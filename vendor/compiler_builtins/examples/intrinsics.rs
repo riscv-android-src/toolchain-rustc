@@ -17,7 +17,7 @@ extern crate panic_handler;
 
 #[cfg(all(not(thumb), not(windows)))]
 #[link(name = "c")]
-extern {}
+extern "C" {}
 
 // Every function in this module maps will be lowered to an intrinsic by LLVM, if the platform
 // doesn't have native support for the operation used in the function. ARM has a naming convention
@@ -27,7 +27,14 @@ extern {}
 mod intrinsics {
     // trunccdfsf2
     pub fn aeabi_d2f(x: f64) -> f32 {
-        x as f32
+        // This is only implemented in C currently, so only test it there.
+        #[cfg(feature = "c")]
+        return x as f32;
+        #[cfg(not(feature = "c"))]
+        {
+            drop(x);
+            0.0
+        }
     }
 
     // fixdfsi
@@ -263,6 +270,10 @@ mod intrinsics {
     pub fn modti3(a: i128, b: i128) -> i128 {
         a % b
     }
+
+    pub fn udivsi3(a: u32, b: u32) -> u32 {
+        a / b
+    }
 }
 
 fn run() {
@@ -325,14 +336,17 @@ fn run() {
     bb(umodti3(bb(2), bb(2)));
     bb(divti3(bb(2), bb(2)));
     bb(modti3(bb(2), bb(2)));
+    bb(udivsi3(bb(2), bb(2)));
 
     something_with_a_dtor(&|| assert_eq!(bb(1), 1));
 
-    extern {
+    extern "C" {
         fn rust_begin_unwind();
     }
     // if bb(false) {
-        unsafe { rust_begin_unwind(); }
+    unsafe {
+        rust_begin_unwind();
+    }
     // }
 }
 
@@ -365,7 +379,7 @@ pub fn _start() -> ! {
 #[cfg(windows)]
 #[link(name = "kernel32")]
 #[link(name = "msvcrt")]
-extern {}
+extern "C" {}
 
 // ARM targets need these symbols
 #[no_mangle]

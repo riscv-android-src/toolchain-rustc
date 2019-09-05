@@ -23,14 +23,15 @@ use rustc::hir::def_id::DefId;
 use rustc::hir::itemlikevisit::ItemLikeVisitor;
 use rustc::hir::intravisit;
 use rustc::ich::{ATTR_DIRTY, ATTR_CLEAN};
-use syntax::ast::{self, Attribute, NestedMetaItem};
-use rustc_data_structures::fx::FxHashSet;
-use syntax_pos::Span;
 use rustc::ty::TyCtxt;
+use rustc_data_structures::fx::FxHashSet;
+use syntax::ast::{self, Attribute, NestedMetaItem};
+use syntax::symbol::{Symbol, sym};
+use syntax_pos::Span;
 
-const EXCEPT: &str = "except";
-const LABEL: &str = "label";
-const CFG: &str = "cfg";
+const EXCEPT: Symbol = sym::except;
+const LABEL: Symbol = sym::label;
+const CFG: Symbol = sym::cfg;
 
 // Base and Extra labels to build up the labels
 
@@ -591,7 +592,7 @@ fn expect_associated_value(tcx: TyCtxt<'_, '_, '_>, item: &NestedMetaItem) -> as
 // nodes.
 pub struct FindAllAttrs<'a, 'tcx:'a> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    attr_names: Vec<&'static str>,
+    attr_names: Vec<Symbol>,
     found_attrs: Vec<&'tcx Attribute>,
 }
 
@@ -599,7 +600,7 @@ impl<'a, 'tcx> FindAllAttrs<'a, 'tcx> {
 
     fn is_active_attr(&mut self, attr: &Attribute) -> bool {
         for attr_name in &self.attr_names {
-            if attr.check_name(attr_name) && check_config(self.tcx, attr) {
+            if attr.check_name(*attr_name) && check_config(self.tcx, attr) {
                 return true;
             }
         }

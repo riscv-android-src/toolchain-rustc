@@ -1,10 +1,11 @@
 use crate::utils::{
-    in_macro, match_def_path, match_trait_method, same_tys, snippet, snippet_with_macro_callsite, span_lint_and_then,
+    in_macro_or_desugar, match_def_path, match_trait_method, same_tys, snippet, snippet_with_macro_callsite,
+    span_lint_and_then,
 };
 use crate::utils::{paths, resolve_node};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_tool_lint, impl_lint_pass};
 use rustc_errors::Applicability;
 
 declare_clippy_lint! {
@@ -29,19 +30,11 @@ pub struct IdentityConversion {
     try_desugar_arm: Vec<HirId>,
 }
 
-impl LintPass for IdentityConversion {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(IDENTITY_CONVERSION)
-    }
-
-    fn name(&self) -> &'static str {
-        "IdentityConversion"
-    }
-}
+impl_lint_pass!(IdentityConversion => [IDENTITY_CONVERSION]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for IdentityConversion {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
-        if in_macro(e.span) {
+        if in_macro_or_desugar(e.span) {
             return;
         }
 
@@ -63,7 +56,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for IdentityConversion {
             },
 
             ExprKind::MethodCall(ref name, .., ref args) => {
-                if match_trait_method(cx, e, &paths::INTO[..]) && &*name.ident.as_str() == "into" {
+                if match_trait_method(cx, e, &paths::INTO) && &*name.ident.as_str() == "into" {
                     let a = cx.tables.expr_ty(e);
                     let b = cx.tables.expr_ty(&args[0]);
                     if same_tys(cx, a, b) {
@@ -99,7 +92,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for IdentityConversion {
             ExprKind::Call(ref path, ref args) => {
                 if let ExprKind::Path(ref qpath) = path.node {
                     if let Some(def_id) = resolve_node(cx, qpath, path.hir_id).opt_def_id() {
-                        if match_def_path(cx.tcx, def_id, &paths::FROM_FROM[..]) {
+                        if match_def_path(cx, def_id, &paths::FROM_FROM) {
                             let a = cx.tables.expr_ty(e);
                             let b = cx.tables.expr_ty(&args[0]);
                             if same_tys(cx, a, b) {

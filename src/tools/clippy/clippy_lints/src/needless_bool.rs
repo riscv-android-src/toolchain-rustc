@@ -3,10 +3,10 @@
 //! This lint is **warn** by default
 
 use crate::utils::sugg::Sugg;
-use crate::utils::{in_macro, span_lint, span_lint_and_sugg};
+use crate::utils::{higher, in_macro_or_desugar, span_lint, span_lint_and_sugg};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::ast::LitKind;
 use syntax::source_map::Spanned;
@@ -54,23 +54,12 @@ declare_clippy_lint! {
     "comparing a variable to a boolean, e.g., `if x == true` or `if x != true`"
 }
 
-#[derive(Copy, Clone)]
-pub struct NeedlessBool;
-
-impl LintPass for NeedlessBool {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NEEDLESS_BOOL)
-    }
-
-    fn name(&self) -> &'static str {
-        "NeedlessBool"
-    }
-}
+declare_lint_pass!(NeedlessBool => [NEEDLESS_BOOL]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBool {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
         use self::Expression::*;
-        if let ExprKind::If(ref pred, ref then_block, Some(ref else_expr)) = e.node {
+        if let Some((ref pred, ref then_block, Some(ref else_expr))) = higher::if_block(&e) {
             let reduce = |ret, not| {
                 let mut applicability = Applicability::MachineApplicable;
                 let snip = Sugg::hir_with_applicability(cx, pred, "<predicate>", &mut applicability);
@@ -130,7 +119,7 @@ fn parent_node_is_if_expr<'a, 'b>(expr: &Expr, cx: &LateContext<'a, 'b>) -> bool
     let parent_node = cx.tcx.hir().get_by_hir_id(parent_id);
 
     if let rustc::hir::Node::Expr(e) = parent_node {
-        if let ExprKind::If(_, _, _) = e.node {
+        if higher::if_block(&e).is_some() {
             return true;
         }
     }
@@ -138,22 +127,11 @@ fn parent_node_is_if_expr<'a, 'b>(expr: &Expr, cx: &LateContext<'a, 'b>) -> bool
     false
 }
 
-#[derive(Copy, Clone)]
-pub struct BoolComparison;
-
-impl LintPass for BoolComparison {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(BOOL_COMPARISON)
-    }
-
-    fn name(&self) -> &'static str {
-        "BoolComparison"
-    }
-}
+declare_lint_pass!(BoolComparison => [BOOL_COMPARISON]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoolComparison {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
-        if in_macro(e.span) {
+        if in_macro_or_desugar(e.span) {
             return;
         }
 

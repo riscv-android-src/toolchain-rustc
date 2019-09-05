@@ -755,8 +755,31 @@ impl<'a, 'tcx> LateContext<'a, 'tcx> {
     }
 
     /// Check if a `DefId`'s path matches the given absolute type path usage.
-    // Uplifted from rust-lang/rust-clippy
-    pub fn match_path(&self, def_id: DefId, path: &[&str]) -> bool {
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore (no context or def id available)
+    /// if cx.match_def_path(def_id, &["core", "option", "Option"]) {
+    ///     // The given `def_id` is that of an `Option` type
+    /// }
+    /// ```
+    pub fn match_def_path(&self, def_id: DefId, path: &[&str]) -> bool {
+        let names = self.get_def_path(def_id);
+
+        names.len() == path.len() && names.into_iter().zip(path.iter()).all(|(a, &b)| *a == *b)
+    }
+
+    /// Gets the absolute path of `def_id` as a vector of `&str`.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,ignore (no context or def id available)
+    /// let def_path = cx.get_def_path(def_id);
+    /// if let &["core", "option", "Option"] = &def_path[..] {
+    ///     // The given `def_id` is that of an `Option` type
+    /// }
+    /// ```
+    pub fn get_def_path(&self, def_id: DefId) -> Vec<LocalInternedString> {
         pub struct AbsolutePathPrinter<'a, 'tcx> {
             pub tcx: TyCtxt<'a, 'tcx, 'tcx>,
         }
@@ -805,8 +828,8 @@ impl<'a, 'tcx> LateContext<'a, 'tcx> {
 
                 // This shouldn't ever be needed, but just in case:
                 Ok(vec![match trait_ref {
-                    Some(trait_ref) => Symbol::intern(&format!("{:?}", trait_ref)).as_str(),
-                    None => Symbol::intern(&format!("<{}>", self_ty)).as_str(),
+                    Some(trait_ref) => LocalInternedString::intern(&format!("{:?}", trait_ref)),
+                    None => LocalInternedString::intern(&format!("<{}>", self_ty)),
                 }])
             }
 
@@ -822,9 +845,10 @@ impl<'a, 'tcx> LateContext<'a, 'tcx> {
                 // This shouldn't ever be needed, but just in case:
                 path.push(match trait_ref {
                     Some(trait_ref) => {
-                        Symbol::intern(&format!("<impl {} for {}>", trait_ref, self_ty)).as_str()
+                        LocalInternedString::intern(&format!("<impl {} for {}>", trait_ref,
+                                                    self_ty))
                     },
-                    None => Symbol::intern(&format!("<impl {}>", self_ty)).as_str(),
+                    None => LocalInternedString::intern(&format!("<impl {}>", self_ty)),
                 });
 
                 Ok(path)
@@ -856,10 +880,9 @@ impl<'a, 'tcx> LateContext<'a, 'tcx> {
             }
         }
 
-        let names = AbsolutePathPrinter { tcx: self.tcx }.print_def_path(def_id, &[]).unwrap();
-
-        names.len() == path.len()
-            && names.into_iter().zip(path.iter()).all(|(a, &b)| *a == *b)
+        AbsolutePathPrinter { tcx: self.tcx }
+            .print_def_path(def_id, &[])
+            .unwrap()
     }
 }
 
@@ -1142,12 +1165,10 @@ impl<'a, T: EarlyLintPass> ast_visit::Visitor<'a> for EarlyContextAndPass<'a, T>
     }
 
     fn visit_pat(&mut self, p: &'a ast::Pat) {
-        let mut visit_subpats = true;
-        run_early_pass!(self, check_pat, p, &mut visit_subpats);
+        run_early_pass!(self, check_pat, p);
         self.check_id(p.id);
-        if visit_subpats {
-            ast_visit::walk_pat(self, p);
-        }
+        ast_visit::walk_pat(self, p);
+        run_early_pass!(self, check_pat_post, p);
     }
 
     fn visit_expr(&mut self, e: &'a ast::Expr) {
@@ -1305,6 +1326,30 @@ impl<'a, T: EarlyLintPass> ast_visit::Visitor<'a> for EarlyContextAndPass<'a, T>
         ast_visit::walk_path(self, &mac.node.path);
 
         run_early_pass!(self, check_mac, mac);
+    }
+
+    fn visit_fn_header(&mut self, header: &'a ast::FnHeader) {
+        // Unlike in HIR lowering and name resolution, the `AsyncArgument` statements are not added
+        // to the function body and the arguments do not replace those in the declaration. They are
+        // still visited manually here so that buffered lints can be emitted.
+        if let ast::IsAsync::Async { ref arguments, .. } = header.asyncness.node {
+            for a in arguments {
+                // Visit the argument..
+                if let Some(arg) = &a.arg {
+                    self.visit_pat(&arg.pat);
+                    if let ast::ArgSource::AsyncFn(pat) = &arg.source {
+                        self.visit_pat(pat);
+                    }
+                    self.visit_ty(&arg.ty);
+                }
+
+                // ..and the statement.
+                self.visit_stmt(&a.move_stmt);
+                if let Some(pat_stmt) = &a.pat_stmt {
+                    self.visit_stmt(&pat_stmt);
+                }
+            }
+        }
     }
 }
 

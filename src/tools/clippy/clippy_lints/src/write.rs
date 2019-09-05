@@ -1,11 +1,12 @@
 use crate::utils::{snippet_with_applicability, span_lint, span_lint_and_sugg};
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use std::borrow::Cow;
 use syntax::ast::*;
 use syntax::parse::{parser, token};
 use syntax::tokenstream::{TokenStream, TokenTree};
+use syntax_pos::symbol::Symbol;
 
 declare_clippy_lint! {
     /// **What it does:** This lint warns when you use `println!("")` to
@@ -168,31 +169,20 @@ declare_clippy_lint! {
     "writing a literal with a format string"
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Pass;
+declare_lint_pass!(Write => [
+    PRINT_WITH_NEWLINE,
+    PRINTLN_EMPTY_STRING,
+    PRINT_STDOUT,
+    USE_DEBUG,
+    PRINT_LITERAL,
+    WRITE_WITH_NEWLINE,
+    WRITELN_EMPTY_STRING,
+    WRITE_LITERAL
+]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(
-            PRINT_WITH_NEWLINE,
-            PRINTLN_EMPTY_STRING,
-            PRINT_STDOUT,
-            USE_DEBUG,
-            PRINT_LITERAL,
-            WRITE_WITH_NEWLINE,
-            WRITELN_EMPTY_STRING,
-            WRITE_LITERAL
-        )
-    }
-
-    fn name(&self) -> &'static str {
-        "Write"
-    }
-}
-
-impl EarlyLintPass for Pass {
+impl EarlyLintPass for Write {
     fn check_mac(&mut self, cx: &EarlyContext<'_>, mac: &Mac) {
-        if mac.node.path == "println" {
+        if mac.node.path == sym!(println) {
             span_lint(cx, PRINT_STDOUT, mac.span, "use of `println!`");
             if let Some(fmtstr) = check_tts(cx, &mac.node.tts, false).0 {
                 if fmtstr == "" {
@@ -207,7 +197,7 @@ impl EarlyLintPass for Pass {
                     );
                 }
             }
-        } else if mac.node.path == "print" {
+        } else if mac.node.path == sym!(print) {
             span_lint(cx, PRINT_STDOUT, mac.span, "use of `print!`");
             if let (Some(fmtstr), _, is_raw) = check_tts(cx, &mac.node.tts, false) {
                 if check_newlines(&fmtstr, is_raw) {
@@ -220,7 +210,7 @@ impl EarlyLintPass for Pass {
                     );
                 }
             }
-        } else if mac.node.path == "write" {
+        } else if mac.node.path == sym!(write) {
             if let (Some(fmtstr), _, is_raw) = check_tts(cx, &mac.node.tts, true) {
                 if check_newlines(&fmtstr, is_raw) {
                     span_lint(
@@ -232,7 +222,7 @@ impl EarlyLintPass for Pass {
                     );
                 }
             }
-        } else if mac.node.path == "writeln" {
+        } else if mac.node.path == sym!(writeln) {
             let check_tts = check_tts(cx, &mac.node.tts, true);
             if let Some(fmtstr) = check_tts.0 {
                 if fmtstr == "" {
@@ -375,7 +365,7 @@ fn check_tts<'a>(cx: &EarlyContext<'a>, tts: &TokenStream, is_write: bool) -> (O
                             match arg.position {
                                 ArgumentImplicitlyIs(_) | ArgumentIs(_) => {},
                                 ArgumentNamed(name) => {
-                                    if *p == name {
+                                    if *p == Symbol::intern(name) {
                                         seen = true;
                                         all_simple &= arg.format == SIMPLE;
                                     }

@@ -108,9 +108,10 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("awk", &["*.awk"]),
     ("bazel", &["*.bzl", "WORKSPACE", "BUILD", "BUILD.bazel"]),
     ("bitbake", &["*.bb", "*.bbappend", "*.bbclass", "*.conf", "*.inc"]),
+    ("brotli", &["*.br"]),
     ("buildstream", &["*.bst"]),
-    ("bzip2", &["*.bz2"]),
-    ("c", &["*.c", "*.h", "*.H", "*.cats"]),
+    ("bzip2", &["*.bz2", "*.tbz2"]),
+    ("c", &["*.[chH]", "*.[chH].in", "*.cats"]),
     ("cabal", &["*.cabal"]),
     ("cbor", &["*.cbor"]),
     ("ceylon", &["*.ceylon"]),
@@ -120,8 +121,8 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("creole", &["*.creole"]),
     ("config", &["*.cfg", "*.conf", "*.config", "*.ini"]),
     ("cpp", &[
-        "*.C", "*.cc", "*.cpp", "*.cxx",
-        "*.h", "*.H", "*.hh", "*.hpp", "*.hxx", "*.inl",
+        "*.[ChH]", "*.cc", "*.[ch]pp", "*.[ch]xx", "*.hh",  "*.inl",
+        "*.[ChH].in", "*.cc.in", "*.[ch]pp.in", "*.[ch]xx.in", "*.hh.in",
     ]),
     ("crystal", &["Projectfile", "*.cr"]),
     ("cs", &["*.cs"]),
@@ -147,7 +148,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("fsharp", &["*.fs", "*.fsx", "*.fsi"]),
     ("gn", &["*.gn", "*.gni"]),
     ("go", &["*.go"]),
-    ("gzip", &["*.gz"]),
+    ("gzip", &["*.gz", "*.tgz"]),
     ("groovy", &["*.groovy", "*.gradle"]),
     ("h", &["*.h", "*.hpp"]),
     ("hbs", &["*.hbs"]),
@@ -155,7 +156,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("hs", &["*.hs", "*.lhs"]),
     ("html", &["*.htm", "*.html", "*.ejs"]),
     ("idris", &["*.idr", "*.lidr"]),
-    ("java", &["*.java", "*.jsp"]),
+    ("java", &["*.java", "*.jsp", "*.jspx", "*.properties"]),
     ("jinja", &["*.j2", "*.jinja", "*.jinja2"]),
     ("js", &[
         "*.js", "*.jsx", "*.vue",
@@ -195,14 +196,16 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
         "OFL-*[0-9]*",
     ]),
     ("lisp", &["*.el", "*.jl", "*.lisp", "*.lsp", "*.sc", "*.scm"]),
+    ("lock", &["*.lock", "package-lock.json"]),
     ("log", &["*.log"]),
     ("lua", &["*.lua"]),
     ("lzma", &["*.lzma"]),
     ("lz4", &["*.lz4"]),
     ("m4", &["*.ac", "*.m4"]),
     ("make", &[
-        "gnumakefile", "Gnumakefile", "GNUmakefile",
-        "makefile", "Makefile",
+        "[Gg][Nn][Uu]makefile", "[Mm]akefile",
+        "[Gg][Nn][Uu]makefile.am", "[Mm]akefile.am",
+        "[Gg][Nn][Uu]makefile.in", "[Mm]akefile.in",
         "*.mk", "*.mak"
     ]),
     ("mako", &["*.mako", "*.mao"]),
@@ -233,6 +236,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("purs", &["*.purs"]),
     ("py", &["*.py"]),
     ("qmake", &["*.pro", "*.pri", "*.prf"]),
+    ("qml", &["*.qml"]),
     ("readme", &["README*", "*README"]),
     ("r", &["*.R", "*.r", "*.Rmd", "*.Rnw"]),
     ("rdoc", &["*.rdoc"]),
@@ -281,7 +285,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ]),
     ("taskpaper", &["*.taskpaper"]),
     ("tcl", &["*.tcl"]),
-    ("tex", &["*.tex", "*.ltx", "*.cls", "*.sty", "*.bib"]),
+    ("tex", &["*.tex", "*.ltx", "*.cls", "*.sty", "*.bib", "*.dtx", "*.ins"]),
     ("textile", &["*.textile"]),
     ("thrift", &["*.thrift"]),
     ("tf", &["*.tf"]),
@@ -297,10 +301,14 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("vimscript", &["*.vim"]),
     ("wiki", &["*.mediawiki", "*.wiki"]),
     ("webidl", &["*.idl", "*.webidl", "*.widl"]),
-    ("xml", &["*.xml", "*.xml.dist"]),
-    ("xz", &["*.xz"]),
+    ("xml", &[
+        "*.xml", "*.xml.dist", "*.dtd", "*.xsl", "*.xslt", "*.xsd", "*.xjb",
+        "*.rng", "*.sch",
+    ]),
+    ("xz", &["*.xz", "*.txz"]),
     ("yacc", &["*.y"]),
     ("yaml", &["*.yaml", "*.yml"]),
+    ("zig", &["*.zig"]),
     ("zsh", &[
         ".zshenv", "zshenv",
         ".zlogin", "zlogin",
@@ -309,6 +317,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
         ".zshrc", "zshrc",
         "*.zsh",
     ]),
+    ("zstd", &["*.zst", "*.zstd"]),
 ];
 
 /// Glob represents a single glob in a set of file type definitions.
@@ -346,6 +355,18 @@ enum GlobInner<'a> {
 impl<'a> Glob<'a> {
     fn unmatched() -> Glob<'a> {
         Glob(GlobInner::UnmatchedIgnore)
+    }
+
+    /// Return the file type defintion that matched, if one exists. A file type
+    /// definition always exists when a specific definition matches a file
+    /// path.
+    pub fn file_type_def(&self) -> Option<&FileTypeDef> {
+        match self {
+            Glob(GlobInner::UnmatchedIgnore) => None,
+            Glob(GlobInner::Matched { def, .. }) => {
+                Some(def)
+            },
+        }
     }
 }
 

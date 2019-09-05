@@ -21,9 +21,9 @@
 //!
 //! [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 
-use crate::infer::{InferCtxt, RegionVariableOrigin, TypeVariableOrigin};
+use crate::infer::{InferCtxt, RegionVariableOrigin, TypeVariableOrigin, ConstVariableOrigin};
+use crate::mir::interpret::ConstValue;
 use rustc_data_structures::indexed_vec::IndexVec;
-use rustc_data_structures::sync::Lrc;
 use rustc_macros::HashStable;
 use serialize::UseSpecializedDecodable;
 use smallvec::SmallVec;
@@ -31,7 +31,7 @@ use std::ops::Index;
 use syntax::source_map::Span;
 use crate::ty::fold::TypeFoldable;
 use crate::ty::subst::Kind;
-use crate::ty::{self, BoundVar, Lift, List, Region, TyCtxt};
+use crate::ty::{self, BoundVar, InferConst, Lift, List, Region, TyCtxt};
 
 mod canonicalizer;
 
@@ -116,6 +116,8 @@ impl CanonicalVarInfo {
             CanonicalVarKind::PlaceholderTy(_) => false,
             CanonicalVarKind::Region(_) => true,
             CanonicalVarKind::PlaceholderRegion(..) => false,
+            CanonicalVarKind::Const(_) => true,
+            CanonicalVarKind::PlaceholderConst(_) => false,
         }
     }
 }
@@ -138,6 +140,12 @@ pub enum CanonicalVarKind {
     /// are solving a goal like `for<'a> T: Foo<'a>` to represent the
     /// bound region `'a`.
     PlaceholderRegion(ty::PlaceholderRegion),
+
+    /// Some kind of const inference variable.
+    Const(ty::UniverseIndex),
+
+    /// A "placeholder" that represents "any const".
+    PlaceholderConst(ty::PlaceholderConst),
 }
 
 impl CanonicalVarKind {
@@ -151,6 +159,8 @@ impl CanonicalVarKind {
             CanonicalVarKind::PlaceholderTy(placeholder) => placeholder.universe,
             CanonicalVarKind::Region(ui) => ui,
             CanonicalVarKind::PlaceholderRegion(placeholder) => placeholder.universe,
+            CanonicalVarKind::Const(ui) => ui,
+            CanonicalVarKind::PlaceholderConst(placeholder) => placeholder.universe,
         }
     }
 }
@@ -186,7 +196,7 @@ pub struct QueryResponse<'tcx, R> {
 pub type Canonicalized<'gcx, V> = Canonical<'gcx, <V as Lift<'gcx>>::Lifted>;
 
 pub type CanonicalizedQueryResponse<'gcx, T> =
-    Lrc<Canonical<'gcx, QueryResponse<'gcx, <T as Lift<'gcx>>::Lifted>>>;
+    &'gcx Canonical<'gcx, QueryResponse<'gcx, <T as Lift<'gcx>>::Lifted>>;
 
 /// Indicates whether or not we were able to prove the query to be
 /// true.
@@ -389,6 +399,33 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                 };
                 self.tcx.mk_region(ty::RePlaceholder(placeholder_mapped)).into()
             }
+
+            CanonicalVarKind::Const(ui) => {
+                self.next_const_var_in_universe(
+                    self.next_ty_var_in_universe(
+                        TypeVariableOrigin::MiscVariable(span),
+                        universe_map(ui),
+                    ),
+                    ConstVariableOrigin::MiscVariable(span),
+                    universe_map(ui),
+                ).into()
+            }
+
+            CanonicalVarKind::PlaceholderConst(
+                ty::PlaceholderConst { universe, name },
+            ) => {
+                let universe_mapped = universe_map(universe);
+                let placeholder_mapped = ty::PlaceholderConst {
+                    universe: universe_mapped,
+                    name,
+                };
+                self.tcx.mk_const(
+                    ty::Const {
+                        val: ConstValue::Placeholder(placeholder_mapped),
+                        ty: self.tcx.types.err, // FIXME(const_generics)
+                    }
+                ).into()
+            }
         }
     }
 }
@@ -444,8 +481,13 @@ impl<'tcx> CanonicalVarValues<'tcx> {
                     UnpackedKind::Lifetime(..) => tcx.mk_region(
                         ty::ReLateBound(ty::INNERMOST, ty::BoundRegion::BrAnon(i))
                     ).into(),
-                    UnpackedKind::Const(..) => {
-                        unimplemented!() // FIXME(const_generics)
+                    UnpackedKind::Const(ct) => {
+                        tcx.mk_const(ty::Const {
+                            ty: ct.ty,
+                            val: ConstValue::Infer(
+                                InferConst::Canonical(ty::INNERMOST, ty::BoundVar::from_u32(i))
+                            ),
+                        }).into()
                     }
                 })
                 .collect()

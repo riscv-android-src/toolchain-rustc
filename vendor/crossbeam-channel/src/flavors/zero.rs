@@ -7,12 +7,12 @@ use std::marker::PhantomData;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use parking_lot::Mutex;
+use crossbeam_utils::Backoff;
 
 use context::Context;
 use err::{RecvTimeoutError, SendTimeoutError, TryRecvError, TrySendError};
 use select::{Operation, SelectHandle, Selected, Token};
-use utils::Backoff;
+use utils::Mutex;
 use waker::Waker;
 
 /// A pointer to a packet.
@@ -60,7 +60,7 @@ impl<T> Packet<T> {
 
     /// Waits until the packet becomes ready for reading or writing.
     fn wait_ready(&self) {
-        let mut backoff = Backoff::new();
+        let backoff = Backoff::new();
         while !self.ready.load(Ordering::Acquire) {
             backoff.snooze();
         }
@@ -408,10 +408,6 @@ impl<'a, T> SelectHandle for Receiver<'a, T> {
         let mut inner = self.0.inner.lock();
         inner.receivers.unwatch(oper);
     }
-
-    fn state(&self) -> usize {
-        self.0.inner.lock().senders.register_count()
-    }
 }
 
 impl<'a, T> SelectHandle for Sender<'a, T> {
@@ -461,9 +457,5 @@ impl<'a, T> SelectHandle for Sender<'a, T> {
     fn unwatch(&self, oper: Operation) {
         let mut inner = self.0.inner.lock();
         inner.senders.unwatch(oper);
-    }
-
-    fn state(&self) -> usize {
-        self.0.inner.lock().receivers.register_count()
     }
 }

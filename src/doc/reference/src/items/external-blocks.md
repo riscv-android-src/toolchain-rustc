@@ -17,7 +17,7 @@
 >
 > _ExternalFunctionItem_ :\
 > &nbsp;&nbsp; `fn` [IDENTIFIER]&nbsp;[_Generics_]<sup>?</sup>\
-> &nbsp;&nbsp; `(` _NamedFunctionParameters_<sup>?</sup> | _NamedFunctionParametersWithVariadics_ ) `)`\
+> &nbsp;&nbsp; `(` ( _NamedFunctionParameters_ | _NamedFunctionParametersWithVariadics_ )<sup>?</sup> `)`\
 > &nbsp;&nbsp; [_FunctionReturnType_]<sup>?</sup> [_WhereClause_]<sup>?</sup> `;`
 >
 > _NamedFunctionParameters_ :\
@@ -166,8 +166,6 @@ extern {
 [IDENTIFIER]: identifiers.html
 [WebAssembly module]: https://webassembly.github.io/spec/core/syntax/modules.html
 [_Abi_]: items/functions.html
-[_FunctionParam_]: items/functions.html
-[_FunctionParameters_]: items/functions.html
 [_FunctionReturnType_]: items/functions.html
 [_Generics_]: items/generics.html
 [_InnerAttribute_]: attributes.html

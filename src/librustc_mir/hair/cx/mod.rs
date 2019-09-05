@@ -16,9 +16,8 @@ use rustc::ty::subst::{Kind, InternalSubsts};
 use rustc::ty::layout::VariantIdx;
 use syntax::ast;
 use syntax::attr;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use rustc::hir;
-use rustc_data_structures::sync::Lrc;
 use crate::hair::constant::{lit_to_const, LitToConstError};
 
 #[derive(Clone)]
@@ -32,7 +31,7 @@ pub struct Cx<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     /// Identity `InternalSubsts` for use with const-evaluation.
     pub identity_substs: &'gcx InternalSubsts<'gcx>,
 
-    pub region_scope_tree: Lrc<region::ScopeTree>,
+    pub region_scope_tree: &'gcx region::ScopeTree,
     pub tables: &'a ty::TypeckTables<'gcx>,
 
     /// This is `Constness::Const` if we are compiling a `static`,
@@ -68,7 +67,7 @@ impl<'a, 'gcx, 'tcx> Cx<'a, 'gcx, 'tcx> {
         // Some functions always have overflow checks enabled,
         // however, they may not get codegen'd, depending on
         // the settings for the crate they are codegened in.
-        let mut check_overflow = attr::contains_name(attrs, "rustc_inherit_overflow_checks");
+        let mut check_overflow = attr::contains_name(attrs, sym::rustc_inherit_overflow_checks);
 
         // Respect -C overflow-checks.
         check_overflow |= tcx.sess.overflow_checks();

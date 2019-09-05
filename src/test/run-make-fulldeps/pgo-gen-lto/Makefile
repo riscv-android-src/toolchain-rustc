@@ -1,10 +1,8 @@
+# needs-profiler-support
+
 -include ../tools.mk
 
-# ignore-windows
-
 all:
-ifeq ($(PROFILER_SUPPORT),1)
-	$(RUSTC) -Copt-level=3 -Clto=fat -Z pgo-gen="$(TMPDIR)/test.profraw" test.rs
+	$(RUSTC) -Copt-level=3 -Clto=fat -Z pgo-gen="$(TMPDIR)" test.rs
 	$(call RUN,test) || exit 1
-	[ -e "$(TMPDIR)/test.profraw" ] || (echo "No .profraw file"; exit 1)
-endif
+	[ -e "$(TMPDIR)"/default_*.profraw ] || (echo "No .profraw file"; exit 1)

@@ -1,9 +1,9 @@
 use matches::matches;
-use rustc::hir::def::Def;
+use rustc::hir::def::{DefKind, Res};
 use rustc::hir::intravisit::*;
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use syntax::source_map::Span;
 use syntax::symbol::keywords;
@@ -55,20 +55,9 @@ declare_clippy_lint! {
     "unused lifetimes in function definitions"
 }
 
-#[derive(Copy, Clone)]
-pub struct LifetimePass;
+declare_lint_pass!(Lifetimes => [NEEDLESS_LIFETIMES, EXTRA_UNUSED_LIFETIMES]);
 
-impl LintPass for LifetimePass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NEEDLESS_LIFETIMES, EXTRA_UNUSED_LIFETIMES)
-    }
-
-    fn name(&self) -> &'static str {
-        "LifeTimes"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LifetimePass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Lifetimes {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
         if let ItemKind::Fn(ref decl, _, ref generics, id) = item.node {
             check_fn_inner(cx, decl, Some(id), generics, item.span);
@@ -321,14 +310,14 @@ impl<'v, 't> RefVisitor<'v, 't> {
                 })
             {
                 let hir_id = ty.hir_id;
-                match self.cx.tables.qpath_def(qpath, hir_id) {
-                    Def::TyAlias(def_id) | Def::Struct(def_id) => {
+                match self.cx.tables.qpath_res(qpath, hir_id) {
+                    Res::Def(DefKind::TyAlias, def_id) | Res::Def(DefKind::Struct, def_id) => {
                         let generics = self.cx.tcx.generics_of(def_id);
                         for _ in generics.params.as_slice() {
                             self.record(&None);
                         }
                     },
-                    Def::Trait(def_id) => {
+                    Res::Def(DefKind::Trait, def_id) => {
                         let trait_def = self.cx.tcx.trait_def(def_id);
                         for _ in &self.cx.tcx.generics_of(trait_def.def_id).params {
                             self.record(&None);
@@ -487,7 +476,9 @@ struct BodyLifetimeChecker {
 impl<'tcx> Visitor<'tcx> for BodyLifetimeChecker {
     // for lifetimes as parameters of generics
     fn visit_lifetime(&mut self, lifetime: &'tcx Lifetime) {
-        if lifetime.name.ident().name != keywords::Invalid.name() && lifetime.name.ident().name != "'static" {
+        if lifetime.name.ident().name != keywords::Invalid.name()
+            && lifetime.name.ident().name != syntax::symbol::keywords::StaticLifetime.name()
+        {
             self.lifetimes_used_in_body = true;
         }
     }

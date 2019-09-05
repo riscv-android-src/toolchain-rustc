@@ -1,11 +1,13 @@
-use std::collections::HashSet;
+use std::collections::{hash_set, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use atty;
+use serde::de::{Deserialize, Deserializer, SeqAccess, Visitor};
 
 use crate::config::config_type::ConfigType;
 use crate::config::lists::*;
-use crate::config::{Config, FileName};
+use crate::config::Config;
 
 /// Macro that will stringify the enum variants or a provided textual repr
 #[macro_export]
@@ -396,36 +398,63 @@ impl Default for EmitMode {
 }
 
 /// A set of directories, files and modules that rustfmt should ignore.
-#[derive(Default, Deserialize, Serialize, Clone, Debug, PartialEq)]
-pub struct IgnoreList(HashSet<PathBuf>);
+#[derive(Default, Serialize, Clone, Debug, PartialEq)]
+pub struct IgnoreList {
+    /// A set of path specified in rustfmt.toml.
+    #[serde(flatten)]
+    path_set: HashSet<PathBuf>,
+    /// A path to rustfmt.toml.
+    #[serde(skip_serializing)]
+    rustfmt_toml_path: PathBuf,
+}
+
+impl<'de> Deserialize<'de> for IgnoreList {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct HashSetVisitor;
+        impl<'v> Visitor<'v> for HashSetVisitor {
+            type Value = HashSet<PathBuf>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a sequence of path")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'v>,
+            {
+                let mut path_set = HashSet::new();
+                while let Some(elem) = seq.next_element()? {
+                    path_set.insert(elem);
+                }
+                Ok(path_set)
+            }
+        }
+        Ok(IgnoreList {
+            path_set: deserializer.deserialize_seq(HashSetVisitor)?,
+            rustfmt_toml_path: PathBuf::new(),
+        })
+    }
+}
+
+impl<'a> IntoIterator for &'a IgnoreList {
+    type Item = &'a PathBuf;
+    type IntoIter = hash_set::Iter<'a, PathBuf>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.path_set.iter()
+    }
+}
 
 impl IgnoreList {
     pub fn add_prefix(&mut self, dir: &Path) {
-        self.0 = self
-            .0
-            .iter()
-            .map(|s| {
-                if s.has_root() {
-                    s.clone()
-                } else {
-                    let mut path = PathBuf::from(dir);
-                    path.push(s);
-                    path
-                }
-            })
-            .collect();
+        self.rustfmt_toml_path = dir.to_path_buf();
     }
 
-    fn skip_file_inner(&self, file: &Path) -> bool {
-        self.0.iter().any(|path| file.starts_with(path))
-    }
-
-    pub fn skip_file(&self, file: &FileName) -> bool {
-        if let FileName::Real(ref path) = file {
-            self.skip_file_inner(path)
-        } else {
-            false
-        }
+    pub fn rustfmt_toml_path(&self) -> &Path {
+        &self.rustfmt_toml_path
     }
 }
 

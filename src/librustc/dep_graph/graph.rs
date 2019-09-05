@@ -992,8 +992,9 @@ impl CurrentDepGraph {
 
         // Pre-allocate the dep node structures. We over-allocate a little so
         // that we hopefully don't have to re-allocate during this compilation
-        // session.
-        let new_node_count_estimate = (prev_graph_node_count * 115) / 100;
+        // session. The over-allocation is 2% plus a small constant to account
+        // for the fact that in very small crates 2% might not be enough.
+        let new_node_count_estimate = (prev_graph_node_count * 102) / 100 + 200;
 
         CurrentDepGraph {
             data: IndexVec::with_capacity(new_node_count_estimate),
@@ -1020,25 +1021,22 @@ impl CurrentDepGraph {
     fn complete_anon_task(&mut self, kind: DepKind, task_deps: TaskDeps) -> DepNodeIndex {
         debug_assert!(!kind.is_eval_always());
 
-        let mut fingerprint = self.anon_id_seed;
         let mut hasher = StableHasher::new();
 
-        for &read in task_deps.reads.iter() {
-            let read_dep_node = self.data[read].node;
+        // The dep node indices are hashed here instead of hashing the dep nodes of the
+        // dependencies. These indices may refer to different nodes per session, but this isn't
+        // a problem here because we that ensure the final dep node hash is per session only by
+        // combining it with the per session random number `anon_id_seed`. This hash only need
+        // to map the dependencies to a single value on a per session basis.
+        task_deps.reads.hash(&mut hasher);
 
-            ::std::mem::discriminant(&read_dep_node.kind).hash(&mut hasher);
+        let target_dep_node = DepNode {
+            kind,
 
             // Fingerprint::combine() is faster than sending Fingerprint
             // through the StableHasher (at least as long as StableHasher
             // is so slow).
-            fingerprint = fingerprint.combine(read_dep_node.hash);
-        }
-
-        fingerprint = fingerprint.combine(hasher.finish());
-
-        let target_dep_node = DepNode {
-            kind,
-            hash: fingerprint,
+            hash: self.anon_id_seed.combine(hasher.finish()),
         };
 
         self.intern_node(target_dep_node, task_deps.reads, Fingerprint::ZERO).0

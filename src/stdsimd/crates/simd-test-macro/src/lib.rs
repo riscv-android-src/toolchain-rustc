@@ -55,7 +55,9 @@ pub fn simd_test(
         .parse()
         .unwrap_or_else(|_| panic!("failed to parse name: {}", name.to_string()));
 
-    let target = env::var("TARGET").expect("TARGET environment variable should be set for rustc");
+    let target = env::var("TARGET").expect(
+        "TARGET environment variable should be set for rustc (e.g. TARGET=x86_64-apple-darwin cargo test)"
+    );
     let mut force_test = false;
     let macro_test = match target
         .split('-')
@@ -67,7 +69,7 @@ pub fn simd_test(
         "aarch64" => "is_aarch64_feature_detected",
         "powerpc" | "powerpcle" => "is_powerpc_feature_detected",
         "powerpc64" | "powerpc64le" => "is_powerpc64_feature_detected",
-        "mips" | "mipsel" => {
+        "mips" | "mipsel" | "mipsisa32r6" | "mipsisa32r6el" => {
             // FIXME:
             // On MIPS CI run-time feature detection always returns false due
             // to this qemu bug: https://bugs.launchpad.net/qemu/+bug/1754372
@@ -77,7 +79,7 @@ pub fn simd_test(
             force_test = true;
             "is_mips_feature_detected"
         }
-        "mips64" | "mips64el" => {
+        "mips64" | "mips64el" | "mipsisa64r6" | "mipsisa64r6el" => {
             // FIXME: see above
             force_test = true;
             "is_mips64_feature_detected"

@@ -17,7 +17,7 @@
 #![recursion_limit="256"]
 
 #![deny(rust_2018_idioms)]
-#![cfg_attr(not(stage0), deny(internal))]
+#![deny(internal)]
 
 pub extern crate getopts;
 #[cfg(unix)]
@@ -63,6 +63,7 @@ use syntax::ast;
 use syntax::source_map::FileLoader;
 use syntax::feature_gate::{GatedCfg, UnstableFeatures};
 use syntax::parse::{self, PResult};
+use syntax::symbol::sym;
 use syntax_pos::{DUMMY_SP, MultiSpan, FileName};
 
 pub mod pretty;
@@ -669,7 +670,7 @@ impl RustcDefaultCalls {
                         // through to build scripts.
                         let value = value.as_ref().map(|s| s.as_str());
                         let value = value.as_ref().map(|s| s.as_ref());
-                        if name != "target_feature" || value != Some("crt-static") {
+                        if name != sym::target_feature || value != Some("crt-static") {
                             if !allow_unstable_cfg && gated_cfg.is_some() {
                                 return None
                             }
@@ -744,7 +745,7 @@ fn usage(verbose: bool, include_unstable_options: bool) {
     }
     let message = "Usage: rustc [OPTIONS] INPUT";
     let nightly_help = if nightly_options::is_nightly_build() {
-        "\n    -Z help             Print internal options for debugging rustc"
+        "\n    -Z help             Print unstable compiler options"
     } else {
         ""
     };
@@ -892,7 +893,7 @@ Available lint options:
 }
 
 fn describe_debug_flags() {
-    println!("\nAvailable debug options:\n");
+    println!("\nAvailable options:\n");
     print_flag_list("-Z", config::DB_OPTIONS);
 }
 
@@ -1163,7 +1164,7 @@ pub fn report_ices_to_stderr_if_any<F: FnOnce() -> R, R>(f: F) -> Result<R, Erro
 /// This allows tools to enable rust logging without having to magically match rustc's
 /// log crate version
 pub fn init_rustc_env_logger() {
-    env_logger::init();
+    env_logger::init_from_env("RUSTC_LOG");
 }
 
 pub fn main() {

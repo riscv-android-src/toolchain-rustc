@@ -5,15 +5,16 @@ use std::marker::PhantomData;
 use std::mem;
 use std::time::{Duration, Instant};
 
+use crossbeam_utils::Backoff;
+use smallvec::SmallVec;
+
 use channel::{self, Receiver, Sender};
 use context::Context;
 use err::{ReadyTimeoutError, TryReadyError};
 use err::{RecvError, SendError};
 use err::{SelectTimeoutError, TrySelectError};
-use smallvec::SmallVec;
-use utils::{self, Backoff};
-
 use flavors;
+use utils;
 
 /// Temporary data that gets initialized during select or a blocking operation, and is consumed by
 /// `read` or `write`.
@@ -30,7 +31,7 @@ pub struct Token {
 }
 
 /// Identifier associated with an operation by a specific thread on a specific channel.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Operation(usize);
 
 impl Operation {
@@ -50,7 +51,7 @@ impl Operation {
 }
 
 /// Current state of a select or a blocking operation.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Selected {
     /// Still waiting for an operation.
     Waiting,
@@ -117,15 +118,6 @@ pub trait SelectHandle {
 
     /// Unregisters an operation for readiness notification.
     fn unwatch(&self, oper: Operation);
-
-    /// Returns the current state of the opposite side of the channel.
-    ///
-    /// This is typically represented by the current message index at the opposite side of the
-    /// channel.
-    ///
-    /// For example, by calling `state()`, the receiving side can check how much activity the
-    /// sending side has had and viceversa.
-    fn state(&self) -> usize;
 }
 
 impl<'a, T: SelectHandle> SelectHandle for &'a T {
@@ -159,10 +151,6 @@ impl<'a, T: SelectHandle> SelectHandle for &'a T {
 
     fn unwatch(&self, oper: Operation) {
         (**self).unwatch(oper)
-    }
-
-    fn state(&self) -> usize {
-        (**self).state()
     }
 }
 
@@ -210,66 +198,23 @@ fn run_select(
     // selected operation.
     let mut token = Token::default();
 
-    // Is this is a non-blocking select?
-    if timeout == Timeout::Now {
-        if handles.len() <= 1 {
-            // Try selecting the operations without blocking.
-            for &(handle, i, ptr) in handles.iter() {
-                if handle.try_select(&mut token) {
-                    return Some((token, i, ptr));
-                }
-            }
-
-            return None;
-        }
-
-        let mut states = SmallVec::<[usize; 4]>::with_capacity(handles.len());
-
-        // Snapshot the channel states of all operations.
-        for &(handle, _, _) in handles.iter() {
-            states.push(handle.state());
-        }
-
-        loop {
-            // Try selecting one of the operations.
-            for &(handle, i, ptr) in handles.iter() {
-                if handle.try_select(&mut token) {
-                    return Some((token, i, ptr));
-                }
-            }
-
-            let mut changed = false;
-
-            // Update the channel states and check whether any have been changed.
-            for (&(handle, _, _), state) in handles.iter().zip(states.iter_mut()) {
-                let current = handle.state();
-
-                if *state != current {
-                    *state = current;
-                    changed = true;
-                }
-            }
-
-            // If none of the states have changed, selection failed.
-            if !changed {
-                return None;
-            }
+    // Try selecting one of the operations without blocking.
+    for &(handle, i, ptr) in handles.iter() {
+        if handle.try_select(&mut token) {
+            return Some((token, i, ptr));
         }
     }
 
     loop {
-        // Try selecting one of the operations without blocking.
-        for &(handle, i, ptr) in handles.iter() {
-            if handle.try_select(&mut token) {
-                return Some((token, i, ptr));
-            }
-        }
-
         // Prepare for blocking.
         let res = Context::with(|cx| {
             let mut sel = Selected::Waiting;
             let mut registered_count = 0;
             let mut index_ready = None;
+
+            if let Timeout::Now = timeout {
+                cx.try_select(Selected::Aborted).unwrap();
+            }
 
             // Register all operations.
             for (handle, i, _) in handles.iter_mut() {
@@ -299,7 +244,7 @@ fn run_select(
                 // Check with each operation for how long we're allowed to block, and compute the
                 // earliest deadline.
                 let mut deadline: Option<Instant> = match timeout {
-                    Timeout::Now => unreachable!(),
+                    Timeout::Now => return None,
                     Timeout::Never => None,
                     Timeout::At(when) => Some(when),
                 };
@@ -353,15 +298,19 @@ fn run_select(
             return Some((token, i, ptr));
         }
 
-        // Check for timeout.
+        // Try selecting one of the operations without blocking.
+        for &(handle, i, ptr) in handles.iter() {
+            if handle.try_select(&mut token) {
+                return Some((token, i, ptr));
+            }
+        }
+
         match timeout {
-            Timeout::Now => unreachable!(),
+            Timeout::Now => return None,
             Timeout::Never => {}
             Timeout::At(when) => {
                 if Instant::now() >= when {
-                    // Fall back to one final non-blocking select. This is needed to make the whole
-                    // select invocation appear from the outside as a single operation.
-                    return run_select(handles, Timeout::Now);
+                    return None;
                 }
             }
         }
@@ -392,7 +341,7 @@ fn run_ready(
     utils::shuffle(handles);
 
     loop {
-        let mut backoff = Backoff::new();
+        let backoff = Backoff::new();
         loop {
             // Check operations for readiness.
             for &(handle, i, _) in handles.iter() {
@@ -401,8 +350,10 @@ fn run_ready(
                 }
             }
 
-            if !backoff.snooze() {
+            if backoff.is_completed() {
                 break;
+            } else {
+                backoff.snooze();
             }
         }
 
@@ -512,7 +463,8 @@ fn run_ready(
 /// * Wait for an operation to become ready with [`try_ready`], [`ready`], or [`ready_timeout`]. If
 ///   successful, we may attempt to execute the operation, but are not obliged to. In fact, it's
 ///   possible for another thread to make the operation not ready just before we try executing it,
-///   so it's wise to use a retry loop.
+///   so it's wise to use a retry loop. However, note that these methods might return with success
+///   spuriously, so it's a good idea to always double check if the operation is really ready.
 ///
 /// # Examples
 ///
@@ -829,6 +781,9 @@ impl<'a> Select<'a> {
     /// An operation is considered to be ready if it doesn't have to block. Note that it is ready
     /// even when it will simply return an error because the channel is disconnected.
     ///
+    /// Note that this method might return with success spuriously, so it's a good idea to always
+    /// double check if the operation is really ready.
+    ///
     /// # Examples
     ///
     /// ```
@@ -867,6 +822,9 @@ impl<'a> Select<'a> {
     ///
     /// An operation is considered to be ready if it doesn't have to block. Note that it is ready
     /// even when it will simply return an error because the channel is disconnected.
+    ///
+    /// Note that this method might return with success spuriously, so it's a good idea to always
+    /// double check if the operation is really ready.
     ///
     /// # Panics
     ///
@@ -916,6 +874,9 @@ impl<'a> Select<'a> {
     /// An operation is considered to be ready if it doesn't have to block. Note that it is ready
     /// even when it will simply return an error because the channel is disconnected.
     ///
+    /// Note that this method might return with success spuriously, so it's a good idea to double
+    /// check if the operation is really ready.
+    ///
     /// # Examples
     ///
     /// ```
@@ -959,6 +920,12 @@ impl<'a> Clone for Select<'a> {
         Select {
             handles: self.handles.clone(),
         }
+    }
+}
+
+impl<'a> Default for Select<'a> {
+    fn default() -> Select<'a> {
+        Select::new()
     }
 }
 

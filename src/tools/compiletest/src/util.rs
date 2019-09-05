@@ -3,11 +3,12 @@ use std::env;
 use std::path::PathBuf;
 use crate::common::Config;
 
+use log::*;
+
 /// Conversion table from triple OS name to Rust SYSNAME
 const OS_TABLE: &'static [(&'static str, &'static str)] = &[
     ("android", "android"),
     ("androideabi", "android"),
-    ("bitrig", "bitrig"),
     ("cloudabi", "cloudabi"),
     ("cuda", "cuda"),
     ("darwin", "macos"),

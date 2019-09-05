@@ -1,7 +1,7 @@
 use core::ops;
 
-use int::LargeInt;
 use int::Int;
+use int::LargeInt;
 
 trait Mul: LargeInt {
     fn mul(self, other: Self) -> Self {
@@ -19,8 +19,9 @@ trait Mul: LargeInt {
         low += (t & lower_mask) << half_bits;
         high += Self::low_as_high(t >> half_bits);
         high += Self::low_as_high((self.low() >> half_bits).wrapping_mul(other.low() >> half_bits));
-        high = high.wrapping_add(self.high().wrapping_mul(Self::low_as_high(other.low())))
-                   .wrapping_add(Self::low_as_high(self.low()).wrapping_mul(other.high()));
+        high = high
+            .wrapping_add(self.high().wrapping_mul(Self::low_as_high(other.low())))
+            .wrapping_add(Self::low_as_high(self.low()).wrapping_mul(other.high()));
         Self::from_parts(low, high)
     }
 }
@@ -70,7 +71,7 @@ impl Mulo for i32 {}
 impl Mulo for i64 {}
 impl Mulo for i128 {}
 
-trait UMulo : Int {
+trait UMulo: Int {
     fn mulo(self, other: Self, overflow: &mut i32) -> Self {
         *overflow = 0;
         let result = self.wrapping_mul(other);
@@ -83,7 +84,7 @@ trait UMulo : Int {
 impl UMulo for u128 {}
 
 intrinsics! {
-    #[use_c_shim_if(all(target_arch = "x86", not(target_env = "msvc")))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_lmul]
     pub extern "C" fn __muldi3(a: u64, b: u64) -> u64 {
         a.mul(b)

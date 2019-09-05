@@ -10,7 +10,8 @@ use crate::mir::operand::OperandRef;
 use crate::mir::place::PlaceRef;
 use crate::MemFlags;
 use rustc::ty::Ty;
-use rustc::ty::layout::{Align, Size};
+use rustc::ty::layout::{Align, Size, HasParamEnv};
+use rustc_target::spec::{HasTargetSpec};
 use std::ops::Range;
 use std::iter::TrustedLen;
 
@@ -29,6 +30,9 @@ pub trait BuilderMethods<'a, 'tcx: 'a>:
     + IntrinsicCallMethods<'tcx>
     + AsmBuilderMethods<'tcx>
     + StaticBuilderMethods<'tcx>
+    + HasParamEnv<'tcx>
+    + HasTargetSpec
+
 {
     fn new_block<'b>(cx: &'a Self::CodegenCx, llfn: Self::Value, name: &'b str) -> Self;
     fn with_cx(cx: &'a Self::CodegenCx) -> Self;

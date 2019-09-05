@@ -111,7 +111,9 @@ where
         crate_name: config.crate_name,
     };
 
-    let _sess_abort_error = OnDrop(|| compiler.sess.diagnostic().print_error_count());
+    let _sess_abort_error = OnDrop(|| {
+        compiler.sess.diagnostic().print_error_count(&util::diagnostics_registry());
+    });
 
     if compiler.sess.profile_queries() {
         profile::begin(&compiler.sess);
@@ -121,10 +123,6 @@ where
 
     if compiler.sess.profile_queries() {
         profile::dump(&compiler.sess, "profile_queries".to_string())
-    }
-
-    if compiler.sess.opts.debugging_opts.self_profile {
-        compiler.sess.profiler(|p| p.dump_raw_events(&compiler.sess.opts));
     }
 
     r

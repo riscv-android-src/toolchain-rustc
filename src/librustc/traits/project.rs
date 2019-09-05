@@ -19,6 +19,7 @@ use crate::mir::interpret::{GlobalId, ConstValue};
 use rustc_data_structures::snapshot_map::{Snapshot, SnapshotMap};
 use rustc_macros::HashStable;
 use syntax::ast::Ident;
+use syntax::symbol::sym;
 use crate::ty::subst::{Subst, InternalSubsts};
 use crate::ty::{self, ToPredicate, ToPolyTraitRef, Ty, TyCtxt};
 use crate::ty::fold::{TypeFoldable, TypeFolder};
@@ -594,7 +595,7 @@ fn opt_normalize_projection_type<'a, 'b, 'gcx, 'tcx>(
 
             // Once we have inferred everything we need to know, we
             // can ignore the `obligations` from that point on.
-            if !infcx.any_unresolved_type_vars(&ty.value) {
+            if infcx.unresolved_type_vars(&ty.value).is_none() {
                 infcx.projection_cache.borrow_mut().complete_normalized(cache_key, &ty);
                 // No need to extend `obligations`.
             } else {
@@ -704,7 +705,7 @@ fn opt_normalize_projection_type<'a, 'b, 'gcx, 'tcx>(
 fn prune_cache_value_obligations<'a, 'gcx, 'tcx>(infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
                                                  result: &NormalizedTy<'tcx>)
                                                  -> NormalizedTy<'tcx> {
-    if !infcx.any_unresolved_type_vars(&result.value) {
+    if infcx.unresolved_type_vars(&result.value).is_none() {
         return NormalizedTy { value: result.value, obligations: vec![] };
     }
 
@@ -722,7 +723,7 @@ fn prune_cache_value_obligations<'a, 'gcx, 'tcx>(infcx: &'a InferCtxt<'a, 'gcx, 
                   // but we have `T: Foo<X = ?1>` and `?1: Bar<X =
                   // ?0>`).
                   ty::Predicate::Projection(ref data) =>
-                      infcx.any_unresolved_type_vars(&data.ty()),
+                      infcx.unresolved_type_vars(&data.ty()).is_some(),
 
                   // We are only interested in `T: Foo<X = U>` predicates, whre
                   // `U` references one of `unresolved_type_vars`. =)
@@ -1318,9 +1319,9 @@ fn confirm_generator_candidate<'cx, 'gcx, 'tcx>(
                                             gen_sig)
         .map_bound(|(trait_ref, yield_ty, return_ty)| {
             let name = tcx.associated_item(obligation.predicate.item_def_id).ident.name;
-            let ty = if name == "Return" {
+            let ty = if name == sym::Return {
                 return_ty
-            } else if name == "Yield" {
+            } else if name == sym::Yield {
                 yield_ty
             } else {
                 bug!()
@@ -1371,7 +1372,7 @@ fn confirm_closure_candidate<'cx, 'gcx, 'tcx>(
     let tcx = selcx.tcx();
     let infcx = selcx.infcx();
     let closure_sig_ty = vtable.substs.closure_sig_ty(vtable.closure_def_id, tcx);
-    let closure_sig = infcx.shallow_resolve(&closure_sig_ty).fn_sig(tcx);
+    let closure_sig = infcx.shallow_resolve(closure_sig_ty).fn_sig(tcx);
     let Normalized {
         value: closure_sig,
         obligations
@@ -1420,7 +1421,7 @@ fn confirm_callable_candidate<'cx, 'gcx, 'tcx>(
                 projection_ty: ty::ProjectionTy::from_ref_and_name(
                     tcx,
                     trait_ref,
-                    Ident::from_str(FN_OUTPUT_NAME),
+                    Ident::with_empty_ctxt(FN_OUTPUT_NAME),
                 ),
                 ty: ret_type
             }

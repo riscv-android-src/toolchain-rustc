@@ -1,11 +1,12 @@
 use if_chain::if_chain;
-use rustc::hir::def::{CtorKind, Def};
+use rustc::hir;
+use rustc::hir::def::{CtorKind, DefKind, Res};
 use rustc::hir::intravisit::{walk_item, walk_path, walk_ty, NestedVisitorMap, Visitor};
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty;
-use rustc::ty::DefIdTree;
-use rustc::{declare_tool_lint, lint_array};
+use rustc::ty::{DefIdTree, Ty};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax_pos::symbol::keywords::SelfUpper;
 
@@ -46,18 +47,7 @@ declare_clippy_lint! {
     "Unnecessary structure name repetition whereas `Self` is applicable"
 }
 
-#[derive(Copy, Clone, Default)]
-pub struct UseSelf;
-
-impl LintPass for UseSelf {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(USE_SELF)
-    }
-
-    fn name(&self) -> &'static str {
-        "UseSelf"
-    }
-}
+declare_lint_pass!(UseSelf => [USE_SELF]);
 
 const SEGMENTS_MSG: &str = "segments should be composed of at least 1 element";
 
@@ -79,14 +69,14 @@ fn span_use_self_lint(cx: &LateContext<'_, '_>, path: &Path) {
 }
 
 struct TraitImplTyVisitor<'a, 'tcx: 'a> {
-    item_type: ty::Ty<'tcx>,
+    item_type: Ty<'tcx>,
     cx: &'a LateContext<'a, 'tcx>,
     trait_type_walker: ty::walk::TypeWalker<'tcx>,
     impl_type_walker: ty::walk::TypeWalker<'tcx>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for TraitImplTyVisitor<'a, 'tcx> {
-    fn visit_ty(&mut self, t: &'tcx Ty) {
+    fn visit_ty(&mut self, t: &'tcx hir::Ty) {
         let trait_ty = self.trait_type_walker.next();
         let impl_ty = self.impl_type_walker.next();
 
@@ -96,7 +86,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TraitImplTyVisitor<'a, 'tcx> {
             if impl_ty != trait_ty {
                 if let Some(impl_ty) = impl_ty {
                     if self.item_type == impl_ty {
-                        let is_self_ty = if let def::Def::SelfTy(..) = path.def {
+                        let is_self_ty = if let def::Res::SelfTy(..) = path.res {
                             true
                         } else {
                             false
@@ -120,7 +110,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TraitImplTyVisitor<'a, 'tcx> {
 
 fn check_trait_method_impl_decl<'a, 'tcx: 'a>(
     cx: &'a LateContext<'a, 'tcx>,
-    item_type: ty::Ty<'tcx>,
+    item_type: Ty<'tcx>,
     impl_item: &ImplItem,
     impl_decl: &'tcx FnDecl,
     impl_trait_ref: &ty::TraitRef<'_>,
@@ -231,10 +221,10 @@ struct UseSelfVisitor<'a, 'tcx: 'a> {
 impl<'a, 'tcx> Visitor<'tcx> for UseSelfVisitor<'a, 'tcx> {
     fn visit_path(&mut self, path: &'tcx Path, _id: HirId) {
         if path.segments.last().expect(SEGMENTS_MSG).ident.name != SelfUpper.name() {
-            if self.item_path.def == path.def {
+            if self.item_path.res == path.res {
                 span_use_self_lint(self.cx, path);
-            } else if let Def::Ctor(ctor_did, def::CtorOf::Struct, CtorKind::Fn) = path.def {
-                if self.item_path.def.opt_def_id() == self.cx.tcx.parent(ctor_did) {
+            } else if let Res::Def(DefKind::Ctor(def::CtorOf::Struct, CtorKind::Fn), ctor_did) = path.res {
+                if self.item_path.res.opt_def_id() == self.cx.tcx.parent(ctor_did) {
                     span_use_self_lint(self.cx, path);
                 }
             }

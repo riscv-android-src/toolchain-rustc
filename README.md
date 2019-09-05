@@ -128,9 +128,15 @@ build.
 #### MSVC
 [windows-msvc]: #windows-msvc
 
-MSVC builds of Rust additionally require an installation of Visual Studio 2013
-(or later) so `rustc` can use its linker. Make sure to check the “C++ tools”
-option.
+MSVC builds of Rust additionally require an installation of Visual Studio 2017
+(or later) so `rustc` can use its linker.  The simplest way is to get the
+[Visual Studio Build Tools] and check the “C++ build tools” workload.
+
+[Visual Studio Build Tools]: https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2019
+
+At last check (cmake 3.14.3 and msvc 16.0.3) using the 2019 tools fails to
+build the in-tree LLVM build with a CMake error, so use 2017 instead by
+including the “MSVC v141 – VS 2017 C++ x64/x86 build tools (v14.16)” component.
 
 With these dependencies installed, you can build the compiler in a `cmd.exe`
 shell with:
@@ -261,3 +267,19 @@ BSD-like licenses.
 
 See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), and
 [COPYRIGHT](COPYRIGHT) for details.
+
+## Trademark
+[trademark]: #trademark
+
+The Rust programming language is an open source, community project governed
+by a core team. It is also sponsored by the Mozilla Foundation (“Mozilla”),
+which owns and protects the Rust and Cargo trademarks and logos
+(the “Rust Trademarks”).
+
+If you want to use these names or brands, please read the [media guide][media-guide].
+
+Third-party logos may be subject to third-party copyrights and trademarks. See
+[Licenses][policies-licenses] for details.
+
+[media-guide]: https://www.rust-lang.org/policies/media-guide
+[policies-licenses]: https://www.rust-lang.org/policies/licenses

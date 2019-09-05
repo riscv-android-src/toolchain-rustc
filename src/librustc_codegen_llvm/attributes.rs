@@ -104,7 +104,7 @@ pub fn set_probestack(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
     }
 
     // probestack doesn't play nice either with pgo-gen.
-    if cx.sess().opts.debugging_opts.pgo_gen.is_some() {
+    if cx.sess().opts.debugging_opts.pgo_gen.enabled() {
         return;
     }
 
@@ -321,12 +321,12 @@ pub fn provide(providers: &mut Providers<'_>) {
             // rustdoc needs to be able to document functions that use all the features, so
             // whitelist them all
             Lrc::new(llvm_util::all_known_features()
-                .map(|(a, b)| (a.to_string(), b.map(|s| s.to_string())))
+                .map(|(a, b)| (a.to_string(), b))
                 .collect())
         } else {
             Lrc::new(llvm_util::target_feature_whitelist(tcx.sess)
                 .iter()
-                .map(|&(a, b)| (a.to_string(), b.map(|s| s.to_string())))
+                .map(|&(a, b)| (a.to_string(), b))
                 .collect())
         }
     };

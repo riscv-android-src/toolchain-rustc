@@ -8,10 +8,11 @@ use std::iter;
 use if_chain::if_chain;
 use matches::matches;
 use rustc::hir;
-use rustc::hir::def::Def;
+use rustc::hir::def::{DefKind, Res};
+use rustc::hir::intravisit::{self, Visitor};
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, Lint, LintArray, LintContext, LintPass};
 use rustc::ty::{self, Predicate, Ty};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::ast;
 use syntax::source_map::{BytePos, Span};
@@ -20,15 +21,12 @@ use syntax::symbol::LocalInternedString;
 use crate::utils::paths;
 use crate::utils::sugg;
 use crate::utils::{
-    get_arg_name, get_parent_expr, get_trait_def_id, has_iter_method, implements_trait, in_macro, is_copy, is_expn_of,
-    is_self, is_self_ty, iter_input_pats, last_path_segment, match_def_path, match_path, match_qpath,
-    match_trait_method, match_type, match_var, method_calls, method_chain_args, remove_blocks, return_ty, same_tys,
-    single_segment_path, snippet, snippet_with_applicability, snippet_with_macro_callsite, span_lint,
+    get_arg_name, get_parent_expr, get_trait_def_id, has_iter_method, implements_trait, in_macro, is_copy,
+    is_ctor_function, is_expn_of, is_self, is_self_ty, iter_input_pats, last_path_segment, match_def_path, match_path,
+    match_qpath, match_trait_method, match_type, match_var, method_calls, method_chain_args, remove_blocks, return_ty,
+    same_tys, single_segment_path, snippet, snippet_with_applicability, snippet_with_macro_callsite, span_lint,
     span_lint_and_sugg, span_lint_and_then, span_note_and_lint, walk_ptrs_ty, walk_ptrs_ty_depth, SpanlessEq,
 };
-
-#[derive(Clone)]
-pub struct Pass;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for `.unwrap()` calls on `Option`s.
@@ -292,6 +290,50 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
+    /// **What it does:** Checks for usage of `_.filter_map(_).next()`.
+    ///
+    /// **Why is this bad?** Readability, this can be written more concisely as a
+    /// single method call.
+    ///
+    /// **Known problems:** None
+    ///
+    /// **Example:**
+    /// ```rust
+    ///  (0..3).filter_map(|x| if x == 2 { Some(x) } else { None }).next();
+    /// ```
+    /// Can be written as
+    ///
+    /// ```rust
+    ///  (0..3).find_map(|x| if x == 2 { Some(x) } else { None });
+    /// ```
+    pub FILTER_MAP_NEXT,
+    pedantic,
+    "using combination of `filter_map` and `next` which can usually be written as a single method call"
+}
+
+declare_clippy_lint! {
+    /// **What it does:** Checks for usage of `_.find(_).map(_)`.
+    ///
+    /// **Why is this bad?** Readability, this can be written more concisely as a
+    /// single method call.
+    ///
+    /// **Known problems:** Often requires a condition + Option/Iterator creation
+    /// inside the closure.
+    ///
+    /// **Example:**
+    /// ```rust
+    ///  (0..3).find(|x| x == 2).map(|x| x * 2);
+    /// ```
+    /// Can be written as
+    /// ```rust
+    ///  (0..3).find_map(|x| if x == 2 { Some(x * 2) } else { None });
+    /// ```
+    pub FIND_MAP,
+    pedantic,
+    "using a combination of `find` and `map` can usually be written as a single method call"
+}
+
+declare_clippy_lint! {
     /// **What it does:** Checks for an iterator search (such as `find()`,
     /// `position()`, or `rposition()`) followed by a call to `is_some()`.
     ///
@@ -362,7 +404,7 @@ declare_clippy_lint! {
     /// **Why is this bad?** The function will always be called.
     ///
     /// **Known problems:** If the function has side-effects, not calling it will
-    /// change the semantic of the program, but you shouldn't rely on that anyway.
+    /// change the semantics of the program, but you shouldn't rely on that anyway.
     ///
     /// **Example:**
     /// ```rust
@@ -740,8 +782,9 @@ declare_clippy_lint! {
     /// their content into an iterator. Auto-referencing resolves the `into_iter` call to its reference
     /// instead, like `<&[T; N] as IntoIterator>::into_iter`, which just iterates over item references
     /// like calling `iter` would. Furthermore, when the standard library actually
-    /// [implements the `into_iter` method][25725] which moves the content out of the array, the
-    /// original use of `into_iter` got inferred with the wrong type and the code will be broken.
+    /// [implements the `into_iter` method](https://github.com/rust-lang/rust/issues/25725) which moves
+    /// the content out of the array, the original use of `into_iter` got inferred with the wrong type
+    /// and the code will be broken.
     ///
     /// **Known problems:** None
     ///
@@ -750,8 +793,6 @@ declare_clippy_lint! {
     /// ```rust
     /// let _ = [1, 2, 3].into_iter().map(|x| *x).collect::<Vec<u32>>();
     /// ```
-    ///
-    /// [25725]: https://github.com/rust-lang/rust/issues/25725
     pub INTO_ITER_ON_ARRAY,
     correctness,
     "using `.into_iter()` on an array"
@@ -777,52 +818,46 @@ declare_clippy_lint! {
     "using `.into_iter()` on a reference"
 }
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(
-            OPTION_UNWRAP_USED,
-            RESULT_UNWRAP_USED,
-            SHOULD_IMPLEMENT_TRAIT,
-            WRONG_SELF_CONVENTION,
-            WRONG_PUB_SELF_CONVENTION,
-            OK_EXPECT,
-            OPTION_MAP_UNWRAP_OR,
-            OPTION_MAP_UNWRAP_OR_ELSE,
-            RESULT_MAP_UNWRAP_OR_ELSE,
-            OPTION_MAP_OR_NONE,
-            OR_FUN_CALL,
-            EXPECT_FUN_CALL,
-            CHARS_NEXT_CMP,
-            CHARS_LAST_CMP,
-            CLONE_ON_COPY,
-            CLONE_ON_REF_PTR,
-            CLONE_DOUBLE_REF,
-            NEW_RET_NO_SELF,
-            SINGLE_CHAR_PATTERN,
-            SEARCH_IS_SOME,
-            TEMPORARY_CSTRING_AS_PTR,
-            FILTER_NEXT,
-            FILTER_MAP,
-            MAP_FLATTEN,
-            ITER_NTH,
-            ITER_SKIP_NEXT,
-            GET_UNWRAP,
-            STRING_EXTEND_CHARS,
-            ITER_CLONED_COLLECT,
-            USELESS_ASREF,
-            UNNECESSARY_FOLD,
-            UNNECESSARY_FILTER_MAP,
-            INTO_ITER_ON_ARRAY,
-            INTO_ITER_ON_REF,
-        )
-    }
+declare_lint_pass!(Methods => [
+    OPTION_UNWRAP_USED,
+    RESULT_UNWRAP_USED,
+    SHOULD_IMPLEMENT_TRAIT,
+    WRONG_SELF_CONVENTION,
+    WRONG_PUB_SELF_CONVENTION,
+    OK_EXPECT,
+    OPTION_MAP_UNWRAP_OR,
+    OPTION_MAP_UNWRAP_OR_ELSE,
+    RESULT_MAP_UNWRAP_OR_ELSE,
+    OPTION_MAP_OR_NONE,
+    OR_FUN_CALL,
+    EXPECT_FUN_CALL,
+    CHARS_NEXT_CMP,
+    CHARS_LAST_CMP,
+    CLONE_ON_COPY,
+    CLONE_ON_REF_PTR,
+    CLONE_DOUBLE_REF,
+    NEW_RET_NO_SELF,
+    SINGLE_CHAR_PATTERN,
+    SEARCH_IS_SOME,
+    TEMPORARY_CSTRING_AS_PTR,
+    FILTER_NEXT,
+    FILTER_MAP,
+    FILTER_MAP_NEXT,
+    FIND_MAP,
+    MAP_FLATTEN,
+    ITER_NTH,
+    ITER_SKIP_NEXT,
+    GET_UNWRAP,
+    STRING_EXTEND_CHARS,
+    ITER_CLONED_COLLECT,
+    USELESS_ASREF,
+    UNNECESSARY_FOLD,
+    UNNECESSARY_FILTER_MAP,
+    INTO_ITER_ON_ARRAY,
+    INTO_ITER_ON_REF,
+]);
 
-    fn name(&self) -> &'static str {
-        "Methods"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Methods {
     #[allow(clippy::cognitive_complexity)]
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
         if in_macro(expr.span) {
@@ -844,6 +879,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
             ["next", "filter"] => lint_filter_next(cx, expr, arg_lists[1]),
             ["map", "filter"] => lint_filter_map(cx, expr, arg_lists[1], arg_lists[0]),
             ["map", "filter_map"] => lint_filter_map_map(cx, expr, arg_lists[1], arg_lists[0]),
+            ["next", "filter_map"] => lint_filter_map_next(cx, expr, arg_lists[1]),
+            ["map", "find"] => lint_find_map(cx, expr, arg_lists[1], arg_lists[0]),
             ["flat_map", "filter"] => lint_filter_flat_map(cx, expr, arg_lists[1], arg_lists[0]),
             ["flat_map", "filter_map"] => lint_filter_map_flat_map(cx, expr, arg_lists[1], arg_lists[0]),
             ["flatten", "map"] => lint_map_flatten(cx, expr, arg_lists[1]),
@@ -869,7 +906,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
                 lint_expect_fun_call(cx, expr, *method_span, &method_call.ident.as_str(), args);
 
                 let self_ty = cx.tables.expr_ty_adjusted(&args[0]);
-                if args.len() == 1 && method_call.ident.name == "clone" {
+                if args.len() == 1 && method_call.ident.name == sym!(clone) {
                     lint_clone_on_copy(cx, expr, &args[0], self_ty);
                     lint_clone_on_ref_ptr(cx, expr, &args[0]);
                 }
@@ -877,12 +914,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
                 match self_ty.sty {
                     ty::Ref(_, ty, _) if ty.sty == ty::Str => {
                         for &(method, pos) in &PATTERN_METHODS {
-                            if method_call.ident.name == method && args.len() > pos {
+                            if method_call.ident.name.as_str() == method && args.len() > pos {
                                 lint_single_char_pattern(cx, expr, &args[pos]);
                             }
                         }
                     },
-                    ty::Ref(..) if method_call.ident.name == "into_iter" => {
+                    ty::Ref(..) if method_call.ident.name == sym!(into_iter) => {
                         lint_into_iter(cx, expr, self_ty, *method_span);
                     },
                     _ => (),
@@ -907,7 +944,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
         if in_external_macro(cx.sess(), implitem.span) {
             return;
         }
-        let name = implitem.ident.name;
+        let name = implitem.ident.name.as_str();
         let parent = cx.tcx.hir().get_parent_item(implitem.hir_id);
         let item = cx.tcx.hir().expect_item_by_hir_id(parent);
         let def_id = cx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
@@ -935,7 +972,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
                 // check conventions w.r.t. conversion method names and predicates
                 let is_copy = is_copy(cx, ty);
                 for &(ref conv, self_kinds) in &CONVENTIONS {
-                    if conv.check(&name.as_str()) {
+                    if conv.check(&name) {
                         if !self_kinds
                                 .iter()
                                 .any(|k| k.matches(cx, first_arg_ty, first_arg, self_ty, is_copy, &implitem.generics)) {
@@ -1008,7 +1045,51 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
 
 /// Checks for the `OR_FUN_CALL` lint.
 #[allow(clippy::too_many_lines)]
-fn lint_or_fun_call(cx: &LateContext<'_, '_>, expr: &hir::Expr, method_span: Span, name: &str, args: &[hir::Expr]) {
+fn lint_or_fun_call<'a, 'tcx: 'a>(
+    cx: &LateContext<'a, 'tcx>,
+    expr: &hir::Expr,
+    method_span: Span,
+    name: &str,
+    args: &'tcx [hir::Expr],
+) {
+    // Searches an expression for method calls or function calls that aren't ctors
+    struct FunCallFinder<'a, 'tcx: 'a> {
+        cx: &'a LateContext<'a, 'tcx>,
+        found: bool,
+    }
+
+    impl<'a, 'tcx> intravisit::Visitor<'tcx> for FunCallFinder<'a, 'tcx> {
+        fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
+            let call_found = match &expr.node {
+                // ignore enum and struct constructors
+                hir::ExprKind::Call(..) => !is_ctor_function(self.cx, expr),
+                hir::ExprKind::MethodCall(..) => true,
+                _ => false,
+            };
+
+            if call_found {
+                // don't lint for constant values
+                let owner_def = self.cx.tcx.hir().get_parent_did_by_hir_id(expr.hir_id);
+                let promotable = self
+                    .cx
+                    .tcx
+                    .rvalue_promotable_map(owner_def)
+                    .contains(&expr.hir_id.local_id);
+                if !promotable {
+                    self.found |= true;
+                }
+            }
+
+            if !self.found {
+                intravisit::walk_expr(self, expr);
+            }
+        }
+
+        fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, 'tcx> {
+            intravisit::NestedVisitorMap::None
+        }
+    }
+
     /// Checks for `unwrap_or(T::new())` or `unwrap_or(T::default())`.
     fn check_unwrap_or_default(
         cx: &LateContext<'_, '_>,
@@ -1060,13 +1141,13 @@ fn lint_or_fun_call(cx: &LateContext<'_, '_>, expr: &hir::Expr, method_span: Spa
 
     /// Checks for `*or(foo())`.
     #[allow(clippy::too_many_arguments)]
-    fn check_general_case(
-        cx: &LateContext<'_, '_>,
+    fn check_general_case<'a, 'tcx: 'a>(
+        cx: &LateContext<'a, 'tcx>,
         name: &str,
         method_span: Span,
         fun_span: Span,
         self_expr: &hir::Expr,
-        arg: &hir::Expr,
+        arg: &'tcx hir::Expr,
         or_has_args: bool,
         span: Span,
     ) {
@@ -1083,10 +1164,9 @@ fn lint_or_fun_call(cx: &LateContext<'_, '_>, expr: &hir::Expr, method_span: Spa
             return;
         }
 
-        // don't lint for constant values
-        let owner_def = cx.tcx.hir().get_parent_did_by_hir_id(arg.hir_id);
-        let promotable = cx.tcx.rvalue_promotable_map(owner_def).contains(&arg.hir_id.local_id);
-        if promotable {
+        let mut finder = FunCallFinder { cx: &cx, found: false };
+        finder.visit_expr(&arg);
+        if !finder.found {
             return;
         }
 
@@ -1165,7 +1245,7 @@ fn lint_expect_fun_call(cx: &LateContext<'_, '_>, expr: &hir::Expr, method_span:
                 hir::ExprKind::AddrOf(_, expr) => expr,
                 hir::ExprKind::MethodCall(method_name, _, call_args) => {
                     if call_args.len() == 1
-                        && (method_name.ident.name == "as_str" || method_name.ident.name == "as_ref")
+                        && (method_name.ident.name == sym!(as_str) || method_name.ident.name == sym!(as_ref))
                         && {
                             let arg_type = cx.tables.expr_ty(&call_args[0]);
                             let base_type = walk_ptrs_ty(arg_type);
@@ -1225,7 +1305,6 @@ fn lint_expect_fun_call(cx: &LateContext<'_, '_>, expr: &hir::Expr, method_span:
             hir::ExprKind::Call(..)
             | hir::ExprKind::MethodCall(..)
             // These variants are debatable or require further examination
-            | hir::ExprKind::If(..)
             | hir::ExprKind::Match(..)
             | hir::ExprKind::Block{ .. } => true,
             _ => false,
@@ -1463,8 +1542,8 @@ fn lint_cstring_as_ptr(cx: &LateContext<'_, '_>, expr: &hir::Expr, new: &hir::Ex
         if let hir::ExprKind::Call(ref fun, ref args) = new.node;
         if args.len() == 1;
         if let hir::ExprKind::Path(ref path) = fun.node;
-        if let Def::Method(did) = cx.tables.qpath_def(path, fun.hir_id);
-        if match_def_path(cx.tcx, did, &paths::CSTRING_NEW);
+        if let Res::Def(DefKind::Method, did) = cx.tables.qpath_res(path, fun.hir_id);
+        if match_def_path(cx, did, &paths::CSTRING_NEW);
         then {
             span_lint_and_then(
                 cx,
@@ -1705,7 +1784,7 @@ fn derefs_to_slice<'a, 'tcx>(
     }
 
     if let hir::ExprKind::MethodCall(ref path, _, ref args) = expr.node {
-        if path.ident.name == "iter" && may_slice(cx, cx.tables.expr_ty(&args[0])) {
+        if path.ident.name == sym!(iter) && may_slice(cx, cx.tables.expr_ty(&args[0])) {
             Some(&args[0])
         } else {
             None
@@ -1917,6 +1996,42 @@ fn lint_filter_map<'a, 'tcx>(
     }
 }
 
+/// lint use of `filter_map().next()` for `Iterators`
+fn lint_filter_map_next<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr, filter_args: &'tcx [hir::Expr]) {
+    if match_trait_method(cx, expr, &paths::ITERATOR) {
+        let msg = "called `filter_map(p).next()` on an `Iterator`. This is more succinctly expressed by calling \
+                   `.find_map(p)` instead.";
+        let filter_snippet = snippet(cx, filter_args[1].span, "..");
+        if filter_snippet.lines().count() <= 1 {
+            span_note_and_lint(
+                cx,
+                FILTER_MAP_NEXT,
+                expr.span,
+                msg,
+                expr.span,
+                &format!("replace `filter_map({0}).next()` with `find_map({0})`", filter_snippet),
+            );
+        } else {
+            span_lint(cx, FILTER_MAP_NEXT, expr.span, msg);
+        }
+    }
+}
+
+/// lint use of `find().map()` for `Iterators`
+fn lint_find_map<'a, 'tcx>(
+    cx: &LateContext<'a, 'tcx>,
+    expr: &'tcx hir::Expr,
+    _find_args: &'tcx [hir::Expr],
+    map_args: &'tcx [hir::Expr],
+) {
+    // lint if caller of `.filter().map()` is an Iterator
+    if match_trait_method(cx, &map_args[0], &paths::ITERATOR) {
+        let msg = "called `find(p).map(q)` on an `Iterator`. \
+                   This is more succinctly expressed by calling `.find_map(..)` instead.";
+        span_lint(cx, FIND_MAP, expr.span, msg);
+    }
+}
+
 /// lint use of `filter().map()` for `Iterators`
 fn lint_filter_map_map<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
@@ -1981,6 +2096,19 @@ fn lint_search_is_some<'a, 'tcx>(
         );
         let search_snippet = snippet(cx, search_args[1].span, "..");
         if search_snippet.lines().count() <= 1 {
+            // suggest `any(|x| ..)` instead of `any(|&x| ..)` for `find(|&x| ..).is_some()`
+            let any_search_snippet = if_chain! {
+                if search_method == "find";
+                if let hir::ExprKind::Closure(_, _, body_id, ..) = search_args[1].node;
+                let closure_body = cx.tcx.hir().body(body_id);
+                if let Some(closure_arg) = closure_body.arguments.get(0);
+                if let hir::PatKind::Ref(..) = closure_arg.pat.node;
+                then {
+                    Some(search_snippet.replacen('&', "", 1))
+                } else {
+                    None
+                }
+            };
             // add note if not multi-line
             span_note_and_lint(
                 cx,
@@ -1989,8 +2117,10 @@ fn lint_search_is_some<'a, 'tcx>(
                 &msg,
                 expr.span,
                 &format!(
-                    "replace `{0}({1}).is_some()` with `any({1})`",
-                    search_method, search_snippet
+                    "replace `{0}({1}).is_some()` with `any({2})`",
+                    search_method,
+                    search_snippet,
+                    any_search_snippet.as_ref().map_or(&*search_snippet, String::as_str)
                 ),
             );
         } else {
@@ -2041,7 +2171,7 @@ fn lint_chars_cmp(
         if arg_char.len() == 1;
         if let hir::ExprKind::Path(ref qpath) = fun.node;
         if let Some(segment) = single_segment_path(qpath);
-        if segment.ident.name == "Some";
+        if segment.ident.name == sym!(Some);
         then {
             let mut applicability = Applicability::MachineApplicable;
             let self_ty = walk_ptrs_ty(cx.tables.expr_ty_adjusted(&args[0][0]));
@@ -2199,9 +2329,10 @@ fn ty_has_iter_method(
     self_ref_ty: Ty<'_>,
 ) -> Option<(&'static Lint, &'static str, &'static str)> {
     if let Some(ty_name) = has_iter_method(cx, self_ref_ty) {
-        let lint = match ty_name {
-            "array" | "PathBuf" => INTO_ITER_ON_ARRAY,
-            _ => INTO_ITER_ON_REF,
+        let lint = if ty_name == "array" || ty_name == "PathBuf" {
+            INTO_ITER_ON_ARRAY
+        } else {
+            INTO_ITER_ON_REF
         };
         let mutbl = match self_ref_ty.sty {
             ty::Ref(_, _, mutbl) => mutbl,

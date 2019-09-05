@@ -10,8 +10,9 @@ use syntax::visit;
 use syntax::{ast, ptr, symbol};
 
 use crate::comment::{
-    combine_strs_with_missing_comments, contains_comment, recover_comment_removed,
-    recover_missing_comment_in_span, rewrite_missing_comment, FindUncommented,
+    combine_strs_with_missing_comments, contains_comment, is_last_comment_block,
+    recover_comment_removed, recover_missing_comment_in_span, rewrite_missing_comment,
+    FindUncommented,
 };
 use crate::config::lists::*;
 use crate::config::{BraceStyle, Config, Density, IndentStyle, Version};
@@ -36,7 +37,7 @@ const DEFAULT_VISIBILITY: ast::Visibility = source_map::Spanned {
 };
 
 fn type_annotation_separator(config: &Config) -> &str {
-    colon_spaces(config.space_before_colon(), config.space_after_colon())
+    colon_spaces(config)
 }
 
 // Statements of the form
@@ -730,7 +731,7 @@ pub fn format_impl(
                 if generics.where_clause.predicates.len() == 1 {
                     result.push_str(",");
                 }
-                result.push_str(&format!("{}{{{}}}", &sep, &sep));
+                result.push_str(&format!("{}{{{}}}", sep, sep));
             } else {
                 result.push_str(" {}");
             }
@@ -912,7 +913,7 @@ fn rewrite_trait_ref(
     let shape = Shape::indented(offset + used_space, context.config);
     if let Some(trait_ref_str) = trait_ref.rewrite(context, shape) {
         if !trait_ref_str.contains('\n') {
-            return Some(format!(" {}{}", polarity_str, &trait_ref_str));
+            return Some(format!(" {}{}", polarity_str, trait_ref_str));
         }
     }
     // We could not make enough space for trait_ref, so put it on new line.
@@ -921,9 +922,9 @@ fn rewrite_trait_ref(
     let trait_ref_str = trait_ref.rewrite(context, shape)?;
     Some(format!(
         "{}{}{}",
-        &offset.to_string_with_newline(context.config),
+        offset.to_string_with_newline(context.config),
         polarity_str,
-        &trait_ref_str
+        trait_ref_str
     ))
 }
 
@@ -1173,11 +1174,7 @@ fn format_unit_struct(
 ) -> Option<String> {
     let header_str = format_header(context, p.prefix, p.ident, p.vis);
     let generics_str = if let Some(generics) = p.generics {
-        let hi = if generics.where_clause.predicates.is_empty() {
-            generics.span.hi()
-        } else {
-            generics.where_clause.span.hi()
-        };
+        let hi = context.snippet_provider.span_before(p.span, ";");
         format_generics(
             context,
             generics,
@@ -1361,7 +1358,7 @@ fn format_tuple_struct(
         context
             .snippet_provider
             .opt_span_after(mk_sp(last_arg_span.hi(), span.hi()), ")")
-            .unwrap_or(last_arg_span.hi())
+            .unwrap_or_else(|| last_arg_span.hi())
     };
 
     let where_clause_str = match struct_parts.generics {
@@ -1695,10 +1692,7 @@ fn rewrite_static(
     static_parts: &StaticParts<'_>,
     offset: Indent,
 ) -> Option<String> {
-    let colon = colon_spaces(
-        context.config.space_before_colon(),
-        context.config.space_after_colon(),
-    );
+    let colon = colon_spaces(context.config);
     let mut prefix = format!(
         "{}{}{} {}{}{}",
         format_visibility(context, static_parts.vis),
@@ -1828,6 +1822,42 @@ fn is_empty_infer(ty: &ast::Ty, pat_span: Span) -> bool {
     }
 }
 
+/// Recover any missing comments between the argument and the type.
+///
+/// # Returns
+///
+/// A 2-len tuple with the comment before the colon in first position, and the comment after the
+/// colon in second position.
+fn get_missing_arg_comments(
+    context: &RewriteContext<'_>,
+    pat_span: Span,
+    ty_span: Span,
+    shape: Shape,
+) -> (String, String) {
+    let missing_comment_span = mk_sp(pat_span.hi(), ty_span.lo());
+
+    let span_before_colon = {
+        let missing_comment_span_hi = context
+            .snippet_provider
+            .span_before(missing_comment_span, ":");
+        mk_sp(pat_span.hi(), missing_comment_span_hi)
+    };
+    let span_after_colon = {
+        let missing_comment_span_lo = context
+            .snippet_provider
+            .span_after(missing_comment_span, ":");
+        mk_sp(missing_comment_span_lo, ty_span.lo())
+    };
+
+    let comment_before_colon = rewrite_missing_comment(span_before_colon, shape, context)
+        .filter(|comment| !comment.is_empty())
+        .map_or(String::new(), |comment| format!(" {}", comment));
+    let comment_after_colon = rewrite_missing_comment(span_after_colon, shape, context)
+        .filter(|comment| !comment.is_empty())
+        .map_or(String::new(), |comment| format!("{} ", comment));
+    (comment_before_colon, comment_after_colon)
+}
+
 impl Rewrite for ast::Arg {
     fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
         if let Some(ref explicit_self) = self.to_self() {
@@ -1838,13 +1868,11 @@ impl Rewrite for ast::Arg {
                 .rewrite(context, Shape::legacy(shape.width, shape.indent))?;
 
             if !is_empty_infer(&*self.ty, self.pat.span) {
-                if context.config.space_before_colon() {
-                    result.push_str(" ");
-                }
-                result.push_str(":");
-                if context.config.space_after_colon() {
-                    result.push_str(" ");
-                }
+                let (before_comment, after_comment) =
+                    get_missing_arg_comments(context, self.pat.span, self.ty.span, shape);
+                result.push_str(&before_comment);
+                result.push_str(colon_spaces(context.config));
+                result.push_str(&after_comment);
                 let overhead = last_line_width(&result);
                 let max_width = shape.width.checked_sub(overhead)?;
                 let ty_str = self
@@ -2115,7 +2143,7 @@ fn rewrite_fn_base(
             indent
         } else {
             if context.config.version() == Version::Two {
-                if arg_str.len() != 0 || !no_args_and_over_max_width {
+                if !arg_str.is_empty() || !no_args_and_over_max_width {
                     result.push(' ');
                 }
             } else {
@@ -2256,7 +2284,7 @@ fn rewrite_args(
     span: Span,
     variadic: bool,
 ) -> Option<String> {
-    if args.len() == 0 {
+    if args.is_empty() {
         let comment = context
             .snippet(mk_sp(
                 span.lo(),
@@ -2680,19 +2708,19 @@ fn format_generics(
     let shape = Shape::legacy(context.budget(used_width + offset.width()), offset);
     let mut result = rewrite_generics(context, "", generics, shape)?;
 
-    let same_line_brace = if !generics.where_clause.predicates.is_empty() || result.contains('\n') {
+    // If the generics are not parameterized then generics.span.hi() == 0,
+    // so we use span.lo(), which is the position after `struct Foo`.
+    let span_end_before_where = if !generics.params.is_empty() {
+        generics.span.hi()
+    } else {
+        span.lo()
+    };
+    let (same_line_brace, missed_comments) = if !generics.where_clause.predicates.is_empty() {
         let budget = context.budget(last_line_used_width(&result, offset.width()));
         let mut option = WhereClauseOption::snuggled(&result);
         if brace_pos == BracePos::None {
             option.suppress_comma = true;
         }
-        // If the generics are not parameterized then generics.span.hi() == 0,
-        // so we use span.lo(), which is the position after `struct Foo`.
-        let span_end_before_where = if !generics.params.is_empty() {
-            generics.span.hi()
-        } else {
-            span.lo()
-        };
         let where_clause_str = rewrite_where_clause(
             context,
             &generics.where_clause,
@@ -2706,15 +2734,41 @@ fn format_generics(
             false,
         )?;
         result.push_str(&where_clause_str);
-        brace_pos == BracePos::ForceSameLine
-            || brace_style == BraceStyle::PreferSameLine
-            || (generics.where_clause.predicates.is_empty()
-                && trimmed_last_line_width(&result) == 1)
+        (
+            brace_pos == BracePos::ForceSameLine || brace_style == BraceStyle::PreferSameLine,
+            // missed comments are taken care of in #rewrite_where_clause
+            None,
+        )
     } else {
-        brace_pos == BracePos::ForceSameLine
-            || trimmed_last_line_width(&result) == 1
-            || brace_style != BraceStyle::AlwaysNextLine
+        (
+            brace_pos == BracePos::ForceSameLine
+                || (result.contains('\n') && brace_style == BraceStyle::PreferSameLine
+                    || brace_style != BraceStyle::AlwaysNextLine)
+                || trimmed_last_line_width(&result) == 1,
+            rewrite_missing_comment(
+                mk_sp(
+                    span_end_before_where,
+                    if brace_pos == BracePos::None {
+                        span.hi()
+                    } else {
+                        context.snippet_provider.span_before(span, "{")
+                    },
+                ),
+                shape,
+                context,
+            ),
+        )
     };
+    // add missing comments
+    let missed_line_comments = missed_comments
+        .filter(|missed_comments| !missed_comments.is_empty())
+        .map_or(false, |missed_comments| {
+            let is_block = is_last_comment_block(&missed_comments);
+            let sep = if is_block { " " } else { "\n" };
+            result.push_str(sep);
+            result.push_str(&missed_comments);
+            !is_block
+        });
     if brace_pos == BracePos::None {
         return Some(result);
     }
@@ -2730,7 +2784,7 @@ fn format_generics(
         // 2 = ` {`
         2
     };
-    let forbid_same_line_brace = overhead > remaining_budget;
+    let forbid_same_line_brace = missed_line_comments || overhead > remaining_budget;
     if !forbid_same_line_brace && same_line_brace {
         result.push(' ');
     } else {

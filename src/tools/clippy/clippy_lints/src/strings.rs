@@ -1,6 +1,6 @@
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::source_map::Spanned;
 
@@ -73,18 +73,7 @@ declare_clippy_lint! {
     "calling `as_bytes` on a string literal instead of using a byte string literal"
 }
 
-#[derive(Copy, Clone)]
-pub struct StringAdd;
-
-impl LintPass for StringAdd {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(STRING_ADD, STRING_ADD_ASSIGN)
-    }
-
-    fn name(&self) -> &'static str {
-        "StringAdd"
-    }
-}
+declare_lint_pass!(StringAdd => [STRING_ADD, STRING_ADD_ASSIGN]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringAdd {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
@@ -149,26 +138,15 @@ fn is_add(cx: &LateContext<'_, '_>, src: &Expr, target: &Expr) -> bool {
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct StringLitAsBytes;
-
-impl LintPass for StringLitAsBytes {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(STRING_LIT_AS_BYTES)
-    }
-
-    fn name(&self) -> &'static str {
-        "StringLiteralAsBytes"
-    }
-}
+declare_lint_pass!(StringLitAsBytes => [STRING_LIT_AS_BYTES]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringLitAsBytes {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
-        use crate::utils::{in_macro, snippet, snippet_with_applicability};
+        use crate::utils::{in_macro_or_desugar, snippet, snippet_with_applicability};
         use syntax::ast::{LitKind, StrStyle};
 
         if let ExprKind::MethodCall(ref path, _, ref args) = e.node {
-            if path.ident.name == "as_bytes" {
+            if path.ident.name == sym!(as_bytes) {
                 if let ExprKind::Lit(ref lit) = args[0].node {
                     if let LitKind::Str(ref lit_content, style) = lit.node {
                         let callsite = snippet(cx, args[0].span.source_callsite(), r#""foo""#);
@@ -195,7 +173,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringLitAsBytes {
                             );
                         } else if callsite == expanded
                             && lit_content.as_str().chars().all(|c| c.is_ascii())
-                            && !in_macro(args[0].span)
+                            && !in_macro_or_desugar(args[0].span)
                         {
                             span_lint_and_sugg(
                                 cx,

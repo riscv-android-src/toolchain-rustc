@@ -3,6 +3,7 @@ use core::f64;
 const TOINT: f64 = 1. / f64::EPSILON;
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn ceil(x: f64) -> f64 {
     // On wasm32 we know that LLVM's intrinsic will compile to an optimized
     // `f64.ceil` native instruction, so we can leverage this for both code size
@@ -26,7 +27,7 @@ pub fn ceil(x: f64) -> f64 {
         x + TOINT - TOINT - x
     };
     // special case because of non-nearest rounding modes
-    if e <= 0x3ff - 1 {
+    if e < 0x3ff {
         force_eval!(y);
         return if (u >> 63) != 0 { -0. } else { 1. };
     }

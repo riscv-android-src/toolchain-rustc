@@ -205,11 +205,10 @@ impl fmt::Display for UseSegment {
             UseSegment::List(ref list) => {
                 write!(f, "{{")?;
                 for (i, item) in list.iter().enumerate() {
-                    let is_last = i == list.len() - 1;
-                    write!(f, "{}", item)?;
-                    if !is_last {
+                    if i != 0 {
                         write!(f, ", ")?;
                     }
+                    write!(f, "{}", item)?;
                 }
                 write!(f, "}}")
             }
@@ -219,13 +218,12 @@ impl fmt::Display for UseSegment {
 impl fmt::Display for UseTree {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (i, segment) in self.path.iter().enumerate() {
-            let is_last = i == self.path.len() - 1;
-            write!(f, "{}", segment)?;
-            if !is_last {
+            if i != 0 {
                 write!(f, "::")?;
             }
+            write!(f, "{}", segment)?;
         }
-        write!(f, "")
+        Ok(())
     }
 }
 
@@ -244,30 +242,31 @@ impl UseTree {
                     format!("{}use {};", vis, s)
                 }
             })?;
-        if let Some(ref attrs) = self.attrs {
-            let attr_str = attrs.rewrite(context, shape)?;
-            let lo = attrs.last().as_ref()?.span().hi();
-            let hi = self.span.lo();
-            let span = mk_sp(lo, hi);
+        match self.attrs {
+            Some(ref attrs) if !attrs.is_empty() => {
+                let attr_str = attrs.rewrite(context, shape)?;
+                let lo = attrs.last().as_ref()?.span().hi();
+                let hi = self.span.lo();
+                let span = mk_sp(lo, hi);
 
-            let allow_extend = if attrs.len() == 1 {
-                let line_len = attr_str.len() + 1 + use_str.len();
-                !attrs.first().unwrap().is_sugared_doc
-                    && context.config.inline_attribute_width() >= line_len
-            } else {
-                false
-            };
+                let allow_extend = if attrs.len() == 1 {
+                    let line_len = attr_str.len() + 1 + use_str.len();
+                    !attrs.first().unwrap().is_sugared_doc
+                        && context.config.inline_attribute_width() >= line_len
+                } else {
+                    false
+                };
 
-            combine_strs_with_missing_comments(
-                context,
-                &attr_str,
-                &use_str,
-                span,
-                shape,
-                allow_extend,
-            )
-        } else {
-            Some(use_str)
+                combine_strs_with_missing_comments(
+                    context,
+                    &attr_str,
+                    &use_str,
+                    span,
+                    shape,
+                    allow_extend,
+                )
+            }
+            _ => Some(use_str),
         }
     }
 
@@ -494,10 +493,7 @@ impl UseTree {
 
         // Recursively normalize elements of a list use (including sorting the list).
         if let UseSegment::List(list) = last {
-            let mut list = list
-                .into_iter()
-                .map(|ut| ut.normalize())
-                .collect::<Vec<_>>();
+            let mut list = list.into_iter().map(UseTree::normalize).collect::<Vec<_>>();
             list.sort();
             last = UseSegment::List(list);
         }

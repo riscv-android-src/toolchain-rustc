@@ -6,13 +6,13 @@
 
 #![stable(feature = "core_array", since = "1.36.0")]
 
-use borrow::{Borrow, BorrowMut};
-use cmp::Ordering;
-use convert::TryFrom;
-use fmt;
-use hash::{Hash, self};
-use marker::Unsize;
-use slice::{Iter, IterMut};
+use crate::borrow::{Borrow, BorrowMut};
+use crate::cmp::Ordering;
+use crate::convert::{Infallible, TryFrom};
+use crate::fmt;
+use crate::hash::{Hash, self};
+use crate::marker::Unsize;
+use crate::slice::{Iter, IterMut};
 
 /// Utility trait implemented only on arrays of fixed size
 ///
@@ -57,7 +57,7 @@ pub struct TryFromSliceError(());
 #[stable(feature = "core_array", since = "1.36.0")]
 impl fmt::Display for TryFromSliceError {
     #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.__description(), f)
     }
 }
@@ -71,6 +71,13 @@ impl TryFromSliceError {
     #[doc(hidden)]
     pub fn __description(&self) -> &str {
         "could not convert slice to array"
+    }
+}
+
+#[stable(feature = "try_from_slice_error", since = "1.36.0")]
+impl From<Infallible> for TryFromSliceError {
+    fn from(x: Infallible) -> TryFromSliceError {
+        match x {}
     }
 }
 
@@ -186,7 +193,7 @@ macro_rules! array_impls {
 
             #[stable(feature = "rust1", since = "1.0.0")]
             impl<T: fmt::Debug> fmt::Debug for [T; $N] {
-                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                     fmt::Debug::fmt(&&self[..], f)
                 }
             }

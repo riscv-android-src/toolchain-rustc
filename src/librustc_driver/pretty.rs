@@ -255,7 +255,10 @@ trait HirPrinterSupport<'hir>: pprust_hir::PpAnn {
 
     /// Computes an user-readable representation of a path, if possible.
     fn node_path(&self, id: ast::NodeId) -> Option<String> {
-        self.hir_map().and_then(|map| map.def_path_from_id(id)).map(|path| {
+        self.hir_map().and_then(|map| {
+            let hir_id = map.node_to_hir_id(id);
+            map.def_path_from_hir_id(hir_id)
+        }).map(|path| {
             path.data
                 .into_iter()
                 .map(|elem| elem.data.to_string())
@@ -540,12 +543,12 @@ impl FromStr for UserIdentifiedItem {
     }
 }
 
-enum NodesMatchingUII<'a, 'hir: 'a> {
+enum NodesMatchingUII<'a> {
     NodesMatchingDirect(option::IntoIter<ast::NodeId>),
-    NodesMatchingSuffix(hir_map::NodesMatchingSuffix<'a, 'hir>),
+    NodesMatchingSuffix(Box<dyn Iterator<Item = ast::NodeId> + 'a>),
 }
 
-impl<'a, 'hir> Iterator for NodesMatchingUII<'a, 'hir> {
+impl<'a> Iterator for NodesMatchingUII<'a> {
     type Item = ast::NodeId;
 
     fn next(&mut self) -> Option<ast::NodeId> {
@@ -573,10 +576,12 @@ impl UserIdentifiedItem {
 
     fn all_matching_node_ids<'a, 'hir>(&'a self,
                                        map: &'a hir_map::Map<'hir>)
-                                       -> NodesMatchingUII<'a, 'hir> {
+                                       -> NodesMatchingUII<'a> {
         match *self {
             ItemViaNode(node_id) => NodesMatchingDirect(Some(node_id).into_iter()),
-            ItemViaPath(ref parts) => NodesMatchingSuffix(map.nodes_matching_suffix(&parts)),
+            ItemViaPath(ref parts) => {
+                NodesMatchingSuffix(Box::new(map.nodes_matching_suffix(&parts)))
+            }
         }
     }
 
@@ -642,9 +647,8 @@ fn print_flowgraph<'a, 'tcx, W: Write>(variants: Vec<borrowck_dot::Variant>,
     // alphanumeric. This does not appear in the rendered graph, so it does not
     // have to be user friendly.
     let name = format!(
-        "hir_id_{}_{}_{}",
-        hir_id.owner.address_space().index(),
-        hir_id.owner.as_array_index(),
+        "hir_id_{}_{}",
+        hir_id.owner.index(),
         hir_id.local_id.index(),
     );
     let lcfg = LabelledCFG {
@@ -801,8 +805,7 @@ pub fn print_after_hir_lowering<'tcx>(
                                             src_name,
                                             &mut rdr,
                                             box out,
-                                            annotation.pp_ann(),
-                                            true)
+                                            annotation.pp_ann())
                 })
             }
 
@@ -825,8 +828,7 @@ pub fn print_after_hir_lowering<'tcx>(
                                                                          src_name,
                                                                          &mut rdr,
                                                                          box out,
-                                                                         annotation.pp_ann(),
-                                                                         true);
+                                                                         annotation.pp_ann());
                     for node_id in uii.all_matching_node_ids(hir_map) {
                         let node = hir_map.get(node_id);
                         pp_state.print_node(node)?;

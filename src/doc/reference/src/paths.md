@@ -121,7 +121,7 @@ S::f();  // Calls the inherent impl.
 > &nbsp;&nbsp; `::`<sup>?</sup> _TypePathSegment_ (`::` _TypePathSegment_)<sup>\*</sup>
 >
 > _TypePathSegment_ :\
-> &nbsp;&nbsp; _PathIdentSegment_ (`::`<sup>?</sup> ([_GenericArgs_] | _TypePathFn_)<sup>?</sup>
+> &nbsp;&nbsp; _PathIdentSegment_ `::`<sup>?</sup> ([_GenericArgs_] | _TypePathFn_)<sup>?</sup>
 >
 > _TypePathFn_ :\
 > `(` _TypePathFnInputs_<sup>?</sup> `)` (`->` [_Type_])<sup>?</sup>
@@ -357,21 +357,15 @@ mod without { // ::without
 [_Type_]: types.html#type-expressions
 [item]: items.html
 [variable]: variables.html
-[identifiers]: identifiers.html
 [implementations]: items/implementations.html
-[modules]: items/modules.html
 [use declarations]: items/use-declarations.html
 [IDENTIFIER]: identifiers.html
 [`use`]: items/use-declarations.html
 [attributes]: attributes.html
-[enum]: items/enumerations.html
 [expressions]: expressions.html
 [macro transcribers]: macros-by-example.html
 [macros]: macros-by-example.html
 [patterns]: patterns.html
-[struct]: items/structs.html
-[trait implementation]: items/implementations.html#trait-implementations
 [trait implementations]: items/implementations.html#trait-implementations
 [traits]: items/traits.html
-[union]: items/unions.html
 [visibility]: visibility-and-privacy.html

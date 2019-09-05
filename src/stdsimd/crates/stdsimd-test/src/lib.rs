@@ -3,11 +3,7 @@
 //! This basically just disassembles the current executable and then parses the
 //! output once globally and then provides the `assert` function which makes
 //! assertions about the disassembly of a function.
-
-#![cfg_attr(
-    feature = "cargo-clippy",
-    allow(clippy::missing_docs_in_private_items, clippy::print_stdout)
-)]
+#![allow(clippy::missing_docs_in_private_items, clippy::print_stdout)]
 
 extern crate assert_instr_macro;
 extern crate backtrace;
@@ -65,10 +61,10 @@ fn normalize(symbol: &str) -> String {
     };
     // Normalize to no leading underscore to handle platforms that may
     // inject extra ones in symbol names.
-    while ret.starts_with("_") {
+    while ret.starts_with('_') {
         ret.remove(0);
     }
-    return ret;
+    ret
 }
 
 /// Main entry point for this crate, called by the `#[assert_instr]` macro.

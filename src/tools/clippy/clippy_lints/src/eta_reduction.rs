@@ -1,13 +1,12 @@
 use if_chain::if_chain;
+use matches::matches;
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty::{self, Ty};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 
 use crate::utils::{is_adjusted, iter_input_pats, snippet_opt, span_lint_and_then, type_is_unsafe_function};
-
-pub struct EtaPass;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for closures which just call another function where
@@ -42,6 +41,7 @@ declare_clippy_lint! {
     /// **Known problems:** rust-lang/rust-clippy#3071, rust-lang/rust-clippy#4002,
     /// rust-lang/rust-clippy#3942
     ///
+    ///
     /// **Example:**
     /// ```rust,ignore
     /// Some('a').map(|s| s.to_uppercase());
@@ -55,17 +55,9 @@ declare_clippy_lint! {
     "redundant closures for method calls"
 }
 
-impl LintPass for EtaPass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(REDUNDANT_CLOSURE, REDUNDANT_CLOSURE_FOR_METHOD_CALLS)
-    }
+declare_lint_pass!(EtaReduction => [REDUNDANT_CLOSURE, REDUNDANT_CLOSURE_FOR_METHOD_CALLS]);
 
-    fn name(&self) -> &'static str {
-        "EtaReduction"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EtaPass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EtaReduction {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         if in_external_macro(cx.sess(), expr.span) {
             return;
@@ -97,6 +89,9 @@ fn check_closure(cx: &LateContext<'_, '_>, expr: &Expr) {
             if !(is_adjusted(cx, ex) || args.iter().any(|arg| is_adjusted(cx, arg)));
 
             let fn_ty = cx.tables.expr_ty(caller);
+
+            if matches!(fn_ty.sty, ty::FnDef(_, _) | ty::FnPtr(_) | ty::Closure(_, _));
+
             if !type_is_unsafe_function(cx, fn_ty);
 
             if compare_inputs(&mut iter_input_pats(decl, body), &mut args.into_iter());
@@ -124,7 +119,7 @@ fn check_closure(cx: &LateContext<'_, '_>, expr: &Expr) {
             // Are the expression or the arguments type-adjusted? Then we need the closure
             if !(is_adjusted(cx, ex) || args.iter().skip(1).any(|arg| is_adjusted(cx, arg)));
 
-            let method_def_id = cx.tables.type_dependent_defs()[ex.hir_id].def_id();
+            let method_def_id = cx.tables.type_dependent_def_id(ex.hir_id).unwrap();
             if !type_is_unsafe_function(cx, cx.tcx.type_of(method_def_id));
 
             if compare_inputs(&mut iter_input_pats(decl, body), &mut args.into_iter());

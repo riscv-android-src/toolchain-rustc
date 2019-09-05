@@ -26,6 +26,7 @@ const LG3: f32 = 0.28498786688; /* 0x91e9ee.0p-25 */
 const LG4: f32 = 0.24279078841; /* 0xf89e26.0p-26 */
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn log10f(mut x: f32) -> f32 {
     let x1p25f = f32::from_bits(0x4c000000); // 0x1p25f === 2 ^ 25
 
@@ -87,5 +88,5 @@ pub fn log10f(mut x: f32) -> f32 {
     hi = f32::from_bits(ui);
     lo = f - hi - hfsq + s * (hfsq + r);
     dk = k as f32;
-    return dk * LOG10_2LO + (lo + hi) * IVLN10LO + lo * IVLN10HI + hi * IVLN10HI + dk * LOG10_2HI;
+    dk * LOG10_2LO + (lo + hi) * IVLN10LO + lo * IVLN10HI + hi * IVLN10HI + dk * LOG10_2HI
 }

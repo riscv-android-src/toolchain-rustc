@@ -12,9 +12,8 @@
        test(no_crate_inject, attr(deny(warnings))))]
 
 #![deny(rust_2018_idioms)]
-#![cfg_attr(not(stage0), deny(internal))]
+#![deny(internal)]
 
-#![feature(alloc)]
 #![feature(core_intrinsics)]
 #![feature(dropck_eyepatch)]
 #![feature(raw_vec_internals)]

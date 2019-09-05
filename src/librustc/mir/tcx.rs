@@ -17,9 +17,9 @@ pub struct PlaceTy<'tcx> {
     pub variant_index: Option<VariantIdx>,
 }
 
-static_assert!(PLACE_TY_IS_3_PTRS_LARGE:
-    mem::size_of::<PlaceTy<'_>>() <= 24
-);
+// At least on 64 bit systems, `PlaceTy` should not be larger than two or three pointers.
+#[cfg(target_arch = "x86_64")]
+static_assert_size!(PlaceTy<'_>, 16);
 
 impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
     pub fn from_ty(ty: Ty<'tcx>) -> PlaceTy<'tcx> {
@@ -47,7 +47,7 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
                 let field_def = &variant_def.fields[f.index()];
                 field_def.ty(tcx, substs)
             }
-            ty::Tuple(ref tys) => tys[f.index()],
+            ty::Tuple(ref tys) => tys[f.index()].expect_ty(),
             _ => bug!("extracting field of non-tuple non-adt: {:?}", self),
         };
         debug!("field_ty self: {:?} f: {:?} yields: {:?}", self, f, answer);
@@ -133,41 +133,6 @@ impl<'tcx> Place<'tcx> {
                 proj.base.ty(local_decls, tcx).projection_ty(tcx, &proj.elem),
         }
     }
-
-    /// If this is a field projection, and the field is being projected from a closure type,
-    /// then returns the index of the field being projected. Note that this closure will always
-    /// be `self` in the current MIR, because that is the only time we directly access the fields
-    /// of a closure type.
-    pub fn is_upvar_field_projection<'cx, 'gcx>(&self, mir: &'cx Mir<'tcx>,
-                                                tcx: &TyCtxt<'cx, 'gcx, 'tcx>) -> Option<Field> {
-        let (place, by_ref) = if let Place::Projection(ref proj) = self {
-            if let ProjectionElem::Deref = proj.elem {
-                (&proj.base, true)
-            } else {
-                (self, false)
-            }
-        } else {
-            (self, false)
-        };
-
-        match place {
-            Place::Projection(ref proj) => match proj.elem {
-                ProjectionElem::Field(field, _ty) => {
-                    let base_ty = proj.base.ty(mir, *tcx).ty;
-
-                    if (base_ty.is_closure() || base_ty.is_generator()) &&
-                        (!by_ref || mir.upvar_decls[field.index()].by_ref)
-                    {
-                        Some(field)
-                    } else {
-                        None
-                    }
-                },
-                _ => None,
-            }
-            _ => None,
-        }
-    }
 }
 
 pub enum RvalueInitializationState {
@@ -212,11 +177,13 @@ impl<'tcx> Rvalue<'tcx> {
             }
             Rvalue::Discriminant(ref place) => {
                 let ty = place.ty(local_decls, tcx).ty;
-                if let ty::Adt(adt_def, _) = ty.sty {
-                    adt_def.repr.discr_type().to_ty(tcx)
-                } else {
-                    // This can only be `0`, for now, so `u8` will suffice.
-                    tcx.types.u8
+                match ty.sty {
+                    ty::Adt(adt_def, _) => adt_def.repr.discr_type().to_ty(tcx),
+                    ty::Generator(_, substs, _) => substs.discr_ty(tcx),
+                    _ => {
+                        // This can only be `0`, for now, so `u8` will suffice.
+                        tcx.types.u8
+                    }
                 }
             }
             Rvalue::NullaryOp(NullOp::Box, t) => tcx.mk_box(t),

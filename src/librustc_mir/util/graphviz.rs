@@ -25,10 +25,9 @@ pub fn write_mir_graphviz<'tcx, W>(tcx: TyCtxt<'_, '_, 'tcx>,
 // it does not have to be user friendly.
 pub fn graphviz_safe_def_name(def_id: DefId) -> String {
     format!(
-        "{}_{}_{}",
+        "{}_{}",
         def_id.krate.index(),
-        def_id.index.address_space().index(),
-        def_id.index.as_array_index(),
+        def_id.index.index(),
     )
 }
 
@@ -168,7 +167,7 @@ fn write_graph_label<'a, 'gcx, 'tcx, W: Write>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
             write!(w, r#"{:?}: {}; // {}<br align="left"/>"#,
                    Place::Base(PlaceBase::Local(local)), escape(&decl.ty), name)?;
         } else {
-            write!(w, r#"let mut {:?}: {};<br align="left"/>"#,
+            write!(w, r#"{:?}: {};<br align="left"/>"#,
                    Place::Base(PlaceBase::Local(local)), escape(&decl.ty))?;
         }
     }

@@ -2,7 +2,7 @@ use crate::utils::{is_automatically_derived, span_lint_hir};
 use if_chain::if_chain;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for manual re-implementations of `PartialEq::ne`.
@@ -28,29 +28,18 @@ declare_clippy_lint! {
     "re-implementing `PartialEq::ne`"
 }
 
-#[derive(Clone, Copy)]
-pub struct Pass;
+declare_lint_pass!(PartialEqNeImpl => [PARTIALEQ_NE_IMPL]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(PARTIALEQ_NE_IMPL)
-    }
-
-    fn name(&self) -> &'static str {
-        "PartialEqNeImpl"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PartialEqNeImpl {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
         if_chain! {
             if let ItemKind::Impl(_, _, _, _, Some(ref trait_ref), _, ref impl_items) = item.node;
             if !is_automatically_derived(&*item.attrs);
             if let Some(eq_trait) = cx.tcx.lang_items().eq_trait();
-            if trait_ref.path.def.def_id() == eq_trait;
+            if trait_ref.path.res.def_id() == eq_trait;
             then {
                 for impl_item in impl_items {
-                    if impl_item.ident.name == "ne" {
+                    if impl_item.ident.name == sym!(ne) {
                         span_lint_hir(
                             cx,
                             PARTIALEQ_NE_IMPL,

@@ -22,6 +22,7 @@ use gitignore::{self, Gitignore, GitignoreBuilder};
 use pathutil::{is_hidden, strip_prefix};
 use overrides::{self, Override};
 use types::{self, Types};
+use walk::DirEntry;
 use {Error, Match, PartialErrorBuilder};
 
 /// IgnoreMatch represents information about where a match came from when using
@@ -73,6 +74,8 @@ struct IgnoreOptions {
     git_ignore: bool,
     /// Whether to read .git/info/exclude files.
     git_exclude: bool,
+    /// Whether to ignore files case insensitively
+    ignore_case_insensitive: bool,
 }
 
 /// Ignore is a matcher useful for recursively walking one or more directories.
@@ -225,7 +228,11 @@ impl Ignore {
                 Gitignore::empty()
             } else {
                 let (m, err) =
-                    create_gitignore(&dir, &self.0.custom_ignore_filenames);
+                    create_gitignore(
+                        &dir,
+                        &self.0.custom_ignore_filenames,
+                        self.0.opts.ignore_case_insensitive,
+                    );
                 errs.maybe_push(err);
                 m
             };
@@ -233,7 +240,12 @@ impl Ignore {
             if !self.0.opts.ignore {
                 Gitignore::empty()
             } else {
-                let (m, err) = create_gitignore(&dir, &[".ignore"]);
+                let (m, err) =
+                    create_gitignore(
+                        &dir,
+                        &[".ignore"],
+                        self.0.opts.ignore_case_insensitive,
+                    );
                 errs.maybe_push(err);
                 m
             };
@@ -241,7 +253,12 @@ impl Ignore {
             if !self.0.opts.git_ignore {
                 Gitignore::empty()
             } else {
-                let (m, err) = create_gitignore(&dir, &[".gitignore"]);
+                let (m, err) =
+                    create_gitignore(
+                        &dir,
+                        &[".gitignore"],
+                        self.0.opts.ignore_case_insensitive,
+                    );
                 errs.maybe_push(err);
                 m
             };
@@ -249,7 +266,12 @@ impl Ignore {
             if !self.0.opts.git_exclude {
                 Gitignore::empty()
             } else {
-                let (m, err) = create_gitignore(&dir, &[".git/info/exclude"]);
+                let (m, err) =
+                    create_gitignore(
+                        &dir,
+                        &[".git/info/exclude"],
+                        self.0.opts.ignore_case_insensitive,
+                    );
                 errs.maybe_push(err);
                 m
             };
@@ -285,11 +307,23 @@ impl Ignore {
                     || has_explicit_ignores
     }
 
+    /// Like `matched`, but works with a directory entry instead.
+    pub fn matched_dir_entry<'a>(
+        &'a self,
+        dent: &DirEntry,
+    ) -> Match<IgnoreMatch<'a>> {
+        let m = self.matched(dent.path(), dent.is_dir());
+        if m.is_none() && self.0.opts.hidden && is_hidden(dent) {
+            return Match::Ignore(IgnoreMatch::hidden());
+        }
+        m
+    }
+
     /// Returns a match indicating whether the given file path should be
     /// ignored or not.
     ///
     /// The match contains information about its origin.
-    pub fn matched<'a, P: AsRef<Path>>(
+    fn matched<'a, P: AsRef<Path>>(
         &'a self,
         path: P,
         is_dir: bool,
@@ -329,9 +363,6 @@ impl Ignore {
             } else if mat.is_whitelist() {
                 whitelisted = mat;
             }
-        }
-        if whitelisted.is_none() && self.0.opts.hidden && is_hidden(path) {
-            return Match::Ignore(IgnoreMatch::hidden());
         }
         whitelisted
     }
@@ -483,6 +514,7 @@ impl IgnoreBuilder {
                 git_global: true,
                 git_ignore: true,
                 git_exclude: true,
+                ignore_case_insensitive: false,
             },
         }
     }
@@ -496,7 +528,11 @@ impl IgnoreBuilder {
             if !self.opts.git_global {
                 Gitignore::empty()
             } else {
-                let (gi, err) = Gitignore::global();
+                let mut builder = GitignoreBuilder::new("");
+                builder
+                    .case_insensitive(self.opts.ignore_case_insensitive)
+                    .unwrap();
+                let (gi, err) = builder.build_global();
                 if let Some(err) = err {
                     debug!("{}", err);
                 }
@@ -627,6 +663,17 @@ impl IgnoreBuilder {
         self.opts.git_exclude = yes;
         self
     }
+
+    /// Process ignore files case insensitively
+    ///
+    /// This is disabled by default.
+    pub fn ignore_case_insensitive(
+        &mut self,
+        yes: bool,
+    ) -> &mut IgnoreBuilder {
+        self.opts.ignore_case_insensitive = yes;
+        self
+    }
 }
 
 /// Creates a new gitignore matcher for the directory given.
@@ -638,9 +685,11 @@ impl IgnoreBuilder {
 pub fn create_gitignore<T: AsRef<OsStr>>(
     dir: &Path,
     names: &[T],
+    case_insensitive: bool,
 ) -> (Gitignore, Option<Error>) {
     let mut builder = GitignoreBuilder::new(dir);
     let mut errs = PartialErrorBuilder::default();
+    builder.case_insensitive(case_insensitive).unwrap();
     for name in names {
         let gipath = dir.join(name.as_ref());
         errs.maybe_push_ignore_io(builder.add(gipath));
@@ -830,7 +879,7 @@ mod tests {
     #[test]
     fn errored() {
         let td = tmpdir("ignore-test-");
-        wfile(td.path().join(".gitignore"), "f**oo");
+        wfile(td.path().join(".gitignore"), "{foo");
 
         let (_, err) = IgnoreBuilder::new().build().add_child(td.path());
         assert!(err.is_some());
@@ -839,8 +888,8 @@ mod tests {
     #[test]
     fn errored_both() {
         let td = tmpdir("ignore-test-");
-        wfile(td.path().join(".gitignore"), "f**oo");
-        wfile(td.path().join(".ignore"), "fo**o");
+        wfile(td.path().join(".gitignore"), "{foo");
+        wfile(td.path().join(".ignore"), "{bar");
 
         let (_, err) = IgnoreBuilder::new().build().add_child(td.path());
         assert_eq!(2, partial(err.expect("an error")).len());
@@ -850,7 +899,7 @@ mod tests {
     fn errored_partial() {
         let td = tmpdir("ignore-test-");
         mkdirp(td.path().join(".git"));
-        wfile(td.path().join(".gitignore"), "f**oo\nbar");
+        wfile(td.path().join(".gitignore"), "{foo\nbar");
 
         let (ig, err) = IgnoreBuilder::new().build().add_child(td.path());
         assert!(err.is_some());
@@ -860,7 +909,7 @@ mod tests {
     #[test]
     fn errored_partial_and_ignore() {
         let td = tmpdir("ignore-test-");
-        wfile(td.path().join(".gitignore"), "f**oo\nbar");
+        wfile(td.path().join(".gitignore"), "{foo\nbar");
         wfile(td.path().join(".ignore"), "!bar");
 
         let (ig, err) = IgnoreBuilder::new().build().add_child(td.path());

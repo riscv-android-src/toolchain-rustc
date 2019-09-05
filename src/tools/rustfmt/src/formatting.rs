@@ -14,6 +14,7 @@ use syntax::source_map::{FilePathMapping, SourceMap, Span, DUMMY_SP};
 
 use crate::comment::{CharClasses, FullCodeCharKind};
 use crate::config::{Config, FileName, Verbosity};
+use crate::ignore_path::IgnorePathSet;
 use crate::issues::BadIssueSeeker;
 use crate::utils::{count_newlines, get_skip_macro_names};
 use crate::visitor::{FmtVisitor, SnippetProvider};
@@ -48,11 +49,7 @@ impl<'b, T: Write + 'b> Session<'b, T> {
             let format_result = format_project(input, config, self);
 
             format_result.map(|report| {
-                {
-                    let new_errors = &report.internal.borrow().1;
-
-                    self.errors.add(new_errors);
-                }
+                self.errors.add(&report.internal.borrow().1);
                 report
             })
         })
@@ -69,6 +66,14 @@ fn format_project<T: FormatHandler>(
 
     let main_file = input.file_name();
     let input_is_stdin = main_file == FileName::Stdin;
+
+    let ignore_path_set = match IgnorePathSet::from_ignore_list(&config.ignore()) {
+        Ok(set) => set,
+        Err(e) => return Err(ErrorKind::InvalidGlobPattern(e)),
+    };
+    if config.skip_children() && ignore_path_set.is_match(&main_file) {
+        return Ok(FormatReport::new());
+    }
 
     // Parse the crate.
     let source_map = Rc::new(SourceMap::new(FilePathMapping::empty()));
@@ -94,7 +99,6 @@ fn format_project<T: FormatHandler>(
     parse_session.span_diagnostic = Handler::with_emitter(true, None, silent_emitter);
 
     let mut context = FormatContext::new(&krate, report, parse_session, config, handler);
-
     let files = modules::ModResolver::new(
         context.parse_session.source_map(),
         directory_ownership.unwrap_or(parse::DirectoryOwnership::UnownedViaMod(false)),
@@ -103,7 +107,8 @@ fn format_project<T: FormatHandler>(
     .visit_crate(&krate)
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
     for (path, (module, _)) in files {
-        if (config.skip_children() && path != main_file) || config.ignore().skip_file(&path) {
+        let should_ignore = !input_is_stdin && ignore_path_set.is_match(&path);
+        if (config.skip_children() && path != main_file) || should_ignore {
             continue;
         }
         should_emit_verbose(input_is_stdin, config, || println!("Formatting {}", path));
@@ -267,21 +272,20 @@ impl FormattingError {
                 .and_then(|fl| {
                     fl.file
                         .get_line(fl.lines[0].line_index)
-                        .map(|l| l.into_owned())
+                        .map(std::borrow::Cow::into_owned)
                 })
                 .unwrap_or_else(String::new),
         }
     }
 
-    pub(crate) fn msg_prefix(&self) -> &str {
+    pub(crate) fn is_internal(&self) -> bool {
         match self.kind {
             ErrorKind::LineOverflow(..)
             | ErrorKind::TrailingWhitespace
             | ErrorKind::IoError(_)
             | ErrorKind::ParseError
-            | ErrorKind::LostComment => "internal error:",
-            ErrorKind::LicenseCheck | ErrorKind::BadAttr | ErrorKind::VersionMismatch => "error:",
-            ErrorKind::BadIssue(_) | ErrorKind::DeprecatedAttr => "warning:",
+            | ErrorKind::LostComment => true,
+            _ => false,
         }
     }
 
@@ -657,7 +661,7 @@ fn parse_crate(
                 return Ok(c);
             }
         }
-        Ok(Err(mut diagnostics)) => diagnostics.iter_mut().for_each(|d| d.emit()),
+        Ok(Err(mut diagnostics)) => diagnostics.iter_mut().for_each(DiagnosticBuilder::emit),
         Err(_) => {
             // Note that if you see this message and want more information,
             // then run the `parse_crate_mod` function above without

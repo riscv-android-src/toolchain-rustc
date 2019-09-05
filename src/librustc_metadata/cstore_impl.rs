@@ -11,6 +11,7 @@ use rustc::middle::cstore::{CrateStore, DepKind,
 use rustc::middle::exported_symbols::ExportedSymbol;
 use rustc::middle::stability::DeprecationEntry;
 use rustc::hir::def;
+use rustc::hir;
 use rustc::session::{CrateDisambiguator, Session};
 use rustc::ty::{self, TyCtxt};
 use rustc::ty::query::Providers;
@@ -30,7 +31,7 @@ use syntax::source_map;
 use syntax::edition::Edition;
 use syntax::parse::source_file_to_stream;
 use syntax::parse::parser::emit_unclosed_delims;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax_pos::{Span, NO_EXPANSION, FileName};
 use rustc_data_structures::bit_set::BitSet;
 
@@ -105,11 +106,11 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         let _ = cdata;
         tcx.calculate_dtor(def_id, &mut |_,_| Ok(()))
     }
-    variances_of => { Lrc::new(cdata.get_item_variances(def_id.index)) }
+    variances_of => { tcx.arena.alloc_from_iter(cdata.get_item_variances(def_id.index)) }
     associated_item_def_ids => {
         let mut result = vec![];
         cdata.each_child_of_item(def_id.index,
-          |child| result.push(child.def.def_id()), tcx.sess);
+          |child| result.push(child.res.def_id()), tcx.sess);
         Lrc::new(result)
     }
     associated_item => { cdata.get_associated_item(def_id.index) }
@@ -130,13 +131,14 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         mir
     }
     mir_const_qualif => {
-        (cdata.mir_const_qualif(def_id.index), Lrc::new(BitSet::new_empty(0)))
+        (cdata.mir_const_qualif(def_id.index), tcx.arena.alloc(BitSet::new_empty(0)))
     }
     fn_sig => { cdata.fn_sig(def_id.index, tcx) }
     inherent_impls => { Lrc::new(cdata.get_inherent_implementations_for_type(def_id.index)) }
     is_const_fn_raw => { cdata.is_const_fn_raw(def_id.index) }
     is_foreign_item => { cdata.is_foreign_item(def_id.index) }
-    describe_def => { cdata.get_def(def_id.index) }
+    static_mutability => { cdata.static_mutability(def_id.index) }
+    def_kind => { cdata.def_kind(def_id.index) }
     def_span => { cdata.get_span(def_id.index, &tcx.sess) }
     lookup_stability => {
         cdata.get_stability(def_id.index).map(|s| tcx.intern_stability(s))
@@ -347,13 +349,13 @@ pub fn provide<'tcx>(providers: &mut Providers<'tcx>) {
             {
                 let visible_parent_map = &mut visible_parent_map;
                 let mut add_child = |bfs_queue: &mut VecDeque<_>,
-                                     child: &def::Export,
+                                     child: &def::Export<hir::HirId>,
                                      parent: DefId| {
                     if child.vis != ty::Visibility::Public {
                         return;
                     }
 
-                    let child = child.def.def_id();
+                    let child = child.res.def_id();
 
                     match visible_parent_map.entry(child) {
                         Entry::Occupied(mut entry) => {
@@ -415,7 +417,11 @@ impl cstore::CStore {
         self.get_crate_data(def.krate).get_item_attrs(def.index, sess)
     }
 
-    pub fn item_children_untracked(&self, def_id: DefId, sess: &Session) -> Vec<def::Export> {
+    pub fn item_children_untracked(
+        &self,
+        def_id: DefId,
+        sess: &Session
+    ) -> Vec<def::Export<hir::HirId>> {
         let mut result = vec![];
         self.get_crate_data(def_id.krate)
             .each_child_of_item(def_id.index, |child| result.push(child), sess);
@@ -426,7 +432,7 @@ impl cstore::CStore {
         let data = self.get_crate_data(id.krate);
         if let Some(ref proc_macros) = data.proc_macros {
             return LoadedMacro::ProcMacro(proc_macros[id.index.to_proc_macro_index()].1.clone());
-        } else if data.name == "proc_macro" && data.item_name(id.index) == "quote" {
+        } else if data.name == sym::proc_macro && data.item_name(id.index) == "quote" {
             use syntax::ext::base::SyntaxExtension;
             use syntax_ext::proc_macro_impl::BangProcMacro;
 
@@ -492,6 +498,10 @@ impl CrateStore for cstore::CStore {
     fn crate_name_untracked(&self, cnum: CrateNum) -> Symbol
     {
         self.get_crate_data(cnum).name
+    }
+
+    fn crate_is_private_dep_untracked(&self, cnum: CrateNum) -> bool {
+        self.get_crate_data(cnum).private_dep
     }
 
     fn crate_disambiguator_untracked(&self, cnum: CrateNum) -> CrateDisambiguator

@@ -11,9 +11,7 @@ use log::{trace, warn};
 use crate::core::source::MaybePackage;
 use crate::core::{Dependency, Package, PackageId, Source, SourceId, Summary};
 use crate::ops;
-use crate::util::paths;
-use crate::util::Config;
-use crate::util::{internal, CargoResult};
+use crate::util::{internal, paths, CargoResult, CargoResultExt, Config};
 
 pub struct PathSource<'cfg> {
     source_id: SourceId,
@@ -103,10 +101,10 @@ impl<'cfg> PathSource<'cfg> {
     /// stages are:
     ///
     /// 1) Only warn users about the future change iff their matching rules are
-    ///    affected. (CURRENT STAGE)
+    ///    affected.
     ///
     /// 2) Switch to the new strategy and update documents. Still keep warning
-    ///    affected users.
+    ///    affected users. (CURRENT STAGE)
     ///
     /// 3) Drop the old strategy and no more warnings.
     ///
@@ -124,7 +122,6 @@ impl<'cfg> PathSource<'cfg> {
                 p
             };
             Pattern::new(pattern)
-                .map_err(|e| failure::format_err!("could not parse glob pattern `{}`: {}", p, e))
         };
 
         let glob_exclude = pkg
@@ -132,14 +129,27 @@ impl<'cfg> PathSource<'cfg> {
             .exclude()
             .iter()
             .map(|p| glob_parse(p))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>();
 
         let glob_include = pkg
             .manifest()
             .include()
             .iter()
             .map(|p| glob_parse(p))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>();
+
+        // Don't warn if using a negate pattern, since those weren't ever
+        // previously supported.
+        let has_negate = pkg
+            .manifest()
+            .exclude()
+            .iter()
+            .chain(pkg.manifest().include().iter())
+            .any(|p| p.starts_with("!"));
+        // Don't warn about glob mismatch if it doesn't parse.
+        let glob_is_valid = glob_exclude.is_ok() && glob_include.is_ok() && !has_negate;
+        let glob_exclude = glob_exclude.unwrap_or_else(|_| Vec::new());
+        let glob_include = glob_include.unwrap_or_else(|_| Vec::new());
 
         let glob_should_package = |relative_path: &Path| -> bool {
             fn glob_match(patterns: &[Pattern], relative_path: &Path) -> bool {
@@ -178,10 +188,7 @@ impl<'cfg> PathSource<'cfg> {
                 {
                     Match::None => Ok(true),
                     Match::Ignore(_) => Ok(false),
-                    Match::Whitelist(pattern) => Err(failure::format_err!(
-                        "exclude rules cannot start with `!`: {}",
-                        pattern.original()
-                    )),
+                    Match::Whitelist(_) => Ok(true),
                 }
             } else {
                 match ignore_include
@@ -189,10 +196,7 @@ impl<'cfg> PathSource<'cfg> {
                 {
                     Match::None => Ok(false),
                     Match::Ignore(_) => Ok(true),
-                    Match::Whitelist(pattern) => Err(failure::format_err!(
-                        "include rules cannot start with `!`: {}",
-                        pattern.original()
-                    )),
+                    Match::Whitelist(_) => Ok(false),
                 }
             }
         };
@@ -201,23 +205,31 @@ impl<'cfg> PathSource<'cfg> {
 
         let mut filter = |path: &Path| -> CargoResult<bool> {
             let relative_path = path.strip_prefix(root)?;
+
+            let rel = relative_path.as_os_str();
+            if rel == "Cargo.lock" {
+                return Ok(pkg.include_lockfile());
+            } else if rel == "Cargo.toml" {
+                return Ok(true);
+            }
+
             let glob_should_package = glob_should_package(relative_path);
             let ignore_should_package = ignore_should_package(relative_path)?;
 
-            if glob_should_package != ignore_should_package {
+            if glob_is_valid && glob_should_package != ignore_should_package {
                 if glob_should_package {
                     if no_include_option {
                         self.config.shell().warn(format!(
-                            "Pattern matching for Cargo's include/exclude fields is changing and \
-                             file `{}` WILL be excluded in a future Cargo version.\n\
+                            "Pattern matching for Cargo's include/exclude fields has changed and \
+                             file `{}` is now excluded.\n\
                              See <https://github.com/rust-lang/cargo/issues/4268> for more \
                              information.",
                             relative_path.display()
                         ))?;
                     } else {
                         self.config.shell().warn(format!(
-                            "Pattern matching for Cargo's include/exclude fields is changing and \
-                             file `{}` WILL NOT be included in a future Cargo version.\n\
+                            "Pattern matching for Cargo's include/exclude fields has changed and \
+                             file `{}` is no longer included.\n\
                              See <https://github.com/rust-lang/cargo/issues/4268> for more \
                              information.",
                             relative_path.display()
@@ -225,16 +237,16 @@ impl<'cfg> PathSource<'cfg> {
                     }
                 } else if no_include_option {
                     self.config.shell().warn(format!(
-                        "Pattern matching for Cargo's include/exclude fields is changing and \
-                         file `{}` WILL NOT be excluded in a future Cargo version.\n\
+                        "Pattern matching for Cargo's include/exclude fields has changed and \
+                         file `{}` is NOT excluded.\n\
                          See <https://github.com/rust-lang/cargo/issues/4268> for more \
                          information.",
                         relative_path.display()
                     ))?;
                 } else {
                     self.config.shell().warn(format!(
-                        "Pattern matching for Cargo's include/exclude fields is changing and \
-                         file `{}` WILL be included in a future Cargo version.\n\
+                        "Pattern matching for Cargo's include/exclude fields has changed and \
+                         file `{}` is now included.\n\
                          See <https://github.com/rust-lang/cargo/issues/4268> for more \
                          information.",
                         relative_path.display()
@@ -242,8 +254,7 @@ impl<'cfg> PathSource<'cfg> {
                 }
             }
 
-            // Update to `ignore_should_package` for Stage 2.
-            Ok(glob_should_package)
+            Ok(ignore_should_package)
         };
 
         // Attempt Git-prepopulate only if no `include` (see rust-lang/cargo#4135).
@@ -334,7 +345,11 @@ impl<'cfg> PathSource<'cfg> {
         }
         let statuses = repo.statuses(Some(&mut opts))?;
         let untracked = statuses.iter().filter_map(|entry| match entry.status() {
-            git2::Status::WT_NEW => Some((join(root, entry.path_bytes()), None)),
+            // Don't include Cargo.lock if it is untracked. Packaging will
+            // generate a new one as needed.
+            git2::Status::WT_NEW if entry.path() != Some("Cargo.lock") => {
+                Some((join(root, entry.path_bytes()), None))
+            }
             _ => None,
         });
 
@@ -344,17 +359,15 @@ impl<'cfg> PathSource<'cfg> {
             let file_path = file_path?;
 
             // Filter out files blatantly outside this package. This is helped a
-            // bit obove via the `pathspec` function call, but we need to filter
+            // bit above via the `pathspec` function call, but we need to filter
             // the entries in the index as well.
             if !file_path.starts_with(pkg_path) {
                 continue;
             }
 
             match file_path.file_name().and_then(|s| s.to_str()) {
-                // Filter out `Cargo.lock` and `target` always; we don't want to
-                // package a lock file no one will ever read and we also avoid
-                // build artifacts.
-                Some("Cargo.lock") | Some("target") => continue,
+                // The `target` directory is never included.
+                Some("target") => continue,
 
                 // Keep track of all sub-packages found and also strip out all
                 // matches we've found so far. Note, though, that if we find
@@ -455,7 +468,10 @@ impl<'cfg> PathSource<'cfg> {
         //
         // TODO: drop `collect` and sort after transition period and dropping warning tests.
         // See rust-lang/cargo#4268 and rust-lang/cargo#4270.
-        let mut entries: Vec<PathBuf> = fs::read_dir(path)?.map(|e| e.unwrap().path()).collect();
+        let mut entries: Vec<PathBuf> = fs::read_dir(path)
+            .chain_err(|| format!("cannot read {:?}", path))?
+            .map(|e| e.unwrap().path())
+            .collect();
         entries.sort_unstable_by(|a, b| a.as_os_str().cmp(b.as_os_str()));
         for path in entries {
             let name = path.file_name().and_then(|s| s.to_str());
@@ -466,7 +482,7 @@ impl<'cfg> PathSource<'cfg> {
             if is_root {
                 // Skip Cargo artifacts.
                 match name {
-                    Some("target") | Some("Cargo.lock") => continue,
+                    Some("target") => continue,
                     _ => {}
                 }
             }
@@ -574,4 +590,8 @@ impl<'cfg> Source for PathSource<'cfg> {
     }
 
     fn add_to_yanked_whitelist(&mut self, _pkgs: &[PackageId]) {}
+
+    fn is_yanked(&mut self, _pkg: PackageId) -> CargoResult<bool> {
+        Ok(false)
+    }
 }

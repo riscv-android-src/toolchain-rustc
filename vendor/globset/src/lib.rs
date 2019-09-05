@@ -104,27 +104,25 @@ or to enable case insensitive matching.
 #![deny(missing_docs)]
 
 extern crate aho_corasick;
+extern crate bstr;
 extern crate fnv;
 #[macro_use]
 extern crate log;
-extern crate memchr;
 extern crate regex;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
-use std::ffi::OsStr;
 use std::fmt;
 use std::hash;
 use std::path::Path;
 use std::str;
 
-use aho_corasick::{Automaton, AcAutomaton, FullAcAutomaton};
+use aho_corasick::AhoCorasick;
+use bstr::{B, BStr, BString};
 use regex::bytes::{Regex, RegexBuilder, RegexSet};
 
-use pathutil::{
-    file_name, file_name_ext, normalize_path, os_str_bytes, path_bytes,
-};
+use pathutil::{file_name, file_name_ext, normalize_path};
 use glob::MatchStrategy;
 pub use glob::{Glob, GlobBuilder, GlobMatcher};
 
@@ -143,8 +141,13 @@ pub struct Error {
 /// The kind of error that can occur when parsing a glob pattern.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ErrorKind {
-    /// Occurs when a use of `**` is invalid. Namely, `**` can only appear
-    /// adjacent to a path separator, or the beginning/end of a glob.
+    /// **DEPRECATED**.
+    ///
+    /// This error used to occur for consistency with git's glob specification,
+    /// but the specification now accepts all uses of `**`. When `**` does not
+    /// appear adjacent to a path separator or at the beginning/end of a glob,
+    /// it is now treated as two consecutive `*` patterns. As such, this error
+    /// is no longer used.
     InvalidRecursive,
     /// Occurs when a character class (e.g., `[abc]`) is not closed.
     UnclosedClass,
@@ -289,6 +292,7 @@ pub struct GlobSet {
 
 impl GlobSet {
     /// Create an empty `GlobSet`. An empty set matches nothing.
+    #[inline]
     pub fn empty() -> GlobSet {
         GlobSet {
             len: 0,
@@ -297,11 +301,13 @@ impl GlobSet {
     }
 
     /// Returns true if this set is empty, and therefore matches nothing.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// Returns the number of globs in this set.
+    #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
@@ -484,24 +490,25 @@ impl GlobSetBuilder {
 /// path against multiple globs or sets of globs.
 #[derive(Clone, Debug)]
 pub struct Candidate<'a> {
-    path: Cow<'a, [u8]>,
-    basename: Cow<'a, [u8]>,
-    ext: Cow<'a, [u8]>,
+    path: Cow<'a, BStr>,
+    basename: Cow<'a, BStr>,
+    ext: Cow<'a, BStr>,
 }
 
 impl<'a> Candidate<'a> {
     /// Create a new candidate for matching from the given path.
     pub fn new<P: AsRef<Path> + ?Sized>(path: &'a P) -> Candidate<'a> {
-        let path = path.as_ref();
-        let basename = file_name(path).unwrap_or(OsStr::new(""));
+        let path = normalize_path(BString::from_path_lossy(path.as_ref()));
+        let basename = file_name(&path).unwrap_or(Cow::Borrowed(B("")));
+        let ext = file_name_ext(&basename).unwrap_or(Cow::Borrowed(B("")));
         Candidate {
-            path: normalize_path(path_bytes(path)),
-            basename: os_str_bytes(basename),
-            ext: file_name_ext(basename).unwrap_or(Cow::Borrowed(b"")),
+            path: path,
+            basename: basename,
+            ext: ext,
         }
     }
 
-    fn path_prefix(&self, max: usize) -> &[u8] {
+    fn path_prefix(&self, max: usize) -> &BStr {
         if self.path.len() <= max {
             &*self.path
         } else {
@@ -509,7 +516,7 @@ impl<'a> Candidate<'a> {
         }
     }
 
-    fn path_suffix(&self, max: usize) -> &[u8] {
+    fn path_suffix(&self, max: usize) -> &BStr {
         if self.path.len() <= max {
             &*self.path
         } else {
@@ -570,12 +577,12 @@ impl LiteralStrategy {
     }
 
     fn is_match(&self, candidate: &Candidate) -> bool {
-        self.0.contains_key(&*candidate.path)
+        self.0.contains_key(candidate.path.as_bytes())
     }
 
     #[inline(never)]
     fn matches_into(&self, candidate: &Candidate, matches: &mut Vec<usize>) {
-        if let Some(hits) = self.0.get(&*candidate.path) {
+        if let Some(hits) = self.0.get(candidate.path.as_bytes()) {
             matches.extend(hits);
         }
     }
@@ -597,7 +604,7 @@ impl BasenameLiteralStrategy {
         if candidate.basename.is_empty() {
             return false;
         }
-        self.0.contains_key(&*candidate.basename)
+        self.0.contains_key(candidate.basename.as_bytes())
     }
 
     #[inline(never)]
@@ -605,7 +612,7 @@ impl BasenameLiteralStrategy {
         if candidate.basename.is_empty() {
             return;
         }
-        if let Some(hits) = self.0.get(&*candidate.basename) {
+        if let Some(hits) = self.0.get(candidate.basename.as_bytes()) {
             matches.extend(hits);
         }
     }
@@ -627,7 +634,7 @@ impl ExtensionStrategy {
         if candidate.ext.is_empty() {
             return false;
         }
-        self.0.contains_key(&*candidate.ext)
+        self.0.contains_key(candidate.ext.as_bytes())
     }
 
     #[inline(never)]
@@ -635,7 +642,7 @@ impl ExtensionStrategy {
         if candidate.ext.is_empty() {
             return;
         }
-        if let Some(hits) = self.0.get(&*candidate.ext) {
+        if let Some(hits) = self.0.get(candidate.ext.as_bytes()) {
             matches.extend(hits);
         }
     }
@@ -643,7 +650,7 @@ impl ExtensionStrategy {
 
 #[derive(Clone, Debug)]
 struct PrefixStrategy {
-    matcher: FullAcAutomaton<Vec<u8>>,
+    matcher: AhoCorasick,
     map: Vec<usize>,
     longest: usize,
 }
@@ -651,8 +658,8 @@ struct PrefixStrategy {
 impl PrefixStrategy {
     fn is_match(&self, candidate: &Candidate) -> bool {
         let path = candidate.path_prefix(self.longest);
-        for m in self.matcher.find_overlapping(path) {
-            if m.start == 0 {
+        for m in self.matcher.find_overlapping_iter(path) {
+            if m.start() == 0 {
                 return true;
             }
         }
@@ -661,9 +668,9 @@ impl PrefixStrategy {
 
     fn matches_into(&self, candidate: &Candidate, matches: &mut Vec<usize>) {
         let path = candidate.path_prefix(self.longest);
-        for m in self.matcher.find_overlapping(path) {
-            if m.start == 0 {
-                matches.push(self.map[m.pati]);
+        for m in self.matcher.find_overlapping_iter(path) {
+            if m.start() == 0 {
+                matches.push(self.map[m.pattern()]);
             }
         }
     }
@@ -671,7 +678,7 @@ impl PrefixStrategy {
 
 #[derive(Clone, Debug)]
 struct SuffixStrategy {
-    matcher: FullAcAutomaton<Vec<u8>>,
+    matcher: AhoCorasick,
     map: Vec<usize>,
     longest: usize,
 }
@@ -679,8 +686,8 @@ struct SuffixStrategy {
 impl SuffixStrategy {
     fn is_match(&self, candidate: &Candidate) -> bool {
         let path = candidate.path_suffix(self.longest);
-        for m in self.matcher.find_overlapping(path) {
-            if m.end == path.len() {
+        for m in self.matcher.find_overlapping_iter(path) {
+            if m.end() == path.len() {
                 return true;
             }
         }
@@ -689,9 +696,9 @@ impl SuffixStrategy {
 
     fn matches_into(&self, candidate: &Candidate, matches: &mut Vec<usize>) {
         let path = candidate.path_suffix(self.longest);
-        for m in self.matcher.find_overlapping(path) {
-            if m.end == path.len() {
-                matches.push(self.map[m.pati]);
+        for m in self.matcher.find_overlapping_iter(path) {
+            if m.end() == path.len() {
+                matches.push(self.map[m.pattern()]);
             }
         }
     }
@@ -705,11 +712,11 @@ impl RequiredExtensionStrategy {
         if candidate.ext.is_empty() {
             return false;
         }
-        match self.0.get(&*candidate.ext) {
+        match self.0.get(candidate.ext.as_bytes()) {
             None => false,
             Some(regexes) => {
                 for &(_, ref re) in regexes {
-                    if re.is_match(&*candidate.path) {
+                    if re.is_match(candidate.path.as_bytes()) {
                         return true;
                     }
                 }
@@ -723,9 +730,9 @@ impl RequiredExtensionStrategy {
         if candidate.ext.is_empty() {
             return;
         }
-        if let Some(regexes) = self.0.get(&*candidate.ext) {
+        if let Some(regexes) = self.0.get(candidate.ext.as_bytes()) {
             for &(global_index, ref re) in regexes {
-                if re.is_match(&*candidate.path) {
+                if re.is_match(candidate.path.as_bytes()) {
                     matches.push(global_index);
                 }
             }
@@ -741,11 +748,11 @@ struct RegexSetStrategy {
 
 impl RegexSetStrategy {
     fn is_match(&self, candidate: &Candidate) -> bool {
-        self.matcher.is_match(&*candidate.path)
+        self.matcher.is_match(candidate.path.as_bytes())
     }
 
     fn matches_into(&self, candidate: &Candidate, matches: &mut Vec<usize>) {
-        for i in self.matcher.matches(&*candidate.path) {
+        for i in self.matcher.matches(candidate.path.as_bytes()) {
             matches.push(self.map[i]);
         }
     }
@@ -776,18 +783,16 @@ impl MultiStrategyBuilder {
     }
 
     fn prefix(self) -> PrefixStrategy {
-        let it = self.literals.into_iter().map(|s| s.into_bytes());
         PrefixStrategy {
-            matcher: AcAutomaton::new(it).into_full(),
+            matcher: AhoCorasick::new_auto_configured(&self.literals),
             map: self.map,
             longest: self.longest,
         }
     }
 
     fn suffix(self) -> SuffixStrategy {
-        let it = self.literals.into_iter().map(|s| s.into_bytes());
         SuffixStrategy {
-            matcher: AcAutomaton::new(it).into_full(),
+            matcher: AhoCorasick::new_auto_configured(&self.literals),
             map: self.map,
             longest: self.longest,
         }

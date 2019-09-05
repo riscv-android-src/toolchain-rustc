@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,18 +12,15 @@
 
 [package]
 name = "opener"
-version = "0.3.2"
+version = "0.4.0"
 authors = ["Brian Bowman <seeker14491@gmail.com>"]
 description = "Open a file or link using the system default program."
 readme = "../README.md"
 keywords = ["open", "default", "launcher", "browser"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Seeker14491/opener"
-[dependencies.failure]
-version = "0.1.2"
 
-[dependencies.failure_derive]
-version = "0.1.2"
+[dependencies]
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3"
 features = ["shellapi"]

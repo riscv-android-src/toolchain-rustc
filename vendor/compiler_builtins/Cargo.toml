@@ -12,7 +12,7 @@
 
 [package]
 name = "compiler_builtins"
-version = "0.1.9"
+version = "0.1.14"
 authors = ["Jorge Aparicio <japaricious@gmail.com>"]
 links = "compiler-rt"
 include = ["/Cargo.toml", "/build.rs", "/src/*", "/examples/*", "/LICENSE.txt", "/README.md", "/compiler-rt/*", "/libm/src/math/*"]
@@ -33,7 +33,7 @@ test = false
 
 [[example]]
 name = "intrinsics"
-required-features = ["c", "compiler-builtins"]
+required-features = ["compiler-builtins"]
 [dependencies.core]
 version = "1.0.0"
 optional = true
@@ -49,4 +49,4 @@ default = ["compiler-builtins"]
 mangled-names = []
 mem = []
 no-lang-items = []
-rustc-dep-of-std = ["c", "compiler-builtins", "core"]
+rustc-dep-of-std = ["compiler-builtins", "core"]

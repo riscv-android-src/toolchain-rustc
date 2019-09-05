@@ -6,7 +6,7 @@
 use crate::hir::def::Namespace;
 use crate::mir::ProjectionKind;
 use crate::mir::interpret::ConstValue;
-use crate::ty::{self, Lift, Ty, TyCtxt, ConstVid};
+use crate::ty::{self, Lift, Ty, TyCtxt, ConstVid, InferConst};
 use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 use crate::ty::print::{FmtPrinter, Printer};
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
@@ -55,7 +55,7 @@ impl fmt::Debug for ty::AdtDef {
 impl fmt::Debug for ty::ClosureUpvar<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ClosureUpvar({:?},{:?})",
-               self.def,
+               self.res,
                self.ty)
     }
 }
@@ -240,7 +240,7 @@ impl fmt::Debug for Ty<'tcx> {
 
 impl fmt::Debug for ty::ParamTy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/#{}", self.name, self.idx)
+        write!(f, "{}/#{}", self.name, self.index)
     }
 }
 
@@ -302,7 +302,7 @@ CloneTypeFoldableAndLiftImpls! {
     ::syntax::ast::FloatTy,
     ::syntax::ast::NodeId,
     ::syntax_pos::symbol::Symbol,
-    crate::hir::def::Def,
+    crate::hir::def::Res,
     crate::hir::def_id::DefId,
     crate::hir::InlineAsm,
     crate::hir::MatchSource,
@@ -326,6 +326,7 @@ CloneTypeFoldableAndLiftImpls! {
     crate::ty::IntVarValue,
     crate::ty::ParamConst,
     crate::ty::ParamTy,
+    crate::ty::adjustment::PointerCast,
     crate::ty::RegionVid,
     crate::ty::UniverseIndex,
     crate::ty::Variance,
@@ -626,16 +627,8 @@ impl<'a, 'tcx> Lift<'tcx> for ty::adjustment::Adjust<'a> {
         match *self {
             ty::adjustment::Adjust::NeverToAny =>
                 Some(ty::adjustment::Adjust::NeverToAny),
-            ty::adjustment::Adjust::ReifyFnPointer =>
-                Some(ty::adjustment::Adjust::ReifyFnPointer),
-            ty::adjustment::Adjust::UnsafeFnPointer =>
-                Some(ty::adjustment::Adjust::UnsafeFnPointer),
-            ty::adjustment::Adjust::ClosureFnPointer(unsafety) =>
-                Some(ty::adjustment::Adjust::ClosureFnPointer(unsafety)),
-            ty::adjustment::Adjust::MutToConstPointer =>
-                Some(ty::adjustment::Adjust::MutToConstPointer),
-            ty::adjustment::Adjust::Unsize =>
-                Some(ty::adjustment::Adjust::Unsize),
+            ty::adjustment::Adjust::Pointer(ptr) =>
+                Some(ty::adjustment::Adjust::Pointer(ptr)),
             ty::adjustment::Adjust::Deref(ref overloaded) => {
                 tcx.lift(overloaded).map(ty::adjustment::Adjust::Deref)
             }
@@ -744,7 +737,8 @@ impl<'a, 'tcx> Lift<'tcx> for ty::error::TypeError<'a> {
             ProjectionMismatched(x) => ProjectionMismatched(x),
             ProjectionBoundsLength(x) => ProjectionBoundsLength(x),
             Sorts(ref x) => return tcx.lift(x).map(Sorts),
-            ExistentialMismatch(ref x) => return tcx.lift(x).map(ExistentialMismatch)
+            ExistentialMismatch(ref x) => return tcx.lift(x).map(ExistentialMismatch),
+            ConstMismatch(ref x) => return tcx.lift(x).map(ConstMismatch),
         })
     }
 }
@@ -1185,11 +1179,7 @@ BraceStructTypeFoldableImpl! {
 EnumTypeFoldableImpl! {
     impl<'tcx> TypeFoldable<'tcx> for ty::adjustment::Adjust<'tcx> {
         (ty::adjustment::Adjust::NeverToAny),
-        (ty::adjustment::Adjust::ReifyFnPointer),
-        (ty::adjustment::Adjust::UnsafeFnPointer),
-        (ty::adjustment::Adjust::ClosureFnPointer)(a),
-        (ty::adjustment::Adjust::MutToConstPointer),
-        (ty::adjustment::Adjust::Unsize),
+        (ty::adjustment::Adjust::Pointer)(a),
         (ty::adjustment::Adjust::Deref)(a),
         (ty::adjustment::Adjust::Borrow)(a),
     }
@@ -1289,7 +1279,7 @@ TupleStructTypeFoldableImpl! {
 
 BraceStructTypeFoldableImpl! {
     impl<'tcx> TypeFoldable<'tcx> for ty::ClosureUpvar<'tcx> {
-        def, span, ty
+        res, span, ty
     }
 }
 
@@ -1331,6 +1321,7 @@ EnumTypeFoldableImpl! {
         (ty::error::TypeError::ProjectionBoundsLength)(x),
         (ty::error::TypeError::Sorts)(x),
         (ty::error::TypeError::ExistentialMismatch)(x),
+        (ty::error::TypeError::ConstMismatch)(x),
     }
 }
 
@@ -1361,9 +1352,9 @@ impl<'tcx> TypeFoldable<'tcx> for ConstValue<'tcx> {
     fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {
         match *self {
             ConstValue::ByRef(ptr, alloc) => ConstValue::ByRef(ptr, alloc),
-            // FIXME(const_generics): implement TypeFoldable for InferConst
-            ConstValue::Infer(ic) => ConstValue::Infer(ic),
+            ConstValue::Infer(ic) => ConstValue::Infer(ic.fold_with(folder)),
             ConstValue::Param(p) => ConstValue::Param(p.fold_with(folder)),
+            ConstValue::Placeholder(p) => ConstValue::Placeholder(p),
             ConstValue::Scalar(a) => ConstValue::Scalar(a),
             ConstValue::Slice(a, b) => ConstValue::Slice(a, b),
             ConstValue::Unevaluated(did, substs)
@@ -1374,12 +1365,22 @@ impl<'tcx> TypeFoldable<'tcx> for ConstValue<'tcx> {
     fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
         match *self {
             ConstValue::ByRef(..) => false,
-            // FIXME(const_generics): implement TypeFoldable for InferConst
-            ConstValue::Infer(_ic) => false,
+            ConstValue::Infer(ic) => ic.visit_with(visitor),
             ConstValue::Param(p) => p.visit_with(visitor),
+            ConstValue::Placeholder(_) => false,
             ConstValue::Scalar(_) => false,
             ConstValue::Slice(..) => false,
             ConstValue::Unevaluated(_, substs) => substs.visit_with(visitor),
         }
+    }
+}
+
+impl<'tcx> TypeFoldable<'tcx> for InferConst<'tcx> {
+    fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, _folder: &mut F) -> Self {
+        *self
+    }
+
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, _visitor: &mut V) -> bool {
+        false
     }
 }

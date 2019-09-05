@@ -1,9 +1,9 @@
 use crate::utils::span_lint;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use std::f64::consts as f64;
-use syntax::ast::{FloatTy, Lit, LitKind};
+use syntax::ast::{FloatTy, LitKind};
 use syntax::symbol;
 
 declare_clippy_lint! {
@@ -19,10 +19,7 @@ declare_clippy_lint! {
     /// actually more precise, please [file a Rust
     /// issue](https://github.com/rust-lang/rust/issues).
     ///
-    /// **Known problems:** If you happen to have a value that is within 1/8192 of a
-    /// known constant, but is not *and should not* be the same, this lint will
-    /// report your value anyway. We have not yet noticed any false positives in
-    /// code we tested clippy with (this includes servo), but YMMV.
+    /// **Known problems:** None.
     ///
     /// **Example:**
     /// ```rust
@@ -34,7 +31,7 @@ declare_clippy_lint! {
 }
 
 // Tuples are of the form (constant, name, min_digits)
-const KNOWN_CONSTS: &[(f64, &str, usize)] = &[
+const KNOWN_CONSTS: [(f64, &str, usize); 16] = [
     (f64::E, "E", 4),
     (f64::FRAC_1_PI, "FRAC_1_PI", 4),
     (f64::FRAC_1_SQRT_2, "FRAC_1_SQRT_2", 5),
@@ -53,29 +50,18 @@ const KNOWN_CONSTS: &[(f64, &str, usize)] = &[
     (f64::SQRT_2, "SQRT_2", 5),
 ];
 
-#[derive(Copy, Clone)]
-pub struct Pass;
+declare_lint_pass!(ApproxConstant => [APPROX_CONSTANT]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(APPROX_CONSTANT)
-    }
-
-    fn name(&self) -> &'static str {
-        "ApproxConstant"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ApproxConstant {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
         if let ExprKind::Lit(lit) = &e.node {
-            check_lit(cx, lit, e);
+            check_lit(cx, &lit.node, e);
         }
     }
 }
 
-fn check_lit(cx: &LateContext<'_, '_>, lit: &Lit, e: &Expr) {
-    match lit.node {
+fn check_lit(cx: &LateContext<'_, '_>, lit: &LitKind, e: &Expr) {
+    match *lit {
         LitKind::Float(s, FloatTy::F32) => check_known_consts(cx, e, s, "f32"),
         LitKind::Float(s, FloatTy::F64) => check_known_consts(cx, e, s, "f64"),
         LitKind::FloatUnsuffixed(s) => check_known_consts(cx, e, s, "f{32, 64}"),
@@ -86,7 +72,7 @@ fn check_lit(cx: &LateContext<'_, '_>, lit: &Lit, e: &Expr) {
 fn check_known_consts(cx: &LateContext<'_, '_>, e: &Expr, s: symbol::Symbol, module: &str) {
     let s = s.as_str();
     if s.parse::<f64>().is_ok() {
-        for &(constant, name, min_digits) in KNOWN_CONSTS {
+        for &(constant, name, min_digits) in &KNOWN_CONSTS {
             if is_approx_const(constant, &s, min_digits) {
                 span_lint(
                     cx,

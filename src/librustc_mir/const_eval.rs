@@ -6,12 +6,12 @@ use std::borrow::{Borrow, Cow};
 use std::hash::Hash;
 use std::collections::hash_map::Entry;
 
-use rustc::hir::{self, def_id::DefId};
-use rustc::hir::def::Def;
+use rustc::hir::def::DefKind;
+use rustc::hir::def_id::DefId;
 use rustc::mir::interpret::{ConstEvalErr, ErrorHandled};
 use rustc::mir;
 use rustc::ty::{self, TyCtxt, query::TyCtxtAt};
-use rustc::ty::layout::{self, LayoutOf, VariantIdx};
+use rustc::ty::layout::{self, LayoutOf, VariantIdx, Size};
 use rustc::ty::subst::Subst;
 use rustc::traits::Reveal;
 use rustc::util::common::ErrorReported;
@@ -21,7 +21,7 @@ use syntax::ast::Mutability;
 use syntax::source_map::{Span, DUMMY_SP};
 
 use crate::interpret::{self,
-    PlaceTy, MPlaceTy, MemPlace, OpTy, ImmTy, Immediate, Scalar, Pointer,
+    PlaceTy, MPlaceTy, MemPlace, OpTy, ImmTy, Immediate, Scalar,
     RawConst, ConstValue,
     EvalResult, EvalError, InterpError, GlobalId, InterpretCx, StackPopCleanup,
     Allocation, AllocId, MemoryKind,
@@ -59,7 +59,7 @@ pub(crate) fn eval_promoted<'a, 'mir, 'tcx>(
 ) -> EvalResult<'tcx, MPlaceTy<'tcx>> {
     let span = tcx.def_span(cid.instance.def_id());
     let mut ecx = mk_eval_cx(tcx, span, param_env);
-    eval_body_using_ecx(&mut ecx, cid, Some(mir), param_env)
+    eval_body_using_ecx(&mut ecx, cid, mir, param_env)
 }
 
 fn mplace_to_const<'tcx>(
@@ -107,37 +107,15 @@ fn op_to_const<'tcx>(
     ty::Const { val, ty: op.layout.ty }
 }
 
-fn eval_body_and_ecx<'a, 'mir, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    cid: GlobalId<'tcx>,
-    mir: Option<&'mir mir::Mir<'tcx>>,
-    param_env: ty::ParamEnv<'tcx>,
-) -> (EvalResult<'tcx, MPlaceTy<'tcx>>, CompileTimeEvalContext<'a, 'mir, 'tcx>) {
-    // we start out with the best span we have
-    // and try improving it down the road when more information is available
-    let span = tcx.def_span(cid.instance.def_id());
-    let span = mir.map(|mir| mir.span).unwrap_or(span);
-    let mut ecx = InterpretCx::new(tcx.at(span), param_env, CompileTimeInterpreter::new());
-    let r = eval_body_using_ecx(&mut ecx, cid, mir, param_env);
-    (r, ecx)
-}
-
 // Returns a pointer to where the result lives
 fn eval_body_using_ecx<'mir, 'tcx>(
     ecx: &mut CompileTimeEvalContext<'_, 'mir, 'tcx>,
     cid: GlobalId<'tcx>,
-    mir: Option<&'mir mir::Mir<'tcx>>,
+    mir: &'mir mir::Mir<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
 ) -> EvalResult<'tcx, MPlaceTy<'tcx>> {
     debug!("eval_body_using_ecx: {:?}, {:?}", cid, param_env);
     let tcx = ecx.tcx.tcx;
-    let mut mir = match mir {
-        Some(mir) => mir,
-        None => ecx.load_mir(cid.instance.def)?,
-    };
-    if let Some(index) = cid.promoted {
-        mir = &mir.promoted[index];
-    }
     let layout = ecx.layout_of(mir.return_ty().subst(tcx, cid.instance.substs))?;
     assert!(!layout.is_unsized());
     let ret = ecx.allocate(layout, MemoryKind::Stack);
@@ -158,9 +136,8 @@ fn eval_body_using_ecx<'mir, 'tcx>(
     ecx.run()?;
 
     // Intern the result
-    let internally_mutable = !layout.ty.is_freeze(tcx, param_env, mir.span);
-    let is_static = tcx.is_static(cid.instance.def_id());
-    let mutability = if is_static == Some(hir::Mutability::MutMutable) || internally_mutable {
+    let mutability = if tcx.is_mutable_static(cid.instance.def_id()) ||
+                     !layout.ty.is_freeze(tcx, param_env, mir.span) {
         Mutability::Mutable
     } else {
         Mutability::Immutable
@@ -406,6 +383,15 @@ impl<'a, 'mir, 'tcx> interpret::Machine<'a, 'mir, 'tcx>
         Cow::Borrowed(alloc)
     }
 
+    #[inline(always)]
+    fn new_allocation(
+        _size: Size,
+        _extra: &Self::MemoryExtra,
+        _kind: MemoryKind<!>,
+    ) -> (Self::AllocExtra, Self::PointerTag) {
+        ((), ())
+    }
+
     fn box_alloc(
         _ecx: &mut InterpretCx<'a, 'mir, 'tcx, Self>,
         _dest: PlaceTy<'tcx>,
@@ -432,20 +418,11 @@ impl<'a, 'mir, 'tcx> interpret::Machine<'a, 'mir, 'tcx>
 
         let span = ecx.frame().span;
         ecx.machine.loop_detector.observe_and_analyze(
-            &ecx.tcx,
+            *ecx.tcx,
             span,
             &ecx.memory,
             &ecx.stack[..],
         )
-    }
-
-    #[inline(always)]
-    fn tag_new_allocation(
-        _ecx: &mut InterpretCx<'a, 'mir, 'tcx, Self>,
-        ptr: Pointer,
-        _kind: MemoryKind<Self::MemoryKinds>,
-    ) -> Pointer {
-        ptr
     }
 
     #[inline(always)]
@@ -514,7 +491,7 @@ pub fn error_to_const_error<'a, 'mir, 'tcx>(
 }
 
 fn validate_and_turn_into_const<'a, 'tcx>(
-    tcx: ty::TyCtxt<'a, 'tcx, 'tcx>,
+    tcx: TyCtxt<'a, 'tcx, 'tcx>,
     constant: RawConst<'tcx>,
     key: ty::ParamEnvAnd<'tcx, GlobalId<'tcx>>,
 ) -> ::rustc::mir::interpret::ConstEvalResult<'tcx> {
@@ -533,7 +510,7 @@ fn validate_and_turn_into_const<'a, 'tcx>(
         }
         // Now that we validated, turn this into a proper constant.
         let def_id = cid.instance.def.def_id();
-        if tcx.is_static(def_id).is_some() || cid.promoted.is_some() {
+        if tcx.is_static(def_id) || cid.promoted.is_some() {
             Ok(mplace_to_const(&ecx, mplace))
         } else {
             Ok(op_to_const(&ecx, mplace.into()))
@@ -615,25 +592,23 @@ pub fn const_eval_raw_provider<'a, 'tcx>(
     let cid = key.value;
     let def_id = cid.instance.def.def_id();
 
-    if let Some(id) = tcx.hir().as_local_hir_id(def_id) {
-        let tables = tcx.typeck_tables_of(def_id);
+    if def_id.is_local() && tcx.typeck_tables_of(def_id).tainted_by_errors {
+        return Err(ErrorHandled::Reported);
+    }
 
-        // Do match-check before building MIR
-        // FIXME(#59378) check_match may have errored but we're not checking for that anymore
-        tcx.check_match(def_id);
+    let span = tcx.def_span(cid.instance.def_id());
+    let mut ecx = InterpretCx::new(tcx.at(span), key.param_env, CompileTimeInterpreter::new());
 
-        if let hir::BodyOwnerKind::Const = tcx.hir().body_owner_kind_by_hir_id(id) {
-            tcx.mir_const_qualif(def_id);
+    let res = ecx.load_mir(cid.instance.def);
+    res.map(|mir| {
+        if let Some(index) = cid.promoted {
+            &mir.promoted[index]
+        } else {
+            mir
         }
-
-        // Do not continue into miri if typeck errors occurred; it will fail horribly
-        if tables.tainted_by_errors {
-            return Err(ErrorHandled::Reported)
-        }
-    };
-
-    let (res, ecx) = eval_body_and_ecx(tcx, cid, None, key.param_env);
-    res.and_then(|place| {
+    }).and_then(
+        |mir| eval_body_using_ecx(&mut ecx, cid, mir, key.param_env)
+    ).and_then(|place| {
         Ok(RawConst {
             alloc_id: place.to_ptr().expect("we allocated this ptr!").alloc_id,
             ty: place.layout.ty
@@ -641,7 +616,7 @@ pub fn const_eval_raw_provider<'a, 'tcx>(
     }).map_err(|error| {
         let err = error_to_const_error(&ecx, error);
         // errors in statics are always emitted as fatal errors
-        if tcx.is_static(def_id).is_some() {
+        if tcx.is_static(def_id) {
             // Ensure that if the above error was either `TooGeneric` or `Reported`
             // an error must be reported.
             let reported_err = tcx.sess.track_errors(|| {
@@ -659,14 +634,14 @@ pub fn const_eval_raw_provider<'a, 'tcx>(
             }
         } else if def_id.is_local() {
             // constant defined in this crate, we can figure out a lint level!
-            match tcx.describe_def(def_id) {
+            match tcx.def_kind(def_id) {
                 // constants never produce a hard error at the definition site. Anything else is
                 // a backwards compatibility hazard (and will break old versions of winapi for sure)
                 //
                 // note that validation may still cause a hard error on this very same constant,
                 // because any code that existed before validation could not have failed validation
                 // thus preventing such a hard error from being a backwards compatibility hazard
-                Some(Def::Const(_)) | Some(Def::AssociatedConst(_)) => {
+                Some(DefKind::Const) | Some(DefKind::AssociatedConst) => {
                     let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
                     err.report_as_lint(
                         tcx.at(tcx.def_span(def_id)),

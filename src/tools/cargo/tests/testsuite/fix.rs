@@ -685,7 +685,10 @@ fn fix_features() {
 #[test]
 fn shows_warnings() {
     let p = project()
-        .file("src/lib.rs", "#[deprecated] fn bar() {} pub fn foo() { let _ = bar(); }")
+        .file(
+            "src/lib.rs",
+            "#[deprecated] fn bar() {} pub fn foo() { let _ = bar(); }",
+        )
         .build();
 
     p.cargo("fix --allow-no-vcs")
@@ -927,9 +930,7 @@ fn fix_idioms() {
 fn idioms_2015_ok() {
     let p = project().file("src/lib.rs", "").build();
 
-    p.cargo("fix --edition-idioms --allow-no-vcs")
-        .masquerade_as_nightly_cargo()
-        .run();
+    p.cargo("fix --edition-idioms --allow-no-vcs").run();
 }
 
 #[test]

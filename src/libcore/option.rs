@@ -135,9 +135,9 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use iter::{FromIterator, FusedIterator, TrustedLen};
-use {hint, mem, ops::{self, Deref}};
-use pin::Pin;
+use crate::iter::{FromIterator, FusedIterator, TrustedLen};
+use crate::{convert, hint, mem, ops::{self, Deref}};
+use crate::pin::Pin;
 
 // Note that this is not a lang item per se, but it has a hidden dependency on
 // `Iterator`, which is one. The compiler assumes that the `next` method of
@@ -178,6 +178,7 @@ impl<T> Option<T> {
     /// ```
     ///
     /// [`Some`]: #variant.Some
+    #[must_use]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_some(&self) -> bool {
@@ -200,6 +201,7 @@ impl<T> Option<T> {
     /// ```
     ///
     /// [`None`]: #variant.None
+    #[must_use]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_none(&self) -> bool {
@@ -536,7 +538,7 @@ impl<T> Option<T> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter(&self) -> Iter<T> {
+    pub fn iter(&self) -> Iter<'_, T> {
         Iter { inner: Item { opt: self.as_ref() } }
     }
 
@@ -557,7 +559,7 @@ impl<T> Option<T> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut { inner: Item { opt: self.as_mut() } }
     }
 
@@ -1409,5 +1411,35 @@ impl<T> ops::Try for Option<T> {
     #[inline]
     fn from_error(_: NoneError) -> Self {
         None
+    }
+}
+
+impl<T> Option<Option<T>> {
+    /// Converts from `Option<Option<T>>` to `Option<T>`
+    ///
+    /// # Examples
+    /// Basic usage:
+    /// ```
+    /// #![feature(option_flattening)]
+    /// let x: Option<Option<u32>> = Some(Some(6));
+    /// assert_eq!(Some(6), x.flatten());
+    ///
+    /// let x: Option<Option<u32>> = Some(None);
+    /// assert_eq!(None, x.flatten());
+    ///
+    /// let x: Option<Option<u32>> = None;
+    /// assert_eq!(None, x.flatten());
+    /// ```
+    /// Flattening once only removes one level of nesting:
+    /// ```
+    /// #![feature(option_flattening)]
+    /// let x: Option<Option<Option<u32>>> = Some(Some(Some(6)));
+    /// assert_eq!(Some(Some(6)), x.flatten());
+    /// assert_eq!(Some(6), x.flatten().flatten());
+    /// ```
+    #[inline]
+    #[unstable(feature = "option_flattening", issue = "60258")]
+    pub fn flatten(self) -> Option<T> {
+        self.and_then(convert::identity)
     }
 }

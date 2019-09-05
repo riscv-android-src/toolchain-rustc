@@ -38,6 +38,7 @@ const A_T: [f32; 5] = [
 ];
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn atanf(mut x: f32) -> f32 {
     let x1p_120 = f32::from_bits(0x03800000); // 0x1p-120 === 2 ^ (-120)
 
@@ -79,16 +80,14 @@ pub fn atanf(mut x: f32) -> f32 {
                 x = (x - 1.) / (x + 1.);
                 1
             }
+        } else if ix < 0x401c0000 {
+            /* |x| < 2.4375 */
+            x = (x - 1.5) / (1. + 1.5 * x);
+            2
         } else {
-            if ix < 0x401c0000 {
-                /* |x| < 2.4375 */
-                x = (x - 1.5) / (1. + 1.5 * x);
-                2
-            } else {
-                /* 2.4375 <= |x| < 2**26 */
-                x = -1. / x;
-                3
-            }
+            /* 2.4375 <= |x| < 2**26 */
+            x = -1. / x;
+            3
         }
     };
     /* end of argument reduction */

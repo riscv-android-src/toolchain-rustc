@@ -27,7 +27,7 @@ a keyword. [crates.io][cratesio] imposes even more restrictions, such as
 enforcing only ASCII characters, not a reserved name, not a special Windows
 name such as "nul", is not too long, etc.
 
-[alphanumeric]: https://doc.rust-lang.org/std/primitive.char.html#method.is_alphanumeric
+[alphanumeric]: ../std/primitive.char.html#method.is_alphanumeric
 
 #### The `version` field
 
@@ -73,11 +73,11 @@ examples, etc.
 
 #### The `build` field (optional)
 
-This field specifies a file in the package root which is a [build script][1] for
-building native code. More information can be found in the build script
-[guide][1].
+This field specifies a file in the package root which is a [build script] for
+building native code. More information can be found in the [build script
+guide][build script].
 
-[1]: reference/build-scripts.html
+[build script]: reference/build-scripts.html
 
 ```toml
 [package]
@@ -121,15 +121,39 @@ may be replaced by docs.rs links.
 
 #### The `exclude` and `include` fields (optional)
 
-You can explicitly specify to Cargo that a set of [globs][globs] should be
-ignored or included for the purposes of packaging and rebuilding a package. The
-globs specified in the `exclude` field identify a set of files that are not
-included when a package is published as well as ignored for the purposes of
-detecting when to rebuild a package, and the globs in `include` specify files
-that are explicitly included.
+You can explicitly specify that a set of file patterns should be ignored or
+included for the purposes of packaging. The patterns specified in the
+`exclude` field identify a set of files that are not included, and the
+patterns in `include` specify files that are explicitly included.
 
-If a VCS is being used for a package, the `exclude` field will be seeded with
-the VCS’ ignore settings (`.gitignore` for git for example).
+The patterns should be [gitignore]-style patterns. Briefly:
+
+- `foo` matches any file or directory with the name `foo` anywhere in the
+  package. This is equivalent to the pattern `**/foo`.
+- `/foo` matches any file or directory with the name `foo` only in the root of
+  the package.
+- `foo/` matches any *directory* with the name `foo` anywhere in the package.
+- Common glob patterns like `*`, `?`, and `[]` are supported:
+  - `*` matches zero or more characters except `/`.  For example, `*.html`
+    matches any file or directory with the `.html` extension anywhere in the
+    package.
+  - `?` matches any character except `/`. For example, `foo?` matches `food`,
+    but not `foo`.
+  - `[]` allows for matching a range of characters. For example, `[ab]`
+    matches either `a` or `b`. `[a-z]` matches letters a through z.
+- `**/` prefix matches in any directory. For example, `**/foo/bar` matches the
+  file or directory `bar` anywhere that is directly under directory `foo`.
+- `/**` suffix matches everything inside. For example, `foo/**` matches all
+  files inside directory `foo`, including all files in subdirectories below
+  `foo`.
+- `/**/` matches zero or more directories. For example, `a/**/b` matches
+  `a/b`, `a/x/b`, `a/x/y/b`, and so on.
+- `!` prefix negates a pattern. For example, a pattern of `src/**.rs` and
+  `!foo.rs` would match all files with the `.rs` extension inside the `src`
+  directory, except for any file named `foo.rs`.
+
+If git is being used for a package, the `exclude` field will be seeded with
+the `gitignore` settings from the repository.
 
 ```toml
 [package]
@@ -145,23 +169,17 @@ include = ["src/**/*", "Cargo.toml"]
 
 The options are mutually exclusive: setting `include` will override an
 `exclude`. Note that `include` must be an exhaustive list of files as otherwise
-necessary source files may not be included.
+necessary source files may not be included. The package's `Cargo.toml` is
+automatically included.
 
-[globs]: https://docs.rs/glob/0.2.11/glob/struct.Pattern.html
+The include/exclude list is also used for change tracking in some situations.
+For targets built with `rustdoc`, it is used to determine the list of files to
+track to determine if the target should be rebuilt. If the package has a
+[build script] that does not emit any `rerun-if-*` directives, then the
+include/exclude list is used for tracking if the build script should be re-run
+if any of those files change.
 
-#### Migrating to `gitignore`-like pattern matching
-
-The current interpretation of these configs is based on UNIX Globs, as
-implemented in the [`glob` crate](https://crates.io/crates/glob). We want
-Cargo's `include` and `exclude` configs to work as similar to `gitignore` as
-possible. [The `gitignore` specification](https://git-scm.com/docs/gitignore) is
-also based on Globs, but has a bunch of additional features that enable easier
-pattern writing and more control. Therefore, we are migrating the interpretation
-for the rules of these configs to use the [`ignore`
-crate](https://crates.io/crates/ignore), and treat them each rule as a single
-line in a `gitignore` file. See [the tracking
-issue](https://github.com/rust-lang/cargo/issues/4268) for more details on the
-migration.
+[gitignore]: https://git-scm.com/docs/gitignore
 
 #### The `publish`  field (optional)
 
@@ -298,9 +316,21 @@ is-it-maintained-issue-resolution = { repository = "..." }
 # Is it maintained percentage of open issues: `repository` is required.
 is-it-maintained-open-issues = { repository = "..." }
 
-# Maintenance: `status` is required. Available options are `actively-developed`,
-# `passively-maintained`, `as-is`, `experimental`, `looking-for-maintainer`,
-# `deprecated`, and the default `none`, which displays no badge on crates.io.
+# Maintenance: `status` is required. Available options are:
+# - `actively-developed`: New features are being added and bugs are being fixed.
+# - `passively-maintained`: There are no plans for new features, but the maintainer intends to
+#   respond to issues that get filed.
+# - `as-is`: The crate is feature complete, the maintainer does not intend to continue working on
+#   it or providing support, but it works for the purposes it was designed for.
+# - `experimental`: The author wants to share it with the community but is not intending to meet
+#   anyone's particular use case.
+# - `looking-for-maintainer`: The current maintainer would like to transfer the crate to someone
+#   else.
+# - `deprecated`: The maintainer does not recommend using this crate (the description of the crate
+#   can describe why, there could be a better solution available or there could be problems with
+#   the crate that the author does not want to fix).
+# - `none`: Displays no badge on crates.io, since the maintainer has not chosen to specify
+#   their intentions, potential crate users will need to investigate on their own.
 maintenance = { status = "..." }
 ```
 
@@ -602,6 +632,8 @@ and also be a member crate of another workspace (contain `package.workspace`).
 Most of the time workspaces will not need to be dealt with as `cargo new` and
 `cargo init` will handle workspace configuration automatically.
 
+[globs]: https://docs.rs/glob/0.2.11/glob/struct.Pattern.html
+
 #### Virtual Manifest
 
 In workspace manifests, if the `package` table is present, the workspace root
@@ -636,10 +668,6 @@ Cargo will also treat any files located in `src/bin/*.rs` as executables. If you
 executable consists of more than just one source file, you might also use a directory
 inside `src/bin` containing a `main.rs` file which will be treated as an executable
 with a name of the parent directory.
-Do note, however, once you add a `[[bin]]` section ([see
-below](#configuring-a-target)), Cargo will no longer automatically build files
-located in `src/bin/*.rs`. Instead you must create a `[[bin]]` section for
-each file you want to build.
 
 Your package can optionally contain folders named `examples`, `tests`, and
 `benches`, which Cargo will treat as containing examples,
@@ -670,7 +698,13 @@ may be composed of single files or directories with a `main.rs` file.
 
 To structure your code after you've created the files and folders for your
 package, you should remember to use Rust's module system, which you can read
-about in [the book](https://doc.rust-lang.org/book/crates-and-modules.html).
+about in [the
+book](../book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html).
+
+See [Configuring a target](#configuring-a-target) below for more details on
+manually configuring target settings. See [Target
+auto-discovery](#target-auto-discovery) below for more information on
+controlling how Cargo automatically infers targets.
 
 ### Examples
 
@@ -686,7 +720,7 @@ You can run individual executable examples with the command `cargo run --example
 
 Specify `crate-type` to make an example be compiled as a library (additional
 information about crate types is available in
-[The Rust Reference](https://doc.rust-lang.org/reference/linkage.html)):
+[The Rust Reference](../reference/linkage.html)):
 
 ```toml
 [[example]]
@@ -788,9 +822,45 @@ name = "my-cool-binary"
 path = "src/my-cool-binary.rs"
 ```
 
-The `[package]` also includes the optional `autobins`, `autoexamples`,
-`autotests`, and `autobenches` keys to explicitly opt-in or opt-out of
-auto-discovering specific target kinds.
+#### Target auto-discovery
+
+By default, Cargo automatically determines the targets to build based on the
+[layout of the files](#the-project-layout) on the filesystem. The target
+configuration tables, such as `[lib]`, `[[bin]]`, `[[test]]`, `[[bench]]`, or
+`[[example]]`, can be used to add additional targets that don't follow the
+standard directory layout.
+
+The automatic target discovery can be disabled so that only manually
+configured targets will be built. Setting the keys `autobins`, `autoexamples`,
+`autotests`, or `autobenches` to `false` in the `[package]` section will
+disable auto-discovery of the corresponding target type.
+
+Disabling automatic discovery should only be needed for specialized
+situations. For example, if you have a library where you want a *module* named
+`bin`, this would present a problem because Cargo would usually attempt to
+compile anything in the `bin` directory as an executable. Here is a sample
+layout of this scenario:
+
+```
+├── Cargo.toml
+└── src
+    ├── lib.rs
+    └── bin
+        └── mod.rs
+```
+
+To prevent Cargo from inferring `src/bin/mod.rs` as an executable, set
+`autobins = false` in `Cargo.toml` to disable auto-discovery:
+
+```toml
+[package]
+# …
+autobins = false
+```
+
+> **Note**: For packages with the 2015 edition, the default for auto-discovery
+> is `false` if at least one target is manually defined in `Cargo.toml`.
+> Beginning with the 2018 edition, the default is always `true`.
 
 #### The `required-features` field (optional)
 
@@ -828,7 +898,7 @@ The available options are `dylib`, `rlib`, `staticlib`, `cdylib`, and
 `proc-macro`.
 
 You can read more about the different crate types in the
-[Rust Reference Manual](https://doc.rust-lang.org/reference/linkage.html)
+[Rust Reference Manual](../reference/linkage.html)
 
 ### The `[patch]` Section
 

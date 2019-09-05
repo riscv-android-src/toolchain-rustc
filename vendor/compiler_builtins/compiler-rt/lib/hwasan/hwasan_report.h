@@ -23,8 +23,10 @@ namespace __hwasan {
 
 void ReportStats();
 void ReportTagMismatch(StackTrace *stack, uptr addr, uptr access_size,
-                       bool is_store);
+                       bool is_store, bool fatal);
 void ReportInvalidFree(StackTrace *stack, uptr addr);
+void ReportTailOverwritten(StackTrace *stack, uptr addr, uptr orig_size,
+                           uptr tail_size, const u8 *expected);
 
 void ReportAtExitStatistics();
 

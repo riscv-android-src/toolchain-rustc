@@ -14,11 +14,13 @@
 
 use if_chain::if_chain;
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use syntax::ast;
 
 use crate::utils::sugg::Sugg;
-use crate::utils::{in_macro, snippet_block, snippet_block_with_applicability, span_lint_and_sugg, span_lint_and_then};
+use crate::utils::{
+    in_macro_or_desugar, snippet_block, snippet_block_with_applicability, span_lint_and_sugg, span_lint_and_then,
+};
 use rustc_errors::Applicability;
 
 declare_clippy_lint! {
@@ -71,22 +73,11 @@ declare_clippy_lint! {
     "`if`s that can be collapsed (e.g., `if x { if y { ... } }` and `else { if x { ... } }`)"
 }
 
-#[derive(Copy, Clone)]
-pub struct CollapsibleIf;
-
-impl LintPass for CollapsibleIf {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(COLLAPSIBLE_IF)
-    }
-
-    fn name(&self) -> &'static str {
-        "CollapsibleIf"
-    }
-}
+declare_lint_pass!(CollapsibleIf => [COLLAPSIBLE_IF]);
 
 impl EarlyLintPass for CollapsibleIf {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &ast::Expr) {
-        if !in_macro(expr.span) {
+        if !in_macro_or_desugar(expr.span) {
             check_if(cx, expr)
         }
     }
@@ -121,7 +112,7 @@ fn check_collapsible_maybe_if_let(cx: &EarlyContext<'_>, else_: &ast::Expr) {
         if let ast::ExprKind::Block(ref block, _) = else_.node;
         if !block_starts_with_comment(cx, block);
         if let Some(else_) = expr_block(block);
-        if !in_macro(else_.span);
+        if !in_macro_or_desugar(else_.span);
         then {
             match else_.node {
                 ast::ExprKind::If(..) | ast::ExprKind::IfLet(..) => {

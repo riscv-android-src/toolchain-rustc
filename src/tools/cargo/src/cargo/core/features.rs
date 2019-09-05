@@ -199,6 +199,9 @@ features! {
 
         // Declarative build scripts.
         [unstable] metabuild: bool,
+
+        // Specifying the 'public' attribute on dependencies
+        [unstable] public_dependency: bool,
     }
 }
 
@@ -319,7 +322,6 @@ impl Features {
 pub struct CliUnstable {
     pub print_im_a_teapot: bool,
     pub unstable_options: bool,
-    pub offline: bool,
     pub no_index_update: bool,
     pub avoid_dev_deps: bool,
     pub minimal_versions: bool,
@@ -328,6 +330,7 @@ pub struct CliUnstable {
     pub config_profile: bool,
     pub dual_proc_macros: bool,
     pub mtime_on_use: bool,
+    pub install_upgrade: bool,
 }
 
 impl CliUnstable {
@@ -363,7 +366,6 @@ impl CliUnstable {
         match k {
             "print-im-a-teapot" => self.print_im_a_teapot = parse_bool(v)?,
             "unstable-options" => self.unstable_options = true,
-            "offline" => self.offline = true,
             "no-index-update" => self.no_index_update = true,
             "avoid-dev-deps" => self.avoid_dev_deps = true,
             "minimal-versions" => self.minimal_versions = true,
@@ -372,6 +374,7 @@ impl CliUnstable {
             "config-profile" => self.config_profile = true,
             "dual-proc-macros" => self.dual_proc_macros = true,
             "mtime-on-use" => self.mtime_on_use = true,
+            "install-upgrade" => self.install_upgrade = true,
             _ => failure::bail!("unknown `-Z` flag specified: {}", k),
         }
 

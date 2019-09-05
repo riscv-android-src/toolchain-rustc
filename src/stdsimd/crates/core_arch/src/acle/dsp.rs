@@ -4,21 +4,21 @@
 //!
 //! Intrinsics that could live here:
 //!
-//! - [x] __smulbb
-//! - [x] __smulbt
-//! - [x] __smultb
-//! - [x] __smultt
-//! - [x] __smulwb
-//! - [x] __smulwt
-//! - [x] __qadd
-//! - [x] __qsub
-//! - [x] __qdbl
-//! - [x] __smlabb
-//! - [x] __smlabt
-//! - [x] __smlatb
-//! - [x] __smlatt
-//! - [x] __smlawb
-//! - [x] __smlawt
+//! - \[x\] __smulbb
+//! - \[x\] __smulbt
+//! - \[x\] __smultb
+//! - \[x\] __smultt
+//! - \[x\] __smulwb
+//! - \[x\] __smulwt
+//! - \[x\] __qadd
+//! - \[x\] __qsub
+//! - \[x\] __qdbl
+//! - \[x\] __smlabb
+//! - \[x\] __smlabt
+//! - \[x\] __smlatb
+//! - \[x\] __smlatt
+//! - \[x\] __smlawb
+//! - \[x\] __smlawt
 
 #[cfg(test)]
 use stdsimd_test::assert_instr;
@@ -99,7 +99,7 @@ pub unsafe fn __smultb(a: int16x2_t, b: int16x2_t) -> i32 {
 /// Insert a SMULTB instruction
 ///
 /// Returns the equivalent of a\[1\] * b\[0\]
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 #[inline]
 #[cfg_attr(test, assert_instr(smulbt))]
 pub unsafe fn __smulbt(a: int16x2_t, b: int16x2_t) -> i32 {
@@ -109,7 +109,7 @@ pub unsafe fn __smulbt(a: int16x2_t, b: int16x2_t) -> i32 {
 /// Insert a SMULTT instruction
 ///
 /// Returns the equivalent of a\[1\] * b\[1\]
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 #[inline]
 #[cfg_attr(test, assert_instr(smultt))]
 pub unsafe fn __smultt(a: int16x2_t, b: int16x2_t) -> i32 {
@@ -171,7 +171,7 @@ pub unsafe fn __qdbl(a: i32) -> i32 {
 /// Insert a SMLABB instruction
 ///
 /// Returns the equivalent of a\[0\] * b\[0\] + c
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 /// Sets the Q flag if overflow occurs on the addition.
 #[inline]
 #[cfg_attr(test, assert_instr(smlabb))]
@@ -182,7 +182,7 @@ pub unsafe fn __smlabb(a: int16x2_t, b: int16x2_t, c: i32) -> i32 {
 /// Insert a SMLABT instruction
 ///
 /// Returns the equivalent of a\[0\] * b\[1\] + c
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 /// Sets the Q flag if overflow occurs on the addition.
 #[inline]
 #[cfg_attr(test, assert_instr(smlabt))]
@@ -193,7 +193,7 @@ pub unsafe fn __smlabt(a: int16x2_t, b: int16x2_t, c: i32) -> i32 {
 /// Insert a SMLATB instruction
 ///
 /// Returns the equivalent of a\[1\] * b\[0\] + c
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 /// Sets the Q flag if overflow occurs on the addition.
 #[inline]
 #[cfg_attr(test, assert_instr(smlatb))]
@@ -204,7 +204,7 @@ pub unsafe fn __smlatb(a: int16x2_t, b: int16x2_t, c: i32) -> i32 {
 /// Insert a SMLATT instruction
 ///
 /// Returns the equivalent of a\[1\] * b\[1\] + c
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 /// Sets the Q flag if overflow occurs on the addition.
 #[inline]
 #[cfg_attr(test, assert_instr(smlatt))]
@@ -214,8 +214,8 @@ pub unsafe fn __smlatt(a: int16x2_t, b: int16x2_t, c: i32) -> i32 {
 
 /// Insert a SMLAWB instruction
 ///
-/// Returns the equivalent of (a * b[0] + (c << 16)) >> 16
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// Returns the equivalent of (a * b\[0\] + (c << 16)) >> 16
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 /// Sets the Q flag if overflow occurs on the addition.
 #[inline]
 #[cfg_attr(test, assert_instr(smlawb))]
@@ -225,8 +225,8 @@ pub unsafe fn __smlawb(a: i32, b: int16x2_t, c: i32) -> i32 {
 
 /// Insert a SMLAWT instruction
 ///
-/// Returns the equivalent of (a * b[1] + (c << 16)) >> 16
-/// where [0] is the lower 16 bits and [1] is the upper 16 bits.
+/// Returns the equivalent of (a * b\[1\] + (c << 16)) >> 16
+/// where \[0\] is the lower 16 bits and \[1\] is the upper 16 bits.
 /// Sets the Q flag if overflow occurs on the addition.
 #[inline]
 #[cfg_attr(test, assert_instr(smlawt))]
@@ -236,9 +236,11 @@ pub unsafe fn __smlawt(a: i32, b: int16x2_t, c: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::core_arch::arm::*;
-    use crate::core_arch::simd::{i16x2, i8x4, u8x4};
-    use std::mem::transmute;
+    use crate::core_arch::{
+        arm::*,
+        simd::{i16x2, i8x4, u8x4},
+    };
+    use std::{i32, mem::transmute};
     use stdsimd_test::simd_test;
 
     #[test]
@@ -299,8 +301,8 @@ mod tests {
     fn qadd() {
         unsafe {
             assert_eq!(super::__qadd(-10, 60), 50);
-            assert_eq!(super::__qadd(::std::i32::MAX, 10), ::std::i32::MAX);
-            assert_eq!(super::__qadd(::std::i32::MIN, -10), ::std::i32::MIN);
+            assert_eq!(super::__qadd(i32::MAX, 10), i32::MAX);
+            assert_eq!(super::__qadd(i32::MIN, -10), i32::MIN);
         }
     }
 
@@ -308,15 +310,15 @@ mod tests {
     fn qsub() {
         unsafe {
             assert_eq!(super::__qsub(10, 60), -50);
-            assert_eq!(super::__qsub(::std::i32::MAX, -10), ::std::i32::MAX);
-            assert_eq!(super::__qsub(::std::i32::MIN, 10), ::std::i32::MIN);
+            assert_eq!(super::__qsub(i32::MAX, -10), i32::MAX);
+            assert_eq!(super::__qsub(i32::MIN, 10), i32::MIN);
         }
     }
 
     fn qdbl() {
         unsafe {
             assert_eq!(super::__qdbl(10), 20);
-            assert_eq!(super::__qdbl(::std::i32::MAX), ::std::i32::MAX);
+            assert_eq!(super::__qdbl(i32::MAX), i32::MAX);
         }
     }
 

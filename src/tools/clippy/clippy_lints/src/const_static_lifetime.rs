@@ -1,6 +1,6 @@
-use crate::utils::{in_macro, snippet, span_lint_and_then};
+use crate::utils::{in_macro_or_desugar, snippet, span_lint_and_then};
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::ast::*;
 
@@ -26,17 +26,7 @@ declare_clippy_lint! {
     "Using explicit `'static` lifetime for constants when elision rules would allow omitting them."
 }
 
-pub struct StaticConst;
-
-impl LintPass for StaticConst {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(CONST_STATIC_LIFETIME)
-    }
-
-    fn name(&self) -> &'static str {
-        "StaticConst"
-    }
-}
+declare_lint_pass!(StaticConst => [CONST_STATIC_LIFETIME]);
 
 impl StaticConst {
     // Recursively visit types
@@ -57,7 +47,7 @@ impl StaticConst {
                 if let Some(lifetime) = *optional_lifetime {
                     match borrow_type.ty.node {
                         TyKind::Path(..) | TyKind::Slice(..) | TyKind::Array(..) | TyKind::Tup(..) => {
-                            if lifetime.ident.name == "'static" {
+                            if lifetime.ident.name == syntax::symbol::keywords::StaticLifetime.name() {
                                 let snip = snippet(cx, borrow_type.ty.span, "<type>");
                                 let sugg = format!("&{}", snip);
                                 span_lint_and_then(
@@ -91,7 +81,7 @@ impl StaticConst {
 
 impl EarlyLintPass for StaticConst {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &Item) {
-        if !in_macro(item.span) {
+        if !in_macro_or_desugar(item.span) {
             // Match only constants...
             if let ItemKind::Const(ref var_type, _) = item.node {
                 self.visit_type(var_type, cx);

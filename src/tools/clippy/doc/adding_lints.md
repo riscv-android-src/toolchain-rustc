@@ -116,7 +116,7 @@ where all the lint code is. We are going to call the file
 
 ```rust
 use rustc::lint::{LintArray, LintPass, EarlyLintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 ```
 
 The next step is to provide a lint declaration. Lints are declared using the
@@ -147,22 +147,9 @@ lint pass:
 
 // .. imports and lint declaration ..
 
-#[derive(Copy, Clone)]
-pub struct FooFunctionsPass;
+declare_lint_pass!(FooFunctions => [FOO_FUNCTIONS]);
 
-impl LintPass for FooFunctionsPass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(
-            FOO_FUNCTIONS,
-        )
-    }
-
-    fn name(&self) -> &'static str {
-        "FooFunctions"
-    }
-}
-
-impl EarlyLintPass for FooFunctionsPass {}
+impl EarlyLintPass for FooFunctions {}
 ```
 
 Don't worry about the `name` method here. As long as it includes the name of the
@@ -176,7 +163,7 @@ will have to register our lint pass manually in the `register_plugins` function
 in `clippy_lints/src/lib.rs`:
 
 ```rust
-reg.register_early_lint_pass(box foo_functions::FooFunctionsPass);
+reg.register_early_lint_pass(box foo_functions::FooFunctions);
 ```
 
 This should fix the `unknown clippy lint: clippy::foo_functions` error that we
@@ -211,10 +198,10 @@ use rustc::{declare_tool_lint, lint_array};
 With UI tests and the lint declaration in place, we can start working on the
 implementation of the lint logic.
 
-Let's start by implementing the `EarlyLintPass` for our `FooFunctionsPass`:
+Let's start by implementing the `EarlyLintPass` for our `FooFunctions`:
 
 ```rust
-impl EarlyLintPass for FooFunctionsPass {
+impl EarlyLintPass for FooFunctions {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: &FnDecl, span: Span, _: NodeId) {
         // TODO: Emit lint here
     }
@@ -236,7 +223,7 @@ provide an extra help message and we can't really suggest a better name
 automatically. This is how it looks:
 
 ```rust
-impl EarlyLintPass for Pass {
+impl EarlyLintPass for FooFunctions {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, _: FnKind<'_>, _: &FnDecl, span: Span, _: NodeId) {
         span_help_and_lint(
             cx,
@@ -263,7 +250,7 @@ Both provide access to the name of the function/method via an [`Ident`][ident].
 With that we can expand our `check_fn` method to:
 
 ```rust
-impl EarlyLintPass for Pass {
+impl EarlyLintPass for FooFunctions {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: &FnDecl, span: Span, _: NodeId) {
         if is_foo_fn(fn_kind) {
             span_help_and_lint(
@@ -303,16 +290,6 @@ running `cargo test` should produce the expected output. Remember to run
 
 `cargo test` (as opposed to `cargo uitest`) will also ensure that our lint
 implementation is not violating any Clippy lints itself.
-
-If you are still following the example, you will see that `FooFunctionsPass`
-violates a Clippy lint. So we are going to rename that struct to just `Pass`:
-
-```rust
-#[derive(Copy, Clone)]
-pub struct Pass;
-
-impl LintPass for Pass { /* .. */ }
-```
 
 That should be it for the lint implementation. Running `cargo test` should now
 pass.
@@ -394,6 +371,7 @@ Before submitting your PR make sure you followed all of the basic requirements:
 - [ ] `cargo test` passes locally
 - [ ] Executed `util/dev update_lints`
 - [ ] Added lint documentation
+- [ ] Run `cargo fmt`
 
 ### Cheatsheet
 
@@ -403,7 +381,7 @@ Here are some pointers to things you are likely going to need for every lint:
   is already in here (`implements_trait`, `match_path`, `snippet`, etc)
 * [Clippy diagnostics][diagnostics]
 * [The `if_chain` macro][if_chain]
-* [`in_macro`][in_macro] and [`in_external_macro`][in_external_macro]
+* [`in_macro_or_desugar`][in_macro_or_desugar] and [`in_external_macro`][in_external_macro]
 * [`Span`][span]
 * [`Applicability`][applicability]
 * [The rustc guide][rustc_guide] explains a lot of internal compiler concepts
@@ -443,7 +421,7 @@ don't hesitate to ask on Discord, IRC or in the issue/PR.
 [if_chain]: https://docs.rs/if_chain/0.1.2/if_chain/
 [ty]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/ty/sty/index.html
 [ast]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/ast/index.html
-[in_macro]: https://github.com/rust-lang/rust-clippy/blob/d0717d1f9531a03d154aaeb0cad94c243915a146/clippy_lints/src/utils/mod.rs#L94
+[in_macro_or_desugar]: https://github.com/rust-lang/rust-clippy/blob/d0717d1f9531a03d154aaeb0cad94c243915a146/clippy_lints/src/utils/mod.rs#L94
 [in_external_macro]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/lint/fn.in_external_macro.html
 [play]: https://play.rust-lang.org
 [author_example]: https://play.rust-lang.org/?version=stable&mode=debug&edition=2018&gist=f093b986e80ad62f3b67a1f24f5e66e2

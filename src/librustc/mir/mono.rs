@@ -1,6 +1,6 @@
 use crate::hir::def_id::{DefId, CrateNum, LOCAL_CRATE};
 use crate::hir::HirId;
-use syntax::symbol::{Symbol, InternedString};
+use syntax::symbol::InternedString;
 use crate::ty::{Instance, TyCtxt};
 use crate::util::nodemap::FxHashMap;
 use rustc_data_structures::base_n;
@@ -18,7 +18,7 @@ pub enum MonoItem<'tcx> {
 }
 
 impl<'tcx> MonoItem<'tcx> {
-    pub fn size_estimate<'a>(&self, tcx: &TyCtxt<'a, 'tcx, 'tcx>) -> usize {
+    pub fn size_estimate<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> usize {
         match *self {
             MonoItem::Fn(instance) => {
                 // Estimate the size of a function based on how many statements
@@ -144,7 +144,7 @@ impl<'tcx> CodegenUnit<'tcx> {
         base_n::encode(hash, base_n::CASE_INSENSITIVE)
     }
 
-    pub fn estimate_size<'a>(&mut self, tcx: &TyCtxt<'a, 'tcx, 'tcx>) {
+    pub fn estimate_size<'a>(&mut self, tcx: TyCtxt<'a, 'tcx, 'tcx>) {
         // Estimate the size of a codegen unit as (approximately) the number of MIR
         // statements it corresponds to.
         self.size_estimate = Some(self.items.keys().map(|mi| mi.size_estimate(tcx)).sum());
@@ -280,7 +280,7 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a> CodegenUnitNameBuilder<'a, 'gcx, 'tcx> {
             cgu_name
         } else {
             let cgu_name = &cgu_name.as_str()[..];
-            Symbol::intern(&CodegenUnit::mangle_name(cgu_name)).as_interned_str()
+            InternedString::intern(&CodegenUnit::mangle_name(cgu_name))
         }
     }
 
@@ -336,6 +336,6 @@ impl<'a, 'gcx: 'tcx, 'tcx: 'a> CodegenUnitNameBuilder<'a, 'gcx, 'tcx> {
             write!(cgu_name, ".{}", special_suffix).unwrap();
         }
 
-        Symbol::intern(&cgu_name[..]).as_interned_str()
+        InternedString::intern(&cgu_name[..])
     }
 }

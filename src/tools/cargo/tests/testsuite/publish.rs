@@ -354,8 +354,8 @@ fn unpublishable_crate() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] some crates cannot be published.
-`foo` is marked as unpublishable
+[ERROR] `foo` cannot be published.
+The registry `crates-io` is not listed in the `publish` value in Cargo.toml.
 ",
         )
         .run();
@@ -644,8 +644,8 @@ fn registry_not_in_publish_list() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] some crates cannot be published.
-`foo` is marked as unpublishable
+[ERROR] `foo` cannot be published.
+The registry `alternative` is not listed in the `publish` value in Cargo.toml.
 ",
         )
         .run();
@@ -675,8 +675,8 @@ fn publish_empty_list() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] some crates cannot be published.
-`foo` is marked as unpublishable
+[ERROR] `foo` cannot be published.
+The registry `alternative` is not listed in the `publish` value in Cargo.toml.
 ",
         )
         .run();
@@ -745,11 +745,45 @@ fn block_publish_no_registry() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] some crates cannot be published.
-`foo` is marked as unpublishable
+[ERROR] `foo` cannot be published.
+The registry `alternative` is not listed in the `publish` value in Cargo.toml.
 ",
         )
         .run();
+}
+
+#[test]
+fn publish_with_crates_io_explicit() {
+    // Explicitly setting `crates-io` in the publish list.
+    registry::init();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            license = "MIT"
+            description = "foo"
+            publish = ["crates-io"]
+        "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("publish --registry alternative")
+        .with_status(101)
+        .with_stderr(
+            "\
+[ERROR] `foo` cannot be published.
+The registry `alternative` is not listed in the `publish` value in Cargo.toml.
+",
+        )
+        .run();
+
+    p.cargo("publish").run();
 }
 
 #[test]
@@ -942,4 +976,40 @@ fn publish_with_patch() {
         "foo-0.0.1.crate",
         &["Cargo.toml", "Cargo.toml.orig", "src/main.rs"],
     );
+}
+
+#[test]
+fn publish_checks_for_token_before_verify() {
+    registry::init();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+            license = "MIT"
+            description = "foo"
+        "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    let credentials = paths::home().join(".cargo/credentials");
+    fs::remove_file(&credentials).unwrap();
+
+    // Assert upload token error before the package is verified
+    p.cargo("publish")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] no upload token found, please run `cargo login`")
+        .with_stderr_does_not_contain("[VERIFYING] foo v0.0.1 ([CWD])")
+        .run();
+
+    // Assert package verified successfully on dry run
+    p.cargo("publish --dry-run")
+        .with_status(0)
+        .with_stderr_contains("[VERIFYING] foo v0.0.1 ([CWD])")
+        .run();
 }

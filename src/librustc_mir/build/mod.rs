@@ -147,7 +147,21 @@ pub fn mir_build<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> Mir<'t
             build::construct_fn(cx, id, arguments, safety, abi,
                                 return_ty, yield_ty, return_ty_span, body)
         } else {
-            build::construct_const(cx, body_id, return_ty_span)
+            // Get the revealed type of this const. This is *not* the adjusted
+            // type of its body, which may be a subtype of this type. For
+            // example:
+            //
+            // fn foo(_: &()) {}
+            // static X: fn(&'static ()) = foo;
+            //
+            // The adjusted type of the body of X is `for<'a> fn(&'a ())` which
+            // is not the same as the type of X. We need the type of the return
+            // place to be the type of the constant because NLL typeck will
+            // equate them.
+
+            let return_ty = cx.tables().node_type(id);
+
+            build::construct_const(cx, body_id, return_ty, return_ty_span)
         };
 
         // Convert the Mir to global types.
@@ -375,7 +389,8 @@ struct Builder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     var_indices: HirIdMap<LocalsForNode>,
     local_decls: IndexVec<Local, LocalDecl<'tcx>>,
     canonical_user_type_annotations: ty::CanonicalUserTypeAnnotations<'tcx>,
-    upvar_decls: Vec<UpvarDecl>,
+    __upvar_debuginfo_codegen_only_do_not_use: Vec<UpvarDebuginfo>,
+    upvar_mutbls: Vec<Mutability>,
     unit_temp: Option<Place<'tcx>>,
 
     /// Cached block with the `RESUME` terminator; this is created
@@ -625,11 +640,12 @@ fn construct_fn<'a, 'gcx, 'tcx, A>(hir: Cx<'a, 'gcx, 'tcx>,
     let fn_def_id = tcx_hir.local_def_id_from_hir_id(fn_id);
 
     // Gather the upvars of a closure, if any.
+    let mut upvar_mutbls = vec![];
     // In analyze_closure() in upvar.rs we gathered a list of upvars used by a
     // closure and we stored in a map called upvar_list in TypeckTables indexed
     // with the closure's DefId. Here, we run through that vec of UpvarIds for
     // the given closure and use the necessary information to create UpvarDecl.
-    let upvar_decls: Vec<_> = hir_tables
+    let upvar_debuginfo: Vec<_> = hir_tables
         .upvar_list
         .get(&fn_def_id)
         .into_iter()
@@ -642,27 +658,27 @@ fn construct_fn<'a, 'gcx, 'tcx, A>(hir: Cx<'a, 'gcx, 'tcx>,
                 ty::UpvarCapture::ByValue => false,
                 ty::UpvarCapture::ByRef(..) => true,
             };
-            let mut decl = UpvarDecl {
+            let mut debuginfo = UpvarDebuginfo {
                 debug_name: keywords::Invalid.name(),
-                var_hir_id: ClearCrossCrate::Set(var_hir_id),
                 by_ref,
-                mutability: Mutability::Not,
             };
+            let mut mutability = Mutability::Not;
             if let Some(Node::Binding(pat)) = tcx_hir.find(var_node_id) {
                 if let hir::PatKind::Binding(_, _, ident, _) = pat.node {
-                    decl.debug_name = ident.name;
+                    debuginfo.debug_name = ident.name;
                     if let Some(&bm) = hir.tables.pat_binding_modes().get(pat.hir_id) {
                         if bm == ty::BindByValue(hir::MutMutable) {
-                            decl.mutability = Mutability::Mut;
+                            mutability = Mutability::Mut;
                         } else {
-                            decl.mutability = Mutability::Not;
+                            mutability = Mutability::Not;
                         }
                     } else {
                         tcx.sess.delay_span_bug(pat.span, "missing binding mode");
                     }
                 }
             }
-            decl
+            upvar_mutbls.push(mutability);
+            debuginfo
         })
         .collect();
 
@@ -672,7 +688,8 @@ fn construct_fn<'a, 'gcx, 'tcx, A>(hir: Cx<'a, 'gcx, 'tcx>,
         safety,
         return_ty,
         return_ty_span,
-        upvar_decls);
+        upvar_debuginfo,
+        upvar_mutbls);
 
     let call_site_scope = region::Scope {
         id: body.value.hir_id.local_id,
@@ -727,16 +744,25 @@ fn construct_fn<'a, 'gcx, 'tcx, A>(hir: Cx<'a, 'gcx, 'tcx>,
 fn construct_const<'a, 'gcx, 'tcx>(
     hir: Cx<'a, 'gcx, 'tcx>,
     body_id: hir::BodyId,
-    ty_span: Span,
+    const_ty: Ty<'tcx>,
+    const_ty_span: Span,
 ) -> Mir<'tcx> {
     let tcx = hir.tcx();
-    let ast_expr = &tcx.hir().body(body_id).value;
-    let ty = hir.tables().expr_ty_adjusted(ast_expr);
     let owner_id = tcx.hir().body_owner(body_id);
     let span = tcx.hir().span(owner_id);
-    let mut builder = Builder::new(hir, span, 0, Safety::Safe, ty, ty_span,vec![]);
+    let mut builder = Builder::new(
+        hir,
+        span,
+        0,
+        Safety::Safe,
+        const_ty,
+        const_ty_span,
+        vec![],
+        vec![],
+    );
 
     let mut block = START_BLOCK;
+    let ast_expr = &tcx.hir().body(body_id).value;
     let expr = builder.hir.mirror(ast_expr);
     unpack!(block = builder.into_expr(&Place::RETURN_PLACE, block, expr));
 
@@ -762,7 +788,7 @@ fn construct_error<'a, 'gcx, 'tcx>(hir: Cx<'a, 'gcx, 'tcx>,
     let owner_id = hir.tcx().hir().body_owner(body_id);
     let span = hir.tcx().hir().span(owner_id);
     let ty = hir.tcx().types.err;
-    let mut builder = Builder::new(hir, span, 0, Safety::Safe, ty, span, vec![]);
+    let mut builder = Builder::new(hir, span, 0, Safety::Safe, ty, span, vec![], vec![]);
     let source_info = builder.source_info(span);
     builder.cfg.terminate(START_BLOCK, source_info, TerminatorKind::Unreachable);
     builder.finish(None)
@@ -775,7 +801,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
            safety: Safety,
            return_ty: Ty<'tcx>,
            return_span: Span,
-           upvar_decls: Vec<UpvarDecl>)
+           __upvar_debuginfo_codegen_only_do_not_use: Vec<UpvarDebuginfo>,
+           upvar_mutbls: Vec<Mutability>)
            -> Builder<'a, 'gcx, 'tcx> {
         let lint_level = LintLevel::Explicit(hir.root_lint_level);
         let mut builder = Builder {
@@ -797,7 +824,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 1,
             ),
             canonical_user_type_annotations: IndexVec::new(),
-            upvar_decls,
+            __upvar_debuginfo_codegen_only_do_not_use,
+            upvar_mutbls,
             var_indices: Default::default(),
             unit_temp: None,
             cached_resume_block: None,
@@ -832,7 +860,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             self.local_decls,
             self.canonical_user_type_annotations,
             self.arg_count,
-            self.upvar_decls,
+            self.__upvar_debuginfo_codegen_only_do_not_use,
             self.fn_span,
             self.hir.control_flow_destroyed(),
         )

@@ -19,7 +19,7 @@ use log::info;
 use std::fmt;
 use std::mem;
 #[cfg(target_arch = "x86_64")]
-use rustc_data_structures::static_assert;
+use rustc_data_structures::static_assert_size;
 use rustc_data_structures::sync::Lrc;
 
 #[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Hash, Debug, Copy)]
@@ -61,6 +61,7 @@ impl DelimToken {
 
 #[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Hash, Debug, Copy)]
 pub enum Lit {
+    Bool(ast::Name), // AST only, must never appear in a `Token`
     Byte(ast::Name),
     Char(ast::Name),
     Err(ast::Name),
@@ -72,9 +73,13 @@ pub enum Lit {
     ByteStrRaw(ast::Name, u16), /* raw byte str delimited by n hash symbols */
 }
 
+#[cfg(target_arch = "x86_64")]
+static_assert_size!(Lit, 8);
+
 impl Lit {
     crate fn literal_name(&self) -> &'static str {
         match *self {
+            Bool(_) => panic!("literal token contains `Lit::Bool`"),
             Byte(_) => "byte literal",
             Char(_) => "char literal",
             Err(_) => "invalid literal",
@@ -82,6 +87,13 @@ impl Lit {
             Float(_) => "float literal",
             Str_(_) | StrRaw(..) => "string literal",
             ByteStr(_) | ByteStrRaw(..) => "byte string literal"
+        }
+    }
+
+    crate fn may_have_suffix(&self) -> bool {
+        match *self {
+            Integer(..) | Float(..) => true,
+            _ => false,
         }
     }
 
@@ -99,6 +111,11 @@ pub(crate) fn ident_can_begin_expr(ident: ast::Ident, is_raw: bool) -> bool {
     ident_token.is_path_segment_keyword() ||
     [
         keywords::Async.name(),
+
+        // FIXME: remove when `await!(..)` syntax is removed
+        // https://github.com/rust-lang/rust/issues/60610
+        keywords::Await.name(),
+
         keywords::Do.name(),
         keywords::Box.name(),
         keywords::Break.name(),
@@ -203,7 +220,7 @@ pub enum Token {
 
 // `Token` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_STATEMENT: mem::size_of::<Token>() == 16);
+static_assert_size!(Token, 16);
 
 impl Token {
     /// Recovers a `Token` from an `ast::Ident`. This creates a raw identifier if necessary.
@@ -580,14 +597,12 @@ pub enum Nonterminal {
     NtPath(ast::Path),
     NtVis(ast::Visibility),
     NtTT(TokenTree),
-    // These are not exposed to macros, but are used by quasiquote.
-    NtArm(ast::Arm),
-    NtImplItem(ast::ImplItem),
+    // Used only for passing items to proc macro attributes (they are not
+    // strictly necessary for that, `Annotatable` can be converted into
+    // tokens directly, but doing that naively regresses pretty-printing).
     NtTraitItem(ast::TraitItem),
+    NtImplItem(ast::ImplItem),
     NtForeignItem(ast::ForeignItem),
-    NtGenerics(ast::Generics),
-    NtWhereClause(ast::WhereClause),
-    NtArg(ast::Arg),
 }
 
 impl PartialEq for Nonterminal {
@@ -620,13 +635,9 @@ impl fmt::Debug for Nonterminal {
             NtMeta(..) => f.pad("NtMeta(..)"),
             NtPath(..) => f.pad("NtPath(..)"),
             NtTT(..) => f.pad("NtTT(..)"),
-            NtArm(..) => f.pad("NtArm(..)"),
             NtImplItem(..) => f.pad("NtImplItem(..)"),
             NtTraitItem(..) => f.pad("NtTraitItem(..)"),
             NtForeignItem(..) => f.pad("NtForeignItem(..)"),
-            NtGenerics(..) => f.pad("NtGenerics(..)"),
-            NtWhereClause(..) => f.pad("NtWhereClause(..)"),
-            NtArg(..) => f.pad("NtArg(..)"),
             NtVis(..) => f.pad("NtVis(..)"),
             NtLifetime(..) => f.pad("NtLifetime(..)"),
         }

@@ -2,6 +2,7 @@
 #![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![allow(clippy::blacklisted_name)]
 #![allow(clippy::explicit_iter_loop)]
+#![allow(clippy::redundant_closure)]
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::redundant_clone)]
 
@@ -44,6 +45,7 @@ mod generate_lockfile;
 mod git;
 mod init;
 mod install;
+mod install_upgrade;
 mod jobserver;
 mod list_targets;
 mod local_registry;
@@ -54,6 +56,7 @@ mod metabuild;
 mod metadata;
 mod net_config;
 mod new;
+mod offline;
 mod out_dir;
 mod overrides;
 mod package;
@@ -65,7 +68,9 @@ mod profile_config;
 mod profile_overrides;
 mod profile_targets;
 mod profiles;
+mod pub_priv;
 mod publish;
+mod publish_lockfile;
 mod read_manifest;
 mod registry;
 mod rename_deps;

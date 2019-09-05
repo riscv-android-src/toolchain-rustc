@@ -23,6 +23,7 @@ pub unsafe fn EVP_get_digestbynid(type_: c_int) -> *const EVP_MD {
 
 extern "C" {
     pub fn EVP_MD_size(md: *const EVP_MD) -> c_int;
+    pub fn EVP_MD_type(md: *const EVP_MD) -> c_int;
 
     #[cfg(any(ossl110, libressl273))]
     pub fn EVP_CIPHER_key_length(cipher: *const EVP_CIPHER) -> c_int;
@@ -166,6 +167,7 @@ extern "C" {
     pub fn EVP_des_ecb() -> *const EVP_CIPHER;
     pub fn EVP_des_ede3() -> *const EVP_CIPHER;
     pub fn EVP_des_ede3_cbc() -> *const EVP_CIPHER;
+    pub fn EVP_des_ede3_cfb64() -> *const EVP_CIPHER;
     pub fn EVP_des_cbc() -> *const EVP_CIPHER;
     pub fn EVP_rc4() -> *const EVP_CIPHER;
     pub fn EVP_bf_ecb() -> *const EVP_CIPHER;

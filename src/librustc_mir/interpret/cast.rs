@@ -1,6 +1,8 @@
 use rustc::ty::{self, Ty, TypeAndMut};
 use rustc::ty::layout::{self, TyLayout, Size};
+use rustc::ty::adjustment::{PointerCast};
 use syntax::ast::{FloatTy, IntTy, UintTy};
+use syntax::symbol::sym;
 
 use rustc_apfloat::ieee::{Single, Double};
 use rustc::mir::interpret::{
@@ -29,11 +31,11 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
     ) -> EvalResult<'tcx> {
         use rustc::mir::CastKind::*;
         match kind {
-            Unsize => {
+            Pointer(PointerCast::Unsize) => {
                 self.unsize_into(src, dest)?;
             }
 
-            Misc | MutToConstPointer => {
+            Misc | Pointer(PointerCast::MutToConstPointer) => {
                 let src = self.read_immediate(src)?;
 
                 if self.type_is_fat_ptr(src.layout.ty) {
@@ -53,14 +55,13 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
                 } else {
                     match src.layout.variants {
                         layout::Variants::Single { index } => {
-                            if let Some(def) = src.layout.ty.ty_adt_def() {
+                            if let Some(discr) =
+                                src.layout.ty.discriminant_for_variant(*self.tcx, index)
+                            {
                                 // Cast from a univariant enum
                                 assert!(src.layout.is_zst());
-                                let discr_val = def
-                                    .discriminant_for_variant(*self.tcx, index)
-                                    .val;
                                 return self.write_scalar(
-                                    Scalar::from_uint(discr_val, dest.layout.size),
+                                    Scalar::from_uint(discr.val, dest.layout.size),
                                     dest);
                             }
                         }
@@ -72,13 +73,12 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
                 }
             }
 
-            ReifyFnPointer => {
+            Pointer(PointerCast::ReifyFnPointer) => {
                 // The src operand does not matter, just its type
                 match src.layout.ty.sty {
                     ty::FnDef(def_id, substs) => {
-                        if self.tcx.has_attr(def_id, "rustc_args_required_const") {
-                            bug!("reifying a fn ptr that requires \
-                                    const arguments");
+                        if self.tcx.has_attr(def_id, sym::rustc_args_required_const) {
+                            bug!("reifying a fn ptr that requires const arguments");
                         }
                         let instance: EvalResult<'tcx, _> = ty::Instance::resolve(
                             *self.tcx,
@@ -93,7 +93,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
                 }
             }
 
-            UnsafeFnPointer => {
+            Pointer(PointerCast::UnsafeFnPointer) => {
                 let src = self.read_immediate(src)?;
                 match dest.layout.ty.sty {
                     ty::FnPtr(_) => {
@@ -104,7 +104,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
                 }
             }
 
-            ClosureFnPointer(_) => {
+            Pointer(PointerCast::ClosureFnPointer(_)) => {
                 // The src operand does not matter, just its type
                 match src.layout.ty.sty {
                     ty::Closure(def_id, substs) => {

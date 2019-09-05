@@ -20,206 +20,365 @@
 
 //! Scanners for fragments of CommonMark syntax
 
-use entities;
-use utils;
-use std::borrow::Cow;
-use std::borrow::Cow::{Borrowed, Owned};
 use std::char;
-use parse::Alignment;
+use std::convert::TryInto;
 
-pub use puncttable::{is_ascii_punctuation, is_punctuation};
+use crate::entities;
+use crate::parse::{Alignment, LinkType, HtmlScanGuard};
+use crate::strings::CowStr;
+pub use crate::puncttable::{is_ascii_punctuation, is_punctuation};
 
-// sorted for binary_search
-const HTML_TAGS: [&'static str; 50] = ["article", "aside", "blockquote",
-    "body", "button", "canvas", "caption", "col", "colgroup", "dd", "div",
-    "dl", "dt", "embed", "fieldset", "figcaption", "figure", "footer", "form",
-    "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "hr", "iframe",
-    "li", "map", "object", "ol", "output", "p", "pre", "progress", "script",
-    "section", "style", "table", "tbody", "td", "textarea", "tfoot", "th",
-    "thead", "tr", "ul", "video"];
+use memchr::memchr;
 
-const URI_SCHEMES: [&'static str; 164] = ["aaa", "aaas", "about", "acap",
-    "adiumxtra", "afp", "afs", "aim", "apt", "attachment", "aw", "beshare",
-    "bitcoin", "bolo", "callto", "cap", "chrome", "chrome-extension", "cid",
-    "coap", "com-eventbrite-attendee", "content", "crid", "cvs", "data", "dav",
-    "dict", "dlna-playcontainer", "dlna-playsingle", "dns", "doi", "dtn",
-    "dvb", "ed2k", "facetime", "feed", "file", "finger", "fish", "ftp", "geo",
-    "gg", "git", "gizmoproject", "go", "gopher", "gtalk", "h323", "hcp",
-    "http", "https", "iax", "icap", "icon", "im", "imap", "info", "ipn", "ipp",
-    "irc", "irc6", "ircs", "iris", "iris.beep", "iris.lwz", "iris.xpc",
-    "iris.xpcs", "itms", "jar", "javascript", "jms", "keyparc", "lastfm",
-    "ldap", "ldaps", "magnet", "mailto", "maps", "market", "message", "mid",
-    "mms", "ms-help", "msnim", "msrp", "msrps", "mtqp", "mumble", "mupdate",
-    "mvn", "news", "nfs", "ni", "nih", "nntp", "notes", "oid",
-    "opaquelocktoken", "palm", "paparazzi", "platform", "pop", "pres", "proxy",
-    "psyc", "query", "res", "resource", "rmi", "rsync", "rtmp", "rtsp",
-    "secondlife", "service", "session", "sftp", "sgn", "shttp", "sieve", "sip",
-    "sips", "skype", "smb", "sms", "snmp", "soap.beep", "soap.beeps", "soldat",
-    "spotify", "ssh", "steam", "svn", "tag", "teamspeak", "tel", "telnet",
-    "tftp", "things", "thismessage", "tip", "tn3270", "tv", "udp", "unreal",
-    "urn", "ut2004", "vemmi", "ventrilo", "view-source", "webcal", "ws", "wss",
-    "wtai", "wyciwyg", "xcon", "xcon-userid", "xfire", "xmlrpc.beep",
-    "xmlrpc.beeps", "xmpp", "xri", "ymsgr", "z39.50r", "z39.50s"];
+// Allowing arbitrary depth nested parentheses inside link destinations
+// can create denial of service vulnerabilities if we're not careful.
+// The simplest countermeasure is to limit their depth, which is
+// explicitly allowed by the spec as long as the limit is at least 3:
+// https://spec.commonmark.org/0.29/#link-destination
+const LINK_MAX_NESTED_PARENS: usize = 5;
 
-pub fn is_ascii_whitespace(c: u8) -> bool {
+// sorted for binary search
+const HTML_TAGS: [&str; 62] = ["address", "article", "aside", "base",
+    "basefont", "blockquote", "body", "caption", "center", "col", "colgroup",
+    "dd", "details", "dialog", "dir", "div", "dl", "dt", "fieldset",
+    "figcaption", "figure", "footer", "form", "frame", "frameset", "h1",
+    "h2", "h3", "h4", "h5", "h6", "head", "header", "hr", "html", "iframe",
+    "legend", "li", "link", "main", "menu", "menuitem", "nav", "noframes",
+    "ol", "optgroup", "option", "p", "param", "section", "source", "summary",
+    "table", "tbody", "td", "tfoot", "th", "thead", "title", "tr", "track",
+    "ul"];
+
+/// Analysis of the beginning of a line, including indentation and container
+/// markers.
+#[derive(Clone)]
+pub struct LineStart<'a> {
+    bytes: &'a [u8],
+    tab_start: usize,
+    ix: usize,
+    spaces_remaining: usize,
+    // no thematic breaks can occur before this offset.
+    // this prevents scanning over and over up to a certain point
+    min_hrule_offset: usize,
+}
+
+impl<'a> LineStart<'a> {
+    pub(crate) fn new(bytes: &[u8]) -> LineStart {
+        LineStart {
+            bytes,
+            tab_start: 0,
+            ix: 0,
+            spaces_remaining: 0,
+            min_hrule_offset: 0,
+        }
+    }
+
+    /// Try to scan a number of spaces.
+    ///
+    /// Returns true if all spaces were consumed.
+    ///
+    /// Note: consumes some spaces even if not successful.
+    pub(crate) fn scan_space(&mut self, n_space: usize) -> bool {
+        self.scan_space_inner(n_space) == 0
+    }
+
+    /// Scan a number of spaces up to a maximum.
+    ///
+    /// Returns number of spaces scanned.
+    pub(crate) fn scan_space_upto(&mut self, n_space: usize) -> usize {
+        n_space - self.scan_space_inner(n_space)
+    }
+
+    /// Returns unused remainder of spaces.
+    fn scan_space_inner(&mut self, mut n_space: usize) -> usize {
+        let n_from_remaining = self.spaces_remaining.min(n_space);
+        self.spaces_remaining -= n_from_remaining;
+        n_space -= n_from_remaining;
+        while n_space > 0 && self.ix < self.bytes.len() {
+            match self.bytes[self.ix] {
+                b' ' => {
+                    self.ix += 1;
+                    n_space -= 1;
+                }
+                b'\t' => {
+                    let spaces = 4 - (self.ix - self.tab_start) % 4;
+                    self.ix += 1;
+                    self.tab_start = self.ix;
+                    let n = spaces.min(n_space);
+                    n_space -= n;
+                    self.spaces_remaining = spaces - n;
+                }
+                _ => break,
+            }
+        }
+        n_space
+    }
+
+    /// Scan all available ASCII whitespace (not including eol).
+    pub(crate) fn scan_all_space(&mut self) {
+        self.spaces_remaining = 0;
+        self.ix += self.bytes[self.ix..]
+            .iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count();
+    }
+
+    /// Determine whether we're at end of line (includes end of file).
+    pub(crate) fn is_at_eol(&self) -> bool {
+        if self.ix >= self.bytes.len() {
+            return true;
+        }
+        let c = self.bytes[self.ix];
+        c == b'\r' || c == b'\n'
+    }
+
+    fn scan_ch(&mut self, c: u8) -> bool {
+        if self.ix < self.bytes.len() && self.bytes[self.ix] == c {
+            self.ix += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn scan_blockquote_marker(&mut self) -> bool {
+        let save = self.clone();
+        let _ = self.scan_space(3);
+        if self.scan_ch(b'>') {
+            let _ = self.scan_space(1);
+            true
+        } else {
+            *self = save;
+            false
+        }
+    }
+
+    /// Scan a list marker.
+    ///
+    /// Return value is the character, the start index, and the indent in spaces.
+    /// For ordered list markers, the character will be one of b'.' or b')'. For
+    /// bullet list markers, it will be one of b'-', b'+', or b'*'.
+    pub(crate) fn scan_list_marker(&mut self) -> Option<(u8, usize, usize)> {
+        let save = self.clone();
+        let indent = self.scan_space_upto(3);
+        if self.ix < self.bytes.len() {
+            let c = self.bytes[self.ix];
+            if c == b'-' || c == b'+' || c == b'*' {
+                if self.ix >= self.min_hrule_offset {
+                    // there could be an hrule here
+                    if let Err(min_offset) = scan_hrule(&self.bytes[self.ix..]) {
+                        self.min_hrule_offset = min_offset;
+                    } else {
+                        *self = save;
+                        return None;
+                    }
+                }
+                self.ix += 1;
+                if self.scan_space(1) || self.is_at_eol() {
+                    return self.finish_list_marker(c, 0, indent + 2);
+                }
+            } else if c >= b'0' && c <= b'9' {
+                let start_ix = self.ix;
+                let mut ix = self.ix + 1;
+                let mut val = u64::from(c - b'0');
+                while ix < self.bytes.len() && ix - start_ix < 10 {
+                    let c = self.bytes[ix];
+                    ix += 1;
+                    if c >= b'0' && c <= b'9' {
+                        val = val * 10 + u64::from(c - b'0');
+                    } else if c == b')' || c == b'.' {
+                        self.ix = ix;
+                        let val_usize = val as usize;
+                        // This will cause some failures on 32 bit arch.
+                        // TODO (breaking API change): should be u64, not usize.
+                        if val_usize as u64 != val { return None; }                        
+                        if self.scan_space(1) || self.is_at_eol() {
+                            return self.finish_list_marker(c, val_usize, indent + self.ix - start_ix);
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+        *self = save;
+        None
+    }
+
+    fn finish_list_marker(&mut self, c: u8, start: usize, mut indent: usize)
+        -> Option<(u8, usize, usize)>
+    {
+        let save = self.clone();
+
+        // skip the rest of the line if it's blank
+        if scan_blank_line(&self.bytes[self.ix..]).is_some() {
+            return Some((c, start, indent));
+        }
+
+        let post_indent = self.scan_space_upto(4);
+        if post_indent < 4 {
+            indent += post_indent;
+        } else {
+            *self = save;
+        }
+        Some((c, start, indent))
+    }
+
+    /// Returns Some(is_checked) when a task list marker was found. Resets itself
+    /// to original state otherwise.
+    pub(crate) fn scan_task_list_marker(&mut self) -> Option<bool> {
+        let save = self.clone();
+        self.scan_space_upto(3);
+
+        if !self.scan_ch(b'[') {
+            *self = save;
+            return None;
+        }
+        let is_checked = match self.bytes.get(self.ix) {
+            Some(&c) if is_ascii_whitespace_no_nl(c) => {
+                self.ix += 1;
+                false
+            }
+            Some(b'x') | Some(b'X') => {
+                self.ix += 1;
+                true
+            }
+            _ => {
+                *self = save;
+                return None;
+            }
+        };
+        if !self.scan_ch(b']') {
+            *self = save;
+            return None;
+        }
+        if !self.bytes.get(self.ix).map(|&b| is_ascii_whitespace_no_nl(b)).unwrap_or(false) {
+            *self = save;
+            return None;
+        }
+        Some(is_checked)
+    }
+
+    pub(crate) fn bytes_scanned(&self) -> usize {
+        self.ix
+    }
+
+    pub(crate) fn remaining_space(&self) -> usize {
+        self.spaces_remaining
+    }
+}
+
+pub(crate) fn is_ascii_whitespace(c: u8) -> bool {
     (c >= 0x09 && c <= 0x0d) || c == b' '
 }
 
-pub fn is_ascii_whitespace_no_nl(c: u8) -> bool {
+pub(crate) fn is_ascii_whitespace_no_nl(c: u8) -> bool {
     c == b'\t' || c == 0x0b || c == 0x0c || c == b' '
 }
 
-pub fn is_ascii_alpha(c: u8) -> bool {
+fn is_ascii_alpha(c: u8) -> bool {
     match c {
         b'a' ... b'z' | b'A' ... b'Z' => true,
         _ => false
     }
 }
 
-pub fn is_ascii_upper(c: u8) -> bool {
-    match c {
-        b'A' ... b'Z' => true,
-        _ => false
-    }
-}
-
-pub fn is_ascii_alphanumeric(c: u8) -> bool {
+fn is_ascii_alphanumeric(c: u8) -> bool {
     match c {
         b'0' ... b'9' | b'a' ... b'z' | b'A' ... b'Z' => true,
         _ => false
     }
 }
 
-fn is_hexdigit(c: u8) -> bool {
-    match c {
-        b'0' ... b'9' | b'a' ... b'f' | b'A' ... b'F' => true,
-        _ => false
-    }
+fn is_ascii_letterdigitdash(c: u8) -> bool {
+    c == b'-' || is_ascii_alphanumeric(c)
 }
 
 fn is_digit(c: u8) -> bool {
     b'0' <= c && c <= b'9'
 }
 
-// scan a single character
-pub fn scan_ch(data: &str, c: u8) -> usize {
-    if !data.is_empty() && data.as_bytes()[0] == c { 1 } else { 0 }
-}
-
-pub fn scan_while<F>(data: &str, f: F) -> usize
-        where F: Fn(u8) -> bool {
-    match data.as_bytes().iter().position(|&c| !f(c)) {
-        Some(i) => i,
-        None => data.len()
+fn is_valid_unquoted_attr_value_char(c: u8) -> bool {
+    match c {
+        b'\'' | b'"' | b' ' | b'=' | b'>' | b'<' | b'`' | b'\n' | b'\r' => false,
+        _ => true
     }
 }
 
-pub fn scan_ch_repeat(data: &str, c: u8) -> usize {
+// scan a single character
+pub(crate) fn scan_ch(data: &[u8], c: u8) -> usize {
+    if !data.is_empty() && data[0] == c { 1 } else { 0 }
+}
+
+pub(crate) fn scan_while<F>(data: &[u8], mut f: F) -> usize
+        where F: FnMut(u8) -> bool {
+    data.iter().take_while(|&&c| f(c)).count()
+}
+
+pub(crate) fn scan_rev_while<F>(data: &[u8], mut f: F) -> usize
+        where F: FnMut(u8) -> bool {
+    data.iter().rev().take_while(|&&c| f(c)).count()
+}
+
+pub(crate) fn scan_ch_repeat(data: &[u8], c: u8) -> usize {
     scan_while(data, |x| x == c)
 }
 
-// TODO: maybe should scan unicode whitespace too
-pub fn scan_whitespace_no_nl(data: &str) -> usize {
+// Note: this scans ASCII whitespace only, for Unicode whitespace use
+// a different function.
+pub(crate) fn scan_whitespace_no_nl(data: &[u8]) -> usize {
     scan_while(data, is_ascii_whitespace_no_nl)
 }
 
-// Maybe returning Option<usize> would be more Rustic?
-pub fn scan_eol(s: &str) -> (usize, bool) {
-    if s.is_empty() { return (0, true); }
-    match s.as_bytes()[0] {
-        b'\n' => (1, true),
-        b'\r' => (if s[1..].starts_with('\n') { 2 } else { 1 }, true),
-        _ => (0, false)
+fn scan_attr_value_chars(data: &[u8]) -> usize {
+    scan_while(data, is_valid_unquoted_attr_value_char)
+}
+
+pub(crate) fn scan_eol(bytes: &[u8]) -> Option<usize> {
+    if bytes.is_empty() { return Some(0); }
+    match bytes[0] {
+        b'\n' => Some(1),
+        b'\r' => Some(if bytes.get(1) == Some(&b'\n') { 2 } else { 1 }),
+        _ => None
     }
 }
 
-// unusual among "scan" functions in that it scans from the _back_ of the string
-// TODO: should also scan unicode whitespace?
-pub fn scan_trailing_whitespace(data: &str) -> usize {
-    match data.as_bytes().iter().rev().position(|&c| !is_ascii_whitespace_no_nl(c)) {
-        Some(i) => i,
-        None => data.len()
-    }
+pub(crate) fn scan_blank_line(bytes: &[u8]) -> Option<usize> {
+    let i = scan_whitespace_no_nl(bytes);
+    scan_eol(&bytes[i..]).map(|n| i + n)
 }
 
-fn scan_codepoint(data: &str) -> Option<char> {
-    data.chars().next()
+pub(crate) fn scan_nextline(bytes: &[u8]) -> usize {
+    memchr(b'\n', bytes).map_or(bytes.len(), |x| x + 1)
 }
 
-// get last codepoint in string
-fn scan_trailing_codepoint(data: &str) -> Option<char> {
-    // would just data.chars.next_back() be better?
-    let size = data.len();
-    if size == 0 {
-        None
-    } else {
-        let c = data.as_bytes()[size - 1];
-        if c < 0x80 {
-            Some(c as char)
-        } else {
-            let mut i = size - 2;
-            while (data.as_bytes()[i] & 0xc0) == 0x80 {
-                i -= 1;
-            }
-            data[i..].chars().next()
-        }
-    }
-}
-
-// Maybe Option, size of 0 makes sense at EOF
-pub fn scan_blank_line(text: &str) -> usize {
-    let i = scan_whitespace_no_nl(text);
-    if let (n, true) = scan_eol(&text[i..]) {
-        i + n
-    } else {
-        0
-    }
-}
-
-pub fn scan_nextline(s: &str) -> usize {
-    match s.as_bytes().iter().position(|&c| c == b'\n') {
-        Some(x) => x + 1,
-        None => s.len()
-    }
-}
-
-pub fn count_tab(bytes: &[u8]) -> usize {
-    let mut count = 0;
-    for &c in bytes.iter().rev() {
-        match c {
-            b'\t' | b'\n' => break,
-            x if (x & 0xc0) != 0x80 => count += 1,
-            _ => ()
-        }
-    }
-    4 - count % 4
-}
-
-// takes a loc because tabs might require left context
-// return: number of bytes, number of spaces
-pub fn scan_leading_space(text: &str, loc: usize) -> (usize, usize) {
-    let bytes = text.as_bytes();
+// return: end byte for closing code fence, or None
+// if the line is not a closing code fence
+pub(crate) fn scan_closing_code_fence(bytes: &[u8], fence_char: u8, n_fence_char: usize) -> Option<usize> {
+    if bytes.is_empty() { return Some(0); }
     let mut i = 0;
-    let mut spaces = 0;
-    for &c in &bytes[loc..] {
-        match c {
-            b' ' => spaces += 1,
-            b'\t' => spaces += count_tab(&bytes[.. loc + i]),
-            _ => break
-        }
-        i += 1
-    }
-    (i, spaces)
+    let num_fence_chars_found = scan_ch_repeat(&bytes[i..], fence_char);
+    if num_fence_chars_found < n_fence_char { return None; }
+    i += num_fence_chars_found;
+    let num_trailing_spaces = scan_ch_repeat(&bytes[i..], b' ');
+    i += num_trailing_spaces;
+    scan_eol(&bytes[i..]).map(|_| i)
 }
 
 // returned pair is (number of bytes, number of spaces)
-pub fn calc_indent(text: &str, max: usize) -> (usize, usize) {
-    let bytes = text.as_bytes();
-    let mut i = 0;
+fn calc_indent(text: &[u8], max: usize) -> (usize, usize) {
     let mut spaces = 0;
-    while i < text.len() && spaces < max {
-        match bytes[i] {
-            b' ' => spaces += 1,
+    let mut offset = 0;
+
+    for (i, &b) in text.iter().enumerate() {
+        match b {
+            b' ' => {
+                spaces += 1;
+                if spaces == max {
+                    break;
+                }
+            }
             b'\t' => {
                 let new_spaces = spaces + 4 - (spaces & 3);
                 if new_spaces > max {
@@ -227,73 +386,72 @@ pub fn calc_indent(text: &str, max: usize) -> (usize, usize) {
                 }
                 spaces = new_spaces;
             },
-            _ => break
+            _ => break,
         }
-        i += 1;
+        offset = i;
     }
-    (i, spaces)
+
+    (offset, spaces)
 }
 
-// return size of line containing hrule, including trailing newline, or 0
-pub fn scan_hrule(data: &str) -> usize {
-    let bytes = data.as_bytes();
-    let size = data.len();
-    let mut i = 0;
-    if i + 2 >= size { return 0; }
-    let c = bytes[i];
-    if !(c == b'*' || c == b'-' || c == b'_') { return 0; }
+/// Scan hrule opening sequence.
+///
+/// Returns Ok(x) when it finds an hrule, where x is the 
+/// size of line containing the hrule, including the trailing newline.
+/// 
+/// Returns Err(x) when it does not find an hrule and x is
+/// the offset in data before no hrule can appear.
+pub(crate) fn scan_hrule(bytes: &[u8]) -> Result<usize, usize> {
+    if bytes.len() < 3 { return Err(0); }
+    let c = bytes[0];
+    if !(c == b'*' || c == b'-' || c == b'_') { return Err(0); }
     let mut n = 0;
-    while i < size {
+    let mut i = 0;
+
+    while i < bytes.len() {
         match bytes[i] {
             b'\n' | b'\r' => {
-                i += scan_eol(&data[i..]).0;
+                i += scan_eol(&bytes[i..]).unwrap_or(0);
                 break;
             }
-            c2 if c2 == c => n += 1,
-            b' '|b'\t' => (),
-            _ => return 0
+            c2 if c2 == c => {
+                n += 1;
+            }
+            b' ' | b'\t' => (),
+            _ => return Err(i)
         }
         i += 1;
     }
-    if n >= 3 { i } else { 0 }
+    if n >= 3 { Ok(i) } else { Err(i) }
 }
 
-// returns number of bytes in prefix and level
-pub fn scan_atx_header(data: &str) -> (usize, i32) {
-    let size = data.len();
+/// Scan an ATX heading opening sequence.
+///
+/// Returns number of bytes in prefix and level.
+pub(crate) fn scan_atx_heading(data: &[u8]) -> Option<(usize, i32)> {
     let level = scan_ch_repeat(data, b'#');
-    let i = level;
-    if level >= 1 && level <= 6 {
-        if i < size {
-            match data.as_bytes()[i] {
-                b' ' | b'\t' ... b'\r' => (),
-                _ => return (0, 0)
-            }
-        }
-        (i, level as i32)
+    if level >= 1 && level <= 6 && data.get(level).cloned().map_or(true, is_ascii_whitespace) {
+        Some((level, level as i32))
     } else {
-        (0, 0)
+        None
     }
 }
 
-// returns number of bytes in line (including trailing newline) and level
-pub fn scan_setext_header(data: &str) -> (usize, i32) {
-    let size = data.len();
-    let mut i = 0;
-    if i == size { return (0, 0); }
-    let c = data.as_bytes()[i];
-    if !(c == b'-' || c == b'=') { return (0, 0); }
-    i += 1 + scan_ch_repeat(&data[i + 1 ..], c);
-    let n = scan_blank_line(&data[i..]);
-    if n == 0 { return (0, 0); }
-    i += n;
+/// Scan a setext heading underline.
+///
+/// Returns number of bytes in line (including trailing newline) and level.
+pub(crate) fn scan_setext_heading(data: &[u8]) -> Option<(usize, i32)> {
+    let c = *data.get(0)?;
+    if !(c == b'-' || c == b'=') { return None; }
+    let mut i = 1 + scan_ch_repeat(&data[1..], c);
+    i += scan_blank_line(&data[i..])?;
     let level = if c == b'=' { 1 } else { 2 };
-    (i, level)
+    Some((i, level))
 }
 
 // returns number of bytes in line (including trailing
 // newline) and column alignments
-pub fn scan_table_head(data: &str) -> (usize, Vec<Alignment>) {
+pub(crate) fn scan_table_head(data: &[u8]) -> (usize, Vec<Alignment>) {
     let (mut i, spaces) = calc_indent(data, 4);
     if spaces > 3 || i == data.len() {
         return (0, vec![]);
@@ -301,13 +459,12 @@ pub fn scan_table_head(data: &str) -> (usize, Vec<Alignment>) {
     let mut cols = vec![];
     let mut active_col = Alignment::None;
     let mut start_col = true;
-    if data.as_bytes()[i] == b'|' {
+    if data[i] == b'|' {
         i += 1;
     }
-    for c in data.as_bytes()[i..].iter() {
-        let eol = scan_eol(&data[i..]);
-        if eol.1 {
-            i += eol.0;
+    for c in &data[i..] {
+        if let Some(n) = scan_eol(&data[i..]) {
+            i += n;
             break;
         }
         match *c {
@@ -343,352 +500,759 @@ pub fn scan_table_head(data: &str) -> (usize, Vec<Alignment>) {
         cols.push(active_col);
     }
 
-    if cols.len() < 2 {
-        (0, vec![])
-    } else {
-        (i, cols)
-    }
+    (i, cols)
 }
 
-// returns: number of bytes scanned, char
-pub fn scan_code_fence(data: &str) -> (usize, u8) {
-    if data.is_empty() {
-        return (0, 0);
-    }
-    let c = data.as_bytes()[0];
-    if !(c == b'`' || c == b'~') { return (0, 0); }
-    let i = 1 + scan_ch_repeat(&data[1 ..], c);
+/// Scan code fence.
+///
+/// Returns number of bytes scanned and the char that is repeated to make the code fence.
+pub(crate) fn scan_code_fence(data: &[u8]) -> Option<(usize, u8)> {
+    let c = *data.get(0)?;
+    if !(c == b'`' || c == b'~') { return None; }
+    let i = 1 + scan_ch_repeat(&data[1..], c);
     if i >= 3 {
         if c == b'`' {
-            let next_line = i + scan_nextline(&data[i..]);
-            if data[i..next_line].find('`').is_some() {
-                return (0, 0);
+            let suffix = &data[i..];
+            let next_line = i + scan_nextline(suffix);
+            // FIXME: make sure this is correct
+            if suffix[..(next_line - i)].iter().any(|&b| b == b'`') {
+                return None;
             }
         }
-        return (i, c);
-    }
-    (0, 0)
-}
-
-pub fn scan_backticks(data: &str) -> usize {
-    scan_ch_repeat(data, b'`')
-}
-
-pub fn scan_blockquote_start(data: &str) -> usize {
-    if data.starts_with('>') {
-        let n = 1;
-        n + scan_ch(&data[n..], b' ')
+        Some((i, c))
     } else {
-        0
+        None
     }
 }
 
-// return number of bytes scanned, delimeter, start index, and indent
-pub fn scan_listitem(data: &str) -> (usize, u8, usize, usize) {
-    if data.is_empty() { return (0, 0, 0, 0); }
-    let mut c = data.as_bytes()[0];
-    let mut start = 0;
-    let w = match c {
-        b'-' | b'+' | b'*' => 1,
-        b'0' ... b'9' => {
-            let mut i = 1;
-            i += scan_while(&data[i..], is_digit);
-            if i >= data.len() { return (0, 0, 0, 0); }
-            start = match data[..i].parse() {
-                Ok(start) => start,
-                Err(_) => return (0, 0, 0, 0),
-            };
-            c = data.as_bytes()[i];
-            if !(c == b'.' || c == b')') { return (0, 0, 0, 0); }
-            i + 1
+pub(crate) fn scan_blockquote_start(data: &[u8]) -> Option<usize> {
+    if data.starts_with(b"> ") {
+        Some(2)
+    } else {
+        None
+    }
+}
+
+/// This already assumes the list item has been scanned.
+pub(crate) fn scan_empty_list(data: &[u8]) -> bool {
+    let mut ix = 0;
+    for _ in 0..2 {
+        if let Some(bytes) = scan_blank_line(&data[ix..]) {
+            ix += bytes;
+        } else {
+            return false;
         }
-        _ => { return (0, 0, 0, 0); }
+    }
+    true
+}
+
+// return number of bytes scanned, delimiter, start index, and indent
+pub(crate) fn scan_listitem(bytes: &[u8]) -> Option<(usize, u8, usize, usize)> {
+    let mut c = *bytes.get(0)?;
+    let (w, start) = match c {
+        b'-' | b'+' | b'*' => (1, 0),
+        b'0' ... b'9' => {
+            let (length, start) = parse_decimal(bytes);
+            c = *bytes.get(length)?;
+            if !(c == b'.' || c == b')') { return None; }
+            (length + 1, start)
+        }
+        _ => { return None; }
     };
     // TODO: replace calc_indent with scan_leading_whitespace, for tab correctness
-    let (mut postn, mut postindent) = calc_indent(&data[w.. ], 5);
+    let (mut postn, mut postindent) = calc_indent(&bytes[w.. ], 5);
     if postindent == 0 {
-        if !scan_eol(&data[w..]).1 { return (0, 0, 0, 0); }
+        if scan_eol(&bytes[w..]).is_none() {
+            return None;
+        }
         postindent += 1;
     } else if postindent > 4 {
         postn = 1;
         postindent = 1;
     }
-    (w + postn, c, start, w + postindent)
+    if scan_blank_line(&bytes[w..]).is_some() {
+        postn = 0;
+        postindent = 1;
+    }
+    Some((w + postn, c, start, w + postindent))
 }
 
-// return whether delimeter run can open or close
-pub fn compute_open_close(data: &str, loc: usize, c: u8) -> (usize, bool, bool) {
-    // TODO: handle Unicode, not just ASCII
-    let size = data.len();
-    let mut end = loc + 1;
-    while end < size && data.as_bytes()[end] == c {
-        end += 1;
+// returns (number of bytes, parsed decimal)
+fn parse_decimal(bytes: &[u8]) -> (usize, usize) {
+    match bytes.iter()
+        .take_while(|&&b| is_digit(b))
+        .try_fold((0, 0usize), |(count, acc), c| {
+            match acc.checked_mul(10) {
+                Some(ten_acc) => Ok((count + 1, ten_acc + usize::from(c - b'0'))),
+                // stop early on overflow
+                None => Err((count, acc)),
+            }
+        })
+    {
+       Ok(p) | Err(p) => p,
     }
-    let mut beg = loc;
-    while beg > 0 && data.as_bytes()[beg - 1] == c {
-        beg -= 1;
-    }
-    let (white_before, punc_before) = match scan_trailing_codepoint(&data[..beg]) {
-        None => (true, false),
-        Some(c) => (c.is_whitespace(), is_punctuation(c))
-    };
-    let (white_after, punc_after) = match scan_codepoint(&data[end..]) {
-        None => (true, false),
-        Some(c) => (c.is_whitespace(), is_punctuation(c))
-    };
-    let left_flanking = !white_after && (!punc_after || white_before || punc_before);
-    let right_flanking = !white_before && (!punc_before || white_after || punc_after);
-    let (can_open, can_close) = match c {
-        b'*' => (left_flanking, right_flanking),
-        b'_' => (left_flanking && (!right_flanking || punc_before),
-                right_flanking && (!left_flanking || punc_after)),
-        _ => (false, false)
-    };
-    (end - loc, can_open, can_close)
 }
 
-fn cow_from_codepoint_str(s: &str, radix: u32) -> Cow<'static, str> {
-    let mut codepoint = u32::from_str_radix(s, radix).unwrap();
+// returns (number of bytes, parsed hex)
+fn parse_hex(bytes: &[u8]) -> (usize, usize) {
+    match bytes.iter()
+        .try_fold((0, 0usize), |(count, acc), c| {
+            let mut c = *c;
+            let digit = if c >= b'0' && c <= b'9' {
+                usize::from(c - b'0')
+            } else {
+                // make lower case
+                c |= 0x20;
+                if c >= b'a' && c <= b'f' {
+                    usize::from(c - b'a' + 10)
+                } else {
+                    return Err((count, acc));
+                }
+            };
+            match acc.checked_mul(16) {
+                Some(sixteen_acc) => Ok((count + 1, sixteen_acc + digit)),
+                // stop early on overflow
+                None => Err((count, acc)),
+            }
+        })
+    {
+       Ok(p) | Err(p) => p,
+    }
+}
+
+fn char_from_codepoint(input: usize) -> Option<char> {
+    let mut codepoint = input.try_into().ok()?;
     if codepoint == 0 {
         codepoint = 0xFFFD;
     }
-    Owned(char::from_u32(codepoint).unwrap_or('\u{FFFD}').to_string())
+    char::from_u32(codepoint)
 }
 
 // doesn't bother to check data[0] == '&'
-pub fn scan_entity(data: &str) -> (usize, Option<Cow<'static, str>>) {
-    let size = data.len();
+pub(crate) fn scan_entity(bytes: &[u8]) -> (usize, Option<CowStr<'static>>) {
     let mut end = 1;
-    if scan_ch(&data[end..], b'#') == 1 {
+    if scan_ch(&bytes[end..], b'#') == 1 {
         end += 1;
-        if end < size && (data.as_bytes()[end] == b'x' || data.as_bytes()[end] == b'X') {
+        let (bytecount, codepoint) = if end < bytes.len() && bytes[end] | 0x20 == b'x' {
             end += 1;
-            end += scan_while(&data[end..], is_hexdigit);
-            if end > 3 && end < 12 && scan_ch(&data[end..], b';') == 1 {
-                return (end + 1, Some(cow_from_codepoint_str(&data[3..end], 16)));
-            }
+            parse_hex(&bytes[end..])
         } else {
-            end += scan_while(&data[end..], is_digit);
-            if end > 2 && end < 11 && scan_ch(&data[end..], b';') == 1 {
-                return (end + 1, Some(cow_from_codepoint_str(&data[2..end], 10)));
-            }
-        }
-        return (0, None);
+            parse_decimal(&bytes[end..])
+        };
+        end += bytecount;
+        return if bytecount == 0 || scan_ch(&bytes[end..], b';') == 0 {
+            (0, None)
+        } else if let Some(c) = char_from_codepoint(codepoint) {
+            (end + 1, Some(c.into()))
+        } else {
+            (0, None)
+        };
     }
-    end += scan_while(&data[end..], is_ascii_alphanumeric);
-    if scan_ch(&data[end..], b';') == 1 {
-        if let Some(value) = entities::get_entity(&data[1..end]) {
-            return (end + 1, Some(Borrowed(value)));
+    end += scan_while(&bytes[end..], is_ascii_alphanumeric);
+    if scan_ch(&bytes[end..], b';') == 1 {
+        if let Some(value) = entities::get_entity(&bytes[1..end]) {
+            return (end + 1, Some(value.into()));
         }
     }
     (0, None)
 }
 
-// note: dest returned is raw, still needs to be unescaped
-pub fn scan_link_dest(data: &str) -> Option<(usize, &str)> {
-    let size = data.len();
-    let mut i = 0;
-    let pointy_n = scan_ch(data, b'<');
-    let pointy = pointy_n != 0;
-    i += pointy_n;
-    let dest_beg = i;
-    let mut in_parens = false;
-    while i < size {
-        match data.as_bytes()[i] {
-            b'\n' | b'\r' => break,
-            b' ' => {
-                if !pointy && !in_parens { break; }
-            }
-            b'(' => {
-                if !pointy {
-                    if in_parens { return None; }
-                    in_parens = true;
-                }
-            }
-            b')' => {
-                if !pointy {
-                    if !in_parens { break; }
-                    in_parens = false;
-                }
-            }
-            b'>' => {
-                if pointy { break; }
-            }
-            b'\\' => i += 1,
-            _ => ()
+// returns (bytes scanned, title cow)
+fn scan_link_title(text: &str, start_ix: usize) -> Option<(usize, CowStr<'_>)> {
+    let bytes = text.as_bytes();
+    let open = match bytes.get(start_ix) {
+        Some(b @ b'\'') | Some(b @ b'\"') | Some(b @ b'(') => *b,
+        _ => return None,
+    };
+    let close = if open == b'(' { b')' } else { open };
+
+    let mut title = String::new();
+    let mut mark = start_ix + 1;
+    let mut i = start_ix + 1;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        if c == close {
+            let cow = if mark == 1 {
+                (i - start_ix + 1, text[mark..i].into())
+            } else {
+                title.push_str(&text[mark..i]);
+                (i - start_ix + 1, title.into())
+            };
+            
+            return Some(cow);
         }
+        if c == open {
+            return None;
+        }
+
+        // TODO: do b'\r' as well?
+        if c == b'&' {
+            if let (n, Some(value)) = scan_entity(&bytes[i..]) {
+                title.push_str(&text[mark..i]);
+                title.push_str(&value);
+                i += n;
+                mark = i;
+                continue;
+            }
+        }
+        if c == b'\\' {
+            if i + 1 < bytes.len() && is_ascii_punctuation(bytes[i + 1]) {
+                title.push_str(&text[mark..i]);
+                i += 1;
+                mark = i;
+            }
+        }
+
         i += 1;
     }
-    let dest_end = i;
-    if dest_end > data.len() {
-        return None;
-    }
-    if pointy {
-        let n = scan_ch(&data[i..], b'>');
-        if n == 0 { return None; }
-        i += n;
-    }
 
-    Some((i, &data[dest_beg..dest_end]))
+    None
 }
 
-// return value is: total bytes, link uri
-pub fn scan_autolink(data: &str) -> Option<(usize, Cow<str>)> {
-    let mut i = 0;
-    let n = scan_ch(data, b'<');
-    if n == 0 { return None; }
-    i += n;
-    let link_beg = i;
-    let n_uri = scan_uri(&data[i..]);
-    let (n_link, link) = if n_uri != 0 {
-        (n_uri, Borrowed(&data[link_beg .. i + n_uri]))
-    } else {
-        let n_email = scan_email(&data[i..]);
-        if n_email == 0 { return None; }
-        (n_email, Owned("mailto:".to_owned() + &data[link_beg.. i + n_email]))
+// FIXME: we can most likely re-use other scanners
+// returns (bytelength, title_str)
+pub(crate) fn scan_refdef_title(text: &str) -> Option<(usize, &str)> {
+    let mut chars = text.chars().peekable();
+    let closing_delim = match chars.next()? {
+        '\'' => '\'',
+        '"' => '"',
+        '(' => ')',
+        _ => return None,
     };
-    i += n_link;
-    if scan_ch(&data[i..], b'>') == 0 { return None; }
-    Some((i + 1, link))
-}
+    let mut bytecount = 1;
 
-fn scan_uri(data: &str) -> usize {
-    let mut i = 0;
-    while i < data.len() {
-        match data.as_bytes()[i] {
-            c if is_ascii_alphanumeric(c)  => i += 1,
-            b'.' | b'-' => i += 1,
-            b':' => break,
-            _ => return 0
-        }
-    }
-    if i == data.len() { return 0; }
-    let scheme = &data[..i];
-    if !URI_SCHEMES.binary_search_by(|probe| utils::strcasecmp(probe, scheme)).is_ok() {
-        return 0;
-    }
-    i += 1;  // scan the :
-    while i < data.len() {
-        match data.as_bytes()[i] {
-            b'\0' ... b' ' | b'<' | b'>' => break,
-            _ => i += 1
-        }
-    }
-    if i == data.len() { return 0; }
-    i
-}
-
-fn scan_email(data: &str) -> usize {
-    // using a regex library would be convenient, but doing it by hand is not too bad
-    let size = data.len();
-    let mut i = 0;
-    while i < size {
-        match data.as_bytes()[i] {
-            c if is_ascii_alphanumeric(c) => i += 1,
-            b'.' | b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'/' |
-            b'=' | b'?' | b'^' | b'_' | b'`' | b'{' | b'|' | b'}' | b'~' | b'-' => i += 1,
-            _ => break
-        }
-    }
-    if scan_ch(&data[i..], b'@') == 0 { return 0; }
-    i += 1;
-    loop {
-        let label_beg = i;
-        while i < size {
-            match data.as_bytes()[i] {
-                c if is_ascii_alphanumeric(c) => i += 1,
-                b'-' => i += 1,
-                _ => break,
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => {
+                bytecount += 1;
+                let mut next = *chars.peek()?;
+                while is_ascii_whitespace_no_nl(next as u8) {
+                    bytecount += chars.next()?.len_utf8();
+                    next = *chars.peek()?;
+                }
+                if *chars.peek()? == '\n' {
+                    // blank line - not allowed
+                    return None;
+                }
+            }
+            '\\' => {
+                let next_char = chars.next()?;
+                bytecount += 1 + next_char.len_utf8();
+            }
+            c if c == closing_delim => {
+                return Some((bytecount + 1, &text[1..bytecount]));
+            }
+            c => {
+                bytecount += c.len_utf8();
             }
         }
-        if i == label_beg || i - label_beg > 63 ||
-                data.as_bytes()[label_beg] == b'-' || data.as_bytes()[i - 1] == b'-' { return 0; }
-        if scan_ch(&data[i..], b'.') == 0 { break; }
-        i += 1
     }
-    i
+    None
 }
 
-pub fn scan_attribute_name(data: &str) -> usize {
-    let size = data.len();
-    if size == 0 { return 0; }
-    match data.as_bytes()[0] {
-        c if is_ascii_alpha(c) => (),
-        b'_' | b':' => (),
-        _ => return 0
+// note: dest returned is raw, still needs to be unescaped
+// TODO: check that nested parens are really not allowed for refdefs
+// TODO(performance): this func should probably its own unescaping
+pub(crate) fn scan_link_dest(data: &str, start_ix: usize, max_next: usize) -> Option<(usize, &str)> {
+    let bytes = &data.as_bytes()[start_ix..];
+    let mut i = scan_ch(bytes, b'<');
+
+    if i != 0 {
+        // pointy links
+        while i < bytes.len() {
+            match bytes[i] {
+                b'\n' | b'\r' | b'<' => return None,
+                b'>' => return Some((i + 1, &data[(start_ix + 1)..(start_ix + i)])),
+                b'\\' if i + 1 < bytes.len() && is_ascii_punctuation(bytes[i + 1]) => {
+                    i += 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        None
+    } else {
+        // non-pointy links
+        let mut nest = 0;
+        while i < bytes.len() {
+            match bytes[i] {
+                0x0 ... 0x20 => {
+                    break;
+                }
+                b'(' => {
+                    if nest > max_next {
+                        return None;
+                    }
+                    nest += 1;
+                }
+                b')' => {
+                    if nest == 0 {
+                        break;
+                    }
+                    nest -= 1;
+                }
+                b'\\' if i + 1 < bytes.len() && is_ascii_punctuation(bytes[i + 1]) => {
+                    i += 1;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        Some((i, &data[start_ix..(start_ix + i)]))
     }
-    let mut i = 1;
-    while i < size {
-        match data.as_bytes()[i] {
-            c if is_ascii_alphanumeric(c) => i += 1,
-            b'_' | b'.' | b':' | b'-' => i += 1,
-            _ => break
+}
+
+
+/// Returns next byte index, url and title.
+pub(crate) fn scan_inline_link(underlying: &str, start_ix: usize) -> Option<(usize, CowStr<'_>, CowStr<'_>)> {
+    let mut ix = start_ix;
+    if scan_ch(&underlying.as_bytes()[ix..], b'(') == 0 {
+        return None;
+    }
+    ix += 1;
+    ix += scan_while(&underlying.as_bytes()[ix..], is_ascii_whitespace);
+
+    let (dest_length, dest) = scan_link_dest(underlying, ix, LINK_MAX_NESTED_PARENS)?;
+    let dest = unescape(dest);
+    ix += dest_length;
+
+    ix += scan_while(&underlying.as_bytes()[ix..], is_ascii_whitespace);
+
+    let title = if let Some((bytes_scanned, t)) = scan_link_title(underlying, ix) {
+        ix += bytes_scanned;
+        ix += scan_while(&underlying.as_bytes()[ix..], is_ascii_whitespace);
+        t
+    } else {
+        "".into()
+    };
+    if scan_ch(&underlying.as_bytes()[ix..], b')') == 0 {
+        return None;
+    }
+    ix += 1;
+
+    Some((ix, dest, title))
+}
+
+/// Returns bytes scanned
+fn scan_attribute_name(data: &[u8]) -> Option<usize> {
+    let (&c, tail) = data.split_first()?;
+    if is_ascii_alpha(c) || c == b'_' || c == b':' {
+        Some(1 + scan_while(tail, |c| is_ascii_alphanumeric(c)
+            || c == b'_' || c == b'.' || c == b':' || c == b'-'))
+    } else {
+        None
+    }    
+}
+
+/// Returns byte scanned
+fn scan_inline_attribute_value(data: &[u8]) -> Option<usize> {
+    let c = *data.first()?;
+    let mut ix = 1;
+
+    if is_ascii_whitespace(c) || c == b'=' || c == b'<' || c == b'>' || c == b'`' {
+        None
+    } else if c == b'\'' || c == b'"' {
+        // FIXME: this is very likely a quadratic scaling bug
+        ix += scan_while(&data[ix..], |b| b != c);
+        if scan_ch(&data[ix..], c) == 1 {
+            Some(ix + 1)
+        } else {
+            None
+        }
+    } else {
+        ix += scan_attr_value_chars(&data[ix..]);
+        Some(ix)
+    }
+}
+
+/// Returns byte scanned (TODO: should it return new offset?)
+fn scan_inline_attribute(data: &[u8]) -> Option<usize> {
+    let mut ix = scan_attribute_name(data)?;
+    let n_whitespace = scan_while(&data[ix..], is_ascii_whitespace);
+    ix += n_whitespace;
+    if scan_ch(&data[ix..], b'=') == 1 {
+        ix += 1;
+        ix += scan_while(&data[ix..], is_ascii_whitespace);
+        ix += scan_inline_attribute_value(&data[ix..])?;
+    } else if n_whitespace > 0 {
+        // Leave whitespace for next attribute.
+        ix -= 1;
+    }
+    Some(ix)
+}
+
+fn scan_attribute_value(data: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    match *data.get(0)? {
+        // FIXME: quadratic scaling bug?
+        b @ b'"' | b @ b'\'' => {
+            i += 1;
+            i += scan_while(&data[i..], |c| c != b && c != b'\n' && c != b'\r');
+            if scan_ch(&data[i..], b) == 0 {
+                return None;
+            }
+            i += 1;
+        },
+        b' ' | b'=' | b'>' | b'<' | b'`' | b'\n' | b'\r' => { return None; },
+        _ => { // unquoted attribute value
+            i += scan_attr_value_chars(&data[i..]);
         }
     }
-    i
-}
-
-pub fn is_escaped(data: &str, loc: usize) -> bool {
-    let mut i = loc;
-    while i >= 1 && data.as_bytes()[i - 1] == b'\\' {
-        i -= 1;
-    }
-    ((loc - i) & 1) != 0
+    Some(i)
 }
 
 // Remove backslash escapes and resolve entities
-pub fn unescape(input: &str) -> Cow<str> {
-    if input.find(|c| c == '\\' || c == '&' || c == '\r').is_none() {
-        Borrowed(input)
-    } else {
-        let mut result = String::new();
-        let mut mark = 0;
-        let mut i = 0;
-        while i < input.len() {
-            match input.as_bytes()[i] {
-                b'\\' => {
-                    result.push_str(&input[mark..i]);
-                    i += 1;
-                    mark = i;
-                }
-                b'&' => {
-                    match scan_entity(&input[i..]) {
-                        (n, Some(value)) => {
-                            result.push_str(&input[mark..i]);
-                            result.push_str(&value);
-                            i += n;
-                            mark = i;
-                        }
-                        _ => i += 1
-                    }
-                }
-                b'\r' => {
-                    result.push_str(&input[mark..i]);
-                    i += 1;
-                    mark = i;
-                }
-                _ => i += 1
+pub(crate) fn unescape(input: &str) -> CowStr<'_> {
+    let mut result = String::new();
+    let mut mark = 0;
+    let mut i = 0;
+    let bytes = input.as_bytes();
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() && is_ascii_punctuation(bytes[i + 1]) => {
+                result.push_str(&input[mark..i]);
+                mark = i + 1;
+                i += 2;
             }
+            b'&' => {
+                match scan_entity(&bytes[i..]) {
+                    (n, Some(value)) => {
+                        result.push_str(&input[mark..i]);
+                        result.push_str(&value);
+                        i += n;
+                        mark = i;
+                    }
+                    _ => i += 1
+                }
+            }
+            b'\r' => {
+                result.push_str(&input[mark..i]);
+                i += 1;
+                mark = i;
+            }
+            _ => i += 1
         }
+    }
+    if mark == 0 {
+        input.into()
+    } else {
         result.push_str(&input[mark..]);
-        Owned(result)
+        result.into()
     }
 }
 
-pub fn is_html_tag(tag: &str) -> bool {
-    HTML_TAGS.binary_search_by(|probe| utils::strcasecmp(probe, tag)).is_ok()
+/// Assumes `data` is preceded by `<`.
+pub(crate) fn scan_html_block_tag(data: &[u8]) -> (usize, &[u8]) {
+    let i = scan_ch(data, b'/');
+    let n = scan_while(&data[i..], is_ascii_alphanumeric);
+    // TODO: scan attributes and >
+    (i + n, &data[i .. i + n])
 }
 
-pub fn spaces(n: usize) -> Cow<'static, str> {
-    let a_bunch_of_spaces = "                                ";
-    if n <= a_bunch_of_spaces.len() {
-        Borrowed(&a_bunch_of_spaces[..n])
-    } else {
-        let mut result = String::new();
-        for _ in 0..n {
-            result.push(' ');
+pub(crate) fn is_html_tag(tag: &[u8]) -> bool {
+    HTML_TAGS.binary_search_by(|probe| {
+        let probe_bytes_iter = probe.as_bytes().iter();
+        let tag_bytes_iter = tag.iter();
+
+        probe_bytes_iter.zip(tag_bytes_iter)
+            .find_map(|(&a, &b)| {
+                // We can compare case insensitively because the probes are
+                // all lower case alpha strings.
+                match a.cmp(&(b | 0x20)) {
+                    std::cmp::Ordering::Equal => None,
+                    inequality => Some(inequality),
+                }
+            })
+            .unwrap_or_else(|| probe.len().cmp(&tag.len()))
+    }).is_ok()
+}
+
+/// Assumes that `data` is preceded by `<`.
+pub(crate) fn scan_html_type_7(data: &[u8]) -> Option<usize> {
+    let close_tag_bytes = scan_ch(&data, b'/');
+    let l = scan_while(&data[close_tag_bytes..], is_ascii_alpha);
+    if l == 0  {
+        return None;
+    }
+    let mut i = close_tag_bytes + l;
+    i += scan_while(&data[i..], is_ascii_letterdigitdash);
+
+    if close_tag_bytes == 0 {
+        loop {
+            let whitespace = scan_whitespace_no_nl(&data[i..]);
+            i += whitespace;
+            if let Some(b'/') | Some(b'>') = data.get(i) {
+                break;
+            }
+            if whitespace == 0 { return None; }
+            i += scan_attribute(&data[i..])?;
         }
-        Owned(result)
+    }
+
+    i += scan_whitespace_no_nl(&data[i..]);
+
+    if close_tag_bytes == 0 {
+        i += scan_ch(&data[i..], b'/');
+    }
+
+    let c = scan_ch(&data[i..], b'>');
+    if c == 0 {
+        return None;
+    }
+    i += c;
+
+    scan_blank_line(&data[i..]).map(|_| i)
+}
+
+fn scan_attribute(data: &[u8]) -> Option<usize> {
+    let mut i = scan_whitespace_no_nl(data);
+    i += scan_attribute_name(&data[i..])?;
+    scan_attribute_value_spec(&data[i..]).map(|attr_valspec_bytes| attr_valspec_bytes + i)
+}
+
+fn scan_attribute_value_spec(data: &[u8]) -> Option<usize> {
+    let mut i = scan_whitespace_no_nl(data);
+    let eq = scan_ch(&data[i..], b'=');
+    if eq == 0 { return None; }
+    i += eq;
+    i += scan_whitespace_no_nl(&data[i..]);
+    i += scan_attribute_value(&data[i..])?;
+    Some(i)
+}
+
+/// Returns (next_byte_offset, uri, type)
+pub(crate) fn scan_autolink(text: &str, start_ix: usize) -> Option<(usize, CowStr<'_>, LinkType)> {
+    scan_uri(text, start_ix).map(|(bytes, uri)| (bytes, uri, LinkType::Autolink))
+        .or_else(|| scan_email(text, start_ix).map(|(bytes, uri)| (bytes, uri, LinkType::Email)))
+}
+
+/// Returns (next_byte_offset, uri)
+fn scan_uri(text: &str, start_ix: usize) -> Option<(usize, CowStr<'_>)> {
+    let bytes = &text.as_bytes()[start_ix..];
+
+    // scheme's first byte must be an ascii letter
+    if bytes.is_empty() || !is_ascii_alpha(bytes[0]) {
+        return None;
+    }
+
+    let mut i = 1;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        i += 1;
+        match c {
+            c if is_ascii_alphanumeric(c) => (),
+            b'.' | b'-' | b'+' => (),
+            b':' => break,
+            _ => return None,
+        }
+    }
+
+    // scheme length must be between 2 and 32 characters long. scheme
+    // must be followed by colon
+    if i < 3 || i > 33  {
+        return None;
+    }
+
+    let mut ended = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\0' ... b' ' => {
+                ended = true;
+            }
+            b'>' | b'<' => break,
+            _ if ended => return None,
+            _ => (),
+        }
+        i += 1;
+    };
+
+    Some((start_ix + i + 1, text[start_ix..(start_ix + i)].into()))
+}
+
+/// Returns (next_byte_offset, email)
+fn scan_email(text: &str, start_ix: usize) -> Option<(usize, CowStr<'_>)> {
+    // using a regex library would be convenient, but doing it by hand is not too bad
+    let bytes = &text.as_bytes()[start_ix..];
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+        i += 1;
+        match c {
+            c if is_ascii_alphanumeric(c) => (),
+            b'.' | b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'/' |
+            b'=' | b'?' | b'^' | b'_' | b'`' | b'{' | b'|' | b'}' | b'~' | b'-' => (),
+            b'@' => break,
+            _ => return None,
+        }
+    }
+
+    loop {
+        let label_start_ix = i;
+        let mut fresh_label = true;
+
+        while i < bytes.len() {
+            match bytes[i] {
+                c if is_ascii_alphanumeric(c) => (),
+                b'-' if fresh_label => {
+                    return None;
+                }
+                b'-' => (),
+                _ => break,
+            }
+            fresh_label = false;
+            i += 1;
+        }
+    
+        if i == label_start_ix || i - label_start_ix > 63 || bytes[i - 1] == b'-' {
+            return None;
+        }
+
+        if scan_ch(&bytes[i..], b'.') == 0 {
+            break;
+        }
+        i += 1;
+    }
+
+    if scan_ch(&bytes[i..], b'>') == 0 {
+        return None;
+    }
+
+    Some((start_ix + i + 1, text[start_ix..(start_ix + i)].into()))
+}
+
+/// Scan comment, declaration, or CDATA section, with initial "<!" already consumed.
+/// Returns byte offset on match.
+fn scan_inline_html_comment(bytes: &[u8], mut ix: usize, scan_guard: &mut HtmlScanGuard) -> Option<usize> {
+    let c = *bytes.get(ix)?;
+    ix += 1;
+    match c {
+        b'-' => {
+            let dashes = scan_ch_repeat(&bytes[ix..], b'-');
+            if dashes < 1 { return None; }
+            // Saw "<!--", scan comment.
+            ix += dashes;
+            if scan_ch(&bytes[ix..], b'>') == 1 {
+                return None;
+            }
+
+            while let Some(x) = memchr(b'-', &bytes[ix..]) {
+                ix += x + 1;
+                if scan_ch(&bytes[ix..], b'-') == 1 {
+                    ix += 1;
+                    return if scan_ch(&bytes[ix..], b'>') == 1 {
+                        Some(ix + 1)
+                    } else {
+                        None
+                    };
+                } 
+            }
+            None
+        } 
+        b'[' if bytes[ix..].starts_with(b"CDATA[") && ix > scan_guard.cdata  => {
+            ix += b"CDATA[".len();
+            ix = memchr(b']', &bytes[ix..]).map_or(bytes.len(), |x| ix + x);
+            let close_brackets = scan_ch_repeat(&bytes[ix..], b']');
+            ix += close_brackets;
+
+            if close_brackets == 0 || scan_ch(&bytes[ix..], b'>') == 0 {
+                scan_guard.cdata = ix;
+                None
+            } else {
+                Some(ix + 1)
+            }
+        }
+        b'A' ... b'Z' if ix > scan_guard.declaration => {
+            // Scan declaration.
+            ix += scan_while(&bytes[ix..], |c| c >= b'A' && c <= b'Z');
+            let whitespace = scan_while(&bytes[ix..], is_ascii_whitespace);
+            if whitespace == 0 {
+                return None;
+            }
+            ix += whitespace;
+            ix = memchr(b'>', &bytes[ix..]).map_or(bytes.len(), |x| ix + x);
+            if scan_ch(&bytes[ix..], b'>') == 0 {
+                scan_guard.declaration = ix;
+                None
+            } else {
+                Some(ix + 1)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Scan processing directive, with initial "<?" already consumed.
+/// Returns the next byte offset on success.
+fn scan_inline_html_processing(bytes: &[u8], mut ix: usize, scan_guard: &mut HtmlScanGuard) -> Option<usize> {
+    if ix <= scan_guard.processing {
+        return None;
+    }
+    while let Some(offset) = memchr(b'?', &bytes[ix..]) {
+        ix += offset + 1;
+        if scan_ch(&bytes[ix..], b'>') == 1 {
+            return Some(ix + 1);
+        }
+    }
+    scan_guard.processing = ix;
+    None
+}
+
+/// Returns the next byte offset on success.
+pub(crate) fn scan_inline_html(bytes: &[u8], mut ix: usize, scan_guard: &mut HtmlScanGuard)
+    -> Option<usize>
+{
+    let c = *bytes.get(ix)?;
+    ix += 1;
+
+    match c {
+        b'!' => scan_inline_html_comment(bytes, ix, scan_guard),
+        b'?' => scan_inline_html_processing(bytes, ix, scan_guard),
+        b'/' => {
+            let next_byte = *bytes.get(ix)?;
+            if !is_ascii_alpha(next_byte) {
+                return None;
+            }
+            ix += 1;
+            ix += scan_while(&bytes[ix..], is_ascii_letterdigitdash);
+            ix += scan_while(&bytes[ix..], is_ascii_whitespace);
+            if scan_ch(&bytes[ix..], b'>') == 1 {
+                Some(ix + 1)
+            } else {
+                None
+            }
+        }
+        c if is_ascii_alpha(c) => {
+            // open tag (first character of tag consumed)
+            ix += scan_while(&bytes[ix..], is_ascii_letterdigitdash);
+            // TODO: check if we can share code with scanners::scan_html_type_7
+
+            loop {
+                let whitespace = scan_while(&bytes[ix..], is_ascii_whitespace);
+                ix += whitespace;
+                if let Some(b'/') | Some(b'>') = bytes.get(ix) {
+                    break;
+                }
+                if whitespace == 0 {
+                    return None;
+                }
+                ix += scan_inline_attribute(&bytes[ix..])?;
+            }
+
+            ix += scan_whitespace_no_nl(&bytes[ix..]);
+            ix += scan_ch(&bytes[ix..], b'/');
+
+            let c = scan_ch(&bytes[ix..], b'>');
+            if c == 0 {
+                None
+            } else {
+                Some(ix + c)
+            }
+        }
+        _ => None,
     }
 }
 
@@ -697,6 +1261,6 @@ mod test {
     use super::*;
     #[test]
     fn overflow_list() {
-        assert_eq!((0, 0, 0, 0), scan_listitem("4444444444444444444444444444444444444444444444444444444444!"));
+        assert!(scan_listitem(b"4444444444444444444444444444444444444444444444444444444444!").is_none());
     }
 }

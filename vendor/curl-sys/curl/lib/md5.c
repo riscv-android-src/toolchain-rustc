@@ -5,7 +5,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 1998 - 2018, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 1998 - 2019, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -83,7 +83,7 @@ static void MD5_Final(unsigned char digest[16], MD5_CTX * ctx)
   gcry_md_close(*ctx);
 }
 
-#elif defined(USE_OPENSSL)
+#elif defined(USE_OPENSSL) && !defined(USE_AMISSL)
 /* When OpenSSL is available we use the MD5-function from OpenSSL */
 #include <openssl/md5.h>
 #include "curl_memory.h"
@@ -163,13 +163,6 @@ static void MD5_Final(unsigned char digest[16], MD5_CTX *ctx)
     CryptReleaseContext(ctx->hCryptProv, 0);
 }
 
-#elif defined(USE_AXTLS)
-#include <axTLS/config.h>
-#include <axTLS/os_int.h>
-#include <axTLS/crypto.h>
-#include "curl_memory.h"
-/* The last #include file should be: */
-#include "memdebug.h"
 #else
 /* When no other crypto library is available we use this code segment */
 /*

@@ -1,4 +1,4 @@
-use crate::infer::InferCtxt;
+use crate::infer::{InferCtxt, ShallowResolver};
 use crate::mir::interpret::{GlobalId, ErrorHandled};
 use crate::ty::{self, Ty, TypeFoldable, ToPolyTraitRef};
 use crate::ty::error::ExpectedFound;
@@ -256,8 +256,8 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
         if !pending_obligation.stalled_on.is_empty() {
             if pending_obligation.stalled_on.iter().all(|&ty| {
                 // Use the force-inlined variant of shallow_resolve() because this code is hot.
-                let resolved_ty = self.selcx.infcx().inlined_shallow_resolve(&ty);
-                resolved_ty == ty // nothing changed here
+                let resolved = ShallowResolver::new(self.selcx.infcx()).inlined_shallow_resolve(ty);
+                resolved == ty // nothing changed here
             }) {
                 debug!("process_predicate: pending obligation {:?} still stalled on {:?}",
                        self.selcx.infcx()
@@ -359,7 +359,7 @@ impl<'a, 'b, 'gcx, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'gcx, 
                             // `for<'a> T: 'a where 'a not in T`, which we can treat as
                             // `T: 'static`.
                             Some(t_a) => {
-                                let r_static = self.selcx.tcx().types.re_static;
+                                let r_static = self.selcx.tcx().lifetimes.re_static;
                                 if self.register_region_obligations {
                                     self.selcx.infcx().register_region_obligation_with_cause(
                                         t_a,

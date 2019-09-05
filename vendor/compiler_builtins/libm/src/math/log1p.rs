@@ -66,6 +66,7 @@ const LG6: f64 = 1.531383769920937332e-01; /* 3FC39A09 D078C69F */
 const LG7: f64 = 1.479819860511658591e-01; /* 3FC2F112 DF3E5244 */
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn log1p(x: f64) -> f64 {
     let mut ui: u64 = x.to_bits();
     let hfsq: f64;
@@ -139,5 +140,5 @@ pub fn log1p(x: f64) -> f64 {
     t2 = z * (LG1 + w * (LG3 + w * (LG5 + w * LG7)));
     r = t2 + t1;
     dk = k as f64;
-    return s * (hfsq + r) + (dk * LN2_LO + c) - hfsq + f + dk * LN2_HI;
+    s * (hfsq + r) + (dk * LN2_LO + c) - hfsq + f + dk * LN2_HI
 }

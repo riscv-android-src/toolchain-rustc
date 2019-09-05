@@ -3,7 +3,7 @@ use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::subst::Subst;
 use rustc::ty::{self, Ty};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Detects giving a mutable reference to a function that only
@@ -23,18 +23,7 @@ declare_clippy_lint! {
     "an argument passed as a mutable reference although the callee only demands an immutable reference"
 }
 
-#[derive(Copy, Clone)]
-pub struct UnnecessaryMutPassed;
-
-impl LintPass for UnnecessaryMutPassed {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(UNNECESSARY_MUT_PASSED)
-    }
-
-    fn name(&self) -> &'static str {
-        "UnneccessaryMutPassed"
-    }
-}
+declare_lint_pass!(UnnecessaryMutPassed => [UNNECESSARY_MUT_PASSED]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnnecessaryMutPassed {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
@@ -50,7 +39,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnnecessaryMutPassed {
                 }
             },
             ExprKind::MethodCall(ref path, _, ref arguments) => {
-                let def_id = cx.tables.type_dependent_defs()[e.hir_id].def_id();
+                let def_id = cx.tables.type_dependent_def_id(e.hir_id).unwrap();
                 let substs = cx.tables.node_substs(e.hir_id);
                 let method_type = cx.tcx.type_of(def_id).subst(cx.tcx, substs);
                 check_arguments(cx, arguments, method_type, &path.ident.as_str())

@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 use crate::common::CompareMode;
 use crate::common::{expected_output_path, UI_EXTENSIONS, UI_FIXED, UI_STDERR, UI_STDOUT};
 use crate::common::{output_base_dir, output_base_name, output_testname_unique};
@@ -7,7 +9,6 @@ use crate::common::{Config, TestPaths};
 use crate::common::{Incremental, MirOpt, RunMake, Ui, JsDocTest, Assembly};
 use diff;
 use crate::errors::{self, Error, ErrorKind};
-use filetime::FileTime;
 use crate::header::TestProps;
 use crate::json;
 use regex::{Captures, Regex};
@@ -26,6 +27,9 @@ use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::str;
+
+use lazy_static::lazy_static;
+use log::*;
 
 use crate::extract_gdb_version;
 use crate::is_android_gdb_target;
@@ -71,6 +75,25 @@ pub fn dylib_env_var() -> &'static str {
         "LIBRARY_PATH"
     } else {
         "LD_LIBRARY_PATH"
+    }
+}
+
+/// The platform-specific library name
+pub fn get_lib_name(lib: &str, dylib: bool) -> String {
+    // In some casess (e.g. MUSL), we build a static
+    // library, rather than a dynamic library.
+    // In this case, the only path we can pass
+    // with '--extern-meta' is the '.lib' file
+    if !dylib {
+        return format!("lib{}.rlib", lib);
+    }
+
+    if cfg!(windows) {
+        format!("{}.dll", lib)
+    } else if cfg!(target_os = "macos") {
+        format!("lib{}.dylib", lib)
+    } else {
+        format!("lib{}.so", lib)
     }
 }
 
@@ -1401,10 +1424,21 @@ impl<'test> TestCx<'test> {
     }
 
     fn compile_test(&self) -> ProcRes {
-        let mut rustc = self.make_compile_args(
-            &self.testpaths.file,
-            TargetLocation::ThisFile(self.make_exe_name()),
-        );
+        // Only use `make_exe_name` when the test ends up being executed.
+        let will_execute = match self.config.mode {
+            RunPass | Ui => self.should_run_successfully(),
+            Incremental => self.revision.unwrap().starts_with("r"),
+            RunFail | RunPassValgrind | MirOpt |
+            DebugInfoBoth | DebugInfoGdb | DebugInfoLldb => true,
+            _ => false,
+        };
+        let output_file = if will_execute {
+            TargetLocation::ThisFile(self.make_exe_name())
+        } else {
+            TargetLocation::ThisDirectory(self.output_base_dir())
+        };
+
+        let mut rustc = self.make_compile_args(&self.testpaths.file, output_file);
 
         rustc.arg("-L").arg(&self.aux_output_dir_name());
 
@@ -1585,6 +1619,16 @@ impl<'test> TestCx<'test> {
             create_dir_all(&aux_dir).unwrap();
         }
 
+        // Use a Vec instead of a HashMap to preserve original order
+        let mut extern_priv = self.props.extern_private.clone();
+
+        let mut add_extern_priv = |priv_dep: &str, dylib: bool| {
+            let lib_name = get_lib_name(priv_dep, dylib);
+            rustc
+                .arg("--extern-private")
+                .arg(format!("{}={}", priv_dep, aux_dir.join(lib_name).to_str().unwrap()));
+        };
+
         for rel_ab in &self.props.aux_builds {
             let aux_testpaths = self.compute_aux_test_paths(rel_ab);
             let aux_props =
@@ -1601,11 +1645,13 @@ impl<'test> TestCx<'test> {
             create_dir_all(aux_cx.output_base_dir()).unwrap();
             let mut aux_rustc = aux_cx.make_compile_args(&aux_testpaths.file, aux_output);
 
-            let crate_type = if aux_props.no_prefer_dynamic {
-                None
+            let (dylib, crate_type) = if aux_props.no_prefer_dynamic {
+                (true, None)
             } else if self.config.target.contains("cloudabi")
                 || self.config.target.contains("emscripten")
-                || (self.config.target.contains("musl") && !aux_props.force_host)
+                || (self.config.target.contains("musl")
+                    && !aux_props.force_host
+                    && !self.config.host.contains("musl"))
                 || self.config.target.contains("wasm32")
                 || self.config.target.contains("nvptx")
             {
@@ -1618,10 +1664,19 @@ impl<'test> TestCx<'test> {
                 // dynamic libraries so we just go back to building a normal library. Note,
                 // however, that for MUSL if the library is built with `force_host` then
                 // it's ok to be a dylib as the host should always support dylibs.
-                Some("lib")
+                (false, Some("lib"))
             } else {
-                Some("dylib")
+                (true, Some("dylib"))
             };
+
+            let trimmed = rel_ab.trim_end_matches(".rs").to_string();
+
+            // Normally, every 'extern-private' has a correspodning 'aux-build'
+            // entry. If so, we remove it from our list of private crates,
+            // and add an '--extern-private' flag to rustc
+            if extern_priv.remove_item(&trimmed).is_some() {
+                add_extern_priv(&trimmed, dylib);
+            }
 
             if let Some(crate_type) = crate_type {
                 aux_rustc.args(&["--crate-type", crate_type]);
@@ -1646,6 +1701,15 @@ impl<'test> TestCx<'test> {
             }
         }
 
+        // Add any '--extern-private' entries without a matching
+        // 'aux-build'
+        for private_lib in extern_priv {
+            add_extern_priv(&private_lib, true);
+        }
+
+        self.props.unset_rustc_env.clone()
+            .iter()
+            .fold(&mut rustc, |rustc, v| rustc.env_remove(v));
         rustc.envs(self.props.rustc_env.clone());
         self.compose_and_run(
             rustc,
@@ -1836,16 +1900,21 @@ impl<'test> TestCx<'test> {
                 rustc.arg("-o").arg(path);
             }
             TargetLocation::ThisDirectory(path) => {
-                rustc.arg("--out-dir").arg(path);
+                if is_rustdoc {
+                    // `rustdoc` uses `-o` for the output directory.
+                    rustc.arg("-o").arg(path);
+                } else {
+                    rustc.arg("--out-dir").arg(path);
+                }
             }
         }
 
         match self.config.compare_mode {
             Some(CompareMode::Nll) => {
-                rustc.args(&["-Zborrowck=migrate", "-Ztwo-phase-borrows"]);
+                rustc.args(&["-Zborrowck=mir"]);
             }
             Some(CompareMode::Polonius) => {
-                rustc.args(&["-Zpolonius", "-Zborrowck=mir", "-Ztwo-phase-borrows"]);
+                rustc.args(&["-Zpolonius", "-Zborrowck=mir"]);
             }
             None => {}
         }
@@ -1861,6 +1930,11 @@ impl<'test> TestCx<'test> {
                     rustc.arg(format!("-Clinker={}", linker));
                 }
             }
+        }
+
+        // Use dynamic musl for tests because static doesn't allow creating dylibs
+        if self.config.host.contains("musl") {
+            rustc.arg("-Ctarget-feature=-crt-static");
         }
 
         rustc.args(&self.props.compile_flags);
@@ -2046,48 +2120,8 @@ impl<'test> TestCx<'test> {
     }
 
     fn fatal_proc_rec(&self, err: &str, proc_res: &ProcRes) -> ! {
-        self.try_print_open_handles();
         self.error(err);
         proc_res.fatal(None);
-    }
-
-    // This function is a poor man's attempt to debug rust-lang/rust#38620, if
-    // that's closed then this should be deleted
-    //
-    // This is a very "opportunistic" debugging attempt, so we ignore all
-    // errors here.
-    fn try_print_open_handles(&self) {
-        if !cfg!(windows) {
-            return;
-        }
-        if self.config.mode != Incremental {
-            return;
-        }
-
-        let filename = match self.testpaths.file.file_stem() {
-            Some(path) => path,
-            None => return,
-        };
-
-        let mut cmd = Command::new("handle.exe");
-        cmd.arg("-a").arg("-u");
-        cmd.arg(filename);
-        cmd.arg("-nobanner");
-        cmd.stdout(Stdio::piped());
-        cmd.stderr(Stdio::piped());
-        let output = match cmd.spawn().and_then(read2_abbreviated) {
-            Ok(output) => output,
-            Err(_) => return,
-        };
-        println!("---------------------------------------------------");
-        println!("ran extra command to debug rust-lang/rust#38620: ");
-        println!("{:?}", cmd);
-        println!("result: {}", output.status);
-        println!("--- stdout ----------------------------------------");
-        println!("{}", String::from_utf8_lossy(&output.stdout));
-        println!("--- stderr ----------------------------------------");
-        println!("{}", String::from_utf8_lossy(&output.stderr));
-        println!("---------------------------------------------------");
     }
 
     // codegen tests (using FileCheck)
@@ -2181,9 +2215,7 @@ impl<'test> TestCx<'test> {
 
     fn charset() -> &'static str {
         // FreeBSD 10.1 defaults to GDB 6.1.1 which doesn't support "auto" charset
-        if cfg!(target_os = "bitrig") {
-            "auto"
-        } else if cfg!(target_os = "freebsd") {
+        if cfg!(target_os = "freebsd") {
             "ISO-8859-1"
         } else {
             "UTF-8"
@@ -2634,8 +2666,7 @@ impl<'test> TestCx<'test> {
         create_dir_all(&tmpdir).unwrap();
 
         let host = &self.config.host;
-        let make = if host.contains("bitrig")
-            || host.contains("dragonfly")
+        let make = if host.contains("dragonfly")
             || host.contains("freebsd")
             || host.contains("netbsd")
             || host.contains("openbsd")
@@ -2684,9 +2715,23 @@ impl<'test> TestCx<'test> {
             cmd.env("CLANG", clang);
         }
 
+        if let Some(ref filecheck) = self.config.llvm_filecheck {
+            cmd.env("LLVM_FILECHECK", filecheck);
+        }
+
+        if let Some(ref llvm_bin_dir) = self.config.llvm_bin_dir {
+            cmd.env("LLVM_BIN_DIR", llvm_bin_dir);
+        }
+
         // We don't want RUSTFLAGS set from the outside to interfere with
         // compiler flags set in the test cases:
         cmd.env_remove("RUSTFLAGS");
+
+        // Use dynamic musl for tests because static doesn't allow creating dylibs
+        if self.config.host.contains("musl") {
+            cmd.env("RUSTFLAGS", "-Ctarget-feature=-crt-static")
+                .env("IS_MUSL_HOST", "1");
+        }
 
         if self.config.target.contains("msvc") && self.config.cc != "" {
             // We need to pass a path to `lib.exe`, so assume that `cc` is `cl.exe`
@@ -2800,7 +2845,7 @@ impl<'test> TestCx<'test> {
         let stderr = if explicit {
             proc_res.stderr.clone()
         } else {
-            json::extract_rendered(&proc_res.stderr, &proc_res)
+            json::extract_rendered(&proc_res.stderr)
         };
 
         let normalized_stderr = self.normalize_output(&stderr, &self.props.normalize_stderr);
@@ -2982,7 +3027,7 @@ impl<'test> TestCx<'test> {
     }
 
     fn check_mir_test_timestamp(&self, test_name: &str, output_file: &Path) {
-        let t = |file| FileTime::from_last_modification_time(&fs::metadata(file).unwrap());
+        let t = |file| fs::metadata(file).unwrap().modified().unwrap();
         let source_file = &self.testpaths.file;
         let output_time = t(output_file);
         let source_time = t(source_file);
@@ -3123,42 +3168,40 @@ impl<'test> TestCx<'test> {
     }
 
     fn normalize_output(&self, output: &str, custom_rules: &[(String, String)]) -> String {
-        let parent_dir = self.testpaths.file.parent().unwrap();
         let cflags = self.props.compile_flags.join(" ");
         let json = cflags.contains("--error-format json")
             || cflags.contains("--error-format pretty-json")
             || cflags.contains("--error-format=json")
             || cflags.contains("--error-format=pretty-json");
-        let parent_dir_str = if json {
-            parent_dir.display().to_string().replace("\\", "\\\\")
-        } else {
-            parent_dir.display().to_string()
+
+        let mut normalized = output.to_string();
+
+        let mut normalize_path = |from: &Path, to: &str| {
+            let mut from = from.display().to_string();
+            if json {
+                from = from.replace("\\", "\\\\");
+            }
+            normalized = normalized.replace(&from, to);
         };
 
-        let mut normalized = output.replace(&parent_dir_str, "$DIR");
+        let parent_dir = self.testpaths.file.parent().unwrap();
+        normalize_path(parent_dir, "$DIR");
 
         // Paths into the libstd/libcore
         let src_dir = self.config.src_base.parent().unwrap().parent().unwrap();
-        let src_dir_str = if json {
-            src_dir.display().to_string().replace("\\", "\\\\")
-        } else {
-            src_dir.display().to_string()
-        };
-        normalized = normalized.replace(&src_dir_str, "$SRC_DIR");
+        normalize_path(src_dir, "$SRC_DIR");
 
         // Paths into the build directory
         let test_build_dir = &self.config.build_base;
         let parent_build_dir = test_build_dir.parent().unwrap().parent().unwrap().parent().unwrap();
 
         // eg. /home/user/rust/build/x86_64-unknown-linux-gnu/test/ui
-        normalized = normalized.replace(test_build_dir.to_str().unwrap(), "$TEST_BUILD_DIR");
+        normalize_path(test_build_dir, "$TEST_BUILD_DIR");
         // eg. /home/user/rust/build
-        normalized = normalized.replace(&parent_build_dir.to_str().unwrap(), "$BUILD_DIR");
+        normalize_path(parent_build_dir, "$BUILD_DIR");
 
         // Paths into lib directory.
-        let mut lib_dir = parent_build_dir.parent().unwrap().to_path_buf();
-        lib_dir.push("lib");
-        normalized = normalized.replace(&lib_dir.to_str().unwrap(), "$LIB_DIR");
+        normalize_path(&parent_build_dir.parent().unwrap().join("lib"), "$LIB_DIR");
 
         if json {
             // escaped newlines in json strings should be readable
@@ -3420,9 +3463,13 @@ impl ProcRes {
              {}\n\
              ------------------------------------------\n\
              \n",
-            self.status, self.cmdline, self.stdout, self.stderr
+            self.status, self.cmdline,
+            json::extract_rendered(&self.stdout),
+            json::extract_rendered(&self.stderr),
         );
-        panic!();
+        // Use resume_unwind instead of panic!() to prevent a panic message + backtrace from
+        // compiletest, which is unnecessary noise.
+        std::panic::resume_unwind(Box::new(()));
     }
 }
 

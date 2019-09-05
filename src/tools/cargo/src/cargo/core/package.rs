@@ -1,4 +1,4 @@
-use std::cell::{Cell, Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -22,6 +22,7 @@ use crate::core::source::MaybePackage;
 use crate::core::{Dependency, Manifest, PackageId, SourceId, Target};
 use crate::core::{FeatureMap, SourceMap, Summary};
 use crate::ops;
+use crate::util::config::PackageCacheLock;
 use crate::util::errors::{CargoResult, CargoResultExt, HttpNot200};
 use crate::util::network::Retry;
 use crate::util::{self, internal, lev_distance, Config, Progress, ProgressStyle};
@@ -146,6 +147,10 @@ impl Package {
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
+    /// Gets the manifest.
+    pub fn manifest_mut(&mut self) -> &mut Manifest {
+        &mut self.manifest
+    }
     /// Gets the path to the manifest.
     pub fn manifest_path(&self) -> &Path {
         &self.manifest_path
@@ -231,6 +236,12 @@ impl Package {
              ",
             toml
         ))
+    }
+
+    /// Returns if package should include `Cargo.lock`.
+    pub fn include_lockfile(&self) -> bool {
+        self.manifest().publish_lockfile()
+            && self.targets().iter().any(|t| t.is_example() || t.is_bin())
     }
 }
 
@@ -329,6 +340,9 @@ pub struct Downloads<'a, 'cfg: 'a> {
     /// trigger a timeout; reset `next_speed_check` and set this back to the
     /// configured threshold.
     next_speed_check_bytes_threshold: Cell<u64>,
+    /// Global filesystem lock to ensure only one Cargo is downloading at a
+    /// time.
+    _lock: PackageCacheLock<'cfg>,
 }
 
 struct Download<'cfg> {
@@ -427,6 +441,7 @@ impl<'cfg> PackageSet<'cfg> {
             timeout,
             next_speed_check: Cell::new(Instant::now()),
             next_speed_check_bytes_threshold: Cell::new(0),
+            _lock: self.config.acquire_package_cache_lock()?,
         })
     }
 
@@ -449,6 +464,10 @@ impl<'cfg> PackageSet<'cfg> {
 
     pub fn sources(&self) -> Ref<'_, SourceMap<'cfg>> {
         self.sources.borrow()
+    }
+
+    pub fn sources_mut(&self) -> RefMut<'_, SourceMap<'cfg>> {
+        self.sources.borrow_mut()
     }
 }
 
@@ -515,7 +534,7 @@ impl<'a, 'cfg> Downloads<'a, 'cfg> {
         // Ok we're going to download this crate, so let's set up all our
         // internal state and hand off an `Easy` handle to our libcurl `Multi`
         // handle. This won't actually start the transfer, but later it'll
-        // hapen during `wait_for_download`
+        // happen during `wait_for_download`
         let token = self.next;
         self.next += 1;
         debug!("downloading {} as {}", id, token);
@@ -926,13 +945,23 @@ impl<'a, 'cfg> Drop for Downloads<'a, 'cfg> {
         if !self.success {
             return;
         }
+        // pick the correct plural of crate(s)
+        let crate_string = if self.downloads_finished == 1 {
+            "crate"
+        } else {
+            "crates"
+        };
         let mut status = format!(
-            "{} crates ({}) in {}",
+            "{} {} ({}) in {}",
             self.downloads_finished,
+            crate_string,
             ByteSize(self.downloaded_bytes),
             util::elapsed(self.start.elapsed())
         );
-        if self.largest.0 > ByteSize::mb(1).0 {
+        // print the size of largest crate if it was >1mb
+        // however don't print if only a single crate was downloaded
+        // because it is obvious that it will be the largest then
+        if self.largest.0 > ByteSize::mb(1).0 && self.downloads_finished > 1 {
             status.push_str(&format!(
                 " (largest was `{}` at {})",
                 self.largest.1,

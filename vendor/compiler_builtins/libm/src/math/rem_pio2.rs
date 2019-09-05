@@ -10,7 +10,6 @@
 // ====================================================
 //
 // Optimized by Bruce D. Evans. */
-
 use super::rem_pio2_large;
 
 // #if FLT_EVAL_METHOD==0 || FLT_EVAL_METHOD==1
@@ -43,6 +42,7 @@ const PIO2_3T: f64 = 8.47842766036889956997e-32; /* 0x397B839A, 0x252049C1 */
 //
 // caller must handle the case when reduction is not needed: |x| ~<= pi/4 */
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn rem_pio2(x: f64) -> (i32, f64, f64) {
     let x1p24 = f64::from_bits(0x4170000000000000);
 
@@ -78,7 +78,7 @@ pub fn rem_pio2(x: f64) -> (i32, f64, f64) {
             }
         }
         let y1 = (r - y0) - w;
-        return (n, y0, y1);
+        (n, y0, y1)
     }
 
     if ix <= 0x400f6a7a {
@@ -100,18 +100,16 @@ pub fn rem_pio2(x: f64) -> (i32, f64, f64) {
                 let y1 = (z - y0) + PIO2_1T;
                 return (-1, y0, y1);
             }
+        } else if sign == 0 {
+            let z = x - 2.0 * PIO2_1;
+            let y0 = z - 2.0 * PIO2_1T;
+            let y1 = (z - y0) - 2.0 * PIO2_1T;
+            return (2, y0, y1);
         } else {
-            if sign == 0 {
-                let z = x - 2.0 * PIO2_1;
-                let y0 = z - 2.0 * PIO2_1T;
-                let y1 = (z - y0) - 2.0 * PIO2_1T;
-                return (2, y0, y1);
-            } else {
-                let z = x + 2.0 * PIO2_1;
-                let y0 = z + 2.0 * PIO2_1T;
-                let y1 = (z - y0) + 2.0 * PIO2_1T;
-                return (-2, y0, y1);
-            }
+            let z = x + 2.0 * PIO2_1;
+            let y0 = z + 2.0 * PIO2_1T;
+            let y1 = (z - y0) + 2.0 * PIO2_1T;
+            return (-2, y0, y1);
         }
     }
     if ix <= 0x401c463b {
@@ -185,5 +183,5 @@ pub fn rem_pio2(x: f64) -> (i32, f64, f64) {
     if sign != 0 {
         return (-n, -ty[0], -ty[1]);
     }
-    return (n, ty[0], ty[1]);
+    (n, ty[0], ty[1])
 }

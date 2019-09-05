@@ -1,14 +1,14 @@
 use if_chain::if_chain;
-use rustc::hir::def::Def;
+use rustc::hir::def::{DefKind, Res};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::ptr::P;
 
 use crate::utils::paths::*;
 use crate::utils::sugg::Sugg;
-use crate::utils::{match_def_path, match_type, span_lint_and_then, SpanlessEq};
+use crate::utils::{higher, match_def_path, match_type, span_lint_and_then, SpanlessEq};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for expressions that could be replaced by the question mark operator.
@@ -34,20 +34,9 @@ declare_clippy_lint! {
     "checks for expressions that could be replaced by the question mark operator"
 }
 
-#[derive(Copy, Clone)]
-pub struct Pass;
+declare_lint_pass!(QuestionMark => [QUESTION_MARK]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(QUESTION_MARK)
-    }
-
-    fn name(&self) -> &'static str {
-        "QuestionMark"
-    }
-}
-
-impl Pass {
+impl QuestionMark {
     /// Checks if the given expression on the given context matches the following structure:
     ///
     /// ```ignore
@@ -59,9 +48,9 @@ impl Pass {
     /// If it matches, it will suggest to use the question mark operator instead
     fn check_is_none_and_early_return_none(cx: &LateContext<'_, '_>, expr: &Expr) {
         if_chain! {
-            if let ExprKind::If(if_expr, body, else_) = &expr.node;
+            if let Some((if_expr, body, else_)) = higher::if_block(&expr);
             if let ExprKind::MethodCall(segment, _, args) = &if_expr.node;
-            if segment.ident.name == "is_none";
+            if segment.ident.name == sym!(is_none);
             if Self::expression_returns_none(cx, body);
             if let Some(subject) = args.get(0);
             if Self::is_option(cx, subject);
@@ -128,8 +117,10 @@ impl Pass {
             },
             ExprKind::Ret(Some(ref expr)) => Self::expression_returns_none(cx, expr),
             ExprKind::Path(ref qp) => {
-                if let Def::Ctor(def_id, def::CtorOf::Variant, _) = cx.tables.qpath_def(qp, expression.hir_id) {
-                    return match_def_path(cx.tcx, def_id, &OPTION_NONE);
+                if let Res::Def(DefKind::Ctor(def::CtorOf::Variant, def::CtorKind::Const), def_id) =
+                    cx.tables.qpath_res(qp, expression.hir_id)
+                {
+                    return match_def_path(cx, def_id, &OPTION_NONE);
                 }
 
                 false
@@ -165,7 +156,7 @@ impl Pass {
     }
 }
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for QuestionMark {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         Self::check_is_none_and_early_return_none(cx, expr);
     }

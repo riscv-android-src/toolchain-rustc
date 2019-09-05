@@ -14,7 +14,7 @@ use std::io::Write;
 use std::path::{PathBuf, Path};
 use std::process::{Command, Stdio};
 
-use build_helper::output;
+use build_helper::{output, t};
 
 use crate::{Compiler, Mode, LLVM_TOOLS};
 use crate::channel;
@@ -906,6 +906,7 @@ impl Step for Src {
             "src/stdsimd",
             "src/libproc_macro",
             "src/tools/rustc-std-workspace-core",
+            "src/tools/rustc-std-workspace-alloc",
             "src/librustc",
             "src/libsyntax",
         ];

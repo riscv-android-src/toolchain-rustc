@@ -23,6 +23,10 @@ mod stacked_borrows;
 
 use std::collections::HashMap;
 use std::borrow::Cow;
+use std::rc::Rc;
+
+use rand::rngs::StdRng;
+use rand::SeedableRng;
 
 use rustc::ty::{self, TyCtxt, query::TyCtxtAt};
 use rustc::ty::layout::{LayoutOf, Size, Align};
@@ -33,6 +37,7 @@ pub use rustc_mir::interpret::*;
 pub use rustc_mir::interpret::{self, AllocMap, PlaceTy};
 use syntax::attr;
 use syntax::source_map::DUMMY_SP;
+use syntax::symbol::sym;
 
 pub use crate::fn_call::EvalContextExt as MissingFnsEvalContextExt;
 pub use crate::operator::EvalContextExt as OperatorEvalContextExt;
@@ -45,7 +50,7 @@ use crate::mono_hash_map::MonoHashMap;
 pub use crate::stacked_borrows::{EvalContextExt as StackedBorEvalContextExt};
 
 // Used by priroda.
-pub use crate::stacked_borrows::{Borrow, Stack, Stacks, BorStackItem};
+pub use crate::stacked_borrows::{Tag, Permission, Stack, Stacks, Item};
 
 /// Insert rustc arguments at the beginning of the argument list that Miri wants to be
 /// set per default, for maximal validation power.
@@ -60,6 +65,9 @@ pub fn miri_default_args() -> &'static [&'static str] {
 pub struct MiriConfig {
     pub validate: bool,
     pub args: Vec<String>,
+
+    // The seed to use when non-determinism is required (e.g. getrandom())
+    pub seed: Option<u64>
 }
 
 // Used by priroda.
@@ -71,7 +79,7 @@ pub fn create_ecx<'a, 'mir: 'a, 'tcx: 'mir>(
     let mut ecx = InterpretCx::new(
         tcx.at(syntax::source_map::DUMMY_SP),
         ty::ParamEnv::reveal_all(),
-        Evaluator::new(config.validate),
+        Evaluator::new(config.validate, config.seed),
     );
 
     let main_instance = ty::Instance::mono(ecx.tcx.tcx, main_id);
@@ -149,7 +157,7 @@ pub fn create_ecx<'a, 'mir: 'a, 'tcx: 'mir>(
     // Don't forget `0` terminator.
     cmd.push(std::char::from_u32(0).unwrap());
     // Collect the pointers to the individual strings.
-    let mut argvs = Vec::<Pointer<Borrow>>::new();
+    let mut argvs = Vec::<Pointer<Tag>>::new();
     for arg in config.args {
         // Add `0` terminator.
         let mut arg = arg.into_bytes();
@@ -181,7 +189,7 @@ pub fn create_ecx<'a, 'mir: 'a, 'tcx: 'mir>(
             Size::from_bytes(cmd_utf16.len() as u64 * 2),
             Align::from_bytes(2).unwrap(),
             MiriMemoryKind::Env.into(),
-        ).with_default_tag();
+        );
         ecx.machine.cmd_line = Some(cmd_ptr);
         // Store the UTF-16 string.
         let char_size = Size::from_bytes(2);
@@ -208,7 +216,13 @@ pub fn eval_main<'a, 'tcx: 'a>(
     main_id: DefId,
     config: MiriConfig,
 ) {
-    let mut ecx = create_ecx(tcx, main_id, config).expect("couldn't create ecx");
+    let mut ecx = match create_ecx(tcx, main_id, config) {
+        Ok(ecx) => ecx,
+        Err(mut err) => {
+            err.print_backtrace();
+            panic!("Miri initialziation error: {}", err.kind)
+        }
+    };
 
     // Perform the main execution.
     let res: EvalResult = (|| {
@@ -229,6 +243,13 @@ pub fn eval_main<'a, 'tcx: 'a>(
             }
         }
         Err(mut e) => {
+            // Special treatment for some error kinds
+            let msg = match e.kind {
+                InterpError::Exit(code) => std::process::exit(code),
+                InterpError::NoMirFor(..) =>
+                    format!("{}. Did you set `MIRI_SYSROOT` to a Miri-enabled sysroot? You can prepare one with `cargo miri setup`.", e),
+                _ => e.to_string()
+            };
             e.print_backtrace();
             if let Some(frame) = ecx.stack().last() {
                 let block = &frame.mir.basic_blocks()[frame.block];
@@ -238,11 +259,10 @@ pub fn eval_main<'a, 'tcx: 'a>(
                     block.terminator().source_info.span
                 };
 
-                let e = e.to_string();
-                let msg = format!("constant evaluation error: {}", e);
+                let msg = format!("Miri evaluation error: {}", msg);
                 let mut err = struct_error(ecx.tcx.tcx.at(span), msg.as_str());
                 let frames = ecx.generate_stacktrace(None);
-                err.span_label(span, e);
+                err.span_label(span, msg);
                 // We iterate with indices because we need to look at the next frame (the caller).
                 for idx in 0..frames.len() {
                     let frame_info = &frames[idx];
@@ -256,17 +276,15 @@ pub fn eval_main<'a, 'tcx: 'a>(
                 }
                 err.emit();
             } else {
-                ecx.tcx.sess.err(&e.to_string());
+                ecx.tcx.sess.err(&msg);
             }
 
             for (i, frame) in ecx.stack().iter().enumerate() {
                 trace!("-------------------");
                 trace!("Frame {}", i);
-                trace!("    return: {:#?}", frame.return_place);
+                trace!("    return: {:?}", frame.return_place.map(|p| *p));
                 for (i, local) in frame.locals.iter().enumerate() {
-                    if let Ok(local) = local.access() {
-                        trace!("    local {}: {:?}", i, local);
-                    }
+                    trace!("    local {}: {:?}", i, local.value);
                 }
             }
         }
@@ -306,14 +324,14 @@ impl MayLeak for MiriMemoryKind {
 pub struct Evaluator<'tcx> {
     /// Environment variables set by `setenv`.
     /// Miri does not expose env vars from the host to the emulated program.
-    pub(crate) env_vars: HashMap<Vec<u8>, Pointer<Borrow>>,
+    pub(crate) env_vars: HashMap<Vec<u8>, Pointer<Tag>>,
 
     /// Program arguments (`Option` because we can only initialize them after creating the ecx).
     /// These are *pointers* to argc/argv because macOS.
     /// We also need the full command line as one string because of Windows.
-    pub(crate) argc: Option<Pointer<Borrow>>,
-    pub(crate) argv: Option<Pointer<Borrow>>,
-    pub(crate) cmd_line: Option<Pointer<Borrow>>,
+    pub(crate) argc: Option<Pointer<Tag>>,
+    pub(crate) argv: Option<Pointer<Tag>>,
+    pub(crate) cmd_line: Option<Pointer<Tag>>,
 
     /// Last OS error.
     pub(crate) last_error: u32,
@@ -324,12 +342,13 @@ pub struct Evaluator<'tcx> {
     /// Whether to enforce the validity invariant.
     pub(crate) validate: bool,
 
-    /// Stacked Borrows state.
-    pub(crate) stacked_borrows: stacked_borrows::State,
+    /// The random number generator to use if Miri
+    /// is running in non-deterministic mode
+    pub(crate) rng: Option<StdRng>
 }
 
 impl<'tcx> Evaluator<'tcx> {
-    fn new(validate: bool) -> Self {
+    fn new(validate: bool, seed: Option<u64>) -> Self {
         Evaluator {
             env_vars: HashMap::default(),
             argc: None,
@@ -338,7 +357,7 @@ impl<'tcx> Evaluator<'tcx> {
             last_error: 0,
             tls: TlsData::default(),
             validate,
-            stacked_borrows: stacked_borrows::State::default(),
+            rng: seed.map(|s| StdRng::seed_from_u64(s))
         }
     }
 }
@@ -369,9 +388,9 @@ impl<'a, 'mir, 'tcx> Machine<'a, 'mir, 'tcx> for Evaluator<'tcx> {
     type FrameExtra = stacked_borrows::CallId;
     type MemoryExtra = stacked_borrows::MemoryState;
     type AllocExtra = stacked_borrows::Stacks;
-    type PointerTag = Borrow;
+    type PointerTag = Tag;
 
-    type MemoryMap = MonoHashMap<AllocId, (MemoryKind<MiriMemoryKind>, Allocation<Borrow, Self::AllocExtra>)>;
+    type MemoryMap = MonoHashMap<AllocId, (MemoryKind<MiriMemoryKind>, Allocation<Tag, Self::AllocExtra>)>;
 
     const STATIC_KIND: Option<MiriMemoryKind> = Some(MiriMemoryKind::MutStatic);
 
@@ -385,8 +404,8 @@ impl<'a, 'mir, 'tcx> Machine<'a, 'mir, 'tcx> for Evaluator<'tcx> {
     fn find_fn(
         ecx: &mut InterpretCx<'a, 'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
-        args: &[OpTy<'tcx, Borrow>],
-        dest: Option<PlaceTy<'tcx, Borrow>>,
+        args: &[OpTy<'tcx, Tag>],
+        dest: Option<PlaceTy<'tcx, Tag>>,
         ret: Option<mir::BasicBlock>,
     ) -> EvalResult<'tcx, Option<&'mir mir::Mir<'tcx>>> {
         ecx.find_fn(instance, args, dest, ret)
@@ -396,8 +415,8 @@ impl<'a, 'mir, 'tcx> Machine<'a, 'mir, 'tcx> for Evaluator<'tcx> {
     fn call_intrinsic(
         ecx: &mut rustc_mir::interpret::InterpretCx<'a, 'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
-        args: &[OpTy<'tcx, Borrow>],
-        dest: PlaceTy<'tcx, Borrow>,
+        args: &[OpTy<'tcx, Tag>],
+        dest: PlaceTy<'tcx, Tag>,
     ) -> EvalResult<'tcx> {
         ecx.call_intrinsic(instance, args, dest)
     }
@@ -406,15 +425,15 @@ impl<'a, 'mir, 'tcx> Machine<'a, 'mir, 'tcx> for Evaluator<'tcx> {
     fn ptr_op(
         ecx: &rustc_mir::interpret::InterpretCx<'a, 'mir, 'tcx, Self>,
         bin_op: mir::BinOp,
-        left: ImmTy<'tcx, Borrow>,
-        right: ImmTy<'tcx, Borrow>,
-    ) -> EvalResult<'tcx, (Scalar<Borrow>, bool)> {
+        left: ImmTy<'tcx, Tag>,
+        right: ImmTy<'tcx, Tag>,
+    ) -> EvalResult<'tcx, (Scalar<Tag>, bool)> {
         ecx.ptr_op(bin_op, left, right)
     }
 
     fn box_alloc(
         ecx: &mut InterpretCx<'a, 'mir, 'tcx, Self>,
-        dest: PlaceTy<'tcx, Borrow>,
+        dest: PlaceTy<'tcx, Tag>,
     ) -> EvalResult<'tcx> {
         trace!("box_alloc for {:?}", dest.layout.ty);
         // Call the `exchange_malloc` lang item.
@@ -458,19 +477,19 @@ impl<'a, 'mir, 'tcx> Machine<'a, 'mir, 'tcx> for Evaluator<'tcx> {
         def_id: DefId,
         tcx: TyCtxtAt<'a, 'tcx, 'tcx>,
         memory_extra: &Self::MemoryExtra,
-    ) -> EvalResult<'tcx, Cow<'tcx, Allocation<Borrow, Self::AllocExtra>>> {
+    ) -> EvalResult<'tcx, Cow<'tcx, Allocation<Tag, Self::AllocExtra>>> {
         let attrs = tcx.get_attrs(def_id);
-        let link_name = match attr::first_attr_value_str_by_name(&attrs, "link_name") {
-            Some(name) => name.as_str().get(),
-            None => tcx.item_name(def_id).as_str().get(),
+        let link_name = match attr::first_attr_value_str_by_name(&attrs, sym::link_name) {
+            Some(name) => name.as_str(),
+            None => tcx.item_name(def_id).as_str(),
         };
 
-        let alloc = match link_name {
+        let alloc = match link_name.get() {
             "__cxa_thread_atexit_impl" => {
                 // This should be all-zero, pointer-sized.
                 let size = tcx.data_layout.pointer_size;
                 let data = vec![0; size.bytes() as usize];
-                let extra = AllocationExtra::memory_allocated(size, memory_extra);
+                let extra = Stacks::new(size, Tag::default(), Rc::clone(memory_extra));
                 Allocation::from_bytes(&data, tcx.data_layout.pointer_align.abi, extra)
             }
             _ => return err!(Unimplemented(
@@ -490,16 +509,17 @@ impl<'a, 'mir, 'tcx> Machine<'a, 'mir, 'tcx> for Evaluator<'tcx> {
     fn adjust_static_allocation<'b>(
         alloc: &'b Allocation,
         memory_extra: &Self::MemoryExtra,
-    ) -> Cow<'b, Allocation<Borrow, Self::AllocExtra>> {
-        let extra = AllocationExtra::memory_allocated(
+    ) -> Cow<'b, Allocation<Tag, Self::AllocExtra>> {
+        let extra = Stacks::new(
             Size::from_bytes(alloc.bytes.len() as u64),
-            memory_extra,
+            Tag::default(),
+            Rc::clone(memory_extra),
         );
-        let alloc: Allocation<Borrow, Self::AllocExtra> = Allocation {
+        let alloc: Allocation<Tag, Self::AllocExtra> = Allocation {
             bytes: alloc.bytes.clone(),
             relocations: Relocations::from_presorted(
                 alloc.relocations.iter()
-                    .map(|&(offset, ((), alloc))| (offset, (Borrow::default(), alloc)))
+                    .map(|&(offset, ((), alloc))| (offset, (Tag::default(), alloc)))
                     .collect()
             ),
             undef_mask: alloc.undef_mask.clone(),
@@ -510,46 +530,30 @@ impl<'a, 'mir, 'tcx> Machine<'a, 'mir, 'tcx> for Evaluator<'tcx> {
         Cow::Owned(alloc)
     }
 
-    fn tag_dereference(
-        ecx: &InterpretCx<'a, 'mir, 'tcx, Self>,
-        place: MPlaceTy<'tcx, Borrow>,
-        mutability: Option<hir::Mutability>,
-    ) -> EvalResult<'tcx, Scalar<Borrow>> {
-        let size = ecx.size_and_align_of_mplace(place)?.map(|(size, _)| size)
-            // For extern types, just cover what we can.
-            .unwrap_or_else(|| place.layout.size);
-        if !ecx.tcx.sess.opts.debugging_opts.mir_emit_retag ||
-            !Self::enforce_validity(ecx) || size == Size::ZERO
-        {
-            // No tracking.
-            Ok(place.ptr)
-        } else {
-            ecx.ptr_dereference(place, size, mutability.into())?;
-            // We never change the pointer.
-            Ok(place.ptr)
-        }
+    #[inline(always)]
+    fn new_allocation(
+        size: Size,
+        extra: &Self::MemoryExtra,
+        kind: MemoryKind<MiriMemoryKind>,
+    ) -> (Self::AllocExtra, Self::PointerTag) {
+        Stacks::new_allocation(size, extra, kind)
     }
 
     #[inline(always)]
-    fn tag_new_allocation(
-        ecx: &mut InterpretCx<'a, 'mir, 'tcx, Self>,
-        ptr: Pointer,
-        kind: MemoryKind<Self::MemoryKinds>,
-    ) -> Pointer<Borrow> {
-        if !ecx.machine.validate {
-            // No tracking.
-            ptr.with_default_tag()
-        } else {
-            let tag = ecx.tag_new_allocation(ptr.alloc_id, kind);
-            Pointer::new_with_tag(ptr.alloc_id, ptr.offset, tag)
-        }
+    fn tag_dereference(
+        _ecx: &InterpretCx<'a, 'mir, 'tcx, Self>,
+        place: MPlaceTy<'tcx, Tag>,
+        _mutability: Option<hir::Mutability>,
+    ) -> EvalResult<'tcx, Scalar<Tag>> {
+        // Nothing happens.
+        Ok(place.ptr)
     }
 
     #[inline(always)]
     fn retag(
         ecx: &mut InterpretCx<'a, 'mir, 'tcx, Self>,
         kind: mir::RetagKind,
-        place: PlaceTy<'tcx, Borrow>,
+        place: PlaceTy<'tcx, Tag>,
     ) -> EvalResult<'tcx> {
         if !ecx.tcx.sess.opts.debugging_opts.mir_emit_retag || !Self::enforce_validity(ecx) {
             // No tracking, or no retagging. The latter is possible because a dependency of ours

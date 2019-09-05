@@ -199,12 +199,6 @@ declare_lint! {
 }
 
 declare_lint! {
-    pub INCOHERENT_FUNDAMENTAL_IMPLS,
-    Deny,
-    "potentially-conflicting impls were erroneously allowed"
-}
-
-declare_lint! {
     pub ORDER_DEPENDENT_TRAIT_OBJECTS,
     Deny,
     "trait-object types were treated as different depending on marker-trait order"
@@ -352,12 +346,6 @@ declare_lint! {
     "outlives requirements can be inferred"
 }
 
-declare_lint! {
-    pub DUPLICATE_MATCHER_BINDING_NAME,
-    Deny,
-    "duplicate macro matcher binding name"
-}
-
 /// Some lints that are buffered from `libsyntax`. See `syntax::early_buffered_lints`.
 pub mod parser {
     declare_lint! {
@@ -382,7 +370,7 @@ declare_lint! {
 
 declare_lint! {
     pub AMBIGUOUS_ASSOCIATED_ITEMS,
-    Warn,
+    Deny,
     "ambiguous associated items"
 }
 
@@ -434,7 +422,6 @@ declare_lint_pass! {
         MISSING_FRAGMENT_SPECIFIER,
         PARENTHESIZED_PARAMS_IN_TYPES_AND_MODULES,
         LATE_BOUND_LIFETIME_ARGUMENTS,
-        INCOHERENT_FUNDAMENTAL_IMPLS,
         ORDER_DEPENDENT_TRAIT_OBJECTS,
         DEPRECATED,
         UNUSED_UNSAFE,
@@ -462,7 +449,6 @@ declare_lint_pass! {
         DEPRECATED_IN_FUTURE,
         AMBIGUOUS_ASSOCIATED_ITEMS,
         NESTED_IMPL_TRAIT,
-        DUPLICATE_MATCHER_BINDING_NAME,
         MUTABLE_BORROW_RESERVATION_CONFLICT,
     ]
 }
@@ -482,6 +468,48 @@ pub enum BuiltinLintDiagnostics {
     UnusedImports(String, Vec<(Span, String)>),
     NestedImplTrait { outer_impl_trait_span: Span, inner_impl_trait_span: Span },
     RedundantImport(Vec<(Span, bool)>, ast::Ident),
+}
+
+pub(crate) fn add_elided_lifetime_in_path_suggestion(
+    sess: &Session,
+    db: &mut DiagnosticBuilder<'_>,
+    n: usize,
+    path_span: Span,
+    incl_angl_brckt: bool,
+    insertion_span: Span,
+    anon_lts: String,
+) {
+    let (replace_span, suggestion) = if incl_angl_brckt {
+        (insertion_span, anon_lts)
+    } else {
+        // When possible, prefer a suggestion that replaces the whole
+        // `Path<T>` expression with `Path<'_, T>`, rather than inserting `'_, `
+        // at a point (which makes for an ugly/confusing label)
+        if let Ok(snippet) = sess.source_map().span_to_snippet(path_span) {
+            // But our spans can get out of whack due to macros; if the place we think
+            // we want to insert `'_` isn't even within the path expression's span, we
+            // should bail out of making any suggestion rather than panicking on a
+            // subtract-with-overflow or string-slice-out-out-bounds (!)
+            // FIXME: can we do better?
+            if insertion_span.lo().0 < path_span.lo().0 {
+                return;
+            }
+            let insertion_index = (insertion_span.lo().0 - path_span.lo().0) as usize;
+            if insertion_index > snippet.len() {
+                return;
+            }
+            let (before, after) = snippet.split_at(insertion_index);
+            (path_span, format!("{}{}{}", before, anon_lts, after))
+        } else {
+            (insertion_span, anon_lts)
+        }
+    };
+    db.span_suggestion(
+        replace_span,
+        &format!("indicate the anonymous lifetime{}", if n >= 2 { "s" } else { "" }),
+        suggestion,
+        Applicability::MachineApplicable
+    );
 }
 
 impl BuiltinLintDiagnostics {
@@ -528,36 +556,14 @@ impl BuiltinLintDiagnostics {
             BuiltinLintDiagnostics::ElidedLifetimesInPaths(
                 n, path_span, incl_angl_brckt, insertion_span, anon_lts
             ) => {
-                let (replace_span, suggestion) = if incl_angl_brckt {
-                    (insertion_span, anon_lts)
-                } else {
-                    // When possible, prefer a suggestion that replaces the whole
-                    // `Path<T>` expression with `Path<'_, T>`, rather than inserting `'_, `
-                    // at a point (which makes for an ugly/confusing label)
-                    if let Ok(snippet) = sess.source_map().span_to_snippet(path_span) {
-                        // But our spans can get out of whack due to macros; if the place we think
-                        // we want to insert `'_` isn't even within the path expression's span, we
-                        // should bail out of making any suggestion rather than panicking on a
-                        // subtract-with-overflow or string-slice-out-out-bounds (!)
-                        // FIXME: can we do better?
-                        if insertion_span.lo().0 < path_span.lo().0 {
-                            return;
-                        }
-                        let insertion_index = (insertion_span.lo().0 - path_span.lo().0) as usize;
-                        if insertion_index > snippet.len() {
-                            return;
-                        }
-                        let (before, after) = snippet.split_at(insertion_index);
-                        (path_span, format!("{}{}{}", before, anon_lts, after))
-                    } else {
-                        (insertion_span, anon_lts)
-                    }
-                };
-                db.span_suggestion(
-                    replace_span,
-                    &format!("indicate the anonymous lifetime{}", if n >= 2 { "s" } else { "" }),
-                    suggestion,
-                    Applicability::MachineApplicable
+                add_elided_lifetime_in_path_suggestion(
+                    sess,
+                    db,
+                    n,
+                    path_span,
+                    incl_angl_brckt,
+                    insertion_span,
+                    anon_lts,
                 );
             }
             BuiltinLintDiagnostics::UnknownCrateTypes(span, note, sugg) => {

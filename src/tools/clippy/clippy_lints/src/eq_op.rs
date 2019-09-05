@@ -1,9 +1,9 @@
 use crate::utils::{
-    implements_trait, in_macro, is_copy, multispan_sugg, snippet, span_lint, span_lint_and_then, SpanlessEq,
+    implements_trait, in_macro_or_desugar, is_copy, multispan_sugg, snippet, span_lint, span_lint_and_then, SpanlessEq,
 };
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 
 declare_clippy_lint! {
@@ -46,24 +46,13 @@ declare_clippy_lint! {
     "taking a reference to satisfy the type constraints on `==`"
 }
 
-#[derive(Copy, Clone)]
-pub struct EqOp;
-
-impl LintPass for EqOp {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(EQ_OP, OP_REF)
-    }
-
-    fn name(&self) -> &'static str {
-        "EqOp"
-    }
-}
+declare_lint_pass!(EqOp => [EQ_OP, OP_REF]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EqOp {
     #[allow(clippy::similar_names, clippy::too_many_lines)]
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
         if let ExprKind::Binary(op, ref left, ref right) = e.node {
-            if in_macro(e.span) {
+            if in_macro_or_desugar(e.span) {
                 return;
             }
             if is_valid_operator(op) && SpanlessEq::new(cx).ignore_fn().eq_expr(left, right) {

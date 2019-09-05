@@ -29,7 +29,7 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
 #![deny(rust_2018_idioms)]
-#![cfg_attr(not(stage0), deny(internal))]
+#![deny(internal)]
 #![allow(explicit_outlives_requirements)]
 
 #![feature(arbitrary_self_types)]
@@ -37,9 +37,11 @@
 #![feature(box_syntax)]
 #![feature(core_intrinsics)]
 #![feature(drain_filter)]
+#![feature(inner_deref)]
 #![cfg_attr(windows, feature(libc))]
 #![feature(never_type)]
 #![feature(exhaustive_patterns)]
+#![feature(overlapping_marker_traits)]
 #![feature(extern_types)]
 #![feature(nll)]
 #![feature(non_exhaustive)]
@@ -98,11 +100,13 @@ mod macros;
 
 // N.B., this module needs to be declared first so diagnostics are
 // registered before they are used.
-pub mod diagnostics;
+pub mod error_codes;
 
 #[macro_use]
 pub mod query;
 
+#[macro_use]
+pub mod arena;
 pub mod cfg;
 pub mod dep_graph;
 pub mod hir;

@@ -10,6 +10,7 @@ use rustc::infer::canonical::Canonical;
 use rustc::middle::region;
 use rustc::ty::subst::SubstsRef;
 use rustc::ty::{AdtDef, UpvarSubsts, Ty, Const, UserType};
+use rustc::ty::adjustment::{PointerCast};
 use rustc::ty::layout::VariantIdx;
 use rustc::hir;
 use syntax_pos::Span;
@@ -180,26 +181,9 @@ pub enum ExprKind<'tcx> {
     NeverToAny {
         source: ExprRef<'tcx>,
     },
-    ReifyFnPointer {
+    Pointer {
+        cast: PointerCast,
         source: ExprRef<'tcx>,
-    },
-    ClosureFnPointer {
-        source: ExprRef<'tcx>,
-        unsafety: hir::Unsafety,
-    },
-    UnsafeFnPointer {
-        source: ExprRef<'tcx>,
-    },
-    MutToConstPointer {
-        source: ExprRef<'tcx>,
-    },
-    Unsize {
-        source: ExprRef<'tcx>,
-    },
-    If {
-        condition: ExprRef<'tcx>,
-        then: ExprRef<'tcx>,
-        otherwise: Option<ExprRef<'tcx>>,
     },
     Loop {
         condition: Option<ExprRef<'tcx>>,

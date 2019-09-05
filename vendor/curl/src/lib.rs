@@ -54,10 +54,11 @@ extern crate curl_sys;
 extern crate libc;
 extern crate socket2;
 
-#[cfg(all(unix, not(target_os = "macos"), feature = "ssl"))]
-extern crate openssl_sys;
-#[cfg(all(unix, not(target_os = "macos"), feature = "ssl"))]
+#[cfg(need_openssl_probe)]
 extern crate openssl_probe;
+#[cfg(need_openssl_init)]
+extern crate openssl_sys;
+
 #[cfg(windows)]
 extern crate winapi;
 
@@ -70,15 +71,15 @@ use std::ffi::CStr;
 use std::str;
 use std::sync::{Once, ONCE_INIT};
 
-pub use error::{Error, ShareError, MultiError, FormError};
+pub use error::{Error, FormError, MultiError, ShareError};
 mod error;
 
-pub use version::{Version, Protocols};
+pub use version::{Protocols, Version};
 mod version;
 
-mod panic;
 pub mod easy;
 pub mod multi;
+mod panic;
 
 /// Initializes the underlying libcurl library.
 ///
@@ -103,12 +104,12 @@ pub fn init() {
         // function.
     });
 
-    #[cfg(all(unix, not(target_os = "macos"), feature = "ssl"))]
+    #[cfg(need_openssl_init)]
     fn platform_init() {
         openssl_sys::init();
     }
 
-    #[cfg(not(all(unix, not(target_os = "macos"), feature = "ssl")))]
+    #[cfg(not(need_openssl_init))]
     fn platform_init() {}
 }
 

@@ -1,4 +1,3 @@
-use crate::borrow_check::nll::type_check;
 use crate::build;
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
 use rustc::mir::{Mir, MirPhase, Promoted};
@@ -8,7 +7,6 @@ use rustc::ty::steal::Steal;
 use rustc::hir;
 use rustc::hir::intravisit::{self, Visitor, NestedVisitorMap};
 use rustc::util::nodemap::DefIdSet;
-use rustc_data_structures::sync::Lrc;
 use std::borrow::Cow;
 use syntax::ast;
 use syntax_pos::Span;
@@ -59,7 +57,7 @@ fn is_mir_available<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> boo
 /// Finds the full set of `DefId`s within the current crate that have
 /// MIR associated with them.
 fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
-                      -> Lrc<DefIdSet> {
+                      -> &'tcx DefIdSet {
     assert_eq!(krate, LOCAL_CRATE);
 
     let mut set = DefIdSet::default();
@@ -94,7 +92,7 @@ fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
         set: &mut set,
     }.as_deep_visitor());
 
-    Lrc::new(set)
+    tcx.arena.alloc(set)
 }
 
 fn mir_built<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Steal<Mir<'tcx>> {
@@ -206,7 +204,6 @@ fn mir_const<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Stea
     run_passes(tcx, &mut mir, InstanceDef::Item(def_id), MirPhase::Const, &[
         // What we need to do constant evaluation.
         &simplify::SimplifyCfg::new("initial"),
-        &type_check::TypeckMir,
         &rustc_peek::SanityCheck,
         &uniform_array_move_out::UniformArrayMoveOut,
     ]);

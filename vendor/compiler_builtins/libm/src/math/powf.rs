@@ -44,6 +44,7 @@ const IVLN2_H: f32 = 1.4426879883e+00;
 const IVLN2_L: f32 = 7.0526075433e-06;
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn powf(x: f32, y: f32) -> f32 {
     let mut z: f32;
     let mut ax: f32;
@@ -135,12 +136,12 @@ pub fn powf(x: f32, y: f32) -> f32 {
         return x * x;
     }
 
-    if hy == 0x3f000000 {
-        /* y is  0.5 */
-        if hx >= 0 {
-            /* x >= +0 */
-            return sqrtf(x);
-        }
+    if hy == 0x3f000000
+       /* y is  0.5 */
+       && hx >= 0
+    {
+        /* x >= +0 */
+        return sqrtf(x);
     }
 
     ax = fabsf(x);
@@ -197,7 +198,7 @@ pub fn powf(x: f32, y: f32) -> f32 {
         }
 
         /* now |1-x| is TINY <= 2**-20, suffice to compute
-       log(x) by x-x^2/2+x^3/3-x^4/4 */
+        log(x) by x-x^2/2+x^3/3-x^4/4 */
         t = ax - 1.; /* t has 20 trailing zeros */
         w = (t * t) * (0.5 - t * (0.333333333333 - t * 0.25));
         u = IVLN2_H * t; /* IVLN2_H has 16 sig. bits */
@@ -295,11 +296,11 @@ pub fn powf(x: f32, y: f32) -> f32 {
         /* z < -150 */
         // FIXME: check should be  (uint32_t)j > 0xc3160000
         return sn * TINY * TINY; /* underflow */
-    } else if j as u32 == 0xc3160000 {
-        /* z == -150 */
-        if p_l <= z - p_h {
-            return sn * TINY * TINY; /* underflow */
-        }
+    } else if j as u32 == 0xc3160000
+              /* z == -150 */
+              && p_l <= z - p_h
+    {
+        return sn * TINY * TINY; /* underflow */
     }
 
     /*
@@ -338,5 +339,5 @@ pub fn powf(x: f32, y: f32) -> f32 {
     } else {
         z = f32::from_bits(j as u32);
     }
-    return sn * z;
+    sn * z
 }

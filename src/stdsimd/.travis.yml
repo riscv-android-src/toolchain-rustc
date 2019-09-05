@@ -68,7 +68,7 @@ matrix:
       env: NORUN=1 NOSTD=1 NO_DOCKER=1
       install:
         - rustup component add rust-src
-        - cargo install xargo
+        - (test -x $HOME/.cargo/bin/cargo-xbuild || cargo install cargo-xbuild)
       script:
         # Obtain the devkitPro tools, using `target/` as a temp directory. This
         # is required because we need to use their linker. `lld` uses the `BLX`
@@ -85,11 +85,11 @@ matrix:
         - cd ..
         # Pull the target spec up into the current directory and then build
         - mv ci/gba.json gba.json
-        - xargo build --all --target=gba
+        - cargo xbuild -p core_arch --target gba.json
     - name: "Documentation"
       install: true
       script: ci/dox.sh
-    - name: "Automatic verification: x86 and x86_64"
+    - name: "Automatic verification: x86 / x86_64 / arm / aarch64 / mips*"
       script: cargo test --manifest-path crates/stdsimd-verify/Cargo.toml
       install: true
     - name: "rustfmt"
@@ -110,6 +110,9 @@ matrix:
       script:
         - shellcheck --version
         - shellcheck ci/*.sh
+
+  allow_failures:
+    - name: "powerpc-unknown-linux-gnu - no assert_instr"
 
 install: travis_retry rustup target add $TARGET
 script:

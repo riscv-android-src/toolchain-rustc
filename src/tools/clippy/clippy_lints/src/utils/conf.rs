@@ -13,7 +13,7 @@ use toml;
 /// Gets the configuration file from arguments.
 pub fn file_from_args(args: &[ast::NestedMetaItem]) -> Result<Option<path::PathBuf>, (&'static str, source_map::Span)> {
     for arg in args.iter().filter_map(syntax::ast::NestedMetaItem::meta_item) {
-        if arg.check_name("conf_file") {
+        if arg.check_name(sym!(conf_file)) {
             return match arg.node {
                 ast::MetaItemKind::Word | ast::MetaItemKind::List(_) => {
                     Err(("`conf_file` must be a named value", arg.span))
@@ -64,7 +64,7 @@ macro_rules! define_Conf {
     ($(#[$doc: meta] ($rust_name: ident, $rust_name_str: expr, $default: expr => $($ty: tt)+),)+) => {
         pub use self::helpers::Conf;
         mod helpers {
-            use serde_derive::Deserialize;
+            use serde::Deserialize;
             /// Type used to store lint configuration.
             #[derive(Deserialize)]
             #[serde(rename_all="kebab-case", deny_unknown_fields)]

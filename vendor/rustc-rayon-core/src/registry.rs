@@ -387,11 +387,15 @@ impl Registry {
     {
         // This thread isn't a member of *any* thread pool, so just block.
         debug_assert!(WorkerThread::current().is_null());
-        let job = StackJob::new(|injected| {
-            let worker_thread = WorkerThread::current();
-            assert!(injected && !worker_thread.is_null());
-            op(&*worker_thread, true)
-        }, LockLatch::new());
+        let job = StackJob::new(
+            0,
+            |injected| {
+                let worker_thread = WorkerThread::current();
+                assert!(injected && !worker_thread.is_null());
+                op(&*worker_thread, true)
+            },
+            LockLatch::new(),
+        );
         self.inject(&[job.as_job_ref()]);
         self.release_thread();
         job.latch.wait();
@@ -410,6 +414,7 @@ impl Registry {
         debug_assert!(current_thread.registry().id() != self.id());
         let latch = TickleLatch::new(SpinLatch::new(), &current_thread.registry().sleep);
         let job = StackJob::new(
+            0,
             |injected| {
                 let worker_thread = WorkerThread::current();
                 assert!(injected && !worker_thread.is_null());

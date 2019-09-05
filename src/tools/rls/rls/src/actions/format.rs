@@ -86,17 +86,29 @@ impl Rustfmt {
             .map(|item| {
                 // Rustfmt's line indices are 1-based
                 let start_line = u64::from(item.line_number_orig) - 1;
-                // Could underflow if we don't remove lines and there's only one
-                let removed = u64::from(item.lines_removed).saturating_sub(1);
+                let end_line = start_line + u64::from(item.lines_removed);
+
+                let mut new_text = item.lines.join(newline);
+
+                // Rustfmt represents an added line as start_line == end_line, new_text == "",
+                // which is a no-op, so we need to add a terminating newline.
+                if start_line == end_line && new_text.len() == 0 {
+                    new_text.push_str(newline);
+                }
+
+                // Line deletions are represented as start_line != end_line, new_text == "".
+                // If we're not deleting a line, there should always be a terminating newline.
+                let delete_only = start_line != end_line && new_text.len() == 0;
+                if !delete_only && !new_text.ends_with(newline) {
+                    new_text.push_str(newline);
+                }
+
                 TextEdit {
                     range: Range {
                         start: Position::new(start_line, 0),
-                        // We don't extend the range past the last line because
-                        // sometimes it may not exist, skewing the diff and
-                        // making us add an invalid additional trailing newline.
-                        end: Position::new(start_line + removed, u64::max_value()),
+                        end: Position::new(end_line, 0),
                     },
-                    new_text: item.lines.join(newline),
+                    new_text,
                 }
             })
             .collect())
@@ -202,34 +214,34 @@ mod tests {
 
     #[test]
     fn calc_text_edits() {
-        let config = || FmtConfig::default().get_rustfmt_config().clone();
-        let format = |x: &str| Rustfmt::Internal.calc_text_edits(x.to_string(), config()).unwrap();
-        let line_range = |start, end| Range {
-            start: Position { line: start, character: 0 },
-            end: Position { line: end, character: u64::max_value() },
-        };
+        fn format(input: &str) -> Vec<TextEdit> {
+            let config = || FmtConfig::default().get_rustfmt_config().clone();
+            Rustfmt::Internal.calc_text_edits(input.to_string(), config()).unwrap()
+        }
+
+        fn test_case(input: &str, output: Vec<(u64, u64, u64, u64, &str)>) {
+            assert_eq!(
+                format(input),
+                output
+                    .into_iter()
+                    .map(|(start_l, start_c, end_l, end_c, out)| TextEdit {
+                        range: Range {
+                            start: Position { line: start_l, character: start_c },
+                            end: Position { line: end_l, character: end_c },
+                        },
+                        new_text: out.to_owned(),
+                    })
+                    .collect::<Vec<_>>()
+            )
+        }
         // Handle single-line text wrt. added/removed trailing newline
-        assert_eq!(
-            format("fn main() {} "),
-            vec![TextEdit { range: line_range(0, 0), new_text: "fn main() {}\n".to_owned() }]
-        );
-
-        assert_eq!(
-            format("fn main() {} \n"),
-            vec![TextEdit { range: line_range(0, 0), new_text: "fn main() {}".to_owned() }]
-        );
-
-        assert_eq!(
-            format("\nfn main() {} \n"),
-            vec![TextEdit { range: line_range(0, 1), new_text: "fn main() {}".to_owned() }]
-        );
+        test_case("fn main() {} ", vec![(0, 0, 1, 0, "fn main() {}\n")]);
+        test_case("fn main() {} \n", vec![(0, 0, 1, 0, "fn main() {}\n")]);
+        test_case("\nfn main() {} \n", vec![(0, 0, 2, 0, "fn main() {}\n")]);
         // Check that we send two separate edits
-        assert_eq!(
-            format("  struct Upper ;\n\nstruct Lower ;"),
-            vec![
-                TextEdit { range: line_range(0, 0), new_text: "struct Upper;".to_owned() },
-                TextEdit { range: line_range(2, 2), new_text: "struct Lower;\n".to_owned() }
-            ]
+        test_case(
+            "  struct Upper ;\n\nstruct Lower ;",
+            vec![(0, 0, 1, 0, "struct Upper;\n"), (2, 0, 3, 0, "struct Lower;\n")],
         );
     }
 }

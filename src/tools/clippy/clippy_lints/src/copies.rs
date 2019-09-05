@@ -1,9 +1,9 @@
-use crate::utils::{get_parent_expr, in_macro, snippet, span_lint_and_then, span_note_and_lint};
+use crate::utils::{get_parent_expr, higher, in_macro_or_desugar, snippet, span_lint_and_then, span_note_and_lint};
 use crate::utils::{SpanlessEq, SpanlessHash};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::Ty;
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::FxHashMap;
 use smallvec::SmallVec;
 use std::collections::hash_map::Entry;
@@ -103,30 +103,17 @@ declare_clippy_lint! {
     "`match` with identical arm bodies"
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct CopyAndPaste;
-
-impl LintPass for CopyAndPaste {
-    fn get_lints(&self) -> LintArray {
-        lint_array![IFS_SAME_COND, IF_SAME_THEN_ELSE, MATCH_SAME_ARMS]
-    }
-
-    fn name(&self) -> &'static str {
-        "CopyAndPaste"
-    }
-}
+declare_lint_pass!(CopyAndPaste => [IFS_SAME_COND, IF_SAME_THEN_ELSE, MATCH_SAME_ARMS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CopyAndPaste {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        if !in_macro(expr.span) {
+        if !in_macro_or_desugar(expr.span) {
             // skip ifs directly in else, it will be checked in the parent if
-            if let Some(&Expr {
-                node: ExprKind::If(_, _, Some(ref else_expr)),
-                ..
-            }) = get_parent_expr(cx, expr)
-            {
-                if else_expr.hir_id == expr.hir_id {
-                    return;
+            if let Some(expr) = get_parent_expr(cx, expr) {
+                if let Some((_, _, Some(ref else_expr))) = higher::if_block(&expr) {
+                    if else_expr.hir_id == expr.hir_id {
+                        return;
+                    }
                 }
             }
 
@@ -247,7 +234,7 @@ fn if_sequence(mut expr: &Expr) -> (SmallVec<[&Expr; 1]>, SmallVec<[&Block; 1]>)
     let mut conds = SmallVec::new();
     let mut blocks: SmallVec<[&Block; 1]> = SmallVec::new();
 
-    while let ExprKind::If(ref cond, ref then_expr, ref else_expr) = expr.node {
+    while let Some((ref cond, ref then_expr, ref else_expr)) = higher::if_block(&expr) {
         conds.push(&**cond);
         if let ExprKind::Block(ref block, _) = then_expr.node {
             blocks.push(block);

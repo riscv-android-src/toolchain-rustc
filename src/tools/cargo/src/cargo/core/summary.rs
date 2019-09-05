@@ -1,6 +1,7 @@
 use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Display;
+use std::hash::{Hash, Hasher};
 use std::mem;
 use std::rc::Rc;
 
@@ -104,9 +105,8 @@ impl Summary {
         self
     }
 
-    pub fn set_checksum(mut self, cksum: String) -> Summary {
+    pub fn set_checksum(&mut self, cksum: String) {
         Rc::make_mut(&mut self.inner).checksum = Some(cksum);
-        self
     }
 
     pub fn map_dependencies<F>(mut self, f: F) -> Summary
@@ -135,6 +135,14 @@ impl Summary {
 impl PartialEq for Summary {
     fn eq(&self, other: &Summary) -> bool {
         self.inner.package_id == other.inner.package_id
+    }
+}
+
+impl Eq for Summary {}
+
+impl Hash for Summary {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.inner.package_id.hash(state);
     }
 }
 

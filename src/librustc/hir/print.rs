@@ -5,7 +5,7 @@ use syntax::parse::ParseSess;
 use syntax::parse::lexer::comments;
 use syntax::print::pp::{self, Breaks};
 use syntax::print::pp::Breaks::{Consistent, Inconsistent};
-use syntax::print::pprust::PrintState;
+use syntax::print::pprust::{self, PrintState};
 use syntax::ptr::P;
 use syntax::symbol::keywords;
 use syntax::util::parser::{self, AssocOp, Fixity};
@@ -18,7 +18,6 @@ use crate::hir::{GenericParam, GenericParamKind, GenericArg};
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::io::{self, Write, Read};
-use std::iter::Peekable;
 use std::vec;
 
 pub enum AnnNode<'a> {
@@ -76,7 +75,6 @@ pub struct State<'a> {
     pub s: pp::Printer<'a>,
     cm: Option<&'a SourceMap>,
     comments: Option<Vec<comments::Comment>>,
-    literals: Peekable<vec::IntoIter<comments::Literal>>,
     cur_cmnt: usize,
     boxes: Vec<pp::Breaks>,
     ann: &'a (dyn PpAnn + 'a),
@@ -98,14 +96,6 @@ impl<'a> PrintState<'a> for State<'a> {
     fn cur_cmnt(&mut self) -> &mut usize {
         &mut self.cur_cmnt
     }
-
-    fn cur_lit(&mut self) -> Option<&comments::Literal> {
-        self.literals.peek()
-    }
-
-    fn bump_lit(&mut self) -> Option<comments::Literal> {
-        self.literals.next()
-    }
 }
 
 #[allow(non_upper_case_globals)]
@@ -116,18 +106,16 @@ pub const default_columns: usize = 78;
 
 
 /// Requires you to pass an input filename and reader so that
-/// it can scan the input text for comments and literals to
-/// copy forward.
+/// it can scan the input text for comments to copy forward.
 pub fn print_crate<'a>(cm: &'a SourceMap,
                        sess: &ParseSess,
                        krate: &hir::Crate,
                        filename: FileName,
                        input: &mut dyn Read,
                        out: Box<dyn Write + 'a>,
-                       ann: &'a dyn PpAnn,
-                       is_expanded: bool)
+                       ann: &'a dyn PpAnn)
                        -> io::Result<()> {
-    let mut s = State::new_from_input(cm, sess, filename, input, out, ann, is_expanded);
+    let mut s = State::new_from_input(cm, sess, filename, input, out, ann);
 
     // When printing the AST, we sometimes need to inject `#[no_std]` here.
     // Since you can't compile the HIR, it's not necessary.
@@ -143,36 +131,21 @@ impl<'a> State<'a> {
                           filename: FileName,
                           input: &mut dyn Read,
                           out: Box<dyn Write + 'a>,
-                          ann: &'a dyn PpAnn,
-                          is_expanded: bool)
+                          ann: &'a dyn PpAnn)
                           -> State<'a> {
-        let (cmnts, lits) = comments::gather_comments_and_literals(sess, filename, input);
-
-        State::new(cm,
-                   out,
-                   ann,
-                   Some(cmnts),
-                   // If the code is post expansion, don't use the table of
-                   // literals, since it doesn't correspond with the literals
-                   // in the AST anymore.
-                   if is_expanded {
-                       None
-                   } else {
-                       Some(lits)
-                   })
+        let comments = comments::gather_comments(sess, filename, input);
+        State::new(cm, out, ann, Some(comments))
     }
 
     pub fn new(cm: &'a SourceMap,
                out: Box<dyn Write + 'a>,
                ann: &'a dyn PpAnn,
-               comments: Option<Vec<comments::Comment>>,
-               literals: Option<Vec<comments::Literal>>)
+               comments: Option<Vec<comments::Comment>>)
                -> State<'a> {
         State {
             s: pp::mk_printer(out, default_columns),
             cm: Some(cm),
             comments,
-            literals: literals.unwrap_or_default().into_iter().peekable(),
             cur_cmnt: 0,
             boxes: Vec::new(),
             ann,
@@ -189,7 +162,6 @@ pub fn to_string<F>(ann: &dyn PpAnn, f: F) -> String
             s: pp::mk_printer(Box::new(&mut wr), default_columns),
             cm: None,
             comments: None,
-            literals: vec![].into_iter().peekable(),
             cur_cmnt: 0,
             boxes: Vec::new(),
             ann,
@@ -466,7 +438,7 @@ impl<'a> State<'a> {
             }
             hir::ForeignItemKind::Static(ref t, m) => {
                 self.head(visibility_qualified(&item.vis, "static"))?;
-                if m {
+                if m == hir::MutMutable {
                     self.word_space("mut")?;
                 }
                 self.print_ident(item.ident)?;
@@ -622,7 +594,7 @@ impl<'a> State<'a> {
             }
             hir::ItemKind::GlobalAsm(ref ga) => {
                 self.head(visibility_qualified(&item.vis, "global asm"))?;
-                self.s.word(ga.asm.as_str().get())?;
+                self.s.word(ga.asm.as_str().to_string())?;
                 self.end()?
             }
             hir::ItemKind::Ty(ref ty, ref generics) => {
@@ -646,7 +618,6 @@ impl<'a> State<'a> {
 
                 self.print_where_clause(&exist.generics.where_clause)?;
                 self.s.space()?;
-                self.word_space(":")?;
                 let mut real_bounds = Vec::with_capacity(exist.bounds.len());
                 for b in exist.bounds.iter() {
                     if let GenericBound::Trait(ref ptr, hir::TraitBoundModifier::Maybe) = *b {
@@ -995,23 +966,32 @@ impl<'a> State<'a> {
         self.ann.post(self, AnnNode::SubItem(ii.hir_id))
     }
 
+    pub fn print_local(
+        &mut self,
+        init: Option<&hir::Expr>,
+        decl: impl Fn(&mut Self) -> io::Result<()>
+    ) -> io::Result<()> {
+        self.space_if_not_bol()?;
+        self.ibox(indent_unit)?;
+        self.word_nbsp("let")?;
+
+        self.ibox(indent_unit)?;
+        decl(self)?;
+        self.end()?;
+
+        if let Some(ref init) = init {
+            self.nbsp()?;
+            self.word_space("=")?;
+            self.print_expr(&init)?;
+        }
+        self.end()
+    }
+
     pub fn print_stmt(&mut self, st: &hir::Stmt) -> io::Result<()> {
         self.maybe_print_comment(st.span.lo())?;
         match st.node {
             hir::StmtKind::Local(ref loc) => {
-                self.space_if_not_bol()?;
-                self.ibox(indent_unit)?;
-                self.word_nbsp("let")?;
-
-                self.ibox(indent_unit)?;
-                self.print_local_decl(&loc)?;
-                self.end()?;
-                if let Some(ref init) = loc.init {
-                    self.nbsp()?;
-                    self.word_space("=")?;
-                    self.print_expr(&init)?;
-                }
-                self.end()?
+                self.print_local(loc.init.deref(), |this| this.print_local_decl(&loc))?;
             }
             hir::StmtKind::Item(item) => {
                 self.ann.nested(self, Nested::Item(item))?
@@ -1082,65 +1062,6 @@ impl<'a> State<'a> {
         }
         self.bclose_maybe_open(blk.span, indented, close_box)?;
         self.ann.post(self, AnnNode::Block(blk))
-    }
-
-    fn print_else(&mut self, els: Option<&hir::Expr>) -> io::Result<()> {
-        match els {
-            Some(_else) => {
-                match _else.node {
-                    // "another else-if"
-                    hir::ExprKind::If(ref i, ref then, ref e) => {
-                        self.cbox(indent_unit - 1)?;
-                        self.ibox(0)?;
-                        self.s.word(" else if ")?;
-                        self.print_expr_as_cond(&i)?;
-                        self.s.space()?;
-                        self.print_expr(&then)?;
-                        self.print_else(e.as_ref().map(|e| &**e))
-                    }
-                    // "final else"
-                    hir::ExprKind::Block(ref b, _) => {
-                        self.cbox(indent_unit - 1)?;
-                        self.ibox(0)?;
-                        self.s.word(" else ")?;
-                        self.print_block(&b)
-                    }
-                    // BLEAH, constraints would be great here
-                    _ => {
-                        panic!("print_if saw if with weird alternative");
-                    }
-                }
-            }
-            _ => Ok(()),
-        }
-    }
-
-    pub fn print_if(&mut self,
-                    test: &hir::Expr,
-                    blk: &hir::Expr,
-                    elseopt: Option<&hir::Expr>)
-                    -> io::Result<()> {
-        self.head("if")?;
-        self.print_expr_as_cond(test)?;
-        self.s.space()?;
-        self.print_expr(blk)?;
-        self.print_else(elseopt)
-    }
-
-    pub fn print_if_let(&mut self,
-                        pat: &hir::Pat,
-                        expr: &hir::Expr,
-                        blk: &hir::Block,
-                        elseopt: Option<&hir::Expr>)
-                        -> io::Result<()> {
-        self.head("if let")?;
-        self.print_pat(pat)?;
-        self.s.space()?;
-        self.word_space("=")?;
-        self.print_expr_as_cond(expr)?;
-        self.s.space()?;
-        self.print_block(blk)?;
-        self.print_else(elseopt)
     }
 
     pub fn print_anon_const(&mut self, constant: &hir::AnonConst) -> io::Result<()> {
@@ -1326,6 +1247,12 @@ impl<'a> State<'a> {
         self.print_expr_maybe_paren(expr, parser::PREC_PREFIX)
     }
 
+    fn print_literal(&mut self, lit: &hir::Lit) -> io::Result<()> {
+        self.maybe_print_comment(lit.span.lo())?;
+        let (token, suffix) = lit.node.to_lit_token();
+        self.writer().word(pprust::literal_to_string(token, suffix))
+    }
+
     pub fn print_expr(&mut self, expr: &hir::Expr) -> io::Result<()> {
         self.maybe_print_comment(expr.span.lo())?;
         self.print_outer_attributes(&expr.attrs)?;
@@ -1379,8 +1306,23 @@ impl<'a> State<'a> {
                 self.word_space(":")?;
                 self.print_type(&ty)?;
             }
-            hir::ExprKind::If(ref test, ref blk, ref elseopt) => {
-                self.print_if(&test, &blk, elseopt.as_ref().map(|e| &**e))?;
+            hir::ExprKind::DropTemps(ref init) => {
+                // Print `{`:
+                self.cbox(indent_unit)?;
+                self.ibox(0)?;
+                self.bopen()?;
+
+                // Print `let _t = $init;`:
+                let temp = ast::Ident::from_str("_t");
+                self.print_local(Some(init), |this| this.print_ident(temp))?;
+                self.s.word(";")?;
+
+                // Print `_t`:
+                self.space_if_not_bol()?;
+                self.print_ident(temp)?;
+
+                // Print `}`:
+                self.bclose_maybe_open(expr.span, indent_unit, true)?;
             }
             hir::ExprKind::While(ref test, ref blk, opt_label) => {
                 if let Some(label) = opt_label {
@@ -1591,7 +1533,7 @@ impl<'a> State<'a> {
         if ident.is_raw_guess() {
             self.s.word(format!("r#{}", ident.name))?;
         } else {
-            self.s.word(ident.as_str().get())?;
+            self.s.word(ident.as_str().to_string())?;
         }
         self.ann.post(self, AnnNode::Name(&ident.name))
     }
@@ -1998,7 +1940,7 @@ impl<'a> State<'a> {
         self.commasep(Inconsistent, &decl.inputs, |s, ty| {
             s.ibox(indent_unit)?;
             if let Some(arg_name) = arg_names.get(i) {
-                s.s.word(arg_name.as_str().get())?;
+                s.s.word(arg_name.as_str().to_string())?;
                 s.s.word(":")?;
                 s.s.space()?;
             } else if let Some(body_id) = body_id {
@@ -2387,7 +2329,6 @@ impl<'a> State<'a> {
 /// isn't parsed as (if true {...} else {...} | x) | 5
 fn expr_requires_semi_to_be_stmt(e: &hir::Expr) -> bool {
     match e.node {
-        hir::ExprKind::If(..) |
         hir::ExprKind::Match(..) |
         hir::ExprKind::Block(..) |
         hir::ExprKind::While(..) |

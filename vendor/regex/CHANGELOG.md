@@ -1,3 +1,80 @@
+1.1.6 (2019-04-16)
+==================
+This release fixes a regression introduced by a bug fix (for
+[BUG #557](https://github.com/rust-lang/regex/issues/557)) which could cause
+the regex engine to enter an infinite loop. This bug was originally
+[reported against ripgrep](https://github.com/BurntSushi/ripgrep/issues/1247).
+
+
+1.1.5 (2019-04-01)
+==================
+This release fixes a bug in regex's dependency specification where it requires
+a newer version of regex-syntax, but this wasn't communicated correctly in the
+Cargo.toml. This would have been caught by a minimal version check, but this
+check was disabled because the `rand` crate itself advertises incorrect
+dependency specifications.
+
+Bug fixes:
+
+* [BUG #570](https://github.com/rust-lang/regex/pull/570):
+  Fix regex-syntax minimal version.
+
+
+1.1.4 (2019-03-31)
+==================
+This release fixes a backwards compatibility regression where Regex was no
+longer UnwindSafe. This was caused by the upgrade to aho-corasick 0.7, whose
+AhoCorasick type was itself not UnwindSafe. This has been fixed in aho-corasick
+0.7.4, which we now require.
+
+Bug fixes:
+
+* [BUG #568](https://github.com/rust-lang/regex/pull/568):
+  Fix an API regression where Regex was no longer UnwindSafe.
+
+
+1.1.3 (2019-03-30)
+==================
+This releases fixes a few bugs and adds a performance improvement when a regex
+is a simple alternation of literals.
+
+Performance improvements:
+
+* [OPT #566](https://github.com/rust-lang/regex/pull/566):
+  Upgrades `aho-corasick` to 0.7 and uses it for `foo|bar|...|quux` regexes.
+
+Bug fixes:
+
+* [BUG #527](https://github.com/rust-lang/regex/issues/527):
+  Fix a bug where the parser would panic on patterns like `((?x))`.
+* [BUG #555](https://github.com/rust-lang/regex/issues/555):
+  Fix a bug where the parser would panic on patterns like `(?m){1,1}`.
+* [BUG #557](https://github.com/rust-lang/regex/issues/557):
+  Fix a bug where captures could lead to an incorrect match.
+
+
+1.1.2 (2019-02-27)
+==================
+This release fixes a bug found in the fix introduced in 1.1.1.
+
+Bug fixes:
+
+* [BUG edf45e6f](https://github.com/rust-lang/regex/commit/edf45e6f):
+  Fix bug introduced in reverse suffix literal matcher in the 1.1.1 release.
+
+
+1.1.1 (2019-02-27)
+==================
+This is a small release with one fix for a bug caused by literal optimizations.
+
+Bug fixes:
+
+* [BUG 661bf53d](https://github.com/rust-lang/regex/commit/661bf53d):
+  Fixes a bug in the reverse suffix literal optimization. This was originally
+  reported
+  [against ripgrep](https://github.com/BurntSushi/ripgrep/issues/1203).
+
+
 1.1.0 (2018-11-30)
 ==================
 This is a small release with a couple small enhancements. This release also

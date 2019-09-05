@@ -1,10 +1,11 @@
 use crate::utils::{
-    get_trait_def_id, implements_trait, in_macro, match_type, paths, snippet_opt, span_lint_and_then, SpanlessEq,
+    get_trait_def_id, implements_trait, in_macro, in_macro_or_desugar, match_type, paths, snippet_opt,
+    span_lint_and_then, SpanlessEq,
 };
 use rustc::hir::intravisit::*;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::thin_vec::ThinVec;
 use rustc_errors::Applicability;
 use syntax::ast::LitKind;
@@ -51,18 +52,7 @@ declare_clippy_lint! {
 // For each pairs, both orders are considered.
 const METHODS_WITH_NEGATION: [(&str, &str); 2] = [("is_some", "is_none"), ("is_err", "is_ok")];
 
-#[derive(Copy, Clone)]
-pub struct NonminimalBool;
-
-impl LintPass for NonminimalBool {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NONMINIMAL_BOOL, LOGIC_BUG)
-    }
-
-    fn name(&self) -> &'static str {
-        "NonminimalBool"
-    }
-}
+declare_lint_pass!(NonminimalBool => [NONMINIMAL_BOOL, LOGIC_BUG]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonminimalBool {
     fn check_fn(
@@ -104,7 +94,7 @@ impl<'a, 'tcx, 'v> Hir2Qmm<'a, 'tcx, 'v> {
 
     fn run(&mut self, e: &'v Expr) -> Result<Bool, String> {
         // prevent folding of `cfg!` macros and the like
-        if !in_macro(e.span) {
+        if !in_macro_or_desugar(e.span) {
             match &e.node {
                 ExprKind::Unary(UnNot, inner) => return Ok(Bool::Not(box self.run(inner)?)),
                 ExprKind::Binary(binop, lhs, rhs) => match &binop.node {
@@ -206,7 +196,7 @@ impl<'a, 'tcx, 'v> SuggestContext<'a, 'tcx, 'v> {
                     .iter()
                     .cloned()
                     .flat_map(|(a, b)| vec![(a, b), (b, a)])
-                    .find(|&(a, _)| a == path.ident.as_str())
+                    .find(|&(a, _)| a == path.ident.name.as_str())
                     .and_then(|(_, neg_method)| Some(format!("{}.{}()", self.snip(&args[0])?, neg_method)))
             },
             _ => None,

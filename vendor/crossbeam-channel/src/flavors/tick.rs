@@ -2,12 +2,10 @@
 //!
 //! Messages cannot be sent into this kind of channel; they are materialized on demand.
 
-use std::num::Wrapping;
-use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use crossbeam_utils::atomic::AtomicCell;
 
 use context::Context;
 use err::{RecvTimeoutError, TryRecvError};
@@ -16,20 +14,10 @@ use select::{Operation, SelectHandle, Token};
 /// Result of a receive operation.
 pub type TickToken = Option<Instant>;
 
-/// Channel state.
-struct Inner {
-    /// The instant at which the next message will be delivered.
-    next_tick: Instant,
-
-    /// The index of the next message to be received.
-    index: Wrapping<usize>,
-}
-
 /// Channel that delivers messages periodically.
 pub struct Channel {
-    /// The state of the channel.
-    // TODO: Use `Arc<AtomicCell<Inner>>` here once we implement `AtomicCell`.
-    inner: Arc<Mutex<Inner>>,
+    /// The instant at which the next message will be delivered.
+    delivery_time: AtomicCell<Instant>,
 
     /// The time interval in which messages get delivered.
     duration: Duration,
@@ -40,10 +28,7 @@ impl Channel {
     #[inline]
     pub fn new(dur: Duration) -> Self {
         Channel {
-            inner: Arc::new(Mutex::new(Inner {
-                next_tick: Instant::now() + dur,
-                index: Wrapping(0),
-            })),
+            delivery_time: AtomicCell::new(Instant::now() + dur),
             duration: dur,
         }
     }
@@ -51,17 +36,21 @@ impl Channel {
     /// Attempts to receive a message without blocking.
     #[inline]
     pub fn try_recv(&self) -> Result<Instant, TryRecvError> {
-        let mut inner = self.inner.lock();
-        let now = Instant::now();
+        loop {
+            let now = Instant::now();
+            let delivery_time = self.delivery_time.load();
 
-        // If the next tick time has been reached, we can receive the next message.
-        if now >= inner.next_tick {
-            let msg = inner.next_tick;
-            inner.next_tick = now + self.duration;
-            inner.index += Wrapping(1);
-            Ok(msg)
-        } else {
-            Err(TryRecvError::Empty)
+            if now < delivery_time {
+                return Err(TryRecvError::Empty);
+            }
+
+            if self
+                .delivery_time
+                .compare_exchange(delivery_time, now + self.duration)
+                .is_ok()
+            {
+                return Ok(delivery_time);
+            }
         }
     }
 
@@ -71,15 +60,17 @@ impl Channel {
         loop {
             // Compute the time to sleep until the next message or the deadline.
             let offset = {
-                let mut inner = self.inner.lock();
+                let mut delivery_time = self.delivery_time.load();
                 let now = Instant::now();
 
                 // Check if we can receive the next message.
-                if now >= inner.next_tick {
-                    let msg = inner.next_tick;
-                    inner.next_tick = now + self.duration;
-                    inner.index += Wrapping(1);
-                    return Ok(msg);
+                if now >= delivery_time
+                    && self
+                        .delivery_time
+                        .compare_exchange(delivery_time, now + self.duration)
+                        .is_ok()
+                {
+                    return Ok(delivery_time);
                 }
 
                 // Check if the operation deadline has been reached.
@@ -88,9 +79,9 @@ impl Channel {
                         return Err(RecvTimeoutError::Timeout);
                     }
 
-                    inner.next_tick.min(d) - now
+                    delivery_time.min(d) - now
                 } else {
-                    inner.next_tick - now
+                    delivery_time - now
                 }
             };
 
@@ -107,8 +98,7 @@ impl Channel {
     /// Returns `true` if the channel is empty.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        let inner = self.inner.lock();
-        Instant::now() < inner.next_tick
+        Instant::now() < self.delivery_time.load()
     }
 
     /// Returns `true` if the channel is full.
@@ -134,16 +124,6 @@ impl Channel {
     }
 }
 
-impl Clone for Channel {
-    #[inline]
-    fn clone(&self) -> Channel {
-        Channel {
-            inner: self.inner.clone(),
-            duration: self.duration,
-        }
-    }
-}
-
 impl SelectHandle for Channel {
     #[inline]
     fn try_select(&self, token: &mut Token) -> bool {
@@ -162,7 +142,7 @@ impl SelectHandle for Channel {
 
     #[inline]
     fn deadline(&self) -> Option<Instant> {
-        Some(self.inner.lock().next_tick)
+        Some(self.delivery_time.load())
     }
 
     #[inline]
@@ -190,16 +170,4 @@ impl SelectHandle for Channel {
 
     #[inline]
     fn unwatch(&self, _oper: Operation) {}
-
-    #[inline]
-    fn state(&self) -> usize {
-        // Return the index of the next message to be delivered to the channel.
-        let inner = self.inner.lock();
-        let index = if Instant::now() < inner.next_tick {
-            inner.index
-        } else {
-            inner.index + Wrapping(1)
-        };
-        index.0
-    }
 }

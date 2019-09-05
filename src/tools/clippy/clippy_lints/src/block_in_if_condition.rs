@@ -3,7 +3,7 @@ use matches::matches;
 use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for `if` conditions that use blocks to contain an
@@ -42,18 +42,7 @@ declare_clippy_lint! {
     "complex blocks in conditions, e.g., `if { let x = true; x } ...`"
 }
 
-#[derive(Copy, Clone)]
-pub struct BlockInIfCondition;
-
-impl LintPass for BlockInIfCondition {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(BLOCK_IN_IF_CONDITION_EXPR, BLOCK_IN_IF_CONDITION_STMT)
-    }
-
-    fn name(&self) -> &'static str {
-        "BlockInIfCondition"
-    }
-}
+declare_lint_pass!(BlockInIfCondition => [BLOCK_IN_IF_CONDITION_EXPR, BLOCK_IN_IF_CONDITION_STMT]);
 
 struct ExVisitor<'a, 'tcx: 'a> {
     found_block: Option<&'tcx Expr>,
@@ -65,7 +54,7 @@ impl<'a, 'tcx: 'a> Visitor<'tcx> for ExVisitor<'a, 'tcx> {
         if let ExprKind::Closure(_, _, eid, _, _) = expr.node {
             let body = self.cx.tcx.hir().body(eid);
             let ex = &body.value;
-            if matches!(ex.node, ExprKind::Block(_, _)) && !in_macro(body.value.span) {
+            if matches!(ex.node, ExprKind::Block(_, _)) && !in_macro_or_desugar(body.value.span) {
                 self.found_block = Some(ex);
                 return;
             }
@@ -83,14 +72,14 @@ const COMPLEX_BLOCK_MESSAGE: &str = "in an 'if' condition, avoid complex blocks 
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BlockInIfCondition {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        if let ExprKind::If(check, then, _) = &expr.node {
+        if let Some((check, then, _)) = higher::if_block(&expr) {
             if let ExprKind::Block(block, _) = &check.node {
                 if block.rules == DefaultBlock {
                     if block.stmts.is_empty() {
                         if let Some(ex) = &block.expr {
                             // don't dig into the expression here, just suggest that they remove
                             // the block
-                            if in_macro(expr.span) || differing_macro_contexts(expr.span, ex.span) {
+                            if in_macro_or_desugar(expr.span) || differing_macro_contexts(expr.span, ex.span) {
                                 return;
                             }
                             span_help_and_lint(
@@ -107,7 +96,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BlockInIfCondition {
                         }
                     } else {
                         let span = block.expr.as_ref().map_or_else(|| block.stmts[0].span, |e| e.span);
-                        if in_macro(span) || differing_macro_contexts(expr.span, span) {
+                        if in_macro_or_desugar(span) || differing_macro_contexts(expr.span, span) {
                             return;
                         }
                         // move block higher

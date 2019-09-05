@@ -3,7 +3,7 @@ use if_chain::if_chain;
 use rustc::hir;
 use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Lints for suspicious operations in impls of arithmetic operators, e.g.
@@ -49,18 +49,7 @@ declare_clippy_lint! {
     "suspicious use of operators in impl of OpAssign trait"
 }
 
-#[derive(Copy, Clone)]
-pub struct SuspiciousImpl;
-
-impl LintPass for SuspiciousImpl {
-    fn get_lints(&self) -> LintArray {
-        lint_array![SUSPICIOUS_ARITHMETIC_IMPL, SUSPICIOUS_OP_ASSIGN_IMPL]
-    }
-
-    fn name(&self) -> &'static str {
-        "SuspiciousImpl"
-    }
-}
+declare_lint_pass!(SuspiciousImpl => [SUSPICIOUS_ARITHMETIC_IMPL, SUSPICIOUS_OP_ASSIGN_IMPL]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SuspiciousImpl {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
@@ -156,17 +145,17 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SuspiciousImpl {
     }
 }
 
-fn check_binop<'a>(
+fn check_binop(
     cx: &LateContext<'_, '_>,
     expr: &hir::Expr,
     binop: hir::BinOpKind,
-    traits: &[&'a str],
+    traits: &[&'static str],
     expected_ops: &[hir::BinOpKind],
-) -> Option<&'a str> {
+) -> Option<&'static str> {
     let mut trait_ids = vec![];
     let [krate, module] = crate::utils::paths::OPS_MODULE;
 
-    for t in traits {
+    for &t in traits {
         let path = [krate, module, t];
         if let Some(trait_id) = get_trait_def_id(cx, &path) {
             trait_ids.push(trait_id);
@@ -180,7 +169,7 @@ fn check_binop<'a>(
 
     if_chain! {
         if let Some(trait_ref) = trait_ref_of_method(cx, parent_fn);
-        if let Some(idx) = trait_ids.iter().position(|&tid| tid == trait_ref.path.def.def_id());
+        if let Some(idx) = trait_ids.iter().position(|&tid| tid == trait_ref.path.res.def_id());
         if binop != expected_ops[idx];
         then{
             return Some(traits[idx])

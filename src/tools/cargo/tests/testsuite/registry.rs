@@ -1,5 +1,6 @@
 use std::fs::{self, File};
 use std::io::prelude::*;
+use std::path::Path;
 
 use crate::support::cargo_process;
 use crate::support::git;
@@ -816,30 +817,6 @@ fn update_lockfile() {
 [REMOVING] spam v0.2.5
 ",
         )
-        .run();
-}
-
-#[test]
-fn update_offline() {
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [project]
-            name = "foo"
-            version = "0.0.1"
-            authors = []
-
-            [dependencies]
-            bar = "*"
-        "#,
-        )
-        .file("src/main.rs", "fn main() {}")
-        .build();
-    p.cargo("update -Zoffline")
-        .masquerade_as_nightly_cargo()
-        .with_status(101)
-        .with_stderr("error: you can't update in the offline mode[..]")
         .run();
 }
 
@@ -1976,4 +1953,78 @@ fn rename_deps_and_features() {
     p.cargo("build").run();
     p.cargo("build --features bar/foo01").run();
     p.cargo("build --features bar/another").run();
+}
+
+#[test]
+fn ignore_invalid_json_lines() {
+    Package::new("foo", "0.1.0").publish();
+    Package::new("foo", "0.1.1").invalid_json(true).publish();
+    Package::new("foo", "0.2.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "a"
+                version = "0.5.0"
+                authors = []
+
+                [dependencies]
+                foo = '0.1.0'
+                foo02 = { version = '0.2.0', package = 'foo' }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build").run();
+}
+
+#[test]
+fn readonly_registry_still_works() {
+    Package::new("foo", "0.1.0").publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "a"
+                version = "0.5.0"
+                authors = []
+
+                [dependencies]
+                foo = '0.1.0'
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("generate-lockfile").run();
+    p.cargo("fetch --locked").run();
+    chmod_readonly(&paths::home(), true);
+    p.cargo("build").run();
+    // make sure we un-readonly the files afterwards so "cargo clean" can remove them (#6934)
+    chmod_readonly(&paths::home(), false);
+
+
+    fn chmod_readonly(path: &Path, readonly: bool) {
+        for entry in t!(path.read_dir()) {
+            let entry = t!(entry);
+            let path = entry.path();
+            if t!(entry.file_type()).is_dir() {
+                chmod_readonly(&path, readonly);
+            } else {
+                set_readonly(&path, readonly);
+            }
+        }
+        set_readonly(path, readonly);
+    }
+
+    fn set_readonly(path: &Path, readonly: bool) {
+        let mut perms = t!(path.metadata()).permissions();
+        perms.set_readonly(readonly);
+        t!(fs::set_permissions(path, perms));
+    }
 }

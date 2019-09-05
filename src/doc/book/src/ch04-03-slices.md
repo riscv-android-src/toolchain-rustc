@@ -284,9 +284,9 @@ error[E0502]: cannot borrow `s` as mutable because it is also borrowed as immuta
 
 Recall from the borrowing rules that if we have an immutable reference to
 something, we cannot also take a mutable reference. Because `clear` needs to
-truncate the `String`, it tries to take a mutable reference, which fails. Not
-only has Rust made our API easier to use, but it has also eliminated an entire
-class of errors at compile time!
+truncate the `String`, it needs to get a mutable reference. Rust disallows
+this, and compilation fails. Not only has Rust made our API easier to use, but
+it has also eliminated an entire class of errors at compile time!
 
 #### String Literals Are Slices
 
@@ -311,7 +311,7 @@ fn first_word(s: &String) -> &str {
 ```
 
 A more experienced Rustacean would write the signature shown in Listing 4-9
-instead because it allows us to use the same function on both `String` values
+instead because it allows us to use the same function on both `&String` values
 and `&str` values.
 
 ```rust,ignore

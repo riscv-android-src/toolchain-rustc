@@ -2,15 +2,15 @@ use crate::consts::{constant, Constant};
 use crate::utils::paths;
 use crate::utils::sugg::Sugg;
 use crate::utils::{
-    expr_block, in_macro, is_allowed, is_expn_of, match_qpath, match_type, multispan_sugg, remove_blocks, snippet,
-    snippet_with_applicability, span_lint_and_sugg, span_lint_and_then, span_note_and_lint, walk_ptrs_ty,
+    expr_block, in_macro_or_desugar, is_allowed, is_expn_of, match_qpath, match_type, multispan_sugg, remove_blocks,
+    snippet, snippet_with_applicability, span_lint_and_sugg, span_lint_and_then, span_note_and_lint, walk_ptrs_ty,
 };
 use if_chain::if_chain;
 use rustc::hir::def::CtorKind;
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
-use rustc::ty::{self, Ty, TyKind};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::ty::{self, Ty};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use std::cmp::Ordering;
 use std::collections::Bound;
@@ -215,29 +215,18 @@ declare_clippy_lint! {
     "a wildcard enum match arm using `_`"
 }
 
-#[allow(missing_copy_implementations)]
-pub struct MatchPass;
+declare_lint_pass!(Matches => [
+    SINGLE_MATCH,
+    MATCH_REF_PATS,
+    MATCH_BOOL,
+    SINGLE_MATCH_ELSE,
+    MATCH_OVERLAPPING_ARM,
+    MATCH_WILD_ERR_ARM,
+    MATCH_AS_REF,
+    WILDCARD_ENUM_MATCH_ARM
+]);
 
-impl LintPass for MatchPass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(
-            SINGLE_MATCH,
-            MATCH_REF_PATS,
-            MATCH_BOOL,
-            SINGLE_MATCH_ELSE,
-            MATCH_OVERLAPPING_ARM,
-            MATCH_WILD_ERR_ARM,
-            MATCH_AS_REF,
-            WILDCARD_ENUM_MATCH_ARM
-        )
-    }
-
-    fn name(&self) -> &'static str {
-        "Matches"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MatchPass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         if in_external_macro(cx.sess(), expr.span) {
             return;
@@ -500,7 +489,7 @@ fn check_wild_enum_match(cx: &LateContext<'_, '_>, ex: &Expr, arms: &[Arm]) {
         // already covered.
 
         let mut missing_variants = vec![];
-        if let TyKind::Adt(def, _) = ty.sty {
+        if let ty::Adt(def, _) = ty.sty {
             for variant in &def.variants {
                 missing_variants.push(variant);
             }
@@ -516,11 +505,11 @@ fn check_wild_enum_match(cx: &LateContext<'_, '_>, ex: &Expr, arms: &[Arm]) {
             for pat in &arm.pats {
                 if let PatKind::Path(ref path) = pat.deref().node {
                     if let QPath::Resolved(_, p) = path {
-                        missing_variants.retain(|e| e.ctor_def_id != Some(p.def.def_id()));
+                        missing_variants.retain(|e| e.ctor_def_id != Some(p.res.def_id()));
                     }
                 } else if let PatKind::TupleStruct(ref path, ..) = pat.deref().node {
                     if let QPath::Resolved(_, p) = path {
-                        missing_variants.retain(|e| e.ctor_def_id != Some(p.def.def_id()));
+                        missing_variants.retain(|e| e.ctor_def_id != Some(p.res.def_id()));
                     }
                 }
             }
@@ -600,7 +589,7 @@ fn check_match_ref_pats(cx: &LateContext<'_, '_>, ex: &Expr, arms: &[Arm], expr:
         }));
 
         span_lint_and_then(cx, MATCH_REF_PATS, expr.span, title, |db| {
-            if !in_macro(expr.span) {
+            if !in_macro_or_desugar(expr.span) {
                 multispan_sugg(db, msg.to_owned(), suggs);
             }
         });

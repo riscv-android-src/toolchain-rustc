@@ -1,17 +1,20 @@
 use super::*;
 use crate::dep_graph::{DepGraph, DepKind, DepNodeIndex};
 use crate::hir;
+use crate::hir::map::HirEntryMap;
 use crate::hir::def_id::{LOCAL_CRATE, CrateNum};
 use crate::hir::intravisit::{Visitor, NestedVisitorMap};
 use rustc_data_structures::svh::Svh;
+use rustc_data_structures::indexed_vec::IndexVec;
 use crate::ich::Fingerprint;
 use crate::middle::cstore::CrateStore;
 use crate::session::CrateDisambiguator;
 use crate::session::Session;
-use std::iter::repeat;
-use syntax::ast::{NodeId, CRATE_NODE_ID};
+use crate::util::nodemap::FxHashMap;
+use syntax::ast::NodeId;
 use syntax::source_map::SourceMap;
 use syntax_pos::Span;
+use std::iter::repeat;
 
 use crate::ich::StableHashingContext;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher, StableHasherResult};
@@ -25,7 +28,7 @@ pub(super) struct NodeCollector<'a, 'hir> {
     source_map: &'a SourceMap,
 
     /// The node map
-    map: Vec<Option<Entry<'hir>>>,
+    map: HirEntryMap<'hir>,
     /// The parent of this node
     parent_node: hir::HirId,
 
@@ -145,7 +148,7 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
         let mut collector = NodeCollector {
             krate,
             source_map: sess.source_map(),
-            map: repeat(None).take(sess.current_node_id_count()).collect(),
+            map: vec![None; definitions.def_index_count()],
             parent_node: hir::CRATE_HIR_ID,
             current_signature_dep_index: root_mod_sig_dep_index,
             current_full_dep_index: root_mod_full_dep_index,
@@ -157,9 +160,8 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
             hcx,
             hir_body_nodes,
         };
-        collector.insert_entry(CRATE_NODE_ID, Entry {
-            parent: CRATE_NODE_ID,
-            parent_hir: hir::CRATE_HIR_ID,
+        collector.insert_entry(hir::CRATE_HIR_ID, Entry {
+            parent: hir::CRATE_HIR_ID,
             dep_node: root_mod_sig_dep_index,
             node: Node::Crate,
         });
@@ -171,7 +173,7 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
                                                   crate_disambiguator: CrateDisambiguator,
                                                   cstore: &dyn CrateStore,
                                                   commandline_args_hash: u64)
-                                                  -> (Vec<Option<Entry<'hir>>>, Svh)
+                                                  -> (HirEntryMap<'hir>, Svh)
     {
         self.hir_body_nodes.sort_unstable_by_key(|bn| bn.0);
 
@@ -222,15 +224,24 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
         (self.map, svh)
     }
 
-    fn insert_entry(&mut self, id: NodeId, entry: Entry<'hir>) {
+    fn insert_entry(&mut self, id: HirId, entry: Entry<'hir>) {
         debug!("hir_map: {:?} => {:?}", id, entry);
-        self.map[id.as_usize()] = Some(entry);
+        let local_map = &mut self.map[id.owner.index()];
+        let i = id.local_id.as_u32() as usize;
+        if local_map.is_none() {
+            *local_map = Some(IndexVec::with_capacity(i + 1));
+        }
+        let local_map = local_map.as_mut().unwrap();
+        let len = local_map.len();
+        if i >= len {
+            local_map.extend(repeat(None).take(i - len + 1));
+        }
+        local_map[id.local_id] = Some(entry);
     }
 
     fn insert(&mut self, span: Span, hir_id: HirId, node: Node<'hir>) {
         let entry = Entry {
-            parent: self.hir_to_node_id[&self.parent_node],
-            parent_hir: self.parent_node,
+            parent: self.parent_node,
             dep_node: if self.currently_in_body {
                 self.current_full_dep_index
             } else {
@@ -239,12 +250,11 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
             node,
         };
 
-        let node_id = self.hir_to_node_id[&hir_id];
-
         // Make sure that the DepNode of some node coincides with the HirId
         // owner of that node.
         if cfg!(debug_assertions) {
-           assert_eq!(self.definitions.node_to_hir_id(node_id), hir_id);
+            let node_id = self.hir_to_node_id[&hir_id];
+            assert_eq!(self.definitions.node_to_hir_id(node_id), hir_id);
 
             if hir_id.owner != self.current_dep_node_owner {
                 let node_str = match self.definitions.opt_def_index(node_id) {
@@ -277,7 +287,7 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
             }
         }
 
-        self.insert_entry(node_id, entry);
+        self.insert_entry(hir_id, entry);
     }
 
     fn with_parent<F: FnOnce(&mut Self)>(

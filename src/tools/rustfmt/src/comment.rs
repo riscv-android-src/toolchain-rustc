@@ -142,6 +142,11 @@ fn comment_style(orig: &str, normalize_comments: bool) -> CommentStyle<'_> {
     }
 }
 
+/// Returns true if the last line of the passed string finishes with a block-comment.
+pub fn is_last_comment_block(s: &str) -> bool {
+    s.trim_end().ends_with("*/")
+}
+
 /// Combine `prev_str` and `next_str` into a single `String`. `span` may contain
 /// comments between two strings. If there are such comments, then that will be
 /// recovered. If `allow_extend` is true and there is no comment between the two
@@ -591,7 +596,7 @@ impl<'a> CommentRewrite<'a> {
             ) {
                 Some(s) => self.result.push_str(&Self::join_block(
                     &s,
-                    &format!("{}{}", &self.comment_line_separator, ib.line_start),
+                    &format!("{}{}", self.comment_line_separator, ib.line_start),
                 )),
                 None => self.result.push_str(&Self::join_block(
                     &ib.original_block_as_string(),
@@ -634,7 +639,7 @@ impl<'a> CommentRewrite<'a> {
             ) {
                 Some(s) => self.result.push_str(&Self::join_block(
                     &s,
-                    &format!("{}{}", &self.comment_line_separator, ib.line_start),
+                    &format!("{}{}", self.comment_line_separator, ib.line_start),
                 )),
                 None => self.result.push_str(&Self::join_block(
                     &ib.original_block_as_string(),
@@ -1238,7 +1243,7 @@ where
             },
             CharClassesStatus::LitCharEscape => CharClassesStatus::LitChar,
             CharClassesStatus::Normal => match chr {
-                'r' => match self.base.peek().map(|c| c.get_char()) {
+                'r' => match self.base.peek().map(RichChar::get_char) {
                     Some('#') | Some('"') => {
                         char_kind = FullCodeCharKind::InString;
                         CharClassesStatus::RawStringPrefix(0)

@@ -44,8 +44,6 @@ extern crate rustc_fs_util;
 #[macro_use] extern crate syntax;
 extern crate syntax_pos;
 extern crate rustc_errors as errors;
-extern crate serialize;
-extern crate tempfile;
 
 use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::back::write::{CodegenContext, ModuleConfig, FatLTOInput};
@@ -65,22 +63,18 @@ use rustc::middle::cstore::{EncodedMetadata, MetadataLoader};
 use rustc::session::Session;
 use rustc::session::config::{OutputFilenames, OutputType, PrintRequest, OptLevel};
 use rustc::ty::{self, TyCtxt};
-use rustc::util::profiling::ProfileCategory;
 use rustc::util::common::ErrorReported;
 use rustc_mir::monomorphize;
 use rustc_codegen_ssa::ModuleCodegen;
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
 
-mod diagnostics;
+mod error_codes;
 
 mod back {
-    mod archive;
+    pub mod archive;
     pub mod bytecode;
-    pub mod link;
     pub mod lto;
     pub mod write;
-    mod rpath;
-    pub mod wasm;
 }
 
 mod abi;
@@ -116,12 +110,13 @@ impl ExtraBackendMethods for LlvmCodegenBackend {
         ModuleLlvm::new_metadata(tcx, mod_name)
     }
 
-    fn write_metadata<'b, 'gcx>(
+    fn write_compressed_metadata<'b, 'gcx>(
         &self,
         tcx: TyCtxt<'b, 'gcx, 'gcx>,
-        metadata: &mut ModuleLlvm
-    ) -> EncodedMetadata {
-        base::write_metadata(tcx, metadata)
+        metadata: &EncodedMetadata,
+        llvm_module: &mut ModuleLlvm
+    ) {
+        base::write_compressed_metadata(tcx, metadata, llvm_module)
     }
     fn codegen_allocator<'b, 'gcx>(
         &self,
@@ -295,9 +290,12 @@ impl CodegenBackend for LlvmCodegenBackend {
     fn codegen_crate<'b, 'tcx>(
         &self,
         tcx: TyCtxt<'b, 'tcx, 'tcx>,
+        metadata: EncodedMetadata,
+        need_metadata_module: bool,
         rx: mpsc::Receiver<Box<dyn Any + Send>>
     ) -> Box<dyn Any> {
-        box rustc_codegen_ssa::base::codegen_crate(LlvmCodegenBackend(()), tcx, rx)
+        box rustc_codegen_ssa::base::codegen_crate(
+            LlvmCodegenBackend(()), tcx, metadata, need_metadata_module, rx)
     }
 
     fn join_codegen_and_link(
@@ -306,7 +304,7 @@ impl CodegenBackend for LlvmCodegenBackend {
         sess: &Session,
         dep_graph: &DepGraph,
         outputs: &OutputFilenames,
-    ) -> Result<(), ErrorReported>{
+    ) -> Result<(), ErrorReported> {
         use rustc::util::common::time;
         let (codegen_results, work_products) =
             ongoing_codegen.downcast::
@@ -330,12 +328,21 @@ impl CodegenBackend for LlvmCodegenBackend {
 
         // Run the linker on any artifacts that resulted from the LLVM run.
         // This should produce either a finished executable or library.
-        sess.profiler(|p| p.start_activity(ProfileCategory::Linking, "link_crate"));
+        sess.profiler(|p| p.start_activity("link_crate"));
         time(sess, "linking", || {
-            back::link::link_binary(sess, &codegen_results,
-                                    outputs, &codegen_results.crate_name.as_str());
+            use rustc_codegen_ssa::back::link::link_binary;
+            use crate::back::archive::LlvmArchiveBuilder;
+
+            let target_cpu = crate::llvm_util::target_cpu(sess);
+            link_binary::<LlvmArchiveBuilder<'_>>(
+                sess,
+                &codegen_results,
+                outputs,
+                &codegen_results.crate_name.as_str(),
+                target_cpu,
+            );
         });
-        sess.profiler(|p| p.end_activity(ProfileCategory::Linking, "link_crate"));
+        sess.profiler(|p| p.end_activity("link_crate"));
 
         // Now that we won't touch anything in the incremental compilation directory
         // any more, we can finalize it (which involves renaming it)

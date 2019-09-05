@@ -76,6 +76,7 @@
       - [Move paths](./borrow_check/moves_and_initialization/move_paths.md)
     - [MIR type checker](./borrow_check/type_check.md)
     - [Region inference](./borrow_check/region_inference.md)
+    - [Two-phase-borrows](./borrow_check/two_phase_borrows.md)
 - [Constant evaluation](./const-eval.md)
     - [miri const evaluator](./miri.md)
 - [Parameter Environments](./param_env.md)
@@ -83,6 +84,7 @@
   - [Updating LLVM](./codegen/updating-llvm.md)
   - [Debugging LLVM](./codegen/debugging.md)
 - [Emitting Diagnostics](./diag.md)
+  - [JSON diagnostic format](./diag/json-format.md)
 
 ---
 

@@ -30,19 +30,6 @@ cargo-features = ["publish-lockfile"]
 publish-lockfile = true
 ```
 
-
-### Offline Mode
-* Original Issue: [#4686](https://github.com/rust-lang/cargo/issues/4686)
-* Tracking Issue: [#5655](https://github.com/rust-lang/cargo/issues/5655)
-
-The `-Z offline` flag prevents Cargo from attempting to access the network for
-any reason. Typically Cargo will stop with an error if it wants to access the
-network and it is not available.
-
-Beware that this may result in different dependency resolution than online
-mode. Cargo will restrict itself to crates that are available locally, even
-if there might be a newer version as indicated in the local copy of the index.
-
 ### no-index-update
 * Original Issue: [#3479](https://github.com/rust-lang/cargo/issues/3479)
 
@@ -232,3 +219,52 @@ extra-info = "qwerty"
 
 Metabuild packages should have a public function called `metabuild` that
 performs the same actions as a regular `build.rs` script would perform.
+
+### install-upgrade
+* Tracking Issue: [#6797](https://github.com/rust-lang/cargo/issues/6797)
+
+The `install-upgrade` feature changes the behavior of `cargo install` so that
+it will reinstall a package if it is not "up-to-date". If it is "up-to-date",
+it will do nothing and exit with success instead of failing. Example:
+
+```
+cargo +nightly install foo -Z install-upgrade
+```
+
+Cargo tracks some information to determine if a package is "up-to-date",
+including:
+
+- The package version and source.
+- The set of binary names installed.
+- The chosen features.
+- The release mode (`--debug`).
+- The target (`--target`).
+
+If any of these values change, then Cargo will reinstall the package.
+
+Installation will still fail if a different package installs a binary of the
+same name. `--force` may be used to unconditionally reinstall the package.
+
+Installing with `--path` will always build and install, unless there are
+conflicting binaries from another package.
+
+Additionally, a new flag `--no-track` is available to prevent `cargo install`
+from writing tracking information in `$CARGO_HOME` about which packages are
+installed.
+
+### public-dependency
+* Tracking Issue: [#44663](https://github.com/rust-lang/rust/issues/44663)
+
+The 'public-dependency' features allows marking dependencies as 'public'
+or 'private'. When this feature is enabled, additional information is passed to rustc to allow
+the 'exported_private_dependencies' lint to function properly.
+
+This requires the appropriate key to be set in `cargo-features`:
+
+```toml
+cargo-features = ["public-dependency"]
+
+[dependencies]
+my_dep = { version = "1.2.3", public = true }
+private_dep = "2.0.0" # Will be 'private' by default
+```

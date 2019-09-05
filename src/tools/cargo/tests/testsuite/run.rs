@@ -75,6 +75,32 @@ fn simple_with_args() {
     p.cargo("run hello world").run();
 }
 
+#[cfg(unix)]
+#[test]
+fn simple_with_non_utf8_args() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let p = project()
+        .file(
+            "src/main.rs",
+            r#"
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
+
+            fn main() {
+                assert_eq!(std::env::args_os().nth(1).unwrap(), OsStr::from_bytes(b"hello"));
+                assert_eq!(std::env::args_os().nth(2).unwrap(), OsStr::from_bytes(b"ab\xffcd"));
+            }
+        "#,
+        )
+        .build();
+
+    p.cargo("run")
+        .arg("hello")
+        .arg(std::ffi::OsStr::from_bytes(b"ab\xFFcd"))
+        .run();
+}
+
 #[test]
 fn exit_code() {
     let p = project()
@@ -671,14 +697,14 @@ fn example_with_release_flag() {
             "\
 [COMPILING] bar v0.5.0 ([CWD]/bar)
 [RUNNING] `rustc --crate-name bar bar/src/bar.rs --color never --crate-type lib \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C opt-level=3 \
         -C metadata=[..] \
         --out-dir [CWD]/target/release/deps \
         -L dependency=[CWD]/target/release/deps`
 [COMPILING] foo v0.0.1 ([CWD])
 [RUNNING] `rustc --crate-name a examples/a.rs --color never --crate-type bin \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C opt-level=3 \
         -C metadata=[..] \
         --out-dir [CWD]/target/release/examples \
@@ -700,14 +726,14 @@ fast2",
             "\
 [COMPILING] bar v0.5.0 ([CWD]/bar)
 [RUNNING] `rustc --crate-name bar bar/src/bar.rs --color never --crate-type lib \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C debuginfo=2 \
         -C metadata=[..] \
         --out-dir [CWD]/target/debug/deps \
         -L dependency=[CWD]/target/debug/deps`
 [COMPILING] foo v0.0.1 ([CWD])
 [RUNNING] `rustc --crate-name a examples/a.rs --color never --crate-type bin \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C debuginfo=2 \
         -C metadata=[..] \
         --out-dir [CWD]/target/debug/examples \
@@ -1110,7 +1136,10 @@ fn default_run_workspace() {
         .file("b/src/main.rs", r#"fn main() {println!("run-b");}"#)
         .build();
 
-    p.cargo("run").masquerade_as_nightly_cargo().with_stdout("run-a").run();
+    p.cargo("run")
+        .masquerade_as_nightly_cargo()
+        .with_stdout("run-a")
+        .run();
 }
 
 #[test]
@@ -1194,6 +1223,13 @@ fn run_link_system_path_macos() {
     )
     .unwrap();
     p.root().rm_rf();
-    p2.cargo("run").run();
-    p2.cargo("test").run();
+    const VAR: &str = "DYLD_FALLBACK_LIBRARY_PATH";
+    // Reset DYLD_FALLBACK_LIBRARY_PATH so that we don't inherit anything that
+    // was set by the cargo that invoked the test.
+    p2.cargo("run").env_remove(VAR).run();
+    p2.cargo("test").env_remove(VAR).run();
+    // Ensure this still works when DYLD_FALLBACK_LIBRARY_PATH has
+    // a value set.
+    p2.cargo("run").env(VAR, &libdir).run();
+    p2.cargo("test").env(VAR, &libdir).run();
 }

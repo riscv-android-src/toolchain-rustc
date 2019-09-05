@@ -2,7 +2,7 @@
 #![feature(custom_attribute)]
 #![feature(nll)]
 #![deny(rust_2018_idioms)]
-#![cfg_attr(not(stage0), deny(internal))]
+#![deny(internal)]
 #![allow(unused_attributes)]
 
 #![recursion_limit="256"]
@@ -15,7 +15,7 @@ mod span_utils;
 mod sig;
 
 use rustc::hir;
-use rustc::hir::def::{CtorOf, Def as HirDef};
+use rustc::hir::def::{CtorOf, Res, DefKind as HirDefKind};
 use rustc::hir::Node;
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::middle::privacy::AccessLevels;
@@ -606,21 +606,21 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
         }
     }
 
-    pub fn get_path_def(&self, id: NodeId) -> HirDef {
+    pub fn get_path_res(&self, id: NodeId) -> Res {
         match self.tcx.hir().get(id) {
-            Node::TraitRef(tr) => tr.path.def,
+            Node::TraitRef(tr) => tr.path.res,
 
             Node::Item(&hir::Item {
                 node: hir::ItemKind::Use(ref path, _),
                 ..
             }) |
             Node::Visibility(&Spanned {
-                node: hir::VisibilityKind::Restricted { ref path, .. }, .. }) => path.def,
+                node: hir::VisibilityKind::Restricted { ref path, .. }, .. }) => path.res,
 
             Node::PathSegment(seg) => {
-                match seg.def {
-                    Some(def) if def != HirDef::Err => def,
-                    _ => self.get_path_def(self.tcx.hir().get_parent_node(id)),
+                match seg.res {
+                    Some(res) if res != Res::Err => res,
+                    _ => self.get_path_res(self.tcx.hir().get_parent_node(id)),
                 }
             }
 
@@ -629,7 +629,7 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 ..
             }) => {
                 let hir_id = self.tcx.hir().node_to_hir_id(id);
-                self.tables.qpath_def(qpath, hir_id)
+                self.tables.qpath_res(qpath, hir_id)
             }
 
             Node::Expr(&hir::Expr {
@@ -653,15 +653,15 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 ..
             }) => {
                 let hir_id = self.tcx.hir().node_to_hir_id(id);
-                self.tables.qpath_def(qpath, hir_id)
+                self.tables.qpath_res(qpath, hir_id)
             }
 
             Node::Binding(&hir::Pat {
                 node: hir::PatKind::Binding(_, canonical_id, ..),
                 ..
-            }) => HirDef::Local(self.tcx.hir().hir_to_node_id(canonical_id)),
+            }) => Res::Local(canonical_id),
 
-            _ => HirDef::Err,
+            _ => Res::Err,
         }
     }
 
@@ -697,52 +697,52 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
             return None;
         }
 
-        let def = self.get_path_def(id);
+        let res = self.get_path_res(id);
         let span = path_seg.ident.span;
         filter!(self.span_utils, span);
         let span = self.span_from_span(span);
 
-        match def {
-            HirDef::Upvar(id, ..) | HirDef::Local(id) => {
+        match res {
+            Res::Upvar(id, ..) | Res::Local(id) => {
                 Some(Ref {
                     kind: RefKind::Variable,
                     span,
-                    ref_id: id_from_node_id(id, self),
+                    ref_id: id_from_node_id(self.tcx.hir().hir_to_node_id(id), self),
                 })
             }
-            HirDef::Trait(def_id) if fn_type(path_seg) => {
+            Res::Def(HirDefKind::Trait, def_id) if fn_type(path_seg) => {
                 Some(Ref {
                     kind: RefKind::Type,
                     span,
                     ref_id: id_from_def_id(def_id),
                 })
             }
-            HirDef::Struct(def_id) |
-            HirDef::Variant(def_id, ..) |
-            HirDef::Union(def_id) |
-            HirDef::Enum(def_id) |
-            HirDef::TyAlias(def_id) |
-            HirDef::ForeignTy(def_id) |
-            HirDef::TraitAlias(def_id) |
-            HirDef::AssociatedExistential(def_id) |
-            HirDef::AssociatedTy(def_id) |
-            HirDef::Trait(def_id) |
-            HirDef::Existential(def_id) |
-            HirDef::TyParam(def_id) => {
+            Res::Def(HirDefKind::Struct, def_id) |
+            Res::Def(HirDefKind::Variant, def_id) |
+            Res::Def(HirDefKind::Union, def_id) |
+            Res::Def(HirDefKind::Enum, def_id) |
+            Res::Def(HirDefKind::TyAlias, def_id) |
+            Res::Def(HirDefKind::ForeignTy, def_id) |
+            Res::Def(HirDefKind::TraitAlias, def_id) |
+            Res::Def(HirDefKind::AssociatedExistential, def_id) |
+            Res::Def(HirDefKind::AssociatedTy, def_id) |
+            Res::Def(HirDefKind::Trait, def_id) |
+            Res::Def(HirDefKind::Existential, def_id) |
+            Res::Def(HirDefKind::TyParam, def_id) => {
                 Some(Ref {
                     kind: RefKind::Type,
                     span,
                     ref_id: id_from_def_id(def_id),
                 })
             }
-            HirDef::ConstParam(def_id) => {
+            Res::Def(HirDefKind::ConstParam, def_id) => {
                 Some(Ref {
                     kind: RefKind::Variable,
                     span,
                     ref_id: id_from_def_id(def_id),
                 })
             }
-            HirDef::Ctor(def_id, CtorOf::Struct, ..) => {
+            Res::Def(HirDefKind::Ctor(CtorOf::Struct, ..), def_id) => {
                 // This is a reference to a tuple struct where the def_id points
                 // to an invisible constructor function. That is not a very useful
                 // def, so adjust to point to the tuple struct itself.
@@ -753,17 +753,17 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                     ref_id: id_from_def_id(parent_def_id),
                 })
             }
-            HirDef::Static(..) |
-            HirDef::Const(..) |
-            HirDef::AssociatedConst(..) |
-            HirDef::Ctor(..) => {
+            Res::Def(HirDefKind::Static, _) |
+            Res::Def(HirDefKind::Const, _) |
+            Res::Def(HirDefKind::AssociatedConst, _) |
+            Res::Def(HirDefKind::Ctor(..), _) => {
                 Some(Ref {
                     kind: RefKind::Variable,
                     span,
-                    ref_id: id_from_def_id(def.def_id()),
+                    ref_id: id_from_def_id(res.def_id()),
                 })
             }
-            HirDef::Method(decl_id) => {
+            Res::Def(HirDefKind::Method, decl_id) => {
                 let def_id = if decl_id.is_local() {
                     let ti = self.tcx.associated_item(decl_id);
                     self.tcx
@@ -780,28 +780,27 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                     ref_id: id_from_def_id(def_id.unwrap_or(decl_id)),
                 })
             }
-            HirDef::Fn(def_id) => {
+            Res::Def(HirDefKind::Fn, def_id) => {
                 Some(Ref {
                     kind: RefKind::Function,
                     span,
                     ref_id: id_from_def_id(def_id),
                 })
             }
-            HirDef::Mod(def_id) => {
+            Res::Def(HirDefKind::Mod, def_id) => {
                 Some(Ref {
                     kind: RefKind::Mod,
                     span,
                     ref_id: id_from_def_id(def_id),
                 })
             }
-            HirDef::PrimTy(..) |
-            HirDef::SelfTy(..) |
-            HirDef::Label(..) |
-            HirDef::Macro(..) |
-            HirDef::ToolMod |
-            HirDef::NonMacroAttr(..) |
-            HirDef::SelfCtor(..) |
-            HirDef::Err => None,
+            Res::PrimTy(..) |
+            Res::SelfTy(..) |
+            Res::Def(HirDefKind::Macro(..), _) |
+            Res::ToolMod |
+            Res::NonMacroAttr(..) |
+            Res::SelfCtor(..) |
+            Res::Err => None,
         }
     }
 
@@ -870,8 +869,8 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
     }
 
     fn lookup_ref_id(&self, ref_id: NodeId) -> Option<DefId> {
-        match self.get_path_def(ref_id) {
-            HirDef::PrimTy(_) | HirDef::SelfTy(..) | HirDef::Err => None,
+        match self.get_path_res(ref_id) {
+            Res::PrimTy(_) | Res::SelfTy(..) | Res::Err => None,
             def => Some(def.def_id()),
         }
     }
@@ -880,7 +879,7 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
         let mut result = String::new();
 
         for attr in attrs {
-            if attr.check_name("doc") {
+            if attr.check_name(sym::doc) {
                 if let Some(val) = attr.value_str() {
                     if attr.is_sugared_doc {
                         result.push_str(&strip_doc_comment_decoration(&val.as_str()));
@@ -890,10 +889,10 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                     result.push('\n');
                 } else if let Some(meta_list) = attr.meta_item_list() {
                     meta_list.into_iter()
-                             .filter(|it| it.check_name("include"))
+                             .filter(|it| it.check_name(sym::include))
                              .filter_map(|it| it.meta_item_list().map(|l| l.to_owned()))
                              .flat_map(|it| it)
-                             .filter(|meta| meta.check_name("contents"))
+                             .filter(|meta| meta.check_name(sym::contents))
                              .filter_map(|meta| meta.value_str())
                              .for_each(|val| {
                                  result.push_str(&val.as_str());
@@ -1141,10 +1140,15 @@ fn find_config(supplied: Option<Config>) -> Config {
     if let Some(config) = supplied {
         return config;
     }
+
     match env::var_os("RUST_SAVE_ANALYSIS_CONFIG") {
-        Some(config_string) => rustc_serialize::json::decode(config_string.to_str().unwrap())
-            .expect("Could not deserialize save-analysis config"),
         None => Config::default(),
+        Some(config) => config.to_str()
+            .ok_or(())
+            .map_err(|_| error!("`RUST_SAVE_ANALYSIS_CONFIG` isn't UTF-8"))
+            .and_then(|cfg|  serde_json::from_str(cfg)
+                .map_err(|_| error!("Could not deserialize save-analysis config"))
+            ).unwrap_or_default()
     }
 }
 
@@ -1166,7 +1170,7 @@ fn generated_code(span: Span) -> bool {
 fn id_from_def_id(id: DefId) -> rls_data::Id {
     rls_data::Id {
         krate: id.krate.as_u32(),
-        index: id.index.as_raw_u32(),
+        index: id.index.as_u32(),
     }
 }
 
@@ -1193,7 +1197,7 @@ fn null_id() -> rls_data::Id {
 fn lower_attributes(attrs: Vec<Attribute>, scx: &SaveContext<'_, '_>) -> Vec<rls_data::Attribute> {
     attrs.into_iter()
     // Only retain real attributes. Doc comments are lowered separately.
-    .filter(|attr| attr.path != "doc")
+    .filter(|attr| attr.path != sym::doc)
     .map(|mut attr| {
         // Remove the surrounding '#[..]' or '#![..]' of the pretty printed
         // attribute. First normalize all inner attribute (#![..]) to outer

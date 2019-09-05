@@ -5,6 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+use serde::Deserialize;
 use serde_json;
 
 const LICENSES: &[&str] = &[
@@ -96,6 +97,7 @@ const WHITELIST: &[Crate<'_>] = &[
     Crate("lock_api"),
     Crate("log"),
     Crate("log_settings"),
+    Crate("measureme"),
     Crate("memchr"),
     Crate("memmap"),
     Crate("memoffset"),

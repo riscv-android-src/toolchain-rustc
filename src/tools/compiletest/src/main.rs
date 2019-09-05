@@ -1,22 +1,14 @@
 #![crate_name = "compiletest"]
 #![feature(test)]
+#![feature(vec_remove_item)]
 #![deny(warnings, rust_2018_idioms)]
 
-#[cfg(unix)]
-extern crate libc;
-#[macro_use]
-extern crate log;
-#[macro_use]
-extern crate lazy_static;
-#[macro_use]
-extern crate serde_derive;
 extern crate test;
 
 use crate::common::CompareMode;
 use crate::common::{expected_output_path, output_base_dir, output_relative_path, UI_EXTENSIONS};
 use crate::common::{Config, TestPaths};
 use crate::common::{DebugInfoBoth, DebugInfoGdb, DebugInfoLldb, Mode, Pretty};
-use filetime::FileTime;
 use getopts::Options;
 use std::env;
 use std::ffi::OsString;
@@ -24,11 +16,13 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::SystemTime;
 use test::ColorConfig;
 use crate::util::logv;
 use walkdir::WalkDir;
 use env_logger;
 use getopts;
+use log::*;
 
 use self::header::{EarlyProps, Ignore};
 
@@ -220,6 +214,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "LIST",
         )
         .reqopt("", "llvm-cxxflags", "C++ flags for LLVM", "FLAGS")
+        .optopt("", "llvm-bin-dir", "Path to LLVM's `bin` directory", "PATH")
         .optopt("", "nodejs", "the name of nodejs", "PATH")
         .optopt(
             "",
@@ -305,7 +300,8 @@ pub fn parse_config(args: Vec<String>) -> Config {
         valgrind_path: matches.opt_str("valgrind-path"),
         force_valgrind: matches.opt_present("force-valgrind"),
         run_clang_based_tests_with: matches.opt_str("run-clang-based-tests-with"),
-        llvm_filecheck: matches.opt_str("llvm-filecheck").map(|s| PathBuf::from(&s)),
+        llvm_filecheck: matches.opt_str("llvm-filecheck").map(PathBuf::from),
+        llvm_bin_dir: matches.opt_str("llvm-bin-dir").map(PathBuf::from),
         src_base,
         build_base: opt_path(matches, "build-base"),
         stage_id: matches.opt_str("stage-id").unwrap(),
@@ -522,6 +518,7 @@ pub fn run_tests(config: &Config) {
 
 pub fn test_opts(config: &Config) -> test::TestOpts {
     test::TestOpts {
+        exclude_should_panic: false,
         filter: config.filter.clone(),
         filter_exact: config.filter_exact,
         run_ignored: if config.run_ignored {
@@ -755,31 +752,36 @@ fn up_to_date(
 
 #[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
 struct Stamp {
-    time: FileTime,
+    time: SystemTime,
     file: PathBuf,
 }
 
 impl Stamp {
     fn from_path(p: &Path) -> Self {
+        let time = fs::metadata(p)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
         Stamp {
-            time: mtime(&p),
+            time,
             file: p.into(),
         }
     }
 
-    fn from_dir(path: &Path) -> impl Iterator<Item=Stamp> {
+    fn from_dir(path: &Path) -> impl Iterator<Item = Stamp> {
         WalkDir::new(path)
             .into_iter()
             .map(|entry| entry.unwrap())
             .filter(|entry| entry.file_type().is_file())
-            .map(|entry| Stamp::from_path(entry.path()))
-    }
-}
+            .map(|entry| {
+                let time = (|| -> io::Result<_> { entry.metadata()?.modified() })();
 
-fn mtime(path: &Path) -> FileTime {
-    fs::metadata(path)
-        .map(|f| FileTime::from_last_modification_time(&f))
-        .unwrap_or_else(|_| FileTime::zero())
+                Stamp {
+                    time: time.unwrap_or(SystemTime::UNIX_EPOCH),
+                    file: entry.path().into(),
+                }
+            })
+    }
 }
 
 fn make_test_name(

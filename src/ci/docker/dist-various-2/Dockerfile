@@ -1,9 +1,12 @@
-FROM ubuntu:17.10
+FROM ubuntu:18.04
 
 COPY scripts/cross-apt-packages.sh /scripts/
 RUN sh /scripts/cross-apt-packages.sh
 
-RUN apt-get build-dep -y clang llvm && apt-get install -y --no-install-recommends \
+# Enable source repositories, which are disabled by default on Ubuntu >= 18.04
+RUN sed -i 's/^# deb-src/deb-src/' /etc/apt/sources.list
+
+RUN apt-get update && apt-get build-dep -y clang llvm && apt-get install -y --no-install-recommends \
   build-essential \
   gcc-multilib \
   libedit-dev \
@@ -15,10 +18,13 @@ RUN apt-get build-dep -y clang llvm && apt-get install -y --no-install-recommend
   nodejs \
   python2.7-dev \
   software-properties-common \
-  unzip
+  unzip \
+  # Needed for apt-key to work:
+  dirmngr \
+  gpg-agent
 
 RUN apt-key adv --batch --yes --keyserver keyserver.ubuntu.com --recv-keys 74DA7924C5513486
-RUN add-apt-repository -y 'deb http://apt.dilos.org/dilos dilos2-testing main'
+RUN add-apt-repository -y 'deb http://apt.dilos.org/dilos dilos2 main'
 
 WORKDIR /tmp
 COPY dist-various-2/shared.sh /tmp/
@@ -69,7 +75,7 @@ ENV TARGETS=x86_64-fuchsia
 ENV TARGETS=$TARGETS,aarch64-fuchsia
 ENV TARGETS=$TARGETS,sparcv9-sun-solaris
 ENV TARGETS=$TARGETS,wasm32-unknown-unknown
-ENV TARGETS=$TARGETS,wasm32-unknown-wasi
+ENV TARGETS=$TARGETS,wasm32-wasi
 ENV TARGETS=$TARGETS,x86_64-sun-solaris
 ENV TARGETS=$TARGETS,x86_64-unknown-linux-gnux32
 ENV TARGETS=$TARGETS,x86_64-unknown-cloudabi
@@ -79,5 +85,5 @@ ENV TARGETS=$TARGETS,nvptx64-nvidia-cuda
 ENV X86_FORTANIX_SGX_LIBS="/x86_64-fortanix-unknown-sgx/lib/"
 
 ENV RUST_CONFIGURE_ARGS --enable-extended --enable-lld --disable-docs \
-  --set target.wasm32-unknown-wasi.wasi-root=/wasm32-unknown-wasi
+  --set target.wasm32-wasi.wasi-root=/wasm32-wasi
 ENV SCRIPT python2.7 ../x.py dist --target $TARGETS

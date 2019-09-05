@@ -3,7 +3,8 @@ use int::{Int, LargeInt};
 trait Ashl: Int + LargeInt {
     /// Returns `a << b`, requires `b < Self::BITS`
     fn ashl(self, offset: u32) -> Self
-        where Self: LargeInt<HighHalf = <Self as LargeInt>::LowHalf>,
+    where
+        Self: LargeInt<HighHalf = <Self as LargeInt>::LowHalf>,
     {
         let half_bits = Self::BITS / 2;
         if offset & half_bits != 0 {
@@ -11,9 +12,10 @@ trait Ashl: Int + LargeInt {
         } else if offset == 0 {
             self
         } else {
-            Self::from_parts(self.low() << offset,
-                             (self.high() << offset) |
-                                (self.low() >> (half_bits - offset)))
+            Self::from_parts(
+                self.low() << offset,
+                (self.high() << offset) | (self.low() >> (half_bits - offset)),
+            )
         }
     }
 }
@@ -24,18 +26,23 @@ impl Ashl for u128 {}
 trait Ashr: Int + LargeInt {
     /// Returns arithmetic `a >> b`, requires `b < Self::BITS`
     fn ashr(self, offset: u32) -> Self
-        where Self: LargeInt<LowHalf = <<Self as LargeInt>::HighHalf as Int>::UnsignedInt>,
+    where
+        Self: LargeInt<LowHalf = <<Self as LargeInt>::HighHalf as Int>::UnsignedInt>,
     {
         let half_bits = Self::BITS / 2;
         if offset & half_bits != 0 {
-            Self::from_parts((self.high() >> (offset - half_bits)).unsigned(),
-                              self.high() >> (half_bits - 1))
+            Self::from_parts(
+                (self.high() >> (offset - half_bits)).unsigned(),
+                self.high() >> (half_bits - 1),
+            )
         } else if offset == 0 {
             self
         } else {
             let high_unsigned = self.high().unsigned();
-            Self::from_parts((high_unsigned << (half_bits - offset)) | (self.low() >> offset),
-                              self.high() >> offset)
+            Self::from_parts(
+                (high_unsigned << (half_bits - offset)) | (self.low() >> offset),
+                self.high() >> offset,
+            )
         }
     }
 }
@@ -46,7 +53,8 @@ impl Ashr for i128 {}
 trait Lshr: Int + LargeInt {
     /// Returns logical `a >> b`, requires `b < Self::BITS`
     fn lshr(self, offset: u32) -> Self
-        where Self: LargeInt<HighHalf = <Self as LargeInt>::LowHalf>,
+    where
+        Self: LargeInt<HighHalf = <Self as LargeInt>::LowHalf>,
     {
         let half_bits = Self::BITS / 2;
         if offset & half_bits != 0 {
@@ -54,9 +62,10 @@ trait Lshr: Int + LargeInt {
         } else if offset == 0 {
             self
         } else {
-            Self::from_parts((self.high() << (half_bits - offset)) |
-                                (self.low() >> offset),
-                             self.high() >> offset)
+            Self::from_parts(
+                (self.high() << (half_bits - offset)) | (self.low() >> offset),
+                self.high() >> offset,
+            )
         }
     }
 }
@@ -65,7 +74,7 @@ impl Lshr for u64 {}
 impl Lshr for u128 {}
 
 intrinsics! {
-    #[use_c_shim_if(all(target_arch = "x86", not(target_env = "msvc")))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_llsl]
     pub extern "C" fn __ashldi3(a: u64, b: u32) -> u64 {
         a.ashl(b)
@@ -75,7 +84,7 @@ intrinsics! {
         a.ashl(b)
     }
 
-    #[use_c_shim_if(all(target_arch = "x86", not(target_env = "msvc")))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_lasr]
     pub extern "C" fn __ashrdi3(a: i64, b: u32) -> i64 {
         a.ashr(b)
@@ -85,7 +94,7 @@ intrinsics! {
         a.ashr(b)
     }
 
-    #[use_c_shim_if(all(target_arch = "x86", not(target_env = "msvc")))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_llsr]
     pub extern "C" fn __lshrdi3(a: u64, b: u32) -> u64 {
         a.lshr(b)
