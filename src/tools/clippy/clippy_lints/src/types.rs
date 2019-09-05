@@ -18,6 +18,7 @@ use rustc_typeck::hir_ty_to_ty;
 use syntax::ast::{FloatTy, IntTy, UintTy};
 use syntax::errors::DiagnosticBuilder;
 use syntax::source_map::Span;
+use syntax::symbol::sym;
 
 use crate::consts::{constant, Constant};
 use crate::utils::paths;
@@ -167,7 +168,7 @@ declare_lint_pass!(Types => [BOX_VEC, VEC_BOX, OPTION_OPTION, LINKEDLIST, BORROW
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Types {
     fn check_fn(&mut self, cx: &LateContext<'_, '_>, _: FnKind<'_>, decl: &FnDecl, _: &Body, _: Span, id: HirId) {
         // Skip trait implementations; see issue #605.
-        if let Some(hir::Node::Item(item)) = cx.tcx.hir().find_by_hir_id(cx.tcx.hir().get_parent_item(id)) {
+        if let Some(hir::Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_item(id)) {
             if let ItemKind::Impl(_, _, _, _, Some(..), _, _) = item.node {
                 return;
             }
@@ -584,7 +585,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnitArg {
         }
         if_chain! {
             let map = &cx.tcx.hir();
-            let opt_parent_node = map.find_by_hir_id(map.get_parent_node_by_hir_id(expr.hir_id));
+            let opt_parent_node = map.find(map.get_parent_node(expr.hir_id));
             if let Some(hir::Node::Expr(parent_expr)) = opt_parent_node;
             if is_questionmark_desugar_marked_call(parent_expr);
             then {
@@ -859,7 +860,7 @@ declare_clippy_lint! {
 
 /// Returns the size in bits of an integral type.
 /// Will return 0 if the type is not an int or uint variant
-fn int_ty_to_nbits(typ: Ty<'_>, tcx: TyCtxt<'_, '_, '_>) -> u64 {
+fn int_ty_to_nbits(typ: Ty<'_>, tcx: TyCtxt<'_>) -> u64 {
     match typ.sty {
         ty::Int(i) => match i {
             IntTy::Isize => tcx.data_layout.pointer_size.bits(),
@@ -1091,7 +1092,7 @@ fn is_c_void(cx: &LateContext<'_, '_>, ty: Ty<'_>) -> bool {
         if names.is_empty() {
             return false;
         }
-        if names[0] == "libc" || names[0] == "core" && *names.last().unwrap() == "c_void" {
+        if names[0] == sym!(libc) || names[0] == sym::core && *names.last().unwrap() == sym!(c_void) {
             return true;
         }
     }
@@ -1119,7 +1120,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
             if let ExprKind::Lit(ref lit) = ex.node {
                 use syntax::ast::{LitIntType, LitKind};
                 if let LitKind::Int(n, _) = lit.node {
-                    if cast_to.is_fp() {
+                    if cast_to.is_floating_point() {
                         let from_nbits = 128 - n.leading_zeros();
                         let to_nbits = fp_ty_mantissa_nbits(cast_to);
                         if from_nbits != 0 && to_nbits != 0 && from_nbits <= to_nbits {
@@ -1494,7 +1495,7 @@ declare_clippy_lint! {
     /// checked.
     ///
     /// **Why is this bad?** An expression like `min <= x` may misleadingly imply
-    /// that is is possible for `x` to be less than the minimum. Expressions like
+    /// that it is possible for `x` to be less than the minimum. Expressions like
     /// `max < x` are probably mistakes.
     ///
     /// **Known problems:** For `usize` the size of the current compile target will
@@ -2135,18 +2136,18 @@ impl<'tcx> ImplicitHasherType<'tcx> {
     }
 }
 
-struct ImplicitHasherTypeVisitor<'a, 'tcx: 'a> {
+struct ImplicitHasherTypeVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     found: Vec<ImplicitHasherType<'tcx>>,
 }
 
-impl<'a, 'tcx: 'a> ImplicitHasherTypeVisitor<'a, 'tcx> {
+impl<'a, 'tcx> ImplicitHasherTypeVisitor<'a, 'tcx> {
     fn new(cx: &'a LateContext<'a, 'tcx>) -> Self {
         Self { cx, found: vec![] }
     }
 }
 
-impl<'a, 'tcx: 'a> Visitor<'tcx> for ImplicitHasherTypeVisitor<'a, 'tcx> {
+impl<'a, 'tcx> Visitor<'tcx> for ImplicitHasherTypeVisitor<'a, 'tcx> {
     fn visit_ty(&mut self, t: &'tcx hir::Ty) {
         if let Some(target) = ImplicitHasherType::new(self.cx, t) {
             self.found.push(target);
@@ -2161,14 +2162,14 @@ impl<'a, 'tcx: 'a> Visitor<'tcx> for ImplicitHasherTypeVisitor<'a, 'tcx> {
 }
 
 /// Looks for default-hasher-dependent constructors like `HashMap::new`.
-struct ImplicitHasherConstructorVisitor<'a, 'b, 'tcx: 'a + 'b> {
+struct ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     body: &'a TypeckTables<'tcx>,
     target: &'b ImplicitHasherType<'tcx>,
     suggestions: BTreeMap<Span, String>,
 }
 
-impl<'a, 'b, 'tcx: 'a + 'b> ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
+impl<'a, 'b, 'tcx> ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
     fn new(cx: &'a LateContext<'a, 'tcx>, target: &'b ImplicitHasherType<'tcx>) -> Self {
         Self {
             cx,
@@ -2179,7 +2180,7 @@ impl<'a, 'b, 'tcx: 'a + 'b> ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
     }
 }
 
-impl<'a, 'b, 'tcx: 'a + 'b> Visitor<'tcx> for ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
+impl<'a, 'b, 'tcx> Visitor<'tcx> for ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
     fn visit_body(&mut self, body: &'tcx Body) {
         let prev_body = self.body;
         self.body = self.cx.tcx.body_tables(body.id());

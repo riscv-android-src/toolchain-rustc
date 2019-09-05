@@ -87,29 +87,6 @@ static void parse_options(const char **repo_path, merge_options *opts, int argc,
 	}
 }
 
-static int resolve_refish(git_annotated_commit **commit, git_repository *repo, const char *refish)
-{
-	git_reference *ref;
-	int err = 0;
-	git_oid oid;
-
-	assert(commit != NULL);
-
-	err = git_reference_dwim(&ref, repo, refish);
-	if (err == GIT_OK) {
-		git_annotated_commit_from_ref(commit, repo, ref);
-		git_reference_free(ref);
-		return 0;
-	}
-
-	err = git_oid_fromstr(&oid, refish);
-	if (err == GIT_OK) {
-		err = git_annotated_commit_lookup(commit, repo, &oid);
-	}
-
-	return err;
-}
-
 static int resolve_heads(git_repository *repo, merge_options *opts)
 {
 	git_annotated_commit **annotated = calloc(opts->heads_count, sizeof(git_annotated_commit *));
@@ -119,7 +96,7 @@ static int resolve_heads(git_repository *repo, merge_options *opts)
 	for (i = 0; i < opts->heads_count; i++) {
 		err = resolve_refish(&annotated[annotated_count++], repo, opts->heads[i]);
 		if (err != 0) {
-			fprintf(stderr, "failed to resolve refish %s: %s\n", opts->heads[i], giterr_last()->message);
+			fprintf(stderr, "failed to resolve refish %s: %s\n", opts->heads[i], git_error_last()->message);
 			annotated_count--;
 			continue;
 		}
@@ -176,7 +153,7 @@ static int perform_fastforward(git_repository *repo, const git_oid *target_oid, 
 	}
 
 	/* Lookup the target object */
-	err = git_object_lookup(&target, repo, target_oid, GIT_OBJ_COMMIT);
+	err = git_object_lookup(&target, repo, target_oid, GIT_OBJECT_COMMIT);
 	if (err != 0) {
 		fprintf(stderr, "failed to lookup OID %s\n", git_oid_tostr_s(target_oid));
 		return -1;
@@ -252,7 +229,7 @@ static int create_merge_commit(git_repository *repo, git_index *index, merge_opt
 
 	/* Maybe that's a ref, so DWIM it */
 	err = git_reference_dwim(&merge_ref, repo, opts->heads[0]);
-	check_lg2(err, "failed to DWIM reference", giterr_last()->message);
+	check_lg2(err, "failed to DWIM reference", git_error_last()->message);
 
 	/* Grab a signature */
 	check_lg2(git_signature_now(&sign, "Me", "me@example.com"), "failed to create signature", NULL);
@@ -274,7 +251,7 @@ static int create_merge_commit(git_repository *repo, git_index *index, merge_opt
 	if (err < 0) goto cleanup;
 
 	/* Setup our parent commits */
-	err = git_reference_peel((git_object **)&parents[0], head_ref, GIT_OBJ_COMMIT);
+	err = git_reference_peel((git_object **)&parents[0], head_ref, GIT_OBJECT_COMMIT);
 	check_lg2(err, "failed to peel head reference", NULL);
 	for (i = 0; i < opts->annotated_count; i++) {
 		git_commit_lookup(&parents[i + 1], repo, git_annotated_commit_id(opts->annotated[i]));

@@ -7,12 +7,12 @@ use rustc::hir;
 use rustc::hir::def::{Res, DefKind};
 use rustc::hir::def_id::DefId;
 use rustc::infer::InferCtxt;
-use rustc::mir::Mir;
+use rustc::mir::Body;
 use rustc::ty::subst::{SubstsRef, UnpackedKind};
 use rustc::ty::{self, RegionKind, RegionVid, Ty, TyCtxt};
 use rustc::ty::print::RegionHighlightMode;
 use rustc_errors::DiagnosticBuilder;
-use syntax::symbol::keywords;
+use syntax::symbol::kw;
 use syntax_pos::Span;
 use syntax_pos::symbol::InternedString;
 
@@ -151,8 +151,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// and then return the name `'1` for us to use.
     crate fn give_region_a_name(
         &self,
-        infcx: &InferCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         upvars: &[Upvar],
         mir_def_id: DefId,
         fr: RegionVid,
@@ -165,7 +165,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         let value = self.give_name_from_error_region(infcx.tcx, mir_def_id, fr, counter)
             .or_else(|| {
                 self.give_name_if_anonymous_region_appears_in_arguments(
-                    infcx, mir, mir_def_id, fr, counter,
+                    infcx, body, mir_def_id, fr, counter,
                 )
             })
             .or_else(|| {
@@ -175,12 +175,12 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             })
             .or_else(|| {
                 self.give_name_if_anonymous_region_appears_in_output(
-                    infcx, mir, mir_def_id, fr, counter,
+                    infcx, body, mir_def_id, fr, counter,
                 )
             })
             .or_else(|| {
                 self.give_name_if_anonymous_region_appears_in_yield_ty(
-                    infcx, mir, mir_def_id, fr, counter,
+                    infcx, body, mir_def_id, fr, counter,
                 )
             });
 
@@ -194,7 +194,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// named variants.
     fn give_name_from_error_region(
         &self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         mir_def_id: DefId,
         fr: RegionVid,
         counter: &mut usize,
@@ -216,7 +216,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             }
 
             ty::ReStatic => Some(RegionName {
-                name: keywords::StaticLifetime.name().as_interned_str(),
+                name: kw::StaticLifetime.as_interned_str(),
                 source: RegionNameSource::Static
             }),
 
@@ -230,14 +230,14 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                 },
 
                 ty::BoundRegion::BrEnv => {
-                    let mir_node_id = tcx.hir()
-                                         .as_local_node_id(mir_def_id)
-                                         .expect("non-local mir");
+                    let mir_hir_id = tcx.hir()
+                                        .as_local_hir_id(mir_def_id)
+                                        .expect("non-local mir");
                     let def_ty = self.universal_regions.defining_ty;
 
                     if let DefiningTy::Closure(def_id, substs) = def_ty {
                         let args_span = if let hir::ExprKind::Closure(_, _, _, span, _) =
-                            tcx.hir().expect_expr(mir_node_id).node
+                            tcx.hir().expect_expr(mir_hir_id).node
                         {
                             span
                         } else {
@@ -274,7 +274,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                     }
                 }
 
-                ty::BoundRegion::BrAnon(_) | ty::BoundRegion::BrFresh(_) => None,
+                ty::BoundRegion::BrAnon(_) => None,
             },
 
             ty::ReLateBound(..)
@@ -303,14 +303,14 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// ```
     fn get_named_span(
         &self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         error_region: &RegionKind,
         name: InternedString,
     ) -> Span {
         let scope = error_region.free_region_binding_scope(tcx);
         let node = tcx.hir().as_local_hir_id(scope).unwrap_or(hir::DUMMY_HIR_ID);
 
-        let span = tcx.sess.source_map().def_span(tcx.hir().span_by_hir_id(node));
+        let span = tcx.sess.source_map().def_span(tcx.hir().span(node));
         if let Some(param) = tcx.hir()
             .get_generics(scope)
             .and_then(|generics| generics.get_named(name))
@@ -331,8 +331,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// ```
     fn give_name_if_anonymous_region_appears_in_arguments(
         &self,
-        infcx: &InferCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         mir_def_id: DefId,
         fr: RegionVid,
         counter: &mut usize,
@@ -344,7 +344,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             self.universal_regions.unnormalized_input_tys[implicit_inputs + argument_index];
         if let Some(region_name) = self.give_name_if_we_can_match_hir_ty_from_argument(
             infcx,
-            mir,
+            body,
             mir_def_id,
             fr,
             arg_ty,
@@ -354,21 +354,21 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             return Some(region_name);
         }
 
-        self.give_name_if_we_cannot_match_hir_ty(infcx, mir, fr, arg_ty, counter)
+        self.give_name_if_we_cannot_match_hir_ty(infcx, body, fr, arg_ty, counter)
     }
 
     fn give_name_if_we_can_match_hir_ty_from_argument(
         &self,
-        infcx: &InferCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         mir_def_id: DefId,
         needle_fr: RegionVid,
         argument_ty: Ty<'tcx>,
         argument_index: usize,
         counter: &mut usize,
     ) -> Option<RegionName> {
-        let mir_node_id = infcx.tcx.hir().as_local_node_id(mir_def_id)?;
-        let fn_decl = infcx.tcx.hir().fn_decl(mir_node_id)?;
+        let mir_hir_id = infcx.tcx.hir().as_local_hir_id(mir_def_id)?;
+        let fn_decl = infcx.tcx.hir().fn_decl_by_hir_id(mir_hir_id)?;
         let argument_hir_ty: &hir::Ty = &fn_decl.inputs[argument_index];
         match argument_hir_ty.node {
             // This indicates a variable with no type annotation, like
@@ -376,7 +376,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             // must highlight the variable.
             hir::TyKind::Infer => self.give_name_if_we_cannot_match_hir_ty(
                 infcx,
-                mir,
+                body,
                 needle_fr,
                 argument_ty,
                 counter,
@@ -405,8 +405,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// ```
     fn give_name_if_we_cannot_match_hir_ty(
         &self,
-        infcx: &InferCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         needle_fr: RegionVid,
         argument_ty: Ty<'tcx>,
         counter: &mut usize,
@@ -422,7 +422,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         let assigned_region_name = if type_name.find(&format!("'{}", counter)).is_some() {
             // Only add a label if we can confirm that a region was labelled.
             let argument_index = self.get_argument_index_for_region(infcx.tcx, needle_fr)?;
-            let (_, span) = self.get_argument_name_and_span_for_region(mir, argument_index);
+            let (_, span) = self.get_argument_name_and_span_for_region(body, argument_index);
 
             Some(RegionName {
                 // This counter value will already have been used, so this function will increment
@@ -461,7 +461,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// to highlighting that closest type instead.
     fn give_name_if_we_can_match_hir_ty(
         &self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         needle_fr: RegionVid,
         argument_ty: Ty<'tcx>,
         argument_hir_ty: &hir::Ty,
@@ -653,7 +653,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// ```
     fn give_name_if_anonymous_region_appears_in_upvars(
         &self,
-        tcx: TyCtxt<'_, '_, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         upvars: &[Upvar],
         fr: RegionVid,
         counter: &mut usize,
@@ -675,8 +675,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// or be early bound (named, not in argument).
     fn give_name_if_anonymous_region_appears_in_output(
         &self,
-        infcx: &InferCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         mir_def_id: DefId,
         fr: RegionVid,
         counter: &mut usize,
@@ -696,9 +696,9 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         highlight.highlighting_region_vid(fr, *counter);
         let type_name = infcx.extract_type_name(&return_ty, Some(highlight));
 
-        let mir_node_id = tcx.hir().as_local_node_id(mir_def_id).expect("non-local mir");
+        let mir_hir_id = tcx.hir().as_local_hir_id(mir_def_id).expect("non-local mir");
 
-        let (return_span, mir_description) = match tcx.hir().get(mir_node_id) {
+        let (return_span, mir_description) = match tcx.hir().get(mir_hir_id) {
             hir::Node::Expr(hir::Expr {
                 node: hir::ExprKind::Closure(_, return_ty, _, span, gen_move),
                 ..
@@ -717,7 +717,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                 node: hir::ImplItemKind::Method(method_sig, _),
                 ..
             }) => (method_sig.decl.output.span(), ""),
-            _ => (mir.span, ""),
+            _ => (body.span, ""),
         };
 
         Some(RegionName {
@@ -735,8 +735,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
     fn give_name_if_anonymous_region_appears_in_yield_ty(
         &self,
-        infcx: &InferCtxt<'_, '_, 'tcx>,
-        mir: &Mir<'tcx>,
+        infcx: &InferCtxt<'_, 'tcx>,
+        body: &Body<'tcx>,
         mir_def_id: DefId,
         fr: RegionVid,
         counter: &mut usize,
@@ -759,16 +759,16 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         highlight.highlighting_region_vid(fr, *counter);
         let type_name = infcx.extract_type_name(&yield_ty, Some(highlight));
 
-        let mir_node_id = tcx.hir().as_local_node_id(mir_def_id).expect("non-local mir");
+        let mir_hir_id = tcx.hir().as_local_hir_id(mir_def_id).expect("non-local mir");
 
-        let yield_span = match tcx.hir().get(mir_node_id) {
+        let yield_span = match tcx.hir().get(mir_hir_id) {
             hir::Node::Expr(hir::Expr {
                 node: hir::ExprKind::Closure(_, _, _, span, _),
                 ..
             }) => (
                 tcx.sess.source_map().end_point(*span)
             ),
-            _ => mir.span,
+            _ => body.span,
         };
 
         debug!(

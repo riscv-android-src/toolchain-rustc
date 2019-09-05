@@ -1,14 +1,8 @@
 HTML Sanitization
 =================
 
-[![Build Status](https://travis-ci.org/notriddle/ammonia.svg?branch=master)](https://travis-ci.org/notriddle/ammonia)
-[![Crates.IO](https://img.shields.io/crates/v/ammonia.svg)](https://crates.io/crates/ammonia)
-[![Docs.RS](https://docs.rs/ammonia/badge.svg)](https://docs.rs/ammonia/)
-
-Chat: [Gitter], [Matrix]
-
-[Gitter]: https://gitter.im/rust-ammonia/Lobby
-[Matrix]: https://matrix.to/#/#rust-ammonia:gpmatrix.com
+[![Crates.IO](https://img.shields.io/crates/v/ammonia.svg)](https://crates.rs/crates/ammonia)
+![Requires rustc 1.30.0](https://img.shields.io/badge/rustc-1.30.0+-green.svg)
 
 Ammonia is a whitelist-based HTML sanitization library. It is designed to
 prevent cross-site scripting, layout breaking, and clickjacking caused
@@ -32,7 +26,7 @@ To use `ammonia`, add it to your project's `Cargo.toml` file:
 
 ```toml
 [dependencies]
-ammonia = "1.1.0"
+ammonia = "2"
 ```
 
 

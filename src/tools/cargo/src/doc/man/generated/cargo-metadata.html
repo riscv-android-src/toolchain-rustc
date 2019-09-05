@@ -35,7 +35,7 @@ for a Rust API for reading the metadata.</p>
 </div>
 <div class="listingblock">
 <div class="content">
-<pre class="highlightjs highlight"><code class="language-javascript hljs" data-lang="javascript">{
+<pre class="highlightjs highlight"><code data-lang="javascript" class="language-javascript hljs">{
     /* Array of all packages in the workspace.
        It also includes all feature-enabled dependencies unless --no-deps is used.
     */
@@ -137,7 +137,11 @@ for a Rust API for reading the metadata.</p>
                     /* Array of required features.
                        This property is not included if no required features are set.
                     */
-                    "required-features": ["feat1"]
+                    "required-features": ["feat1"],
+                    /* Whether or not this target has doc tests enabled, and
+                       the target is compatible with doc testing.
+                    */
+                    "doctest": false
                 }
             ],
             /* Set of features defined for the package.

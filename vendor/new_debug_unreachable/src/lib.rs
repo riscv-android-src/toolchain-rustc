@@ -4,10 +4,7 @@
 
 //! `panic!()` in debug builds, optimization hint in release.
 
-extern crate unreachable;
-
-#[doc(hidden)]
-pub use unreachable::unreachable as __unreachable;
+#[doc(hidden)] pub mod _internal { pub use core::hint::unreachable_unchecked; }
 
 #[macro_export]
 /// `panic!()` in debug builds, optimization hint in release.
@@ -15,9 +12,9 @@ macro_rules! debug_unreachable {
     () => { debug_unreachable!("entered unreachable code") };
     ($e:expr) => {
         if cfg!(debug_assertions) {
-            panic!($e);
+            panic!($e)
         } else {
-            $crate::__unreachable()
+            $crate::_internal::unreachable_unchecked()
         }
     }
 }

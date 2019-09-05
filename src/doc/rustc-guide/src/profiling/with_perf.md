@@ -7,15 +7,15 @@ This is a guide for how to profile rustc with [perf](https://perf.wiki.kernel.or
 - Get a clean checkout of rust-lang/master, or whatever it is you want
   to profile.
 - Set the following settings in your `config.toml`:
-  - `debuginfo-lines = true`
-  - `use-jemalloc = false` — lets you do memory use profiling with valgrind 
+  - `debuginfo-level = 1` - enables line debuginfo
+  - `use-jemalloc = false` - lets you do memory use profiling with valgrind
   - leave everything else the defaults
 - Run `./x.py build` to get a full build
 - Make a rustup toolchain pointing to that result
   - see [the "build and run" section for instructions][b-a-r]
 
 [b-a-r]: ../how-to-build-and-run.html#toolchain
-  
+
 ## Gathering a perf profile
 
 perf is an excellent tool on linux that can be used to gather and
@@ -272,9 +272,9 @@ Tree
 : : | rustc_mir::borrow_check::nll::type_check::type_check_internal (13% total, 0% self)
 : : : | core::ops::function::FnOnce::call_once (5% total, 0% self)
 : : : : | rustc_mir::borrow_check::nll::type_check::liveness::generate (5% total, 3% self)
-: : : | <rustc_mir::borrow_check::nll::type_check::TypeVerifier<'a, 'b, 'gcx, 'tcx> as rustc::mir::visit::Visitor<'tcx>>::visit_mir (3% total, 0% self)
+: : : | <rustc_mir::borrow_check::nll::type_check::TypeVerifier<'a, 'b, 'tcx> as rustc::mir::visit::Visitor<'tcx>>::visit_mir (3% total, 0% self)
 : | rustc::mir::visit::Visitor::visit_mir (8% total, 6% self)
-: | <rustc_mir::borrow_check::MirBorrowckCtxt<'cx, 'gcx, 'tcx> as rustc_mir::dataflow::DataflowResultsConsumer<'cx, 'tcx>>::visit_statement_entry (5% total, 0% self)
+: | <rustc_mir::borrow_check::MirBorrowckCtxt<'cx, 'tcx> as rustc_mir::dataflow::DataflowResultsConsumer<'cx, 'tcx>>::visit_statement_entry (5% total, 0% self)
 : | rustc_mir::dataflow::do_dataflow (3% total, 0% self)
 ```
 
@@ -295,7 +295,7 @@ altogether ("total") and the percent of time spent in **just that
 function and not some callee of that function** (self). Usually
 "total" is the more interesting number, but not always.
 
-### Relative percentages 
+### Relative percentages
 
 By default, all in perf-focus are relative to the **total program
 execution**. This is useful to help you keep perspective — often as
@@ -321,7 +321,7 @@ Tree
 | matched `{do_mir_borrowck}` (100% total, 0% self)
 : | rustc_mir::borrow_check::nll::compute_regions (47% total, 0% self) [...]
 : | rustc::mir::visit::Visitor::visit_mir (19% total, 15% self) [...]
-: | <rustc_mir::borrow_check::MirBorrowckCtxt<'cx, 'gcx, 'tcx> as rustc_mir::dataflow::DataflowResultsConsumer<'cx, 'tcx>>::visit_statement_entry (13% total, 0% self) [...]
+: | <rustc_mir::borrow_check::MirBorrowckCtxt<'cx, 'tcx> as rustc_mir::dataflow::DataflowResultsConsumer<'cx, 'tcx>>::visit_statement_entry (13% total, 0% self) [...]
 : | rustc_mir::dataflow::do_dataflow (8% total, 1% self) [...]
 ```
 

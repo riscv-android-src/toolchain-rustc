@@ -32,7 +32,6 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
-use rustc_data_structures::sync::Lrc;
 use std::hash::{Hash, Hasher};
 use syntax::source_map::CompilerDesugaringKind;
 use syntax_pos::{MultiSpan, Span};
@@ -52,9 +51,9 @@ pub mod move_data;
 #[derive(Clone, Copy)]
 pub struct LoanDataFlowOperator;
 
-pub type LoanDataFlow<'a, 'tcx> = DataFlowContext<'a, 'tcx, LoanDataFlowOperator>;
+pub type LoanDataFlow<'tcx> = DataFlowContext<'tcx, LoanDataFlowOperator>;
 
-pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+pub fn check_crate<'tcx>(tcx: TyCtxt<'tcx>) {
     tcx.par_body_owners(|body_owner_def_id| {
         tcx.ensure().borrowck(body_owner_def_id);
     });
@@ -68,28 +67,26 @@ pub fn provide(providers: &mut Providers<'_>) {
 }
 
 /// Collection of conclusions determined via borrow checker analyses.
-pub struct AnalysisData<'a, 'tcx: 'a> {
+pub struct AnalysisData<'tcx> {
     pub all_loans: Vec<Loan<'tcx>>,
-    pub loans: DataFlowContext<'a, 'tcx, LoanDataFlowOperator>,
-    pub move_data: move_data::FlowedMoveData<'a, 'tcx>,
+    pub loans: DataFlowContext<'tcx, LoanDataFlowOperator>,
+    pub move_data: move_data::FlowedMoveData<'tcx>,
 }
 
-fn borrowck<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, owner_def_id: DefId)
-    -> Lrc<BorrowCheckResult>
-{
+fn borrowck<'tcx>(tcx: TyCtxt<'tcx>, owner_def_id: DefId) -> &'tcx BorrowCheckResult {
     assert!(tcx.use_ast_borrowck() || tcx.migrate_borrowck());
 
     debug!("borrowck(body_owner_def_id={:?})", owner_def_id);
 
     let owner_id = tcx.hir().as_local_hir_id(owner_def_id).unwrap();
 
-    match tcx.hir().get_by_hir_id(owner_id) {
+    match tcx.hir().get(owner_id) {
         Node::Ctor(..) => {
             // We get invoked with anything that has MIR, but some of
             // those things (notably the synthesized constructors from
             // tuple structs/variants) do not have an associated body
             // and do not need borrowchecking.
-            return Lrc::new(BorrowCheckResult {
+            return tcx.arena.alloc(BorrowCheckResult {
                 used_mut_nodes: Default::default(),
                 signalled_any_error: SignalledError::NoErrorsSeen,
             })
@@ -136,18 +133,20 @@ fn borrowck<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, owner_def_id: DefId)
         check_loans::check_loans(&mut bccx, &loan_dfcx, &flowed_moves, &all_loans, body);
     }
 
-    Lrc::new(BorrowCheckResult {
+    tcx.arena.alloc(BorrowCheckResult {
         used_mut_nodes: bccx.used_mut_nodes.into_inner(),
         signalled_any_error: bccx.signalled_any_error.into_inner(),
     })
 }
 
-fn build_borrowck_dataflow_data<'a, 'c, 'tcx, F>(this: &mut BorrowckCtxt<'a, 'tcx>,
-                                                 force_analysis: bool,
-                                                 body_id: hir::BodyId,
-                                                 get_cfg: F)
-                                                 -> Option<AnalysisData<'a, 'tcx>>
-    where F: FnOnce(&mut BorrowckCtxt<'a, 'tcx>) -> &'c cfg::CFG
+fn build_borrowck_dataflow_data<'a, 'c, 'tcx, F>(
+    this: &mut BorrowckCtxt<'a, 'tcx>,
+    force_analysis: bool,
+    body_id: hir::BodyId,
+    get_cfg: F,
+) -> Option<AnalysisData<'tcx>>
+where
+    F: FnOnce(&mut BorrowckCtxt<'a, 'tcx>) -> &'c cfg::CFG,
 {
     // Check the body of fn items.
     let (all_loans, move_data) =
@@ -194,13 +193,12 @@ fn build_borrowck_dataflow_data<'a, 'c, 'tcx, F>(this: &mut BorrowckCtxt<'a, 'tc
 /// Accessor for introspective clients inspecting `AnalysisData` and
 /// the `BorrowckCtxt` itself , e.g., the flowgraph visualizer.
 pub fn build_borrowck_dataflow_data_for_fn<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     body_id: hir::BodyId,
-    cfg: &cfg::CFG)
-    -> (BorrowckCtxt<'a, 'tcx>, AnalysisData<'a, 'tcx>)
-{
+    cfg: &cfg::CFG,
+) -> (BorrowckCtxt<'a, 'tcx>, AnalysisData<'tcx>) {
     let owner_id = tcx.hir().body_owner(body_id);
-    let owner_def_id = tcx.hir().local_def_id(owner_id);
+    let owner_def_id = tcx.hir().local_def_id_from_hir_id(owner_id);
     let tables = tcx.typeck_tables_of(owner_def_id);
     let region_scope_tree = tcx.region_scope_tree(owner_def_id);
     let body = tcx.hir().body(body_id);
@@ -221,8 +219,8 @@ pub fn build_borrowck_dataflow_data_for_fn<'a, 'tcx>(
 // ----------------------------------------------------------------------
 // Type definitions
 
-pub struct BorrowckCtxt<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub struct BorrowckCtxt<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
 
     // tables for the current thing we are checking; set to
     // Some in `borrowck_fn` and cleared later
@@ -239,14 +237,13 @@ pub struct BorrowckCtxt<'a, 'tcx: 'a> {
     signalled_any_error: Cell<SignalledError>,
 }
 
-
-impl<'a, 'tcx: 'a> BorrowckCtxt<'a, 'tcx> {
+impl BorrowckCtxt<'_, 'tcx> {
     fn signal_error(&self) {
         self.signalled_any_error.set(SignalledError::SawSomeError);
     }
 }
 
-impl<'a, 'b, 'tcx: 'b> BorrowckErrors<'a> for &'a BorrowckCtxt<'b, 'tcx> {
+impl BorrowckErrors<'a> for &'a BorrowckCtxt<'_, 'tcx> {
     fn struct_span_err_with_code<S: Into<MultiSpan>>(self,
                                                      sp: S,
                                                      msg: &str,
@@ -391,9 +388,8 @@ pub enum LoanPathElem<'tcx> {
     LpInterior(Option<DefId>, InteriorKind),
 }
 
-fn closure_to_block(closure_id: LocalDefId,
-                    tcx: TyCtxt<'_, '_, '_>) -> HirId {
-    let closure_id = tcx.hir().local_def_id_to_node_id(closure_id);
+fn closure_to_block(closure_id: LocalDefId, tcx: TyCtxt<'_>) -> HirId {
+    let closure_id = tcx.hir().local_def_id_to_hir_id(closure_id);
     match tcx.hir().get(closure_id) {
         Node::Expr(expr) => match expr.node {
             hir::ExprKind::Closure(.., body_id, _, _) => {
@@ -407,8 +403,8 @@ fn closure_to_block(closure_id: LocalDefId,
     }
 }
 
-impl<'a, 'tcx> LoanPath<'tcx> {
-    pub fn kill_scope(&self, bccx: &BorrowckCtxt<'a, 'tcx>) -> region::Scope {
+impl LoanPath<'tcx> {
+    pub fn kill_scope(&self, bccx: &BorrowckCtxt<'_, 'tcx>) -> region::Scope {
         match self.kind {
             LpVar(hir_id) => {
                 bccx.region_scope_tree.var_scope(hir_id.local_id)
@@ -556,7 +552,7 @@ pub enum bckerr_code<'tcx> {
 // Combination of an error code and the categorization of the expression
 // that caused it
 #[derive(Debug, PartialEq)]
-pub struct BckError<'c, 'tcx: 'c> {
+pub struct BckError<'c, 'tcx> {
     span: Span,
     cause: AliasableViolationKind,
     cmt: &'c mc::cmt_<'tcx>,
@@ -578,7 +574,7 @@ pub enum MovedValueUseKind {
 ///////////////////////////////////////////////////////////////////////////
 // Misc
 
-impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
+impl BorrowckCtxt<'_, 'tcx> {
     pub fn is_subregion_of(&self,
                            r_sub: ty::Region<'tcx>,
                            r_sup: ty::Region<'tcx>)
@@ -703,10 +699,10 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
             }
 
             move_data::MoveExpr |
-            move_data::MovePat => (self.tcx.hir().span_by_hir_id(hir_id), ""),
+            move_data::MovePat => (self.tcx.hir().span(hir_id), ""),
 
             move_data::Captured =>
-                (match self.tcx.hir().expect_expr_by_hir_id(hir_id).node {
+                (match self.tcx.hir().expect_expr(hir_id).node {
                     hir::ExprKind::Closure(.., fn_decl_span, _) => fn_decl_span,
                     ref r => bug!("Captured({:?}) maps to non-closure: {:?}",
                                   the_move.id, r),
@@ -832,7 +828,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                         let mut db = self.cannot_assign(error_span, &descr, Origin::Ast);
                         if let mc::NoteClosureEnv(upvar_id) = err.cmt.note {
                             let hir_id = upvar_id.var_path.hir_id;
-                            let sp = self.tcx.hir().span_by_hir_id(hir_id);
+                            let sp = self.tcx.hir().span(hir_id);
                             let fn_closure_msg = "`Fn` closures cannot capture their enclosing \
                                                   environment for modifications";
                             match (self.tcx.sess.source_map().span_to_snippet(sp), &err.cmt.cat) {
@@ -900,8 +896,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 // to implement two traits for "one operator" is not very intuitive for
                 // many programmers.
                 if err.cmt.note == mc::NoteIndex {
-                    let node_id = self.tcx.hir().hir_to_node_id(err.cmt.hir_id);
-                    let node =  self.tcx.hir().get(node_id);
+                    let node = self.tcx.hir().get(err.cmt.hir_id);
 
                     // This pattern probably always matches.
                     if let Node::Expr(
@@ -1026,8 +1021,8 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 }
 
                 if let ty::ReScope(scope) = *super_scope {
-                    let node_id = scope.node_id(self.tcx, &self.region_scope_tree);
-                    match self.tcx.hir().find(node_id) {
+                    let hir_id = scope.hir_id(&self.region_scope_tree);
+                    match self.tcx.hir().find(hir_id) {
                         Some(Node::Stmt(_)) => {
                             if *sub_scope != ty::ReStatic {
                                 db.note("consider using a `let` binding to increase its lifetime");
@@ -1122,7 +1117,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     "consider changing this closure to take self by mutable reference"
                 };
                 let hir_id = self.tcx.hir().local_def_id_to_hir_id(id);
-                let help_span = self.tcx.hir().span_by_hir_id(hir_id);
+                let help_span = self.tcx.hir().span(hir_id);
                 self.cannot_act_on_capture_in_sharable_fn(span,
                                                           prefix,
                                                           (help_span, help_msg),
@@ -1177,7 +1172,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
     }
 
     fn local_binding_mode(&self, hir_id: hir::HirId) -> ty::BindingMode {
-        let pat = match self.tcx.hir().get_by_hir_id(hir_id) {
+        let pat = match self.tcx.hir().get(hir_id) {
             Node::Binding(pat) => pat,
             node => bug!("bad node for local: {:?}", node)
         };
@@ -1194,8 +1189,8 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
     }
 
     fn local_ty(&self, hir_id: hir::HirId) -> (Option<&hir::Ty>, bool) {
-        let parent = self.tcx.hir().get_parent_node_by_hir_id(hir_id);
-        let parent_node = self.tcx.hir().get_by_hir_id(parent);
+        let parent = self.tcx.hir().get_parent_node(hir_id);
+        let parent_node = self.tcx.hir().get(parent);
 
         // The parent node is like a fn
         if let Some(fn_like) = FnLikeNode::from_node(parent_node) {
@@ -1228,7 +1223,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
             Some(ImmutabilityBlame::LocalDeref(hir_id)) => {
                 match self.local_binding_mode(hir_id) {
                     ty::BindByReference(..) => {
-                        let let_span = self.tcx.hir().span_by_hir_id(hir_id);
+                        let let_span = self.tcx.hir().span(hir_id);
                         let suggestion = suggest_ref_mut(self.tcx, let_span);
                         if let Some(replace_str) = suggestion {
                             db.span_suggestion(
@@ -1260,7 +1255,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     None => return
                 };
 
-                if let Node::Field(ref field) = self.tcx.hir().get_by_hir_id(hir_id) {
+                if let Node::Field(ref field) = self.tcx.hir().get(hir_id) {
                     if let Some(msg) = self.suggest_mut_for_immutable(&field.ty, false) {
                         db.span_label(field.ty.span, msg);
                     }
@@ -1276,7 +1271,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                             db: &mut DiagnosticBuilder<'_>,
                             borrowed_hir_id: hir::HirId,
                             binding_hir_id: hir::HirId) {
-        let let_span = self.tcx.hir().span_by_hir_id(binding_hir_id);
+        let let_span = self.tcx.hir().span(binding_hir_id);
         if let ty::BindByValue(..) = self.local_binding_mode(binding_hir_id) {
             if let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(let_span) {
                 let (ty, is_implicit_self) = self.local_ty(binding_hir_id);
@@ -1292,9 +1287,9 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                     },
                 )) = ty.map(|t| &t.node)
                 {
-                    let borrow_expr_id = self.tcx.hir().get_parent_node_by_hir_id(borrowed_hir_id);
+                    let borrow_expr_id = self.tcx.hir().get_parent_node(borrowed_hir_id);
                     db.span_suggestion(
-                        self.tcx.hir().span_by_hir_id(borrow_expr_id),
+                        self.tcx.hir().span(borrow_expr_id),
                         "consider removing the `&mut`, as it is an \
                         immutable binding to a mutable reference",
                         snippet,
@@ -1365,7 +1360,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 if *kind == ty::ClosureKind::Fn {
                     let closure_hir_id =
                         self.tcx.hir().local_def_id_to_hir_id(upvar_id.closure_expr_id);
-                    db.span_help(self.tcx.hir().span_by_hir_id(closure_hir_id),
+                    db.span_help(self.tcx.hir().span(closure_hir_id),
                                  "consider changing this closure to take \
                                   self by mutable reference");
                 }
@@ -1374,7 +1369,7 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                 if let Categorization::Deref(..) = err.cmt.cat {
                     db.span_label(*error_span, "cannot borrow as mutable");
                 } else if let Categorization::Local(local_id) = err.cmt.cat {
-                    let span = self.tcx.hir().span_by_hir_id(local_id);
+                    let span = self.tcx.hir().span(local_id);
                     if let Ok(snippet) = self.tcx.sess.source_map().span_to_snippet(span) {
                         if snippet.starts_with("ref mut ") || snippet.starts_with("&mut ") {
                             db.span_label(*error_span, "cannot reborrow mutably");
@@ -1399,10 +1394,10 @@ impl<'a, 'tcx> BorrowckCtxt<'a, 'tcx> {
                                       out: &mut String) {
         match loan_path.kind {
             LpUpvar(ty::UpvarId { var_path: ty::UpvarPath { hir_id: id }, closure_expr_id: _ }) => {
-                out.push_str(&self.tcx.hir().name_by_hir_id(id).as_str());
+                out.push_str(&self.tcx.hir().name(id).as_str());
             }
             LpVar(id) => {
-                out.push_str(&self.tcx.hir().name_by_hir_id(id).as_str());
+                out.push_str(&self.tcx.hir().name(id).as_str());
             }
 
             LpDowncast(ref lp_base, variant_def_id) => {
@@ -1488,7 +1483,7 @@ impl DataFlowOperator for LoanDataFlowOperator {
     }
 }
 
-impl<'tcx> fmt::Debug for InteriorKind {
+impl fmt::Debug for InteriorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             InteriorField(mc::FieldIndex(_, info)) => write!(f, "{}", info),
@@ -1513,13 +1508,12 @@ impl<'tcx> fmt::Debug for LoanPath<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             LpVar(id) => {
-                write!(f, "$({})", ty::tls::with(|tcx| tcx.hir().hir_to_string(id)))
+                write!(f, "$({})", ty::tls::with(|tcx| tcx.hir().node_to_string(id)))
             }
 
             LpUpvar(ty::UpvarId{ var_path: ty::UpvarPath {hir_id: var_id}, closure_expr_id }) => {
                 let s = ty::tls::with(|tcx| {
-                    let var_node_id = tcx.hir().hir_to_node_id(var_id);
-                    tcx.hir().node_to_string(var_node_id)
+                    tcx.hir().node_to_string(var_id)
                 });
                 write!(f, "$({} captured by id={:?})", s, closure_expr_id)
             }
@@ -1553,8 +1547,7 @@ impl<'tcx> fmt::Display for LoanPath<'tcx> {
 
             LpUpvar(ty::UpvarId{ var_path: ty::UpvarPath { hir_id }, closure_expr_id: _ }) => {
                 let s = ty::tls::with(|tcx| {
-                    let var_node_id = tcx.hir().hir_to_node_id(hir_id);
-                    tcx.hir().node_to_string(var_node_id)
+                    tcx.hir().node_to_string(hir_id)
                 });
                 write!(f, "$({} captured by closure)", s)
             }

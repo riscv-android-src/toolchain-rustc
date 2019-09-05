@@ -2,7 +2,9 @@
 
 use syntax::ast;
 use syntax::source_map::{BytePos, Span, DUMMY_SP};
+use syntax::symbol::sym;
 
+use self::doc_comment::DocCommentFormatter;
 use crate::comment::{contains_comment, rewrite_doc_comment, CommentStyle};
 use crate::config::lists::*;
 use crate::config::IndentStyle;
@@ -14,8 +16,10 @@ use crate::shape::Shape;
 use crate::types::{rewrite_path, PathContext};
 use crate::utils::{count_newlines, mk_sp};
 
+mod doc_comment;
+
 /// Returns attributes on the given statement.
-pub fn get_attrs_from_stmt(stmt: &ast::Stmt) -> &[ast::Attribute] {
+pub(crate) fn get_attrs_from_stmt(stmt: &ast::Stmt) -> &[ast::Attribute] {
     match stmt.node {
         ast::StmtKind::Local(ref local) => &local.attrs,
         ast::StmtKind::Item(ref item) => &item.attrs,
@@ -24,7 +28,7 @@ pub fn get_attrs_from_stmt(stmt: &ast::Stmt) -> &[ast::Attribute] {
     }
 }
 
-pub fn get_span_without_attrs(stmt: &ast::Stmt) -> Span {
+pub(crate) fn get_span_without_attrs(stmt: &ast::Stmt) -> Span {
     match stmt.node {
         ast::StmtKind::Local(ref local) => local.span,
         ast::StmtKind::Item(ref item) => item.span,
@@ -37,7 +41,10 @@ pub fn get_span_without_attrs(stmt: &ast::Stmt) -> Span {
 }
 
 /// Returns attributes that are within `outer_span`.
-pub fn filter_inline_attrs(attrs: &[ast::Attribute], outer_span: Span) -> Vec<ast::Attribute> {
+pub(crate) fn filter_inline_attrs(
+    attrs: &[ast::Attribute],
+    outer_span: Span,
+) -> Vec<ast::Attribute> {
     attrs
         .iter()
         .filter(|a| outer_span.lo() <= a.span.lo() && a.span.hi() <= outer_span.hi())
@@ -46,16 +53,15 @@ pub fn filter_inline_attrs(attrs: &[ast::Attribute], outer_span: Span) -> Vec<as
 }
 
 fn is_derive(attr: &ast::Attribute) -> bool {
-    attr.check_name("derive")
+    attr.check_name(sym::derive)
 }
 
 /// Returns the arguments of `#[derive(...)]`.
-fn get_derive_spans(attr: &ast::Attribute) -> Option<Vec<Span>> {
+fn get_derive_spans<'a>(attr: &'a ast::Attribute) -> Option<impl Iterator<Item = Span> + 'a> {
     attr.meta_item_list().map(|meta_item_list| {
         meta_item_list
-            .iter()
-            .map(|nested_meta_item| nested_meta_item.span)
-            .collect()
+            .into_iter()
+            .map(|nested_meta_item| nested_meta_item.span())
     })
 }
 
@@ -184,9 +190,9 @@ fn rewrite_initial_doc_comments(
 
 impl Rewrite for ast::NestedMetaItem {
     fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
-        match self.node {
-            ast::NestedMetaItemKind::MetaItem(ref meta_item) => meta_item.rewrite(context, shape),
-            ast::NestedMetaItemKind::Literal(ref l) => rewrite_literal(context, l, shape),
+        match self {
+            ast::NestedMetaItem::MetaItem(ref meta_item) => meta_item.rewrite(context, shape),
+            ast::NestedMetaItem::Literal(ref l) => rewrite_literal(context, l, shape),
         }
     }
 }
@@ -214,10 +220,10 @@ impl Rewrite for ast::MetaItem {
     fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
         Some(match self.node {
             ast::MetaItemKind::Word => {
-                rewrite_path(context, PathContext::Type, None, &self.ident, shape)?
+                rewrite_path(context, PathContext::Type, None, &self.path, shape)?
             }
             ast::MetaItemKind::List(ref list) => {
-                let path = rewrite_path(context, PathContext::Type, None, &self.ident, shape)?;
+                let path = rewrite_path(context, PathContext::Type, None, &self.path, shape)?;
                 let has_trailing_comma = crate::expr::span_ends_with_comma(context, self.span);
                 overflow::rewrite_with_parens(
                     context,
@@ -235,7 +241,7 @@ impl Rewrite for ast::MetaItem {
                 )?
             }
             ast::MetaItemKind::NameValue(ref literal) => {
-                let path = rewrite_path(context, PathContext::Type, None, &self.ident, shape)?;
+                let path = rewrite_path(context, PathContext::Type, None, &self.path, shape)?;
                 // 3 = ` = `
                 let lit_shape = shape.shrink_left(path.len() + 3)?;
                 // `rewrite_literal` returns `None` when `literal` exceeds max
@@ -321,18 +327,17 @@ impl Rewrite for ast::Attribute {
 
             if let Some(ref meta) = self.meta() {
                 // This attribute is possibly a doc attribute needing normalization to a doc comment
-                if context.config.normalize_doc_attributes() && meta.check_name("doc") {
+                if context.config.normalize_doc_attributes() && meta.check_name(sym::doc) {
                     if let Some(ref literal) = meta.value_str() {
                         let comment_style = match self.style {
                             ast::AttrStyle::Inner => CommentStyle::Doc,
                             ast::AttrStyle::Outer => CommentStyle::TripleSlash,
                         };
 
-                        // Remove possible whitespace from the `CommentStyle::opener()` so that
-                        // the literal itself has control over the comment's leading spaces.
-                        let opener = comment_style.opener().trim_end();
-
-                        let doc_comment = format!("{}{}", opener, literal);
+                        let literal_str = literal.as_str();
+                        let doc_comment_formatter =
+                            DocCommentFormatter::new(literal_str.get(), comment_style);
+                        let doc_comment = format!("{}", doc_comment_formatter);
                         return rewrite_doc_comment(
                             &doc_comment,
                             shape.comment(context.config),
@@ -408,10 +413,11 @@ impl<'a> Rewrite for [ast::Attribute] {
             // Handle derives if we will merge them.
             if context.config.merge_derives() && is_derive(&attrs[0]) {
                 let derives = take_while_with_pred(context, attrs, is_derive);
-                let mut derive_spans = vec![];
-                for derive in derives {
-                    derive_spans.append(&mut get_derive_spans(derive)?);
-                }
+                let derive_spans: Vec<_> = derives
+                    .iter()
+                    .filter_map(get_derive_spans)
+                    .flatten()
+                    .collect();
                 let derive_str =
                     format_derive(&derive_spans, attr_prefix(&attrs[0]), shape, context)?;
                 result.push_str(&derive_str);
@@ -481,4 +487,37 @@ fn attr_prefix(attr: &ast::Attribute) -> &'static str {
         ast::AttrStyle::Inner => "#!",
         ast::AttrStyle::Outer => "#",
     }
+}
+
+pub(crate) trait MetaVisitor<'ast> {
+    fn visit_meta_item(&mut self, meta_item: &'ast ast::MetaItem) {
+        match meta_item.node {
+            ast::MetaItemKind::Word => self.visit_meta_word(meta_item),
+            ast::MetaItemKind::List(ref list) => self.visit_meta_list(meta_item, list),
+            ast::MetaItemKind::NameValue(ref lit) => self.visit_meta_name_value(meta_item, lit),
+        }
+    }
+
+    fn visit_meta_list(
+        &mut self,
+        _meta_item: &'ast ast::MetaItem,
+        list: &'ast [ast::NestedMetaItem],
+    ) {
+        for nm in list {
+            self.visit_nested_meta_item(nm);
+        }
+    }
+
+    fn visit_meta_word(&mut self, _meta_item: &'ast ast::MetaItem) {}
+
+    fn visit_meta_name_value(&mut self, _meta_item: &'ast ast::MetaItem, _lit: &'ast ast::Lit) {}
+
+    fn visit_nested_meta_item(&mut self, nm: &'ast ast::NestedMetaItem) {
+        match nm {
+            ast::NestedMetaItem::MetaItem(ref meta_item) => self.visit_meta_item(meta_item),
+            ast::NestedMetaItem::Literal(ref lit) => self.visit_literal(lit),
+        }
+    }
+
+    fn visit_literal(&mut self, _lit: &'ast ast::Lit) {}
 }

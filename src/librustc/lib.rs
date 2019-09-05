@@ -30,7 +30,7 @@
 
 #![deny(rust_2018_idioms)]
 #![deny(internal)]
-#![allow(explicit_outlives_requirements)]
+#![deny(unused_lifetimes)]
 
 #![feature(arbitrary_self_types)]
 #![feature(box_patterns)]

@@ -11,6 +11,7 @@ use std::thread;
 
 use crate::config::{Color, Config, EmitMode, FileName, NewlineStyle, ReportTactic};
 use crate::formatting::{ReportedErrors, SourceFile};
+use crate::is_nightly_channel;
 use crate::rustfmt_diff::{make_diff, print_diff, DiffLine, Mismatch, ModifiedChunk, OutputWriter};
 use crate::source_file;
 use crate::{FormatReport, FormatReportFormatterBuilder, Input, Session};
@@ -24,6 +25,14 @@ const SKIP_FILE_WHITE_LIST: &[&str] = &[
     // so we do not want to test this file directly.
     "configs/skip_children/foo/mod.rs",
     "issue-3434/no_entry.rs",
+    // These files and directory are a part of modules defined inside `cfg_if!`.
+    "cfg_if/mod.rs",
+    "cfg_if/detect",
+    // These files and directory are a part of modules defined inside `cfg_attr(..)`.
+    "cfg_mod/dir",
+    "cfg_mod/bar.rs",
+    "cfg_mod/foo.rs",
+    "cfg_mod/wasm32.rs",
 ];
 
 struct TestSetting {
@@ -52,10 +61,19 @@ where
         .expect("Failed to join a test thread")
 }
 
+fn is_subpath<P>(path: &Path, subpath: &P) -> bool
+where
+    P: AsRef<Path>,
+{
+    (0..path.components().count())
+        .map(|i| path.components().take(i))
+        .any(|c| c.zip(subpath.as_ref().components()).all(|(a, b)| a == b))
+}
+
 fn is_file_skip(path: &Path) -> bool {
     SKIP_FILE_WHITE_LIST
         .iter()
-        .any(|file_path| path.ends_with(file_path))
+        .any(|file_path| is_subpath(path, file_path))
 }
 
 // Returns a `Vec` containing `PathBuf`s of files with an  `rs` extension in the
@@ -259,9 +277,9 @@ fn assert_output(source: &Path, expected_filename: &Path) {
 #[test]
 fn idempotence_tests() {
     run_test_with(&TestSetting::default(), || {
-        match option_env!("CFG_RELEASE_CHANNEL") {
-            None | Some("nightly") => {}
-            _ => return, // these tests require nightly
+        // these tests require nightly
+        if !is_nightly_channel!() {
+            return;
         }
         // Get all files in the tests/target directory.
         let files = get_test_files(Path::new("tests/target"), true);
@@ -277,9 +295,9 @@ fn idempotence_tests() {
 // no warnings are emitted.
 #[test]
 fn self_tests() {
-    match option_env!("CFG_RELEASE_CHANNEL") {
-        None | Some("nightly") => {}
-        _ => return, // Issue-3443: these tests require nightly
+    // Issue-3443: these tests require nightly
+    if !is_nightly_channel!() {
+        return;
     }
     let mut files = get_test_files(Path::new("tests"), false);
     let bin_directories = vec!["cargo-fmt", "git-rustfmt", "bin", "format-diff"];
@@ -426,6 +444,16 @@ fn check_files(files: Vec<PathBuf>, opt_config: &Option<PathBuf>) -> (Vec<Format
     let mut reports = vec![];
 
     for file_name in files {
+        let sig_comments = read_significant_comments(&file_name);
+        if sig_comments.contains_key("unstable") && !is_nightly_channel!() {
+            debug!(
+                "Skipping '{}' because it requires unstable \
+                 features which are only available on nightly...",
+                file_name.display()
+            );
+            continue;
+        }
+
         debug!("Testing '{}'...", file_name.display());
 
         match idempotent_check(&file_name, &opt_config) {
@@ -485,7 +513,7 @@ fn read_config(filename: &Path) -> Config {
     };
 
     for (key, val) in &sig_comments {
-        if key != "target" && key != "config" {
+        if key != "target" && key != "config" && key != "unstable" {
             config.override_value(key, val);
             if config.is_default(key) {
                 warn!("Default value {} used explicitly for {}", val, key);
@@ -810,7 +838,7 @@ impl ConfigCodeBlock {
 
     fn get_block_config(&self) -> Config {
         let mut config = Config::default();
-        if self.config_value.is_some() && self.config_value.is_some() {
+        if self.config_name.is_some() && self.config_value.is_some() {
             config.override_value(
                 self.config_name.as_ref().unwrap(),
                 self.config_value.as_ref().unwrap(),

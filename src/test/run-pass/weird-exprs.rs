@@ -1,3 +1,5 @@
+#![feature(generators)]
+
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
 #![allow(unreachable_code)]
@@ -141,6 +143,20 @@ fn r#match() {
     assert_eq!(val, ());
 }
 
+fn i_yield() {
+    static || {
+        yield yield yield yield yield yield yield yield yield;
+    };
+}
+
+fn match_nested_if() {
+    let val = match () {
+        () if if if if true {true} else {false} {true} else {false} {true} else {false} => true,
+        _ => false,
+    };
+    assert!(val);
+}
+
 pub fn main() {
     strange();
     funny();
@@ -157,4 +173,6 @@ pub fn main() {
     special_characters();
     punch_card();
     r#match();
+    i_yield();
+    match_nested_if();
 }

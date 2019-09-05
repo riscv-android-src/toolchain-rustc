@@ -21,7 +21,7 @@
 //!         cmd.manifest_path(args.next().unwrap());
 //!     }
 //!     Some(p) => {
-//!         cmd.manifest_path(p.trim_left_matches("--manifest-path="));
+//!         cmd.manifest_path(p.trim_start_matches("--manifest-path="));
 //!     }
 //!     None => {}
 //! };
@@ -157,7 +157,7 @@
 //! ```
 
 #[macro_use]
-extern crate error_chain;
+extern crate failure;
 extern crate semver;
 extern crate serde;
 #[macro_use]
@@ -175,7 +175,7 @@ use semver::Version;
 
 pub use dependency::{Dependency, DependencyKind};
 use diagnostic::Diagnostic;
-pub use errors::{Error, ErrorKind, Result};
+pub use errors::{Error, Result};
 pub use messages::{
     parse_messages, Artifact, ArtifactProfile, BuildScript, CompilerMessage, Message,
 };
@@ -294,7 +294,9 @@ pub struct Package {
     pub authors: Vec<String>,
     /// An opaque identifier for a package
     pub id: PackageId,
-    source: Option<String>,
+    /// The source of the package, e.g.
+    /// crates.io or `None` for local projects.
+    pub source: Option<Source>,
     /// Description as given in the `Cargo.toml`
     pub description: Option<String>,
     /// List of dependencies of this particular package
@@ -360,6 +362,24 @@ pub struct Package {
     __do_not_match_exhaustively: (),
 }
 
+/// The source of a package such as crates.io.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(transparent)]
+pub struct Source(String);
+
+impl Source {
+    /// Returns true if the source is crates.io.
+    pub fn is_crates_io(&self) -> bool {
+        self.0 == "registry+https://github.com/rust-lang/crates.io-index"
+    }
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 /// A single target (lib, bin, example, ...) provided by a crate
 pub struct Target {
@@ -405,10 +425,12 @@ pub enum CargoOpt {
 /// A builder for configurating `cargo metadata` invocation.
 #[derive(Debug, Clone, Default)]
 pub struct MetadataCommand {
+    cargo_path: Option<PathBuf>,
     manifest_path: Option<PathBuf>,
     current_dir: Option<PathBuf>,
     no_deps: bool,
     features: Option<CargoOpt>,
+    other_options: Vec<String>,
 }
 
 impl MetadataCommand {
@@ -416,6 +438,13 @@ impl MetadataCommand {
     /// `Cargo.toml` in the ancestors of the current directory.
     pub fn new() -> MetadataCommand {
         MetadataCommand::default()
+    }
+    /// Path to `cargo` executable.  If not set, this will use the
+    /// the `$CARGO` environment variable, and if that is not set, will
+    /// simply be `cargo`.
+    pub fn cargo_path(&mut self, path: impl AsRef<Path>) -> &mut MetadataCommand {
+        self.cargo_path = Some(path.as_ref().to_path_buf());
+        self
     }
     /// Path to `Cargo.toml`
     pub fn manifest_path(&mut self, path: impl AsRef<Path>) -> &mut MetadataCommand {
@@ -437,9 +466,19 @@ impl MetadataCommand {
         self.features = Some(features);
         self
     }
+    /// Arbitrary command line flags to pass to `cargo`.  These will be added
+    /// to the end of the command line invocation.
+    pub fn other_options(&mut self, options: impl AsRef<[String]>) -> &mut MetadataCommand {
+        self.other_options = options.as_ref().to_vec();
+        self
+    }
     /// Runs configured `cargo metadata` and returns parsed `Metadata`.
     pub fn exec(&mut self) -> Result<Metadata> {
-        let cargo = env::var("CARGO").unwrap_or_else(|_| String::from("cargo"));
+        let cargo = self.cargo_path.clone()
+            .or_else(|| env::var("CARGO")
+                .map(|s| PathBuf::from(s))
+                .ok())
+            .unwrap_or_else(|| PathBuf::from("cargo"));
         let mut cmd = Command::new(cargo);
         cmd.args(&["metadata", "--format-version", "1"]);
 
@@ -451,16 +490,17 @@ impl MetadataCommand {
             match features {
                 CargoOpt::AllFeatures => cmd.arg("--all-features"),
                 CargoOpt::NoDefaultFeatures => cmd.arg("--no-default-features"),
-                CargoOpt::SomeFeatures(ftrs) => cmd.arg(format!("--features {:?}", ftrs)),
+                CargoOpt::SomeFeatures(ftrs) => cmd.arg("--features").arg(ftrs.join(",")),
             };
         }
 
         if let Some(manifest_path) = &self.manifest_path {
             cmd.arg("--manifest-path").arg(manifest_path.as_os_str());
         }
+        cmd.args(&self.other_options);
         let output = cmd.output()?;
         if !output.status.success() {
-            return Err(ErrorKind::CargoMetadata(String::from_utf8(output.stderr)?).into());
+            return Err(Error::CargoMetadata { stderr: String::from_utf8(output.stderr)? });
         }
         let stdout = from_utf8(&output.stdout)?;
         let meta = serde_json::from_str(stdout)?;

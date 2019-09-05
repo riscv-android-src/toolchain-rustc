@@ -6,7 +6,7 @@ use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintC
 use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use syntax::source_map::Span;
-use syntax::symbol::keywords;
+use syntax::symbol::kw;
 
 use crate::reexport::*;
 use crate::utils::{last_path_segment, span_lint};
@@ -147,7 +147,7 @@ fn check_fn_inner<'a, 'tcx>(
     report_extra_lifetimes(cx, decl, generics);
 }
 
-fn could_use_elision<'a, 'tcx: 'a>(
+fn could_use_elision<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     func: &'tcx FnDecl,
     body: Option<BodyId>,
@@ -264,7 +264,7 @@ fn unique_lifetimes(lts: &[RefLt]) -> usize {
 }
 
 /// A visitor usable for `rustc_front::visit::walk_ty()`.
-struct RefVisitor<'a, 'tcx: 'a> {
+struct RefVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     lts: Vec<RefLt>,
     abort: bool,
@@ -346,7 +346,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
             },
             TyKind::Def(item, _) => {
                 let map = self.cx.tcx.hir();
-                if let ItemKind::Existential(ref exist_ty) = map.expect_item(map.hir_to_node_id(item.id)).node {
+                if let ItemKind::Existential(ref exist_ty) = map.expect_item(item.id).node {
                     for bound in &exist_ty.bounds {
                         if let GenericBound::Outlives(_) = *bound {
                             self.record(&None);
@@ -377,7 +377,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
 
 /// Are any lifetimes mentioned in the `where` clause? If so, we don't try to
 /// reason about elision.
-fn has_where_lifetimes<'a, 'tcx: 'a>(cx: &LateContext<'a, 'tcx>, where_clause: &'tcx WhereClause) -> bool {
+fn has_where_lifetimes<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, where_clause: &'tcx WhereClause) -> bool {
     for predicate in &where_clause.predicates {
         match *predicate {
             WherePredicate::RegionPredicate(..) => return true,
@@ -445,7 +445,7 @@ impl<'tcx> Visitor<'tcx> for LifetimeChecker {
     }
 }
 
-fn report_extra_lifetimes<'a, 'tcx: 'a>(cx: &LateContext<'a, 'tcx>, func: &'tcx FnDecl, generics: &'tcx Generics) {
+fn report_extra_lifetimes<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, func: &'tcx FnDecl, generics: &'tcx Generics) {
     let hs = generics
         .params
         .iter()
@@ -476,9 +476,7 @@ struct BodyLifetimeChecker {
 impl<'tcx> Visitor<'tcx> for BodyLifetimeChecker {
     // for lifetimes as parameters of generics
     fn visit_lifetime(&mut self, lifetime: &'tcx Lifetime) {
-        if lifetime.name.ident().name != keywords::Invalid.name()
-            && lifetime.name.ident().name != syntax::symbol::keywords::StaticLifetime.name()
-        {
+        if lifetime.name.ident().name != kw::Invalid && lifetime.name.ident().name != kw::StaticLifetime {
             self.lifetimes_used_in_body = true;
         }
     }

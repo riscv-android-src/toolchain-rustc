@@ -1,6 +1,3 @@
-extern crate cc;
-extern crate pkg_config;
-
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,17 +6,21 @@ use std::process::Command;
 fn main() {
     let https = env::var("CARGO_FEATURE_HTTPS").is_ok();
     let ssh = env::var("CARGO_FEATURE_SSH").is_ok();
-    let curl = env::var("CARGO_FEATURE_CURL").is_ok();
 
     if env::var("LIBGIT2_SYS_USE_PKG_CONFIG").is_ok() {
-        if pkg_config::find_library("libgit2").is_ok() {
-            return
+        let mut cfg = pkg_config::Config::new();
+        if let Ok(lib) = cfg.atleast_version("0.28.0").probe("libgit2") {
+            for include in &lib.include_paths {
+                println!("cargo:root={}", include.display());
+            }
+            return;
         }
     }
 
     if !Path::new("libgit2/.git").exists() {
-        let _ = Command::new("git").args(&["submodule", "update", "--init"])
-                                   .status();
+        let _ = Command::new("git")
+            .args(&["submodule", "update", "--init"])
+            .status();
     }
 
     let target = env::var("TARGET").unwrap();
@@ -41,7 +42,7 @@ fn main() {
     add_c_files(&mut cfg, "libgit2/src".as_ref());
     add_c_files(&mut cfg, "libgit2/src/xdiff".as_ref());
 
-    // These are activated by feautres, but they're all unconditionally always
+    // These are activated by features, but they're all unconditionally always
     // compiled apparently and have internal #define's to make sure they're
     // compiled correctly.
     add_c_files(&mut cfg, "libgit2/src/transports".as_ref());
@@ -58,6 +59,8 @@ fn main() {
     if windows {
         add_c_files(&mut cfg, "libgit2/src/win32".as_ref());
         cfg.define("STRSAFE_NO_DEPRECATE", None);
+        cfg.define("WIN32", None);
+        cfg.define("_WIN32_WINNT", Some("0x0600"));
 
         // libgit2's build system claims that forks like mingw-w64 of MinGW
         // still want this define to use C99 stdio functions automatically.
@@ -121,21 +124,14 @@ fn main() {
             }
         }
     } else {
-        cfg.file("libgit2/src/hash/hash_generic.c");
+        features.push_str("#define GIT_SHA1_COLLISIONDETECT 1\n");
+        cfg.define("SHA1DC_NO_STANDARD_INCLUDES", "1");
+        cfg.define("SHA1DC_CUSTOM_INCLUDE_SHA1_C", "\"common.h\"");
+        cfg.define("SHA1DC_CUSTOM_INCLUDE_UBC_CHECK_C", "\"common.h\"");
+        cfg.file("libgit2/src/hash/sha1dc/sha1.c");
+        cfg.file("libgit2/src/hash/sha1dc/ubc_check.c");
     }
 
-    if curl {
-        features.push_str("#define GIT_CURL 1\n");
-        if let Some(path) = env::var_os("DEP_CURL_INCLUDE") {
-            cfg.include(path);
-        }
-        // Handle dllimport/dllexport on windows by making sure that if we built
-        // curl statically (as told to us by the `curl-sys` crate) we define the
-        // correct values for curl's header files.
-        if env::var_os("DEP_CURL_STATIC").is_some() {
-            cfg.define("CURL_STATICLIB", None);
-        }
-    }
     if let Some(path) = env::var_os("DEP_Z_INCLUDE") {
         cfg.include(path);
     }
@@ -156,7 +152,7 @@ fn main() {
         println!("cargo:rustc-link-lib=rpcrt4");
         println!("cargo:rustc-link-lib=ole32");
         println!("cargo:rustc-link-lib=crypt32");
-        return
+        return;
     }
 
     if target.contains("apple") {

@@ -105,12 +105,12 @@ impl<'a> JobState<'a> {
             .send(Message::BuildPlanMsg(module_name, cmd, filenames));
     }
 
-    pub fn stdout(&self, stdout: &str) {
-        drop(self.tx.send(Message::Stdout(stdout.to_string())));
+    pub fn stdout(&self, stdout: String) {
+        drop(self.tx.send(Message::Stdout(stdout)));
     }
 
-    pub fn stderr(&self, stderr: &str) {
-        drop(self.tx.send(Message::Stderr(stderr.to_string())));
+    pub fn stderr(&self, stderr: String) {
+        drop(self.tx.send(Message::Stderr(stderr)));
     }
 
     /// A method used to signal to the coordinator thread that the rmeta file
@@ -195,7 +195,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         // the target as well. This should ensure that edges changed to
         // `Metadata` propagate upwards `All` dependencies to anything that
         // transitively contains the `Metadata` edge.
-        if unit.target.requires_upstream_objects() {
+        if unit.requires_upstream_objects() {
             for dep in dependencies.iter() {
                 depend_on_deps_of_deps(cx, &mut queue_deps, dep);
             }
@@ -216,7 +216,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
 
         self.queue.queue(*unit, job, queue_deps);
         *self.counts.entry(unit.pkg.package_id()).or_insert(0) += 1;
-        return Ok(());
+        Ok(())
     }
 
     /// Executes all jobs necessary to build the dependency graph.
@@ -410,7 +410,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         } else {
             "optimized"
         });
-        if profile.debuginfo.is_some() {
+        if profile.debuginfo.unwrap_or(0) != 0 {
             opt_type += " + debuginfo";
         }
 
@@ -596,11 +596,10 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
             // being a compiled package.
             Dirty => {
                 if unit.mode.is_doc() {
+                    self.documented.insert(unit.pkg.package_id());
+                    config.shell().status("Documenting", unit.pkg)?;
+                } else if unit.mode.is_doc_test() {
                     // Skip doc test.
-                    if !unit.mode.is_any_test() {
-                        self.documented.insert(unit.pkg.package_id());
-                        config.shell().status("Documenting", unit.pkg)?;
-                    }
                 } else {
                     self.compiled.insert(unit.pkg.package_id());
                     if unit.mode.is_check() {
@@ -613,8 +612,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
             Fresh => {
                 // If doc test are last, only print "Fresh" if nothing has been printed.
                 if self.counts[&unit.pkg.package_id()] == 0
-                    && !(unit.mode == CompileMode::Doctest
-                        && self.compiled.contains(&unit.pkg.package_id()))
+                    && !(unit.mode.is_doc_test() && self.compiled.contains(&unit.pkg.package_id()))
                 {
                     self.compiled.insert(unit.pkg.package_id());
                     config.shell().verbose(|c| c.status("Fresh", unit.pkg))?;

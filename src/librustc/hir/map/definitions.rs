@@ -10,7 +10,6 @@ use crate::ich::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::{IndexVec};
 use rustc_data_structures::stable_hasher::StableHasher;
-use serialize::{Encodable, Decodable, Encoder, Decoder};
 use crate::session::CrateDisambiguator;
 use std::borrow::Borrow;
 use std::fmt::Write;
@@ -25,14 +24,13 @@ use crate::util::nodemap::NodeMap;
 /// Internally the DefPathTable holds a tree of DefKeys, where each DefKey
 /// stores the DefIndex of its parent.
 /// There is one DefPathTable for each crate.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, RustcDecodable, RustcEncodable)]
 pub struct DefPathTable {
     index_to_key: Vec<DefKey>,
     def_path_hashes: Vec<DefPathHash>,
 }
 
 impl DefPathTable {
-
     fn allocate(&mut self,
                 key: DefKey,
                 def_path_hash: DefPathHash)
@@ -83,28 +81,6 @@ impl DefPathTable {
 
     pub fn size(&self) -> usize {
         self.index_to_key.len()
-    }
-}
-
-
-impl Encodable for DefPathTable {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        // Index to key
-        self.index_to_key.encode(s)?;
-
-        // DefPath hashes
-        self.def_path_hashes.encode(s)?;
-
-        Ok(())
-    }
-}
-
-impl Decodable for DefPathTable {
-    fn decode<D: Decoder>(d: &mut D) -> Result<DefPathTable, D::Error> {
-        Ok(DefPathTable {
-            index_to_key: Decodable::decode(d)?,
-            def_path_hashes : Decodable::decode(d)?,
-        })
     }
 }
 
@@ -263,7 +239,7 @@ impl DefPath {
                        "{}[{}]",
                        component.data.as_interned_str(),
                        component.disambiguator)
-                    .unwrap();
+                       .unwrap();
             }
         }
 
@@ -287,7 +263,7 @@ impl DefPath {
                        "{}[{}]",
                        component.data.as_interned_str(),
                        component.disambiguator)
-                    .unwrap();
+                       .unwrap();
             }
         }
         s
@@ -300,7 +276,7 @@ pub enum DefPathData {
     // they are treated specially by the `def_path` function.
     /// The crate root (marker)
     CrateRoot,
-    // Catch-all for random DefId things like DUMMY_NODE_ID
+    // Catch-all for random DefId things like `DUMMY_NODE_ID`
     Misc,
     // Different kinds of items and item-like things:
     /// An impl
@@ -322,9 +298,9 @@ pub enum DefPathData {
     AnonConst,
     /// An `impl Trait` type node
     ImplTrait,
-    /// GlobalMetaData identifies a piece of crate metadata that is global to
-    /// a whole crate (as opposed to just one item). GlobalMetaData components
-    /// are only supposed to show up right below the crate root.
+    /// Identifies a piece of crate metadata that is global to a whole crate
+    /// (as opposed to just one item). `GlobalMetaData` components are only
+    /// supposed to show up right below the crate root.
     GlobalMetaData(InternedString),
 }
 
@@ -466,7 +442,7 @@ impl Definitions {
         root_index
     }
 
-    /// Add a definition with a parent definition.
+    /// Adds a definition with a parent definition.
     pub fn create_def_with_parent(&mut self,
                                   parent: DefIndex,
                                   node_id: ast::NodeId,
@@ -583,7 +559,7 @@ impl DefPathData {
             GlobalMetaData(name) => {
                 return name
             }
-            // note that this does not show up in user printouts
+            // Note that this does not show up in user print-outs.
             CrateRoot => sym::double_braced_crate,
             Impl => sym::double_braced_impl,
             Misc => sym::double_braced_misc,
@@ -601,9 +577,17 @@ impl DefPathData {
     }
 }
 
+/// Evaluates to the number of tokens passed to it.
+///
+/// Logarithmic counting: every one or two recursive expansions, the number of
+/// tokens to count is divided by two, instead of being reduced by one.
+/// Therefore, the recursion depth is the binary logarithm of the number of
+/// tokens to count, and the expanded tree is likewise very small.
 macro_rules! count {
-    () => (0usize);
-    ( $x:tt $($xs:tt)* ) => (1usize + count!($($xs)*));
+    ()                     => (0usize);
+    ($one:tt)              => (1usize);
+    ($($pairs:tt $_p:tt)*) => (count!($($pairs)*) << 1usize);
+    ($odd:tt $($rest:tt)*) => (count!($($rest)*) | 1usize);
 }
 
 // We define the GlobalMetaDataKind enum with this macro because we want to

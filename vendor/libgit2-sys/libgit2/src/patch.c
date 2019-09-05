@@ -80,11 +80,11 @@ size_t git_patch_size(
 
 		if (git_diff_delta__format_file_header(
 			&file_header, patch->delta, NULL, NULL, 0) < 0)
-			giterr_clear();
+			git_error_clear();
 		else
 			out += git_buf_len(&file_header);
 
-		git_buf_free(&file_header);
+		git_buf_dispose(&file_header);
 	}
 
 	return out;
@@ -141,7 +141,7 @@ size_t git_patch_num_hunks(const git_patch *patch)
 
 static int patch_error_outofrange(const char *thing)
 {
-	giterr_set(GITERR_INVALID, "patch %s index out of range", thing);
+	git_error_set(GIT_ERROR_INVALID, "patch %s index out of range", thing);
 	return GIT_ENOTFOUND;
 }
 

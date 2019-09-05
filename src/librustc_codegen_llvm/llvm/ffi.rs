@@ -564,7 +564,7 @@ pub mod debuginfo {
 
     // These values **must** match with LLVMRustDIFlags!!
     bitflags! {
-        #[repr(C)]
+        #[repr(transparent)]
         #[derive(Default)]
         pub struct DIFlags: ::libc::uint32_t {
             const FlagZero                = 0;
@@ -593,7 +593,7 @@ pub mod debuginfo {
 
     // These values **must** match with LLVMRustDISPFlags!!
     bitflags! {
-        #[repr(C)]
+        #[repr(transparent)]
         #[derive(Default)]
         pub struct DISPFlags: ::libc::uint32_t {
             const SPFlagZero              = 0;
@@ -1002,6 +1002,36 @@ extern "C" {
                          RHS: &'a Value,
                          Name: *const c_char)
                          -> &'a Value;
+    pub fn LLVMBuildNSWAdd(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWAdd(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNSWSub(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWSub(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNSWMul(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWMul(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
     pub fn LLVMBuildAnd(B: &Builder<'a>,
                         LHS: &'a Value,
                         RHS: &'a Value,

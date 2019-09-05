@@ -6,14 +6,14 @@ expression.
 It is what allows Rust to work with fewer or no type annotations,
 making things easier for users:
 
-```rust,ignore
+```rust
 fn main() {
     let mut things = vec![];
-    things.push("thing")
+    things.push("thing");
 }
 ```
 
-Here, the type of `things` is *inferenced* to be `&str` because that's the value
+Here, the type of `things` is *inferred* to be `Vec<&str>` because of the value
 we push into `things`.
 
 The type inference is based on the standard Hindley-Milner (HM) type inference
@@ -50,9 +50,8 @@ function and disposed of after it returns.
 
 [ty-ch]: ty.html
 
-Within the closure, `infcx` has the type `InferCtxt<'cx, 'gcx, 'tcx>`
-for some fresh `'cx` and `'tcx` – the latter corresponds to the lifetime of
-this temporary arena, and the `'cx` is the lifetime of the `InferCtxt` itself.
+Within the closure, `infcx` has the type `InferCtxt<'cx, 'tcx>` for some
+fresh `'cx`, while `'tcx` is the same as outside the inference context.
 (Again, see the [`ty` chapter][ty-ch] for more details on this setup.)
 
 The `tcx.infer_ctxt` method actually returns a builder, which means

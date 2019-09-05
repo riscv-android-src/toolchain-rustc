@@ -1,7 +1,7 @@
 use crate::support::registry::Package;
 use crate::support::{basic_bin_manifest, basic_lib_manifest, main_file, project};
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_simple() {
     let p = project()
         .file("src/foo.rs", "")
@@ -39,6 +39,7 @@ fn cargo_metadata_simple() {
                         "crate_types": [
                             "bin"
                         ],
+                        "doctest": false,
                         "edition": "2015",
                         "name": "foo",
                         "src_path": "[..]/foo/src/foo.rs"
@@ -69,7 +70,7 @@ fn cargo_metadata_simple() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_warns_on_implicit_version() {
     let p = project()
         .file("src/foo.rs", "")
@@ -81,7 +82,7 @@ fn cargo_metadata_warns_on_implicit_version() {
     p.cargo("metadata --format-version 1").with_stderr("").run();
 }
 
-#[test]
+#[cargo_test]
 fn library_with_several_crate_types() {
     let p = project()
         .file("src/lib.rs", "")
@@ -129,6 +130,7 @@ crate-type = ["lib", "staticlib"]
                             "lib",
                             "staticlib"
                         ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "foo",
                         "src_path": "[..]/foo/src/lib.rs"
@@ -159,7 +161,7 @@ crate-type = ["lib", "staticlib"]
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn library_with_features() {
     let p = project()
         .file("src/lib.rs", "")
@@ -207,6 +209,7 @@ optional_feat = []
                         "crate_types": [
                             "lib"
                         ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "foo",
                         "src_path": "[..]/foo/src/lib.rs"
@@ -246,7 +249,7 @@ optional_feat = []
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_with_deps_and_version() {
     let p = project()
         .file("src/foo.rs", "")
@@ -302,6 +305,7 @@ fn cargo_metadata_with_deps_and_version() {
                         "crate_types": [
                             "lib"
                         ],
+                        "doctest": true,
                         "edition": "2015",
                         "kind": [
                             "lib"
@@ -360,6 +364,7 @@ fn cargo_metadata_with_deps_and_version() {
                         "crate_types": [
                             "bin"
                         ],
+                        "doctest": false,
                         "edition": "2015",
                         "kind": [
                             "bin"
@@ -393,6 +398,7 @@ fn cargo_metadata_with_deps_and_version() {
                         "crate_types": [
                             "lib"
                         ],
+                        "doctest": true,
                         "edition": "2015",
                         "kind": [
                             "lib"
@@ -439,6 +445,7 @@ fn cargo_metadata_with_deps_and_version() {
                         "crate_types": [
                             "lib"
                         ],
+                        "doctest": true,
                         "edition": "2015",
                         "kind": [
                             "lib"
@@ -509,7 +516,7 @@ fn cargo_metadata_with_deps_and_version() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn example() {
     let p = project()
         .file("src/lib.rs", "")
@@ -552,6 +559,7 @@ name = "ex"
                     {
                         "kind": [ "lib" ],
                         "crate_types": [ "lib" ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "foo",
                         "src_path": "[..]/foo/src/lib.rs"
@@ -559,6 +567,7 @@ name = "ex"
                     {
                         "kind": [ "example" ],
                         "crate_types": [ "bin" ],
+                        "doctest": false,
                         "edition": "2015",
                         "name": "ex",
                         "src_path": "[..]/foo/examples/ex.rs"
@@ -591,7 +600,7 @@ name = "ex"
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn example_lib() {
     let p = project()
         .file("src/lib.rs", "")
@@ -635,6 +644,7 @@ crate-type = ["rlib", "dylib"]
                     {
                         "kind": [ "lib" ],
                         "crate_types": [ "lib" ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "foo",
                         "src_path": "[..]/foo/src/lib.rs"
@@ -642,6 +652,7 @@ crate-type = ["rlib", "dylib"]
                     {
                         "kind": [ "example" ],
                         "crate_types": [ "rlib", "dylib" ],
+                        "doctest": false,
                         "edition": "2015",
                         "name": "ex",
                         "src_path": "[..]/foo/examples/ex.rs"
@@ -674,7 +685,7 @@ crate-type = ["rlib", "dylib"]
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn workspace_metadata() {
     let p = project()
         .file(
@@ -717,6 +728,7 @@ fn workspace_metadata() {
                     {
                         "kind": [ "lib" ],
                         "crate_types": [ "lib" ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "bar",
                         "src_path": "[..]bar/src/lib.rs"
@@ -748,6 +760,7 @@ fn workspace_metadata() {
                     {
                         "kind": [ "lib" ],
                         "crate_types": [ "lib" ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "baz",
                         "src_path": "[..]baz/src/lib.rs"
@@ -784,7 +797,7 @@ fn workspace_metadata() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn workspace_metadata_no_deps() {
     let p = project()
         .file(
@@ -827,6 +840,7 @@ fn workspace_metadata_no_deps() {
                     {
                         "kind": [ "lib" ],
                         "crate_types": [ "lib" ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "bar",
                         "src_path": "[..]bar/src/lib.rs"
@@ -858,6 +872,7 @@ fn workspace_metadata_no_deps() {
                     {
                         "kind": [ "lib" ],
                         "crate_types": ["lib"],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "baz",
                         "src_path": "[..]baz/src/lib.rs"
@@ -878,7 +893,7 @@ fn workspace_metadata_no_deps() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_with_invalid_manifest() {
     let p = project().file("Cargo.toml", "").build();
 
@@ -915,6 +930,7 @@ const MANIFEST_OUTPUT: &str = r#"
         "targets":[{
             "kind":["bin"],
             "crate_types":["bin"],
+            "doctest": false,
             "edition": "2015",
             "name":"foo",
             "src_path":"[..]/foo/src/foo.rs"
@@ -932,7 +948,7 @@ const MANIFEST_OUTPUT: &str = r#"
     "workspace_root": "[..]/foo"
 }"#;
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_no_deps_path_to_cargo_toml_relative() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -945,7 +961,7 @@ fn cargo_metadata_no_deps_path_to_cargo_toml_relative() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_no_deps_path_to_cargo_toml_absolute() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -959,7 +975,7 @@ fn cargo_metadata_no_deps_path_to_cargo_toml_absolute() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_no_deps_path_to_cargo_toml_parent_relative() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -976,7 +992,7 @@ fn cargo_metadata_no_deps_path_to_cargo_toml_parent_relative() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_no_deps_path_to_cargo_toml_parent_absolute() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -994,7 +1010,7 @@ fn cargo_metadata_no_deps_path_to_cargo_toml_parent_absolute() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_no_deps_cwd() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -1006,7 +1022,7 @@ fn cargo_metadata_no_deps_cwd() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_bad_version() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -1024,7 +1040,7 @@ error: '2' isn't a valid value for '--format-version <VERSION>'
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn multiple_features() {
     let p = project()
         .file(
@@ -1046,7 +1062,7 @@ fn multiple_features() {
     p.cargo("metadata --features").arg("a b").run();
 }
 
-#[test]
+#[cargo_test]
 fn package_metadata() {
     let p = project()
         .file(
@@ -1093,6 +1109,7 @@ fn package_metadata() {
                     {
                         "kind": [ "lib" ],
                         "crate_types": [ "lib" ],
+                        "doctest": true,
                         "edition": "2015",
                         "name": "foo",
                         "src_path": "[..]foo/src/lib.rs"
@@ -1117,7 +1134,7 @@ fn package_metadata() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_metadata_path_to_cargo_toml_project() {
     let p = project()
         .file(
@@ -1167,6 +1184,7 @@ fn cargo_metadata_path_to_cargo_toml_project() {
                     "crate_types": [
                         "lib"
                     ],
+                    "doctest": true,
                     "edition": "2015",
                     "kind": [
                         "lib"
@@ -1201,7 +1219,7 @@ fn cargo_metadata_path_to_cargo_toml_project() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn package_edition_2018() {
     let p = project()
         .file("src/lib.rs", "")
@@ -1246,6 +1264,7 @@ fn package_edition_2018() {
                             "crate_types": [
                                 "lib"
                             ],
+                            "doctest": true,
                             "edition": "2018",
                             "kind": [
                                 "lib"
@@ -1280,7 +1299,7 @@ fn package_edition_2018() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn target_edition_2018() {
     let p = project()
         .file("src/lib.rs", "")
@@ -1329,6 +1348,7 @@ fn target_edition_2018() {
                             "crate_types": [
                                 "lib"
                             ],
+                            "doctest": true,
                             "edition": "2018",
                             "kind": [
                                 "lib"
@@ -1340,6 +1360,7 @@ fn target_edition_2018() {
                             "crate_types": [
                                 "bin"
                             ],
+                            "doctest": false,
                             "edition": "2015",
                             "kind": [
                                 "bin"
@@ -1374,7 +1395,7 @@ fn target_edition_2018() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn rename_dependency() {
     Package::new("bar", "0.1.0").publish();
     Package::new("bar", "0.2.0").publish();
@@ -1449,6 +1470,7 @@ fn rename_dependency() {
                     "crate_types": [
                         "lib"
                     ],
+                    "doctest": true,
                     "edition": "2015",
                     "kind": [
                         "lib"
@@ -1482,6 +1504,7 @@ fn rename_dependency() {
                     "crate_types": [
                         "lib"
                     ],
+                    "doctest": true,
                     "edition": "2015",
                     "kind": [
                         "lib"
@@ -1515,6 +1538,7 @@ fn rename_dependency() {
                     "crate_types": [
                         "lib"
                     ],
+                    "doctest": true,
                     "edition": "2015",
                     "kind": [
                         "lib"
@@ -1572,7 +1596,7 @@ fn rename_dependency() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn metadata_links() {
     let p = project()
         .file(
@@ -1616,6 +1640,7 @@ fn metadata_links() {
           "crate_types": [
             "lib"
           ],
+          "doctest": true,
           "edition": "2015",
           "kind": [
             "lib"
@@ -1627,6 +1652,7 @@ fn metadata_links() {
           "crate_types": [
             "bin"
           ],
+          "doctest": false,
           "edition": "2015",
           "kind": [
             "custom-build"
@@ -1661,7 +1687,7 @@ fn metadata_links() {
         .run()
 }
 
-#[test]
+#[cargo_test]
 fn deps_with_bin_only() {
     let p = project()
         .file(

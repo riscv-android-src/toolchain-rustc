@@ -56,7 +56,7 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for public functions that dereferences raw pointer
+    /// **What it does:** Checks for public functions that dereference raw pointer
     /// arguments but are not marked unsafe.
     ///
     /// **Why is this bad?** The function should probably be marked `unsafe`, since
@@ -107,11 +107,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
         span: Span,
         hir_id: hir::HirId,
     ) {
-        let is_impl = if let Some(hir::Node::Item(item)) = cx
-            .tcx
-            .hir()
-            .find_by_hir_id(cx.tcx.hir().get_parent_node_by_hir_id(hir_id))
-        {
+        let is_impl = if let Some(hir::Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
             matches!(item.node, hir::ItemKind::Impl(_, _, _, _, Some(_), _, _))
         } else {
             false
@@ -291,7 +287,7 @@ fn raw_ptr_arg(arg: &hir::Arg, ty: &hir::Ty) -> Option<hir::HirId> {
     }
 }
 
-struct DerefVisitor<'a, 'tcx: 'a> {
+struct DerefVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     ptrs: FxHashSet<hir::HirId>,
     tables: &'a ty::TypeckTables<'tcx>,
@@ -330,7 +326,7 @@ impl<'a, 'tcx> hir::intravisit::Visitor<'tcx> for DerefVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx: 'a> DerefVisitor<'a, 'tcx> {
+impl<'a, 'tcx> DerefVisitor<'a, 'tcx> {
     fn check_arg(&self, ptr: &hir::Expr) {
         if let hir::ExprKind::Path(ref qpath) = ptr.node {
             if let Res::Local(id) = self.cx.tables.qpath_res(qpath, ptr.hir_id) {

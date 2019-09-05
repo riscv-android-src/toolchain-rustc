@@ -31,6 +31,16 @@ pub enum FnKind<'a> {
     Closure(&'a Expr),
 }
 
+impl<'a> FnKind<'a> {
+    pub fn header(&self) -> Option<&'a FnHeader> {
+        match *self {
+            FnKind::ItemFn(_, header, _, _) => Some(header),
+            FnKind::Method(_, sig, _, _) => Some(&sig.header),
+            FnKind::Closure(_) => None,
+        }
+    }
+}
+
 /// Each method of the Visitor trait is a hook to be potentially
 /// overridden. Each method's default implementation recursively visits
 /// the substructure of the input via the corresponding `walk` method;
@@ -129,8 +139,8 @@ pub trait Visitor<'ast>: Sized {
             GenericArg::Const(ct) => self.visit_anon_const(ct),
         }
     }
-    fn visit_assoc_type_binding(&mut self, type_binding: &'ast TypeBinding) {
-        walk_assoc_type_binding(self, type_binding)
+    fn visit_assoc_ty_constraint(&mut self, constraint: &'ast AssocTyConstraint) {
+        walk_assoc_ty_constraint(self, constraint)
     }
     fn visit_attribute(&mut self, attr: &'ast Attribute) {
         walk_attribute(self, attr)
@@ -244,24 +254,24 @@ pub fn walk_item<'a, V: Visitor<'a>>(visitor: &mut V, item: &'a Item) {
             walk_list!(visitor, visit_foreign_item, &foreign_module.items);
         }
         ItemKind::GlobalAsm(ref ga) => visitor.visit_global_asm(ga),
-        ItemKind::Ty(ref typ, ref type_parameters) => {
+        ItemKind::Ty(ref typ, ref generics) => {
             visitor.visit_ty(typ);
-            visitor.visit_generics(type_parameters)
+            visitor.visit_generics(generics)
         }
-        ItemKind::Existential(ref bounds, ref type_parameters) => {
+        ItemKind::Existential(ref bounds, ref generics) => {
             walk_list!(visitor, visit_param_bound, bounds);
-            visitor.visit_generics(type_parameters)
+            visitor.visit_generics(generics)
         }
-        ItemKind::Enum(ref enum_definition, ref type_parameters) => {
-            visitor.visit_generics(type_parameters);
-            visitor.visit_enum_def(enum_definition, type_parameters, item.id, item.span)
+        ItemKind::Enum(ref enum_definition, ref generics) => {
+            visitor.visit_generics(generics);
+            visitor.visit_enum_def(enum_definition, generics, item.id, item.span)
         }
         ItemKind::Impl(_, _, _,
-                 ref type_parameters,
+                 ref generics,
                  ref opt_trait_reference,
                  ref typ,
                  ref impl_items) => {
-            visitor.visit_generics(type_parameters);
+            visitor.visit_generics(generics);
             walk_list!(visitor, visit_trait_ref, opt_trait_reference);
             visitor.visit_ty(typ);
             walk_list!(visitor, visit_impl_item, impl_items);
@@ -394,7 +404,7 @@ pub fn walk_generic_args<'a, V>(visitor: &mut V,
     match *generic_args {
         GenericArgs::AngleBracketed(ref data) => {
             walk_list!(visitor, visit_generic_arg, &data.args);
-            walk_list!(visitor, visit_assoc_type_binding, &data.bindings);
+            walk_list!(visitor, visit_assoc_ty_constraint, &data.constraints);
         }
         GenericArgs::Parenthesized(ref data) => {
             walk_list!(visitor, visit_ty, &data.inputs);
@@ -403,10 +413,17 @@ pub fn walk_generic_args<'a, V>(visitor: &mut V,
     }
 }
 
-pub fn walk_assoc_type_binding<'a, V: Visitor<'a>>(visitor: &mut V,
-                                                   type_binding: &'a TypeBinding) {
-    visitor.visit_ident(type_binding.ident);
-    visitor.visit_ty(&type_binding.ty);
+pub fn walk_assoc_ty_constraint<'a, V: Visitor<'a>>(visitor: &mut V,
+                                                    constraint: &'a AssocTyConstraint) {
+    visitor.visit_ident(constraint.ident);
+    match constraint.kind {
+        AssocTyConstraintKind::Equality { ref ty } => {
+            visitor.visit_ty(ty);
+        }
+        AssocTyConstraintKind::Bound { ref bounds } => {
+            walk_list!(visitor, visit_param_bound, bounds);
+        }
+    }
 }
 
 pub fn walk_pat<'a, V: Visitor<'a>>(visitor: &mut V, pattern: &'a Pat) {
@@ -489,7 +506,7 @@ pub fn walk_generic_param<'a, V: Visitor<'a>>(visitor: &mut V, param: &'a Generi
     walk_list!(visitor, visit_attribute, param.attrs.iter());
     walk_list!(visitor, visit_param_bound, &param.bounds);
     match param.kind {
-        GenericParamKind::Lifetime => {}
+        GenericParamKind::Lifetime => (),
         GenericParamKind::Type { ref default } => walk_list!(visitor, visit_ty, default),
         GenericParamKind::Const { ref ty, .. } => visitor.visit_ty(ty),
     }
@@ -647,8 +664,8 @@ pub fn walk_stmt<'a, V: Visitor<'a>>(visitor: &mut V, statement: &'a Stmt) {
     }
 }
 
-pub fn walk_mac<'a, V: Visitor<'a>>(_: &mut V, _: &Mac) {
-    // Empty!
+pub fn walk_mac<'a, V: Visitor<'a>>(visitor: &mut V, mac: &'a Mac) {
+    visitor.visit_path(&mac.node.path, DUMMY_NODE_ID);
 }
 
 pub fn walk_anon_const<'a, V: Visitor<'a>>(visitor: &mut V, constant: &'a AnonConst) {
@@ -661,10 +678,6 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
     }
     match expression.node {
         ExprKind::Box(ref subexpression) => {
-            visitor.visit_expr(subexpression)
-        }
-        ExprKind::ObsoleteInPlace(ref place, ref subexpression) => {
-            visitor.visit_expr(place);
             visitor.visit_expr(subexpression)
         }
         ExprKind::Array(ref subexpressions) => {
@@ -701,7 +714,6 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
         ExprKind::AddrOf(_, ref subexpression) | ExprKind::Unary(_, ref subexpression) => {
             visitor.visit_expr(subexpression)
         }
-        ExprKind::Lit(_) => {}
         ExprKind::Cast(ref subexpression, ref typ) | ExprKind::Type(ref subexpression, ref typ) => {
             visitor.visit_expr(subexpression);
             visitor.visit_ty(typ)
@@ -755,6 +767,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
         ExprKind::Async(_, _, ref body) => {
             visitor.visit_block(body);
         }
+        ExprKind::Await(_, ref expr) => visitor.visit_expr(expr),
         ExprKind::Assign(ref left_hand_expression, ref right_hand_expression) => {
             visitor.visit_expr(left_hand_expression);
             visitor.visit_expr(right_hand_expression);
@@ -812,7 +825,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
         ExprKind::TryBlock(ref body) => {
             visitor.visit_block(body)
         }
-        ExprKind::Err => {}
+        ExprKind::Lit(_) | ExprKind::Err => {}
     }
 
     visitor.visit_expr_post(expression)
@@ -841,7 +854,7 @@ pub fn walk_attribute<'a, V: Visitor<'a>>(visitor: &mut V, attr: &'a Attribute) 
 
 pub fn walk_tt<'a, V: Visitor<'a>>(visitor: &mut V, tt: TokenTree) {
     match tt {
-        TokenTree::Token(_, tok) => visitor.visit_token(tok),
+        TokenTree::Token(token) => visitor.visit_token(token),
         TokenTree::Delimited(_, _, tts) => visitor.visit_tts(tts),
     }
 }

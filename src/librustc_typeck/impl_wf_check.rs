@@ -49,7 +49,7 @@ use syntax_pos::Span;
 /// impl<'a> Trait<Foo> for Bar { type X = &'a i32; }
 /// //   ^ 'a is unused and appears in assoc type, error
 /// ```
-pub fn impl_wf_check<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+pub fn impl_wf_check<'tcx>(tcx: TyCtxt<'tcx>) {
     // We will tag this as part of the WF check -- logically, it is,
     // but it's one that we must perform earlier than the rest of
     // WfCheck.
@@ -58,7 +58,7 @@ pub fn impl_wf_check<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     }
 }
 
-fn check_mod_impl_wf<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+fn check_mod_impl_wf<'tcx>(tcx: TyCtxt<'tcx>, module_def_id: DefId) {
     tcx.hir().visit_item_likes_in_module(
         module_def_id,
         &mut ImplWfCheck { tcx }
@@ -72,11 +72,11 @@ pub fn provide(providers: &mut Providers<'_>) {
     };
 }
 
-struct ImplWfCheck<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct ImplWfCheck<'tcx> {
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'a, 'tcx> ItemLikeVisitor<'tcx> for ImplWfCheck<'a, 'tcx> {
+impl ItemLikeVisitor<'tcx> for ImplWfCheck<'tcx> {
     fn visit_item(&mut self, item: &'tcx hir::Item) {
         if let hir::ItemKind::Impl(.., ref impl_item_refs) = item.node {
             let impl_def_id = self.tcx.hir().local_def_id_from_hir_id(item.hir_id);
@@ -92,10 +92,11 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for ImplWfCheck<'a, 'tcx> {
     fn visit_impl_item(&mut self, _impl_item: &'tcx hir::ImplItem) { }
 }
 
-fn enforce_impl_params_are_constrained<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                                 impl_def_id: DefId,
-                                                 impl_item_refs: &[hir::ImplItemRef])
-{
+fn enforce_impl_params_are_constrained<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    impl_def_id: DefId,
+    impl_item_refs: &[hir::ImplItemRef],
+) {
     // Every lifetime used in an associated type must be constrained.
     let impl_self_ty = tcx.type_of(impl_def_id);
     let impl_generics = tcx.generics_of(impl_def_id);
@@ -111,7 +112,7 @@ fn enforce_impl_params_are_constrained<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         .map(|item_ref| tcx.hir().local_def_id_from_hir_id(item_ref.id.hir_id))
         .filter(|&def_id| {
             let item = tcx.associated_item(def_id);
-            item.kind == ty::AssociatedKind::Type && item.defaultness.has_value()
+            item.kind == ty::AssocKind::Type && item.defaultness.has_value()
         })
         .flat_map(|def_id| {
             cgp::parameters_for(&tcx.type_of(def_id), true)
@@ -171,11 +172,7 @@ fn enforce_impl_params_are_constrained<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // used elsewhere are not projected back out.
 }
 
-fn report_unused_parameter(tcx: TyCtxt<'_, '_, '_>,
-                           span: Span,
-                           kind: &str,
-                           name: &str)
-{
+fn report_unused_parameter(tcx: TyCtxt<'_>, span: Span, kind: &str, name: &str) {
     struct_span_err!(
         tcx.sess, span, E0207,
         "the {} parameter `{}` is not constrained by the \
@@ -186,9 +183,7 @@ fn report_unused_parameter(tcx: TyCtxt<'_, '_, '_>,
 }
 
 /// Enforce that we do not have two items in an impl with the same name.
-fn enforce_impl_items_are_distinct<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                             impl_item_refs: &[hir::ImplItemRef])
-{
+fn enforce_impl_items_are_distinct<'tcx>(tcx: TyCtxt<'tcx>, impl_item_refs: &[hir::ImplItemRef]) {
     let mut seen_type_items = FxHashMap::default();
     let mut seen_value_items = FxHashMap::default();
     for impl_item_ref in impl_item_refs {

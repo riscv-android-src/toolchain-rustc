@@ -1,15 +1,16 @@
 #![cfg_attr(test, deny(warnings))]
-#![warn(rust_2018_idioms)]
 // While we're getting used to 2018:
+#![warn(rust_2018_idioms)]
 // Clippy isn't enforced by CI (@alexcrichton isn't a fan).
-#![allow(clippy::boxed_local)] // bug rust-lang-nursery/rust-clippy#1123
-#![allow(clippy::cyclomatic_complexity)] // large project
+#![allow(clippy::blacklisted_name)] // frequently used in tests
+#![allow(clippy::cognitive_complexity)] // large project
 #![allow(clippy::derive_hash_xor_eq)] // there's an intentional incoherence
 #![allow(clippy::explicit_into_iter_loop)] // explicit loops are clearer
 #![allow(clippy::explicit_iter_loop)] // explicit loops are clearer
 #![allow(clippy::identity_op)] // used for vertical alignment
 #![allow(clippy::implicit_hasher)] // large project
 #![allow(clippy::large_enum_variant)] // large project
+#![allow(clippy::new_without_default)] // explicit is maybe clearer
 #![allow(clippy::redundant_closure)] // closures can be less verbose
 #![allow(clippy::redundant_closure_call)] // closures over try catch blocks
 #![allow(clippy::too_many_arguments)] // large project
@@ -17,8 +18,15 @@
 #![allow(clippy::wrong_self_convention)] // perhaps `Rc` should be special-cased in Clippy?
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::redundant_clone)]
+// Unit is now interned, and would probably be better as pass-by-copy, but
+// doing so causes a lot of & and * shenanigans that makes the code arguably
+// less clear and harder to read.
+#![allow(clippy::trivially_copy_pass_by_ref)]
+// exhaustively destructuring ensures future fields are handled
+#![allow(clippy::unneeded_field_pattern)]
 
 use std::fmt;
+use std::io;
 
 use failure::Error;
 use log::debug;
@@ -140,23 +148,37 @@ fn handle_cause(cargo_err: &Error, shell: &mut Shell) -> bool {
         drop(writeln!(shell.err(), "  {}", error));
     }
 
+    fn print_stderror_causes(error: &dyn std::error::Error, shell: &mut Shell) {
+        let mut cur = std::error::Error::source(error);
+        while let Some(err) = cur {
+            print(&err.to_string(), shell);
+            cur = std::error::Error::source(err);
+        }
+    }
+
     let verbose = shell.verbosity();
 
-    if verbose == Verbose {
-        // The first error has already been printed to the shell.
-        // Print all remaining errors.
-        for err in cargo_err.iter_causes() {
-            print(&err.to_string(), shell);
+    // The first error has already been printed to the shell.
+    for err in cargo_err.iter_causes() {
+        // If we're not in verbose mode then print remaining errors until one
+        // marked as `Internal` appears.
+        if verbose != Verbose && err.downcast_ref::<Internal>().is_some() {
+            return false;
         }
-    } else {
-        // The first error has already been printed to the shell.
-        // Print remaining errors until one marked as `Internal` appears.
-        for err in cargo_err.iter_causes() {
-            if err.downcast_ref::<Internal>().is_some() {
-                return false;
-            }
 
-            print(&err.to_string(), shell);
+        print(&err.to_string(), shell);
+
+        // Using the `failure` crate currently means that when using
+        // `iter_causes` we're only iterating over the `failure` causes, but
+        // this doesn't include the causes from the standard library `Error`
+        // trait. We don't have a great way of getting an `&dyn Error` from a
+        // `&dyn Fail`, so we currently just special case a few errors that are
+        // known to maybe have causes and we try to print them here.
+        //
+        // Note that this isn't an exhaustive match since causes for
+        // `std::error::Error` aren't the most common thing in the world.
+        if let Some(io) = err.downcast_ref::<io::Error>() {
+            print_stderror_causes(io, shell);
         }
     }
 

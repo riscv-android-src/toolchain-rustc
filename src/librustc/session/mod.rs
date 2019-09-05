@@ -9,7 +9,7 @@ use crate::lint;
 use crate::lint::builtin::BuiltinLintDiagnostics;
 use crate::middle::allocator::AllocatorKind;
 use crate::middle::dependency_format;
-use crate::session::config::OutputType;
+use crate::session::config::{OutputType, PrintRequest, SwitchWithOptPath};
 use crate::session::search_paths::{PathKind, SearchPath};
 use crate::util::nodemap::{FxHashMap, FxHashSet};
 use crate::util::common::{duration_to_secs_str, ErrorReported};
@@ -23,6 +23,8 @@ use rustc_data_structures::sync::{
 
 use errors::{DiagnosticBuilder, DiagnosticId, Applicability};
 use errors::emitter::{Emitter, EmitterWriter};
+use errors::emitter::HumanReadableErrorType;
+use errors::annotate_snippet_emitter_writer::{AnnotateSnippetEmitterWriter};
 use syntax::ast::{self, NodeId};
 use syntax::edition::Edition;
 use syntax::feature_gate::{self, AttributeType};
@@ -318,8 +320,13 @@ impl Session {
         self.diagnostic().abort_if_errors();
     }
     pub fn compile_status(&self) -> Result<(), ErrorReported> {
-        compile_result_from_err_count(self.err_count())
+        if self.has_errors() {
+            Err(ErrorReported)
+        } else {
+            Ok(())
+        }
     }
+    // FIXME(matthewjasper) Remove this method, it should never be needed.
     pub fn track_errors<F, T>(&self, f: F) -> Result<T, ErrorReported>
     where
         F: FnOnce() -> T,
@@ -519,14 +526,8 @@ impl Session {
     pub fn instrument_mcount(&self) -> bool {
         self.opts.debugging_opts.instrument_mcount
     }
-    pub fn count_llvm_insns(&self) -> bool {
-        self.opts.debugging_opts.count_llvm_insns
-    }
     pub fn time_llvm_passes(&self) -> bool {
         self.opts.debugging_opts.time_llvm_passes
-    }
-    pub fn codegen_stats(&self) -> bool {
-        self.opts.debugging_opts.codegen_stats
     }
     pub fn meta_stats(&self) -> bool {
         self.opts.debugging_opts.meta_stats
@@ -1037,22 +1038,31 @@ fn default_emitter(
     match (sopts.error_format, emitter_dest) {
         (config::ErrorOutputType::HumanReadable(kind), dst) => {
             let (short, color_config) = kind.unzip();
-            let emitter = match dst {
-                None => EmitterWriter::stderr(
-                    color_config,
+
+            if let HumanReadableErrorType::AnnotateSnippet(_) = kind {
+                let emitter = AnnotateSnippetEmitterWriter::new(
                     Some(source_map.clone()),
                     short,
-                    sopts.debugging_opts.teach,
-                ),
-                Some(dst) => EmitterWriter::new(
-                    dst,
-                    Some(source_map.clone()),
-                    short,
-                    false, // no teach messages when writing to a buffer
-                    false, // no colors when writing to a buffer
-                ),
-            };
-            Box::new(emitter.ui_testing(sopts.debugging_opts.ui_testing))
+                );
+                Box::new(emitter.ui_testing(sopts.debugging_opts.ui_testing))
+            } else {
+                let emitter = match dst {
+                    None => EmitterWriter::stderr(
+                        color_config,
+                        Some(source_map.clone()),
+                        short,
+                        sopts.debugging_opts.teach,
+                    ),
+                    Some(dst) => EmitterWriter::new(
+                        dst,
+                        Some(source_map.clone()),
+                        short,
+                        false, // no teach messages when writing to a buffer
+                        false, // no colors when writing to a buffer
+                    ),
+                };
+                Box::new(emitter.ui_testing(sopts.debugging_opts.ui_testing))
+            }
         },
         (config::ErrorOutputType::Json { pretty, json_rendered }, None) => Box::new(
             JsonEmitter::stderr(
@@ -1137,8 +1147,18 @@ fn build_session_(
     driver_lint_caps: FxHashMap<lint::LintId, lint::Level>,
 ) -> Session {
     let self_profiler =
-        if sopts.debugging_opts.self_profile {
-            let profiler = SelfProfiler::new(&sopts.debugging_opts.self_profile_events);
+        if let SwitchWithOptPath::Enabled(ref d) = sopts.debugging_opts.self_profile {
+            let directory = if let Some(ref directory) = d {
+                directory
+            } else {
+                std::path::Path::new(".")
+            };
+
+            let profiler = SelfProfiler::new(
+                directory,
+                sopts.crate_name.as_ref().map(|s| &s[..]),
+                &sopts.debugging_opts.self_profile_events
+            );
             match profiler {
                 Ok(profiler) => {
                     crate::ty::query::QueryName::register_with_profiler(&profiler);
@@ -1272,6 +1292,30 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         sess.err("Linker plugin based LTO is not supported together with \
                   `-C prefer-dynamic` when targeting MSVC");
     }
+
+    // Make sure that any given profiling data actually exists so LLVM can't
+    // decide to silently skip PGO.
+    if let Some(ref path) = sess.opts.cg.profile_use {
+        if !path.exists() {
+            sess.err(&format!("File `{}` passed to `-C profile-use` does not exist.",
+                              path.display()));
+        }
+    }
+
+    // PGO does not work reliably with panic=unwind on Windows. Let's make it
+    // an error to combine the two for now. It always runs into an assertions
+    // if LLVM is built with assertions, but without assertions it sometimes
+    // does not crash and will probably generate a corrupted binary.
+    // We should only display this error if we're actually going to run PGO.
+    // If we're just supposed to print out some data, don't show the error (#61002).
+    if sess.opts.cg.profile_generate.enabled() &&
+       sess.target.target.options.is_like_msvc &&
+       sess.panic_strategy() == PanicStrategy::Unwind &&
+       sess.opts.prints.iter().all(|&p| p == PrintRequest::NativeStaticLibs) {
+        sess.err("Profile-guided optimization does not yet work in conjunction \
+                  with `-Cpanic=unwind` on Windows when targeting MSVC. \
+                  See https://github.com/rust-lang/rust/issues/61002 for details.");
+    }
 }
 
 /// Hash value constructed out of all the `-C metadata` arguments passed to the
@@ -1352,11 +1396,3 @@ pub fn early_warn(output: config::ErrorOutputType, msg: &str) {
 }
 
 pub type CompileResult = Result<(), ErrorReported>;
-
-pub fn compile_result_from_err_count(err_count: usize) -> CompileResult {
-    if err_count == 0 {
-        Ok(())
-    } else {
-        Err(ErrorReported)
-    }
-}

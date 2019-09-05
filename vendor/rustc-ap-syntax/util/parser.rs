@@ -1,5 +1,5 @@
-use crate::parse::token::{Token, BinOpToken};
-use crate::symbol::keywords;
+use crate::parse::token::{self, TokenKind, BinOpToken};
+use crate::symbol::kw;
 use crate::ast::{self, BinOpKind};
 
 /// Associative operator with precedence.
@@ -45,8 +45,6 @@ pub enum AssocOp {
     GreaterEqual,
     /// `=`
     Assign,
-    /// `<-`
-    ObsoleteInPlace,
     /// `?=` where ? is one of the BinOpToken
     AssignOp(BinOpToken),
     /// `as`
@@ -71,36 +69,35 @@ pub enum Fixity {
 
 impl AssocOp {
     /// Creates a new AssocOP from a token
-    pub fn from_token(t: &Token) -> Option<AssocOp> {
+    pub fn from_token(t: &TokenKind) -> Option<AssocOp> {
         use AssocOp::*;
         match *t {
-            Token::BinOpEq(k) => Some(AssignOp(k)),
-            Token::LArrow => Some(ObsoleteInPlace),
-            Token::Eq => Some(Assign),
-            Token::BinOp(BinOpToken::Star) => Some(Multiply),
-            Token::BinOp(BinOpToken::Slash) => Some(Divide),
-            Token::BinOp(BinOpToken::Percent) => Some(Modulus),
-            Token::BinOp(BinOpToken::Plus) => Some(Add),
-            Token::BinOp(BinOpToken::Minus) => Some(Subtract),
-            Token::BinOp(BinOpToken::Shl) => Some(ShiftLeft),
-            Token::BinOp(BinOpToken::Shr) => Some(ShiftRight),
-            Token::BinOp(BinOpToken::And) => Some(BitAnd),
-            Token::BinOp(BinOpToken::Caret) => Some(BitXor),
-            Token::BinOp(BinOpToken::Or) => Some(BitOr),
-            Token::Lt => Some(Less),
-            Token::Le => Some(LessEqual),
-            Token::Ge => Some(GreaterEqual),
-            Token::Gt => Some(Greater),
-            Token::EqEq => Some(Equal),
-            Token::Ne => Some(NotEqual),
-            Token::AndAnd => Some(LAnd),
-            Token::OrOr => Some(LOr),
-            Token::DotDot => Some(DotDot),
-            Token::DotDotEq => Some(DotDotEq),
+            token::BinOpEq(k) => Some(AssignOp(k)),
+            token::Eq => Some(Assign),
+            token::BinOp(BinOpToken::Star) => Some(Multiply),
+            token::BinOp(BinOpToken::Slash) => Some(Divide),
+            token::BinOp(BinOpToken::Percent) => Some(Modulus),
+            token::BinOp(BinOpToken::Plus) => Some(Add),
+            token::BinOp(BinOpToken::Minus) => Some(Subtract),
+            token::BinOp(BinOpToken::Shl) => Some(ShiftLeft),
+            token::BinOp(BinOpToken::Shr) => Some(ShiftRight),
+            token::BinOp(BinOpToken::And) => Some(BitAnd),
+            token::BinOp(BinOpToken::Caret) => Some(BitXor),
+            token::BinOp(BinOpToken::Or) => Some(BitOr),
+            token::Lt => Some(Less),
+            token::Le => Some(LessEqual),
+            token::Ge => Some(GreaterEqual),
+            token::Gt => Some(Greater),
+            token::EqEq => Some(Equal),
+            token::Ne => Some(NotEqual),
+            token::AndAnd => Some(LAnd),
+            token::OrOr => Some(LOr),
+            token::DotDot => Some(DotDot),
+            token::DotDotEq => Some(DotDotEq),
             // DotDotDot is no longer supported, but we need some way to display the error
-            Token::DotDotDot => Some(DotDotEq),
-            Token::Colon => Some(Colon),
-            _ if t.is_keyword(keywords::As) => Some(As),
+            token::DotDotDot => Some(DotDotEq),
+            token::Colon => Some(Colon),
+            _ if t.is_keyword(kw::As) => Some(As),
             _ => None
         }
     }
@@ -145,7 +142,6 @@ impl AssocOp {
             LAnd => 6,
             LOr => 5,
             DotDot | DotDotEq => 4,
-            ObsoleteInPlace => 3,
             Assign | AssignOp(_) => 2,
         }
     }
@@ -155,7 +151,7 @@ impl AssocOp {
         use AssocOp::*;
         // NOTE: it is a bug to have an operators that has same precedence but different fixities!
         match *self {
-            ObsoleteInPlace | Assign | AssignOp(_) => Fixity::Right,
+            Assign | AssignOp(_) => Fixity::Right,
             As | Multiply | Divide | Modulus | Add | Subtract | ShiftLeft | ShiftRight | BitAnd |
             BitXor | BitOr | Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual |
             LAnd | LOr | Colon => Fixity::Left,
@@ -167,7 +163,7 @@ impl AssocOp {
         use AssocOp::*;
         match *self {
             Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual => true,
-            ObsoleteInPlace | Assign | AssignOp(_) | As | Multiply | Divide | Modulus | Add |
+            Assign | AssignOp(_) | As | Multiply | Divide | Modulus | Add |
             Subtract | ShiftLeft | ShiftRight | BitAnd | BitXor | BitOr | LAnd | LOr |
             DotDot | DotDotEq | Colon => false
         }
@@ -176,7 +172,7 @@ impl AssocOp {
     pub fn is_assign_like(&self) -> bool {
         use AssocOp::*;
         match *self {
-            Assign | AssignOp(_) | ObsoleteInPlace => true,
+            Assign | AssignOp(_) => true,
             Less | Greater | LessEqual | GreaterEqual | Equal | NotEqual | As | Multiply | Divide |
             Modulus | Add | Subtract | ShiftLeft | ShiftRight | BitAnd | BitXor | BitOr | LAnd |
             LOr | DotDot | DotDotEq | Colon => false
@@ -204,7 +200,32 @@ impl AssocOp {
             BitOr => Some(BinOpKind::BitOr),
             LAnd => Some(BinOpKind::And),
             LOr => Some(BinOpKind::Or),
-            ObsoleteInPlace | Assign | AssignOp(_) | As | DotDot | DotDotEq | Colon => None
+            Assign | AssignOp(_) | As | DotDot | DotDotEq | Colon => None
+        }
+    }
+
+    /// This operator could be used to follow a block unambiguously.
+    ///
+    /// This is used for error recovery at the moment, providing a suggestion to wrap blocks with
+    /// parentheses while having a high degree of confidence on the correctness of the suggestion.
+    pub fn can_continue_expr_unambiguously(&self) -> bool {
+        use AssocOp::*;
+        match self {
+            BitXor | // `{ 42 } ^ 3`
+            Assign | // `{ 42 } = { 42 }`
+            Divide | // `{ 42 } / 42`
+            Modulus | // `{ 42 } % 2`
+            ShiftRight | // `{ 42 } >> 2`
+            LessEqual | // `{ 42 } <= 3`
+            Greater | // `{ 42 } > 3`
+            GreaterEqual | // `{ 42 } >= 3`
+            AssignOp(_) | // `{ 42 } +=`
+            LAnd | // `{ 42 } &&foo`
+            As | // `{ 42 } as usize`
+            // Equal | // `{ 42 } == { 42 }`    Accepting these here would regress incorrect
+            // NotEqual | // `{ 42 } != { 42 }  struct literals parser recovery.
+            Colon => true, // `{ 42 }: usize`
+            _ => false,
         }
     }
 }
@@ -231,7 +252,6 @@ pub enum ExprPrecedence {
 
     Binary(BinOpKind),
 
-    ObsoleteInPlace,
     Cast,
     Type,
 
@@ -267,6 +287,7 @@ pub enum ExprPrecedence {
     TryBlock,
     Struct,
     Async,
+    Await,
     Err,
 }
 
@@ -288,7 +309,6 @@ impl ExprPrecedence {
 
             // Binop-like expr kinds, handled by `AssocOp`.
             ExprPrecedence::Binary(op) => AssocOp::from_ast_binop(op).precedence() as i8,
-            ExprPrecedence::ObsoleteInPlace => AssocOp::ObsoleteInPlace.precedence() as i8,
             ExprPrecedence::Cast => AssocOp::As.precedence() as i8,
             ExprPrecedence::Type => AssocOp::Colon.precedence() as i8,
 
@@ -301,6 +321,7 @@ impl ExprPrecedence {
             ExprPrecedence::Unary => PREC_PREFIX,
 
             // Unary, postfix
+            ExprPrecedence::Await |
             ExprPrecedence::Call |
             ExprPrecedence::MethodCall |
             ExprPrecedence::Field |
@@ -346,6 +367,7 @@ pub fn contains_exterior_struct_lit(value: &ast::Expr) -> bool {
             // X { y: 1 } + X { y: 2 }
             contains_exterior_struct_lit(&lhs) || contains_exterior_struct_lit(&rhs)
         }
+        ast::ExprKind::Await(_, ref x) |
         ast::ExprKind::Unary(_, ref x) |
         ast::ExprKind::Cast(ref x, _) |
         ast::ExprKind::Type(ref x, _) |

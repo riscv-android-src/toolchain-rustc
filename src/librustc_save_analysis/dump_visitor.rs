@@ -75,9 +75,9 @@ macro_rules! access_from_vis {
     };
 }
 
-pub struct DumpVisitor<'l, 'tcx: 'l, 'll, O: DumpOutput> {
+pub struct DumpVisitor<'l, 'tcx, 'll, O: DumpOutput> {
     save_ctxt: SaveContext<'l, 'tcx>,
-    tcx: TyCtxt<'l, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     dumper: &'ll mut JsonDumper<O>,
 
     span: SpanUtils<'l>,
@@ -92,7 +92,7 @@ pub struct DumpVisitor<'l, 'tcx: 'l, 'll, O: DumpOutput> {
     // macro_calls: FxHashSet<Span>,
 }
 
-impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
+impl<'l, 'tcx, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
     pub fn new(
         save_ctxt: SaveContext<'l, 'tcx>,
         dumper: &'ll mut JsonDumper<O>,
@@ -961,11 +961,11 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
                 }
                 Res::Def(HirDefKind::Ctor(..), _) |
                 Res::Def(HirDefKind::Const, _) |
-                Res::Def(HirDefKind::AssociatedConst, _) |
+                Res::Def(HirDefKind::AssocConst, _) |
                 Res::Def(HirDefKind::Struct, _) |
                 Res::Def(HirDefKind::Variant, _) |
                 Res::Def(HirDefKind::TyAlias, _) |
-                Res::Def(HirDefKind::AssociatedTy, _) |
+                Res::Def(HirDefKind::AssocTy, _) |
                 Res::SelfTy(..) => {
                     self.dump_path_ref(id, &ast::Path::from_ident(ident));
                 }
@@ -1177,13 +1177,13 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
                 );
             }
             ast::ImplItemKind::Type(ref ty) => {
-                // FIXME uses of the assoc type should ideally point to this
+                // FIXME: uses of the assoc type should ideally point to this
                 // 'def' and the name here should be a ref to the def in the
                 // trait.
                 self.visit_ty(ty)
             }
             ast::ImplItemKind::Existential(ref bounds) => {
-                // FIXME uses of the assoc type should ideally point to this
+                // FIXME: uses of the assoc type should ideally point to this
                 // 'def' and the name here should be a ref to the def in the
                 // trait.
                 for bound in bounds.iter() {
@@ -1216,7 +1216,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
         let hir_id = self.tcx.hir().node_to_hir_id(id);
         let access = access_from!(self.save_ctxt, root_item, hir_id);
 
-        // The parent def id of a given use tree is always the enclosing item.
+        // The parent `DefId` of a given use tree is always the enclosing item.
         let parent = self.save_ctxt.tcx.hir().opt_local_def_id(id)
             .and_then(|id| self.save_ctxt.tcx.parent(id))
             .map(id_from_def_id);
@@ -1311,7 +1311,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
     }
 }
 
-impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tcx, 'll, O> {
+impl<'l, 'tcx, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tcx, 'll, O> {
     fn visit_mod(&mut self, m: &'l ast::Mod, span: Span, attrs: &[ast::Attribute], id: NodeId) {
         // Since we handle explicit modules ourselves in visit_item, this should
         // only get called for the root module of a crate.
@@ -1531,7 +1531,8 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tc
         self.process_macro_use(ex.span);
         match ex.node {
             ast::ExprKind::Struct(ref path, ref fields, ref base) => {
-                let hir_expr = self.save_ctxt.tcx.hir().expect_expr(ex.id);
+                let expr_hir_id = self.save_ctxt.tcx.hir().node_to_hir_id(ex.id);
+                let hir_expr = self.save_ctxt.tcx.hir().expect_expr(expr_hir_id);
                 let adt = match self.save_ctxt.tables.expr_ty_opt(&hir_expr) {
                     Some(ty) if ty.ty_adt_def().is_some() => ty.ty_adt_def().unwrap(),
                     _ => {
@@ -1579,17 +1580,9 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tc
                 self.visit_expr(subexpression);
                 visit::walk_block(self, block);
             }
-            ast::ExprKind::WhileLet(ref pats, ref subexpression, ref block, _) => {
+            ast::ExprKind::Let(ref pats, ref scrutinee) => {
                 self.process_var_decl_multi(pats);
-                debug!("for loop, walk sub-expr: {:?}", subexpression.node);
-                self.visit_expr(subexpression);
-                visit::walk_block(self, block);
-            }
-            ast::ExprKind::IfLet(ref pats, ref subexpression, ref block, ref opt_else) => {
-                self.process_var_decl_multi(pats);
-                self.visit_expr(subexpression);
-                visit::walk_block(self, block);
-                opt_else.as_ref().map(|el| self.visit_expr(el));
+                self.visit_expr(scrutinee);
             }
             ast::ExprKind::Repeat(ref element, ref count) => {
                 self.visit_expr(element);
@@ -1616,9 +1609,8 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tc
 
     fn visit_arm(&mut self, arm: &'l ast::Arm) {
         self.process_var_decl_multi(&arm.pats);
-        match arm.guard {
-            Some(ast::Guard::If(ref expr)) => self.visit_expr(expr),
-            _ => {}
+        if let Some(expr) = &arm.guard {
+            self.visit_expr(expr);
         }
         self.visit_expr(&arm.body);
     }

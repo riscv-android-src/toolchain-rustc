@@ -74,7 +74,7 @@ impl<'a> FnKind<'a> {
 ///
 /// See the comments on `ItemLikeVisitor` for more details on the overall
 /// visit strategy.
-pub enum NestedVisitorMap<'this, 'tcx: 'this> {
+pub enum NestedVisitorMap<'this, 'tcx> {
     /// Do not visit any nested things. When you add a new
     /// "non-nested" thing, you will want to audit such uses to see if
     /// they remain valid.
@@ -171,7 +171,7 @@ pub trait Visitor<'v> : Sized {
     /// but cannot supply a `Map`; see `nested_visit_map` for advice.
     #[allow(unused_variables)]
     fn visit_nested_item(&mut self, id: ItemId) {
-        let opt_item = self.nested_visit_map().inter().map(|map| map.expect_item_by_hir_id(id.id));
+        let opt_item = self.nested_visit_map().inter().map(|map| map.expect_item(id.id));
         if let Some(item) = opt_item {
             self.visit_item(item);
         }
@@ -261,9 +261,6 @@ pub trait Visitor<'v> : Sized {
     }
     fn visit_pat(&mut self, p: &'v Pat) {
         walk_pat(self, p)
-    }
-    fn visit_argument_source(&mut self, s: &'v ArgSource) {
-        walk_argument_source(self, s)
     }
     fn visit_anon_const(&mut self, c: &'v AnonConst) {
         walk_anon_const(self, c)
@@ -370,7 +367,7 @@ pub trait Visitor<'v> : Sized {
     fn visit_vis(&mut self, vis: &'v Visibility) {
         walk_vis(self, vis)
     }
-    fn visit_associated_item_kind(&mut self, kind: &'v AssociatedItemKind) {
+    fn visit_associated_item_kind(&mut self, kind: &'v AssocItemKind) {
         walk_associated_item_kind(self, kind);
     }
     fn visit_defaultness(&mut self, defaultness: &'v Defaultness) {
@@ -402,15 +399,8 @@ pub fn walk_body<'v, V: Visitor<'v>>(visitor: &mut V, body: &'v Body) {
     for argument in &body.arguments {
         visitor.visit_id(argument.hir_id);
         visitor.visit_pat(&argument.pat);
-        visitor.visit_argument_source(&argument.source);
     }
     visitor.visit_expr(&body.value);
-}
-
-pub fn walk_argument_source<'v, V: Visitor<'v>>(visitor: &mut V, source: &'v ArgSource) {
-    if let ArgSource::AsyncFn(pat) = source {
-        visitor.visit_pat(pat);
-    }
 }
 
 pub fn walk_local<'v, V: Visitor<'v>>(visitor: &mut V, local: &'v Local) {
@@ -684,7 +674,14 @@ pub fn walk_assoc_type_binding<'v, V: Visitor<'v>>(visitor: &mut V,
                                                    type_binding: &'v TypeBinding) {
     visitor.visit_id(type_binding.hir_id);
     visitor.visit_ident(type_binding.ident);
-    visitor.visit_ty(&type_binding.ty);
+    match type_binding.kind {
+        TypeBindingKind::Equality { ref ty } => {
+            visitor.visit_ty(ty);
+        }
+        TypeBindingKind::Constraint { ref bounds } => {
+            walk_list!(visitor, visit_param_bound, bounds);
+        }
+    }
 }
 
 pub fn walk_pat<'v, V: Visitor<'v>>(visitor: &mut V, pattern: &'v Pat) {
@@ -776,7 +773,6 @@ pub fn walk_generic_param<'v, V: Visitor<'v>>(visitor: &mut V, param: &'v Generi
 
 pub fn walk_generics<'v, V: Visitor<'v>>(visitor: &mut V, generics: &'v Generics) {
     walk_list!(visitor, visit_generic_param, &generics.params);
-    visitor.visit_id(generics.where_clause.hir_id);
     walk_list!(visitor, visit_where_predicate, &generics.where_clause.predicates);
 }
 
@@ -944,7 +940,6 @@ pub fn walk_impl_item_ref<'v, V: Visitor<'v>>(visitor: &mut V, impl_item_ref: &'
     visitor.visit_defaultness(defaultness);
 }
 
-
 pub fn walk_struct_def<'v, V: Visitor<'v>>(visitor: &mut V, struct_definition: &'v VariantData) {
     if let Some(ctor_hir_id) = struct_definition.ctor_hir_id() {
         visitor.visit_id(ctor_hir_id);
@@ -1024,7 +1019,6 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr) {
         ExprKind::AddrOf(_, ref subexpression) | ExprKind::Unary(_, ref subexpression) => {
             visitor.visit_expr(subexpression)
         }
-        ExprKind::Lit(_) => {}
         ExprKind::Cast(ref subexpression, ref typ) | ExprKind::Type(ref subexpression, ref typ) => {
             visitor.visit_expr(subexpression);
             visitor.visit_ty(typ)
@@ -1062,7 +1056,7 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr) {
         }
         ExprKind::AssignOp(_, ref left_expression, ref right_expression) => {
             visitor.visit_expr(right_expression);
-            visitor.visit_expr(left_expression)
+            visitor.visit_expr(left_expression);
         }
         ExprKind::Field(ref subexpression, ident) => {
             visitor.visit_expr(subexpression);
@@ -1094,14 +1088,15 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr) {
                 visitor.visit_expr(expr)
             }
         }
-        ExprKind::Yield(ref subexpression) => {
+        ExprKind::Yield(ref subexpression, _) => {
             visitor.visit_expr(subexpression);
         }
-        ExprKind::Err => {}
+        ExprKind::Lit(_) | ExprKind::Err => {}
     }
 }
 
 pub fn walk_arm<'v, V: Visitor<'v>>(visitor: &mut V, arm: &'v Arm) {
+    visitor.visit_id(arm.hir_id);
     walk_list!(visitor, visit_pat, &arm.pats);
     if let Some(ref g) = arm.guard {
         match g {
@@ -1119,7 +1114,7 @@ pub fn walk_vis<'v, V: Visitor<'v>>(visitor: &mut V, vis: &'v Visibility) {
     }
 }
 
-pub fn walk_associated_item_kind<'v, V: Visitor<'v>>(_: &mut V, _: &'v AssociatedItemKind) {
+pub fn walk_associated_item_kind<'v, V: Visitor<'v>>(_: &mut V, _: &'v AssocItemKind) {
     // No visitable content here: this fn exists so you can call it if
     // the right thing to do, should content be added in the future,
     // would be to walk it.

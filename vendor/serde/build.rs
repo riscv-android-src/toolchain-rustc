@@ -14,6 +14,21 @@ fn main() {
     let target = env::var("TARGET").unwrap();
     let emscripten = target == "asmjs-unknown-emscripten" || target == "wasm32-unknown-emscripten";
 
+    // std::collections::Bound was stabilized in Rust 1.17
+    // but it was moved to core::ops later in Rust 1.26:
+    // https://doc.rust-lang.org/core/ops/enum.Bound.html
+    if minor >= 26 {
+        println!("cargo:rustc-cfg=ops_bound");
+    } else if minor >= 17 && cfg!(feature = "std") {
+        println!("cargo:rustc-cfg=collections_bound");
+    }
+
+    // core::cmp::Reverse stabilized in Rust 1.19:
+    // https://doc.rust-lang.org/stable/core/cmp/struct.Reverse.html
+    if minor >= 19 {
+        println!("cargo:rustc-cfg=core_reverse");
+    }
+
     // CString::into_boxed_c_str stabilized in Rust 1.20:
     // https://doc.rust-lang.org/std/ffi/struct.CString.html#method.into_boxed_c_str
     if minor >= 20 {

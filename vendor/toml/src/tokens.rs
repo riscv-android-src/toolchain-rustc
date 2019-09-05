@@ -294,8 +294,8 @@ impl<'a> Tokenizer<'a> {
         &mut self,
         delim: char,
         start: usize,
-        new_ch: &mut FnMut(
-            &mut Tokenizer,
+        new_ch: &mut dyn FnMut(
+            &mut Tokenizer<'_>,
             &mut MaybeString,
             bool,
             usize,
@@ -336,11 +336,14 @@ impl<'a> Tokenizer<'a> {
                 }
                 Some((i, ch)) if ch == delim => {
                     if multiline {
-                        for _ in 0..2 {
-                            if !self.eatc(delim) {
-                                val.push(delim);
-                                continue 'outer;
-                            }
+                        if !self.eatc(delim) {
+                            val.push(delim);
+                            continue 'outer;
+                        }
+                        if !self.eatc(delim) {
+                            val.push(delim);
+                            val.push(delim);
+                            continue 'outer;
                         }
                     }
                     return Ok(String {
@@ -511,7 +514,7 @@ impl MaybeString {
         }
     }
 
-    fn into_cow(self, input: &str) -> Cow<str> {
+    fn into_cow(self, input: &str) -> Cow<'_, str> {
         match self {
             MaybeString::NotEscaped(start) => Cow::Borrowed(&input[start..]),
             MaybeString::Owned(s) => Cow::Owned(s),
@@ -630,6 +633,7 @@ mod tests {
         t(r#""\"a""#, "\"a", false);
         t("\"\"\"\na\"\"\"", "a", true);
         t("\"\"\"\n\"\"\"", "", true);
+        t(r#""""a\"""b""""#, "a\"\"\"b", true);
         err(r#""\a"#, Error::InvalidEscape(2, 'a'));
         err("\"\\\n", Error::InvalidEscape(2, '\n'));
         err("\"\\\r\n", Error::InvalidEscape(2, '\n'));
@@ -661,9 +665,9 @@ mod tests {
 
     #[test]
     fn all() {
-        fn t(input: &str, expected: &[((usize, usize), Token, &str)]) {
+        fn t(input: &str, expected: &[((usize, usize), Token<'_>, &str)]) {
             let mut tokens = Tokenizer::new(input);
-            let mut actual: Vec<((usize, usize), Token, &str)> = Vec::new();
+            let mut actual: Vec<((usize, usize), Token<'_>, &str)> = Vec::new();
             while let Some((span, token)) = tokens.next().unwrap() {
                 actual.push((span.into(), token, &input[span.start..span.end]));
             }

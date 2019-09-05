@@ -10,7 +10,7 @@ use bufstream::BufStream;
 use git2;
 
 // Tests that HTTP auth is offered from `credential.helper`.
-#[test]
+#[cargo_test]
 fn http_auth_offered() {
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -91,7 +91,11 @@ fn http_auth_offered() {
     let config = paths::home().join(".gitconfig");
     let mut config = git2::Config::open(&config).unwrap();
     config
-        .set_str("credential.helper", &script.display().to_string())
+        .set_str(
+            "credential.helper",
+            // This is a bash script so replace `\` with `/` for Windows
+            &script.display().to_string().replace("\\", "/"),
+        )
         .unwrap();
 
     let p = project()
@@ -149,7 +153,7 @@ Caused by:
 }
 
 // Boy, sure would be nice to have a TLS implementation in rust!
-#[test]
+#[cargo_test]
 fn https_something_happens() {
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -214,7 +218,7 @@ Caused by:
 }
 
 // It would sure be nice to have an SSH implementation in Rust!
-#[test]
+#[cargo_test]
 fn ssh_something_happens() {
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();

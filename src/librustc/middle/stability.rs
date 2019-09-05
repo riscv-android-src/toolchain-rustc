@@ -105,15 +105,15 @@ impl_stable_hash_for!(struct self::Index<'tcx> {
 });
 
 // A private tree-walker for producing an Index.
-struct Annotator<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct Annotator<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     index: &'a mut Index<'tcx>,
     parent_stab: Option<&'tcx Stability>,
     parent_depr: Option<DeprecationEntry>,
     in_trait_impl: bool,
 }
 
-impl<'a, 'tcx: 'a> Annotator<'a, 'tcx> {
+impl<'a, 'tcx> Annotator<'a, 'tcx> {
     // Determine the stability for a node based on its attributes and inherited
     // stability. The stability is recorded in the index and used as the parent.
     fn annotate<F>(&mut self, hir_id: HirId, attrs: &[Attribute],
@@ -124,12 +124,12 @@ impl<'a, 'tcx: 'a> Annotator<'a, 'tcx> {
             // This crate explicitly wants staged API.
             debug!("annotate(id = {:?}, attrs = {:?})", hir_id, attrs);
             if let Some(..) = attr::find_deprecation(&self.tcx.sess.parse_sess, attrs, item_sp) {
-                self.tcx.sess.span_err(item_sp, "`#[deprecated]` cannot be used in staged api, \
+                self.tcx.sess.span_err(item_sp, "`#[deprecated]` cannot be used in staged API; \
                                                  use `#[rustc_deprecated]` instead");
             }
             if let Some(mut stab) = attr::find_stability(&self.tcx.sess.parse_sess,
                                                          attrs, item_sp) {
-                // Error if prohibited, or can't inherit anything from a container
+                // Error if prohibited, or can't inherit anything from a container.
                 if kind == AnnotationKind::Prohibited ||
                    (kind == AnnotationKind::Container &&
                     stab.level.is_stable() &&
@@ -316,12 +316,12 @@ impl<'a, 'tcx> Visitor<'tcx> for Annotator<'a, 'tcx> {
     }
 }
 
-struct MissingStabilityAnnotations<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct MissingStabilityAnnotations<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     access_levels: &'a AccessLevels,
 }
 
-impl<'a, 'tcx: 'a> MissingStabilityAnnotations<'a, 'tcx> {
+impl<'a, 'tcx> MissingStabilityAnnotations<'a, 'tcx> {
     fn check_missing_stability(&self, hir_id: HirId, span: Span, name: &str) {
         let stab = self.tcx.stability().local_stability(hir_id);
         let is_error = !self.tcx.sess.opts.test &&
@@ -389,8 +389,8 @@ impl<'a, 'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Index<'tcx> {
-    pub fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Index<'tcx> {
+impl<'tcx> Index<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>) -> Index<'tcx> {
         let is_staged_api =
             tcx.sess.opts.debugging_opts.force_unstable_if_unmarked ||
             tcx.features().staged_api;
@@ -437,7 +437,7 @@ impl<'a, 'tcx> Index<'tcx> {
                         reason: Some(Symbol::intern(reason)),
                         issue: 27812,
                     },
-                    feature: Symbol::intern("rustc_private"),
+                    feature: sym::rustc_private,
                     rustc_depr: None,
                     const_stability: None,
                     promotable: false,
@@ -452,7 +452,7 @@ impl<'a, 'tcx> Index<'tcx> {
                                AnnotationKind::Required,
                                |v| intravisit::walk_crate(v, krate));
         }
-        return index
+        return index;
     }
 
     pub fn local_stability(&self, id: HirId) -> Option<&'tcx Stability> {
@@ -466,7 +466,7 @@ impl<'a, 'tcx> Index<'tcx> {
 
 /// Cross-references the feature names of unstable APIs with enabled
 /// features and possibly prints errors.
-fn check_mod_unstable_api_usage<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+fn check_mod_unstable_api_usage<'tcx>(tcx: TyCtxt<'tcx>, module_def_id: DefId) {
     tcx.hir().visit_item_likes_in_module(module_def_id, &mut Checker { tcx }.as_deep_visitor());
 }
 
@@ -501,8 +501,8 @@ pub fn deprecation_in_effect(since: &str) -> bool {
     }
 }
 
-struct Checker<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct Checker<'tcx> {
+    tcx: TyCtxt<'tcx>,
 }
 
 /// Result of `TyCtxt::eval_stability`.
@@ -521,14 +521,14 @@ pub enum EvalResult {
     Unmarked,
 }
 
-impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
+impl<'tcx> TyCtxt<'tcx> {
     // See issue #38412.
     fn skip_stability_check_due_to_privacy(self, mut def_id: DefId) -> bool {
         // Check if `def_id` is a trait method.
         match self.def_kind(def_id) {
             Some(DefKind::Method) |
-            Some(DefKind::AssociatedTy) |
-            Some(DefKind::AssociatedConst) => {
+            Some(DefKind::AssocTy) |
+            Some(DefKind::AssocConst) => {
                 if let ty::TraitContainer(trait_def_id) = self.associated_item(def_id).container {
                     // Trait methods do not declare visibility (even
                     // for visibility info in cstore). Use containing
@@ -580,7 +580,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 
             let mut diag = self.struct_span_lint_hir(lint, id, span, &msg);
             if let Some(suggestion) = suggestion {
-                if let hir::Node::Expr(_) = self.hir().get_by_hir_id(id) {
+                if let hir::Node::Expr(_) = self.hir().get(id) {
                     diag.span_suggestion(
                         span,
                         "replace the use of the deprecated item",
@@ -752,7 +752,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
+impl Visitor<'tcx> for Checker<'tcx> {
     /// Because stability levels are scoped lexically, we want to walk
     /// nested items in the context of the outer item, so enable
     /// deep-walking.
@@ -827,7 +827,7 @@ impl<'a, 'tcx> Visitor<'tcx> for Checker<'a, 'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
+impl<'tcx> TyCtxt<'tcx> {
     pub fn lookup_deprecation(self, id: DefId) -> Option<Deprecation> {
         self.lookup_deprecation_entry(id).map(|depr| depr.attr)
     }
@@ -836,7 +836,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
 /// Given the list of enabled features that were not language features (i.e., that
 /// were expected to be library features), and the list of features used from
 /// libraries, identify activated features that don't exist and error about them.
-pub fn check_unused_or_stable_features<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+pub fn check_unused_or_stable_features<'tcx>(tcx: TyCtxt<'tcx>) {
     let access_levels = &tcx.privacy_access_levels(LOCAL_CRATE);
 
     if tcx.stability().staged_api[&LOCAL_CRATE] {
@@ -880,10 +880,10 @@ pub fn check_unused_or_stable_features<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     // FIXME: only remove `libc` when `stdbuild` is active.
     // FIXME: remove special casing for `test`.
     remaining_lib_features.remove(&Symbol::intern("libc"));
-    remaining_lib_features.remove(&Symbol::intern("test"));
+    remaining_lib_features.remove(&sym::test);
 
     let check_features =
-        |remaining_lib_features: &mut FxHashMap<_, _>, defined_features: &Vec<_>| {
+        |remaining_lib_features: &mut FxHashMap<_, _>, defined_features: &[_]| {
             for &(feature, since) in defined_features {
                 if let Some(since) = since {
                     if let Some(span) = remaining_lib_features.get(&feature) {
@@ -908,7 +908,7 @@ pub fn check_unused_or_stable_features<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
             if remaining_lib_features.is_empty() {
                 break;
             }
-            check_features(&mut remaining_lib_features, &tcx.defined_lib_features(cnum));
+            check_features(&mut remaining_lib_features, tcx.defined_lib_features(cnum));
         }
     }
 
@@ -920,11 +920,11 @@ pub fn check_unused_or_stable_features<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
     // don't lint about unused features. We should reenable this one day!
 }
 
-fn unnecessary_stable_feature_lint<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+fn unnecessary_stable_feature_lint<'tcx>(
+    tcx: TyCtxt<'tcx>,
     span: Span,
     feature: Symbol,
-    since: Symbol
+    since: Symbol,
 ) {
     tcx.lint_hir(lint::builtin::STABLE_FEATURES,
         hir::CRATE_HIR_ID,

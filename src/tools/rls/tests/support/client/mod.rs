@@ -40,7 +40,7 @@ mod child_process;
 // however we only call `Runtime::block_on` and whenever we do it, there are no
 // active borrows in scope.
 type Messages = Rc<RefCell<Vec<Value>>>;
-type Channels = Rc<RefCell<Vec<(Box<Fn(&Value) -> bool>, oneshot::Sender<Value>)>>>;
+type Channels = Rc<RefCell<Vec<(Box<dyn Fn(&Value) -> bool>, oneshot::Sender<Value>)>>>;
 
 type LspFramed<T> = tokio::codec::Framed<T, LspCodec>;
 
@@ -59,6 +59,10 @@ impl Project {
         let mut cmd = Command::new(rls_exe());
         cmd.current_dir(self.root());
         cmd.stderr(Stdio::inherit());
+        // If `CARGO_TARGET_DIR` is set (such as in rust-lang/rust), don't
+        // reuse it. Each test needs its own target directory so they don't
+        // stomp on each other's files.
+        cmd.env_remove("CARGO_TARGET_DIR");
 
         cmd
     }

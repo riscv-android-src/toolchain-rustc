@@ -50,8 +50,10 @@ pub fn main() {
     assert_approx_eq!(8f32.log2(), 3f32);
     assert_approx_eq!(f64::consts::E.log2(), f64::consts::LOG2_E);
 
-    assert_approx_eq!(1.0f32.mul_add(2.0f32, 5.0f32), 7.0f32);
-    assert_approx_eq!(0.0f64.mul_add(-2.0f64, f64::consts::E), f64::consts::E);
+    assert_approx_eq!(3.0f32.mul_add(2.0f32, 5.0f32), 11.0);
+    assert_eq!(0.0f32.mul_add(-2.0, f32::consts::E), f32::consts::E);
+    assert_approx_eq!(3.0f64.mul_add(2.0, 5.0), 11.0);
+    assert_eq!(0.0f64.mul_add(-2.0f64, f64::consts::E), f64::consts::E);
 
     assert_approx_eq!((-1.0f32).abs(), 1.0f32);
     assert_approx_eq!(34.2f64.abs(), 34.2f64);
@@ -64,4 +66,23 @@ pub fn main() {
 
     assert_approx_eq!(0.1f32.trunc(), 0.0f32);
     assert_approx_eq!((-0.1f64).trunc(), 0.0f64);
+
+    assert_approx_eq!(27.0f32.cbrt(), 3.0f32);
+    assert_approx_eq!(27.0f64.cbrt(), 3.0f64);
+
+    assert_approx_eq!(3.0f32.hypot(4.0f32), 5.0f32);
+    assert_approx_eq!(3.0f64.hypot(4.0f64), 5.0f64);
+
+    assert_approx_eq!(1.0f32.atan2(2.0f32), 0.46364761f32);
+    assert_approx_eq!(1.0f32.atan2(2.0f32), 0.46364761f32);
+
+    assert_approx_eq!(1.0f32.cosh(), 1.54308f32);
+    assert_approx_eq!(1.0f64.cosh(), 1.54308f64);
+
+    assert_approx_eq!(1.0f32.sinh(), 1.1752012f32);
+    assert_approx_eq!(1.0f64.sinh(), 1.1752012f64);
+
+    assert_approx_eq!(1.0f32.tan(), 1.557408f32);
+    assert_approx_eq!(1.0f64.tan(), 1.557408f64);
+
 }

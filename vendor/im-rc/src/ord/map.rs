@@ -26,13 +26,13 @@ use std::iter::{FromIterator, Iterator, Sum};
 use std::mem;
 use std::ops::{Add, Index, IndexMut, RangeBounds};
 
-use hashmap::HashMap;
-use nodes::btree::{BTreeValue, Insert, Node, Remove};
+use crate::hashmap::HashMap;
+use crate::nodes::btree::{BTreeValue, Insert, Node, Remove};
 #[cfg(has_specialisation)]
-use util::linear_search_by;
-use util::Ref;
+use crate::util::linear_search_by;
+use crate::util::Ref;
 
-pub use nodes::btree::{ConsumingIter, DiffItem, DiffIter, Iter as RangedIter};
+pub use crate::nodes::btree::{ConsumingIter, DiffItem, DiffIter, Iter as RangedIter};
 
 /// Construct a map from a sequence of key/value pairs.
 ///
@@ -66,7 +66,7 @@ macro_rules! ordmap {
 }
 
 #[cfg(not(has_specialisation))]
-impl<K: Ord + Clone, V: Clone> BTreeValue for (K, V) {
+impl<K: Ord, V> BTreeValue for (K, V) {
     type Key = K;
 
     fn ptr_eq(&self, _other: &Self) -> bool {
@@ -99,7 +99,7 @@ impl<K: Ord + Clone, V: Clone> BTreeValue for (K, V) {
 }
 
 #[cfg(has_specialisation)]
-impl<K: Ord + Clone, V: Clone> BTreeValue for (K, V) {
+impl<K: Ord, V> BTreeValue for (K, V) {
     type Key = K;
 
     fn ptr_eq(&self, _other: &Self) -> bool {
@@ -132,7 +132,7 @@ impl<K: Ord + Clone, V: Clone> BTreeValue for (K, V) {
 }
 
 #[cfg(has_specialisation)]
-impl<K: Ord + Clone + Copy, V: Clone> BTreeValue for (K, V) {
+impl<K: Ord + Copy, V> BTreeValue for (K, V) {
     fn search_key<BK>(slice: &[Self], key: &BK) -> Result<usize, usize>
     where
         BK: Ord + ?Sized,
@@ -164,11 +164,7 @@ pub struct OrdMap<K, V> {
     root: Ref<Node<(K, V)>>,
 }
 
-impl<K, V> OrdMap<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+impl<K, V> OrdMap<K, V> {
     /// Construct an empty map.
     #[must_use]
     pub fn new() -> Self {
@@ -176,18 +172,6 @@ where
             size: 0,
             root: Ref::from(Node::new()),
         }
-    }
-
-    /// Construct a map with a single mapping.
-    ///
-    /// This method has been deprecated; use [`unit`][unit] instead.
-    ///
-    /// [unit]: #method.unit
-    #[inline]
-    #[must_use]
-    #[deprecated(since = "12.3.0", note = "renamed to `unit` for consistency")]
-    pub fn singleton(key: K, value: V) -> Self {
-        Self::unit(key, value)
     }
 
     /// Construct a map with a single mapping.
@@ -261,6 +245,36 @@ where
         self.size
     }
 
+    /// Discard all elements from the map.
+    ///
+    /// This leaves you with an empty map, and all elements that
+    /// were previously inside it are dropped.
+    ///
+    /// Time: O(n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::OrdMap;
+    /// # fn main() {
+    /// let mut map = ordmap![1=>1, 2=>2, 3=>3];
+    /// map.clear();
+    /// assert!(map.is_empty());
+    /// # }
+    /// ```
+    pub fn clear(&mut self) {
+        if !self.is_empty() {
+            self.root = Default::default();
+            self.size = 0;
+        }
+    }
+}
+
+impl<K, V> OrdMap<K, V>
+where
+    K: Ord,
+{
     /// Get the largest key in a map, along with its value. If the map
     /// is empty, return `None`.
     ///
@@ -380,16 +394,6 @@ where
         self.root.lookup(key).map(|(_, v)| v)
     }
 
-    #[must_use]
-    fn get_mut<BK>(&mut self, key: &BK) -> Option<&mut V>
-    where
-        BK: Ord + ?Sized,
-        K: Borrow<BK>,
-    {
-        let root = Ref::make_mut(&mut self.root);
-        root.lookup_mut(key).map(|(_, v)| v)
-    }
-
     /// Test for the presence of a key in a map.
     ///
     /// Time: O(log n)
@@ -416,6 +420,113 @@ where
         K: Borrow<BK>,
     {
         self.get(k).is_some()
+    }
+
+    /// Test whether a map is a submap of another map, meaning that
+    /// all keys in our map must also be in the other map, with the
+    /// same values.
+    ///
+    /// Use the provided function to decide whether values are equal.
+    ///
+    /// Time: O(n log n)
+    #[must_use]
+    pub fn is_submap_by<B, RM, F>(&self, other: RM, mut cmp: F) -> bool
+    where
+        F: FnMut(&V, &B) -> bool,
+        RM: Borrow<OrdMap<K, B>>,
+    {
+        self.iter()
+            .all(|(k, v)| other.borrow().get(k).map(|ov| cmp(v, ov)).unwrap_or(false))
+    }
+
+    /// Test whether a map is a proper submap of another map, meaning
+    /// that all keys in our map must also be in the other map, with
+    /// the same values. To be a proper submap, ours must also contain
+    /// fewer keys than the other map.
+    ///
+    /// Use the provided function to decide whether values are equal.
+    ///
+    /// Time: O(n log n)
+    #[must_use]
+    pub fn is_proper_submap_by<B, RM, F>(&self, other: RM, cmp: F) -> bool
+    where
+        F: FnMut(&V, &B) -> bool,
+        RM: Borrow<OrdMap<K, B>>,
+    {
+        self.len() != other.borrow().len() && self.is_submap_by(other, cmp)
+    }
+
+    /// Test whether a map is a submap of another map, meaning that
+    /// all keys in our map must also be in the other map, with the
+    /// same values.
+    ///
+    /// Time: O(n log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordmap::OrdMap;
+    /// # fn main() {
+    /// let map1 = ordmap!{1 => 1, 2 => 2};
+    /// let map2 = ordmap!{1 => 1, 2 => 2, 3 => 3};
+    /// assert!(map1.is_submap(map2));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn is_submap<RM>(&self, other: RM) -> bool
+    where
+        V: PartialEq,
+        RM: Borrow<Self>,
+    {
+        self.is_submap_by(other.borrow(), PartialEq::eq)
+    }
+
+    /// Test whether a map is a proper submap of another map, meaning
+    /// that all keys in our map must also be in the other map, with
+    /// the same values. To be a proper submap, ours must also contain
+    /// fewer keys than the other map.
+    ///
+    /// Time: O(n log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordmap::OrdMap;
+    /// # fn main() {
+    /// let map1 = ordmap!{1 => 1, 2 => 2};
+    /// let map2 = ordmap!{1 => 1, 2 => 2, 3 => 3};
+    /// assert!(map1.is_proper_submap(map2));
+    ///
+    /// let map3 = ordmap!{1 => 1, 2 => 2};
+    /// let map4 = ordmap!{1 => 1, 2 => 2};
+    /// assert!(!map3.is_proper_submap(map4));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn is_proper_submap<RM>(&self, other: RM) -> bool
+    where
+        V: PartialEq,
+        RM: Borrow<Self>,
+    {
+        self.is_proper_submap_by(other.borrow(), PartialEq::eq)
+    }
+}
+
+impl<K, V> OrdMap<K, V>
+where
+    K: Ord + Clone,
+    V: Clone,
+{
+    #[must_use]
+    fn get_mut<BK>(&mut self, key: &BK) -> Option<&mut V>
+    where
+        BK: Ord + ?Sized,
+        K: Borrow<BK>,
+    {
+        let root = Ref::make_mut(&mut self.root);
+        root.lookup_mut(key).map(|(_, v)| v)
     }
 
     /// Insert a key/value mapping into a map.
@@ -517,31 +628,6 @@ where
         self.size -= 1;
         self.root = new_root;
         removed_value
-    }
-
-    /// Discard all elements from the map.
-    ///
-    /// This leaves you with an empty map, and all elements that
-    /// were previously inside it are dropped.
-    ///
-    /// Time: O(n)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[macro_use] extern crate im_rc as im;
-    /// # use im::OrdMap;
-    /// # fn main() {
-    /// let mut map = ordmap![1=>1, 2=>2, 3=>3];
-    /// map.clear();
-    /// assert!(map.is_empty());
-    /// # }
-    /// ```
-    pub fn clear(&mut self) {
-        if !self.is_empty() {
-            self.root = Default::default();
-            self.size = 0;
-        }
     }
 
     /// Construct a new map by inserting a key/value mapping into a
@@ -812,7 +898,7 @@ where
     where
         I: IntoIterator<Item = Self>,
     {
-        i.into_iter().fold(Self::default(), |a, b| a.union(b))
+        i.into_iter().fold(Self::default(), Self::union)
     }
 
     /// Construct the union of a sequence of maps, using a function to
@@ -856,8 +942,11 @@ where
             .fold(Self::default(), |a, b| a.union_with_key(b, &f))
     }
 
-    /// Construct the difference between two maps by discarding keys
+    /// Construct the symmetric difference between two maps by discarding keys
     /// which occur in both maps.
+    ///
+    /// This is an alias for the
+    /// [`symmetric_difference`][symmetric_difference] method.
     ///
     /// Time: O(n log n)
     ///
@@ -876,25 +965,68 @@ where
     #[inline]
     #[must_use]
     pub fn difference(self, other: Self) -> Self {
-        self.difference_with_key(other, |_, _, _| None)
+        self.symmetric_difference(other)
     }
 
-    /// Construct the difference between two maps by using a function
+    /// Construct the symmetric difference between two maps by discarding keys
+    /// which occur in both maps.
+    ///
+    /// Time: O(n log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordmap::OrdMap;
+    /// # fn main() {
+    /// let map1 = ordmap!{1 => 1, 3 => 4};
+    /// let map2 = ordmap!{2 => 2, 3 => 5};
+    /// let expected = ordmap!{1 => 1, 2 => 2};
+    /// assert_eq!(expected, map1.symmetric_difference(map2));
+    /// # }
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn symmetric_difference(self, other: Self) -> Self {
+        self.symmetric_difference_with_key(other, |_, _, _| None)
+    }
+
+    /// Construct the symmetric difference between two maps by using a function
+    /// to decide what to do if a key occurs in both.
+    ///
+    /// This is an alias for the
+    /// [`symmetric_difference_with`][symmetric_difference_with] method.
+    ///
+    /// Time: O(n log n)
+    #[inline]
+    #[must_use]
+    pub fn difference_with<F>(self, other: Self, f: F) -> Self
+    where
+        F: FnMut(V, V) -> Option<V>,
+    {
+        self.symmetric_difference_with(other, f)
+    }
+
+    /// Construct the symmetric difference between two maps by using a function
     /// to decide what to do if a key occurs in both.
     ///
     /// Time: O(n log n)
     #[inline]
     #[must_use]
-    pub fn difference_with<F>(self, other: Self, mut f: F) -> Self
+    pub fn symmetric_difference_with<F>(self, other: Self, mut f: F) -> Self
     where
         F: FnMut(V, V) -> Option<V>,
     {
-        self.difference_with_key(other, |_, a, b| f(a, b))
+        self.symmetric_difference_with_key(other, |_, a, b| f(a, b))
     }
 
-    /// Construct the difference between two maps by using a function
+    /// Construct the symmetric difference between two maps by using a function
     /// to decide what to do if a key occurs in both. The function
     /// receives the key as well as both values.
+    ///
+    /// This is an alias for the
+    /// [`symmetric_difference_with_key`][symmetric_difference_with_key]
+    /// method.
     ///
     /// Time: O(n log n)
     ///
@@ -914,7 +1046,36 @@ where
     /// # }
     /// ```
     #[must_use]
-    pub fn difference_with_key<F>(mut self, other: Self, mut f: F) -> Self
+    pub fn difference_with_key<F>(self, other: Self, f: F) -> Self
+    where
+        F: FnMut(&K, V, V) -> Option<V>,
+    {
+        self.symmetric_difference_with_key(other, f)
+    }
+
+    /// Construct the symmetric difference between two maps by using a function
+    /// to decide what to do if a key occurs in both. The function
+    /// receives the key as well as both values.
+    ///
+    /// Time: O(n log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordmap::OrdMap;
+    /// # fn main() {
+    /// let map1 = ordmap!{1 => 1, 3 => 4};
+    /// let map2 = ordmap!{2 => 2, 3 => 5};
+    /// let expected = ordmap!{1 => 1, 2 => 2, 3 => 9};
+    /// assert_eq!(expected, map1.symmetric_difference_with_key(
+    ///     map2,
+    ///     |key, left, right| Some(left + right)
+    /// ));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn symmetric_difference_with_key<F>(mut self, other: Self, mut f: F) -> Self
     where
         F: FnMut(&K, V, V) -> Option<V>,
     {
@@ -932,6 +1093,32 @@ where
             }
         }
         out.union(self)
+    }
+
+    /// Construct the relative complement between two maps by discarding keys
+    /// which occur in `other`.
+    ///
+    /// Time: O(m log n) where m is the size of the other map
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordmap::OrdMap;
+    /// # fn main() {
+    /// let map1 = ordmap!{1 => 1, 3 => 4};
+    /// let map2 = ordmap!{2 => 2, 3 => 5};
+    /// let expected = ordmap!{1 => 1};
+    /// assert_eq!(expected, map1.relative_complement(map2));
+    /// # }
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn relative_complement(mut self, other: Self) -> Self {
+        for (key, _) in other {
+            let _ = self.remove(&key);
+        }
+        self
     }
 
     /// Construct the intersection of two maps, keeping the values
@@ -1012,99 +1199,6 @@ where
             }
         }
         out
-    }
-
-    /// Test whether a map is a submap of another map, meaning that
-    /// all keys in our map must also be in the other map, with the
-    /// same values.
-    ///
-    /// Use the provided function to decide whether values are equal.
-    ///
-    /// Time: O(n log n)
-    #[must_use]
-    pub fn is_submap_by<B, RM, F>(&self, other: RM, mut cmp: F) -> bool
-    where
-        B: Clone,
-        F: FnMut(&V, &B) -> bool,
-        RM: Borrow<OrdMap<K, B>>,
-    {
-        self.iter()
-            .all(|(k, v)| other.borrow().get(k).map(|ov| cmp(v, ov)).unwrap_or(false))
-    }
-
-    /// Test whether a map is a proper submap of another map, meaning
-    /// that all keys in our map must also be in the other map, with
-    /// the same values. To be a proper submap, ours must also contain
-    /// fewer keys than the other map.
-    ///
-    /// Use the provided function to decide whether values are equal.
-    ///
-    /// Time: O(n log n)
-    #[must_use]
-    pub fn is_proper_submap_by<B, RM, F>(&self, other: RM, cmp: F) -> bool
-    where
-        B: Clone,
-        F: FnMut(&V, &B) -> bool,
-        RM: Borrow<OrdMap<K, B>>,
-    {
-        self.len() != other.borrow().len() && self.is_submap_by(other, cmp)
-    }
-
-    /// Test whether a map is a submap of another map, meaning that
-    /// all keys in our map must also be in the other map, with the
-    /// same values.
-    ///
-    /// Time: O(n log n)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[macro_use] extern crate im_rc as im;
-    /// # use im::ordmap::OrdMap;
-    /// # fn main() {
-    /// let map1 = ordmap!{1 => 1, 2 => 2};
-    /// let map2 = ordmap!{1 => 1, 2 => 2, 3 => 3};
-    /// assert!(map1.is_submap(map2));
-    /// # }
-    /// ```
-    #[must_use]
-    pub fn is_submap<RM>(&self, other: RM) -> bool
-    where
-        V: PartialEq,
-        RM: Borrow<Self>,
-    {
-        self.is_submap_by(other.borrow(), PartialEq::eq)
-    }
-
-    /// Test whether a map is a proper submap of another map, meaning
-    /// that all keys in our map must also be in the other map, with
-    /// the same values. To be a proper submap, ours must also contain
-    /// fewer keys than the other map.
-    ///
-    /// Time: O(n log n)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[macro_use] extern crate im_rc as im;
-    /// # use im::ordmap::OrdMap;
-    /// # fn main() {
-    /// let map1 = ordmap!{1 => 1, 2 => 2};
-    /// let map2 = ordmap!{1 => 1, 2 => 2, 3 => 3};
-    /// assert!(map1.is_proper_submap(map2));
-    ///
-    /// let map3 = ordmap!{1 => 1, 2 => 2};
-    /// let map4 = ordmap!{1 => 1, 2 => 2};
-    /// assert!(!map3.is_proper_submap(map4));
-    /// # }
-    /// ```
-    #[must_use]
-    pub fn is_proper_submap<RM>(&self, other: RM) -> bool
-    where
-        V: PartialEq,
-        RM: Borrow<Self>,
-    {
-        self.is_proper_submap_by(other.borrow(), PartialEq::eq)
     }
 
     /// Split a map into two, with the left hand map containing keys
@@ -1389,8 +1483,8 @@ impl<K, V> Clone for OrdMap<K, V> {
 #[cfg(not(has_specialisation))]
 impl<K, V> PartialEq for OrdMap<K, V>
 where
-    K: Ord + PartialEq + Clone,
-    V: PartialEq + Clone,
+    K: Ord + PartialEq,
+    V: PartialEq,
 {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len() && self.diff(other).next().is_none()
@@ -1400,8 +1494,8 @@ where
 #[cfg(has_specialisation)]
 impl<K, V> PartialEq for OrdMap<K, V>
 where
-    K: Ord + Clone + PartialEq,
-    V: Clone + PartialEq,
+    K: Ord + PartialEq,
+    V: PartialEq,
 {
     default fn eq(&self, other: &Self) -> bool {
         self.len() == other.len() && self.diff(other).next().is_none()
@@ -1411,8 +1505,8 @@ where
 #[cfg(has_specialisation)]
 impl<K, V> PartialEq for OrdMap<K, V>
 where
-    K: Ord + Eq + Clone,
-    V: Eq + Clone,
+    K: Ord + Eq,
+    V: Eq,
 {
     fn eq(&self, other: &Self) -> bool {
         Ref::ptr_eq(&self.root, &other.root)
@@ -1420,12 +1514,12 @@ where
     }
 }
 
-impl<K: Ord + Clone + Eq, V: Clone + Eq> Eq for OrdMap<K, V> {}
+impl<K: Ord + Eq, V: Eq> Eq for OrdMap<K, V> {}
 
 impl<K, V> PartialOrd for OrdMap<K, V>
 where
-    K: Ord + Clone,
-    V: PartialOrd + Clone,
+    K: Ord,
+    V: PartialOrd,
 {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         self.iter().partial_cmp(other.iter())
@@ -1434,8 +1528,8 @@ where
 
 impl<K, V> Ord for OrdMap<K, V>
 where
-    K: Ord + Clone,
-    V: Ord + Clone,
+    K: Ord,
+    V: Ord,
 {
     fn cmp(&self, other: &Self) -> Ordering {
         self.iter().cmp(other.iter())
@@ -1444,8 +1538,8 @@ where
 
 impl<K, V> Hash for OrdMap<K, V>
 where
-    K: Ord + Clone + Hash,
-    V: Clone + Hash,
+    K: Ord + Hash,
+    V: Hash,
 {
     fn hash<H>(&self, state: &mut H)
     where
@@ -1457,11 +1551,7 @@ where
     }
 }
 
-impl<K, V> Default for OrdMap<K, V>
-where
-    K: Ord + Clone,
-    V: Clone,
-{
+impl<K, V> Default for OrdMap<K, V> {
     fn default() -> Self {
         Self::new()
     }
@@ -1522,8 +1612,7 @@ where
 impl<'a, BK, K, V> Index<&'a BK> for OrdMap<K, V>
 where
     BK: Ord + ?Sized,
-    K: Ord + Clone + Borrow<BK>,
-    V: Clone,
+    K: Ord + Borrow<BK>,
 {
     type Output = V;
 
@@ -1552,8 +1641,8 @@ where
 
 impl<K, V> Debug for OrdMap<K, V>
 where
-    K: Ord + Clone + Debug,
-    V: Clone + Debug,
+    K: Ord + Debug,
+    V: Debug,
 {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
         let mut d = f.debug_map();
@@ -1602,8 +1691,8 @@ pub struct Keys<'a, K: 'a, V: 'a> {
 
 impl<'a, K, V> Iterator for Keys<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: 'a + Ord,
+    V: 'a,
 {
     type Item = &'a K;
 
@@ -1621,8 +1710,8 @@ where
 
 impl<'a, K, V> DoubleEndedIterator for Keys<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: 'a + Ord,
+    V: 'a,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.it.next_back() {
@@ -1634,8 +1723,8 @@ where
 
 impl<'a, K, V> ExactSizeIterator for Keys<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: 'a + Ord,
+    V: 'a,
 {
 }
 
@@ -1645,8 +1734,8 @@ pub struct Values<'a, K: 'a, V: 'a> {
 
 impl<'a, K, V> Iterator for Values<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: 'a + Ord,
+    V: 'a,
 {
     type Item = &'a V;
 
@@ -1664,8 +1753,8 @@ where
 
 impl<'a, K, V> DoubleEndedIterator for Values<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: 'a + Ord,
+    V: 'a,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         match self.it.next_back() {
@@ -1677,8 +1766,8 @@ where
 
 impl<'a, K, V> ExactSizeIterator for Values<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: 'a + Ord,
+    V: 'a,
 {
 }
 
@@ -1701,8 +1790,7 @@ where
 
 impl<'a, K, V> IntoIterator for &'a OrdMap<K, V>
 where
-    K: Ord + Clone,
-    V: Clone,
+    K: Ord,
 {
     type Item = &'a (K, V);
     type IntoIter = Iter<'a, (K, V)>;
@@ -1872,7 +1960,7 @@ impl<K: Ord + Clone + Arbitrary + Sync, V: Clone + Arbitrary + Sync> Arbitrary f
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
-    use proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
+    use ::proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
     use std::ops::Range;
 
     /// A strategy for a map of a given size.
@@ -1912,11 +2000,10 @@ pub mod proptest {
 mod test {
     use super::proptest::*;
     use super::*;
-    use nodes::btree::DiffItem;
-    use proptest::bool;
-    use proptest::collection;
-    use proptest::num::{i16, usize};
-    use test::is_sorted;
+    use crate::nodes::btree::DiffItem;
+    use crate::test::is_sorted;
+    use ::proptest::num::{i16, usize};
+    use ::proptest::{bool, collection, proptest};
 
     #[test]
     fn iterates_in_order() {
@@ -2009,8 +2096,8 @@ mod test {
         let p1 = Vec::<String>::new();
         let p2 = Vec::<String>::new();
         assert_eq!(p1, p2);
-        let c1 = OrdMap::singleton(v1, p1);
-        let c2 = OrdMap::singleton(v2, p2);
+        let c1 = OrdMap::unit(v1, p1);
+        let c2 = OrdMap::unit(v2, p2);
         assert_eq!(c1, c2);
     }
 
@@ -2018,7 +2105,7 @@ mod test {
     fn insert_remove_single_mut() {
         let mut m = OrdMap::new();
         m.insert(0, 0);
-        assert_eq!(OrdMap::singleton(0, 0), m);
+        assert_eq!(OrdMap::unit(0, 0), m);
         m.remove(&0);
         assert_eq!(OrdMap::new(), m);
     }

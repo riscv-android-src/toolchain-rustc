@@ -186,6 +186,7 @@ features! {
         [stable] rename_dependency: bool,
 
         // Whether a lock file is published with this crate
+        // This is deprecated, and will likely be removed in a future version.
         [unstable] publish_lockfile: bool,
 
         // Overriding profiles for dependencies.
@@ -195,7 +196,7 @@ features! {
         [unstable] namespaced_features: bool,
 
         // "default-run" manifest option,
-        [unstable] default_run: bool,
+        [stable] default_run: bool,
 
         // Declarative build scripts.
         [unstable] metabuild: bool,
@@ -331,6 +332,7 @@ pub struct CliUnstable {
     pub dual_proc_macros: bool,
     pub mtime_on_use: bool,
     pub install_upgrade: bool,
+    pub cache_messages: bool,
 }
 
 impl CliUnstable {
@@ -375,6 +377,7 @@ impl CliUnstable {
             "dual-proc-macros" => self.dual_proc_macros = true,
             "mtime-on-use" => self.mtime_on_use = true,
             "install-upgrade" => self.install_upgrade = true,
+            "cache-messages" => self.cache_messages = true,
             _ => failure::bail!("unknown `-Z` flag specified: {}", k),
         }
 

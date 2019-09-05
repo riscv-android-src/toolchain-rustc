@@ -709,8 +709,8 @@ impl Step for Tidy {
         if !builder.config.vendor {
             cmd.arg("--no-vendor");
         }
-        if !builder.config.verbose_tests {
-            cmd.arg("--quiet");
+        if builder.is_verbose() {
+            cmd.arg("--verbose");
         }
 
         let _folder = builder.fold_output(|| "tidy");
@@ -976,14 +976,10 @@ impl Step for Compiletest {
         }
 
         if suite == "debuginfo" {
-            // Skip debuginfo tests on MSVC
-            if builder.config.build.contains("msvc") {
-                return;
-            }
-
+            let msvc = builder.config.build.contains("msvc");
             if mode == "debuginfo" {
                 return builder.ensure(Compiletest {
-                    mode: "debuginfo-both",
+                    mode: if msvc { "debuginfo-cdb" } else { "debuginfo-gdb+lldb" },
                     ..self
                 });
             }
@@ -1069,6 +1065,11 @@ impl Step for Compiletest {
             }
         });
 
+        if let Some(ref pass) = builder.config.cmd.pass() {
+            cmd.arg("--pass");
+            cmd.arg(pass);
+        }
+
         if let Some(ref nodejs) = builder.config.nodejs {
             cmd.arg("--nodejs").arg(nodejs);
         }
@@ -1082,10 +1083,8 @@ impl Step for Compiletest {
             if builder.config.rust_optimize_tests {
                 flags.push("-O".to_string());
             }
-            if builder.config.rust_debuginfo_tests {
-                flags.push("-g".to_string());
-            }
         }
+        flags.push(format!("-Cdebuginfo={}", builder.config.rust_debuginfo_level_tests));
         flags.push("-Zunstable-options".to_string());
         flags.push(builder.config.cmd.rustc_args().join(" "));
 
@@ -1149,24 +1148,9 @@ impl Step for Compiletest {
             }
         }
 
-        if let Some(var) = env::var_os("RUSTBUILD_FORCE_CLANG_BASED_TESTS") {
-            match &var.to_string_lossy().to_lowercase()[..] {
-                "1" | "yes" | "on" => {
-                    assert!(builder.config.lldb_enabled,
-                        "RUSTBUILD_FORCE_CLANG_BASED_TESTS needs Clang/LLDB to \
-                         be built.");
-                    let clang_exe = builder.llvm_out(target).join("bin").join("clang");
-                    cmd.arg("--run-clang-based-tests-with").arg(clang_exe);
-                }
-                "0" | "no" | "off" => {
-                    // Nothing to do.
-                }
-                other => {
-                    // Let's make sure typos don't get unnoticed
-                    panic!("Unrecognized option '{}' set in \
-                            RUSTBUILD_FORCE_CLANG_BASED_TESTS", other);
-                }
-            }
+        if util::forcing_clang_based_tests() {
+            let clang_exe = builder.llvm_out(target).join("bin").join("clang");
+            cmd.arg("--run-clang-based-tests-with").arg(clang_exe);
         }
 
         // Get paths from cmd args
@@ -1711,15 +1695,11 @@ impl Step for Crate {
         builder.ensure(compile::Test { compiler, target });
         builder.ensure(RemoteCopyLibs { compiler, target });
 
-        // If we're not doing a full bootstrap but we're testing a stage2 version of
-        // libstd, then what we're actually testing is the libstd produced in
-        // stage1. Reflect that here by updating the compiler that we're working
-        // with automatically.
-        let compiler = if builder.force_use_stage1(compiler, target) {
-            builder.compiler(1, compiler.host)
-        } else {
-            compiler.clone()
-        };
+        // If we're not doing a full bootstrap but we're testing a stage2
+        // version of libstd, then what we're actually testing is the libstd
+        // produced in stage1. Reflect that here by updating the compiler that
+        // we're working with automatically.
+        let compiler = builder.compiler_for(compiler.stage, compiler.host, target);
 
         let mut cargo = builder.cargo(compiler, mode, target, test_kind.subcommand());
         match mode {

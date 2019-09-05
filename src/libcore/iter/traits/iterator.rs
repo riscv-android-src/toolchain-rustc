@@ -964,6 +964,7 @@ pub trait Iterator {
     /// Creates an iterator that skips the first `n` elements.
     ///
     /// After they have been consumed, the rest of the elements are yielded.
+    /// Rather than overriding this method directly, instead override the `nth` method.
     ///
     /// # Examples
     ///
@@ -1494,13 +1495,13 @@ pub trait Iterator {
         let mut left: B = Default::default();
         let mut right: B = Default::default();
 
-        for x in self {
+        self.for_each(|x| {
             if f(&x) {
                 left.extend(Some(x))
             } else {
                 right.extend(Some(x))
             }
-        }
+        });
 
         (left, right)
     }

@@ -11,7 +11,7 @@ use super::MirBorrowckCtxt;
 
 use rustc::hir;
 use rustc::ty::{self, TyCtxt};
-use rustc::mir::{Mir, Place, PlaceBase, ProjectionElem};
+use rustc::mir::{Body, Place, PlaceBase, ProjectionElem};
 
 pub trait IsPrefixOf<'tcx> {
     fn is_prefix_of(&self, other: &Place<'tcx>) -> bool;
@@ -36,10 +36,9 @@ impl<'tcx> IsPrefixOf<'tcx> for Place<'tcx> {
     }
 }
 
-
-pub(super) struct Prefixes<'cx, 'gcx: 'tcx, 'tcx: 'cx> {
-    mir: &'cx Mir<'tcx>,
-    tcx: TyCtxt<'cx, 'gcx, 'tcx>,
+pub(super) struct Prefixes<'cx, 'tcx> {
+    body: &'cx Body<'tcx>,
+    tcx: TyCtxt<'tcx>,
     kind: PrefixSet,
     next: Option<&'cx Place<'tcx>>,
 }
@@ -56,25 +55,21 @@ pub(super) enum PrefixSet {
     Supporting,
 }
 
-impl<'cx, 'gcx, 'tcx> MirBorrowckCtxt<'cx, 'gcx, 'tcx> {
+impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     /// Returns an iterator over the prefixes of `place`
     /// (inclusive) from longest to smallest, potentially
     /// terminating the iteration early based on `kind`.
-    pub(super) fn prefixes(
-        &self,
-        place: &'cx Place<'tcx>,
-        kind: PrefixSet,
-    ) -> Prefixes<'cx, 'gcx, 'tcx> {
+    pub(super) fn prefixes(&self, place: &'cx Place<'tcx>, kind: PrefixSet) -> Prefixes<'cx, 'tcx> {
         Prefixes {
             next: Some(place),
             kind,
-            mir: self.mir,
+            body: self.body,
             tcx: self.infcx.tcx,
         }
     }
 }
 
-impl<'cx, 'gcx, 'tcx> Iterator for Prefixes<'cx, 'gcx, 'tcx> {
+impl<'cx, 'tcx> Iterator for Prefixes<'cx, 'tcx> {
     type Item = &'cx Place<'tcx>;
     fn next(&mut self) -> Option<Self::Item> {
         let mut cursor = self.next?;
@@ -139,7 +134,7 @@ impl<'cx, 'gcx, 'tcx> Iterator for Prefixes<'cx, 'gcx, 'tcx> {
             // derefs, except we stop at the deref of a shared
             // reference.
 
-            let ty = proj.base.ty(self.mir, self.tcx).ty;
+            let ty = proj.base.ty(self.body, self.tcx).ty;
             match ty.sty {
                 ty::RawPtr(_) |
                 ty::Ref(

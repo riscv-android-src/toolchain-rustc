@@ -77,13 +77,14 @@ impl Step for ToolBuild {
         let _folder = builder.fold_output(|| format!("stage{}-{}", compiler.stage, tool));
         builder.info(&format!("Building stage{} tool {} ({})", compiler.stage, tool, target));
         let mut duplicates = Vec::new();
-        let is_expected = compile::stream_cargo(builder, &mut cargo, &mut |msg| {
+        let is_expected = compile::stream_cargo(builder, &mut cargo, vec![], &mut |msg| {
             // Only care about big things like the RLS/Cargo for now
             match tool {
                 | "rls"
                 | "cargo"
                 | "clippy-driver"
                 | "miri"
+                | "rustfmt"
                 => {}
 
                 _ => return,
@@ -267,10 +268,6 @@ macro_rules! bootstrap_tool {
         }
 
         impl Tool {
-            pub fn get_mode(&self) -> Mode {
-                Mode::ToolBootstrap
-            }
-
             /// Whether this tool requires LLVM to run
             pub fn uses_llvm_tools(&self) -> bool {
                 match self {
@@ -485,10 +482,6 @@ impl Step for Rustdoc {
             &[],
         );
 
-        // Most tools don't get debuginfo, but rustdoc should.
-        cargo.env("RUSTC_DEBUGINFO", builder.config.rust_debuginfo.to_string())
-             .env("RUSTC_DEBUGINFO_LINES", builder.config.rust_debuginfo_lines.to_string());
-
         let _folder = builder.fold_output(|| format!("stage{}-rustdoc", target_compiler.stage));
         builder.info(&format!("Building rustdoc for stage{} ({})",
             target_compiler.stage, target_compiler.host));
@@ -539,9 +532,9 @@ impl Step for Cargo {
     }
 
     fn run(self, builder: &Builder<'_>) -> PathBuf {
-        // Cargo depends on procedural macros, which requires a full host
-        // compiler to be available, so we need to depend on that.
-        builder.ensure(compile::Rustc {
+        // Cargo depends on procedural macros, so make sure the host
+        // libstd/libproc_macro is available.
+        builder.ensure(compile::Test {
             compiler: self.compiler,
             target: builder.config.build,
         });
@@ -613,26 +606,26 @@ macro_rules! tool_extended {
 tool_extended!((self, builder),
     Cargofmt, rustfmt, "src/tools/rustfmt", "cargo-fmt", {};
     CargoClippy, clippy, "src/tools/clippy", "cargo-clippy", {
-        // Clippy depends on procedural macros (serde), which requires a full host
-        // compiler to be available, so we need to depend on that.
-        builder.ensure(compile::Rustc {
+        // Clippy depends on procedural macros, so make sure that's built for
+        // the compiler itself.
+        builder.ensure(compile::Test {
             compiler: self.compiler,
             target: builder.config.build,
         });
     };
     Clippy, clippy, "src/tools/clippy", "clippy-driver", {
-        // Clippy depends on procedural macros (serde), which requires a full host
-        // compiler to be available, so we need to depend on that.
-        builder.ensure(compile::Rustc {
+        // Clippy depends on procedural macros, so make sure that's built for
+        // the compiler itself.
+        builder.ensure(compile::Test {
             compiler: self.compiler,
             target: builder.config.build,
         });
     };
     Miri, miri, "src/tools/miri", "miri", {};
     CargoMiri, miri, "src/tools/miri", "cargo-miri", {
-        // Miri depends on procedural macros (serde), which requires a full host
-        // compiler to be available, so we need to depend on that.
-        builder.ensure(compile::Rustc {
+        // Miri depends on procedural macros, so make sure that's built for
+        // the compiler itself.
+        builder.ensure(compile::Test {
             compiler: self.compiler,
             target: builder.config.build,
         });
@@ -646,9 +639,9 @@ tool_extended!((self, builder),
         if clippy.is_some() {
             self.extra_features.push("clippy".to_owned());
         }
-        // RLS depends on procedural macros, which requires a full host
-        // compiler to be available, so we need to depend on that.
-        builder.ensure(compile::Rustc {
+        // RLS depends on procedural macros, so make sure that's built for
+        // the compiler itself.
+        builder.ensure(compile::Test {
             compiler: self.compiler,
             target: builder.config.build,
         });
@@ -662,23 +655,14 @@ impl<'a> Builder<'a> {
     pub fn tool_cmd(&self, tool: Tool) -> Command {
         let mut cmd = Command::new(self.tool_exe(tool));
         let compiler = self.compiler(0, self.config.build);
-        self.prepare_tool_cmd(compiler, tool, &mut cmd);
-        cmd
-    }
-
-    /// Prepares the `cmd` provided to be able to run the `compiler` provided.
-    ///
-    /// Notably this munges the dynamic library lookup path to point to the
-    /// right location to run `compiler`.
-    fn prepare_tool_cmd(&self, compiler: Compiler, tool: Tool, cmd: &mut Command) {
         let host = &compiler.host;
+        // Prepares the `cmd` provided to be able to run the `compiler` provided.
+        //
+        // Notably this munges the dynamic library lookup path to point to the
+        // right location to run `compiler`.
         let mut lib_paths: Vec<PathBuf> = vec![
-            if compiler.stage == 0 {
-                self.build.rustc_snapshot_libdir()
-            } else {
-                PathBuf::from(&self.sysroot_libdir(compiler, compiler.host))
-            },
-            self.cargo_out(compiler, tool.get_mode(), *host).join("deps"),
+            self.build.rustc_snapshot_libdir(),
+            self.cargo_out(compiler, Mode::ToolBootstrap, *host).join("deps"),
         ];
 
         // On MSVC a tool may invoke a C compiler (e.g., compiletest in run-make
@@ -699,6 +683,7 @@ impl<'a> Builder<'a> {
             }
         }
 
-        add_lib_path(lib_paths, cmd);
+        add_lib_path(lib_paths, &mut cmd);
+        cmd
     }
 }

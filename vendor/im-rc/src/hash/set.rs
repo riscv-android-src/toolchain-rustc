@@ -12,16 +12,14 @@
 //! you don't mind that values will need to implement
 //! [`Hash`][std::hash::Hash] and [`Eq`][std::cmp::Eq].
 //!
-//! Values will have a predictable order based on the hasher being
-//! used. Unless otherwise specified, all sets will use the default
-//! [`RandomState`][std::collections::hash_map::RandomState] hasher,
-//! which will produce consistent hashes for the duration of its
-//! lifetime, but not between restarts of your program.
+//! Values will have a predictable order based on the hasher
+//! being used. Unless otherwise specified, this will be the standard
+//! [`RandomState`][std::collections::hash_map::RandomState] hasher.
 //!
 //! [1]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
 //! [std::cmp::Eq]: https://doc.rust-lang.org/std/cmp/trait.Eq.html
 //! [std::hash::Hash]: https://doc.rust-lang.org/std/hash/trait.Hash.html
-//! [std::collections::hash_map::RandomState]: https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.h
+//! [std::collections::hash_map::RandomState]: https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.html
 
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -33,11 +31,11 @@ use std::iter::FusedIterator;
 use std::iter::{FromIterator, IntoIterator, Sum};
 use std::ops::{Add, Deref, Mul};
 
-use nodes::hamt::{
+use crate::nodes::hamt::{
     hash_key, Drain as NodeDrain, HashValue, Iter as NodeIter, IterMut as NodeIterMut, Node,
 };
-use ordset::OrdSet;
-use util::Ref;
+use crate::ordset::OrdSet;
+use crate::util::Ref;
 
 /// Construct a set from a sequence of values.
 ///
@@ -84,16 +82,14 @@ macro_rules! hashset {
 /// you don't mind that values will need to implement
 /// [`Hash`][std::hash::Hash] and [`Eq`][std::cmp::Eq].
 ///
-/// Values will have a predictable order based on the hasher being
-/// used. Unless otherwise specified, all sets will use the default
-/// [`RandomState`][std::collections::hash_map::RandomState] hasher,
-/// which will produce consistent hashes for the duration of its
-/// lifetime, but not between restarts of your program.
+/// Values will have a predictable order based on the hasher
+/// being used. Unless otherwise specified, this will be the standard
+/// [`RandomState`][std::collections::hash_map::RandomState] hasher.
 ///
 /// [1]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
 /// [std::cmp::Eq]: https://doc.rust-lang.org/std/cmp/trait.Eq.html
 /// [std::hash::Hash]: https://doc.rust-lang.org/std/hash/trait.Hash.html
-/// [std::collections::hash_map::RandomState]: https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.h
+/// [std::collections::hash_map::RandomState]: https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.html
 pub struct HashSet<A, S = RandomState> {
     hasher: Ref<S>,
     root: Ref<Node<Value<A>>>,
@@ -114,7 +110,7 @@ impl<A> Deref for Value<A> {
 // for `A`, we have to use the `Value<A>` indirection.
 impl<A> HashValue for Value<A>
 where
-    A: Hash + Eq + Clone,
+    A: Hash + Eq,
 {
     type Key = A;
 
@@ -127,28 +123,18 @@ where
     }
 }
 
-impl<A> HashSet<A, RandomState>
-where
-    A: Hash + Eq + Clone,
-{
+impl<A> HashSet<A, RandomState> {
     /// Construct an empty set.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
+}
 
-    /// Construct a set with a single value.
-    ///
-    /// This method has been deprecated; use [`unit`][unit] instead.
-    ///
-    /// [unit]: #method.unit
-    #[inline]
-    #[must_use]
-    #[deprecated(since = "12.3.0", note = "renamed to `unit` for consistency")]
-    pub fn singleton(a: A) -> Self {
-        Self::unit(a)
-    }
-
+impl<A> HashSet<A, RandomState>
+where
+    A: Hash + Eq + Clone,
+{
     /// Construct a set with a single value.
     ///
     /// # Examples
@@ -212,31 +198,6 @@ impl<A, S> HashSet<A, S> {
     pub fn len(&self) -> usize {
         self.size
     }
-}
-
-impl<A, S> HashSet<A, S>
-where
-    A: Hash + Eq + Clone,
-    S: BuildHasher,
-{
-    fn test_eq(&self, other: &Self) -> bool {
-        if self.len() != other.len() {
-            return false;
-        }
-        let mut seen = collections::HashSet::new();
-        for value in self.iter() {
-            if !other.contains(&value) {
-                return false;
-            }
-            seen.insert(value);
-        }
-        for value in other.iter() {
-            if !seen.contains(&value) {
-                return false;
-            }
-        }
-        true
-    }
 
     /// Construct an empty hash set using the provided hasher.
     #[inline]
@@ -274,6 +235,31 @@ where
         }
     }
 
+    /// Discard all elements from the set.
+    ///
+    /// This leaves you with an empty set, and all elements that
+    /// were previously inside it are dropped.
+    ///
+    /// Time: O(n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::HashSet;
+    /// # fn main() {
+    /// let mut set = hashset![1, 2, 3];
+    /// set.clear();
+    /// assert!(set.is_empty());
+    /// # }
+    /// ```
+    pub fn clear(&mut self) {
+        if !self.is_empty() {
+            self.root = Default::default();
+            self.size = 0;
+        }
+    }
+
     /// Get an iterator over the values in a hash set.
     ///
     /// Please note that the order is consistent between sets using
@@ -287,19 +273,30 @@ where
             it: NodeIter::new(&self.root, self.size),
         }
     }
+}
 
-    /// Get a mutable iterator over the values in a hash set.
-    ///
-    /// Please note that the order is consistent between sets using the same
-    /// hasher, but no other ordering guarantee is offered.  Items will not come
-    /// out in insertion order or sort order.  They will, however, come out in
-    /// the same order every time for the same set.
-    #[must_use]
-    pub fn iter_mut(&mut self) -> IterMut<'_, A> {
-        let root = Ref::make_mut(&mut self.root);
-        IterMut {
-            it: NodeIterMut::new(root, self.size),
+impl<A, S> HashSet<A, S>
+where
+    A: Hash + Eq,
+    S: BuildHasher,
+{
+    fn test_eq(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
         }
+        let mut seen = collections::HashSet::new();
+        for value in self.iter() {
+            if !other.contains(&value) {
+                return false;
+            }
+            seen.insert(value);
+        }
+        for value in other.iter() {
+            if !seen.contains(&value) {
+                return false;
+            }
+        }
+        true
     }
 
     /// Test if a value is part of a set.
@@ -312,6 +309,52 @@ where
         A: Borrow<BA>,
     {
         self.root.get(hash_key(&*self.hasher, a), 0, a).is_some()
+    }
+
+    /// Test whether a set is a subset of another set, meaning that
+    /// all values in our set must also be in the other set.
+    ///
+    /// Time: O(n log n)
+    #[must_use]
+    pub fn is_subset<RS>(&self, other: RS) -> bool
+    where
+        RS: Borrow<Self>,
+    {
+        let o = other.borrow();
+        self.iter().all(|a| o.contains(&a))
+    }
+
+    /// Test whether a set is a proper subset of another set, meaning
+    /// that all values in our set must also be in the other set. A
+    /// proper subset must also be smaller than the other set.
+    ///
+    /// Time: O(n log n)
+    #[must_use]
+    pub fn is_proper_subset<RS>(&self, other: RS) -> bool
+    where
+        RS: Borrow<Self>,
+    {
+        self.len() != other.borrow().len() && self.is_subset(other)
+    }
+}
+
+impl<A, S> HashSet<A, S>
+where
+    A: Hash + Eq + Clone,
+    S: BuildHasher,
+{
+    /// Get a mutable iterator over the values in a hash set.
+    ///
+    /// Please note that the order is consistent between sets using the same
+    /// hasher, but no other ordering guarantee is offered.  Items will not come
+    /// out in insertion order or sort order.  They will, however, come out in
+    /// the same order every time for the same set.
+    #[must_use]
+    pub fn iter_mut(&mut self) -> IterMut<'_, A> {
+        let root = Ref::make_mut(&mut self.root);
+        IterMut {
+            it: NodeIterMut::new(root, self.size),
+        }
     }
 
     /// Insert a value into a set.
@@ -344,31 +387,6 @@ where
             self.size -= 1;
         }
         result.map(|v| v.0)
-    }
-
-    /// Discard all elements from the set.
-    ///
-    /// This leaves you with an empty set, and all elements that
-    /// were previously inside it are dropped.
-    ///
-    /// Time: O(n)
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[macro_use] extern crate im_rc as im;
-    /// # use im::HashSet;
-    /// # fn main() {
-    /// let mut set = hashset![1, 2, 3];
-    /// set.clear();
-    /// assert!(set.is_empty());
-    /// # }
-    /// ```
-    pub fn clear(&mut self) {
-        if !self.is_empty() {
-            self.root = Default::default();
-            self.size = 0;
-        }
     }
 
     /// Construct a new set from the current set with the given value
@@ -466,10 +484,13 @@ where
         I: IntoIterator<Item = Self>,
         S: Default,
     {
-        i.into_iter().fold(Self::default(), |a, b| a.union(b))
+        i.into_iter().fold(Self::default(), Self::union)
     }
 
-    /// Construct the difference between two sets.
+    /// Construct the symmetric difference between two sets.
+    ///
+    /// This is an alias for the
+    /// [`symmetric_difference`][symmetric_difference] method.
     ///
     /// Time: O(n log n)
     ///
@@ -486,11 +507,57 @@ where
     /// # }
     /// ```
     #[must_use]
-    pub fn difference(mut self, other: Self) -> Self {
+    pub fn difference(self, other: Self) -> Self {
+        self.symmetric_difference(other)
+    }
+
+    /// Construct the symmetric difference between two sets.
+    ///
+    /// Time: O(n log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::hashset::HashSet;
+    /// # fn main() {
+    /// let set1 = hashset!{1, 2};
+    /// let set2 = hashset!{2, 3};
+    /// let expected = hashset!{1, 3};
+    /// assert_eq!(expected, set1.symmetric_difference(set2));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn symmetric_difference(mut self, other: Self) -> Self {
         for value in other {
             if self.remove(&value).is_none() {
                 self.insert(value);
             }
+        }
+        self
+    }
+
+    /// Construct the relative complement between two sets, that is the set
+    /// of values in `self` that do not occur in `other`.
+    ///
+    /// Time: O(m log n) where m is the size of the other set
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordset::OrdSet;
+    /// # fn main() {
+    /// let set1 = ordset!{1, 2};
+    /// let set2 = ordset!{2, 3};
+    /// let expected = ordset!{1};
+    /// assert_eq!(expected, set1.relative_complement(set2));
+    /// # }
+    /// ```
+    #[must_use]
+    pub fn relative_complement(mut self, other: Self) -> Self {
+        for value in other {
+            let _ = self.remove(&value);
         }
         self
     }
@@ -521,32 +588,6 @@ where
         }
         out
     }
-
-    /// Test whether a set is a subset of another set, meaning that
-    /// all values in our set must also be in the other set.
-    ///
-    /// Time: O(n log n)
-    #[must_use]
-    pub fn is_subset<RS>(&self, other: RS) -> bool
-    where
-        RS: Borrow<Self>,
-    {
-        let o = other.borrow();
-        self.iter().all(|a| o.contains(&a))
-    }
-
-    /// Test whether a set is a proper subset of another set, meaning
-    /// that all values in our set must also be in the other set. A
-    /// proper subset must also be smaller than the other set.
-    ///
-    /// Time: O(n log n)
-    #[must_use]
-    pub fn is_proper_subset<RS>(&self, other: RS) -> bool
-    where
-        RS: Borrow<Self>,
-    {
-        self.len() != other.borrow().len() && self.is_subset(other)
-    }
 }
 
 // Core traits
@@ -566,7 +607,7 @@ where
 
 impl<A, S> PartialEq for HashSet<A, S>
 where
-    A: Hash + Eq + Clone,
+    A: Hash + Eq,
     S: BuildHasher + Default,
 {
     fn eq(&self, other: &Self) -> bool {
@@ -576,7 +617,7 @@ where
 
 impl<A, S> Eq for HashSet<A, S>
 where
-    A: Hash + Eq + Clone,
+    A: Hash + Eq,
     S: BuildHasher + Default,
 {
 }
@@ -613,7 +654,7 @@ where
 
 impl<A, S> Hash for HashSet<A, S>
 where
-    A: Hash + Eq + Clone,
+    A: Hash + Eq,
     S: BuildHasher + Default,
 {
     fn hash<H>(&self, state: &mut H)
@@ -628,7 +669,6 @@ where
 
 impl<A, S> Default for HashSet<A, S>
 where
-    A: Hash + Eq + Clone,
     S: BuildHasher + Default,
 {
     fn default() -> Self {
@@ -719,7 +759,7 @@ where
 #[cfg(not(has_specialisation))]
 impl<A, S> Debug for HashSet<A, S>
 where
-    A: Hash + Eq + Clone + Debug,
+    A: Hash + Eq + Debug,
     S: BuildHasher,
 {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
@@ -730,7 +770,7 @@ where
 #[cfg(has_specialisation)]
 impl<A, S> Debug for HashSet<A, S>
 where
-    A: Hash + Eq + Clone + Debug,
+    A: Hash + Eq + Debug,
     S: BuildHasher,
 {
     default fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
@@ -741,7 +781,7 @@ where
 #[cfg(has_specialisation)]
 impl<A, S> Debug for HashSet<A, S>
 where
-    A: Hash + Eq + Clone + Debug + Ord,
+    A: Hash + Eq + Debug + Ord,
     S: BuildHasher,
 {
     fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
@@ -761,7 +801,7 @@ where
 
 impl<'a, A> Iterator for Iter<'a, A>
 where
-    A: 'a + Clone,
+    A: 'a,
 {
     type Item = &'a A;
 
@@ -774,9 +814,9 @@ where
     }
 }
 
-impl<'a, A> ExactSizeIterator for Iter<'a, A> where A: Clone {}
+impl<'a, A> ExactSizeIterator for Iter<'a, A> {}
 
-impl<'a, A> FusedIterator for Iter<'a, A> where A: Clone {}
+impl<'a, A> FusedIterator for Iter<'a, A> {}
 
 // A mutable iterator over the elements of a set.
 pub struct IterMut<'a, A>
@@ -853,7 +893,7 @@ where
 
 impl<'a, A, S> IntoIterator for &'a HashSet<A, S>
 where
-    A: Hash + Eq + Clone,
+    A: Hash + Eq,
     S: BuildHasher,
 {
     type Item = &'a A;
@@ -994,7 +1034,7 @@ where
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
-    use proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
+    use ::proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
     use std::ops::Range;
 
     /// A strategy for a hash set of a given size.
@@ -1030,9 +1070,10 @@ pub mod proptest {
 mod test {
     use super::proptest::*;
     use super::*;
-    use proptest::num::i16;
+    use crate::test::LolHasher;
+    use ::proptest::num::i16;
+    use ::proptest::proptest;
     use std::hash::BuildHasherDefault;
-    use test::LolHasher;
 
     #[test]
     fn insert_failing() {
@@ -1064,12 +1105,12 @@ mod test {
 
     #[test]
     fn issue_60_drain_iterator_memory_corruption() {
-        use test::MetroHashBuilder;
+        use crate::test::MetroHashBuilder;
         for i in 0..1000 {
             let mut lhs = vec![0, 1, 2];
             lhs.sort();
 
-            let mut hasher = Ref::from(MetroHashBuilder::new(i));
+            let hasher = Ref::from(MetroHashBuilder::new(i));
             let mut iset: HashSet<_, MetroHashBuilder> = HashSet::with_hasher(hasher.clone());
             for &i in &lhs {
                 iset.insert(i);

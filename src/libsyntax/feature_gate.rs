@@ -15,20 +15,24 @@
 use AttributeType::*;
 use AttributeGate::*;
 
-use crate::ast::{self, NodeId, GenericParam, GenericParamKind, PatKind, RangeEnd};
+use crate::ast::{
+    self, AssocTyConstraint, AssocTyConstraintKind, NodeId, GenericParam, GenericParamKind,
+    PatKind, RangeEnd,
+};
 use crate::attr;
 use crate::early_buffered_lints::BufferedEarlyLintId;
 use crate::source_map::Spanned;
 use crate::edition::{ALL_EDITIONS, Edition};
 use crate::visit::{self, FnKind, Visitor};
 use crate::parse::{token, ParseSess};
-use crate::symbol::{Symbol, keywords, sym};
+use crate::parse::parser::Parser;
+use crate::symbol::{Symbol, sym};
 use crate::tokenstream::TokenTree;
 
-use errors::{DiagnosticBuilder, Handler};
+use errors::{Applicability, DiagnosticBuilder, Handler};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_target::spec::abi::Abi;
-use syntax_pos::{Span, DUMMY_SP};
+use syntax_pos::{Span, DUMMY_SP, MultiSpan};
 use log::debug;
 use lazy_static::lazy_static;
 
@@ -523,14 +527,8 @@ declare_features! (
     // Allows `impl Trait` in bindings (`let`, `const`, `static`).
     (active, impl_trait_in_bindings, "1.30.0", Some(34511), None),
 
-    // Allows `const _: TYPE = VALUE`.
-    (active, underscore_const_names, "1.31.0", Some(54912), None),
-
     // Allows using `reason` in lint attributes and the `#[expect(lint)]` lint check.
     (active, lint_reasons, "1.31.0", Some(54503), None),
-
-    // Allows paths to enum variants on type aliases.
-    (active, type_alias_enum_variants, "1.31.0", Some(49683), None),
 
     // Allows exhaustive integer pattern matching on `usize` and `isize`.
     (active, precise_pointer_size_matching, "1.32.0", Some(56354), None),
@@ -548,11 +546,32 @@ declare_features! (
     // Allows using `#[optimize(X)]`.
     (active, optimize_attribute, "1.34.0", Some(54882), None),
 
-    // Allows using `#[repr(align(X))]` on enums.
-    (active, repr_align_enum, "1.34.0", Some(57996), None),
-
     // Allows using C-variadics.
     (active, c_variadic, "1.34.0", Some(44930), None),
+
+    // Allows the user of associated type bounds.
+    (active, associated_type_bounds, "1.34.0", Some(52662), None),
+
+    // Attributes on formal function params.
+    (active, param_attrs, "1.36.0", Some(60406), None),
+
+    // Allows calling constructor functions in `const fn`.
+    (active, const_constructor, "1.37.0", Some(61456), None),
+
+    // Allows `if/while p && let q = r && ...` chains.
+    (active, let_chains, "1.37.0", Some(53667), None),
+
+    // #[repr(transparent)] on enums.
+    (active, transparent_enums, "1.37.0", Some(60405), None),
+
+    // #[repr(transparent)] on unions.
+    (active, transparent_unions, "1.37.0", Some(60405), None),
+
+    // Allows explicit discriminants on non-unit enum variants.
+    (active, arbitrary_enum_discriminant, "1.37.0", Some(60553), None),
+
+    // Allows `impl Trait` with multiple unrelated lifetimes.
+    (active, member_constraints, "1.37.0", Some(61977), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates
@@ -565,7 +584,8 @@ declare_features! (
 const INCOMPLETE_FEATURES: &[Symbol] = &[
     sym::impl_trait_in_bindings,
     sym::generic_associated_types,
-    sym::const_generics
+    sym::const_generics,
+    sym::let_chains,
 ];
 
 declare_features! (
@@ -833,6 +853,13 @@ declare_features! (
     (accepted, extern_crate_self, "1.34.0", Some(56409), None),
     // Allows arbitrary delimited token streams in non-macro attributes.
     (accepted, unrestricted_attribute_tokens, "1.34.0", Some(55208), None),
+    // Allows paths to enum variants on type aliases including `Self`.
+    (accepted, type_alias_enum_variants, "1.37.0", Some(49683), None),
+    // Allows using `#[repr(align(X))]` on enums with equivalent semantics
+    // to wrapping an enum in a wrapper struct with `#[repr(align(X))]`.
+    (accepted, repr_align_enum, "1.37.0", Some(57996), None),
+    // Allows `const _: TYPE = VALUE`.
+    (accepted, underscore_const_names, "1.37.0", Some(54912), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: accepted features
@@ -1134,6 +1161,13 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
             is just used to enable niche optimizations in libcore \
             and will never be stable",
         cfg_fn!(rustc_attrs))),
+    (sym::rustc_nonnull_optimization_guaranteed, Whitelisted, template!(Word),
+    Gated(Stability::Unstable,
+        sym::rustc_attrs,
+        "the `#[rustc_nonnull_optimization_guaranteed]` attribute \
+            is just used to enable niche optimizations in libcore \
+            and will never be stable",
+        cfg_fn!(rustc_attrs))),
     (sym::rustc_regions, Normal, template!(Word), Gated(Stability::Unstable,
                                     sym::rustc_attrs,
                                     "the `#[rustc_regions]` attribute \
@@ -1314,6 +1348,16 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
                                                 "internal implementation detail",
                                                 cfg_fn!(rustc_attrs))),
 
+    (sym::rustc_allocator, Whitelisted, template!(Word), Gated(Stability::Unstable,
+                                                sym::rustc_attrs,
+                                                "internal implementation detail",
+                                                cfg_fn!(rustc_attrs))),
+
+    (sym::rustc_dummy, Normal, template!(Word /* doesn't matter*/), Gated(Stability::Unstable,
+                                         sym::rustc_attrs,
+                                         "used by the test suite",
+                                         cfg_fn!(rustc_attrs))),
+
     // FIXME: #14408 whitelist docs since rustdoc looks at them
     (
         sym::doc,
@@ -1415,7 +1459,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         Normal,
         template!(
             Word,
-            List: r#"/*opt*/ since = "version", /*opt*/ note = "reason"#,
+            List: r#"/*opt*/ since = "version", /*opt*/ note = "reason""#,
             NameValueStr: "reason"
         ),
         Ungated
@@ -1623,7 +1667,7 @@ impl<'a> Context<'a> {
 }
 
 pub fn check_attribute(attr: &ast::Attribute, parse_sess: &ParseSess, features: &Features) {
-    let cx = Context { features: features, parse_sess: parse_sess, plugin_attributes: &[] };
+    let cx = Context { features, parse_sess, plugin_attributes: &[] };
     cx.check_attribute(
         attr,
         attr.ident().and_then(|ident| BUILTIN_ATTRIBUTE_MAP.get(&ident.name).map(|a| *a)),
@@ -1671,20 +1715,20 @@ pub fn emit_feature_err(
     feature_err(sess, feature, span, issue, explain).emit();
 }
 
-pub fn feature_err<'a>(
+pub fn feature_err<'a, S: Into<MultiSpan>>(
     sess: &'a ParseSess,
     feature: Symbol,
-    span: Span,
+    span: S,
     issue: GateIssue,
     explain: &str,
 ) -> DiagnosticBuilder<'a> {
     leveled_feature_err(sess, feature, span, issue, explain, GateStrength::Hard)
 }
 
-fn leveled_feature_err<'a>(
+fn leveled_feature_err<'a, S: Into<MultiSpan>>(
     sess: &'a ParseSess,
     feature: Symbol,
-    span: Span,
+    span: S,
     issue: GateIssue,
     explain: &str,
     level: GateStrength,
@@ -1851,24 +1895,32 @@ impl<'a> PostExpansionVisitor<'a> {
 
         match attr.parse_meta(self.context.parse_sess) {
             Ok(meta) => if !should_skip(name) && !template.compatible(&meta.node) {
+                let error_msg = format!("malformed `{}` attribute input", name);
                 let mut msg = "attribute must be of the form ".to_owned();
+                let mut suggestions = vec![];
                 let mut first = true;
                 if template.word {
                     first = false;
-                    msg.push_str(&format!("`#[{}{}]`", name, ""));
+                    let code = format!("#[{}]", name);
+                    msg.push_str(&format!("`{}`", &code));
+                    suggestions.push(code);
                 }
                 if let Some(descr) = template.list {
                     if !first {
                         msg.push_str(" or ");
                     }
                     first = false;
-                    msg.push_str(&format!("`#[{}({})]`", name, descr));
+                    let code = format!("#[{}({})]", name, descr);
+                    msg.push_str(&format!("`{}`", &code));
+                    suggestions.push(code);
                 }
                 if let Some(descr) = template.name_value_str {
                     if !first {
                         msg.push_str(" or ");
                     }
-                    msg.push_str(&format!("`#[{} = \"{}\"]`", name, descr));
+                    let code = format!("#[{} = \"{}\"]", name, descr);
+                    msg.push_str(&format!("`{}`", &code));
+                    suggestions.push(code);
                 }
                 if should_warn(name) {
                     self.context.parse_sess.buffer_lint(
@@ -1878,7 +1930,17 @@ impl<'a> PostExpansionVisitor<'a> {
                         &msg,
                     );
                 } else {
-                    self.context.parse_sess.span_diagnostic.span_err(meta.span, &msg);
+                    self.context.parse_sess.span_diagnostic.struct_span_err(meta.span, &error_msg)
+                        .span_suggestions(
+                            meta.span,
+                            if suggestions.len() == 1 {
+                                "must be of the form"
+                            } else {
+                                "the following are the possible correct uses"
+                            },
+                            suggestions.into_iter(),
+                            Applicability::HasPlaceholders,
+                        ).emit();
                 }
             }
             Err(mut err) => err.emit(),
@@ -1892,7 +1954,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             self.builtin_attributes.get(&ident.name).map(|a| *a)
         });
 
-        // check for gated attributes
+        // Check for gated attributes.
         self.context.check_attribute(attr, attr_info, false);
 
         if attr.check_name(sym::doc) {
@@ -1922,14 +1984,14 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
         }
 
         match attr_info {
-            Some(&(name, _, template, _)) => self.check_builtin_attribute(
-                attr,
-                name,
-                template
-            ),
-            None => if let Some(TokenTree::Token(_, token::Eq)) = attr.tokens.trees().next() {
-                // All key-value attributes are restricted to meta-item syntax.
-                attr.parse_meta(self.context.parse_sess).map_err(|mut err| err.emit()).ok();
+            // `rustc_dummy` doesn't have any restrictions specific to built-in attributes.
+            Some(&(name, _, template, _)) if name != sym::rustc_dummy =>
+                self.check_builtin_attribute(attr, name, template),
+            _ => if let Some(TokenTree::Token(token)) = attr.tokens.trees().next() {
+                if token == token::Eq {
+                    // All key-value attributes are restricted to meta-item syntax.
+                    attr.parse_meta(self.context.parse_sess).map_err(|mut err| err.emit()).ok();
+                }
             }
         }
     }
@@ -1947,13 +2009,6 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
 
     fn visit_item(&mut self, i: &'a ast::Item) {
         match i.node {
-            ast::ItemKind::Const(_,_) => {
-                if i.ident.name == keywords::Underscore.name() {
-                    gate_feature_post!(&self, underscore_const_names, i.span,
-                                        "naming constants with `_` is unstable");
-                }
-            }
-
             ast::ItemKind::ForeignMod(ref foreign_module) => {
                 self.check_abi(foreign_module.abi, i.span);
             }
@@ -1988,14 +2043,26 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                 }
             }
 
-            ast::ItemKind::Enum(..) => {
-                for attr in attr::filter_by_name(&i.attrs[..], sym::repr) {
-                    for item in attr.meta_item_list().unwrap_or_else(Vec::new) {
-                        if item.check_name(sym::align) {
-                            gate_feature_post!(&self, repr_align_enum, attr.span,
-                                               "`#[repr(align(x))]` on enums is experimental");
-                        }
+            ast::ItemKind::Enum(ast::EnumDef{ref variants, ..}, ..) => {
+                for variant in variants {
+                    match (&variant.node.data, &variant.node.disr_expr) {
+                        (ast::VariantData::Unit(..), _) => {},
+                        (_, Some(disr_expr)) =>
+                            gate_feature_post!(
+                                &self,
+                                arbitrary_enum_discriminant,
+                                disr_expr.value.span,
+                                "discriminants on non-unit variants are experimental"),
+                        _ => {},
                     }
+                }
+
+                let has_feature = self.context.features.arbitrary_enum_discriminant;
+                if !has_feature && !i.span.allows_unstable(sym::arbitrary_enum_discriminant) {
+                    Parser::maybe_report_invalid_custom_discriminants(
+                        self.context.parse_sess,
+                        &variants,
+                    );
                 }
             }
 
@@ -2090,7 +2157,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
     fn visit_fn_ret_ty(&mut self, ret_ty: &'a ast::FunctionRetTy) {
         if let ast::FunctionRetTy::Ty(ref output_ty) = *ret_ty {
             if let ast::TyKind::Never = output_ty.node {
-                // Do nothing
+                // Do nothing.
             } else {
                 self.visit_ty(output_ty)
             }
@@ -2109,9 +2176,6 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
                     gate_feature_post!(&self, type_ascription, e.span,
                                        "type ascription is experimental");
                 }
-            }
-            ast::ExprKind::ObsoleteInPlace(..) => {
-                // these get a hard error in ast-validation
             }
             ast::ExprKind::Yield(..) => {
                 gate_feature_post!(&self, generators,
@@ -2149,7 +2213,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             }
             _ => {}
         }
-        visit::walk_expr(self, e);
+        visit::walk_expr(self, e)
     }
 
     fn visit_arm(&mut self, arm: &'a ast::Arm) {
@@ -2198,15 +2262,27 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             gate_feature_post!(&self, c_variadic, span, "C-variadic functions are unstable");
         }
 
-        visit::walk_fn(self, fn_kind, fn_decl, span);
+        visit::walk_fn(self, fn_kind, fn_decl, span)
     }
 
     fn visit_generic_param(&mut self, param: &'a GenericParam) {
-        if let GenericParamKind::Const { .. } = param.kind {
-            gate_feature_post!(&self, const_generics, param.ident.span,
-                "const generics are unstable");
+        match param.kind {
+            GenericParamKind::Const { .. } =>
+                gate_feature_post!(&self, const_generics, param.ident.span,
+                    "const generics are unstable"),
+            _ => {}
         }
-        visit::walk_generic_param(self, param);
+        visit::walk_generic_param(self, param)
+    }
+
+    fn visit_assoc_ty_constraint(&mut self, constraint: &'a AssocTyConstraint) {
+        match constraint.kind {
+            AssocTyConstraintKind::Bound { .. } =>
+                gate_feature_post!(&self, associated_type_bounds, constraint.span,
+                    "associated type bounds are unstable"),
+            _ => {}
+        }
+        visit::walk_assoc_ty_constraint(self, constraint)
     }
 
     fn visit_trait_item(&mut self, ti: &'a ast::TraitItem) {
@@ -2244,7 +2320,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             }
             _ => {}
         }
-        visit::walk_trait_item(self, ti);
+        visit::walk_trait_item(self, ti)
     }
 
     fn visit_impl_item(&mut self, ii: &'a ast::ImplItem) {
@@ -2276,7 +2352,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             }
             _ => {}
         }
-        visit::walk_impl_item(self, ii);
+        visit::walk_impl_item(self, ii)
     }
 
     fn visit_vis(&mut self, vis: &'a ast::Visibility) {
@@ -2284,7 +2360,7 @@ impl<'a> Visitor<'a> for PostExpansionVisitor<'a> {
             gate_feature_post!(&self, crate_visibility_modifier, vis.span,
                                "`crate` visibility modifier is experimental");
         }
-        visit::walk_vis(self, vis);
+        visit::walk_vis(self, vis)
     }
 }
 
@@ -2294,6 +2370,8 @@ pub fn get_features(span_handler: &Handler, krate_attrs: &[ast::Attribute],
         let mut err = struct_span_err!(span_handler, span, E0557, "feature has been removed");
         if let Some(reason) = reason {
             err.span_note(span, reason);
+        } else {
+            err.span_label(span, "feature has been removed");
         }
         err.emit();
     }
@@ -2375,12 +2453,24 @@ pub fn get_features(span_handler: &Handler, krate_attrs: &[ast::Attribute],
             None => continue,
         };
 
+        let bad_input = |span| {
+            struct_span_err!(span_handler, span, E0556, "malformed `feature` attribute input")
+        };
+
         for mi in list {
             let name = match mi.ident() {
                 Some(ident) if mi.is_word() => ident.name,
-                _ => {
-                    span_err!(span_handler, mi.span(), E0556,
-                            "malformed feature, expected just one word");
+                Some(ident) => {
+                    bad_input(mi.span()).span_suggestion(
+                        mi.span(),
+                        "expected just one word",
+                        format!("{}", ident.name),
+                        Applicability::MaybeIncorrect,
+                    ).emit();
+                    continue
+                }
+                None => {
+                    bad_input(mi.span()).span_label(mi.span(), "expected just one word").emit();
                     continue
                 }
             };
@@ -2448,6 +2538,29 @@ pub fn check_crate(krate: &ast::Crate,
         parse_sess: sess,
         plugin_attributes,
     };
+
+    sess
+        .param_attr_spans
+        .borrow()
+        .iter()
+        .for_each(|span| gate_feature!(
+            &ctx,
+            param_attrs,
+            *span,
+            "attributes on function parameters are unstable"
+        ));
+
+    sess
+        .let_chains_spans
+        .borrow()
+        .iter()
+        .for_each(|span| gate_feature!(
+            &ctx,
+            let_chains,
+            *span,
+            "`let` expressions in this position are experimental"
+        ));
+
     let visitor = &mut PostExpansionVisitor {
         context: &ctx,
         builtin_attributes: &*BUILTIN_ATTRIBUTE_MAP,

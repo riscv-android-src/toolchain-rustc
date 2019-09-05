@@ -11,11 +11,10 @@ use rustc::{bug, span_bug};
 use rustc_data_structures::sync::Lrc;
 use std::cmp::Ordering::{self, Equal};
 use std::cmp::PartialOrd;
-use std::convert::TryFrom;
 use std::convert::TryInto;
 use std::hash::{Hash, Hasher};
 use syntax::ast::{FloatTy, LitKind};
-use syntax_pos::symbol::{LocalInternedString, Symbol};
+use syntax_pos::symbol::Symbol;
 
 /// A `LitKind`-like enum to fold constant `Expr`s into.
 #[derive(Debug, Clone)]
@@ -122,7 +121,7 @@ impl Hash for Constant {
 }
 
 impl Constant {
-    pub fn partial_cmp(tcx: TyCtxt<'_, '_, '_>, cmp_type: Ty<'_>, left: &Self, right: &Self) -> Option<Ordering> {
+    pub fn partial_cmp(tcx: TyCtxt<'_>, cmp_type: Ty<'_>, left: &Self, right: &Self) -> Option<Ordering> {
         match (left, right) {
             (&Constant::Str(ref ls), &Constant::Str(ref rs)) => Some(ls.cmp(rs)),
             (&Constant::Char(ref l), &Constant::Char(ref r)) => Some(l.cmp(r)),
@@ -155,7 +154,7 @@ impl Constant {
 }
 
 /// Parses a `LitKind` to a `Constant`.
-pub fn lit_to_constant<'tcx>(lit: &LitKind, ty: Ty<'tcx>) -> Constant {
+pub fn lit_to_constant(lit: &LitKind, ty: Ty<'_>) -> Constant {
     use syntax::ast::*;
 
     match *lit {
@@ -211,7 +210,7 @@ pub fn constant_context<'c, 'cc>(
     }
 }
 
-pub struct ConstEvalLateContext<'a, 'tcx: 'a> {
+pub struct ConstEvalLateContext<'a, 'tcx> {
     lcx: &'a LateContext<'a, 'tcx>,
     tables: &'a ty::TypeckTables<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
@@ -251,13 +250,18 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
                     if let ExprKind::Path(qpath) = &callee.node;
                     let res = self.tables.qpath_res(qpath, callee.hir_id);
                     if let Some(def_id) = res.opt_def_id();
-                    let def_path = self.lcx.get_def_path(def_id)
+                    let get_def_path = self.lcx.get_def_path(def_id, );
+                    let def_path = get_def_path
                         .iter()
-                        .map(LocalInternedString::get)
+                        .copied()
+                        .map(Symbol::as_str)
                         .collect::<Vec<_>>();
-                    if let &["core", "num", impl_ty, "max_value"] = &def_path[..];
+                    if def_path[0] == "core";
+                    if def_path[1] == "num";
+                    if def_path[3] == "max_value";
+                    if def_path.len() == 4;
                     then {
-                       let value = match impl_ty {
+                       let value = match &*def_path[2] {
                            "<impl i8>" => i8::max_value() as u128,
                            "<impl i16>" => i16::max_value() as u128,
                            "<impl i32>" => i32::max_value() as u128,
@@ -326,7 +330,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
 
         let res = self.tables.qpath_res(qpath, id);
         match res {
-            Res::Def(DefKind::Const, def_id) | Res::Def(DefKind::AssociatedConst, def_id) => {
+            Res::Def(DefKind::Const, def_id) | Res::Def(DefKind::AssocConst, def_id) => {
                 let substs = self.tables.node_substs(id);
                 let substs = if self.substs.is_empty() {
                     substs
@@ -340,7 +344,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
                 };
 
                 let result = self.lcx.tcx.const_eval(self.param_env.and(gid)).ok()?;
-                let result = miri_to_const(self.lcx.tcx, &result);
+                let result = miri_to_const(&result);
                 if result.is_some() {
                     self.needed_resolution = true;
                 }
@@ -465,37 +469,32 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
     }
 }
 
-pub fn miri_to_const<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, result: &ty::Const<'tcx>) -> Option<Constant> {
+pub fn miri_to_const(result: &ty::Const<'_>) -> Option<Constant> {
     use rustc::mir::interpret::{ConstValue, Scalar};
     match result.val {
-        ConstValue::Scalar(Scalar::Bits { bits: b, .. }) => match result.ty.sty {
-            ty::Bool => Some(Constant::Bool(b == 1)),
-            ty::Uint(_) | ty::Int(_) => Some(Constant::Int(b)),
+        ConstValue::Scalar(Scalar::Raw { data: d, .. }) => match result.ty.sty {
+            ty::Bool => Some(Constant::Bool(d == 1)),
+            ty::Uint(_) | ty::Int(_) => Some(Constant::Int(d)),
             ty::Float(FloatTy::F32) => Some(Constant::F32(f32::from_bits(
-                b.try_into().expect("invalid f32 bit representation"),
+                d.try_into().expect("invalid f32 bit representation"),
             ))),
             ty::Float(FloatTy::F64) => Some(Constant::F64(f64::from_bits(
-                b.try_into().expect("invalid f64 bit representation"),
+                d.try_into().expect("invalid f64 bit representation"),
             ))),
             ty::RawPtr(type_and_mut) => {
                 if let ty::Uint(_) = type_and_mut.ty.sty {
-                    return Some(Constant::RawPtr(b));
+                    return Some(Constant::RawPtr(d));
                 }
                 None
             },
             // FIXME: implement other conversions.
             _ => None,
         },
-        ConstValue::Slice(Scalar::Ptr(ptr), n) => match result.ty.sty {
+        ConstValue::Slice { data, start, end } => match result.ty.sty {
             ty::Ref(_, tam, _) => match tam.sty {
-                ty::Str => {
-                    let alloc = tcx.alloc_map.lock().unwrap_memory(ptr.alloc_id);
-                    let offset = ptr.offset.bytes().try_into().expect("too-large pointer offset");
-                    let n = usize::try_from(n).unwrap();
-                    String::from_utf8(alloc.bytes[offset..(offset + n)].to_owned())
-                        .ok()
-                        .map(Constant::Str)
-                },
+                ty::Str => String::from_utf8(data.bytes[start..end].to_owned())
+                    .ok()
+                    .map(Constant::Str),
                 _ => None,
             },
             _ => None,

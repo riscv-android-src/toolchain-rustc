@@ -318,6 +318,10 @@ static TBL: [u64; TBLSIZE * 2] = [
 //
 //      Gal, S. and Bachelis, B.  An Accurate Elementary Mathematical Library
 //      for the IEEE Floating Point Standard.  TOMS 17(1), 26-46 (1991).
+
+/// Exponential, base 2 (f64)
+///
+/// Calculate `2^x`, that is, 2 raised to the power `x`.
 #[inline]
 #[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn exp2(mut x: f64) -> f64 {
@@ -369,7 +373,7 @@ pub fn exp2(mut x: f64) -> f64 {
     /* Reduce x, computing z, i0, and k. */
     let ui = f64::to_bits(x + redux);
     let mut i0 = ui as u32;
-    i0 += TBLSIZE as u32 / 2;
+    i0 = i0.wrapping_add(TBLSIZE as u32 / 2);
     let ku = i0 / TBLSIZE as u32 * TBLSIZE as u32;
     let ki = ku as i32 / TBLSIZE as i32;
     i0 %= TBLSIZE as u32;
@@ -382,4 +386,10 @@ pub fn exp2(mut x: f64) -> f64 {
     let r = t + t * z * (p1 + z * (p2 + z * (p3 + z * (p4 + z * p5))));
 
     scalbn(r, ki)
+}
+
+#[test]
+fn i0_wrap_test() {
+    let x = -3.0 / 256.0;
+    assert_eq!(exp2(x), f64::from_bits(0x3fefbdba3692d514));
 }

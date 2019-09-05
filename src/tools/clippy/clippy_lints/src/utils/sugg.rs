@@ -13,7 +13,7 @@ use std::convert::TryInto;
 use std::fmt::Display;
 use syntax::ast;
 use syntax::parse::token;
-use syntax::print::pprust::token_to_string;
+use syntax::print::pprust::token_kind_to_string;
 use syntax::source_map::{CharPos, Span};
 use syntax::util::parser::AssocOp;
 use syntax_pos::{BytePos, Pos};
@@ -135,8 +135,7 @@ impl<'a> Sugg<'a> {
             | ast::ExprKind::Box(..)
             | ast::ExprKind::Closure(..)
             | ast::ExprKind::If(..)
-            | ast::ExprKind::IfLet(..)
-            | ast::ExprKind::ObsoleteInPlace(..)
+            | ast::ExprKind::Let(..)
             | ast::ExprKind::Unary(..)
             | ast::ExprKind::Match(..) => Sugg::MaybeParen(snippet),
             ast::ExprKind::Async(..)
@@ -163,7 +162,6 @@ impl<'a> Sugg<'a> {
             | ast::ExprKind::Tup(..)
             | ast::ExprKind::Array(..)
             | ast::ExprKind::While(..)
-            | ast::ExprKind::WhileLet(..)
             | ast::ExprKind::Await(..)
             | ast::ExprKind::Err => Sugg::NonParen(snippet),
             ast::ExprKind::Range(.., RangeLimits::HalfOpen) => Sugg::BinOp(AssocOp::DotDot, snippet),
@@ -385,8 +383,7 @@ pub fn make_assoc(op: AssocOp, lhs: &Sugg<'_>, rhs: &Sugg<'_>) -> Sugg<'static> 
             rhs
         ),
         AssocOp::Assign => format!("{} = {}", lhs, rhs),
-        AssocOp::ObsoleteInPlace => format!("in ({}) {}", lhs, rhs),
-        AssocOp::AssignOp(op) => format!("{} {}= {}", lhs, token_to_string(&token::BinOp(op)), rhs),
+        AssocOp::AssignOp(op) => format!("{} {}= {}", lhs, token_kind_to_string(&token::BinOp(op)), rhs),
         AssocOp::As => format!("{} as {}", lhs, rhs),
         AssocOp::DotDot => format!("{}..{}", lhs, rhs),
         AssocOp::DotDotEq => format!("{}..={}", lhs, rhs),
@@ -425,7 +422,7 @@ fn associativity(op: &AssocOp) -> Associativity {
     use syntax::util::parser::AssocOp::*;
 
     match *op {
-        ObsoleteInPlace | Assign | AssignOp(_) => Associativity::Right,
+        Assign | AssignOp(_) => Associativity::Right,
         Add | BitAnd | BitOr | BitXor | LAnd | LOr | Multiply | As | Colon => Associativity::Both,
         Divide | Equal | Greater | GreaterEqual | Less | LessEqual | Modulus | NotEqual | ShiftLeft | ShiftRight
         | Subtract => Associativity::Left,
@@ -482,7 +479,7 @@ fn astbinop2assignop(op: ast::BinOp) -> AssocOp {
 
 /// Returns the indentation before `span` if there are nothing but `[ \t]`
 /// before it on its line.
-fn indentation<'a, T: LintContext<'a>>(cx: &T, span: Span) -> Option<String> {
+fn indentation<T: LintContext>(cx: &T, span: Span) -> Option<String> {
     let lo = cx.sess().source_map().lookup_char_pos(span.lo());
     if let Some(line) = lo.file.get_line(lo.line - 1 /* line numbers in `Loc` are 1-based */) {
         if let Some((pos, _)) = line.char_indices().find(|&(_, c)| c != ' ' && c != '\t') {
@@ -501,7 +498,7 @@ fn indentation<'a, T: LintContext<'a>>(cx: &T, span: Span) -> Option<String> {
 }
 
 /// Convenience extension trait for `DiagnosticBuilder`.
-pub trait DiagnosticBuilderExt<'a, T: LintContext<'a>> {
+pub trait DiagnosticBuilderExt<'a, T: LintContext> {
     /// Suggests to add an attribute to an item.
     ///
     /// Correctly handles indentation of the attribute and item.
@@ -548,7 +545,7 @@ pub trait DiagnosticBuilderExt<'a, T: LintContext<'a>> {
     fn suggest_remove_item(&mut self, cx: &T, item: Span, msg: &str, applicability: Applicability);
 }
 
-impl<'a, 'b, 'c, T: LintContext<'c>> DiagnosticBuilderExt<'c, T> for rustc_errors::DiagnosticBuilder<'b> {
+impl<'a, 'b, 'c, T: LintContext> DiagnosticBuilderExt<'c, T> for rustc_errors::DiagnosticBuilder<'b> {
     fn suggest_item_with_attr<D: Display + ?Sized>(
         &mut self,
         cx: &T,

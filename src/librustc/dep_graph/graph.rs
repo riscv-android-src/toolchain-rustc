@@ -90,7 +90,6 @@ where
 }
 
 impl DepGraph {
-
     pub fn new(prev_graph: PreviousDepGraph,
                prev_work_products: FxHashMap<WorkProductId, WorkProduct>) -> DepGraph {
         let prev_graph_node_count = prev_graph.node_count();
@@ -558,8 +557,8 @@ impl DepGraph {
     /// a node index can be found for that node.
     pub fn try_mark_green_and_read(
         &self,
-        tcx: TyCtxt<'_, '_, '_>,
-        dep_node: &DepNode
+        tcx: TyCtxt<'_>,
+        dep_node: &DepNode,
     ) -> Option<(SerializedDepNodeIndex, DepNodeIndex)> {
         self.try_mark_green(tcx, dep_node).map(|(prev_index, dep_node_index)| {
             debug_assert!(self.is_green(&dep_node));
@@ -570,8 +569,8 @@ impl DepGraph {
 
     pub fn try_mark_green(
         &self,
-        tcx: TyCtxt<'_, '_, '_>,
-        dep_node: &DepNode
+        tcx: TyCtxt<'_>,
+        dep_node: &DepNode,
     ) -> Option<(SerializedDepNodeIndex, DepNodeIndex)> {
         debug_assert!(!dep_node.kind.is_eval_always());
 
@@ -604,10 +603,10 @@ impl DepGraph {
     /// Try to mark a dep-node which existed in the previous compilation session as green.
     fn try_mark_previous_green<'tcx>(
         &self,
-        tcx: TyCtxt<'_, 'tcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         data: &DepGraphData,
         prev_dep_node_index: SerializedDepNodeIndex,
-        dep_node: &DepNode
+        dep_node: &DepNode,
     ) -> Option<DepNodeIndex> {
         debug!("try_mark_previous_green({:?}) - BEGIN", dep_node);
 
@@ -791,7 +790,7 @@ impl DepGraph {
     #[inline(never)]
     fn emit_diagnostics<'tcx>(
         &self,
-        tcx: TyCtxt<'_, 'tcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         data: &DepGraphData,
         dep_node_index: DepNodeIndex,
         did_allocation: bool,
@@ -842,32 +841,21 @@ impl DepGraph {
     //
     // This method will only load queries that will end up in the disk cache.
     // Other queries will not be executed.
-    pub fn exec_cache_promotions<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-        let green_nodes: Vec<DepNode> = {
-            let data = self.data.as_ref().unwrap();
-            data.colors.values.indices().filter_map(|prev_index| {
-                match data.colors.get(prev_index) {
-                    Some(DepNodeColor::Green(_)) => {
-                        let dep_node = data.previous.index_to_node(prev_index);
-                        if dep_node.cache_on_disk(tcx) {
-                            Some(dep_node)
-                        } else {
-                            None
-                        }
-                    }
-                    None |
-                    Some(DepNodeColor::Red) => {
-                        // We can skip red nodes because a node can only be marked
-                        // as red if the query result was recomputed and thus is
-                        // already in memory.
-                        None
-                    }
+    pub fn exec_cache_promotions<'tcx>(&self, tcx: TyCtxt<'tcx>) {
+        let data = self.data.as_ref().unwrap();
+        for prev_index in data.colors.values.indices() {
+            match data.colors.get(prev_index) {
+                Some(DepNodeColor::Green(_)) => {
+                    let dep_node = data.previous.index_to_node(prev_index);
+                    dep_node.try_load_from_on_disk_cache(tcx);
                 }
-            }).collect()
-        };
-
-        for dep_node in green_nodes {
-            dep_node.load_from_on_disk_cache(tcx);
+                None |
+                Some(DepNodeColor::Red) => {
+                    // We can skip red nodes because a node can only be marked
+                    // as red if the query result was recomputed and thus is
+                    // already in memory.
+                }
+            }
         }
     }
 

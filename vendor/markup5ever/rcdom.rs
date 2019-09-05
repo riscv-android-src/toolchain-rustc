@@ -11,32 +11,61 @@
 //!
 //! This is sufficient as a static parse tree, but don't build a
 //! web browser using it. :)
+//!
+//! A DOM is a [tree structure] with ordered children that can be represented in an XML-like
+//! format. For example, the following graph
+//!
+//! ```text
+//! div
+//!  +- "text node"
+//!  +- span
+//! ```
+//! in HTML would be serialized as
+//!
+//! ```html
+//! <div>text node<span></span></div>
+//! ```
+//!
+//! See the [document object model article on wikipedia][dom wiki] for more information.
+//!
+//! This implementation stores the information associated with each node once, and then hands out
+//! refs to children. The nodes themselves are reference-counted to avoid copying - you can create
+//! a new ref and then a node will outlive the document. Nodes own their children, but only have
+//! weak references to their parents.
+//!
+//! [tree structure]: https://en.wikipedia.org/wiki/Tree_(data_structure)
+//! [dom wiki]: https://en.wikipedia.org/wiki/Document_Object_Model
 
-use std::cell::{RefCell, Cell};
+use std::borrow::Cow;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::default::Default;
-use std::borrow::Cow;
+use std::fmt;
 use std::io;
 use std::mem;
 use std::rc::{Rc, Weak};
 
 use tendril::StrTendril;
 
+use interface::tree_builder;
+use interface::tree_builder::{ElementFlags, NodeOrText, QuirksMode, TreeSink};
+use serialize::TraversalScope;
+use serialize::TraversalScope::{ChildrenOnly, IncludeNode};
+use serialize::{Serialize, Serializer};
 use Attribute;
 use ExpandedName;
 use QualName;
-use interface::tree_builder::{TreeSink, QuirksMode, NodeOrText, ElementFlags};
-use interface::tree_builder;
-use serialize::{Serialize, Serializer};
-use serialize::TraversalScope;
-use serialize::TraversalScope::{IncludeNode, ChildrenOnly};
 
 /// The different kinds of nodes in the DOM.
+#[derive(Debug)]
 pub enum NodeData {
-    /// The `Document` itself.
+    /// The `Document` itself - the root node of a HTML document.
     Document,
 
-    /// A `DOCTYPE` with name, public id, and system id.
+    /// A `DOCTYPE` with name, public id, and system id. See
+    /// [document type declaration on wikipedia][dtd wiki].
+    ///
+    /// [dtd wiki]: https://en.wikipedia.org/wiki/Document_type_declaration
     Doctype {
         name: StrTendril,
         public_id: StrTendril,
@@ -44,25 +73,24 @@ pub enum NodeData {
     },
 
     /// A text node.
-    Text {
-        contents: RefCell<StrTendril>,
-    },
+    Text { contents: RefCell<StrTendril> },
 
     /// A comment.
-    Comment {
-        contents: StrTendril,
-    },
+    Comment { contents: StrTendril },
 
     /// An element with attributes.
     Element {
         name: QualName,
         attrs: RefCell<Vec<Attribute>>,
 
-        /// For HTML <template> elements, the template contents
-        /// https://html.spec.whatwg.org/multipage/#template-contents
+        /// For HTML \<template\> elements, the [template contents].
+        ///
+        /// [template contents]: https://html.spec.whatwg.org/multipage/#template-contents
         template_contents: Option<Handle>,
 
-        /// https://html.spec.whatwg.org/multipage/#html-integration-point
+        /// Whether the node is a [HTML integration point].
+        ///
+        /// [HTML integration point]: https://html.spec.whatwg.org/multipage/#html-integration-point
         mathml_annotation_xml_integration_point: bool,
     },
 
@@ -81,16 +109,57 @@ pub struct Node {
     pub children: RefCell<Vec<Handle>>,
     /// Represents this node's data.
     pub data: NodeData,
+    /// Flag to control whether to free any children on destruction.
+    leak_children_on_drop: Cell<bool>,
 }
 
 impl Node {
     /// Create a new node from its contents
-    fn new(data: NodeData) -> Rc<Self> {
+    pub fn new(data: NodeData) -> Rc<Self> {
         Rc::new(Node {
             data: data,
             parent: Cell::new(None),
             children: RefCell::new(Vec::new()),
+            leak_children_on_drop: Cell::new(true),
         })
+    }
+
+    /// Drop any child nodes remaining in this node at destruction.
+    ///
+    /// RcDom's destructor automatically drops any nodes and children that are
+    /// present in the document. This setting only affects nodes that are dropped
+    /// by manipulating the tree before RcDom's destructor runs (such as manually
+    /// removing children from a node after parsing is complete).
+    ///
+    /// Unsafety: due to the representation of children, this can trigger
+    /// stack overflow if dropping a node with a very deep tree of children.
+    /// This is not a recommended configuration to use when interacting with
+    /// arbitrary HTML content.
+    pub unsafe fn free_child_nodes_on_drop(&self) {
+        self.leak_children_on_drop.set(false);
+    }
+}
+
+impl Drop for Node {
+    fn drop(&mut self) {
+        if !self.children.borrow().is_empty() {
+            if self.leak_children_on_drop.get() {
+                warn!("Dropping node with children outside of RcDom's destructor. \
+                       Leaking memory for {} children.", self.children.borrow().len());
+                for child in mem::replace(&mut *self.children.borrow_mut(), vec![]) {
+                    mem::forget(child);
+                }
+            }
+        }
+    }
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        fmt.debug_struct("Node")
+            .field("data", &self.data)
+            .field("children", &self.children)
+            .finish()
     }
 }
 
@@ -113,8 +182,13 @@ fn get_parent_and_index(target: &Handle) -> Option<(Handle, usize)> {
     if let Some(weak) = target.parent.take() {
         let parent = weak.upgrade().expect("dangling weak pointer");
         target.parent.set(Some(weak));
-        let i = match parent.children.borrow().iter().enumerate()
-                    .find(|&(_, child)| Rc::ptr_eq(&child, &target)) {
+        let i = match parent
+            .children
+            .borrow()
+            .iter()
+            .enumerate()
+            .find(|&(_, child)| Rc::ptr_eq(&child, &target))
+        {
             Some((i, _)) => i,
             None => panic!("have parent but couldn't find in parent's children!"),
         };
@@ -129,7 +203,7 @@ fn append_to_existing_text(prev: &Handle, text: &str) -> bool {
         NodeData::Text { ref contents } => {
             contents.borrow_mut().push_slice(text);
             true
-        }
+        },
         _ => false,
     }
 }
@@ -153,9 +227,23 @@ pub struct RcDom {
     pub quirks_mode: QuirksMode,
 }
 
+impl Drop for RcDom {
+    fn drop(&mut self) {
+        // Ensure that node destructors execute linearly, rather
+        // than recursing through a tree of arbitrary depth.
+        let mut to_be_processed = vec![self.document.clone()];
+        while let Some(node) = to_be_processed.pop() {
+            to_be_processed.extend_from_slice(&*node.children.borrow());
+            node.children.borrow_mut().clear();
+        }
+    }
+}
+
 impl TreeSink for RcDom {
     type Output = Self;
-    fn finish(self) -> Self { self }
+    fn finish(self) -> Self {
+        self
+    }
 
     type Handle = Handle;
 
@@ -168,7 +256,11 @@ impl TreeSink for RcDom {
     }
 
     fn get_template_contents(&mut self, target: &Handle) -> Handle {
-        if let NodeData::Element { template_contents: Some(ref contents), .. } = target.data {
+        if let NodeData::Element {
+            template_contents: Some(ref contents),
+            ..
+        } = target.data
+        {
             contents.clone()
         } else {
             panic!("not a template element!")
@@ -190,7 +282,12 @@ impl TreeSink for RcDom {
         };
     }
 
-    fn create_element(&mut self, name: QualName, attrs: Vec<Attribute>, flags: ElementFlags) -> Handle {
+    fn create_element(
+        &mut self,
+        name: QualName,
+        attrs: Vec<Attribute>,
+        flags: ElementFlags,
+    ) -> Handle {
         Node::new(NodeData::Element {
             name: name,
             attrs: RefCell::new(attrs),
@@ -208,46 +305,58 @@ impl TreeSink for RcDom {
     }
 
     fn create_pi(&mut self, target: StrTendril, data: StrTendril) -> Handle {
-        Node::new(NodeData::ProcessingInstruction { target: target, contents: data })
+        Node::new(NodeData::ProcessingInstruction {
+            target: target,
+            contents: data,
+        })
     }
 
     fn append(&mut self, parent: &Handle, child: NodeOrText<Handle>) {
         // Append to an existing Text node if we have one.
         match child {
             NodeOrText::AppendText(ref text) => match parent.children.borrow().last() {
-                Some(h) => if append_to_existing_text(h, &text) { return; },
+                Some(h) => {
+                    if append_to_existing_text(h, &text) {
+                        return;
+                    }
+                },
                 _ => (),
             },
             _ => (),
         }
 
-        append(&parent, match child {
-            NodeOrText::AppendText(text) => Node::new(NodeData::Text { contents: RefCell::new(text) }),
-            NodeOrText::AppendNode(node) => node
-        });
+        append(
+            &parent,
+            match child {
+                NodeOrText::AppendText(text) => Node::new(NodeData::Text {
+                    contents: RefCell::new(text),
+                }),
+                NodeOrText::AppendNode(node) => node,
+            },
+        );
     }
 
-    fn append_before_sibling(&mut self,
-            sibling: &Handle,
-            child: NodeOrText<Handle>) {
+    fn append_before_sibling(&mut self, sibling: &Handle, child: NodeOrText<Handle>) {
         let (parent, i) = get_parent_and_index(&sibling)
             .expect("append_before_sibling called on node without parent");
 
         let child = match (child, i) {
             // No previous node.
-            (NodeOrText::AppendText(text), 0) => {
-                Node::new(NodeData::Text { contents: RefCell::new(text) })
-            }
+            (NodeOrText::AppendText(text), 0) => Node::new(NodeData::Text {
+                contents: RefCell::new(text),
+            }),
 
             // Look for a text node before the insertion point.
             (NodeOrText::AppendText(text), i) => {
                 let children = parent.children.borrow();
-                let prev = &children[i-1];
+                let prev = &children[i - 1];
                 if append_to_existing_text(prev, &text) {
                     return;
                 }
-                Node::new(NodeData::Text { contents: RefCell::new(text) })
-            }
+                Node::new(NodeData::Text {
+                    contents: RefCell::new(text),
+                })
+            },
 
             // The tree builder promises we won't have a text node after
             // the insertion point.
@@ -262,10 +371,12 @@ impl TreeSink for RcDom {
         parent.children.borrow_mut().insert(i, child);
     }
 
-    fn append_based_on_parent_node(&mut self,
+    fn append_based_on_parent_node(
+        &mut self,
         element: &Self::Handle,
         prev_element: &Self::Handle,
-        child: NodeOrText<Self::Handle>) {
+        child: NodeOrText<Self::Handle>,
+    ) {
         let parent = element.parent.take();
         let has_parent = parent.is_some();
         element.parent.set(parent);
@@ -277,15 +388,20 @@ impl TreeSink for RcDom {
         }
     }
 
-    fn append_doctype_to_document(&mut self,
-                                  name: StrTendril,
-                                  public_id: StrTendril,
-                                  system_id: StrTendril) {
-        append(&self.document, Node::new(NodeData::Doctype {
-            name: name,
-            public_id: public_id,
-            system_id: system_id
-        }));
+    fn append_doctype_to_document(
+        &mut self,
+        name: StrTendril,
+        public_id: StrTendril,
+        system_id: StrTendril,
+    ) {
+        append(
+            &self.document,
+            Node::new(NodeData::Doctype {
+                name: name,
+                public_id: public_id,
+                system_id: system_id,
+            }),
+        );
     }
 
     fn add_attrs_if_missing(&mut self, target: &Handle, attrs: Vec<Attribute>) {
@@ -295,11 +411,15 @@ impl TreeSink for RcDom {
             panic!("not an element")
         };
 
-        let existing_names =
-            existing.iter().map(|e| e.name.clone()).collect::<HashSet<_>>();
-        existing.extend(attrs.into_iter().filter(|attr| {
-            !existing_names.contains(&attr.name)
-        }));
+        let existing_names = existing
+            .iter()
+            .map(|e| e.name.clone())
+            .collect::<HashSet<_>>();
+        existing.extend(
+            attrs
+                .into_iter()
+                .filter(|attr| !existing_names.contains(&attr.name)),
+        );
     }
 
     fn remove_from_parent(&mut self, target: &Handle) {
@@ -311,13 +431,20 @@ impl TreeSink for RcDom {
         let mut new_children = new_parent.children.borrow_mut();
         for child in children.iter() {
             let previous_parent = child.parent.replace(Some(Rc::downgrade(&new_parent)));
-            assert!(Rc::ptr_eq(&node, &previous_parent.unwrap().upgrade().expect("dangling weak")))
+            assert!(Rc::ptr_eq(
+                &node,
+                &previous_parent.unwrap().upgrade().expect("dangling weak")
+            ))
         }
         new_children.extend(mem::replace(&mut *children, Vec::new()));
     }
 
     fn is_mathml_annotation_xml_integration_point(&self, target: &Handle) -> bool {
-        if let NodeData::Element { mathml_annotation_xml_integration_point, .. } = target.data {
+        if let NodeData::Element {
+            mathml_annotation_xml_integration_point,
+            ..
+        } = target.data
+        {
             mathml_annotation_xml_integration_point
         } else {
             panic!("not an element!")
@@ -329,56 +456,77 @@ impl Default for RcDom {
     fn default() -> RcDom {
         RcDom {
             document: Node::new(NodeData::Document),
-            errors: vec!(),
+            errors: vec![],
             quirks_mode: tree_builder::NoQuirks,
         }
     }
 }
 
+enum SerializeOp {
+    Open(Handle),
+    Close(QualName)
+}
+
 impl Serialize for Handle {
     fn serialize<S>(&self, serializer: &mut S, traversal_scope: TraversalScope) -> io::Result<()>
-    where S: Serializer {
-        match (&traversal_scope, &self.data) {
-            (_, &NodeData::Element { ref name, ref attrs, .. }) => {
-                if traversal_scope == IncludeNode {
-                    try!(serializer.start_elem(name.clone(),
-                        attrs.borrow().iter().map(|at| (&at.name, &at.value[..]))));
+    where
+        S: Serializer,
+    {
+        let mut ops = match traversal_scope {
+            IncludeNode => vec![SerializeOp::Open(self.clone())],
+            ChildrenOnly(_) => self
+                .children
+                .borrow()
+                .iter()
+                .map(|h| SerializeOp::Open(h.clone())).collect(),
+        };
+
+        while !ops.is_empty() {
+            match ops.remove(0) {
+                SerializeOp::Open(handle) => {
+                    match &handle.data {
+                        &NodeData::Element {
+                            ref name,
+                            ref attrs,
+                            ..
+                        } => {
+                            try!(serializer.start_elem(
+                                name.clone(),
+                                attrs.borrow().iter().map(|at| (&at.name, &at.value[..]))
+                            ));
+
+                            ops.insert(0, SerializeOp::Close(name.clone()));
+
+                            for child in handle.children.borrow().iter().rev() {
+                                ops.insert(0, SerializeOp::Open(child.clone()));
+                            }
+                        }
+
+                        &NodeData::Doctype { ref name, .. } => serializer.write_doctype(&name)?,
+
+                        &NodeData::Text { ref contents } => {
+                            serializer.write_text(&contents.borrow())?
+                        }
+
+                        &NodeData::Comment { ref contents } => {
+                            serializer.write_comment(&contents)?
+                        },
+
+                        &NodeData::ProcessingInstruction {
+                            ref target,
+                            ref contents,
+                        }  => serializer.write_processing_instruction(target, contents)?,
+
+                        &NodeData::Document => panic!("Can't serialize Document node itself"),
+                    }
                 }
 
-                for handle in self.children.borrow().iter() {
-                    try!(handle.clone().serialize(serializer, IncludeNode));
+                SerializeOp::Close(name) => {
+                    try!(serializer.end_elem(name));
                 }
-
-                if traversal_scope == IncludeNode {
-                    try!(serializer.end_elem(name.clone()));
-                }
-                Ok(())
-            }
-
-            (&ChildrenOnly(_), &NodeData::Document) => {
-                for handle in self.children.borrow().iter() {
-                    try!(handle.clone().serialize(serializer, IncludeNode));
-                }
-                Ok(())
-            }
-
-            (&ChildrenOnly(_), _) => Ok(()),
-
-            (&IncludeNode, &NodeData::Doctype { ref name, .. }) => {
-                serializer.write_doctype(&name)
-            }
-            (&IncludeNode, &NodeData::Text { ref contents }) => {
-                serializer.write_text(&contents.borrow())
-            }
-            (&IncludeNode, &NodeData::Comment { ref contents }) => {
-                serializer.write_comment(&contents)
-            }
-            (&IncludeNode, &NodeData::ProcessingInstruction { ref target, ref contents }) => {
-                serializer.write_processing_instruction(target, contents)
-            },
-            (&IncludeNode, &NodeData::Document) => {
-                panic!("Can't serialize Document node itself")
             }
         }
+
+        Ok(())
     }
 }

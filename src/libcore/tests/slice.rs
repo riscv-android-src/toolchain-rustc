@@ -89,6 +89,19 @@ fn test_iterator_nth() {
 }
 
 #[test]
+fn test_iterator_nth_back() {
+    let v: &[_] = &[0, 1, 2, 3, 4];
+    for i in 0..v.len() {
+        assert_eq!(v.iter().nth_back(i).unwrap(), &v[v.len() - i - 1]);
+    }
+    assert_eq!(v.iter().nth_back(v.len()), None);
+
+    let mut iter = v.iter();
+    assert_eq!(iter.nth_back(2).unwrap(), &v[2]);
+    assert_eq!(iter.nth_back(1).unwrap(), &v[0]);
+}
+
+#[test]
 fn test_iterator_last() {
     let v: &[_] = &[0, 1, 2, 3, 4];
     assert_eq!(v.iter().last().unwrap(), &4);
@@ -132,6 +145,30 @@ fn test_chunks_nth() {
     let mut c2 = v2.chunks(3);
     assert_eq!(c2.nth(1).unwrap(), &[3, 4]);
     assert_eq!(c2.next(), None);
+}
+
+#[test]
+fn test_chunks_nth_back() {
+    let v: &[i32] = &[0, 1, 2, 3, 4, 5];
+    let mut c = v.chunks(2);
+    assert_eq!(c.nth_back(1).unwrap(), &[2, 3]);
+    assert_eq!(c.next().unwrap(), &[0, 1]);
+    assert_eq!(c.next(), None);
+
+    let v2: &[i32] = &[0, 1, 2, 3, 4];
+    let mut c2 = v2.chunks(3);
+    assert_eq!(c2.nth_back(1).unwrap(), &[0, 1, 2]);
+    assert_eq!(c2.next(), None);
+    assert_eq!(c2.next_back(), None);
+
+    let v3: &[i32] = &[0, 1, 2, 3, 4];
+    let mut c3 = v3.chunks(10);
+    assert_eq!(c3.nth_back(0).unwrap(), &[0, 1, 2, 3, 4]);
+    assert_eq!(c3.next(), None);
+
+    let v4: &[i32] = &[0, 1, 2];
+    let mut c4 = v4.chunks(10);
+    assert_eq!(c4.nth_back(1_000_000_000usize), None);
 }
 
 #[test]
@@ -357,6 +394,19 @@ fn test_rchunks_nth() {
 }
 
 #[test]
+fn test_rchunks_nth_back() {
+    let v: &[i32] = &[0, 1, 2, 3, 4, 5];
+    let mut c = v.rchunks(2);
+    assert_eq!(c.nth_back(1).unwrap(), &[2, 3]);
+    assert_eq!(c.next_back().unwrap(), &[4, 5]);
+
+    let v2: &[i32] = &[0, 1, 2, 3, 4];
+    let mut c2 = v2.rchunks(3);
+    assert_eq!(c2.nth_back(1).unwrap(), &[2, 3, 4]);
+    assert_eq!(c2.next_back(), None);
+}
+
+#[test]
 fn test_rchunks_last() {
     let v: &[i32] = &[0, 1, 2, 3, 4, 5];
     let c = v.rchunks(2);
@@ -405,6 +455,19 @@ fn test_rchunks_mut_nth() {
     let mut c2 = v2.rchunks_mut(3);
     assert_eq!(c2.nth(1).unwrap(), &[0, 1]);
     assert_eq!(c2.next(), None);
+}
+
+#[test]
+fn test_rchunks_mut_nth_back() {
+    let v: &mut [i32] = &mut [0, 1, 2, 3, 4, 5];
+    let mut c = v.rchunks_mut(2);
+    assert_eq!(c.nth_back(1).unwrap(), &[2, 3]);
+    assert_eq!(c.next_back().unwrap(), &[4, 5]);
+
+    let v2: &mut [i32] = &mut [0, 1, 2, 3, 4];
+    let mut c2 = v2.rchunks_mut(3);
+    assert_eq!(c2.nth_back(1).unwrap(), &[2, 3, 4]);
+    assert_eq!(c2.next_back(), None);
 }
 
 #[test]
@@ -457,6 +520,19 @@ fn test_rchunks_exact_nth() {
     let v2: &[i32] = &[0, 1, 2, 3, 4, 5, 6];
     let mut c2 = v2.rchunks_exact(3);
     assert_eq!(c2.nth(1).unwrap(), &[1, 2, 3]);
+    assert_eq!(c2.next(), None);
+}
+
+#[test]
+fn test_rchunks_exact_nth_back() {
+    let v: &[i32] = &[0, 1, 2, 3, 4, 5];
+    let mut c = v.rchunks_exact(2);
+    assert_eq!(c.nth_back(1).unwrap(), &[2, 3]);
+    assert_eq!(c.next_back().unwrap(), &[4, 5]);
+
+    let v2: &[i32] = &[0, 1, 2, 3, 4, 5, 6];
+    let mut c2 = v2.rchunks_exact(3);
+    assert_eq!(c2.nth_back(1).unwrap(), &[4, 5, 6]);
     assert_eq!(c2.next(), None);
 }
 
@@ -515,6 +591,19 @@ fn test_rchunks_exact_mut_nth() {
     let v2: &mut [i32] = &mut [0, 1, 2, 3, 4, 5, 6];
     let mut c2 = v2.rchunks_exact_mut(3);
     assert_eq!(c2.nth(1).unwrap(), &[1, 2, 3]);
+    assert_eq!(c2.next(), None);
+}
+
+#[test]
+fn test_rchunks_exact_mut_nth_back() {
+    let v: &mut [i32] = &mut [0, 1, 2, 3, 4, 5];
+    let mut c = v.rchunks_exact_mut(2);
+    assert_eq!(c.nth_back(1).unwrap(), &[2, 3]);
+    assert_eq!(c.next_back().unwrap(), &[4, 5]);
+
+    let v2: &mut [i32] = &mut [0, 1, 2, 3, 4, 5, 6];
+    let mut c2 = v2.rchunks_exact_mut(3);
+    assert_eq!(c2.nth_back(1).unwrap(), &[4, 5, 6]);
     assert_eq!(c2.next(), None);
 }
 
@@ -1436,6 +1525,13 @@ fn test_copy_within() {
     let mut bytes = *b"Hello, World!";
     bytes.copy_within(.., 0);
     assert_eq!(&bytes, b"Hello, World!");
+
+    // Ensure that copying at the end of slice won't cause UB.
+    let mut bytes = *b"Hello, World!";
+    bytes.copy_within(13..13, 5);
+    assert_eq!(&bytes, b"Hello, World!");
+    bytes.copy_within(5..5, 13);
+    assert_eq!(&bytes, b"Hello, World!");
 }
 
 #[test]
@@ -1459,6 +1555,13 @@ fn test_copy_within_panics_src_inverted() {
     let mut bytes = *b"Hello, World!";
     // 2 is greater than 1, so this range is invalid.
     bytes.copy_within(2..1, 0);
+}
+#[test]
+#[should_panic(expected = "attempted to index slice up to maximum usize")]
+fn test_copy_within_panics_src_out_of_bounds() {
+    let mut bytes = *b"Hello, World!";
+    // an inclusive range ending at usize::max_value() would make src_end overflow
+    bytes.copy_within(usize::max_value()..=usize::max_value(), 0);
 }
 
 #[test]

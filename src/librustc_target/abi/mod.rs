@@ -7,6 +7,7 @@ use std::fmt;
 use std::ops::{Add, Deref, Sub, Mul, AddAssign, Range, RangeInclusive};
 
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
+use syntax_pos::symbol::{sym, Symbol};
 
 pub mod call;
 
@@ -135,7 +136,7 @@ impl TargetDataLayout {
                     }
                     if bits >= i128_align_src && bits <= 128 {
                         // Default alignment for i128 is decided by taking the alignment of
-                        // largest-sized i{64...128}.
+                        // largest-sized i{64..=128}.
                         i128_align_src = bits;
                         dl.i128_align = a;
                     }
@@ -552,6 +553,13 @@ impl FloatTy {
         }
     }
 
+    pub fn to_symbol(self) -> Symbol {
+        match self {
+            FloatTy::F32 => sym::f32,
+            FloatTy::F64 => sym::f64,
+        }
+    }
+
     pub fn bit_width(self) -> usize {
         match self {
             FloatTy::F32 => 32,
@@ -575,7 +583,7 @@ pub enum Primitive {
     Pointer
 }
 
-impl<'a, 'tcx> Primitive {
+impl Primitive {
     pub fn size<C: HasDataLayout>(self, cx: &C) -> Size {
         let dl = cx.data_layout();
 
@@ -691,7 +699,16 @@ pub enum FieldPlacement {
         offsets: Vec<Size>,
 
         /// Maps source order field indices to memory order indices,
-        /// depending how fields were permuted.
+        /// depending on how the fields were reordered (if at all).
+        /// This is a permutation, with both the source order and the
+        /// memory order using the same (0..n) index ranges.
+        ///
+        /// Note that during computation of `memory_index`, sometimes
+        /// it is easier to operate on the inverse mapping (that is,
+        /// from memory order to source order), and that is usually
+        /// named `inverse_memory_index`.
+        ///
+        // FIXME(eddyb) build a better abstraction for permutations, if possible.
         // FIXME(camlorn) also consider small vector  optimization here.
         memory_index: Vec<u32>
     }

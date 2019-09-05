@@ -44,7 +44,7 @@ impl<W: StableHasherResult> StableHasher<W> {
 impl StableHasherResult for u128 {
     fn finish(hasher: StableHasher<Self>) -> Self {
         let (_0, _1) = hasher.finalize();
-        (_0 as u128) | ((_1 as u128) << 64)
+        u128::from(_0) | (u128::from(_1) << 64)
     }
 }
 
@@ -323,6 +323,37 @@ impl<T: HashStable<CTX>, CTX> HashStable<CTX> for Vec<T> {
     }
 }
 
+impl<K, V, R, CTX> HashStable<CTX> for indexmap::IndexMap<K, V, R>
+    where K: HashStable<CTX> + Eq + Hash,
+          V: HashStable<CTX>,
+          R: BuildHasher,
+{
+    #[inline]
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          ctx: &mut CTX,
+                                          hasher: &mut StableHasher<W>) {
+        self.len().hash_stable(ctx, hasher);
+        for kv in self {
+            kv.hash_stable(ctx, hasher);
+        }
+    }
+}
+
+impl<K, R, CTX> HashStable<CTX> for indexmap::IndexSet<K, R>
+    where K: HashStable<CTX> + Eq + Hash,
+          R: BuildHasher,
+{
+    #[inline]
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          ctx: &mut CTX,
+                                          hasher: &mut StableHasher<W>) {
+        self.len().hash_stable(ctx, hasher);
+        for key in self {
+            key.hash_stable(ctx, hasher);
+        }
+    }
+}
+
 impl<A, CTX> HashStable<CTX> for SmallVec<[A; 1]> where A: HashStable<CTX> {
     #[inline]
     fn hash_stable<W: StableHasherResult>(&self,
@@ -464,6 +495,16 @@ impl<I: indexed_vec::Idx, T, CTX> HashStable<CTX> for indexed_vec::IndexVec<I, T
 
 
 impl<I: indexed_vec::Idx, CTX> HashStable<CTX> for bit_set::BitSet<I>
+{
+    fn hash_stable<W: StableHasherResult>(&self,
+                                          ctx: &mut CTX,
+                                          hasher: &mut StableHasher<W>) {
+        self.words().hash_stable(ctx, hasher);
+    }
+}
+
+impl<R: indexed_vec::Idx, C: indexed_vec::Idx, CTX> HashStable<CTX>
+for bit_set::BitMatrix<R, C>
 {
     fn hash_stable<W: StableHasherResult>(&self,
                                           ctx: &mut CTX,

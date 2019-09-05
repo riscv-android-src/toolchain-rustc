@@ -66,63 +66,64 @@
 #![doc(html_root_url = "https://docs.rs/git2/0.6")]
 #![allow(trivial_numeric_casts, trivial_casts)]
 #![deny(missing_docs)]
+#![warn(rust_2018_idioms)]
 #![cfg_attr(test, deny(warnings))]
 
-extern crate libc;
-extern crate url;
-extern crate libgit2_sys as raw;
-#[macro_use] extern crate bitflags;
-#[macro_use] extern crate log;
-#[cfg(test)] extern crate tempdir;
+use bitflags::bitflags;
+use libgit2_sys as raw;
 
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::str;
 use std::sync::{Once, ONCE_INIT};
 
-pub use blame::{Blame, BlameHunk, BlameIter, BlameOptions};
-pub use blob::{Blob, BlobWriter};
-pub use branch::{Branch, Branches};
-pub use buf::Buf;
-pub use commit::{Commit, Parents};
-pub use config::{Config, ConfigEntry, ConfigEntries};
-pub use cred::{Cred, CredentialHelper};
-pub use describe::{Describe, DescribeFormatOptions, DescribeOptions};
-pub use diff::{Diff, DiffDelta, DiffFile, DiffOptions, Deltas};
-pub use diff::{DiffBinary, DiffBinaryFile, DiffBinaryKind};
-pub use diff::{DiffLine, DiffHunk, DiffStats, DiffFindOptions};
-pub use error::Error;
-pub use index::{Index, IndexEntry, IndexEntries, IndexMatchedPath};
-pub use merge::{AnnotatedCommit, MergeOptions};
-pub use message::{message_prettify, DEFAULT_COMMENT_CHAR};
-pub use note::{Note, Notes};
-pub use object::Object;
-pub use oid::Oid;
-pub use packbuilder::{PackBuilder, PackBuilderStage};
-pub use pathspec::{Pathspec, PathspecMatchList, PathspecFailedEntries};
-pub use pathspec::{PathspecDiffEntries, PathspecEntries};
-pub use patch::Patch;
-pub use proxy_options::ProxyOptions;
-pub use rebase::{Rebase, RebaseOptions, RebaseOperation, RebaseOperationType};
-pub use reference::{Reference, References, ReferenceNames};
-pub use reflog::{Reflog, ReflogEntry, ReflogIter};
-pub use refspec::Refspec;
-pub use remote::{Remote, RemoteConnection, Refspecs, RemoteHead, FetchOptions, PushOptions};
-pub use remote_callbacks::{RemoteCallbacks, Credentials, TransferProgress};
-pub use remote_callbacks::{TransportMessage, Progress, UpdateTips};
-pub use repo::{Repository, RepositoryInitOptions};
-pub use revspec::Revspec;
-pub use revwalk::Revwalk;
-pub use signature::Signature;
-pub use status::{StatusOptions, Statuses, StatusIter, StatusEntry, StatusShow};
-pub use stash::{StashApplyOptions, StashCb, StashApplyProgressCb};
-pub use submodule::{Submodule, SubmoduleUpdateOptions};
-pub use tag::Tag;
-pub use time::{Time, IndexTime};
-pub use tree::{Tree, TreeEntry, TreeIter, TreeWalkMode, TreeWalkResult};
-pub use treebuilder::TreeBuilder;
-pub use odb::{Odb, OdbObject, OdbReader, OdbWriter};
-pub use util::IntoCString;
+pub use crate::blame::{Blame, BlameHunk, BlameIter, BlameOptions};
+pub use crate::blob::{Blob, BlobWriter};
+pub use crate::branch::{Branch, Branches};
+pub use crate::buf::Buf;
+pub use crate::commit::{Commit, Parents};
+pub use crate::config::{Config, ConfigEntries, ConfigEntry};
+pub use crate::cred::{Cred, CredentialHelper};
+pub use crate::describe::{Describe, DescribeFormatOptions, DescribeOptions};
+pub use crate::diff::{Deltas, Diff, DiffDelta, DiffFile, DiffOptions};
+pub use crate::diff::{DiffBinary, DiffBinaryFile, DiffBinaryKind};
+pub use crate::diff::{DiffFindOptions, DiffHunk, DiffLine, DiffStats};
+pub use crate::error::Error;
+pub use crate::index::{
+    Index, IndexConflict, IndexConflicts, IndexEntries, IndexEntry, IndexMatchedPath,
+};
+pub use crate::merge::{AnnotatedCommit, MergeOptions};
+pub use crate::message::{message_prettify, DEFAULT_COMMENT_CHAR};
+pub use crate::note::{Note, Notes};
+pub use crate::object::Object;
+pub use crate::odb::{Odb, OdbObject, OdbReader, OdbWriter};
+pub use crate::oid::Oid;
+pub use crate::packbuilder::{PackBuilder, PackBuilderStage};
+pub use crate::patch::Patch;
+pub use crate::pathspec::{Pathspec, PathspecFailedEntries, PathspecMatchList};
+pub use crate::pathspec::{PathspecDiffEntries, PathspecEntries};
+pub use crate::proxy_options::ProxyOptions;
+pub use crate::rebase::{Rebase, RebaseOperation, RebaseOperationType, RebaseOptions};
+pub use crate::reference::{Reference, ReferenceNames, References};
+pub use crate::reflog::{Reflog, ReflogEntry, ReflogIter};
+pub use crate::refspec::Refspec;
+pub use crate::remote::{
+    FetchOptions, PushOptions, Refspecs, Remote, RemoteConnection, RemoteHead,
+};
+pub use crate::remote_callbacks::{Credentials, RemoteCallbacks, TransferProgress};
+pub use crate::remote_callbacks::{Progress, TransportMessage, UpdateTips};
+pub use crate::repo::{Repository, RepositoryInitOptions};
+pub use crate::revspec::Revspec;
+pub use crate::revwalk::Revwalk;
+pub use crate::signature::Signature;
+pub use crate::stash::{StashApplyOptions, StashApplyProgressCb, StashCb};
+pub use crate::status::{StatusEntry, StatusIter, StatusOptions, StatusShow, Statuses};
+pub use crate::submodule::{Submodule, SubmoduleUpdateOptions};
+pub use crate::tag::Tag;
+pub use crate::time::{IndexTime, Time};
+pub use crate::tree::{Tree, TreeEntry, TreeIter, TreeWalkMode, TreeWalkResult};
+pub use crate::treebuilder::TreeBuilder;
+pub use crate::util::IntoCString;
 
 // Create a convinience method on bitflag struct which checks the given flag
 macro_rules! is_bit_set {
@@ -310,7 +311,7 @@ pub enum ObjectType {
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum ReferenceType {
     /// A reference which points at an object id.
-    Oid,
+    Direct,
 
     /// A reference which points at another reference.
     Symbolic,
@@ -443,9 +444,9 @@ bitflags! {
     /// Flags for the `flags` field of an IndexEntry.
     pub struct IndexEntryFlag: u16 {
         /// Set when the `extended_flags` field is valid.
-        const EXTENDED = raw::GIT_IDXENTRY_EXTENDED as u16;
+        const EXTENDED = raw::GIT_INDEX_ENTRY_EXTENDED as u16;
         /// "Assume valid" flag
-        const VALID = raw::GIT_IDXENTRY_VALID as u16;
+        const VALID = raw::GIT_INDEX_ENTRY_VALID as u16;
     }
 }
 
@@ -458,51 +459,19 @@ bitflags! {
     /// Flags for the `extended_flags` field of an IndexEntry.
     pub struct IndexEntryExtendedFlag: u16 {
         /// An "intent to add" entry from "git add -N"
-        const INTENT_TO_ADD = raw::GIT_IDXENTRY_INTENT_TO_ADD as u16;
+        const INTENT_TO_ADD = raw::GIT_INDEX_ENTRY_INTENT_TO_ADD as u16;
         /// Skip the associated worktree file, for sparse checkouts
-        const SKIP_WORKTREE = raw::GIT_IDXENTRY_SKIP_WORKTREE as u16;
-        /// Reserved for a future on-disk extended flag
-        const EXTENDED2 = raw::GIT_IDXENTRY_EXTENDED2 as u16;
+        const SKIP_WORKTREE = raw::GIT_INDEX_ENTRY_SKIP_WORKTREE as u16;
 
         #[allow(missing_docs)]
-        const UPDATE = raw::GIT_IDXENTRY_UPDATE as u16;
-        #[allow(missing_docs)]
-        const REMOVE = raw::GIT_IDXENTRY_REMOVE as u16;
-        #[allow(missing_docs)]
-        const UPTODATE = raw::GIT_IDXENTRY_UPTODATE as u16;
-        #[allow(missing_docs)]
-        const ADDED = raw::GIT_IDXENTRY_ADDED as u16;
-
-        #[allow(missing_docs)]
-        const HASHED = raw::GIT_IDXENTRY_HASHED as u16;
-        #[allow(missing_docs)]
-        const UNHASHED = raw::GIT_IDXENTRY_UNHASHED as u16;
-        #[allow(missing_docs)]
-        const WT_REMOVE = raw::GIT_IDXENTRY_WT_REMOVE as u16;
-        #[allow(missing_docs)]
-        const CONFLICTED = raw::GIT_IDXENTRY_CONFLICTED as u16;
-
-        #[allow(missing_docs)]
-        const UNPACKED = raw::GIT_IDXENTRY_UNPACKED as u16;
-        #[allow(missing_docs)]
-        const NEW_SKIP_WORKTREE = raw::GIT_IDXENTRY_NEW_SKIP_WORKTREE as u16;
+        const UPTODATE = raw::GIT_INDEX_ENTRY_UPTODATE as u16;
     }
 }
 
 impl IndexEntryExtendedFlag {
     is_bit_set!(is_intent_to_add, IndexEntryExtendedFlag::INTENT_TO_ADD);
     is_bit_set!(is_skip_worktree, IndexEntryExtendedFlag::SKIP_WORKTREE);
-    is_bit_set!(is_extended2, IndexEntryExtendedFlag::EXTENDED2);
-    is_bit_set!(is_update, IndexEntryExtendedFlag::UPDATE);
-    is_bit_set!(is_remove, IndexEntryExtendedFlag::REMOVE);
     is_bit_set!(is_up_to_date, IndexEntryExtendedFlag::UPTODATE);
-    is_bit_set!(is_added, IndexEntryExtendedFlag::ADDED);
-    is_bit_set!(is_hashed, IndexEntryExtendedFlag::HASHED);
-    is_bit_set!(is_unhashed, IndexEntryExtendedFlag::UNHASHED);
-    is_bit_set!(is_wt_remove, IndexEntryExtendedFlag::WT_REMOVE);
-    is_bit_set!(is_conflicted, IndexEntryExtendedFlag::CONFLICTED);
-    is_bit_set!(is_unpacked, IndexEntryExtendedFlag::UNPACKED);
-    is_bit_set!(is_new_skip_worktree, IndexEntryExtendedFlag::NEW_SKIP_WORKTREE);
 }
 
 bitflags! {
@@ -523,7 +492,10 @@ bitflags! {
 impl IndexAddOption {
     is_bit_set!(is_default, IndexAddOption::DEFAULT);
     is_bit_set!(is_force, IndexAddOption::FORCE);
-    is_bit_set!(is_disable_pathspec_match, IndexAddOption::DISABLE_PATHSPEC_MATCH);
+    is_bit_set!(
+        is_disable_pathspec_match,
+        IndexAddOption::DISABLE_PATHSPEC_MATCH
+    );
     is_bit_set!(is_check_pathspec, IndexAddOption::CHECK_PATHSPEC);
 }
 
@@ -626,15 +598,18 @@ impl MergePreference {
     is_bit_set!(is_fastforward_only, MergePreference::FASTFORWARD_ONLY);
 }
 
-#[cfg(test)] #[macro_use] mod test;
-#[macro_use] mod panic;
+#[cfg(test)]
+#[macro_use]
+mod test;
+#[macro_use]
+mod panic;
 mod call;
 mod util;
 
 pub mod build;
 pub mod cert;
-pub mod string_array;
 pub mod oid_array;
+pub mod string_array;
 pub mod transport;
 
 mod blame;
@@ -655,8 +630,8 @@ mod object;
 mod odb;
 mod oid;
 mod packbuilder;
-mod pathspec;
 mod patch;
+mod pathspec;
 mod proxy_options;
 mod rebase;
 mod reference;
@@ -668,9 +643,9 @@ mod repo;
 mod revspec;
 mod revwalk;
 mod signature;
+mod stash;
 mod status;
 mod submodule;
-mod stash;
 mod tag;
 mod time;
 mod tree;
@@ -686,10 +661,13 @@ fn init() {
     raw::init();
 }
 
-#[cfg(all(unix, not(target_os = "macos"), not(target_os = "ios"), feature = "https"))]
+#[cfg(all(
+    unix,
+    not(target_os = "macos"),
+    not(target_os = "ios"),
+    feature = "https"
+))]
 fn openssl_env_init() {
-    extern crate openssl_probe;
-
     // Currently, libgit2 leverages OpenSSL for SSL support when cloning
     // repositories over HTTPS. This means that we're picking up an OpenSSL
     // dependency on non-Windows platforms (where it has its own HTTPS
@@ -804,11 +782,15 @@ fn openssl_env_init() {
     openssl_probe::init_ssl_cert_env_vars();
 }
 
-#[cfg(any(windows, target_os = "macos", target_os = "ios", not(feature = "https")))]
+#[cfg(any(
+    windows,
+    target_os = "macos",
+    target_os = "ios",
+    not(feature = "https")
+))]
 fn openssl_env_init() {}
 
-unsafe fn opt_bytes<'a, T>(_anchor: &'a T,
-                           c: *const libc::c_char) -> Option<&'a [u8]> {
+unsafe fn opt_bytes<'a, T>(_anchor: &'a T, c: *const libc::c_char) -> Option<&'a [u8]> {
     if c.is_null() {
         None
     } else {
@@ -819,7 +801,7 @@ unsafe fn opt_bytes<'a, T>(_anchor: &'a T,
 fn opt_cstr<T: IntoCString>(o: Option<T>) -> Result<Option<CString>, Error> {
     match o {
         Some(s) => s.into_c_string().map(Some),
-        None => Ok(None)
+        None => Ok(None),
     }
 }
 
@@ -833,25 +815,25 @@ impl ObjectType {
         }
     }
 
-    /// Determine if the given git_otype is a valid loose object type.
+    /// Determine if the given git_object_t is a valid loose object type.
     pub fn is_loose(&self) -> bool {
         unsafe { (call!(raw::git_object_typeisloose(*self)) == 1) }
     }
 
-    /// Convert a raw git_otype to an ObjectType
-    pub fn from_raw(raw: raw::git_otype) -> Option<ObjectType> {
+    /// Convert a raw git_object_t to an ObjectType
+    pub fn from_raw(raw: raw::git_object_t) -> Option<ObjectType> {
         match raw {
-            raw::GIT_OBJ_ANY => Some(ObjectType::Any),
-            raw::GIT_OBJ_COMMIT => Some(ObjectType::Commit),
-            raw::GIT_OBJ_TREE => Some(ObjectType::Tree),
-            raw::GIT_OBJ_BLOB => Some(ObjectType::Blob),
-            raw::GIT_OBJ_TAG => Some(ObjectType::Tag),
+            raw::GIT_OBJECT_ANY => Some(ObjectType::Any),
+            raw::GIT_OBJECT_COMMIT => Some(ObjectType::Commit),
+            raw::GIT_OBJECT_TREE => Some(ObjectType::Tree),
+            raw::GIT_OBJECT_BLOB => Some(ObjectType::Blob),
+            raw::GIT_OBJECT_TAG => Some(ObjectType::Tag),
             _ => None,
         }
     }
 
     /// Convert this kind into its raw representation
-    pub fn raw(&self) -> raw::git_otype {
+    pub fn raw(&self) -> raw::git_object_t {
         call::convert(self)
     }
 
@@ -863,7 +845,7 @@ impl ObjectType {
 }
 
 impl fmt::Display for ObjectType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.str().fmt(f)
     }
 }
@@ -872,23 +854,23 @@ impl ReferenceType {
     /// Convert an object type to its string representation.
     pub fn str(&self) -> &'static str {
         match self {
-            &ReferenceType::Oid => "oid",
-            &ReferenceType::Symbolic => "symbolic",
+            ReferenceType::Direct => "direct",
+            ReferenceType::Symbolic => "symbolic",
         }
     }
 
-    /// Convert a raw git_ref_t to a ReferenceType.
-    pub fn from_raw(raw: raw::git_ref_t) -> Option<ReferenceType> {
+    /// Convert a raw git_reference_t to a ReferenceType.
+    pub fn from_raw(raw: raw::git_reference_t) -> Option<ReferenceType> {
         match raw {
-            raw::GIT_REF_OID => Some(ReferenceType::Oid),
-            raw::GIT_REF_SYMBOLIC => Some(ReferenceType::Symbolic),
+            raw::GIT_REFERENCE_DIRECT => Some(ReferenceType::Direct),
+            raw::GIT_REFERENCE_SYMBOLIC => Some(ReferenceType::Symbolic),
             _ => None,
         }
     }
 }
 
 impl fmt::Display for ReferenceType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.str().fmt(f)
     }
 }

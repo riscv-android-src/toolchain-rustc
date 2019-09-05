@@ -1,6 +1,6 @@
 /// The tokenizer for the query interpreter
 
-use error::*;
+use crate::error::{Error, Result};
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Token {
@@ -161,7 +161,7 @@ pub fn tokenize_with_seperator(query: &str, seperator: char) -> Result<Token> {
         }
 
         match RE.captures(s) {
-            None => return Err(Error::from(ErrorKind::ArrayAccessWithoutIndex)),
+            None => return Err(Error::ArrayAccessWithoutIndex),
             Some(captures) => {
                 trace!("Captured: {:?}", captures);
                 match captures.get(0) {
@@ -206,11 +206,11 @@ pub fn tokenize_with_seperator(query: &str, seperator: char) -> Result<Token> {
 
                 if token.len() == 0 {
                     trace!("build_token_tree(...): Empty identifier... returning Error");
-                    return Err(Error::from(ErrorKind::EmptyIdentifier));
+                    return Err(Error::EmptyIdentifier)
                 }
 
-                let mut token = try!(mk_token_object(token));
-                try!(build_token_tree(split, &mut token));
+                let mut token = r#try!(mk_token_object(token));
+                r#try!(build_token_tree(split, &mut token));
                 last.set_next(token);
             }
         }
@@ -221,24 +221,24 @@ pub fn tokenize_with_seperator(query: &str, seperator: char) -> Result<Token> {
 
     if query.is_empty() {
         trace!("Query is empty. Returning error");
-        return Err(Error::from(ErrorKind::EmptyQueryError));
+        return Err(Error::EmptyQueryError)
     }
 
     let mut tokens = query.split(seperator);
     trace!("Tokens splitted: {:?}", tokens);
 
     match tokens.next() {
-        None        => Err(Error::from(ErrorKind::EmptyQueryError)),
+        None        => Err(Error::EmptyQueryError),
         Some(token) => {
             trace!("next Token: {:?}", token);
 
             if token.len() == 0 {
                 trace!("Empty token. Returning Error");
-                return Err(Error::from(ErrorKind::EmptyIdentifier));
+                return Err(Error::EmptyIdentifier);
             }
 
-            let mut tok = try!(mk_token_object(token));
-            let _       = try!(build_token_tree(&mut tokens, &mut tok));
+            let mut tok = r#try!(mk_token_object(token));
+            let _       = r#try!(build_token_tree(&mut tokens, &mut tok));
 
             trace!("Returning Ok({:?})", tok);
             Ok(tok)
@@ -248,7 +248,7 @@ pub fn tokenize_with_seperator(query: &str, seperator: char) -> Result<Token> {
 
 #[cfg(test)]
 mod test {
-    use error::ErrorKind;
+    use crate::error::Error;
     use super::*;
 
     use std::ops::Deref;
@@ -259,8 +259,7 @@ mod test {
         assert!(tokens.is_err());
         let tokens = tokens.unwrap_err();
 
-        let errkind = tokens.kind();
-        assert!(is_match!(errkind, &ErrorKind::EmptyQueryError { .. }));
+        assert!(is_match!(tokens, Error::EmptyQueryError { .. }));
     }
 
     #[test]
@@ -269,8 +268,7 @@ mod test {
         assert!(tokens.is_err());
         let tokens = tokens.unwrap_err();
 
-        let errkind = tokens.kind();
-        assert!(is_match!(errkind, &ErrorKind::EmptyIdentifier { .. }));
+        assert!(is_match!(tokens, Error::EmptyIdentifier { .. }));
     }
 
     #[test]
@@ -279,8 +277,7 @@ mod test {
         assert!(tokens.is_err());
         let tokens = tokens.unwrap_err();
 
-        let errkind = tokens.kind();
-        assert!(is_match!(errkind, &ErrorKind::ArrayAccessWithoutIndex { .. }));
+        assert!(is_match!(tokens, Error::ArrayAccessWithoutIndex { .. }));
     }
 
     #[test]
@@ -289,8 +286,7 @@ mod test {
         assert!(tokens.is_err());
         let tokens = tokens.unwrap_err();
 
-        let errkind = tokens.kind();
-        assert!(is_match!(errkind, &ErrorKind::ArrayAccessWithoutIndex { .. }));
+        assert!(is_match!(tokens, Error::ArrayAccessWithoutIndex { .. }));
     }
 
     #[test]
@@ -299,8 +295,7 @@ mod test {
         assert!(tokens.is_err());
         let tokens = tokens.unwrap_err();
 
-        let errkind = tokens.kind();
-        assert!(is_match!(errkind, &ErrorKind::ArrayAccessWithoutIndex { .. }));
+        assert!(is_match!(tokens, Error::ArrayAccessWithoutIndex { .. }));
     }
 
     #[test]
@@ -387,8 +382,7 @@ mod test {
         assert!(tokens.is_err());
         let tokens = tokens.unwrap_err();
 
-        let errkind = tokens.kind();
-        assert!(is_match!(errkind, &ErrorKind::EmptyIdentifier { .. }));
+        assert!(is_match!(tokens, Error::EmptyIdentifier { .. }));
     }
 
     quickcheck! {

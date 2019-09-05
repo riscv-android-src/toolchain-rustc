@@ -145,7 +145,7 @@ use crate::pin::Pin;
 // which basically means it must be `Option`.
 
 /// The `Option` type. See [the module level documentation](index.html) for more.
-#[derive(Clone, Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
+#[derive(Copy, PartialEq, PartialOrd, Eq, Ord, Debug, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Option<T> {
     /// No value
@@ -725,8 +725,6 @@ impl<T> Option<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(option_xor)]
-    ///
     /// let x = Some(2);
     /// let y: Option<u32> = None;
     /// assert_eq!(x.xor(y), Some(2));
@@ -744,7 +742,7 @@ impl<T> Option<T> {
     /// assert_eq!(x.xor(y), None);
     /// ```
     #[inline]
-    #[unstable(feature = "option_xor", issue = "50512")]
+    #[stable(feature = "option_xor", since = "1.37.0")]
     pub fn xor(self, optb: Option<T>) -> Option<T> {
         match (self, optb) {
             (Some(a), None) => Some(a),
@@ -1039,6 +1037,25 @@ fn expect_failed(msg: &str) -> ! {
 /////////////////////////////////////////////////////////////////////////////
 // Trait implementations
 /////////////////////////////////////////////////////////////////////////////
+
+#[stable(feature = "rust1", since = "1.0.0")]
+impl<T: Clone> Clone for Option<T> {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self {
+            Some(x) => Some(x.clone()),
+            None => None,
+        }
+    }
+
+    #[inline]
+    fn clone_from(&mut self, source: &Self) {
+        match (self, source) {
+            (Some(to), Some(from)) => to.clone_from(from),
+            (to, from) => *to = from.clone(),
+        }
+    }
+}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<T> Default for Option<T> {

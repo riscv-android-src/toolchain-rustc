@@ -1,7 +1,7 @@
-use rustc::mir::interpret::{ConstValue, ErrorHandled};
+use rustc::mir::interpret::{ConstValue, ErrorHandled, Pointer, Scalar};
 use rustc::mir;
 use rustc::ty;
-use rustc::ty::layout::{self, Align, LayoutOf, TyLayout};
+use rustc::ty::layout::{self, Align, LayoutOf, TyLayout, Size};
 
 use crate::base;
 use crate::MemFlags;
@@ -53,7 +53,7 @@ impl<V: CodegenObject> fmt::Debug for OperandRef<'tcx, V> {
     }
 }
 
-impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
+impl<'a, 'tcx, V: CodegenObject> OperandRef<'tcx, V> {
     pub fn new_zst<Bx: BuilderMethods<'a, 'tcx, Value = V>>(
         bx: &mut Bx,
         layout: TyLayout<'tcx>
@@ -67,12 +67,12 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
 
     pub fn from_const<Bx: BuilderMethods<'a, 'tcx, Value = V>>(
         bx: &mut Bx,
-        val: ty::Const<'tcx>
-    ) -> Result<Self, ErrorHandled> {
+        val: &'tcx ty::Const<'tcx>
+    ) -> Self {
         let layout = bx.layout_of(val.ty);
 
         if layout.is_zst() {
-            return Ok(OperandRef::new_zst(bx, layout));
+            return OperandRef::new_zst(bx, layout);
         }
 
         let val = match val.val {
@@ -92,28 +92,32 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
                 );
                 OperandValue::Immediate(llval)
             },
-            ConstValue::Slice(a, b) => {
+            ConstValue::Slice { data, start, end } => {
                 let a_scalar = match layout.abi {
                     layout::Abi::ScalarPair(ref a, _) => a,
                     _ => bug!("from_const: invalid ScalarPair layout: {:#?}", layout)
                 };
+                let a = Scalar::from(Pointer::new(
+                    bx.tcx().alloc_map.lock().create_memory_alloc(data),
+                    Size::from_bytes(start as u64),
+                )).into();
                 let a_llval = bx.scalar_to_backend(
                     a,
                     a_scalar,
                     bx.scalar_pair_element_backend_type(layout, 0, true),
                 );
-                let b_llval = bx.const_usize(b);
+                let b_llval = bx.const_usize((end - start) as u64);
                 OperandValue::Pair(a_llval, b_llval)
             },
-            ConstValue::ByRef(ptr, alloc) => {
-                return Ok(bx.load_operand(bx.from_const_alloc(layout, alloc, ptr.offset)));
+            ConstValue::ByRef { offset, align, alloc } => {
+                return bx.load_operand(bx.from_const_alloc(layout, align, alloc, offset));
             },
         };
 
-        Ok(OperandRef {
+        OperandRef {
             val,
             layout
-        })
+        }
     }
 
     /// Asserts that this operand refers to a scalar and returns
@@ -262,7 +266,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
     }
 }
 
-impl<'a, 'tcx: 'a, V: CodegenObject> OperandValue<V> {
+impl<'a, 'tcx, V: CodegenObject> OperandValue<V> {
     pub fn store<Bx: BuilderMethods<'a, 'tcx, Value = V>>(
         self,
         bx: &mut Bx,
@@ -372,7 +376,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandValue<V> {
     }
 }
 
-impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
+impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     fn maybe_codegen_consume_direct(
         &mut self,
         bx: &mut Bx,
@@ -380,45 +384,47 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     ) -> Option<OperandRef<'tcx, Bx::Value>> {
         debug!("maybe_codegen_consume_direct(place={:?})", place);
 
-        // watch out for locals that do not have an
-        // alloca; they are handled somewhat differently
-        if let mir::Place::Base(mir::PlaceBase::Local(index)) = *place {
-            match self.locals[index] {
-                LocalRef::Operand(Some(o)) => {
-                    return Some(o);
-                }
-                LocalRef::Operand(None) => {
-                    bug!("use of {:?} before def", place);
-                }
-                LocalRef::Place(..) | LocalRef::UnsizedPlace(..) => {
-                    // use path below
-                }
-            }
-        }
-
-        // Moves out of scalar and scalar pair fields are trivial.
-        if let &mir::Place::Projection(ref proj) = place {
-            if let Some(o) = self.maybe_codegen_consume_direct(bx, &proj.base) {
-                match proj.elem {
-                    mir::ProjectionElem::Field(ref f, _) => {
-                        return Some(o.extract_field(bx, f.index()));
-                    }
-                    mir::ProjectionElem::Index(_) |
-                    mir::ProjectionElem::ConstantIndex { .. } => {
-                        // ZSTs don't require any actual memory access.
-                        // FIXME(eddyb) deduplicate this with the identical
-                        // checks in `codegen_consume` and `extract_field`.
-                        let elem = o.layout.field(bx.cx(), 0);
-                        if elem.is_zst() {
-                            return Some(OperandRef::new_zst(bx, elem));
+        place.iterate(|place_base, place_projection| {
+            if let mir::PlaceBase::Local(index) = place_base {
+                match self.locals[*index] {
+                    LocalRef::Operand(Some(mut o)) => {
+                        // Moves out of scalar and scalar pair fields are trivial.
+                        for proj in place_projection {
+                            match proj.elem {
+                                mir::ProjectionElem::Field(ref f, _) => {
+                                    o = o.extract_field(bx, f.index());
+                                }
+                                mir::ProjectionElem::Index(_) |
+                                mir::ProjectionElem::ConstantIndex { .. } => {
+                                    // ZSTs don't require any actual memory access.
+                                    // FIXME(eddyb) deduplicate this with the identical
+                                    // checks in `codegen_consume` and `extract_field`.
+                                    let elem = o.layout.field(bx.cx(), 0);
+                                    if elem.is_zst() {
+                                        o = OperandRef::new_zst(bx, elem);
+                                    } else {
+                                        return None;
+                                    }
+                                }
+                                _ => return None,
+                            }
                         }
-                    }
-                    _ => {}
-                }
-            }
-        }
 
-        None
+                        Some(o)
+                    }
+                    LocalRef::Operand(None) => {
+                        bug!("use of {:?} before def", place);
+                    }
+                    LocalRef::Place(..) | LocalRef::UnsizedPlace(..) => {
+                        // watch out for locals that do not have an
+                        // alloca; they are handled somewhat differently
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        })
     }
 
     pub fn codegen_consume(
@@ -462,7 +468,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             mir::Operand::Constant(ref constant) => {
                 let ty = self.monomorphize(&constant.ty);
                 self.eval_mir_constant(constant)
-                    .and_then(|c| OperandRef::from_const(bx, c))
+                    .map(|c| OperandRef::from_const(bx, c))
                     .unwrap_or_else(|err| {
                         match err {
                             // errored or at least linted

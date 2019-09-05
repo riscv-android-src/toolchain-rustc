@@ -11,7 +11,7 @@
 //! mutate it.
 //!
 //! Shareable mutable containers exist to permit mutability in a controlled manner, even in the
-//! presence of aliasing. Both `Cell<T>` and `RefCell<T>` allows to do this in a single threaded
+//! presence of aliasing. Both `Cell<T>` and `RefCell<T>` allow doing this in a single-threaded
 //! way. However, neither `Cell<T>` nor `RefCell<T>` are thread safe (they do not implement
 //! `Sync`). If you need to do aliasing and mutation between multiple threads it is possible to
 //! use [`Mutex`](../../std/sync/struct.Mutex.html),
@@ -67,16 +67,26 @@
 //! mutability:
 //!
 //! ```
+//! use std::cell::{RefCell, RefMut};
 //! use std::collections::HashMap;
-//! use std::cell::RefCell;
 //! use std::rc::Rc;
 //!
 //! fn main() {
 //!     let shared_map: Rc<RefCell<_>> = Rc::new(RefCell::new(HashMap::new()));
-//!     shared_map.borrow_mut().insert("africa", 92388);
-//!     shared_map.borrow_mut().insert("kyoto", 11837);
-//!     shared_map.borrow_mut().insert("piccadilly", 11826);
-//!     shared_map.borrow_mut().insert("marbles", 38);
+//!     // Create a new block to limit the scope of the dynamic borrow
+//!     {
+//!         let mut map: RefMut<_> = shared_map.borrow_mut();
+//!         map.insert("africa", 92388);
+//!         map.insert("kyoto", 11837);
+//!         map.insert("piccadilly", 11826);
+//!         map.insert("marbles", 38);
+//!     }
+//!
+//!     // Note that if we had not let the previous borrow of the cache fall out
+//!     // of scope then the subsequent borrow would cause a dynamic thread panic.
+//!     // This is the major hazard of using `RefCell`.
+//!     let total: i32 = shared_map.borrow().values().sum();
+//!     println!("{}", total);
 //! }
 //! ```
 //!
@@ -102,27 +112,15 @@
 //!
 //! impl Graph {
 //!     fn minimum_spanning_tree(&self) -> Vec<(i32, i32)> {
-//!         // Create a new scope to contain the lifetime of the
-//!         // dynamic borrow
-//!         {
-//!             // Take a reference to the inside of cache cell
-//!             let mut cache = self.span_tree_cache.borrow_mut();
-//!             if cache.is_some() {
-//!                 return cache.as_ref().unwrap().clone();
-//!             }
-//!
-//!             let span_tree = self.calc_span_tree();
-//!             *cache = Some(span_tree);
-//!         }
-//!
-//!         // Recursive call to return the just-cached value.
-//!         // Note that if we had not let the previous borrow
-//!         // of the cache fall out of scope then the subsequent
-//!         // recursive borrow would cause a dynamic thread panic.
-//!         // This is the major hazard of using `RefCell`.
-//!         self.minimum_spanning_tree()
+//!         self.span_tree_cache.borrow_mut()
+//!             .get_or_insert_with(|| self.calc_span_tree())
+//!             .clone()
 //!     }
-//! #   fn calc_span_tree(&self) -> Vec<(i32, i32)> { vec![] }
+//!
+//!     fn calc_span_tree(&self) -> Vec<(i32, i32)> {
+//!         // Expensive computation goes here
+//!         vec![]
+//!     }
 //! }
 //! ```
 //!
@@ -496,7 +494,6 @@ impl<T: ?Sized> Cell<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(as_cell)]
     /// use std::cell::Cell;
     ///
     /// let slice: &mut [i32] = &mut [1, 2, 3];
@@ -506,7 +503,7 @@ impl<T: ?Sized> Cell<T> {
     /// assert_eq!(slice_cell.len(), 3);
     /// ```
     #[inline]
-    #[unstable(feature = "as_cell", issue="43038")]
+    #[stable(feature = "as_cell", since = "1.37.0")]
     pub fn from_mut(t: &mut T) -> &Cell<T> {
         unsafe {
             &*(t as *mut T as *const Cell<T>)
@@ -543,7 +540,6 @@ impl<T> Cell<[T]> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(as_cell)]
     /// use std::cell::Cell;
     ///
     /// let slice: &mut [i32] = &mut [1, 2, 3];
@@ -552,7 +548,7 @@ impl<T> Cell<[T]> {
     ///
     /// assert_eq!(slice_cell.len(), 3);
     /// ```
-    #[unstable(feature = "as_cell", issue="43038")]
+    #[stable(feature = "as_cell", since = "1.37.0")]
     pub fn as_slice_of_cells(&self) -> &[Cell<T>] {
         unsafe {
             &*(self as *const Cell<[T]> as *const [Cell<T>])
@@ -969,7 +965,6 @@ impl<T: ?Sized> RefCell<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(borrow_state)]
     /// use std::cell::RefCell;
     ///
     /// let c = RefCell::new(5);
@@ -984,7 +979,7 @@ impl<T: ?Sized> RefCell<T> {
     ///     assert!(unsafe { c.try_borrow_unguarded() }.is_ok());
     /// }
     /// ```
-    #[unstable(feature = "borrow_state", issue = "27733")]
+    #[stable(feature = "borrow_state", since = "1.37.0")]
     #[inline]
     pub unsafe fn try_borrow_unguarded(&self) -> Result<&T, BorrowError> {
         if !is_writing(self.borrow.get()) {
@@ -1354,7 +1349,7 @@ impl<'b> BorrowRefMut<'b> {
         }
     }
 
-    // Clone a `BorrowRefMut`.
+    // Clones a `BorrowRefMut`.
     //
     // This is only valid if each `BorrowRefMut` is used to track a mutable
     // reference to a distinct, nonoverlapping range of the original object.

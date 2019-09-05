@@ -135,7 +135,7 @@ int git_attr_get_many_with_session(
 		goto cleanup;
 
 	info = git__calloc(num_attr, sizeof(attr_get_many_info));
-	GITERR_CHECK_ALLOC(info);
+	GIT_ERROR_CHECK_ALLOC(info);
 
 	git_vector_foreach(&files, i, file) {
 
@@ -233,7 +233,7 @@ int git_attr_foreach(
 
 				error = callback(assign->name, assign->value, payload);
 				if (error) {
-					giterr_set_after_callback(error);
+					git_error_set_after_callback(error);
 					goto cleanup;
 				}
 			}
@@ -277,7 +277,7 @@ static int system_attr_file(
 		error = git_sysdir_find_system_file(out, GIT_ATTR_FILE_SYSTEM);
 
 		if (error == GIT_ENOTFOUND)
-			giterr_clear();
+			git_error_clear();
 
 		return error;
 	}
@@ -286,7 +286,7 @@ static int system_attr_file(
 		error = git_sysdir_find_system_file(&attr_session->sysdir, GIT_ATTR_FILE_SYSTEM);
 
 		if (error == GIT_ENOTFOUND)
-			giterr_clear();
+			git_error_clear();
 		else if (error)
 			return error;
 
@@ -298,7 +298,7 @@ static int system_attr_file(
 
 	/* We can safely provide a git_buf with no allocation (asize == 0) to
 	 * a consumer. This allows them to treat this as a regular `git_buf`,
-	 * but their call to `git_buf_free` will not attempt to free it.
+	 * but their call to `git_buf_dispose` will not attempt to free it.
 	 */
 	git_buf_attach_notowned(
 		out, attr_session->sysdir.ptr, attr_session->sysdir.size);
@@ -359,7 +359,7 @@ static int attr_setup(git_repository *repo, git_attr_session *attr_session)
 		attr_session->init_setup = 1;
 
 out:
-	git_buf_free(&path);
+	git_buf_dispose(&path);
 
 	return error;
 }
@@ -377,12 +377,12 @@ int git_attr_add_macro(
 		return error;
 
 	macro = git__calloc(1, sizeof(git_attr_rule));
-	GITERR_CHECK_ALLOC(macro);
+	GIT_ERROR_CHECK_ALLOC(macro);
 
 	pool = &git_repository_attr_cache(repo)->pool;
 
 	macro->match.pattern = git_pool_strdup(pool, name);
-	GITERR_CHECK_ALLOC(macro->match.pattern);
+	GIT_ERROR_CHECK_ALLOC(macro->match.pattern);
 
 	macro->match.length = strlen(macro->match.pattern);
 	macro->match.flags = GIT_ATTR_FNMATCH_MACRO;
@@ -532,7 +532,7 @@ static int collect_attr_files(
 	info.flags = flags;
 	info.workdir = workdir;
 	if (git_repository_index__weakptr(&info.index, repo) < 0)
-		giterr_clear(); /* no error even if there is no index */
+		git_error_clear(); /* no error even if there is no index */
 	info.files = files;
 
 	if (!strcmp(dir.ptr, "."))
@@ -565,8 +565,8 @@ static int collect_attr_files(
  cleanup:
 	if (error < 0)
 		release_attr_files(files);
-	git_buf_free(&attrfile);
-	git_buf_free(&dir);
+	git_buf_dispose(&attrfile);
+	git_buf_dispose(&dir);
 
 	return error;
 }

@@ -26,7 +26,7 @@ use std::{cmp, fs};
 
 use syntax::ast;
 use syntax::attr;
-use syntax::ext::base::SyntaxExtension;
+use syntax::ext::base::{SyntaxExtension, SyntaxExtensionKind};
 use syntax::symbol::{Symbol, sym};
 use syntax::visit;
 use syntax::{span_err, span_fatal};
@@ -162,7 +162,7 @@ impl<'a> CrateLoader<'a> {
 
     fn verify_no_symbol_conflicts(&self,
                                   span: Span,
-                                  root: &CrateRoot) {
+                                  root: &CrateRoot<'_>) {
         // Check for (potential) conflicts with the local crate
         if self.local_crate_name == root.name &&
            self.sess.local_crate_disambiguator() == root.disambiguator {
@@ -236,7 +236,7 @@ impl<'a> CrateLoader<'a> {
                 let host_lib = host_lib.unwrap();
                 self.load_derive_macros(
                     &host_lib.metadata.get_root(),
-                    host_lib.dylib.clone().map(|p| p.0),
+                    host_lib.dylib.map(|p| p.0),
                     span
                 )
             } else {
@@ -289,13 +289,13 @@ impl<'a> CrateLoader<'a> {
         (cnum, cmeta)
     }
 
-    fn load_proc_macro<'b> (
+    fn load_proc_macro<'b>(
         &mut self,
         locate_ctxt: &mut locator::Context<'b>,
         path_kind: PathKind,
     ) -> Option<(LoadResult, Option<Library>)>
     where
-        'a: 'b
+        'a: 'b,
     {
         // Use a new locator Context so trying to load a proc macro doesn't affect the error
         // message we emit
@@ -476,7 +476,7 @@ impl<'a> CrateLoader<'a> {
     // Go through the crate metadata and load any crates that it references
     fn resolve_crate_deps(&mut self,
                           root: &Option<CratePaths>,
-                          crate_root: &CrateRoot,
+                          crate_root: &CrateRoot<'_>,
                           metadata: &MetadataBlob,
                           krate: CrateNum,
                           span: Span,
@@ -582,7 +582,7 @@ impl<'a> CrateLoader<'a> {
     /// implemented as dynamic libraries, but we have a possible future where
     /// custom derive (and other macro-1.1 style features) are implemented via
     /// executables and custom IPC.
-    fn load_derive_macros(&mut self, root: &CrateRoot, dylib: Option<PathBuf>, span: Span)
+    fn load_derive_macros(&mut self, root: &CrateRoot<'_>, dylib: Option<PathBuf>, span: Span)
                           -> Vec<(ast::Name, Lrc<SyntaxExtension>)> {
         use std::{env, mem};
         use crate::dynamic_lib::DynamicLibrary;
@@ -611,33 +611,31 @@ impl<'a> CrateLoader<'a> {
         };
 
         let extensions = decls.iter().map(|&decl| {
-            match decl {
+            let (name, kind, helper_attrs) = match decl {
                 ProcMacro::CustomDerive { trait_name, attributes, client } => {
-                    let attrs = attributes.iter().cloned().map(Symbol::intern).collect::<Vec<_>>();
-                    (trait_name, SyntaxExtension::ProcMacroDerive(
-                        Box::new(ProcMacroDerive {
-                            client,
-                            attrs: attrs.clone(),
-                        }),
-                        attrs,
-                        root.edition,
-                    ))
+                    let helper_attrs =
+                        attributes.iter().cloned().map(Symbol::intern).collect::<Vec<_>>();
+                    (
+                        trait_name,
+                        SyntaxExtensionKind::Derive(Box::new(ProcMacroDerive {
+                            client, attrs: helper_attrs.clone()
+                        })),
+                        helper_attrs,
+                    )
                 }
-                ProcMacro::Attr { name, client } => {
-                    (name, SyntaxExtension::AttrProcMacro(
-                        Box::new(AttrProcMacro { client }),
-                        root.edition,
-                    ))
-                }
-                ProcMacro::Bang { name, client } => {
-                    (name, SyntaxExtension::ProcMacro {
-                        expander: Box::new(BangProcMacro { client }),
-                        allow_internal_unstable: None,
-                        edition: root.edition,
-                    })
-                }
-            }
-        }).map(|(name, ext)| (Symbol::intern(name), Lrc::new(ext))).collect();
+                ProcMacro::Attr { name, client } => (
+                    name, SyntaxExtensionKind::Attr(Box::new(AttrProcMacro { client })), Vec::new()
+                ),
+                ProcMacro::Bang { name, client } => (
+                    name, SyntaxExtensionKind::Bang(Box::new(BangProcMacro { client })), Vec::new()
+                )
+            };
+
+            (Symbol::intern(name), Lrc::new(SyntaxExtension {
+                helper_attrs,
+                ..SyntaxExtension::default(kind, root.edition)
+            }))
+        }).collect();
 
         // Intentionally leak the dynamic library. We can't ever unload it
         // since the library can make things that will live arbitrarily long.
@@ -870,7 +868,7 @@ impl<'a> CrateLoader<'a> {
 
     fn inject_profiler_runtime(&mut self) {
         if self.sess.opts.debugging_opts.profile ||
-            self.sess.opts.debugging_opts.pgo_gen.enabled()
+           self.sess.opts.cg.profile_generate.enabled()
         {
             info!("loading profiler");
 

@@ -1,11 +1,3 @@
-// Copyright 2018 Syn Developers
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Tokens representing Rust punctuation, keywords, and delimiters.
 //!
 //! The type names in this module can be difficult to keep straight, so we
@@ -20,11 +12,8 @@
 //!
 //! [`ItemStatic`]: ../struct.ItemStatic.html
 //!
-//! ```
-//! # #[macro_use]
-//! # extern crate syn;
-//! #
-//! # use syn::{Attribute, Expr, Ident, Type, Visibility};
+//! ```edition2018
+//! # use syn::{Attribute, Expr, Ident, Token, Type, Visibility};
 //! #
 //! pub struct ItemStatic {
 //!     pub attrs: Vec<Attribute>,
@@ -38,8 +27,6 @@
 //!     pub expr: Box<Expr>,
 //!     pub semi_token: Token![;],
 //! }
-//! #
-//! # fn main() {}
 //! ```
 //!
 //! # Parsing
@@ -53,9 +40,7 @@
 //! [`bracketed!`]: ../macro.bracketed.html
 //! [`braced!`]: ../macro.braced.html
 //!
-//! ```
-//! # extern crate syn;
-//! #
+//! ```edition2018
 //! use syn::{Attribute, Result};
 //! use syn::parse::{Parse, ParseStream};
 //! #
@@ -82,9 +67,26 @@
 //!         # unimplemented!()
 //!     }
 //! }
-//! #
-//! # fn main() {}
 //! ```
+//!
+//! # Other operations
+//!
+//! Every keyword and punctuation token supports the following operations.
+//!
+//! - [Peeking] — `input.peek(Token![...])`
+//!
+//! - [Parsing] — `input.parse::<Token![...]>()?`
+//!
+//! - [Printing] — `quote!( ... #the_token ... )`
+//!
+//! - Construction from a [`Span`] — `let the_token = Token![...](sp)`
+//!
+//! - Field access to its span — `let sp = the_token.span`
+//!
+//! [Peeking]: ../parse/struct.ParseBuffer.html#method.peek
+//! [Parsing]: ../parse/struct.ParseBuffer.html#method.parse
+//! [Printing]: https://docs.rs/quote/0.6/quote/trait.ToTokens.html
+//! [`Span`]: https://docs.rs/proc-macro2/0.4/proc_macro2/struct.Span.html
 
 use std;
 #[cfg(feature = "extra-traits")]
@@ -93,6 +95,7 @@ use std::cmp;
 use std::fmt::{self, Debug};
 #[cfg(feature = "extra-traits")]
 use std::hash::{Hash, Hasher};
+use std::ops::{Deref, DerefMut};
 
 #[cfg(feature = "parsing")]
 use proc_macro2::Delimiter;
@@ -104,6 +107,7 @@ use proc_macro2::TokenStream;
 #[cfg(feature = "printing")]
 use quote::{ToTokens, TokenStreamExt};
 
+use self::private::WithSpan;
 #[cfg(feature = "parsing")]
 use buffer::Cursor;
 #[cfg(feature = "parsing")]
@@ -134,9 +138,18 @@ pub trait Token: private::Sealed {
     fn display() -> &'static str;
 }
 
-#[cfg(feature = "parsing")]
 mod private {
+    use proc_macro2::Span;
+
+    #[cfg(feature = "parsing")]
     pub trait Sealed {}
+
+    /// Support writing `token.span` rather than `token.spans[0]` on tokens that
+    /// hold a single span.
+    #[repr(C)]
+    pub struct WithSpan {
+        pub span: Span,
+    }
 }
 
 #[cfg(feature = "parsing")]
@@ -196,24 +209,24 @@ impl_token!(LitFloat "floating point literal");
 impl_token!(LitBool "boolean literal");
 
 // Not public API.
-#[cfg(feature = "parsing")]
 #[doc(hidden)]
-pub trait CustomKeyword {
-    fn ident() -> &'static str;
+#[cfg(feature = "parsing")]
+pub trait CustomToken {
+    fn peek(cursor: Cursor) -> bool;
     fn display() -> &'static str;
 }
 
 #[cfg(feature = "parsing")]
-impl<K: CustomKeyword> private::Sealed for K {}
+impl<T: CustomToken> private::Sealed for T {}
 
 #[cfg(feature = "parsing")]
-impl<K: CustomKeyword> Token for K {
+impl<T: CustomToken> Token for T {
     fn peek(cursor: Cursor) -> bool {
-        parsing::peek_keyword(cursor, K::ident())
+        <Self as CustomToken>::peek(cursor)
     }
 
     fn display() -> &'static str {
-        K::display()
+        <Self as CustomToken>::display()
     }
 }
 
@@ -302,10 +315,31 @@ macro_rules! define_keywords {
     };
 }
 
+macro_rules! impl_deref_if_len_is_1 {
+    ($name:ident/1) => {
+        impl Deref for $name {
+            type Target = WithSpan;
+
+            fn deref(&self) -> &Self::Target {
+                unsafe { &*(self as *const Self as *const WithSpan) }
+            }
+        }
+
+        impl DerefMut for $name {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                unsafe { &mut *(self as *mut Self as *mut WithSpan) }
+            }
+        }
+    };
+
+    ($name:ident/$len:tt) => {};
+}
+
 macro_rules! define_punctuation_structs {
     ($($token:tt pub struct $name:ident/$len:tt #[$doc:meta])*) => {
         $(
             #[cfg_attr(feature = "clone-impls", derive(Copy, Clone))]
+            #[repr(C)]
             #[$doc]
             ///
             /// Don't try to remember the name of this type -- use the [`Token!`]
@@ -353,6 +387,8 @@ macro_rules! define_punctuation_structs {
             impl Hash for $name {
                 fn hash<H: Hasher>(&self, _state: &mut H) {}
             }
+
+            impl_deref_if_len_is_1!($name/$len);
         )*
     };
 }
@@ -467,7 +503,7 @@ define_punctuation_structs! {
 #[cfg(feature = "printing")]
 impl ToTokens for Underscore {
     fn to_tokens(&self, tokens: &mut TokenStream) {
-        tokens.append(Ident::new("_", self.spans[0]));
+        tokens.append(Ident::new("_", self.span));
     }
 }
 
@@ -783,8 +819,10 @@ pub use self::SelfType as CapSelf;
 #[doc(hidden)]
 pub use self::SelfValue as Self_;
 
+// Not public API.
+#[doc(hidden)]
 #[cfg(feature = "parsing")]
-mod parsing {
+pub mod parsing {
     use proc_macro2::{Spacing, Span};
 
     use buffer::Cursor;
@@ -863,8 +901,10 @@ mod parsing {
     }
 }
 
+// Not public API.
+#[doc(hidden)]
 #[cfg(feature = "printing")]
-mod printing {
+pub mod printing {
     use proc_macro2::{Delimiter, Group, Ident, Punct, Spacing, Span, TokenStream};
     use quote::TokenStreamExt;
 

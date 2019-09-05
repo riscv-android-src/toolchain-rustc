@@ -8,18 +8,21 @@ use std::{env, fs};
 use regex::Regex;
 
 use crate::config::config_type::ConfigType;
+#[allow(unreachable_pub)]
 pub use crate::config::file_lines::{FileLines, FileName, Range};
+#[allow(unreachable_pub)]
 pub use crate::config::lists::*;
+#[allow(unreachable_pub)]
 pub use crate::config::options::*;
 
 #[macro_use]
-pub mod config_type;
+pub(crate) mod config_type;
 #[macro_use]
-pub mod options;
+pub(crate) mod options;
 
-pub mod file_lines;
-pub mod license;
-pub mod lists;
+pub(crate) mod file_lines;
+pub(crate) mod license;
+pub(crate) mod lists;
 
 // This macro defines configuration options used in rustfmt. Each option
 // is defined as follows:
@@ -37,7 +40,7 @@ create_config! {
 
     // Comments. macros, and strings
     wrap_comments: bool, false, false, "Break comments to fit on the line";
-    format_doc_comments: bool, false, false, "Format doc comments.";
+    format_code_in_doc_comments: bool, false, false, "Format the code snippet in doc comments.";
     comment_width: usize, 80, false,
         "Maximum length of comments. No effect unless wrap_comments = true";
     normalize_comments: bool, false, false, "Convert /* */ comments to // comments where possible";
@@ -89,7 +92,8 @@ create_config! {
         the same line with the pattern of arms";
     force_multiline_blocks: bool, false, false,
         "Force multiline closure bodies and match arms to be wrapped in a block";
-    fn_args_density: Density, Density::Tall, false, "Argument density in functions";
+    fn_args_layout: Density, Density::Tall, true,
+        "Control the layout of arguments in a function";
     brace_style: BraceStyle, BraceStyle::SameLineWhere, false, "Brace style for items";
     control_brace_style: ControlBraceStyle, ControlBraceStyle::AlwaysSameLine, false,
         "Brace style for control flow constructs";
@@ -457,6 +461,79 @@ mod test {
         assert_eq!(s.contains("stable_option"), true);
         assert_eq!(s.contains("unstable_option"), true);
         assert_eq!(s.contains("(unstable)"), true);
+    }
+
+    #[test]
+    fn test_dump_default_config() {
+        const DEFAULT_CONFIG: &str = r#"max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Auto"
+use_small_heuristics = "Default"
+indent_style = "Block"
+wrap_comments = false
+format_code_in_doc_comments = false
+comment_width = 80
+normalize_comments = false
+normalize_doc_attributes = false
+license_template_path = ""
+format_strings = false
+format_macro_matchers = false
+format_macro_bodies = true
+empty_item_single_line = true
+struct_lit_single_line = true
+fn_single_line = false
+where_single_line = false
+imports_indent = "Block"
+imports_layout = "Mixed"
+merge_imports = false
+reorder_imports = true
+reorder_modules = true
+reorder_impl_items = false
+type_punctuation_density = "Wide"
+space_before_colon = false
+space_after_colon = true
+spaces_around_ranges = false
+binop_separator = "Front"
+remove_nested_parens = true
+combine_control_expr = true
+overflow_delimited_expr = false
+struct_field_align_threshold = 0
+enum_discrim_align_threshold = 0
+match_arm_blocks = true
+force_multiline_blocks = false
+fn_args_layout = "Tall"
+brace_style = "SameLineWhere"
+control_brace_style = "AlwaysSameLine"
+trailing_semicolon = true
+trailing_comma = "Vertical"
+match_block_trailing_comma = false
+blank_lines_upper_bound = 1
+blank_lines_lower_bound = 0
+edition = "2015"
+version = "One"
+inline_attribute_width = 0
+merge_derives = true
+use_try_shorthand = false
+use_field_init_shorthand = false
+force_explicit_abi = true
+condense_wildcard_suffixes = false
+color = "Auto"
+required_version = "1.3.0"
+unstable_features = false
+disable_all_formatting = false
+skip_children = false
+hide_parse_errors = false
+error_on_line_overflow = false
+error_on_unformatted = false
+report_todo = "Never"
+report_fixme = "Never"
+ignore = []
+emit_mode = "Files"
+make_backup = false
+"#;
+        let toml = Config::default().all_options().to_toml().unwrap();
+        assert_eq!(&toml, DEFAULT_CONFIG);
     }
 
     // FIXME(#2183): these tests cannot be run in parallel because they use env vars.

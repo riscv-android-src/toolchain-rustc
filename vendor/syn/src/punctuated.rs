@@ -1,18 +1,11 @@
-// Copyright 2018 Syn Developers
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A punctuated sequence of syntax tree nodes separated by punctuation.
 //!
 //! Lots of things in Rust are punctuated sequences.
 //!
 //! - The fields of a struct are `Punctuated<Field, Token![,]>`.
 //! - The segments of a path are `Punctuated<PathSegment, Token![::]>`.
-//! - The bounds on a generic parameter are `Punctuated<TypeParamBound, Token![+]>`.
+//! - The bounds on a generic parameter are `Punctuated<TypeParamBound,
+//!   Token![+]>`.
 //! - The arguments to a function call are `Punctuated<Expr, Token![,]>`.
 //!
 //! This module provides a common representation for these punctuated sequences
@@ -32,6 +25,7 @@ use std::fmt::{self, Debug};
 #[cfg(any(feature = "full", feature = "derive"))]
 use std::iter;
 use std::iter::FromIterator;
+use std::marker::PhantomData;
 use std::ops::{Index, IndexMut};
 use std::option;
 use std::slice;
@@ -112,7 +106,7 @@ impl<T, P> Punctuated<T, P> {
         Iter {
             inner: Box::new(PrivateIter {
                 inner: self.inner.iter(),
-                last: self.last.as_ref().map(|t| t.as_ref()).into_iter(),
+                last: self.last.as_ref().map(Box::as_ref).into_iter(),
             }),
         }
     }
@@ -123,7 +117,7 @@ impl<T, P> Punctuated<T, P> {
         IterMut {
             inner: Box::new(PrivateIterMut {
                 inner: self.inner.iter_mut(),
-                last: self.last.as_mut().map(|t| t.as_mut()).into_iter(),
+                last: self.last.as_mut().map(Box::as_mut).into_iter(),
             }),
         }
     }
@@ -133,7 +127,7 @@ impl<T, P> Punctuated<T, P> {
     pub fn pairs(&self) -> Pairs<T, P> {
         Pairs {
             inner: self.inner.iter(),
-            last: self.last.as_ref().map(|t| t.as_ref()).into_iter(),
+            last: self.last.as_ref().map(Box::as_ref).into_iter(),
         }
     }
 
@@ -142,7 +136,7 @@ impl<T, P> Punctuated<T, P> {
     pub fn pairs_mut(&mut self) -> PairsMut<T, P> {
         PairsMut {
             inner: self.inner.iter_mut(),
-            last: self.last.as_mut().map(|t| t.as_mut()).into_iter(),
+            last: self.last.as_mut().map(Box::as_mut).into_iter(),
         }
     }
 
@@ -420,9 +414,13 @@ impl<T, P> IntoIterator for Punctuated<T, P> {
     type IntoIter = IntoIter<T, P>;
 
     fn into_iter(self) -> Self::IntoIter {
+        let mut elements = Vec::with_capacity(self.len());
+        elements.extend(self.inner.into_iter().map(|pair| pair.0));
+        elements.extend(self.last.map(|t| *t));
+
         IntoIter {
-            inner: self.inner.into_iter(),
-            last: self.last.map(|t| *t).into_iter(),
+            inner: elements.into_iter(),
+            marker: PhantomData,
         }
     }
 }
@@ -478,6 +476,16 @@ impl<'a, T, P> ExactSizeIterator for Pairs<'a, T, P> {
     }
 }
 
+// No Clone bound on T or P.
+impl<'a, T, P> Clone for Pairs<'a, T, P> {
+    fn clone(&self) -> Self {
+        Pairs {
+            inner: self.inner.clone(),
+            last: self.last.clone(),
+        }
+    }
+}
+
 /// An iterator over mutably borrowed pairs of type `Pair<&mut T, &mut P>`.
 ///
 /// Refer to the [module documentation] for details about punctuated sequences.
@@ -510,6 +518,7 @@ impl<'a, T, P> ExactSizeIterator for PairsMut<'a, T, P> {
 /// Refer to the [module documentation] for details about punctuated sequences.
 ///
 /// [module documentation]: index.html
+#[derive(Clone)]
 pub struct IntoPairs<T, P> {
     inner: vec::IntoIter<(T, P)>,
     last: option::IntoIter<T>,
@@ -537,25 +546,25 @@ impl<T, P> ExactSizeIterator for IntoPairs<T, P> {
 /// Refer to the [module documentation] for details about punctuated sequences.
 ///
 /// [module documentation]: index.html
+#[derive(Clone)]
 pub struct IntoIter<T, P> {
-    inner: vec::IntoIter<(T, P)>,
-    last: option::IntoIter<T>,
+    inner: vec::IntoIter<T>,
+
+    // TODO: remove P type parameter in the next breaking change
+    marker: PhantomData<P>,
 }
 
 impl<T, P> Iterator for IntoIter<T, P> {
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.inner
-            .next()
-            .map(|pair| pair.0)
-            .or_else(|| self.last.next())
+        self.inner.next()
     }
 }
 
 impl<T, P> ExactSizeIterator for IntoIter<T, P> {
     fn len(&self) -> usize {
-        self.inner.len() + self.last.len()
+        self.inner.len()
     }
 }
 
@@ -565,7 +574,14 @@ impl<T, P> ExactSizeIterator for IntoIter<T, P> {
 ///
 /// [module documentation]: index.html
 pub struct Iter<'a, T: 'a> {
-    inner: Box<ExactSizeIterator<Item = &'a T> + 'a>,
+    // The `Item = &'a T` needs to be specified to support rustc 1.31 and older.
+    // On modern compilers we would be able to write just IterTrait<'a, T> where
+    // Item can be inferred unambiguously from the supertrait.
+    inner: Box<IterTrait<'a, T, Item = &'a T> + 'a>,
+}
+
+trait IterTrait<'a, T: 'a>: ExactSizeIterator<Item = &'a T> {
+    fn clone_box(&self) -> Box<IterTrait<'a, T, Item = &'a T> + 'a>;
 }
 
 struct PrivateIter<'a, T: 'a, P: 'a> {
@@ -578,6 +594,15 @@ impl private {
     pub fn empty_punctuated_iter<'a, T>() -> Iter<'a, T> {
         Iter {
             inner: Box::new(iter::empty()),
+        }
+    }
+}
+
+// No Clone bound on T.
+impl<'a, T> Clone for Iter<'a, T> {
+    fn clone(&self) -> Self {
+        Iter {
+            inner: self.inner.clone_box(),
         }
     }
 }
@@ -610,6 +635,25 @@ impl<'a, T, P> Iterator for PrivateIter<'a, T, P> {
 impl<'a, T, P> ExactSizeIterator for PrivateIter<'a, T, P> {
     fn len(&self) -> usize {
         self.inner.len() + self.last.len()
+    }
+}
+
+// No Clone bound on T or P.
+impl<'a, T, P> Clone for PrivateIter<'a, T, P> {
+    fn clone(&self) -> Self {
+        PrivateIter {
+            inner: self.inner.clone(),
+            last: self.last.clone(),
+        }
+    }
+}
+
+impl<'a, T: 'a, I: 'a> IterTrait<'a, T> for I
+where
+    I: ExactSizeIterator<Item = &'a T> + Clone,
+{
+    fn clone_box(&self) -> Box<IterTrait<'a, T, Item = &'a T> + 'a> {
+        Box::new(self.clone())
     }
 }
 
@@ -673,6 +717,7 @@ impl<'a, T, P> ExactSizeIterator for PrivateIterMut<'a, T, P> {
 /// Refer to the [module documentation] for details about punctuated sequences.
 ///
 /// [module documentation]: index.html
+#[cfg_attr(feature = "clone-impls", derive(Clone))]
 pub enum Pair<T, P> {
     Punctuated(T, P),
     End(T),

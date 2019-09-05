@@ -19,8 +19,11 @@ pub trait Idx: Copy + 'static + Ord + Debug + Hash {
     fn index(self) -> usize;
 
     fn increment_by(&mut self, amount: usize) {
-        let v = self.index() + amount;
-        *self = Self::new(v);
+        *self = self.plus(amount);
+    }
+
+    fn plus(self, amount: usize) -> Self {
+        Self::new(self.index() + amount)
     }
 }
 
@@ -167,6 +170,14 @@ macro_rules! newtype_index {
             }
         }
 
+        impl std::ops::Add<usize> for $type {
+            type Output = Self;
+
+            fn add(self, other: usize) -> Self {
+                Self::new(self.index() + other)
+            }
+        }
+
         impl Idx for $type {
             #[inline]
             fn new(value: usize) -> Self {
@@ -211,6 +222,11 @@ macro_rules! newtype_index {
             #[inline]
             fn add_usize(&self, u: usize) -> Option<Self> {
                 Idx::index(*self).checked_add(u).map(Self::new)
+            }
+
+            #[inline]
+            fn sub_usize(&self, u: usize) -> Option<Self> {
+                Idx::index(*self).checked_sub(u).map(Self::new)
             }
         }
 
@@ -418,7 +434,7 @@ macro_rules! newtype_index {
     (@derives      [$($derives:ident,)*]
      @attrs        [$(#[$attrs:meta])*]
      @type         [$type:ident]
-     @max          [$_max:expr]
+     @max          [$max:expr]
      @vis          [$v:vis]
      @debug_format [$debug_format:tt]
                    $(#[doc = $doc:expr])*

@@ -6,16 +6,16 @@ use rustc::ty::{self, TyCtxt};
 use rustc::hir::itemlikevisit::ItemLikeVisitor;
 use rustc::hir;
 
-pub fn check<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
+pub fn check<'tcx>(tcx: TyCtxt<'tcx>) {
     let mut orphan = OrphanChecker { tcx };
     tcx.hir().krate().visit_all_item_likes(&mut orphan);
 }
 
-struct OrphanChecker<'cx, 'tcx: 'cx> {
-    tcx: TyCtxt<'cx, 'tcx, 'tcx>,
+struct OrphanChecker<'tcx> {
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'cx, 'tcx, 'v> ItemLikeVisitor<'v> for OrphanChecker<'cx, 'tcx> {
+impl ItemLikeVisitor<'v> for OrphanChecker<'tcx> {
     /// Checks exactly one impl for orphan rules and other such
     /// restrictions. In this fn, it can happen that multiple errors
     /// apply to a specific impl, so just return after reporting one
@@ -26,7 +26,7 @@ impl<'cx, 'tcx, 'v> ItemLikeVisitor<'v> for OrphanChecker<'cx, 'tcx> {
         // "Trait" impl
         if let hir::ItemKind::Impl(.., Some(_), _, _) = item.node {
             debug!("coherence2::orphan check: trait impl {}",
-                   self.tcx.hir().hir_to_string(item.hir_id));
+                   self.tcx.hir().node_to_string(item.hir_id));
             let trait_ref = self.tcx.impl_trait_ref(def_id).unwrap();
             let trait_def_id = trait_ref.def_id;
             let cm = self.tcx.sess.source_map();

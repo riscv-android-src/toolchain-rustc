@@ -92,7 +92,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EvalOrderDependence {
     }
 }
 
-struct DivergenceVisitor<'a, 'tcx: 'a> {
+struct DivergenceVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
 }
 
@@ -176,11 +176,11 @@ fn check_for_unsequenced_reads(vis: &mut ReadVisitor<'_, '_>) {
     let map = &vis.cx.tcx.hir();
     let mut cur_id = vis.write_expr.hir_id;
     loop {
-        let parent_id = map.get_parent_node_by_hir_id(cur_id);
+        let parent_id = map.get_parent_node(cur_id);
         if parent_id == cur_id {
             break;
         }
-        let parent_node = match map.find_by_hir_id(parent_id) {
+        let parent_node = match map.find(parent_id) {
             Some(parent) => parent,
             None => break,
         };
@@ -272,7 +272,7 @@ fn check_stmt<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, stmt: &'tcx Stmt) -> St
 }
 
 /// A visitor that looks for reads from a variable.
-struct ReadVisitor<'a, 'tcx: 'a> {
+struct ReadVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     /// The ID of the variable we're looking for.
     var: HirId,

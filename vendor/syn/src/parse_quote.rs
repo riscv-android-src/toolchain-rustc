@@ -8,13 +8,9 @@
 ///
 /// [`Parse`]: parse/trait.Parse.html
 ///
-/// ```
-/// #[macro_use]
-/// extern crate quote;
-/// #[macro_use]
-/// extern crate syn;
-///
-/// use syn::Stmt;
+/// ```edition2018
+/// use quote::quote;
+/// use syn::{parse_quote, Stmt};
 ///
 /// fn main() {
 ///     let name = quote!(v);
@@ -37,25 +33,18 @@
 /// The following helper function adds a bound `T: HeapSize` to every type
 /// parameter `T` in the input generics.
 ///
-/// ```
-#[cfg_attr(not(syn_can_call_macro_by_path), doc = " #[macro_use]")]
-#[cfg_attr(not(syn_can_call_macro_by_path), doc = " extern crate quote;")]
-/// #[macro_use]
-/// extern crate syn;
-///
-/// use syn::{Generics, GenericParam};
+/// ```edition2018
+/// use syn::{parse_quote, Generics, GenericParam};
 ///
 /// // Add a bound `T: HeapSize` to every type parameter T.
 /// fn add_trait_bounds(mut generics: Generics) -> Generics {
 ///     for param in &mut generics.params {
-///         if let GenericParam::Type(ref mut type_param) = *param {
+///         if let GenericParam::Type(type_param) = param {
 ///             type_param.bounds.push(parse_quote!(HeapSize));
 ///         }
 ///     }
 ///     generics
 /// }
-/// #
-/// # fn main() {}
 /// ```
 ///
 /// # Special cases

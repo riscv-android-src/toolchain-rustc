@@ -29,7 +29,7 @@ use rustc::{bug, span_bug};
 use syntax::ast::{self, Ident, Name, NodeId, CRATE_NODE_ID};
 use syntax::ext::base::Determinacy::{self, Determined, Undetermined};
 use syntax::ext::hygiene::Mark;
-use syntax::symbol::{keywords, sym};
+use syntax::symbol::{kw, sym};
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax::{struct_span_err, unwrap_or};
 use syntax_pos::{MultiSpan, Span};
@@ -217,15 +217,15 @@ impl<'a> Resolver<'a> {
                     parent_scope.expect("no parent scope for a single-segment import");
 
                 if ns == TypeNS {
-                    if ident.name == keywords::Crate.name() ||
-                        ident.name == keywords::DollarCrate.name() {
+                    if ident.name == kw::Crate ||
+                        ident.name == kw::DollarCrate {
                         let module = self.resolve_crate_root(ident);
                         let binding = (module, ty::Visibility::Public,
                                         module.span, Mark::root())
                                         .to_name_binding(self.arenas);
                         return Ok(binding);
-                    } else if ident.name == keywords::Super.name() ||
-                                ident.name == keywords::SelfLower.name() {
+                    } else if ident.name == kw::Super ||
+                                ident.name == kw::SelfLower {
                         // FIXME: Implement these with renaming requirements so that e.g.
                         // `use super;` doesn't work, but `use super as name;` does.
                         // Fall through here to get an error from `early_resolve_...`.
@@ -388,7 +388,7 @@ impl<'a> Resolver<'a> {
                 None => return Err((Undetermined, Weak::Yes)),
             };
             let (orig_current_module, mut ident) = (self.current_module, ident.modern());
-            match ident.span.glob_adjust(module.expansion, glob_import.span.ctxt().modern()) {
+            match ident.span.glob_adjust(module.expansion, glob_import.span) {
                 Some(Some(def)) => self.current_module = self.macro_def_scope(def),
                 Some(None) => {}
                 None => continue,
@@ -605,8 +605,7 @@ impl<'a> Resolver<'a> {
         // Define `binding` in `module`s glob importers.
         for directive in module.glob_importers.borrow_mut().iter() {
             let mut ident = ident.modern();
-            let scope = match ident.span.reverse_glob_adjust(module.expansion,
-                                                             directive.span.ctxt().modern()) {
+            let scope = match ident.span.reverse_glob_adjust(module.expansion, directive.span) {
                 Some(Some(def)) => self.macro_def_scope(def),
                 Some(None) => directive.parent_scope.module,
                 None => continue,
@@ -645,30 +644,30 @@ struct UnresolvedImportError {
     suggestion: Option<Suggestion>,
 }
 
-pub struct ImportResolver<'a, 'b: 'a> {
+pub struct ImportResolver<'a, 'b> {
     pub resolver: &'a mut Resolver<'b>,
 }
 
-impl<'a, 'b: 'a> std::ops::Deref for ImportResolver<'a, 'b> {
+impl<'a, 'b> std::ops::Deref for ImportResolver<'a, 'b> {
     type Target = Resolver<'b>;
     fn deref(&self) -> &Resolver<'b> {
         self.resolver
     }
 }
 
-impl<'a, 'b: 'a> std::ops::DerefMut for ImportResolver<'a, 'b> {
+impl<'a, 'b> std::ops::DerefMut for ImportResolver<'a, 'b> {
     fn deref_mut(&mut self) -> &mut Resolver<'b> {
         self.resolver
     }
 }
 
-impl<'a, 'b: 'a> ty::DefIdTree for &'a ImportResolver<'a, 'b> {
+impl<'a, 'b> ty::DefIdTree for &'a ImportResolver<'a, 'b> {
     fn parent(self, id: DefId) -> Option<DefId> {
         self.resolver.parent(id)
     }
 }
 
-impl<'a, 'b:'a> ImportResolver<'a, 'b> {
+impl<'a, 'b> ImportResolver<'a, 'b> {
     // Import resolution
     //
     // This is a fixed-point algorithm. We resolve imports until our efforts
@@ -707,7 +706,7 @@ impl<'a, 'b:'a> ImportResolver<'a, 'b> {
                 has_errors = true;
 
                 if let SingleImport { source, ref source_bindings, .. } = import.subclass {
-                    if source.name == keywords::SelfLower.name() {
+                    if source.name == kw::SelfLower {
                         // Silence `unresolved import` error if E0429 is already emitted
                         if let Err(Determined) = source_bindings.value_ns.get() {
                             continue;
@@ -992,7 +991,7 @@ impl<'a, 'b:'a> ImportResolver<'a, 'b> {
                     // HACK(eddyb) `lint_if_path_starts_with_module` needs at least
                     // 2 segments, so the `resolve_path` above won't trigger it.
                     let mut full_path = directive.module_path.clone();
-                    full_path.push(Segment::from_ident(keywords::Invalid.ident()));
+                    full_path.push(Segment::from_ident(Ident::invalid()));
                     self.lint_if_path_starts_with_module(
                         directive.crate_lint(),
                         &full_path,
@@ -1359,8 +1358,7 @@ impl<'a, 'b:'a> ImportResolver<'a, 'b> {
             resolution.borrow().binding().map(|binding| (ident, binding))
         }).collect::<Vec<_>>();
         for ((mut ident, ns), binding) in bindings {
-            let scope = match ident.span.reverse_glob_adjust(module.expansion,
-                                                             directive.span.ctxt().modern()) {
+            let scope = match ident.span.reverse_glob_adjust(module.expansion, directive.span) {
                 Some(Some(def)) => self.macro_def_scope(def),
                 Some(None) => self.current_module,
                 None => continue,
@@ -1395,7 +1393,7 @@ impl<'a, 'b:'a> ImportResolver<'a, 'b> {
             // so they can cause name conflict errors downstream.
             let is_good_import = binding.is_import() && !binding.is_ambiguity() &&
                                  // Note that as_str() de-gensyms the Symbol
-                                 !(ident.name.is_gensymed() && ident.name.as_str() != "_");
+                                 !(ident.is_gensymed() && ident.name.as_str() != "_");
             if is_good_import || binding.is_macro_def() {
                 let res = binding.res();
                 if res != Res::Err {
@@ -1484,8 +1482,8 @@ fn import_path_to_string(names: &[Ident],
                          subclass: &ImportDirectiveSubclass<'_>,
                          span: Span) -> String {
     let pos = names.iter()
-        .position(|p| span == p.span && p.name != keywords::PathRoot.name());
-    let global = !names.is_empty() && names[0].name == keywords::PathRoot.name();
+        .position(|p| span == p.span && p.name != kw::PathRoot);
+    let global = !names.is_empty() && names[0].name == kw::PathRoot;
     if let Some(pos) = pos {
         let names = if global { &names[1..pos + 1] } else { &names[..pos + 1] };
         names_to_string(names)

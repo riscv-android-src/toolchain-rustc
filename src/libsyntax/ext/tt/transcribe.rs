@@ -8,7 +8,6 @@ use crate::parse::token::{self, NtTT, Token};
 use crate::tokenstream::{DelimSpan, TokenStream, TokenTree, TreeAndJoint};
 
 use smallvec::{smallvec, SmallVec};
-use syntax_pos::DUMMY_SP;
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
@@ -24,8 +23,8 @@ enum Frame {
 impl Frame {
     /// Construct a new frame around the delimited set of tokens.
     fn new(tts: Vec<quoted::TokenTree>) -> Frame {
-        let forest = Lrc::new(quoted::Delimited { delim: token::NoDelim, tts: tts });
-        Frame::Delimited { forest: forest, idx: 0, span: DelimSpan::dummy() }
+        let forest = Lrc::new(quoted::Delimited { delim: token::NoDelim, tts });
+        Frame::Delimited { forest, idx: 0, span: DelimSpan::dummy() }
     }
 }
 
@@ -109,17 +108,13 @@ pub fn transcribe(
         else {
             // Otherwise, if we have just reached the end of a sequence and we can keep repeating,
             // go back to the beginning of the sequence.
-            if let Frame::Sequence { ref mut idx, ref sep, .. } = *stack.last_mut().unwrap() {
-                let (ref mut repeat_idx, repeat_len) = *repeats.last_mut().unwrap();
+            if let Frame::Sequence { idx, sep, .. } = stack.last_mut().unwrap() {
+                let (repeat_idx, repeat_len) = repeats.last_mut().unwrap();
                 *repeat_idx += 1;
-                if *repeat_idx < repeat_len {
+                if repeat_idx < repeat_len {
                     *idx = 0;
-                    if let Some(sep) = sep.clone() {
-                        let prev_span = match result.last() {
-                            Some((tt, _)) => tt.span(),
-                            None => DUMMY_SP,
-                        };
-                        result.push(TokenTree::Token(prev_span, sep).into());
+                    if let Some(sep) = sep {
+                        result.push(TokenTree::Token(sep.clone()).into());
                     }
                     continue;
                 }
@@ -225,7 +220,7 @@ pub fn transcribe(
                             result.push(tt.clone().into());
                         } else {
                             sp = sp.apply_mark(cx.current_expansion.mark);
-                            let token = TokenTree::Token(sp, Token::Interpolated(nt.clone()));
+                            let token = TokenTree::token(token::Interpolated(nt.clone()), sp);
                             result.push(token.into());
                         }
                     } else {
@@ -241,8 +236,8 @@ pub fn transcribe(
                     let ident =
                         Ident::new(ident.name, ident.span.apply_mark(cx.current_expansion.mark));
                     sp = sp.apply_mark(cx.current_expansion.mark);
-                    result.push(TokenTree::Token(sp, token::Dollar).into());
-                    result.push(TokenTree::Token(sp, token::Token::from_ast_ident(ident)).into());
+                    result.push(TokenTree::token(token::Dollar, sp).into());
+                    result.push(TokenTree::Token(Token::from_ast_ident(ident)).into());
                 }
             }
 
@@ -253,15 +248,15 @@ pub fn transcribe(
             // the previous results (from outside the Delimited).
             quoted::TokenTree::Delimited(mut span, delimited) => {
                 span = span.apply_mark(cx.current_expansion.mark);
-                stack.push(Frame::Delimited { forest: delimited, idx: 0, span: span });
+                stack.push(Frame::Delimited { forest: delimited, idx: 0, span });
                 result_stack.push(mem::replace(&mut result, Vec::new()));
             }
 
             // Nothing much to do here. Just push the token to the result, being careful to
             // preserve syntax context.
-            quoted::TokenTree::Token(sp, tok) => {
+            quoted::TokenTree::Token(token) => {
                 let mut marker = Marker(cx.current_expansion.mark);
-                let mut tt = TokenTree::Token(sp, tok);
+                let mut tt = TokenTree::Token(token);
                 noop_visit_tt(&mut tt, &mut marker);
                 result.push(tt.into());
             }

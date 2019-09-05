@@ -11,10 +11,10 @@ use std::{mem, ptr};
 
 use typenum::{Pow, Unsigned, U2};
 
-use config::HashLevelSize;
-use nodes::sparse_chunk::{Iter as ChunkIter, IterMut as ChunkIterMut, SparseChunk};
-use nodes::types::Bits;
-use util::{clone_ref, Ref};
+use crate::config::HashLevelSize;
+use crate::nodes::sparse_chunk::{Iter as ChunkIter, IterMut as ChunkIterMut, SparseChunk};
+use crate::nodes::types::Bits;
+use crate::util::{clone_ref, Ref};
 
 pub type HashWidth = <U2 as Pow<HashLevelSize>>::Output;
 pub type HashBits = <HashWidth as Bits>::Store; // a uint of HASH_SIZE bits
@@ -33,7 +33,7 @@ fn mask(hash: HashBits, shift: usize) -> HashBits {
     hash >> shift & HASH_MASK
 }
 
-pub trait HashValue: Clone {
+pub trait HashValue {
     type Key: Eq;
 
     fn extract_key(&self) -> &Self::Key;
@@ -95,18 +95,23 @@ impl<A> From<CollisionNode<A>> for Entry<A> {
     }
 }
 
-impl<A: HashValue> Default for Node<A> {
+impl<A> Default for Node<A> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<A: HashValue> Node<A> {
+impl<A> Node<A> {
     #[inline]
     pub fn new() -> Self {
         Node {
             data: SparseChunk::new(),
         }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.data.len()
     }
 
     #[inline]
@@ -130,15 +135,12 @@ impl<A: HashValue> Node<A> {
         }
     }
 
-    #[inline]
-    fn len(&self) -> usize {
-        self.data.len()
-    }
-
     fn pop(&mut self) -> Entry<A> {
         self.data.pop().unwrap()
     }
+}
 
+impl<A: HashValue> Node<A> {
     fn merge_values(value1: A, hash1: HashBits, value2: A, hash2: HashBits, shift: usize) -> Self {
         let index1 = mask(hash1, shift) as usize;
         let index2 = mask(hash2, shift) as usize;
@@ -188,6 +190,7 @@ impl<A: HashValue> Node<A> {
 
     pub fn get_mut<BK>(&mut self, hash: HashBits, shift: usize, key: &BK) -> Option<&mut A>
     where
+        A: Clone,
         BK: Eq + ?Sized,
         A::Key: Borrow<BK>,
     {
@@ -215,7 +218,10 @@ impl<A: HashValue> Node<A> {
         }
     }
 
-    pub fn insert(&mut self, hash: HashBits, shift: usize, value: A) -> Option<A> {
+    pub fn insert(&mut self, hash: HashBits, shift: usize, value: A) -> Option<A>
+    where
+        A: Clone,
+    {
         let index = mask(hash, shift) as usize;
         if let Some(entry) = self.data.get_mut(index) {
             let mut fallthrough = false;
@@ -278,6 +284,7 @@ impl<A: HashValue> Node<A> {
 
     pub fn remove<BK>(&mut self, hash: HashBits, shift: usize, key: &BK) -> Option<A>
     where
+        A: Clone,
         BK: Eq + ?Sized,
         A::Key: Borrow<BK>,
     {
@@ -293,7 +300,7 @@ impl<A: HashValue> Node<A> {
                     } // Otherwise, fall through to the removal.
                 }
                 Entry::Collision(ref mut coll_ref) => {
-                    let mut coll = Ref::make_mut(coll_ref);
+                    let coll = Ref::make_mut(coll_ref);
                     removed = coll.remove(key);
                     if coll.len() == 1 {
                         new_node = Some(coll.pop());
@@ -597,7 +604,7 @@ where
 
 impl<A> Iterator for Drain<A>
 where
-    A: HashValue,
+    A: HashValue + Clone,
 {
     type Item = (A, HashBits);
 
@@ -644,9 +651,9 @@ where
     }
 }
 
-impl<A: HashValue> ExactSizeIterator for Drain<A> {}
+impl<A: HashValue> ExactSizeIterator for Drain<A> where A: Clone {}
 
-impl<A: HashValue> FusedIterator for Drain<A> {}
+impl<A: HashValue> FusedIterator for Drain<A> where A: Clone {}
 
 impl<A: HashValue + fmt::Debug> fmt::Debug for Node<A> {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {

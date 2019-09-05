@@ -43,11 +43,16 @@ fn mul(x: u64, y: u64) -> (u64, u64) {
     t1 = xlo * ylo;
     t2 = xlo * yhi + xhi * ylo;
     t3 = xhi * yhi;
-    let lo = t1 + (t2 << 32);
+    let lo = t1.wrapping_add(t2 << 32);
     let hi = t3 + (t2 >> 32) + (t1 > lo) as u64;
     (hi, lo)
 }
 
+/// Floating multiply add (f64)
+///
+/// Computes `(x*y)+z`, rounded as one ternary operation:
+/// Computes the value (as if) to infinite precision and rounds once to the result format,
+/// according to the rounding mode characterized by the value of FLT_ROUNDS.
 #[inline]
 #[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn fma(x: f64, y: f64, z: f64) -> f64 {
@@ -116,7 +121,7 @@ pub fn fma(x: f64, y: f64, z: f64) -> f64 {
     let mut nonzero: i32 = 1;
     if samesign {
         /* r += z */
-        rlo += zlo;
+        rlo = rlo.wrapping_add(zlo);
         rhi += zhi + (rlo < zlo) as u64;
     } else {
         /* r -= z */

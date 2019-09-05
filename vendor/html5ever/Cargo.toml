@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,7 +12,7 @@
 
 [package]
 name = "html5ever"
-version = "0.22.5"
+version = "0.23.0"
 authors = ["The html5ever Project Developers"]
 build = "build.rs"
 description = "High-performance browser-grade HTML5 parser"
@@ -37,7 +37,7 @@ harness = false
 name = "serializer"
 
 [[bench]]
-name = "tokenizer"
+name = "html5ever"
 harness = false
 [dependencies.log]
 version = "0.4"
@@ -46,7 +46,10 @@ version = "0.4"
 version = "0.1"
 
 [dependencies.markup5ever]
-version = "0.7"
+version = "0.8"
+[dev-dependencies.criterion]
+version = "0.2"
+
 [dev-dependencies.rustc-serialize]
 version = "0.3.15"
 

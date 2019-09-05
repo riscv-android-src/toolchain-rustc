@@ -1,13 +1,9 @@
-extern crate mdbook;
 #[macro_use]
 extern crate pretty_assertions;
-extern crate select;
-extern crate tempfile;
-extern crate walkdir;
 
 mod dummy_book;
 
-use dummy_book::{assert_contains_strings, assert_doesnt_contain_strings, DummyBook};
+use crate::dummy_book::{assert_contains_strings, assert_doesnt_contain_strings, DummyBook};
 
 use mdbook::config::Config;
 use mdbook::errors::*;
@@ -22,16 +18,21 @@ use std::path::Path;
 use tempfile::Builder as TempFileBuilder;
 use walkdir::{DirEntry, WalkDir};
 
-const BOOK_ROOT: &'static str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dummy_book");
-const TOC_TOP_LEVEL: &[&'static str] = &[
+const BOOK_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/dummy_book");
+const TOC_TOP_LEVEL: &[&str] = &[
     "1. First Chapter",
     "2. Second Chapter",
     "Conclusion",
     "Dummy Book",
     "Introduction",
 ];
-const TOC_SECOND_LEVEL: &[&'static str] =
-    &["1.1. Nested Chapter", "1.2. Includes", "2.1. Nested Chapter", "1.3. Recursive"];
+const TOC_SECOND_LEVEL: &[&str] = &[
+    "1.1. Nested Chapter",
+    "1.2. Includes",
+    "1.3. Recursive",
+    "1.4. Markdown",
+    "2.1. Nested Chapter",
+];
 
 /// Make sure you can load the dummy book and build it without panicking.
 #[test]
@@ -119,7 +120,11 @@ fn check_correct_relative_links_in_print_page() {
 
     assert_contains_strings(
         first.join("print.html"),
-        &[r##"<a href="second/../first/nested.html">the first section</a>,"##],
+        &[
+            r##"<a href="second/../first/nested.html">the first section</a>,"##,
+            r##"<a href="second/../../std/foo/bar.html">outside</a>"##,
+            r##"<img src="second/../images/picture.png" alt="Some image" />"##,
+        ],
     );
 }
 
@@ -183,7 +188,7 @@ fn chapter_files_were_rendered_to_html() {
     let chapter_files = WalkDir::new(&src)
         .into_iter()
         .filter_entry(|entry| entry_ends_with(entry, ".md"))
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path().to_path_buf())
         .filter(|path| path.file_name().and_then(OsStr::to_str) != Some("SUMMARY.md"));
 
@@ -323,7 +328,10 @@ fn able_to_include_files_in_chapters() {
 
     let includes = temp.path().join("book/first/includes.html");
 
-    let summary_strings = &["<h1>Summary</h1>", ">First Chapter</a>"];
+    let summary_strings = &[
+        r##"<h1><a class="header" href="#summary" id="summary">Summary</a></h1>"##,
+        ">First Chapter</a>",
+    ];
     assert_contains_strings(&includes, summary_strings);
 
     assert_doesnt_contain_strings(&includes, &["{{#include ../SUMMARY.md::}}"]);
@@ -386,7 +394,7 @@ fn by_default_mdbook_use_index_preprocessor_to_convert_readme_to_index() {
         "First README",
     ];
     assert_contains_strings(&first_index, &expected_strings);
-    assert_doesnt_contain_strings(&first_index, &vec!["README.html"]);
+    assert_doesnt_contain_strings(&first_index, &["README.html"]);
 
     let second_index = temp.path().join("book").join("second").join("index.html");
     let unexpected_strings = vec!["Second README"];
@@ -399,7 +407,7 @@ fn theme_dir_overrides_work_correctly() {
     let book_dir = book_dir.path();
     let theme_dir = book_dir.join("theme");
 
-    let mut index = ::mdbook::theme::INDEX.to_vec();
+    let mut index = mdbook::theme::INDEX.to_vec();
     index.extend_from_slice(b"\n<!-- This is a modified index.hbs! -->");
 
     write_file(&theme_dir, "index.hbs", &index).unwrap();
@@ -411,10 +419,55 @@ fn theme_dir_overrides_work_correctly() {
     dummy_book::assert_contains_strings(built_index, &["This is a modified index.hbs!"]);
 }
 
+#[test]
+fn no_index_for_print_html() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let print_html = temp.path().join("book/print.html");
+    assert_contains_strings(print_html, &[r##"noindex"##]);
+
+    let index_html = temp.path().join("book/index.html");
+    assert_doesnt_contain_strings(index_html, &[r##"noindex"##]);
+}
+
+#[test]
+fn markdown_options() {
+    let temp = DummyBook::new().build().unwrap();
+    let md = MDBook::load(temp.path()).unwrap();
+    md.build().unwrap();
+
+    let path = temp.path().join("book/first/markdown.html");
+    assert_contains_strings(
+        &path,
+        &[
+            "<th>foo</th>",
+            "<th>bar</th>",
+            "<td>baz</td>",
+            "<td>bim</td>",
+        ],
+    );
+    assert_contains_strings(&path, &[
+        r##"<sup class="footnote-reference"><a href="#1">1</a></sup>"##,
+        r##"<sup class="footnote-reference"><a href="#word">2</a></sup>"##,
+        r##"<div class="footnote-definition" id="1"><sup class="footnote-definition-label">1</sup>"##,
+        r##"<div class="footnote-definition" id="word"><sup class="footnote-definition-label">2</sup>"##,
+    ]);
+    assert_contains_strings(&path, &["<del>strikethrough example</del>"]);
+    assert_contains_strings(
+        &path,
+        &[
+            "<li><input disabled=\"\" type=\"checkbox\" checked=\"\"/>\nApples",
+            "<li><input disabled=\"\" type=\"checkbox\" checked=\"\"/>\nBroccoli",
+            "<li><input disabled=\"\" type=\"checkbox\"/>\nCarrots",
+        ],
+    );
+}
+
 #[cfg(feature = "search")]
 mod search {
-    extern crate serde_json;
-    use dummy_book::DummyBook;
+    use crate::dummy_book::DummyBook;
     use mdbook::utils::fs::file_to_string;
     use mdbook::MDBook;
     use std::fs::File;
@@ -423,12 +476,13 @@ mod search {
     fn read_book_index(root: &Path) -> serde_json::Value {
         let index = root.join("book/searchindex.js");
         let index = file_to_string(index).unwrap();
-        let index = index.trim_left_matches("window.search = ");
-        let index = index.trim_right_matches(";");
+        let index = index.trim_start_matches("Object.assign(window.search, ");
+        let index = index.trim_end_matches(");");
         serde_json::from_str(&index).unwrap()
     }
 
     #[test]
+    #[allow(clippy::float_cmp)]
     fn book_creates_reasonable_search_index() {
         let temp = DummyBook::new().build().unwrap();
         let md = MDBook::load(temp.path()).unwrap();
@@ -457,7 +511,7 @@ mod search {
         assert_eq!(docs[&some_section]["body"], "");
         assert_eq!(
             docs[&summary]["body"],
-            "Dummy Book Introduction First Chapter Nested Chapter Includes Recursive Second Chapter Nested Chapter Conclusion"
+            "Dummy Book Introduction First Chapter Nested Chapter Includes Recursive Markdown Second Chapter Nested Chapter Conclusion"
         );
         assert_eq!(docs[&summary]["breadcrumbs"], "First Chapter » Summary");
         assert_eq!(docs[&conclusion]["body"], "I put &lt;HTML&gt; in here!");

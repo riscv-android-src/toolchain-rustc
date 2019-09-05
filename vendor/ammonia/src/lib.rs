@@ -1,6 +1,9 @@
 // Copyright (C) Michael Howell and others
 // this library is released under the same terms as Rust itself.
 
+#![forbid(unsafe_code)]
+#![forbid(missing_docs)]
+
 //! Ammonia is a whitelist-based HTML sanitization library. It is designed to
 //! prevent cross-site scripting, layout breaking, and clickjacking caused
 //! by untrusted user-provided HTML being mixed into a larger web page.
@@ -42,10 +45,11 @@ use html5ever::rcdom::{Handle, NodeData, RcDom};
 use html5ever::serialize::{serialize, SerializeOpts};
 use html5ever::tree_builder::{NodeOrText, TreeSink};
 use html5ever::interface::Attribute;
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
+use std::iter::IntoIterator as IntoIter;
 use std::mem::replace;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -73,7 +77,7 @@ lazy_static! {
 ///
 /// # Examples
 ///
-///     assert_eq!(ammonia::clean("<script>XSS</script>"), "XSS")
+///     assert_eq!(ammonia::clean("XSS<script>attack</script>"), "XSS")
 pub fn clean(src: &str) -> String {
     AMMONIA.clean(src).to_string()
 }
@@ -182,43 +186,43 @@ pub fn clean(src: &str) -> String {
 ///        .clean("");
 ///    # }
 ///    ```
-/// 
+///
 ///  * A tag is in either [`tags`] or [`tag_attributes`] while also
 ///    being in [`clean_content_tags`].
-/// 
+///
 ///    Both [`tags`] and [`tag_attributes`] are whitelists but
 ///    [`clean_content_tags`] is a blacklist, so it doesn't make sense
 ///    to have the same tag in both.
-/// 
+///
 ///    For example, this will panic, since the `aside` tag is in
 ///    [`tags`] by default:
-/// 
+///
 ///    ```should_panic
 ///    #[macro_use]
 ///    extern crate maplit;
 ///    # extern crate ammonia;
-///    
+///
 ///    use ammonia::Builder;
-///    
+///
 ///    # fn main() {
 ///    Builder::default()
 ///        .clean_content_tags(hashset!["aside"])
 ///        .clean("");
 ///    # }
 ///    ```
-/// 
+///
 ///    This, however, is valid:
-/// 
+///
 ///    ```
 ///    #[macro_use]
 ///    extern crate maplit;
 ///    # extern crate ammonia;
-///    
+///
 ///    use ammonia::Builder;
-///    
+///
 ///    # fn main() {
 ///    Builder::default()
-///        .rm_tags(std::iter::once("aside"))
+///        .rm_tags(&["aside"])
 ///        .clean_content_tags(hashset!["aside"])
 ///        .clean("");
 ///    # }
@@ -239,9 +243,11 @@ pub struct Builder<'a> {
     tags: HashSet<&'a str>,
     clean_content_tags: HashSet<&'a str>,
     tag_attributes: HashMap<&'a str, HashSet<&'a str>>,
+    tag_attribute_values: HashMap<&'a str, HashMap<&'a str, HashSet<&'a str>>>,
     generic_attributes: HashSet<&'a str>,
     url_schemes: HashSet<&'a str>,
     url_relative: UrlRelative,
+    attribute_filter: Option<Box<AttributeFilter>>,
     link_rel: Option<&'a str>,
     allowed_classes: HashMap<&'a str, HashSet<&'a str>>,
     strip_comments: bool,
@@ -262,7 +268,9 @@ impl<'a> Default for Builder<'a> {
             "strike", "strong", "sub", "summary", "sup", "table", "tbody",
             "td", "th", "thead", "time", "tr", "tt", "u", "ul", "var", "wbr"
         ];
-        let clean_content_tags = hashset![];
+        let clean_content_tags = hashset![
+            "script", "style"
+        ];
         let generic_attributes = hashset![
             "lang", "title"
         ];
@@ -322,6 +330,7 @@ impl<'a> Default for Builder<'a> {
                 "align", "char", "charoff"
             ],
         ];
+        let tag_attribute_values = hashmap![];
         let url_schemes = hashset![
             "bitcoin", "ftp", "ftps", "geo", "http", "https", "im", "irc",
             "ircs", "magnet", "mailto", "mms", "mx", "news", "nntp",
@@ -334,9 +343,11 @@ impl<'a> Default for Builder<'a> {
             tags: tags,
             clean_content_tags: clean_content_tags,
             tag_attributes: tag_attributes,
+            tag_attribute_values: tag_attribute_values,
             generic_attributes: generic_attributes,
             url_schemes: url_schemes,
             url_relative: UrlRelative::PassThrough,
+            attribute_filter: None,
             link_rel: Some("noopener noreferrer"),
             allowed_classes: allowed_classes,
             strip_comments: true,
@@ -390,11 +401,11 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .add_tags(std::iter::once("my-tag"))
+    ///         .add_tags(&["my-tag"])
     ///         .clean("<my-tag>test</my-tag> <span>mess</span>").to_string();
     ///     assert_eq!("<my-tag>test</my-tag> <span>mess</span>", a);
-    pub fn add_tags<I: Iterator<Item=&'a str>>(&mut self, it: I) -> &mut Self {
-        self.tags.extend(it);
+    pub fn add_tags<T: 'a + ?Sized + Borrow<str>, I: IntoIter<Item=&'a T>>(&mut self, it: I) -> &mut Self {
+        self.tags.extend(it.into_iter().map(Borrow::borrow));
         self
     }
 
@@ -405,12 +416,12 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .rm_tags(std::iter::once("span"))
+    ///         .rm_tags(&["span"])
     ///         .clean("<span></span>").to_string();
     ///     assert_eq!("", a);
-    pub fn rm_tags<'b, I: Iterator<Item=&'b str>>(&mut self, it: I) -> &mut Self {
+    pub fn rm_tags<'b, T: 'b + ?Sized + Borrow<str>, I: IntoIter<Item=&'b T>>(&mut self, it: I) -> &mut Self {
         for i in it {
-            self.tags.remove(i);
+            self.tags.remove(i.borrow());
         }
         self
     }
@@ -431,7 +442,7 @@ impl<'a> Builder<'a> {
     ///
     /// Adding tags which are whitelisted in `tags` or `tag_attributes` will cause
     /// a panic.
-    /// 
+    ///
     /// # Examples
     ///
     ///     #[macro_use]
@@ -450,7 +461,7 @@ impl<'a> Builder<'a> {
     ///     # }
     ///
     /// # Defaults
-    /// 
+    ///
     /// No tags have content removed by default.
     pub fn clean_content_tags(&mut self, value: HashSet<&'a str>) -> &mut Self {
         self.clean_content_tags = value;
@@ -460,18 +471,18 @@ impl<'a> Builder<'a> {
     /// Add additonal blacklisted clean-content tags without overwriting old ones.
     ///
     /// Does nothing if the tag is already there.
-    /// 
+    ///
     /// Adding tags which are whitelisted in `tags` or `tag_attributes` will cause
     /// a panic.
     ///
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .add_clean_content_tags(std::iter::once("my-tag"))
+    ///         .add_clean_content_tags(&["my-tag"])
     ///         .clean("<my-tag>test</my-tag><span>mess</span>").to_string();
     ///     assert_eq!("<span>mess</span>", a);
-    pub fn add_clean_content_tags<I: Iterator<Item=&'a str>>(&mut self, it: I) -> &mut Self {
-        self.clean_content_tags.extend(it);
+    pub fn add_clean_content_tags<T: 'a + ?Sized + Borrow<str>, I: IntoIter<Item=&'a T>>(&mut self, it: I) -> &mut Self {
+        self.clean_content_tags.extend(it.into_iter().map(Borrow::borrow));
         self
     }
 
@@ -490,13 +501,13 @@ impl<'a> Builder<'a> {
     ///     let tag_blacklist = hashset!["script"];
     ///     let a = ammonia::Builder::default()
     ///         .clean_content_tags(tag_blacklist)
-    ///         .rm_clean_content_tags(std::iter::once("script"))
+    ///         .rm_clean_content_tags(&["script"])
     ///         .clean("<script>XSS</script>").to_string();
     ///     assert_eq!("XSS", a);
     ///     # }
-    pub fn rm_clean_content_tags<'b, I: Iterator<Item=&'b str>>(&mut self, it: I) -> &mut Self {
+    pub fn rm_clean_content_tags<'b, T: 'b + ?Sized + Borrow<str>, I: IntoIter<Item=&'b T>>(&mut self, it: I) -> &mut Self {
         for i in it {
-            self.clean_content_tags.remove(i);
+            self.clean_content_tags.remove(i.borrow());
         }
         self
     }
@@ -588,12 +599,12 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .add_tags(std::iter::once("my-tag"))
-    ///         .add_tag_attributes("my-tag", std::iter::once("my-attr"))
+    ///         .add_tags(&["my-tag"])
+    ///         .add_tag_attributes("my-tag", &["my-attr"])
     ///         .clean("<my-tag my-attr>test</my-tag> <span>mess</span>").to_string();
     ///     assert_eq!("<my-tag my-attr=\"\">test</my-tag> <span>mess</span>", a);
-    pub fn add_tag_attributes<I: Iterator<Item=&'a str>>(&mut self, tag: &'a str, it: I) -> &mut Self {
-        self.tag_attributes.entry(tag).or_insert_with(|| HashSet::new()).extend(it);
+    pub fn add_tag_attributes<T: 'a + ?Sized + Borrow<str>, U: 'a + ?Sized + Borrow<str>, I: IntoIter<Item=&'a T>>(&mut self, tag: &'a U, it: I) -> &mut Self {
+        self.tag_attributes.entry(tag.borrow()).or_insert_with(|| HashSet::new()).extend(it.into_iter().map(Borrow::borrow));
         self
     }
 
@@ -604,13 +615,13 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .rm_tag_attributes("a", std::iter::once("href"))
+    ///         .rm_tag_attributes("a", &["href"])
     ///         .clean("<a href=\"/\"></a>").to_string();
     ///     assert_eq!("<a rel=\"noopener noreferrer\"></a>", a);
-    pub fn rm_tag_attributes<'b, 'c, I: Iterator<Item=&'b str>>(&mut self, tag: &'c str, it: I) -> &mut Self {
-        if let Some(tag) = self.tag_attributes.get_mut(tag) {
+    pub fn rm_tag_attributes<'b, 'c, T: 'b + ?Sized + Borrow<str>, U: 'c + ?Sized + Borrow<str>, I: IntoIter<Item=&'b T>>(&mut self, tag: &'c U, it: I) -> &mut Self {
+        if let Some(tag) = self.tag_attributes.get_mut(tag.borrow()) {
             for i in it {
-                tag.remove(i);
+                tag.remove(i.borrow());
             }
         }
         self
@@ -628,6 +639,103 @@ impl<'a> Builder<'a> {
     ///     assert_eq!(tag_attributes, b.clone_tag_attributes());
     pub fn clone_tag_attributes(&self) -> HashMap<&'a str, HashSet<&'a str>> {
         self.tag_attributes.clone()
+    }
+
+    /// Sets the values of HTML attributes that are allowed on specific tags.
+    ///
+    /// The value is structured as a map from tag names to a map from attribute names to a set of
+    /// attribute values.
+    ///
+    /// If a tag is not itself whitelisted, adding entries to this map will do nothing.
+    ///
+    /// # Examples
+    ///
+    ///     #[macro_use]
+    ///     extern crate maplit;
+    ///     # extern crate ammonia;
+    ///
+    ///     use ammonia::Builder;
+    ///
+    ///     # fn main() {
+    ///     let tags = hashset!["my-tag"];
+    ///     let tag_attribute_values = hashmap![
+    ///         "my-tag" => hashmap![
+    ///             "my-attr" => hashset!["val"],
+    ///         ],
+    ///     ];
+    ///     let a = Builder::new().tags(tags).tag_attribute_values(tag_attribute_values)
+    ///         .clean("<my-tag my-attr=val>")
+    ///         .to_string();
+    ///     assert_eq!(a, "<my-tag my-attr=\"val\"></my-tag>");
+    ///     # }
+    ///
+    /// # Defaults
+    ///
+    /// None.
+    pub fn tag_attribute_values(&mut self, value: HashMap<&'a str, HashMap<&'a str, HashSet<&'a str>>>) -> &mut Self {
+        self.tag_attribute_values = value;
+        self
+    }
+
+    /// Add additonal whitelisted tag-specific attribute values without overwriting old ones.
+    ///
+    /// # Examples
+    ///
+    ///     let a = ammonia::Builder::default()
+    ///         .add_tags(&["my-tag"])
+    ///         .add_tag_attribute_values("my-tag", "my-attr", &[""])
+    ///         .clean("<my-tag my-attr>test</my-tag> <span>mess</span>").to_string();
+    ///     assert_eq!("<my-tag my-attr=\"\">test</my-tag> <span>mess</span>", a);
+    pub fn add_tag_attribute_values<T: 'a + ?Sized + Borrow<str>, U: 'a + ?Sized + Borrow<str>, V: 'a + ?Sized + Borrow<str>, I: IntoIter<Item=&'a T>>(&mut self, tag: &'a U, attribute: &'a V, it: I) -> &mut Self {
+        self.tag_attribute_values
+            .entry(tag.borrow())
+            .or_insert_with(HashMap::new)
+            .entry(attribute.borrow())
+            .or_insert_with(HashSet::new)
+            .extend(it.into_iter().map(Borrow::borrow));
+
+        self
+    }
+
+    /// Remove already-whitelisted tag-specific attribute values.
+    ///
+    /// Does nothing if the attribute or the value is already gone.
+    ///
+    /// # Examples
+    ///
+    ///     let a = ammonia::Builder::default()
+    ///         .rm_tag_attributes("a", &["href"])
+    ///         .add_tag_attribute_values("a", "href", &["/"])
+    ///         .rm_tag_attribute_values("a", "href", &["/"])
+    ///         .clean("<a href=\"/\"></a>").to_string();
+    ///     assert_eq!("<a rel=\"noopener noreferrer\"></a>", a);
+    pub fn rm_tag_attribute_values<'b, 'c, T: 'b + ?Sized + Borrow<str>, U: 'c + ?Sized + Borrow<str>, V: 'c + ?Sized + Borrow<str>, I: IntoIter<Item=&'b T>>(&mut self, tag: &'c U, attribute: &'c V, it: I) -> &mut Self {
+        if let Some(attrs) = self.tag_attribute_values.get_mut(tag.borrow()).and_then(|map| map.get_mut(attribute.borrow())) {
+            for i in it {
+                attrs.remove(i.borrow());
+            }
+        }
+        self
+    }
+
+    /// Returns a copy of the set of whitelisted tag-specific attribute values.
+    ///
+    /// # Examples
+    ///
+    ///     use std::collections::{HashMap, HashSet};
+    ///
+    ///     let mut attribute_values = HashMap::with_capacity(2);
+    ///     attribute_values.insert("my-attr-1", std::iter::once("foo").collect());
+    ///     attribute_values.insert("my-attr-2", vec!["baz", "bar"].into_iter().collect());
+    ///
+    ///     let mut tag_attribute_values = HashMap::with_capacity(1);
+    ///     tag_attribute_values.insert("my-tag", attribute_values);
+
+    ///     let mut b = ammonia::Builder::default();
+    ///     b.tag_attribute_values(Clone::clone(&tag_attribute_values));
+    ///     assert_eq!(tag_attribute_values, b.clone_tag_attribute_values());
+    pub fn clone_tag_attribute_values(&self) -> HashMap<&'a str, HashMap<&'a str, HashSet<&'a str>>> {
+        self.tag_attribute_values.clone()
     }
 
     /// Sets the attributes that are allowed on any tag.
@@ -664,11 +772,11 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .add_generic_attributes(std::iter::once("my-attr"))
+    ///         .add_generic_attributes(&["my-attr"])
     ///         .clean("<span my-attr>mess</span>").to_string();
     ///     assert_eq!("<span my-attr=\"\">mess</span>", a);
-    pub fn add_generic_attributes<I: Iterator<Item=&'a str>>(&mut self, it: I) -> &mut Self {
-        self.generic_attributes.extend(it);
+    pub fn add_generic_attributes<T: 'a + ?Sized + Borrow<str>, I: IntoIter<Item=&'a T>>(&mut self, it: I) -> &mut Self {
+        self.generic_attributes.extend(it.into_iter().map(Borrow::borrow));
         self
     }
 
@@ -679,12 +787,12 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .rm_generic_attributes(std::iter::once("title"))
+    ///         .rm_generic_attributes(&["title"])
     ///         .clean("<span title=\"cool\"></span>").to_string();
     ///     assert_eq!("<span></span>", a);
-    pub fn rm_generic_attributes<'b, I: Iterator<Item=&'b str>>(&mut self, it: I) -> &mut Self {
+    pub fn rm_generic_attributes<'b, T: 'b + ?Sized + Borrow<str>, I: IntoIter<Item=&'b T>>(&mut self, it: I) -> &mut Self {
         for i in it {
-            self.generic_attributes.remove(i);
+            self.generic_attributes.remove(i.borrow());
         }
         self
     }
@@ -743,11 +851,11 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .add_url_schemes(std::iter::once("my-scheme"))
+    ///         .add_url_schemes(&["my-scheme"])
     ///         .clean("<a href=my-scheme:home>mess</span>").to_string();
     ///     assert_eq!("<a href=\"my-scheme:home\" rel=\"noopener noreferrer\">mess</a>", a);
-    pub fn add_url_schemes<I: Iterator<Item=&'a str>>(&mut self, it: I) -> &mut Self {
-        self.url_schemes.extend(it);
+    pub fn add_url_schemes<T: 'a + ?Sized + Borrow<str>, I: IntoIter<Item=&'a T>>(&mut self, it: I) -> &mut Self {
+        self.url_schemes.extend(it.into_iter().map(Borrow::borrow));
         self
     }
 
@@ -758,12 +866,12 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .rm_url_schemes(std::iter::once("ftp"))
+    ///         .rm_url_schemes(&["ftp"])
     ///         .clean("<a href=\"ftp://ftp.mozilla.org/\"></a>").to_string();
     ///     assert_eq!("<a rel=\"noopener noreferrer\"></a>", a);
-    pub fn rm_url_schemes<'b, I: Iterator<Item=&'b str>>(&mut self, it: I) -> &mut Self {
+    pub fn rm_url_schemes<'b, T: 'b + ?Sized + Borrow<str>, I: IntoIter<Item=&'b T>>(&mut self, it: I) -> &mut Self {
         for i in it {
-            self.url_schemes.remove(i);
+            self.url_schemes.remove(i.borrow());
         }
         self
     }
@@ -803,6 +911,42 @@ impl<'a> Builder<'a> {
     /// ```
     pub fn url_relative(&mut self, value: UrlRelative) -> &mut Self {
         self.url_relative = value;
+        self
+    }
+
+    /// Allows rewriting of all attributes using a callback.
+    ///
+    /// The callback takes name of the element, attribute and its value.
+    /// Returns `None` to remove the attribute, or a value to use.
+    ///
+    /// Rewriting of attributes with URLs is done before `url_relative()`.
+    ///
+    /// # Panics
+    ///
+    /// If more than one callback is set.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use ammonia::Builder;
+    /// let a = Builder::new()
+    ///     .attribute_filter(|element, attribute, value| {
+    ///         match (element, attribute) {
+    ///             ("img", "src") => None,
+    ///             _ => Some(value.into())
+    ///         }
+    ///     })
+    ///     .link_rel(None)
+    ///     .clean("<a href=/><img alt=Home src=foo></a>")
+    ///     .to_string();
+    /// assert_eq!(a,
+    ///     r#"<a href="/"><img alt="Home"></a>"#);
+    /// ```
+    pub fn attribute_filter<'cb, CallbackFn>(&mut self, callback: CallbackFn) -> &mut Self
+        where CallbackFn: for<'u> Fn(&str, &str, &'u str) -> Option<Cow<'u, str>> + Send + Sync + 'static
+    {
+        assert!(self.attribute_filter.is_none(), "attribute_filter can be set only once");
+        self.attribute_filter = Some(Box::new(callback));
         self
     }
 
@@ -949,11 +1093,11 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .add_allowed_classes("a", std::iter::once("onebox"))
+    ///         .add_allowed_classes("a", &["onebox"])
     ///         .clean("<a href=/ class=onebox>mess</span>").to_string();
     ///     assert_eq!("<a href=\"/\" class=\"onebox\" rel=\"noopener noreferrer\">mess</a>", a);
-    pub fn add_allowed_classes<I: Iterator<Item=&'a str>>(&mut self, tag: &'a str, it: I) -> &mut Self {
-        self.allowed_classes.entry(tag).or_insert_with(|| HashSet::new()).extend(it);
+    pub fn add_allowed_classes<T: 'a + ?Sized + Borrow<str>, U: 'a + ?Sized + Borrow<str>, I: IntoIter<Item=&'a T>>(&mut self, tag: &'a U, it: I) -> &mut Self {
+        self.allowed_classes.entry(tag.borrow()).or_insert_with(|| HashSet::new()).extend(it.into_iter().map(Borrow::borrow));
         self
     }
 
@@ -964,14 +1108,14 @@ impl<'a> Builder<'a> {
     /// # Examples
     ///
     ///     let a = ammonia::Builder::default()
-    ///         .add_allowed_classes("span", std::iter::once("active"))
-    ///         .rm_allowed_classes("span", std::iter::once("active"))
+    ///         .add_allowed_classes("span", &["active"])
+    ///         .rm_allowed_classes("span", &["active"])
     ///         .clean("<span class=active>").to_string();
     ///     assert_eq!("<span class=\"\"></span>", a);
-    pub fn rm_allowed_classes<'b, 'c, I: Iterator<Item=&'b str>>(&mut self, tag: &'c str, it: I) -> &mut Self {
-        if let Some(tag) = self.allowed_classes.get_mut(tag) {
+    pub fn rm_allowed_classes<'b, 'c, T: 'b + ?Sized + Borrow<str>, U: 'c + ?Sized + Borrow<str>, I: IntoIter<Item=&'b T>>(&mut self, tag: &'c U, it: I) -> &mut Self {
+        if let Some(tag) = self.allowed_classes.get_mut(tag.borrow()) {
             for i in it {
-                tag.remove(i);
+                tag.remove(i.borrow());
             }
         }
         self
@@ -1148,6 +1292,7 @@ impl<'a> Builder<'a> {
     /// without having to break Ammonia's API.
     fn clean_dom(&self, mut dom: RcDom) -> Document {
         let mut stack = Vec::new();
+        let mut removed = Vec::new();
         let link_rel = self.link_rel
             .map(|link_rel| format_tendril!("{}", link_rel));
         if link_rel.is_some() {
@@ -1186,11 +1331,16 @@ impl<'a> Builder<'a> {
                 .into_iter()
                 .rev(),
         );
+        // This design approach is used to prevent pathological content from producing
+        // a stack overflow. The `stack` contains to-be-cleaned nodes, while `remove`,
+        // of course, contains nodes that need to be dropped (we can't just drop them,
+        // because they could have a very deep child tree).
         while let Some(mut node) = stack.pop() {
             let parent = node.parent
                 .replace(None).expect("a node in the DOM will have a parent, except the root, which is not processed")
                 .upgrade().expect("a node's parent will be pointed to by its parent (or the root pointer), and will not be dropped");
             if self.clean_node_content(&node) {
+                removed.push(node);
                 continue;
             }
             let pass = self.clean_child(&mut node);
@@ -1207,8 +1357,19 @@ impl<'a> Builder<'a> {
                     .into_iter()
                     .rev(),
             );
+            if !pass {
+                removed.push(node);
+            }
         }
-        Document(body)
+        // Now, imperatively clean up all of the child nodes.
+        // Otherwise, we could wind up with a DoS, either caused by a memory leak,
+        // or caused by a stack overflow.
+        while let Some(node) = stack.pop() {
+            removed.extend_from_slice(
+                &replace(&mut *node.children.borrow_mut(), Vec::new())[..]
+            );
+        }
+        Document(dom)
     }
 
     /// Returns `true` if a node and all its content should be removed.
@@ -1245,6 +1406,14 @@ impl<'a> Builder<'a> {
                         self.tag_attributes
                             .get(&*name.local)
                             .map(|ta| ta.contains(&*attr.name.local)) ==
+                            Some(true) ||
+                        self.tag_attribute_values
+                            .get(&*name.local)
+                            .and_then(|tav| tav.get(&*attr.name.local))
+                            .map(|vs| {
+                                let attr_val = attr.value.to_lowercase();
+                                vs.iter().any(|v| v.to_lowercase() == attr_val)
+                            }) ==
                             Some(true);
                     if !whitelisted {
                         // If the class attribute is not whitelisted,
@@ -1309,6 +1478,28 @@ impl<'a> Builder<'a> {
                             attr.value = format_tendril!("{}{}", id_prefix, attr.value);
                         }
                     }
+                }
+            }
+            if let Some(ref attr_filter) = self.attribute_filter {
+                let mut drop_attrs = Vec::new();
+                let mut attrs = attrs.borrow_mut();
+                for (i, attr) in &mut attrs.iter_mut().enumerate() {
+                    let replace_with = if let Some(new) = attr_filter.filter(&*name.local, &*attr.name.local, &*attr.value) {
+                        if *new != *attr.value {
+                            Some(format_tendril!("{}", new))
+                        } else {
+                            None // no need to replace the attr if filter returned the same value
+                        }
+                    } else {
+                        drop_attrs.push(i);
+                        None
+                    };
+                    if let Some(replace_with) = replace_with {
+                        attr.value = replace_with;
+                    }
+                }
+                for i in drop_attrs.into_iter().rev() {
+                    attrs.swap_remove(i);
                 }
             }
             if let Some(ref base) = url_base {
@@ -1377,7 +1568,12 @@ impl<'a> Builder<'a> {
 
 /// Given an element name and attribute name, determine if the given attribute contains a URL.
 fn is_url_attr(element: &str, attr: &str) -> bool {
-    attr == "href" || attr == "src" || (element == "object" && attr == "data")
+    attr == "href" || attr == "src"
+    || (element == "form" && attr == "action")
+    || (element == "object" && attr == "data")
+    || ((element == "button" || element == "input") && attr == "formaction")
+    || (element == "a" && attr == "ping")
+    || (element == "video" && attr == "poster")
 }
 
 fn is_url_relative(url: &str) -> bool {
@@ -1461,7 +1657,7 @@ pub enum UrlRelative {
 }
 
 impl fmt::Debug for UrlRelative {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             UrlRelative::Deny => write!(f, "UrlRelative::Deny"),
             UrlRelative::PassThrough => write!(f, "UrlRelative::PassThrough"),
@@ -1472,12 +1668,42 @@ impl fmt::Debug for UrlRelative {
     }
 }
 
+/// Types that implement this trait can be used to convert a relative URL into an absolute URL.
+///
+/// This evaluator is only called when the URL is relative; absolute URLs are not evaluated.
+///
+/// See [`url_relative`][url_relative] for more details.
+///
+/// [url_relative]: struct.Builder.html#method.url_relative
 pub trait UrlRelativeEvaluate: Send + Sync {
+    /// Return `None` to remove the attribute. Return `Some(str)` to replace it with a new string.
     fn evaluate<'a>(&self, &'a str) -> Option<Cow<'a, str>>;
 }
 impl<T> UrlRelativeEvaluate for T where T: Fn(&str) -> Option<Cow<str>> + Send + Sync {
     fn evaluate<'a>(&self, url: &'a str) -> Option<Cow<'a, str>> {
         self(url)
+    }
+}
+
+impl fmt::Debug for AttributeFilter {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("AttributeFilter")
+    }
+}
+
+/// Types that implement this trait can be used to remove or rewrite arbitrary attributes.
+///
+/// See [`attribute_filter`][attribute_filter] for more details.
+///
+/// [attribute_filter]: struct.Builder.html#method.attribute_filter
+pub trait AttributeFilter: Send + Sync {
+    /// Return `None` to remove the attribute. Return `Some(str)` to replace it with a new string.
+    fn filter<'a>(&self, &str, &str, &'a str) -> Option<Cow<'a, str>>;
+}
+
+impl<T> AttributeFilter for T where T: for<'a> Fn(&str, &str, &'a str) -> Option<Cow<'a, str>> + Send + Sync + 'static {
+    fn filter<'a>(&self, element: &str, attribute: &str, value: &'a str) -> Option<Cow<'a, str>> {
+        self(element, attribute, value)
     }
 }
 
@@ -1507,8 +1733,7 @@ impl<T> UrlRelativeEvaluate for T where T: Fn(&str) -> Option<Cow<str>> + Send +
 ///     let document = Builder::new()
 ///         .clean(input);
 ///     assert_eq!(document.to_string(), output);
-#[derive(Clone)]
-pub struct Document(Handle);
+pub struct Document(RcDom);
 
 impl Document {
     /// Serializes a `Document` instance to a `String`.
@@ -1522,7 +1747,7 @@ impl Document {
     ///
     ///     use ammonia::Builder;
     ///
-    ///     let input = "Some <style>HTML here";
+    ///     let input = "Some <style></style>HTML here";
     ///     let output = "Some HTML here";
     ///
     ///     let document = Builder::new()
@@ -1531,7 +1756,7 @@ impl Document {
     pub fn to_string(&self) -> String {
         let opts = Self::serialize_opts();
         let mut ret_val = Vec::new();
-        serialize(&mut ret_val, &self.0, opts)
+        serialize(&mut ret_val, &self.0.document.children.borrow()[0], opts)
             .expect("Writing to a string shouldn't fail (expect on OOM)");
         String::from_utf8(ret_val)
             .expect("html5ever only supports UTF8")
@@ -1552,7 +1777,7 @@ impl Document {
     ///
     ///     use ammonia::Builder;
     ///
-    ///     let input = "Some <style>HTML here";
+    ///     let input = "Some <style></style>HTML here";
     ///     let expected = b"Some HTML here";
     ///
     ///     let document = Builder::new()
@@ -1567,7 +1792,7 @@ impl Document {
         W: io::Write,
     {
         let opts = Self::serialize_opts();
-        serialize(writer, &self.0, opts)
+        serialize(writer, &self.0.document.children.borrow()[0], opts)
     }
 
     /// Exposes the `Document` instance as an [`html5ever::rcdom::Handle`][h].
@@ -1631,7 +1856,7 @@ impl Document {
     ///     # fn main() { do_main().unwrap() }
     #[cfg(ammonia_unstable)]
     pub fn to_dom_node(&self) -> Handle {
-        self.0.clone()
+        self.0.document.children.borrow()[0].clone()
     }
 
     fn serialize_opts() -> SerializeOpts {
@@ -1639,8 +1864,22 @@ impl Document {
     }
 }
 
+impl Clone for Document {
+    fn clone(&self) -> Self {
+        let parser = Builder::make_parser();
+        let dom = parser.one(&self.to_string()[..]);
+        Document(dom)
+    }
+}
+
+impl fmt::Display for Document {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.to_string())
+    }
+}
+
 impl fmt::Debug for Document {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Document({})", self.to_string())
     }
 }
@@ -1655,6 +1894,18 @@ impl From<Document> for String {
 mod test {
     use super::*;
     #[test]
+    fn deeply_nested_whitelisted() {
+        clean(&"<b>".repeat(60_000));
+    }
+    #[test]
+    fn deeply_nested_blacklisted() {
+        clean(&"<b-b>".repeat(60_000));
+    }
+    #[test]
+    fn deeply_nested_alternating() {
+        clean(&"<b-b>".repeat(35_000));
+    }
+    #[test]
     fn included_angles() {
         let fragment = "1 < 2";
         let result = clean(fragment);
@@ -1664,7 +1915,7 @@ mod test {
     fn remove_script() {
         let fragment = "an <script>evil()</script> example";
         let result = clean(fragment);
-        assert_eq!(result, "an evil() example");
+        assert_eq!(result, "an  example");
     }
     #[test]
     fn ignore_link() {
@@ -1719,6 +1970,89 @@ mod test {
             "<a href=\"http://example.com/test\" rel=\"noopener noreferrer\">Test</a>"
         );
     }
+    #[test]
+    fn attribute_filter_nop() {
+        let fragment = "<a href=test>Test</a>";
+        let result = Builder::new()
+            .attribute_filter(|elem, attr, value| {
+                assert_eq!("a", elem);
+                assert!(match (attr, value) {
+                    ("href", "test") => true,
+                    ("rel", "noopener noreferrer") => true,
+                    _ => false,
+                }, value.to_string());
+                Some(value.into())
+            })
+            .clean(fragment)
+            .to_string();
+        assert_eq!(
+            result,
+            "<a href=\"test\" rel=\"noopener noreferrer\">Test</a>"
+        );
+    }
+
+    #[test]
+    fn attribute_filter_drop() {
+        let fragment = "Test<img alt=test src=imgtest>";
+        let result = Builder::new()
+            .attribute_filter(|elem, attr, value| {
+                assert_eq!("img", elem);
+                match (attr, value) {
+                    ("src", "imgtest") => None,
+                    ("alt", "test") => Some(value.into()),
+                    _ => panic!("unexpected"),
+                }
+            })
+            .clean(fragment)
+            .to_string();
+        assert_eq!(
+            result,
+            r#"Test<img alt="test">"#
+        );
+    }
+
+    #[test]
+    fn url_filter_absolute() {
+        let fragment = "Test<img alt=test src=imgtest>";
+        let result = Builder::new()
+            .attribute_filter(|elem, attr, value| {
+                assert_eq!("img", elem);
+                match (attr, value) {
+                    ("src", "imgtest") => Some(format!("https://example.com/images/{}", value).into()),
+                    ("alt", "test") => None,
+                    _ => panic!("unexpected"),
+                }
+            })
+            .url_relative(UrlRelative::RewriteWithBase(Url::parse("http://wrong.invalid/").unwrap()))
+            .clean(fragment)
+            .to_string();
+        assert_eq!(
+            result,
+            r#"Test<img src="https://example.com/images/imgtest">"#
+        );
+    }
+
+    #[test]
+    fn url_filter_relative() {
+        let fragment = "Test<img alt=test src=imgtest>";
+        let result = Builder::new()
+            .attribute_filter(|elem, attr, value| {
+                assert_eq!("img", elem);
+                match (attr, value) {
+                    ("src", "imgtest") => Some("rewrite".into()),
+                    ("alt", "test") => Some("altalt".into()),
+                    _ => panic!("unexpected"),
+                }
+            })
+            .url_relative(UrlRelative::RewriteWithBase(Url::parse("https://example.com/base/#").unwrap()))
+            .clean(fragment)
+            .to_string();
+        assert_eq!(
+            result,
+            r#"Test<img alt="altalt" src="https://example.com/base/rewrite">"#
+        );
+    }
+
     #[test]
     fn rewrite_url_relative_no_rel() {
         let fragment = "<a href=test>Test</a>";
@@ -1899,6 +2233,61 @@ mod test {
         );
     }
     #[test]
+    fn remove_non_allowed_attributes_with_tag_attribute_values() {
+        let fragment = "<p data-label=\"baz\" name=\"foo\"></p>";
+        let result = Builder::new()
+            .tag_attribute_values(hashmap![
+                "p" => hashmap![
+                    "data-label" => hashset!["bar"],
+                ],
+            ])
+            .tag_attributes(hashmap![
+                "p" => hashset!["name"],
+            ])
+            .clean(fragment);
+        assert_eq!(
+            result.to_string(),
+            "<p name=\"foo\"></p>",
+        );
+    }
+    #[test]
+    fn keep_allowed_attributes_with_tag_attribute_values() {
+        let fragment = "<p data-label=\"bar\" name=\"foo\"></p>";
+        let result = Builder::new()
+            .tag_attribute_values(hashmap![
+                "p" => hashmap![
+                    "data-label" => hashset!["bar"],
+                ],
+            ])
+            .tag_attributes(hashmap![
+                "p" => hashset!["name"],
+            ])
+            .clean(fragment);
+        assert_eq!(
+            result.to_string(),
+            "<p data-label=\"bar\" name=\"foo\"></p>",
+        );
+    }
+    #[test]
+    fn tag_attribute_values_case_insensitive() {
+        let fragment = "<input type=\"CHECKBOX\" name=\"foo\">";
+        let result = Builder::new()
+            .tags(hashset!["input"])
+            .tag_attribute_values(hashmap![
+                "input" => hashmap![
+                    "type" => hashset!["checkbox"],
+                ],
+            ])
+            .tag_attributes(hashmap![
+                "input" => hashset!["name"],
+            ])
+            .clean(fragment);
+        assert_eq!(
+            result.to_string(),
+            "<input type=\"CHECKBOX\" name=\"foo\">",
+        );
+    }
+    #[test]
     fn remove_entity_link() {
         let fragment = "<a href=\"&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61\
                         &#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29\">Click me!</a>";
@@ -1985,7 +2374,7 @@ mod test {
         let fragment = b"an <script>evil()</script> example";
         let result = Builder::new().clean_from_reader(&fragment[..]);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().to_string(), "an evil() example");
+        assert_eq!(result.unwrap().to_string(), "an  example");
     }
     #[test]
     fn reader_non_utf8() {
@@ -1993,6 +2382,12 @@ mod test {
         let result = Builder::new().clean_from_reader(&fragment[..]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().to_string(), "non-utf8 \u{fffd}string");
+    }
+    #[test]
+    fn display_impl() {
+        let fragment = r#"a <a>link</a>"#;
+        let result = Builder::new().link_rel(None).clean(fragment);
+        assert_eq!(format!("{}", result), "a <a>link</a>");
     }
     #[test]
     fn debug_impl() {

@@ -27,9 +27,7 @@ use crate::hir::intravisit;
 // Returns true if the given item must be inlined because it may be
 // monomorphized or it was marked with `#[inline]`. This will only return
 // true for functions.
-fn item_might_be_inlined(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                         item: &hir::Item,
-                         attrs: CodegenFnAttrs) -> bool {
+fn item_might_be_inlined(tcx: TyCtxt<'tcx>, item: &hir::Item, attrs: CodegenFnAttrs) -> bool {
     if attrs.requests_inline() {
         return true
     }
@@ -44,16 +42,18 @@ fn item_might_be_inlined(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     }
 }
 
-fn method_might_be_inlined<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                     impl_item: &hir::ImplItem,
-                                     impl_src: DefId) -> bool {
+fn method_might_be_inlined<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    impl_item: &hir::ImplItem,
+    impl_src: DefId,
+) -> bool {
     let codegen_fn_attrs = tcx.codegen_fn_attrs(impl_item.hir_id.owner_def_id());
     let generics = tcx.generics_of(tcx.hir().local_def_id_from_hir_id(impl_item.hir_id));
     if codegen_fn_attrs.requests_inline() || generics.requires_monomorphization(tcx) {
         return true
     }
     if let Some(impl_hir_id) = tcx.hir().as_local_hir_id(impl_src) {
-        match tcx.hir().find_by_hir_id(impl_hir_id) {
+        match tcx.hir().find(impl_hir_id) {
             Some(Node::Item(item)) =>
                 item_might_be_inlined(tcx, &item, codegen_fn_attrs),
             Some(..) | None =>
@@ -65,9 +65,9 @@ fn method_might_be_inlined<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
 // Information needed while computing reachability.
-struct ReachableContext<'a, 'tcx: 'a> {
+struct ReachableContext<'a, 'tcx> {
     // The type context.
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     tables: &'a ty::TypeckTables<'tcx>,
     // The set of items which must be exported in the linkage sense.
     reachable_symbols: HirIdSet,
@@ -104,7 +104,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ReachableContext<'a, 'tcx> {
         };
 
         match res {
-            Some(Res::Local(hir_id)) | Some(Res::Upvar(hir_id, ..)) => {
+            Some(Res::Local(hir_id)) => {
                 self.reachable_symbols.insert(hir_id);
             }
             Some(res) => {
@@ -118,7 +118,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ReachableContext<'a, 'tcx> {
                             // If this path leads to a constant, then we need to
                             // recurse into the constant to continue finding
                             // items that are reachable.
-                            Res::Def(DefKind::Const, _) | Res::Def(DefKind::AssociatedConst, _) => {
+                            Res::Def(DefKind::Const, _) | Res::Def(DefKind::AssocConst, _) => {
                                 self.worklist.push(hir_id);
                             }
 
@@ -147,7 +147,7 @@ impl<'a, 'tcx> ReachableContext<'a, 'tcx> {
             None => { return false; }
         };
 
-        match self.tcx.hir().find_by_hir_id(hir_id) {
+        match self.tcx.hir().find(hir_id) {
             Some(Node::Item(item)) => {
                 match item.node {
                     hir::ItemKind::Fn(..) =>
@@ -174,12 +174,12 @@ impl<'a, 'tcx> ReachableContext<'a, 'tcx> {
                         } else {
                             let impl_did = self.tcx
                                                .hir()
-                                               .get_parent_did_by_hir_id(hir_id);
+                                               .get_parent_did(hir_id);
                             // Check the impl. If the generics on the self
                             // type of the impl require inlining, this method
                             // does too.
                             let impl_hir_id = self.tcx.hir().as_local_hir_id(impl_did).unwrap();
-                            match self.tcx.hir().expect_item_by_hir_id(impl_hir_id).node {
+                            match self.tcx.hir().expect_item(impl_hir_id).node {
                                 hir::ItemKind::Impl(..) => {
                                     let generics = self.tcx.generics_of(impl_did);
                                     generics.requires_monomorphization(self.tcx)
@@ -205,7 +205,7 @@ impl<'a, 'tcx> ReachableContext<'a, 'tcx> {
                 continue
             }
 
-            if let Some(ref item) = self.tcx.hir().find_by_hir_id(search_item) {
+            if let Some(ref item) = self.tcx.hir().find(search_item) {
                 self.propagate_node(item, search_item);
             }
         }
@@ -296,7 +296,7 @@ impl<'a, 'tcx> ReachableContext<'a, 'tcx> {
                         self.visit_nested_body(body);
                     }
                     hir::ImplItemKind::Method(_, body) => {
-                        let did = self.tcx.hir().get_parent_did_by_hir_id(search_item);
+                        let did = self.tcx.hir().get_parent_did(search_item);
                         if method_might_be_inlined(self.tcx, impl_item, did) {
                             self.visit_nested_body(body)
                         }
@@ -318,7 +318,7 @@ impl<'a, 'tcx> ReachableContext<'a, 'tcx> {
             _ => {
                 bug!(
                     "found unexpected node kind in worklist: {} ({:?})",
-                    self.tcx.hir().hir_to_string(search_item),
+                    self.tcx.hir().node_to_string(search_item),
                     node,
                 );
             }
@@ -334,13 +334,13 @@ impl<'a, 'tcx> ReachableContext<'a, 'tcx> {
 // items of non-exported traits (or maybe all local traits?) unless their respective
 // trait items are used from inlinable code through method call syntax or UFCS, or their
 // trait is a lang item.
-struct CollectPrivateImplItemsVisitor<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct CollectPrivateImplItemsVisitor<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     access_levels: &'a privacy::AccessLevels,
     worklist: &'a mut Vec<hir::HirId>,
 }
 
-impl<'a, 'tcx: 'a> ItemLikeVisitor<'tcx> for CollectPrivateImplItemsVisitor<'a, 'tcx> {
+impl<'a, 'tcx> ItemLikeVisitor<'tcx> for CollectPrivateImplItemsVisitor<'a, 'tcx> {
     fn visit_item(&mut self, item: &hir::Item) {
         // Anything which has custom linkage gets thrown on the worklist no
         // matter where it is in the crate, along with "special std symbols"
@@ -391,7 +391,7 @@ impl<'a, 'tcx: 'a> ItemLikeVisitor<'tcx> for CollectPrivateImplItemsVisitor<'a, 
 #[derive(Clone, HashStable)]
 pub struct ReachableSet(pub Lrc<HirIdSet>);
 
-fn reachable_set<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, crate_num: CrateNum) -> ReachableSet {
+fn reachable_set<'tcx>(tcx: TyCtxt<'tcx>, crate_num: CrateNum) -> ReachableSet {
     debug_assert!(crate_num == LOCAL_CRATE);
 
     let access_levels = &tcx.privacy_access_levels(LOCAL_CRATE);

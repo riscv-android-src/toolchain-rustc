@@ -1,4 +1,6 @@
-// compile-pass
+// check-pass
+
+// https://github.com/rust-lang/rust/pull/60944#issuecomment-495346120
 
 struct Foo<'a>(&'a ());
 impl<'a> Foo<'a> {

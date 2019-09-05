@@ -578,6 +578,9 @@ macro_rules! forwarded_impl {
 #[cfg(all(feature = "std", de_boxed_c_str))]
 forwarded_impl!((), Box<CStr>, CString::into_boxed_c_str);
 
+#[cfg(core_reverse)]
+forwarded_impl!((T), Reverse<T>, Reverse);
+
 ////////////////////////////////////////////////////////////////////////////////
 
 struct OptionVisitor<T> {
@@ -962,7 +965,7 @@ impl<'de, T> Deserialize<'de> for [T; 0] {
 }
 
 macro_rules! array_impls {
-    ($($len:expr => ($($n:tt $name:ident)+))+) => {
+    ($($len:expr => ($($n:tt)+))+) => {
         $(
             impl<'de, T> Visitor<'de> for ArrayVisitor<[T; $len]>
             where
@@ -979,14 +982,12 @@ macro_rules! array_impls {
                 where
                     A: SeqAccess<'de>,
                 {
-                    $(
-                        let $name = match try!(seq.next_element()) {
+                    Ok([$(
+                        match try!(seq.next_element()) {
                             Some(val) => val,
                             None => return Err(Error::invalid_length($n, &self)),
-                        };
-                    )+
-
-                    Ok([$($name),+])
+                        }
+                    ),+])
                 }
             }
 
@@ -1042,38 +1043,38 @@ macro_rules! array_impls {
 }
 
 array_impls! {
-    1 => (0 a)
-    2 => (0 a 1 b)
-    3 => (0 a 1 b 2 c)
-    4 => (0 a 1 b 2 c 3 d)
-    5 => (0 a 1 b 2 c 3 d 4 e)
-    6 => (0 a 1 b 2 c 3 d 4 e 5 f)
-    7 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g)
-    8 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h)
-    9 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i)
-    10 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j)
-    11 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k)
-    12 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l)
-    13 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m)
-    14 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n)
-    15 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o)
-    16 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p)
-    17 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q)
-    18 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r)
-    19 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s)
-    20 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t)
-    21 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u)
-    22 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v)
-    23 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w)
-    24 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x)
-    25 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y)
-    26 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y 25 z)
-    27 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y 25 z 26 aa)
-    28 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y 25 z 26 aa 27 ab)
-    29 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y 25 z 26 aa 27 ab 28 ac)
-    30 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y 25 z 26 aa 27 ab 28 ac 29 ad)
-    31 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y 25 z 26 aa 27 ab 28 ac 29 ad 30 ae)
-    32 => (0 a 1 b 2 c 3 d 4 e 5 f 6 g 7 h 8 i 9 j 10 k 11 l 12 m 13 n 14 o 15 p 16 q 17 r 18 s 19 t 20 u 21 v 22 w 23 x 24 y 25 z 26 aa 27 ab 28 ac 29 ad 30 ae 31 af)
+    1 => (0)
+    2 => (0 1)
+    3 => (0 1 2)
+    4 => (0 1 2 3)
+    5 => (0 1 2 3 4)
+    6 => (0 1 2 3 4 5)
+    7 => (0 1 2 3 4 5 6)
+    8 => (0 1 2 3 4 5 6 7)
+    9 => (0 1 2 3 4 5 6 7 8)
+    10 => (0 1 2 3 4 5 6 7 8 9)
+    11 => (0 1 2 3 4 5 6 7 8 9 10)
+    12 => (0 1 2 3 4 5 6 7 8 9 10 11)
+    13 => (0 1 2 3 4 5 6 7 8 9 10 11 12)
+    14 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13)
+    15 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14)
+    16 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15)
+    17 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
+    18 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17)
+    19 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18)
+    20 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19)
+    21 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20)
+    22 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21)
+    23 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22)
+    24 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23)
+    25 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24)
+    26 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25)
+    27 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26)
+    28 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27)
+    29 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28)
+    30 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29)
+    31 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30)
+    32 => (0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -2264,6 +2265,117 @@ mod range {
             };
             Ok((start, end))
         }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(any(ops_bound, collections_bound))]
+impl<'de, T> Deserialize<'de> for Bound<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        enum Field {
+            Unbounded,
+            Included,
+            Excluded,
+        }
+
+        impl<'de> Deserialize<'de> for Field {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct FieldVisitor;
+
+                impl<'de> Visitor<'de> for FieldVisitor {
+                    type Value = Field;
+
+                    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                        formatter.write_str("`Unbounded`, `Included` or `Excluded`")
+                    }
+
+                    fn visit_u32<E>(self, value: u32) -> Result<Self::Value, E>
+                    where
+                        E: Error,
+                    {
+                        match value {
+                            0 => Ok(Field::Unbounded),
+                            1 => Ok(Field::Included),
+                            2 => Ok(Field::Excluded),
+                            _ => Err(Error::invalid_value(
+                                Unexpected::Unsigned(value as u64),
+                                &self,
+                            )),
+                        }
+                    }
+
+                    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+                    where
+                        E: Error,
+                    {
+                        match value {
+                            "Unbounded" => Ok(Field::Unbounded),
+                            "Included" => Ok(Field::Included),
+                            "Excluded" => Ok(Field::Excluded),
+                            _ => Err(Error::unknown_variant(value, VARIANTS)),
+                        }
+                    }
+
+                    fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+                    where
+                        E: Error,
+                    {
+                        match value {
+                            b"Unbounded" => Ok(Field::Unbounded),
+                            b"Included" => Ok(Field::Included),
+                            b"Excluded" => Ok(Field::Excluded),
+                            _ => match str::from_utf8(value) {
+                                Ok(value) => Err(Error::unknown_variant(value, VARIANTS)),
+                                Err(_) => {
+                                    Err(Error::invalid_value(Unexpected::Bytes(value), &self))
+                                }
+                            },
+                        }
+                    }
+                }
+
+                deserializer.deserialize_identifier(FieldVisitor)
+            }
+        }
+
+        struct BoundVisitor<T>(PhantomData<Bound<T>>);
+
+        impl<'de, T> Visitor<'de> for BoundVisitor<T>
+        where
+            T: Deserialize<'de>,
+        {
+            type Value = Bound<T>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("enum Bound")
+            }
+
+            fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+            where
+                A: EnumAccess<'de>,
+            {
+                match try!(data.variant()) {
+                    (Field::Unbounded, v) => v.unit_variant().map(|()| Bound::Unbounded),
+                    (Field::Included, v) => v.newtype_variant().map(Bound::Included),
+                    (Field::Excluded, v) => v.newtype_variant().map(Bound::Excluded),
+                }
+            }
+        }
+
+        const VARIANTS: &'static [&'static str] = &["Unbounded", "Included", "Excluded"];
+
+        deserializer.deserialize_enum("Bound", VARIANTS, BoundVisitor(PhantomData))
     }
 }
 

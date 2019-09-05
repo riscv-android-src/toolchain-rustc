@@ -4,6 +4,7 @@ use std::fmt;
 
 use syntax::ast::{self, UseTreeKind};
 use syntax::source_map::{self, BytePos, Span, DUMMY_SP};
+use syntax::symbol::sym;
 
 use crate::comment::combine_strs_with_missing_comments;
 use crate::config::lists::*;
@@ -20,12 +21,12 @@ use crate::visitor::FmtVisitor;
 
 /// Returns a name imported by a `use` declaration.
 /// E.g., returns `Ordering` for `std::cmp::Ordering` and `self` for `std::cmp::self`.
-pub fn path_to_imported_ident(path: &ast::Path) -> ast::Ident {
+pub(crate) fn path_to_imported_ident(path: &ast::Path) -> ast::Ident {
     path.segments.last().unwrap().ident
 }
 
 impl<'a> FmtVisitor<'a> {
-    pub fn format_import(&mut self, item: &ast::Item, tree: &ast::UseTree) {
+    pub(crate) fn format_import(&mut self, item: &ast::Item, tree: &ast::UseTree) {
         let span = item.span();
         let shape = self.shape();
         let rw = UseTree::from_ast(
@@ -84,7 +85,7 @@ impl<'a> FmtVisitor<'a> {
 
 // FIXME we do a lot of allocation to make our own representation.
 #[derive(Clone, Eq, PartialEq)]
-pub enum UseSegment {
+pub(crate) enum UseSegment {
     Ident(String, Option<String>),
     Slf(Option<String>),
     Super(Option<String>),
@@ -94,11 +95,11 @@ pub enum UseSegment {
 }
 
 #[derive(Clone)]
-pub struct UseTree {
-    pub path: Vec<UseSegment>,
-    pub span: Span,
+pub(crate) struct UseTree {
+    pub(crate) path: Vec<UseSegment>,
+    pub(crate) span: Span,
     // Comment information within nested use tree.
-    pub list_item: Option<ListItem>,
+    pub(crate) list_item: Option<ListItem>,
     // Additional fields for top level use items.
     // Should we have another struct for top-level use items rather than reusing this?
     visibility: Option<ast::Visibility>,
@@ -156,7 +157,7 @@ impl UseSegment {
     }
 }
 
-pub fn merge_use_trees(use_trees: Vec<UseTree>) -> Vec<UseTree> {
+pub(crate) fn merge_use_trees(use_trees: Vec<UseTree>) -> Vec<UseTree> {
     let mut result = Vec::with_capacity(use_trees.len());
     for use_tree in use_trees {
         if use_tree.has_comment() || use_tree.attrs.is_some() {
@@ -229,7 +230,11 @@ impl fmt::Display for UseTree {
 
 impl UseTree {
     // Rewrite use tree with `use ` and a trailing `;`.
-    pub fn rewrite_top_level(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
+    pub(crate) fn rewrite_top_level(
+        &self,
+        context: &RewriteContext<'_>,
+        shape: Shape,
+    ) -> Option<String> {
         let vis = self.visibility.as_ref().map_or(Cow::from(""), |vis| {
             crate::utils::format_visibility(context, &vis)
         });
@@ -245,7 +250,7 @@ impl UseTree {
         match self.attrs {
             Some(ref attrs) if !attrs.is_empty() => {
                 let attr_str = attrs.rewrite(context, shape)?;
-                let lo = attrs.last().as_ref()?.span().hi();
+                let lo = attrs.last().as_ref()?.span.hi();
                 let hi = self.span.lo();
                 let span = mk_sp(lo, hi);
 
@@ -285,7 +290,7 @@ impl UseTree {
         }
     }
 
-    pub fn from_ast_with_normalization(
+    pub(crate) fn from_ast_with_normalization(
         context: &RewriteContext<'_>,
         item: &ast::Item,
     ) -> Option<UseTree> {
@@ -391,7 +396,7 @@ impl UseTree {
                     rewrite_ident(context, path_to_imported_ident(&a.prefix)).to_owned()
                 };
                 let alias = rename.and_then(|ident| {
-                    if ident.name == "_" {
+                    if ident.name == sym::underscore_imports {
                         // for impl-only-use
                         Some("_".to_owned())
                     } else if ident == path_to_imported_ident(&a.prefix) {
@@ -416,7 +421,7 @@ impl UseTree {
     }
 
     // Do the adjustments that rustfmt does elsewhere to use paths.
-    pub fn normalize(mut self) -> UseTree {
+    pub(crate) fn normalize(mut self) -> UseTree {
         let mut last = self.path.pop().expect("Empty use tree?");
         // Hack around borrow checker.
         let mut normalize_sole_list = false;
@@ -474,7 +479,7 @@ impl UseTree {
 
         // Normalise foo::{bar} -> foo::bar
         if let UseSegment::List(ref list) = last {
-            if list.len() == 1 {
+            if list.len() == 1 && list[0].to_string() != "self" {
                 normalize_sole_list = true;
             }
         }
@@ -1030,7 +1035,10 @@ mod test {
             parse_use_tree("a::self as foo").normalize(),
             parse_use_tree("a as foo")
         );
-        assert_eq!(parse_use_tree("a::{self}").normalize(), parse_use_tree("a"));
+        assert_eq!(
+            parse_use_tree("a::{self}").normalize(),
+            parse_use_tree("a::{self}")
+        );
         assert_eq!(parse_use_tree("a::{b}").normalize(), parse_use_tree("a::b"));
         assert_eq!(
             parse_use_tree("a::{b, c::self}").normalize(),
@@ -1065,8 +1073,8 @@ mod test {
         );
 
         assert!(
-            parse_use_tree("foo::{self as bar}").normalize()
-                < parse_use_tree("foo::{qux as bar}").normalize()
+            parse_use_tree("foo::{qux as bar}").normalize()
+                < parse_use_tree("foo::{self as bar}").normalize()
         );
         assert!(
             parse_use_tree("foo::{qux as bar}").normalize()

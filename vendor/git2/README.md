@@ -1,7 +1,6 @@
 # git2-rs
 
-[![Build Status](https://travis-ci.org/alexcrichton/git2-rs.svg?branch=master)](https://travis-ci.org/alexcrichton/git2-rs)
-[![Build Status](https://ci.appveyor.com/api/projects/status/6vem3xgno2kuxnfm?svg=true)](https://ci.appveyor.com/project/alexcrichton/git2-rs)
+[![Build Status](https://dev.azure.com/rust-lang/git2-rs/_apis/build/status/rust-lang.git2-rs?branchName=master)](https://dev.azure.com/rust-lang/git2-rs/_build/latest?definitionId=9&branchName=master)
 
 [Documentation](https://docs.rs/git2)
 
@@ -9,19 +8,25 @@ libgit2 bindings for Rust
 
 ```toml
 [dependencies]
-git2 = "0.7"
+git2 = "0.8"
 ```
+
+## Rust version requirements
+
+git2-rs works with stable Rust, and typically works with the most recent prior
+stable release as well. Check [azure-pipelines.yml](azure-pipelines.yml) to see the oldest
+version of Rust known to pass tests.
 
 ## Version of libgit2
 
-Currently this library requires libgit2 0.25.1. The source for libgit2 is
+Currently this library requires libgit2 0.28.0. The source for libgit2 is
 included in the libgit2-sys crate so there's no need to pre-install the libgit2
 library, the libgit2-sys crate will figure that and/or build that for you.
 
 ## Building git2-rs
 
 ```sh
-$ git clone https://github.com/alexcrichton/git2-rs
+$ git clone https://github.com/rust-lang/git2-rs
 $ cd git2-rs
 $ cargo build
 ```

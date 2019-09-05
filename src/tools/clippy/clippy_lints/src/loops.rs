@@ -61,9 +61,17 @@ declare_clippy_lint! {
     /// **Known problems:** None.
     ///
     /// **Example:**
-    /// ```ignore
+    /// ```rust
+    /// let vec = vec!['a', 'b', 'c'];
     /// for i in 0..vec.len() {
     ///     println!("{}", vec[i]);
+    /// }
+    /// ```
+    /// Could be written as:
+    /// ```rust
+    /// let vec = vec!['a', 'b', 'c'];
+    /// for i in vec {
+    ///     println!("{}", i);
     /// }
     /// ```
     pub NEEDLESS_RANGE_LOOP,
@@ -728,7 +736,7 @@ fn never_loop_expr(expr: &Expr, main_loop_id: HirId) -> NeverLoopResult {
             }
         },
         ExprKind::Struct(_, _, None)
-        | ExprKind::Yield(_)
+        | ExprKind::Yield(_, _)
         | ExprKind::Closure(_, _, _, _, _)
         | ExprKind::InlineAsm(_, _, _)
         | ExprKind::Path(_)
@@ -1237,7 +1245,12 @@ fn is_len_call(expr: &Expr, var: Name) -> bool {
     false
 }
 
-fn is_end_eq_array_len(cx: &LateContext<'_, '_>, end: &Expr, limits: ast::RangeLimits, indexed_ty: Ty<'_>) -> bool {
+fn is_end_eq_array_len<'tcx>(
+    cx: &LateContext<'_, 'tcx>,
+    end: &Expr,
+    limits: ast::RangeLimits,
+    indexed_ty: Ty<'tcx>,
+) -> bool {
     if_chain! {
         if let ExprKind::Lit(ref lit) = end.node;
         if let ast::LitKind::Int(end_int, _) = lit.node;
@@ -1634,7 +1647,7 @@ fn check_for_mutability(cx: &LateContext<'_, '_>, bound: &Expr) -> Option<HirId>
         then {
             let res = cx.tables.qpath_res(qpath, bound.hir_id);
             if let Res::Local(node_id) = res {
-                let node_str = cx.tcx.hir().get_by_hir_id(node_id);
+                let node_str = cx.tcx.hir().get(node_id);
                 if_chain! {
                     if let Node::Binding(pat) = node_str;
                     if let PatKind::Binding(bind_ann, ..) = pat.node;
@@ -1662,7 +1675,16 @@ fn check_for_mutation(
     };
     let def_id = def_id::DefId::local(body.hir_id.owner);
     let region_scope_tree = &cx.tcx.region_scope_tree(def_id);
-    ExprUseVisitor::new(&mut delegate, cx.tcx, cx.param_env, region_scope_tree, cx.tables, None).walk_expr(body);
+    ExprUseVisitor::new(
+        &mut delegate,
+        cx.tcx,
+        def_id,
+        cx.param_env,
+        region_scope_tree,
+        cx.tables,
+        None,
+    )
+    .walk_expr(body);
     delegate.mutation_span()
 }
 
@@ -1701,13 +1723,13 @@ impl<'tcx> Visitor<'tcx> for UsedVisitor {
     }
 }
 
-struct LocalUsedVisitor<'a, 'tcx: 'a> {
+struct LocalUsedVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     local: HirId,
     used: bool,
 }
 
-impl<'a, 'tcx: 'a> Visitor<'tcx> for LocalUsedVisitor<'a, 'tcx> {
+impl<'a, 'tcx> Visitor<'tcx> for LocalUsedVisitor<'a, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr) {
         if same_var(self.cx, expr, self.local) {
             self.used = true;
@@ -1721,7 +1743,7 @@ impl<'a, 'tcx: 'a> Visitor<'tcx> for LocalUsedVisitor<'a, 'tcx> {
     }
 }
 
-struct VarVisitor<'a, 'tcx: 'a> {
+struct VarVisitor<'a, 'tcx> {
     /// context reference
     cx: &'a LateContext<'a, 'tcx>,
     /// var name to look for as index
@@ -1769,7 +1791,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                     }
                     let res = self.cx.tables.qpath_res(seqpath, seqexpr.hir_id);
                     match res {
-                        Res::Local(hir_id) | Res::Upvar(hir_id, ..) => {
+                        Res::Local(hir_id) => {
                             let parent_id = self.cx.tcx.hir().get_parent_item(expr.hir_id);
                             let parent_def_id = self.cx.tcx.hir().local_def_id_from_hir_id(parent_id);
                             let extent = self.cx.tcx.region_scope_tree(parent_def_id).var_scope(hir_id.local_id);
@@ -1829,24 +1851,13 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
             if let QPath::Resolved(None, ref path) = *qpath;
             if path.segments.len() == 1;
             then {
-                match self.cx.tables.qpath_res(qpath, expr.hir_id) {
-                    Res::Upvar(local_id, ..) => {
-                        if local_id == self.var {
-                            // we are not indexing anything, record that
-                            self.nonindex = true;
-                        }
+                if let Res::Local(local_id) = self.cx.tables.qpath_res(qpath, expr.hir_id) {
+                    if local_id == self.var {
+                        self.nonindex = true;
+                    } else {
+                        // not the correct variable, but still a variable
+                        self.referenced.insert(path.segments[0].ident.name);
                     }
-                    Res::Local(local_id) =>
-                    {
-
-                        if local_id == self.var {
-                            self.nonindex = true;
-                        } else {
-                            // not the correct variable, but still a variable
-                            self.referenced.insert(path.segments[0].ident.name);
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
@@ -1903,7 +1914,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
     }
 }
 
-fn is_used_inside<'a, 'tcx: 'a>(cx: &'a LateContext<'a, 'tcx>, expr: &'tcx Expr, container: &'tcx Expr) -> bool {
+fn is_used_inside<'a, 'tcx>(cx: &'a LateContext<'a, 'tcx>, expr: &'tcx Expr, container: &'tcx Expr) -> bool {
     let def_id = match var_def_id(cx, expr) {
         Some(id) => id,
         None => return false,
@@ -1916,7 +1927,7 @@ fn is_used_inside<'a, 'tcx: 'a>(cx: &'a LateContext<'a, 'tcx>, expr: &'tcx Expr,
     false
 }
 
-fn is_iterator_used_after_while_let<'a, 'tcx: 'a>(cx: &LateContext<'a, 'tcx>, iter_expr: &'tcx Expr) -> bool {
+fn is_iterator_used_after_while_let<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, iter_expr: &'tcx Expr) -> bool {
     let def_id = match var_def_id(cx, iter_expr) {
         Some(id) => id,
         None => return false,
@@ -1934,7 +1945,7 @@ fn is_iterator_used_after_while_let<'a, 'tcx: 'a>(cx: &LateContext<'a, 'tcx>, it
     visitor.var_used_after_while_let
 }
 
-struct VarUsedAfterLoopVisitor<'a, 'tcx: 'a> {
+struct VarUsedAfterLoopVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     def_id: HirId,
     iter_expr_id: HirId,
@@ -1976,7 +1987,7 @@ fn is_ref_iterable_type(cx: &LateContext<'_, '_>, e: &Expr) -> bool {
     match_type(cx, ty, &paths::BTREESET)
 }
 
-fn is_iterable_array(ty: Ty<'_>, cx: &LateContext<'_, '_>) -> bool {
+fn is_iterable_array<'tcx>(ty: Ty<'tcx>, cx: &LateContext<'_, 'tcx>) -> bool {
     // IntoIterator is currently only implemented for array sizes <= 32 in rustc
     match ty.sty {
         ty::Array(_, n) => (0..=32).contains(&n.assert_usize(cx.tcx).expect("array length")),
@@ -2040,7 +2051,7 @@ enum VarState {
 }
 
 /// Scan a for loop for variables that are incremented exactly once.
-struct IncrementVisitor<'a, 'tcx: 'a> {
+struct IncrementVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,      // context reference
     states: FxHashMap<HirId, VarState>, // incremented variables
     depth: u32,                         // depth of conditional expressions
@@ -2094,7 +2105,7 @@ impl<'a, 'tcx> Visitor<'tcx> for IncrementVisitor<'a, 'tcx> {
 }
 
 /// Checks whether a variable is initialized to zero at the start of a loop.
-struct InitializeVisitor<'a, 'tcx: 'a> {
+struct InitializeVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>, // context reference
     end_expr: &'tcx Expr,          // the for loop. Stop scanning here.
     var_id: HirId,
@@ -2207,8 +2218,8 @@ fn is_conditional(expr: &Expr) -> bool {
 fn is_nested(cx: &LateContext<'_, '_>, match_expr: &Expr, iter_expr: &Expr) -> bool {
     if_chain! {
         if let Some(loop_block) = get_enclosing_block(cx, match_expr.hir_id);
-        let parent_node = cx.tcx.hir().get_parent_node_by_hir_id(loop_block.hir_id);
-        if let Some(Node::Expr(loop_expr)) = cx.tcx.hir().find_by_hir_id(parent_node);
+        let parent_node = cx.tcx.hir().get_parent_node(loop_block.hir_id);
+        if let Some(Node::Expr(loop_expr)) = cx.tcx.hir().find(parent_node);
         then {
             return is_loop_nested(cx, loop_expr, iter_expr)
         }
@@ -2224,11 +2235,11 @@ fn is_loop_nested(cx: &LateContext<'_, '_>, loop_expr: &Expr, iter_expr: &Expr) 
         return true;
     };
     loop {
-        let parent = cx.tcx.hir().get_parent_node_by_hir_id(id);
+        let parent = cx.tcx.hir().get_parent_node(id);
         if parent == id {
             return false;
         }
-        match cx.tcx.hir().find_by_hir_id(parent) {
+        match cx.tcx.hir().find(parent) {
             Some(Node::Expr(expr)) => match expr.node {
                 ExprKind::Loop(..) | ExprKind::While(..) => {
                     return true;
@@ -2363,7 +2374,7 @@ fn check_infinite_loop<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, cond: &'tcx Expr, e
 /// Stops analysis if a function call is found
 /// Note: In some cases such as `self`, there are no mutable annotation,
 /// All variables definition IDs are collected
-struct VarCollectorVisitor<'a, 'tcx: 'a> {
+struct VarCollectorVisitor<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     ids: FxHashSet<HirId>,
     def_ids: FxHashMap<def_id::DefId, bool>,
@@ -2378,7 +2389,7 @@ impl<'a, 'tcx> VarCollectorVisitor<'a, 'tcx> {
             let res = self.cx.tables.qpath_res(qpath, ex.hir_id);
             then {
                 match res {
-                    Res::Local(node_id) | Res::Upvar(node_id, ..) => {
+                    Res::Local(node_id) => {
                         self.ids.insert(node_id);
                     },
                     Res::Def(DefKind::Static, def_id) => {

@@ -26,7 +26,7 @@ use std::slice;
 use syntax::ptr::P;
 use syntax_pos::{Span, DUMMY_SP, MultiSpan};
 
-pub(crate) fn check_match<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) {
+pub(crate) fn check_match<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) {
     let body_id = if let Some(id) = tcx.hir().as_local_hir_id(def_id) {
         tcx.hir().body_owned_by(id)
     } else {
@@ -35,6 +35,7 @@ pub(crate) fn check_match<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) 
 
     MatchVisitor {
         tcx,
+        body_owner: def_id,
         tables: tcx.body_tables(body_id),
         region_scope_tree: &tcx.region_scope_tree(def_id),
         param_env: tcx.param_env(def_id),
@@ -46,8 +47,9 @@ fn create_e0004<'a>(sess: &'a Session, sp: Span, error_message: String) -> Diagn
     struct_span_err!(sess, sp, E0004, "{}", &error_message)
 }
 
-struct MatchVisitor<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct MatchVisitor<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    body_owner: DefId,
     tables: &'a ty::TypeckTables<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     identity_substs: SubstsRef<'tcx>,
@@ -102,7 +104,7 @@ impl<'a, 'tcx> PatternContext<'a, 'tcx> {
                 PatternError::StaticInPattern(span) => {
                     self.span_e0158(span, "statics cannot be referenced in patterns")
                 }
-                PatternError::AssociatedConstInPattern(span) => {
+                PatternError::AssocConstInPattern(span) => {
                     self.span_e0158(span, "associated consts cannot be referenced in patterns")
                 }
                 PatternError::FloatBug => {
@@ -159,7 +161,7 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
             }
         }
 
-        let module = self.tcx.hir().get_module_parent_by_hir_id(scrut.hir_id);
+        let module = self.tcx.hir().get_module_parent(scrut.hir_id);
         MatchCheckCtxt::create_and_enter(self.tcx, self.param_env, module, |ref mut cx| {
             let mut have_errors = false;
 
@@ -191,7 +193,7 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
             // Then, if the match has no arms, check whether the scrutinee
             // is uninhabited.
             let pat_ty = self.tables.node_type(scrut.hir_id);
-            let module = self.tcx.hir().get_module_parent_by_hir_id(scrut.hir_id);
+            let module = self.tcx.hir().get_module_parent(scrut.hir_id);
             let mut def_span = None;
             let mut missing_variants = vec![];
             if inlined_arms.is_empty() {
@@ -259,7 +261,7 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
     }
 
     fn check_irrefutable(&self, pat: &'tcx Pat, origin: &str) {
-        let module = self.tcx.hir().get_module_parent_by_hir_id(pat.hir_id);
+        let module = self.tcx.hir().get_module_parent(pat.hir_id);
         MatchCheckCtxt::create_and_enter(self.tcx, self.param_env, module, |ref mut cx| {
             let mut patcx = PatternContext::new(self.tcx,
                                                 self.param_env.and(self.identity_substs),
@@ -437,7 +439,7 @@ fn check_arms<'a, 'tcx>(
     }
 }
 
-fn check_exhaustive<'p, 'a: 'p, 'tcx: 'a>(
+fn check_exhaustive<'p, 'a, 'tcx>(
     cx: &mut MatchCheckCtxt<'a, 'tcx>,
     scrut_ty: Ty<'tcx>,
     sp: Span,
@@ -632,6 +634,7 @@ fn check_for_mutation_in_guard(cx: &MatchVisitor<'_, '_>, guard: &hir::Guard) {
         hir::Guard::If(expr) =>
             ExprUseVisitor::new(&mut checker,
                                 cx.tcx,
+                                cx.body_owner,
                                 cx.param_env,
                                 cx.region_scope_tree,
                                 cx.tables,
@@ -639,7 +642,7 @@ fn check_for_mutation_in_guard(cx: &MatchVisitor<'_, '_>, guard: &hir::Guard) {
     };
 }
 
-struct MutationChecker<'a, 'tcx: 'a> {
+struct MutationChecker<'a, 'tcx> {
     cx: &'a MatchVisitor<'a, 'tcx>,
 }
 
@@ -688,7 +691,7 @@ fn check_legality_of_bindings_in_at_patterns(cx: &MatchVisitor<'_, '_>, pat: &Pa
     AtBindingPatternVisitor { cx: cx, bindings_allowed: true }.visit_pat(pat);
 }
 
-struct AtBindingPatternVisitor<'a, 'b:'a, 'tcx:'b> {
+struct AtBindingPatternVisitor<'a, 'b, 'tcx> {
     cx: &'a MatchVisitor<'b, 'tcx>,
     bindings_allowed: bool
 }

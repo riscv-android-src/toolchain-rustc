@@ -23,9 +23,11 @@ Be aware that Miri will not catch all possible errors in your program, and
 cannot run all programs:
 
 * There are still plenty of open questions around the basic invariants for some
-  types and when these invariants even have to hold, so if you program runs fine
-  in Miri right now that is by no means a guarantee that it is UB-free when
-  these questions get answered.
+  types and when these invariants even have to hold. Miri tries to avoid false
+  positives here, so if you program runs fine in Miri right now that is by no
+  means a guarantee that it is UB-free when these questions get answered. In
+  particular, Miri does currently not check that integers are initialized or
+  that references point to valid data.
 * If the program relies on unspecified details of how data is laid out, it will
   still run fine in Miri -- but might break (including causing UB) on different
   compiler versions or different platforms.
@@ -53,7 +55,11 @@ Install Miri via `rustup`:
 rustup component add miri
 ```
 
-If `rustup` says the `miri` component is unavailable, that's because not all nightly releases come with all tools. Check out [this website](https://rust-lang.github.io/rustup-components-history) to determine a nightly version that comes with Miri and install that, e.g. using `rustup install nightly-2019-03-28`.
+If `rustup` says the `miri` component is unavailable, that's because not all
+nightly releases come with all tools. Check out
+[this website](https://rust-lang.github.io/rustup-components-history) to
+determine a nightly version that comes with Miri and install that, e.g. using
+`rustup install nightly-2019-03-28`.
 
 Now you can run your project in Miri:
 
@@ -86,6 +92,24 @@ fn does_not_work_on_miri() {
     let x = 0u8;
     assert!(&x as *const _ as usize % 4 < 4);
 }
+```
+
+### Running Miri on CI
+
+To run Miri on CI, make sure that you handle the case where the latest nightly
+does not ship the Miri component because it currently does not build.  For
+example, you can use the following snippet to always test with the latest
+nightly that *does* come with Miri:
+
+```sh
+MIRI_NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)
+echo "Installing latest nightly with Miri: $MIRI_NIGHTLY"
+rustup default "$MIRI_NIGHTLY"
+
+rustup component add miri
+cargo miri setup
+
+cargo miri test -- -- -Zunstable-options --exclude-should-panic
 ```
 
 ### Common Problems
@@ -129,7 +153,17 @@ able to just `cargo build` Miri.
 In case this fails, your nightly might be incompatible with Miri master.  The
 `rust-version` file contains the commit hash of rustc that Miri is currently
 tested against; you can use that to find a nightly that works or you might have
-to wait for the next nightly to get released.
+to wait for the next nightly to get released. You can also use
+[`rustup-toolchain-install-master`](https://github.com/kennytm/rustup-toolchain-install-master)
+to install that exact version of rustc as a toolchain:
+```
+rustup-toolchain-install-master $(cat rust-version) -c rust-src
+```
+
+Another common problem is outdated dependencies: Miri does not come with a
+lockfile (it cannot, due to how it gets embedded into the rustc build). So you
+have to run `cargo update` every now and then yourself to make sure you are
+using the latest versions of everything (which is what gets tested on CI).
 
 ### Testing the Miri driver
 [testing-miri]: #testing-the-miri-driver
@@ -139,42 +173,30 @@ version of `rustc` that, instead of compiling your code, runs it.  It accepts
 all the same flags as `rustc` (though the ones only affecting code generation
 and linking obviously will have no effect) [and more][miri-flags].
 
-To run the Miri driver, you need to have the `MIRI_SYSROOT` environment variable
-set to an appropriate sysroot.  You can generate such a sysroot with the
-following incantation:
-
-```
-cargo run --bin cargo-miri -- miri setup
-```
-
-This basically runs the `cargo-miri` binary (which backs the `cargo miri`
-subcommand) with `cargo`, and asks it to `setup`.  It should in the end print
-the directory where the libstd was built.  In the following, we will assume it
-is `~/.cache/miri/HOST`; you may have to adjust that if you are not using Linux.
-
-Now you can run the driver directly using
+Running the Miri driver requires some fiddling with environment variables, so
+the `miri` script helps you do that.  For example, you can run the driver on a
+particular file by doing
 
 ```sh
-MIRI_SYSROOT=~/.cache/miri/HOST cargo run tests/run-pass/format.rs # or whatever test you like
+./miri run tests/run-pass/format.rs
+./miri run tests/run-pass/hello.rs --target i686-unknown-linux-gnu
 ```
 
-and you can run the test suite using
+and you can run the test suite using:
 
 ```
-cargo test
+./miri test
 ```
 
-We recommend adding the `--release` flag to make tests run faster.
-
-`cargo test --release FILTER` only runs those tests that contain `FILTER` in
-their filename (including the base directory, e.g. `cargo test --release fail`
-will run all compile-fail tests).
+`./miri test FILTER` only runs those tests that contain `FILTER` in their
+filename (including the base directory, e.g. `./miri test fail` will run all
+compile-fail tests).
 
 You can get a trace of which MIR statements are being executed by setting the
 `MIRI_LOG` environment variable.  For example:
 
 ```sh
-MIRI_LOG=info cargo run tests/run-pass/vecs.rs
+MIRI_LOG=info ./miri run tests/run-pass/vecs.rs
 ```
 
 Setting `MIRI_LOG` like this will configure logging for Miri itself as well as
@@ -183,7 +205,7 @@ can also do more targeted configuration, e.g. the following helps debug the
 stacked borrows implementation:
 
 ```sh
-MIRI_LOG=rustc_mir::interpret=info,miri::stacked_borrows cargo run tests/run-pass/vecs.rs
+MIRI_LOG=rustc_mir::interpret=info,miri::stacked_borrows ./miri run tests/run-pass/vecs.rs
 ```
 
 In addition, you can set `MIRI_BACKTRACE=1` to get a backtrace of where an
@@ -197,7 +219,7 @@ is probably easier to test it with the cargo wrapper.  You can install your
 development version of Miri using
 
 ```
-cargo install --path . --force
+./miri install
 ```
 
 and then you can use it as if it was installed by `rustup`.  Make sure you use
@@ -233,18 +255,7 @@ rustup override set custom
 ```
 
 With this, you should now have a working development setup!  See
-[above][testing-miri] for how to proceed working with the Miri driver.  Notice
-that rustc's sysroot is already built for Miri in this case, so you can set
-`MIRI_SYSROOT=$(rustc --print sysroot)`.
-
-Running `cargo miri` in this setup is a bit more complicated, because the Miri
-binary you just created needs help to find the libraries it links against.  On
-Linux, you can set the rpath to make this "just work":
-
-```sh
-export RUSTFLAGS="-C link-args=-Wl,-rpath,$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/lib"
-cargo install --path . --force
-```
+[above][testing-miri] for how to proceed working with the Miri driver.
 
 ### Miri `-Z` flags and environment variables
 [miri-flags]: #miri--z-flags-and-environment-variables
@@ -271,9 +282,12 @@ Several `-Z` flags are relevant for Miri:
 
 Moreover, Miri recognizes some environment variables:
 
-* `MIRI_SYSROOT` (recognized by `miri`, `cargo miri` and the test suite)
-  indicates the sysroot to use.
-* `MIRI_TARGET` (recognized by the test suite) indicates which target
+* `MIRI_LOG`, `MIRI_BACKTRACE` control logging and backtrace printing during
+  Miri executions, also [see above][testing-miri].
+* `MIRI_SYSROOT` (recognized by `cargo miri` and the test suite)
+  indicates the sysroot to use.  To do the same thing with `miri`
+  directly, use the `--sysroot` flag.
+* `MIRI_TEST_TARGET` (recognized by the test suite) indicates which target
   architecture to test against.  `miri` and `cargo miri` accept the `--target`
   flag for the same purpose.
 
@@ -315,15 +329,18 @@ Definite bugs found:
 * [`Debug for vec_deque::Iter` accessing uninitialized memory](https://github.com/rust-lang/rust/issues/53566)
 * [`From<&[T]> for Rc` creating a not sufficiently aligned reference](https://github.com/rust-lang/rust/issues/54908)
 * [`BTreeMap` creating a shared reference pointing to a too small allocation](https://github.com/rust-lang/rust/issues/54957)
+* [`Vec::append` creating a dangling reference](https://github.com/rust-lang/rust/pull/61082)
 * [Futures turning a shared reference into a mutable one](https://github.com/rust-lang/rust/pull/56319)
 * [`str` turning a shared reference into a mutable one](https://github.com/rust-lang/rust/pull/58200)
 * [`rand` performing unaligned reads](https://github.com/rust-random/rand/issues/779)
+* [The Unix allocator calling `posix_memalign` in an invalid way](https://github.com/rust-lang/rust/issues/62251)
 
 Violations of Stacked Borrows found that are likely bugs (but Stacked Borrows is currently just an experiment):
 
 * [`VecDeque` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/56161)
 * [`BTreeMap` creating mutable references that overlap with shared references](https://github.com/rust-lang/rust/pull/58431)
 * [`LinkedList` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/60072)
+* [`Vec::push` invalidating existing references into the vector](https://github.com/rust-lang/rust/issues/60847)
 
 ## License
 

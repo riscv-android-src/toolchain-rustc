@@ -1,5 +1,6 @@
 pub use self::Mode::*;
 
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -15,7 +16,8 @@ pub enum Mode {
     RunPass,
     RunPassValgrind,
     Pretty,
-    DebugInfoBoth,
+    DebugInfoCdb,
+    DebugInfoGdbLldb,
     DebugInfoGdb,
     DebugInfoLldb,
     Codegen,
@@ -33,9 +35,10 @@ impl Mode {
     pub fn disambiguator(self) -> &'static str {
         // Run-pass and pretty run-pass tests could run concurrently, and if they do,
         // they need to keep their output segregated. Same is true for debuginfo tests that
-        // can be run both on gdb and lldb.
+        // can be run on cdb, gdb, and lldb.
         match self {
             Pretty => ".pretty",
+            DebugInfoCdb => ".cdb",
             DebugInfoGdb => ".gdb",
             DebugInfoLldb => ".lldb",
             _ => "",
@@ -52,7 +55,8 @@ impl FromStr for Mode {
             "run-pass" => Ok(RunPass),
             "run-pass-valgrind" => Ok(RunPassValgrind),
             "pretty" => Ok(Pretty),
-            "debuginfo-both" => Ok(DebugInfoBoth),
+            "debuginfo-cdb" => Ok(DebugInfoCdb),
+            "debuginfo-gdb+lldb" => Ok(DebugInfoGdbLldb),
             "debuginfo-lldb" => Ok(DebugInfoLldb),
             "debuginfo-gdb" => Ok(DebugInfoGdb),
             "codegen" => Ok(Codegen),
@@ -77,7 +81,8 @@ impl fmt::Display for Mode {
             RunPass => "run-pass",
             RunPassValgrind => "run-pass-valgrind",
             Pretty => "pretty",
-            DebugInfoBoth => "debuginfo-both",
+            DebugInfoCdb => "debuginfo-cdb",
+            DebugInfoGdbLldb => "debuginfo-gdb+lldb",
             DebugInfoGdb => "debuginfo-gdb",
             DebugInfoLldb => "debuginfo-lldb",
             Codegen => "codegen",
@@ -89,6 +94,36 @@ impl fmt::Display for Mode {
             JsDocTest => "js-doc-test",
             MirOpt => "mir-opt",
             Assembly => "assembly",
+        };
+        fmt::Display::fmt(s, f)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Hash)]
+pub enum PassMode {
+    Check,
+    Build,
+    Run,
+}
+
+impl FromStr for PassMode {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "check" => Ok(PassMode::Check),
+            "build" => Ok(PassMode::Build),
+            "run" => Ok(PassMode::Run),
+            _ => Err(()),
+        }
+    }
+}
+
+impl fmt::Display for PassMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match *self {
+            PassMode::Check => "check",
+            PassMode::Build => "build",
+            PassMode::Run => "run",
         };
         fmt::Display::fmt(s, f)
     }
@@ -179,6 +214,9 @@ pub struct Config {
     /// Exactly match the filter, rather than a substring
     pub filter_exact: bool,
 
+    /// Force the pass mode of a check/build/run-pass test to this mode.
+    pub force_pass_mode: Option<PassMode>,
+
     /// Write out a parseable log of tests that were run
     pub logfile: Option<PathBuf>,
 
@@ -197,6 +235,9 @@ pub struct Config {
 
     /// Host triple for the compiler being invoked
     pub host: String,
+
+    /// Path to / name of the Microsoft Console Debugger (CDB) executable
+    pub cdb: Option<OsString>,
 
     /// Path to / name of the GDB executable
     pub gdb: Option<String>,

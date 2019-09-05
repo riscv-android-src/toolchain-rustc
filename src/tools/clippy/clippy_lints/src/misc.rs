@@ -387,7 +387,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
                         db.span_suggestion(
                             expr.span,
                             "consider comparing them within some error",
-                            format!("({}).abs() < error", lhs - rhs),
+                            format!(
+                                "({}).abs() {} error",
+                                lhs - rhs,
+                                if op == BinOpKind::Eq { '<' } else { '>' }
+                            ),
                             Applicability::MachineApplicable, // snippet
                         );
                         db.span_note(expr.span, "std::f32::EPSILON and std::f64::EPSILON are available.");
@@ -594,16 +598,16 @@ fn is_used(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
 fn in_attributes_expansion(expr: &Expr) -> bool {
     expr.span
         .ctxt()
-        .outer()
-        .expn_info()
+        .outer_expn_info()
         .map_or(false, |info| matches!(info.format, ExpnFormat::MacroAttribute(_)))
 }
 
 /// Tests whether `res` is a variable defined outside a macro.
 fn non_macro_local(cx: &LateContext<'_, '_>, res: def::Res) -> bool {
-    match res {
-        def::Res::Local(id) | def::Res::Upvar(id, ..) => !in_macro_or_desugar(cx.tcx.hir().span_by_hir_id(id)),
-        _ => false,
+    if let def::Res::Local(id) = res {
+        !in_macro_or_desugar(cx.tcx.hir().span(id))
+    } else {
+        false
     }
 }
 

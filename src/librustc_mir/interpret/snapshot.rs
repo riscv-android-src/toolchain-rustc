@@ -12,7 +12,7 @@ use rustc::mir;
 use rustc::mir::interpret::{
     AllocId, Pointer, Scalar,
     Relocations, Allocation, UndefMask,
-    EvalResult, InterpError,
+    InterpResult, InterpError,
 };
 
 use rustc::ty::{self, TyCtxt};
@@ -28,30 +28,29 @@ use super::{Frame, Memory, Operand, MemPlace, Place, Immediate, ScalarMaybeUndef
 use crate::const_eval::CompileTimeInterpreter;
 
 #[derive(Default)]
-pub(crate) struct InfiniteLoopDetector<'a, 'mir, 'tcx: 'a + 'mir> {
-    /// The set of all `EvalSnapshot` *hashes* observed by this detector.
+pub(crate) struct InfiniteLoopDetector<'mir, 'tcx> {
+    /// The set of all `InterpSnapshot` *hashes* observed by this detector.
     ///
     /// When a collision occurs in this table, we store the full snapshot in
     /// `snapshots`.
     hashes: FxHashSet<u64>,
 
-    /// The set of all `EvalSnapshot`s observed by this detector.
+    /// The set of all `InterpSnapshot`s observed by this detector.
     ///
-    /// An `EvalSnapshot` will only be fully cloned once it has caused a
+    /// An `InterpSnapshot` will only be fully cloned once it has caused a
     /// collision in `hashes`. As a result, the detector must observe at least
     /// *two* full cycles of an infinite loop before it triggers.
-    snapshots: FxHashSet<EvalSnapshot<'a, 'mir, 'tcx>>,
+    snapshots: FxHashSet<InterpSnapshot<'mir, 'tcx>>,
 }
 
-impl<'a, 'mir, 'tcx> InfiniteLoopDetector<'a, 'mir, 'tcx>
-{
-    pub fn observe_and_analyze<'b>(
+impl<'mir, 'tcx> InfiniteLoopDetector<'mir, 'tcx> {
+    pub fn observe_and_analyze(
         &mut self,
-        tcx: TyCtxt<'b, 'tcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         span: Span,
-        memory: &Memory<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>,
+        memory: &Memory<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
         stack: &[Frame<'mir, 'tcx>],
-    ) -> EvalResult<'tcx, ()> {
+    ) -> InterpResult<'tcx, ()> {
         // Compute stack's hash before copying anything
         let mut hcx = tcx.get_stable_hashing_context();
         let mut hasher = StableHasher::<u64>::new();
@@ -72,7 +71,7 @@ impl<'a, 'mir, 'tcx> InfiniteLoopDetector<'a, 'mir, 'tcx>
         // We need to make a full copy. NOW things that to get really expensive.
         info!("snapshotting the state of the interpreter");
 
-        if self.snapshots.insert(EvalSnapshot::new(memory, stack)) {
+        if self.snapshots.insert(InterpSnapshot::new(memory, stack)) {
             // Spurious collision or first cycle
             return Ok(())
         }
@@ -186,9 +185,9 @@ impl<'a, Ctx> Snapshot<'a, Ctx> for Scalar
     fn snapshot(&self, ctx: &'a Ctx) -> Self::Item {
         match self {
             Scalar::Ptr(p) => Scalar::Ptr(p.snapshot(ctx)),
-            Scalar::Bits{ size, bits } => Scalar::Bits {
+            Scalar::Raw{ size, data } => Scalar::Raw {
+                data: *data,
                 size: *size,
-                bits: *bits,
             },
         }
     }
@@ -305,7 +304,7 @@ impl_stable_hash_for!(enum crate::interpret::eval_context::StackPopCleanup {
 });
 
 #[derive(Eq, PartialEq)]
-struct FrameSnapshot<'a, 'tcx: 'a> {
+struct FrameSnapshot<'a, 'tcx> {
     instance: &'a ty::Instance<'tcx>,
     span: &'a Span,
     return_to_block: &'a StackPopCleanup,
@@ -315,8 +314,8 @@ struct FrameSnapshot<'a, 'tcx: 'a> {
     stmt: usize,
 }
 
-impl_stable_hash_for!(impl<'mir, 'tcx: 'mir> for struct Frame<'mir, 'tcx> {
-    mir,
+impl_stable_hash_for!(impl<> for struct Frame<'mir, 'tcx> {
+    body,
     instance,
     span,
     return_to_block,
@@ -334,7 +333,7 @@ impl<'a, 'mir, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a Frame<'mir, 'tcx>
 
     fn snapshot(&self, ctx: &'a Ctx) -> Self::Item {
         let Frame {
-            mir: _,
+            body: _,
             instance,
             span,
             return_to_block,
@@ -373,8 +372,8 @@ impl_stable_hash_for!(struct LocalState<'tcx> {
     layout -> _,
 });
 
-impl<'a, 'b, 'mir, 'tcx: 'a+'mir> SnapshotContext<'b>
-    for Memory<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>
+impl<'b, 'mir, 'tcx> SnapshotContext<'b>
+    for Memory<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>
 {
     fn resolve(&'b self, id: &AllocId) -> Option<&'b Allocation> {
         self.get(*id).ok()
@@ -384,18 +383,17 @@ impl<'a, 'b, 'mir, 'tcx: 'a+'mir> SnapshotContext<'b>
 /// The virtual machine state during const-evaluation at a given point in time.
 /// We assume the `CompileTimeInterpreter` has no interesting extra state that
 /// is worth considering here.
-struct EvalSnapshot<'a, 'mir, 'tcx: 'a + 'mir> {
-    memory: Memory<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>,
+struct InterpSnapshot<'mir, 'tcx> {
+    memory: Memory<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
     stack: Vec<Frame<'mir, 'tcx>>,
 }
 
-impl<'a, 'mir, 'tcx: 'a + 'mir> EvalSnapshot<'a, 'mir, 'tcx>
-{
+impl InterpSnapshot<'mir, 'tcx> {
     fn new(
-        memory: &Memory<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>,
-        stack: &[Frame<'mir, 'tcx>]
+        memory: &Memory<'mir, 'tcx, CompileTimeInterpreter<'mir, 'tcx>>,
+        stack: &[Frame<'mir, 'tcx>],
     ) -> Self {
-        EvalSnapshot {
+        InterpSnapshot {
             memory: memory.clone(),
             stack: stack.into(),
         }
@@ -408,11 +406,9 @@ impl<'a, 'mir, 'tcx: 'a + 'mir> EvalSnapshot<'a, 'mir, 'tcx>
         // Start with the stack, iterate and recursively snapshot
         self.stack.iter().map(|frame| frame.snapshot(&self.memory)).collect()
     }
-
 }
 
-impl<'a, 'mir, 'tcx> Hash for EvalSnapshot<'a, 'mir, 'tcx>
-{
+impl<'mir, 'tcx> Hash for InterpSnapshot<'mir, 'tcx> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Implement in terms of hash stable, so that k1 == k2 -> hash(k1) == hash(k2)
         let mut hcx = self.memory.tcx.get_stable_hashing_context();
@@ -422,17 +418,15 @@ impl<'a, 'mir, 'tcx> Hash for EvalSnapshot<'a, 'mir, 'tcx>
     }
 }
 
-impl_stable_hash_for!(impl<'tcx, 'b, 'mir> for struct EvalSnapshot<'b, 'mir, 'tcx> {
+impl_stable_hash_for!(impl<> for struct InterpSnapshot<'mir, 'tcx> {
     // Not hashing memory: Avoid hashing memory all the time during execution
     memory -> _,
     stack,
 });
 
-impl<'a, 'mir, 'tcx> Eq for EvalSnapshot<'a, 'mir, 'tcx>
-{}
+impl<'mir, 'tcx> Eq for InterpSnapshot<'mir, 'tcx> {}
 
-impl<'a, 'mir, 'tcx> PartialEq for EvalSnapshot<'a, 'mir, 'tcx>
-{
+impl<'mir, 'tcx> PartialEq for InterpSnapshot<'mir, 'tcx> {
     fn eq(&self, other: &Self) -> bool {
         // FIXME: This looks to be a *ridiculously expensive* comparison operation.
         // Doesn't this make tons of copies?  Either `snapshot` is very badly named,

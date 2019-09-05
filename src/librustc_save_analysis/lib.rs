@@ -1,8 +1,8 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![feature(custom_attribute)]
 #![feature(nll)]
 #![deny(rust_2018_idioms)]
 #![deny(internal)]
+#![deny(unused_lifetimes)]
 #![allow(unused_attributes)]
 
 #![recursion_limit="256"]
@@ -24,12 +24,12 @@ use rustc::session::config::{CrateType, Input, OutputType};
 use rustc::ty::{self, DefIdTree, TyCtxt};
 use rustc::{bug, span_bug};
 use rustc_codegen_utils::link::{filename_for_metadata, out_filename};
-use rustc_data_structures::sync::Lrc;
 
 use std::cell::Cell;
 use std::default::Default;
 use std::env;
 use std::fs::File;
+use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 
 use syntax::ast::{self, Attribute, DUMMY_NODE_ID, NodeId, PatKind};
@@ -52,8 +52,8 @@ use rls_data::config::Config;
 use log::{debug, error, info};
 
 
-pub struct SaveContext<'l, 'tcx: 'l> {
-    tcx: TyCtxt<'l, 'tcx, 'tcx>,
+pub struct SaveContext<'l, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     tables: &'l ty::TypeckTables<'tcx>,
     access_levels: &'l AccessLevels,
     span_utils: SpanUtils<'tcx>,
@@ -68,7 +68,7 @@ pub enum Data {
     RelationData(Relation, Impl),
 }
 
-impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
+impl<'l, 'tcx> SaveContext<'l, 'tcx> {
     fn span_from_span(&self, span: Span) -> SpanData {
         use rls_span::{Column, Row};
 
@@ -110,8 +110,8 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
         let mut result = Vec::with_capacity(self.tcx.crates().len());
 
         for &n in self.tcx.crates().iter() {
-            let span = match *self.tcx.extern_crate(n.as_def_id()) {
-                Some(ExternCrate { span, .. }) => span,
+            let span = match self.tcx.extern_crate(n.as_def_id()) {
+                Some(&ExternCrate { span, .. }) => span,
                 None => {
                     debug!("Skipping crate {}, no data", n);
                     continue;
@@ -411,7 +411,10 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                             let mut decl_id = None;
                             let mut docs = String::new();
                             let mut attrs = vec![];
-                            if let Some(Node::ImplItem(item)) = self.tcx.hir().find(id) {
+                            let hir_id = self.tcx.hir().node_to_hir_id(id);
+                            if let Some(Node::ImplItem(item)) =
+                                self.tcx.hir().find(hir_id)
+                            {
                                 docs = self.docs_for_attrs(&item.attrs);
                                 attrs = item.attrs.to_vec();
                             }
@@ -452,8 +455,9 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                     Some(def_id) => {
                         let mut docs = String::new();
                         let mut attrs = vec![];
+                        let hir_id = self.tcx.hir().node_to_hir_id(id);
 
-                        if let Some(Node::TraitItem(item)) = self.tcx.hir().find(id) {
+                        if let Some(Node::TraitItem(item)) = self.tcx.hir().find(hir_id) {
                             docs = self.docs_for_attrs(&item.attrs);
                             attrs = item.attrs.to_vec();
                         }
@@ -514,14 +518,16 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
     }
 
     pub fn get_expr_data(&self, expr: &ast::Expr) -> Option<Data> {
-        let hir_node = self.tcx.hir().expect_expr(expr.id);
+        let expr_hir_id = self.tcx.hir().node_to_hir_id(expr.id);
+        let hir_node = self.tcx.hir().expect_expr(expr_hir_id);
         let ty = self.tables.expr_ty_adjusted_opt(&hir_node);
         if ty.is_none() || ty.unwrap().sty == ty::Error {
             return None;
         }
         match expr.node {
             ast::ExprKind::Field(ref sub_ex, ident) => {
-                let hir_node = match self.tcx.hir().find(sub_ex.id) {
+                let sub_ex_hir_id = self.tcx.hir().node_to_hir_id(sub_ex.id);
+                let hir_node = match self.tcx.hir().find(sub_ex_hir_id) {
                     Some(Node::Expr(expr)) => expr,
                     _ => {
                         debug!(
@@ -607,7 +613,8 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
     }
 
     pub fn get_path_res(&self, id: NodeId) -> Res {
-        match self.tcx.hir().get(id) {
+        let hir_id = self.tcx.hir().node_to_hir_id(id);
+        match self.tcx.hir().get(hir_id) {
             Node::TraitRef(tr) => tr.path.res,
 
             Node::Item(&hir::Item {
@@ -620,7 +627,10 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
             Node::PathSegment(seg) => {
                 match seg.res {
                     Some(res) if res != Res::Err => res,
-                    _ => self.get_path_res(self.tcx.hir().get_parent_node(id)),
+                    _ => {
+                        let parent_node = self.tcx.hir().get_parent_node(hir_id);
+                        self.get_path_res(self.tcx.hir().hir_to_node_id(parent_node))
+                    },
                 }
             }
 
@@ -628,7 +638,6 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 node: hir::ExprKind::Struct(ref qpath, ..),
                 ..
             }) => {
-                let hir_id = self.tcx.hir().node_to_hir_id(id);
                 self.tables.qpath_res(qpath, hir_id)
             }
 
@@ -652,7 +661,6 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
                 node: hir::TyKind::Path(ref qpath),
                 ..
             }) => {
-                let hir_id = self.tcx.hir().node_to_hir_id(id);
                 self.tables.qpath_res(qpath, hir_id)
             }
 
@@ -703,7 +711,7 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
         let span = self.span_from_span(span);
 
         match res {
-            Res::Upvar(id, ..) | Res::Local(id) => {
+            Res::Local(id) => {
                 Some(Ref {
                     kind: RefKind::Variable,
                     span,
@@ -724,8 +732,8 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
             Res::Def(HirDefKind::TyAlias, def_id) |
             Res::Def(HirDefKind::ForeignTy, def_id) |
             Res::Def(HirDefKind::TraitAlias, def_id) |
-            Res::Def(HirDefKind::AssociatedExistential, def_id) |
-            Res::Def(HirDefKind::AssociatedTy, def_id) |
+            Res::Def(HirDefKind::AssocExistential, def_id) |
+            Res::Def(HirDefKind::AssocTy, def_id) |
             Res::Def(HirDefKind::Trait, def_id) |
             Res::Def(HirDefKind::Existential, def_id) |
             Res::Def(HirDefKind::TyParam, def_id) => {
@@ -755,7 +763,7 @@ impl<'l, 'tcx: 'l> SaveContext<'l, 'tcx> {
             }
             Res::Def(HirDefKind::Static, _) |
             Res::Def(HirDefKind::Const, _) |
-            Res::Def(HirDefKind::AssociatedConst, _) |
+            Res::Def(HirDefKind::AssocConst, _) |
             Res::Def(HirDefKind::Ctor(..), _) => {
                 Some(Ref {
                     kind: RefKind::Variable,
@@ -961,8 +969,8 @@ impl<'l> PathCollector<'l> {
     }
 }
 
-impl<'l, 'a: 'l> Visitor<'a> for PathCollector<'l> {
-    fn visit_pat(&mut self, p: &'a ast::Pat) {
+impl<'l> Visitor<'l> for PathCollector<'l> {
+    fn visit_pat(&mut self, p: &'l ast::Pat) {
         match p.node {
             PatKind::Struct(ref path, ..) => {
                 self.collected_paths.push((p.id, path));
@@ -1018,7 +1026,7 @@ impl<'a> DumpHandler<'a> {
         }
     }
 
-    fn output_file(&self, ctx: &SaveContext<'_, '_>) -> File {
+    fn output_file(&self, ctx: &SaveContext<'_, '_>) -> (BufWriter<File>, PathBuf) {
         let sess = &ctx.tcx.sess;
         let file_name = match ctx.config.output_file {
             Some(ref s) => PathBuf::from(s),
@@ -1052,11 +1060,11 @@ impl<'a> DumpHandler<'a> {
 
         info!("Writing output to {}", file_name.display());
 
-        let output_file = File::create(&file_name).unwrap_or_else(
+        let output_file = BufWriter::new(File::create(&file_name).unwrap_or_else(
             |e| sess.fatal(&format!("Could not open {}: {}", file_name.display(), e)),
-        );
+        ));
 
-        output_file
+        (output_file, file_name)
     }
 }
 
@@ -1068,13 +1076,23 @@ impl<'a> SaveHandler for DumpHandler<'a> {
         cratename: &str,
         input: &'l Input,
     ) {
-        let output = &mut self.output_file(&save_ctxt);
-        let mut dumper = JsonDumper::new(output, save_ctxt.config.clone());
-        let mut visitor = DumpVisitor::new(save_ctxt, &mut dumper);
+        let sess = &save_ctxt.tcx.sess;
+        let file_name = {
+            let (mut output, file_name) = self.output_file(&save_ctxt);
+            let mut dumper = JsonDumper::new(&mut output, save_ctxt.config.clone());
+            let mut visitor = DumpVisitor::new(save_ctxt, &mut dumper);
 
-        visitor.dump_crate_info(cratename, krate);
-        visitor.dump_compilation_options(input, cratename);
-        visit::walk_crate(&mut visitor, krate);
+            visitor.dump_crate_info(cratename, krate);
+            visitor.dump_compilation_options(input, cratename);
+            visit::walk_crate(&mut visitor, krate);
+
+            file_name
+        };
+
+        if sess.opts.debugging_opts.emit_artifact_notifications {
+            sess.parse_sess.span_diagnostic
+                .emit_artifact_notification(&file_name, "save-analysis");
+        }
     }
 }
 
@@ -1106,7 +1124,7 @@ impl<'b> SaveHandler for CallbackHandler<'b> {
 }
 
 pub fn process_crate<'l, 'tcx, H: SaveHandler>(
-    tcx: TyCtxt<'l, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     krate: &ast::Crate,
     cratename: &str,
     input: &'l Input,
@@ -1120,7 +1138,7 @@ pub fn process_crate<'l, 'tcx, H: SaveHandler>(
         // fallback in case the access levels couldn't have been correctly computed.
         let access_levels = match tcx.sess.compile_status() {
             Ok(..) => tcx.privacy_access_levels(LOCAL_CRATE),
-            Err(..) => Lrc::new(AccessLevels::default()),
+            Err(..) => tcx.arena.alloc(AccessLevels::default()),
         };
 
         let save_ctxt = SaveContext {

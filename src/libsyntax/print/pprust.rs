@@ -6,14 +6,14 @@ use crate::ast::{Attribute, MacDelimiter, GenericArg};
 use crate::util::parser::{self, AssocOp, Fixity};
 use crate::attr;
 use crate::source_map::{self, SourceMap, Spanned};
-use crate::parse::token::{self, BinOpToken, Nonterminal, Token};
+use crate::parse::token::{self, BinOpToken, Nonterminal, Token, TokenKind};
 use crate::parse::lexer::comments;
 use crate::parse::{self, ParseSess};
 use crate::print::pp::{self, Breaks};
 use crate::print::pp::Breaks::{Consistent, Inconsistent};
 use crate::ptr::P;
 use crate::std_inject;
-use crate::symbol::{keywords, sym};
+use crate::symbol::{kw, sym};
 use crate::tokenstream::{self, TokenStream, TokenTree};
 
 use rustc_target::spec::abi::{self, Abi};
@@ -163,22 +163,23 @@ fn binop_to_string(op: BinOpToken) -> &'static str {
     }
 }
 
-pub fn literal_to_string(lit: token::Lit, suffix: Option<ast::Name>) -> String {
-    let mut out = match lit {
-        token::Byte(b)           => format!("b'{}'", b),
-        token::Char(c)           => format!("'{}'", c),
-        token::Err(c)            => format!("'{}'", c),
-        token::Bool(c)           |
-        token::Float(c)          |
-        token::Integer(c)        => c.to_string(),
-        token::Str_(s)           => format!("\"{}\"", s),
-        token::StrRaw(s, n)      => format!("r{delim}\"{string}\"{delim}",
-                                            delim="#".repeat(n as usize),
-                                            string=s),
-        token::ByteStr(v)        => format!("b\"{}\"", v),
-        token::ByteStrRaw(s, n)  => format!("br{delim}\"{string}\"{delim}",
-                                            delim="#".repeat(n as usize),
-                                            string=s),
+pub fn literal_to_string(lit: token::Lit) -> String {
+    let token::Lit { kind, symbol, suffix } = lit;
+    let mut out = match kind {
+        token::Byte          => format!("b'{}'", symbol),
+        token::Char          => format!("'{}'", symbol),
+        token::Str           => format!("\"{}\"", symbol),
+        token::StrRaw(n)     => format!("r{delim}\"{string}\"{delim}",
+                                        delim="#".repeat(n as usize),
+                                        string=symbol),
+        token::ByteStr       => format!("b\"{}\"", symbol),
+        token::ByteStrRaw(n) => format!("br{delim}\"{string}\"{delim}",
+                                        delim="#".repeat(n as usize),
+                                        string=symbol),
+        token::Integer       |
+        token::Float         |
+        token::Bool          |
+        token::Err           => symbol.to_string(),
     };
 
     if let Some(suffix) = suffix {
@@ -188,7 +189,7 @@ pub fn literal_to_string(lit: token::Lit, suffix: Option<ast::Name>) -> String {
     out
 }
 
-pub fn token_to_string(tok: &Token) -> String {
+pub fn token_kind_to_string(tok: &TokenKind) -> String {
     match *tok {
         token::Eq                   => "=".to_string(),
         token::Lt                   => "<".to_string(),
@@ -231,7 +232,7 @@ pub fn token_to_string(tok: &Token) -> String {
         token::SingleQuote          => "'".to_string(),
 
         /* Literals */
-        token::Literal(lit, suf) => literal_to_string(lit, suf),
+        token::Literal(lit) => literal_to_string(lit),
 
         /* Name components */
         token::Ident(s, false)      => s.to_string(),
@@ -247,6 +248,10 @@ pub fn token_to_string(tok: &Token) -> String {
 
         token::Interpolated(ref nt) => nonterminal_to_string(nt),
     }
+}
+
+pub fn token_to_string(token: &Token) -> String {
+    token_kind_to_string(&token.kind)
 }
 
 pub fn nonterminal_to_string(nt: &Nonterminal) -> String {
@@ -356,7 +361,7 @@ pub fn vis_to_string(v: &ast::Visibility) -> String {
 }
 
 pub fn fun_to_string(decl: &ast::FnDecl,
-                     header: &ast::FnHeader,
+                     header: ast::FnHeader,
                      name: ast::Ident,
                      generics: &ast::Generics)
                      -> String {
@@ -571,7 +576,7 @@ pub trait PrintState<'a> {
 
     fn print_literal(&mut self, lit: &ast::Lit) -> io::Result<()> {
         self.maybe_print_comment(lit.span.lo())?;
-        self.writer().word(literal_to_string(lit.token, lit.suffix))
+        self.writer().word(literal_to_string(lit.token))
     }
 
     fn print_string(&mut self, st: &str,
@@ -641,8 +646,8 @@ pub trait PrintState<'a> {
             if i > 0 {
                 self.writer().word("::")?
             }
-            if segment.ident.name != keywords::PathRoot.name() {
-                if segment.ident.name == keywords::DollarCrate.name() {
+            if segment.ident.name != kw::PathRoot {
+                if segment.ident.name == kw::DollarCrate {
                     self.print_dollar_crate(segment.ident)?;
                 } else {
                     self.writer().word(segment.ident.as_str().to_string())?;
@@ -723,21 +728,21 @@ pub trait PrintState<'a> {
     /// expression arguments as expressions). It can be done! I think.
     fn print_tt(&mut self, tt: tokenstream::TokenTree) -> io::Result<()> {
         match tt {
-            TokenTree::Token(_, ref tk) => {
-                self.writer().word(token_to_string(tk))?;
-                match *tk {
-                    parse::token::DocComment(..) => {
+            TokenTree::Token(ref token) => {
+                self.writer().word(token_to_string(&token))?;
+                match token.kind {
+                    token::DocComment(..) => {
                         self.writer().hardbreak()
                     }
                     _ => Ok(())
                 }
             }
             TokenTree::Delimited(_, delim, tts) => {
-                self.writer().word(token_to_string(&token::OpenDelim(delim)))?;
+                self.writer().word(token_kind_to_string(&token::OpenDelim(delim)))?;
                 self.writer().space()?;
                 self.print_tts(tts)?;
                 self.writer().space()?;
-                self.writer().word(token_to_string(&token::CloseDelim(delim)))
+                self.writer().word(token_kind_to_string(&token::CloseDelim(delim)))
             },
         }
     }
@@ -1039,7 +1044,7 @@ impl<'a> State<'a> {
         match item.node {
             ast::ForeignItemKind::Fn(ref decl, ref generics) => {
                 self.head("")?;
-                self.print_fn(decl, &ast::FnHeader::default(),
+                self.print_fn(decl, ast::FnHeader::default(),
                               Some(item.ident),
                               generics, &item.vis)?;
                 self.end()?; // end head-ibox
@@ -1169,7 +1174,7 @@ impl<'a> State<'a> {
                 self.s.word(";")?;
                 self.end()?; // end the outer cbox
             }
-            ast::ItemKind::Fn(ref decl, ref header, ref param_names, ref body) => {
+            ast::ItemKind::Fn(ref decl, header, ref param_names, ref body) => {
                 self.head("")?;
                 self.print_fn(
                     decl,
@@ -1340,7 +1345,7 @@ impl<'a> State<'a> {
                 self.s.word(";")?;
             }
             ast::ItemKind::Mac(ref mac) => {
-                if item.ident.name == keywords::Invalid.name() {
+                if item.ident.name == kw::Invalid {
                     self.print_mac(mac)?;
                     match mac.node.delim {
                         MacDelimiter::Brace => {}
@@ -1521,7 +1526,7 @@ impl<'a> State<'a> {
                             vis: &ast::Visibility)
                             -> io::Result<()> {
         self.print_fn(&m.decl,
-                      &m.header,
+                      m.header,
                       Some(ident),
                       &generics,
                       vis)
@@ -1710,11 +1715,26 @@ impl<'a> State<'a> {
         self.ann.post(self, AnnNode::Block(blk))
     }
 
+    /// Print a `let pats = scrutinee` expression.
+    pub fn print_let(&mut self, pats: &[P<ast::Pat>], scrutinee: &ast::Expr) -> io::Result<()> {
+        self.s.word("let ")?;
+
+        self.print_pats(pats)?;
+        self.s.space()?;
+
+        self.word_space("=")?;
+        self.print_expr_cond_paren(
+            scrutinee,
+            Self::cond_needs_par(scrutinee)
+            || parser::needs_par_as_let_scrutinee(scrutinee.precedence().order())
+        )
+    }
+
     fn print_else(&mut self, els: Option<&ast::Expr>) -> io::Result<()> {
         match els {
             Some(_else) => {
                 match _else.node {
-                    // "another else-if"
+                    // Another `else if` block.
                     ast::ExprKind::If(ref i, ref then, ref e) => {
                         self.cbox(INDENT_UNIT - 1)?;
                         self.ibox(0)?;
@@ -1724,27 +1744,14 @@ impl<'a> State<'a> {
                         self.print_block(then)?;
                         self.print_else(e.as_ref().map(|e| &**e))
                     }
-                    // "another else-if-let"
-                    ast::ExprKind::IfLet(ref pats, ref expr, ref then, ref e) => {
-                        self.cbox(INDENT_UNIT - 1)?;
-                        self.ibox(0)?;
-                        self.s.word(" else if let ")?;
-                        self.print_pats(pats)?;
-                        self.s.space()?;
-                        self.word_space("=")?;
-                        self.print_expr_as_cond(expr)?;
-                        self.s.space()?;
-                        self.print_block(then)?;
-                        self.print_else(e.as_ref().map(|e| &**e))
-                    }
-                    // "final else"
+                    // Final `else` block.
                     ast::ExprKind::Block(ref b, _) => {
                         self.cbox(INDENT_UNIT - 1)?;
                         self.ibox(0)?;
                         self.s.word(" else ")?;
                         self.print_block(b)
                     }
-                    // BLEAH, constraints would be great here
+                    // Constraints would be great here!
                     _ => {
                         panic!("print_if saw if with weird alternative");
                     }
@@ -1757,20 +1764,10 @@ impl<'a> State<'a> {
     pub fn print_if(&mut self, test: &ast::Expr, blk: &ast::Block,
                     elseopt: Option<&ast::Expr>) -> io::Result<()> {
         self.head("if")?;
+
         self.print_expr_as_cond(test)?;
         self.s.space()?;
-        self.print_block(blk)?;
-        self.print_else(elseopt)
-    }
 
-    pub fn print_if_let(&mut self, pats: &[P<ast::Pat>], expr: &ast::Expr, blk: &ast::Block,
-                        elseopt: Option<&ast::Expr>) -> io::Result<()> {
-        self.head("if let")?;
-        self.print_pats(pats)?;
-        self.s.space()?;
-        self.word_space("=")?;
-        self.print_expr_as_cond(expr)?;
-        self.s.space()?;
         self.print_block(blk)?;
         self.print_else(elseopt)
     }
@@ -1802,21 +1799,18 @@ impl<'a> State<'a> {
     }
 
     pub fn print_expr_maybe_paren(&mut self, expr: &ast::Expr, prec: i8) -> io::Result<()> {
-        let needs_par = expr.precedence().order() < prec;
-        if needs_par {
-            self.popen()?;
-        }
-        self.print_expr(expr)?;
-        if needs_par {
-            self.pclose()?;
-        }
-        Ok(())
+        self.print_expr_cond_paren(expr, expr.precedence().order() < prec)
     }
 
     /// Print an expr using syntax that's acceptable in a condition position, such as the `cond` in
     /// `if cond { ... }`.
     pub fn print_expr_as_cond(&mut self, expr: &ast::Expr) -> io::Result<()> {
-        let needs_par = match expr.node {
+        self.print_expr_cond_paren(expr, Self::cond_needs_par(expr))
+    }
+
+    /// Does `expr` need parenthesis when printed in a condition position?
+    fn cond_needs_par(expr: &ast::Expr) -> bool {
+        match expr.node {
             // These cases need parens due to the parse error observed in #26461: `if return {}`
             // parses as the erroneous construct `if (return {})`, not `if (return) {}`.
             ast::ExprKind::Closure(..) |
@@ -1824,8 +1818,11 @@ impl<'a> State<'a> {
             ast::ExprKind::Break(..) => true,
 
             _ => parser::contains_exterior_struct_lit(expr),
-        };
+        }
+    }
 
+    /// Print `expr` or `(expr)` when `needs_par` holds.
+    fn print_expr_cond_paren(&mut self, expr: &ast::Expr, needs_par: bool) -> io::Result<()> {
         if needs_par {
             self.popen()?;
         }
@@ -1957,6 +1954,17 @@ impl<'a> State<'a> {
             // of `(x as i32) < ...`. We need to convince it _not_ to do that.
             (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Lt) |
             (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Shl) => parser::PREC_FORCE_PAREN,
+            // We are given `(let _ = a) OP b`.
+            //
+            // - When `OP <= LAnd` we should print `let _ = a OP b` to avoid redundant parens
+            //   as the parser will interpret this as `(let _ = a) OP b`.
+            //
+            // - Otherwise, e.g. when we have `(let a = b) < c` in AST,
+            //   parens are required since the parser would interpret `let a = b < c` as
+            //   `let a = (b < c)`. To achieve this, we force parens.
+            (&ast::ExprKind::Let { .. }, _) if !parser::needs_par_as_let_scrutinee(prec) => {
+                parser::PREC_FORCE_PAREN
+            }
             _ => left_prec,
         };
 
@@ -2004,13 +2012,6 @@ impl<'a> State<'a> {
                 self.word_space("box")?;
                 self.print_expr_maybe_paren(expr, parser::PREC_PREFIX)?;
             }
-            ast::ExprKind::ObsoleteInPlace(ref place, ref expr) => {
-                let prec = AssocOp::ObsoleteInPlace.precedence() as i8;
-                self.print_expr_maybe_paren(place, prec + 1)?;
-                self.s.space()?;
-                self.word_space("<-")?;
-                self.print_expr_maybe_paren(expr, prec)?;
-            }
             ast::ExprKind::Array(ref exprs) => {
                 self.print_expr_vec(&exprs[..], attrs)?;
             }
@@ -2054,11 +2055,11 @@ impl<'a> State<'a> {
                 self.word_space(":")?;
                 self.print_type(ty)?;
             }
+            ast::ExprKind::Let(ref pats, ref scrutinee) => {
+                self.print_let(pats, scrutinee)?;
+            }
             ast::ExprKind::If(ref test, ref blk, ref elseopt) => {
                 self.print_if(test, blk, elseopt.as_ref().map(|e| &**e))?;
-            }
-            ast::ExprKind::IfLet(ref pats, ref expr, ref blk, ref elseopt) => {
-                self.print_if_let(pats, expr, blk, elseopt.as_ref().map(|e| &**e))?;
             }
             ast::ExprKind::While(ref test, ref blk, opt_label) => {
                 if let Some(label) = opt_label {
@@ -2067,19 +2068,6 @@ impl<'a> State<'a> {
                 }
                 self.head("while")?;
                 self.print_expr_as_cond(test)?;
-                self.s.space()?;
-                self.print_block_with_attrs(blk, attrs)?;
-            }
-            ast::ExprKind::WhileLet(ref pats, ref expr, ref blk, opt_label) => {
-                if let Some(label) = opt_label {
-                    self.print_ident(label.ident)?;
-                    self.word_space(":")?;
-                }
-                self.head("while let")?;
-                self.print_pats(pats)?;
-                self.s.space()?;
-                self.word_space("=")?;
-                self.print_expr_as_cond(expr)?;
                 self.s.space()?;
                 self.print_block_with_attrs(blk, attrs)?;
             }
@@ -2119,7 +2107,7 @@ impl<'a> State<'a> {
                 self.bclose_(expr.span, INDENT_UNIT)?;
             }
             ast::ExprKind::Closure(
-                capture_clause, ref asyncness, movability, ref decl, ref body, _) => {
+                capture_clause, asyncness, movability, ref decl, ref body, _) => {
                 self.print_movability(movability)?;
                 self.print_asyncness(asyncness)?;
                 self.print_capture_clause(capture_clause)?;
@@ -2400,8 +2388,8 @@ impl<'a> State<'a> {
                           colons_before_params: bool)
                           -> io::Result<()>
     {
-        if segment.ident.name != keywords::PathRoot.name() {
-            if segment.ident.name == keywords::DollarCrate.name() {
+        if segment.ident.name != kw::PathRoot {
+            if segment.ident.name == kw::DollarCrate {
                 self.print_dollar_crate(segment.ident)?;
             } else {
                 self.print_ident(segment.ident)?;
@@ -2456,14 +2444,21 @@ impl<'a> State<'a> {
 
                 let mut comma = data.args.len() != 0;
 
-                for binding in data.bindings.iter() {
+                for constraint in data.constraints.iter() {
                     if comma {
                         self.word_space(",")?
                     }
-                    self.print_ident(binding.ident)?;
+                    self.print_ident(constraint.ident)?;
                     self.s.space()?;
-                    self.word_space("=")?;
-                    self.print_type(&binding.ty)?;
+                    match constraint.kind {
+                        ast::AssocTyConstraintKind::Equality { ref ty } => {
+                            self.word_space("=")?;
+                            self.print_type(ty)?;
+                        }
+                        ast::AssocTyConstraintKind::Bound { ref bounds } => {
+                            self.print_type_bounds(":", &*bounds)?;
+                        }
+                    }
                     comma = true;
                 }
 
@@ -2658,14 +2653,10 @@ impl<'a> State<'a> {
         self.print_outer_attributes(&arm.attrs)?;
         self.print_pats(&arm.pats)?;
         self.s.space()?;
-        if let Some(ref g) = arm.guard {
-            match g {
-                ast::Guard::If(ref e) => {
-                    self.word_space("if")?;
-                    self.print_expr(e)?;
-                    self.s.space()?;
-                }
-            }
+        if let Some(ref e) = arm.guard {
+            self.word_space("if")?;
+            self.print_expr(e)?;
+            self.s.space()?;
         }
         self.word_space("=>")?;
 
@@ -2716,7 +2707,7 @@ impl<'a> State<'a> {
 
     pub fn print_fn(&mut self,
                     decl: &ast::FnDecl,
-                    header: &ast::FnHeader,
+                    header: ast::FnHeader,
                     name: Option<ast::Ident>,
                     generics: &ast::Generics,
                     vis: &ast::Visibility) -> io::Result<()> {
@@ -2771,7 +2762,8 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn print_asyncness(&mut self, asyncness: &ast::IsAsync) -> io::Result<()> {
+    pub fn print_asyncness(&mut self, asyncness: ast::IsAsync)
+                                -> io::Result<()> {
         if asyncness.is_async() {
             self.word_nbsp("async")?;
         }
@@ -2984,7 +2976,7 @@ impl<'a> State<'a> {
                     self.print_explicit_self(&eself)?;
                 } else {
                     let invalid = if let PatKind::Ident(_, ident, _) = input.pat.node {
-                        ident.name == keywords::Invalid.name()
+                        ident.name == kw::Invalid
                     } else {
                         false
                     };
@@ -3036,14 +3028,13 @@ impl<'a> State<'a> {
         let generics = ast::Generics {
             params: Vec::new(),
             where_clause: ast::WhereClause {
-                id: ast::DUMMY_NODE_ID,
                 predicates: Vec::new(),
                 span: syntax_pos::DUMMY_SP,
             },
             span: syntax_pos::DUMMY_SP,
         };
         self.print_fn(decl,
-                      &ast::FnHeader { unsafety, abi, ..ast::FnHeader::default() },
+                      ast::FnHeader { unsafety, abi, ..ast::FnHeader::default() },
                       name,
                       &generics,
                       &source_map::dummy_spanned(ast::VisibilityKind::Inherited))?;
@@ -3106,7 +3097,7 @@ impl<'a> State<'a> {
     }
 
     pub fn print_fn_header_info(&mut self,
-                                header: &ast::FnHeader,
+                                header: ast::FnHeader,
                                 vis: &ast::Visibility) -> io::Result<()> {
         self.s.word(visibility_qualified(vis, ""))?;
 
@@ -3115,7 +3106,7 @@ impl<'a> State<'a> {
             ast::Constness::Const => self.word_nbsp("const")?
         }
 
-        self.print_asyncness(&header.asyncness.node)?;
+        self.print_asyncness(header.asyncness.node)?;
         self.print_unsafety(header.unsafety)?;
 
         if header.abi != Abi::Rust {
@@ -3147,12 +3138,12 @@ mod tests {
 
     use crate::ast;
     use crate::source_map;
-    use crate::with_globals;
+    use crate::with_default_globals;
     use syntax_pos;
 
     #[test]
     fn test_fun_to_string() {
-        with_globals(|| {
+        with_default_globals(|| {
             let abba_ident = ast::Ident::from_str("abba");
 
             let decl = ast::FnDecl {
@@ -3164,7 +3155,7 @@ mod tests {
             assert_eq!(
                 fun_to_string(
                     &decl,
-                    &ast::FnHeader {
+                    ast::FnHeader {
                         unsafety: ast::Unsafety::Normal,
                         constness: source_map::dummy_spanned(ast::Constness::NotConst),
                         asyncness: source_map::dummy_spanned(ast::IsAsync::NotAsync),
@@ -3180,7 +3171,7 @@ mod tests {
 
     #[test]
     fn test_variant_to_string() {
-        with_globals(|| {
+        with_default_globals(|| {
             let ident = ast::Ident::from_str("principal_skinner");
 
             let var = source_map::respan(syntax_pos::DUMMY_SP, ast::Variant_ {

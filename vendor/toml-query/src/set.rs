@@ -4,9 +4,9 @@
 use serde::Serialize;
 use toml::Value;
 
-use tokenizer::tokenize_with_seperator;
-use tokenizer::Token;
-use error::*;
+use crate::tokenizer::tokenize_with_seperator;
+use crate::tokenizer::Token;
+use crate::error::{Error, Result};
 
 pub trait TomlValueSetExt {
 
@@ -40,7 +40,7 @@ pub trait TomlValueSetExt {
     /// A convenience method for setting any arbitrary serializable value.
     #[cfg(feature = "typed")]
     fn set_serialized<S: Serialize>(&mut self, query: &str, value: S) -> Result<Option<Value>> {
-        let value = Value::try_from(value)?;
+        let value = Value::try_from(value).map_err(Error::TomlSerialize)?;
         self.set(query, value)
     }
 
@@ -49,12 +49,12 @@ pub trait TomlValueSetExt {
 impl TomlValueSetExt for Value {
 
     fn set_with_seperator(&mut self, query: &str, sep: char, value: Value) -> Result<Option<Value>> {
-        use resolver::mut_resolver::resolve;
+        use crate::resolver::mut_resolver::resolve;
 
-        let mut tokens = try!(tokenize_with_seperator(query, sep));
+        let mut tokens = r#try!(tokenize_with_seperator(query, sep));
         let last = tokens.pop_last();
 
-        let val = try!(resolve(self, &tokens, true))
+        let val = r#try!(resolve(self, &tokens, true))
             .unwrap(); // safe because of resolve() guarantees
         let last = last.unwrap_or_else(|| Box::new(tokens));
 
@@ -64,14 +64,8 @@ impl TomlValueSetExt for Value {
                     &mut Value::Table(ref mut t) => {
                         Ok(t.insert(ident, value))
                     },
-                    &mut Value::Array(_) => {
-                        let kind = ErrorKind::NoIdentifierInArray(ident);
-                        Err(Error::from(kind))
-                    }
-                    _ => {
-                        let kind = ErrorKind::QueryingValueAsTable(ident);
-                        Err(Error::from(kind))
-                    }
+                    &mut Value::Array(_) => Err(Error::NoIdentifierInArray(ident)),
+                    _ => Err(Error::QueryingValueAsTable(ident)),
                 }
             }
 
@@ -87,14 +81,8 @@ impl TomlValueSetExt for Value {
                             Ok(None)
                         }
                     }
-                    &mut Value::Table(_) => {
-                        let kind = ErrorKind::NoIndexInTable(idx);
-                        Err(Error::from(kind))
-                    }
-                    _ => {
-                        let kind = ErrorKind::QueryingValueAsArray(idx);
-                        Err(Error::from(kind))
-                    }
+                    &mut Value::Table(_) => Err(Error::NoIndexInTable(idx)),
+                    _ => Err(Error::QueryingValueAsArray(idx)),
                 }
             }
 
@@ -344,7 +332,7 @@ mod test {
         assert!(res.is_err());
 
         let res = res.unwrap_err();
-        assert!(is_match!(res.kind(), &ErrorKind::IdentifierNotFoundInDocument(_)));
+        assert!(is_match!(res, Error::IdentifierNotFoundInDocument(_)));
     }
 
     #[test]
@@ -356,7 +344,7 @@ mod test {
         assert!(res.is_err());
 
         let res = res.unwrap_err();
-        assert!(is_match!(res.kind(), &ErrorKind::NoIndexInTable(0)));
+        assert!(is_match!(res, Error::NoIndexInTable(0)));
     }
 
     #[test]
@@ -370,7 +358,7 @@ mod test {
         assert!(res.is_err());
         let res = res.unwrap_err();
 
-        assert!(is_match!(res.kind(), &ErrorKind::NoIdentifierInArray(_)));
+        assert!(is_match!(res, Error::NoIdentifierInArray(_)));
     }
 
     #[test]
@@ -384,7 +372,7 @@ mod test {
         assert!(res.is_err());
         let res = res.unwrap_err();
 
-        assert!(is_match!(res.kind(), &ErrorKind::NoIndexInTable(_)));
+        assert!(is_match!(res, Error::NoIndexInTable(_)));
     }
 
     #[test]
@@ -398,7 +386,7 @@ mod test {
         assert!(res.is_err());
         let res = res.unwrap_err();
 
-        assert!(is_match!(res.kind(), &ErrorKind::QueryingValueAsTable(_)));
+        assert!(is_match!(res, Error::QueryingValueAsTable(_)));
     }
 
     #[test]
@@ -412,15 +400,14 @@ mod test {
         assert!(res.is_err());
         let res = res.unwrap_err();
 
-        assert!(is_match!(res.kind(), &ErrorKind::QueryingValueAsArray(_)));
+        assert!(is_match!(res, Error::QueryingValueAsArray(_)));
     }
 
     #[cfg(feature = "typed")]
     #[test]
     fn test_serialize() {
-        use std::collections::BTreeMap;
-        use insert::TomlValueInsertExt;
-        use read::TomlValueReadExt;
+        use toml::map::Map;
+        use crate::insert::TomlValueInsertExt;
 
         #[derive(Serialize, Deserialize, Debug)]
         struct Test {
@@ -428,7 +415,7 @@ mod test {
             s: String,
         }
 
-        let mut toml = Value::Table(BTreeMap::new());
+        let mut toml = Value::Table(Map::new());
         let test     = Test {
             a: 15,
             s: String::from("Helloworld"),

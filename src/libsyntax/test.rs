@@ -29,7 +29,7 @@ use crate::parse::{token, ParseSess};
 use crate::print::pprust;
 use crate::ast::{self, Ident};
 use crate::ptr::P;
-use crate::symbol::{self, Symbol, keywords, sym};
+use crate::symbol::{self, Symbol, kw, sym};
 use crate::ThinVec;
 
 struct Test {
@@ -100,7 +100,7 @@ impl<'a> MutVisitor for TestHarnessGenerator<'a> {
 
     fn flat_map_item(&mut self, i: P<ast::Item>) -> SmallVec<[P<ast::Item>; 1]> {
         let ident = i.ident;
-        if ident.name != keywords::Invalid.name() {
+        if ident.name != kw::Invalid {
             self.cx.path.push(ident);
         }
         debug!("current path: {}", path_name_i(&self.cx.path));
@@ -139,7 +139,7 @@ impl<'a> MutVisitor for TestHarnessGenerator<'a> {
             }
             item.node = ast::ItemKind::Mod(module);
         }
-        if ident.name != keywords::Invalid.name() {
+        if ident.name != kw::Invalid {
             self.cx.path.pop();
         }
         smallvec![P(item)]
@@ -215,7 +215,7 @@ fn mk_reexport_mod(cx: &mut TestCtxt<'_>,
                    tests: Vec<Ident>,
                    tested_submods: Vec<(Ident, Ident)>)
                    -> (P<ast::Item>, Ident) {
-    let super_ = Ident::with_empty_ctxt(keywords::Super.name());
+    let super_ = Ident::with_empty_ctxt(kw::Super);
 
     let items = tests.into_iter().map(|r| {
         cx.ext_cx.item_use_simple(DUMMY_SP, dummy_spanned(ast::VisibilityKind::Public),
@@ -232,11 +232,11 @@ fn mk_reexport_mod(cx: &mut TestCtxt<'_>,
         items,
     };
 
-    let sym = Ident::with_empty_ctxt(Symbol::gensym("__test_reexports"));
+    let name = Ident::from_str("__test_reexports").gensym();
     let parent = if parent == ast::DUMMY_NODE_ID { ast::CRATE_NODE_ID } else { parent };
     cx.ext_cx.current_expansion.mark = cx.ext_cx.resolver.get_module_scope(parent);
     let it = cx.ext_cx.monotonic_expander().flat_map_item(P(ast::Item {
-        ident: sym,
+        ident: name,
         attrs: Vec::new(),
         id: ast::DUMMY_NODE_ID,
         node: ast::ItemKind::Mod(reexport_mod),
@@ -245,7 +245,7 @@ fn mk_reexport_mod(cx: &mut TestCtxt<'_>,
         tokens: None,
     })).pop().unwrap();
 
-    (it, sym)
+    (it, name)
 }
 
 /// Crawl over the crate, inserting test reexports and the test main function
@@ -280,19 +280,10 @@ fn generate_test_harness(sess: &ParseSess,
         test_runner
     };
 
-    mark.set_expn_info(ExpnInfo {
-        call_site: DUMMY_SP,
-        def_site: None,
-        format: MacroAttribute(Symbol::intern("test_case")),
-        allow_internal_unstable: Some(vec![
-            Symbol::intern("main"),
-            Symbol::intern("test"),
-            Symbol::intern("rustc_attrs"),
-        ].into()),
-        allow_internal_unsafe: false,
-        local_inner_macros: false,
-        edition: hygiene::default_edition(),
-    });
+    mark.set_expn_info(ExpnInfo::with_unstable(
+        MacroAttribute(sym::test_case), DUMMY_SP, sess.edition,
+        &[sym::main, sym::test, sym::rustc_attrs],
+    ));
 
     TestHarnessGenerator {
         cx,
@@ -331,7 +322,7 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
     //        }
     let sp = ignored_span(cx, DUMMY_SP);
     let ecx = &cx.ext_cx;
-    let test_id = ecx.ident_of("test").gensym();
+    let test_id = Ident::with_empty_ctxt(sym::test);
 
     // test::test_main_static(...)
     let mut test_runner = cx.test_runner.clone().unwrap_or(
@@ -347,14 +338,14 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
     let call_test_main = ecx.stmt_expr(call_test_main);
 
     // #![main]
-    let main_meta = ecx.meta_word(sp, Symbol::intern("main"));
+    let main_meta = ecx.meta_word(sp, sym::main);
     let main_attr = ecx.attribute(sp, main_meta);
 
     // extern crate test as test_gensym
     let test_extern_stmt = ecx.stmt_item(sp, ecx.item(sp,
         test_id,
         vec![],
-        ast::ItemKind::ExternCrate(Some(Symbol::intern("test")))
+        ast::ItemKind::ExternCrate(None)
     ));
 
     // pub fn main() { ... }
@@ -373,9 +364,10 @@ fn mk_main(cx: &mut TestCtxt<'_>) -> P<ast::Item> {
                            main_body);
 
     // Honor the reexport_test_harness_main attribute
-    let main_id = Ident::new(
-        cx.reexport_test_harness_main.unwrap_or(Symbol::gensym("main")),
-        sp);
+    let main_id = match cx.reexport_test_harness_main {
+        Some(sym) => Ident::new(sym, sp),
+        None => Ident::from_str_and_span("main", sp).gensym(),
+    };
 
     P(ast::Item {
         ident: main_id,

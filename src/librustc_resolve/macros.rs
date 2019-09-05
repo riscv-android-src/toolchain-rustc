@@ -17,12 +17,12 @@ use syntax::errors::DiagnosticBuilder;
 use syntax::ext::base::{self, Determinacy};
 use syntax::ext::base::{MacroKind, SyntaxExtension};
 use syntax::ext::expand::{AstFragment, Invocation, InvocationKind};
-use syntax::ext::hygiene::{self, Mark};
+use syntax::ext::hygiene::Mark;
 use syntax::ext::tt::macro_rules;
 use syntax::feature_gate::{
     feature_err, is_builtin_attr_name, AttributeGate, GateIssue, Stability, BUILTIN_ATTRIBUTES,
 };
-use syntax::symbol::{Symbol, keywords, sym};
+use syntax::symbol::{Symbol, kw, sym};
 use syntax::visit::Visitor;
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax_pos::{Span, DUMMY_SP};
@@ -114,6 +114,22 @@ fn sub_namespace_match(candidate: Option<MacroKind>, requirement: Option<MacroKi
     candidate.is_none() || requirement.is_none() || candidate == requirement
 }
 
+// We don't want to format a path using pretty-printing,
+// `format!("{}", path)`, because that tries to insert
+// line-breaks and is slow.
+fn fast_print_path(path: &ast::Path) -> String {
+    let mut path_str = String::with_capacity(64);
+    for (i, segment) in path.segments.iter().enumerate() {
+        if i != 0 {
+            path_str.push_str("::");
+        }
+        if segment.ident.name != kw::PathRoot {
+            path_str.push_str(&segment.ident.as_str())
+        }
+    }
+    path_str
+}
+
 impl<'a> base::Resolver for Resolver<'a> {
     fn next_node_id(&mut self) -> ast::NodeId {
         self.session.next_node_id()
@@ -132,15 +148,15 @@ impl<'a> base::Resolver for Resolver<'a> {
     }
 
     fn resolve_dollar_crates(&mut self, fragment: &AstFragment) {
-        struct ResolveDollarCrates<'a, 'b: 'a> {
+        struct ResolveDollarCrates<'a, 'b> {
             resolver: &'a mut Resolver<'b>
         }
         impl<'a> Visitor<'a> for ResolveDollarCrates<'a, '_> {
             fn visit_ident(&mut self, ident: Ident) {
-                if ident.name == keywords::DollarCrate.name() {
+                if ident.name == kw::DollarCrate {
                     let name = match self.resolver.resolve_crate_root(ident).kind {
-                        ModuleKind::Def(.., name) if name != keywords::Invalid.name() => name,
-                        _ => keywords::Crate.name(),
+                        ModuleKind::Def(.., name) if name != kw::Invalid => name,
+                        _ => kw::Crate,
                     };
                     ident.span.ctxt().set_dollar_crate_name(name);
                 }
@@ -174,7 +190,7 @@ impl<'a> base::Resolver for Resolver<'a> {
             krate: CrateNum::BuiltinMacros,
             index: DefIndex::from(self.macro_map.len()),
         };
-        let kind = ext.kind();
+        let kind = ext.macro_kind();
         self.macro_map.insert(def_id, ext);
         let binding = self.arenas.alloc_name_binding(NameBinding {
             kind: NameBindingKind::Res(Res::Def(DefKind::Macro(kind), def_id), false),
@@ -209,14 +225,19 @@ impl<'a> base::Resolver for Resolver<'a> {
         let parent_scope = self.invoc_parent_scope(invoc_id, derives_in_scope);
         let (res, ext) = match self.resolve_macro_to_res(path, kind, &parent_scope, true, force) {
             Ok((res, ext)) => (res, ext),
-            Err(Determinacy::Determined) if kind == MacroKind::Attr => {
-                // Replace unresolved attributes with used inert attributes for better recovery.
-                return Ok(Some(Lrc::new(SyntaxExtension::NonMacroAttr { mark_used: true })));
-            }
+            // Replace unresolved attributes with used inert attributes for better recovery.
+            Err(Determinacy::Determined) if kind == MacroKind::Attr =>
+                (Res::Err, self.non_macro_attr(true)),
             Err(determinacy) => return Err(determinacy),
         };
 
-        if let Res::Def(DefKind::Macro(_), def_id) = res {
+        let format = match kind {
+            MacroKind::Derive => format!("derive({})", fast_print_path(path)),
+            _ => fast_print_path(path),
+        };
+        invoc.expansion_data.mark.set_expn_info(ext.expn_info(invoc.span(), &format));
+
+        if let Res::Def(_, def_id) = res {
             if after_derive {
                 self.session.span_err(invoc.span(),
                                       "macro attributes must be placed before `#[derive]`");
@@ -226,7 +247,6 @@ impl<'a> base::Resolver for Resolver<'a> {
                 self.macro_def_scope(invoc.expansion_data.mark).normal_ancestor_id;
             self.definitions.add_parent_module_of_macro_def(invoc.expansion_data.mark,
                                                             normal_module_def_id);
-            invoc.expansion_data.mark.set_default_transparency(ext.default_transparency());
         }
 
         Ok(Some(ext))
@@ -241,12 +261,7 @@ impl<'a> base::Resolver for Resolver<'a> {
 
     fn check_unused_macros(&self) {
         for did in self.unused_macros.iter() {
-            let id_span = match *self.macro_map[did] {
-                SyntaxExtension::NormalTT { def_info, .. } |
-                SyntaxExtension::DeclMacro { def_info, .. } => def_info,
-                _ => None,
-            };
-            if let Some((id, span)) = id_span {
+            if let Some((id, span)) = self.macro_map[did].def_info {
                 let lint = lint::builtin::UNUSED_MACROS;
                 let msg = "unused macro definition";
                 self.session.buffer_lint(lint, id, span, msg);
@@ -413,9 +428,9 @@ impl<'a> Resolver<'a> {
 
         // Possibly apply the macro helper hack
         if kind == MacroKind::Bang && path.len() == 1 &&
-           path[0].ident.span.ctxt().outer().expn_info()
+           path[0].ident.span.ctxt().outer_expn_info()
                .map_or(false, |info| info.local_inner_macros) {
-            let root = Ident::new(keywords::DollarCrate.name(), path[0].ident.span);
+            let root = Ident::new(kw::DollarCrate, path[0].ident.span);
             path.insert(0, Segment::from_ident(root));
         }
 
@@ -586,17 +601,12 @@ impl<'a> Resolver<'a> {
                         let parent_scope = ParentScope { derives: Vec::new(), ..*parent_scope };
                         match self.resolve_macro_to_res(derive, MacroKind::Derive,
                                                         &parent_scope, true, force) {
-                            Ok((_, ext)) => {
-                                if let SyntaxExtension::ProcMacroDerive(_, helpers, _) = &*ext {
-                                    if helpers.contains(&ident.name) {
-                                        let binding =
-                                            (Res::NonMacroAttr(NonMacroAttrKind::DeriveHelper),
-                                            ty::Visibility::Public, derive.span, Mark::root())
-                                            .to_name_binding(self.arenas);
-                                        result = Ok((binding, Flags::empty()));
-                                        break;
-                                    }
-                                }
+                            Ok((_, ext)) => if ext.helper_attrs.contains(&ident.name) {
+                                let binding = (Res::NonMacroAttr(NonMacroAttrKind::DeriveHelper),
+                                               ty::Visibility::Public, derive.span, Mark::root())
+                                               .to_name_binding(self.arenas);
+                                result = Ok((binding, Flags::empty()));
+                                break;
                             }
                             Err(Determinacy::Determined) => {}
                             Err(Determinacy::Undetermined) =>
@@ -613,7 +623,7 @@ impl<'a> Resolver<'a> {
                     _ => Err(Determinacy::Determined),
                 }
                 WhereToResolve::CrateRoot => {
-                    let root_ident = Ident::new(keywords::PathRoot.name(), orig_ident.span);
+                    let root_ident = Ident::new(kw::PathRoot, orig_ident.span);
                     let root_module = self.resolve_crate_root(root_ident);
                     let binding = self.resolve_ident_in_module_ext(
                         ModuleOrUniformRoot::Module(root_module),
@@ -1012,6 +1022,12 @@ impl<'a> Resolver<'a> {
 
     fn suggest_macro_name(&mut self, name: Symbol, kind: MacroKind,
                           err: &mut DiagnosticBuilder<'a>, span: Span) {
+        if kind == MacroKind::Derive && (name.as_str() == "Send" || name.as_str() == "Sync") {
+            let msg = format!("unsafe traits like `{}` should be implemented explicitly", name);
+            err.span_note(span, &msg);
+            return;
+        }
+
         // First check if this is a locally-defined bang macro.
         let suggestion = if let MacroKind::Bang = kind {
             find_best_match_for_name(
@@ -1100,7 +1116,7 @@ impl<'a> Resolver<'a> {
         let def_id = self.definitions.local_def_id(item.id);
         let ext = Lrc::new(macro_rules::compile(&self.session.parse_sess,
                                                &self.session.features_untracked(),
-                                               item, hygiene::default_edition()));
+                                               item, self.session.edition()));
         self.macro_map.insert(def_id, ext);
 
         let def = match item.node { ast::ItemKind::MacroDef(ref def) => def, _ => unreachable!() };

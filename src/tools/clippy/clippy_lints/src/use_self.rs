@@ -8,7 +8,7 @@ use rustc::ty;
 use rustc::ty::{DefIdTree, Ty};
 use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
-use syntax_pos::symbol::keywords::SelfUpper;
+use syntax_pos::symbol::kw;
 
 use crate::utils::span_lint_and_sugg;
 
@@ -68,7 +68,7 @@ fn span_use_self_lint(cx: &LateContext<'_, '_>, path: &Path) {
     );
 }
 
-struct TraitImplTyVisitor<'a, 'tcx: 'a> {
+struct TraitImplTyVisitor<'a, 'tcx> {
     item_type: Ty<'tcx>,
     cx: &'a LateContext<'a, 'tcx>,
     trait_type_walker: ty::walk::TypeWalker<'tcx>,
@@ -108,7 +108,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TraitImplTyVisitor<'a, 'tcx> {
     }
 }
 
-fn check_trait_method_impl_decl<'a, 'tcx: 'a>(
+fn check_trait_method_impl_decl<'a, 'tcx>(
     cx: &'a LateContext<'a, 'tcx>,
     item_type: Ty<'tcx>,
     impl_item: &ImplItem,
@@ -119,7 +119,7 @@ fn check_trait_method_impl_decl<'a, 'tcx: 'a>(
         .tcx
         .associated_items(impl_trait_ref.def_id)
         .find(|assoc_item| {
-            assoc_item.kind == ty::AssociatedKind::Method
+            assoc_item.kind == ty::AssocKind::Method
                 && cx
                     .tcx
                     .hygienic_eq(impl_item.ident, assoc_item.ident, impl_trait_ref.def_id)
@@ -213,14 +213,14 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UseSelf {
     }
 }
 
-struct UseSelfVisitor<'a, 'tcx: 'a> {
+struct UseSelfVisitor<'a, 'tcx> {
     item_path: &'a Path,
     cx: &'a LateContext<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for UseSelfVisitor<'a, 'tcx> {
     fn visit_path(&mut self, path: &'tcx Path, _id: HirId) {
-        if path.segments.last().expect(SEGMENTS_MSG).ident.name != SelfUpper.name() {
+        if path.segments.last().expect(SEGMENTS_MSG).ident.name != kw::SelfUpper {
             if self.item_path.res == path.res {
                 span_use_self_lint(self.cx, path);
             } else if let Res::Def(DefKind::Ctor(def::CtorOf::Struct, CtorKind::Fn), ctor_did) = path.res {

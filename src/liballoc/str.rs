@@ -86,10 +86,6 @@ impl<S: Borrow<str>> SliceConcatExt<str> for [S] {
             String::from_utf8_unchecked( join_generic_copy(self, sep.as_bytes()) )
         }
     }
-
-    fn connect(&self, sep: &str) -> String {
-        self.join(sep)
-    }
 }
 
 macro_rules! spezialize_for_lengths {
@@ -430,6 +426,13 @@ impl str {
     /// let new_year = "农历新年";
     ///
     /// assert_eq!(new_year, new_year.to_uppercase());
+    /// ```
+    ///
+    /// One character can become multiple:
+    /// ```
+    /// let s = "tschüß";
+    ///
+    /// assert_eq!("TSCHÜSS", s.to_uppercase());
     /// ```
     #[stable(feature = "unicode_case_mapping", since = "1.2.0")]
     pub fn to_uppercase(&self) -> String {

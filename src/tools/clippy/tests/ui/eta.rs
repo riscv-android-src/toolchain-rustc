@@ -32,8 +32,8 @@ fn main() {
     let e = Some(1u8).map(|a| generic(a));
     let e = Some(1u8).map(generic);
     // See #515
-    let a: Option<Box<::std::ops::Deref<Target = [i32]>>> =
-        Some(vec![1i32, 2]).map(|v| -> Box<::std::ops::Deref<Target = [i32]>> { Box::new(v) });
+    let a: Option<Box<dyn (::std::ops::Deref<Target = [i32]>)>> =
+        Some(vec![1i32, 2]).map(|v| -> Box<dyn (::std::ops::Deref<Target = [i32]>)> { Box::new(v) });
 }
 
 trait TestTrait {
@@ -108,7 +108,7 @@ fn test_redundant_closures_containing_method_calls() {
     let _: Vec<_> = arr.iter().map(|x| x.map_err(|e| some.take().unwrap()(e))).collect();
 }
 
-struct Thunk<T>(Box<FnMut() -> T>);
+struct Thunk<T>(Box<dyn FnMut() -> T>);
 
 impl<T> Thunk<T> {
     fn new<F: 'static + FnOnce() -> T>(f: F) -> Thunk<T> {
@@ -176,4 +176,30 @@ fn test_redundant_closure_with_function_pointer() {
 fn test_redundant_closure_with_another_closure() {
     let closure = |a| println!("{}", a);
     let a = Some(1u8).map(|a| closure(a));
+}
+
+fn make_lazy(f: impl Fn() -> fn(u8) -> u8) -> impl Fn(u8) -> u8 {
+    // Currently f is called when result of make_lazy is called.
+    // If the closure is removed, f will be called when make_lazy itself is
+    // called. This changes semantics, so the closure must stay.
+    Box::new(move |x| f()(x))
+}
+
+fn call<F: FnOnce(&mut String) -> String>(f: F) -> String {
+    f(&mut "Hello".to_owned())
+}
+fn test_difference_in_mutability() {
+    call(|s| s.clone());
+}
+
+struct Bar;
+impl std::ops::Deref for Bar {
+    type Target = str;
+    fn deref(&self) -> &str {
+        "hi"
+    }
+}
+
+fn test_deref_with_trait_method() {
+    let _ = [Bar].iter().map(|s| s.to_string()).collect::<Vec<_>>();
 }

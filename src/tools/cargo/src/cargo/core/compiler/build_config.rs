@@ -27,6 +27,8 @@ pub struct BuildConfig {
     /// An optional wrapper, if any, used to wrap rustc invocations
     pub rustc_wrapper: Option<ProcessBuilder>,
     pub rustfix_diagnostic_server: RefCell<Option<RustfixDiagnosticServer>>,
+    /// Whether or not Cargo should cache compiler output on disk.
+    cache_messages: bool,
 }
 
 impl BuildConfig {
@@ -87,6 +89,7 @@ impl BuildConfig {
         }
         let cfg_jobs: Option<u32> = config.get("build.jobs")?;
         let jobs = jobs.or(cfg_jobs).unwrap_or(::num_cpus::get() as u32);
+
         Ok(BuildConfig {
             requested_target: target,
             jobs,
@@ -97,10 +100,18 @@ impl BuildConfig {
             build_plan: false,
             rustc_wrapper: None,
             rustfix_diagnostic_server: RefCell::new(None),
+            cache_messages: config.cli_unstable().cache_messages,
         })
     }
 
-    pub fn json_messages(&self) -> bool {
+    /// Whether or not Cargo should cache compiler messages on disk.
+    pub fn cache_messages(&self) -> bool {
+        self.cache_messages
+    }
+
+    /// Whether or not the *user* wants JSON output. Whether or not rustc
+    /// actually uses JSON is decided in `add_error_format`.
+    pub fn emit_json(&self) -> bool {
         self.message_format == MessageFormat::Json
     }
 
@@ -172,14 +183,17 @@ impl CompileMode {
         }
     }
 
-    /// Returns `true` if this is a doc or doc test. Be careful using this.
-    /// Although both run rustdoc, the dependencies for those two modes are
-    /// very different.
+    /// Returns `true` if this is generating documentation.
     pub fn is_doc(self) -> bool {
         match self {
-            CompileMode::Doc { .. } | CompileMode::Doctest => true,
+            CompileMode::Doc { .. } => true,
             _ => false,
         }
+    }
+
+    /// Returns `true` if this a doc test.
+    pub fn is_doc_test(self) -> bool {
+        self == CompileMode::Doctest
     }
 
     /// Returns `true` if this is any type of test (test, benchmark, doc test, or

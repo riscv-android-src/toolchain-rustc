@@ -104,14 +104,14 @@ impl LanguageItems {
     )*
 }
 
-struct LanguageItemCollector<'a, 'tcx: 'a> {
+struct LanguageItemCollector<'tcx> {
     items: LanguageItems,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     /// A mapping from the name of the lang item to its order and the form it must be of.
     item_refs: FxHashMap<&'static str, (usize, Target)>,
 }
 
-impl<'a, 'v, 'tcx> ItemLikeVisitor<'v> for LanguageItemCollector<'a, 'tcx> {
+impl ItemLikeVisitor<'v> for LanguageItemCollector<'tcx> {
     fn visit_item(&mut self, item: &hir::Item) {
         if let Some((value, span)) = extract(&item.attrs) {
             let actual_target = Target::from_item(item);
@@ -159,8 +159,8 @@ impl<'a, 'v, 'tcx> ItemLikeVisitor<'v> for LanguageItemCollector<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> LanguageItemCollector<'a, 'tcx> {
-    fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> LanguageItemCollector<'a, 'tcx> {
+impl LanguageItemCollector<'tcx> {
+    fn new(tcx: TyCtxt<'tcx>) -> LanguageItemCollector<'tcx> {
         let mut item_refs = FxHashMap::default();
 
         $( item_refs.insert($name, ($variant as usize, $target)); )*
@@ -210,14 +210,14 @@ impl<'a, 'tcx> LanguageItemCollector<'a, 'tcx> {
 pub fn extract(attrs: &[ast::Attribute]) -> Option<(Symbol, Span)> {
     attrs.iter().find_map(|attr| Some(match attr {
         _ if attr.check_name(sym::lang) => (attr.value_str()?, attr.span),
-        _ if attr.check_name(sym::panic_handler) => (Symbol::intern("panic_impl"), attr.span),
-        _ if attr.check_name(sym::alloc_error_handler) => (Symbol::intern("oom"), attr.span),
+        _ if attr.check_name(sym::panic_handler) => (sym::panic_impl, attr.span),
+        _ if attr.check_name(sym::alloc_error_handler) => (sym::oom, attr.span),
         _ => return None,
     }))
 }
 
 /// Traverse and collect all the lang items in all crates.
-pub fn collect<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> LanguageItems {
+pub fn collect<'tcx>(tcx: TyCtxt<'tcx>) -> LanguageItems {
     // Initialize the collector.
     let mut collector = LanguageItemCollector::new(tcx);
 
@@ -320,6 +320,7 @@ language_item_table! {
     FnMutTraitLangItem,          "fn_mut",             fn_mut_trait,            Target::Trait;
     FnOnceTraitLangItem,         "fn_once",            fn_once_trait,           Target::Trait;
 
+    FutureTraitLangItem,         "future_trait",       future_trait,            Target::Trait;
     GeneratorStateLangItem,      "generator_state",    gen_state,               Target::Enum;
     GeneratorTraitLangItem,      "generator",          gen_trait,               Target::Trait;
     UnpinTraitLangItem,          "unpin",              unpin_trait,             Target::Trait;
@@ -402,7 +403,7 @@ language_item_table! {
     Rc,                          "rc",                 rc,                      Target::Struct;
 }
 
-impl<'a, 'tcx, 'gcx> TyCtxt<'a, 'tcx, 'gcx> {
+impl<'tcx> TyCtxt<'tcx> {
     /// Returns the `DefId` for a given `LangItem`.
     /// If not found, fatally abort compilation.
     pub fn require_lang_item(&self, lang_item: LangItem) -> DefId {

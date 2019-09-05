@@ -254,7 +254,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonSnakeCase {
         let crate_ident = if let Some(name) = &cx.tcx.sess.opts.crate_name {
             Some(Ident::from_str(name))
         } else {
-            attr::find_by_name(&cx.tcx.hir().attrs_by_hir_id(hir::CRATE_HIR_ID), sym::crate_name)
+            attr::find_by_name(&cx.tcx.hir().attrs(hir::CRATE_HIR_ID), sym::crate_name)
                 .and_then(|attr| attr.meta())
                 .and_then(|meta| {
                     meta.name_value_literal().and_then(|lit| {
@@ -440,26 +440,4 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonUpperCaseGlobals {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{is_camel_case, to_camel_case};
-
-    #[test]
-    fn camel_case() {
-        assert!(!is_camel_case("userData"));
-        assert_eq!(to_camel_case("userData"), "UserData");
-
-        assert!(is_camel_case("X86_64"));
-
-        assert!(!is_camel_case("X86__64"));
-        assert_eq!(to_camel_case("X86__64"), "X86_64");
-
-        assert!(!is_camel_case("Abc_123"));
-        assert_eq!(to_camel_case("Abc_123"), "Abc123");
-
-        assert!(!is_camel_case("A1_b2_c3"));
-        assert_eq!(to_camel_case("A1_b2_c3"), "A1B2C3");
-
-        assert!(!is_camel_case("ONE_TWO_THREE"));
-        assert_eq!(to_camel_case("ONE_TWO_THREE"), "OneTwoThree");
-    }
-}
+mod tests;

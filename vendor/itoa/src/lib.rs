@@ -1,16 +1,59 @@
-// Copyright 2016 Itoa Developers
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+//! This crate provides fast functions for printing integer primitives to an
+//! [`io::Write`] or a [`fmt::Write`]. The implementation comes straight from
+//! [libcore] but avoids the performance penalty of going through
+//! [`fmt::Formatter`].
+//!
+//! See also [`dtoa`] for printing floating point primitives.
+//!
+//! [`io::Write`]: https://doc.rust-lang.org/std/io/trait.Write.html
+//! [`fmt::Write`]: https://doc.rust-lang.org/core/fmt/trait.Write.html
+//! [libcore]: https://github.com/rust-lang/rust/blob/b8214dc6c6fc20d0a660fb5700dca9ebf51ebe89/src/libcore/fmt/num.rs#L201-L254
+//! [`fmt::Formatter`]: https://doc.rust-lang.org/std/fmt/struct.Formatter.html
+//! [`dtoa`]: https://github.com/dtolnay/dtoa
+//!
+//! <br>
+//!
+//! # Performance (lower is better)
+//!
+//! ![performance](https://raw.githubusercontent.com/dtolnay/itoa/master/performance.png)
+//!
+//! <br>
+//!
+//! # Examples
+//!
+//! ```edition2018
+//! use std::{fmt, io};
+//!
+//! fn demo_itoa_write() -> io::Result<()> {
+//!     // Write to a vector or other io::Write.
+//!     let mut buf = Vec::new();
+//!     itoa::write(&mut buf, 128u64)?;
+//!     println!("{:?}", buf);
+//!
+//!     // Write to a stack buffer.
+//!     let mut bytes = [0u8; 20];
+//!     let n = itoa::write(&mut bytes[..], 128u64)?;
+//!     println!("{:?}", &bytes[..n]);
+//!
+//!     Ok(())
+//! }
+//!
+//! fn demo_itoa_fmt() -> fmt::Result {
+//!     // Write to a string.
+//!     let mut s = String::new();
+//!     itoa::fmt(&mut s, 128u64)?;
+//!     println!("{}", s);
+//!
+//!     Ok(())
+//! }
+//! ```
 
-#![doc(html_root_url = "https://docs.rs/itoa/0.4.3")]
+#![doc(html_root_url = "https://docs.rs/itoa/0.4.4")]
 #![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(feature = "cargo-clippy", allow(renamed_and_removed_lints))]
 #![cfg_attr(
     feature = "cargo-clippy",
-    allow(cast_lossless, unreadable_literal)
+    allow(const_static_lifetime, transmute_ptr_to_ptr),
 )]
 
 #[cfg(feature = "i128")]
@@ -43,7 +86,7 @@ pub fn fmt<W: fmt::Write, V: Integer>(mut wr: W, value: V) -> fmt::Result {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```
 /// let mut buffer = itoa::Buffer::new();
 /// let printed = buffer.format(1234);
 /// assert_eq!(printed, "1234");
@@ -95,7 +138,7 @@ mod private {
 pub trait Integer: private::Sealed {
     // Not public API.
     #[doc(hidden)]
-    fn write<'a>(self, buf: &'a mut Buffer) -> &'a str;
+    fn write(self, buf: &mut Buffer) -> &str;
 }
 
 trait IntegerPrivate<B> {
@@ -115,7 +158,7 @@ macro_rules! impl_IntegerCommon {
     ($max_len:expr, $t:ident) => {
         impl Integer for $t {
             #[inline]
-            fn write<'a>(self, buf: &'a mut Buffer) -> &'a str {
+            fn write(self, buf: &mut Buffer) -> &str {
                 unsafe {
                     debug_assert!($max_len <= I128_MAX_LEN);
                     let buf = mem::transmute::<&mut [u8; I128_MAX_LEN], &mut [u8; $max_len]>(

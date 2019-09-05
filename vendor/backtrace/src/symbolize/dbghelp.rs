@@ -8,21 +8,44 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+//! Symbolication strategy using `dbghelp.dll` on Windows, only used for MSVC
+//!
+//! This symbolication strategy, like with backtraces, uses dynamically loaded
+//! information from `dbghelp.dll`. (see `src/dbghelp.rs` for info about why
+//! it's dynamically loaded).
+//!
+//! This API selects its resolution strategy based on the frame provided or the
+//! information we have at hand. If a frame from `StackWalkEx` is given to us
+//! then we use similar APIs to generate correct information about inlined
+//! functions. Otherwise if all we have is an address or an older stack frame
+//! from `StackWalk64` we use the older APIs for symbolication.
+//!
+//! There's a good deal of support in this module, but a good chunk of it is
+//! converting back and forth between Windows types and Rust types. For example
+//! symbols come to us as wide strings which we then convert to utf-8 strings if
+//! we can.
+
 #![allow(bad_style)]
+
+// This is a hack for compatibility with rustc 1.25.0. The no_std mode of this
+// crate is not supported pre-1.30.0, but in std mode the `char` module here
+// moved in rustc 1.26.0 (ish). As a result, in std mode we use `std::char` to
+// retain compatibility with rustc 1.25.0, but in `no_std` mode (which is
+// 1.30.0+ already) we use `core::char`.
+#[cfg(not(feature = "std"))]
+use core::char;
+#[cfg(feature = "std")]
+use std::char;
 
 use core::mem;
 use core::slice;
-use core::char;
 
-use winapi::ctypes::*;
-use winapi::shared::basetsd::*;
-use winapi::shared::minwindef::*;
-use winapi::um::processthreadsapi;
-use winapi::um::dbghelp;
-use winapi::um::dbghelp::*;
-
+use backtrace::FrameImp as Frame;
+use dbghelp;
+use symbolize::ResolveWhat;
+use types::{c_void, BytesOrWideString};
+use windows::*;
 use SymbolName;
-use types::BytesOrWideString;
 
 // Store an OsString on std so we can provide the symbol name and filename.
 pub struct Symbol {
@@ -46,11 +69,8 @@ impl Symbol {
     }
 
     pub fn filename_raw(&self) -> Option<BytesOrWideString> {
-        self.filename.map(|slice| {
-            unsafe {
-                BytesOrWideString::Wide(&*slice)
-            }
-        })
+        self.filename
+            .map(|slice| unsafe { BytesOrWideString::Wide(&*slice) })
     }
 
     pub fn lineno(&self) -> Option<u32> {
@@ -58,15 +78,82 @@ impl Symbol {
     }
 
     #[cfg(feature = "std")]
-    pub fn filename(&self) -> Option<&::std::ffi::OsString> {
-        self._filename_cache.as_ref()
+    pub fn filename(&self) -> Option<&::std::path::Path> {
+        use std::path::Path;
+
+        self._filename_cache.as_ref().map(Path::new)
     }
 }
 
 #[repr(C, align(8))]
 struct Aligned8<T>(T);
 
-pub unsafe fn resolve(addr: *mut c_void, cb: &mut FnMut(&super::Symbol)) {
+pub unsafe fn resolve(what: ResolveWhat, cb: &mut FnMut(&super::Symbol)) {
+    // Ensure this process's symbols are initialized
+    let dbghelp = match dbghelp::init() {
+        Ok(dbghelp) => dbghelp,
+        Err(()) => return, // oh well...
+    };
+
+    match what {
+        ResolveWhat::Address(addr) => resolve_without_inline(&dbghelp, addr, cb),
+        ResolveWhat::Frame(frame) => match &frame.inner {
+            Frame::New(frame) => resolve_with_inline(&dbghelp, frame, cb),
+            Frame::Old(_) => resolve_without_inline(&dbghelp, frame.ip(), cb),
+        },
+    }
+}
+
+unsafe fn resolve_with_inline(
+    dbghelp: &dbghelp::Cleanup,
+    frame: &STACKFRAME_EX,
+    cb: &mut FnMut(&super::Symbol),
+) {
+    do_resolve(
+        |info| {
+            dbghelp.SymFromInlineContextW()(
+                GetCurrentProcess(),
+                // FIXME: why is `-1` used here and below? It seems to produce
+                // more accurate backtraces on Windows (aka passes tests in
+                // rust-lang/rust), but it's unclear why it's required in the
+                // first place.
+                frame.AddrPC.Offset - 1,
+                frame.InlineFrameContext,
+                &mut 0,
+                info,
+            )
+        },
+        |line| {
+            dbghelp.SymGetLineFromInlineContextW()(
+                GetCurrentProcess(),
+                frame.AddrPC.Offset - 1,
+                frame.InlineFrameContext,
+                0,
+                &mut 0,
+                line,
+            )
+        },
+        cb,
+    )
+}
+
+unsafe fn resolve_without_inline(
+    dbghelp: &dbghelp::Cleanup,
+    addr: *mut c_void,
+    cb: &mut FnMut(&super::Symbol),
+) {
+    do_resolve(
+        |info| dbghelp.SymFromAddrW()(GetCurrentProcess(), addr as DWORD64, &mut 0, info),
+        |line| dbghelp.SymGetLineFromAddrW64()(GetCurrentProcess(), addr as DWORD64, &mut 0, line),
+        cb,
+    )
+}
+
+unsafe fn do_resolve(
+    sym_from_addr: impl FnOnce(*mut SYMBOL_INFOW) -> BOOL,
+    get_line_from_addr: impl FnOnce(&mut IMAGEHLP_LINEW64) -> BOOL,
+    cb: &mut FnMut(&super::Symbol),
+) {
     const SIZE: usize = 2 * MAX_SYM_NAME + mem::size_of::<SYMBOL_INFOW>();
     let mut data = Aligned8([0u8; SIZE]);
     let data = &mut data.0;
@@ -77,22 +164,14 @@ pub unsafe fn resolve(addr: *mut c_void, cb: &mut FnMut(&super::Symbol)) {
     // due to struct alignment.
     info.SizeOfStruct = 88;
 
-    let _c = ::dbghelp_init();
-
-    let mut displacement = 0u64;
-    let ret = dbghelp::SymFromAddrW(processthreadsapi::GetCurrentProcess(),
-                                    addr as DWORD64,
-                                    &mut displacement,
-                                    info);
-    if ret != TRUE {
-        return
+    if sym_from_addr(info) != TRUE {
+        return;
     }
 
     // If the symbol name is greater than MaxNameLen, SymFromAddrW will
     // give a buffer of (MaxNameLen - 1) characters and set NameLen to
     // the real value.
-    let name_len = ::core::cmp::min(info.NameLen as usize,
-                                    info.MaxNameLen as usize - 1);
+    let name_len = ::core::cmp::min(info.NameLen as usize, info.MaxNameLen as usize - 1);
     let name_ptr = info.Name.as_ptr() as *const u16;
     let name = slice::from_raw_parts(name_ptr, name_len);
 
@@ -111,7 +190,7 @@ pub unsafe fn resolve(addr: *mut c_void, cb: &mut FnMut(&super::Symbol)) {
                 remaining = &mut tmp[len..];
                 name_len += len;
             } else {
-                break
+                break;
             }
         }
     }
@@ -119,15 +198,10 @@ pub unsafe fn resolve(addr: *mut c_void, cb: &mut FnMut(&super::Symbol)) {
 
     let mut line = mem::zeroed::<IMAGEHLP_LINEW64>();
     line.SizeOfStruct = mem::size_of::<IMAGEHLP_LINEW64>() as DWORD;
-    let mut displacement = 0;
-    let ret = dbghelp::SymGetLineFromAddrW64(processthreadsapi::GetCurrentProcess(),
-                                             addr as DWORD64,
-                                             &mut displacement,
-                                             &mut line);
 
     let mut filename = None;
     let mut lineno = None;
-    if ret == TRUE {
+    if get_line_from_addr(&mut line) == TRUE {
         lineno = Some(line.LineNumber as u32);
 
         let base = line.FileName;
@@ -140,7 +214,6 @@ pub unsafe fn resolve(addr: *mut c_void, cb: &mut FnMut(&super::Symbol)) {
 
         filename = Some(slice::from_raw_parts(base, len) as *const [u16]);
     }
-
 
     cb(&super::Symbol {
         inner: Symbol {
@@ -156,11 +229,8 @@ pub unsafe fn resolve(addr: *mut c_void, cb: &mut FnMut(&super::Symbol)) {
 #[cfg(feature = "std")]
 unsafe fn cache(filename: Option<*const [u16]>) -> Option<::std::ffi::OsString> {
     use std::os::windows::ffi::OsStringExt;
-    filename.map(|f| {
-        ::std::ffi::OsString::from_wide(&*f)
-    })
+    filename.map(|f| ::std::ffi::OsString::from_wide(&*f))
 }
 
 #[cfg(not(feature = "std"))]
-unsafe fn cache(_filename: Option<*const [u16]>) {
-}
+unsafe fn cache(_filename: Option<*const [u16]>) {}

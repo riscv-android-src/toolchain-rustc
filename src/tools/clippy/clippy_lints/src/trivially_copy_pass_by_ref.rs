@@ -64,8 +64,9 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
             // Cap the calculated bit width at 32-bits to reduce
             // portability problems between 32 and 64-bit targets
             let bit_width = cmp::min(bit_width, 32);
+            #[allow(clippy::integer_division)]
             let byte_width = bit_width / 8;
-            // Use a limit of 2 times the register bit width
+            // Use a limit of 2 times the register byte width
             byte_width * 2
         });
         Self { limit }
@@ -118,7 +119,7 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
                         cx,
                         TRIVIALLY_COPY_PASS_BY_REF,
                         input.span,
-                        "this argument is passed by reference, but would be more efficient if passed by value",
+                        &format!("this argument ({} byte) is passed by reference, but would be more efficient if passed by value (limit: {} byte)", size, self.limit),
                         "consider passing by value instead",
                         value_type,
                         Applicability::Unspecified,
@@ -130,7 +131,7 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
 
     fn check_trait_items(&mut self, cx: &LateContext<'_, '_>, trait_items: &[TraitItemRef]) {
         for item in trait_items {
-            if let AssociatedItemKind::Method { .. } = item.kind {
+            if let AssocItemKind::Method { .. } = item.kind {
                 self.check_trait_method(cx, item);
             }
         }
@@ -178,11 +179,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TriviallyCopyPassByRef {
         }
 
         // Exclude non-inherent impls
-        if let Some(Node::Item(item)) = cx
-            .tcx
-            .hir()
-            .find_by_hir_id(cx.tcx.hir().get_parent_node_by_hir_id(hir_id))
-        {
+        if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
             if matches!(item.node, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
                 ItemKind::Trait(..))
             {

@@ -20,7 +20,7 @@ use crate::mir::mono::CodegenUnit;
 use crate::mir;
 use crate::mir::interpret::GlobalId;
 use crate::session::CrateDisambiguator;
-use crate::session::config::{EntryFnType, OutputFilenames, OptLevel};
+use crate::session::config::{EntryFnType, OutputFilenames, OptLevel, SymbolManglingVersion};
 use crate::traits::{self, Vtable};
 use crate::traits::query::{
     CanonicalPredicateGoal, CanonicalProjectionGoal,
@@ -45,7 +45,7 @@ use crate::util::profiling::ProfileCategory::*;
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::IndexVec;
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::{FxIndexMap, FxHashMap, FxHashSet};
 use rustc_data_structures::stable_hasher::StableVec;
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::fingerprint::Fingerprint;
@@ -100,8 +100,7 @@ pub use self::on_disk_cache::OnDiskCache;
 
 rustc_query_append! { [define_queries!][ <'tcx>
     Other {
-        /// Run analysis passes on the crate
-        [] fn analysis: Analysis(CrateNum) -> Result<(), ErrorReported>,
-
+        /// Runs analysis passes on the crate.
+        [eval_always] fn analysis: Analysis(CrateNum) -> Result<(), ErrorReported>,
     },
 ]}

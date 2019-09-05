@@ -44,7 +44,7 @@ also check privacy, like any other paths.
 Specifying a relative path with `use` is slightly different. Instead of
 starting from a name in the current scope, we must start the path given to
 `use` with the keyword `self`. Listing 7-12 shows how to specify a relative
-path to get the same behavior as Listing 7-11.
+path to get the same behavior as in Listing 7-11.
 
 <span class="filename">Filename: src/lib.rs</span>
 
@@ -227,11 +227,11 @@ from a new scope with `pub use`</span>
 
 By using `pub use`, external code can now call the `add_to_waitlist` function
 using `hosting::add_to_waitlist`. If we hadn’t specified `pub use`, the
-`eat_at_restaurant` function could call `hosting::add_to_waitlist` in its scope
-but external code couldn’t take advantage of this new path.
+`eat_at_restaurant` function could call `hosting::add_to_waitlist` in its
+scope, but external code couldn’t take advantage of this new path.
 
 Re-exporting is useful when the internal structure of your code is different
-than the way programmers calling your code would think about the domain. For
+from how programmers calling your code would think about the domain. For
 example, in this restaurant metaphor, the people running the restaurant think
 about “front of house” and “back of house.” But customers visiting a restaurant
 probably won’t think about the parts of the restaurant in those terms. With
@@ -253,11 +253,11 @@ rand = "0.5.5"
 ```
 
 Adding `rand` as a dependency in *Cargo.toml* tells Cargo to download the
-`rand` package and any dependencies from *https://crates.io* and make `rand`
-available to our project.
+`rand` package and any dependencies from [crates.io](https://crates.io/) and
+make `rand` available to our project.
 
 Then, to bring `rand` definitions into the scope of our package, we added a
-`use` line starting with the name of the package, `rand`, and listing the items
+`use` line starting with the name of the package, `rand`, and listed the items
 we wanted to bring into scope. Recall that in the [“Generating a Random
 Number”][rand]<!-- ignore --> section in Chapter 2, we brought the `Rng` trait
 into scope and called the `rand::thread_rng` function:
@@ -270,9 +270,9 @@ fn main() {
 ```
 
 Members of the Rust community have made many packages available at
-*https://crates.io*, and pulling any of them into your package involves these
-same steps: listing them in your package’s *Cargo.toml* file and using `use` to
-bring items into scope.
+[crates.io](https://crates.io/), and pulling any of them into your package
+involves these same steps: listing them in your package’s *Cargo.toml* file and
+using `use` to bring items into scope.
 
 Note that the standard library (`std`) is also a crate that’s external to our
 package. Because the standard library is shipped with the Rust language, we
