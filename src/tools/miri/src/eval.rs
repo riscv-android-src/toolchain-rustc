@@ -1,3 +1,5 @@
+//! Main evaluator loop and setting up the initial stack frame.
+
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
@@ -5,12 +7,11 @@ use syntax::source_map::DUMMY_SP;
 use rustc::ty::{self, TyCtxt};
 use rustc::ty::layout::{LayoutOf, Size, Align};
 use rustc::hir::def_id::DefId;
-use rustc::mir;
 
 use crate::{
-    InterpResult, InterpError, InterpretCx, StackPopCleanup, struct_error,
-    Scalar, Tag, Pointer,
-    MemoryExtra, MiriMemoryKind, Evaluator, TlsEvalContextExt,
+    InterpResult, InterpError, InterpCx, StackPopCleanup, struct_error,
+    Scalar, Tag, Pointer, FnVal,
+    MemoryExtra, MiriMemoryKind, Evaluator, TlsEvalContextExt, HelpersEvalContextExt,
 };
 
 /// Configuration needed to spawn a Miri instance.
@@ -28,24 +29,21 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     tcx: TyCtxt<'tcx>,
     main_id: DefId,
     config: MiriConfig,
-) -> InterpResult<'tcx, InterpretCx<'mir, 'tcx, Evaluator<'tcx>>> {
-    let mut ecx = InterpretCx::new(
+) -> InterpResult<'tcx, InterpCx<'mir, 'tcx, Evaluator<'tcx>>> {
+    let mut ecx = InterpCx::new(
         tcx.at(syntax::source_map::DUMMY_SP),
         ty::ParamEnv::reveal_all(),
-        Evaluator::new(config.validate),
+        Evaluator::new(),
+        MemoryExtra::new(StdRng::seed_from_u64(config.seed.unwrap_or(0)), config.validate),
     );
 
-    // FIXME: InterpretCx::new should take an initial MemoryExtra
-    ecx.memory_mut().extra = MemoryExtra::with_rng(config.seed.map(StdRng::seed_from_u64));
-    
     let main_instance = ty::Instance::mono(ecx.tcx.tcx, main_id);
     let main_mir = ecx.load_mir(main_instance.def)?;
 
     if !main_mir.return_ty().is_unit() || main_mir.arg_count != 0 {
-        return err!(Unimplemented(
+        throw_unsup_format!(
             "miri does not support main functions without `fn()` type signatures"
-                .to_owned(),
-        ));
+        );
     }
 
     let start_id = tcx.lang_items().start_fn().unwrap();
@@ -61,10 +59,10 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     let start_mir = ecx.load_mir(start_instance.def)?;
 
     if start_mir.arg_count != 3 {
-        return err!(AbiViolation(format!(
+        bug!(
             "'start' lang item should have three arguments, but has {}",
             start_mir.arg_count
-        )));
+        );
     }
 
     // Return value (in static memory so that it does not count as leak).
@@ -84,12 +82,12 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     let mut args = ecx.frame().body.args_iter();
 
     // First argument: pointer to `main()`.
-    let main_ptr = ecx.memory_mut().create_fn_alloc(main_instance);
-    let dest = ecx.eval_place(&mir::Place::Base(mir::PlaceBase::Local(args.next().unwrap())))?;
+    let main_ptr = ecx.memory_mut().create_fn_alloc(FnVal::Instance(main_instance));
+    let dest = ecx.local_place(args.next().unwrap())?;
     ecx.write_scalar(Scalar::Ptr(main_ptr), dest)?;
 
     // Second argument (argc): `1`.
-    let dest = ecx.eval_place(&mir::Place::Base(mir::PlaceBase::Local(args.next().unwrap())))?;
+    let dest = ecx.local_place(args.next().unwrap())?;
     let argc = Scalar::from_uint(config.args.len() as u128, dest.layout.size);
     ecx.write_scalar(argc, dest)?;
     // Store argc for macOS's `_NSGetArgc`.
@@ -99,9 +97,8 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         ecx.machine.argc = Some(argc_place.ptr.to_ptr()?);
     }
 
-    // FIXME: extract main source file path.
     // Third argument (`argv`): created from `config.args`.
-    let dest = ecx.eval_place(&mir::Place::Base(mir::PlaceBase::Local(args.next().unwrap())))?;
+    let dest = ecx.local_place(args.next().unwrap())?;
     // For Windows, construct a command string with all the aguments.
     let mut cmd = String::new();
     for arg in config.args.iter() {
@@ -127,7 +124,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         let place = ecx.mplace_field(argvs_place, idx as u64)?;
         ecx.write_scalar(Scalar::Ptr(arg), place.into())?;
     }
-    ecx.memory_mut().mark_immutable(argvs_place.to_ptr()?.alloc_id)?;
+    ecx.memory_mut().mark_immutable(argvs_place.ptr.assert_ptr().alloc_id)?;
     // Write a pointer to that place as the argument.
     let argv = argvs_place.ptr;
     ecx.write_scalar(argv, dest)?;
@@ -181,7 +178,7 @@ pub fn eval_main<'tcx>(
     };
 
     // Perform the main execution.
-    let res: InterpResult = (|| {
+    let res: InterpResult<'_> = (|| {
         ecx.run()?;
         ecx.run_tls_dtors()
     })();
@@ -202,7 +199,7 @@ pub fn eval_main<'tcx>(
             // Special treatment for some error kinds
             let msg = match e.kind {
                 InterpError::Exit(code) => std::process::exit(code),
-                InterpError::NoMirFor(..) =>
+                err_unsup!(NoMirFor(..)) =>
                     format!("{}. Did you set `MIRI_SYSROOT` to a Miri-enabled sysroot? You can prepare one with `cargo miri setup`.", e),
                 _ => e.to_string()
             };

@@ -1,7 +1,7 @@
 use crate::errors::*;
-use crate::utils::fs::file_to_string;
-use crate::utils::take_lines;
+use crate::utils::{take_anchored_lines, take_lines};
 use regex::{CaptureMatches, Captures, Regex};
+use std::fs;
 use std::ops::{Range, RangeFrom, RangeFull, RangeTo};
 use std::path::{Path, PathBuf};
 
@@ -63,13 +63,13 @@ where
     let mut previous_end_index = 0;
     let mut replaced = String::new();
 
-    for playpen in find_links(s) {
-        replaced.push_str(&s[previous_end_index..playpen.start_index]);
+    for link in find_links(s) {
+        replaced.push_str(&s[previous_end_index..link.start_index]);
 
-        match playpen.render_with_path(&path) {
+        match link.render_with_path(&path) {
             Ok(new_content) => {
                 if depth < MAX_LINK_NESTED_DEPTH {
-                    if let Some(rel_path) = playpen.link.relative_path(path) {
+                    if let Some(rel_path) = link.link_type.relative_path(path) {
                         replaced.push_str(&replace_all(&new_content, rel_path, source, depth + 1));
                     } else {
                         replaced.push_str(&new_content);
@@ -80,17 +80,17 @@ where
                         source.display()
                     );
                 }
-                previous_end_index = playpen.end_index;
+                previous_end_index = link.end_index;
             }
             Err(e) => {
-                error!("Error updating \"{}\", {}", playpen.link_text, e);
+                error!("Error updating \"{}\", {}", link.link_text, e);
                 for cause in e.iter().skip(1) {
                     warn!("Caused By: {}", cause);
                 }
 
                 // This should make sure we include the raw `{{# ... }}` snippet
                 // in the page content if there are any errors.
-                previous_end_index = playpen.start_index;
+                previous_end_index = link.start_index;
             }
         }
     }
@@ -106,6 +106,7 @@ enum LinkType<'a> {
     IncludeRangeFrom(PathBuf, RangeFrom<usize>),
     IncludeRangeTo(PathBuf, RangeTo<usize>),
     IncludeRangeFull(PathBuf, RangeFull),
+    IncludeAnchor(PathBuf, String),
     Playpen(PathBuf, Vec<&'a str>),
 }
 
@@ -118,6 +119,7 @@ impl<'a> LinkType<'a> {
             LinkType::IncludeRangeFrom(p, _) => Some(return_relative_path(base, &p)),
             LinkType::IncludeRangeTo(p, _) => Some(return_relative_path(base, &p)),
             LinkType::IncludeRangeFull(p, _) => Some(return_relative_path(base, &p)),
+            LinkType::IncludeAnchor(p, _) => Some(return_relative_path(base, &p)),
             LinkType::Playpen(p, _) => Some(return_relative_path(base, &p)),
         }
     }
@@ -133,11 +135,21 @@ fn return_relative_path<P: AsRef<Path>>(base: P, relative: P) -> PathBuf {
 fn parse_include_path(path: &str) -> LinkType<'static> {
     let mut parts = path.split(':');
     let path = parts.next().unwrap().into();
-    // subtract 1 since line numbers usually begin with 1
-    let start = parts
-        .next()
-        .and_then(|s| s.parse::<usize>().ok())
-        .map(|val| val.saturating_sub(1));
+
+    let next_element = parts.next();
+    let start = if let Some(value) = next_element.and_then(|s| s.parse::<usize>().ok()) {
+        // subtract 1 since line numbers usually begin with 1
+        Some(value.saturating_sub(1))
+    } else if let Some(anchor) = next_element {
+        if anchor == "" {
+            None
+        } else {
+            return LinkType::IncludeAnchor(path, String::from(anchor));
+        }
+    } else {
+        None
+    };
+
     let end = parts.next();
     let has_end = end.is_some();
     let end = end.and_then(|s| s.parse::<usize>().ok());
@@ -169,7 +181,7 @@ fn parse_include_path(path: &str) -> LinkType<'static> {
 struct Link<'a> {
     start_index: usize,
     end_index: usize,
-    link: LinkType<'a>,
+    link_type: LinkType<'a>,
     link_text: &'a str,
 }
 
@@ -193,11 +205,11 @@ impl<'a> Link<'a> {
             _ => None,
         };
 
-        link_type.and_then(|lnk| {
+        link_type.and_then(|lnk_type| {
             cap.get(0).map(|mat| Link {
                 start_index: mat.start(),
                 end_index: mat.end(),
-                link: lnk,
+                link_type: lnk_type,
                 link_text: mat.as_str(),
             })
         })
@@ -205,13 +217,13 @@ impl<'a> Link<'a> {
 
     fn render_with_path<P: AsRef<Path>>(&self, base: P) -> Result<String> {
         let base = base.as_ref();
-        match self.link {
+        match self.link_type {
             // omit the escape char
             LinkType::Escaped => Ok((&self.link_text[1..]).to_owned()),
             LinkType::IncludeRange(ref pat, ref range) => {
                 let target = base.join(pat);
 
-                file_to_string(&target)
+                fs::read_to_string(&target)
                     .map(|s| take_lines(&s, range.clone()))
                     .chain_err(|| {
                         format!(
@@ -224,7 +236,7 @@ impl<'a> Link<'a> {
             LinkType::IncludeRangeFrom(ref pat, ref range) => {
                 let target = base.join(pat);
 
-                file_to_string(&target)
+                fs::read_to_string(&target)
                     .map(|s| take_lines(&s, range.clone()))
                     .chain_err(|| {
                         format!(
@@ -237,7 +249,7 @@ impl<'a> Link<'a> {
             LinkType::IncludeRangeTo(ref pat, ref range) => {
                 let target = base.join(pat);
 
-                file_to_string(&target)
+                fs::read_to_string(&target)
                     .map(|s| take_lines(&s, *range))
                     .chain_err(|| {
                         format!(
@@ -250,7 +262,7 @@ impl<'a> Link<'a> {
             LinkType::IncludeRangeFull(ref pat, _) => {
                 let target = base.join(pat);
 
-                file_to_string(&target).chain_err(|| {
+                fs::read_to_string(&target).chain_err(|| {
                     format!(
                         "Could not read file for link {} ({})",
                         self.link_text,
@@ -258,10 +270,23 @@ impl<'a> Link<'a> {
                     )
                 })
             }
+            LinkType::IncludeAnchor(ref pat, ref anchor) => {
+                let target = base.join(pat);
+
+                fs::read_to_string(&target)
+                    .map(|s| take_anchored_lines(&s, anchor))
+                    .chain_err(|| {
+                        format!(
+                            "Could not read file for link {} ({})",
+                            self.link_text,
+                            target.display(),
+                        )
+                    })
+            }
             LinkType::Playpen(ref pat, ref attrs) => {
                 let target = base.join(pat);
 
-                let contents = file_to_string(&target).chain_err(|| {
+                let contents = fs::read_to_string(&target).chain_err(|| {
                     format!(
                         "Could not read file for link {} ({})",
                         self.link_text,
@@ -373,13 +398,13 @@ mod tests {
                 Link {
                     start_index: 22,
                     end_index: 42,
-                    link: LinkType::Playpen(PathBuf::from("file.rs"), vec![]),
+                    link_type: LinkType::Playpen(PathBuf::from("file.rs"), vec![]),
                     link_text: "{{#playpen file.rs}}",
                 },
                 Link {
                     start_index: 47,
                     end_index: 68,
-                    link: LinkType::Playpen(PathBuf::from("test.rs"), vec![]),
+                    link_type: LinkType::Playpen(PathBuf::from("test.rs"), vec![]),
                     link_text: "{{#playpen test.rs }}",
                 },
             ]
@@ -396,7 +421,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 48,
-                link: LinkType::IncludeRange(PathBuf::from("file.rs"), 9..20),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), 9..20),
                 link_text: "{{#include file.rs:10:20}}",
             }]
         );
@@ -412,7 +437,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 45,
-                link: LinkType::IncludeRange(PathBuf::from("file.rs"), 9..10),
+                link_type: LinkType::IncludeRange(PathBuf::from("file.rs"), 9..10),
                 link_text: "{{#include file.rs:10}}",
             }]
         );
@@ -428,7 +453,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 46,
-                link: LinkType::IncludeRangeFrom(PathBuf::from("file.rs"), 9..),
+                link_type: LinkType::IncludeRangeFrom(PathBuf::from("file.rs"), 9..),
                 link_text: "{{#include file.rs:10:}}",
             }]
         );
@@ -444,7 +469,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 46,
-                link: LinkType::IncludeRangeTo(PathBuf::from("file.rs"), ..20),
+                link_type: LinkType::IncludeRangeTo(PathBuf::from("file.rs"), ..20),
                 link_text: "{{#include file.rs::20}}",
             }]
         );
@@ -460,7 +485,7 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 44,
-                link: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
+                link_type: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
                 link_text: "{{#include file.rs::}}",
             }]
         );
@@ -476,8 +501,27 @@ mod tests {
             vec![Link {
                 start_index: 22,
                 end_index: 42,
-                link: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
+                link_type: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
                 link_text: "{{#include file.rs}}",
+            }]
+        );
+    }
+
+    #[test]
+    fn test_find_links_with_anchor() {
+        let s = "Some random text with {{#include file.rs:anchor}}...";
+        let res = find_links(s).collect::<Vec<_>>();
+        println!("\nOUTPUT: {:?}\n", res);
+        assert_eq!(
+            res,
+            vec![Link {
+                start_index: 22,
+                end_index: 49,
+                link_type: LinkType::IncludeAnchor(
+                    PathBuf::from("file.rs"),
+                    String::from("anchor")
+                ),
+                link_text: "{{#include file.rs:anchor}}",
             }]
         );
     }
@@ -494,7 +538,7 @@ mod tests {
             vec![Link {
                 start_index: 38,
                 end_index: 68,
-                link: LinkType::Escaped,
+                link_type: LinkType::Escaped,
                 link_text: "\\{{#playpen file.rs editable}}",
             }]
         );
@@ -513,13 +557,13 @@ mod tests {
                 Link {
                     start_index: 38,
                     end_index: 68,
-                    link: LinkType::Playpen(PathBuf::from("file.rs"), vec!["editable"]),
+                    link_type: LinkType::Playpen(PathBuf::from("file.rs"), vec!["editable"]),
                     link_text: "{{#playpen file.rs editable }}",
                 },
                 Link {
                     start_index: 89,
                     end_index: 136,
-                    link: LinkType::Playpen(
+                    link_type: LinkType::Playpen(
                         PathBuf::from("my.rs"),
                         vec!["editable", "no_run", "should_panic"],
                     ),
@@ -543,7 +587,7 @@ mod tests {
             Link {
                 start_index: 38,
                 end_index: 58,
-                link: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
+                link_type: LinkType::IncludeRangeFull(PathBuf::from("file.rs"), ..),
                 link_text: "{{#include file.rs}}",
             }
         );
@@ -552,7 +596,7 @@ mod tests {
             Link {
                 start_index: 63,
                 end_index: 112,
-                link: LinkType::Escaped,
+                link_type: LinkType::Escaped,
                 link_text: "\\{{#contents are insignifficant in escaped link}}",
             }
         );
@@ -561,7 +605,7 @@ mod tests {
             Link {
                 start_index: 130,
                 end_index: 177,
-                link: LinkType::Playpen(
+                link_type: LinkType::Playpen(
                     PathBuf::from("my.rs"),
                     vec!["editable", "no_run", "should_panic"]
                 ),

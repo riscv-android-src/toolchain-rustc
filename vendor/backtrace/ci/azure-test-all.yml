@@ -9,6 +9,8 @@ steps:
     displayName: "Build backtrace"
   - bash: cargo test
     displayName: "Test backtrace"
+  - bash: cargo test --features 'gimli-symbolize'
+    displayName: "Test backtrace (gimli-symbolize)"
   - bash: cargo test --no-default-features
     displayName: "Test backtrace (-default)"
   - bash: cargo test --no-default-features --features 'std'
@@ -21,12 +23,18 @@ steps:
     displayName: "Test backtrace (-default + libunwind + libbacktrace)"
   - bash: cargo test --no-default-features --features 'libunwind libbacktrace dbghelp std'
     displayName: "Test backtrace (-default + libunwind + libbacktrace + dbghelp)"
+  - bash: cargo test --no-default-features --features 'libunwind coresymbolication dbghelp std'
+    displayName: "Test backtrace (-default + libunwind + coresymbolication + dbghelp)"
+  - bash: cargo test --no-default-features --features 'libunwind coresymbolication dbghelp std libbacktrace'
+    displayName: "Test backtrace (-default + libunwind + coresymbolication + dbghelp + libbacktrace)"
   - bash: cargo test --no-default-features --features 'unix-backtrace std'
     displayName: "Test backtrace (-default + unix-backtrace)"
   - bash: cargo test --no-default-features --features 'unix-backtrace dladdr std'
     displayName: "Test backtrace (-default + unix-backtrace + dladdr)"
   - bash: cargo test --no-default-features --features 'unix-backtrace libbacktrace std'
     displayName: "Test backtrace (-default + unix-backtrace + libbacktrace)"
+  - bash: cargo test --no-default-features --features 'unix-backtrace coresymbolication std'
+    displayName: "Test backtrace (-default + unix-backtrace + coresymbolication)"
   - bash: cargo test --no-default-features --features 'serialize-serde std'
     displayName: "Test backtrace (-default + serialize-serde + std)"
   - bash: cargo test --no-default-features --features 'serialize-rustc std'
@@ -35,8 +43,6 @@ steps:
     displayName: "Test backtrace (-default + serialize-rustc + serialize-serde + std)"
   - bash: cargo test --no-default-features --features 'cpp_demangle std'
     displayName: "Test backtrace (-default + cpp_demangle + std)"
-  - bash: cargo test --no-default-features --features 'gimli-symbolize std'
-    displayName: "Test backtrace (-default + gimli-symbolize + std)"
   - bash: cargo test --no-default-features --features 'dbghelp std'
     displayName: "Test backtrace (-default + dbghelp + std)"
   - bash: cargo test --no-default-features --features 'dbghelp std verify-winapi'
@@ -47,3 +53,5 @@ steps:
     displayName: "Test without debuginfo (libbacktrace)"
   - bash: cd ./crates/without_debuginfo && cargo test --features 'libbacktrace coresymbolication'
     displayName: "Test without debuginfo (coresymbolication)"
+  - bash: cd ./crates/without_debuginfo && cargo test --features 'libbacktrace gimli-symbolize'
+    displayName: "Test without debuginfo (gimli-symbolize)"

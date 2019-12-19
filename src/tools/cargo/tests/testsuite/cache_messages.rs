@@ -1,4 +1,4 @@
-use crate::support::{is_nightly, process, project, registry::Package};
+use crate::support::{clippy_is_available, is_nightly, process, project, registry::Package};
 use std::path::Path;
 
 fn as_str(bytes: &[u8]) -> &str {
@@ -50,6 +50,52 @@ fn simple() {
         .masquerade_as_nightly_cargo()
         .exec_with_output()
         .expect("cargo to run");
+    assert_eq!(as_str(&rustc_output.stderr), as_str(&cargo_output2.stderr));
+    assert!(cargo_output2.stdout.is_empty());
+}
+
+// same as `simple`, except everything is using the short format
+#[cargo_test]
+fn simple_short() {
+    if !is_nightly() {
+        // --json-rendered is unstable
+        return;
+    }
+    let p = project()
+        .file(
+            "src/lib.rs",
+            "
+                fn a() {}
+                fn b() {}
+            ",
+        )
+        .build();
+
+    let agnostic_path = Path::new("src").join("lib.rs");
+    let agnostic_path_s = agnostic_path.to_str().unwrap();
+
+    let rustc_output = process("rustc")
+        .cwd(p.root())
+        .args(&["--crate-type=lib", agnostic_path_s, "--error-format=short"])
+        .exec_with_output()
+        .expect("rustc to run");
+
+    assert!(rustc_output.stdout.is_empty());
+    assert!(rustc_output.status.success());
+
+    let cargo_output1 = p
+        .cargo("check -Zcache-messages -q --color=never --message-format=short")
+        .masquerade_as_nightly_cargo()
+        .exec_with_output()
+        .expect("cargo to run");
+    assert_eq!(as_str(&rustc_output.stderr), as_str(&cargo_output1.stderr));
+    // assert!(cargo_output1.stdout.is_empty());
+    let cargo_output2 = p
+        .cargo("check -Zcache-messages -q --message-format=short")
+        .masquerade_as_nightly_cargo()
+        .exec_with_output()
+        .expect("cargo to run");
+    println!("{}", String::from_utf8_lossy(&cargo_output2.stdout));
     assert_eq!(as_str(&rustc_output.stderr), as_str(&cargo_output2.stderr));
     assert!(cargo_output2.stdout.is_empty());
 }
@@ -240,14 +286,30 @@ fn rustdoc() {
 }
 
 #[cargo_test]
-fn clippy() {
+fn fix() {
     if !is_nightly() {
         // --json-rendered is unstable
         return;
     }
-    if let Err(e) = process("clippy-driver").arg("-V").exec_with_output() {
-        eprintln!("clippy-driver not available, skipping clippy test");
-        eprintln!("{:?}", e);
+    // Make sure `fix` is not broken by caching.
+    let p = project().file("src/lib.rs", "pub fn try() {}").build();
+
+    p.cargo("fix --edition --allow-no-vcs -Zcache-messages")
+        .masquerade_as_nightly_cargo()
+        .run();
+
+    assert_eq!(p.read_file("src/lib.rs"), "pub fn r#try() {}");
+}
+
+#[cargo_test]
+fn clippy() {
+    if !is_nightly() {
+        // --json-rendered is unstable
+        eprintln!("skipping test: requires nightly");
+        return;
+    }
+
+    if !clippy_is_available() {
         return;
     }
 
@@ -275,22 +337,6 @@ fn clippy() {
         .masquerade_as_nightly_cargo()
         .with_stderr_contains("[..]assert!(true)[..]") // This should not be here.
         .run();
-}
-
-#[cargo_test]
-fn fix() {
-    if !is_nightly() {
-        // --json-rendered is unstable
-        return;
-    }
-    // Make sure `fix` is not broken by caching.
-    let p = project().file("src/lib.rs", "pub fn try() {}").build();
-
-    p.cargo("fix --edition --allow-no-vcs -Zcache-messages")
-        .masquerade_as_nightly_cargo()
-        .run();
-
-    assert_eq!(p.read_file("src/lib.rs"), "pub fn r#try() {}");
 }
 
 #[cargo_test]
@@ -332,17 +378,5 @@ fn very_verbose() {
     p.cargo("check -Zcache-messages -vv")
         .masquerade_as_nightly_cargo()
         .with_stderr_contains("[..]not_used[..]")
-        .run();
-}
-
-#[cargo_test]
-fn short_incompatible() {
-    let p = project().file("src/lib.rs", "").build();
-    p.cargo("check -Zcache-messages --message-format=short")
-        .masquerade_as_nightly_cargo()
-        .with_stderr(
-            "[ERROR] currently `--message-format short` is incompatible with cached output",
-        )
-        .with_status(101)
         .run();
 }

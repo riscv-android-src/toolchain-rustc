@@ -3,11 +3,11 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
-use crate::support::cargo_process;
 use crate::support::paths::CargoPathExt;
 use crate::support::registry::Package;
 use crate::support::{
-    basic_manifest, git, path2url, paths, project, publish::validate_crate_contents, registry,
+    basic_manifest, cargo_process, git, path2url, paths, project, publish::validate_crate_contents,
+    registry, symlink_supported,
 };
 use git2;
 
@@ -367,18 +367,6 @@ fn exclude() {
             "\
 [WARNING] manifest has no description[..]
 See https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info.
-[WARNING] [..] file `dir_root_1/some_dir/file` is now excluded.
-See [..]
-[WARNING] [..] file `dir_root_2/some_dir/file` is now excluded.
-See [..]
-[WARNING] [..] file `dir_root_3/some_dir/file` is now excluded.
-See [..]
-[WARNING] [..] file `some_dir/dir_deep_1/some_dir/file` is now excluded.
-See [..]
-[WARNING] [..] file `some_dir/dir_deep_3/some_dir/file` is now excluded.
-See [..]
-[WARNING] [..] file `some_dir/file_deep_1` is now excluded.
-See [..]
 [PACKAGING] foo v0.0.1 ([..])
 [ARCHIVING] Cargo.toml
 [ARCHIVING] file_root_3
@@ -513,6 +501,56 @@ fn package_git_submodule() {
     project
         .cargo("package --no-verify -v")
         .with_stderr_contains("[ARCHIVING] bar/Makefile")
+        .run();
+}
+
+#[cargo_test]
+/// Tests if a symlink to a git submodule is properly handled.
+///
+/// This test requires you to be able to make symlinks.
+/// For windows, this may require you to enable developer mode.
+fn package_symlink_to_submodule() {
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir as symlink;
+
+    if !symlink_supported() {
+        return;
+    }
+
+    let project = git::new("foo", |project| {
+        project.file("src/lib.rs", "pub fn foo() {}")
+    })
+    .unwrap();
+
+    let library = git::new("submodule", |library| {
+        library.no_manifest().file("Makefile", "all:")
+    })
+    .unwrap();
+
+    let repository = git2::Repository::open(&project.root()).unwrap();
+    let url = path2url(library.root()).to_string();
+    git::add_submodule(&repository, &url, Path::new("submodule"));
+    t!(symlink(
+        &project.root().join("submodule"),
+        &project.root().join("submodule-link")
+    ));
+    git::add(&repository);
+    git::commit(&repository);
+
+    let repository = git2::Repository::open(&project.root().join("submodule")).unwrap();
+    repository
+        .reset(
+            &repository.revparse_single("HEAD").unwrap(),
+            git2::ResetType::Hard,
+            None,
+        )
+        .unwrap();
+
+    project
+        .cargo("package --no-verify -v")
+        .with_stderr_contains("[ARCHIVING] submodule/Makefile")
         .run();
 }
 
@@ -672,9 +710,19 @@ See [..]
 }
 
 #[cargo_test]
-#[cfg(unix)]
+/// Tests if a broken symlink is properly handled when packaging.
+///
+/// This test requires you to be able to make symlinks.
+/// For windows, this may require you to enable developer mode.
 fn broken_symlink() {
-    use std::os::unix::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir as symlink;
+
+    if !symlink_supported() {
+        return;
+    }
 
     let p = project()
         .file(
@@ -693,7 +741,7 @@ fn broken_symlink() {
         )
         .file("src/main.rs", r#"fn main() { println!("hello"); }"#)
         .build();
-    t!(fs::symlink("nowhere", &p.root().join("src/foo.rs")));
+    t!(symlink("nowhere", &p.root().join("src/foo.rs")));
 
     p.cargo("package -v")
         .with_status(101)
@@ -708,6 +756,26 @@ Caused by:
   [..]
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+/// Tests if a symlink to a directory is proberly included.
+///
+/// This test requires you to be able to make symlinks.
+/// For windows, this may require you to enable developer mode.
+fn package_symlink_to_dir() {
+    if !symlink_supported() {
+        return;
+    }
+
+    project()
+        .file("src/main.rs", r#"fn main() { println!("hello"); }"#)
+        .file("bla/Makefile", "all:")
+        .symlink_dir("bla", "foo")
+        .build()
+        .cargo("package -v")
+        .with_stderr_contains("[ARCHIVING] foo/Makefile")
         .run();
 }
 
@@ -758,7 +826,7 @@ committed into git:
 
 Cargo.toml
 
-to proceed despite this, pass the `--allow-dirty` flag
+to proceed despite this and include the uncommited changes, pass the `--allow-dirty` flag
 ",
         )
         .run();
@@ -1172,13 +1240,7 @@ fn include_cargo_toml_implicit() {
         .run();
 }
 
-fn include_exclude_test(
-    include: &str,
-    exclude: &str,
-    files: &[&str],
-    expected: &str,
-    has_warnings: bool,
-) {
+fn include_exclude_test(include: &str, exclude: &str, files: &[&str], expected: &str) {
     let mut pb = project().file(
         "Cargo.toml",
         &format!(
@@ -1203,13 +1265,10 @@ fn include_exclude_test(
     }
     let p = pb.build();
 
-    let mut e = p.cargo("package --list");
-    if has_warnings {
-        e.with_stderr_contains("[..]");
-    } else {
-        e.with_stderr("");
-    }
-    e.with_stdout(expected).run();
+    p.cargo("package --list")
+        .with_stderr("")
+        .with_stdout(expected)
+        .run();
     p.root().rm_rf();
 }
 
@@ -1230,7 +1289,6 @@ fn package_include_ignore_only() {
          src/abc2.rs\n\
          src/lib.rs\n\
          ",
-        false,
     )
 }
 
@@ -1246,7 +1304,6 @@ fn gitignore_patterns() {
          foo\n\
          x/foo/y\n\
          ",
-        true,
     );
 
     include_exclude_test(
@@ -1256,7 +1313,6 @@ fn gitignore_patterns() {
         "Cargo.toml\n\
          foo\n\
          ",
-        false,
     );
 
     include_exclude_test(
@@ -1269,7 +1325,6 @@ fn gitignore_patterns() {
          foo\n\
          src/lib.rs\n\
          ",
-        true,
     );
 
     include_exclude_test(
@@ -1292,7 +1347,6 @@ fn gitignore_patterns() {
          other\n\
          src/lib.rs\n\
          ",
-        false,
     );
 
     include_exclude_test(
@@ -1302,7 +1356,6 @@ fn gitignore_patterns() {
         "Cargo.toml\n\
          a/foo/bar\n\
          ",
-        false,
     );
 
     include_exclude_test(
@@ -1312,7 +1365,6 @@ fn gitignore_patterns() {
         "Cargo.toml\n\
          foo/x/y/z\n\
          ",
-        false,
     );
 
     include_exclude_test(
@@ -1324,7 +1376,6 @@ fn gitignore_patterns() {
          a/x/b\n\
          a/x/y/b\n\
          ",
-        false,
     );
 }
 
@@ -1338,7 +1389,6 @@ fn gitignore_negate() {
          Cargo.toml\n\
          src/lib.rs\n\
          ",
-        false,
     );
 
     // NOTE: This is unusual compared to git. Git treats `src/` as a
@@ -1352,7 +1402,6 @@ fn gitignore_negate() {
         "Cargo.toml\n\
          src/lib.rs\n\
          ",
-        false,
     );
 
     include_exclude_test(
@@ -1362,7 +1411,6 @@ fn gitignore_negate() {
         "Cargo.toml\n\
          src/lib.rs\n\
          ",
-        false,
     );
 
     include_exclude_test(
@@ -1372,6 +1420,5 @@ fn gitignore_negate() {
         "Cargo.toml\n\
          foo.rs\n\
          ",
-        false,
     );
 }

@@ -10,7 +10,7 @@ use syntax::ast::{
 use syntax::ptr;
 use syntax::source_map::{BytePos, Span, NO_EXPANSION};
 use syntax::symbol::{sym, Symbol};
-use syntax_pos::Mark;
+use syntax_pos::ExpnId;
 use unicode_width::UnicodeWidthStr;
 
 use crate::comment::{filter_normal_code, CharClasses, FullCodeCharKind, LineClasses};
@@ -284,10 +284,9 @@ pub(crate) fn semicolon_for_expr(context: &RewriteContext<'_>, expr: &ast::Expr)
 pub(crate) fn semicolon_for_stmt(context: &RewriteContext<'_>, stmt: &ast::Stmt) -> bool {
     match stmt.node {
         ast::StmtKind::Semi(ref expr) => match expr.node {
-            ast::ExprKind::While(..)
-            | ast::ExprKind::WhileLet(..)
-            | ast::ExprKind::Loop(..)
-            | ast::ExprKind::ForLoop(..) => false,
+            ast::ExprKind::While(..) | ast::ExprKind::Loop(..) | ast::ExprKind::ForLoop(..) => {
+                false
+            }
             ast::ExprKind::Break(..) | ast::ExprKind::Continue(..) | ast::ExprKind::Ret(..) => {
                 context.config.trailing_semicolon()
             }
@@ -306,7 +305,22 @@ pub(crate) fn stmt_expr(stmt: &ast::Stmt) -> Option<&ast::Expr> {
     }
 }
 
-#[inline]
+/// Returns the number of LF and CRLF respectively.
+pub(crate) fn count_lf_crlf(input: &str) -> (usize, usize) {
+    let mut lf = 0;
+    let mut crlf = 0;
+    let mut is_crlf = false;
+    for c in input.as_bytes() {
+        match c {
+            b'\r' => is_crlf = true,
+            b'\n' if is_crlf => crlf += 1,
+            b'\n' => lf += 1,
+            _ => is_crlf = false,
+        }
+    }
+    (lf, crlf)
+}
+
 pub(crate) fn count_newlines(input: &str) -> usize {
     // Using bytes to omit UTF-8 decoding
     bytecount::count(input.as_bytes(), b'\n')
@@ -438,9 +452,7 @@ pub(crate) fn is_block_expr(context: &RewriteContext<'_>, expr: &ast::Expr, repr
         | ast::ExprKind::Array(..)
         | ast::ExprKind::Struct(..)
         | ast::ExprKind::While(..)
-        | ast::ExprKind::WhileLet(..)
         | ast::ExprKind::If(..)
-        | ast::ExprKind::IfLet(..)
         | ast::ExprKind::Block(..)
         | ast::ExprKind::Loop(..)
         | ast::ExprKind::ForLoop(..)
@@ -492,7 +504,7 @@ pub(crate) fn remove_trailing_white_spaces(text: &str) -> String {
 /// Indent each line according to the specified `indent`.
 /// e.g.
 ///
-/// ```rust,ignore
+/// ```rust,compile_fail
 /// foo!{
 /// x,
 /// y,
@@ -506,7 +518,7 @@ pub(crate) fn remove_trailing_white_spaces(text: &str) -> String {
 ///
 /// will become
 ///
-/// ```rust,ignore
+/// ```rust,compile_fail
 /// foo!{
 ///     x,
 ///     y,
@@ -615,32 +627,12 @@ pub(crate) trait NodeIdExt {
 
 impl NodeIdExt for NodeId {
     fn root() -> NodeId {
-        NodeId::placeholder_from_mark(Mark::root())
+        NodeId::placeholder_from_expn_id(ExpnId::root())
     }
 }
 
 pub(crate) fn unicode_str_width(s: &str) -> usize {
     s.width()
-}
-
-pub(crate) fn get_skip_macro_names(attrs: &[ast::Attribute]) -> Vec<String> {
-    let mut skip_macro_names = vec![];
-    for attr in attrs {
-        // syntax::ast::Path is implemented partialEq
-        // but it is designed for segments.len() == 1
-        if format!("{}", attr.path) != "rustfmt::skip::macros" {
-            continue;
-        }
-
-        if let Some(list) = attr.meta_item_list() {
-            for nested_meta_item in list {
-                if let Some(name) = nested_meta_item.ident() {
-                    skip_macro_names.push(name.to_string());
-                }
-            }
-        }
-    }
-    skip_macro_names
 }
 
 #[cfg(test)]

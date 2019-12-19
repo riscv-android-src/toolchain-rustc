@@ -1,3 +1,5 @@
+#![warn(rust_2018_idioms)]
+
 extern crate rls_span as span;
 #[macro_use]
 extern crate log;
@@ -48,6 +50,7 @@ pub enum VfsSpan {
     Utf16CodeUnit(SpanData),
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl VfsSpan {
     pub fn from_usv(span: span::Span<span::ZeroIndexed>, len: Option<u64>) -> VfsSpan {
         VfsSpan::UnicodeScalarValue(SpanData { span, len })
@@ -150,7 +153,7 @@ impl Into<String> for Error {
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Error::OutOfSync(ref path_buf) => {
                 write!(f, "file {} out of sync with filesystem", path_buf.display())
@@ -165,6 +168,12 @@ impl fmt::Display for Error {
             | Error::Io(..)
             | Error::BadFileKind => f.write_str(::std::error::Error::description(self)),
         }
+    }
+}
+
+impl<U> Default for Vfs<U> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -556,7 +565,7 @@ impl<T: FileLoader, U> VfsInternal<T, U> {
         let mut files = self.files.lock().unwrap();
         match files.get_mut(path) {
             Some(ref mut file) => {
-                if let None = file.user_data {
+                if file.user_data.is_none() {
                     let text = match file.kind {
                         FileKind::Text(ref f) => Some(&f.text as &str),
                         FileKind::Binary(_) => None,
@@ -585,7 +594,7 @@ fn coalesce_changes<'a>(changes: &'a [Change]) -> HashMap<&'a Path, Vec<&'a Chan
     // Note that for any given file, we preserve the order of the changes.
     let mut result = HashMap::new();
     for c in changes {
-        result.entry(&*c.file()).or_insert(vec![]).push(c);
+        result.entry(&*c.file()).or_insert_with(Vec::new).push(c);
     }
     result
 }
@@ -733,7 +742,7 @@ impl TextFile {
                     new_text.push_str(&self.text[range.1 as usize..]);
                     new_text
                 }
-                Change::AddFile { file: _, ref text } => text.to_owned(),
+                Change::AddFile { ref text, .. } => text.to_owned(),
             };
 
             self.text = new_text;
@@ -821,7 +830,7 @@ fn byte_in_str(s: &str, c: span::Column<span::ZeroIndexed>) -> Result<usize, Err
         }
     }
 
-    return Err(Error::InternalError("Out of bounds access in `byte_in_str`"));
+    Err(Error::InternalError("Out of bounds access in `byte_in_str`"))
 }
 
 /// Return a UTF-8 byte offset in `s` for a given UTF-16 code unit offset.
@@ -840,7 +849,7 @@ fn byte_in_str_utf16(s: &str, c: span::Column<span::ZeroIndexed>) -> Result<usiz
         utf16_offset += chr.len_utf16();
     }
 
-    return Err(Error::InternalError("UTF-16 code unit offset is not at `str` char boundary"));
+    Err(Error::InternalError("UTF-16 code unit offset is not at `str` char boundary"))
 }
 
 trait FileLoader {
@@ -862,7 +871,7 @@ impl FileLoader for RealFileLoader {
             }
         };
         let mut buf = vec![];
-        if let Err(_) = file.read_to_end(&mut buf) {
+        if file.read_to_end(&mut buf).is_err() {
             return Err(Error::Io(
                 Some(file_name.to_owned()),
                 Some(format!("Could not read file: {}", file_name.display())),
@@ -912,8 +921,7 @@ mod tests {
 
         assert_eq!(
             '😢'.len_utf8(),
-            byte_in_str_utf16("😢a", Column::new_zero_indexed('😢'.len_utf16() as u32))
-                .unwrap()
+            byte_in_str_utf16("😢a", Column::new_zero_indexed('😢'.len_utf16() as u32)).unwrap()
         );
 
         // 😢 is represented by 2 u16s - we can't index in the middle of a character

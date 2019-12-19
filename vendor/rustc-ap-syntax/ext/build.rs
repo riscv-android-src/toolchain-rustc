@@ -815,7 +815,7 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
 
 
     fn pat(&self, span: Span, pat: PatKind) -> P<ast::Pat> {
-        P(ast::Pat { id: ast::DUMMY_NODE_ID, node: pat, span: span })
+        P(ast::Pat { id: ast::DUMMY_NODE_ID, node: pat, span })
     }
     fn pat_wild(&self, span: Span) -> P<ast::Pat> {
         self.pat(span, PatKind::Wild)
@@ -840,14 +840,14 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     }
     fn pat_tuple_struct(&self, span: Span, path: ast::Path,
                         subpats: Vec<P<ast::Pat>>) -> P<ast::Pat> {
-        self.pat(span, PatKind::TupleStruct(path, subpats, None))
+        self.pat(span, PatKind::TupleStruct(path, subpats))
     }
     fn pat_struct(&self, span: Span, path: ast::Path,
                   field_pats: Vec<Spanned<ast::FieldPat>>) -> P<ast::Pat> {
         self.pat(span, PatKind::Struct(path, field_pats, false))
     }
     fn pat_tuple(&self, span: Span, pats: Vec<P<ast::Pat>>) -> P<ast::Pat> {
-        self.pat(span, PatKind::Tuple(pats, None))
+        self.pat(span, PatKind::Tuple(pats))
     }
 
     fn pat_some(&self, span: Span, pat: P<ast::Pat>) -> P<ast::Pat> {
@@ -963,9 +963,11 @@ impl<'a> AstBuilder for ExtCtxt<'a> {
     fn arg(&self, span: Span, ident: ast::Ident, ty: P<ast::Ty>) -> ast::Arg {
         let arg_pat = self.pat_ident(span, ident);
         ast::Arg {
-            ty,
+            attrs: ThinVec::default(),
+            id: ast::DUMMY_NODE_ID,
             pat: arg_pat,
-            id: ast::DUMMY_NODE_ID
+            span,
+            ty,
         }
     }
 

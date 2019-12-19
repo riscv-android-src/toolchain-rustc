@@ -63,10 +63,15 @@ loop {
     moved = ShowOnDrop("Drops when moved");
     // drops now, but is then uninitialized
     moved;
+
+    // Uninitialized does not drop.
     let uninitialized: ShowOnDrop;
-    // Only first element drops
-    let mut partially_initialized: (ShowOnDrop, ShowOnDrop);
-    partially_initialized.0 = ShowOnDrop("Partial tuple first");
+
+    // After a partial move, only the remaining fields are dropped.
+    let mut partial_move = (ShowOnDrop("first"), ShowOnDrop("forgotten"));
+    // Perform a partial move, leaving only `partial_move.0` initialized.
+    core::mem::forget(partial_move.1);
+    // When partial_move's scope ends, only the first field is dropped.
 }
 ```
 
@@ -76,17 +81,17 @@ Not running destructors in Rust is safe even if it has a type that isn't
 `'static`. [`std::mem::ManuallyDrop`] provides a wrapper to prevent a
 variable or field from being dropped automatically.
 
-[initialized]: glossary.html#initialized
-[variable]: variables.html
-[temporary]: expressions.html#temporary-lifetimes
-[Assignment]: expressions/operator-expr.html#assignment-expressions
+[initialized]: glossary.md#initialized
+[variable]: variables.md
+[temporary]: expressions.md#temporary-lifetimes
+[Assignment]: expressions/operator-expr.md#assignment-expressions
 [`std::ops::Drop::drop`]: ../std/ops/trait.Drop.html
 [RFC 1857]: https://github.com/rust-lang/rfcs/blob/master/text/1857-stabilize-drop-order.md
-[struct]: types/struct.html
-[tuple]: types/tuple.html
-[enum variant]: types/enum.html
-[array]: types/array.html
-[closure]: types/closure.html
-[Trait objects]: types/trait-object.html
+[struct]: types/struct.md
+[tuple]: types/tuple.md
+[enum variant]: types/enum.md
+[array]: types/array.md
+[closure]: types/closure.md
+[Trait objects]: types/trait-object.md
 [`std::ptr::drop_in_place`]: ../std/ptr/fn.drop_in_place.html
 [`std::mem::ManuallyDrop`]: ../std/mem/struct.ManuallyDrop.html

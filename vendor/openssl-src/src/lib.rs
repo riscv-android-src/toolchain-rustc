@@ -1,7 +1,8 @@
 extern crate cc;
 
 use std::env;
-use std::fs;
+use std::io::{Read, Write};
+use std::fs::{self, File};
 use std::path::{PathBuf, Path};
 use std::process::Command;
 
@@ -51,6 +52,14 @@ impl Build {
         self
     }
 
+    fn cmd_make(&self) -> Command {
+        match &self.host.as_ref().expect("HOST dir not set")[..] {
+            "x86_64-unknown-dragonfly" => Command::new("gmake"),
+            "x86_64-unknown-freebsd" => Command::new("gmake"),
+            _ => Command::new("make"),
+        }
+    }
+
     pub fn build(&mut self) -> Artifacts {
         let target = &self.target.as_ref().expect("TARGET dir not set")[..];
         let host = &self.host.as_ref().expect("HOST dir not set")[..];
@@ -68,10 +77,11 @@ impl Build {
         let inner_dir = build_dir.join("src");
         fs::create_dir_all(&inner_dir).unwrap();
         cp_r(&source_dir(), &inner_dir);
+        apply_patches(target, &inner_dir);
 
         let mut configure = Command::new("perl");
         configure.arg("./Configure");
-        if target.contains("pc-windows-gnu") {
+        if host.contains("pc-windows-gnu") {
             configure.arg(&format!("--prefix={}", sanitize_sh(&install_dir)));
         } else {
             configure.arg(&format!("--prefix={}", install_dir.display()));
@@ -138,6 +148,8 @@ impl Build {
             "armv7-linux-androideabi" => "linux-armv4",
             "arm-unknown-linux-gnueabi" => "linux-armv4",
             "arm-unknown-linux-gnueabihf" => "linux-armv4",
+            "arm-unknown-linux-musleabi" => "linux-armv4",
+            "arm-unknown-linux-musleabihf" => "linux-armv4",
             "armv7-unknown-linux-gnueabihf" => "linux-armv4",
             "armv7-unknown-linux-musleabihf" => "linux-armv4",
             "asmjs-unknown-emscripten" => "gcc",
@@ -161,6 +173,7 @@ impl Build {
             "x86_64-pc-windows-gnu" => "mingw64",
             "x86_64-pc-windows-msvc" => "VC-WIN64A",
             "x86_64-unknown-freebsd" => "BSD-x86_64",
+            "x86_64-unknown-dragonfly" => "BSD-x86_64",
             "x86_64-unknown-linux-gnu" => "linux-x86_64",
             "x86_64-unknown-linux-musl" => "linux-x86_64",
             "x86_64-unknown-netbsd" => "BSD-x86_64",
@@ -220,15 +233,15 @@ impl Build {
                 // splitting a large file, so presumably OpenSSL has a large
                 // file soemwhere in it? Who knows!
                 configure.arg("-Wa,-mbig-obj");
+            }
 
+            if target.contains("pc-windows-gnu") && path.ends_with("-gcc") {
                 // As of OpenSSL 1.1.1 the build system is now trying to execute
                 // `windres` which doesn't exist when we're cross compiling from
                 // Linux, so we may need to instruct it manually to know what
                 // executable to run.
-                if path.ends_with("-gcc") {
-                    let windres = format!("{}-windres", &path[..path.len() - 4]);
-                    configure.env("WINDRES", &windres);
-                }
+                let windres = format!("{}-windres", &path[..path.len() - 4]);
+                configure.env("WINDRES", &windres);
             }
 
             if target.contains("emscripten") {
@@ -264,11 +277,11 @@ impl Build {
             install.arg("install_sw").current_dir(&inner_dir);
             self.run_command(install, "installing OpenSSL");
         } else {
-            let mut depend = Command::new("make");
+            let mut depend = self.cmd_make();
             depend.arg("depend").current_dir(&inner_dir);
             self.run_command(depend, "building OpenSSL dependencies");
 
-            let mut build = Command::new("make");
+            let mut build = self.cmd_make();
             build.current_dir(&inner_dir);
             if !cfg!(windows) {
                 if let Some(s) = env::var_os("CARGO_MAKEFLAGS") {
@@ -277,7 +290,7 @@ impl Build {
             }
             self.run_command(build, "building OpenSSL");
 
-            let mut install = Command::new("make");
+            let mut install = self.cmd_make();
             install.arg("install_sw").current_dir(&inner_dir);
             self.run_command(install, "installing OpenSSL");
         }
@@ -322,6 +335,13 @@ fn cp_r(src: &Path, dst: &Path) {
         let f = f.unwrap();
         let path = f.path();
         let name = path.file_name().unwrap();
+
+        // Skip git metadata as it's been known to cause issues (#26) and
+        // otherwise shouldn't be required
+        if name.to_str() == Some(".git") {
+            continue
+        }
+
         let dst = dst.join(name);
         if f.file_type().unwrap().is_dir() {
             fs::create_dir_all(&dst).unwrap();
@@ -331,6 +351,22 @@ fn cp_r(src: &Path, dst: &Path) {
             fs::copy(&path, &dst).unwrap();
         }
     }
+}
+
+fn apply_patches(target: &str, inner: &Path) {
+    if !target.contains("musl") {
+        return;
+    }
+
+    // Undo part of https://github.com/openssl/openssl/commit/c352bd07ed2ff872876534c950a6968d75ef121e on MUSL
+    // since it doesn't have asm/unistd.h
+    let mut buf = String::new();
+    let path = inner.join("crypto/rand/rand_unix.c");
+    File::open(&path).unwrap().read_to_string(&mut buf).unwrap();
+
+    let buf = buf.replace("asm/unistd.h", "sys/syscall.h").replace("__NR_getrandom", "SYS_getrandom");
+
+    File::create(&path).unwrap().write_all(buf.as_bytes()).unwrap();
 }
 
 fn sanitize_sh(path: &Path) -> String {

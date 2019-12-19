@@ -17,7 +17,7 @@ use crate::comment::{CharClasses, FullCodeCharKind};
 use crate::config::{Config, FileName, Verbosity};
 use crate::ignore_path::IgnorePathSet;
 use crate::issues::BadIssueSeeker;
-use crate::utils::{count_newlines, get_skip_macro_names};
+use crate::utils::count_newlines;
 use crate::visitor::{FmtVisitor, SnippetProvider};
 use crate::{modules, source_file, ErrorKind, FormatReport, Input, Session};
 
@@ -158,10 +158,7 @@ impl<'a, T: FormatHandler + 'a> FormatContext<'a, T> {
             &snippet_provider,
             self.report.clone(),
         );
-        visitor
-            .skip_macro_names
-            .borrow_mut()
-            .append(&mut get_skip_macro_names(&self.krate.attrs));
+        visitor.skip_context.update_with_attrs(&self.krate.attrs);
 
         // Format inner attributes if available.
         if !self.krate.attrs.is_empty() && is_root {
@@ -177,7 +174,12 @@ impl<'a, T: FormatHandler + 'a> FormatContext<'a, T> {
             visitor.format_separate_mod(module, &*source_file);
         };
 
-        debug_assert_eq!(visitor.line_number, count_newlines(&visitor.buffer));
+        debug_assert_eq!(
+            visitor.line_number,
+            count_newlines(&visitor.buffer),
+            "failed in format_file visitor.buffer:\n {:?}",
+            &visitor.buffer
+        );
 
         // For some reason, the source_map does not include terminating
         // newlines so we must add one on for each file. This is sad.
@@ -233,8 +235,8 @@ impl<'b, T: Write + 'b> FormatHandler for Session<'b, T> {
         report: &mut FormatReport,
     ) -> Result<(), ErrorKind> {
         if let Some(ref mut out) = self.out {
-            match source_file::write_file(Some(source_map), &path, &result, out, &self.config) {
-                Ok(has_diff) if has_diff => report.add_diff(),
+            match source_file::write_file(Some(source_map), &path, &result, out, &*self.emitter) {
+                Ok(ref result) if result.has_diff => report.add_diff(),
                 Err(e) => {
                     // Create a new error with path_str to help users see which files failed
                     let err_msg = format!("{}: {}", path, e);
@@ -308,7 +310,8 @@ impl FormattingError {
             | ErrorKind::DeprecatedAttr
             | ErrorKind::BadIssue(_)
             | ErrorKind::BadAttr
-            | ErrorKind::LostComment => {
+            | ErrorKind::LostComment
+            | ErrorKind::LicenseCheck => {
                 let trailing_ws_start = self
                     .line_buffer
                     .rfind(|c: char| !c.is_whitespace())

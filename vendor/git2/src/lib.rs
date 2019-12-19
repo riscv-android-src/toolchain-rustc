@@ -63,7 +63,7 @@
 //! source `Repository`, to ensure that they do not outlive the repository
 //! itself.
 
-#![doc(html_root_url = "https://docs.rs/git2/0.6")]
+#![doc(html_root_url = "https://docs.rs/git2/0.9")]
 #![allow(trivial_numeric_casts, trivial_casts)]
 #![deny(missing_docs)]
 #![warn(rust_2018_idioms)]
@@ -75,12 +75,13 @@ use libgit2_sys as raw;
 use std::ffi::{CStr, CString};
 use std::fmt;
 use std::str;
-use std::sync::{Once, ONCE_INIT};
+use std::sync::Once;
 
 pub use crate::blame::{Blame, BlameHunk, BlameIter, BlameOptions};
 pub use crate::blob::{Blob, BlobWriter};
 pub use crate::branch::{Branch, Branches};
 pub use crate::buf::Buf;
+pub use crate::cherrypick::CherrypickOptions;
 pub use crate::commit::{Commit, Parents};
 pub use crate::config::{Config, ConfigEntries, ConfigEntry};
 pub use crate::cred::{Cred, CredentialHelper};
@@ -616,6 +617,7 @@ mod blame;
 mod blob;
 mod branch;
 mod buf;
+mod cherrypick;
 mod commit;
 mod config;
 mod cred;
@@ -652,7 +654,7 @@ mod tree;
 mod treebuilder;
 
 fn init() {
-    static INIT: Once = ONCE_INIT;
+    static INIT: Once = Once::new();
 
     INIT.call_once(|| {
         openssl_env_init();
@@ -1304,6 +1306,26 @@ impl StashFlags {
 impl Default for StashFlags {
     fn default() -> Self {
         StashFlags::DEFAULT
+    }
+}
+
+bitflags! {
+    #[allow(missing_docs)]
+    pub struct AttrCheckFlags: u32 {
+        /// Check the working directory, then the index.
+        const FILE_THEN_INDEX = raw::GIT_ATTR_CHECK_FILE_THEN_INDEX as u32;
+        /// Check the index, then the working directory.
+        const INDEX_THEN_FILE = raw::GIT_ATTR_CHECK_INDEX_THEN_FILE as u32;
+        /// Check the index only.
+        const INDEX_ONLY = raw::GIT_ATTR_CHECK_INDEX_ONLY as u32;
+        /// Do not use the system gitattributes file.
+        const NO_SYSTEM = raw::GIT_ATTR_CHECK_NO_SYSTEM as u32;
+    }
+}
+
+impl Default for AttrCheckFlags {
+    fn default() -> Self {
+        AttrCheckFlags::FILE_THEN_INDEX
     }
 }
 

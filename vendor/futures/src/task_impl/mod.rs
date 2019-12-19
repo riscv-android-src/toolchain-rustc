@@ -24,13 +24,16 @@ pub struct BorrowedTask<'a> {
 }
 
 fn fresh_task_id() -> usize {
-    use core::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    #[allow(deprecated)]
+    use core::sync::atomic::ATOMIC_USIZE_INIT;
 
     // TODO: this assert is a real bummer, need to figure out how to reuse
     //       old IDs that are no longer in use.
     //
     // Note, though, that it is intended that these ids go away entirely
     // eventually, see the comment on `is_current` below.
+    #[allow(deprecated)]
     static NEXT_ID: AtomicUsize = ATOMIC_USIZE_INIT;
     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
     assert!(id < usize::max_value() / 2,
@@ -54,6 +57,31 @@ fn with<F: FnOnce(&BorrowedTask) -> R, R>(f: F) -> R {
 /// the future as notifications arrive, until the future terminates.
 ///
 /// This is obtained by the `task::current` function.
+///
+/// # FAQ
+///
+/// ### Why does `Task` not implement `Eq` and `Hash`?
+///
+/// A valid use case for `Task` to implement these two traits has not been
+/// encountered.
+///
+/// Usually, this question is asked by someone who wants to store a `Task`
+/// instance in a `HashSet`. This seems like an obvious way to implement a
+/// future aware, multi-handle structure; e.g. a multi-producer channel.
+///
+/// In this case, the idea is that whenever a `start_send` is called on one of
+/// the channel's send handles, if the channel is at capacity, the current task
+/// is stored in a set. Then, when capacity is available, a task is removed from
+/// the set and notified.
+///
+/// The problem with this strategy is that multiple `Sender` handles can be used
+/// on the same task. In this case, when the second handle is used and the task
+/// is stored in a set, there already is an entry. Then, when the first
+/// handle is dropped, this entry is cleared, resulting in a dead lock.
+///
+/// See [here](https://github.com/rust-lang-nursery/futures-rs/issues/670) for
+/// more discussion.
+///
 #[derive(Clone)]
 pub struct Task {
     id: usize,
@@ -250,6 +278,19 @@ impl<T: ?Sized> Spawn<T> {
         self.obj
     }
 
+    /// Calls the provided closure, scheduling notifications to be sent to the
+    /// `notify` argument.
+    pub fn poll_fn_notify<N, F, R>(&mut self,
+                             notify: &N,
+                             id: usize,
+                             f: F) -> R
+        where F: FnOnce(&mut T) -> R,
+              N: Clone + Into<NotifyHandle>,
+    {
+        let mk = || notify.clone().into();
+        self.enter(BorrowedUnpark::new(&mk, id), f)
+    }
+
     /// Polls the internal future, scheduling notifications to be sent to the
     /// `notify` argument.
     ///
@@ -285,8 +326,7 @@ impl<T: ?Sized> Spawn<T> {
         where N: Clone + Into<NotifyHandle>,
               T: Future,
     {
-        let mk = || notify.clone().into();
-        self.enter(BorrowedUnpark::new(&mk, id), |f| f.poll())
+        self.poll_fn_notify(notify, id, |f| f.poll())
     }
 
     /// Like `poll_future_notify`, except polls the underlying stream.
@@ -297,8 +337,7 @@ impl<T: ?Sized> Spawn<T> {
         where N: Clone + Into<NotifyHandle>,
               T: Stream,
     {
-        let mk = || notify.clone().into();
-        self.enter(BorrowedUnpark::new(&mk, id), |s| s.poll())
+        self.poll_fn_notify(notify, id, |s| s.poll())
     }
 
     /// Invokes the underlying `start_send` method with this task in place.
@@ -314,8 +353,7 @@ impl<T: ?Sized> Spawn<T> {
         where N: Clone + Into<NotifyHandle>,
               T: Sink,
     {
-        let mk = || notify.clone().into();
-        self.enter(BorrowedUnpark::new(&mk, id), |s| s.start_send(value))
+        self.poll_fn_notify(notify, id, |s| s.start_send(value))
     }
 
     /// Invokes the underlying `poll_complete` method with this task in place.
@@ -330,8 +368,7 @@ impl<T: ?Sized> Spawn<T> {
         where N: Clone + Into<NotifyHandle>,
               T: Sink,
     {
-        let mk = || notify.clone().into();
-        self.enter(BorrowedUnpark::new(&mk, id), |s| s.poll_complete())
+        self.poll_fn_notify(notify, id, |s| s.poll_complete())
     }
 
     /// Invokes the underlying `close` method with this task in place.
@@ -346,8 +383,7 @@ impl<T: ?Sized> Spawn<T> {
         where N: Clone + Into<NotifyHandle>,
               T: Sink,
     {
-        let mk = || notify.clone().into();
-        self.enter(BorrowedUnpark::new(&mk, id), |s| s.close())
+        self.poll_fn_notify(notify, id, |s| s.close())
     }
 
     fn enter<F, R>(&mut self, unpark: BorrowedUnpark, f: F) -> R
@@ -686,4 +722,12 @@ impl<T: Notify> From<&'static T> for NotifyHandle {
     fn from(src : &'static T) -> NotifyHandle {
         unsafe { NotifyHandle::new(src as *const _ as *mut StaticRef<T>) }
     }
+}
+
+#[cfg(feature = "nightly")]
+mod nightly {
+    use super::NotifyHandle;
+    use core::marker::Unpin;
+
+    impl Unpin for NotifyHandle {}
 }

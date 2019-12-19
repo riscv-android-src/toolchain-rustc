@@ -2,6 +2,19 @@ trigger:
   - master
 
 jobs:
+  - job: rustfmt
+    pool:
+      vmImage: ubuntu-16.04
+    steps:
+      - template: ci/azure-install-rust.yml
+      - bash: |
+          set -ex
+          rustup component add rustfmt
+          cargo fmt --all -- --check
+        displayName: "rustfmt check"
+    variables:
+      TOOLCHAIN: stable
+
   - job: MSRV
     pool:
       vmImage: ubuntu-16.04
@@ -10,7 +23,7 @@ jobs:
       - script: cargo build
         displayName: "Build crate"
     variables:
-      TOOLCHAIN: 1.32.0
+      TOOLCHAIN: 1.33.0
 
   - job: Linux
     pool:
@@ -31,10 +44,8 @@ jobs:
       vmImage: macos-10.13
     steps:
       - template: ci/azure-test-all.yml
-    strategy:
-      matrix:
-        x86_64:
-          TARGET: x86_64-apple-darwin
+    variables:
+      TOOLCHAIN: stable
 
   - job: Windows
     pool:
@@ -44,6 +55,6 @@ jobs:
     strategy:
       matrix:
         x86_64-msvc:
-          TARGET: x86_64-pc-windows-msvc
+          TOOLCHAIN: stable-x86_64-pc-windows-msvc
         i686-msvc:
-          TARGET: i686-pc-windows-msvc
+          TOOLCHAIN: stable-i686-pc-windows-msvc

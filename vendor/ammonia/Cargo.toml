@@ -12,7 +12,7 @@
 
 [package]
 name = "ammonia"
-version = "2.1.1"
+version = "2.1.2"
 authors = ["Michael Howell <michael@notriddle.com>"]
 description = "HTML Sanitization"
 documentation = "https://docs.rs/ammonia/"
@@ -38,5 +38,8 @@ version = "0.4"
 
 [dependencies.url]
 version = "1"
+[dev-dependencies.env_logger]
+version = "0.6.1"
+
 [dev-dependencies.version-sync]
 version = "0.7"

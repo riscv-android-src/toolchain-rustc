@@ -78,7 +78,7 @@ use crate::ast::{Ident, Name};
 use crate::ext::tt::quoted::{self, TokenTree};
 use crate::parse::{Directory, ParseSess};
 use crate::parse::parser::{Parser, PathStyle};
-use crate::parse::token::{self, DocComment, Nonterminal, Token, TokenKind};
+use crate::parse::token::{self, DocComment, Nonterminal, Token};
 use crate::print::pprust;
 use crate::symbol::{kw, sym, Symbol};
 use crate::tokenstream::{DelimSpan, TokenStream};
@@ -92,7 +92,6 @@ use rustc_data_structures::sync::Lrc;
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::mem;
 use std::ops::{Deref, DerefMut};
-use std::rc::Rc;
 
 // To avoid costly uniqueness checks, we require that `MatchSeq` always has a nonempty body.
 
@@ -156,7 +155,7 @@ type NamedMatchVec = SmallVec<[NamedMatch; 4]>;
 /// all the elements in that `SmallVec` strictly outlive the root stack slot
 /// lifetime. By separating `'tt` from `'root`, we can show that.
 #[derive(Clone)]
-struct MatcherPos<'root, 'tt: 'root> {
+struct MatcherPos<'root, 'tt> {
     /// The token or sequence of tokens that make up the matcher
     top_elts: TokenTreeOrTokenTreeSlice<'tt>,
 
@@ -199,7 +198,7 @@ struct MatcherPos<'root, 'tt: 'root> {
     seq_op: Option<quoted::KleeneOp>,
 
     /// The separator if we are in a repetition.
-    sep: Option<TokenKind>,
+    sep: Option<Token>,
 
     /// The "parent" matcher position if we are in a repetition. That is, the matcher position just
     /// before we enter the sequence.
@@ -233,7 +232,7 @@ impl<'root, 'tt> MatcherPos<'root, 'tt> {
 // Therefore, the initial MatcherPos is always allocated on the stack,
 // subsequent ones (of which there aren't that many) are allocated on the heap,
 // and this type is used to encapsulate both cases.
-enum MatcherPosHandle<'root, 'tt: 'root> {
+enum MatcherPosHandle<'root, 'tt> {
     Ref(&'root mut MatcherPos<'root, 'tt>),
     Box(Box<MatcherPos<'root, 'tt>>),
 }
@@ -280,7 +279,7 @@ pub enum ParseResult<T> {
 
 /// A `ParseResult` where the `Success` variant contains a mapping of `Ident`s to `NamedMatch`es.
 /// This represents the mapping of metavars to the token trees they bind to.
-pub type NamedParseResult = ParseResult<FxHashMap<Ident, Rc<NamedMatch>>>;
+pub type NamedParseResult = ParseResult<FxHashMap<Ident, NamedMatch>>;
 
 /// Count how many metavars are named in the given matcher `ms`.
 pub fn count_names(ms: &[TokenTree]) -> usize {
@@ -373,7 +372,7 @@ fn nameize<I: Iterator<Item = NamedMatch>>(
         sess: &ParseSess,
         m: &TokenTree,
         res: &mut I,
-        ret_val: &mut FxHashMap<Ident, Rc<NamedMatch>>,
+        ret_val: &mut FxHashMap<Ident, NamedMatch>,
     ) -> Result<(), (syntax_pos::Span, String)> {
         match *m {
             TokenTree::Sequence(_, ref seq) => for next_m in &seq.tts {
@@ -390,8 +389,7 @@ fn nameize<I: Iterator<Item = NamedMatch>>(
             TokenTree::MetaVarDecl(sp, bind_name, _) => {
                 match ret_val.entry(bind_name) {
                     Vacant(spot) => {
-                        // FIXME(simulacrum): Don't construct Rc here
-                        spot.insert(Rc::new(res.next().unwrap()));
+                        spot.insert(res.next().unwrap());
                     }
                     Occupied(..) => {
                         return Err((sp, format!("duplicated bind name: {}", bind_name)))
@@ -417,24 +415,24 @@ fn nameize<I: Iterator<Item = NamedMatch>>(
 
 /// Generates an appropriate parsing failure message. For EOF, this is "unexpected end...". For
 /// other tokens, this is "unexpected token...".
-pub fn parse_failure_msg(tok: TokenKind) -> String {
-    match tok {
+pub fn parse_failure_msg(tok: &Token) -> String {
+    match tok.kind {
         token::Eof => "unexpected end of macro invocation".to_string(),
         _ => format!(
             "no rules expected the token `{}`",
-            pprust::token_to_string(&tok)
+            pprust::token_to_string(tok)
         ),
     }
 }
 
 /// Performs a token equality check, ignoring syntax context (that is, an unhygienic comparison)
-fn token_name_eq(t1: &TokenKind, t2: &TokenKind) -> bool {
-    if let (Some((name1, is_raw1)), Some((name2, is_raw2))) = (t1.ident_name(), t2.ident_name()) {
-        name1 == name2 && is_raw1 == is_raw2
-    } else if let (Some(name1), Some(name2)) = (t1.lifetime_name(), t2.lifetime_name()) {
-        name1 == name2
+fn token_name_eq(t1: &Token, t2: &Token) -> bool {
+    if let (Some((ident1, is_raw1)), Some((ident2, is_raw2))) = (t1.ident(), t2.ident()) {
+        ident1.name == ident2.name && is_raw1 == is_raw2
+    } else if let (Some(ident1), Some(ident2)) = (t1.lifetime(), t2.lifetime()) {
+        ident1.name == ident2.name
     } else {
-        *t1 == *t2
+        t1.kind == t2.kind
     }
 }
 
@@ -557,8 +555,8 @@ fn inner_parse_loop<'root, 'tt>(
                     // implicitly disallowing OneOrMore from having 0 matches here. Thus, that will
                     // result in a "no rules expected token" error by virtue of this matcher not
                     // working.
-                    if seq.op == quoted::KleeneOp::ZeroOrMore
-                        || seq.op == quoted::KleeneOp::ZeroOrOne
+                    if seq.kleene.op == quoted::KleeneOp::ZeroOrMore
+                        || seq.kleene.op == quoted::KleeneOp::ZeroOrOne
                     {
                         let mut new_item = item.clone();
                         new_item.match_cur += seq.num_captures;
@@ -573,7 +571,7 @@ fn inner_parse_loop<'root, 'tt>(
                     cur_items.push(MatcherPosHandle::Box(Box::new(MatcherPos {
                         stack: smallvec![],
                         sep: seq.separator.clone(),
-                        seq_op: Some(seq.op),
+                        seq_op: Some(seq.kleene.op),
                         idx: 0,
                         matches,
                         match_lo: item.match_cur,
@@ -712,7 +710,7 @@ pub fn parse(
 
         // If we reached the EOF, check that there is EXACTLY ONE possible matcher. Otherwise,
         // either the parse is ambiguous (which should never happen) or there is a syntax error.
-        if token_name_eq(&parser.token, &token::Eof) {
+        if parser.token == token::Eof {
             if eof_items.len() == 1 {
                 let matches = eof_items[0]
                     .matches
@@ -804,8 +802,8 @@ pub fn parse(
 
 /// The token is an identifier, but not `_`.
 /// We prohibit passing `_` to macros expecting `ident` for now.
-fn get_macro_name(token: &TokenKind) -> Option<(Name, bool)> {
-    match *token {
+fn get_macro_name(token: &Token) -> Option<(Name, bool)> {
+    match token.kind {
         token::Ident(name, is_raw) if name != kw::Underscore => Some((name, is_raw)),
         _ => None,
     }
@@ -825,7 +823,9 @@ fn may_begin_with(token: &Token, name: Name) -> bool {
     }
 
     match name {
-        sym::expr => token.can_begin_expr(),
+        sym::expr => token.can_begin_expr()
+            // This exception is here for backwards compatibility.
+            && !token.is_keyword(kw::Let),
         sym::ty => token.can_begin_type(),
         sym::ident => get_macro_name(token).is_some(),
         sym::literal => token.can_begin_literal_or_bool(),
@@ -899,7 +899,7 @@ fn may_begin_with(token: &Token, name: Name) -> bool {
 /// # Returns
 ///
 /// The parsed non-terminal.
-fn parse_nt<'a>(p: &mut Parser<'a>, sp: Span, name: Symbol) -> Nonterminal {
+fn parse_nt(p: &mut Parser<'_>, sp: Span, name: Symbol) -> Nonterminal {
     if name == sym::tt {
         return token::NtTT(p.parse_token_tree());
     }

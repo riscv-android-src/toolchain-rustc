@@ -123,7 +123,7 @@ mod thread {
 ## Prelude Items
 
 Modules implicitly have some names in scope. These name are to built-in types,
-macros imported with [`#[macro_use]`] on an extern crate, and by the crate's
+macros imported with [`#[macro_use]`][macro_use] on an extern crate, and by the crate's
 [prelude]. These names are all made of a single identifier. These names are not
 part of the module, so for example, any name `name`, `self::name` is not a
 valid path. The names added by the [prelude] can be removed by placing the
@@ -135,19 +135,19 @@ Modules, like all items, accept outer attributes. They also accept inner
 attributes: either after `{` for a module with a body, or at the beginning of the
 source file, after the optional BOM and shebang.
 
-The built-in attributes that have meaning on a function are [`cfg`],
+The built-in attributes that have meaning on a module are [`cfg`],
 [`deprecated`], [`doc`], [the lint check attributes], `path`, and
 `no_implicit_prelude`. Modules also accept macro attributes.
 
-[_InnerAttribute_]: attributes.html
-[_Item_]: items.html
-[`#[macro_use]`]: macros-by-example.html#the-macro_use-attribute
-[`cfg`]: conditional-compilation.html
-[`deprecated`]: attributes/diagnostics.html#the-deprecated-attribute
-[`doc`]: ../rustdoc/the-doc-attribute.html
-[IDENTIFIER]: identifiers.html
-[attribute]: attributes.html
-[items]: items.html
-[module path]: paths.html
-[prelude]: crates-and-source-files.html#preludes-and-no_std
-[the lint check attributes]: attributes/diagnostics.html#lint-check-attributes
+[_InnerAttribute_]: ../attributes.md
+[_Item_]: ../items.md
+[macro_use]: ../macros-by-example.md#the-macro_use-attribute
+[`cfg`]: ../conditional-compilation.md
+[`deprecated`]: ../attributes/diagnostics.md#the-deprecated-attribute
+[`doc`]: ../../rustdoc/the-doc-attribute.html
+[IDENTIFIER]: ../identifiers.md
+[attribute]: ../attributes.md
+[items]: ../items.md
+[module path]: ../paths.md
+[prelude]: ../crates-and-source-files.md#preludes-and-no_std
+[the lint check attributes]: ../attributes/diagnostics.md#lint-check-attributes

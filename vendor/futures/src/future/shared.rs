@@ -235,8 +235,20 @@ impl Notify for Notifier {
     }
 }
 
-unsafe impl<F: Future> Sync for Inner<F> {}
-unsafe impl<F: Future> Send for Inner<F> {}
+// The `F` is synchronized by a lock, so `F` doesn't need
+// to be `Sync`. However, its `Item` or `Error` are exposed
+// through an `Arc` but not lock, so they must be `Send + Sync`.
+unsafe impl<F> Send for Inner<F>
+    where F: Future + Send,
+          F::Item: Send + Sync,
+          F::Error: Send + Sync,
+{}
+
+unsafe impl<F> Sync for Inner<F>
+    where F: Future + Send,
+          F::Item: Send + Sync,
+          F::Error: Send + Sync,
+{}
 
 impl<F> fmt::Debug for Inner<F>
     where F: Future + fmt::Debug,
@@ -294,6 +306,7 @@ impl<E> error::Error for SharedError<E>
         self.error.description()
     }
 
+    #[allow(deprecated)]
     fn cause(&self) -> Option<&error::Error> {
         self.error.cause()
     }

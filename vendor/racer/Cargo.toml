@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "racer"
-version = "2.1.23"
+version = "2.1.25"
 authors = ["Phil Dawes <phil@phildawes.net>", "The Racer developers"]
 description = "Code completion for Rust"
 homepage = "https://github.com/racer-rust/racer"
@@ -63,7 +64,7 @@ optional = true
 version = "0.5.1"
 
 [dependencies.rustc-ap-syntax]
-version = "491.0.0"
+version = "546.0.0"
 [dev-dependencies.racer-testutils]
 version = "0.1"
 

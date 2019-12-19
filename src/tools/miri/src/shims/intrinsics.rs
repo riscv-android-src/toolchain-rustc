@@ -1,11 +1,11 @@
 use rustc_apfloat::Float;
 use rustc::mir;
 use rustc::mir::interpret::{InterpResult, PointerArithmetic};
-use rustc::ty::layout::{self, LayoutOf, Size};
+use rustc::ty::layout::{self, LayoutOf, Size, Align};
 use rustc::ty;
 
 use crate::{
-    PlaceTy, OpTy, ImmTy, Immediate, Scalar, ScalarMaybeUndef, Tag,
+    PlaceTy, OpTy, ImmTy, Immediate, Scalar, Tag,
     OperatorEvalContextExt
 };
 
@@ -44,34 +44,48 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "assume" => {
                 let cond = this.read_scalar(args[0])?.to_bool()?;
                 if !cond {
-                    return err!(AssumptionNotHeld);
+                    throw_ub_format!("`assume` intrinsic called with `false`");
                 }
+            }
+
+            "volatile_load" => {
+                let place = this.deref_operand(args[0])?;
+                this.copy_op(place.into(), dest)?;
+            }
+
+            "volatile_store" => {
+                let place = this.deref_operand(args[0])?;
+                this.copy_op(args[1], place.into())?;
             }
 
             "atomic_load" |
             "atomic_load_relaxed" |
             "atomic_load_acq" => {
-                let ptr = this.deref_operand(args[0])?;
-                let val = this.read_scalar(ptr.into())?; // make sure it fits into a scalar; otherwise it cannot be atomic
-                this.write_scalar(val, dest)?;
-            }
+                let place = this.deref_operand(args[0])?;
+                let val = this.read_scalar(place.into())?; // make sure it fits into a scalar; otherwise it cannot be atomic
 
-            "volatile_load" => {
-                let ptr = this.deref_operand(args[0])?;
-                this.copy_op(ptr.into(), dest)?;
+                // Check alignment requirements. Atomics must always be aligned to their size,
+                // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
+                // be 8-aligned).
+                let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
+                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+
+                this.write_scalar(val, dest)?;
             }
 
             "atomic_store" |
             "atomic_store_relaxed" |
             "atomic_store_rel" => {
-                let ptr = this.deref_operand(args[0])?;
+                let place = this.deref_operand(args[0])?;
                 let val = this.read_scalar(args[1])?; // make sure it fits into a scalar; otherwise it cannot be atomic
-                this.write_scalar(val, ptr.into())?;
-            }
 
-            "volatile_store" => {
-                let ptr = this.deref_operand(args[0])?;
-                this.copy_op(args[1], ptr.into())?;
+                // Check alignment requirements. Atomics must always be aligned to their size,
+                // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
+                // be 8-aligned).
+                let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
+                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+
+                this.write_scalar(val, place.into())?;
             }
 
             "atomic_fence_acq" => {
@@ -79,25 +93,39 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             _ if intrinsic_name.starts_with("atomic_xchg") => {
-                let ptr = this.deref_operand(args[0])?;
+                let place = this.deref_operand(args[0])?;
                 let new = this.read_scalar(args[1])?;
-                let old = this.read_scalar(ptr.into())?;
+                let old = this.read_scalar(place.into())?;
+
+                // Check alignment requirements. Atomics must always be aligned to their size,
+                // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
+                // be 8-aligned).
+                let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
+                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+
                 this.write_scalar(old, dest)?; // old value is returned
-                this.write_scalar(new, ptr.into())?;
+                this.write_scalar(new, place.into())?;
             }
 
             _ if intrinsic_name.starts_with("atomic_cxchg") => {
-                let ptr = this.deref_operand(args[0])?;
+                let place = this.deref_operand(args[0])?;
                 let expect_old = this.read_immediate(args[1])?; // read as immediate for the sake of `binary_op()`
                 let new = this.read_scalar(args[2])?;
-                let old = this.read_immediate(ptr.into())?; // read as immediate for the sake of `binary_op()`
+                let old = this.read_immediate(place.into())?; // read as immediate for the sake of `binary_op()`
+
+                // Check alignment requirements. Atomics must always be aligned to their size,
+                // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
+                // be 8-aligned).
+                let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
+                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+
                 // binary_op will bail if either of them is not a scalar
                 let (eq, _) = this.binary_op(mir::BinOp::Eq, old, expect_old)?;
                 let res = Immediate::ScalarPair(old.to_scalar_or_undef(), eq.into());
                 this.write_immediate(res, dest)?; // old value is returned
                 // update ptr depending on comparison
                 if eq.to_bool()? {
-                    this.write_scalar(new, ptr.into())?;
+                    this.write_scalar(new, place.into())?;
                 }
             }
 
@@ -131,12 +159,19 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "atomic_xsub_rel" |
             "atomic_xsub_acqrel" |
             "atomic_xsub_relaxed" => {
-                let ptr = this.deref_operand(args[0])?;
-                if !ptr.layout.ty.is_integral() {
-                    return err!(Unimplemented(format!("Atomic arithmetic operations only work on integer types")));
+                let place = this.deref_operand(args[0])?;
+                if !place.layout.ty.is_integral() {
+                    bug!("Atomic arithmetic operations only work on integer types");
                 }
                 let rhs = this.read_immediate(args[1])?;
-                let old = this.read_immediate(ptr.into())?;
+                let old = this.read_immediate(place.into())?;
+
+                // Check alignment requirements. Atomics must always be aligned to their size,
+                // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
+                // be 8-aligned).
+                let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
+                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+
                 this.write_immediate(*old, dest)?; // old value is returned
                 let (op, neg) = match intrinsic_name.split('_').nth(1).unwrap() {
                     "or" => (mir::BinOp::BitOr, false),
@@ -154,7 +189,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 } else {
                     val
                 };
-                this.write_scalar(val, ptr.into())?;
+                this.write_scalar(val, place.into())?;
             }
 
             "breakpoint" => unimplemented!(), // halt miri
@@ -166,17 +201,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let elem_size = elem_layout.size.bytes();
                 let count = this.read_scalar(args[2])?.to_usize(this)?;
                 let elem_align = elem_layout.align.abi;
-                // erase tags: this is a raw ptr operation
+
+                let size = Size::from_bytes(count * elem_size);
                 let src = this.read_scalar(args[0])?.not_undef()?;
+                let src = this.memory().check_ptr_access(src, size, elem_align)?;
                 let dest = this.read_scalar(args[1])?.not_undef()?;
-                this.memory_mut().copy(
-                    src,
-                    elem_align,
-                    dest,
-                    elem_align,
-                    Size::from_bytes(count * elem_size),
-                    intrinsic_name.ends_with("_nonoverlapping"),
-                )?;
+                let dest = this.memory().check_ptr_access(dest, size, elem_align)?;
+
+                if let (Some(src), Some(dest)) = (src, dest) {
+                    this.memory_mut().copy(
+                        src,
+                        dest,
+                        size,
+                        intrinsic_name.ends_with("_nonoverlapping"),
+                    )?;
+                }
             }
 
             "discriminant_value" => {
@@ -186,7 +225,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "sinf32" | "fabsf32" | "cosf32" | "sqrtf32" | "expf32" | "exp2f32" | "logf32" |
-            "log10f32" | "log2f32" | "floorf32" | "ceilf32" | "truncf32" => {
+            "log10f32" | "log2f32" | "floorf32" | "ceilf32" | "truncf32" | "roundf32" => {
                 // FIXME: Using host floats.
                 let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
                 let f = match intrinsic_name.get() {
@@ -202,13 +241,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     "floorf32" => f.floor(),
                     "ceilf32" => f.ceil(),
                     "truncf32" => f.trunc(),
+                    "roundf32" => f.round(),
                     _ => bug!(),
                 };
                 this.write_scalar(Scalar::from_u32(f.to_bits()), dest)?;
             }
 
             "sinf64" | "fabsf64" | "cosf64" | "sqrtf64" | "expf64" | "exp2f64" | "logf64" |
-            "log10f64" | "log2f64" | "floorf64" | "ceilf64" | "truncf64" => {
+            "log10f64" | "log2f64" | "floorf64" | "ceilf64" | "truncf64" | "roundf64" => {
                 // FIXME: Using host floats.
                 let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
                 let f = match intrinsic_name.get() {
@@ -224,6 +264,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     "floorf64" => f.floor(),
                     "ceilf64" => f.ceil(),
                     "truncf64" => f.trunc(),
+                    "roundf64" => f.round(),
                     _ => bug!(),
                 };
                 this.write_scalar(Scalar::from_u64(f.to_bits()), dest)?;
@@ -274,11 +315,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 if this.binary_op(mir::BinOp::Rem, a, b)?.0.to_bits(dest.layout.size)? != 0 {
                     // Check if `b` is -1, which is the "min_value / -1" case.
                     let minus1 = Scalar::from_int(-1, dest.layout.size);
-                    return if b.to_scalar().unwrap() == minus1 {
-                        err!(Intrinsic(format!("exact_div: result of dividing MIN by -1 cannot be represented")))
+                    return Err(if b.to_scalar().unwrap() == minus1 {
+                        err_ub_format!("exact_div: result of dividing MIN by -1 cannot be represented")
                     } else {
-                        err!(Intrinsic(format!("exact_div: {:?} cannot be divided by {:?} without remainder", *a, *b)))
-                    };
+                        err_ub_format!("exact_div: {:?} cannot be divided by {:?} without remainder", *a, *b)
+                    }.into());
                 }
                 this.binop_ignore_overflow(mir::BinOp::Div, a, b, dest)?;
             },
@@ -302,7 +343,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     match dest.layout.abi {
                         layout::Abi::Scalar(ref s) => {
                             let x = Scalar::from_int(0, s.value.size(this));
-                            this.write_immediate(Immediate::Scalar(x.into()), dest)?;
+                            this.write_scalar(x, dest)?;
                         }
                         layout::Abi::ScalarPair(ref s1, ref s2) => {
                             let x = Scalar::from_int(0, s1.value.size(this));
@@ -331,8 +372,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "move_val_init" => {
-                let ptr = this.deref_operand(args[0])?;
-                this.copy_op(args[1], ptr.into())?;
+                let place = this.deref_operand(args[0])?;
+                this.copy_op(args[1], place.into())?;
             }
 
             "offset" => {
@@ -346,7 +387,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let ty = substs.type_at(0);
                 let layout = this.layout_of(ty)?;
                 if layout.abi.is_uninhabited() {
-                    return err!(Intrinsic(format!("Trying to instantiate uninhabited type {}", ty)))
+                    throw_ub_format!("Trying to instantiate uninhabited type {}", ty)
                 }
             }
 
@@ -440,7 +481,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let r = this.read_immediate(args[1])?;
                 let rval = r.to_scalar()?.to_bits(args[1].layout.size)?;
                 if rval == 0 {
-                    return err!(Intrinsic(format!("Division by 0 in unchecked_div")));
+                    throw_ub_format!("Division by 0 in unchecked_div");
                 }
                 this.binop_ignore_overflow(
                     mir::BinOp::Div,
@@ -455,7 +496,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let r = this.read_immediate(args[1])?;
                 let rval = r.to_scalar()?.to_bits(args[1].layout.size)?;
                 if rval == 0 {
-                    return err!(Intrinsic(format!("Division by 0 in unchecked_rem")));
+                    throw_ub_format!("Division by 0 in unchecked_rem");
                 }
                 this.binop_ignore_overflow(
                     mir::BinOp::Rem,
@@ -476,7 +517,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 let (res, overflowed) = this.binary_op(op, l, r)?;
                 if overflowed {
-                    return err!(Intrinsic(format!("Overflowing arithmetic in {}", intrinsic_name.get())));
+                    throw_ub_format!("Overflowing arithmetic in {}", intrinsic_name.get());
                 }
                 this.write_scalar(res, dest)?;
             }
@@ -488,6 +529,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // However, this only affects direct calls of the intrinsic; calls to the stable
                 // functions wrapping them do get their validation.
                 // FIXME: should we check alignment for ZSTs?
+                use crate::ScalarMaybeUndef;
                 if !dest.layout.is_zst() {
                     match dest.layout.abi {
                         layout::Abi::Scalar(..) => {
@@ -530,7 +572,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
             }
 
-            name => return err!(Unimplemented(format!("unimplemented intrinsic: {}", name))),
+            name => throw_unsup_format!("unimplemented intrinsic: {}", name),
         }
 
         Ok(())

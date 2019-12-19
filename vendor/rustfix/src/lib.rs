@@ -1,3 +1,5 @@
+#![warn(rust_2018_idioms)]
+
 #[macro_use]
 extern crate log;
 #[macro_use]
@@ -5,9 +7,7 @@ extern crate failure;
 #[cfg(test)]
 #[macro_use]
 extern crate proptest;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
+use serde_json;
 
 use std::collections::HashSet;
 use std::ops::Range;
@@ -15,7 +15,7 @@ use std::ops::Range;
 use failure::Error;
 
 pub mod diagnostics;
-use diagnostics::{Diagnostic, DiagnosticSpan};
+use crate::diagnostics::{Diagnostic, DiagnosticSpan};
 mod replace;
 
 #[derive(Debug, Clone, Copy)]
@@ -37,31 +37,31 @@ pub fn get_suggestions_from_json<S: ::std::hash::BuildHasher>(
     Ok(result)
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct LinePosition {
     pub line: usize,
     pub column: usize,
 }
 
 impl std::fmt::Display for LinePosition {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.line, self.column)
     }
 }
 
-#[derive(Debug, Copy, Clone, Hash, PartialEq)]
+#[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct LineRange {
     pub start: LinePosition,
     pub end: LinePosition,
 }
 
 impl std::fmt::Display for LineRange {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}-{}", self.start, self.end)
     }
 }
 
-#[derive(Debug, Clone, Hash, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 /// An error/warning and possible solutions for fixing it
 pub struct Suggestion {
     pub message: String,
@@ -69,13 +69,13 @@ pub struct Suggestion {
     pub solutions: Vec<Solution>,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Solution {
     pub message: String,
     pub replacements: Vec<Replacement>,
 }
 
-#[derive(Debug, Clone, Hash, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Snippet {
     pub file_name: String,
     pub line_range: LineRange,
@@ -86,7 +86,7 @@ pub struct Snippet {
     pub text: (String, String, String),
 }
 
-#[derive(Debug, Clone, Hash, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct Replacement {
     pub snippet: Snippet,
     pub replacement: String,
@@ -104,21 +104,32 @@ fn parse_snippet(span: &DiagnosticSpan) -> Option<Snippet> {
             std::cmp::min(indent, line.highlight_start)
         })
         .min()?;
+
+    let text_slice = span.text[0].text.chars().collect::<Vec<char>>();
+
+    // We subtract `1` because these highlights are 1-based
     let start = span.text[0].highlight_start - 1;
     let end = span.text[0].highlight_end - 1;
-    let lead = span.text[0].text[indent..start].to_string();
-    let mut body = span.text[0].text[start..end].to_string();
+    let lead = text_slice[indent..start].iter().collect();
+    let mut body: String = text_slice[start..end].iter().collect();
+
     for line in span.text.iter().take(span.text.len() - 1).skip(1) {
         body.push('\n');
         body.push_str(&line.text[indent..]);
     }
     let mut tail = String::new();
     let last = &span.text[span.text.len() - 1];
+
+    // If we get a DiagnosticSpanLine where highlight_end > text.len(), we prevent an 'out of
+    // bounds' access by making sure the index is within the array bounds.
+    let last_tail_index = last.highlight_end.min(last.text.len()) - 1;
+    let last_slice = last.text.chars().collect::<Vec<char>>();
+
     if span.text.len() > 1 {
         body.push('\n');
-        body.push_str(&last.text[indent..last.highlight_end - 1]);
+        body.push_str(&last_slice[indent..last_tail_index].iter().collect::<String>());
     }
-    tail.push_str(&last.text[last.highlight_end - 1..]);
+    tail.push_str(&last_slice[last_tail_index..].iter().collect::<String>());
     Some(Snippet {
         file_name: span.file_name.clone(),
         line_range: LineRange {
@@ -173,8 +184,8 @@ pub fn collect_suggestions<S: ::std::hash::BuildHasher>(
                 .spans
                 .iter()
                 .filter(|span| {
-                    use Filter::*;
-                    use diagnostics::Applicability::*;
+                    use crate::Filter::*;
+                    use crate::diagnostics::Applicability::*;
 
                     match (filter, &span.suggestion_applicability) {
                         (MachineApplicableOnly, Some(MachineApplicable)) => true,

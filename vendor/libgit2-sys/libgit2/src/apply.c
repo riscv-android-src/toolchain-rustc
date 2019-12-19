@@ -18,7 +18,7 @@
 #include "git2/repository.h"
 #include "array.h"
 #include "patch.h"
-#include "fileops.h"
+#include "futils.h"
 #include "delta.h"
 #include "zstream.h"
 #include "reader.h"
@@ -59,7 +59,7 @@ static int patch_image_init_fromstr(
 	git_pool_init(&out->pool, sizeof(git_diff_line));
 
 	for (start = in; start < in + in_len; start = end) {
-		end = memchr(start, '\n', in_len);
+		end = memchr(start, '\n', in_len - (start - in));
 
 		if (end == NULL)
 			end = in + in_len;
@@ -199,23 +199,34 @@ static int apply_hunk(
 
 	for (i = 0; i < hunk->line_count; i++) {
 		size_t linenum = hunk->line_start + i;
-		git_diff_line *line = git_array_get(patch->lines, linenum);
+		git_diff_line *line = git_array_get(patch->lines, linenum), *prev;
 
 		if (!line) {
 			error = apply_err("preimage does not contain line %"PRIuZ, linenum);
 			goto done;
 		}
 
-		if (line->origin == GIT_DIFF_LINE_CONTEXT ||
-			line->origin == GIT_DIFF_LINE_DELETION) {
-			if ((error = git_vector_insert(&preimage.lines, line)) < 0)
-				goto done;
-		}
-
-		if (line->origin == GIT_DIFF_LINE_CONTEXT ||
-			line->origin == GIT_DIFF_LINE_ADDITION) {
-			if ((error = git_vector_insert(&postimage.lines, line)) < 0)
-				goto done;
+		switch (line->origin) {
+			case GIT_DIFF_LINE_CONTEXT_EOFNL:
+			case GIT_DIFF_LINE_DEL_EOFNL:
+			case GIT_DIFF_LINE_ADD_EOFNL:
+				prev = i ? git_array_get(patch->lines, i - 1) : NULL;
+				if (prev && prev->content[prev->content_len - 1] == '\n')
+					prev->content_len -= 1;
+				break;
+			case GIT_DIFF_LINE_CONTEXT:
+				if ((error = git_vector_insert(&preimage.lines, line)) < 0 ||
+				    (error = git_vector_insert(&postimage.lines, line)) < 0)
+					goto done;
+				break;
+			case GIT_DIFF_LINE_DELETION:
+				if ((error = git_vector_insert(&preimage.lines, line)) < 0)
+					goto done;
+				break;
+			case GIT_DIFF_LINE_ADDITION:
+				if ((error = git_vector_insert(&postimage.lines, line)) < 0)
+					goto done;
+				break;
 		}
 	}
 
@@ -439,7 +450,6 @@ static int apply_one(
 	git_filemode_t pre_filemode;
 	git_index_entry pre_entry, post_entry;
 	bool skip_preimage = false;
-	size_t pos;
 	int error;
 
 	if ((error = git_patch_from_diff(&patch, diff, i)) < 0)
@@ -464,8 +474,7 @@ static int apply_one(
 	 */
 	if (delta->status != GIT_DELTA_RENAMED &&
 	    delta->status != GIT_DELTA_ADDED) {
-		pos = git_strmap_lookup_index(removed_paths, delta->old_file.path);
-		if (git_strmap_valid_index(removed_paths, pos)) {
+		if (git_strmap_exists(removed_paths, delta->old_file.path)) {
 			error = apply_err("path '%s' has been renamed or deleted", delta->old_file.path);
 			goto done;
 		}
@@ -534,7 +543,7 @@ static int apply_one(
 	if (delta->status != GIT_DELTA_DELETED) {
 		if ((error = git_apply__patch(&post_contents, &filename, &mode,
 				pre_contents.ptr, pre_contents.size, patch, opts)) < 0 ||
-			(error = git_blob_create_frombuffer(&post_id, repo,
+			(error = git_blob_create_from_buffer(&post_id, repo,
 				post_contents.ptr, post_contents.size)) < 0)
 			goto done;
 
@@ -549,7 +558,7 @@ static int apply_one(
 
 	if (delta->status == GIT_DELTA_RENAMED ||
 	    delta->status == GIT_DELTA_DELETED)
-		git_strmap_insert(removed_paths, delta->old_file.path, (char *)delta->old_file.path, &error);
+		error = git_strmap_set(removed_paths, delta->old_file.path, (char *) delta->old_file.path);
 
 	if (delta->status == GIT_DELTA_RENAMED ||
 	    delta->status == GIT_DELTA_ADDED)
@@ -577,7 +586,7 @@ static int apply_deltas(
 	size_t i;
 	int error = 0;
 
-	if (git_strmap_alloc(&removed_paths) < 0)
+	if (git_strmap_new(&removed_paths) < 0)
 		return -1;
 
 	for (i = 0; i < git_diff_num_deltas(diff); i++) {
@@ -745,6 +754,13 @@ static int git_apply__to_index(
 done:
 	git_index_free(index);
 	return error;
+}
+
+int git_apply_options_init(git_apply_options *opts, unsigned int version)
+{
+	GIT_INIT_STRUCTURE_FROM_TEMPLATE(
+		opts, version, git_apply_options, GIT_APPLY_OPTIONS_INIT);
+	return 0;
 }
 
 /*

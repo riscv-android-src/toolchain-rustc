@@ -1,6 +1,7 @@
 // error-pattern:cargo-clippy
 
 #![feature(box_syntax)]
+#![feature(box_patterns)]
 #![feature(never_type)]
 #![feature(rustc_private)]
 #![feature(slice_patterns)]
@@ -8,7 +9,8 @@
 #![allow(clippy::missing_docs_in_private_items)]
 #![recursion_limit = "512"]
 #![warn(rust_2018_idioms, trivial_casts, trivial_numeric_casts)]
-#![deny(internal)]
+#![deny(rustc::internal)]
+#![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![feature(crate_visibility_modifier)]
 #![feature(concat_idents)]
 
@@ -98,42 +100,42 @@ macro_rules! declare_clippy_lint {
     };
     { $(#[$attr:meta])* pub $name:tt, complexity, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Warn, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Warn, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, perf, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Warn, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Warn, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, pedantic, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Allow, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Allow, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, restriction, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Allow, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Allow, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, cargo, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Allow, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Allow, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, nursery, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Allow, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Allow, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, internal, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Allow, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Allow, $description, report_in_external_macro: true
         }
     };
     { $(#[$attr:meta])* pub $name:tt, internal_warn, $description:tt } => {
         declare_tool_lint! {
-            pub clippy::$name, Warn, $description, report_in_external_macro: true
+            $(#[$attr])* pub clippy::$name, Warn, $description, report_in_external_macro: true
         }
     };
 }
@@ -194,10 +196,10 @@ pub mod indexing_slicing;
 pub mod infallible_destructuring_match;
 pub mod infinite_iter;
 pub mod inherent_impl;
+pub mod inherent_to_string;
 pub mod inline_fn_without_body;
 pub mod int_plus_one;
 pub mod integer_division;
-pub mod invalid_ref;
 pub mod items_after_statements;
 pub mod large_enum_variant;
 pub mod len_zero;
@@ -205,6 +207,7 @@ pub mod let_if_seq;
 pub mod lifetimes;
 pub mod literal_representation;
 pub mod loops;
+pub mod main_recursion;
 pub mod map_clone;
 pub mod map_unit_fn;
 pub mod matches;
@@ -260,9 +263,11 @@ pub mod strings;
 pub mod suspicious_trait_impl;
 pub mod swap;
 pub mod temporary_assignment;
+pub mod trait_bounds;
 pub mod transmute;
 pub mod transmuting_null;
 pub mod trivially_copy_pass_by_ref;
+pub mod try_err;
 pub mod types;
 pub mod unicode;
 pub mod unsafe_removed_from_name;
@@ -468,6 +473,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
     reg.register_late_lint_pass(box types::LetUnitValue);
     reg.register_late_lint_pass(box types::UnitCmp);
     reg.register_late_lint_pass(box loops::Loops);
+    reg.register_late_lint_pass(box main_recursion::MainRecursion::default());
     reg.register_late_lint_pass(box lifetimes::Lifetimes);
     reg.register_late_lint_pass(box entry::HashMapPass);
     reg.register_late_lint_pass(box ranges::Ranges);
@@ -546,11 +552,11 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
     reg.register_early_lint_pass(box literal_representation::DecimalLiteralRepresentation::new(
             conf.literal_representation_threshold
     ));
+    reg.register_late_lint_pass(box try_err::TryErr);
     reg.register_late_lint_pass(box use_self::UseSelf);
     reg.register_late_lint_pass(box bytecount::ByteCount);
     reg.register_late_lint_pass(box infinite_iter::InfiniteIter);
     reg.register_late_lint_pass(box inline_fn_without_body::InlineFnWithoutBody);
-    reg.register_late_lint_pass(box invalid_ref::InvalidRef);
     reg.register_late_lint_pass(box identity_conversion::IdentityConversion::default());
     reg.register_late_lint_pass(box types::ImplicitHasher);
     reg.register_early_lint_pass(box redundant_static_lifetimes::RedundantStaticLifetimes);
@@ -582,6 +588,8 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
     reg.register_late_lint_pass(box path_buf_push_overwrite::PathBufPushOverwrite);
     reg.register_late_lint_pass(box checked_conversions::CheckedConversions);
     reg.register_late_lint_pass(box integer_division::IntegerDivision);
+    reg.register_late_lint_pass(box inherent_to_string::InherentToString);
+    reg.register_late_lint_pass(box trait_bounds::TraitBounds);
 
     reg.register_lint_group("clippy::restriction", Some("clippy_restriction"), vec![
         arithmetic::FLOAT_ARITHMETIC,
@@ -663,7 +671,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         utils::internal_lints::CLIPPY_LINTS_INTERNAL,
         utils::internal_lints::COMPILER_LINT_FUNCTIONS,
         utils::internal_lints::LINT_WITHOUT_LINT_PASS,
-        utils::internal_lints::OUTER_EXPN_INFO,
+        utils::internal_lints::OUTER_EXPN_EXPN_INFO,
     ]);
 
     reg.register_lint_group("clippy::all", Some("clippy"), vec![
@@ -722,9 +730,10 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         indexing_slicing::OUT_OF_BOUNDS_INDEXING,
         infallible_destructuring_match::INFALLIBLE_DESTRUCTURING_MATCH,
         infinite_iter::INFINITE_ITER,
+        inherent_to_string::INHERENT_TO_STRING,
+        inherent_to_string::INHERENT_TO_STRING_SHADOW_DISPLAY,
         inline_fn_without_body::INLINE_FN_WITHOUT_BODY,
         int_plus_one::INT_PLUS_ONE,
-        invalid_ref::INVALID_REF,
         large_enum_variant::LARGE_ENUM_VARIANT,
         len_zero::LEN_WITHOUT_IS_EMPTY,
         len_zero::LEN_ZERO,
@@ -750,6 +759,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         loops::WHILE_IMMUTABLE_CONDITION,
         loops::WHILE_LET_LOOP,
         loops::WHILE_LET_ON_ITERATOR,
+        main_recursion::MAIN_RECURSION,
         map_clone::MAP_CLONE,
         map_unit_fn::OPTION_MAP_UNIT_FN,
         map_unit_fn::RESULT_MAP_UNIT_FN,
@@ -850,6 +860,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         swap::ALMOST_SWAPPED,
         swap::MANUAL_SWAP,
         temporary_assignment::TEMPORARY_ASSIGNMENT,
+        trait_bounds::TYPE_REPETITION_IN_BOUNDS,
         transmute::CROSSPOINTER_TRANSMUTE,
         transmute::TRANSMUTE_BYTES_TO_STR,
         transmute::TRANSMUTE_INT_TO_BOOL,
@@ -861,6 +872,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         transmute::WRONG_TRANSMUTE,
         transmuting_null::TRANSMUTING_NULL,
         trivially_copy_pass_by_ref::TRIVIALLY_COPY_PASS_BY_REF,
+        try_err::TRY_ERR,
         types::ABSURD_EXTREME_COMPARISONS,
         types::BORROWED_BOX,
         types::BOX_VEC,
@@ -882,6 +894,8 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         unsafe_removed_from_name::UNSAFE_REMOVED_FROM_NAME,
         unused_io_amount::UNUSED_IO_AMOUNT,
         unused_label::UNUSED_LABEL,
+        unwrap::PANICKING_UNWRAP,
+        unwrap::UNNECESSARY_UNWRAP,
         vec::USELESS_VEC,
         write::PRINTLN_EMPTY_STRING,
         write::PRINT_LITERAL,
@@ -909,6 +923,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         formatting::SUSPICIOUS_ASSIGNMENT_FORMATTING,
         formatting::SUSPICIOUS_ELSE_FORMATTING,
         infallible_destructuring_match::INFALLIBLE_DESTRUCTURING_MATCH,
+        inherent_to_string::INHERENT_TO_STRING,
         len_zero::LEN_WITHOUT_IS_EMPTY,
         len_zero::LEN_ZERO,
         let_if_seq::USELESS_LET_IF_SEQ,
@@ -918,6 +933,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         loops::FOR_KV_MAP,
         loops::NEEDLESS_RANGE_LOOP,
         loops::WHILE_LET_ON_ITERATOR,
+        main_recursion::MAIN_RECURSION,
         map_clone::MAP_CLONE,
         matches::MATCH_BOOL,
         matches::MATCH_OVERLAPPING_ARM,
@@ -963,6 +979,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         returns::NEEDLESS_RETURN,
         returns::UNUSED_UNIT,
         strings::STRING_LIT_AS_BYTES,
+        try_err::TRY_ERR,
         types::FN_TO_NUMERIC_CAST,
         types::FN_TO_NUMERIC_CAST_WITH_TRUNCATION,
         types::IMPLICIT_HASHER,
@@ -1028,6 +1045,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         reference::REF_IN_DEREF,
         swap::MANUAL_SWAP,
         temporary_assignment::TEMPORARY_ASSIGNMENT,
+        trait_bounds::TYPE_REPETITION_IN_BOUNDS,
         transmute::CROSSPOINTER_TRANSMUTE,
         transmute::TRANSMUTE_BYTES_TO_STR,
         transmute::TRANSMUTE_INT_TO_BOOL,
@@ -1045,6 +1063,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         types::UNNECESSARY_CAST,
         types::VEC_BOX,
         unused_label::UNUSED_LABEL,
+        unwrap::UNNECESSARY_UNWRAP,
         zero_div_zero::ZERO_DIVIDED_BY_ZERO,
     ]);
 
@@ -1070,8 +1089,8 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         functions::NOT_UNSAFE_PTR_ARG_DEREF,
         indexing_slicing::OUT_OF_BOUNDS_INDEXING,
         infinite_iter::INFINITE_ITER,
+        inherent_to_string::INHERENT_TO_STRING_SHADOW_DISPLAY,
         inline_fn_without_body::INLINE_FN_WITHOUT_BODY,
-        invalid_ref::INVALID_REF,
         literal_representation::MISTYPED_LITERAL_SUFFIXES,
         loops::FOR_LOOP_OVER_OPTION,
         loops::FOR_LOOP_OVER_RESULT,
@@ -1105,6 +1124,7 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         types::UNIT_CMP,
         unicode::ZERO_WIDTH_SPACE,
         unused_io_amount::UNUSED_IO_AMOUNT,
+        unwrap::PANICKING_UNWRAP,
     ]);
 
     reg.register_lint_group("clippy::perf", Some("clippy_perf"), vec![
@@ -1141,8 +1161,6 @@ pub fn register_plugins(reg: &mut rustc_plugin::Registry<'_>, conf: &Conf) {
         needless_borrow::NEEDLESS_BORROW,
         path_buf_push_overwrite::PATH_BUF_PUSH_OVERWRITE,
         redundant_clone::REDUNDANT_CLONE,
-        unwrap::PANICKING_UNWRAP,
-        unwrap::UNNECESSARY_UNWRAP,
     ]);
 }
 

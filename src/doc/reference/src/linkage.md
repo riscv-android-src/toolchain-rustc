@@ -200,7 +200,7 @@ fn main() {
 }
 ```
 
-[cargo]: http://doc.crates.io/environment-variables.html#environment-variables-cargo-sets-for-build-scripts
+[cargo]: ../cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-build-scripts
 
 To use this feature locally, you typically will use the `RUSTFLAGS` environment
 variable to specify flags to the compiler through Cargo. For example to compile
@@ -210,6 +210,6 @@ a statically linked binary on MSVC you would execute:
 RUSTFLAGS='-C target-feature=+crt-static' cargo build --target x86_64-pc-windows-msvc
 ```
 
-[`cfg` attribute `target_feature` option]: conditional-compilation.html#target_feature
-[configuration option]: conditional-compilation.html
-[procedural macros]: procedural-macros.html
+[`cfg` attribute `target_feature` option]: conditional-compilation.md#target_feature
+[configuration option]: conditional-compilation.md
+[procedural macros]: procedural-macros.md

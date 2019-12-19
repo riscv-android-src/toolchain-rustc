@@ -1,12 +1,10 @@
-use std::collections::BTreeMap;
-
-use context::Context;
-use error::RenderError;
-use helpers::{HelperDef, HelperResult};
-use output::Output;
-use registry::Registry;
-use render::{Helper, RenderContext, Renderable};
-use value::{to_json, JsonTruthy};
+use crate::context::{BlockParams, Context};
+use crate::error::RenderError;
+use crate::helpers::{HelperDef, HelperResult};
+use crate::output::Output;
+use crate::registry::Registry;
+use crate::render::{Helper, RenderContext, Renderable};
+use crate::value::JsonTruthy;
 
 #[derive(Clone, Copy)]
 pub struct WithHelper;
@@ -18,7 +16,7 @@ impl HelperDef for WithHelper {
         r: &Registry,
         ctx: &Context,
         rc: &mut RenderContext,
-        out: &mut Output,
+        out: &mut dyn Output,
     ) -> HelperResult {
         let param = h
             .param(0)
@@ -30,26 +28,33 @@ impl HelperDef for WithHelper {
             let mut local_rc = rc.derive();
 
             let not_empty = param.value().is_truthy(false);
-            let template = if not_empty {
-                h.template()
-            } else {
-                h.inverse()
-            };
+            let template = if not_empty { h.template() } else { h.inverse() };
 
             if let Some(path_root) = param.path_root() {
                 let local_path_root = format!("{}/{}", local_rc.get_path(), path_root);
                 local_rc.push_local_path_root(local_path_root);
             }
             if not_empty {
-                if let Some(inner_path) = param.path() {
-                    let new_path = format!("{}/{}", local_rc.get_path(), inner_path);
-                    local_rc.set_path(new_path);
+                let new_path = param.path().map(|p| {
+                    if param.is_absolute_path() {
+                        p.to_string()
+                    } else {
+                        format!("{}/{}", rc.get_path(), p)
+                    }
+                });
+                if let Some(ref new_path) = new_path {
+                    local_rc.set_path(new_path.clone());
                 }
 
                 if let Some(block_param) = h.block_param() {
-                    let mut map = BTreeMap::new();
-                    map.insert(block_param.to_string(), to_json(param.value()));
-                    local_rc.push_block_context(&map)?;
+                    let mut params = BlockParams::new();
+                    if new_path.is_some() {
+                        params.add_path(block_param, local_rc.get_path())?;
+                    } else {
+                        params.add_value(block_param, param.value().clone())?;
+                    }
+
+                    local_rc.push_block_context(params)?;
                 }
             }
 
@@ -78,8 +83,8 @@ pub static WITH_HELPER: WithHelper = WithHelper;
 
 #[cfg(test)]
 mod test {
-    use registry::Registry;
-    use value::to_json;
+    use crate::registry::Registry;
+    use crate::value::to_json;
 
     #[derive(Serialize)]
     struct Address {
@@ -105,26 +110,20 @@ mod test {
         let person = Person {
             name: "Ning Sun".to_string(),
             age: 27,
-            addr: addr,
+            addr,
             titles: vec!["programmer".to_string(), "cartographier".to_string()],
         };
 
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#with addr}}{{city}}{{/with}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string("t1", "{{#with notfound}}hello{{else}}world{{/with}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string("t2", "{{#with addr/country}}{{this}}{{/with}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#with addr}}{{city}}{{/with}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t1", "{{#with notfound}}hello{{else}}world{{/with}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t2", "{{#with addr/country}}{{this}}{{/with}}")
+            .is_ok());
 
         let r0 = handlebars.render("t0", &person);
         assert_eq!(r0.ok().unwrap(), "Beijing".to_string());
@@ -146,29 +145,20 @@ mod test {
         let person = Person {
             name: "Ning Sun".to_string(),
             age: 27,
-            addr: addr,
+            addr,
             titles: vec!["programmer".to_string(), "cartographier".to_string()],
         };
 
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#with addr as |a|}}{{a.city}}{{/with}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t1",
-                    "{{#with notfound as |c|}}hello{{else}}world{{/with}}"
-                )
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string("t2", "{{#with addr/country as |t|}}{{t}}{{/with}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#with addr as |a|}}{{a.city}}{{/with}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t1", "{{#with notfound as |c|}}hello{{else}}world{{/with}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t2", "{{#with addr/country as |t|}}{{t}}{{/with}}")
+            .is_ok());
 
         let r0 = handlebars.render("t0", &person);
         assert_eq!(r0.ok().unwrap(), "Beijing".to_string());
@@ -190,7 +180,7 @@ mod test {
         let person = Person {
             name: "Ning Sun".to_string(),
             age: 27,
-            addr: addr,
+            addr,
             titles: vec!["programmer".to_string(), "cartographier".to_string()],
         };
 
@@ -209,30 +199,24 @@ mod test {
         let people = vec![person, person2];
 
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t0",
-                    "{{#each this}}{{#with addr}}{{city}}{{/with}}{{/each}}"
-                )
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t1",
-                    "{{#each this}}{{#with addr}}{{../age}}{{/with}}{{/each}}"
-                )
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t2",
-                    "{{#each this}}{{#with addr}}{{@../index}}{{/with}}{{/each}}"
-                )
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string(
+                "t0",
+                "{{#each this}}{{#with addr}}{{city}}{{/with}}{{/each}}"
+            )
+            .is_ok());
+        assert!(handlebars
+            .register_template_string(
+                "t1",
+                "{{#each this}}{{#with addr}}{{../age}}{{/with}}{{/each}}"
+            )
+            .is_ok());
+        assert!(handlebars
+            .register_template_string(
+                "t2",
+                "{{#each this}}{{#with addr}}{{@../index}}{{/with}}{{/each}}"
+            )
+            .is_ok());
 
         let r0 = handlebars.render("t0", &people);
         assert_eq!(r0.ok().unwrap(), "BeijingBeijing".to_string());
@@ -247,14 +231,9 @@ mod test {
     #[test]
     fn test_path_up() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t0",
-                    "{{#with a}}{{#with b}}{{../../d}}{{/with}}{{/with}}"
-                )
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#with a}}{{#with b}}{{../../d}}{{/with}}{{/with}}")
+            .is_ok());
         let data = btreemap! {
             "a".to_string() => to_json(&btreemap! {
                 "b".to_string() => vec![btreemap!{"c".to_string() => vec![1]}]

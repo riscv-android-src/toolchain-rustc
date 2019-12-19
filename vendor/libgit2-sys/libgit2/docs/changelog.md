@@ -1,36 +1,26 @@
-v0.28.2
--------
+v0.28 + 1
+---------
 
-This is a bugfix release with the following changes:
+### Breaking CMake configuration changes
 
-* Fix include directory ordering when using bundled dependencies.
+* The CMake option to use a system http-parser library, instead of the
+  bundled dependency, has changed.  This is due to a deficiency in
+  http-parser that we have fixed in our implementation.  The bundled
+  library is now the default, but if you wish to force the use of the
+  system http-parser implementation despite incompatibilities, you can
+  specify `-DUSE_HTTP_PARSER=system` to CMake.
 
-* Fix infinite loop when searching for a non-existing repository with
-  Windows-style paths including drive prefixes.
+* The interactions between `USE_HTTPS` and `SHA1_BACKEND` have been
+  streamlined. The detection was moved to a new `USE_SHA1`, modeled after
+  `USE_HTTPS`, which takes the values "CollisionDetection/Backend/Generic", to
+  better match how the "hashing backend" is selected, the default (ON) being
+  "CollisionDetection". If you were using `SHA1_BACKEND` previously, you'll
+  need to check the value you've used, or switch to the autodetection.
 
-* Fix paths with a trailing "/" not always being treated as
-  directories when computing ignores.
+### Changes or improvements
 
-* Fix false negatives when computing ignores where ignore rules
-  that are a prefix to a negative ignore rule exist.
-
-* Fix patches with CRLF line endings not being parsed correctly.
-
-* Fix segfault when parsing patches with file addition (deletion)
-  where the added (deleted) file name contains a space.
-
-* Fix assertion failure when trying to write to a non-existent
-  locked configuration file.
-
-v0.28.1
--------
-
-This is a bugfix release with the following change:
-
-* The deprecated functions (`git_buf_free` and the `giterr_` family of
-  functions) are now exported properly.  In the v0.28 release, they were
-  not given the correct external attributes and they did not have the
-  correct linkage visibility in the v0.28 library.
+* libgit2 can now correctly cope with URLs where the host contains a colon
+  but a port is not specified.  (eg `http://example.com:/repo.git`).
 
 v0.28
 -----

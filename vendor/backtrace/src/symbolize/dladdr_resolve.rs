@@ -14,12 +14,13 @@
 //! basic, not handling inline frame information at all. Since it's so prevalent
 //! though we have an option to use it!
 
-use types::{BytesOrWideString, c_void};
-use symbolize::{dladdr, SymbolName, ResolveWhat};
+use crate::symbolize::{dladdr, ResolveWhat, SymbolName};
+use crate::types::BytesOrWideString;
+use core::ffi::c_void;
 
-pub struct Symbol(dladdr::Symbol);
+pub struct Symbol<'a>(dladdr::Symbol<'a>);
 
-impl Symbol {
+impl Symbol<'_> {
     pub fn name(&self) -> Option<SymbolName> {
         self.0.name()
     }
@@ -44,8 +45,6 @@ impl Symbol {
 
 pub unsafe fn resolve(what: ResolveWhat, cb: &mut FnMut(&super::Symbol)) {
     dladdr::resolve(what.address_or_ip(), &mut |sym| {
-        cb(&super::Symbol {
-            inner: Symbol(sym),
-        })
+        cb(&super::Symbol { inner: Symbol(sym) })
     });
 }

@@ -1,8 +1,8 @@
 extern crate cc;
 
 use std::env;
-use std::path::PathBuf;
 use std::fs::File;
+use std::path::PathBuf;
 
 fn main() {
     let target = env::var("TARGET").unwrap();
@@ -13,7 +13,7 @@ fn main() {
         target.contains("wasm32")
     {
         println!("cargo:rustc-cfg=empty");
-        return
+        return;
     }
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
@@ -56,11 +56,13 @@ fn main() {
     build.define("BACKTRACE_SUPPORTS_DATA", "0");
 
     File::create(out_dir.join("config.h")).unwrap();
-    if !target.contains("apple-ios") &&
-       !target.contains("solaris") &&
-       !target.contains("redox") &&
-       !target.contains("android") &&
-       !target.contains("haiku") {
+    if !target.contains("apple-ios")
+        && !target.contains("solaris")
+        && !target.contains("redox")
+        && !target.contains("android")
+        && !target.contains("haiku")
+        && !target.contains("vxworks")
+    {
         build.define("HAVE_DL_ITERATE_PHDR", "1");
     }
     build.define("_GNU_SOURCE", "1");
@@ -68,8 +70,8 @@ fn main() {
 
     // When we're built as part of the Rust compiler, this is used to enable
     // debug information in libbacktrace itself.
-    let any_debug = env::var("RUSTC_DEBUGINFO").unwrap_or_default() == "true" ||
-        env::var("RUSTC_DEBUGINFO_LINES").unwrap_or_default() == "true";
+    let any_debug = env::var("RUSTC_DEBUGINFO").unwrap_or_default() == "true"
+        || env::var("RUSTC_DEBUGINFO_LINES").unwrap_or_default() == "true";
     build.debug(any_debug);
 
     let syms = [
@@ -92,6 +94,20 @@ fn main() {
         "backtrace_qsort",
         "backtrace_create_state",
         "backtrace_uncompress_zdebug",
+
+        // These should be `static` in C, but they aren't...
+        "macho_get_view",
+        "macho_symbol_type_relevant",
+        "macho_get_commands",
+        "macho_try_dsym",
+        "macho_try_dwarf",
+        "macho_get_addr_range",
+        "macho_get_uuid",
+        "macho_add",
+        "macho_add_symtab",
+        "macho_file_to_host_u64",
+        "macho_file_to_host_u32",
+        "macho_file_to_host_u16",
     ];
     let prefix = if cfg!(feature = "rustc-dep-of-std") {
         println!("cargo:rustc-cfg=rdos");

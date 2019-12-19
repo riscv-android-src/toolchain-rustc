@@ -160,7 +160,13 @@ int git_path_dirname_r(git_buf *buffer, const char *path)
 	while (endp > path && *endp == '/')
 		endp--;
 
-	if ((len = win32_prefix_length(path, endp - path + 1)) > 0) {
+	if (endp - path + 1 > INT_MAX) {
+		git_error_set(GIT_ERROR_INVALID, "path too long");
+		len = -1;
+		goto Exit;
+	}
+
+	if ((len = win32_prefix_length(path, (int)(endp - path + 1))) > 0) {
 		is_prefix = 1;
 		goto Exit;
 	}
@@ -180,7 +186,13 @@ int git_path_dirname_r(git_buf *buffer, const char *path)
 		endp--;
 	} while (endp > path && *endp == '/');
 
-	if ((len = win32_prefix_length(path, endp - path + 1)) > 0) {
+	if (endp - path + 1 > INT_MAX) {
+		git_error_set(GIT_ERROR_INVALID, "path too long");
+		len = -1;
+		goto Exit;
+	}
+
+	if ((len = win32_prefix_length(path, (int)(endp - path + 1))) > 0) {
 		is_prefix = 1;
 		goto Exit;
 	}
@@ -276,9 +288,12 @@ int git_path_root(const char *path)
 		while (path[offset] && path[offset] != '/' && path[offset] != '\\')
 			offset++;
 	}
+
+	if (path[offset] == '\\')
+		return offset;
 #endif
 
-	if (path[offset] == '/' || path[offset] == '\\')
+	if (path[offset] == '/')
 		return offset;
 
 	return -1;	/* Not a real error - signals that path is not rooted */
@@ -1817,12 +1832,12 @@ GIT_INLINE(unsigned int) dotgit_flags(
 #endif
 
 	if (repo && !protectHFS)
-		error = git_repository__cvar(&protectHFS, repo, GIT_CVAR_PROTECTHFS);
+		error = git_repository__configmap_lookup(&protectHFS, repo, GIT_CONFIGMAP_PROTECTHFS);
 	if (!error && protectHFS)
 		flags |= GIT_PATH_REJECT_DOT_GIT_HFS;
 
 	if (repo && !protectNTFS)
-		error = git_repository__cvar(&protectNTFS, repo, GIT_CVAR_PROTECTNTFS);
+		error = git_repository__configmap_lookup(&protectNTFS, repo, GIT_CONFIGMAP_PROTECTNTFS);
 	if (!error && protectNTFS)
 		flags |= GIT_PATH_REJECT_DOT_GIT_NTFS;
 
@@ -1908,4 +1923,26 @@ extern int git_path_is_gitfile(const char *path, size_t pathlen, git_path_gitfil
 		git_error_set(GIT_ERROR_OS, "invalid filesystem for path validation");
 		return -1;
 	}
+}
+
+bool git_path_supports_symlinks(const char *dir)
+{
+	git_buf path = GIT_BUF_INIT;
+	bool supported = false;
+	struct stat st;
+	int fd;
+
+	if ((fd = git_futils_mktmp(&path, dir, 0666)) < 0 ||
+	    p_close(fd) < 0 ||
+	    p_unlink(path.ptr) < 0 ||
+	    p_symlink("testing", path.ptr) < 0 ||
+	    p_lstat(path.ptr, &st) < 0)
+		goto done;
+
+	supported = (S_ISLNK(st.st_mode) != 0);
+done:
+	if (path.size)
+		(void)p_unlink(path.ptr);
+	git_buf_dispose(&path);
+	return supported;
 }

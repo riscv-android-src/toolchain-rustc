@@ -1,9 +1,11 @@
+#[cfg(unix)]
+extern crate libc;
 extern crate rayon_core;
 
 use rayon_core::ThreadPoolBuilder;
 
-use std::process::Command;
 use std::env;
+use std::process::Command;
 
 #[cfg(target_os = "linux")]
 use std::os::unix::process::ExitStatusExt;
@@ -15,6 +17,32 @@ fn force_stack_overflow(depth: u32) {
     }
 }
 
+#[cfg(unix)]
+fn disable_core() {
+    unsafe {
+        libc::setrlimit(
+            libc::RLIMIT_CORE,
+            &libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            },
+        );
+    }
+}
+
+#[cfg(unix)]
+fn overflow_code() -> Option<i32> {
+    None
+}
+
+#[cfg(windows)]
+fn overflow_code() -> Option<i32> {
+    use std::os::windows::process::ExitStatusExt;
+    use std::process::ExitStatus;
+
+    ExitStatus::from_raw(0xc00000fd /*STATUS_STACK_OVERFLOW*/).code()
+}
+
 fn main() {
     if env::args().len() == 1 {
         // first check that the recursivecall actually causes a stack overflow, and does not get optimized away
@@ -24,11 +52,8 @@ fn main() {
                 .status()
                 .unwrap();
 
-            #[cfg(windows)]
-            assert_eq!(status.code(), Some(0xc00000fd /*STATUS_STACK_OVERFLOW*/));
-
-            #[cfg(unix)]
-            assert_eq!(status.code(), None);
+            #[cfg(any(unix, windows))]
+            assert_eq!(status.code(), overflow_code());
 
             #[cfg(target_os = "linux")]
             assert!(
@@ -53,6 +78,8 @@ fn main() {
             .build()
             .unwrap();
         pool.install(|| {
+            #[cfg(unix)]
+            disable_core();
             force_stack_overflow(32);
         });
     }

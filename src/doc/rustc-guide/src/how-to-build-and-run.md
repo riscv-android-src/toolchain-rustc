@@ -160,7 +160,7 @@ The following tables indicate the outputs of various stage actions:
 | `stage0` builds `rustc` with `stage0-sysroot`             | `build/HOST/stage0-rustc/HOST`               |
 | copy `stage0-rustc (except executable)`                   | `build/HOST/stage0-sysroot/lib/rustlib/HOST` |
 | build `llvm`                                              | `build/HOST/llvm`                            |
-| `stage0` builds `codegen` with `stage0-sysroot`           | `build/HOST/stage0-codgen/HOST`              |
+| `stage0` builds `codegen` with `stage0-sysroot`           | `build/HOST/stage0-codegen/HOST`             |
 | `stage0` builds `rustdoc` with `stage0-sysroot`           | `build/HOST/stage0-tools/HOST`               |
 
 `--stage=0` stops here.
@@ -434,7 +434,7 @@ whether the compiler builds is not enough. A common example is that
 you need to add a `debug!` statement to inspect the value of some
 state or better understand the problem. In that case, you really need
 a full build.  By leveraging incremental, though, you can often get
-these builds to complete very fast (e.g., around 30 seconds): the only
+these builds to complete very fast (e.g., around 30 seconds). The only
 catch is this requires a bit of fudging and may produce compilers that
 don't work (but that is easily detected and fixed).
 
@@ -483,7 +483,7 @@ in other sections:
 - Running tests (see the [section on running tests](./tests/running.html) for
   more details):
   - `./x.py test --stage 1 src/libstd` – runs the `#[test]` tests from libstd
-  - `./x.py test --stage 1 src/test/run-pass` – runs the `run-pass` test suite
+  - `./x.py test --stage 1 src/test/ui` – runs the `ui` test suite
   - `./x.py test --stage 1 src/test/ui/const-generics` - runs all the tests in
   the `const-generics/` subdirectory of the `ui` test suite
   - `./x.py test --stage 1 src/test/ui/const-generics/const-types.rs` - runs
@@ -495,12 +495,12 @@ One of the challenges with rustc is that the RLS can't handle it, since it's a
 bootstrapping compiler. This makes code navigation difficult. One solution is to
 use `ctags`.
 
-`ctags` has a long history and several variants. Exhuberant CTags seems to be
+`ctags` has a long history and several variants. Exuberant Ctags seems to be
 quite commonly distributed but it does not have out-of-box Rust support. Some
 distributions seem to use [Universal Ctags][utags], which is a maintained fork
 and does have built-in Rust support.
 
-The following script can be used to set up Exhuberant Ctags:
+The following script can be used to set up Exuberant Ctags:
 [https://github.com/nikomatsakis/rust-etags][etags].
 
 `ctags` integrates into emacs and vim quite easily. The following can then be

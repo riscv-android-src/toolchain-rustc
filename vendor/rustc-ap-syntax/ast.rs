@@ -5,8 +5,8 @@ pub use UnsafeSource::*;
 pub use crate::symbol::{Ident, Symbol as Name};
 pub use crate::util::parser::ExprPrecedence;
 
-use crate::ext::hygiene::{Mark, SyntaxContext};
-use crate::parse::token;
+use crate::ext::hygiene::{ExpnId, SyntaxContext};
+use crate::parse::token::{self, DelimToken};
 use crate::print::pprust;
 use crate::ptr::P;
 use crate::source_map::{dummy_spanned, respan, Spanned};
@@ -22,7 +22,7 @@ use syntax_pos::{Span, DUMMY_SP};
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
-use serialize::{self, Decoder, Encoder};
+use rustc_serialize::{self, Decoder, Encoder};
 use std::fmt;
 
 pub use rustc_target::abi::FloatTy;
@@ -50,8 +50,14 @@ impl fmt::Debug for Lifetime {
             f,
             "lifetime({}: {})",
             self.id,
-            pprust::lifetime_to_string(self)
+            self
         )
+    }
+}
+
+impl fmt::Display for Lifetime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.ident.name.as_str())
     }
 }
 
@@ -245,12 +251,12 @@ mod node_id_inner {
 pub use node_id_inner::NodeId;
 
 impl NodeId {
-    pub fn placeholder_from_mark(mark: Mark) -> Self {
-        NodeId::from_u32(mark.as_u32())
+    pub fn placeholder_from_expn_id(expn_id: ExpnId) -> Self {
+        NodeId::from_u32(expn_id.as_u32())
     }
 
-    pub fn placeholder_to_mark(self) -> Mark {
-        Mark::from_u32(self.as_u32())
+    pub fn placeholder_to_expn_id(self) -> ExpnId {
+        ExpnId::from_u32(self.as_u32())
     }
 }
 
@@ -260,13 +266,13 @@ impl fmt::Display for NodeId {
     }
 }
 
-impl serialize::UseSpecializedEncodable for NodeId {
+impl rustc_serialize::UseSpecializedEncodable for NodeId {
     fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
         s.emit_u32(self.as_u32())
     }
 }
 
-impl serialize::UseSpecializedDecodable for NodeId {
+impl rustc_serialize::UseSpecializedDecodable for NodeId {
     fn default_decode<D: Decoder>(d: &mut D) -> Result<NodeId, D::Error> {
         d.read_u32().map(NodeId::from_u32)
     }
@@ -362,7 +368,6 @@ impl Default for Generics {
         Generics {
             params: Vec::new(),
             where_clause: WhereClause {
-                id: DUMMY_NODE_ID,
                 predicates: Vec::new(),
                 span: DUMMY_SP,
             },
@@ -374,7 +379,6 @@ impl Default for Generics {
 /// A where-clause in a definition.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct WhereClause {
-    pub id: NodeId,
     pub predicates: Vec<WherePredicate>,
     pub span: Span,
 }
@@ -515,21 +519,28 @@ impl fmt::Debug for Pat {
 }
 
 impl Pat {
+    /// Attempt reparsing the pattern as a type.
+    /// This is intended for use by diagnostics.
     pub(super) fn to_ty(&self) -> Option<P<Ty>> {
         let node = match &self.node {
+            // In a type expression `_` is an inference variable.
             PatKind::Wild => TyKind::Infer,
+            // An IDENT pattern with no binding mode would be valid as path to a type. E.g. `u32`.
             PatKind::Ident(BindingMode::ByValue(Mutability::Immutable), ident, None) => {
                 TyKind::Path(None, Path::from_ident(*ident))
             }
             PatKind::Path(qself, path) => TyKind::Path(qself.clone(), path.clone()),
             PatKind::Mac(mac) => TyKind::Mac(mac.clone()),
+            // `&mut? P` can be reinterpreted as `&mut? T` where `T` is `P` reparsed as a type.
             PatKind::Ref(pat, mutbl) => pat
                 .to_ty()
                 .map(|ty| TyKind::Rptr(None, MutTy { ty, mutbl: *mutbl }))?,
-            PatKind::Slice(pats, None, _) if pats.len() == 1 => {
-                pats[0].to_ty().map(TyKind::Slice)?
-            }
-            PatKind::Tuple(pats, None) => {
+            // A slice/array pattern `[P]` can be reparsed as `[T]`, an unsized array,
+            // when `P` can be reparsed as a type `T`.
+            PatKind::Slice(pats) if pats.len() == 1 => pats[0].to_ty().map(TyKind::Slice)?,
+            // A tuple pattern `(P0, .., Pn)` can be reparsed as `(T0, .., Tn)`
+            // assuming `T0` to `Tn` are all syntactically valid as types.
+            PatKind::Tuple(pats) => {
                 let mut tys = Vec::with_capacity(pats.len());
                 // FIXME(#48994) - could just be collected into an Option<Vec>
                 for pat in pats {
@@ -555,24 +566,28 @@ impl Pat {
             return false;
         }
 
-        match self.node {
-            PatKind::Ident(_, _, Some(ref p)) => p.walk(it),
-            PatKind::Struct(_, ref fields, _) => fields.iter().all(|field| field.node.pat.walk(it)),
-            PatKind::TupleStruct(_, ref s, _) | PatKind::Tuple(ref s, _) => {
+        match &self.node {
+            PatKind::Ident(_, _, Some(p)) => p.walk(it),
+            PatKind::Struct(_, fields, _) => fields.iter().all(|field| field.node.pat.walk(it)),
+            PatKind::TupleStruct(_, s) | PatKind::Tuple(s) | PatKind::Slice(s) => {
                 s.iter().all(|p| p.walk(it))
             }
-            PatKind::Box(ref s) | PatKind::Ref(ref s, _) | PatKind::Paren(ref s) => s.walk(it),
-            PatKind::Slice(ref before, ref slice, ref after) => {
-                before.iter().all(|p| p.walk(it))
-                    && slice.iter().all(|p| p.walk(it))
-                    && after.iter().all(|p| p.walk(it))
-            }
+            PatKind::Box(s) | PatKind::Ref(s, _) | PatKind::Paren(s) => s.walk(it),
             PatKind::Wild
+            | PatKind::Rest
             | PatKind::Lit(_)
             | PatKind::Range(..)
             | PatKind::Ident(..)
             | PatKind::Path(..)
             | PatKind::Mac(_) => true,
+        }
+    }
+
+    /// Is this a `..` pattern?
+    pub fn is_rest(&self) -> bool {
+        match self.node {
+            PatKind::Rest => true,
+            _ => false,
         }
     }
 }
@@ -626,9 +641,7 @@ pub enum PatKind {
     Struct(Path, Vec<Spanned<FieldPat>>, /* recovered */ bool),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
-    /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
-    /// `0 <= position <= subpats.len()`.
-    TupleStruct(Path, Vec<P<Pat>>, Option<usize>),
+    TupleStruct(Path, Vec<P<Pat>>),
 
     /// A possibly qualified path pattern.
     /// Unqualified path patterns `A::B::C` can legally refer to variants, structs, constants
@@ -637,9 +650,7 @@ pub enum PatKind {
     Path(Option<QSelf>, Path),
 
     /// A tuple pattern (`(a, b)`).
-    /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
-    /// `0 <= position <= subpats.len()`.
-    Tuple(Vec<P<Pat>>, Option<usize>),
+    Tuple(Vec<P<Pat>>),
 
     /// A `box` pattern.
     Box(P<Pat>),
@@ -653,9 +664,22 @@ pub enum PatKind {
     /// A range pattern (e.g., `1...2`, `1..=2` or `1..2`).
     Range(P<Expr>, P<Expr>, Spanned<RangeEnd>),
 
-    /// `[a, b, ..i, y, z]` is represented as:
-    ///     `PatKind::Slice(box [a, b], Some(i), box [y, z])`
-    Slice(Vec<P<Pat>>, Option<P<Pat>>, Vec<P<Pat>>),
+    /// A slice pattern `[a, b, c]`.
+    Slice(Vec<P<Pat>>),
+
+    /// A rest pattern `..`.
+    ///
+    /// Syntactically it is valid anywhere.
+    ///
+    /// Semantically however, it only has meaning immediately inside:
+    /// - a slice pattern: `[a, .., b]`,
+    /// - a binding pattern immediately inside a slice pattern: `[a, r @ ..]`,
+    /// - a tuple pattern: `(a, .., b)`,
+    /// - a tuple struct/variant pattern: `$path(a, .., b)`.
+    ///
+    /// In all of these cases, an additional restriction applies,
+    /// only one rest pattern may occur in the pattern sequences.
+    Rest,
 
     /// Parentheses in patterns used for grouping (i.e., `(PAT)`).
     Paren(P<Pat>),
@@ -895,14 +919,9 @@ pub struct Local {
 pub struct Arm {
     pub attrs: Vec<Attribute>,
     pub pats: Vec<P<Pat>>,
-    pub guard: Option<Guard>,
+    pub guard: Option<P<Expr>>,
     pub body: P<Expr>,
     pub span: Span,
-}
-
-#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
-pub enum Guard {
-    If(P<Expr>),
 }
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
@@ -1034,10 +1053,9 @@ impl Expr {
             ExprKind::Unary(..) => ExprPrecedence::Unary,
             ExprKind::Lit(_) => ExprPrecedence::Lit,
             ExprKind::Type(..) | ExprKind::Cast(..) => ExprPrecedence::Cast,
+            ExprKind::Let(..) => ExprPrecedence::Let,
             ExprKind::If(..) => ExprPrecedence::If,
-            ExprKind::IfLet(..) => ExprPrecedence::IfLet,
             ExprKind::While(..) => ExprPrecedence::While,
-            ExprKind::WhileLet(..) => ExprPrecedence::WhileLet,
             ExprKind::ForLoop(..) => ExprPrecedence::ForLoop,
             ExprKind::Loop(..) => ExprPrecedence::Loop,
             ExprKind::Match(..) => ExprPrecedence::Match,
@@ -1118,26 +1136,20 @@ pub enum ExprKind {
     Cast(P<Expr>, P<Ty>),
     /// A type ascription (e.g., `42: usize`).
     Type(P<Expr>, P<Ty>),
+    /// A `let pats = expr` expression that is only semantically allowed in the condition
+    /// of `if` / `while` expressions. (e.g., `if let 0 = x { .. }`).
+    ///
+    /// The `Vec<P<Pat>>` is for or-patterns at the top level.
+    /// FIXME(54883): Change this to just `P<Pat>`.
+    Let(Vec<P<Pat>>, P<Expr>),
     /// An `if` block, with an optional `else` block.
     ///
     /// `if expr { block } else { expr }`
     If(P<Expr>, P<Block>, Option<P<Expr>>),
-    /// An `if let` expression with an optional else block
-    ///
-    /// `if let pat = expr { block } else { expr }`
-    ///
-    /// This is desugared to a `match` expression.
-    IfLet(Vec<P<Pat>>, P<Expr>, P<Block>, Option<P<Expr>>),
-    /// A while loop, with an optional label
+    /// A while loop, with an optional label.
     ///
     /// `'label: while expr { block }`
     While(P<Expr>, P<Block>, Option<Label>),
-    /// A `while let` loop, with an optional label.
-    ///
-    /// `'label: while let pat = expr { block }`
-    ///
-    /// This is desugared to a combination of `loop` and `match` expressions.
-    WhileLet(Vec<P<Pat>>, P<Expr>, P<Block>, Option<Label>),
     /// A `for` loop, with an optional label.
     ///
     /// `'label: for pat in expr { block }`
@@ -1166,7 +1178,7 @@ pub enum ExprKind {
     /// preexisting defs.
     Async(CaptureBy, NodeId, P<Block>),
     /// An await expression (`my_future.await`).
-    Await(AwaitOrigin, P<Expr>),
+    Await(P<Expr>),
 
     /// A try block (`try { ... }`).
     TryBlock(P<Block>),
@@ -1181,7 +1193,7 @@ pub enum ExprKind {
     Field(P<Expr>, Ident),
     /// An indexing operation (e.g., `foo[2]`).
     Index(P<Expr>, P<Expr>),
-    /// A range (e.g., `1..2`, `1..`, `..2`, `1...2`, `1...`, `...2`).
+    /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`).
     Range(Option<P<Expr>>, Option<P<Expr>>, RangeLimits),
 
     /// Variable reference, possibly containing `::` and/or type
@@ -1303,6 +1315,16 @@ pub enum MacDelimiter {
 impl Mac_ {
     pub fn stream(&self) -> TokenStream {
         self.tts.clone()
+    }
+}
+
+impl MacDelimiter {
+    crate fn to_token(self) -> DelimToken {
+        match self {
+            MacDelimiter::Parenthesis => DelimToken::Paren,
+            MacDelimiter::Bracket => DelimToken::Bracket,
+            MacDelimiter::Brace => DelimToken::Brace,
+        }
     }
 }
 
@@ -1770,9 +1792,11 @@ pub struct InlineAsm {
 /// E.g., `bar: usize` as in `fn foo(bar: usize)`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct Arg {
+    pub attrs: ThinVec<Attribute>,
     pub ty: P<Ty>,
     pub pat: P<Pat>,
     pub id: NodeId,
+    pub span: Span,
 }
 
 /// Alternative representation for `Arg`s describing `self` parameter of methods.
@@ -1817,7 +1841,7 @@ impl Arg {
         }
     }
 
-    pub fn from_self(eself: ExplicitSelf, eself_ident: Ident) -> Arg {
+    pub fn from_self(attrs: ThinVec<Attribute>, eself: ExplicitSelf, eself_ident: Ident) -> Arg {
         let span = eself.span.to(eself_ident.span);
         let infer_ty = P(Ty {
             id: DUMMY_NODE_ID,
@@ -1825,11 +1849,13 @@ impl Arg {
             span,
         });
         let arg = |mutbl, ty| Arg {
+            attrs,
             pat: P(Pat {
                 id: DUMMY_NODE_ID,
                 node: PatKind::Ident(BindingMode::ByValue(mutbl), eself_ident, None),
                 span,
             }),
+            span,
             ty,
             id: DUMMY_NODE_ID,
         };
@@ -1844,7 +1870,7 @@ impl Arg {
                         lt,
                         MutTy {
                             ty: infer_ty,
-                            mutbl: mutbl,
+                            mutbl,
                         },
                     ),
                     span,
@@ -2132,7 +2158,7 @@ impl PolyTraitRef {
         PolyTraitRef {
             bound_generic_params: generic_params,
             trait_ref: TraitRef {
-                path: path,
+                path,
                 ref_id: DUMMY_NODE_ID,
             },
             span,
@@ -2410,12 +2436,11 @@ impl ForeignItemKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serialize;
 
     // Are ASTs encodable?
     #[test]
     fn check_asts_encodable() {
-        fn assert_encodable<T: serialize::Encodable>() {}
+        fn assert_encodable<T: rustc_serialize::Encodable>() {}
         assert_encodable::<Crate>();
     }
 }

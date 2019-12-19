@@ -19,3 +19,10 @@ async unsafe fn rust() {
         Ok(())
     }
 }
+
+async fn await_try() {
+    something
+     .await
+      ?
+     ;
+}

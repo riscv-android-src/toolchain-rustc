@@ -11,7 +11,7 @@ on one at a time (each of them is fairly independent from the others):
 - [member constraints][m_c] (`member R_m of [R_c...]`), which arise from impl Trait.
 
 [`propagate_constraints`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/borrow_check/nll/region_infer/struct.RegionInferenceContext.html#method.propagate_constraints
-[m_c]: ./member_constraints.html
+[m_c]: ./member_constraints.md
 
 In this chapter, we'll explain the "heart" of constraint propagation,
 covering both liveness and outlives constraints.
@@ -29,7 +29,7 @@ given some set of constraints `{C}` and it computes a set of values
   - For each constraint C:
     - Update `Values` as needed to satisfy the constraint
 
-[riv]: ../region-inference.html#region-variables
+[riv]: ../region_inference.md#region-variables
 
 As a simple example, if we have a liveness constraint `R live at E`,
 then we can apply `Values(R) = Values(R) union {E}` to make the
@@ -55,7 +55,7 @@ includes a region R is live at some [point] P. This simply means that
 the value of R must include the point P. Liveness constraints are
 computed by the MIR type checker.
 
-[point]: ../../appendix/glossary.html
+[point]: ../../appendix/glossary.md
 
 A liveness constraint `R live at E` is satisfied if `E` is a member of
 `Values(R)`. So to "apply" such a constraint to `Values`, we just have
@@ -88,7 +88,7 @@ have to compute `Values(R1) = Values(R1) union Values(R2)`.
 One observation that follows from this is that if you have `R1: R2`
 and `R2: R1`, then `R1 = R2` must be true. Similarly, if you have:
 
-```
+```txt
 R1: R2
 R2: R3
 R3: R4
@@ -112,14 +112,14 @@ induces an edge `'a -> 'b`. This conversion happens in the
 [`RegionInferenceContext::new`] function that creates the inference
 context.
 
-[`ConstraintSet`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/borrow_check/nll/constraints/struct.ConstraintSet.html
-[graph-fn]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/borrow_check/nll/constraints/struct.ConstraintSet.html#method.graph
+[`ConstraintSet`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/borrow_check/nll/constraints/struct.OutlivesConstraintSet.html
+[graph-fn]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/borrow_check/nll/constraints/struct.OutlivesConstraintSet.html#method.graph
 [`RegionInferenceContext::new`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/borrow_check/nll/region_infer/struct.RegionInferenceContext.html#method.new
 
 When using a graph representation, we can detect regions that must be equal
 by looking for cycles. That is, if you have a constraint like
 
-```
+```txt
 'a: 'b
 'b: 'c
 'c: 'd
@@ -137,7 +137,7 @@ by invoking `constraint_sccs.scc(r)`.
 
 Working in terms of SCCs allows us to be more efficient: if we have a
 set of regions `'a...'d` that are part of a single SCC, we don't have
-to compute/store their values separarely. We can just store one value
+to compute/store their values separately. We can just store one value
 **for the SCC**, since they must all be equal.
 
 If you look over the region inference code, you will see that a number
@@ -153,7 +153,7 @@ When we compute SCCs, we not only figure out which regions are a
 member of each SCC, we also figure out the edges between them. So for example
 consider this set of outlives constraints:
 
-```
+```txt
 'a: 'b
 'b: 'a
 
@@ -178,7 +178,7 @@ expressed in terms of regions -- that is, we have a map like
 in terms of SCCs -- we can integrate these liveness constraints very
 easily just by taking the union:
 
-```
+```txt
 for each region R:
   let S be the SCC that contains R
   Values(S) = Values(S) union Liveness(R)
@@ -195,7 +195,7 @@ the value of `S1`, we first compute the values of each successor `S2`.
 Then we simply union all of those values together. To use a
 quasi-iterator-like notation:
 
-```
+```txt
 Values(S1) =
   s1.successors()
     .map(|s2| Values(s2))
@@ -220,5 +220,3 @@ taking into account all of the liveness and outlives
 constraints. However, in order to complete the process, we must also
 consider [member constraints][m_c], which are described in [a later
 section][m_c].
-
-

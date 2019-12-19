@@ -13,17 +13,22 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_data_structures"
-version = "491.0.0"
+version = "546.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit 6312b89fdabce0aedf613391266e08c0deef2324 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit 435236b8877cdb98c82eaebfb7887782277265c5 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
 [lib]
 name = "rustc_data_structures"
 path = "lib.rs"
+doctest = false
 [dependencies.cfg-if]
 version = "0.1.2"
+
+[dependencies.crossbeam-utils]
+version = "0.6.5"
+features = ["nightly"]
 
 [dependencies.ena]
 version = "0.13"
@@ -54,16 +59,14 @@ version = "0.2.0"
 package = "rustc-rayon-core"
 
 [dependencies.rustc-ap-graphviz]
-version = "491.0.0"
-
-[dependencies.rustc-ap-rustc_cratesio_shim]
-version = "491.0.0"
-
-[dependencies.rustc-ap-serialize]
-version = "491.0.0"
+version = "546.0.0"
 
 [dependencies.rustc-hash]
 version = "1.0.1"
+
+[dependencies.rustc_serialize]
+version = "546.0.0"
+package = "rustc-ap-serialize"
 
 [dependencies.smallvec]
 version = "0.6.7"

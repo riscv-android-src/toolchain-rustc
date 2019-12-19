@@ -1,12 +1,12 @@
 use serde_json::value::Value as Json;
 
-use context::Context;
-use error::RenderError;
-use helpers::{HelperDef, HelperResult};
-use output::Output;
-use registry::Registry;
-use render::{Helper, RenderContext};
-use value::JsonRender;
+use crate::context::Context;
+use crate::error::RenderError;
+use crate::helpers::{HelperDef, HelperResult};
+use crate::output::Output;
+use crate::registry::Registry;
+use crate::render::{Helper, RenderContext};
+use crate::value::JsonRender;
 
 #[derive(Clone, Copy)]
 pub struct LookupHelper;
@@ -18,7 +18,7 @@ impl HelperDef for LookupHelper {
         _: &Registry,
         _: &Context,
         _: &mut RenderContext,
-        out: &mut Output,
+        out: &mut dyn Output,
     ) -> HelperResult {
         let collection_value = h
             .param(0)
@@ -28,14 +28,14 @@ impl HelperDef for LookupHelper {
             .ok_or_else(|| RenderError::new("Insufficient params for helper \"lookup\""))?;
 
         let null = Json::Null;
-        let value = match collection_value.value() {
-            &Json::Array(ref v) => index
+        let value = match *collection_value.value() {
+            Json::Array(ref v) => index
                 .value()
                 .as_u64()
                 .and_then(|u| Some(u as usize))
                 .and_then(|u| v.get(u))
                 .unwrap_or(&null),
-            &Json::Object(ref m) => index
+            Json::Object(ref m) => index
                 .value()
                 .as_str()
                 .and_then(|k| m.get(k))
@@ -52,34 +52,28 @@ pub static LOOKUP_HELPER: LookupHelper = LookupHelper;
 
 #[cfg(test)]
 mod test {
-    use registry::Registry;
+    use crate::registry::Registry;
 
     use std::collections::BTreeMap;
 
     #[test]
     fn test_lookup() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#each v1}}{{lookup ../../v2 @index}}{{/each}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string("t1", "{{#each v1}}{{lookup ../../v2 1}}{{/each}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string("t2", "{{lookup kk \"a\"}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#each v1}}{{lookup ../../v2 @index}}{{/each}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t1", "{{#each v1}}{{lookup ../../v2 1}}{{/each}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t2", "{{lookup kk \"a\"}}")
+            .is_ok());
 
         let mut m: BTreeMap<String, Vec<u16>> = BTreeMap::new();
         m.insert("v1".to_string(), vec![1u16, 2u16, 3u16]);
         m.insert("v2".to_string(), vec![9u16, 8u16, 7u16]);
 
-        let m2 = btreemap!{
+        let m2 = btreemap! {
             "kk".to_string() => btreemap!{"a".to_string() => "world".to_string()}
         };
 

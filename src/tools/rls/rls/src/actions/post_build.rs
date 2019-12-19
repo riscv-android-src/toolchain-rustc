@@ -16,6 +16,7 @@ use crate::actions::diagnostics::{parse_diagnostics, Diagnostic, ParsedDiagnosti
 use crate::actions::progress::DiagnosticsNotifier;
 use crate::build::{BuildResult, Crate};
 use crate::concurrency::JobToken;
+use crate::config::CrateBlacklist;
 use crate::lsp_data::{PublishDiagnosticsParams, Range};
 
 use failure;
@@ -35,7 +36,7 @@ pub struct PostBuildHandler {
     pub file_to_crates: Arc<Mutex<HashMap<PathBuf, HashSet<Crate>>>>,
     pub project_path: PathBuf,
     pub show_warnings: bool,
-    pub use_black_list: bool,
+    pub crate_blacklist: CrateBlacklist,
     pub related_information_support: bool,
     pub shown_cargo_error: Arc<AtomicBool>,
     pub active_build_count: Arc<AtomicUsize>,
@@ -53,7 +54,7 @@ impl PostBuildHandler {
 
                 // Emit appropriate diagnostics using the ones from build.
                 self.handle_messages(&cwd, &messages);
-                let analysis_queue = self.analysis_queue.clone();
+                let analysis_queue = Arc::clone(&self.analysis_queue);
 
                 {
                     let mut files_to_crates = self.file_to_crates.lock().unwrap();
@@ -172,28 +173,15 @@ impl PostBuildHandler {
     }
 
     fn reload_analysis_from_disk(&self, cwd: &Path) {
-        if self.use_black_list {
-            self.analysis
-                .reload_with_blacklist(&self.project_path, cwd, &rls_blacklist::CRATE_BLACKLIST)
-                .unwrap();
-        } else {
-            self.analysis.reload(&self.project_path, cwd).unwrap();
-        }
+        self.analysis
+            .reload_with_blacklist(&self.project_path, cwd, &self.crate_blacklist.0[..])
+            .unwrap();
     }
 
     fn reload_analysis_from_memory(&self, cwd: &Path, analysis: Vec<Analysis>) {
-        if self.use_black_list {
-            self.analysis
-                .reload_from_analysis(
-                    analysis,
-                    &self.project_path,
-                    cwd,
-                    &rls_blacklist::CRATE_BLACKLIST,
-                )
-                .unwrap();
-        } else {
-            self.analysis.reload_from_analysis(analysis, &self.project_path, cwd, &[]).unwrap();
-        }
+        self.analysis
+            .reload_from_analysis(analysis, &self.project_path, cwd, &self.crate_blacklist.0[..])
+            .unwrap();
     }
 
     fn finalize(mut self) {
@@ -244,10 +232,13 @@ pub struct AnalysisQueue {
 impl AnalysisQueue {
     // Create a new queue and start the worker thread.
     pub fn init() -> AnalysisQueue {
-        let queue = Arc::new(Mutex::new(Vec::new()));
-        let queue_clone = queue.clone();
-        let worker_thread =
-            thread::spawn(move || AnalysisQueue::run_worker_thread(queue_clone)).thread().clone();
+        let queue = Arc::default();
+        let worker_thread = thread::spawn({
+            let queue = Arc::clone(&queue);
+            || AnalysisQueue::run_worker_thread(queue)
+        })
+        .thread()
+        .clone();
 
         AnalysisQueue { cur_cwd: Mutex::new(None), queue, worker_thread }
     }
@@ -305,6 +296,7 @@ impl Drop for AnalysisQueue {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 enum QueuedJob {
     Job(Job),
     Terminate,

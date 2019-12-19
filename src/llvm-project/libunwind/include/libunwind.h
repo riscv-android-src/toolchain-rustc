@@ -1,9 +1,8 @@
 //===---------------------------- libunwind.h -----------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //
 // Compatible with libunwind API documented at:
@@ -76,7 +75,7 @@ typedef struct unw_addr_space *unw_addr_space_t;
 
 typedef int unw_regnum_t;
 typedef uintptr_t unw_word_t;
-#if defined(__arm__)
+#if defined(__arm__) && !defined(__ARM_DWARF_EH__)
 typedef uint64_t unw_fpreg_t;
 #else
 typedef double unw_fpreg_t;

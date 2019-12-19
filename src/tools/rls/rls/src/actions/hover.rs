@@ -255,12 +255,11 @@ fn tooltip_local_variable_usage(
     doc_url: Option<String>,
 ) -> Vec<MarkedString> {
     debug!("tooltip_local_variable_usage: {}", def.name);
-    let vfs = ctx.vfs.clone();
 
     let the_type = def.value.trim().into();
     let mut context = String::new();
     if ctx.config.lock().unwrap().show_hover_context {
-        match vfs.load_line(&def.span.file, def.span.range.row_start) {
+        match ctx.vfs.load_line(&def.span.file, def.span.range.row_start) {
             Ok(line) => {
                 context.push_str(line.trim());
             }
@@ -282,7 +281,7 @@ fn tooltip_local_variable_usage(
 fn tooltip_type(ctx: &InitActionContext, def: &Def, doc_url: Option<String>) -> Vec<MarkedString> {
     debug!("tooltip_type: {}", def.name);
 
-    let vfs = ctx.vfs.clone();
+    let vfs = &ctx.vfs;
 
     let the_type = || def.value.trim().into();
     let the_type = def_decl(def, &vfs, the_type);
@@ -299,7 +298,7 @@ fn tooltip_field_or_variant(
 ) -> Vec<MarkedString> {
     debug!("tooltip_field_or_variant: {}", def.name);
 
-    let vfs = ctx.vfs.clone();
+    let vfs = &ctx.vfs;
 
     let the_type = def.value.trim().into();
     let docs = def_docs(def, &vfs);
@@ -315,7 +314,7 @@ fn tooltip_struct_enum_union_trait(
 ) -> Vec<MarkedString> {
     debug!("tooltip_struct_enum_union_trait: {}", def.name);
 
-    let vfs = ctx.vfs.clone();
+    let vfs = &ctx.vfs;
     let fmt_config = ctx.fmt_config();
     // We hover often, so use the in-process one to speed things up.
     let fmt = Rustfmt::Internal;
@@ -341,7 +340,7 @@ fn tooltip_struct_enum_union_trait(
 fn tooltip_mod(ctx: &InitActionContext, def: &Def, doc_url: Option<String>) -> Vec<MarkedString> {
     debug!("tooltip_mod: name: {}", def.name);
 
-    let vfs = ctx.vfs.clone();
+    let vfs = &ctx.vfs;
 
     let the_type = def.value.trim();
     let the_type = the_type.replace("\\\\", "/");
@@ -370,7 +369,7 @@ fn tooltip_function_method(
 ) -> Vec<MarkedString> {
     debug!("tooltip_function_method: {}", def.name);
 
-    let vfs = ctx.vfs.clone();
+    let vfs = &ctx.vfs;
     let fmt_config = ctx.fmt_config();
     // We hover often, so use the in-process one to speed things up.
     let fmt = Rustfmt::Internal;
@@ -441,11 +440,9 @@ fn tooltip_static_const_decl(
 ) -> Vec<MarkedString> {
     debug!("tooltip_static_const_decl: {}", def.name);
 
-    let vfs = ctx.vfs.clone();
+    let vfs = &ctx.vfs;
 
-    let the_type = def.value.trim().into();
-
-    let the_type = def_decl(def, &vfs, || the_type);
+    let the_type = def_decl(def, &vfs, || def.value.trim().into());
     let docs = def_docs(def, &vfs);
     let context = None;
 
@@ -505,43 +502,6 @@ fn create_tooltip(
         tooltip.push(MarkedString::from_markdown(docs));
     }
     tooltip
-}
-
-/// Skips `skip_components` from the `path` if the path starts with `prefix`.
-/// Returns the original path if there is no match.
-///
-/// # Examples
-///
-/// ```ignore
-/// # use std::path::Path;
-///
-/// let base_path = Path::new(".rustup/toolchains/nightly-x86_64-pc-windows-msvc/lib/rustlib/src/rust/src/liballoc/string.rs");
-/// let tidy_path = skip_path_components(base_path, ".rustup", 7);
-/// assert_eq!(tidy_path, Some(PathBuf::from("liballoc/string.rs")));
-///
-/// let base_path = Path::new("/home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/smallvec-0.6.2/lib.rs");
-/// let tidy_path = skip_path_components(base_path, "/home/user/.cargo", 3);
-/// assert_eq!(tidy_path, Some(PathBuf::from("smallvec-0.6.2/lib.rs")));
-///
-/// let base_path = Path::new("/home/user/.cargo/registry/src/github.com-1ecc6299db9ec823/smallvec-0.6.2/lib.rs");
-/// let tidy_path = skip_path_components(base_path, ".cargo", 3);
-/// assert_eq!(tidy_path, None);
-///
-/// let base_path = Path::new("some/unknown/path/lib.rs");
-/// let tidy_path = skip_path_components(base_path, ".rustup", 4);
-/// assert_eq!(tidy_path, None);
-/// ```
-fn skip_path_components<P: AsRef<Path>>(
-    path: &Path,
-    prefix: P,
-    skip_components: usize,
-) -> Option<PathBuf> {
-    path.strip_prefix(prefix).ok().map(|stripped| {
-        stripped.components().skip(skip_components).fold(PathBuf::new(), |mut comps, comp| {
-            comps.push(comp);
-            comps
-        })
-    })
 }
 
 /// Collapses parent directory references inside of paths.
@@ -616,22 +576,28 @@ fn racer_match_to_def(ctx: &InitActionContext, m: &racer::Match) -> Option<Def> 
         use std::env;
 
         let home = home::home_dir().unwrap_or_default();
-        let rustup_home =
-            env::var("RUSTUP_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".rustup"));
         let cargo_home =
             env::var("CARGO_HOME").map(PathBuf::from).unwrap_or_else(|_| home.join(".cargo"));
+        let cargo_registry_src =
+            cargo_home.join("registry").join("src").join("github.com-1ecc6299db9ec823");
+        let rust_src_path = racer::get_rust_src_path().ok();
 
         let contextstr = m.contextstr.replacen("\\\\?\\", "", 1);
         let contextstr_path = PathBuf::from(&contextstr);
         let contextstr_path = collapse_parents(contextstr_path);
 
-        // Tidy up the module path.
-        // Skips `toolchains/$TOOLCHAIN/lib/rustlib/src/rust/src`.
-        skip_path_components(&contextstr_path, rustup_home, 7)
-            // Skips `/registry/src/github.com-1ecc6299db9ec823/`.
-            .or_else(|| skip_path_components(&contextstr_path, cargo_home, 3))
-            // Make the path relative to the root of the project, if possible.
+        // Attempt to tidy up the module path
+        rust_src_path
+            .and_then(|rust_src_path| {
+                // Make the path relative to Rust src root
+                contextstr_path.strip_prefix(rust_src_path).ok().map(ToOwned::to_owned)
+            })
             .or_else(|| {
+                // Make the path relative to the package root cached in Cargo registry
+                contextstr_path.strip_prefix(cargo_registry_src).ok().map(ToOwned::to_owned)
+            })
+            .or_else(|| {
+                // Make the path relative to the root of the project
                 contextstr_path.strip_prefix(&ctx.current_project).ok().map(ToOwned::to_owned)
             })
             .and_then(|path| path.to_str().map(ToOwned::to_owned))
@@ -684,7 +650,6 @@ fn racer_match_to_def(ctx: &InitActionContext, m: &racer::Match) -> Option<Def> 
 /// Uses racer to synthesize a `Def` for the given `span`. If no appropriate
 /// match is found with coordinates, `None` is returned.
 fn racer_def(ctx: &InitActionContext, span: &Span<ZeroIndexed>) -> Option<Def> {
-    let vfs = ctx.vfs.clone();
     let file_path = &span.file;
 
     if !file_path.as_path().exists() {
@@ -692,7 +657,7 @@ fn racer_def(ctx: &InitActionContext, span: &Span<ZeroIndexed>) -> Option<Def> {
         return None;
     }
 
-    let name = vfs.load_line(file_path.as_path(), span.range.row_start).ok().and_then(|line| {
+    let name = ctx.vfs.load_line(file_path.as_path(), span.range.row_start).ok().and_then(|line| {
         let col_start = span.range.col_start.0 as usize;
         let col_end = span.range.col_end.0 as usize;
         line.get(col_start..col_end).map(ToOwned::to_owned)

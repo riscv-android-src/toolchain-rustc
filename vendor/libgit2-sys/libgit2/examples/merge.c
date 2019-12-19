@@ -15,10 +15,6 @@
 #include "common.h"
 #include <assert.h>
 
-#ifdef _MSC_VER
-#define snprintf sprintf_s
-#endif
-
 /** The following example demonstrates how to do merges with libgit2.
  *
  * It will merge whatever commit-ish you pass in into the current branch.
@@ -61,7 +57,7 @@ static void opts_add_refish(merge_options *opts, const char *refish)
 	assert(opts != NULL);
 
 	sz = ++opts->heads_count * sizeof(opts->heads[0]);
-	opts->heads = xrealloc(opts->heads, sz);
+	opts->heads = xrealloc((void *) opts->heads, sz);
 	opts->heads[opts->heads_count - 1] = refish;
 }
 
@@ -224,6 +220,7 @@ static int create_merge_commit(git_repository *repo, git_index *index, merge_opt
 	check_lg2(git_repository_head(&head_ref, repo), "failed to get repo HEAD", NULL);
 	if (resolve_refish(&merge_commit, repo, opts->heads[0])) {
 		fprintf(stderr, "failed to resolve refish %s", opts->heads[0]);
+		free(parents);
 		return -1;
 	}
 
@@ -278,9 +275,8 @@ cleanup:
 	return err;
 }
 
-int main(int argc, char **argv)
+int lg2_merge(git_repository *repo, int argc, char **argv)
 {
-	git_repository *repo = NULL;
 	merge_options opts;
 	git_index *index;
 	git_repository_state_t state;
@@ -291,11 +287,6 @@ int main(int argc, char **argv)
 
 	merge_options_init(&opts);
 	parse_options(&path, &opts, argc, argv);
-
-	git_libgit2_init();
-
-	check_lg2(git_repository_open_ext(&repo, path, 0, NULL),
-	          "Could not open repository", NULL);
 
 	state = git_repository_state(repo);
 	if (state != GIT_REPOSITORY_STATE_NONE) {
@@ -364,10 +355,8 @@ int main(int argc, char **argv)
 	}
 
 cleanup:
-	free(opts.heads);
+	free((char **)opts.heads);
 	free(opts.annotated);
-	git_repository_free(repo);
-	git_libgit2_shutdown();
 
 	return 0;
 }

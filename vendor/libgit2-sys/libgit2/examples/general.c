@@ -76,12 +76,11 @@ static void check_error(int error_code, const char *action)
 	exit(1);
 }
 
-int main (int argc, char** argv)
+int lg2_general(git_repository *repo, int argc, char** argv)
 {
 	int error;
 	git_oid oid;
 	char *repo_path;
-	git_repository *repo;
 
 	/**
 	 * Initialize the library, this will set up any global state which libgit2 needs
@@ -625,7 +624,7 @@ static void revwalking(git_repository *repo)
 static void index_walking(git_repository *repo)
 {
 	git_index *index;
-	unsigned int i, ecount;
+	size_t i, ecount;
 
 	printf("\n*Index Walking*\n");
 

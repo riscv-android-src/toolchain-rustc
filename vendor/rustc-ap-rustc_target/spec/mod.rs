@@ -34,7 +34,7 @@
 //! the target's settings, though `target-feature` and `link-args` will *add*
 //! to the list specified by the target, rather than replace.
 
-use serialize::json::{Json, ToJson};
+use rustc_serialize::json::{Json, ToJson};
 use std::collections::BTreeMap;
 use std::default::Default;
 use std::{fmt, io};
@@ -60,12 +60,14 @@ mod solaris_base;
 mod uefi_base;
 mod windows_base;
 mod windows_msvc_base;
+mod windows_uwp_base;
 mod thumb_base;
 mod l4re_base;
 mod fuchsia_base;
 mod redox_base;
 mod riscv_base;
 mod wasm32_base;
+mod vxworks_base;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Hash,
          RustcEncodable, RustcDecodable)]
@@ -119,19 +121,19 @@ macro_rules! flavor_mappings {
     ($((($($flavor:tt)*), $string:expr),)*) => (
         impl LinkerFlavor {
             pub const fn one_of() -> &'static str {
-                concat!("one of: ", $($string, " ",)+)
+                concat!("one of: ", $($string, " ",)*)
             }
 
             pub fn from_str(s: &str) -> Option<Self> {
                 Some(match s {
-                    $($string => $($flavor)*,)+
+                    $($string => $($flavor)*,)*
                     _ => return None,
                 })
             }
 
             pub fn desc(&self) -> &str {
                 match *self {
-                    $($($flavor)* => $string,)+
+                    $($($flavor)* => $string,)*
                 }
             }
         }
@@ -268,16 +270,16 @@ pub type LinkArgs = BTreeMap<LinkerFlavor, Vec<String>>;
 pub type TargetResult = Result<Target, String>;
 
 macro_rules! supported_targets {
-    ( $(($triple:expr, $module:ident),)+ ) => (
-        $(mod $module;)*
+    ( $(($( $triple:literal, )+ $module:ident ),)+ ) => {
+        $(mod $module;)+
 
         /// List of supported targets
-        const TARGETS: &[&str] = &[$($triple),*];
+        const TARGETS: &[&str] = &[$($($triple),+),+];
 
         fn load_specific(target: &str) -> Result<Target, LoadTargetError> {
             match target {
                 $(
-                    $triple => {
+                    $($triple)|+ => {
                         let mut t = $module::target()
                             .map_err(LoadTargetError::Other)?;
                         t.options.is_builtin = true;
@@ -286,7 +288,7 @@ macro_rules! supported_targets {
                         // run-time that the parser works correctly
                         t = Target::from_json(t.to_json())
                             .map_err(LoadTargetError::Other)?;
-                        debug!("Got builtin target: {:?}", t);
+                        debug!("got builtin target: {:?}", t);
                         Ok(t)
                     },
                 )+
@@ -305,9 +307,9 @@ macro_rules! supported_targets {
 
         #[cfg(test)]
         mod test_json_encode_decode {
-            use serialize::json::ToJson;
+            use rustc_serialize::json::ToJson;
             use super::Target;
-            $(use super::$module;)*
+            $(use super::$module;)+
 
             $(
                 #[test]
@@ -322,9 +324,9 @@ macro_rules! supported_targets {
                         assert_eq!(original, parsed);
                     });
                 }
-            )*
+            )+
         }
-    )
+    };
 }
 
 supported_targets! {
@@ -361,13 +363,13 @@ supported_targets! {
     ("thumbv7neon-unknown-linux-gnueabihf", thumbv7neon_unknown_linux_gnueabihf),
     ("armv7-unknown-linux-musleabihf", armv7_unknown_linux_musleabihf),
     ("aarch64-unknown-linux-gnu", aarch64_unknown_linux_gnu),
-
     ("aarch64-unknown-linux-musl", aarch64_unknown_linux_musl),
     ("x86_64-unknown-linux-musl", x86_64_unknown_linux_musl),
     ("i686-unknown-linux-musl", i686_unknown_linux_musl),
     ("i586-unknown-linux-musl", i586_unknown_linux_musl),
     ("mips-unknown-linux-musl", mips_unknown_linux_musl),
     ("mipsel-unknown-linux-musl", mipsel_unknown_linux_musl),
+    ("hexagon-unknown-linux-musl", hexagon_unknown_linux_musl),
 
     ("mips-unknown-linux-uclibc", mips_unknown_linux_uclibc),
     ("mipsel-unknown-linux-uclibc", mipsel_unknown_linux_uclibc),
@@ -426,11 +428,15 @@ supported_targets! {
     ("armv7r-none-eabi", armv7r_none_eabi),
     ("armv7r-none-eabihf", armv7r_none_eabihf),
 
-    ("x86_64-sun-solaris", x86_64_sun_solaris),
+    // `x86_64-pc-solaris` is an alias for `x86_64_sun_solaris` for backwards compatibility reasons.
+    // (See <https://github.com/rust-lang/rust/issues/40531>.)
+    ("x86_64-sun-solaris", "x86_64-pc-solaris", x86_64_sun_solaris),
     ("sparcv9-sun-solaris", sparcv9_sun_solaris),
 
     ("x86_64-pc-windows-gnu", x86_64_pc_windows_gnu),
     ("i686-pc-windows-gnu", i686_pc_windows_gnu),
+    ("i686-uwp-windows-gnu", i686_uwp_windows_gnu),
+    ("x86_64-uwp-windows-gnu", x86_64_uwp_windows_gnu),
 
     ("aarch64-pc-windows-msvc", aarch64_pc_windows_msvc),
     ("x86_64-pc-windows-msvc", x86_64_pc_windows_msvc),
@@ -462,6 +468,7 @@ supported_targets! {
     ("aarch64-unknown-hermit", aarch64_unknown_hermit),
     ("x86_64-unknown-hermit", x86_64_unknown_hermit),
 
+    ("riscv32i-unknown-none-elf", riscv32i_unknown_none_elf),
     ("riscv32imc-unknown-none-elf", riscv32imc_unknown_none_elf),
     ("riscv32imac-unknown-none-elf", riscv32imac_unknown_none_elf),
     ("riscv64imac-unknown-none-elf", riscv64imac_unknown_none_elf),
@@ -474,6 +481,15 @@ supported_targets! {
     ("x86_64-unknown-uefi", x86_64_unknown_uefi),
 
     ("nvptx64-nvidia-cuda", nvptx64_nvidia_cuda),
+
+    ("x86_64-wrs-vxworks", x86_64_wrs_vxworks),
+    ("i686-wrs-vxworks", i686_wrs_vxworks),
+    ("i586-wrs-vxworks", i586_wrs_vxworks),
+    ("armv7-wrs-vxworks", armv7_wrs_vxworks),
+    ("aarch64-wrs-vxworks", aarch64_wrs_vxworks),
+    ("powerpc-wrs-vxworks", powerpc_wrs_vxworks),
+    ("powerpc-wrs-vxworks-spe", powerpc_wrs_vxworks_spe),
+    ("powerpc64-wrs-vxworks", powerpc64_wrs_vxworks),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -495,8 +511,8 @@ pub struct Target {
     pub target_env: String,
     /// Vendor name to use for conditional compilation.
     pub target_vendor: String,
-    /// Architecture to use for ABI considerations. Valid options: "x86",
-    /// "x86_64", "arm", "aarch64", "mips", "powerpc", and "powerpc64".
+    /// Architecture to use for ABI considerations. Valid options include: "x86",
+    /// "x86_64", "arm", "aarch64", "mips", "powerpc", "powerpc64", and others.
     pub arch: String,
     /// [Data layout](http://llvm.org/docs/LangRef.html#data-layout) to pass to LLVM.
     pub data_layout: String,
@@ -720,10 +736,6 @@ pub struct TargetOptions {
     /// for this target unconditionally.
     pub no_builtins: bool,
 
-    /// Whether to lower 128-bit operations to compiler_builtins calls. Use if
-    /// your backend only supports 64-bit and smaller math.
-    pub i128_lowering: bool,
-
     /// The codegen backend to use for this target, typically "llvm"
     pub codegen_backend: String,
 
@@ -747,6 +759,9 @@ pub struct TargetOptions {
     /// target features. This is `true` by default, and `false` for targets like
     /// wasm32 where the whole program either has simd or not.
     pub simd_types_indirect: bool,
+
+    /// Pass a list of symbol which should be exported in the dylib to the linker.
+    pub limit_rdylib_exports: bool,
 
     /// If set, have the linker export exactly these symbols, instead of using
     /// the usual logic to figure this out from the crate itself.
@@ -836,13 +851,13 @@ impl Default for TargetOptions {
             requires_lto: false,
             singlethread: false,
             no_builtins: false,
-            i128_lowering: false,
             codegen_backend: "llvm".to_string(),
             default_hidden_visibility: false,
             embed_bitcode: false,
             emit_debug_gdb_scripts: true,
             requires_uwtable: false,
             simd_types_indirect: true,
+            limit_rdylib_exports: true,
             override_export_symbols: None,
             merge_functions: MergeFunctions::Aliases,
             target_mcount: "mcount".to_string(),
@@ -1149,6 +1164,7 @@ impl Target {
         key!(emit_debug_gdb_scripts, bool);
         key!(requires_uwtable, bool);
         key!(simd_types_indirect, bool);
+        key!(limit_rdylib_exports, bool);
         key!(override_export_symbols, opt_list);
         key!(merge_functions, MergeFunctions)?;
         key!(target_mcount);
@@ -1182,7 +1198,7 @@ impl Target {
     pub fn search(target_triple: &TargetTriple) -> Result<Target, String> {
         use std::env;
         use std::fs;
-        use serialize::json;
+        use rustc_serialize::json;
 
         fn load_file(path: &Path) -> Result<Target, String> {
             let contents = fs::read(path).map_err(|e| e.to_string())?;
@@ -1364,6 +1380,7 @@ impl ToJson for Target {
         target_option_val!(emit_debug_gdb_scripts);
         target_option_val!(requires_uwtable);
         target_option_val!(simd_types_indirect);
+        target_option_val!(limit_rdylib_exports);
         target_option_val!(override_export_symbols);
         target_option_val!(merge_functions);
         target_option_val!(target_mcount);

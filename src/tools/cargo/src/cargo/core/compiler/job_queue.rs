@@ -154,12 +154,12 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         let dependencies = cx.dep_targets(unit);
         let mut queue_deps = dependencies
             .iter()
+            .cloned()
             .filter(|unit| {
                 // Binaries aren't actually needed to *compile* tests, just to run
                 // them, so we don't include this dependency edge in the job graph.
                 !unit.target.is_test() || !unit.target.is_bin()
             })
-            .cloned()
             .map(|dep| {
                 // Handle the case here where our `unit -> dep` dependency may
                 // only require the metadata, not the full compilation to
@@ -172,7 +172,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
                 };
                 (dep, artifact)
             })
-            .collect::<Vec<_>>();
+            .collect::<HashMap<_, _>>();
 
         // This is somewhat tricky, but we may need to synthesize some
         // dependencies for this target if it requires full upstream
@@ -196,19 +196,18 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         // `Metadata` propagate upwards `All` dependencies to anything that
         // transitively contains the `Metadata` edge.
         if unit.requires_upstream_objects() {
-            for dep in dependencies.iter() {
+            for dep in dependencies {
                 depend_on_deps_of_deps(cx, &mut queue_deps, dep);
             }
 
             fn depend_on_deps_of_deps<'a>(
                 cx: &Context<'a, '_>,
-                deps: &mut Vec<(Unit<'a>, Artifact)>,
-                unit: &Unit<'a>,
+                deps: &mut HashMap<Unit<'a>, Artifact>,
+                unit: Unit<'a>,
             ) {
-                for dep in cx.dep_targets(unit) {
-                    if cx.only_requires_rmeta(unit, &dep) {
-                        deps.push((dep, Artifact::All));
-                        depend_on_deps_of_deps(cx, deps, &dep);
+                for dep in cx.dep_targets(&unit) {
+                    if deps.insert(dep, Artifact::All).is_none() {
+                        depend_on_deps_of_deps(cx, deps, dep);
                     }
                 }
             }
@@ -535,9 +534,9 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         unit: &Unit<'a>,
         cx: &mut Context<'_, '_>,
     ) -> CargoResult<()> {
-        let output = cx.build_state.outputs.lock().unwrap();
+        let outputs = cx.build_script_outputs.lock().unwrap();
         let bcx = &mut cx.bcx;
-        if let Some(output) = output.get(&(unit.pkg.package_id(), unit.kind)) {
+        if let Some(output) = outputs.get(&(unit.pkg.package_id(), unit.kind)) {
             if !output.warnings.is_empty() {
                 if let Some(msg) = msg {
                     writeln!(bcx.config.shell().err(), "{}\n", msg)?;

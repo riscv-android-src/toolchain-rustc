@@ -268,7 +268,7 @@ static int rebase_alloc(git_rebase **out, const git_rebase_options *rebase_opts)
 	if (rebase_opts)
 		memcpy(&rebase->options, rebase_opts, sizeof(git_rebase_options));
 	else
-		git_rebase_init_options(&rebase->options, GIT_REBASE_OPTIONS_VERSION);
+		git_rebase_options_init(&rebase->options, GIT_REBASE_OPTIONS_VERSION);
 
 	if (rebase_opts && rebase_opts->rewrite_notes_ref) {
 		rebase->options.rewrite_notes_ref = git__strdup(rebase_opts->rewrite_notes_ref);
@@ -298,7 +298,8 @@ int git_rebase_open(
 	git_rebase *rebase;
 	git_buf path = GIT_BUF_INIT, orig_head_name = GIT_BUF_INIT,
 		orig_head_id = GIT_BUF_INIT, onto_id = GIT_BUF_INIT;
-	int state_path_len, error;
+	size_t state_path_len;
+	int error;
 
 	assert(repo);
 
@@ -493,11 +494,16 @@ static int rebase_setupfiles(git_rebase *rebase)
 	return rebase_setupfiles_merge(rebase);
 }
 
-int git_rebase_init_options(git_rebase_options *opts, unsigned int version)
+int git_rebase_options_init(git_rebase_options *opts, unsigned int version)
 {
 	GIT_INIT_STRUCTURE_FROM_TEMPLATE(
 		opts, version, git_rebase_options, GIT_REBASE_OPTIONS_INIT);
 	return 0;
+}
+
+int git_rebase_init_options(git_rebase_options *opts, unsigned int version)
+{
+	return git_rebase_options_init(opts, version);
 }
 
 static int rebase_ensure_not_in_progress(git_repository *repo)
@@ -1325,6 +1331,22 @@ int git_rebase_finish(
 		error = rebase_cleanup(rebase);
 
 	return error;
+}
+
+const char *git_rebase_orig_head_name(git_rebase *rebase) {
+	return rebase->orig_head_name;
+}
+
+const git_oid *git_rebase_orig_head_id(git_rebase *rebase) {
+	return &rebase->orig_head_id;
+}
+
+const char *git_rebase_onto_name(git_rebase *rebase) {
+	return rebase->onto_name;
+}
+
+const git_oid *git_rebase_onto_id(git_rebase *rebase) {
+	return &rebase->onto_id;
 }
 
 size_t git_rebase_operation_entrycount(git_rebase *rebase)

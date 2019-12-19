@@ -35,7 +35,6 @@
 //! Ideally each instance of concurrent data structure may have its own queue that gets fully
 //! destroyed as soon as the data structure gets dropped.
 
-use alloc::boxed::Box;
 use core::cell::{Cell, UnsafeCell};
 use core::mem::{self, ManuallyDrop};
 use core::num::Wrapping;
@@ -46,7 +45,7 @@ use core::sync::atomic::Ordering;
 use arrayvec::ArrayVec;
 use crossbeam_utils::CachePadded;
 
-use atomic::Owned;
+use atomic::{Shared, Owned};
 use collector::{Collector, LocalHandle};
 use deferred::Deferred;
 use epoch::{AtomicEpoch, Epoch};
@@ -287,7 +286,8 @@ impl Local {
                 guard_count: Cell::new(0),
                 handle_count: Cell::new(1),
                 pin_count: Cell::new(Wrapping(0)),
-            }).into_shared(&unprotected());
+            })
+            .into_shared(&unprotected());
             collector.global.locals.insert(local, &unprotected());
             LocalHandle {
                 local: local.as_raw(),
@@ -501,22 +501,20 @@ impl IsElement<Local> for Local {
         &*local_ptr
     }
 
-    unsafe fn finalize(entry: &Entry) {
-        let local = Self::element_of(entry);
-        drop(Box::from_raw(local as *const Local as *mut Local));
+    unsafe fn finalize(entry: &Entry, guard: &Guard) {
+        guard.defer_destroy(Shared::from(Self::element_of(entry) as *const _));
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
-    use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
     #[test]
     fn check_defer() {
-        static FLAG: AtomicUsize = ATOMIC_USIZE_INIT;
+        static FLAG: AtomicUsize = AtomicUsize::new(0);
         fn set() {
             FLAG.store(42, Ordering::Relaxed);
         }
@@ -529,7 +527,7 @@ mod tests {
 
     #[test]
     fn check_bag() {
-        static FLAG: AtomicUsize = ATOMIC_USIZE_INIT;
+        static FLAG: AtomicUsize = AtomicUsize::new(0);
         fn incr() {
             FLAG.fetch_add(1, Ordering::Relaxed);
         }

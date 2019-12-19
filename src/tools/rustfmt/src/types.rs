@@ -168,14 +168,22 @@ impl<'a> Rewrite for SegmentParam<'a> {
             SegmentParam::LifeTime(lt) => lt.rewrite(context, shape),
             SegmentParam::Type(ty) => ty.rewrite(context, shape),
             SegmentParam::Binding(assoc_ty_constraint) => {
-                let mut result = match context.config.type_punctuation_density() {
-                    TypeDensity::Wide => {
-                        format!("{} = ", rewrite_ident(context, assoc_ty_constraint.ident))
+                let mut result = match assoc_ty_constraint.kind {
+                    ast::AssocTyConstraintKind::Bound { .. } => {
+                        format!("{}: ", rewrite_ident(context, assoc_ty_constraint.ident))
                     }
-                    TypeDensity::Compressed => {
-                        format!("{}=", rewrite_ident(context, assoc_ty_constraint.ident))
+                    ast::AssocTyConstraintKind::Equality { .. } => {
+                        match context.config.type_punctuation_density() {
+                            TypeDensity::Wide => {
+                                format!("{} = ", rewrite_ident(context, assoc_ty_constraint.ident))
+                            }
+                            TypeDensity::Compressed => {
+                                format!("{}=", rewrite_ident(context, assoc_ty_constraint.ident))
+                            }
+                        }
                     }
                 };
+
                 let budget = shape.width.checked_sub(result.len())?;
                 let rewrite = assoc_ty_constraint
                     .kind
@@ -328,8 +336,9 @@ where
         Shape::legacy(budget, offset)
     };
 
+    let is_inputs_empty = inputs.len() == 0;
     let list_lo = context.snippet_provider.span_after(span, "(");
-    let (list_str, tactic) = if inputs.len() == 0 {
+    let (list_str, tactic) = if is_inputs_empty {
         let tactic = get_tactics(&[], &output, shape);
         let list_hi = context.snippet_provider.span_before(span, ")");
         let comment = context
@@ -377,7 +386,10 @@ where
         (write_list(&item_vec, &fmt)?, tactic)
     };
 
-    let args = if tactic == DefinitiveListTactic::Horizontal || !context.use_block_indent() {
+    let args = if tactic == DefinitiveListTactic::Horizontal
+        || !context.use_block_indent()
+        || is_inputs_empty
+    {
         format!("({})", list_str)
     } else {
         format!(

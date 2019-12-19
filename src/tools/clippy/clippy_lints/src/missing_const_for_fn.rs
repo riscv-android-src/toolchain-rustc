@@ -40,17 +40,27 @@ declare_clippy_lint! {
     /// **Example:**
     ///
     /// ```rust
+    /// # struct Foo {
+    /// #     random_number: usize,
+    /// # }
+    /// # impl Foo {
     /// fn new() -> Self {
     ///     Self { random_number: 42 }
     /// }
+    /// # }
     /// ```
     ///
     /// Could be a const fn:
     ///
     /// ```rust
+    /// # struct Foo {
+    /// #     random_number: usize,
+    /// # }
+    /// # impl Foo {
     /// const fn new() -> Self {
     ///     Self { random_number: 42 }
     /// }
+    /// # }
     /// ```
     pub MISSING_CONST_FOR_FN,
     nursery,
@@ -69,7 +79,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingConstForFn {
         span: Span,
         hir_id: HirId,
     ) {
-        let def_id = cx.tcx.hir().local_def_id_from_hir_id(hir_id);
+        let def_id = cx.tcx.hir().local_def_id(hir_id);
 
         if in_external_macro(cx.tcx.sess, span) || is_entrypoint_fn(cx, def_id) {
             return;

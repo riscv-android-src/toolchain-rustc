@@ -12,32 +12,42 @@
 
 // FIXME (#13400): this is only a tiny fraction of the Windows console api
 
-extern crate winapi;
-
-use std::io::prelude::*;
+use crate::color;
 use std::io;
+use std::io::prelude::*;
+use std::ops::Deref;
 use std::ptr;
-use Attr;
-use Error;
-use Result;
-use Terminal;
-use color;
+use crate::Attr;
+use crate::Error;
+use crate::Result;
+use crate::Terminal;
 
-use win::winapi::um::wincon::{SetConsoleCursorPosition, SetConsoleTextAttribute};
-use win::winapi::um::wincon::{FillConsoleOutputCharacterW, GetConsoleScreenBufferInfo, COORD};
-use win::winapi::um::wincon::FillConsoleOutputAttribute;
-use win::winapi::shared::minwindef::{DWORD, WORD};
-use win::winapi::um::handleapi::INVALID_HANDLE_VALUE;
-use win::winapi::um::fileapi::{CreateFileA, OPEN_EXISTING};
-use win::winapi::um::winnt::{FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE, HANDLE};
+use winapi::shared::minwindef::{DWORD, WORD};
+use winapi::um::consoleapi::{GetConsoleMode, SetConsoleMode};
+use winapi::um::fileapi::{CreateFileA, OPEN_EXISTING};
+use winapi::um::handleapi::{CloseHandle, INVALID_HANDLE_VALUE};
+use winapi::um::wincon::FillConsoleOutputAttribute;
+use winapi::um::wincon::{FillConsoleOutputCharacterW, GetConsoleScreenBufferInfo, COORD};
+use winapi::um::wincon::{SetConsoleCursorPosition, SetConsoleTextAttribute};
+use winapi::um::wincon::{BACKGROUND_INTENSITY, ENABLE_VIRTUAL_TERMINAL_PROCESSING};
+use winapi::um::winnt::{FILE_SHARE_WRITE, GENERIC_READ, GENERIC_WRITE, HANDLE};
 
-/// A Terminal implementation which uses the Win32 Console API.
-pub struct WinConsole<T> {
-    buf: T,
+/// Console info which can be used by a Terminal implementation
+/// which uses the Win32 Console API.
+pub struct WinConsoleInfo {
     def_foreground: color::Color,
     def_background: color::Color,
     foreground: color::Color,
     background: color::Color,
+    reverse: bool,
+    secure: bool,
+    standout: bool,
+}
+
+/// A Terminal implementation which uses the Win32 Console API.
+pub struct WinConsole<T> {
+    buf: T,
+    info: WinConsoleInfo,
 }
 
 fn color_to_bits(color: color::Color) -> u16 {
@@ -78,8 +88,35 @@ fn bits_to_color(bits: u16) -> color::Color {
     color | (bits as u32 & 0x8) // copy the hi-intensity bit
 }
 
-// Just get a handle to the current console buffer whatever it is
-fn conout() -> io::Result<HANDLE> {
+struct HandleWrapper {
+    inner: HANDLE,
+}
+
+impl HandleWrapper {
+    fn new(h: HANDLE) -> HandleWrapper {
+        HandleWrapper { inner: h }
+    }
+}
+
+impl Drop for HandleWrapper {
+    fn drop(&mut self) {
+        if self.inner != INVALID_HANDLE_VALUE {
+            unsafe {
+                CloseHandle(self.inner);
+            }
+        }
+    }
+}
+
+impl Deref for HandleWrapper {
+    type Target = HANDLE;
+    fn deref(&self) -> &HANDLE {
+        &self.inner
+    }
+}
+
+/// Just get a handle to the current console buffer whatever it is
+fn conout() -> io::Result<HandleWrapper> {
     let name = b"CONOUT$\0";
     let handle = unsafe {
         CreateFileA(
@@ -95,8 +132,27 @@ fn conout() -> io::Result<HANDLE> {
     if handle == INVALID_HANDLE_VALUE {
         Err(io::Error::last_os_error())
     } else {
-        Ok(handle)
+        Ok(HandleWrapper::new(handle))
     }
+}
+
+unsafe fn set_flag(handle: HANDLE, flag: DWORD) -> io::Result<()> {
+    let mut curr_mode: DWORD = 0;
+    if GetConsoleMode(handle, &mut curr_mode) == 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    if SetConsoleMode(handle, curr_mode | flag) == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    return Ok(());
+}
+
+/// Check if console supports ansi codes (should succeed on Windows 10)
+pub fn supports_ansi() -> bool {
+    conout()
+        .and_then(|handle| unsafe { set_flag(*handle, ENABLE_VIRTUAL_TERMINAL_PROCESSING) })
+        .is_ok()
 }
 
 // This test will only pass if it is running in an actual console, probably
@@ -105,41 +161,76 @@ fn test_conout() {
     assert!(conout().is_ok())
 }
 
-impl<T: Write + Send> WinConsole<T> {
-    fn apply(&mut self) -> io::Result<()> {
-        let out = conout()?;
-        let _unused = self.buf.flush();
-        let mut accum: WORD = 0;
-        accum |= color_to_bits(self.foreground);
-        accum |= color_to_bits(self.background) << 4;
-        unsafe {
-            SetConsoleTextAttribute(out, accum);
-        }
-        Ok(())
-    }
-
-    /// Returns `Err` whenever the terminal cannot be created for some
+impl WinConsoleInfo {
+    /// Returns `Err` whenever console info cannot be retrieved for some
     /// reason.
-    pub fn new(out: T) -> io::Result<WinConsole<T>> {
+    pub fn from_env() -> io::Result<WinConsoleInfo> {
         let fg;
         let bg;
         let handle = conout()?;
         unsafe {
             let mut buffer_info = ::std::mem::uninitialized();
-            if GetConsoleScreenBufferInfo(handle, &mut buffer_info) != 0 {
+            if GetConsoleScreenBufferInfo(*handle, &mut buffer_info) != 0 {
                 fg = bits_to_color(buffer_info.wAttributes);
                 bg = bits_to_color(buffer_info.wAttributes >> 4);
             } else {
                 return Err(io::Error::last_os_error());
             }
         }
-        Ok(WinConsole {
-            buf: out,
+        Ok(WinConsoleInfo {
             def_foreground: fg,
             def_background: bg,
             foreground: fg,
             background: bg,
+            reverse: false,
+            secure: false,
+            standout: false,
         })
+    }
+}
+
+impl<T: Write + Send> WinConsole<T> {
+    fn apply(&mut self) -> io::Result<()> {
+        let out = conout()?;
+        let _unused = self.buf.flush();
+
+        let (mut fg, bg) = if self.info.reverse {
+            (self.info.background, self.info.foreground)
+        } else {
+            (self.info.foreground, self.info.background)
+        };
+
+        if self.info.secure {
+            fg = bg;
+        }
+
+        let mut accum: WORD = 0;
+
+        accum |= color_to_bits(fg);
+        accum |= color_to_bits(bg) << 4;
+
+        if self.info.standout {
+            accum |= BACKGROUND_INTENSITY;
+        } else {
+            accum &= BACKGROUND_INTENSITY ^ 0xFF;
+        }
+
+        unsafe {
+            SetConsoleTextAttribute(*out, accum);
+        }
+        Ok(())
+    }
+
+    /// Create a new WinConsole with the given WinConsoleInfo and out
+    pub fn new_with_consoleinfo(out: T, info: WinConsoleInfo) -> WinConsole<T> {
+        WinConsole { buf: out, info }
+    }
+
+    /// Returns `Err` whenever the terminal cannot be created for some
+    /// reason.
+    pub fn new(out: T) -> io::Result<WinConsole<T>> {
+        let info = WinConsoleInfo::from_env()?;
+        Ok(Self::new_with_consoleinfo(out, info))
     }
 }
 
@@ -157,14 +248,14 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
     type Output = T;
 
     fn fg(&mut self, color: color::Color) -> Result<()> {
-        self.foreground = color;
+        self.info.foreground = color;
         self.apply()?;
 
         Ok(())
     }
 
     fn bg(&mut self, color: color::Color) -> Result<()> {
-        self.background = color;
+        self.info.background = color;
         self.apply()?;
 
         Ok(())
@@ -173,12 +264,27 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
     fn attr(&mut self, attr: Attr) -> Result<()> {
         match attr {
             Attr::ForegroundColor(f) => {
-                self.foreground = f;
+                self.info.foreground = f;
                 self.apply()?;
                 Ok(())
             }
             Attr::BackgroundColor(b) => {
-                self.background = b;
+                self.info.background = b;
+                self.apply()?;
+                Ok(())
+            }
+            Attr::Reverse => {
+                self.info.reverse = true;
+                self.apply()?;
+                Ok(())
+            }
+            Attr::Secure => {
+                self.info.secure = true;
+                self.apply()?;
+                Ok(())
+            }
+            Attr::Standout(v) => {
+                self.info.standout = v;
                 self.apply()?;
                 Ok(())
             }
@@ -187,17 +293,22 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
     }
 
     fn supports_attr(&self, attr: Attr) -> bool {
-        // it claims support for underscore and reverse video, but I can't get
-        // it to do anything -cmr
         match attr {
-            Attr::ForegroundColor(_) | Attr::BackgroundColor(_) => true,
+            Attr::ForegroundColor(_)
+            | Attr::BackgroundColor(_)
+            | Attr::Standout(_)
+            | Attr::Reverse
+            | Attr::Secure => true,
             _ => false,
         }
     }
 
     fn reset(&mut self) -> Result<()> {
-        self.foreground = self.def_foreground;
-        self.background = self.def_background;
+        self.info.foreground = self.info.def_foreground;
+        self.info.background = self.info.def_background;
+        self.info.reverse = false;
+        self.info.secure = false;
+        self.info.standout = false;
         self.apply()?;
 
         Ok(())
@@ -216,7 +327,7 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
         let handle = conout()?;
         unsafe {
             let mut buffer_info = ::std::mem::uninitialized();
-            if GetConsoleScreenBufferInfo(handle, &mut buffer_info) != 0 {
+            if GetConsoleScreenBufferInfo(*handle, &mut buffer_info) != 0 {
                 let (x, y) = (
                     buffer_info.dwCursorPosition.X,
                     buffer_info.dwCursorPosition.Y,
@@ -229,7 +340,7 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
                     Ok(())
                 } else {
                     let pos = COORD { X: x, Y: y - 1 };
-                    if SetConsoleCursorPosition(handle, pos) != 0 {
+                    if SetConsoleCursorPosition(*handle, pos) != 0 {
                         Ok(())
                     } else {
                         Err(io::Error::last_os_error().into())
@@ -246,7 +357,7 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
         let handle = conout()?;
         unsafe {
             let mut buffer_info = ::std::mem::uninitialized();
-            if GetConsoleScreenBufferInfo(handle, &mut buffer_info) == 0 {
+            if GetConsoleScreenBufferInfo(*handle, &mut buffer_info) == 0 {
                 return Err(io::Error::last_os_error().into());
             }
             let pos = buffer_info.dwCursorPosition;
@@ -254,10 +365,10 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
             let num = (size.X - pos.X) as DWORD;
             let mut written = 0;
             // 0x0020u16 is ' ' (space) in UTF-16 (same as ascii)
-            if FillConsoleOutputCharacterW(handle, 0x0020, num, pos, &mut written) == 0 {
+            if FillConsoleOutputCharacterW(*handle, 0x0020, num, pos, &mut written) == 0 {
                 return Err(io::Error::last_os_error().into());
             }
-            if FillConsoleOutputAttribute(handle, 0, num, pos, &mut written) == 0 {
+            if FillConsoleOutputAttribute(*handle, 0, num, pos, &mut written) == 0 {
                 return Err(io::Error::last_os_error().into());
             }
             // Similar reasoning for not failing as in cursor_up -- it doesn't even make
@@ -272,13 +383,13 @@ impl<T: Write + Send> Terminal for WinConsole<T> {
         let handle = conout()?;
         unsafe {
             let mut buffer_info = ::std::mem::uninitialized();
-            if GetConsoleScreenBufferInfo(handle, &mut buffer_info) != 0 {
+            if GetConsoleScreenBufferInfo(*handle, &mut buffer_info) != 0 {
                 let COORD { X: x, Y: y } = buffer_info.dwCursorPosition;
                 if x == 0 {
                     Err(Error::CursorDestinationInvalid)
                 } else {
                     let pos = COORD { X: 0, Y: y };
-                    if SetConsoleCursorPosition(handle, pos) != 0 {
+                    if SetConsoleCursorPosition(*handle, pos) != 0 {
                         Ok(())
                     } else {
                         Err(io::Error::last_os_error().into())

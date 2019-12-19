@@ -73,7 +73,7 @@ Quick Start
 2. Create the cmake build environment: `cmake ..`
 3. Build libgit2: `cmake --build .`
 
-Trouble with these steps?  Read our (troubleshooting guide)[docs/troubleshooting.md].
+Trouble with these steps?  Read our [troubleshooting guide](docs/troubleshooting.md).
 More detailed build guidance is available below.
 
 Getting Help
@@ -103,9 +103,7 @@ We ask that you not open a GitHub Issue for help, only for bug reports.
 
 **Reporting Security Issues**
 
-In case you think to have found a security issue with libgit2, please do not
-open a public issue.  Instead, you can report the issue to the private mailing
-list [security@libgit2.com](mailto:security@libgit2.com).
+Please have a look at SECURITY.md.
 
 What It Can Do
 ==============
@@ -359,7 +357,7 @@ Here are the bindings to libgit2 that are currently available:
 * Ruby
     * Rugged <https://github.com/libgit2/rugged>
 * Rust
-    * git2-rs <https://github.com/alexcrichton/git2-rs>
+    * git2-rs <https://github.com/rust-lang/git2-rs>
 * Swift
     * SwiftGit2 <https://github.com/SwiftGit2/SwiftGit2>
 * Vala

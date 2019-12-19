@@ -66,6 +66,7 @@ pub trait Visitor<'ast>: Sized {
     fn visit_local(&mut self, l: &'ast Local) { walk_local(self, l) }
     fn visit_block(&mut self, b: &'ast Block) { walk_block(self, b) }
     fn visit_stmt(&mut self, s: &'ast Stmt) { walk_stmt(self, s) }
+    fn visit_arg(&mut self, arg: &'ast Arg) { walk_arg(self, arg) }
     fn visit_arm(&mut self, a: &'ast Arm) { walk_arm(self, a) }
     fn visit_pat(&mut self, p: &'ast Pat) { walk_pat(self, p) }
     fn visit_anon_const(&mut self, c: &'ast AnonConst) { walk_anon_const(self, c) }
@@ -428,9 +429,9 @@ pub fn walk_assoc_ty_constraint<'a, V: Visitor<'a>>(visitor: &mut V,
 
 pub fn walk_pat<'a, V: Visitor<'a>>(visitor: &mut V, pattern: &'a Pat) {
     match pattern.node {
-        PatKind::TupleStruct(ref path, ref children, _) => {
+        PatKind::TupleStruct(ref path, ref elems) => {
             visitor.visit_path(path, pattern.id);
-            walk_list!(visitor, visit_pat, children);
+            walk_list!(visitor, visit_pat, elems);
         }
         PatKind::Path(ref opt_qself, ref path) => {
             if let Some(ref qself) = *opt_qself {
@@ -446,8 +447,8 @@ pub fn walk_pat<'a, V: Visitor<'a>>(visitor: &mut V, pattern: &'a Pat) {
                 visitor.visit_pat(&field.node.pat)
             }
         }
-        PatKind::Tuple(ref tuple_elements, _) => {
-            walk_list!(visitor, visit_pat, tuple_elements);
+        PatKind::Tuple(ref elems) => {
+            walk_list!(visitor, visit_pat, elems);
         }
         PatKind::Box(ref subpattern) |
         PatKind::Ref(ref subpattern, _) |
@@ -463,11 +464,9 @@ pub fn walk_pat<'a, V: Visitor<'a>>(visitor: &mut V, pattern: &'a Pat) {
             visitor.visit_expr(lower_bound);
             visitor.visit_expr(upper_bound);
         }
-        PatKind::Wild => (),
-        PatKind::Slice(ref prepatterns, ref slice_pattern, ref postpatterns) => {
-            walk_list!(visitor, visit_pat, prepatterns);
-            walk_list!(visitor, visit_pat, slice_pattern);
-            walk_list!(visitor, visit_pat, postpatterns);
+        PatKind::Wild | PatKind::Rest => {},
+        PatKind::Slice(ref elems) => {
+            walk_list!(visitor, visit_pat, elems);
         }
         PatKind::Mac(ref mac) => visitor.visit_mac(mac),
     }
@@ -549,11 +548,10 @@ pub fn walk_fn_ret_ty<'a, V: Visitor<'a>>(visitor: &mut V, ret_ty: &'a FunctionR
 }
 
 pub fn walk_fn_decl<'a, V: Visitor<'a>>(visitor: &mut V, function_declaration: &'a FnDecl) {
-    for argument in &function_declaration.inputs {
-        visitor.visit_pat(&argument.pat);
-        visitor.visit_ty(&argument.ty)
+    for arg in &function_declaration.inputs {
+        visitor.visit_arg(arg);
     }
-    visitor.visit_fn_ret_ty(&function_declaration.output)
+    visitor.visit_fn_ret_ty(&function_declaration.output);
 }
 
 pub fn walk_fn<'a, V>(visitor: &mut V, kind: FnKind<'a>, declaration: &'a FnDecl, _span: Span)
@@ -718,6 +716,10 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
             visitor.visit_expr(subexpression);
             visitor.visit_ty(typ)
         }
+        ExprKind::Let(ref pats, ref scrutinee) => {
+            walk_list!(visitor, visit_pat, pats);
+            visitor.visit_expr(scrutinee);
+        }
         ExprKind::If(ref head_expression, ref if_block, ref optional_else) => {
             visitor.visit_expr(head_expression);
             visitor.visit_block(if_block);
@@ -725,18 +727,6 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
         }
         ExprKind::While(ref subexpression, ref block, ref opt_label) => {
             walk_list!(visitor, visit_label, opt_label);
-            visitor.visit_expr(subexpression);
-            visitor.visit_block(block);
-        }
-        ExprKind::IfLet(ref pats, ref subexpression, ref if_block, ref optional_else) => {
-            walk_list!(visitor, visit_pat, pats);
-            visitor.visit_expr(subexpression);
-            visitor.visit_block(if_block);
-            walk_list!(visitor, visit_expr, optional_else);
-        }
-        ExprKind::WhileLet(ref pats, ref subexpression, ref block, ref opt_label) => {
-            walk_list!(visitor, visit_label, opt_label);
-            walk_list!(visitor, visit_pat, pats);
             visitor.visit_expr(subexpression);
             visitor.visit_block(block);
         }
@@ -767,7 +757,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
         ExprKind::Async(_, _, ref body) => {
             visitor.visit_block(body);
         }
-        ExprKind::Await(_, ref expr) => visitor.visit_expr(expr),
+        ExprKind::Await(ref expr) => visitor.visit_expr(expr),
         ExprKind::Assign(ref left_hand_expression, ref right_hand_expression) => {
             visitor.visit_expr(left_hand_expression);
             visitor.visit_expr(right_hand_expression);
@@ -831,12 +821,16 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
     visitor.visit_expr_post(expression)
 }
 
+pub fn walk_arg<'a, V: Visitor<'a>>(visitor: &mut V, arg: &'a Arg) {
+    walk_list!(visitor, visit_attribute, arg.attrs.iter());
+    visitor.visit_pat(&arg.pat);
+    visitor.visit_ty(&arg.ty);
+}
+
 pub fn walk_arm<'a, V: Visitor<'a>>(visitor: &mut V, arm: &'a Arm) {
     walk_list!(visitor, visit_pat, &arm.pats);
-    if let Some(ref g) = &arm.guard {
-        match g {
-            Guard::If(ref e) => visitor.visit_expr(e),
-        }
+    if let Some(ref e) = &arm.guard {
+        visitor.visit_expr(e);
     }
     visitor.visit_expr(&arm.body);
     walk_list!(visitor, visit_attribute, &arm.attrs);

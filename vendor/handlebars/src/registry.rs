@@ -1,21 +1,21 @@
-use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
+use hashbrown::HashMap;
 use serde::Serialize;
 
 use regex::{Captures, Regex};
 
-use context::Context;
-use directives::{self, DirectiveDef};
-use error::{RenderError, TemplateError, TemplateFileError, TemplateRenderError};
-use helpers::{self, HelperDef};
-use output::{Output, StringOutput, WriteOutput};
-use render::{RenderContext, Renderable};
-use support::str::StringWriter;
-use template::Template;
+use crate::context::Context;
+use crate::directives::{self, DirectiveDef};
+use crate::error::{RenderError, TemplateError, TemplateFileError, TemplateRenderError};
+use crate::helpers::{self, HelperDef};
+use crate::output::{Output, StringOutput, WriteOutput};
+use crate::render::{RenderContext, Renderable};
+use crate::support::str::StringWriter;
+use crate::template::Template;
 
 #[cfg(not(feature = "no_dir_source"))]
 use walkdir::{DirEntry, WalkDir};
@@ -29,7 +29,7 @@ lazy_static! {
 ///
 /// An *escape fn* is represented as a `Box` to avoid unnecessary type
 /// parameters (and because traits cannot be aliased using `type`).
-pub type EscapeFn = Box<Fn(&str) -> String + Send + Sync>;
+pub type EscapeFn = Box<dyn Fn(&str) -> String + Send + Sync>;
 
 /// The default *escape fn* replaces the characters `&"<>`
 /// with the equivalent html / xml entities.
@@ -42,8 +42,10 @@ pub fn html_escape(data: &str) -> String {
                 Some("\"") => "&quot;",
                 Some("&") => "&amp;",
                 _ => unreachable!(),
-            }.to_owned()
-        }).into_owned()
+            }
+            .to_owned()
+        })
+        .into_owned()
 }
 
 /// `EscapeFn` that do not change any thing. Useful when using in a non-html
@@ -57,8 +59,8 @@ pub fn no_escape(data: &str) -> String {
 /// It maintains compiled templates and registered helpers.
 pub struct Registry {
     templates: HashMap<String, Template>,
-    helpers: HashMap<String, Box<HelperDef + 'static>>,
-    directives: HashMap<String, Box<DirectiveDef + 'static>>,
+    helpers: HashMap<String, Box<dyn HelperDef + 'static>>,
+    directives: HashMap<String, Box<dyn DirectiveDef + 'static>>,
     escape_fn: EscapeFn,
     source_map: bool,
     strict_mode: bool,
@@ -86,12 +88,14 @@ fn filter_file(entry: &DirEntry, suffix: &str) -> bool {
     let path = entry.path();
 
     // ignore hidden files, emacs buffers and files with wrong suffix
-    !path.is_file() || path
-        .file_name()
-        .map(|s| {
-            let ds = s.to_string_lossy();
-            ds.starts_with(".") || ds.starts_with("#") || !ds.ends_with(suffix)
-        }).unwrap_or(true)
+    !path.is_file()
+        || path
+            .file_name()
+            .map(|s| {
+                let ds = s.to_string_lossy();
+                ds.starts_with('.') || ds.starts_with('#') || !ds.ends_with(suffix)
+            })
+            .unwrap_or(true)
 }
 
 impl Registry {
@@ -146,7 +150,7 @@ impl Registry {
     /// By default, handlebars renders empty string for value that
     /// undefined or never exists. Since rust is a static type
     /// language, we offer strict mode in handlebars-rust.  In strict
-    /// mode, if you were access a value that doesn't exist, a
+    /// mode, if you were to render a value that doesn't exist, a
     /// `RenderError` will be raised.
     pub fn set_strict_mode(&mut self, enable: bool) {
         self.strict_mode = enable;
@@ -251,11 +255,14 @@ impl Registry {
     }
 
     /// Register a template from `std::io::Read` source
-    pub fn register_template_source(
+    pub fn register_template_source<R>(
         &mut self,
         name: &str,
-        tpl_source: &mut Read,
-    ) -> Result<(), TemplateFileError> {
+        tpl_source: &mut R,
+    ) -> Result<(), TemplateFileError>
+    where
+        R: Read,
+    {
         let mut buf = String::new();
         tpl_source
             .read_to_string(&mut buf)
@@ -273,8 +280,8 @@ impl Registry {
     pub fn register_helper(
         &mut self,
         name: &str,
-        def: Box<HelperDef + 'static>,
-    ) -> Option<Box<HelperDef + 'static>> {
+        def: Box<dyn HelperDef + 'static>,
+    ) -> Option<Box<dyn HelperDef + 'static>> {
         self.helpers.insert(name.to_string(), def)
     }
 
@@ -282,8 +289,8 @@ impl Registry {
     pub fn register_decorator(
         &mut self,
         name: &str,
-        def: Box<DirectiveDef + 'static>,
-    ) -> Option<Box<DirectiveDef + 'static>> {
+        def: Box<dyn DirectiveDef + 'static>,
+    ) -> Option<Box<dyn DirectiveDef + 'static>> {
         self.directives.insert(name.to_string(), def)
     }
 
@@ -301,7 +308,7 @@ impl Registry {
     }
 
     /// Get a reference to the current *escape fn*.
-    pub fn get_escape_fn(&self) -> &Fn(&str) -> String {
+    pub fn get_escape_fn(&self) -> &dyn Fn(&str) -> String {
         &*self.escape_fn
     }
 
@@ -316,13 +323,13 @@ impl Registry {
     }
 
     /// Return a registered helper
-    pub fn get_helper(&self, name: &str) -> Option<&Box<HelperDef + 'static>> {
-        self.helpers.get(name)
+    pub fn get_helper(&self, name: &str) -> Option<&(dyn HelperDef + 'static)> {
+        self.helpers.get(name).map(|v| v.as_ref())
     }
 
     /// Return a registered directive, aka decorator
-    pub fn get_decorator(&self, name: &str) -> Option<&Box<DirectiveDef + 'static>> {
-        self.directives.get(name)
+    pub fn get_decorator(&self, name: &str) -> Option<&(dyn DirectiveDef + 'static)> {
+        self.directives.get(name).map(|v| v.as_ref())
     }
 
     /// Return all templates registered
@@ -335,14 +342,15 @@ impl Registry {
         self.templates.clear();
     }
 
-    fn render_to_output<T>(
+    fn render_to_output<T, O>(
         &self,
         name: &str,
         data: &T,
-        output: &mut Output,
+        output: &mut O,
     ) -> Result<(), RenderError>
     where
         T: Serialize,
+        O: Output,
     {
         self.get_template(name)
             .ok_or_else(|| RenderError::new(format!("Template not found: {}", name)))
@@ -350,7 +358,8 @@ impl Registry {
                 let ctx = Context::wraps(data)?;
                 let mut render_context = RenderContext::new(t.name.as_ref());
                 t.render(self, &ctx, &mut render_context, output)
-            }).map(|_| ())
+            })
+            .map(|_| ())
     }
 
     /// Render a registered template with some data into a string
@@ -413,15 +422,16 @@ impl Registry {
     }
 
     /// render a template source using current registry without register it
-    pub fn render_template_source_to_write<T, W>(
+    pub fn render_template_source_to_write<T, R, W>(
         &self,
-        template_source: &mut Read,
+        template_source: &mut R,
         data: &T,
         writer: W,
     ) -> Result<(), TemplateRenderError>
     where
         T: Serialize,
         W: Write,
+        R: Read,
     {
         let mut tpl_str = String::new();
         template_source
@@ -433,17 +443,17 @@ impl Registry {
 
 #[cfg(test)]
 mod test {
-    use context::Context;
-    use error::RenderError;
-    use helpers::HelperDef;
-    use output::Output;
-    use registry::Registry;
-    use render::{Helper, RenderContext, Renderable};
+    use crate::context::Context;
+    use crate::error::RenderError;
+    use crate::helpers::HelperDef;
+    use crate::output::Output;
+    use crate::registry::Registry;
+    use crate::render::{Helper, RenderContext, Renderable};
+    use crate::support::str::StringWriter;
     #[cfg(not(feature = "no_dir_source"))]
     use std::fs::{DirBuilder, File};
     #[cfg(not(feature = "no_dir_source"))]
     use std::io::Write;
-    use support::str::StringWriter;
     #[cfg(not(feature = "no_dir_source"))]
     use tempfile::tempdir;
 
@@ -457,7 +467,7 @@ mod test {
             r: &'reg Registry,
             ctx: &Context,
             rc: &mut RenderContext<'reg>,
-            out: &mut Output,
+            out: &mut dyn Output,
         ) -> Result<(), RenderError> {
             h.template().unwrap().render(r, ctx, rc, out)
         }
@@ -661,14 +671,12 @@ mod test {
             "the_only_key": "the_only_value"
         });
 
-        assert!(
-            r.render_template("accessing the_only_key {{the_only_key}}", &data)
-                .is_ok()
-        );
-        assert!(
-            r.render_template("accessing non-exists key {{the_key_never_exists}}", &data)
-                .is_err()
-        );
+        assert!(r
+            .render_template("accessing the_only_key {{the_only_key}}", &data)
+            .is_ok());
+        assert!(r
+            .render_template("accessing non-exists key {{the_key_never_exists}}", &data)
+            .is_err());
 
         let render_error = r
             .render_template("accessing non-exists key {{the_key_never_exists}}", &data)
@@ -679,14 +687,12 @@ mod test {
         );
 
         let data2 = json!([1, 2, 3]);
-        assert!(
-            r.render_template("accessing valid array index {{this.[2]}}", &data2)
-                .is_ok()
-        );
-        assert!(
-            r.render_template("accessing invalid array index {{this.[3]}}", &data2)
-                .is_err()
-        );
+        assert!(r
+            .render_template("accessing valid array index {{this.[2]}}", &data2)
+            .is_ok());
+        assert!(r
+            .render_template("accessing invalid array index {{this.[3]}}", &data2)
+            .is_err());
         let render_error2 = r
             .render_template("accessing invalid array index {{this.[3]}}", &data2)
             .unwrap_err();
@@ -694,5 +700,62 @@ mod test {
             render_error2.as_render_error().unwrap().column_no.unwrap(),
             31
         );
+    }
+
+    use crate::value::ScopedJson;
+    struct GenMissingHelper;
+    impl HelperDef for GenMissingHelper {
+        fn call_inner<'reg: 'rc, 'rc>(
+            &self,
+            _: &Helper<'reg, 'rc>,
+            _: &'reg Registry,
+            _: &'rc Context,
+            _: &mut RenderContext<'reg>,
+        ) -> Result<Option<ScopedJson<'reg, 'rc>>, RenderError> {
+            Ok(Some(ScopedJson::Missing))
+        }
+    }
+
+    #[test]
+    fn test_strict_mode_in_helper() {
+        let mut r = Registry::new();
+        r.set_strict_mode(true);
+
+        r.register_helper(
+            "check_missing",
+            Box::new(
+                |h: &Helper,
+                 _: &Registry,
+                 _: &Context,
+                 _: &mut RenderContext,
+                 _: &mut dyn Output|
+                 -> Result<(), RenderError> {
+                    let value = h.param(0).unwrap();
+                    assert!(value.is_value_missing());
+                    Ok(())
+                },
+            ),
+        );
+
+        r.register_helper("generate_missing_value", Box::new(GenMissingHelper));
+
+        let data = json!({
+            "the_key_we_have": "the_value_we_have"
+        });
+        assert!(r
+            .render_template("accessing non-exists key {{the_key_we_dont_have}}", &data)
+            .is_err());
+        assert!(r
+            .render_template(
+                "accessing non-exists key from helper {{check_missing the_key_we_dont_have}}",
+                &data
+            )
+            .is_ok());
+        assert!(r
+            .render_template(
+                "accessing helper that generates missing value {{generate_missing_value}}",
+                &data
+            )
+            .is_err());
     }
 }

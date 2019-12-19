@@ -189,14 +189,12 @@ fn custom_build_script_wrong_rustc_flags() {
     p.cargo("build")
         .with_status(101)
         .with_stderr_contains(
-            "\
-             [ERROR] Only `-l` and `-L` flags are allowed in build script of `foo v0.5.0 ([CWD])`: \
+            "[ERROR] Only `-l` and `-L` flags are allowed in build script of `foo v0.5.0 ([CWD])`: \
              `-aaa -bbb`",
         )
         .run();
 }
 
-/*
 #[cargo_test]
 fn custom_build_script_rustc_flags() {
     let p = project()
@@ -212,7 +210,8 @@ fn custom_build_script_rustc_flags() {
             [dependencies.foo]
             path = "foo"
         "#,
-        ).file("src/main.rs", "fn main() {}")
+        )
+        .file("src/main.rs", "fn main() {}")
         .file(
             "foo/Cargo.toml",
             r#"
@@ -223,7 +222,8 @@ fn custom_build_script_rustc_flags() {
             authors = ["wycats@example.com"]
             build = "build.rs"
         "#,
-        ).file("foo/src/lib.rs", "")
+        )
+        .file("foo/src/lib.rs", "")
         .file(
             "foo/build.rs",
             r#"
@@ -231,25 +231,28 @@ fn custom_build_script_rustc_flags() {
                 println!("cargo:rustc-flags=-l nonexistinglib -L /dummy/path1 -L /dummy/path2");
             }
         "#,
-        ).build();
+        )
+        .build();
 
-    // TODO: TEST FAILS BECAUSE OF WRONG STDOUT (but otherwise, the build works).
     p.cargo("build --verbose")
-        .with_status(101)
         .with_stderr(
             "\
-[COMPILING] bar v0.5.0 ([CWD])
-[RUNNING] `rustc --crate-name test [CWD]/src/lib.rs --crate-type lib -C debuginfo=2 \
-        -C metadata=[..] \
-        -C extra-filename=-[..] \
-        --out-dir [CWD]/target \
-        --emit=[..]link \
-        -L [CWD]/target \
-        -L [CWD]/target/deps`
+[COMPILING] foo [..]
+[RUNNING] `rustc --crate-name build_script_build foo/build.rs [..]
+[RUNNING] `[..]build-script-build`
+[RUNNING] `rustc --crate-name foo foo/src/lib.rs [..]\
+    -L dependency=[CWD]/target/debug/deps \
+    -L /dummy/path1 -L /dummy/path2 -l nonexistinglib`
+[COMPILING] bar [..]
+[RUNNING] `rustc --crate-name bar src/main.rs [..]\
+    -L dependency=[CWD]/target/debug/deps \
+    --extern foo=[..]libfoo-[..] \
+    -L /dummy/path1 -L /dummy/path2`
+[FINISHED] dev [..]
 ",
-        ).run();
+        )
+        .run();
 }
-*/
 
 #[cargo_test]
 fn links_no_build_cmd() {
@@ -2156,6 +2159,11 @@ fn flags_go_into_tests() {
 
 #[cargo_test]
 fn diamond_passes_args_only_once() {
+    // FIXME: when pipelining rides to stable, enable this test on all channels.
+    if !crate::support::is_nightly() {
+        return;
+    }
+
     let p = project()
         .file(
             "Cargo.toml",
@@ -2230,7 +2238,7 @@ fn diamond_passes_args_only_once() {
 [COMPILING] a v0.5.0 ([..]
 [RUNNING] `rustc [..]`
 [COMPILING] foo v0.5.0 ([..]
-[RUNNING] `[..]rlib -L native=test`
+[RUNNING] `[..]rmeta -L native=test`
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
 ",
         )

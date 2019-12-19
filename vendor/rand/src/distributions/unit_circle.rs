@@ -6,50 +6,41 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-use Rng;
-use distributions::{Distribution, Uniform};
+#![allow(deprecated)]
+
+use crate::Rng;
+use crate::distributions::{Distribution, Uniform};
 
 /// Samples uniformly from the edge of the unit circle in two dimensions.
 ///
 /// Implemented via a method by von Neumann[^1].
 ///
-///
-/// # Example
-///
-/// ```
-/// use rand::distributions::{UnitCircle, Distribution};
-///
-/// let circle = UnitCircle::new();
-/// let v = circle.sample(&mut rand::thread_rng());
-/// println!("{:?} is from the unit circle.", v)
-/// ```
-///
 /// [^1]: von Neumann, J. (1951) [*Various Techniques Used in Connection with
 ///       Random Digits.*](https://mcnp.lanl.gov/pdf_files/nbs_vonneumann.pdf)
 ///       NBS Appl. Math. Ser., No. 12. Washington, DC: U.S. Government Printing
 ///       Office, pp. 36-38.
+#[deprecated(since="0.7.0", note="moved to rand_distr crate")]
 #[derive(Clone, Copy, Debug)]
-pub struct UnitCircle {
-    uniform: Uniform<f64>,
-}
+pub struct UnitCircle;
 
 impl UnitCircle {
     /// Construct a new `UnitCircle` distribution.
     #[inline]
     pub fn new() -> UnitCircle {
-        UnitCircle { uniform: Uniform::new(-1., 1.) }
+        UnitCircle
     }
 }
 
 impl Distribution<[f64; 2]> for UnitCircle {
     #[inline]
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> [f64; 2] {
+        let uniform = Uniform::new(-1., 1.);
         let mut x1;
         let mut x2;
         let mut sum;
         loop {
-            x1 = self.uniform.sample(rng);
-            x2 = self.uniform.sample(rng);
+            x1 = uniform.sample(rng);
+            x2 = uniform.sample(rng);
             sum = x1*x1 + x2*x2;
             if sum < 1. {
                 break;
@@ -62,7 +53,7 @@ impl Distribution<[f64; 2]> for UnitCircle {
 
 #[cfg(test)]
 mod tests {
-    use distributions::Distribution;
+    use crate::distributions::Distribution;
     use super::UnitCircle;
 
     /// Assert that two numbers are almost equal to each other.
@@ -83,7 +74,7 @@ mod tests {
 
     #[test]
     fn norm() {
-        let mut rng = ::test::rng(1);
+        let mut rng = crate::test::rng(1);
         let dist = UnitCircle::new();
         for _ in 0..1000 {
             let x = dist.sample(&mut rng);
@@ -93,10 +84,17 @@ mod tests {
 
     #[test]
     fn value_stability() {
-        let mut rng = ::test::rng(2);
-        let dist = UnitCircle::new();
-        assert_eq!(dist.sample(&mut rng), [-0.8032118336637037, 0.5956935036263119]);
-        assert_eq!(dist.sample(&mut rng), [-0.4742919588505423, -0.880367615130018]);
-        assert_eq!(dist.sample(&mut rng), [0.9297328981467168, 0.368234623716601]);
+        let mut rng = crate::test::rng(2);
+        let expected = [
+                [-0.9965658683520504, -0.08280380447614634],
+                [-0.9790853270389644, -0.20345004884984505],
+                [-0.8449189758898707, 0.5348943112253227],
+            ];
+        let samples = [
+                UnitCircle.sample(&mut rng),
+                UnitCircle.sample(&mut rng),
+                UnitCircle.sample(&mut rng),
+            ];
+        assert_eq!(samples, expected);
     }
 }

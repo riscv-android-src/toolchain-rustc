@@ -9,10 +9,11 @@ use crate::parse::parser::emit_unclosed_delims;
 use crate::parse::token::TokenKind;
 use crate::tokenstream::{TokenStream, TokenTree};
 use crate::diagnostics::plugin::ErrorMap;
-use crate::print::pprust::token_to_string;
+use crate::print::pprust;
+use crate::symbol::Symbol;
 
 use errors::{Applicability, FatalError, Level, Handler, ColorConfig, Diagnostic, DiagnosticBuilder};
-use rustc_data_structures::sync::{Lrc, Lock};
+use rustc_data_structures::sync::{Lrc, Lock, Once};
 use syntax_pos::{Span, SourceFile, FileName, MultiSpan};
 use syntax_pos::edition::Edition;
 
@@ -32,7 +33,6 @@ pub mod token;
 crate mod classify;
 crate mod diagnostics;
 crate mod literal;
-crate mod unescape;
 crate mod unescape_error_reporting;
 
 /// Info about a parsing session.
@@ -54,6 +54,12 @@ pub struct ParseSess {
     /// operation token that followed it, but that the parser cannot identify without further
     /// analysis.
     pub ambiguous_block_expr_parse: Lock<FxHashMap<Span, Span>>,
+    pub param_attr_spans: Lock<Vec<Span>>,
+    // Places where `let` exprs were used and should be feature gated according to `let_chains`.
+    pub let_chains_spans: Lock<Vec<Span>>,
+    // Places where `async || ..` exprs were used and should be feature gated.
+    pub async_closure_spans: Lock<Vec<Span>>,
+    pub injected_crate_name: Once<Symbol>,
 }
 
 impl ParseSess {
@@ -79,6 +85,10 @@ impl ParseSess {
             buffered_lints: Lock::new(vec![]),
             edition: Edition::from_session(),
             ambiguous_block_expr_parse: Lock::new(FxHashMap::default()),
+            param_attr_spans: Lock::new(Vec::new()),
+            let_chains_spans: Lock::new(Vec::new()),
+            async_closure_spans: Lock::new(Vec::new()),
+            injected_crate_name: Once::new(),
         }
     }
 
@@ -300,7 +310,7 @@ pub fn maybe_file_to_stream(
     source_file: Lrc<SourceFile>,
     override_span: Option<Span>,
 ) -> Result<(TokenStream, Vec<lexer::UnmatchedBrace>), Vec<Diagnostic>> {
-    let srdr = lexer::StringReader::new_or_buffered_errs(sess, source_file, override_span)?;
+    let srdr = lexer::StringReader::new(sess, source_file, override_span);
     let (token_trees, unmatched_braces) = srdr.into_token_trees();
 
     match token_trees {
@@ -312,7 +322,7 @@ pub fn maybe_file_to_stream(
             for unmatched in unmatched_braces {
                 let mut db = sess.span_diagnostic.struct_span_err(unmatched.found_span, &format!(
                     "incorrect close delimiter: `{}`",
-                    token_to_string(&token::CloseDelim(unmatched.found_delim)),
+                    pprust::token_kind_to_string(&token::CloseDelim(unmatched.found_delim)),
                 ));
                 db.span_label(unmatched.found_span, "incorrect close delimiter");
                 if let Some(sp) = unmatched.candidate_span {
@@ -424,48 +434,38 @@ mod tests {
                 string_to_stream("macro_rules! zip (($a)=>($a))".to_string()).trees().collect();
             let tts: &[TokenTree] = &tts[..];
 
-            match (tts.len(), tts.get(0), tts.get(1), tts.get(2), tts.get(3)) {
-                (
-                    4,
-                    Some(&TokenTree::Token(Token {
-                        kind: token::Ident(name_macro_rules, false), ..
-                    })),
-                    Some(&TokenTree::Token(Token { kind: token::Not, .. })),
-                    Some(&TokenTree::Token(Token { kind: token::Ident(name_zip, false), .. })),
-                    Some(&TokenTree::Delimited(_, macro_delim, ref macro_tts)),
-                )
-                if name_macro_rules == sym::macro_rules && name_zip.as_str() == "zip" => {
+            match tts {
+                [
+                    TokenTree::Token(Token { kind: token::Ident(name_macro_rules, false), .. }),
+                    TokenTree::Token(Token { kind: token::Not, .. }),
+                    TokenTree::Token(Token { kind: token::Ident(name_zip, false), .. }),
+                    TokenTree::Delimited(_, macro_delim,  macro_tts)
+                ]
+                if name_macro_rules == &sym::macro_rules && name_zip.as_str() == "zip" => {
                     let tts = &macro_tts.trees().collect::<Vec<_>>();
-                    match (tts.len(), tts.get(0), tts.get(1), tts.get(2)) {
-                        (
-                            3,
-                            Some(&TokenTree::Delimited(_, first_delim, ref first_tts)),
-                            Some(&TokenTree::Token(Token { kind: token::FatArrow, .. })),
-                            Some(&TokenTree::Delimited(_, second_delim, ref second_tts)),
-                        )
-                        if macro_delim == token::Paren => {
+                    match &tts[..] {
+                        [
+                            TokenTree::Delimited(_, first_delim, first_tts),
+                            TokenTree::Token(Token { kind: token::FatArrow, .. }),
+                            TokenTree::Delimited(_, second_delim, second_tts),
+                        ]
+                        if macro_delim == &token::Paren => {
                             let tts = &first_tts.trees().collect::<Vec<_>>();
-                            match (tts.len(), tts.get(0), tts.get(1)) {
-                                (
-                                    2,
-                                    Some(&TokenTree::Token(Token { kind: token::Dollar, .. })),
-                                    Some(&TokenTree::Token(Token {
-                                        kind: token::Ident(name, false), ..
-                                    })),
-                                )
-                                if first_delim == token::Paren && name.as_str() == "a" => {},
+                            match &tts[..] {
+                                [
+                                    TokenTree::Token(Token { kind: token::Dollar, .. }),
+                                    TokenTree::Token(Token { kind: token::Ident(name, false), .. }),
+                                ]
+                                if first_delim == &token::Paren && name.as_str() == "a" => {},
                                 _ => panic!("value 3: {:?} {:?}", first_delim, first_tts),
                             }
                             let tts = &second_tts.trees().collect::<Vec<_>>();
-                            match (tts.len(), tts.get(0), tts.get(1)) {
-                                (
-                                    2,
-                                    Some(&TokenTree::Token(Token { kind: token::Dollar, .. })),
-                                    Some(&TokenTree::Token(Token {
-                                        kind: token::Ident(name, false), ..
-                                    })),
-                                )
-                                if second_delim == token::Paren && name.as_str() == "a" => {},
+                            match &tts[..] {
+                                [
+                                    TokenTree::Token(Token { kind: token::Dollar, .. }),
+                                    TokenTree::Token(Token { kind: token::Ident(name, false), .. }),
+                                ]
+                                if second_delim == &token::Paren && name.as_str() == "a" => {},
                                 _ => panic!("value 4: {:?} {:?}", second_delim, second_tts),
                             }
                         },

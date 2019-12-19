@@ -7,7 +7,7 @@ use serde_json::error::Error as SerdeError;
 #[cfg(not(feature = "no_dir_source"))]
 use walkdir::Error as WalkdirError;
 
-use template::Parameter;
+use crate::template::Parameter;
 
 /// Error when rendering data on template.
 #[derive(Debug)]
@@ -16,7 +16,7 @@ pub struct RenderError {
     pub template_name: Option<String>,
     pub line_no: Option<usize>,
     pub column_no: Option<usize>,
-    cause: Option<Box<Error + Send + Sync>>,
+    cause: Option<Box<dyn Error + Send + Sync>>,
 }
 
 impl fmt::Display for RenderError {
@@ -42,8 +42,8 @@ impl Error for RenderError {
         &self.desc[..]
     }
 
-    fn cause(&self) -> Option<&Error> {
-        self.cause.as_ref().map(|e| &**e as &Error)
+    fn cause(&self) -> Option<&dyn Error> {
+        self.cause.as_ref().map(|e| &**e as &dyn Error)
     }
 }
 
@@ -74,6 +74,14 @@ impl RenderError {
             column_no: None,
             cause: None,
         }
+    }
+
+    pub fn strict_error(path: Option<&String>) -> RenderError {
+        let msg = match path {
+            Some(path) => format!("Variable {:?} not found in strict mode.", path),
+            None => "Value is missing in strict mode".to_owned(),
+        };
+        RenderError::new(&msg)
     }
 
     pub fn with<E>(cause: E) -> RenderError
@@ -255,7 +263,7 @@ quick_error! {
 
 impl TemplateRenderError {
     pub fn as_render_error(&self) -> Option<&RenderError> {
-        if let &TemplateRenderError::RenderError(ref e) = self {
+        if let TemplateRenderError::RenderError(ref e) = *self {
             Some(&e)
         } else {
             None

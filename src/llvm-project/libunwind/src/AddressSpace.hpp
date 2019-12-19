@@ -1,9 +1,8 @@
 //===------------------------- AddressSpace.hpp ---------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //
 // Abstracts accessing local vs remote address spaces.
@@ -28,6 +27,9 @@
 
 #if _LIBUNWIND_USE_DLADDR
 #include <dlfcn.h>
+#if defined(__unix__) &&  defined(__ELF__) && defined(_LIBUNWIND_HAS_COMMENT_LIB_PRAGMA)
+#pragma comment(lib, "dl")
+#endif
 #endif
 
 #ifdef __APPLE__
@@ -457,6 +459,8 @@ inline bool LocalAddressSpace::findUnwindSections(pint_t targetAddr,
 #elif defined(_LIBUNWIND_SUPPORT_SEH_UNWIND) && defined(_WIN32)
   // Don't even bother, since Windows has functions that do all this stuff
   // for us.
+  (void)targetAddr;
+  (void)info;
   return true;
 #elif defined(_LIBUNWIND_ARM_EHABI) && defined(__BIONIC__) &&                  \
     (__ANDROID_API__ < 21)
@@ -597,6 +601,11 @@ inline bool LocalAddressSpace::findFunctionName(pint_t addr, char *buf,
       return true;
     }
   }
+#else
+  (void)addr;
+  (void)buf;
+  (void)bufLen;
+  (void)offset;
 #endif
   return false;
 }

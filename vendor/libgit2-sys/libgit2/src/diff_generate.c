@@ -9,7 +9,7 @@
 
 #include "diff.h"
 #include "patch_generate.h"
-#include "fileops.h"
+#include "futils.h"
 #include "config.h"
 #include "attr_file.h"
 #include "filter.h"
@@ -179,7 +179,7 @@ static int diff_delta__from_one(
 
 	delta->old_file.flags |= GIT_DIFF_FLAG_VALID_ID;
 
-	if (has_old || !git_oid_iszero(&delta->new_file.id))
+	if (has_old || !git_oid_is_zero(&delta->new_file.id))
 		delta->new_file.flags |= GIT_DIFF_FLAG_VALID_ID;
 
 	return diff_insert_delta(diff, delta, matched_pathspec);
@@ -240,7 +240,7 @@ static int diff_delta__from_two(
 		delta->old_file.flags |= GIT_DIFF_FLAG_EXISTS;
 		delta->new_file.flags |= GIT_DIFF_FLAG_EXISTS;
 
-		if (!git_oid_iszero(&new_entry->id))
+		if (!git_oid_is_zero(&new_entry->id))
 			delta->new_file.flags |= GIT_DIFF_FLAG_VALID_ID;
 	}
 
@@ -472,17 +472,17 @@ static int diff_generated_apply_options(
 	if ((val = git_repository_config_snapshot(&cfg, repo)) < 0)
 		return val;
 
-	if (!git_config__cvar(&val, cfg, GIT_CVAR_SYMLINKS) && val)
+	if (!git_config__configmap_lookup(&val, cfg, GIT_CONFIGMAP_SYMLINKS) && val)
 		diff->diffcaps |= GIT_DIFFCAPS_HAS_SYMLINKS;
 
-	if (!git_config__cvar(&val, cfg, GIT_CVAR_IGNORESTAT) && val)
+	if (!git_config__configmap_lookup(&val, cfg, GIT_CONFIGMAP_IGNORESTAT) && val)
 		diff->diffcaps |= GIT_DIFFCAPS_IGNORE_STAT;
 
 	if ((diff->base.opts.flags & GIT_DIFF_IGNORE_FILEMODE) == 0 &&
-		!git_config__cvar(&val, cfg, GIT_CVAR_FILEMODE) && val)
+		!git_config__configmap_lookup(&val, cfg, GIT_CONFIGMAP_FILEMODE) && val)
 		diff->diffcaps |= GIT_DIFFCAPS_TRUST_MODE_BITS;
 
-	if (!git_config__cvar(&val, cfg, GIT_CVAR_TRUSTCTIME) && val)
+	if (!git_config__configmap_lookup(&val, cfg, GIT_CONFIGMAP_TRUSTCTIME) && val)
 		diff->diffcaps |= GIT_DIFFCAPS_TRUST_CTIME;
 
 	/* Don't set GIT_DIFFCAPS_USE_DEV - compile time option in core git */
@@ -797,13 +797,13 @@ static int maybe_modified(
 	/* if oids and modes match (and are valid), then file is unmodified */
 	} else if (git_oid_equal(&oitem->id, &nitem->id) &&
 			 omode == nmode &&
-			 !git_oid_iszero(&oitem->id)) {
+			 !git_oid_is_zero(&oitem->id)) {
 		status = GIT_DELTA_UNMODIFIED;
 
 	/* if we have an unknown OID and a workdir iterator, then check some
 	 * circumstances that can accelerate things or need special handling
 	 */
-	} else if (git_oid_iszero(&nitem->id) && new_is_workdir) {
+	} else if (git_oid_is_zero(&nitem->id) && new_is_workdir) {
 		bool use_ctime =
 			((diff->diffcaps & GIT_DIFFCAPS_TRUST_CTIME) != 0);
 		git_index *index = git_iterator_index(info->new_iter);
@@ -843,7 +843,7 @@ static int maybe_modified(
 	/* if we got here and decided that the files are modified, but we
 	 * haven't calculated the OID of the new item, then calculate it now
 	 */
-	if (modified_uncertain && git_oid_iszero(&nitem->id)) {
+	if (modified_uncertain && git_oid_is_zero(&nitem->id)) {
 		const git_oid *update_check =
 			DIFF_FLAG_IS_SET(diff, GIT_DIFF_UPDATE_INDEX) && omode == nmode ?
 			&oitem->id : NULL;
@@ -877,7 +877,7 @@ static int maybe_modified(
 
 	return diff_delta__from_two(
 		diff, status, oitem, omode, nitem, nmode,
-		git_oid_iszero(&noid) ? NULL : &noid, matched_pathspec);
+		git_oid_is_zero(&noid) ? NULL : &noid, matched_pathspec);
 }
 
 static bool entry_is_prefixed(

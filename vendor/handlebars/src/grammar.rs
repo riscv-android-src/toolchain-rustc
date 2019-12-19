@@ -15,7 +15,7 @@ macro_rules! assert_rule {
                 .unwrap()
                 .last()
                 .unwrap()
-                .into_span()
+                .as_span()
                 .end(),
             $in.len()
         );
@@ -31,8 +31,9 @@ macro_rules! assert_not_rule {
                     .unwrap()
                     .last()
                     .unwrap()
-                    .into_span()
-                    .end() != $in.len()
+                    .as_span()
+                    .end()
+                    != $in.len()
         );
     };
 }
@@ -160,15 +161,10 @@ fn test_subexpression() {
 
 #[test]
 fn test_expression() {
-    let s = vec!["{{exp}}", "{{(exp)}}", "{{this.name}}", "{{this.[0].name}}"];
-    for i in s.iter() {
-        assert_rule!(Rule::expression, i);
-    }
-}
-
-#[test]
-fn test_helper_expression() {
     let s = vec![
+        "{{exp}}",
+        "{{(exp)}}",
+        "{{../exp}}",
         "{{exp 1}}",
         "{{exp \"literal\"}}",
         "{{exp ref}}",
@@ -180,9 +176,10 @@ fn test_helper_expression() {
         "{{exp key=ref}}",
         "{{exp key=(sub)}}",
         "{{exp key=(sub 0)}}",
+        "{{exp key=(sub 0 key=1)}}",
     ];
     for i in s.iter() {
-        assert_rule!(Rule::helper_expression, i);
+        assert_rule!(Rule::expression, i);
     }
 }
 
@@ -214,7 +211,7 @@ fn test_helper_start() {
         "{{#if}}",
         "{{~#if hello~}}",
         "{{#each people as |person|}}",
-        "{{#each-obj obj as |key val|}}",
+        "{{#each-obj obj as |val key|}}",
         "{{#each assets}}",
     ];
     for i in s.iter() {
@@ -262,7 +259,7 @@ fn test_raw_block() {
 
 #[test]
 fn test_block_param() {
-    let s = vec!["as |person|", "as |key val|"];
+    let s = vec!["as |person|", "as |val key|"];
     for i in s.iter() {
         assert_rule!(Rule::block_param, i);
     }
