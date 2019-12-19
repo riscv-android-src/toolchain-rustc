@@ -346,7 +346,7 @@ pub enum X509_STORE_CTX {}
 
 cfg_if! {
     if #[cfg(any(ossl110, libressl280))] {
-        pub enum X509_VERIFY_PARAM {} 
+        pub enum X509_VERIFY_PARAM {}
     } else if #[cfg(libressl251)] {
         #[repr(C)]
         pub struct X509_VERIFY_PARAM {
@@ -947,6 +947,7 @@ cfg_if! {
         }
 
         #[repr(C)]
+        #[cfg(not(osslconf = "OPENSSL_NO_SRP"))]
         pub struct SRP_CTX {
             SRP_cb_arg: *mut c_void,
             TLS_ext_srp_username_callback: *mut c_void,

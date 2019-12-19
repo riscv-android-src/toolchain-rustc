@@ -24,11 +24,11 @@ struct SyntaxContextData {
     outer_mark: Mark,
     transparency: Transparency,
     prev_ctxt: SyntaxContext,
-    // This context, but with all transparent and semi-transparent marks filtered away.
+    /// This context, but with all transparent and semi-transparent marks filtered away.
     opaque: SyntaxContext,
-    // This context, but with all transparent marks filtered away.
+    /// This context, but with all transparent marks filtered away.
     opaque_and_semitransparent: SyntaxContext,
-    // Name of the crate to which `$crate` with this context would resolve.
+    /// Name of the crate to which `$crate` with this context would resolve.
     dollar_crate_name: Symbol,
 }
 
@@ -218,14 +218,17 @@ pub fn clear_markings() {
 }
 
 impl SyntaxContext {
+    #[inline]
     pub const fn empty() -> Self {
         SyntaxContext(0)
     }
 
+    #[inline]
     crate fn as_u32(self) -> u32 {
         self.0
     }
 
+    #[inline]
     crate fn from_u32(raw: u32) -> SyntaxContext {
         SyntaxContext(raw)
     }
@@ -588,6 +591,10 @@ impl ExpnFormat {
 /// The kind of compiler desugaring.
 #[derive(Clone, Copy, Hash, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable)]
 pub enum CompilerDesugaringKind {
+    /// We desugar `if c { i } else { e }` to `match $ExprKind::Use(c) { true => i, _ => e }`.
+    /// However, we do not want to blame `c` for unreachability but rather say that `i`
+    /// is unreachable. This desugaring kind allows us to avoid blaming `c`.
+    IfTemporary,
     QuestionMark,
     TryBlock,
     /// Desugaring of an `impl Trait` in return type position
@@ -595,13 +602,16 @@ pub enum CompilerDesugaringKind {
     /// `impl Trait` with `Foo`.
     ExistentialReturnType,
     Async,
+    Await,
     ForLoop,
 }
 
 impl CompilerDesugaringKind {
     pub fn name(self) -> Symbol {
         Symbol::intern(match self {
+            CompilerDesugaringKind::IfTemporary => "if",
             CompilerDesugaringKind::Async => "async",
+            CompilerDesugaringKind::Await => "await",
             CompilerDesugaringKind::QuestionMark => "?",
             CompilerDesugaringKind::TryBlock => "try block",
             CompilerDesugaringKind::ExistentialReturnType => "existential type",

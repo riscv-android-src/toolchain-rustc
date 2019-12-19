@@ -105,6 +105,13 @@ You may be running `cargo miri` with a different compiler version than the one
 used to build the custom libstd that Miri uses, and Miri failed to detect that.
 Try deleting `~/.cache/miri`.
 
+#### "no mir for `std::rt::lang_start_internal`"
+
+This means the sysroot you are using was not compiled with Miri in mind.  This
+should never happen when you use `cargo miri` because that takes care of setting
+up the sysroot.  If you are using `miri` (the Miri driver) directly, see
+[below][testing-miri] for how to set up the sysroot.
+
 ## Development and Debugging
 
 If you want to hack on miri yourself, great!  Here are some resources you might
@@ -113,63 +120,56 @@ find useful.
 ### Using a nightly rustc
 
 Miri heavily relies on internal rustc interfaces to execute MIR.  Still, some
-things (like adding support for a new intrinsic) can be done by working just on
-the Miri side.
+things (like adding support for a new intrinsic or a shim for an external
+function being called) can be done by working just on the Miri side.
 
-To prepare, make sure you are using a nightly Rust compiler.  The most
-convenient way is to install Miri using cargo, then you can easily run it on
-other projects:
-
-```sh
-rustup component remove miri # avoid having Miri installed twice
-cargo +nightly install --path "$DIR" --force
-cargo +nightly miri setup
-```
-
-(We are giving `+nightly` explicitly here all the time because it is important
-that all of these commands get executed with the same toolchain.)
+To prepare, make sure you are using a nightly Rust compiler.  Then you should be
+able to just `cargo build` Miri.
 
 In case this fails, your nightly might be incompatible with Miri master.  The
 `rust-version` file contains the commit hash of rustc that Miri is currently
 tested against; you can use that to find a nightly that works or you might have
 to wait for the next nightly to get released.
 
-If you want to use a different libstd (not the one that comes with the
-nightly), you can do that by running
+### Testing the Miri driver
+[testing-miri]: #testing-the-miri-driver
 
-```sh
-XARGO_RUST_SRC=~/src/rust/rustc/src/ cargo +nightly miri setup
+The Miri driver in the `miri` binary is the "heart" of Miri: it is basically a
+version of `rustc` that, instead of compiling your code, runs it.  It accepts
+all the same flags as `rustc` (though the ones only affecting code generation
+and linking obviously will have no effect) [and more][miri-flags].
+
+To run the Miri driver, you need to have the `MIRI_SYSROOT` environment variable
+set to an appropriate sysroot.  You can generate such a sysroot with the
+following incantation:
+
+```
+cargo run --bin cargo-miri -- miri setup
 ```
 
-Either way, you can now do `cargo +nightly miri run` to run Miri with your
-local changes on whatever project you are debugging.
+This basically runs the `cargo-miri` binary (which backs the `cargo miri`
+subcommand) with `cargo`, and asks it to `setup`.  It should in the end print
+the directory where the libstd was built.  In the following, we will assume it
+is `~/.cache/miri/HOST`; you may have to adjust that if you are not using Linux.
 
-`cargo miri setup` should end in printing the directory where the libstd was
-built.  For the next step to work, set that as your `MIRI_SYSROOT` environment
-variable:
-
-```sh
-export MIRI_SYSROOT=~/.cache/miri/HOST # or whatever the previous command said
-```
-
-### Testing Miri
-
-Instead of running an entire project using `cargo miri`, you can also use the
-Miri "driver" directly to run just a single file.  That can be easier during
-debugging.
+Now you can run the driver directly using
 
 ```sh
-cargo run tests/run-pass/format.rs # or whatever test you like
+MIRI_SYSROOT=~/.cache/miri/HOST cargo run tests/run-pass/format.rs # or whatever test you like
 ```
 
-You can also run the test suite with `cargo test --release`.  `cargo test
---release FILTER` only runs those tests that contain `FILTER` in their filename
-(including the base directory, e.g. `cargo test --release fail` will run all
-compile-fail tests).  We recommend using `--release` to make test running take
-less time.
+and you can run the test suite using
 
-Now you are set up!  You can write a failing test case, and tweak miri until it
-fails no more.
+```
+cargo test
+```
+
+We recommend adding the `--release` flag to make tests run faster.
+
+`cargo test --release FILTER` only runs those tests that contain `FILTER` in
+their filename (including the base directory, e.g. `cargo test --release fail`
+will run all compile-fail tests).
+
 You can get a trace of which MIR statements are being executed by setting the
 `MIRI_LOG` environment variable.  For example:
 
@@ -177,26 +177,43 @@ You can get a trace of which MIR statements are being executed by setting the
 MIRI_LOG=info cargo run tests/run-pass/vecs.rs
 ```
 
-Setting `MIRI_LOG` like this will configure logging for miri itself as well as
+Setting `MIRI_LOG` like this will configure logging for Miri itself as well as
 the `rustc::mir::interpret` and `rustc_mir::interpret` modules in rustc.  You
-can also do more targeted configuration, e.g. to debug the stacked borrows
-implementation:
+can also do more targeted configuration, e.g. the following helps debug the
+stacked borrows implementation:
+
 ```sh
 MIRI_LOG=rustc_mir::interpret=info,miri::stacked_borrows cargo run tests/run-pass/vecs.rs
 ```
 
 In addition, you can set `MIRI_BACKTRACE=1` to get a backtrace of where an
-evaluation error was originally created.
+evaluation error was originally raised.
 
+### Testing `cargo miri`
+
+Working with the driver directly gives you full control, but you also lose all
+the convenience provided by cargo.  Once your test case depends on a crate, it
+is probably easier to test it with the cargo wrapper.  You can install your
+development version of Miri using
+
+```
+cargo install --path . --force
+```
+
+and then you can use it as if it was installed by `rustup`.  Make sure you use
+the same toolchain when calling `cargo miri` that you used when installing Miri!
+
+There's a test for the cargo wrapper in the `test-cargo-miri` directory; run
+`./run-test.py` in there to execute it.
 
 ### Using a locally built rustc
 
-Since the heart of Miri (the main interpreter engine) lives in rustc, working on
-Miri will often require using a locally built rustc.  The bug you want to fix
-may actually be on the rustc side, or you just need to get more detailed trace
-of the execution than what is possible with release builds -- in both cases, you
-should develop miri against a rustc you compiled yourself, with debug assertions
-(and hence tracing) enabled.
+A big part of the Miri driver lives in rustc, so working on Miri will sometimes
+require using a locally built rustc.  The bug you want to fix may actually be on
+the rustc side, or you just need to get more detailed trace of the execution
+than what is possible with release builds -- in both cases, you should develop
+miri against a rustc you compiled yourself, with debug assertions (and hence
+tracing) enabled.
 
 The setup for a local rustc works as follows:
 ```sh
@@ -216,30 +233,41 @@ rustup override set custom
 ```
 
 With this, you should now have a working development setup!  See
-["Testing Miri"](#testing-miri) above for how to proceed.
+[above][testing-miri] for how to proceed working with the Miri driver.  Notice
+that rustc's sysroot is already built for Miri in this case, so you can set
+`MIRI_SYSROOT=$(rustc --print sysroot)`.
 
 Running `cargo miri` in this setup is a bit more complicated, because the Miri
-binary you just created does not actually run without some environment variables.
-But you can contort cargo into calling `cargo miri` the right way for you:
+binary you just created needs help to find the libraries it links against.  On
+Linux, you can set the rpath to make this "just work":
 
 ```sh
-# in some other project's directory, to run `cargo miri test`:
-MIRI_SYSROOT=$(rustc +custom --print sysroot) cargo +custom run --manifest-path /path/to/miri/Cargo.toml --bin cargo-miri --release -- miri test
+export RUSTFLAGS="-C link-args=-Wl,-rpath,$(rustc --print sysroot)/lib/rustlib/x86_64-unknown-linux-gnu/lib"
+cargo install --path . --force
 ```
 
 ### Miri `-Z` flags and environment variables
+[miri-flags]: #miri--z-flags-and-environment-variables
 
 Several `-Z` flags are relevant for Miri:
 
-* `-Zmir-opt-level` controls how many MIR optimizations are performed.  miri
+* `-Zmiri-seed=<hex>` is a custom `-Z` flag added by Miri.  It enables the
+  interpreted program to seed an RNG with system entropy.  Miri will keep an RNG
+  on its own that is seeded with the given seed, and use that to generate the
+  "system entropy" that seeds the RNG(s) in the interpreted program.
+  **NOTE**: This entropy is not good enough for cryptographic use!  Do not
+  generate secret keys in Miri or perform other kinds of cryptographic
+  operations that rely on proper random numbers.
+* `-Zmiri-disable-validation` disables enforcing the validity invariant, which
+  is enforced by default.  This is mostly useful for debugging; it means Miri
+  will miss bugs in your program.  However, this can also help to make Miri run
+  faster.
+* `-Zmir-opt-level` controls how many MIR optimizations are performed.  Miri
   overrides the default to be `0`; be advised that using any higher level can
-  make miri miss bugs in your program because they got optimized away.
+  make Miri miss bugs in your program because they got optimized away.
 * `-Zalways-encode-mir` makes rustc dump MIR even for completely monomorphic
-  functions.  This is needed so that miri can execute such functions, so miri
+  functions.  This is needed so that Miri can execute such functions, so Miri
   sets this flag per default.
-* `-Zmiri-disable-validation` is a custom `-Z` flag added by miri.  It disables
-  enforcing the validity invariant, which is enforced by default.  This is
-  mostly useful for debugging; it means miri will miss bugs in your program.
 
 Moreover, Miri recognizes some environment variables:
 
@@ -280,15 +308,22 @@ used according to their aliasing restrictions.
 
 ## Bugs found by Miri
 
-Miri has already found a number of bugs in the Rust standard library, which we collect here.
+Miri has already found a number of bugs in the Rust standard library and beyond, which we collect here.
+
+Definite bugs found:
 
 * [`Debug for vec_deque::Iter` accessing uninitialized memory](https://github.com/rust-lang/rust/issues/53566)
 * [`From<&[T]> for Rc` creating a not sufficiently aligned reference](https://github.com/rust-lang/rust/issues/54908)
 * [`BTreeMap` creating a shared reference pointing to a too small allocation](https://github.com/rust-lang/rust/issues/54957)
-* [`VecDeque` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/56161)
 * [Futures turning a shared reference into a mutable one](https://github.com/rust-lang/rust/pull/56319)
 * [`str` turning a shared reference into a mutable one](https://github.com/rust-lang/rust/pull/58200)
+* [`rand` performing unaligned reads](https://github.com/rust-random/rand/issues/779)
+
+Violations of Stacked Borrows found that are likely bugs (but Stacked Borrows is currently just an experiment):
+
+* [`VecDeque` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/56161)
 * [`BTreeMap` creating mutable references that overlap with shared references](https://github.com/rust-lang/rust/pull/58431)
+* [`LinkedList` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/60072)
 
 ## License
 

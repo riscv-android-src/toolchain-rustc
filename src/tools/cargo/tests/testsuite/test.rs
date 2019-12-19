@@ -164,18 +164,20 @@ fn cargo_test_quiet_with_harness() {
             fn main() {}
             #[test] fn test_hello() {}
         "#,
-        ).build();
+        )
+        .build();
 
-        p.cargo("test -q")
-            .with_stdout(
-                "
+    p.cargo("test -q")
+        .with_stdout(
+            "
 running 1 test
 .
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
-"
-            ).with_stderr("")
-            .run();
+",
+        )
+        .with_stderr("")
+        .run();
 }
 
 #[test]
@@ -205,13 +207,10 @@ fn cargo_test_quiet_no_harness() {
             fn main() {}
             #[test] fn test_hello() {}
         "#,
-        ).build();
+        )
+        .build();
 
-        p.cargo("test -q")
-            .with_stdout(
-                ""
-            ).with_stderr("")
-            .run();
+    p.cargo("test -q").with_stdout("").with_stderr("").run();
 }
 
 #[test]
@@ -1553,7 +1552,8 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 ",
         )
-        .with_stderr("\
+        .with_stderr(
+            "\
 [COMPILING] foo v0.0.1 ([CWD])
 [RUNNING] `rustc --crate-name foo src/lib.rs [..] --test [..]`
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
@@ -3270,7 +3270,7 @@ fn test_hint_not_masked_by_doctest() {
 }
 
 #[test]
-fn test_hint_workspace() {
+fn test_hint_workspace_virtual() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -3287,6 +3287,40 @@ fn test_hint_workspace() {
 
     p.cargo("test")
         .with_stderr_contains("[ERROR] test failed, to rerun pass '-p b --lib'")
+        .with_status(101)
+        .run();
+    p.cargo("test")
+        .cwd("b")
+        .with_stderr_contains("[ERROR] test failed, to rerun pass '--lib'")
+        .with_status(101)
+        .run();
+}
+
+#[test]
+fn test_hint_workspace_nonvirtual() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+
+            [workspace]
+            members = ["a"]
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("a/Cargo.toml", &basic_manifest("a", "0.1.0"))
+        .file("a/src/lib.rs", "#[test] fn t1() {assert!(false)}")
+        .build();
+
+    p.cargo("test --all")
+        .with_stderr_contains("[ERROR] test failed, to rerun pass '-p a --lib'")
+        .with_status(101)
+        .run();
+    p.cargo("test -p a")
+        .with_stderr_contains("[ERROR] test failed, to rerun pass '-p a --lib'")
         .with_status(101)
         .run();
 }
@@ -3528,13 +3562,13 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         )
         .run();
 
-    p.cargo("test --doc")
-        .with_stderr(
-            "\
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-[DOCTEST] foo
-",
-        )
+    // This has been modified to attempt to diagnose spurious errors on CI.
+    // For some reason, this is recompiling the lib when it shouldn't. If the
+    // root cause is ever found, the changes here should be reverted.
+    // See https://github.com/rust-lang/cargo/issues/6887
+    p.cargo("test --doc -vv")
+        .with_stderr_does_not_contain("[COMPILING] foo [..]")
+        .with_stderr_contains("[DOCTEST] foo")
         .with_stdout(
             "
 running 1 test
@@ -3544,6 +3578,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 ",
         )
+        .env("CARGO_LOG", "cargo=trace")
         .run();
 
     p.cargo("test --lib --doc")

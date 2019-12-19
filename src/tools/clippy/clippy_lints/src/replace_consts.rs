@@ -1,9 +1,9 @@
 use crate::utils::{match_def_path, span_lint_and_sugg};
 use if_chain::if_chain;
 use rustc::hir;
-use rustc::hir::def::Def;
+use rustc::hir::def::{DefKind, Res};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 
 declare_clippy_lint! {
@@ -29,26 +29,16 @@ declare_clippy_lint! {
     "Lint usages of standard library `const`s that could be replaced by `const fn`s"
 }
 
-pub struct ReplaceConsts;
-
-impl LintPass for ReplaceConsts {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(REPLACE_CONSTS)
-    }
-
-    fn name(&self) -> &'static str {
-        "ReplaceConsts"
-    }
-}
+declare_lint_pass!(ReplaceConsts => [REPLACE_CONSTS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ReplaceConsts {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
         if_chain! {
             if let hir::ExprKind::Path(ref qp) = expr.node;
-            if let Def::Const(def_id) = cx.tables.qpath_def(qp, expr.hir_id);
+            if let Res::Def(DefKind::Const, def_id) = cx.tables.qpath_res(qp, expr.hir_id);
             then {
-                for &(const_path, repl_snip) in REPLACEMENTS {
-                    if match_def_path(cx.tcx, def_id, const_path) {
+                for (const_path, repl_snip) in &REPLACEMENTS {
+                    if match_def_path(cx, def_id, const_path) {
                         span_lint_and_sugg(
                             cx,
                             REPLACE_CONSTS,
@@ -66,33 +56,33 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ReplaceConsts {
     }
 }
 
-const REPLACEMENTS: &[(&[&str], &str)] = &[
+const REPLACEMENTS: [([&str; 3], &str); 25] = [
     // Once
-    (&["core", "sync", "ONCE_INIT"], "Once::new()"),
+    (["core", "sync", "ONCE_INIT"], "Once::new()"),
     // Min
-    (&["core", "isize", "MIN"], "isize::min_value()"),
-    (&["core", "i8", "MIN"], "i8::min_value()"),
-    (&["core", "i16", "MIN"], "i16::min_value()"),
-    (&["core", "i32", "MIN"], "i32::min_value()"),
-    (&["core", "i64", "MIN"], "i64::min_value()"),
-    (&["core", "i128", "MIN"], "i128::min_value()"),
-    (&["core", "usize", "MIN"], "usize::min_value()"),
-    (&["core", "u8", "MIN"], "u8::min_value()"),
-    (&["core", "u16", "MIN"], "u16::min_value()"),
-    (&["core", "u32", "MIN"], "u32::min_value()"),
-    (&["core", "u64", "MIN"], "u64::min_value()"),
-    (&["core", "u128", "MIN"], "u128::min_value()"),
+    (["core", "isize", "MIN"], "isize::min_value()"),
+    (["core", "i8", "MIN"], "i8::min_value()"),
+    (["core", "i16", "MIN"], "i16::min_value()"),
+    (["core", "i32", "MIN"], "i32::min_value()"),
+    (["core", "i64", "MIN"], "i64::min_value()"),
+    (["core", "i128", "MIN"], "i128::min_value()"),
+    (["core", "usize", "MIN"], "usize::min_value()"),
+    (["core", "u8", "MIN"], "u8::min_value()"),
+    (["core", "u16", "MIN"], "u16::min_value()"),
+    (["core", "u32", "MIN"], "u32::min_value()"),
+    (["core", "u64", "MIN"], "u64::min_value()"),
+    (["core", "u128", "MIN"], "u128::min_value()"),
     // Max
-    (&["core", "isize", "MAX"], "isize::max_value()"),
-    (&["core", "i8", "MAX"], "i8::max_value()"),
-    (&["core", "i16", "MAX"], "i16::max_value()"),
-    (&["core", "i32", "MAX"], "i32::max_value()"),
-    (&["core", "i64", "MAX"], "i64::max_value()"),
-    (&["core", "i128", "MAX"], "i128::max_value()"),
-    (&["core", "usize", "MAX"], "usize::max_value()"),
-    (&["core", "u8", "MAX"], "u8::max_value()"),
-    (&["core", "u16", "MAX"], "u16::max_value()"),
-    (&["core", "u32", "MAX"], "u32::max_value()"),
-    (&["core", "u64", "MAX"], "u64::max_value()"),
-    (&["core", "u128", "MAX"], "u128::max_value()"),
+    (["core", "isize", "MAX"], "isize::max_value()"),
+    (["core", "i8", "MAX"], "i8::max_value()"),
+    (["core", "i16", "MAX"], "i16::max_value()"),
+    (["core", "i32", "MAX"], "i32::max_value()"),
+    (["core", "i64", "MAX"], "i64::max_value()"),
+    (["core", "i128", "MAX"], "i128::max_value()"),
+    (["core", "usize", "MAX"], "usize::max_value()"),
+    (["core", "u8", "MAX"], "u8::max_value()"),
+    (["core", "u16", "MAX"], "u16::max_value()"),
+    (["core", "u32", "MAX"], "u32::max_value()"),
+    (["core", "u64", "MAX"], "u64::max_value()"),
+    (["core", "u128", "MAX"], "u128::max_value()"),
 ];

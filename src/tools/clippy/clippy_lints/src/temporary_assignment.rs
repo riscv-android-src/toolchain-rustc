@@ -1,9 +1,9 @@
 use crate::utils::is_adjusted;
 use crate::utils::span_lint;
-use rustc::hir::def::Def;
+use rustc::hir::def::{DefKind, Res};
 use rustc::hir::{Expr, ExprKind};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for construction of a structure or tuple just to
@@ -27,7 +27,7 @@ fn is_temporary(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
     match &expr.node {
         ExprKind::Struct(..) | ExprKind::Tup(..) => true,
         ExprKind::Path(qpath) => {
-            if let Def::Const(..) = cx.tables.qpath_def(qpath, expr.hir_id) {
+            if let Res::Def(DefKind::Const, ..) = cx.tables.qpath_res(qpath, expr.hir_id) {
                 true
             } else {
                 false
@@ -37,20 +37,9 @@ fn is_temporary(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
     }
 }
 
-#[derive(Copy, Clone)]
-pub struct Pass;
+declare_lint_pass!(TemporaryAssignment => [TEMPORARY_ASSIGNMENT]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(TEMPORARY_ASSIGNMENT)
-    }
-
-    fn name(&self) -> &'static str {
-        "TemporaryAssignment"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TemporaryAssignment {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         if let ExprKind::Assign(target, _) = &expr.node {
             let mut base = target;

@@ -331,7 +331,7 @@ fn build_clone_shim<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                 substs.upvar_tys(def_id, tcx)
             )
         }
-        ty::Tuple(tys) => builder.tuple_like_shim(dest, src, tys.iter().cloned()),
+        ty::Tuple(tys) => builder.tuple_like_shim(dest, src, tys.iter().map(|k| k.expect_ty())),
         _ => {
             bug!("clone shim for `{:?}` which is not `Copy` and is not an aggregate", self_ty)
         }
@@ -465,7 +465,7 @@ impl<'a, 'tcx> CloneShimBuilder<'a, 'tcx> {
 
         let ref_loc = self.make_place(
             Mutability::Not,
-            tcx.mk_ref(tcx.types.re_erased, ty::TypeAndMut {
+            tcx.mk_ref(tcx.lifetimes.re_erased, ty::TypeAndMut {
                 ty,
                 mutbl: hir::Mutability::MutImmutable,
             })
@@ -475,7 +475,7 @@ impl<'a, 'tcx> CloneShimBuilder<'a, 'tcx> {
         let statement = self.make_statement(
             StatementKind::Assign(
                 ref_loc.clone(),
-                box Rvalue::Ref(tcx.types.re_erased, BorrowKind::Shared, src)
+                box Rvalue::Ref(tcx.lifetimes.re_erased, BorrowKind::Shared, src)
             )
         );
 
@@ -644,7 +644,7 @@ impl<'a, 'tcx> CloneShimBuilder<'a, 'tcx> {
 
     fn tuple_like_shim<I>(&mut self, dest: Place<'tcx>,
                           src: Place<'tcx>, tys: I)
-            where I: Iterator<Item = ty::Ty<'tcx>> {
+            where I: Iterator<Item = Ty<'tcx>> {
         let mut previous_field = None;
         for (i, ity) in tys.enumerate() {
             let field = Field::new(i);
@@ -734,7 +734,7 @@ fn build_call_shim<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             // let rcvr = &mut rcvr;
             let ref_rcvr = local_decls.push(temp_decl(
                 Mutability::Not,
-                tcx.mk_ref(tcx.types.re_erased, ty::TypeAndMut {
+                tcx.mk_ref(tcx.lifetimes.re_erased, ty::TypeAndMut {
                     ty: sig.inputs()[0],
                     mutbl: hir::Mutability::MutMutable
                 }),
@@ -747,7 +747,7 @@ fn build_call_shim<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                 source_info,
                 kind: StatementKind::Assign(
                     Place::Base(PlaceBase::Local(ref_rcvr)),
-                    box Rvalue::Ref(tcx.types.re_erased, borrow_kind, rcvr_l)
+                    box Rvalue::Ref(tcx.lifetimes.re_erased, borrow_kind, rcvr_l)
                 )
             });
             Operand::Move(Place::Base(PlaceBase::Local(ref_rcvr)))

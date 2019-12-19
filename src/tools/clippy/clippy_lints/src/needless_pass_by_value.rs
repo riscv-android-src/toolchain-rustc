@@ -1,7 +1,7 @@
 use crate::utils::ptr::get_spans;
 use crate::utils::{
-    get_trait_def_id, implements_trait, in_macro, is_copy, is_self, match_type, multispan_sugg, paths, snippet,
-    snippet_opt, span_lint_and_then,
+    get_trait_def_id, implements_trait, in_macro_or_desugar, is_copy, is_self, match_type, multispan_sugg, paths,
+    snippet, snippet_opt, span_lint_and_then,
 };
 use if_chain::if_chain;
 use matches::matches;
@@ -12,7 +12,7 @@ use rustc::middle::expr_use_visitor as euv;
 use rustc::middle::mem_categorization as mc;
 use rustc::traits;
 use rustc::ty::{self, RegionKind, TypeFoldable};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
 use rustc_target::spec::abi::Abi;
@@ -50,17 +50,7 @@ declare_clippy_lint! {
     "functions taking arguments by value, but not consuming them in its body"
 }
 
-pub struct NeedlessPassByValue;
-
-impl LintPass for NeedlessPassByValue {
-    fn get_lints(&self) -> LintArray {
-        lint_array![NEEDLESS_PASS_BY_VALUE]
-    }
-
-    fn name(&self) -> &'static str {
-        "NeedlessPassByValue"
-    }
-}
+declare_lint_pass!(NeedlessPassByValue => [NEEDLESS_PASS_BY_VALUE]);
 
 macro_rules! need {
     ($e: expr) => {
@@ -83,7 +73,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
         span: Span,
         hir_id: HirId,
     ) {
-        if in_macro(span) {
+        if in_macro_or_desugar(span) {
             return;
         }
 
@@ -229,7 +219,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                                 get_spans(cx, Some(body.id()), idx, &[("clone", ".to_owned()")]);
                             if let TyKind::Path(QPath::Resolved(_, ref path)) = input.node;
                             if let Some(elem_ty) = path.segments.iter()
-                                .find(|seg| seg.ident.name == "Vec")
+                                .find(|seg| seg.ident.name == sym!(Vec))
                                 .and_then(|ps| ps.args.as_ref())
                                 .map(|params| params.args.iter().find_map(|arg| match arg {
                                     GenericArg::Type(ty) => Some(ty),
@@ -322,7 +312,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 /// Functions marked with these attributes must have the exact signature.
 fn requires_exact_signature(attrs: &[Attribute]) -> bool {
     attrs.iter().any(|attr| {
-        ["proc_macro", "proc_macro_attribute", "proc_macro_derive"]
+        [sym!(proc_macro), sym!(proc_macro_attribute), sym!(proc_macro_derive)]
             .iter()
             .any(|&allow| attr.check_name(allow))
     })

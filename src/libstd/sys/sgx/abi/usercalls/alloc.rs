@@ -85,8 +85,10 @@ pub unsafe trait UserSafe {
     ///
     /// * the pointer is not aligned.
     /// * the pointer is null.
+    /// * the pointed-to range does not fit in the address space.
     /// * the pointed-to range is not in user memory.
     unsafe fn from_raw_sized(ptr: *mut u8, size: usize) -> NonNull<Self> {
+        assert!(ptr.wrapping_add(size) >= ptr);
         let ret = Self::from_raw_sized_unchecked(ptr, size);
         Self::check_ptr(ret);
         NonNull::new_unchecked(ret as _)
@@ -268,6 +270,7 @@ impl<T> User<[T]> where [T]: UserSafe {
     ///
     /// * The pointer is not aligned
     /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
     /// * The pointed-to range is not in user memory
     pub unsafe fn from_raw_parts(ptr: *mut T, len: usize) -> Self {
         User(NonNull::new_userref(<[T]>::from_raw_sized(ptr as _, len * mem::size_of::<T>())))
@@ -372,6 +375,7 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
     ///
     /// * The pointer is not aligned
     /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
     /// * The pointed-to range is not in user memory
     pub unsafe fn from_raw_parts<'a>(ptr: *const T, len: usize) -> &'a Self {
         &*(<[T]>::from_raw_sized(ptr as _, len * mem::size_of::<T>()).as_ptr() as *const Self)
@@ -389,6 +393,7 @@ impl<T> UserRef<[T]> where [T]: UserSafe {
     ///
     /// * The pointer is not aligned
     /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
     /// * The pointed-to range is not in user memory
     pub unsafe fn from_raw_parts_mut<'a>(ptr: *mut T, len: usize) -> &'a mut Self {
         &mut*(<[T]>::from_raw_sized(ptr as _, len * mem::size_of::<T>()).as_ptr() as *mut Self)
@@ -523,7 +528,11 @@ impl<T, I: SliceIndex<[T]>> Index<I> for UserRef<[T]> where [T]: UserSafe, I::Ou
     #[inline]
     fn index(&self, index: I) -> &UserRef<I::Output> {
         unsafe {
-            UserRef::from_ptr(index.index(&*self.as_raw_ptr()))
+            if let Some(slice) = index.get(&*self.as_raw_ptr()) {
+                UserRef::from_ptr(slice)
+            } else {
+                rtabort!("index out of range for user slice");
+            }
         }
     }
 }
@@ -533,7 +542,11 @@ impl<T, I: SliceIndex<[T]>> IndexMut<I> for UserRef<[T]> where [T]: UserSafe, I:
     #[inline]
     fn index_mut(&mut self, index: I) -> &mut UserRef<I::Output> {
         unsafe {
-            UserRef::from_mut_ptr(index.index_mut(&mut*self.as_raw_mut_ptr()))
+            if let Some(slice) = index.get_mut(&mut*self.as_raw_mut_ptr()) {
+                UserRef::from_mut_ptr(slice)
+            } else {
+                rtabort!("index out of range for user slice");
+            }
         }
     }
 }
@@ -544,10 +557,11 @@ impl UserRef<super::raw::ByteBuffer> {
     /// enclave memory.
     ///
     /// # Panics
-    /// This function panics if:
+    /// This function panics if, in the user `ByteBuffer`:
     ///
-    /// * The pointer in the user `ByteBuffer` is null
-    /// * The pointed-to range in the user `ByteBuffer` is not in user memory
+    /// * The pointer is null
+    /// * The pointed-to range does not fit in the address space
+    /// * The pointed-to range is not in user memory
     pub fn copy_user_buffer(&self) -> Vec<u8> {
         unsafe {
             let buf = self.to_enclave();

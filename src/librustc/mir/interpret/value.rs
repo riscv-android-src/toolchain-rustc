@@ -2,6 +2,7 @@ use std::fmt;
 use rustc_macros::HashStable;
 
 use crate::ty::{Ty, InferConst, ParamConst, layout::{HasDataLayout, Size}, subst::SubstsRef};
+use crate::ty::PlaceholderConst;
 use crate::hir::def_id::DefId;
 
 use super::{EvalResult, Pointer, PointerArithmetic, Allocation, AllocId, sign_extend, truncate};
@@ -25,6 +26,9 @@ pub enum ConstValue<'tcx> {
 
     /// Infer the value of the const.
     Infer(InferConst<'tcx>),
+
+    /// A placeholder const - universally quantified higher-ranked const.
+    Placeholder(PlaceholderConst),
 
     /// Used only for types with `layout::abi::Scalar` ABI and ZSTs.
     ///
@@ -50,7 +54,7 @@ pub enum ConstValue<'tcx> {
 }
 
 #[cfg(target_arch = "x86_64")]
-static_assert!(CONST_SIZE: ::std::mem::size_of::<ConstValue<'static>>() == 40);
+static_assert_size!(ConstValue<'_>, 40);
 
 impl<'tcx> ConstValue<'tcx> {
     #[inline]
@@ -58,6 +62,7 @@ impl<'tcx> ConstValue<'tcx> {
         match *self {
             ConstValue::Param(_) |
             ConstValue::Infer(_) |
+            ConstValue::Placeholder(_) |
             ConstValue::ByRef(..) |
             ConstValue::Unevaluated(..) |
             ConstValue::Slice(..) => None,
@@ -106,7 +111,7 @@ pub enum Scalar<Tag=(), Id=AllocId> {
 }
 
 #[cfg(target_arch = "x86_64")]
-static_assert!(SCALAR_SIZE: ::std::mem::size_of::<Scalar>() == 24);
+static_assert_size!(Scalar, 24);
 
 impl<Tag> fmt::Display for Scalar<Tag> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -119,13 +124,18 @@ impl<Tag> fmt::Display for Scalar<Tag> {
 
 impl<'tcx> Scalar<()> {
     #[inline]
+    pub fn with_tag<Tag>(self, new_tag: Tag) -> Scalar<Tag> {
+        match self {
+            Scalar::Ptr(ptr) => Scalar::Ptr(ptr.with_tag(new_tag)),
+            Scalar::Bits { bits, size } => Scalar::Bits { bits, size },
+        }
+    }
+
+    #[inline(always)]
     pub fn with_default_tag<Tag>(self) -> Scalar<Tag>
         where Tag: Default
     {
-        match self {
-            Scalar::Ptr(ptr) => Scalar::Ptr(ptr.with_default_tag()),
-            Scalar::Bits { bits, size } => Scalar::Bits { bits, size },
-        }
+        self.with_tag(Tag::default())
     }
 }
 
@@ -134,14 +144,6 @@ impl<'tcx, Tag> Scalar<Tag> {
     pub fn erase_tag(self) -> Scalar {
         match self {
             Scalar::Ptr(ptr) => Scalar::Ptr(ptr.erase_tag()),
-            Scalar::Bits { bits, size } => Scalar::Bits { bits, size },
-        }
-    }
-
-    #[inline]
-    pub fn with_tag(self, new_tag: Tag) -> Self {
-        match self {
-            Scalar::Ptr(ptr) => Scalar::Ptr(Pointer { tag: new_tag, ..ptr }),
             Scalar::Bits { bits, size } => Scalar::Bits { bits, size },
         }
     }
@@ -434,13 +436,18 @@ impl<Tag> fmt::Display for ScalarMaybeUndef<Tag> {
 
 impl<'tcx> ScalarMaybeUndef<()> {
     #[inline]
+    pub fn with_tag<Tag>(self, new_tag: Tag) -> ScalarMaybeUndef<Tag> {
+        match self {
+            ScalarMaybeUndef::Scalar(s) => ScalarMaybeUndef::Scalar(s.with_tag(new_tag)),
+            ScalarMaybeUndef::Undef => ScalarMaybeUndef::Undef,
+        }
+    }
+
+    #[inline(always)]
     pub fn with_default_tag<Tag>(self) -> ScalarMaybeUndef<Tag>
         where Tag: Default
     {
-        match self {
-            ScalarMaybeUndef::Scalar(s) => ScalarMaybeUndef::Scalar(s.with_default_tag()),
-            ScalarMaybeUndef::Undef => ScalarMaybeUndef::Undef,
-        }
+        self.with_tag(Tag::default())
     }
 }
 

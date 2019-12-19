@@ -182,7 +182,7 @@ use rustc::mir::interpret::{AllocId, ConstValue};
 use rustc::middle::lang_items::{ExchangeMallocFnLangItem, StartFnLangItem};
 use rustc::ty::subst::{InternalSubsts, SubstsRef};
 use rustc::ty::{self, TypeFoldable, Ty, TyCtxt, GenericParamDefKind};
-use rustc::ty::adjustment::CustomCoerceUnsized;
+use rustc::ty::adjustment::{CustomCoerceUnsized, PointerCast};
 use rustc::session::config::EntryFnType;
 use rustc::mir::{self, Location, Place, PlaceBase, Promoted, Static, StaticKind};
 use rustc::mir::visit::Visitor as MirVisitor;
@@ -480,6 +480,8 @@ fn check_type_length_limit<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let type_length_limit = *tcx.sess.type_length_limit.get();
     // We include the const length in the type length, as it's better
     // to be overly conservative.
+    // FIXME(const_generics): we should instead uniformly walk through `substs`,
+    // ignoring lifetimes.
     if type_length + const_length > type_length_limit {
         // The instance name is already known to be too long for rustc.
         // Show only the first and last 32 characters to avoid blasting
@@ -529,7 +531,9 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
             // When doing an cast from a regular pointer to a fat pointer, we
             // have to instantiate all methods of the trait being cast to, so we
             // can build the appropriate vtable.
-            mir::Rvalue::Cast(mir::CastKind::Unsize, ref operand, target_ty) => {
+            mir::Rvalue::Cast(
+                mir::CastKind::Pointer(PointerCast::Unsize), ref operand, target_ty
+            ) => {
                 let target_ty = self.tcx.subst_and_normalize_erasing_regions(
                     self.param_substs,
                     ty::ParamEnv::reveal_all(),
@@ -554,7 +558,9 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
                                                          self.output);
                 }
             }
-            mir::Rvalue::Cast(mir::CastKind::ReifyFnPointer, ref operand, _) => {
+            mir::Rvalue::Cast(
+                mir::CastKind::Pointer(PointerCast::ReifyFnPointer), ref operand, _
+            ) => {
                 let fn_ty = operand.ty(self.mir, self.tcx);
                 let fn_ty = self.tcx.subst_and_normalize_erasing_regions(
                     self.param_substs,
@@ -563,7 +569,9 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
                 );
                 visit_fn_use(self.tcx, fn_ty, false, &mut self.output);
             }
-            mir::Rvalue::Cast(mir::CastKind::ClosureFnPointer(_), ref operand, _) => {
+            mir::Rvalue::Cast(
+                mir::CastKind::Pointer(PointerCast::ClosureFnPointer(_)), ref operand, _
+            ) => {
                 let source_ty = operand.ty(self.mir, self.tcx);
                 let source_ty = self.tcx.subst_and_normalize_erasing_regions(
                     self.param_substs,
@@ -607,7 +615,6 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
     }
 
     fn visit_terminator_kind(&mut self,
-                             block: mir::BasicBlock,
                              kind: &mir::TerminatorKind<'tcx>,
                              location: Location) {
         debug!("visiting terminator {:?} @ {:?}", kind, location);
@@ -646,12 +653,12 @@ impl<'a, 'tcx> MirVisitor<'tcx> for MirNeighborCollector<'a, 'tcx> {
             mir::TerminatorKind::FalseUnwind { .. } => bug!(),
         }
 
-        self.super_terminator_kind(block, kind, location);
+        self.super_terminator_kind(kind, location);
     }
 
     fn visit_place(&mut self,
                     place: &mir::Place<'tcx>,
-                    context: mir::visit::PlaceContext<'tcx>,
+                    context: mir::visit::PlaceContext,
                     location: Location) {
         match place {
             Place::Base(
@@ -1135,14 +1142,13 @@ fn create_mono_items_for_default_impls<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                         continue;
                     }
 
-                    let counts = tcx.generics_of(method.def_id).own_counts();
-                    if counts.types + counts.consts != 0 {
+                    if tcx.generics_of(method.def_id).own_requires_monomorphization() {
                         continue;
                     }
 
                     let substs = InternalSubsts::for_item(tcx, method.def_id, |param, _| {
                         match param.kind {
-                            GenericParamDefKind::Lifetime => tcx.types.re_erased.into(),
+                            GenericParamDefKind::Lifetime => tcx.lifetimes.re_erased.into(),
                             GenericParamDefKind::Type { .. } |
                             GenericParamDefKind::Const => {
                                 trait_ref.substs[param.index as usize]

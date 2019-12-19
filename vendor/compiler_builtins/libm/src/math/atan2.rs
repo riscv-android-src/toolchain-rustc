@@ -44,6 +44,7 @@ const PI: f64 = 3.1415926535897931160E+00; /* 0x400921FB, 0x54442D18 */
 const PI_LO: f64 = 1.2246467991473531772E-16; /* 0x3CA1A626, 0x33145C07 */
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn atan2(y: f64, x: f64) -> f64 {
     if x.is_nan() || y.is_nan() {
         return x + y;
@@ -52,7 +53,7 @@ pub fn atan2(y: f64, x: f64) -> f64 {
     let lx = x.to_bits() as u32;
     let mut iy = (y.to_bits() >> 32) as u32;
     let ly = y.to_bits() as u32;
-    if (ix - 0x3ff00000 | lx) == 0 {
+    if ((ix - 0x3ff00000) | lx) == 0 {
         /* x = 1.0 */
         return atan(y);
     }
@@ -91,12 +92,12 @@ pub fn atan2(y: f64, x: f64) -> f64 {
         }
     }
     /* |y/x| > 0x1p64 */
-    if ix + (64 << 20) < iy || iy == 0x7ff00000 {
+    if ix.wrapping_add(64 << 20) < iy || iy == 0x7ff00000 {
         return if m & 1 != 0 { -PI / 2.0 } else { PI / 2.0 };
     }
 
     /* z = atan(|y/x|) without spurious underflow */
-    let z = if (m & 2 != 0) && iy + (64 << 20) < ix {
+    let z = if (m & 2 != 0) && iy.wrapping_add(64 << 20) < ix {
         /* |y/x| < 0x1p-64, x<0 */
         0.0
     } else {

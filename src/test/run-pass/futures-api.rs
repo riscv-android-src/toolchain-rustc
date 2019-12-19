@@ -1,7 +1,5 @@
 // aux-build:arc_wake.rs
 
-#![feature(futures_api)]
-
 extern crate arc_wake;
 
 use std::future::Future;
@@ -20,7 +18,10 @@ struct Counter {
 }
 
 impl ArcWake for Counter {
-    fn wake(arc_self: &Arc<Self>) {
+    fn wake(self: Arc<Self>) {
+        Self::wake_by_ref(&self)
+    }
+    fn wake_by_ref(arc_self: &Arc<Self>) {
         arc_self.wakes.fetch_add(1, atomic::Ordering::SeqCst);
     }
 }
@@ -32,8 +33,8 @@ impl Future for MyFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Wake twice
         let waker = cx.waker();
-        waker.wake();
-        waker.wake();
+        waker.wake_by_ref();
+        waker.wake_by_ref();
         Poll::Ready(())
     }
 }

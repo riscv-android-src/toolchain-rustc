@@ -265,7 +265,7 @@ impl<'a, 'gcx, 'tcx> WfPredicates<'a, 'gcx, 'tcx> {
                 ty::Tuple(ref tys) => {
                     if let Some((_last, rest)) = tys.split_last() {
                         for elem in rest {
-                            self.require_sized(elem, traits::TupleElem);
+                            self.require_sized(elem.expect_ty(), traits::TupleElem);
                         }
                     }
                 }
@@ -516,7 +516,7 @@ pub fn object_region_bounds<'a, 'gcx, 'tcx>(
     // Since we don't actually *know* the self type for an object,
     // this "open(err)" serves as a kind of dummy standin -- basically
     // a placeholder type.
-    let open_ty = tcx.mk_infer(ty::FreshTy(0));
+    let open_ty = tcx.mk_ty_infer(ty::FreshTy(0));
 
     let predicates = existential_predicates.iter().filter_map(|predicate| {
         if let ty::ExistentialPredicate::Projection(_) = *predicate.skip_binder() {

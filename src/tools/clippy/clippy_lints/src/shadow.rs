@@ -4,7 +4,7 @@ use rustc::hir::intravisit::FnKind;
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty;
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use syntax::source_map::Span;
 
 declare_clippy_lint! {
@@ -75,20 +75,9 @@ declare_clippy_lint! {
     "rebinding a name without even using the original value"
 }
 
-#[derive(Copy, Clone)]
-pub struct Pass;
+declare_lint_pass!(Shadow => [SHADOW_SAME, SHADOW_REUSE, SHADOW_UNRELATED]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(SHADOW_SAME, SHADOW_REUSE, SHADOW_UNRELATED)
-    }
-
-    fn name(&self) -> &'static str {
-        "Shadow"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Shadow {
     fn check_fn(
         &mut self,
         cx: &LateContext<'a, 'tcx>,
@@ -197,7 +186,9 @@ fn check_pat<'a, 'tcx>(
                 if let ExprKind::Struct(_, ref efields, _) = init_struct.node {
                     for field in pfields {
                         let name = field.node.ident.name;
-                        let efield = efields.iter().find(|f| f.ident.name == name).map(|f| &*f.expr);
+                        let efield = efields
+                            .iter()
+                            .find_map(|f| if f.ident.name == name { Some(&*f.expr) } else { None });
                         check_pat(cx, &field.node.pat, efield, span, bindings);
                     }
                 } else {
@@ -326,13 +317,6 @@ fn check_expr<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr, bindings: 
         ExprKind::Array(ref v) | ExprKind::Tup(ref v) => {
             for e in v {
                 check_expr(cx, e, bindings)
-            }
-        },
-        ExprKind::If(ref cond, ref then, ref otherwise) => {
-            check_expr(cx, cond, bindings);
-            check_expr(cx, &**then, bindings);
-            if let Some(ref o) = *otherwise {
-                check_expr(cx, o, bindings);
             }
         },
         ExprKind::While(ref cond, ref block, _) => {

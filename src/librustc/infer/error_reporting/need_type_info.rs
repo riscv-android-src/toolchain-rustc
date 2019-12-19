@@ -11,7 +11,7 @@ use errors::DiagnosticBuilder;
 
 struct FindLocalByTypeVisitor<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
     infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
-    target_ty: &'a Ty<'tcx>,
+    target_ty: Ty<'tcx>,
     hir_map: &'a hir::map::Map<'gcx>,
     found_local_pattern: Option<&'gcx Pat>,
     found_arg_pattern: Option<&'gcx Pat>,
@@ -26,7 +26,7 @@ impl<'a, 'gcx, 'tcx> FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
             Some(ty) => {
                 let ty = self.infcx.resolve_type_vars_if_possible(&ty);
                 ty.walk().any(|inner_ty| {
-                    inner_ty == *self.target_ty || match (&inner_ty.sty, &self.target_ty.sty) {
+                    inner_ty == self.target_ty || match (&inner_ty.sty, &self.target_ty.sty) {
                         (&Infer(TyVar(a_vid)), &Infer(TyVar(b_vid))) => {
                             self.infcx
                                 .type_variables
@@ -68,10 +68,10 @@ impl<'a, 'gcx, 'tcx> Visitor<'gcx> for FindLocalByTypeVisitor<'a, 'gcx, 'tcx> {
 impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     pub fn extract_type_name(
         &self,
-        ty: &'a Ty<'tcx>,
+        ty: Ty<'tcx>,
         highlight: Option<ty::print::RegionHighlightMode>,
     ) -> String {
-        if let ty::Infer(ty::TyVar(ty_vid)) = (*ty).sty {
+        if let ty::Infer(ty::TyVar(ty_vid)) = ty.sty {
             let ty_vars = self.type_variables.borrow();
             if let TypeVariableOrigin::TypeParameterDefinition(_, name) =
                 *ty_vars.var_origin(ty_vid) {
@@ -88,27 +88,21 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         s
     }
 
-    pub fn need_type_info_err(&self,
-                            body_id: Option<hir::BodyId>,
-                            span: Span,
-                            ty: Ty<'tcx>)
-                            -> DiagnosticBuilder<'gcx> {
+    pub fn need_type_info_err(
+        &self,
+        body_id: Option<hir::BodyId>,
+        span: Span,
+        ty: Ty<'tcx>
+    ) -> DiagnosticBuilder<'gcx> {
         let ty = self.resolve_type_vars_if_possible(&ty);
         let name = self.extract_type_name(&ty, None);
 
         let mut err_span = span;
-        let mut labels = vec![(
-            span,
-            if &name == "_" {
-                "cannot infer type".to_owned()
-            } else {
-                format!("cannot infer type for `{}`", name)
-            },
-        )];
+        let mut labels = vec![(span, InferCtxt::missing_type_msg(&name))];
 
         let mut local_visitor = FindLocalByTypeVisitor {
             infcx: &self,
-            target_ty: &ty,
+            target_ty: ty,
             hir_map: &self.tcx.hir(),
             found_local_pattern: None,
             found_arg_pattern: None,
@@ -165,5 +159,29 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         }
 
         err
+    }
+
+    pub fn need_type_info_err_in_generator(
+        &self,
+        span: Span,
+        ty: Ty<'tcx>
+    ) -> DiagnosticBuilder<'gcx> {
+        let ty = self.resolve_type_vars_if_possible(&ty);
+        let name = self.extract_type_name(&ty, None);
+
+        let mut err = struct_span_err!(self.tcx.sess,
+                       span,
+                       E0698,
+                       "type inside generator must be known in this context");
+        err.span_label(span, InferCtxt::missing_type_msg(&name));
+        err
+    }
+
+    fn missing_type_msg(type_name: &str) -> String {
+        if type_name == "_" {
+            "cannot infer type".to_owned()
+        } else {
+            format!("cannot infer type for `{}`", type_name)
+        }
     }
 }

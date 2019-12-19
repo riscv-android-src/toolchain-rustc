@@ -112,7 +112,7 @@ use std::io;
 use std::rc::Rc;
 use syntax::ast::{self, NodeId};
 use syntax::ptr::P;
-use syntax::symbol::keywords;
+use syntax::symbol::{keywords, sym};
 use syntax_pos::Span;
 
 use crate::hir;
@@ -144,7 +144,7 @@ impl LiveNode {
 
 #[derive(Copy, Clone, PartialEq, Debug)]
 enum LiveNodeKind {
-    FreeVarNode(Span),
+    UpvarNode(Span),
     ExprNode(Span),
     VarDefNode(Span),
     ExitNode
@@ -153,8 +153,8 @@ enum LiveNodeKind {
 fn live_node_kind_to_string(lnk: LiveNodeKind, tcx: TyCtxt<'_, '_, '_>) -> String {
     let cm = tcx.sess.source_map();
     match lnk {
-        FreeVarNode(s) => {
-            format!("Free var node [{}]", cm.span_to_string(s))
+        UpvarNode(s) => {
+            format!("Upvar node [{}]", cm.span_to_string(s))
         }
         ExprNode(s) => {
             format!("Expr node [{}]", cm.span_to_string(s))
@@ -362,7 +362,7 @@ fn visit_fn<'a, 'tcx: 'a>(ir: &mut IrMaps<'a, 'tcx>,
     if let FnKind::Method(..) = fk {
         let parent = ir.tcx.hir().get_parent_item(id);
         if let Some(Node::Item(i)) = ir.tcx.hir().find_by_hir_id(parent) {
-            if i.attrs.iter().any(|a| a.check_name("automatically_derived")) {
+            if i.attrs.iter().any(|a| a.check_name(sym::automatically_derived)) {
                 return;
             }
         }
@@ -467,8 +467,8 @@ fn visit_expr<'a, 'tcx>(ir: &mut IrMaps<'a, 'tcx>, expr: &'tcx Expr) {
     match expr.node {
       // live nodes required for uses or definitions of variables:
       hir::ExprKind::Path(hir::QPath::Resolved(_, ref path)) => {
-        debug!("expr {}: path that leads to {:?}", expr.hir_id, path.def);
-        if let Def::Local(..) = path.def {
+        debug!("expr {}: path that leads to {:?}", expr.hir_id, path.res);
+        if let Res::Local(..) = path.res {
             ir.add_live_node_for_node(expr.hir_id, ExprNode(expr.span));
         }
         intravisit::walk_expr(ir, expr);
@@ -483,24 +483,23 @@ fn visit_expr<'a, 'tcx>(ir: &mut IrMaps<'a, 'tcx>, expr: &'tcx Expr) {
         // in better error messages than just pointing at the closure
         // construction site.
         let mut call_caps = Vec::new();
-        ir.tcx.with_freevars(expr.hir_id, |freevars| {
-            call_caps.extend(freevars.iter().filter_map(|fv| {
-                if let Def::Local(rv) = fv.def {
-                    let fv_ln = ir.add_live_node(FreeVarNode(fv.span));
-                    let var_hid = ir.tcx.hir().node_to_hir_id(rv);
-                    Some(CaptureInfo { ln: fv_ln, var_hid })
+        let closure_def_id = ir.tcx.hir().local_def_id_from_hir_id(expr.hir_id);
+        if let Some(upvars) = ir.tcx.upvars(closure_def_id) {
+            call_caps.extend(upvars.iter().filter_map(|upvar| {
+                if let Res::Local(rv) = upvar.res {
+                    let upvar_ln = ir.add_live_node(UpvarNode(upvar.span));
+                    Some(CaptureInfo { ln: upvar_ln, var_hid: rv })
                 } else {
                     None
                 }
             }));
-        });
+        }
         ir.set_captures(expr.hir_id, call_caps);
 
         intravisit::walk_expr(ir, expr);
       }
 
       // live nodes required for interesting control flow:
-      hir::ExprKind::If(..) |
       hir::ExprKind::Match(..) |
       hir::ExprKind::While(..) |
       hir::ExprKind::Loop(..) => {
@@ -522,6 +521,7 @@ fn visit_expr<'a, 'tcx>(ir: &mut IrMaps<'a, 'tcx>, expr: &'tcx Expr) {
       hir::ExprKind::Binary(..) |
       hir::ExprKind::AddrOf(..) |
       hir::ExprKind::Cast(..) |
+      hir::ExprKind::DropTemps(..) |
       hir::ExprKind::Unary(..) |
       hir::ExprKind::Break(..) |
       hir::ExprKind::Continue(_) |
@@ -1039,28 +1039,6 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 })
             }
 
-            hir::ExprKind::If(ref cond, ref then, ref els) => {
-                //
-                //     (cond)
-                //       |
-                //       v
-                //     (expr)
-                //     /   \
-                //    |     |
-                //    v     v
-                //  (then)(els)
-                //    |     |
-                //    v     v
-                //   (  succ  )
-                //
-                let else_ln = self.propagate_through_opt_expr(els.as_ref().map(|e| &**e), succ);
-                let then_ln = self.propagate_through_expr(&then, succ);
-                let ln = self.live_node(expr.hir_id, expr.span);
-                self.init_from_succ(ln, else_ln);
-                self.merge_from_succ(ln, then_ln, false);
-                self.propagate_through_expr(&cond, ln)
-            }
-
             hir::ExprKind::While(ref cond, ref blk, _) => {
                 self.propagate_through_loop(expr, WhileLoop(&cond), &blk, succ)
             }
@@ -1222,6 +1200,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             hir::ExprKind::AddrOf(_, ref e) |
             hir::ExprKind::Cast(ref e, _) |
             hir::ExprKind::Type(ref e, _) |
+            hir::ExprKind::DropTemps(ref e) |
             hir::ExprKind::Unary(_, ref e) |
             hir::ExprKind::Yield(ref e) |
             hir::ExprKind::Repeat(ref e, _) => {
@@ -1346,8 +1325,9 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
 
     fn access_path(&mut self, hir_id: HirId, path: &hir::Path, succ: LiveNode, acc: u32)
                    -> LiveNode {
-        match path.def {
-            Def::Local(nid) => {
+        match path.res {
+            Res::Local(hid) => {
+              let nid = self.ir.tcx.hir().hir_to_node_id(hid);
               self.access_var(hir_id, nid, succ, acc, path.span)
             }
             _ => succ
@@ -1520,13 +1500,13 @@ fn check_expr<'a, 'tcx>(this: &mut Liveness<'a, 'tcx>, expr: &'tcx Expr) {
         }
 
         // no correctness conditions related to liveness
-        hir::ExprKind::Call(..) | hir::ExprKind::MethodCall(..) | hir::ExprKind::If(..) |
+        hir::ExprKind::Call(..) | hir::ExprKind::MethodCall(..) |
         hir::ExprKind::Match(..) | hir::ExprKind::While(..) | hir::ExprKind::Loop(..) |
         hir::ExprKind::Index(..) | hir::ExprKind::Field(..) |
         hir::ExprKind::Array(..) | hir::ExprKind::Tup(..) | hir::ExprKind::Binary(..) |
-        hir::ExprKind::Cast(..) | hir::ExprKind::Unary(..) | hir::ExprKind::Ret(..) |
-        hir::ExprKind::Break(..) | hir::ExprKind::Continue(..) | hir::ExprKind::Lit(_) |
-        hir::ExprKind::Block(..) | hir::ExprKind::AddrOf(..) |
+        hir::ExprKind::Cast(..) | hir::ExprKind::DropTemps(..) | hir::ExprKind::Unary(..) |
+        hir::ExprKind::Ret(..) | hir::ExprKind::Break(..) | hir::ExprKind::Continue(..) |
+        hir::ExprKind::Lit(_) | hir::ExprKind::Block(..) | hir::ExprKind::AddrOf(..) |
         hir::ExprKind::Struct(..) | hir::ExprKind::Repeat(..) |
         hir::ExprKind::Closure(..) | hir::ExprKind::Path(_) | hir::ExprKind::Yield(..) |
         hir::ExprKind::Box(..) | hir::ExprKind::Type(..) | hir::ExprKind::Err => {
@@ -1539,13 +1519,12 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
     fn check_place(&mut self, expr: &'tcx Expr) {
         match expr.node {
             hir::ExprKind::Path(hir::QPath::Resolved(_, ref path)) => {
-                if let Def::Local(nid) = path.def {
+                if let Res::Local(var_hid) = path.res {
                     // Assignment to an immutable variable or argument: only legal
                     // if there is no later assignment. If this local is actually
                     // mutable, then check for a reassignment to flag the mutability
                     // as being used.
                     let ln = self.live_node(expr.hir_id, expr.span);
-                    let var_hid = self.ir.tcx.hir().node_to_hir_id(nid);
                     let var = self.variable(var_hid, expr.span);
                     self.warn_about_dead_assign(expr.span, expr.hir_id, ln, var);
                 }
@@ -1627,11 +1606,18 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                     );
 
                     if self.ir.variable_is_shorthand(var) {
-                        err.multipart_suggestion(
-                            "try ignoring the field",
-                            spans.iter().map(|span| (*span, format!("{}: _", name))).collect(),
-                            Applicability::MachineApplicable
-                        );
+                        if let Node::Binding(pat) = self.ir.tcx.hir().get_by_hir_id(hir_id) {
+                            // Handle `ref` and `ref mut`.
+                            let spans = spans.iter()
+                                .map(|_span| (pat.span, format!("{}: _", name)))
+                                .collect();
+
+                            err.multipart_suggestion(
+                                "try ignoring the field",
+                                spans,
+                                Applicability::MachineApplicable,
+                            );
+                        }
                     } else {
                         err.multipart_suggestion(
                             "consider prefixing with an underscore",

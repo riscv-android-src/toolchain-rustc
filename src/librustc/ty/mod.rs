@@ -1,4 +1,6 @@
-#![cfg_attr(not(stage0), allow(usage_of_ty_tykind))]
+// ignore-tidy-filelength
+
+#![allow(usage_of_ty_tykind)]
 
 pub use self::Variance::*;
 pub use self::AssociatedItemContainer::*;
@@ -6,9 +8,9 @@ pub use self::BorrowKind::*;
 pub use self::IntVarValue::*;
 pub use self::fold::TypeFoldable;
 
-use crate::hir::{map as hir_map, FreevarMap, GlobMap, TraitMap};
-use crate::hir::{HirId, Node};
-use crate::hir::def::{Def, CtorOf, CtorKind, ExportMap};
+use crate::hir::{map as hir_map, UpvarMap, GlobMap, TraitMap};
+use crate::hir::Node;
+use crate::hir::def::{Res, DefKind, CtorOf, CtorKind, ExportMap};
 use crate::hir::def_id::{CrateNum, DefId, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_data_structures::svh::Svh;
 use rustc_macros::HashStable;
@@ -41,10 +43,11 @@ use std::ops::Deref;
 use rustc_data_structures::sync::{self, Lrc, ParallelIterator, par_iter};
 use std::slice;
 use std::{mem, ptr};
+use std::ops::Range;
 use syntax::ast::{self, Name, Ident, NodeId};
 use syntax::attr;
 use syntax::ext::hygiene::Mark;
-use syntax::symbol::{keywords, Symbol, LocalInternedString, InternedString};
+use syntax::symbol::{keywords, sym, Symbol, LocalInternedString, InternedString};
 use syntax_pos::Span;
 
 use smallvec;
@@ -94,6 +97,7 @@ mod constness;
 pub mod error;
 mod erase_regions;
 pub mod fast_reject;
+pub mod flags;
 pub mod fold;
 pub mod inhabitedness;
 pub mod layout;
@@ -110,7 +114,6 @@ pub mod wf;
 pub mod util;
 
 mod context;
-mod flags;
 mod instance;
 mod structural_impls;
 mod sty;
@@ -119,11 +122,11 @@ mod sty;
 
 #[derive(Clone)]
 pub struct Resolutions {
-    pub freevars: FreevarMap,
+    pub upvars: UpvarMap,
     pub trait_map: TraitMap,
     pub maybe_unused_trait_imports: NodeSet,
     pub maybe_unused_extern_crates: Vec<(NodeId, Span)>,
-    pub export_map: ExportMap,
+    pub export_map: ExportMap<NodeId>,
     pub glob_map: GlobMap,
     /// Extern prelude entries. The value is `true` if the entry was introduced
     /// via `extern crate` item and not `--extern` option or compiler built-in.
@@ -189,12 +192,12 @@ pub enum AssociatedKind {
 }
 
 impl AssociatedItem {
-    pub fn def(&self) -> Def {
+    pub fn def_kind(&self) -> DefKind {
         match self.kind {
-            AssociatedKind::Const => Def::AssociatedConst(self.def_id),
-            AssociatedKind::Method => Def::Method(self.def_id),
-            AssociatedKind::Type => Def::AssociatedTy(self.def_id),
-            AssociatedKind::Existential => Def::AssociatedExistential(self.def_id),
+            AssociatedKind::Const => DefKind::AssociatedConst,
+            AssociatedKind::Method => DefKind::Method,
+            AssociatedKind::Type => DefKind::AssociatedTy,
+            AssociatedKind::Existential => DefKind::AssociatedExistential,
         }
     }
 
@@ -210,7 +213,7 @@ impl AssociatedItem {
         }
     }
 
-    pub fn signature<'a, 'tcx>(&self, tcx: &TyCtxt<'a, 'tcx, 'tcx>) -> String {
+    pub fn signature<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> String {
         match self.kind {
             ty::AssociatedKind::Method => {
                 // We skip the binder here because the binder would deanonymize all
@@ -267,10 +270,10 @@ impl Visibility {
         match visibility.node {
             hir::VisibilityKind::Public => Visibility::Public,
             hir::VisibilityKind::Crate(_) => Visibility::Restricted(DefId::local(CRATE_DEF_INDEX)),
-            hir::VisibilityKind::Restricted { ref path, .. } => match path.def {
+            hir::VisibilityKind::Restricted { ref path, .. } => match path.res {
                 // If there is no resolution, `resolve` will have already reported an error, so
                 // assume that the visibility is public to avoid reporting more privacy errors.
-                Def::Err => Visibility::Public,
+                Res::Err => Visibility::Public,
                 def => Visibility::Restricted(def.def_id()),
             },
             hir::VisibilityKind::Inherited => {
@@ -330,15 +333,11 @@ pub enum Variance {
 /// `tcx.variances_of()` to get the variance for a *particular*
 /// item.
 #[derive(HashStable)]
-pub struct CrateVariancesMap {
+pub struct CrateVariancesMap<'tcx> {
     /// For each item with generics, maps to a vector of the variance
     /// of its generics. If an item has no generics, it will have no
     /// entry.
-    pub variances: FxHashMap<DefId, Lrc<Vec<ty::Variance>>>,
-
-    /// An empty vector, useful for cloning.
-    #[stable_hasher(ignore)]
-    pub empty_variance: Lrc<Vec<ty::Variance>>,
+    pub variances: FxHashMap<DefId, &'tcx [ty::Variance]>,
 }
 
 impl Variance {
@@ -438,12 +437,12 @@ bitflags! {
         // FIXME: Rename this to the actual property since it's used for generators too
         const HAS_TY_CLOSURE     = 1 << 9;
 
-        // `true` if there are "names" of types and regions and so forth
-        // that are local to a particular fn
+        /// `true` if there are "names" of types and regions and so forth
+        /// that are local to a particular fn
         const HAS_FREE_LOCAL_NAMES    = 1 << 10;
 
-        // Present if the type belongs in a local type context.
-        // Only set for Infer other than Fresh.
+        /// Present if the type belongs in a local type context.
+        /// Only set for Infer other than Fresh.
         const KEEP_IN_LOCAL_TCX  = 1 << 11;
 
         // Is there a projection that does not involve a bound region?
@@ -457,14 +456,15 @@ bitflags! {
         const HAS_TY_PLACEHOLDER = 1 << 14;
 
         const HAS_CT_INFER = 1 << 15;
+        const HAS_CT_PLACEHOLDER = 1 << 16;
 
         const NEEDS_SUBST        = TypeFlags::HAS_PARAMS.bits |
                                    TypeFlags::HAS_SELF.bits |
                                    TypeFlags::HAS_RE_EARLY_BOUND.bits;
 
-        // Flags representing the nominal content of a type,
-        // computed by FlagsComputation. If you add a new nominal
-        // flag, it should be added here too.
+        /// Flags representing the nominal content of a type,
+        /// computed by FlagsComputation. If you add a new nominal
+        /// flag, it should be added here too.
         const NOMINAL_FLAGS     = TypeFlags::HAS_PARAMS.bits |
                                   TypeFlags::HAS_SELF.bits |
                                   TypeFlags::HAS_TY_INFER.bits |
@@ -479,7 +479,8 @@ bitflags! {
                                   TypeFlags::HAS_FREE_LOCAL_NAMES.bits |
                                   TypeFlags::KEEP_IN_LOCAL_TCX.bits |
                                   TypeFlags::HAS_RE_LATE_BOUND.bits |
-                                  TypeFlags::HAS_TY_PLACEHOLDER.bits;
+                                  TypeFlags::HAS_TY_PLACEHOLDER.bits |
+                                  TypeFlags::HAS_CT_PLACEHOLDER.bits;
     }
 }
 
@@ -509,7 +510,7 @@ pub struct TyS<'tcx> {
 
 // `TyS` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_TY_S: ::std::mem::size_of::<TyS<'_>>() == 32);
+static_assert_size!(TyS<'_>, 32);
 
 impl<'tcx> Ord for TyS<'tcx> {
     fn cmp(&self, other: &TyS<'tcx>) -> Ordering {
@@ -812,7 +813,7 @@ pub type UpvarCaptureMap<'tcx> = FxHashMap<UpvarId, UpvarCapture<'tcx>>;
 
 #[derive(Copy, Clone)]
 pub struct ClosureUpvar<'tcx> {
-    pub def: Def,
+    pub res: Res,
     pub span: Span,
     pub ty: Ty<'tcx>,
 }
@@ -934,18 +935,26 @@ impl<'a, 'gcx, 'tcx> Generics {
     }
 
     pub fn requires_monomorphization(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> bool {
-        for param in &self.params {
-            match param.kind {
-                GenericParamDefKind::Type { .. } | GenericParamDefKind::Const => return true,
-                GenericParamDefKind::Lifetime => {}
-            }
+        if self.own_requires_monomorphization() {
+            return true;
         }
+
         if let Some(parent_def_id) = self.parent {
             let parent = tcx.generics_of(parent_def_id);
             parent.requires_monomorphization(tcx)
         } else {
             false
         }
+    }
+
+    pub fn own_requires_monomorphization(&self) -> bool {
+        for param in &self.params {
+            match param.kind {
+                GenericParamDefKind::Type { .. } | GenericParamDefKind::Const => return true,
+                GenericParamDefKind::Lifetime => {}
+            }
+        }
+        false
     }
 
     pub fn region_param(&'tcx self,
@@ -970,7 +979,7 @@ impl<'a, 'gcx, 'tcx> Generics {
                       param: &ParamTy,
                       tcx: TyCtxt<'a, 'gcx, 'tcx>)
                       -> &'tcx GenericParamDef {
-        if let Some(index) = param.idx.checked_sub(self.parent_count as u32) {
+        if let Some(index) = param.index.checked_sub(self.parent_count as u32) {
             let param = &self.params[index as usize];
             match param.kind {
                 GenericParamDefKind::Type { .. } => param,
@@ -1110,11 +1119,7 @@ pub struct CratePredicatesMap<'tcx> {
     /// For each struct with outlive bounds, maps to a vector of the
     /// predicate of its outlive bounds. If an item has no outlives
     /// bounds, it will have no entry.
-    pub predicates: FxHashMap<DefId, Lrc<Vec<ty::Predicate<'tcx>>>>,
-
-    /// An empty vector, useful for cloning.
-    #[stable_hasher(ignore)]
-    pub empty_predicate: Lrc<Vec<ty::Predicate<'tcx>>>,
+    pub predicates: FxHashMap<DefId, &'tcx [ty::Predicate<'tcx>]>,
 }
 
 impl<'tcx> AsRef<Predicate<'tcx>> for Predicate<'tcx> {
@@ -1628,6 +1633,8 @@ pub type PlaceholderRegion = Placeholder<BoundRegion>;
 
 pub type PlaceholderType = Placeholder<BoundVar>;
 
+pub type PlaceholderConst = Placeholder<BoundVar>;
+
 /// When type checking, we use the `ParamEnv` to track
 /// details about the set of where-clauses that are in scope at this
 /// particular point.
@@ -1868,11 +1875,11 @@ impl<'a, 'gcx, 'tcx> VariantDef {
         );
 
         let mut flags = VariantFlags::NO_VARIANT_FLAGS;
-        if adt_kind == AdtKind::Struct && tcx.has_attr(parent_did, "non_exhaustive") {
+        if adt_kind == AdtKind::Struct && tcx.has_attr(parent_did, sym::non_exhaustive) {
             debug!("found non-exhaustive field list for {:?}", parent_did);
             flags = flags | VariantFlags::IS_FIELD_LIST_NON_EXHAUSTIVE;
         } else if let Some(variant_did) = variant_did {
-            if tcx.has_attr(variant_did, "non_exhaustive") {
+            if tcx.has_attr(variant_did, sym::non_exhaustive) {
                 debug!("found non-exhaustive field list for {:?}", variant_did);
                 flags = flags | VariantFlags::IS_FIELD_LIST_NON_EXHAUSTIVE;
             }
@@ -2149,7 +2156,7 @@ impl<'a, 'gcx, 'tcx> AdtDef {
         debug!("AdtDef::new({:?}, {:?}, {:?}, {:?})", did, kind, variants, repr);
         let mut flags = AdtFlags::NO_ADT_FLAGS;
 
-        if kind == AdtKind::Enum && tcx.has_attr(did, "non_exhaustive") {
+        if kind == AdtKind::Enum && tcx.has_attr(did, sym::non_exhaustive) {
             debug!("found non-exhaustive variant list for {:?}", did);
             flags = flags | AdtFlags::IS_VARIANT_LIST_NON_EXHAUSTIVE;
         }
@@ -2165,7 +2172,7 @@ impl<'a, 'gcx, 'tcx> AdtDef {
         }
 
         let attrs = tcx.get_attrs(did);
-        if attr::contains_name(&attrs, "fundamental") {
+        if attr::contains_name(&attrs, sym::fundamental) {
             flags |= AdtFlags::IS_FUNDAMENTAL;
         }
         if Some(did) == tcx.lang_items().phantom_data() {
@@ -2331,14 +2338,14 @@ impl<'a, 'gcx, 'tcx> AdtDef {
             .expect("variant_index_with_ctor_id: unknown variant").0
     }
 
-    pub fn variant_of_def(&self, def: Def) -> &VariantDef {
-        match def {
-            Def::Variant(vid) => self.variant_with_id(vid),
-            Def::Ctor(cid, ..) => self.variant_with_ctor_id(cid),
-            Def::Struct(..) | Def::Union(..) |
-            Def::TyAlias(..) | Def::AssociatedTy(..) | Def::SelfTy(..) |
-            Def::SelfCtor(..) => self.non_enum_variant(),
-            _ => bug!("unexpected def {:?} in variant_of_def", def)
+    pub fn variant_of_res(&self, res: Res) -> &VariantDef {
+        match res {
+            Res::Def(DefKind::Variant, vid) => self.variant_with_id(vid),
+            Res::Def(DefKind::Ctor(..), cid) => self.variant_with_ctor_id(cid),
+            Res::Def(DefKind::Struct, _) | Res::Def(DefKind::Union, _) |
+            Res::Def(DefKind::TyAlias, _) | Res::Def(DefKind::AssociatedTy, _) | Res::SelfTy(..) |
+            Res::SelfCtor(..) => self.non_enum_variant(),
+            _ => bug!("unexpected res {:?} in variant_of_res", res)
         }
     }
 
@@ -2410,11 +2417,17 @@ impl<'a, 'gcx, 'tcx> AdtDef {
         })
     }
 
+    #[inline]
+    pub fn variant_range(&self) -> Range<VariantIdx> {
+        (VariantIdx::new(0)..VariantIdx::new(self.variants.len()))
+    }
+
     /// Computes the discriminant value used by a specific variant.
     /// Unlike `discriminants`, this is (amortized) constant-time,
     /// only doing at most one query for evaluating an explicit
     /// discriminant (the last one before the requested variant),
     /// assuming there are no constant-evaluation errors there.
+    #[inline]
     pub fn discriminant_for_variant(&self,
                                     tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                     variant_index: VariantIdx)
@@ -2495,7 +2508,7 @@ impl<'a, 'gcx, 'tcx> AdtDef {
             Tuple(ref tys) => {
                 match tys.last() {
                     None => vec![],
-                    Some(ty) => self.sized_constraint_for_ty(tcx, ty)
+                    Some(ty) => self.sized_constraint_for_ty(tcx, ty.expect_ty()),
                 }
             }
 
@@ -2799,8 +2812,10 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
                 _ => false,
             }
         } else {
-            match self.describe_def(def_id).expect("no def for def-id") {
-                Def::AssociatedConst(_) | Def::Method(_) | Def::AssociatedTy(_) => true,
+            match self.def_kind(def_id).expect("no def for def-id") {
+                DefKind::AssociatedConst
+                | DefKind::Method
+                | DefKind::AssociatedTy => true,
                 _ => false,
             }
         };
@@ -2942,27 +2957,27 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    /// Returns `ty::VariantDef` if `def` refers to a struct,
+    /// Returns `ty::VariantDef` if `res` refers to a struct,
     /// or variant or their constructors, panics otherwise.
-    pub fn expect_variant_def(self, def: Def) -> &'tcx VariantDef {
-        match def {
-            Def::Variant(did) => {
+    pub fn expect_variant_res(self, res: Res) -> &'tcx VariantDef {
+        match res {
+            Res::Def(DefKind::Variant, did) => {
                 let enum_did = self.parent(did).unwrap();
                 self.adt_def(enum_did).variant_with_id(did)
             }
-            Def::Struct(did) | Def::Union(did) => {
+            Res::Def(DefKind::Struct, did) | Res::Def(DefKind::Union, did) => {
                 self.adt_def(did).non_enum_variant()
             }
-            Def::Ctor(variant_ctor_did, CtorOf::Variant, ..) => {
+            Res::Def(DefKind::Ctor(CtorOf::Variant, ..), variant_ctor_did) => {
                 let variant_did = self.parent(variant_ctor_did).unwrap();
                 let enum_did = self.parent(variant_did).unwrap();
                 self.adt_def(enum_did).variant_with_ctor_id(variant_ctor_did)
             }
-            Def::Ctor(ctor_did, CtorOf::Struct, ..) => {
+            Res::Def(DefKind::Ctor(CtorOf::Struct, ..), ctor_did) => {
                 let struct_did = self.parent(ctor_did).expect("struct ctor has no parent");
                 self.adt_def(struct_did).non_enum_variant()
             }
-            _ => bug!("expect_variant_def used with unexpected def {:?}", def)
+            _ => bug!("expect_variant_res used with unexpected res {:?}", res)
         }
     }
 
@@ -3015,7 +3030,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     }
 
     /// Determines whether an item is annotated with an attribute.
-    pub fn has_attr(self, did: DefId, attr: &str) -> bool {
+    pub fn has_attr(self, did: DefId, attr: Symbol) -> bool {
         attr::contains_name(&self.get_attrs(did), attr)
     }
 
@@ -3038,7 +3053,7 @@ impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
     /// `DefId` of the impl that the method belongs to; otherwise, returns `None`.
     pub fn impl_of_method(self, def_id: DefId) -> Option<DefId> {
         let item = if def_id.krate != LOCAL_CRATE {
-            if let Some(Def::Method(_)) = self.describe_def(def_id) {
+            if let Some(DefKind::Method) = self.def_kind(def_id) {
                 Some(self.associated_item(def_id))
             } else {
                 None
@@ -3102,18 +3117,6 @@ impl Iterator for AssociatedItemsIterator<'_, '_, '_> {
         let def_id = self.def_ids.get(self.next_index)?;
         self.next_index += 1;
         Some(self.tcx.associated_item(*def_id))
-    }
-}
-
-impl<'a, 'gcx, 'tcx> TyCtxt<'a, 'gcx, 'tcx> {
-    pub fn with_freevars<T, F>(self, fid: HirId, f: F) -> T where
-        F: FnOnce(&[hir::Freevar]) -> T,
-    {
-        let def_id = self.hir().local_def_id_from_hir_id(fid);
-        match self.freevars(def_id) {
-            None => f(&[]),
-            Some(d) => f(&d),
-        }
     }
 }
 
@@ -3402,7 +3405,7 @@ impl_stable_hash_for!(struct self::SymbolName {
 impl SymbolName {
     pub fn new(name: &str) -> SymbolName {
         SymbolName {
-            name: Symbol::intern(name).as_interned_str()
+            name: InternedString::intern(name)
         }
     }
 

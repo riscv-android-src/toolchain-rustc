@@ -4,8 +4,7 @@ use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc::{declare_tool_lint, lint_array};
-use syntax::ast;
+use rustc::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for a read and a write to the same variable where
@@ -54,18 +53,7 @@ declare_clippy_lint! {
     "whether an expression contains a diverging sub expression"
 }
 
-#[derive(Copy, Clone)]
-pub struct EvalOrderDependence;
-
-impl LintPass for EvalOrderDependence {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(EVAL_ORDER_DEPENDENCE, DIVERGING_SUB_EXPRESSION)
-    }
-
-    fn name(&self) -> &'static str {
-        "EvalOrderDependence"
-    }
-}
+declare_lint_pass!(EvalOrderDependence => [EVAL_ORDER_DEPENDENCE, DIVERGING_SUB_EXPRESSION]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EvalOrderDependence {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
@@ -75,7 +63,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EvalOrderDependence {
                 if let ExprKind::Path(ref qpath) = lhs.node {
                     if let QPath::Resolved(_, ref path) = *qpath {
                         if path.segments.len() == 1 {
-                            if let def::Def::Local(var) = cx.tables.qpath_def(qpath, lhs.hir_id) {
+                            if let def::Res::Local(var) = cx.tables.qpath_res(qpath, lhs.hir_id) {
                                 let mut visitor = ReadVisitor {
                                     cx,
                                     var,
@@ -287,7 +275,7 @@ fn check_stmt<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, stmt: &'tcx Stmt) -> St
 struct ReadVisitor<'a, 'tcx: 'a> {
     cx: &'a LateContext<'a, 'tcx>,
     /// The ID of the variable we're looking for.
-    var: ast::NodeId,
+    var: HirId,
     /// The expressions where the write to the variable occurred (for reporting
     /// in the lint).
     write_expr: &'tcx Expr,
@@ -307,7 +295,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ReadVisitor<'a, 'tcx> {
                 if_chain! {
                     if let QPath::Resolved(None, ref path) = *qpath;
                     if path.segments.len() == 1;
-                    if let def::Def::Local(local_id) = self.cx.tables.qpath_def(qpath, expr.hir_id);
+                    if let def::Res::Local(local_id) = self.cx.tables.qpath_res(qpath, expr.hir_id);
                     if local_id == self.var;
                     // Check that this is a read, not a write.
                     if !is_in_assignment_position(self.cx, expr);

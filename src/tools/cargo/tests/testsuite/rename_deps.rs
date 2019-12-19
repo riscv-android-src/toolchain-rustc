@@ -85,7 +85,6 @@ fn lots_of_names() {
             "Cargo.toml",
             &format!(
                 r#"
-                cargo-features = ["alternative-registries"]
                 [package]
                 name = "test"
                 version = "0.1.0"
@@ -123,7 +122,7 @@ fn lots_of_names() {
         .file("foo/src/lib.rs", "pub fn foo4() {}")
         .build();
 
-    p.cargo("build -v").masquerade_as_nightly_cargo().run();
+    p.cargo("build -v").run();
 }
 
 #[test]

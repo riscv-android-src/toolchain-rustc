@@ -1,6 +1,6 @@
 use crate::utils::{
-    has_drop, in_macro, is_copy, match_def_path, match_type, paths, snippet_opt, span_lint_hir, span_lint_hir_and_then,
-    walk_ptrs_ty_depth,
+    has_drop, in_macro_or_desugar, is_copy, match_def_path, match_type, paths, snippet_opt, span_lint_hir,
+    span_lint_hir_and_then, walk_ptrs_ty_depth,
 };
 use if_chain::if_chain;
 use matches::matches;
@@ -13,7 +13,7 @@ use rustc::mir::{
     TerminatorKind,
 };
 use rustc::ty::{self, Ty};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use std::convert::TryFrom;
 use syntax::source_map::{BytePos, Span};
@@ -64,17 +64,7 @@ declare_clippy_lint! {
     "`clone()` of an owned value that is going to be dropped immediately"
 }
 
-pub struct RedundantClone;
-
-impl LintPass for RedundantClone {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(REDUNDANT_CLONE)
-    }
-
-    fn name(&self) -> &'static str {
-        "RedundantClone"
-    }
-}
+declare_lint_pass!(RedundantClone => [REDUNDANT_CLONE]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
     #[allow(clippy::too_many_lines)]
@@ -93,7 +83,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
         for (bb, bbdata) in mir.basic_blocks().iter_enumerated() {
             let terminator = bbdata.terminator();
 
-            if in_macro(terminator.source_info.span) {
+            if in_macro_or_desugar(terminator.source_info.span) {
                 continue;
             }
 
@@ -104,14 +94,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
 
             let (fn_def_id, arg, arg_ty, _) = unwrap_or_continue!(is_call_with_ref_arg(cx, mir, &terminator.kind));
 
-            let from_borrow = match_def_path(cx.tcx, fn_def_id, &paths::CLONE_TRAIT_METHOD)
-                || match_def_path(cx.tcx, fn_def_id, &paths::TO_OWNED_METHOD)
-                || (match_def_path(cx.tcx, fn_def_id, &paths::TO_STRING_METHOD)
-                    && match_type(cx, arg_ty, &paths::STRING));
+            let from_borrow = match_def_path(cx, fn_def_id, &paths::CLONE_TRAIT_METHOD)
+                || match_def_path(cx, fn_def_id, &paths::TO_OWNED_METHOD)
+                || (match_def_path(cx, fn_def_id, &paths::TO_STRING_METHOD) && match_type(cx, arg_ty, &paths::STRING));
 
             let from_deref = !from_borrow
-                && (match_def_path(cx.tcx, fn_def_id, &paths::PATH_TO_PATH_BUF)
-                    || match_def_path(cx.tcx, fn_def_id, &paths::OS_STR_TO_OS_STRING));
+                && (match_def_path(cx, fn_def_id, &paths::PATH_TO_PATH_BUF)
+                    || match_def_path(cx, fn_def_id, &paths::OS_STR_TO_OS_STRING));
 
             if !from_borrow && !from_deref {
                 continue;
@@ -144,7 +133,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
                     if let Some((pred_fn_def_id, pred_arg, pred_arg_ty, Some(res))) =
                         is_call_with_ref_arg(cx, mir, &pred_terminator.kind);
                     if *res == mir::Place::Base(mir::PlaceBase::Local(cloned));
-                    if match_def_path(cx.tcx, pred_fn_def_id, &paths::DEREF_TRAIT_METHOD);
+                    if match_def_path(cx, pred_fn_def_id, &paths::DEREF_TRAIT_METHOD);
                     if match_type(cx, pred_arg_ty, &paths::PATH_BUF)
                         || match_type(cx, pred_arg_ty, &paths::OS_STRING);
                     then {
@@ -316,7 +305,7 @@ impl<'tcx> mir::visit::Visitor<'tcx> for LocalUseVisitor {
     fn visit_basic_block_data(&mut self, block: mir::BasicBlock, data: &mir::BasicBlockData<'tcx>) {
         let statements = &data.statements;
         for (statement_index, statement) in statements.iter().enumerate() {
-            self.visit_statement(block, statement, mir::Location { block, statement_index });
+            self.visit_statement(statement, mir::Location { block, statement_index });
 
             // Once flagged, skip remaining statements
             if self.used_other_than_drop {
@@ -325,7 +314,6 @@ impl<'tcx> mir::visit::Visitor<'tcx> for LocalUseVisitor {
         }
 
         self.visit_terminator(
-            block,
             data.terminator(),
             mir::Location {
                 block,
@@ -334,7 +322,7 @@ impl<'tcx> mir::visit::Visitor<'tcx> for LocalUseVisitor {
         );
     }
 
-    fn visit_local(&mut self, local: &mir::Local, ctx: PlaceContext<'tcx>, _: mir::Location) {
+    fn visit_local(&mut self, local: &mir::Local, ctx: PlaceContext, _: mir::Location) {
         match ctx {
             PlaceContext::MutatingUse(MutatingUseContext::Drop) | PlaceContext::NonUse(_) => return,
             _ => {},

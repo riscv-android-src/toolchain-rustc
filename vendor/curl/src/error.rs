@@ -1,8 +1,8 @@
 use std::error;
 use std::ffi::{self, CStr};
 use std::fmt;
-use std::str;
 use std::io;
+use std::str;
 
 use curl_sys;
 
@@ -283,6 +283,16 @@ impl Error {
         self.code == curl_sys::CURLE_CHUNK_FAILED
     }
 
+    /// Returns whether this error corresponds to CURLE_HTTP2.
+    pub fn is_http2_error(&self) -> bool {
+        self.code == curl_sys::CURLE_HTTP2
+    }
+
+    /// Returns whether this error corresponds to CURLE_HTTP2_STREAM.
+    pub fn is_http2_stream_error(&self) -> bool {
+        self.code == curl_sys::CURLE_HTTP2_STREAM
+    }
+
     // /// Returns whether this error corresponds to CURLE_NO_CONNECTION_AVAILABLE.
     // pub fn is_no_connection_available(&self) -> bool {
     //     self.code == curl_sys::CURLE_NO_CONNECTION_AVAILABLE
@@ -312,10 +322,10 @@ impl fmt::Display for Error {
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Error")
-         .field("description", &error::Error::description(self))
-         .field("code", &self.code)
-         .field("extra", &self.extra)
-         .finish()
+            .field("description", &error::Error::description(self))
+            .field("code", &self.code)
+            .field("extra", &self.extra)
+            .finish()
     }
 }
 
@@ -382,9 +392,12 @@ impl fmt::Display for ShareError {
 
 impl fmt::Debug for ShareError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "ShareError {{ description: {:?}, code: {} }}",
-               error::Error::description(self),
-               self.code)
+        write!(
+            f,
+            "ShareError {{ description: {:?}, code: {} }}",
+            error::Error::description(self),
+            self.code
+        )
     }
 }
 
@@ -466,9 +479,12 @@ impl fmt::Display for MultiError {
 
 impl fmt::Debug for MultiError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "MultiError {{ description: {:?}, code: {} }}",
-               error::Error::description(self),
-               self.code)
+        write!(
+            f,
+            "MultiError {{ description: {:?}, code: {} }}",
+            error::Error::description(self),
+            self.code
+        )
     }
 }
 
@@ -481,7 +497,6 @@ impl error::Error for MultiError {
         }
     }
 }
-
 
 /// An error from "form add" operations.
 ///
@@ -546,9 +561,12 @@ impl fmt::Display for FormError {
 
 impl fmt::Debug for FormError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "FormError {{ description: {:?}, code: {} }}",
-               error::Error::description(self),
-               self.code)
+        write!(
+            f,
+            "FormError {{ description: {:?}, code: {} }}",
+            error::Error::description(self),
+            self.code
+        )
     }
 }
 
@@ -571,7 +589,10 @@ impl error::Error for FormError {
 
 impl From<ffi::NulError> for Error {
     fn from(_: ffi::NulError) -> Error {
-        Error { code: curl_sys::CURLE_CONV_FAILED, extra: None }
+        Error {
+            code: curl_sys::CURLE_CONV_FAILED,
+            extra: None,
+        }
     }
 }
 

@@ -1,8 +1,10 @@
 use if_chain::if_chain;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 
-use crate::utils::{in_macro, match_type, paths, span_lint_and_then, usage::is_potentially_mutated};
+use crate::utils::{
+    higher::if_block, in_macro_or_desugar, match_type, paths, span_lint_and_then, usage::is_potentially_mutated,
+};
 use rustc::hir::intravisit::*;
 use rustc::hir::*;
 use syntax::source_map::Span;
@@ -53,8 +55,6 @@ declare_clippy_lint! {
     nursery,
     "checks for calls of unwrap[_err]() that will always fail"
 }
-
-pub struct Pass;
 
 /// Visitor that keeps track of which variables are unwrappable.
 struct UnwrappableVariablesVisitor<'a, 'tcx: 'a> {
@@ -132,7 +132,7 @@ impl<'a, 'tcx: 'a> UnwrappableVariablesVisitor<'a, 'tcx> {
 
 impl<'a, 'tcx: 'a> Visitor<'tcx> for UnwrappableVariablesVisitor<'a, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr) {
-        if let ExprKind::If(cond, then, els) = &expr.node {
+        if let Some((cond, then, els)) = if_block(&expr) {
             walk_expr(self, cond);
             self.visit_branch(cond, then, false);
             if let Some(els) = els {
@@ -143,10 +143,10 @@ impl<'a, 'tcx: 'a> Visitor<'tcx> for UnwrappableVariablesVisitor<'a, 'tcx> {
             if_chain! {
                 if let ExprKind::MethodCall(ref method_name, _, ref args) = expr.node;
                 if let ExprKind::Path(QPath::Resolved(None, ref path)) = args[0].node;
-                if ["unwrap", "unwrap_err"].contains(&&*method_name.ident.as_str());
-                let call_to_unwrap = method_name.ident.name == "unwrap";
+                if [sym!(unwrap), sym!(unwrap_err)].contains(&method_name.ident.name);
+                let call_to_unwrap = method_name.ident.name == sym!(unwrap);
                 if let Some(unwrappable) = self.unwrappables.iter()
-                    .find(|u| u.ident.def == path.def);
+                    .find(|u| u.ident.res == path.res);
                 then {
                     if call_to_unwrap == unwrappable.safe_to_unwrap {
                         span_lint_and_then(
@@ -179,17 +179,9 @@ impl<'a, 'tcx: 'a> Visitor<'tcx> for UnwrappableVariablesVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a> LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(PANICKING_UNWRAP, UNNECESSARY_UNWRAP)
-    }
+declare_lint_pass!(Unwrap => [PANICKING_UNWRAP, UNNECESSARY_UNWRAP]);
 
-    fn name(&self) -> &'static str {
-        "Unwrap"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Unwrap {
     fn check_fn(
         &mut self,
         cx: &LateContext<'a, 'tcx>,
@@ -199,7 +191,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
         span: Span,
         fn_id: HirId,
     ) {
-        if in_macro(span) {
+        if in_macro_or_desugar(span) {
             return;
         }
 

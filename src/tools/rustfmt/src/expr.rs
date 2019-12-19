@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cmp::min;
 
+use itertools::Itertools;
 use syntax::parse::token::DelimToken;
 use syntax::source_map::{BytePos, SourceMap, Span};
 use syntax::{ast, ptr};
@@ -1246,8 +1247,7 @@ fn rewrite_string_lit(context: &RewriteContext<'_>, span: Span, shape: Shape) ->
     if !context.config.format_strings() {
         if string_lit
             .lines()
-            .rev()
-            .skip(1)
+            .dropping_back(1)
             .all(|line| line.ends_with('\\'))
         {
             let new_indent = shape.visual_indent(1).indent;
@@ -1343,9 +1343,11 @@ pub fn can_be_overflowed_expr(
     args_len: usize,
 ) -> bool {
     match expr.node {
+        _ if !expr.attrs.is_empty() => false,
         ast::ExprKind::Match(..) => {
             (context.use_block_indent() && args_len == 1)
                 || (context.config.indent_style() == IndentStyle::Visual && args_len > 1)
+                || context.config.overflow_delimited_expr()
         }
         ast::ExprKind::If(..)
         | ast::ExprKind::IfLet(..)
@@ -1459,7 +1461,7 @@ fn rewrite_paren(
     let subexpr_str = subexpr.rewrite(context, sub_shape)?;
     let fits_single_line = !pre_comment.contains("//") && !post_comment.contains("//");
     if fits_single_line {
-        Some(format!("({}{}{})", pre_comment, &subexpr_str, post_comment))
+        Some(format!("({}{}{})", pre_comment, subexpr_str, post_comment))
     } else {
         rewrite_paren_in_multi_line(context, subexpr, shape, pre_span, post_span)
     }
@@ -1690,7 +1692,7 @@ pub fn wrap_struct_field(
 }
 
 pub fn struct_lit_field_separator(config: &Config) -> &str {
-    colon_spaces(config.space_before_colon(), config.space_after_colon())
+    colon_spaces(config)
 }
 
 pub fn rewrite_field(

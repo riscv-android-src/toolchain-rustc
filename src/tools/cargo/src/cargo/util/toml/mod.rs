@@ -239,6 +239,7 @@ pub struct DetailedTomlDependency {
     #[serde(rename = "default_features")]
     default_features2: Option<bool>,
     package: Option<String>,
+    public: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -822,7 +823,7 @@ impl TomlManifest {
         }
     }
 
-    fn to_real_manifest(
+    pub fn to_real_manifest(
         me: &Rc<TomlManifest>,
         source_id: SourceId,
         package_root: &Path,
@@ -1035,7 +1036,7 @@ impl TomlManifest {
                 features.require(Feature::publish_lockfile())?;
                 b
             }
-            None => false,
+            None => features.is_enabled(Feature::publish_lockfile()),
         };
 
         if summary.features().contains_key("default-features") {
@@ -1201,7 +1202,7 @@ impl TomlManifest {
                 );
             }
 
-            let mut dep = replacement.to_dependency(spec.name(), cx, None)?;
+            let mut dep = replacement.to_dependency(spec.name().as_str(), cx, None)?;
             {
                 let version = spec.version().ok_or_else(|| {
                     failure::format_err!(
@@ -1460,6 +1461,16 @@ impl DetailedTomlDependency {
         if let Some(name_in_toml) = explicit_name_in_toml {
             cx.features.require(Feature::rename_dependency())?;
             dep.set_explicit_name_in_toml(name_in_toml);
+        }
+
+        if let Some(p) = self.public {
+            cx.features.require(Feature::public_dependency())?;
+
+            if dep.kind() != Kind::Normal {
+                bail!("'public' specifier can only be used on regular dependencies, not {:?} dependencies", dep.kind());
+            }
+
+            dep.set_public(p);
         }
         Ok(dep)
     }

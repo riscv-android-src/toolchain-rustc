@@ -1,6 +1,5 @@
 use crate::borrow_check::borrow_set::{BorrowSet, BorrowData, TwoPhaseActivation};
 use crate::borrow_check::places_conflict;
-use crate::borrow_check::Context;
 use crate::borrow_check::AccessDepth;
 use crate::dataflow::indexes::BorrowIndex;
 use rustc::mir::{BasicBlock, Location, Mir, Place, PlaceBase};
@@ -11,13 +10,8 @@ use rustc_data_structures::graph::dominators::Dominators;
 /// Returns `true` if the borrow represented by `kind` is
 /// allowed to be split into separate Reservation and
 /// Activation phases.
-pub(super) fn allow_two_phase_borrow<'a, 'tcx, 'gcx: 'tcx>(
-    tcx: &TyCtxt<'a, 'gcx, 'tcx>,
-    kind: BorrowKind
-) -> bool {
-    tcx.two_phase_borrows()
-        && (kind.allows_two_phase_borrow()
-            || tcx.sess.opts.debugging_opts.two_phase_beyond_autoref)
+pub(super) fn allow_two_phase_borrow<'a, 'tcx, 'gcx: 'tcx>(kind: BorrowKind) -> bool {
+    kind.allows_two_phase_borrow()
 }
 
 /// Control for the path borrow checking code
@@ -32,7 +26,7 @@ pub(super) fn each_borrow_involving_path<'a, 'tcx, 'gcx: 'tcx, F, I, S> (
     s: &mut S,
     tcx: TyCtxt<'a, 'gcx, 'tcx>,
     mir: &Mir<'tcx>,
-    _context: Context,
+    _location: Location,
     access_place: (AccessDepth, &Place<'tcx>),
     borrow_set: &BorrowSet<'tcx>,
     candidates: I,

@@ -113,7 +113,7 @@ multiplexing = true # whether or not to use HTTP/2 multiplexing where possible
 # This setting can be used to help debug what's going on with HTTP requests made
 # by Cargo. When set to `true` then Cargo's normal debug logging will be filled
 # in with HTTP information, which you can extract with
-# `RUST_LOG=cargo::ops::registry=debug` (and `trace` may print more).
+# `CARGO_LOG=cargo::ops::registry=debug` (and `trace` may print more).
 #
 # Be wary when posting these logs elsewhere though, it may be the case that a
 # header has an authentication token in it you don't want leaked! Be sure to
@@ -141,6 +141,7 @@ color = 'auto'         # whether cargo colorizes output
 [net]
 retry = 2 # number of times a network call will automatically retried
 git-fetch-with-cli = false  # if `true` we'll use `git`-the-CLI to fetch git repos
+offline = false # do not access the network, but otherwise try to proceed if possible
 
 # Alias cargo commands. The first 4 aliases are built in. If your
 # command requires grouped whitespace use the list format.

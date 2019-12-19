@@ -26,7 +26,7 @@ use rustc_data_structures::sync::{self, Lrc};
 use crate::hir::def_id::{CrateNum, LOCAL_CRATE};
 use crate::hir::intravisit;
 use crate::hir;
-use crate::lint::builtin::{BuiltinLintDiagnostics, DUPLICATE_MATCHER_BINDING_NAME};
+use crate::lint::builtin::BuiltinLintDiagnostics;
 use crate::lint::builtin::parser::{QUESTION_MARK_MACRO_SEP, ILL_FORMED_ATTRIBUTE_INPUT};
 use crate::session::{Session, DiagnosticMessageId};
 use crate::ty::TyCtxt;
@@ -35,10 +35,10 @@ use crate::util::nodemap::NodeMap;
 use errors::{DiagnosticBuilder, DiagnosticId};
 use std::{hash, ptr};
 use syntax::ast;
-use syntax::source_map::{MultiSpan, ExpnFormat};
+use syntax::source_map::{MultiSpan, ExpnFormat, CompilerDesugaringKind};
 use syntax::early_buffered_lints::BufferedEarlyLintId;
 use syntax::edition::Edition;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax_pos::Span;
 
 pub use crate::lint::context::{LateContext, EarlyContext, LintContext, LintStore,
@@ -82,7 +82,6 @@ impl Lint {
         match lint_id {
             BufferedEarlyLintId::QuestionMarkMacroSep => QUESTION_MARK_MACRO_SEP,
             BufferedEarlyLintId::IllFormedAttributeInput => ILL_FORMED_ATTRIBUTE_INPUT,
-            BufferedEarlyLintId::DuplicateMacroMatcherBindingName => DUPLICATE_MATCHER_BINDING_NAME,
         }
     }
 
@@ -372,7 +371,8 @@ macro_rules! early_lint_methods {
             fn check_block_post(a: &ast::Block);
             fn check_stmt(a: &ast::Stmt);
             fn check_arm(a: &ast::Arm);
-            fn check_pat(a: &ast::Pat, b: &mut bool); // FIXME: &mut bool looks just broken
+            fn check_pat(a: &ast::Pat);
+            fn check_pat_post(a: &ast::Pat);
             fn check_expr(a: &ast::Expr);
             fn check_expr_post(a: &ast::Expr);
             fn check_ty(a: &ast::Ty);
@@ -570,6 +570,17 @@ impl Level {
             _ => None,
         }
     }
+
+    /// Converts a symbol to a level.
+    pub fn from_symbol(x: Symbol) -> Option<Level> {
+        match x {
+            sym::allow => Some(Allow),
+            sym::warn => Some(Warn),
+            sym::deny => Some(Deny),
+            sym::forbid => Some(Forbid),
+            _ => None,
+        }
+    }
 }
 
 /// How a lint level was set.
@@ -752,7 +763,7 @@ pub fn struct_lint_level<'a>(sess: &'a Session,
 
 pub fn maybe_lint_level_root(tcx: TyCtxt<'_, '_, '_>, id: hir::HirId) -> bool {
     let attrs = tcx.hir().attrs_by_hir_id(id);
-    attrs.iter().any(|attr| Level::from_str(&attr.name_or_empty()).is_some())
+    attrs.iter().any(|attr| Level::from_symbol(attr.name_or_empty()).is_some())
 }
 
 fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
@@ -767,6 +778,9 @@ fn lint_levels<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, cnum: CrateNum)
 
     let push = builder.levels.push(&krate.attrs);
     builder.levels.register_id(hir::CRATE_HIR_ID);
+    for macro_def in &krate.exported_macros {
+       builder.levels.register_id(macro_def.hir_id);
+    }
     intravisit::walk_crate(&mut builder, krate);
     builder.levels.pop(push);
 
@@ -867,21 +881,22 @@ pub fn in_external_macro(sess: &Session, span: Span) -> bool {
     };
 
     match info.format {
-        ExpnFormat::MacroAttribute(..) => return true, // definitely a plugin
-        ExpnFormat::CompilerDesugaring(_) => return true, // well, it's "external"
-        ExpnFormat::MacroBang(..) => {} // check below
-    }
+        ExpnFormat::MacroAttribute(..) => true, // definitely a plugin
+        ExpnFormat::CompilerDesugaring(CompilerDesugaringKind::ForLoop) => false,
+        ExpnFormat::CompilerDesugaring(_) => true, // well, it's "external"
+        ExpnFormat::MacroBang(..) => {
+            let def_site = match info.def_site {
+                Some(span) => span,
+                // no span for the def_site means it's an external macro
+                None => return true,
+            };
 
-    let def_site = match info.def_site {
-        Some(span) => span,
-        // no span for the def_site means it's an external macro
-        None => return true,
-    };
-
-    match sess.source_map().span_to_snippet(def_site) {
-        Ok(code) => !code.starts_with("macro_rules"),
-        // no snippet = external macro or compiler-builtin expansion
-        Err(_) => true,
+            match sess.source_map().span_to_snippet(def_site) {
+                Ok(code) => !code.starts_with("macro_rules"),
+                // no snippet = external macro or compiler-builtin expansion
+                Err(_) => true,
+            }
+        }
     }
 }
 

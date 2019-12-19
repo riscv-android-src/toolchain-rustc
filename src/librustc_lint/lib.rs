@@ -20,12 +20,12 @@
 #![recursion_limit="256"]
 
 #![deny(rust_2018_idioms)]
-#![cfg_attr(not(stage0), deny(internal))]
+#![deny(internal)]
 
 #[macro_use]
 extern crate rustc;
 
-mod diagnostics;
+mod error_codes;
 mod nonstandard_style;
 pub mod builtin;
 mod types;
@@ -94,7 +94,7 @@ macro_rules! early_lint_passes {
             UnusedImportBraces: UnusedImportBraces,
             UnsafeCode: UnsafeCode,
             AnonymousParameters: AnonymousParameters,
-            EllipsisInclusiveRangePatterns: EllipsisInclusiveRangePatterns,
+            EllipsisInclusiveRangePatterns: EllipsisInclusiveRangePatterns::default(),
             NonCamelCaseTypes: NonCamelCaseTypes,
             DeprecatedAttr: DeprecatedAttr::new(),
         ]);
@@ -118,7 +118,7 @@ macro_rules! late_lint_passes {
             UnusedBrokenConst: UnusedBrokenConst,
 
             // Uses attr::is_used which is untracked, can't be an incremental module pass.
-            UnusedAttributes: UnusedAttributes,
+            UnusedAttributes: UnusedAttributes::new(),
 
             // Needs to run after UnusedAttributes as it marks all `feature` attributes as used.
             UnstableFeatures: UnstableFeatures,
@@ -132,7 +132,7 @@ macro_rules! late_lint_passes {
             // Depends on access levels
             // FIXME: Turn the computation of types which implement Debug into a query
             // and change this to a module lint pass
-            MissingDebugImplementations: MissingDebugImplementations::new(),
+            MissingDebugImplementations: MissingDebugImplementations::default(),
         ]);
     )
 }
@@ -372,11 +372,6 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
             edition: None,
         },
         FutureIncompatibleInfo {
-            id: LintId::of(INCOHERENT_FUNDAMENTAL_IMPLS),
-            reference: "issue #46205 <https://github.com/rust-lang/rust/issues/46205>",
-            edition: None,
-        },
-        FutureIncompatibleInfo {
             id: LintId::of(ORDER_DEPENDENT_TRAIT_OBJECTS),
             reference: "issue #56484 <https://github.com/rust-lang/rust/issues/56484>",
             edition: None,
@@ -426,11 +421,6 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
         FutureIncompatibleInfo {
             id: LintId::of(AMBIGUOUS_ASSOCIATED_ITEMS),
             reference: "issue #57644 <https://github.com/rust-lang/rust/issues/57644>",
-            edition: None,
-        },
-        FutureIncompatibleInfo {
-            id: LintId::of(DUPLICATE_MATCHER_BINDING_NAME),
-            reference: "issue #57593 <https://github.com/rust-lang/rust/issues/57593>",
             edition: None,
         },
         FutureIncompatibleInfo {
@@ -494,11 +484,15 @@ pub fn register_builtins(store: &mut lint::LintStore, sess: Option<&Session>) {
         "no longer a warning, #[no_mangle] statics always exported");
     store.register_removed("bad_repr",
         "replaced with a generic attribute input check");
+    store.register_removed("duplicate_matcher_binding_name",
+        "converted into hard error, see https://github.com/rust-lang/rust/issues/57742");
+    store.register_removed("incoherent_fundamental_impls",
+        "converted into hard error, see https://github.com/rust-lang/rust/issues/46205");
 }
 
 pub fn register_internals(store: &mut lint::LintStore, sess: Option<&Session>) {
     store.register_early_pass(sess, false, false, box DefaultHashTypes::new());
-    store.register_late_pass(sess, false, false, false, box TyKindUsage);
+    store.register_late_pass(sess, false, false, false, box TyTyKind);
     store.register_group(
         sess,
         false,
@@ -507,6 +501,8 @@ pub fn register_internals(store: &mut lint::LintStore, sess: Option<&Session>) {
         vec![
             LintId::of(DEFAULT_HASH_TYPES),
             LintId::of(USAGE_OF_TY_TYKIND),
+            LintId::of(TY_PASS_BY_REFERENCE),
+            LintId::of(USAGE_OF_QUALIFIED_TY),
         ],
     );
 }

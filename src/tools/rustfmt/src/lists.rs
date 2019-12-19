@@ -389,7 +389,7 @@ where
                         result.push('\n');
                         result.push_str(indent_str);
                         // This is the width of the item (without comments).
-                        line_len = item.item.as_ref().map_or(0, |str| str.len());
+                        line_len = item.item.as_ref().map_or(0, String::len);
                     }
                 } else {
                     result.push(' ');
@@ -577,13 +577,8 @@ pub fn extract_pre_comment(pre_snippet: &str) -> (Option<String>, ListItemCommen
     let has_block_comment = trimmed_pre_snippet.ends_with("*/");
     let has_single_line_comment = trimmed_pre_snippet.starts_with("//");
     if has_block_comment {
-        let comment_end = pre_snippet.chars().rev().position(|c| c == '/').unwrap();
-        if pre_snippet
-            .chars()
-            .rev()
-            .take(comment_end + 1)
-            .any(|c| c == '\n')
-        {
+        let comment_end = pre_snippet.rfind(|c| c == '/').unwrap();
+        if pre_snippet[comment_end..].contains('\n') {
             (
                 Some(trimmed_pre_snippet.to_owned()),
                 ListItemCommentStyle::DifferentLine,
@@ -651,7 +646,7 @@ pub fn get_comment_end(
     if let Some(i) = block_open_index {
         match post_snippet.find('/') {
             Some(j) if j < i => block_open_index = None,
-            _ if i > 0 && &post_snippet[i - 1..i] == "/" => block_open_index = None,
+            _ if post_snippet[..i].ends_with('/') => block_open_index = None,
             _ => (),
         }
     }
@@ -692,8 +687,13 @@ pub fn has_extra_newline(post_snippet: &str, comment_end: usize) -> bool {
         return false;
     }
 
+    let len_last = post_snippet[..comment_end]
+        .chars()
+        .last()
+        .unwrap()
+        .len_utf8();
     // Everything from the separator to the next item.
-    let test_snippet = &post_snippet[comment_end - 1..];
+    let test_snippet = &post_snippet[comment_end - len_last..];
     let first_newline = test_snippet
         .find('\n')
         .unwrap_or_else(|| test_snippet.len());
@@ -811,7 +811,7 @@ where
 pub fn total_item_width(item: &ListItem) -> usize {
     comment_len(item.pre_comment.as_ref().map(|x| &(*x)[..]))
         + comment_len(item.post_comment.as_ref().map(|x| &(*x)[..]))
-        + item.item.as_ref().map_or(0, |str| str.len())
+        + item.item.as_ref().map_or(0, String::len)
 }
 
 fn comment_len(comment: Option<&str>) -> usize {

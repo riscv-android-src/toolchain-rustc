@@ -1,7 +1,7 @@
 use rustc::hir::def_id::DefId;
 use rustc::hir;
 use rustc::mir::*;
-use rustc::ty::{self, Predicate, TyCtxt};
+use rustc::ty::{self, Predicate, Ty, TyCtxt, adjustment::{PointerCast}};
 use rustc_target::spec::abi;
 use std::borrow::Cow;
 use syntax_pos::Span;
@@ -60,13 +60,14 @@ pub fn is_min_const_fn(
     }
 
     for local in &mir.local_decls {
-        check_ty(tcx, local.ty, local.source_info.span)?;
+        check_ty(tcx, local.ty, local.source_info.span, def_id)?;
     }
     // impl trait is gone in MIR, so check the return type manually
     check_ty(
         tcx,
         tcx.fn_sig(def_id).output().skip_binder(),
         mir.local_decls.iter().next().unwrap().source_info.span,
+        def_id,
     )?;
 
     for bb in mir.basic_blocks() {
@@ -80,8 +81,9 @@ pub fn is_min_const_fn(
 
 fn check_ty(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    ty: ty::Ty<'tcx>,
+    ty: Ty<'tcx>,
     span: Span,
+    fn_def_id: DefId,
 ) -> McfResult {
     for ty in ty.walk() {
         match ty.sty {
@@ -91,7 +93,9 @@ fn check_ty(
             )),
             ty::Opaque(..) => return Err((span, "`impl Trait` in const fn is unstable".into())),
             ty::FnPtr(..) => {
-                return Err((span, "function pointers in const fn are unstable".into()))
+                if !tcx.const_fn_is_allowed_fn_ptr(fn_def_id) {
+                    return Err((span, "function pointers in const fn are unstable".into()))
+                }
             }
             ty::Dynamic(preds, _) => {
                 for pred in preds.iter() {
@@ -152,16 +156,16 @@ fn check_rvalue(
                 _ => check_operand(tcx, mir, operand, span),
             }
         }
-        Rvalue::Cast(CastKind::MutToConstPointer, operand, _) => {
+        Rvalue::Cast(CastKind::Pointer(PointerCast::MutToConstPointer), operand, _) => {
             check_operand(tcx, mir, operand, span)
         }
-        Rvalue::Cast(CastKind::UnsafeFnPointer, _, _) |
-        Rvalue::Cast(CastKind::ClosureFnPointer(_), _, _) |
-        Rvalue::Cast(CastKind::ReifyFnPointer, _, _) => Err((
+        Rvalue::Cast(CastKind::Pointer(PointerCast::UnsafeFnPointer), _, _) |
+        Rvalue::Cast(CastKind::Pointer(PointerCast::ClosureFnPointer(_)), _, _) |
+        Rvalue::Cast(CastKind::Pointer(PointerCast::ReifyFnPointer), _, _) => Err((
             span,
             "function pointer casts are not allowed in const fn".into(),
         )),
-        Rvalue::Cast(CastKind::Unsize, _, _) => Err((
+        Rvalue::Cast(CastKind::Pointer(PointerCast::Unsize), _, _) => Err((
             span,
             "unsizing casts are not allowed in const fn".into(),
         )),
@@ -326,7 +330,12 @@ fn check_terminator(
                     abi::Abi::Rust if tcx.is_min_const_fn(def_id) => {},
                     abi::Abi::Rust => return Err((
                         span,
-                        "can only call other `min_const_fn` within a `min_const_fn`".into(),
+                        format!(
+                            "can only call other `const fn` within a `const fn`, \
+                             but `{:?}` is not stable as `const fn`",
+                            func,
+                        )
+                        .into(),
                     )),
                     abi => return Err((
                         span,

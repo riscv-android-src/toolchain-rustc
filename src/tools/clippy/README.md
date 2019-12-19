@@ -7,7 +7,7 @@
 
 A collection of lints to catch common mistakes and improve your [Rust](https://github.com/rust-lang/rust) code.
 
-[There are 299 lints included in this crate!](https://rust-lang.github.io/rust-clippy/master/index.html)
+[There are 302 lints included in this crate!](https://rust-lang.github.io/rust-clippy/master/index.html)
 
 We have a bunch of lint categories to allow you to choose how much Clippy is supposed to ~~annoy~~ help you:
 
@@ -124,6 +124,11 @@ before_script:
    - rustup component add clippy --toolchain=nightly || cargo install --git https://github.com/rust-lang/rust-clippy/ --force clippy
    # etc
 ```
+
+Note that adding `-D warnings` will cause your build to fail if **any** warnings are found in your code.
+That includes warnings found by rustc (e.g. `dead_code`, etc.). If you want to avoid this and only cause
+an error for clippy warnings, use `#![deny(clippy::all)]` in your code or `-D clippy::all` on the command
+line. (You can swap `clippy::all` with the specific lint category you are targeting.)
 
 ## Configuration
 

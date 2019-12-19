@@ -222,10 +222,10 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
         debug!("should_inline({:?})", callsite);
         let tcx = self.tcx;
 
-        // Don't inline closures that have captures
+        // Don't inline closures that have capture debuginfo
         // FIXME: Handle closures better
-        if callee_mir.upvar_decls.len() > 0 {
-            debug!("    upvar decls present - not inlining");
+        if callee_mir.__upvar_debuginfo_codegen_only_do_not_use.len() > 0 {
+            debug!("    upvar debuginfo present - not inlining");
             return false;
         }
 
@@ -458,7 +458,7 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
                 let dest = if dest_needs_borrow(&destination.0) {
                     debug!("Creating temp for return destination");
                     let dest = Rvalue::Ref(
-                        self.tcx.types.re_erased,
+                        self.tcx.lifetimes.re_erased,
                         BorrowKind::Mut { allow_two_phase_borrow: false },
                         destination.0);
 
@@ -575,7 +575,10 @@ impl<'a, 'tcx> Inliner<'a, 'tcx> {
             let tuple_tmp_args =
                 tuple_tys.iter().enumerate().map(|(i, ty)| {
                     // This is e.g., `tuple_tmp.0` in our example above.
-                    let tuple_field = Operand::Move(tuple.clone().field(Field::new(i), ty));
+                    let tuple_field = Operand::Move(tuple.clone().field(
+                        Field::new(i),
+                        ty.expect_ty(),
+                    ));
 
                     // Spill to a local to make e.g., `tmp0`.
                     self.create_temp_if_necessary(tuple_field, callsite, caller_mir)
@@ -662,7 +665,7 @@ impl<'a, 'tcx> Integrator<'a, 'tcx> {
 impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
     fn visit_local(&mut self,
                    local: &mut Local,
-                   _ctxt: PlaceContext<'tcx>,
+                   _ctxt: PlaceContext,
                    _location: Location) {
         if *local == RETURN_PLACE {
             match self.destination {
@@ -683,7 +686,7 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
 
     fn visit_place(&mut self,
                     place: &mut Place<'tcx>,
-                    _ctxt: PlaceContext<'tcx>,
+                    _ctxt: PlaceContext,
                     _location: Location) {
 
         match place {
@@ -723,9 +726,9 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
         }
     }
 
-    fn visit_terminator_kind(&mut self, block: BasicBlock,
+    fn visit_terminator_kind(&mut self,
                              kind: &mut TerminatorKind<'tcx>, loc: Location) {
-        self.super_terminator_kind(block, kind, loc);
+        self.super_terminator_kind(kind, loc);
 
         match *kind {
             TerminatorKind::GeneratorDrop |

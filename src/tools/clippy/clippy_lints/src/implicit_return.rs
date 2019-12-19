@@ -1,7 +1,7 @@
-use crate::utils::{in_macro, is_expn_of, snippet_opt, span_lint_and_then};
+use crate::utils::{in_macro_or_desugar, is_expn_of, snippet_opt, span_lint_and_then};
 use rustc::hir::{intravisit::FnKind, Body, ExprKind, FnDecl, HirId, MatchSource};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::source_map::Span;
 
@@ -33,9 +33,9 @@ declare_clippy_lint! {
     "use a return statement like `return expr` instead of an expression"
 }
 
-pub struct Pass;
+declare_lint_pass!(ImplicitReturn => [IMPLICIT_RETURN]);
 
-impl Pass {
+impl ImplicitReturn {
     fn lint(cx: &LateContext<'_, '_>, outer_span: syntax_pos::Span, inner_span: syntax_pos::Span, msg: &str) {
         span_lint_and_then(cx, IMPLICIT_RETURN, outer_span, "missing return statement", |db| {
             if let Some(snippet) = snippet_opt(cx, inner_span) {
@@ -74,13 +74,6 @@ impl Pass {
                     Self::lint(cx, expr.span, break_expr.span, "change `break` to `return` as shown");
                 }
             },
-            ExprKind::If(.., if_expr, else_expr) => {
-                Self::expr_match(cx, if_expr);
-
-                if let Some(else_expr) = else_expr {
-                    Self::expr_match(cx, else_expr);
-                }
-            },
             ExprKind::Match(.., arms, source) => {
                 let check_all_arms = match source {
                     MatchSource::IfLetDesugar {
@@ -110,17 +103,7 @@ impl Pass {
     }
 }
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(IMPLICIT_RETURN)
-    }
-
-    fn name(&self) -> &'static str {
-        "ImplicitReturn"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitReturn {
     fn check_fn(
         &mut self,
         cx: &LateContext<'a, 'tcx>,
@@ -135,7 +118,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
 
         // checking return type through MIR, HIR is not able to determine inferred closure return types
         // make sure it's not a macro
-        if !mir.return_ty().is_unit() && !in_macro(span) {
+        if !mir.return_ty().is_unit() && !in_macro_or_desugar(span) {
             Self::expr_match(cx, &body.value);
         }
     }

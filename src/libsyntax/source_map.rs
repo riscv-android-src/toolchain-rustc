@@ -388,16 +388,6 @@ impl SourceMap {
         }
     }
 
-    pub fn lookup_char_pos_adj(&self, pos: BytePos) -> LocWithOpt {
-        let loc = self.lookup_char_pos(pos);
-        LocWithOpt {
-            filename: loc.file.name.clone(),
-            line: loc.line,
-            col: loc.col,
-            file: Some(loc.file)
-        }
-    }
-
     /// Returns `Some(span)`, a union of the lhs and rhs span. The lhs must precede the rhs. If
     /// there are gaps between lhs and rhs, the resulting union will cross these gaps.
     /// For this to work, the spans have to be:
@@ -438,10 +428,10 @@ impl SourceMap {
             return "no-location".to_string();
         }
 
-        let lo = self.lookup_char_pos_adj(sp.lo());
-        let hi = self.lookup_char_pos_adj(sp.hi());
+        let lo = self.lookup_char_pos(sp.lo());
+        let hi = self.lookup_char_pos(sp.hi());
         format!("{}:{}:{}: {}:{}",
-                        lo.filename,
+                        lo.file.name,
                         lo.line,
                         lo.col.to_usize() + 1,
                         hi.line,
@@ -939,6 +929,27 @@ impl SourceMap {
         }
 
         None
+    }
+
+    /// Reuses the span but adds information like the kind of the desugaring and features that are
+    /// allowed inside this span.
+    pub fn mark_span_with_reason(
+        &self,
+        reason: hygiene::CompilerDesugaringKind,
+        span: Span,
+        allow_internal_unstable: Option<Lrc<[symbol::Symbol]>>,
+    ) -> Span {
+        let mark = Mark::fresh(Mark::root());
+        mark.set_expn_info(ExpnInfo {
+            call_site: span,
+            def_site: Some(span),
+            format: CompilerDesugaring(reason),
+            allow_internal_unstable,
+            allow_internal_unsafe: false,
+            local_inner_macros: false,
+            edition: hygiene::default_edition(),
+        });
+        span.with_ctxt(SyntaxContext::empty().apply_mark(mark))
     }
 }
 

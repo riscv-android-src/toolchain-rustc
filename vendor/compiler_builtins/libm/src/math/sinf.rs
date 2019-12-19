@@ -25,6 +25,7 @@ const S3_PIO2: f64 = 3. * FRAC_PI_2; /* 0x4012D97C, 0x7F3321D2 */
 const S4_PIO2: f64 = 4. * FRAC_PI_2; /* 0x401921FB, 0x54442D18 */
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn sinf(x: f32) -> f32 {
     let x64 = x as f64;
 
@@ -87,7 +88,7 @@ pub fn sinf(x: f32) -> f32 {
     match n & 3 {
         0 => k_sinf(y),
         1 => k_cosf(y),
-        2 => return k_sinf(-y),
+        2 => k_sinf(-y),
         _ => -k_cosf(y),
     }
 }

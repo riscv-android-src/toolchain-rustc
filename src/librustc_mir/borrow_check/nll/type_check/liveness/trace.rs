@@ -3,7 +3,7 @@ use crate::borrow_check::nll::region_infer::values::{self, PointIndex, RegionVal
 use crate::borrow_check::nll::type_check::liveness::local_use_map::LocalUseMap;
 use crate::borrow_check::nll::type_check::NormalizeLocation;
 use crate::borrow_check::nll::type_check::TypeChecker;
-use crate::dataflow::move_paths::indexes::MovePathIndex;
+use crate::dataflow::indexes::MovePathIndex;
 use crate::dataflow::move_paths::MoveData;
 use crate::dataflow::{FlowAtLocation, FlowsAtLocation, MaybeInitializedPlaces};
 use rustc::infer::canonical::QueryRegionConstraint;
@@ -517,16 +517,15 @@ impl LivenessContext<'_, '_, '_, '_, 'tcx> {
 
         let tcx = typeck.tcx();
         tcx.for_each_free_region(&value, |live_region| {
-            let borrowck_context = typeck.borrowck_context.as_mut().unwrap();
-            let live_region_vid = borrowck_context
+            let live_region_vid = typeck.borrowck_context
                 .universal_regions
                 .to_region_vid(live_region);
-            borrowck_context
+            typeck.borrowck_context
                 .constraints
                 .liveness_constraints
                 .add_elements(live_region_vid, live_at);
 
-            if let Some(facts) = borrowck_context.all_facts {
+            if let Some(facts) = typeck.borrowck_context.all_facts {
                 for point in live_at.iter() {
                     let loc = elements.to_location(point);
                     facts.region_live_at.push((live_region_vid, location_table.start_index(loc)));

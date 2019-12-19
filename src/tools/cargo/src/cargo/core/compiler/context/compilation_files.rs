@@ -8,7 +8,8 @@ use std::sync::Arc;
 use lazycell::LazyCell;
 use log::info;
 
-use super::{BuildContext, Context, FileFlavor, Kind, Layout, Unit};
+use super::{BuildContext, Context, FileFlavor, Kind, Layout};
+use crate::core::compiler::Unit;
 use crate::core::{TargetKind, Workspace};
 use crate::util::{self, CargoResult};
 
@@ -166,8 +167,13 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
         }
     }
 
-    /// Returns the root of the build output tree.
+    /// Returns the root of the build output tree for the target
     pub fn target_root(&self) -> &Path {
+        self.target.as_ref().unwrap_or(&self.host).dest()
+    }
+
+    /// Returns the root of the build output tree for the host
+    pub fn host_root(&self) -> &Path {
         self.host.dest()
     }
 
@@ -302,7 +308,7 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
                     path,
                     hardlink: None,
                     export_path: None,
-                    flavor: FileFlavor::Linkable,
+                    flavor: FileFlavor::Linkable { rmeta: false },
                 });
             } else {
                 let mut add = |crate_type: &str, flavor: FileFlavor| -> CargoResult<()> {
@@ -366,11 +372,20 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
                             add(
                                 kind.crate_type(),
                                 if kind.linkable() {
-                                    FileFlavor::Linkable
+                                    FileFlavor::Linkable { rmeta: false }
                                 } else {
                                     FileFlavor::Normal
                                 },
                             )?;
+                        }
+                        let path = out_dir.join(format!("lib{}.rmeta", file_stem));
+                        if !unit.target.requires_upstream_objects() {
+                            ret.push(OutputFile {
+                                path,
+                                hardlink: None,
+                                export_path: None,
+                                flavor: FileFlavor::Linkable { rmeta: true },
+                            });
                         }
                     }
                 }
@@ -499,9 +514,9 @@ fn compute_metadata<'a, 'cfg>(
     // This helps when the target directory is a shared cache for projects with different cargo configs,
     // or if the user is experimenting with different rustflags manually.
     if unit.mode.is_doc() {
-        cx.bcx.rustdocflags_args(unit).ok().hash(&mut hasher);
+        cx.bcx.rustdocflags_args(unit).hash(&mut hasher);
     } else {
-        cx.bcx.rustflags_args(unit).ok().hash(&mut hasher);
+        cx.bcx.rustflags_args(unit).hash(&mut hasher);
     }
 
     // Artifacts compiled for the host should have a different metadata

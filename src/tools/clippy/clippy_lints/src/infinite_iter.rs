@@ -1,6 +1,6 @@
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 
 use crate::utils::{get_trait_def_id, higher, implements_trait, match_qpath, match_type, paths, span_lint};
 
@@ -41,20 +41,9 @@ declare_clippy_lint! {
     "possible infinite iteration"
 }
 
-#[derive(Copy, Clone)]
-pub struct Pass;
+declare_lint_pass!(InfiniteIter => [INFINITE_ITER, MAYBE_INFINITE_ITER]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(INFINITE_ITER, MAYBE_INFINITE_ITER)
-    }
-
-    fn name(&self) -> &'static str {
-        "InfiniteIter"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InfiniteIter {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         let (lint, msg) = match complete_infinite_iter(cx, expr) {
             Infinite => (INFINITE_ITER, "infinite iteration detected"),
@@ -125,7 +114,7 @@ use self::Heuristic::{All, Always, Any, First};
 /// returns an infinite or possibly infinite iterator. The finiteness
 /// is an upper bound, e.g., some methods can return a possibly
 /// infinite iterator at worst, e.g., `take_while`.
-static HEURISTICS: &[(&str, usize, Heuristic, Finiteness)] = &[
+const HEURISTICS: [(&str, usize, Heuristic, Finiteness); 19] = [
     ("zip", 2, All, Infinite),
     ("chain", 2, Any, Infinite),
     ("cycle", 1, Always, Infinite),
@@ -150,8 +139,8 @@ static HEURISTICS: &[(&str, usize, Heuristic, Finiteness)] = &[
 fn is_infinite(cx: &LateContext<'_, '_>, expr: &Expr) -> Finiteness {
     match expr.node {
         ExprKind::MethodCall(ref method, _, ref args) => {
-            for &(name, len, heuristic, cap) in HEURISTICS.iter() {
-                if method.ident.name == name && args.len() == len {
+            for &(name, len, heuristic, cap) in &HEURISTICS {
+                if method.ident.name.as_str() == name && args.len() == len {
                     return (match heuristic {
                         Always => Infinite,
                         First => is_infinite(cx, &args[0]),
@@ -161,7 +150,7 @@ fn is_infinite(cx: &LateContext<'_, '_>, expr: &Expr) -> Finiteness {
                     .and(cap);
                 }
             }
-            if method.ident.name == "flat_map" && args.len() == 2 {
+            if method.ident.name == sym!(flat_map) && args.len() == 2 {
                 if let ExprKind::Closure(_, _, body_id, _, _) = args[1].node {
                     let body = cx.tcx.hir().body(body_id);
                     return is_infinite(cx, &body.value);
@@ -185,7 +174,7 @@ fn is_infinite(cx: &LateContext<'_, '_>, expr: &Expr) -> Finiteness {
 
 /// the names and argument lengths of methods that *may* exhaust their
 /// iterators
-static POSSIBLY_COMPLETING_METHODS: &[(&str, usize)] = &[
+const POSSIBLY_COMPLETING_METHODS: [(&str, usize); 6] = [
     ("find", 2),
     ("rfind", 2),
     ("position", 2),
@@ -196,7 +185,7 @@ static POSSIBLY_COMPLETING_METHODS: &[(&str, usize)] = &[
 
 /// the names and argument lengths of methods that *always* exhaust
 /// their iterators
-static COMPLETING_METHODS: &[(&str, usize)] = &[
+const COMPLETING_METHODS: [(&str, usize); 12] = [
     ("count", 1),
     ("fold", 3),
     ("for_each", 2),
@@ -212,7 +201,7 @@ static COMPLETING_METHODS: &[(&str, usize)] = &[
 ];
 
 /// the paths of types that are known to be infinitely allocating
-static INFINITE_COLLECTORS: &[&[&str]] = &[
+const INFINITE_COLLECTORS: [&[&str]; 8] = [
     &paths::BINARY_HEAP,
     &paths::BTREEMAP,
     &paths::BTREESET,
@@ -226,23 +215,23 @@ static INFINITE_COLLECTORS: &[&[&str]] = &[
 fn complete_infinite_iter(cx: &LateContext<'_, '_>, expr: &Expr) -> Finiteness {
     match expr.node {
         ExprKind::MethodCall(ref method, _, ref args) => {
-            for &(name, len) in COMPLETING_METHODS.iter() {
-                if method.ident.name == name && args.len() == len {
+            for &(name, len) in &COMPLETING_METHODS {
+                if method.ident.name.as_str() == name && args.len() == len {
                     return is_infinite(cx, &args[0]);
                 }
             }
-            for &(name, len) in POSSIBLY_COMPLETING_METHODS.iter() {
-                if method.ident.name == name && args.len() == len {
+            for &(name, len) in &POSSIBLY_COMPLETING_METHODS {
+                if method.ident.name.as_str() == name && args.len() == len {
                     return MaybeInfinite.and(is_infinite(cx, &args[0]));
                 }
             }
-            if method.ident.name == "last" && args.len() == 1 {
+            if method.ident.name == sym!(last) && args.len() == 1 {
                 let not_double_ended = get_trait_def_id(cx, &paths::DOUBLE_ENDED_ITERATOR)
                     .map_or(false, |id| !implements_trait(cx, cx.tables.expr_ty(&args[0]), id, &[]));
                 if not_double_ended {
                     return is_infinite(cx, &args[0]);
                 }
-            } else if method.ident.name == "collect" {
+            } else if method.ident.name == sym!(collect) {
                 let ty = cx.tables.expr_ty(expr);
                 if INFINITE_COLLECTORS.iter().any(|path| match_type(cx, ty, path)) {
                     return is_infinite(cx, &args[0]);

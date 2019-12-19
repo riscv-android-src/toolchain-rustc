@@ -2,7 +2,7 @@ use std::time::Duration;
 
 pub use self::cfg::{Cfg, CfgExpr};
 pub use self::config::{homedir, Config, ConfigValue};
-pub use self::dependency_queue::{DependencyQueue, Dirty, Fresh, Freshness};
+pub use self::dependency_queue::DependencyQueue;
 pub use self::diagnostic_server::RustfixDiagnosticServer;
 pub use self::errors::{internal, process_error};
 pub use self::errors::{CargoResult, CargoResultExt, CliResult, Test};
@@ -21,6 +21,7 @@ pub use self::rustc::Rustc;
 pub use self::sha256::Sha256;
 pub use self::to_semver::ToSemver;
 pub use self::to_url::ToUrl;
+pub use self::to_url_with_base::ToUrlWithBase;
 pub use self::vcs::{existing_vcs_repo, FossilRepo, GitRepo, HgRepo, PijulRepo};
 pub use self::workspace::{
     print_available_benches, print_available_binaries, print_available_examples,
@@ -51,6 +52,7 @@ pub mod rustc;
 mod sha256;
 pub mod to_semver;
 pub mod to_url;
+mod to_url_with_base;
 pub mod toml;
 mod vcs;
 mod workspace;

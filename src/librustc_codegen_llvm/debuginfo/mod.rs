@@ -29,7 +29,7 @@ use rustc::util::nodemap::{DefIdMap, FxHashMap, FxHashSet};
 use rustc_data_structures::small_c_str::SmallCStr;
 use rustc_data_structures::indexed_vec::IndexVec;
 use rustc_codegen_ssa::debuginfo::{FunctionDebugContext, MirDebugScope, VariableAccess,
-    VariableKind, FunctionDebugContextData};
+    VariableKind, FunctionDebugContextData, type_names};
 
 use libc::c_uint;
 use std::cell::RefCell;
@@ -44,7 +44,6 @@ use rustc_codegen_ssa::traits::*;
 pub mod gdb;
 mod utils;
 mod namespace;
-mod type_names;
 pub mod metadata;
 mod create_scope_map;
 mod source_loc;
@@ -64,7 +63,7 @@ pub struct CrateDebugContext<'a, 'tcx> {
     llcontext: &'a llvm::Context,
     llmod: &'a llvm::Module,
     builder: &'a mut DIBuilder<'a>,
-    created_files: RefCell<FxHashMap<(Symbol, Symbol), &'a DIFile>>,
+    created_files: RefCell<FxHashMap<(Option<Symbol>, Option<Symbol>), &'a DIFile>>,
     created_enum_disr_types: RefCell<FxHashMap<(DefId, layout::Primitive), &'a DIType>>,
 
     type_map: RefCell<TypeMap<'a, 'tcx>>,
@@ -393,7 +392,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 if let ty::Tuple(args) = sig.inputs()[sig.inputs().len() - 1].sty {
                     signature.extend(
                         args.iter().map(|argument_type| {
-                            Some(type_metadata(cx, argument_type, syntax_pos::DUMMY_SP))
+                            Some(type_metadata(cx, argument_type.expect_ty(), syntax_pos::DUMMY_SP))
                         })
                     );
                 }
@@ -422,7 +421,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 let actual_type =
                     cx.tcx.normalize_erasing_regions(ParamEnv::reveal_all(), actual_type);
                 // Add actual type name to <...> clause of function name
-                let actual_type_name = compute_debuginfo_type_name(cx,
+                let actual_type_name = compute_debuginfo_type_name(cx.tcx(),
                                                                    actual_type,
                                                                    true);
                 name_to_append_suffix_to.push_str(&actual_type_name[..]);
@@ -543,7 +542,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         finalize(self)
     }
 
-    fn debuginfo_upvar_decls_ops_sequence(&self, byte_offset_of_var_in_env: u64) -> [i64; 4] {
+    fn debuginfo_upvar_ops_sequence(&self, byte_offset_of_var_in_env: u64) -> [i64; 4] {
         unsafe {
             [llvm::LLVMRustDIBuilderCreateOpDeref(),
              llvm::LLVMRustDIBuilderCreateOpPlusUconst(),

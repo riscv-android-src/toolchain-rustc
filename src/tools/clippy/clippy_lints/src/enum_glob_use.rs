@@ -1,10 +1,10 @@
 //! lint on `use`ing all variants of an enum
 
 use crate::utils::span_lint;
-use rustc::hir::def::Def;
+use rustc::hir::def::{DefKind, Res};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use syntax::source_map::Span;
 
 declare_clippy_lint! {
@@ -25,17 +25,7 @@ declare_clippy_lint! {
     "use items that import all variants of an enum"
 }
 
-pub struct EnumGlobUse;
-
-impl LintPass for EnumGlobUse {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(ENUM_GLOB_USE)
-    }
-
-    fn name(&self) -> &'static str {
-        "EnumGlobUse"
-    }
-}
+declare_lint_pass!(EnumGlobUse => [ENUM_GLOB_USE]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EnumGlobUse {
     fn check_mod(&mut self, cx: &LateContext<'a, 'tcx>, m: &'tcx Mod, _: Span, _: HirId) {
@@ -48,12 +38,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EnumGlobUse {
 }
 
 impl EnumGlobUse {
-    fn lint_item(&self, cx: &LateContext<'_, '_>, item: &Item) {
+    fn lint_item(self, cx: &LateContext<'_, '_>, item: &Item) {
         if item.vis.node.is_pub() {
             return; // re-exports are fine
         }
         if let ItemKind::Use(ref path, UseKind::Glob) = item.node {
-            if let Def::Enum(_) = path.def {
+            if let Res::Def(DefKind::Enum, _) = path.res {
                 span_lint(cx, ENUM_GLOB_USE, item.span, "don't use glob imports for enum variants");
             }
         }

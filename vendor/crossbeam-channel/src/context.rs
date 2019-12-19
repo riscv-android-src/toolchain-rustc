@@ -6,8 +6,9 @@ use std::sync::Arc;
 use std::thread::{self, Thread, ThreadId};
 use std::time::Instant;
 
+use crossbeam_utils::Backoff;
+
 use select::Selected;
-use utils::Backoff;
 
 /// Thread-local context used in select.
 #[derive(Clone)]
@@ -94,7 +95,8 @@ impl Context {
                 select.into(),
                 Ordering::AcqRel,
                 Ordering::Acquire,
-            ).map(|_| ())
+            )
+            .map(|_| ())
             .map_err(|e| e.into())
     }
 
@@ -117,7 +119,7 @@ impl Context {
     /// Waits until a packet is provided and returns it.
     #[inline]
     pub fn wait_packet(&self) -> usize {
-        let mut backoff = Backoff::new();
+        let backoff = Backoff::new();
         loop {
             let packet = self.inner.packet.load(Ordering::Acquire);
             if packet != 0 {
@@ -133,15 +135,17 @@ impl Context {
     #[inline]
     pub fn wait_until(&self, deadline: Option<Instant>) -> Selected {
         // Spin for a short time, waiting until an operation is selected.
-        let mut backoff = Backoff::new();
+        let backoff = Backoff::new();
         loop {
             let sel = Selected::from(self.inner.select.load(Ordering::Acquire));
             if sel != Selected::Waiting {
                 return sel;
             }
 
-            if !backoff.snooze() {
+            if backoff.is_completed() {
                 break;
+            } else {
+                backoff.snooze();
             }
         }
 

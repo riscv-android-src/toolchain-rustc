@@ -17,6 +17,7 @@ use crate::{ModuleCodegen, ModuleKind, CachedModuleCodegen};
 
 use rustc::dep_graph::cgu_reuse_tracker::CguReuse;
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
+use rustc::middle::cstore::EncodedMetadata;
 use rustc::middle::lang_items::StartFnLangItem;
 use rustc::middle::weak_lang_items;
 use rustc::mir::mono::{Stats, CodegenUnitNameBuilder};
@@ -25,7 +26,6 @@ use rustc::ty::layout::{self, Align, TyLayout, LayoutOf, VariantIdx, HasTyCtxt};
 use rustc::ty::query::Providers;
 use rustc::middle::cstore::{self, LinkagePreference};
 use rustc::util::common::{time, print_time_passes_entry};
-use rustc::util::profiling::ProfileCategory;
 use rustc::session::config::{self, EntryFnType, Lto};
 use rustc::session::Session;
 use rustc_mir::monomorphize::item::DefPathBasedNames;
@@ -531,31 +531,12 @@ pub const CODEGEN_WORKER_ID: usize = ::std::usize::MAX;
 pub fn codegen_crate<B: ExtraBackendMethods>(
     backend: B,
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    metadata: EncodedMetadata,
+    need_metadata_module: bool,
     rx: mpsc::Receiver<Box<dyn Any + Send>>
 ) -> OngoingCodegen<B> {
 
     check_for_rustc_errors_attr(tcx);
-
-    let cgu_name_builder = &mut CodegenUnitNameBuilder::new(tcx);
-
-    // Codegen the metadata.
-    tcx.sess.profiler(|p| p.start_activity(ProfileCategory::Codegen, "codegen crate metadata"));
-
-    let metadata_cgu_name = cgu_name_builder.build_cgu_name(LOCAL_CRATE,
-                                                            &["crate"],
-                                                            Some("metadata")).as_str()
-                                                                             .to_string();
-    let mut metadata_llvm_module = backend.new_metadata(tcx, &metadata_cgu_name);
-    let metadata = time(tcx.sess, "write metadata", || {
-        backend.write_metadata(tcx, &mut metadata_llvm_module)
-    });
-    tcx.sess.profiler(|p| p.end_activity(ProfileCategory::Codegen, "codegen crate metadata"));
-
-    let metadata_module = ModuleCodegen {
-        name: metadata_cgu_name,
-        module_llvm: metadata_llvm_module,
-        kind: ModuleKind::Metadata,
-    };
 
     // Skip crate items and just output metadata in -Z no-codegen mode.
     if tcx.sess.opts.debugging_opts.no_codegen ||
@@ -567,7 +548,6 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
             rx,
             1);
 
-        ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, metadata_module);
         ongoing_codegen.codegen_finished(tcx);
 
         assert_and_save_dep_graph(tcx);
@@ -576,6 +556,8 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
         return ongoing_codegen;
     }
+
+    let cgu_name_builder = &mut CodegenUnitNameBuilder::new(tcx);
 
     // Run the monomorphization collector and partition the collected items into
     // codegen units.
@@ -640,7 +622,28 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
         ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, allocator_module);
     }
 
-    ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, metadata_module);
+    if need_metadata_module {
+        // Codegen the encoded metadata.
+        tcx.sess.profiler(|p| p.start_activity("codegen crate metadata"));
+
+        let metadata_cgu_name = cgu_name_builder.build_cgu_name(LOCAL_CRATE,
+                                                                &["crate"],
+                                                                Some("metadata")).as_str()
+                                                                                 .to_string();
+        let mut metadata_llvm_module = backend.new_metadata(tcx, &metadata_cgu_name);
+        time(tcx.sess, "write compressed metadata", || {
+            backend.write_compressed_metadata(tcx, &ongoing_codegen.metadata,
+                                              &mut metadata_llvm_module);
+        });
+        tcx.sess.profiler(|p| p.end_activity("codegen crate metadata"));
+
+        let metadata_module = ModuleCodegen {
+            name: metadata_cgu_name,
+            module_llvm: metadata_llvm_module,
+            kind: ModuleKind::Metadata,
+        };
+        ongoing_codegen.submit_pre_codegened_module_to_llvm(tcx, metadata_module);
+    }
 
     // We sort the codegen units by size. This way we can schedule work for LLVM
     // a bit more efficiently.
@@ -662,14 +665,12 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
 
         match cgu_reuse {
             CguReuse::No => {
-                tcx.sess.profiler(|p| p.start_activity(ProfileCategory::Codegen,
-                                                       format!("codegen {}", cgu.name())));
+                tcx.sess.profiler(|p| p.start_activity(format!("codegen {}", cgu.name())));
                 let start_time = Instant::now();
                 let stats = backend.compile_codegen_unit(tcx, *cgu.name());
                 all_stats.extend(stats);
                 total_codegen_time += start_time.elapsed();
-                tcx.sess.profiler(|p| p.end_activity(ProfileCategory::Codegen,
-                                                     format!("codegen {}", cgu.name())));
+                tcx.sess.profiler(|p| p.end_activity(format!("codegen {}", cgu.name())));
                 false
             }
             CguReuse::PreLto => {

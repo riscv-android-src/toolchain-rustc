@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! Manually manage memory through raw pointers.
 //!
 //! *[See also the pointer primitive types](../../std/primitive.pointer.html).*
@@ -63,24 +65,24 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use convert::From;
-use intrinsics;
-use ops::{CoerceUnsized, DispatchFromDyn};
-use fmt;
-use hash;
-use marker::{PhantomData, Unsize};
-use mem::{self, MaybeUninit};
+use crate::convert::From;
+use crate::intrinsics;
+use crate::ops::{CoerceUnsized, DispatchFromDyn};
+use crate::fmt;
+use crate::hash;
+use crate::marker::{PhantomData, Unsize};
+use crate::mem::{self, MaybeUninit};
 
-use cmp::Ordering::{self, Less, Equal, Greater};
-
-#[stable(feature = "rust1", since = "1.0.0")]
-pub use intrinsics::copy_nonoverlapping;
+use crate::cmp::Ordering::{self, Less, Equal, Greater};
 
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use intrinsics::copy;
+pub use crate::intrinsics::copy_nonoverlapping;
 
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use intrinsics::write_bytes;
+pub use crate::intrinsics::copy;
+
+#[stable(feature = "rust1", since = "1.0.0")]
+pub use crate::intrinsics::write_bytes;
 
 /// Executes the destructor (if any) of the pointed-to value.
 ///
@@ -153,12 +155,12 @@ pub use intrinsics::write_bytes;
 /// location first:
 /// ```
 /// use std::ptr;
-/// use std::mem;
+/// use std::mem::{self, MaybeUninit};
 ///
 /// unsafe fn drop_after_copy<T>(to_drop: *mut T) {
-///     let mut copy: T = mem::uninitialized();
-///     ptr::copy(to_drop, &mut copy, 1);
-///     drop(copy);
+///     let mut copy: MaybeUninit<T> = MaybeUninit::uninit();
+///     ptr::copy(to_drop, copy.as_mut_ptr(), 1);
+///     drop(copy.assume_init());
 /// }
 ///
 /// #[repr(packed, C)]
@@ -372,10 +374,7 @@ unsafe fn swap_nonoverlapping_bytes(x: *mut u8, y: *mut u8, len: usize) {
     // #[repr(simd)], even if we don't actually use this struct directly.
     //
     // FIXME repr(simd) broken on emscripten and redox
-    // It's also broken on big-endian powerpc64 and s390x.  #42778
-    #[cfg_attr(not(any(target_os = "emscripten", target_os = "redox",
-                       target_endian = "big")),
-               repr(simd))]
+    #[cfg_attr(not(any(target_os = "emscripten", target_os = "redox")), repr(simd))]
     struct Block(u64, u64, u64, u64);
     struct UnalignedBlock(u64, u64, u64, u64);
 
@@ -811,9 +810,6 @@ pub unsafe fn write_unaligned<T>(dst: *mut T, src: T) {
 /// to not be elided or reordered by the compiler across other volatile
 /// operations.
 ///
-/// Memory accessed with `read_volatile` or [`write_volatile`] should not be
-/// accessed with non-volatile operations.
-///
 /// [`write_volatile`]: ./fn.write_volatile.html
 ///
 /// # Notes
@@ -838,7 +834,7 @@ pub unsafe fn write_unaligned<T>(dst: *mut T, src: T) {
 ///
 /// * `src` must be properly aligned.
 ///
-/// Like [`read`], `read_unaligned` creates a bitwise copy of `T`, regardless of
+/// Like [`read`], `read_volatile` creates a bitwise copy of `T`, regardless of
 /// whether `T` is [`Copy`]. If `T` is not [`Copy`], using both the returned
 /// value and the value at `*src` can [violate memory safety][read-ownership].
 /// However, storing non-[`Copy`] types in volatile memory is almost certainly
@@ -881,9 +877,6 @@ pub unsafe fn read_volatile<T>(src: *const T) -> T {
 /// Volatile operations are intended to act on I/O memory, and are guaranteed
 /// to not be elided or reordered by the compiler across other volatile
 /// operations.
-///
-/// Memory accessed with [`read_volatile`] or `write_volatile` should not be
-/// accessed with non-volatile operations.
 ///
 /// `write_volatile` does not drop the contents of `dst`. This is safe, but it
 /// could leak allocations or resources, so care should be taken not to overwrite
@@ -970,6 +963,13 @@ impl<T: ?Sized> *const T {
         // Compare via a cast to a thin pointer, so fat pointers are only
         // considering their "data" part for null-ness.
         (self as *const u8) == null()
+    }
+
+    /// Cast to a pointer to a different type
+    #[unstable(feature = "ptr_cast", issue = "60602")]
+    #[inline]
+    pub const fn cast<U>(self) -> *const U {
+        self as _
     }
 
     /// Returns `None` if the pointer is null, or else returns a reference to
@@ -1538,7 +1538,6 @@ impl<T: ?Sized> *const T {
     /// Accessing adjacent `u8` as `u16`
     ///
     /// ```
-    /// # #![feature(align_offset)]
     /// # fn foo(n: usize) {
     /// # use std::mem::align_of;
     /// # unsafe {
@@ -1554,7 +1553,7 @@ impl<T: ?Sized> *const T {
     /// }
     /// # } }
     /// ```
-    #[unstable(feature = "align_offset", issue = "44488")]
+    #[stable(feature = "align_offset", since = "1.36.0")]
     pub fn align_offset(self, align: usize) -> usize where T: Sized {
         if !align.is_power_of_two() {
             panic!("align_offset: align is not a power-of-two");
@@ -1590,6 +1589,13 @@ impl<T: ?Sized> *mut T {
         // Compare via a cast to a thin pointer, so fat pointers are only
         // considering their "data" part for null-ness.
         (self as *mut u8) == null_mut()
+    }
+
+    /// Cast to a pointer to a different type
+    #[unstable(feature = "ptr_cast", issue = "60602")]
+    #[inline]
+    pub const fn cast<U>(self) -> *mut U {
+        self as _
     }
 
     /// Returns `None` if the pointer is null, or else returns a reference to
@@ -2310,7 +2316,6 @@ impl<T: ?Sized> *mut T {
     /// Accessing adjacent `u8` as `u16`
     ///
     /// ```
-    /// # #![feature(align_offset)]
     /// # fn foo(n: usize) {
     /// # use std::mem::align_of;
     /// # unsafe {
@@ -2326,7 +2331,7 @@ impl<T: ?Sized> *mut T {
     /// }
     /// # } }
     /// ```
-    #[unstable(feature = "align_offset", issue = "44488")]
+    #[stable(feature = "align_offset", since = "1.36.0")]
     pub fn align_offset(self, align: usize) -> usize where T: Sized {
         if !align.is_power_of_two() {
             panic!("align_offset: align is not a power-of-two");
@@ -2402,7 +2407,7 @@ pub(crate) unsafe fn align_offset<T: Sized>(p: *const T, a: usize) -> usize {
         }
     }
 
-    let stride = ::mem::size_of::<T>();
+    let stride = mem::size_of::<T>();
     let a_minus_one = a.wrapping_sub(1);
     let pmoda = p as usize & a_minus_one;
 
@@ -2580,7 +2585,7 @@ pub fn eq<T: ?Sized>(a: *const T, b: *const T) -> bool {
 /// ```
 #[stable(feature = "ptr_hash", since = "1.35.0")]
 pub fn hash<T: ?Sized, S: hash::Hasher>(hashee: *const T, into: &mut S) {
-    use hash::Hash;
+    use crate::hash::Hash;
     hashee.hash(into);
 }
 
@@ -2623,14 +2628,14 @@ macro_rules! fnptr_impls_safety_abi {
 
         #[stable(feature = "fnptr_impls", since = "1.4.0")]
         impl<Ret, $($Arg),*> fmt::Pointer for $FnTy {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 fmt::Pointer::fmt(&(*self as *const ()), f)
             }
         }
 
         #[stable(feature = "fnptr_impls", since = "1.4.0")]
         impl<Ret, $($Arg),*> fmt::Debug for $FnTy {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 fmt::Pointer::fmt(&(*self as *const ()), f)
             }
         }
@@ -2776,7 +2781,7 @@ pub struct Unique<T: ?Sized> {
 
 #[unstable(feature = "ptr_internals", issue = "0")]
 impl<T: ?Sized> fmt::Debug for Unique<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&self.as_ptr(), f)
     }
 }
@@ -2876,7 +2881,7 @@ impl<T: ?Sized, U: ?Sized> DispatchFromDyn<Unique<U>> for Unique<T> where T: Uns
 
 #[unstable(feature = "ptr_internals", issue = "0")]
 impl<T: ?Sized> fmt::Pointer for Unique<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&self.as_ptr(), f)
     }
 }
@@ -2959,7 +2964,6 @@ impl<T: Sized> NonNull<T> {
     /// some other means.
     #[stable(feature = "nonnull", since = "1.25.0")]
     #[inline]
-    #[rustc_const_unstable(feature = "const_ptr_nonnull")]
     pub const fn dangling() -> Self {
         unsafe {
             let ptr = mem::align_of::<T>() as *mut T;
@@ -3023,7 +3027,6 @@ impl<T: ?Sized> NonNull<T> {
     /// Cast to a pointer of another type
     #[stable(feature = "nonnull_cast", since = "1.27.0")]
     #[inline]
-    #[rustc_const_unstable(feature = "const_ptr_nonnull")]
     pub const fn cast<U>(self) -> NonNull<U> {
         unsafe {
             NonNull::new_unchecked(self.as_ptr() as *mut U)
@@ -3049,14 +3052,14 @@ impl<T: ?Sized, U: ?Sized> DispatchFromDyn<NonNull<U>> for NonNull<T> where T: U
 
 #[stable(feature = "nonnull", since = "1.25.0")]
 impl<T: ?Sized> fmt::Debug for NonNull<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&self.as_ptr(), f)
     }
 }
 
 #[stable(feature = "nonnull", since = "1.25.0")]
 impl<T: ?Sized> fmt::Pointer for NonNull<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Pointer::fmt(&self.as_ptr(), f)
     }
 }

@@ -1,7 +1,7 @@
 //! Contains utility functions to generate suggestions.
 #![deny(clippy::missing_docs_in_private_items)]
 
-use crate::utils::{higher, in_macro, snippet, snippet_opt, snippet_with_macro_callsite};
+use crate::utils::{higher, in_macro_or_desugar, snippet, snippet_opt, snippet_with_macro_callsite};
 use matches::matches;
 use rustc::hir;
 use rustc::lint::{EarlyContext, LateContext, LintContext};
@@ -69,7 +69,7 @@ impl<'a> Sugg<'a> {
         default: &'a str,
         applicability: &mut Applicability,
     ) -> Self {
-        if *applicability != Applicability::Unspecified && in_macro(expr.span) {
+        if *applicability != Applicability::Unspecified && in_macro_or_desugar(expr.span) {
             *applicability = Applicability::MaybeIncorrect;
         }
         Self::hir_opt(cx, expr).unwrap_or_else(|| {
@@ -94,7 +94,6 @@ impl<'a> Sugg<'a> {
             hir::ExprKind::AddrOf(..)
             | hir::ExprKind::Box(..)
             | hir::ExprKind::Closure(.., _)
-            | hir::ExprKind::If(..)
             | hir::ExprKind::Unary(..)
             | hir::ExprKind::Match(..) => Sugg::MaybeParen(snippet),
             hir::ExprKind::Continue(..)
@@ -115,6 +114,7 @@ impl<'a> Sugg<'a> {
             | hir::ExprKind::Struct(..)
             | hir::ExprKind::Tup(..)
             | hir::ExprKind::While(..)
+            | hir::ExprKind::DropTemps(_)
             | hir::ExprKind::Err => Sugg::NonParen(snippet),
             hir::ExprKind::Assign(..) => Sugg::BinOp(AssocOp::Assign, snippet),
             hir::ExprKind::AssignOp(op, ..) => Sugg::BinOp(hirbinop2assignop(op), snippet),
@@ -164,6 +164,7 @@ impl<'a> Sugg<'a> {
             | ast::ExprKind::Array(..)
             | ast::ExprKind::While(..)
             | ast::ExprKind::WhileLet(..)
+            | ast::ExprKind::Await(..)
             | ast::ExprKind::Err => Sugg::NonParen(snippet),
             ast::ExprKind::Range(.., RangeLimits::HalfOpen) => Sugg::BinOp(AssocOp::DotDot, snippet),
             ast::ExprKind::Range(.., RangeLimits::Closed) => Sugg::BinOp(AssocOp::DotDotEq, snippet),

@@ -4,7 +4,7 @@ use rustc::hir::intravisit::{walk_path, NestedVisitorMap, Visitor};
 use rustc::hir::{self, *};
 use rustc::lint::LateContext;
 use rustc_data_structures::fx::FxHashSet;
-use syntax::symbol::Symbol;
+use syntax_pos::symbol::Symbol;
 
 use super::OPTION_MAP_UNWRAP_OR;
 

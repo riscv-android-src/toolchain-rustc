@@ -1,5 +1,6 @@
-use super::{InferCtxt, FixupError, FixupResult};
-use crate::ty::{self, Ty, TyCtxt, TypeFoldable};
+use super::{InferCtxt, FixupError, FixupResult, Span, type_variable::TypeVariableOrigin};
+use crate::mir::interpret::ConstValue;
+use crate::ty::{self, Ty, TyCtxt, TypeFoldable, InferConst};
 use crate::ty::fold::{TypeFolder, TypeVisitor};
 
 ///////////////////////////////////////////////////////////////////////////
@@ -72,22 +73,34 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for OpportunisticTypeAndRegionResolv
                 r,
         }
     }
+
+    fn fold_const(&mut self, ct: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+        if !ct.needs_infer() {
+            ct // micro-optimize -- if there is nothing in this const that this fold affects...
+        } else {
+            let c0 = self.infcx.shallow_resolve(ct);
+            c0.super_fold_with(self)
+        }
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////
 // UNRESOLVED TYPE FINDER
 
-/// The unresolved type **finder** walks your type and searches for
-/// type variables that don't yet have a value. They get pushed into a
-/// vector. It does not construct the fully resolved type (which might
+/// The unresolved type **finder** walks a type searching for
+/// type variables that don't yet have a value. The first unresolved type is stored.
+/// It does not construct the fully resolved type (which might
 /// involve some hashing and so forth).
 pub struct UnresolvedTypeFinder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
+
+    /// Used to find the type parameter name and location for error reporting.
+    pub first_unresolved: Option<(Ty<'tcx>,Option<Span>)>,
 }
 
 impl<'a, 'gcx, 'tcx> UnresolvedTypeFinder<'a, 'gcx, 'tcx> {
     pub fn new(infcx: &'a InferCtxt<'a, 'gcx, 'tcx>) -> Self {
-        UnresolvedTypeFinder { infcx }
+        UnresolvedTypeFinder { infcx, first_unresolved: None }
     }
 }
 
@@ -95,21 +108,36 @@ impl<'a, 'gcx, 'tcx> TypeVisitor<'tcx> for UnresolvedTypeFinder<'a, 'gcx, 'tcx> 
     fn visit_ty(&mut self, t: Ty<'tcx>) -> bool {
         let t = self.infcx.shallow_resolve(t);
         if t.has_infer_types() {
-            if let ty::Infer(_) = t.sty {
+            if let ty::Infer(infer_ty) = t.sty {
                 // Since we called `shallow_resolve` above, this must
                 // be an (as yet...) unresolved inference variable.
-                true
+                let ty_var_span =
+                if let ty::TyVar(ty_vid) = infer_ty {
+                    let ty_vars = self.infcx.type_variables.borrow();
+                    if let TypeVariableOrigin::TypeParameterDefinition(span, _name)
+                        = *ty_vars.var_origin(ty_vid)
+                    {
+                        Some(span)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                self.first_unresolved = Some((t, ty_var_span));
+                true  // Halt visiting.
             } else {
                 // Otherwise, visit its contents.
                 t.super_visit_with(self)
             }
         } else {
-            // Micro-optimize: no inference types at all Can't have unresolved type
-            // variables, no need to visit the contents.
+            // All type variables in inference types must already be resolved,
+            // - no need to visit the contents, continue visiting.
             false
         }
     }
 }
+
 
 ///////////////////////////////////////////////////////////////////////////
 // FULL TYPE RESOLUTION
@@ -118,7 +146,7 @@ impl<'a, 'gcx, 'tcx> TypeVisitor<'tcx> for UnresolvedTypeFinder<'a, 'gcx, 'tcx> 
 /// their concrete results. If any variable cannot be replaced (never unified, etc)
 /// then an `Err` result is returned.
 pub fn fully_resolve<'a, 'gcx, 'tcx, T>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
-                                        value: &T) -> FixupResult<T>
+                                        value: &T) -> FixupResult<'tcx, T>
     where T : TypeFoldable<'tcx>
 {
     let mut full_resolver = FullTypeResolver { infcx: infcx, err: None };
@@ -133,7 +161,7 @@ pub fn fully_resolve<'a, 'gcx, 'tcx, T>(infcx: &InferCtxt<'a, 'gcx, 'tcx>,
 // `err` field is not enforcable otherwise.
 struct FullTypeResolver<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
-    err: Option<FixupError>,
+    err: Option<FixupError<'tcx>>,
 }
 
 impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for FullTypeResolver<'a, 'gcx, 'tcx> {
@@ -179,6 +207,27 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for FullTypeResolver<'a, 'gcx, 'tcx>
                                         .expect("region resolution not performed")
                                         .resolve_var(rid),
             _ => r,
+        }
+    }
+
+    fn fold_const(&mut self, c: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
+        if !c.needs_infer() && !ty::keep_local(&c) {
+            c // micro-optimize -- if there is nothing in this const that this fold affects...
+              // ^ we need to have the `keep_local` check to un-default
+              // defaulted tuples.
+        } else {
+            let c = self.infcx.shallow_resolve(c);
+            match c.val {
+                ConstValue::Infer(InferConst::Var(vid)) => {
+                    self.err = Some(FixupError::UnresolvedConst(vid));
+                    return self.tcx().consts.err;
+                }
+                ConstValue::Infer(InferConst::Fresh(_)) => {
+                    bug!("Unexpected const in full const resolver: {:?}", c);
+                }
+                _ => {}
+            }
+            c.super_fold_with(self)
         }
     }
 }

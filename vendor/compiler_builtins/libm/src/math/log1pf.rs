@@ -21,6 +21,7 @@ const LG3: f32 = 0.28498786688; /* 0x91e9ee.0p-25 */
 const LG4: f32 = 0.24279078841; /* 0xf89e26.0p-26 */
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn log1pf(x: f32) -> f32 {
     let mut ui: u32 = x.to_bits();
     let hfsq: f32;
@@ -94,5 +95,5 @@ pub fn log1pf(x: f32) -> f32 {
     r = t2 + t1;
     hfsq = 0.5 * f * f;
     dk = k as f32;
-    return s * (hfsq + r) + (dk * LN2_LO + c) - hfsq + f + dk * LN2_HI;
+    s * (hfsq + r) + (dk * LN2_LO + c) - hfsq + f + dk * LN2_HI
 }

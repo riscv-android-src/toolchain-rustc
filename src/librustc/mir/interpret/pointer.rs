@@ -78,7 +78,7 @@ pub struct Pointer<Tag=(),Id=AllocId> {
     pub tag: Tag,
 }
 
-static_assert!(POINTER_SIZE: ::std::mem::size_of::<Pointer>() == 16);
+static_assert_size!(Pointer, 16);
 
 /// Produces a `Pointer` which points to the beginning of the Allocation
 impl From<AllocId> for Pointer {
@@ -95,10 +95,16 @@ impl<'tcx> Pointer<()> {
     }
 
     #[inline(always)]
+    pub fn with_tag<Tag>(self, tag: Tag) -> Pointer<Tag>
+    {
+        Pointer::new_with_tag(self.alloc_id, self.offset, tag)
+    }
+
+    #[inline(always)]
     pub fn with_default_tag<Tag>(self) -> Pointer<Tag>
         where Tag: Default
     {
-        Pointer::new_with_tag(self.alloc_id, self.offset, Default::default())
+        self.with_tag(Tag::default())
     }
 }
 

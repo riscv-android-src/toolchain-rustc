@@ -995,7 +995,7 @@ pub const fn _MM_SHUFFLE(z: u32, y: u32, x: u32, w: u32) -> i32 {
 #[cfg_attr(test, assert_instr(shufps, mask = 3))]
 #[rustc_args_required_const(2)]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-pub unsafe fn _mm_shuffle_ps(a: __m128, b: __m128, mask: u32) -> __m128 {
+pub unsafe fn _mm_shuffle_ps(a: __m128, b: __m128, mask: i32) -> __m128 {
     let mask = (mask & 0xFF) as u8;
 
     macro_rules! shuffle_done {
@@ -1209,7 +1209,7 @@ pub unsafe fn _mm_load_ps1(p: *const f32) -> __m128 {
 #[target_feature(enable = "sse")]
 #[cfg_attr(test, assert_instr(movaps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_ptr_alignment))]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_load_ps(p: *const f32) -> __m128 {
     *(p as *const __m128)
 }
@@ -1370,7 +1370,7 @@ pub unsafe fn _mm_store_ss(p: *mut f32, a: __m128) {
 #[target_feature(enable = "sse")]
 #[cfg_attr(test, assert_instr(movaps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_ptr_alignment))]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_store1_ps(p: *mut f32, a: __m128) {
     let b: __m128 = simd_shuffle4(a, a, [0, 0, 0, 0]);
     *(p as *mut __m128) = b;
@@ -1402,7 +1402,7 @@ pub unsafe fn _mm_store_ps1(p: *mut f32, a: __m128) {
 #[target_feature(enable = "sse")]
 #[cfg_attr(test, assert_instr(movaps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_ptr_alignment))]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_store_ps(p: *mut f32, a: __m128) {
     *(p as *mut __m128) = a;
 }
@@ -1446,7 +1446,7 @@ pub unsafe fn _mm_storeu_ps(p: *mut f32, a: __m128) {
 #[target_feature(enable = "sse")]
 #[cfg_attr(test, assert_instr(movaps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_ptr_alignment))]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_storer_ps(p: *mut f32, a: __m128) {
     let b: __m128 = simd_shuffle4(a, a, [3, 2, 1, 0]);
     *(p as *mut __m128) = b;
@@ -2033,7 +2033,7 @@ extern "C" {
 #[target_feature(enable = "sse")]
 #[cfg_attr(test, assert_instr(movntps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
-#[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_ptr_alignment))]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn _mm_stream_ps(mem_addr: *mut f32, a: __m128) {
     intrinsics::nontemporal_store(mem_addr as *mut __m128, a);
 }
@@ -2497,10 +2497,9 @@ pub unsafe fn _mm_cvtps_pi8(a: __m128) -> __m64 {
 
 #[cfg(test)]
 mod tests {
-    use crate::mem::transmute;
-    use std::f32::NAN;
+    use crate::{hint::black_box, mem::transmute};
+    use std::{boxed, f32::NAN};
     use stdsimd_test::simd_test;
-    use test::black_box; // Used to inhibit constant-folding.
 
     use crate::core_arch::{simd::*, x86::*};
 
@@ -3909,7 +3908,7 @@ mod tests {
     #[simd_test(enable = "sse,mmx")]
     unsafe fn test_mm_stream_pi() {
         let a = transmute(i8x8::new(0, 0, 0, 0, 0, 0, 0, 7));
-        let mut mem = ::std::boxed::Box::<__m64>::new(transmute(i8x8::splat(1)));
+        let mut mem = boxed::Box::<__m64>::new(transmute(i8x8::splat(1)));
         _mm_stream_pi(&mut *mem as *mut _ as *mut _, a);
         assert_eq_m64(a, *mem);
     }

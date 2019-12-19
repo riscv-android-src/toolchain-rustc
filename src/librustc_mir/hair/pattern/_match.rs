@@ -211,6 +211,7 @@ impl<'a, 'tcx> LiteralExpander<'a, 'tcx> {
         // the constant's pointee type
         crty: Ty<'tcx>,
     ) -> ConstValue<'tcx> {
+        debug!("fold_const_value_deref {:?} {:?} {:?}", val, rty, crty);
         match (val, &crty.sty, &rty.sty) {
             // the easy case, deref a reference
             (ConstValue::Scalar(Scalar::Ptr(p)), x, y) if x == y => ConstValue::ByRef(
@@ -238,6 +239,7 @@ impl<'a, 'tcx> LiteralExpander<'a, 'tcx> {
 
 impl<'a, 'tcx> PatternFolder<'tcx> for LiteralExpander<'a, 'tcx> {
     fn fold_pattern(&mut self, pat: &Pattern<'tcx>) -> Pattern<'tcx> {
+        debug!("fold_pattern {:?} {:?} {:?}", pat, pat.ty.sty, pat.kind);
         match (&pat.ty.sty, &*pat.kind) {
             (
                 &ty::Ref(_, rty, _),
@@ -383,6 +385,18 @@ impl<'a, 'tcx> MatchCheckCtxt<'a, 'tcx> {
             self.tcx.is_ty_uninhabited_from(self.module, ty)
         } else {
             false
+        }
+    }
+
+    fn is_non_exhaustive_variant<'p>(&self, pattern: &'p Pattern<'tcx>) -> bool
+        where 'a: 'p
+    {
+        match *pattern.kind {
+            PatternKind::Variant { adt_def, variant_index, .. } => {
+                let ref variant = adt_def.variants[variant_index];
+                variant.is_field_list_non_exhaustive()
+            }
+            _ => false,
         }
     }
 
@@ -1095,10 +1109,17 @@ pub fn is_useful<'p, 'a: 'p, 'tcx: 'a>(cx: &mut MatchCheckCtxt<'a, 'tcx>,
     debug!("is_useful_expand_first_col: pcx={:#?}, expanding {:#?}", pcx, v[0]);
 
     if let Some(constructors) = pat_constructors(cx, v[0], pcx) {
-        debug!("is_useful - expanding constructors: {:#?}", constructors);
-        split_grouped_constructors(cx.tcx, constructors, matrix, pcx.ty).into_iter().map(|c|
-            is_useful_specialized(cx, matrix, v, c, pcx.ty, witness)
-        ).find(|result| result.is_useful()).unwrap_or(NotUseful)
+        let is_declared_nonexhaustive = cx.is_non_exhaustive_variant(v[0]) && !cx.is_local(pcx.ty);
+        debug!("is_useful - expanding constructors: {:#?}, is_declared_nonexhaustive: {:?}",
+               constructors, is_declared_nonexhaustive);
+
+        if is_declared_nonexhaustive {
+            Useful
+        } else {
+            split_grouped_constructors(cx.tcx, constructors, matrix, pcx.ty).into_iter().map(|c|
+                is_useful_specialized(cx, matrix, v, c, pcx.ty, witness)
+            ).find(|result| result.is_useful()).unwrap_or(NotUseful)
+        }
     } else {
         debug!("is_useful - expanding wildcard");
 
@@ -1357,7 +1378,7 @@ fn constructor_sub_pattern_tys<'a, 'tcx: 'a>(cx: &MatchCheckCtxt<'a, 'tcx>,
 {
     debug!("constructor_sub_pattern_tys({:#?}, {:?})", ctor, ty);
     match ty.sty {
-        ty::Tuple(ref fs) => fs.into_iter().map(|t| *t).collect(),
+        ty::Tuple(ref fs) => fs.into_iter().map(|t| t.expect_ty()).collect(),
         ty::Slice(ty) | ty::Array(ty, _) => match *ctor {
             Slice(length) => (0..length).map(|_| ty).collect(),
             ConstantValue(_) => vec![],

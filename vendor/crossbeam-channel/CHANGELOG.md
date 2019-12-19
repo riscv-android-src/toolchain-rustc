@@ -1,3 +1,26 @@
+# Version 0.3.8
+
+- Bump the minimum required version of `crossbeam-utils`.
+
+# Version 0.3.7
+
+- Remove `parking_lot` and `rand` dependencies.
+- Expand documentation.
+- Implement `Default` for `Select`.
+- Make `size_of::<Receiver<T>>()` smaller.
+- Several minor optimizations.
+- Add more tests.
+
+# Version 0.3.6
+
+- Fix a bug in initialization of unbounded channels.
+
+# Version 0.3.5
+
+- New implementation for unbounded channels.
+- A number of small performance improvements.
+- Remove `crossbeam-epoch` dependency.
+
 # Version 0.3.4
 
 - Bump `crossbeam-epoch` to `0.7`.

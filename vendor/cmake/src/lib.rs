@@ -47,10 +47,10 @@
 extern crate cc;
 
 use std::env;
-use std::ffi::{OsString, OsStr};
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::ErrorKind;
 use std::io::prelude::*;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -148,9 +148,12 @@ impl Config {
 
     /// Adds a new `-D` flag to pass to cmake during the generation step.
     pub fn define<K, V>(&mut self, k: K, v: V) -> &mut Config
-        where K: AsRef<OsStr>, V: AsRef<OsStr>
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
     {
-        self.defines.push((k.as_ref().to_owned(), v.as_ref().to_owned()));
+        self.defines
+            .push((k.as_ref().to_owned(), v.as_ref().to_owned()));
         self
     }
 
@@ -229,10 +232,12 @@ impl Config {
     /// Configure an environment variable for the `cmake` processes spawned by
     /// this crate in the `build` step.
     pub fn env<K, V>(&mut self, key: K, value: V) -> &mut Config
-        where K: AsRef<OsStr>,
-              V: AsRef<OsStr>,
+    where
+        K: AsRef<OsStr>,
+        V: AsRef<OsStr>,
     {
-        self.env.push((key.as_ref().to_owned(), value.as_ref().to_owned()));
+        self.env
+            .push((key.as_ref().to_owned(), value.as_ref().to_owned()));
         self
     }
 
@@ -286,19 +291,19 @@ impl Config {
                 t
             }
         };
-        let host = self.host.clone().unwrap_or_else(|| {
-            getenv_unwrap("HOST")
-        });
+        let host = self.host.clone().unwrap_or_else(|| getenv_unwrap("HOST"));
         let msvc = target.contains("msvc");
         let mut c_cfg = cc::Build::new();
-        c_cfg.cargo_metadata(false)
+        c_cfg
+            .cargo_metadata(false)
             .opt_level(0)
             .debug(false)
             .target(&target)
             .warnings(false)
             .host(&host);
         let mut cxx_cfg = cc::Build::new();
-        cxx_cfg.cargo_metadata(false)
+        cxx_cfg
+            .cargo_metadata(false)
             .cpp(true)
             .opt_level(0)
             .debug(false)
@@ -312,9 +317,10 @@ impl Config {
         let c_compiler = c_cfg.get_compiler();
         let cxx_compiler = cxx_cfg.get_compiler();
 
-        let dst = self.out_dir.clone().unwrap_or_else(|| {
-            PathBuf::from(getenv_unwrap("OUT_DIR"))
-        });
+        let dst = self
+            .out_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(getenv_unwrap("OUT_DIR")));
         let build = dst.join("build");
         self.maybe_clear(&build);
         let _ = fs::create_dir(&build);
@@ -327,23 +333,24 @@ impl Config {
                 cmake_prefix_path.push(PathBuf::from(root));
             }
         }
-        let system_prefix = env::var_os("CMAKE_PREFIX_PATH")
-                                .unwrap_or(OsString::new());
-        cmake_prefix_path.extend(env::split_paths(&system_prefix)
-                                     .map(|s| s.to_owned()));
+        let system_prefix = env::var_os("CMAKE_PREFIX_PATH").unwrap_or(OsString::new());
+        cmake_prefix_path.extend(env::split_paths(&system_prefix).map(|s| s.to_owned()));
         let cmake_prefix_path = env::join_paths(&cmake_prefix_path).unwrap();
 
         // Build up the first cmake command to build the build system.
         let executable = env::var("CMAKE").unwrap_or("cmake".to_owned());
-        let mut cmd = Command::new(executable);
+        let mut cmd = Command::new(&executable);
 
         if self.verbose_cmake {
             cmd.arg("-Wdev");
             cmd.arg("--debug-output");
         }
 
-        cmd.arg(&self.path)
-           .current_dir(&build);
+        cmd.arg(&self.path).current_dir(&build);
+        let mut is_ninja = false;
+        if let Some(ref generator) = self.generator {
+            is_ninja = generator.to_string_lossy().contains("Ninja");
+        }
         if target.contains("windows-gnu") {
             if host.contains("windows") {
                 // On MinGW we need to coerce cmake to not generate a visual
@@ -353,10 +360,18 @@ impl Config {
                     // If make.exe isn't found, that means we may be using a MinGW
                     // toolchain instead of a MSYS2 toolchain. If neither is found,
                     // the build cannot continue.
-                    let has_msys2 = Command::new("make").arg("--version").output().err()
-                        .map(|e| e.kind() != ErrorKind::NotFound).unwrap_or(true);
-                    let has_mingw32 = Command::new("mingw32-make").arg("--version").output().err()
-                        .map(|e| e.kind() != ErrorKind::NotFound).unwrap_or(true);
+                    let has_msys2 = Command::new("make")
+                        .arg("--version")
+                        .output()
+                        .err()
+                        .map(|e| e.kind() != ErrorKind::NotFound)
+                        .unwrap_or(true);
+                    let has_mingw32 = Command::new("mingw32-make")
+                        .arg("--version")
+                        .output()
+                        .err()
+                        .map(|e| e.kind() != ErrorKind::NotFound)
+                        .unwrap_or(true);
 
                     let generator = match (has_msys2, has_mingw32) {
                         (true, _) => "MSYS Makefiles",
@@ -391,8 +406,16 @@ impl Config {
             // If we're on MSVC we need to be sure to use the right generator or
             // otherwise we won't get 32/64 bit correct automatically.
             // This also guarantees that NMake generator isn't chosen implicitly.
+            let using_nmake_generator;
             if self.generator.is_none() {
                 cmd.arg("-G").arg(self.visual_studio_generator(&target));
+                using_nmake_generator = false;
+            } else {
+                using_nmake_generator = self.generator.as_ref().unwrap() == "NMake Makefiles";
+            }
+            if target.contains("x86_64") && !is_ninja && !using_nmake_generator {
+                cmd.arg("-Thost=x64");
+                cmd.arg("-DCMAKE_GENERATOR_PLATFORM=x64");
             }
         } else if target.contains("redox") {
             if !self.defined("CMAKE_SYSTEM_NAME") {
@@ -403,10 +426,8 @@ impl Config {
                 cmd.arg("-DCMAKE_SYSTEM_NAME=SunOS");
             }
         }
-        let mut is_ninja = false;
         if let Some(ref generator) = self.generator {
             cmd.arg("-G").arg(generator);
-            is_ninja = generator.to_string_lossy().contains("Ninja");
         }
         let profile = self.profile.clone().unwrap_or_else(|| {
             // Automatically set the `CMAKE_BUILD_TYPE` if the user did not
@@ -458,10 +479,7 @@ impl Config {
                 "false" => false,
                 "true" => true,
                 unknown => {
-                    eprintln!(
-                        "Warning: unknown debug={}; defaulting to `true`.",
-                        unknown
-                    );
+                    eprintln!("Warning: unknown debug={}; defaulting to `true`.", unknown);
                     true
                 }
             };
@@ -487,26 +505,24 @@ impl Config {
             cmd.arg(dstflag);
         }
 
-        let build_type = self.defines.iter().find(|&&(ref a, _)| {
-            a == "CMAKE_BUILD_TYPE"
-        }).map(|x| x.1.to_str().unwrap()).unwrap_or(&profile);
-        let build_type_upcase = build_type.chars()
-                                          .flat_map(|c| c.to_uppercase())
-                                          .collect::<String>();
+        let build_type = self
+            .defines
+            .iter()
+            .find(|&&(ref a, _)| a == "CMAKE_BUILD_TYPE")
+            .map(|x| x.1.to_str().unwrap())
+            .unwrap_or(&profile);
+        let build_type_upcase = build_type
+            .chars()
+            .flat_map(|c| c.to_uppercase())
+            .collect::<String>();
 
         {
             // let cmake deal with optimization/debuginfo
-            let skip_arg = |arg: &OsStr| {
-                match arg.to_str() {
-                    Some(s) => {
-                        s.starts_with("-O") || s.starts_with("/O") || s == "-g"
-                    }
-                    None => false,
-                }
+            let skip_arg = |arg: &OsStr| match arg.to_str() {
+                Some(s) => s.starts_with("-O") || s.starts_with("/O") || s == "-g",
+                None => false,
             };
-            let mut set_compiler = |kind: &str,
-                                    compiler: &cc::Tool,
-                                    extra: &OsString| {
+            let mut set_compiler = |kind: &str, compiler: &cc::Tool, extra: &OsString| {
                 let flag_var = format!("CMAKE_{}_FLAGS", kind);
                 let tool_var = format!("CMAKE_{}_COMPILER", kind);
                 if !self.defined(&flag_var) {
@@ -516,7 +532,7 @@ impl Config {
                     flagsflag.push(extra);
                     for arg in compiler.args() {
                         if skip_arg(arg) {
-                            continue
+                            continue;
                         }
                         flagsflag.push(" ");
                         flagsflag.push(arg);
@@ -532,8 +548,7 @@ impl Config {
                 // Note that for other generators, though, this *overrides*
                 // things like the optimization flags, which is bad.
                 if self.generator.is_none() && msvc {
-                    let flag_var_alt = format!("CMAKE_{}_FLAGS_{}", kind,
-                                               build_type_upcase);
+                    let flag_var_alt = format!("CMAKE_{}_FLAGS_{}", kind, build_type_upcase);
                     if !self.defined(&flag_var_alt) {
                         let mut flagsflag = OsString::from("-D");
                         flagsflag.push(&flag_var_alt);
@@ -541,7 +556,7 @@ impl Config {
                         flagsflag.push(extra);
                         for arg in compiler.args() {
                             if skip_arg(arg) {
-                                continue
+                                continue;
                             }
                             flagsflag.push(" ");
                             flagsflag.push(arg);
@@ -561,19 +576,27 @@ impl Config {
                 // as it's not needed for MSVC with Visual Studio generators and
                 // for MinGW it doesn't really vary.
                 if !self.defined("CMAKE_TOOLCHAIN_FILE")
-                   && !self.defined(&tool_var)
-                   && (env::consts::FAMILY != "windows" || (msvc && is_ninja)) {
+                    && !self.defined(&tool_var)
+                    && (env::consts::FAMILY != "windows" || (msvc && is_ninja))
+                {
                     let mut ccompiler = OsString::from("-D");
                     ccompiler.push(&tool_var);
                     ccompiler.push("=");
                     ccompiler.push(find_exe(compiler.path()));
-                    #[cfg(windows)] {
+                    #[cfg(windows)]
+                    {
                         // CMake doesn't like unescaped `\`s in compiler paths
                         // so we either have to escape them or replace with `/`s.
                         use std::os::windows::ffi::{OsStrExt, OsStringExt};
-                        let wchars = ccompiler.encode_wide().map(|wchar| {
-                            if wchar == b'\\' as u16 { '/' as u16 } else { wchar }
-                        }).collect::<Vec<_>>();
+                        let wchars = ccompiler
+                            .encode_wide()
+                            .map(|wchar| {
+                                if wchar == b'\\' as u16 {
+                                    '/' as u16
+                                } else {
+                                    wchar
+                                }
+                            }).collect::<Vec<_>>();
                         ccompiler = OsString::from_wide(&wchars);
                     }
                     cmd.arg(ccompiler);
@@ -609,34 +632,38 @@ impl Config {
         }
 
         let mut makeflags = None;
-        let mut parallel_args = Vec::new();
+        let mut parallel_flags = None;
+
         if let Ok(s) = env::var("NUM_JOBS") {
             match self.generator.as_ref().map(|g| g.to_string_lossy()) {
                 Some(ref g) if g.contains("Ninja") => {
-                    parallel_args.push(format!("-j{}", s));
+                    parallel_flags = Some(format!("-j{}", s));
                 }
                 Some(ref g) if g.contains("Visual Studio") => {
-                    parallel_args.push(format!("/m:{}", s));
+                    parallel_flags = Some(format!("/m:{}", s));
                 }
                 Some(ref g) if g.contains("NMake") => {
                     // NMake creates `Makefile`s, but doesn't understand `-jN`.
                 }
-                _ if fs::metadata(&dst.join("build/Makefile")).is_ok() => {
+                _ if fs::metadata(&build.join("Makefile")).is_ok() => {
                     match env::var_os("CARGO_MAKEFLAGS") {
                         // Only do this on non-windows and non-bsd
                         // On Windows, we could be invoking make instead of
                         // mingw32-make which doesn't work with our jobserver
                         // bsdmake also does not work with our job server
-                        Some(ref s) if !(cfg!(windows) ||
-                                         cfg!(target_os = "openbsd") ||
-                                         cfg!(target_os = "netbsd") ||
-                                         cfg!(target_os = "freebsd") ||
-                                         cfg!(target_os = "bitrig") ||
-                                         cfg!(target_os = "dragonflybsd")
-                        ) => makeflags = Some(s.clone()),
+                        Some(ref s)
+                            if !(cfg!(windows)
+                                || cfg!(target_os = "openbsd")
+                                || cfg!(target_os = "netbsd")
+                                || cfg!(target_os = "freebsd")
+                                || cfg!(target_os = "bitrig")
+                                || cfg!(target_os = "dragonflybsd")) =>
+                        {
+                            makeflags = Some(s.clone())
+                        }
 
                         // This looks like `make`, let's hope it understands `-jN`.
-                        _ => parallel_args.push(format!("-j{}", s)),
+                        _ => makeflags = Some(OsString::from(format!("-j{}", s))),
                     }
                 }
                 _ => {}
@@ -645,10 +672,11 @@ impl Config {
 
         // And build!
         let target = self.cmake_target.clone().unwrap_or("install".to_string());
-        let mut cmd = Command::new("cmake");
+        let mut cmd = Command::new(&executable);
         for &(ref k, ref v) in c_compiler.env().iter().chain(&self.env) {
             cmd.env(k, v);
         }
+
         if let Some(flags) = makeflags {
             cmd.env("MAKEFLAGS", flags);
         }
@@ -658,33 +686,40 @@ impl Config {
         if !self.no_build_target {
             cmd.arg("--target").arg(target);
         }
-        cmd.arg("--config").arg(&profile)
-            .arg("--").args(&self.build_args)
-            .args(&parallel_args)
+
+        cmd.arg("--config")
+            .arg(&profile)
+            .arg("--")
+            .args(&self.build_args)
             .current_dir(&build);
+
+        if let Some(flags) = parallel_flags {
+            cmd.arg(flags);
+        }
 
         run(&mut cmd, "cmake");
 
         println!("cargo:root={}", dst.display());
-        return dst
+        return dst;
     }
 
     fn visual_studio_generator(&self, target: &str) -> String {
         use cc::windows_registry::{find_vs_version, VsVers};
 
         let base = match find_vs_version() {
+            Ok(VsVers::Vs16) => "Visual Studio 16 2019",
             Ok(VsVers::Vs15) => "Visual Studio 15 2017",
             Ok(VsVers::Vs14) => "Visual Studio 14 2015",
             Ok(VsVers::Vs12) => "Visual Studio 12 2013",
-            Ok(_) => panic!("Visual studio version detected but this crate \
-                             doesn't know how to generate cmake files for it, \
-                             can the `cmake` crate be updated?"),
+            Ok(_) => panic!(
+                "Visual studio version detected but this crate \
+                 doesn't know how to generate cmake files for it, \
+                 can the `cmake` crate be updated?"
+            ),
             Err(msg) => panic!(msg),
         };
-        if target.contains("i686") {
+        if target.contains("i686") || target.contains("x86_64") {
             base.to_string()
-        } else if target.contains("x86_64") {
-            format!("{} Win64", base)
         } else {
             panic!("unsupported msvc target: {}", target);
         }
@@ -721,20 +756,20 @@ impl Config {
         for line in contents.lines() {
             if line.starts_with("CMAKE_HOME_DIRECTORY") {
                 let needs_cleanup = match line.split('=').next_back() {
-                    Some(cmake_home) => {
-                        fs::canonicalize(cmake_home)
-                            .ok()
-                            .map(|cmake_home| cmake_home != path)
-                            .unwrap_or(true)
-                    },
-                    None => true
+                    Some(cmake_home) => fs::canonicalize(cmake_home)
+                        .ok()
+                        .map(|cmake_home| cmake_home != path)
+                        .unwrap_or(true),
+                    None => true,
                 };
                 if needs_cleanup {
-                    println!("detected home dir change, cleaning out entire build \
-                              directory");
+                    println!(
+                        "detected home dir change, cleaning out entire build \
+                         directory"
+                    );
                     fs::remove_dir_all(dir).unwrap();
                 }
-                break
+                break;
             }
         }
     }
@@ -745,13 +780,18 @@ fn run(cmd: &mut Command, program: &str) {
     let status = match cmd.status() {
         Ok(status) => status,
         Err(ref e) if e.kind() == ErrorKind::NotFound => {
-            fail(&format!("failed to execute command: {}\nis `{}` not installed?",
-                          e, program));
+            fail(&format!(
+                "failed to execute command: {}\nis `{}` not installed?",
+                e, program
+            ));
         }
         Err(e) => fail(&format!("failed to execute command: {}", e)),
     };
     if !status.success() {
-        fail(&format!("command did not execute successfully, got: {}", status));
+        fail(&format!(
+            "command did not execute successfully, got: {}",
+            status
+        ));
     }
 }
 

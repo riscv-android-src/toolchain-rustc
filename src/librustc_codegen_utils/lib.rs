@@ -16,13 +16,14 @@
 #![recursion_limit="256"]
 
 #![deny(rust_2018_idioms)]
-#![cfg_attr(not(stage0), deny(internal))]
+#![deny(internal)]
 
 #[macro_use]
 extern crate rustc;
 
 use rustc::ty::TyCtxt;
 use rustc::hir::def_id::LOCAL_CRATE;
+use syntax::symbol::sym;
 
 pub mod link;
 pub mod codegen_backend;
@@ -35,7 +36,7 @@ pub mod symbol_names_test;
 /// reporting an error.
 pub fn check_for_rustc_errors_attr(tcx: TyCtxt<'_, '_, '_>) {
     if let Some((def_id, _)) = tcx.entry_fn(LOCAL_CRATE) {
-        if tcx.has_attr(def_id, "rustc_error") {
+        if tcx.has_attr(def_id, sym::rustc_error) {
             tcx.sess.span_fatal(tcx.def_span(def_id), "compilation successful");
         }
     }

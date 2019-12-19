@@ -205,9 +205,10 @@
 // Don't link to std. We are std.
 #![no_std]
 
-#![deny(missing_docs)]
-#![deny(intra_doc_link_resolution_failure)]
-#![deny(missing_debug_implementations)]
+//#![warn(deprecated_in_future)] // FIXME: std still has quite a few uses of `mem::uninitialized`
+#![warn(missing_docs)]
+#![warn(missing_debug_implementations)]
+#![deny(intra_doc_link_resolution_failure)] // rustdoc is run without -D warnings
 
 #![deny(rust_2018_idioms)]
 #![allow(explicit_outlives_requirements)]
@@ -222,14 +223,14 @@
 #![cfg_attr(all(target_vendor = "fortanix", target_env = "sgx"),
             feature(global_asm, slice_index_methods,
                     decl_macro, coerce_unsized, sgx_platform, ptr_wrapping_offset_from))]
+#![cfg_attr(all(test, target_vendor = "fortanix", target_env = "sgx"),
+            feature(fixed_size_array, maybe_uninit_extra))]
 
 // std is implemented with unstable features, many of which are internal
 // compiler details that will never be stable
 // NB: the following list is sorted to minimize merge conflicts.
-#![feature(align_offset)]
 #![feature(alloc_error_handler)]
 #![feature(alloc_layout_extra)]
-#![feature(alloc)]
 #![feature(allocator_api)]
 #![feature(allocator_internals)]
 #![feature(allow_internal_unsafe)]
@@ -262,17 +263,16 @@
 #![feature(external_doc)]
 #![feature(fn_traits)]
 #![feature(fnbox)]
-#![feature(futures_api)]
 #![feature(generator_trait)]
 #![feature(hash_raw_entry)]
 #![feature(hashmap_internals)]
 #![feature(int_error_internals)]
+#![feature(int_error_matching)]
 #![feature(integer_atomics)]
 #![feature(lang_items)]
 #![feature(libc)]
 #![feature(link_args)]
 #![feature(linkage)]
-#![feature(maybe_uninit)]
 #![feature(needs_panic_runtime)]
 #![feature(never_type)]
 #![feature(nll)]
@@ -459,18 +459,15 @@ pub mod process;
 pub mod sync;
 pub mod time;
 
-#[unstable(feature = "futures_api",
-           reason = "futures in libcore are unstable",
-           issue = "50547")]
+#[stable(feature = "futures_api", since = "1.36.0")]
 pub mod task {
     //! Types and Traits for working with asynchronous tasks.
     #[doc(inline)]
+    #[stable(feature = "futures_api", since = "1.36.0")]
     pub use core::task::*;
 }
 
-#[unstable(feature = "futures_api",
-           reason = "futures in libcore are unstable",
-           issue = "50547")]
+#[stable(feature = "futures_api", since = "1.36.0")]
 pub mod future;
 
 // Platform-abstraction modules

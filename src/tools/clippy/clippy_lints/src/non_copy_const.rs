@@ -4,17 +4,17 @@
 
 use std::ptr;
 
-use rustc::hir::def::Def;
+use rustc::hir::def::{DefKind, Res};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, Lint, LintArray, LintPass};
 use rustc::ty::adjustment::Adjust;
 use rustc::ty::{Ty, TypeFlags};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use rustc_typeck::hir_ty_to_ty;
 use syntax_pos::{Span, DUMMY_SP};
 
-use crate::utils::{in_constant, in_macro, is_copy, span_lint_and_then};
+use crate::utils::{in_constant, in_macro_or_desugar, is_copy, span_lint_and_then};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for declaration of `const` items which is interior
@@ -118,7 +118,7 @@ fn verify_ty_bound<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>, source: S
 
     let (lint, msg, span) = source.lint();
     span_lint_and_then(cx, lint, span, msg, |db| {
-        if in_macro(span) {
+        if in_macro_or_desugar(span) {
             return; // Don't give suggestions into macros.
         }
         match source {
@@ -143,17 +143,7 @@ fn verify_ty_bound<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>, source: S
     });
 }
 
-pub struct NonCopyConst;
-
-impl LintPass for NonCopyConst {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(DECLARE_INTERIOR_MUTABLE_CONST, BORROW_INTERIOR_MUTABLE_CONST)
-    }
-
-    fn name(&self) -> &'static str {
-        "NonCopyConst"
-    }
-}
+declare_lint_pass!(NonCopyConst => [DECLARE_INTERIOR_MUTABLE_CONST, BORROW_INTERIOR_MUTABLE_CONST]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonCopyConst {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, it: &'tcx Item) {
@@ -204,8 +194,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonCopyConst {
             }
 
             // Make sure it is a const item.
-            match cx.tables.qpath_def(qpath, expr.hir_id) {
-                Def::Const(_) | Def::AssociatedConst(_) => {},
+            match cx.tables.qpath_res(qpath, expr.hir_id) {
+                Res::Def(DefKind::Const, _) | Res::Def(DefKind::AssociatedConst, _) => {},
                 _ => return,
             };
 

@@ -111,7 +111,7 @@ use crate::io::prelude::*;
 use crate::ffi::OsStr;
 use crate::fmt;
 use crate::fs;
-use crate::io::{self, Initializer};
+use crate::io::{self, Initializer, IoSlice, IoSliceMut};
 use crate::path::Path;
 use crate::str;
 use crate::sys::pipe::{read2, AnonPipe};
@@ -133,6 +133,18 @@ use crate::sys_common::{AsInner, AsInnerMut, FromInner, IntoInner};
 /// Calling [`wait`](#method.wait) (or other functions that wrap around it) will make
 /// the parent process wait until the child has actually exited before
 /// continuing.
+///
+/// # Warning
+///
+/// On some system, calling [`wait`] or similar is necessary for the OS to
+/// release resources. A process that terminated but has not been waited on is
+/// still around as a "zombie". Leaving too many zombies around may exhaust
+/// global resources (for example process IDs).
+///
+/// The standard library does *not* automatically wait on child processes (not
+/// even if the `Child` is dropped), it is up to the application developer to do
+/// so. As a consequence, dropping `Child` handles without waiting on them first
+/// is not recommended in long-running applications.
 ///
 /// # Examples
 ///
@@ -225,6 +237,10 @@ impl Write for ChildStdin {
         self.inner.write(buf)
     }
 
+    fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
+        self.inner.write_vectored(bufs)
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -271,6 +287,11 @@ impl Read for ChildStdout {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)
     }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        self.inner.read_vectored(bufs)
+    }
+
     #[inline]
     unsafe fn initializer(&self) -> Initializer {
         Initializer::nop()
@@ -318,6 +339,11 @@ impl Read for ChildStderr {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.read(buf)
     }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
+        self.inner.read_vectored(bufs)
+    }
+
     #[inline]
     unsafe fn initializer(&self) -> Initializer {
         Initializer::nop()

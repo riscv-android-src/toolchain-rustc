@@ -35,6 +35,7 @@ use crate::util::nodemap::{FxHashMap, FxHashSet};
 use errors::{Applicability, DiagnosticBuilder};
 use std::fmt;
 use syntax::ast;
+use syntax::symbol::sym;
 use syntax_pos::{DUMMY_SP, Span, ExpnInfo, ExpnFormat};
 
 impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
@@ -329,7 +330,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             return None
         };
 
-        if tcx.has_attr(impl_def_id, "rustc_on_unimplemented") {
+        if tcx.has_attr(impl_def_id, sym::rustc_on_unimplemented) {
             Some(impl_def_id)
         } else {
             None
@@ -638,6 +639,21 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                         let OnUnimplementedNote { message, label, note }
                             = self.on_unimplemented_note(trait_ref, obligation);
                         let have_alt_message = message.is_some() || label.is_some();
+                        let is_try = self.tcx.sess.source_map().span_to_snippet(span)
+                            .map(|s| &s == "?")
+                            .unwrap_or(false);
+                        let is_from = format!("{}", trait_ref).starts_with("std::convert::From<");
+                        let (message, note) = if is_try && is_from {
+                            (Some(format!(
+                                "`?` couldn't convert the error to `{}`",
+                                trait_ref.self_ty(),
+                            )), Some(
+                                "the question mark operation (`?`) implicitly performs a \
+                                 conversion on the error value using the `From` trait".to_owned()
+                            ))
+                        } else {
+                            (message, note)
+                        };
 
                         let mut err = struct_span_err!(
                             self.tcx.sess,
@@ -863,7 +879,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                 let expected_ty = expected_trait_ref.skip_binder().substs.type_at(1);
                 let expected = match expected_ty.sty {
                     ty::Tuple(ref tys) => tys.iter()
-                        .map(|t| ArgKind::from_expected_ty(t, Some(span))).collect(),
+                        .map(|t| ArgKind::from_expected_ty(t.expect_ty(), Some(span))).collect(),
                     _ => vec![ArgKind::Arg("_".to_owned(), expected_ty.to_string())],
                 };
 
@@ -1230,13 +1246,13 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
                            found: ty::PolyTraitRef<'tcx>)
         -> DiagnosticBuilder<'tcx>
     {
-        fn build_fn_sig_string<'a, 'gcx, 'tcx>(tcx: ty::TyCtxt<'a, 'gcx, 'tcx>,
+        fn build_fn_sig_string<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                                trait_ref: &ty::TraitRef<'tcx>) -> String {
             let inputs = trait_ref.substs.type_at(1);
             let sig = if let ty::Tuple(inputs) = inputs.sty {
                 tcx.mk_fn_sig(
-                    inputs.iter().cloned(),
-                    tcx.mk_infer(ty::TyVar(ty::TyVid { index: 0 })),
+                    inputs.iter().map(|k| k.expect_ty()),
+                    tcx.mk_ty_infer(ty::TyVar(ty::TyVid { index: 0 })),
                     false,
                     hir::Unsafety::Normal,
                     ::rustc_target::spec::abi::Abi::Rust
@@ -1244,7 +1260,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             } else {
                 tcx.mk_fn_sig(
                     ::std::iter::once(inputs),
-                    tcx.mk_infer(ty::TyVar(ty::TyVid { index: 0 })),
+                    tcx.mk_ty_infer(ty::TyVar(ty::TyVid { index: 0 })),
                     false,
                     hir::Unsafety::Normal,
                     ::rustc_target::spec::abi::Abi::Rust
@@ -1441,7 +1457,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> { self.infcx.tcx }
 
             fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
-                if let ty::Param(ty::ParamTy {name, ..}) = ty.sty {
+                if let ty::Param(ty::ParamTy {name, .. }) = ty.sty {
                     let infcx = self.infcx;
                     self.var_map.entry(ty).or_insert_with(||
                         infcx.next_ty_var(

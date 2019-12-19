@@ -1,6 +1,7 @@
 use core::f32;
 
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn floorf(x: f32) -> f32 {
     // On wasm32 we know that LLVM's intrinsic will compile to an optimized
     // `f32.floor` native instruction, so we can leverage this for both code size
@@ -11,7 +12,7 @@ pub fn floorf(x: f32) -> f32 {
         }
     }
     let mut ui = x.to_bits();
-    let e = (((ui >> 23) & 0xff) - 0x7f) as i32;
+    let e = (((ui >> 23) as i32) & 0xff) - 0x7f;
 
     if e >= 23 {
         return x;
@@ -34,5 +35,13 @@ pub fn floorf(x: f32) -> f32 {
             return -1.0;
         }
     }
-    return f32::from_bits(ui);
+    f32::from_bits(ui)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn no_overflow() {
+        assert_eq!(super::floorf(0.5), 0.0);
+    }
 }

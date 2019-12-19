@@ -11,7 +11,7 @@ use std::iter;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use build_helper::{self, output};
+use build_helper::{self, output, t};
 
 use crate::builder::{Builder, Compiler, Kind, RunConfig, ShouldRun, Step};
 use crate::cache::{Interned, INTERNER};
@@ -683,7 +683,7 @@ impl Step for RustdocUi {
             target: self.target,
             mode: "ui",
             suite: "rustdoc-ui",
-            path: None,
+            path: Some("src/test/rustdoc-ui"),
             compare_mode: None,
         })
     }
@@ -1016,7 +1016,10 @@ impl Step for Compiletest {
         // Also provide `rust_test_helpers` for the host.
         builder.ensure(native::TestHelpers { target: compiler.host });
 
-        builder.ensure(native::TestHelpers { target });
+        // wasm32 can't build the test helpers
+        if !target.contains("wasm32") {
+            builder.ensure(native::TestHelpers { target });
+        }
         builder.ensure(RemoteCopyLibs { compiler, target });
 
         let mut cmd = builder.tool_cmd(Tool::Compiletest);
@@ -1181,8 +1184,19 @@ impl Step for Compiletest {
                     Err(_) => p,
                 }
             })
-            .filter(|p| p.starts_with(suite_path) && p.is_file())
-            .map(|p| p.strip_prefix(suite_path).unwrap().to_str().unwrap())
+            .filter(|p| p.starts_with(suite_path) && (p.is_dir() || p.is_file()))
+            .filter_map(|p| {
+                // Since test suite paths are themselves directories, if we don't
+                // specify a directory or file, we'll get an empty string here
+                // (the result of the test suite directory without its suite prefix).
+                // Therefore, we need to filter these out, as only the first --test-args
+                // flag is respected, so providing an empty --test-args conflicts with
+                // any following it.
+                match p.strip_prefix(suite_path).ok().and_then(|p| p.to_str()) {
+                    Some(s) if s != "" => Some(s),
+                    _ => None,
+                }
+            })
             .collect();
 
         test_args.append(&mut builder.config.cmd.test_args());
@@ -1228,6 +1242,28 @@ impl Step for Compiletest {
                 if let Some(ar) = builder.ar(target) {
                     cmd.arg("--ar").arg(ar);
                 }
+
+                // The llvm/bin directory contains many useful cross-platform
+                // tools. Pass the path to run-make tests so they can use them.
+                let llvm_bin_path = llvm_config.parent()
+                    .expect("Expected llvm-config to be contained in directory");
+                assert!(llvm_bin_path.is_dir());
+                cmd.arg("--llvm-bin-dir").arg(llvm_bin_path);
+
+                // If LLD is available, add it to the PATH
+                if builder.config.lld_enabled {
+                    let lld_install_root = builder.ensure(native::Lld {
+                        target: builder.config.build,
+                    });
+
+                    let lld_bin_path = lld_install_root.join("bin");
+
+                    let old_path = env::var_os("PATH").unwrap_or_default();
+                    let new_path = env::join_paths(std::iter::once(lld_bin_path)
+                        .chain(env::split_paths(&old_path)))
+                        .expect("Could not add LLD bin path to PATH");
+                    cmd.env("PATH", new_path);
+                }
             }
         }
 
@@ -1265,11 +1301,11 @@ impl Step for Compiletest {
         builder.add_rust_test_threads(&mut cmd);
 
         if builder.config.sanitizers {
-            cmd.env("SANITIZER_SUPPORT", "1");
+            cmd.env("RUSTC_SANITIZER_SUPPORT", "1");
         }
 
         if builder.config.profiler {
-            cmd.env("PROFILER_SUPPORT", "1");
+            cmd.env("RUSTC_PROFILER_SUPPORT", "1");
         }
 
         cmd.env("RUST_TEST_TMPDIR", builder.out.join("tmp"));
@@ -1844,6 +1880,10 @@ impl Step for CrateRustdoc {
 
         cargo.arg("--");
         cargo.args(&builder.config.cmd.test_args());
+
+        if self.host.contains("musl") {
+            cargo.arg("'-Ctarget-feature=-crt-static'");
+        }
 
         if !builder.config.verbose_tests {
             cargo.arg("--quiet");

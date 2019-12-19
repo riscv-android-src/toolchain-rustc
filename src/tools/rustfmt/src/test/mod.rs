@@ -13,7 +13,7 @@ use crate::config::{Color, Config, EmitMode, FileName, NewlineStyle, ReportTacti
 use crate::formatting::{ReportedErrors, SourceFile};
 use crate::rustfmt_diff::{make_diff, print_diff, DiffLine, Mismatch, ModifiedChunk, OutputWriter};
 use crate::source_file;
-use crate::{FormatReport, Input, Session};
+use crate::{FormatReport, FormatReportFormatterBuilder, Input, Session};
 
 const DIFF_CONTEXT_SIZE: usize = 3;
 const CONFIGURATIONS_FILE_NAME: &str = "Configurations.md";
@@ -34,7 +34,7 @@ struct TestSetting {
 impl Default for TestSetting {
     fn default() -> Self {
         TestSetting {
-            stack_size: 8388608, // 8MB
+            stack_size: 8_388_608, // 8MB
         }
     }
 }
@@ -90,12 +90,13 @@ fn verify_config_used(path: &Path, config_name: &str) {
         if path.extension().map_or(false, |f| f == "rs") {
             // check if "// rustfmt-<config_name>:" appears in the file.
             let filebuf = BufReader::new(
-                fs::File::open(&path).expect(&format!("couldn't read file {}", path.display())),
+                fs::File::open(&path)
+                    .unwrap_or_else(|_| panic!("couldn't read file {}", path.display())),
             );
             assert!(
                 filebuf
                     .lines()
-                    .map(|l| l.unwrap())
+                    .map(Result::unwrap)
                     .take_while(|l| l.starts_with("//"))
                     .any(|l| l.starts_with(&format!("// rustfmt-{}", config_name))),
                 format!(
@@ -249,7 +250,7 @@ fn assert_output(source: &Path, expected_filename: &Path) {
         let mut failures = HashMap::new();
         failures.insert(source.to_owned(), compare);
         print_mismatches_default_message(failures);
-        assert!(false, "Text does not match expected output");
+        panic!("Text does not match expected output");
     }
 }
 
@@ -298,7 +299,10 @@ fn self_tests() {
     assert_eq!(fails, 0, "{} self tests failed", fails);
 
     for format_report in reports {
-        println!("{}", format_report);
+        println!(
+            "{}",
+            FormatReportFormatterBuilder::new(&format_report).build()
+        );
         warnings += format_report.warning_count();
     }
 
@@ -426,7 +430,7 @@ fn check_files(files: Vec<PathBuf>, opt_config: &Option<PathBuf>) -> (Vec<Format
 
         match idempotent_check(&file_name, &opt_config) {
             Ok(ref report) if report.has_warnings() => {
-                print!("{}", report);
+                print!("{}", FormatReportFormatterBuilder::new(&report).build());
                 fails += 1;
             }
             Ok(report) => reports.push(report),
@@ -565,8 +569,8 @@ fn get_config(config_file: Option<&Path>) -> Config {
 
 // Reads significant comments of the form: `// rustfmt-key: value` into a hash map.
 fn read_significant_comments(file_name: &Path) -> HashMap<String, String> {
-    let file =
-        fs::File::open(file_name).expect(&format!("couldn't read file {}", file_name.display()));
+    let file = fs::File::open(file_name)
+        .unwrap_or_else(|_| panic!("couldn't read file {}", file_name.display()));
     let reader = BufReader::new(file);
     let pattern = r"^\s*//\s*rustfmt-([^:]+):\s*(\S+)";
     let regex = regex::Regex::new(pattern).expect("failed creating pattern 1");
@@ -609,11 +613,11 @@ fn handle_result(
     for (file_name, fmt_text) in result {
         // If file is in tests/source, compare to file with same name in tests/target.
         let target = get_target(&file_name, target);
-        let open_error = format!("couldn't open target {:?}", &target);
+        let open_error = format!("couldn't open target {:?}", target);
         let mut f = fs::File::open(&target).expect(&open_error);
 
         let mut text = String::new();
-        let read_error = format!("failed reading target {:?}", &target);
+        let read_error = format!("failed reading target {:?}", target);
         f.read_to_string(&mut text).expect(&read_error);
 
         // Ignore LF and CRLF difference for Windows.
@@ -962,10 +966,10 @@ fn configuration_snippet_tests() {
     fn get_code_blocks() -> Vec<ConfigCodeBlock> {
         let mut file_iter = BufReader::new(
             fs::File::open(Path::new(CONFIGURATIONS_FILE_NAME))
-                .expect(&format!("couldn't read file {}", CONFIGURATIONS_FILE_NAME)),
+                .unwrap_or_else(|_| panic!("couldn't read file {}", CONFIGURATIONS_FILE_NAME)),
         )
         .lines()
-        .map(|l| l.unwrap())
+        .map(Result::unwrap)
         .enumerate();
         let mut code_blocks: Vec<ConfigCodeBlock> = Vec::new();
         let mut hash_set = Config::hash_set();
@@ -988,7 +992,7 @@ fn configuration_snippet_tests() {
     let blocks = get_code_blocks();
     let failures = blocks
         .iter()
-        .map(|b| b.formatted_is_idempotent())
+        .map(ConfigCodeBlock::formatted_is_idempotent)
         .fold(0, |acc, r| acc + (!r as u32));
 
     // Display results.

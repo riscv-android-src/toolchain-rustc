@@ -6,6 +6,7 @@ pub use crate::symbol::{Ident, Symbol as Name};
 pub use crate::util::parser::ExprPrecedence;
 
 use crate::ext::hygiene::{Mark, SyntaxContext};
+use crate::parse::token;
 use crate::print::pprust;
 use crate::ptr::P;
 use crate::source_map::{dummy_spanned, respan, Spanned};
@@ -15,7 +16,7 @@ use crate::ThinVec;
 
 use rustc_data_structures::indexed_vec::Idx;
 #[cfg(target_arch = "x86_64")]
-use rustc_data_structures::static_assert;
+use rustc_data_structures::static_assert_size;
 use rustc_target::spec::abi::Abi;
 use syntax_pos::{Span, DUMMY_SP};
 
@@ -68,9 +69,15 @@ pub struct Path {
     pub segments: Vec<PathSegment>,
 }
 
-impl<'a> PartialEq<&'a str> for Path {
-    fn eq(&self, string: &&'a str) -> bool {
-        self.segments.len() == 1 && self.segments[0].ident.name == *string
+impl PartialEq<Symbol> for Path {
+    fn eq(&self, symbol: &Symbol) -> bool {
+        self.segments.len() == 1 && {
+            let name = self.segments[0].ident.name;
+            // Make sure these symbols are pure strings
+            debug_assert!(!symbol.is_gensymed());
+            debug_assert!(!name.is_gensymed());
+            name == *symbol
+        }
     }
 }
 
@@ -876,6 +883,17 @@ pub struct Local {
     pub id: NodeId,
     pub span: Span,
     pub attrs: ThinVec<Attribute>,
+    /// Origin of this local variable.
+    pub source: LocalSource,
+}
+
+#[derive(Clone, Copy, RustcEncodable, RustcDecodable, Debug)]
+pub enum LocalSource {
+    /// Local was parsed from source.
+    Normal,
+    /// Within `ast::IsAsync::Async`, a local is generated that will contain the moved arguments
+    /// of an `async fn`.
+    AsyncFn,
 }
 
 /// An arm of a 'match'.
@@ -946,7 +964,7 @@ pub struct Expr {
 
 // `Expr` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_EXPR: std::mem::size_of::<Expr>() == 88);
+static_assert_size!(Expr, 96);
 
 impl Expr {
     /// Whether this expression would be valid somewhere that expects a value; for example, an `if`
@@ -1042,6 +1060,7 @@ impl Expr {
             ExprKind::Block(..) => ExprPrecedence::Block,
             ExprKind::TryBlock(..) => ExprPrecedence::TryBlock,
             ExprKind::Async(..) => ExprPrecedence::Async,
+            ExprKind::Await(..) => ExprPrecedence::Await,
             ExprKind::Assign(..) => ExprPrecedence::Assign,
             ExprKind::AssignOp(..) => ExprPrecedence::AssignOp,
             ExprKind::Field(..) => ExprPrecedence::Field,
@@ -1114,6 +1133,7 @@ pub enum ExprKind {
     Lit(Lit),
     /// A cast (e.g., `foo as f64`).
     Cast(P<Expr>, P<Ty>),
+    /// A type ascription (e.g., `42: usize`).
     Type(P<Expr>, P<Ty>),
     /// An `if` block, with an optional `else` block.
     ///
@@ -1162,6 +1182,9 @@ pub enum ExprKind {
     /// created during lowering cannot be made the parent of any other
     /// preexisting defs.
     Async(CaptureBy, NodeId, P<Block>),
+    /// An await expression (`my_future.await`).
+    Await(AwaitOrigin, P<Expr>),
+
     /// A try block (`try { ... }`).
     TryBlock(P<Block>),
 
@@ -1263,6 +1286,15 @@ pub enum Movability {
     Movable,
 }
 
+/// Whether an `await` comes from `await!` or `.await` syntax.
+/// FIXME: this should be removed when support for legacy `await!` is removed.
+/// https://github.com/rust-lang/rust/issues/60610
+#[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, Copy)]
+pub enum AwaitOrigin {
+    FieldLike,
+    MacroLike,
+}
+
 pub type Mac = Spanned<Mac_>;
 
 /// Represents a macro invocation. The `Path` indicates which macro
@@ -1313,8 +1345,19 @@ pub enum StrStyle {
     Raw(u16),
 }
 
-/// A literal.
-pub type Lit = Spanned<LitKind>;
+/// An AST literal.
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
+pub struct Lit {
+    /// The original literal token as written in source code.
+    pub token: token::Lit,
+    /// The original literal suffix as written in source code.
+    pub suffix: Option<Symbol>,
+    /// The "semantic" representation of the literal lowered from the original tokens.
+    /// Strings are unescaped, hexadecimal forms are eliminated, etc.
+    /// FIXME: Remove this and only create the semantic representation during lowering to HIR.
+    pub node: LitKind,
+    pub span: Span,
+}
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, Copy, Hash, PartialEq)]
 pub enum LitIntType {
@@ -1713,6 +1756,16 @@ pub struct Arg {
     pub ty: P<Ty>,
     pub pat: P<Pat>,
     pub id: NodeId,
+    pub source: ArgSource,
+}
+
+/// The source of an argument in a function header.
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
+pub enum ArgSource {
+    /// Argument as written by the user.
+    Normal,
+    /// Argument from `async fn` lowering, contains the original binding pattern.
+    AsyncFn(P<Pat>),
 }
 
 /// Alternative representation for `Arg`s describing `self` parameter of methods.
@@ -1772,6 +1825,7 @@ impl Arg {
             }),
             ty,
             id: DUMMY_NODE_ID,
+            source: ArgSource::Normal,
         };
         match eself.node {
             SelfKind::Explicit(ty, mutbl) => arg(mutbl, ty),
@@ -1826,18 +1880,39 @@ pub enum Unsafety {
     Normal,
 }
 
-#[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
+pub struct AsyncArgument {
+    /// `__arg0`
+    pub ident: Ident,
+    /// `__arg0: <ty>` argument to replace existing function argument `<pat>: <ty>`. Only if
+    /// argument is not a simple binding.
+    pub arg: Option<Arg>,
+    /// `let __arg0 = __arg0;` statement to be inserted at the start of the block.
+    pub move_stmt: Stmt,
+    /// `let <pat> = __arg0;` statement to be inserted at the start of the block, after matching
+    /// move statement. Only if argument is not a simple binding.
+    pub pat_stmt: Option<Stmt>,
+}
+
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum IsAsync {
     Async {
         closure_id: NodeId,
         return_impl_trait_id: NodeId,
+        /// This field stores the arguments and statements that are used in HIR lowering to
+        /// ensure that `async fn` arguments are dropped at the correct time.
+        ///
+        /// The argument and statements here are generated at parse time as they are required in
+        /// both the hir lowering, def collection and name resolution and this stops them needing
+        /// to be created in each place.
+        arguments: Vec<AsyncArgument>,
     },
     NotAsync,
 }
 
 impl IsAsync {
-    pub fn is_async(self) -> bool {
-        if let IsAsync::Async { .. } = self {
+    pub fn is_async(&self) -> bool {
+        if let IsAsync::Async { .. } = *self {
             true
         } else {
             false
@@ -1845,12 +1920,12 @@ impl IsAsync {
     }
 
     /// In ths case this is an `async` return, the `NodeId` for the generated `impl Trait` item.
-    pub fn opt_return_id(self) -> Option<NodeId> {
+    pub fn opt_return_id(&self) -> Option<NodeId> {
         match self {
             IsAsync::Async {
                 return_impl_trait_id,
                 ..
-            } => Some(return_impl_trait_id),
+            } => Some(*return_impl_trait_id),
             IsAsync::NotAsync => None,
         }
     }
@@ -2190,7 +2265,7 @@ impl Item {
 ///
 /// All the information between the visibility and the name of the function is
 /// included in this struct (e.g., `async unsafe fn` or `const extern "C" fn`).
-#[derive(Clone, Copy, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct FnHeader {
     pub unsafety: Unsafety,
     pub asyncness: Spanned<IsAsync>,
@@ -2328,9 +2403,8 @@ pub struct ForeignItem {
 pub enum ForeignItemKind {
     /// A foreign function.
     Fn(P<FnDecl>, Generics),
-    /// A foreign static item (`static ext: u8`), with optional mutability.
-    /// (The boolean is `true` for mutable items).
-    Static(P<Ty>, bool),
+    /// A foreign static item (`static ext: u8`).
+    Static(P<Ty>, Mutability),
     /// A foreign type.
     Ty,
     /// A macro invocation.

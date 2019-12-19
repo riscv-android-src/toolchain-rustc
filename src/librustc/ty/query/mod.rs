@@ -1,6 +1,6 @@
 use crate::dep_graph::{self, DepNode};
 use crate::hir::def_id::{CrateNum, DefId, DefIndex};
-use crate::hir::def::{Def, Export};
+use crate::hir::def::{DefKind, Export};
 use crate::hir::{self, TraitCandidate, ItemLocalId, CodegenFnAttrs};
 use crate::infer::canonical::{self, Canonical};
 use crate::lint;
@@ -41,7 +41,6 @@ use crate::ty::subst::SubstsRef;
 use crate::util::nodemap::{DefIdSet, DefIdMap, ItemLocalSet};
 use crate::util::common::{ErrorReported};
 use crate::util::profiling::ProfileCategory::*;
-use crate::session::Session;
 
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::bit_set::BitSet;

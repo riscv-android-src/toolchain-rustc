@@ -20,7 +20,6 @@
 #include <limits>
 #include <memory>
 #include <pthread.h>
-#include <sys/syscall.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -52,7 +51,7 @@ namespace {
 // call so that it can be initialized on first use instead of as a global. We
 // force the alignment to 64-bytes for x86 cache line alignment, as this
 // structure is used in the hot path of implementation.
-struct alignas(64) ThreadLocalData {
+struct XRAY_TLS_ALIGNAS(64) ThreadLocalData {
   BufferQueue::Buffer Buffer{};
   BufferQueue *BQ = nullptr;
 
@@ -125,8 +124,10 @@ static atomic_sint32_t LogFlushStatus = {
 // critical section, calling a function that might be XRay instrumented (and
 // thus in turn calling into malloc by virtue of registration of the
 // thread_local's destructor).
+#if XRAY_HAS_TLS_ALIGNAS
 static_assert(alignof(ThreadLocalData) >= 64,
               "ThreadLocalData must be cache line aligned.");
+#endif
 static ThreadLocalData &getThreadLocalData() {
   thread_local typename std::aligned_storage<
       sizeof(ThreadLocalData), alignof(ThreadLocalData)>::type TLDStorage{};
@@ -250,7 +251,7 @@ XRayBuffer fdrIterator(const XRayBuffer B) {
   // fence ordering to ensure that writes we expect to have been completed
   // before the fence are fully committed before we read the extents.
   atomic_thread_fence(memory_order_acquire);
-  auto BufferSize = atomic_load(&It->Extents, memory_order_acquire);
+  auto BufferSize = atomic_load(It->Extents, memory_order_acquire);
   SerializedBufferSize = BufferSize + sizeof(MetadataRecord);
   CurrentBuffer = allocateBuffer(SerializedBufferSize);
   if (CurrentBuffer == nullptr)
@@ -364,7 +365,7 @@ XRayLogFlushStatus fdrLoggingFlush() XRAY_NEVER_INSTRUMENT {
     // still use a Metadata record, but fill in the extents instead for the
     // data.
     MetadataRecord ExtentsRecord;
-    auto BufferExtents = atomic_load(&B.Extents, memory_order_acquire);
+    auto BufferExtents = atomic_load(B.Extents, memory_order_acquire);
     DCHECK(BufferExtents <= B.Size);
     ExtentsRecord.Type = uint8_t(RecordType::Metadata);
     ExtentsRecord.RecordKind =

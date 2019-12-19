@@ -2,7 +2,7 @@ use crate::utils::paths;
 use crate::utils::usage::mutated_variables;
 use crate::utils::{match_qpath, match_trait_method, span_lint};
 use rustc::hir;
-use rustc::hir::def::Def;
+use rustc::hir::def::Res;
 use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc::lint::LateContext;
 
@@ -66,9 +66,9 @@ fn check_expression<'a, 'tcx: 'a>(
                     if match_qpath(path, &paths::OPTION_SOME) {
                         if_chain! {
                             if let hir::ExprKind::Path(path) = &args[0].node;
-                            if let Def::Local(ref local) = cx.tables.qpath_def(path, args[0].hir_id);
+                            if let Res::Local(ref local) = cx.tables.qpath_res(path, args[0].hir_id);
                             then {
-                                if arg_id == cx.tcx.hir().node_to_hir_id(*local) {
+                                if arg_id == *local {
                                     return (false, false)
                                 }
                             }
@@ -88,12 +88,6 @@ fn check_expression<'a, 'tcx: 'a>(
             } else {
                 (false, false)
             }
-        },
-        // There must be an else_arm or there will be a type error
-        hir::ExprKind::If(_, ref if_arm, Some(ref else_arm)) => {
-            let if_check = check_expression(cx, arg_id, if_arm);
-            let else_check = check_expression(cx, arg_id, else_arm);
-            (if_check.0 | else_check.0, if_check.1 | else_check.1)
         },
         hir::ExprKind::Match(_, ref arms, _) => {
             let mut found_mapping = false;

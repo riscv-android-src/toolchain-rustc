@@ -1,6 +1,6 @@
 # cmake
 
-[![Build Status](https://travis-ci.org/alexcrichton/cmake-rs.svg?branch=master)](https://travis-ci.org/alexcrichton/cmake-rs)
+[![Build Status](https://travis-ci.com/alexcrichton/cmake-rs.svg?branch=master)](https://travis-ci.com/alexcrichton/cmake-rs)
 
 [Documentation](https://docs.rs/cmake)
 
@@ -30,5 +30,5 @@ at your option.
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in Serde by you, as defined in the Apache-2.0 license, shall be
+for inclusion in cmake by you, as defined in the Apache-2.0 license, shall be
 dual licensed as above, without any additional terms or conditions.

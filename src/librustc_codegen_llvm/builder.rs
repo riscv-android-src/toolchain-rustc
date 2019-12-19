@@ -18,6 +18,7 @@ use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::base::to_immediate;
 use rustc_codegen_ssa::mir::operand::{OperandValue, OperandRef};
 use rustc_codegen_ssa::mir::place::PlaceRef;
+use rustc_target::spec::{HasTargetSpec, Target};
 use std::borrow::Cow;
 use std::ops::{Deref, Range};
 use std::ptr;
@@ -63,6 +64,18 @@ impl ty::layout::HasDataLayout for Builder<'_, '_, '_> {
 impl ty::layout::HasTyCtxt<'tcx> for Builder<'_, '_, 'tcx> {
     fn tcx<'a>(&'a self) -> TyCtxt<'a, 'tcx, 'tcx> {
         self.cx.tcx
+    }
+}
+
+impl ty::layout::HasParamEnv<'tcx> for Builder<'_, '_, 'tcx> {
+    fn param_env(&self) -> ty::ParamEnv<'tcx> {
+        self.cx.param_env()
+    }
+}
+
+impl HasTargetSpec for Builder<'_, '_, 'tcx> {
+    fn target_spec(&self) -> &Target {
+        &self.cx.target_spec()
     }
 }
 

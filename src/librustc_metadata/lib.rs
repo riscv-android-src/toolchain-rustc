@@ -14,7 +14,7 @@
 #![recursion_limit="256"]
 
 #![deny(rust_2018_idioms)]
-#![cfg_attr(not(stage0), deny(internal))]
+#![deny(internal)]
 
 extern crate libc;
 #[allow(unused_extern_crates)]
@@ -26,7 +26,7 @@ extern crate rustc;
 #[macro_use]
 extern crate rustc_data_structures;
 
-mod diagnostics;
+mod error_codes;
 
 mod index_builder;
 mod index;

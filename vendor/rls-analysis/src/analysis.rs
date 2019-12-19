@@ -6,20 +6,20 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+use fst;
 use std::collections::{HashMap, HashSet};
+use std::iter;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use std::iter;
-use fst;
 
-use {Id, Span, SymbolQuery};
 use raw::{CrateId, DefKind};
+use {Id, Span, SymbolQuery};
 
 /// This is the main database that contains all the collected symbol information,
 /// such as definitions, their mapping between spans, hierarchy and so on,
 /// organized in a per-crate fashion.
 #[derive(Debug)]
-crate struct Analysis {
+pub(crate) struct Analysis {
     /// Contains lowered data with global inter-crate `Id`s per each crate.
     pub per_crate: HashMap<CrateId, PerCrateAnalysis>,
 
@@ -30,10 +30,10 @@ crate struct Analysis {
     //
     // In the future we should handle imports, in particular aliasing ones, more
     // explicitly and then this can be removed.
-    crate aliased_imports: HashSet<Id>,
+    pub(crate) aliased_imports: HashSet<Id>,
 
     // Maps a crate names to the crate ids for all crates with that name.
-    crate crate_names: HashMap<String, Vec<CrateId>>,
+    pub(crate) crate_names: HashMap<String, Vec<CrateId>>,
 
     pub doc_url_base: String,
     pub src_url_base: String,
@@ -133,11 +133,9 @@ pub struct Glob {
     pub value: String,
 }
 
-
 impl PerCrateAnalysis {
     pub fn new(timestamp: SystemTime, path: Option<PathBuf>) -> PerCrateAnalysis {
-        let empty_fst =
-            fst::Map::from_iter(iter::empty::<(String, u64)>()).unwrap();
+        let empty_fst = fst::Map::from_iter(iter::empty::<(String, u64)>()).unwrap();
         PerCrateAnalysis {
             def_id_for_span: HashMap::new(),
             defs: HashMap::new(),
@@ -158,7 +156,7 @@ impl PerCrateAnalysis {
 
     // Returns true if there is a def in this crate with the same crate-local id
     // and span as `def`.
-    crate fn has_congruent_def(&self, local_id: u32, span: &Span) -> bool {
+    pub(crate) fn has_congruent_def(&self, local_id: u32, span: &Span) -> bool {
         let id = Id::from_crate_and_local(self.global_crate_num, local_id);
         match self.defs.get(&id) {
             Some(existing) => span == &existing.span,
@@ -183,7 +181,7 @@ impl Analysis {
         self.per_crate
             .values()
             .filter(|c| c.path.is_some())
-            .map(|c| (c.path.as_ref().unwrap().clone(), c.timestamp.clone()))
+            .map(|c| (c.path.as_ref().unwrap().clone(), c.timestamp))
             .collect()
     }
 
@@ -214,8 +212,7 @@ impl Analysis {
         //     "error in for_each_crate, found {} results, expected 0 or 1",
         //     result.len(),
         // );
-        let temp = result.drain(..).next();
-        temp // stupid NLL bug
+        result.into_iter().nth(0)
     }
 
     pub fn for_all_crates<F, T>(&self, f: F) -> Vec<T>
@@ -237,21 +234,20 @@ impl Analysis {
     }
 
     pub fn ref_for_span(&self, span: &Span) -> Option<Ref> {
-        self.for_each_crate(|c| c.def_id_for_span.get(span).map(|r| r.clone()))
+        self.for_each_crate(|c| c.def_id_for_span.get(span).cloned())
     }
 
     // Like def_id_for_span, but will only return a def_id if it is in the same
     // crate.
     pub fn local_def_id_for_span(&self, span: &Span) -> Option<Id> {
         self.for_each_crate(|c| {
-            c.def_id_for_span
-                .get(span)
-                .map(|r| r.some_id())
-                .and_then(|id| if c.defs.contains_key(&id) {
+            c.def_id_for_span.get(span).map(Ref::some_id).and_then(|id| {
+                if c.defs.contains_key(&id) {
                     Some(id)
                 } else {
                     None
-                })
+                }
+            })
         })
     }
 
@@ -316,19 +312,15 @@ impl Analysis {
 
     pub fn query_defs(&self, query: SymbolQuery) -> Vec<Def> {
         let mut crates = Vec::with_capacity(self.per_crate.len());
-        let stream = query.build_stream(
-            self.per_crate.values().map(|c| {
-                crates.push(c);
-                &c.def_fst
-            })
-        );
+        let stream = query.build_stream(self.per_crate.values().map(|c| {
+            crates.push(c);
+            &c.def_fst
+        }));
 
         query.search_stream(stream, |acc, e| {
             let c = &crates[e.index];
             let ids = &c.def_fst_values[e.value as usize];
-            acc.extend(
-                ids.iter().flat_map(|id| c.defs.get(id)).cloned()
-            );
+            acc.extend(ids.iter().flat_map(|id| c.defs.get(id)).cloned());
         })
     }
 

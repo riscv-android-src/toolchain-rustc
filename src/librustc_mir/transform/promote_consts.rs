@@ -44,8 +44,8 @@ pub enum TempState {
 impl TempState {
     pub fn is_promotable(&self) -> bool {
         debug!("is_promotable: self={:?}", self);
-        if let TempState::Defined { uses, .. } = *self {
-            uses > 0
+        if let TempState::Defined { .. } = *self {
+            true
         } else {
             false
         }
@@ -77,12 +77,17 @@ struct TempCollector<'tcx> {
 impl<'tcx> Visitor<'tcx> for TempCollector<'tcx> {
     fn visit_local(&mut self,
                    &index: &Local,
-                   context: PlaceContext<'tcx>,
+                   context: PlaceContext,
                    location: Location) {
         debug!("visit_local: index={:?} context={:?} location={:?}", index, context, location);
-        // We're only interested in temporaries
-        if self.mir.local_kind(index) != LocalKind::Temp {
-            return;
+        // We're only interested in temporaries and the return place
+        match self.mir.local_kind(index) {
+            | LocalKind::Temp
+            | LocalKind::ReturnPointer
+            => {},
+            | LocalKind::Arg
+            | LocalKind::Var
+            => return,
         }
 
         // Ignore drops, if the temp gets promoted,
@@ -101,7 +106,6 @@ impl<'tcx> Visitor<'tcx> for TempCollector<'tcx> {
         if *temp == TempState::Undefined {
             match context {
                 PlaceContext::MutatingUse(MutatingUseContext::Store) |
-                PlaceContext::MutatingUse(MutatingUseContext::AsmOutput) |
                 PlaceContext::MutatingUse(MutatingUseContext::Call) => {
                     *temp = TempState::Defined {
                         location,
@@ -357,7 +361,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
 impl<'a, 'tcx> MutVisitor<'tcx> for Promoter<'a, 'tcx> {
     fn visit_local(&mut self,
                    local: &mut Local,
-                   _: PlaceContext<'tcx>,
+                   _: PlaceContext,
                    _: Location) {
         if self.source.local_kind(*local) == LocalKind::Temp {
             *local = self.promote_temp(*local);

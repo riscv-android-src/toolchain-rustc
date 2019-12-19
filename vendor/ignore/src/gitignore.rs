@@ -69,8 +69,7 @@ impl Glob {
 
     /// Returns true if and only if this glob has a `**/` prefix.
     fn has_doublestar_prefix(&self) -> bool {
-        self.actual.starts_with("**/")
-        || (self.actual == "**" && self.is_only_dir)
+        self.actual.starts_with("**/") || self.actual == "**"
     }
 }
 
@@ -127,16 +126,7 @@ impl Gitignore {
     /// `$XDG_CONFIG_HOME/git/ignore` is read. If `$XDG_CONFIG_HOME` is not
     /// set or is empty, then `$HOME/.config/git/ignore` is used instead.
     pub fn global() -> (Gitignore, Option<Error>) {
-        match gitconfig_excludes_path() {
-            None => (Gitignore::empty(), None),
-            Some(path) => {
-                if !path.is_file() {
-                    (Gitignore::empty(), None)
-                } else {
-                    Gitignore::new(path)
-                }
-            }
-        }
+        GitignoreBuilder::new("").build_global()
     }
 
     /// Creates a new empty gitignore matcher that never matches anything.
@@ -359,6 +349,36 @@ impl GitignoreBuilder {
         })
     }
 
+    /// Build a global gitignore matcher using the configuration in this
+    /// builder.
+    ///
+    /// This consumes ownership of the builder unlike `build` because it
+    /// must mutate the builder to add the global gitignore globs.
+    ///
+    /// Note that this ignores the path given to this builder's constructor
+    /// and instead derives the path automatically from git's global
+    /// configuration.
+    pub fn build_global(mut self) -> (Gitignore, Option<Error>) {
+        match gitconfig_excludes_path() {
+            None => (Gitignore::empty(), None),
+            Some(path) => {
+                if !path.is_file() {
+                    (Gitignore::empty(), None)
+                } else {
+                    let mut errs = PartialErrorBuilder::default();
+                    errs.maybe_push_ignore_io(self.add(path));
+                    match self.build() {
+                        Ok(gi) => (gi, errs.into_error_option()),
+                        Err(err) => {
+                            errs.push(err);
+                            (Gitignore::empty(), errs.into_error_option())
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Add each glob from the file path given.
     ///
     /// The file given should be formatted as a `gitignore` file.
@@ -437,7 +457,6 @@ impl GitignoreBuilder {
             is_whitelist: false,
             is_only_dir: false,
         };
-        let mut literal_separator = false;
         let mut is_absolute = false;
         if line.starts_with("\\!") || line.starts_with("\\#") {
             line = &line[1..];
@@ -452,7 +471,6 @@ impl GitignoreBuilder {
                 // then the glob can only match the beginning of a path
                 // (relative to the location of gitignore). We achieve this by
                 // simply banning wildcards from matching /.
-                literal_separator = true;
                 line = &line[1..];
                 is_absolute = true;
             }
@@ -465,16 +483,11 @@ impl GitignoreBuilder {
                 line = &line[..i];
             }
         }
-        // If there is a literal slash, then we note that so that globbing
-        // doesn't let wildcards match slashes.
         glob.actual = line.to_string();
-        if is_absolute || line.chars().any(|c| c == '/') {
-            literal_separator = true;
-        }
-        // If there was a slash, then this is a glob that must match the entire
-        // path name. Otherwise, we should let it match anywhere, so use a **/
-        // prefix.
-        if !literal_separator {
+        // If there is a literal slash, then this is a glob that must match the
+        // entire path name. Otherwise, we should let it match anywhere, so use
+        // a **/ prefix.
+        if !is_absolute && !line.chars().any(|c| c == '/') {
             // ... but only if we don't already have a **/ prefix.
             if !glob.has_doublestar_prefix() {
                 glob.actual = format!("**/{}", glob.actual);
@@ -488,7 +501,7 @@ impl GitignoreBuilder {
         }
         let parsed =
             GlobBuilder::new(&glob.actual)
-                .literal_separator(literal_separator)
+                .literal_separator(true)
                 .case_insensitive(self.case_insensitive)
                 .backslash_escape(true)
                 .build()
@@ -505,12 +518,16 @@ impl GitignoreBuilder {
 
     /// Toggle whether the globs should be matched case insensitively or not.
     ///
-    /// When this option is changed, only globs added after the change will be affected.
+    /// When this option is changed, only globs added after the change will be
+    /// affected.
     ///
     /// This is disabled by default.
     pub fn case_insensitive(
-        &mut self, yes: bool
+        &mut self,
+        yes: bool,
     ) -> Result<&mut GitignoreBuilder, Error> {
+        // TODO: This should not return a `Result`. Fix this in the next semver
+        // release.
         self.case_insensitive = yes;
         Ok(self)
     }
@@ -691,6 +708,9 @@ mod tests {
     ignored!(ig39, ROOT, "\\?", "?");
     ignored!(ig40, ROOT, "\\*", "*");
     ignored!(ig41, ROOT, "\\a", "a");
+    ignored!(ig42, ROOT, "s*.rs", "sfoo.rs");
+    ignored!(ig43, ROOT, "**", "foo.rs");
+    ignored!(ig44, ROOT, "**/**/*", "a/foo.rs");
 
     not_ignored!(ignot1, ROOT, "amonths", "months");
     not_ignored!(ignot2, ROOT, "monthsa", "months");
@@ -712,6 +732,7 @@ mod tests {
     not_ignored!(ignot16, ROOT, "*\n!**/", "foo", true);
     not_ignored!(ignot17, ROOT, "src/*.rs", "src/grep/src/main.rs");
     not_ignored!(ignot18, ROOT, "path1/*", "path2/path1/foo");
+    not_ignored!(ignot19, ROOT, "s*.rs", "src/foo.rs");
 
     fn bytes(s: &str) -> Vec<u8> {
         s.to_string().into_bytes()

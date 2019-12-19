@@ -5,7 +5,7 @@ use rustc::mir::{
     Mutability, Operand, Place, PlaceBase, Projection, ProjectionElem, Static, StaticKind,
 };
 use rustc::mir::{Terminator, TerminatorKind};
-use rustc::ty::{self, Const, DefIdTree, TyS, TyCtxt};
+use rustc::ty::{self, Const, DefIdTree, Ty, TyS, TyCtxt};
 use rustc_data_structures::indexed_vec::Idx;
 use syntax_pos::Span;
 use syntax_pos::symbol::keywords;
@@ -68,10 +68,10 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 ));
 
                 item_msg = format!("`{}`", access_place_desc.unwrap());
-                if access_place.is_upvar_field_projection(self.mir, &self.infcx.tcx).is_some() {
+                if self.is_upvar_field_projection(access_place).is_some() {
                     reason = ", as it is not declared as mutable".to_string();
                 } else {
-                    let name = self.mir.upvar_decls[upvar_index.index()].debug_name;
+                    let name = self.upvars[upvar_index.index()].name;
                     reason = format!(", as `{}` is not declared as mutable", name);
                 }
             }
@@ -81,15 +81,14 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 elem: ProjectionElem::Deref,
             }) => {
                 if *base == Place::Base(PlaceBase::Local(Local::new(1))) &&
-                    !self.mir.upvar_decls.is_empty() {
+                    !self.upvars.is_empty() {
                     item_msg = format!("`{}`", access_place_desc.unwrap());
                     debug_assert!(self.mir.local_decls[Local::new(1)].ty.is_region_ptr());
                     debug_assert!(is_closure_or_generator(
                         the_place_err.ty(self.mir, self.infcx.tcx).ty
                     ));
 
-                    reason = if access_place.is_upvar_field_projection(self.mir,
-                                                                       &self.infcx.tcx).is_some() {
+                    reason = if self.is_upvar_field_projection(access_place).is_some() {
                         ", as it is a captured variable in a `Fn` closure".to_string()
                     } else {
                         ", as `Fn` closures cannot mutate their captured variables".to_string()
@@ -309,9 +308,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
 
                 err.span_label(span, format!("cannot {ACT}", ACT = act));
 
-                let upvar_hir_id = self.mir.upvar_decls[upvar_index.index()]
-                    .var_hir_id
-                    .assert_crate_local();
+                let upvar_hir_id = self.upvars[upvar_index.index()].var_hir_id;
                 let upvar_node_id = self.infcx.tcx.hir().hir_to_node_id(upvar_hir_id);
                 if let Some(Node::Binding(pat)) = self.infcx.tcx.hir().find(upvar_node_id) {
                     if let hir::PatKind::Binding(
@@ -452,7 +449,7 @@ impl<'a, 'gcx, 'tcx> MirBorrowckCtxt<'a, 'gcx, 'tcx> {
                 base,
                 elem: ProjectionElem::Deref,
             }) if *base == Place::Base(PlaceBase::Local(Local::new(1))) &&
-                  !self.mir.upvar_decls.is_empty() =>
+                  !self.upvars.is_empty() =>
             {
                 err.span_label(span, format!("cannot {ACT}", ACT = act));
                 err.span_help(
@@ -616,7 +613,7 @@ fn suggest_ampmut<'cx, 'gcx, 'tcx>(
      })
 }
 
-fn is_closure_or_generator(ty: ty::Ty<'_>) -> bool {
+fn is_closure_or_generator(ty: Ty<'_>) -> bool {
     ty.is_closure() || ty.is_generator()
 }
 
@@ -629,7 +626,7 @@ fn is_closure_or_generator(ty: ty::Ty<'_>) -> bool {
 /// ```
 fn annotate_struct_field(
     tcx: TyCtxt<'cx, 'gcx, 'tcx>,
-    ty: ty::Ty<'tcx>,
+    ty: Ty<'tcx>,
     field: &mir::Field,
 ) -> Option<(Span, String)> {
     // Expect our local to be a reference to a struct of some kind.

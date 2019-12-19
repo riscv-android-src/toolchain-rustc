@@ -10,7 +10,7 @@ use crate::mut_visit::{self, MutVisitor};
 use crate::parse::{self, parser, DirectoryOwnership};
 use crate::parse::token;
 use crate::ptr::P;
-use crate::symbol::{keywords, Ident, Symbol};
+use crate::symbol::{keywords, Ident, Symbol, sym};
 use crate::ThinVec;
 use crate::tokenstream::{self, TokenStream};
 
@@ -871,7 +871,7 @@ impl<'a> ExtCtxt<'a> {
         let mut last_macro = None;
         loop {
             if ctxt.outer().expn_info().map_or(None, |info| {
-                if info.format.name() == "include" {
+                if info.format.name() == sym::include {
                     // Stop going up the backtrace once include! is encountered
                     return None;
                 }
@@ -998,6 +998,7 @@ pub fn expr_to_spanned_string<'a>(
     Err(match expr.node {
         ast::ExprKind::Lit(ref l) => match l.node {
             ast::LitKind::Str(s, style) => return Ok(respan(expr.span, (s, style))),
+            ast::LitKind::Err(_) => None,
             _ => Some(cx.struct_span_err(l.span, err_msg))
         },
         ast::ExprKind::Err => None,

@@ -21,16 +21,8 @@ pub struct UpdateOptions<'a> {
 
 pub fn generate_lockfile(ws: &Workspace<'_>) -> CargoResult<()> {
     let mut registry = PackageRegistry::new(ws.config())?;
-    let resolve = ops::resolve_with_previous(
-        &mut registry,
-        ws,
-        Method::Everything,
-        None,
-        None,
-        &[],
-        true,
-        true,
-    )?;
+    let resolve =
+        ops::resolve_with_previous(&mut registry, ws, Method::Everything, None, None, &[], true)?;
     ops::write_pkg_lockfile(ws, &resolve)?;
     Ok(())
 }
@@ -44,13 +36,29 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
         failure::bail!("you can't generate a lockfile for an empty workspace.")
     }
 
-    if opts.config.cli_unstable().offline {
+    if opts.config.offline() {
         failure::bail!("you can't update in the offline mode");
     }
 
+    // Updates often require a lot of modifications to the registry, so ensure
+    // that we're synchronized against other Cargos.
+    let _lock = ws.config().acquire_package_cache_lock()?;
+
     let previous_resolve = match ops::load_pkg_lockfile(ws)? {
         Some(resolve) => resolve,
-        None => return generate_lockfile(ws),
+        None => {
+            match opts.precise {
+                None => return generate_lockfile(ws),
+
+                // Precise option specified, so calculate a previous_resolve required
+                // by precise package update later.
+                Some(_) => {
+                    let mut registry = PackageRegistry::new(opts.config)?;
+                    ops::resolve_with_previous(&mut registry, ws, Method::Everything,
+                                               None, None, &[], true)?
+                }
+            }
+        }
     };
     let mut registry = PackageRegistry::new(opts.config)?;
     let mut to_avoid = HashSet::new();
@@ -81,6 +89,7 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
                 });
             }
         }
+
         registry.add_sources(sources)?;
     }
 
@@ -91,7 +100,6 @@ pub fn update_lockfile(ws: &Workspace<'_>, opts: &UpdateOptions<'_>) -> CargoRes
         Some(&previous_resolve),
         Some(&to_avoid),
         &[],
-        true,
         true,
     )?;
 

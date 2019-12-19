@@ -1,5 +1,9 @@
 # pulldown-cmark
 
+[![Build Status](https://dev.azure.com/raphlinus/pulldown-cmark/_apis/build/status/pulldown-cmark-CI?branchName=master)](https://dev.azure.com/raphlinus/pulldown-cmark/_build/latest?definitionId=2&branchName=master)
+[![Docs](https://docs.rs/pulldown-cmark/badge.svg)](https://docs.rs/pulldown-cmark)
+[![Crates.io](https://img.shields.io/crates/v/pulldown-cmark.svg?maxAge=2592000)](https://crates.io/crates/pulldown-cmark)
+
 [Documentation](https://docs.rs/pulldown-cmark/)
 
 This library is a pull parser for [CommonMark](http://commonmark.org/), written
@@ -13,6 +17,11 @@ It is designed to be:
 * Safe; written in pure Rust with no unsafe blocks
 * Versatile; in particular source-maps are supported
 * Correct; the goal is 100% compliance with the [CommonMark spec](http://spec.commonmark.org/)
+
+Further, it optionally supports parsing footnotes,
+[Github flavored tables](https://github.github.com/gfm/#tables-extension-),
+[Github flavored task lists](https://github.github.com/gfm/#task-list-items-extension-) and
+[strikethrough](https://github.github.com/gfm/#strikethrough-extension-).
 
 ## Why a pull parser?
 
@@ -34,9 +43,11 @@ Pull parsing is in some sense the most versatile architecture. It's possible to
 drive a push interface, also with minimal memory, and quite straightforward to
 construct an AST. Another advantage is that source-map information (the mapping
 between parsed blocks and offsets within the source text) is readily available;
-you basically just call `get_offset()` as you consume events.
+you can call `into_offset_iter()` to create an iterator that yields `(Event, Range)`
+pairs, where the second element is the event's corresponding range in the source
+document.
 
-While manipulating AST's is the most flexible way to transform documents,
+While manipulating ASTs is the most flexible way to transform documents,
 operating on iterators is surprisingly easy, and quite efficient. Here, for
 example, is the code to transform soft line breaks into hard breaks:
 
@@ -51,7 +62,7 @@ Or expanding an abbreviation in text:
 
 ```rust
 let parser = parser.map(|event| match event {
-	Event::Text(text) => Event::Text(text.replace("abbr", "abbreviation")),
+	Event::Text(text) => Event::Text(text.replace("abbr", "abbreviation").into()),
 	_ => event
 });
 ```
@@ -73,6 +84,9 @@ for event in parser {
 }
 ```
 
+There are some basic but fully functional examples of the usage of the crate in the
+`examples` directory of this repository.
+
 ## Using Rust idiomatically
 
 A lot of the internal scanning code is written at a pretty low level (it
@@ -86,15 +100,20 @@ full power and expressivity of Rust's iterator infrastructure, including
 for loops and `map` (as in the examples above), collecting the events into
 a vector (for recording, playback, and manipulation), and more.
 
-Further, the `Text` event (representing text) is a copy-on-write string (note:
-this isn't quite true yet). The vast majority of text fragments are just
+Further, the `Text` event (representing text) is a small copy-on-write string.
+The vast majority of text fragments are just
 slices of the source document. For these, copy-on-write gives a convenient
 representation that requires no allocation or copying, but allocated
 strings are available when they're needed. Thus, when rendering text to
 HTML, most text is copied just once, from the source document to the
 HTML buffer.
 
-## Building only the pulldown-cmark library
+When using the pulldown-cmark's own HTML renderer, make sure to write to a buffered
+target like a `Vec<u8>` or `String`. Since it performs many (very) small writes, writing
+directly to stdout, files, or sockets is detrimental to performance. Such writers can
+be wrapped in a [`BufWriter`](https://doc.rust-lang.org/std/io/struct.BufWriter.html).
+
+## Build options
 
 By default, the binary is built as well. If you don't want/need it, then build like this:
 
@@ -105,7 +124,20 @@ By default, the binary is built as well. If you don't want/need it, then build l
 Or put in your `Cargo.toml` file:
 
 ```toml
-pulldown-cmark = { version = "0.0.11", default-features = false }
+pulldown-cmark = { version = "0.5", default-features = false }
+```
+
+SIMD accelerated scanners are available for the x64 platform from version 0.5 onwards. To
+enable them, build with simd feature:
+
+```bash
+> cargo build --release --features simd
+```
+
+Or add the feature to your project's `Cargo.toml`:
+
+```toml
+pulldown-cmark = { version = "0.5", default-features = false, features = ["simd"] }
 ```
 
 ## Authors

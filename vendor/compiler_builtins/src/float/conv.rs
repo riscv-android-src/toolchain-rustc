@@ -2,10 +2,10 @@ use float::Float;
 use int::Int;
 
 macro_rules! int_to_float {
-    ($i:expr, $ity:ty, $fty:ty) => ({
+    ($i:expr, $ity:ty, $fty:ty) => {{
         let i = $i;
         if i == 0 {
-            return 0.0
+            return 0.0;
         }
 
         let mant_dig = <$fty>::SIGNIFICAND_BITS + 1;
@@ -22,20 +22,22 @@ macro_rules! int_to_float {
         let mut e = sd - 1;
 
         if <$ity>::BITS < mant_dig {
-            return <$fty>::from_parts(s,
+            return <$fty>::from_parts(
+                s,
                 (e + exponent_bias) as <$fty as Float>::Int,
-                (a as <$fty as Float>::Int) << (mant_dig - e - 1))
+                (a as <$fty as Float>::Int) << (mant_dig - e - 1),
+            );
         }
 
         a = if sd > mant_dig {
             /* start:  0000000000000000000001xxxxxxxxxxxxxxxxxxxxxxPQxxxxxxxxxxxxxxxxxx
-            *  finish: 000000000000000000000000000000000000001xxxxxxxxxxxxxxxxxxxxxxPQR
-            *                                                12345678901234567890123456
-            *  1 = msb 1 bit
-            *  P = bit MANT_DIG-1 bits to the right of 1
-            *  Q = bit MANT_DIG bits to the right of 1
-            *  R = "or" of all bits to the right of Q
-            */
+             *  finish: 000000000000000000000000000000000000001xxxxxxxxxxxxxxxxxxxxxxPQR
+             *                                                12345678901234567890123456
+             *  1 = msb 1 bit
+             *  P = bit MANT_DIG-1 bits to the right of 1
+             *  Q = bit MANT_DIG bits to the right of 1
+             *  R = "or" of all bits to the right of Q
+             */
             let mant_dig_plus_one = mant_dig + 1;
             let mant_dig_plus_two = mant_dig + 2;
             a = if sd == mant_dig_plus_one {
@@ -43,8 +45,10 @@ macro_rules! int_to_float {
             } else if sd == mant_dig_plus_two {
                 a
             } else {
-                (a >> (sd - mant_dig_plus_two)) as <$ity as Int>::UnsignedInt |
-                ((a & <$ity as Int>::UnsignedInt::max_value()).wrapping_shl((n + mant_dig_plus_two) - sd) != 0) as <$ity as Int>::UnsignedInt
+                (a >> (sd - mant_dig_plus_two)) as <$ity as Int>::UnsignedInt
+                    | ((a & <$ity as Int>::UnsignedInt::max_value())
+                        .wrapping_shl((n + mant_dig_plus_two) - sd)
+                        != 0) as <$ity as Int>::UnsignedInt
             };
 
             /* finish: */
@@ -54,19 +58,22 @@ macro_rules! int_to_float {
 
             /* a is now rounded to mant_dig or mant_dig+1 bits */
             if (a & (1 << mant_dig)) != 0 {
-                a >>= 1; e += 1;
+                a >>= 1;
+                e += 1;
             }
             a
-            /* a is now rounded to mant_dig bits */
+        /* a is now rounded to mant_dig bits */
         } else {
             a.wrapping_shl(mant_dig - sd)
             /* a is now rounded to mant_dig bits */
         };
 
-        <$fty>::from_parts(s,
+        <$fty>::from_parts(
+            s,
             (e + exponent_bias) as <$fty as Float>::Int,
-            a as <$fty as Float>::Int)
-    })
+            a as <$fty as Float>::Int,
+        )
+    }};
 }
 
 intrinsics! {
@@ -80,10 +87,7 @@ intrinsics! {
         int_to_float!(i, i32, f64)
     }
 
-    #[use_c_shim_if(any(
-        all(target_arch = "x86", not(target_env = "msvc")),
-        all(target_arch = "x86_64", not(windows)),
-    ))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_l2f]
     pub extern "C" fn __floatdisf(i: i64) -> f32 {
         // On x86_64 LLVM will use native instructions for this conversion, we
@@ -95,7 +99,7 @@ intrinsics! {
         }
     }
 
-    #[use_c_shim_if(all(target_arch = "x86", not(target_env = "msvc")))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_l2d]
     pub extern "C" fn __floatdidf(i: i64) -> f64 {
         // On x86_64 LLVM will use native instructions for this conversion, we
@@ -127,19 +131,13 @@ intrinsics! {
         int_to_float!(i, u32, f64)
     }
 
-    #[use_c_shim_if(any(
-        all(target_arch = "x86", not(target_env = "msvc")),
-        all(target_arch = "x86_64", not(windows)),
-    ))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_ul2f]
     pub extern "C" fn __floatundisf(i: u64) -> f32 {
         int_to_float!(i, u64, f32)
     }
 
-    #[use_c_shim_if(any(
-        all(target_arch = "x86", not(target_env = "msvc")),
-        all(target_arch = "x86_64", not(windows)),
-    ))]
+    #[maybe_use_optimized_c_shim]
     #[arm_aeabi_alias = __aeabi_ul2d]
     pub extern "C" fn __floatundidf(i: u64) -> f64 {
         int_to_float!(i, u64, f64)
@@ -159,11 +157,11 @@ intrinsics! {
 #[derive(PartialEq)]
 enum Sign {
     Positive,
-    Negative
+    Negative,
 }
 
 macro_rules! float_to_int {
-    ($f:expr, $fty:ty, $ity:ty) => ({
+    ($f:expr, $fty:ty, $ity:ty) => {{
         let f = $f;
         let fixint_min = <$ity>::min_value();
         let fixint_max = <$ity>::max_value();
@@ -180,21 +178,34 @@ macro_rules! float_to_int {
         let a_abs = a_rep & !sign_bit;
 
         // this is used to work around -1 not being available for unsigned
-        let sign = if (a_rep & sign_bit) == 0 { Sign::Positive } else { Sign::Negative };
+        let sign = if (a_rep & sign_bit) == 0 {
+            Sign::Positive
+        } else {
+            Sign::Negative
+        };
         let mut exponent = (a_abs >> significand_bits) as usize;
         let significand = (a_abs & <$fty>::SIGNIFICAND_MASK) | <$fty>::IMPLICIT_BIT;
 
         // if < 1 or unsigned & negative
-        if  exponent < exponent_bias ||
-            fixint_unsigned && sign == Sign::Negative {
-            return 0
+        if exponent < exponent_bias || fixint_unsigned && sign == Sign::Negative {
+            return 0;
         }
         exponent -= exponent_bias;
 
         // If the value is infinity, saturate.
         // If the value is too large for the integer type, 0.
-        if exponent >= (if fixint_unsigned {fixint_bits} else {fixint_bits -1}) {
-            return if sign == Sign::Positive {fixint_max} else {fixint_min}
+        if exponent
+            >= (if fixint_unsigned {
+                fixint_bits
+            } else {
+                fixint_bits - 1
+            })
+        {
+            return if sign == Sign::Positive {
+                fixint_max
+            } else {
+                fixint_min
+            };
         }
         // If 0 <= exponent < significand_bits, right shift to get the result.
         // Otherwise, shift left.
@@ -210,7 +221,7 @@ macro_rules! float_to_int {
         } else {
             r
         }
-    })
+    }};
 }
 
 intrinsics! {

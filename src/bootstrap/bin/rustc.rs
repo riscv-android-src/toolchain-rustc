@@ -262,6 +262,7 @@ fn main() {
             // The flags here should be kept in sync with `add_miri_default_args`
             // in miri's `src/lib.rs`.
             cmd.arg("-Zalways-encode-mir");
+            cmd.arg("--cfg=miri");
             // These options are preferred by miri, to be able to perform better validation,
             // but the bootstrap compiler might not understand them.
             if stage != "0" {
@@ -290,9 +291,7 @@ fn main() {
     }
 
     // This is required for internal lints.
-    if stage != "0" {
-        cmd.arg("-Zunstable-options");
-    }
+    cmd.arg("-Zunstable-options");
 
     // Force all crates compiled by this compiler to (a) be unstable and (b)
     // allow the `rustc_private` feature to link to other unstable crates
@@ -310,6 +309,7 @@ fn main() {
     {
         cmd.arg("-Dwarnings");
         cmd.arg("-Dbare_trait_objects");
+        cmd.arg("-Drust_2018_idioms");
     }
 
     if verbose > 1 {

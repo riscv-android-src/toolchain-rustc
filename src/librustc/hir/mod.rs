@@ -10,7 +10,7 @@ pub use self::PrimTy::*;
 pub use self::UnOp::*;
 pub use self::UnsafeSource::*;
 
-use crate::hir::def::Def;
+use crate::hir::def::{Res, DefKind};
 use crate::hir::def_id::{DefId, DefIndex, LocalDefId, CRATE_DEF_INDEX};
 use crate::util::nodemap::{NodeMap, FxHashSet};
 use crate::mir::mono::Linkage;
@@ -20,7 +20,7 @@ use syntax_pos::{Span, DUMMY_SP, symbol::InternedString};
 use syntax::source_map::Spanned;
 use rustc_target::spec::abi::Abi;
 use syntax::ast::{self, CrateSugar, Ident, Name, NodeId, AsmDialect};
-use syntax::ast::{Attribute, Label, Lit, StrStyle, FloatTy, IntTy, UintTy};
+use syntax::ast::{Attribute, Label, LitKind, StrStyle, FloatTy, IntTy, UintTy};
 use syntax::attr::{InlineAttr, OptimizeAttr};
 use syntax::ext::hygiene::SyntaxContext;
 use syntax::ptr::P;
@@ -37,6 +37,7 @@ use rustc_macros::HashStable;
 use serialize::{self, Encoder, Encodable, Decoder, Decodable};
 use std::collections::{BTreeSet, BTreeMap};
 use std::fmt;
+use smallvec::SmallVec;
 
 /// HIR doesn't commit to a concrete storage type and has its own alias for a vector.
 /// It can be `Vec`, `P<[T]>` or potentially `Box<[T]>`, or some other container with similar
@@ -125,12 +126,12 @@ mod item_local_id_inner {
     use rustc_macros::HashStable;
     newtype_index! {
         /// An `ItemLocalId` uniquely identifies something within a given "item-like",
-        /// that is within a hir::Item, hir::TraitItem, or hir::ImplItem. There is no
+        /// that is, within a hir::Item, hir::TraitItem, or hir::ImplItem. There is no
         /// guarantee that the numerical value of a given `ItemLocalId` corresponds to
         /// the node's position within the owning item in any way, but there is a
         /// guarantee that the `LocalItemId`s within an owner occupy a dense range of
         /// integers starting at zero, so a mapping that maps all or most nodes within
-        /// an "item-like" to something else can be implement by a `Vec` instead of a
+        /// an "item-like" to something else can be implemented by a `Vec` instead of a
         /// tree or hash map.
         pub struct ItemLocalId {
             derive [HashStable]
@@ -296,8 +297,8 @@ impl Lifetime {
 #[derive(Clone, RustcEncodable, RustcDecodable, HashStable)]
 pub struct Path {
     pub span: Span,
-    /// The definition that the path resolved to.
-    pub def: Def,
+    /// The resolution for the path.
+    pub res: Res,
     /// The segments in the path: the things separated by `::`.
     pub segments: HirVec<PathSegment>,
 }
@@ -327,13 +328,13 @@ pub struct PathSegment {
     /// The identifier portion of this path segment.
     #[stable_hasher(project(name))]
     pub ident: Ident,
-    // `id` and `def` are optional. We currently only use these in save-analysis,
+    // `id` and `res` are optional. We currently only use these in save-analysis,
     // any path segments without these will not have save-analysis info and
     // therefore will not have 'jump to def' in IDEs, but otherwise will not be
     // affected. (In general, we don't bother to get the defs for synthesized
     // segments, only for segments which have come from the AST).
     pub hir_id: Option<HirId>,
-    pub def: Option<Def>,
+    pub res: Option<Res>,
 
     /// Type/lifetime parameters attached to this path. They come in
     /// two flavors: `Path<A,B,C>` and `Path(A,B) -> C`. Note that
@@ -355,7 +356,7 @@ impl PathSegment {
         PathSegment {
             ident,
             hir_id: None,
-            def: None,
+            res: None,
             infer_types: true,
             args: None,
         }
@@ -364,14 +365,14 @@ impl PathSegment {
     pub fn new(
         ident: Ident,
         hir_id: Option<HirId>,
-        def: Option<Def>,
+        res: Option<Res>,
         args: GenericArgs,
         infer_types: bool,
     ) -> Self {
         PathSegment {
             ident,
             hir_id,
-            def,
+            res,
             infer_types,
             args: if args.is_empty() {
                 None
@@ -608,9 +609,9 @@ impl Generics {
         own_counts
     }
 
-    pub fn get_named(&self, name: &InternedString) -> Option<&GenericParam> {
+    pub fn get_named(&self, name: InternedString) -> Option<&GenericParam> {
         for param in &self.params {
-            if *name == param.name.ident().as_interned_str() {
+            if name == param.name.ident().as_interned_str() {
                 return Some(param);
             }
         }
@@ -1330,6 +1331,9 @@ impl BodyOwnerKind {
     }
 }
 
+/// A literal.
+pub type Lit = Spanned<LitKind>;
+
 /// A constant (expression) that's not an item or associated item,
 /// but needs its own `DefId` for type-checking, const-eval, etc.
 /// These are usually found nested inside types (e.g., array lengths)
@@ -1352,7 +1356,7 @@ pub struct Expr {
 
 // `Expr` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_EXPR: std::mem::size_of::<Expr>() == 72);
+static_assert_size!(Expr, 72);
 
 impl Expr {
     pub fn precedence(&self) -> ExprPrecedence {
@@ -1366,7 +1370,7 @@ impl Expr {
             ExprKind::Unary(..) => ExprPrecedence::Unary,
             ExprKind::Lit(_) => ExprPrecedence::Lit,
             ExprKind::Type(..) | ExprKind::Cast(..) => ExprPrecedence::Cast,
-            ExprKind::If(..) => ExprPrecedence::If,
+            ExprKind::DropTemps(ref expr, ..) => expr.precedence(),
             ExprKind::While(..) => ExprPrecedence::While,
             ExprKind::Loop(..) => ExprPrecedence::Loop,
             ExprKind::Match(..) => ExprPrecedence::Match,
@@ -1392,8 +1396,11 @@ impl Expr {
     pub fn is_place_expr(&self) -> bool {
          match self.node {
             ExprKind::Path(QPath::Resolved(_, ref path)) => {
-                match path.def {
-                    Def::Local(..) | Def::Upvar(..) | Def::Static(..) | Def::Err => true,
+                match path.res {
+                    Res::Local(..)
+                    | Res::Upvar(..)
+                    | Res::Def(DefKind::Static, _)
+                    | Res::Err => true,
                     _ => false,
                 }
             }
@@ -1416,7 +1423,6 @@ impl Expr {
             ExprKind::MethodCall(..) |
             ExprKind::Struct(..) |
             ExprKind::Tup(..) |
-            ExprKind::If(..) |
             ExprKind::Match(..) |
             ExprKind::Closure(..) |
             ExprKind::Block(..) |
@@ -1437,6 +1443,7 @@ impl Expr {
             ExprKind::Binary(..) |
             ExprKind::Yield(..) |
             ExprKind::Cast(..) |
+            ExprKind::DropTemps(..) |
             ExprKind::Err => {
                 false
             }
@@ -1486,10 +1493,12 @@ pub enum ExprKind {
     Cast(P<Expr>, P<Ty>),
     /// A type reference (e.g., `Foo`).
     Type(P<Expr>, P<Ty>),
-    /// An `if` block, with an optional else block.
+    /// Wraps the expression in a terminating scope.
+    /// This makes it semantically equivalent to `{ let _t = expr; _t }`.
     ///
-    /// I.e., `if <expr> { <expr> } else { <expr> }`.
-    If(P<Expr>, P<Expr>, Option<P<Expr>>),
+    /// This construct only exists to tweak the drop order in HIR lowering.
+    /// An example of that is the desugaring of `for` loops.
+    DropTemps(P<Expr>),
     /// A while loop, with an optional label
     ///
     /// I.e., `'label: while expr { <block> }`.
@@ -1583,6 +1592,19 @@ pub enum LocalSource {
     Normal,
     /// A desugared `for _ in _ { .. }` loop.
     ForLoopDesugar,
+    /// When lowering async functions, we create locals within the `async move` so that
+    /// all arguments are dropped after the future is polled.
+    ///
+    /// ```ignore (pseudo-Rust)
+    /// async fn foo(<pattern> @ x: Type) {
+    ///     async move {
+    ///         let <pattern> = x;
+    ///     }
+    /// }
+    /// ```
+    AsyncFn,
+    /// A desugared `<expr>.await`.
+    AwaitDesugar,
 }
 
 /// Hints at the original code for a `match _ { .. }`.
@@ -1590,6 +1612,10 @@ pub enum LocalSource {
 pub enum MatchSource {
     /// A `match _ { .. }`.
     Normal,
+    /// An `if _ { .. }` (optionally with `else { .. }`).
+    IfDesugar {
+        contains_else_clause: bool,
+    },
     /// An `if let _ = _ { .. }` (optionally with `else { .. }`).
     IfLetDesugar {
         contains_else_clause: bool,
@@ -1601,6 +1627,8 @@ pub enum MatchSource {
     ForLoopDesugar,
     /// A desugared `?` operator.
     TryDesugar,
+    /// A desugared `<expr>.await`.
+    AwaitDesugar,
 }
 
 /// The loop type that yielded an `ExprKind::Loop`.
@@ -1883,11 +1911,34 @@ pub struct InlineAsm {
 pub struct Arg {
     pub pat: P<Pat>,
     pub hir_id: HirId,
+    pub source: ArgSource,
+}
+
+impl Arg {
+    /// Returns the pattern representing the original binding for this argument.
+    pub fn original_pat(&self) -> &P<Pat> {
+        match &self.source {
+            ArgSource::Normal => &self.pat,
+            ArgSource::AsyncFn(pat) => &pat,
+        }
+    }
+}
+
+/// Represents the source of an argument in a function header.
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
+pub enum ArgSource {
+    /// Argument as specified by the user.
+    Normal,
+    /// Generated argument from `async fn` lowering, contains the original binding pattern.
+    AsyncFn(P<Pat>),
 }
 
 /// Represents the header (not the body) of a function declaration.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub struct FnDecl {
+    /// The types of the function's arguments.
+    ///
+    /// Additional argument data is stored in the function's [body](Body::arguments).
     pub inputs: HirVec<Ty>,
     pub output: FunctionRetTy,
     pub c_variadic: bool,
@@ -2097,7 +2148,7 @@ pub enum UseKind {
 /// resolve maps each TraitRef's ref_id to its defining trait; that's all
 /// that the ref_id is for. Note that ref_id's value is not the NodeId of the
 /// trait being referred to but just a unique NodeId that serves as a key
-/// within the DefMap.
+/// within the resolution map.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub struct TraitRef {
     pub path: Path,
@@ -2109,10 +2160,10 @@ pub struct TraitRef {
 impl TraitRef {
     /// Gets the `DefId` of the referenced trait. It _must_ actually be a trait or trait alias.
     pub fn trait_def_id(&self) -> DefId {
-        match self.path.def {
-            Def::Trait(did) => did,
-            Def::TraitAlias(did) => did,
-            Def::Err => {
+        match self.path.res {
+            Res::Def(DefKind::Trait, did) => did,
+            Res::Def(DefKind::TraitAlias, did) => did,
+            Res::Err => {
                 FatalError.raise();
             }
             _ => unreachable!(),
@@ -2249,6 +2300,15 @@ pub struct FnHeader {
     pub constness: Constness,
     pub asyncness: IsAsync,
     pub abi: Abi,
+}
+
+impl FnHeader {
+    pub fn is_const(&self) -> bool {
+        match &self.constness {
+            Constness::Const => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -2405,9 +2465,8 @@ pub struct ForeignItem {
 pub enum ForeignItemKind {
     /// A foreign function.
     Fn(P<FnDecl>, HirVec<Ident>, Generics),
-    /// A foreign static item (`static ext: u8`), with optional mutability
-    /// (the boolean is true when mutable).
-    Static(P<Ty>, bool),
+    /// A foreign static item (`static ext: u8`).
+    Static(P<Ty>, Mutability),
     /// A foreign type.
     Type,
 }
@@ -2422,33 +2481,43 @@ impl ForeignItemKind {
     }
 }
 
-/// A free variable referred to in a function.
+/// A variable captured by a closure.
 #[derive(Debug, Copy, Clone, RustcEncodable, RustcDecodable, HashStable)]
-pub struct Freevar {
-    /// The variable being accessed free.
-    pub def: Def,
+pub struct Upvar<Id = HirId> {
+    /// The variable being captured.
+    pub res: Res<Id>,
 
     // First span where it is accessed (there can be multiple).
     pub span: Span
 }
 
-impl Freevar {
-    pub fn var_id(&self) -> NodeId {
-        match self.def {
-            Def::Local(id) | Def::Upvar(id, ..) => id,
-            _ => bug!("Freevar::var_id: bad def ({:?})", self.def)
+impl<Id: fmt::Debug + Copy> Upvar<Id> {
+    pub fn map_id<R>(self, map: impl FnMut(Id) -> R) -> Upvar<R> {
+        Upvar {
+            res: self.res.map_id(map),
+            span: self.span,
+        }
+    }
+
+    pub fn var_id(&self) -> Id {
+        match self.res {
+            Res::Local(id) | Res::Upvar(id, ..) => id,
+            _ => bug!("Upvar::var_id: bad res ({:?})", self.res)
         }
     }
 }
 
-pub type FreevarMap = NodeMap<Vec<Freevar>>;
+pub type UpvarMap = NodeMap<Vec<Upvar<ast::NodeId>>>;
 
 pub type CaptureModeMap = NodeMap<CaptureClause>;
 
+ // The TraitCandidate's import_ids is empty if the trait is defined in the same module, and
+ // has length > 0 if the trait is found through an chain of imports, starting with the
+ // import/use statement in the scope where the trait is used.
 #[derive(Clone, Debug)]
 pub struct TraitCandidate {
     pub def_id: DefId,
-    pub import_id: Option<NodeId>,
+    pub import_ids: SmallVec<[NodeId; 1]>,
 }
 
 // Trait method resolution
@@ -2461,7 +2530,7 @@ pub type GlobMap = NodeMap<FxHashSet<Name>>;
 
 pub fn provide(providers: &mut Providers<'_>) {
     check_attr::provide(providers);
-    providers.describe_def = map::describe_def;
+    providers.def_kind = map::def_kind;
 }
 
 #[derive(Clone, RustcEncodable, RustcDecodable, HashStable)]

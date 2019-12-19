@@ -1,13 +1,13 @@
 use if_chain::if_chain;
 use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintContext, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::ast;
 use syntax::source_map::Span;
 use syntax::visit::FnKind;
 use syntax_pos::BytePos;
 
-use crate::utils::{in_macro, match_path_ast, snippet_opt, span_lint_and_then, span_note_and_lint};
+use crate::utils::{in_macro_or_desugar, match_path_ast, snippet_opt, span_lint_and_then, span_note_and_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for return statements at the end of a block.
@@ -83,10 +83,9 @@ declare_clippy_lint! {
     "needless unit expression"
 }
 
-#[derive(Copy, Clone)]
-pub struct ReturnPass;
+declare_lint_pass!(Return => [NEEDLESS_RETURN, LET_AND_RETURN, UNUSED_UNIT]);
 
-impl ReturnPass {
+impl Return {
     // Check the final stmt or expr in a block for unnecessary return.
     fn check_block_return(&mut self, cx: &EarlyContext<'_>, block: &ast::Block) {
         if let Some(stmt) = block.stmts.last() {
@@ -131,7 +130,7 @@ impl ReturnPass {
     }
 
     fn emit_return_lint(&mut self, cx: &EarlyContext<'_>, ret_span: Span, inner_span: Span) {
-        if in_external_macro(cx.sess(), inner_span) || in_macro(inner_span) {
+        if in_external_macro(cx.sess(), inner_span) || in_macro_or_desugar(inner_span) {
             return;
         }
         span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
@@ -158,11 +157,11 @@ impl ReturnPass {
             if let ast::StmtKind::Local(ref local) = stmt.node;
             // don't lint in the presence of type inference
             if local.ty.is_none();
-            if !local.attrs.iter().any(attr_is_cfg);
+            if local.attrs.is_empty();
             if let Some(ref initexpr) = local.init;
             if let ast::PatKind::Ident(_, ident, _) = local.pat.node;
             if let ast::ExprKind::Path(_, ref path) = retexpr.node;
-            if match_path_ast(path, &[&ident.as_str()]);
+            if match_path_ast(path, &[&*ident.name.as_str()]);
             if !in_external_macro(cx.sess(), initexpr.span);
             then {
                     span_note_and_lint(cx,
@@ -177,17 +176,7 @@ impl ReturnPass {
     }
 }
 
-impl LintPass for ReturnPass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NEEDLESS_RETURN, LET_AND_RETURN, UNUSED_UNIT)
-    }
-
-    fn name(&self) -> &'static str {
-        "Return"
-    }
-}
-
-impl EarlyLintPass for ReturnPass {
+impl EarlyLintPass for Return {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, kind: FnKind<'_>, decl: &ast::FnDecl, span: Span, _: ast::NodeId) {
         match kind {
             FnKind::ItemFn(.., block) | FnKind::Method(.., block) => self.check_block_return(cx, block),
@@ -196,7 +185,7 @@ impl EarlyLintPass for ReturnPass {
         if_chain! {
             if let ast::FunctionRetTy::Ty(ref ty) = decl.output;
             if let ast::TyKind::Tup(ref vals) = ty.node;
-            if vals.is_empty() && !in_macro(ty.span) && get_def(span) == get_def(ty.span);
+            if vals.is_empty() && !in_macro_or_desugar(ty.span) && get_def(span) == get_def(ty.span);
             then {
                 let (rspan, appl) = if let Ok(fn_source) =
                         cx.sess().source_map()
@@ -228,7 +217,7 @@ impl EarlyLintPass for ReturnPass {
         if_chain! {
             if let Some(ref stmt) = block.stmts.last();
             if let ast::StmtKind::Expr(ref expr) = stmt.node;
-            if is_unit_expr(expr) && !in_macro(expr.span);
+            if is_unit_expr(expr) && !in_macro_or_desugar(expr.span);
             then {
                 let sp = expr.span;
                 span_lint_and_then(cx, UNUSED_UNIT, sp, "unneeded unit expression", |db| {
@@ -246,7 +235,7 @@ impl EarlyLintPass for ReturnPass {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
         match e.node {
             ast::ExprKind::Ret(Some(ref expr)) | ast::ExprKind::Break(_, Some(ref expr)) => {
-                if is_unit_expr(expr) && !in_macro(expr.span) {
+                if is_unit_expr(expr) && !in_macro_or_desugar(expr.span) {
                     span_lint_and_then(cx, UNUSED_UNIT, expr.span, "unneeded `()`", |db| {
                         db.span_suggestion(
                             expr.span,
@@ -263,7 +252,7 @@ impl EarlyLintPass for ReturnPass {
 }
 
 fn attr_is_cfg(attr: &ast::Attribute) -> bool {
-    attr.meta_item_list().is_some() && attr.check_name("cfg")
+    attr.meta_item_list().is_some() && attr.check_name(sym!(cfg))
 }
 
 // get the def site

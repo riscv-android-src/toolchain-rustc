@@ -5,6 +5,7 @@ use super::{expm1, expo2};
 //         = x + x^3/6 + o(x^5)
 //
 #[inline]
+#[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn sinh(x: f64) -> f64 {
     // union {double f; uint64_t i;} u = {.f = x};
     // uint32_t w;
@@ -45,5 +46,5 @@ pub fn sinh(x: f64) -> f64 {
     /* |x| > log(DBL_MAX) or nan */
     /* note: the result is stored to handle overflow */
     t = 2.0 * h * expo2(absx);
-    return t;
+    t
 }

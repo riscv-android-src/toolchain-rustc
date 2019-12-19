@@ -7,7 +7,7 @@
  *                            | (__| |_| |  _ <| |___
  *                             \___|\___/|_| \_\_____|
  *
- * Copyright (C) 2018, Daniel Stenberg, <daniel@haxx.se>, et al.
+ * Copyright (C) 2018 - 2019, Daniel Stenberg, <daniel@haxx.se>, et al.
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
@@ -22,6 +22,8 @@
  *
  ***************************************************************************/
 
+#include "curl.h"
+
 #ifdef  __cplusplus
 extern "C" {
 #endif
@@ -35,7 +37,7 @@ typedef enum {
   CURLUE_BAD_PORT_NUMBER,     /* 4 */
   CURLUE_UNSUPPORTED_SCHEME,  /* 5 */
   CURLUE_URLDECODE,           /* 6 */
-  CURLUE_RELATIVE,            /* 7 */
+  CURLUE_OUT_OF_MEMORY,       /* 7 */
   CURLUE_USER_NOT_ALLOWED,    /* 8 */
   CURLUE_UNKNOWN_PART,        /* 9 */
   CURLUE_NO_SCHEME,           /* 10 */
@@ -44,10 +46,8 @@ typedef enum {
   CURLUE_NO_OPTIONS,          /* 13 */
   CURLUE_NO_HOST,             /* 14 */
   CURLUE_NO_PORT,             /* 15 */
-  CURLUE_NO_PATH,             /* 16 */
-  CURLUE_NO_QUERY,            /* 17 */
-  CURLUE_NO_FRAGMENT,         /* 18 */
-  CURLUE_OUT_OF_MEMORY        /* 19 */
+  CURLUE_NO_QUERY,            /* 16 */
+  CURLUE_NO_FRAGMENT          /* 17 */
 } CURLUcode;
 
 typedef enum {
@@ -75,6 +75,7 @@ typedef enum {
 #define CURLU_URLDECODE (1<<6)          /* URL decode on get */
 #define CURLU_URLENCODE (1<<7)          /* URL encode on set */
 #define CURLU_APPENDQUERY (1<<8)        /* append a form style part */
+#define CURLU_GUESS_SCHEME (1<<9)       /* legacy curl-style guessing */
 
 typedef struct Curl_URL CURLU;
 

@@ -791,7 +791,8 @@ impl Execs {
     pub fn cwd<T: AsRef<OsStr>>(&mut self, path: T) -> &mut Self {
         if let Some(ref mut p) = self.process_builder {
             if let Some(cwd) = p.get_cwd() {
-                p.cwd(cwd.join(path.as_ref()));
+                let new_path = cwd.join(path.as_ref());
+                p.cwd(new_path);
             } else {
                 p.cwd(path);
             }
@@ -1616,6 +1617,10 @@ fn substitute_macros(input: &str) -> String {
         ("[SUMMARY]", "     Summary"),
         ("[FIXING]", "      Fixing"),
         ("[EXE]", env::consts::EXE_SUFFIX),
+        ("[IGNORED]", "     Ignored"),
+        ("[INSTALLED]", "   Installed"),
+        ("[REPLACED]", "    Replaced"),
+        ("[NOTE]", "        Note"),
     ];
     let mut result = input.to_owned();
     for &(pat, subst) in &macros {
@@ -1675,6 +1680,7 @@ fn _process(t: &OsStr) -> cargo::util::ProcessBuilder {
         .env_remove("XDG_CONFIG_HOME") // see #2345
         .env("GIT_CONFIG_NOSYSTEM", "1") // keep trying to sandbox ourselves
         .env_remove("EMAIL")
+        .env_remove("USER") // not set on some rust-lang docker images
         .env_remove("MFLAGS")
         .env_remove("MAKEFLAGS")
         .env_remove("CARGO_MAKEFLAGS")
@@ -1734,7 +1740,7 @@ pub fn is_coarse_mtime() -> bool {
 }
 
 /// Some CI setups are much slower then the equipment used by Cargo itself.
-/// Architectures that do not have a modern processor, hardware emulation, ect.
+/// Architectures that do not have a modern processor, hardware emulation, etc.
 /// This provides a way for those setups to increase the cut off for all the time based test.
 pub fn slow_cpu_multiplier(main: u64) -> Duration {
     lazy_static::lazy_static! {

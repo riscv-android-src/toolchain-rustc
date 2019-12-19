@@ -4,7 +4,7 @@ use rustc::hir::intravisit::FnKind;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::ast::LitKind;
 use syntax::source_map::{ExpnFormat, Span};
@@ -12,9 +12,9 @@ use syntax::source_map::{ExpnFormat, Span};
 use crate::consts::{constant, Constant};
 use crate::utils::sugg::Sugg;
 use crate::utils::{
-    get_item_name, get_parent_expr, implements_trait, in_constant, in_macro, is_integer_literal, iter_input_pats,
-    last_path_segment, match_qpath, match_trait_method, paths, snippet, span_lint, span_lint_and_then, walk_ptrs_ty,
-    SpanlessEq,
+    get_item_name, get_parent_expr, implements_trait, in_constant, in_macro_or_desugar, is_integer_literal,
+    iter_input_pats, last_path_segment, match_qpath, match_trait_method, paths, snippet, span_lint, span_lint_and_then,
+    span_lint_hir_and_then, walk_ptrs_ty, SpanlessEq,
 };
 
 declare_clippy_lint! {
@@ -232,31 +232,20 @@ declare_clippy_lint! {
     "using `==` or `!=` on float constants instead of comparing difference with an epsilon"
 }
 
-#[derive(Copy, Clone)]
-pub struct Pass;
+declare_lint_pass!(MiscLints => [
+    TOPLEVEL_REF_ARG,
+    CMP_NAN,
+    FLOAT_CMP,
+    CMP_OWNED,
+    MODULO_ONE,
+    REDUNDANT_PATTERN,
+    USED_UNDERSCORE_BINDING,
+    SHORT_CIRCUIT_STATEMENT,
+    ZERO_PTR,
+    FLOAT_CMP_CONST
+]);
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(
-            TOPLEVEL_REF_ARG,
-            CMP_NAN,
-            FLOAT_CMP,
-            CMP_OWNED,
-            MODULO_ONE,
-            REDUNDANT_PATTERN,
-            USED_UNDERSCORE_BINDING,
-            SHORT_CIRCUIT_STATEMENT,
-            ZERO_PTR,
-            FLOAT_CMP_CONST
-        )
-    }
-
-    fn name(&self) -> &'static str {
-        "MiscLints"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
     fn check_fn(
         &mut self,
         cx: &LateContext<'a, 'tcx>,
@@ -293,19 +282,20 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
             if let Some(ref init) = l.init;
             then {
                 if an == BindingAnnotation::Ref || an == BindingAnnotation::RefMut {
-                    let init = Sugg::hir(cx, init, "..");
+                    let sugg_init = Sugg::hir(cx, init, "..");
                     let (mutopt,initref) = if an == BindingAnnotation::RefMut {
-                        ("mut ", init.mut_addr())
+                        ("mut ", sugg_init.mut_addr())
                     } else {
-                        ("", init.addr())
+                        ("", sugg_init.addr())
                     };
                     let tyopt = if let Some(ref ty) = l.ty {
                         format!(": &{mutopt}{ty}", mutopt=mutopt, ty=snippet(cx, ty.span, "_"))
                     } else {
                         String::new()
                     };
-                    span_lint_and_then(cx,
+                    span_lint_hir_and_then(cx,
                         TOPLEVEL_REF_ARG,
+                        init.hir_id,
                         l.pat.span,
                         "`ref` on an entire `let` pattern is discouraged, take a reference with `&` instead",
                         |db| {
@@ -420,7 +410,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
                     binding != "_result" && // FIXME: #944
                     is_used(cx, expr) &&
                     // don't lint if the declaration is in a macro
-                    non_macro_local(cx, &cx.tables.qpath_def(qpath, expr.hir_id))
+                    non_macro_local(cx, cx.tables.qpath_res(qpath, expr.hir_id))
                 {
                     Some(binding)
                 } else {
@@ -471,7 +461,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
 fn check_nan(cx: &LateContext<'_, '_>, path: &Path, expr: &Expr) {
     if !in_constant(cx, expr.hir_id) {
         if let Some(seg) = path.segments.last() {
-            if seg.ident.name == "NAN" {
+            if seg.ident.name == sym!(NAN) {
                 span_lint(
                     cx,
                     CMP_NAN,
@@ -609,10 +599,10 @@ fn in_attributes_expansion(expr: &Expr) -> bool {
         .map_or(false, |info| matches!(info.format, ExpnFormat::MacroAttribute(_)))
 }
 
-/// Tests whether `def` is a variable defined outside a macro.
-fn non_macro_local(cx: &LateContext<'_, '_>, def: &def::Def) -> bool {
-    match *def {
-        def::Def::Local(id) | def::Def::Upvar(id, _, _) => !in_macro(cx.tcx.hir().span(id)),
+/// Tests whether `res` is a variable defined outside a macro.
+fn non_macro_local(cx: &LateContext<'_, '_>, res: def::Res) -> bool {
+    match res {
+        def::Res::Local(id) | def::Res::Upvar(id, ..) => !in_macro_or_desugar(cx.tcx.hir().span_by_hir_id(id)),
         _ => false,
     }
 }

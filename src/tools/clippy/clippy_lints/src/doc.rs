@@ -2,8 +2,9 @@ use crate::utils::span_lint;
 use itertools::Itertools;
 use pulldown_cmark;
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_tool_lint, impl_lint_pass};
 use rustc_data_structures::fx::FxHashSet;
+use std::ops::Range;
 use syntax::ast;
 use syntax::source_map::{BytePos, Span};
 use syntax_pos::Pos;
@@ -33,53 +34,27 @@ declare_clippy_lint! {
     "presence of `_`, `::` or camel-case outside backticks in documentation"
 }
 
+#[allow(clippy::module_name_repetitions)]
 #[derive(Clone)]
-pub struct Doc {
+pub struct DocMarkdown {
     valid_idents: FxHashSet<String>,
 }
 
-impl Doc {
+impl DocMarkdown {
     pub fn new(valid_idents: FxHashSet<String>) -> Self {
         Self { valid_idents }
     }
 }
 
-impl LintPass for Doc {
-    fn get_lints(&self) -> LintArray {
-        lint_array![DOC_MARKDOWN]
-    }
+impl_lint_pass!(DocMarkdown => [DOC_MARKDOWN]);
 
-    fn name(&self) -> &'static str {
-        "DocMarkdown"
-    }
-}
-
-impl EarlyLintPass for Doc {
+impl EarlyLintPass for DocMarkdown {
     fn check_crate(&mut self, cx: &EarlyContext<'_>, krate: &ast::Crate) {
         check_attrs(cx, &self.valid_idents, &krate.attrs);
     }
 
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &ast::Item) {
         check_attrs(cx, &self.valid_idents, &item.attrs);
-    }
-}
-
-struct Parser<'a> {
-    parser: pulldown_cmark::Parser<'a>,
-}
-
-impl<'a> Parser<'a> {
-    fn new(parser: pulldown_cmark::Parser<'a>) -> Self {
-        Self { parser }
-    }
-}
-
-impl<'a> Iterator for Parser<'a> {
-    type Item = (usize, pulldown_cmark::Event<'a>);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let offset = self.parser.get_offset();
-        self.parser.next().map(|event| (offset, event))
     }
 }
 
@@ -152,7 +127,7 @@ pub fn check_attrs<'a>(cx: &EarlyContext<'_>, valid_idents: &FxHashSet<String>, 
                 spans.extend_from_slice(&current_spans);
                 doc.push_str(&current);
             }
-        } else if attr.check_name("doc") {
+        } else if attr.check_name(sym!(doc)) {
             // ignore mix of sugared and non-sugared doc
             return;
         }
@@ -166,30 +141,31 @@ pub fn check_attrs<'a>(cx: &EarlyContext<'_>, valid_idents: &FxHashSet<String>, 
     }
 
     if !doc.is_empty() {
-        let parser = Parser::new(pulldown_cmark::Parser::new(&doc));
-        let parser = parser.coalesce(|x, y| {
+        let parser = pulldown_cmark::Parser::new(&doc).into_offset_iter();
+        // Iterate over all `Events` and combine consecutive events into one
+        let events = parser.coalesce(|previous, current| {
             use pulldown_cmark::Event::*;
 
-            let x_offset = x.0;
-            let y_offset = y.0;
+            let previous_range = previous.1;
+            let current_range = current.1;
 
-            match (x.1, y.1) {
-                (Text(x), Text(y)) => {
-                    let mut x = x.into_owned();
-                    x.push_str(&y);
-                    Ok((x_offset, Text(x.into())))
+            match (previous.0, current.0) {
+                (Text(previous), Text(current)) => {
+                    let mut previous = previous.to_string();
+                    previous.push_str(&current);
+                    Ok((Text(previous.into()), previous_range))
                 },
-                (x, y) => Err(((x_offset, x), (y_offset, y))),
+                (previous, current) => Err(((previous, previous_range), (current, current_range))),
             }
         });
-        check_doc(cx, valid_idents, parser, &spans);
+        check_doc(cx, valid_idents, events, &spans);
     }
 }
 
-fn check_doc<'a, Events: Iterator<Item = (usize, pulldown_cmark::Event<'a>)>>(
+fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize>)>>(
     cx: &EarlyContext<'_>,
     valid_idents: &FxHashSet<String>,
-    docs: Events,
+    events: Events,
     spans: &[(usize, Span)],
 ) {
     use pulldown_cmark::Event::*;
@@ -198,15 +174,15 @@ fn check_doc<'a, Events: Iterator<Item = (usize, pulldown_cmark::Event<'a>)>>(
     let mut in_code = false;
     let mut in_link = None;
 
-    for (offset, event) in docs {
+    for (event, range) in events {
         match event {
-            Start(CodeBlock(_)) | Start(Code) => in_code = true,
-            End(CodeBlock(_)) | End(Code) => in_code = false,
-            Start(Link(link, _)) => in_link = Some(link),
-            End(Link(_, _)) => in_link = None,
+            Start(CodeBlock(_)) => in_code = true,
+            End(CodeBlock(_)) => in_code = false,
+            Start(Link(_, url, _)) => in_link = Some(url),
+            End(Link(..)) => in_link = None,
             Start(_tag) | End(_tag) => (),         // We don't care about other tags
             Html(_html) | InlineHtml(_html) => (), // HTML is weird, just ignore it
-            SoftBreak | HardBreak => (),
+            SoftBreak | HardBreak | TaskListMarker(_) | Code(_) => (),
             FootnoteReference(text) | Text(text) => {
                 if Some(&text) == in_link.as_ref() {
                     // Probably a link of the form `<http://example.com>`
@@ -216,7 +192,7 @@ fn check_doc<'a, Events: Iterator<Item = (usize, pulldown_cmark::Event<'a>)>>(
                 }
 
                 if !in_code {
-                    let index = match spans.binary_search_by(|c| c.0.cmp(&offset)) {
+                    let index = match spans.binary_search_by(|c| c.0.cmp(&range.start)) {
                         Ok(o) => o,
                         Err(e) => e - 1,
                     };
@@ -224,7 +200,7 @@ fn check_doc<'a, Events: Iterator<Item = (usize, pulldown_cmark::Event<'a>)>>(
                     let (begin, span) = spans[index];
 
                     // Adjust for the beginning of the current `Event`
-                    let span = span.with_lo(span.lo() + BytePos::from_usize(offset - begin));
+                    let span = span.with_lo(span.lo() + BytePos::from_usize(range.start - begin));
 
                     check_text(cx, valid_idents, &text, span);
                 }

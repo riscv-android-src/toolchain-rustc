@@ -15,40 +15,35 @@
 //! (for example, with and without tests), so we actually build a dependency
 //! graph of `Unit`s, which capture these properties.
 
-use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
-
-use log::trace;
-
-use super::{BuildContext, CompileMode, Kind, Unit};
+use crate::core::compiler::Unit;
+use crate::core::compiler::{BuildContext, CompileMode, Context, Kind};
 use crate::core::dependency::Kind as DepKind;
 use crate::core::package::Downloads;
 use crate::core::profiles::UnitFor;
 use crate::core::{Package, PackageId, Target};
 use crate::CargoResult;
+use log::trace;
+use std::collections::{HashMap, HashSet};
 
 struct State<'a: 'tmp, 'cfg: 'a, 'tmp> {
-    bcx: &'tmp BuildContext<'a, 'cfg>,
-    deps: &'tmp mut HashMap<Unit<'a>, Vec<Unit<'a>>>,
-    pkgs: RefCell<&'tmp mut HashMap<PackageId, &'a Package>>,
+    cx: &'tmp mut Context<'a, 'cfg>,
     waiting_on_download: HashSet<PackageId>,
     downloads: Downloads<'a, 'cfg>,
 }
 
 pub fn build_unit_dependencies<'a, 'cfg>(
+    cx: &mut Context<'a, 'cfg>,
     roots: &[Unit<'a>],
-    bcx: &BuildContext<'a, 'cfg>,
-    deps: &mut HashMap<Unit<'a>, Vec<Unit<'a>>>,
-    pkgs: &mut HashMap<PackageId, &'a Package>,
 ) -> CargoResult<()> {
-    assert!(deps.is_empty(), "can only build unit deps once");
+    assert!(
+        cx.unit_dependencies.is_empty(),
+        "can only build unit deps once"
+    );
 
     let mut state = State {
-        bcx,
-        deps,
-        pkgs: RefCell::new(pkgs),
+        downloads: cx.bcx.packages.enable_download()?,
+        cx,
         waiting_on_download: HashSet::new(),
-        downloads: bcx.packages.enable_download()?,
     };
 
     loop {
@@ -61,7 +56,7 @@ pub fn build_unit_dependencies<'a, 'cfg>(
             // cleared, and avoid building the lib thrice (once with `panic`, once
             // without, once for `--test`). In particular, the lib included for
             // Doc tests and examples are `Build` mode here.
-            let unit_for = if unit.mode.is_any_test() || bcx.build_config.test() {
+            let unit_for = if unit.mode.is_any_test() || state.cx.bcx.build_config.test() {
                 UnitFor::new_test()
             } else if unit.target.is_custom_build() {
                 // This normally doesn't happen, except `clean` aggressively
@@ -78,14 +73,25 @@ pub fn build_unit_dependencies<'a, 'cfg>(
 
         if !state.waiting_on_download.is_empty() {
             state.finish_some_downloads()?;
-            state.deps.clear();
+            state.cx.unit_dependencies.clear();
         } else {
             break;
         }
     }
-    trace!("ALL UNIT DEPENDENCIES {:#?}", state.deps);
 
     connect_run_custom_build_deps(&mut state);
+
+    trace!("ALL UNIT DEPENDENCIES {:#?}", state.cx.unit_dependencies);
+
+    record_units_requiring_metadata(state.cx);
+
+    // Dependencies are used in tons of places throughout the backend, many of
+    // which affect the determinism of the build itself. As a result be sure
+    // that dependency lists are always sorted to ensure we've always got a
+    // deterministic output.
+    for list in state.cx.unit_dependencies.values_mut() {
+        list.sort();
+    }
 
     Ok(())
 }
@@ -95,16 +101,16 @@ fn deps_of<'a, 'cfg, 'tmp>(
     state: &mut State<'a, 'cfg, 'tmp>,
     unit_for: UnitFor,
 ) -> CargoResult<()> {
-    // Currently the `deps` map does not include `unit_for`. This should
+    // Currently the `unit_dependencies` map does not include `unit_for`. This should
     // be safe for now. `TestDependency` only exists to clear the `panic`
     // flag, and you'll never ask for a `unit` with `panic` set as a
     // `TestDependency`. `CustomBuild` should also be fine since if the
     // requested unit's settings are the same as `Any`, `CustomBuild` can't
     // affect anything else in the hierarchy.
-    if !state.deps.contains_key(unit) {
+    if !state.cx.unit_dependencies.contains_key(unit) {
         let unit_deps = compute_deps(unit, state, unit_for)?;
         let to_insert: Vec<_> = unit_deps.iter().map(|&(unit, _)| unit).collect();
-        state.deps.insert(*unit, to_insert);
+        state.cx.unit_dependencies.insert(*unit, to_insert);
         for (unit, unit_for) in unit_deps {
             deps_of(&unit, state, unit_for)?;
         }
@@ -122,13 +128,13 @@ fn compute_deps<'a, 'cfg, 'tmp>(
     unit_for: UnitFor,
 ) -> CargoResult<Vec<(Unit<'a>, UnitFor)>> {
     if unit.mode.is_run_custom_build() {
-        return compute_deps_custom_build(unit, state.bcx);
+        return compute_deps_custom_build(unit, state.cx.bcx);
     } else if unit.mode.is_doc() && !unit.mode.is_any_test() {
         // Note: this does not include doc test.
         return compute_deps_doc(unit, state);
     }
 
-    let bcx = state.bcx;
+    let bcx = state.cx.bcx;
     let id = unit.pkg.package_id();
     let deps = bcx.resolve.deps(id).filter(|&(_id, deps)| {
         assert!(!deps.is_empty());
@@ -286,7 +292,7 @@ fn compute_deps_doc<'a, 'cfg, 'tmp>(
     unit: &Unit<'a>,
     state: &mut State<'a, 'cfg, 'tmp>,
 ) -> CargoResult<Vec<(Unit<'a>, UnitFor)>> {
-    let bcx = state.bcx;
+    let bcx = state.cx.bcx;
     let deps = bcx
         .resolve
         .deps(unit.pkg.package_id())
@@ -342,7 +348,7 @@ fn compute_deps_doc<'a, 'cfg, 'tmp>(
 
 fn maybe_lib<'a>(
     unit: &Unit<'a>,
-    bcx: &BuildContext<'_, '_>,
+    bcx: &BuildContext<'a, '_>,
     unit_for: UnitFor,
 ) -> Option<(Unit<'a>, UnitFor)> {
     unit.pkg.targets().iter().find(|t| t.linkable()).map(|t| {
@@ -361,7 +367,7 @@ fn maybe_lib<'a>(
 /// build script.
 fn dep_build_script<'a>(
     unit: &Unit<'a>,
-    bcx: &BuildContext<'_, '_>,
+    bcx: &BuildContext<'a, '_>,
 ) -> Option<(Unit<'a>, UnitFor)> {
     unit.pkg
         .targets()
@@ -370,16 +376,15 @@ fn dep_build_script<'a>(
         .map(|t| {
             // The profile stored in the Unit is the profile for the thing
             // the custom build script is running for.
-            (
-                Unit {
-                    pkg: unit.pkg,
-                    target: t,
-                    profile: bcx.profiles.get_profile_run_custom_build(&unit.profile),
-                    kind: unit.kind,
-                    mode: CompileMode::RunCustomBuild,
-                },
-                UnitFor::new_build(),
-            )
+            let unit = bcx.units.intern(
+                unit.pkg,
+                t,
+                bcx.profiles.get_profile_run_custom_build(&unit.profile),
+                unit.kind,
+                CompileMode::RunCustomBuild,
+            );
+
+            (unit, UnitFor::new_build())
         })
 }
 
@@ -402,7 +407,7 @@ fn check_or_build_mode(mode: CompileMode, target: &Target) -> CompileMode {
 }
 
 fn new_unit<'a>(
-    bcx: &BuildContext<'_, '_>,
+    bcx: &BuildContext<'a, '_>,
     pkg: &'a Package,
     target: &'a Target,
     unit_for: UnitFor,
@@ -416,13 +421,8 @@ fn new_unit<'a>(
         mode,
         bcx.build_config.release,
     );
-    Unit {
-        pkg,
-        target,
-        profile,
-        kind,
-        mode,
-    }
+
+    bcx.units.intern(pkg, target, profile, kind, mode)
 }
 
 /// Fill in missing dependencies for units of the `RunCustomBuild`
@@ -445,7 +445,7 @@ fn connect_run_custom_build_deps(state: &mut State<'_, '_, '_>) {
         // have the build script as the key and the library would be in the
         // value's set.
         let mut reverse_deps = HashMap::new();
-        for (unit, deps) in state.deps.iter() {
+        for (unit, deps) in state.cx.unit_dependencies.iter() {
             for dep in deps {
                 if dep.mode == CompileMode::RunCustomBuild {
                     reverse_deps
@@ -466,7 +466,8 @@ fn connect_run_custom_build_deps(state: &mut State<'_, '_, '_>) {
         // `dep_build_script` to manufacture an appropriate build script unit to
         // depend on.
         for unit in state
-            .deps
+            .cx
+            .unit_dependencies
             .keys()
             .filter(|k| k.mode == CompileMode::RunCustomBuild)
         {
@@ -477,13 +478,13 @@ fn connect_run_custom_build_deps(state: &mut State<'_, '_, '_>) {
 
             let to_add = reverse_deps
                 .iter()
-                .flat_map(|reverse_dep| state.deps[reverse_dep].iter())
+                .flat_map(|reverse_dep| state.cx.unit_dependencies[reverse_dep].iter())
                 .filter(|other| {
                     other.pkg != unit.pkg
                         && other.target.linkable()
                         && other.pkg.manifest().links().is_some()
                 })
-                .filter_map(|other| dep_build_script(other, state.bcx).map(|p| p.0))
+                .filter_map(|other| dep_build_script(other, state.cx.bcx).map(|p| p.0))
                 .collect::<HashSet<_>>();
 
             if !to_add.is_empty() {
@@ -494,21 +495,39 @@ fn connect_run_custom_build_deps(state: &mut State<'_, '_, '_>) {
 
     // And finally, add in all the missing dependencies!
     for (unit, new_deps) in new_deps {
-        state.deps.get_mut(&unit).unwrap().extend(new_deps);
+        state
+            .cx
+            .unit_dependencies
+            .get_mut(&unit)
+            .unwrap()
+            .extend(new_deps);
+    }
+}
+
+/// Records the list of units which are required to emit metadata.
+///
+/// Units which depend only on the metadata of others requires the others to
+/// actually produce metadata, so we'll record that here.
+fn record_units_requiring_metadata(cx: &mut Context<'_, '_>) {
+    for (key, deps) in cx.unit_dependencies.iter() {
+        for dep in deps {
+            if cx.only_requires_rmeta(key, dep) {
+                cx.rmeta_required.insert(*dep);
+            }
+        }
     }
 }
 
 impl<'a, 'cfg, 'tmp> State<'a, 'cfg, 'tmp> {
     fn get(&mut self, id: PackageId) -> CargoResult<Option<&'a Package>> {
-        let mut pkgs = self.pkgs.borrow_mut();
-        if let Some(pkg) = pkgs.get(&id) {
+        if let Some(pkg) = self.cx.package_cache.get(&id) {
             return Ok(Some(pkg));
         }
         if !self.waiting_on_download.insert(id) {
             return Ok(None);
         }
         if let Some(pkg) = self.downloads.start(id)? {
-            pkgs.insert(id, pkg);
+            self.cx.package_cache.insert(id, pkg);
             self.waiting_on_download.remove(&id);
             return Ok(Some(pkg));
         }
@@ -528,7 +547,7 @@ impl<'a, 'cfg, 'tmp> State<'a, 'cfg, 'tmp> {
         loop {
             let pkg = self.downloads.wait()?;
             self.waiting_on_download.remove(&pkg.package_id());
-            self.pkgs.borrow_mut().insert(pkg.package_id(), pkg);
+            self.cx.package_cache.insert(pkg.package_id(), pkg);
 
             // Arbitrarily choose that 5 or more packages concurrently download
             // is a good enough number to "fill the network pipe". If we have

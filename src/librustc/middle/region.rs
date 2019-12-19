@@ -12,7 +12,6 @@ use crate::ty;
 
 use std::mem;
 use std::fmt;
-use rustc_data_structures::sync::Lrc;
 use rustc_macros::HashStable;
 use syntax::source_map;
 use syntax::ast;
@@ -159,7 +158,7 @@ newtype_index! {
 impl_stable_hash_for!(struct crate::middle::region::FirstStatementIndex { private });
 
 // compilation error if size of `ScopeData` is not the same as a `u32`
-static_assert!(ASSERT_SCOPE_DATA: mem::size_of::<ScopeData>() == 4);
+static_assert_size!(ScopeData, 4);
 
 impl Scope {
     /// Returns a item-local ID associated with this scope.
@@ -659,12 +658,15 @@ impl<'tcx> ScopeTree {
             // The lifetime was defined on node that doesn't own a body,
             // which in practice can only mean a trait or an impl, that
             // is the parent of a method, and that is enforced below.
-            assert_eq!(Some(param_owner_id), self.root_parent,
-                       "free_scope: {:?} not recognized by the \
-                        region scope tree for {:?} / {:?}",
-                       param_owner,
-                       self.root_parent.map(|id| tcx.hir().local_def_id_from_hir_id(id)),
-                       self.root_body.map(|hir_id| DefId::local(hir_id.owner)));
+            if Some(param_owner_id) != self.root_parent {
+                tcx.sess.delay_span_bug(
+                    DUMMY_SP,
+                    &format!("free_scope: {:?} not recognized by the \
+                              region scope tree for {:?} / {:?}",
+                             param_owner,
+                             self.root_parent.map(|id| tcx.hir().local_def_id_from_hir_id(id)),
+                             self.root_body.map(|hir_id| DefId::local(hir_id.owner))));
+            }
 
             // The trait/impl lifetime is in scope for the method's body.
             self.root_body.unwrap().local_id
@@ -885,17 +887,6 @@ fn resolve_expr<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, expr:
                     terminating(r.hir_id.local_id);
             }
 
-            hir::ExprKind::If(ref expr, ref then, Some(ref otherwise)) => {
-                terminating(expr.hir_id.local_id);
-                terminating(then.hir_id.local_id);
-                terminating(otherwise.hir_id.local_id);
-            }
-
-            hir::ExprKind::If(ref expr, ref then, None) => {
-                terminating(expr.hir_id.local_id);
-                terminating(then.hir_id.local_id);
-            }
-
             hir::ExprKind::Loop(ref body, _, _) => {
                 terminating(body.hir_id.local_id);
             }
@@ -907,6 +898,12 @@ fn resolve_expr<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, expr:
 
             hir::ExprKind::Match(..) => {
                 visitor.cx.var_parent = visitor.cx.parent;
+            }
+
+            hir::ExprKind::DropTemps(ref expr) => {
+                // `DropTemps(expr)` does not denote a conditional scope.
+                // Rather, we want to achieve the same behavior as `{ let _t = expr; _t }`.
+                terminating(expr.hir_id.local_id);
             }
 
             hir::ExprKind::AssignOp(..) | hir::ExprKind::Index(..) |
@@ -1323,7 +1320,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RegionResolutionVisitor<'a, 'tcx> {
 }
 
 fn region_scope_tree<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId)
-    -> Lrc<ScopeTree>
+    -> &'tcx ScopeTree
 {
     let closure_base_def_id = tcx.closure_base_def_id(def_id);
     if closure_base_def_id != def_id {
@@ -1365,7 +1362,7 @@ fn region_scope_tree<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId)
         ScopeTree::default()
     };
 
-    Lrc::new(scope_tree)
+    tcx.arena.alloc(scope_tree)
 }
 
 pub fn provide(providers: &mut Providers<'_>) {

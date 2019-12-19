@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use build_helper::t;
+
 use crate::cache::{Cache, Interned, INTERNER};
 use crate::check;
 use crate::compile;
@@ -853,14 +855,30 @@ impl<'a> Builder<'a> {
 
         // FIXME: Temporary fix for https://github.com/rust-lang/cargo/issues/3005
         // Force cargo to output binaries with disambiguating hashes in the name
-        let metadata = if compiler.stage == 0 {
-            // Treat stage0 like special channel, whether it's a normal prior-
+        let mut metadata = if compiler.stage == 0 {
+            // Treat stage0 like a special channel, whether it's a normal prior-
             // release rustc or a local rebuild with the same version, so we
             // never mix these libraries by accident.
-            "bootstrap"
+            "bootstrap".to_string()
         } else {
-            &self.config.channel
+            self.config.channel.to_string()
         };
+        // We want to make sure that none of the dependencies between
+        // std/test/rustc unify with one another. This is done for weird linkage
+        // reasons but the gist of the problem is that if librustc, libtest, and
+        // libstd all depend on libc from crates.io (which they actually do) we
+        // want to make sure they all get distinct versions. Things get really
+        // weird if we try to unify all these dependencies right now, namely
+        // around how many times the library is linked in dynamic libraries and
+        // such. If rustc were a static executable or if we didn't ship dylibs
+        // this wouldn't be a problem, but we do, so it is. This is in general
+        // just here to make sure things build right. If you can remove this and
+        // things still build right, please do!
+        match mode {
+            Mode::Std => metadata.push_str("std"),
+            Mode::Test => metadata.push_str("test"),
+            _ => {},
+        }
         cargo.env("__CARGO_DEFAULT_LIB_METADATA", &metadata);
 
         let stage;
@@ -1291,6 +1309,8 @@ mod __test {
     use super::*;
     use crate::config::Config;
     use std::thread;
+
+    use pretty_assertions::assert_eq;
 
     fn configure(host: &[&str], target: &[&str]) -> Config {
         let mut config = Config::default_opts();

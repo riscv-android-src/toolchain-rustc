@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,7 +12,7 @@
 
 [package]
 name = "regex"
-version = "1.1.0"
+version = "1.1.6"
 authors = ["The Rust Project Developers"]
 exclude = ["/.travis.yml", "/appveyor.yml", "/ci/*", "/scripts/*"]
 autotests = false
@@ -71,13 +71,13 @@ path = "tests/test_backtrack_bytes.rs"
 name = "crates-regex"
 path = "tests/test_crates_regex.rs"
 [dependencies.aho-corasick]
-version = "0.6.7"
+version = "0.7.3"
 
 [dependencies.memchr]
 version = "2.0.2"
 
 [dependencies.regex-syntax]
-version = "0.6.2"
+version = "0.6.6"
 
 [dependencies.thread_local]
 version = "0.3.6"
@@ -92,7 +92,7 @@ version = "0.7"
 default-features = false
 
 [dev-dependencies.rand]
-version = "0.5"
+version = "0.6.5"
 
 [features]
 default = ["use_std"]

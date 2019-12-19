@@ -1,18 +1,16 @@
 use crate::utils::paths;
 use crate::utils::{
-    in_macro, match_trait_method, match_type, remove_blocks, snippet_with_applicability, span_lint_and_sugg,
+    in_macro_or_desugar, is_copy, match_trait_method, match_type, remove_blocks, snippet_with_applicability,
+    span_lint_and_sugg,
 };
 use if_chain::if_chain;
 use rustc::hir;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use syntax::ast::Ident;
 use syntax::source_map::Span;
-
-#[derive(Clone)]
-pub struct Pass;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for usage of `iterator.map(|x| x.clone())` and suggests
@@ -42,19 +40,11 @@ declare_clippy_lint! {
     "using `iterator.map(|x| x.clone())`, or dereferencing closures for `Copy` types"
 }
 
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(MAP_CLONE)
-    }
+declare_lint_pass!(MapClone => [MAP_CLONE]);
 
-    fn name(&self) -> &'static str {
-        "MapClone"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MapClone {
     fn check_expr(&mut self, cx: &LateContext<'_, '_>, e: &hir::Expr) {
-        if in_macro(e.span) {
+        if in_macro_or_desugar(e.span) {
             return;
         }
 
@@ -73,14 +63,14 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
                         hir::BindingAnnotation::Unannotated, .., name, None
                     ) = inner.node {
                         if ident_eq(name, closure_expr) {
-                            lint(cx, e.span, args[0].span);
+                            lint(cx, e.span, args[0].span, true);
                         }
                     },
                     hir::PatKind::Binding(hir::BindingAnnotation::Unannotated, .., name, None) => {
                         match closure_expr.node {
                             hir::ExprKind::Unary(hir::UnOp::UnDeref, ref inner) => {
                                 if ident_eq(name, inner) && !cx.tables.expr_ty(inner).is_box() {
-                                    lint(cx, e.span, args[0].span);
+                                    lint(cx, e.span, args[0].span, true);
                                 }
                             },
                             hir::ExprKind::MethodCall(ref method, _, ref obj) => {
@@ -88,8 +78,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
                                     && match_trait_method(cx, closure_expr, &paths::CLONE_TRAIT) {
 
                                     let obj_ty = cx.tables.expr_ty(&obj[0]);
-                                    if let ty::Ref(..) = obj_ty.sty {
-                                        lint(cx, e.span, args[0].span);
+                                    if let ty::Ref(_, ty, _) = obj_ty.sty {
+                                        let copy = is_copy(cx, ty);
+                                        lint(cx, e.span, args[0].span, copy);
                                     } else {
                                         lint_needless_cloning(cx, e.span, args[0].span);
                                     }
@@ -125,18 +116,33 @@ fn lint_needless_cloning(cx: &LateContext<'_, '_>, root: Span, receiver: Span) {
     )
 }
 
-fn lint(cx: &LateContext<'_, '_>, replace: Span, root: Span) {
+fn lint(cx: &LateContext<'_, '_>, replace: Span, root: Span, copied: bool) {
     let mut applicability = Applicability::MachineApplicable;
-    span_lint_and_sugg(
-        cx,
-        MAP_CLONE,
-        replace,
-        "You are using an explicit closure for cloning elements",
-        "Consider calling the dedicated `cloned` method",
-        format!(
-            "{}.cloned()",
-            snippet_with_applicability(cx, root, "..", &mut applicability)
-        ),
-        applicability,
-    )
+    if copied {
+        span_lint_and_sugg(
+            cx,
+            MAP_CLONE,
+            replace,
+            "You are using an explicit closure for copying elements",
+            "Consider calling the dedicated `copied` method",
+            format!(
+                "{}.copied()",
+                snippet_with_applicability(cx, root, "..", &mut applicability)
+            ),
+            applicability,
+        )
+    } else {
+        span_lint_and_sugg(
+            cx,
+            MAP_CLONE,
+            replace,
+            "You are using an explicit closure for cloning elements",
+            "Consider calling the dedicated `cloned` method",
+            format!(
+                "{}.cloned()",
+                snippet_with_applicability(cx, root, "..", &mut applicability)
+            ),
+            applicability,
+        )
+    }
 }

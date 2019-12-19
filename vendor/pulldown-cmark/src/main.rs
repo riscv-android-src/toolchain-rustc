@@ -28,9 +28,9 @@ use pulldown_cmark::Parser;
 use pulldown_cmark::Options;
 use pulldown_cmark::html;
 
+use std::mem;
 use std::env;
-use std::io;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::Path;
 use std::fs::File;
 
@@ -43,10 +43,6 @@ fn render_html(text: &str, opts: Options) -> String {
 
 fn dry_run(text:&str, opts: Options) {
     let p = Parser::new_ext(text, opts);
-    /*
-    let events = p.collect::<Vec<_>>();
-    let count = events.len();
-    */
     let count = p.count();
     println!("{} events", count);
 }
@@ -91,7 +87,7 @@ struct Spec<'a> {
 
 impl<'a> Spec<'a> {
     pub fn new(spec: &'a str) -> Self {
-        Spec{ spec: spec, test_n: 0 }
+        Spec{ spec, test_n: 0 }
     }
 }
 
@@ -103,7 +99,7 @@ struct TestCase<'a> {
 
 impl<'a> TestCase<'a> {
     pub fn new(n: usize, input: &'a str, expected: &'a str) -> Self {
-        TestCase { n: n, input: input, expected: expected }
+        TestCase { n, input, expected }
     }
 }
 
@@ -135,9 +131,7 @@ impl<'a> Iterator for Spec<'a> {
     }
 }
 
-
 fn run_spec(spec_text: &str, args: &[String], opts: Options) {
-    //println!("spec length={}, args={:?}", spec_text.len(), args);
     let (first, last) = if args.is_empty() {
         (None, None)
     } else {
@@ -174,7 +168,7 @@ fn run_spec(spec_text: &str, args: &[String], opts: Options) {
 
         let our_html = render_html(&test.input, opts);
 
-        if our_html == test.expected {
+        if our_html == test.expected.replace("→", "\t") {
             print!(".");
         } else {
             if tests_failed == 0 {
@@ -193,9 +187,12 @@ fn run_spec(spec_text: &str, args: &[String], opts: Options) {
     print!("{}", fail_report);
 }
 
-fn brief<ProgramName>(program: ProgramName) -> String
-        where ProgramName: std::fmt::Display {
-    return format!("Usage: {} FILE [options]", program);
+fn brief(program: &str) -> String {
+    format!(
+        "Usage: {} [options]\n\n{}",
+        program,
+        "Reads markdown from standard input and emits HTML.",
+    )
 }
 
 pub fn main() {
@@ -206,21 +203,14 @@ pub fn main() {
     opts.optflag("e", "events", "print event sequence instead of rendering");
     opts.optflag("T", "enable-tables", "enable GitHub-style tables");
     opts.optflag("F", "enable-footnotes", "enable Hoedown-style footnotes");
+    opts.optflag("S", "enable-strikethrough", "enable GitHub-style strikethrough");
+    opts.optflag("L", "enable-tasklists", "enable GitHub-style task lists");
     opts.optopt("s", "spec", "run tests from spec file", "FILE");
     opts.optopt("b", "bench", "run benchmark", "FILE");
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
-            let message = format!("{}\n{}\n",
-                                  f.to_string(),
-                                  opts.usage(&brief(&args[0])));
-            if let Err(err) = write!(std::io::stderr(), "{}", message) {
-                panic!("Failed to write to standard error: {}\n\
-                       Error encountered while trying to log the \
-                       following message: \"{}\"",
-                       err,
-                       message);
-            }
+            eprintln!("{}\n{}", f, opts.usage(&brief(&args[0])));
             std::process::exit(1);
         }
     };
@@ -235,6 +225,12 @@ pub fn main() {
     if matches.opt_present("enable-footnotes") {
         opts.insert(Options::ENABLE_FOOTNOTES);
     }
+    if matches.opt_present("enable-strikethrough") {
+        opts.insert(Options::ENABLE_STRIKETHROUGH);
+    }
+    if matches.opt_present("enable-tasklists") {
+        opts.insert(Options::ENABLE_TASKLISTS);
+    }
     if let Some(filename) = matches.opt_str("spec") {
         run_spec(&read_file(&filename).replace("→", "\t"), &matches.free, opts);
     } else if let Some(filename) = matches.opt_str("bench") {
@@ -244,7 +240,7 @@ pub fn main() {
         }
     } else {
         let mut input = String::new();
-        if let Err(why) = io::stdin().read_to_string(&mut input) {
+        if let Err(why) = io::stdin().lock().read_to_string(&mut input) {
             panic!("couldn't read from stdin: {}", why)
         }
         if matches.opt_present("events") {
@@ -252,7 +248,16 @@ pub fn main() {
         } else if matches.opt_present("dry-run") {
             dry_run(&input, opts);
         } else {
-            print!("{}", render_html(&input, opts));
+            let mut p = Parser::new_ext(&input, opts);
+            let stdio = io::stdout();
+            let buffer = std::io::BufWriter::with_capacity(1*1024*1024, stdio.lock());
+            html::write_html(buffer, &mut p).unwrap();
+            // Since the program will now terminate and the memory will be returned
+            // to the operating system anyway, there is no point in tidely cleaning
+            // up all the datastructures we have used. We shouldn't do this if we'd
+            // do other things after this, because this is basically intentionally
+            // leaking data. Skipping cleanup let's us return a bit (~5%) faster.
+            mem::forget(p);
         }
     }
 }

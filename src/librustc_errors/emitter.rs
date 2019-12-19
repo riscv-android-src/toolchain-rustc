@@ -16,15 +16,47 @@ use std::borrow::Cow;
 use std::io::prelude::*;
 use std::io;
 use std::cmp::{min, Reverse};
-use termcolor::{StandardStream, ColorChoice, ColorSpec, BufferWriter};
+use std::path::Path;
+use termcolor::{StandardStream, ColorChoice, ColorSpec, BufferWriter, Ansi};
 use termcolor::{WriteColor, Color, Buffer};
+
+/// Describes the way the content of the `rendered` field of the json output is generated
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HumanReadableErrorType {
+    Default(ColorConfig),
+    Short(ColorConfig),
+}
+
+impl HumanReadableErrorType {
+    /// Returns a (`short`, `color`) tuple
+    pub fn unzip(self) -> (bool, ColorConfig) {
+        match self {
+            HumanReadableErrorType::Default(cc) => (false, cc),
+            HumanReadableErrorType::Short(cc) => (true, cc),
+        }
+    }
+    pub fn new_emitter(
+        self,
+        dst: Box<dyn Write + Send>,
+        source_map: Option<Lrc<SourceMapperDyn>>,
+        teach: bool,
+    ) -> EmitterWriter {
+        let (short, color_config) = self.unzip();
+        EmitterWriter::new(dst, source_map, short, teach, color_config.suggests_using_colors())
+    }
+}
 
 const ANONYMIZED_LINE_NUM: &str = "LL";
 
 /// Emitter trait for emitting errors.
 pub trait Emitter {
     /// Emit a structured diagnostic.
-    fn emit(&mut self, db: &DiagnosticBuilder<'_>);
+    fn emit_diagnostic(&mut self, db: &DiagnosticBuilder<'_>);
+
+    /// Emit a notification that an artifact has been output.
+    /// This is currently only supported for the JSON format,
+    /// other formats can, and will, simply ignore it.
+    fn emit_artifact_notification(&mut self, _path: &Path) {}
 
     /// Checks if should show explanations about "rustc --explain"
     fn should_show_explain(&self) -> bool {
@@ -33,7 +65,7 @@ pub trait Emitter {
 }
 
 impl Emitter for EmitterWriter {
-    fn emit(&mut self, db: &DiagnosticBuilder<'_>) {
+    fn emit_diagnostic(&mut self, db: &DiagnosticBuilder<'_>) {
         let mut primary_span = db.span.clone();
         let mut children = db.children.clone();
         let mut suggestions: &[_] = &[];
@@ -104,8 +136,8 @@ pub enum ColorConfig {
 }
 
 impl ColorConfig {
-    fn to_color_choice(&self) -> ColorChoice {
-        match *self {
+    fn to_color_choice(self) -> ColorChoice {
+        match self {
             ColorConfig::Always => {
                 if atty::is(atty::Stream::Stderr) {
                     ColorChoice::Always
@@ -118,6 +150,14 @@ impl ColorConfig {
                 ColorChoice::Auto
             }
             ColorConfig::Auto => ColorChoice::Never,
+        }
+    }
+    fn suggests_using_colors(self) -> bool {
+        match self {
+            | ColorConfig::Always
+            | ColorConfig::Auto
+            => true,
+            ColorConfig::Never => false,
         }
     }
 }
@@ -152,13 +192,15 @@ impl EmitterWriter {
         }
     }
 
-    pub fn new(dst: Box<dyn Write + Send>,
-               source_map: Option<Lrc<SourceMapperDyn>>,
-               short_message: bool,
-               teach: bool)
-               -> EmitterWriter {
+    pub fn new(
+        dst: Box<dyn Write + Send>,
+        source_map: Option<Lrc<SourceMapperDyn>>,
+        short_message: bool,
+        teach: bool,
+        colored: bool,
+    ) -> EmitterWriter {
         EmitterWriter {
-            dst: Raw(dst),
+            dst: Raw(dst, colored),
             sm: source_map,
             short_message,
             teach,
@@ -232,6 +274,7 @@ impl EmitterWriter {
                 // 6..7. This is degenerate input, but it's best to degrade
                 // gracefully -- and the parser likes to supply a span like
                 // that for EOF, in particular.
+
                 if lo.col_display == hi.col_display && lo.line == hi.line {
                     hi.col_display += 1;
                 }
@@ -511,6 +554,15 @@ impl EmitterWriter {
                     && j > i                      // multiline lines).
                     && p == 0  // We're currently on the first line, move the label one line down
                 {
+                    // If we're overlapping with an un-labelled annotation with the same span
+                    // we can just merge them in the output
+                    if next.start_col == annotation.start_col
+                    && next.end_col == annotation.end_col
+                    && !next.has_label()
+                    {
+                        continue;
+                    }
+
                     // This annotation needs a new line in the output.
                     p += 1;
                     break;
@@ -1538,13 +1590,15 @@ fn emit_to_destination(rendered_buffer: &[Vec<StyledString>],
 pub enum Destination {
     Terminal(StandardStream),
     Buffered(BufferWriter),
-    Raw(Box<dyn Write + Send>),
+    // The bool denotes whether we should be emitting ansi color codes or not
+    Raw(Box<(dyn Write + Send)>, bool),
 }
 
 pub enum WritableDst<'a> {
     Terminal(&'a mut StandardStream),
     Buffered(&'a mut BufferWriter, Buffer),
-    Raw(&'a mut Box<dyn Write + Send>),
+    Raw(&'a mut (dyn Write + Send)),
+    ColoredRaw(Ansi<&'a mut (dyn Write + Send)>),
 }
 
 impl Destination {
@@ -1570,7 +1624,8 @@ impl Destination {
                 let buf = t.buffer();
                 WritableDst::Buffered(t, buf)
             }
-            Destination::Raw(ref mut t) => WritableDst::Raw(t),
+            Destination::Raw(ref mut t, false) => WritableDst::Raw(t),
+            Destination::Raw(ref mut t, true) => WritableDst::ColoredRaw(Ansi::new(t)),
         }
     }
 }
@@ -1628,6 +1683,7 @@ impl<'a> WritableDst<'a> {
         match *self {
             WritableDst::Terminal(ref mut t) => t.set_color(color),
             WritableDst::Buffered(_, ref mut t) => t.set_color(color),
+            WritableDst::ColoredRaw(ref mut t) => t.set_color(color),
             WritableDst::Raw(_) => Ok(())
         }
     }
@@ -1636,6 +1692,7 @@ impl<'a> WritableDst<'a> {
         match *self {
             WritableDst::Terminal(ref mut t) => t.reset(),
             WritableDst::Buffered(_, ref mut t) => t.reset(),
+            WritableDst::ColoredRaw(ref mut t) => t.reset(),
             WritableDst::Raw(_) => Ok(()),
         }
     }
@@ -1647,6 +1704,7 @@ impl<'a> Write for WritableDst<'a> {
             WritableDst::Terminal(ref mut t) => t.write(bytes),
             WritableDst::Buffered(_, ref mut buf) => buf.write(bytes),
             WritableDst::Raw(ref mut w) => w.write(bytes),
+            WritableDst::ColoredRaw(ref mut t) => t.write(bytes),
         }
     }
 
@@ -1655,6 +1713,7 @@ impl<'a> Write for WritableDst<'a> {
             WritableDst::Terminal(ref mut t) => t.flush(),
             WritableDst::Buffered(_, ref mut buf) => buf.flush(),
             WritableDst::Raw(ref mut w) => w.flush(),
+            WritableDst::ColoredRaw(ref mut w) => w.flush(),
         }
     }
 }

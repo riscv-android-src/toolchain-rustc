@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,7 +12,7 @@
 
 [package]
 name = "rustc-rayon"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["Niko Matsakis <niko@alum.mit.edu>", "Josh Stone <cuviper@gmail.com>"]
 build = "build.rs"
 exclude = ["/ci/*", "/scripts/*", "/.travis.yml", "/appveyor.yml", "/bors.toml"]
@@ -31,7 +31,7 @@ version = "1.0"
 default-features = false
 
 [dependencies.rustc-rayon-core]
-version = "0.1"
+version = "0.2"
 [dev-dependencies.docopt]
 version = "1"
 

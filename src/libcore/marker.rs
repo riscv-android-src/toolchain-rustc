@@ -6,10 +6,10 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
-use cell::UnsafeCell;
-use cmp;
-use hash::Hash;
-use hash::Hasher;
+use crate::cell::UnsafeCell;
+use crate::cmp;
+use crate::hash::Hash;
+use crate::hash::Hasher;
 
 /// Types that can be transferred across thread boundaries.
 ///
@@ -73,9 +73,9 @@ impl<T: ?Sized> !Send for *mut T { }
 /// impl Foo for Impl { }
 /// impl Bar for Impl { }
 ///
-/// let x: &Foo = &Impl;    // OK
-/// // let y: &Bar = &Impl; // error: the trait `Bar` cannot
-///                         // be made into an object
+/// let x: &dyn Foo = &Impl;    // OK
+/// // let y: &dyn Bar = &Impl; // error: the trait `Bar` cannot
+///                             // be made into an object
 /// ```
 ///
 /// [trait object]: ../../book/ch17-02-trait-objects.html

@@ -42,7 +42,6 @@ use stdsimd_test::assert_instr;
 #[inline]
 #[cfg_attr(test, assert_instr(cmpxchg16b, success = Ordering::SeqCst, failure = Ordering::SeqCst))]
 #[target_feature(enable = "cmpxchg16b")]
-#[cfg(not(stage0))]
 pub unsafe fn cmpxchg16b(
     dst: *mut u128,
     old: u128,
@@ -50,8 +49,7 @@ pub unsafe fn cmpxchg16b(
     success: Ordering,
     failure: Ordering,
 ) -> u128 {
-    use crate::intrinsics;
-    use crate::sync::atomic::Ordering::*;
+    use crate::{intrinsics, sync::atomic::Ordering::*};
 
     debug_assert!(dst as usize % 16 == 0);
 

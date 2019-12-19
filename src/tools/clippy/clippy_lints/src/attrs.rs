@@ -2,20 +2,22 @@
 
 use crate::reexport::*;
 use crate::utils::{
-    in_macro, last_line_of_span, match_def_path, paths, snippet_opt, span_lint, span_lint_and_sugg, span_lint_and_then,
-    without_block_comments,
+    in_macro_or_desugar, is_present_in_source, last_line_of_span, match_def_path, paths, snippet_opt, span_lint,
+    span_lint_and_sugg, span_lint_and_then, without_block_comments,
 };
 use if_chain::if_chain;
 use rustc::hir::*;
 use rustc::lint::{
-    CheckLintNameResult, EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintArray, LintContext, LintPass,
+    in_external_macro, CheckLintNameResult, EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintArray,
+    LintContext, LintPass,
 };
-use rustc::ty::{self, TyCtxt};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::ty;
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
 use semver::Version;
 use syntax::ast::{AttrStyle, Attribute, Lit, LitKind, MetaItemKind, NestedMetaItem};
 use syntax::source_map::Span;
+use syntax_pos::symbol::Symbol;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for items annotated with `#[inline(always)]`,
@@ -186,26 +188,15 @@ declare_clippy_lint! {
     "usage of `cfg_attr(rustfmt)` instead of `tool_attributes`"
 }
 
-#[derive(Copy, Clone)]
-pub struct AttrPass;
+declare_lint_pass!(Attributes => [
+    INLINE_ALWAYS,
+    DEPRECATED_SEMVER,
+    USELESS_ATTRIBUTE,
+    EMPTY_LINE_AFTER_OUTER_ATTR,
+    UNKNOWN_CLIPPY_LINTS,
+]);
 
-impl LintPass for AttrPass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(
-            INLINE_ALWAYS,
-            DEPRECATED_SEMVER,
-            USELESS_ATTRIBUTE,
-            EMPTY_LINE_AFTER_OUTER_ATTR,
-            UNKNOWN_CLIPPY_LINTS,
-        )
-    }
-
-    fn name(&self) -> &'static str {
-        "Attributes"
-    }
-}
-
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AttrPass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
     fn check_attribute(&mut self, cx: &LateContext<'a, 'tcx>, attr: &'tcx Attribute) {
         if let Some(items) = &attr.meta_item_list() {
             if let Some(ident) = attr.ident() {
@@ -215,14 +206,14 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AttrPass {
                     },
                     _ => {},
                 }
-                if items.is_empty() || !attr.check_name("deprecated") {
+                if items.is_empty() || !attr.check_name(sym!(deprecated)) {
                     return;
                 }
                 for item in items {
                     if_chain! {
                         if let NestedMetaItem::MetaItem(mi) = &item;
                         if let MetaItemKind::NameValue(lit) = &mi.node;
-                        if mi.check_name("since");
+                        if mi.check_name(sym!(since));
                         then {
                             check_semver(cx, item.span(), lit);
                         }
@@ -233,14 +224,17 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AttrPass {
     }
 
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if is_relevant_item(cx.tcx, item) {
+        if is_relevant_item(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
         match item.node {
             ItemKind::ExternCrate(..) | ItemKind::Use(..) => {
-                let skip_unused_imports = item.attrs.iter().any(|attr| attr.check_name("macro_use"));
+                let skip_unused_imports = item.attrs.iter().any(|attr| attr.check_name(sym!(macro_use)));
 
                 for attr in &item.attrs {
+                    if in_external_macro(cx.sess(), attr.span) {
+                        return;
+                    }
                     if let Some(lint_list) = &attr.meta_item_list() {
                         if let Some(ident) = attr.ident() {
                             match &*ident.as_str() {
@@ -250,15 +244,17 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AttrPass {
                                     for lint in lint_list {
                                         match item.node {
                                             ItemKind::Use(..) => {
-                                                if is_word(lint, "unused_imports") || is_word(lint, "deprecated") {
+                                                if is_word(lint, sym!(unused_imports))
+                                                    || is_word(lint, sym!(deprecated))
+                                                {
                                                     return;
                                                 }
                                             },
                                             ItemKind::ExternCrate(..) => {
-                                                if is_word(lint, "unused_imports") && skip_unused_imports {
+                                                if is_word(lint, sym!(unused_imports)) && skip_unused_imports {
                                                     return;
                                                 }
-                                                if is_word(lint, "unused_extern_crates") {
+                                                if is_word(lint, sym!(unused_extern_crates)) {
                                                     return;
                                                 }
                                             },
@@ -298,13 +294,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AttrPass {
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem) {
-        if is_relevant_impl(cx.tcx, item) {
+        if is_relevant_impl(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem) {
-        if is_relevant_trait(cx.tcx, item) {
+        if is_relevant_trait(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
     }
@@ -357,52 +353,52 @@ fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
     }
 }
 
-fn is_relevant_item<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, item: &Item) -> bool {
+fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item) -> bool {
     if let ItemKind::Fn(_, _, _, eid) = item.node {
-        is_relevant_expr(tcx, tcx.body_tables(eid), &tcx.hir().body(eid).value)
+        is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value)
     } else {
         true
     }
 }
 
-fn is_relevant_impl<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, item: &ImplItem) -> bool {
+fn is_relevant_impl(cx: &LateContext<'_, '_>, item: &ImplItem) -> bool {
     match item.node {
-        ImplItemKind::Method(_, eid) => is_relevant_expr(tcx, tcx.body_tables(eid), &tcx.hir().body(eid).value),
+        ImplItemKind::Method(_, eid) => is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value),
         _ => false,
     }
 }
 
-fn is_relevant_trait<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, item: &TraitItem) -> bool {
+fn is_relevant_trait(cx: &LateContext<'_, '_>, item: &TraitItem) -> bool {
     match item.node {
         TraitItemKind::Method(_, TraitMethod::Required(_)) => true,
         TraitItemKind::Method(_, TraitMethod::Provided(eid)) => {
-            is_relevant_expr(tcx, tcx.body_tables(eid), &tcx.hir().body(eid).value)
+            is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value)
         },
         _ => false,
     }
 }
 
-fn is_relevant_block<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, tables: &ty::TypeckTables<'_>, block: &Block) -> bool {
+fn is_relevant_block(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, block: &Block) -> bool {
     if let Some(stmt) = block.stmts.first() {
         match &stmt.node {
             StmtKind::Local(_) => true,
-            StmtKind::Expr(expr) | StmtKind::Semi(expr) => is_relevant_expr(tcx, tables, expr),
+            StmtKind::Expr(expr) | StmtKind::Semi(expr) => is_relevant_expr(cx, tables, expr),
             _ => false,
         }
     } else {
-        block.expr.as_ref().map_or(false, |e| is_relevant_expr(tcx, tables, e))
+        block.expr.as_ref().map_or(false, |e| is_relevant_expr(cx, tables, e))
     }
 }
 
-fn is_relevant_expr<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, tables: &ty::TypeckTables<'_>, expr: &Expr) -> bool {
+fn is_relevant_expr(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, expr: &Expr) -> bool {
     match &expr.node {
-        ExprKind::Block(block, _) => is_relevant_block(tcx, tables, block),
-        ExprKind::Ret(Some(e)) => is_relevant_expr(tcx, tables, e),
+        ExprKind::Block(block, _) => is_relevant_block(cx, tables, block),
+        ExprKind::Ret(Some(e)) => is_relevant_expr(cx, tables, e),
         ExprKind::Ret(None) | ExprKind::Break(_, None) => false,
         ExprKind::Call(path_expr, _) => {
             if let ExprKind::Path(qpath) = &path_expr.node {
-                if let Some(fun_id) = tables.qpath_def(qpath, path_expr.hir_id).opt_def_id() {
-                    !match_def_path(tcx, fun_id, &paths::BEGIN_PANIC)
+                if let Some(fun_id) = tables.qpath_res(qpath, path_expr.hir_id).opt_def_id() {
+                    !match_def_path(cx, fun_id, &paths::BEGIN_PANIC)
                 } else {
                     true
                 }
@@ -415,7 +411,7 @@ fn is_relevant_expr<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, tables: &ty::TypeckTa
 }
 
 fn check_attrs(cx: &LateContext<'_, '_>, span: Span, name: Name, attrs: &[Attribute]) {
-    if in_macro(span) {
+    if in_macro_or_desugar(span) {
         return;
     }
 
@@ -448,10 +444,10 @@ fn check_attrs(cx: &LateContext<'_, '_>, span: Span, name: Name, attrs: &[Attrib
         }
 
         if let Some(values) = attr.meta_item_list() {
-            if values.len() != 1 || !attr.check_name("inline") {
+            if values.len() != 1 || !attr.check_name(sym!(inline)) {
                 continue;
             }
-            if is_word(&values[0], "always") {
+            if is_word(&values[0], sym!(always)) {
                 span_lint(
                     cx,
                     INLINE_ALWAYS,
@@ -480,7 +476,7 @@ fn check_semver(cx: &LateContext<'_, '_>, span: Span, lit: &Lit) {
     );
 }
 
-fn is_word(nmi: &NestedMetaItem, expected: &str) -> bool {
+fn is_word(nmi: &NestedMetaItem, expected: Symbol) -> bool {
     if let NestedMetaItem::MetaItem(mi) = &nmi {
         mi.is_word() && mi.check_name(expected)
     } else {
@@ -488,47 +484,22 @@ fn is_word(nmi: &NestedMetaItem, expected: &str) -> bool {
     }
 }
 
-// If the snippet is empty, it's an attribute that was inserted during macro
-// expansion and we want to ignore those, because they could come from external
-// sources that the user has no control over.
-// For some reason these attributes don't have any expansion info on them, so
-// we have to check it this way until there is a better way.
-fn is_present_in_source(cx: &LateContext<'_, '_>, span: Span) -> bool {
-    if let Some(snippet) = snippet_opt(cx, span) {
-        if snippet.is_empty() {
-            return false;
-        }
-    }
-    true
-}
+declare_lint_pass!(DeprecatedCfgAttribute => [DEPRECATED_CFG_ATTR]);
 
-#[derive(Copy, Clone)]
-pub struct CfgAttrPass;
-
-impl LintPass for CfgAttrPass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(DEPRECATED_CFG_ATTR,)
-    }
-
-    fn name(&self) -> &'static str {
-        "DeprecatedCfgAttribute"
-    }
-}
-
-impl EarlyLintPass for CfgAttrPass {
+impl EarlyLintPass for DeprecatedCfgAttribute {
     fn check_attribute(&mut self, cx: &EarlyContext<'_>, attr: &Attribute) {
         if_chain! {
             // check cfg_attr
-            if attr.check_name("cfg_attr");
+            if attr.check_name(sym!(cfg_attr));
             if let Some(items) = attr.meta_item_list();
             if items.len() == 2;
             // check for `rustfmt`
             if let Some(feature_item) = items[0].meta_item();
-            if feature_item.check_name("rustfmt");
+            if feature_item.check_name(sym!(rustfmt));
             // check for `rustfmt_skip` and `rustfmt::skip`
             if let Some(skip_item) = &items[1].meta_item();
-            if skip_item.check_name("rustfmt_skip") ||
-                skip_item.path.segments.last().expect("empty path in attribute").ident.name == "skip";
+            if skip_item.check_name(sym!(rustfmt_skip)) ||
+                skip_item.path.segments.last().expect("empty path in attribute").ident.name == sym!(skip);
             // Only lint outer attributes, because custom inner attributes are unstable
             // Tracking issue: https://github.com/rust-lang/rust/issues/54726
             if let AttrStyle::Outer = attr.style;

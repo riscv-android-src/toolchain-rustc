@@ -8,10 +8,10 @@ use std::sync::Arc;
 use jobserver::Client;
 
 use crate::core::compiler::compilation;
-use crate::core::profiles::Profile;
-use crate::core::{Package, PackageId, Resolve, Target};
+use crate::core::compiler::Unit;
+use crate::core::{Package, PackageId, Resolve};
 use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::{internal, profile, short_hash, Config};
+use crate::util::{internal, profile, Config};
 
 use super::build_plan::BuildPlan;
 use super::custom_build::{self, BuildDeps, BuildScripts, BuildState};
@@ -26,49 +26,6 @@ use self::unit_dependencies::build_unit_dependencies;
 mod compilation_files;
 use self::compilation_files::CompilationFiles;
 pub use self::compilation_files::{Metadata, OutputFile};
-
-/// All information needed to define a unit.
-///
-/// A unit is an object that has enough information so that cargo knows how to build it.
-/// For example, if your package has dependencies, then every dependency will be built as a library
-/// unit. If your package is a library, then it will be built as a library unit as well, or if it
-/// is a binary with `main.rs`, then a binary will be output. There are also separate unit types
-/// for `test`ing and `check`ing, amongst others.
-///
-/// The unit also holds information about all possible metadata about the package in `pkg`.
-///
-/// A unit needs to know extra information in addition to the type and root source file. For
-/// example, it needs to know the target architecture (OS, chip arch etc.) and it needs to know
-/// whether you want a debug or release build. There is enough information in this struct to figure
-/// all that out.
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug, PartialOrd, Ord)]
-pub struct Unit<'a> {
-    /// Information about available targets, which files to include/exclude, etc. Basically stuff in
-    /// `Cargo.toml`.
-    pub pkg: &'a Package,
-    /// Information about the specific target to build, out of the possible targets in `pkg`. Not
-    /// to be confused with *target-triple* (or *target architecture* ...), the target arch for a
-    /// build.
-    pub target: &'a Target,
-    /// The profile contains information about *how* the build should be run, including debug
-    /// level, etc.
-    pub profile: Profile,
-    /// Whether this compilation unit is for the host or target architecture.
-    ///
-    /// For example, when
-    /// cross compiling and using a custom build script, the build script needs to be compiled for
-    /// the host architecture so the host rustc can use it (when compiling to the target
-    /// architecture).
-    pub kind: Kind,
-    /// The "mode" this unit is being compiled for. See [`CompileMode`] for more details.
-    pub mode: CompileMode,
-}
-
-impl<'a> Unit<'a> {
-    pub fn buildkey(&self) -> String {
-        format!("{}-{}", self.pkg.name(), short_hash(self))
-    }
-}
 
 pub struct Context<'a, 'cfg: 'a> {
     pub bcx: &'a BuildContext<'a, 'cfg>,
@@ -85,6 +42,17 @@ pub struct Context<'a, 'cfg: 'a> {
     unit_dependencies: HashMap<Unit<'a>, Vec<Unit<'a>>>,
     files: Option<CompilationFiles<'a, 'cfg>>,
     package_cache: HashMap<PackageId, &'a Package>,
+
+    /// A flag indicating whether pipelining is enabled for this compilation
+    /// session. Pipelining largely only affects the edges of the dependency
+    /// graph that we generate at the end, and otherwise it's pretty
+    /// straightforward.
+    pipelining: bool,
+
+    /// A set of units which are compiling rlibs and are expected to produce
+    /// metadata files in addition to the rlib itself. This is only filled in
+    /// when `pipelining` above is enabled.
+    rmeta_required: HashSet<Unit<'a>>,
 }
 
 impl<'a, 'cfg> Context<'a, 'cfg> {
@@ -103,6 +71,12 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
                 .chain_err(|| "failed to create jobserver")?,
         };
 
+        let pipelining = bcx
+            .config
+            .get_bool("build.pipelining")?
+            .map(|t| t.val)
+            .unwrap_or(false);
+
         Ok(Self {
             bcx,
             compilation: Compilation::new(bcx)?,
@@ -119,6 +93,8 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             unit_dependencies: HashMap::new(),
             files: None,
             package_cache: HashMap::new(),
+            rmeta_required: HashSet::new(),
+            pipelining,
         })
     }
 
@@ -238,12 +214,12 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
                             .collect()
                     });
             }
-            let rustdocflags = self.bcx.rustdocflags_args(unit)?;
+            let rustdocflags = self.bcx.rustdocflags_args(unit);
             if !rustdocflags.is_empty() {
                 self.compilation
                     .rustdocflags
                     .entry(unit.pkg.package_id())
-                    .or_insert(rustdocflags);
+                    .or_insert(rustdocflags.to_vec());
             }
 
             super::output_depinfo(&mut self, unit)?;
@@ -304,12 +280,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         self.primary_packages
             .extend(units.iter().map(|u| u.pkg.package_id()));
 
-        build_unit_dependencies(
-            units,
-            self.bcx,
-            &mut self.unit_dependencies,
-            &mut self.package_cache,
-        )?;
+        build_unit_dependencies(self, units)?;
         let files = CompilationFiles::new(
             units,
             host_layout,
@@ -380,9 +351,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
                 return Vec::new();
             }
         }
-        let mut deps = self.unit_dependencies[unit].clone();
-        deps.sort();
-        deps
+        self.unit_dependencies[unit].clone()
     }
 
     pub fn is_primary_package(&self, unit: &Unit<'a>) -> bool {
@@ -430,9 +399,10 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
                     path.display()
                 )
             };
-        let suggestion = "Consider changing their names to be unique or compiling them separately.\n\
-            This may become a hard error in the future; see \
-            <https://github.com/rust-lang/cargo/issues/6313>.";
+        let suggestion =
+            "Consider changing their names to be unique or compiling them separately.\n\
+             This may become a hard error in the future; see \
+             <https://github.com/rust-lang/cargo/issues/6313>.";
         let report_collision = |unit: &Unit<'_>,
                                 other_unit: &Unit<'_>,
                                 path: &PathBuf|
@@ -496,6 +466,27 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             }
         }
         Ok(())
+    }
+
+    /// Returns whether when `parent` depends on `dep` if it only requires the
+    /// metadata file from `dep`.
+    pub fn only_requires_rmeta(&self, parent: &Unit<'a>, dep: &Unit<'a>) -> bool {
+        // this is only enabled when pipelining is enabled
+        self.pipelining
+            // We're only a candidate for requiring an `rmeta` file if we
+            // ourselves are building an rlib,
+            && !parent.target.requires_upstream_objects()
+            && parent.mode == CompileMode::Build
+            // Our dependency must also be built as an rlib, otherwise the
+            // object code must be useful in some fashion
+            && !dep.target.requires_upstream_objects()
+            && dep.mode == CompileMode::Build
+    }
+
+    /// Returns whether when `unit` is built whether it should emit metadata as
+    /// well because some compilations rely on that.
+    pub fn rmeta_required(&self, unit: &Unit<'a>) -> bool {
+        self.rmeta_required.contains(unit)
     }
 }
 

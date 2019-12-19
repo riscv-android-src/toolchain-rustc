@@ -33,7 +33,7 @@ use std::u32;
 use syntax::ast;
 use syntax::attr;
 use syntax::source_map::Spanned;
-use syntax::symbol::keywords;
+use syntax::symbol::{keywords, sym};
 use syntax_pos::{self, hygiene, FileName, SourceFile, Span};
 use log::{debug, trace};
 
@@ -134,7 +134,7 @@ impl<'a, 'tcx> SpecializedEncoder<DefId> for EncodeContext<'a, 'tcx> {
 impl<'a, 'tcx> SpecializedEncoder<DefIndex> for EncodeContext<'a, 'tcx> {
     #[inline]
     fn specialized_encode(&mut self, def_index: &DefIndex) -> Result<(), Self::Error> {
-        self.emit_u32(def_index.as_raw_u32())
+        self.emit_u32(def_index.as_u32())
     }
 }
 
@@ -469,7 +469,7 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
 
         let attrs = tcx.hir().krate_attrs();
         let is_proc_macro = tcx.sess.crate_types.borrow().contains(&CrateType::ProcMacro);
-        let has_default_lib_allocator = attr::contains_name(&attrs, "default_lib_allocator");
+        let has_default_lib_allocator = attr::contains_name(&attrs, sym::default_lib_allocator);
         let has_global_allocator = *tcx.sess.has_global_allocator.get();
         let has_panic_handler = *tcx.sess.has_panic_handler.try_get().unwrap_or(&false);
 
@@ -496,13 +496,13 @@ impl<'a, 'tcx> EncodeContext<'a, 'tcx> {
             } else {
                 None
             },
-            compiler_builtins: attr::contains_name(&attrs, "compiler_builtins"),
-            needs_allocator: attr::contains_name(&attrs, "needs_allocator"),
-            needs_panic_runtime: attr::contains_name(&attrs, "needs_panic_runtime"),
-            no_builtins: attr::contains_name(&attrs, "no_builtins"),
-            panic_runtime: attr::contains_name(&attrs, "panic_runtime"),
-            profiler_runtime: attr::contains_name(&attrs, "profiler_runtime"),
-            sanitizer_runtime: attr::contains_name(&attrs, "sanitizer_runtime"),
+            compiler_builtins: attr::contains_name(&attrs, sym::compiler_builtins),
+            needs_allocator: attr::contains_name(&attrs, sym::needs_allocator),
+            needs_panic_runtime: attr::contains_name(&attrs, sym::needs_panic_runtime),
+            no_builtins: attr::contains_name(&attrs, sym::no_builtins),
+            panic_runtime: attr::contains_name(&attrs, sym::panic_runtime),
+            profiler_runtime: attr::contains_name(&attrs, sym::profiler_runtime),
+            sanitizer_runtime: attr::contains_name(&attrs, sym::sanitizer_runtime),
 
             crate_deps,
             dylib_dependency_formats,
@@ -586,8 +586,13 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
         let data = VariantData {
             ctor_kind: variant.ctor_kind,
             discr: variant.discr,
+            // FIXME(eddyb) deduplicate these with `encode_enum_variant_ctor`.
             ctor: variant.ctor_def_id.map(|did| did.index),
-            ctor_sig: None,
+            ctor_sig: if variant.ctor_kind == CtorKind::Fn {
+                variant.ctor_def_id.map(|ctor_def_id| self.lazy(&tcx.fn_sig(ctor_def_id)))
+            } else {
+                None
+            },
         };
 
         let enum_id = tcx.hir().as_local_hir_id(enum_did).unwrap();
@@ -789,7 +794,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
             ctor_vis = ty::Visibility::Restricted(DefId::local(CRATE_DEF_INDEX));
         }
 
-        let repr_options = get_repr_options(&tcx, adt_def_id);
+        let repr_options = get_repr_options(tcx, adt_def_id);
 
         Entry {
             kind: EntryKind::Struct(self.lazy(&data), repr_options),
@@ -1119,7 +1124,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
             hir::ItemKind::GlobalAsm(..) => EntryKind::GlobalAsm,
             hir::ItemKind::Ty(..) => EntryKind::Type,
             hir::ItemKind::Existential(..) => EntryKind::Existential,
-            hir::ItemKind::Enum(..) => EntryKind::Enum(get_repr_options(&tcx, def_id)),
+            hir::ItemKind::Enum(..) => EntryKind::Enum(get_repr_options(tcx, def_id)),
             hir::ItemKind::Struct(ref struct_def, _) => {
                 let variant = tcx.adt_def(def_id).non_enum_variant();
 
@@ -1129,7 +1134,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
                 let ctor = struct_def.ctor_hir_id()
                     .map(|ctor_hir_id| tcx.hir().local_def_id_from_hir_id(ctor_hir_id).index);
 
-                let repr_options = get_repr_options(&tcx, def_id);
+                let repr_options = get_repr_options(tcx, def_id);
 
                 EntryKind::Struct(self.lazy(&VariantData {
                     ctor_kind: variant.ctor_kind,
@@ -1140,7 +1145,7 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
             }
             hir::ItemKind::Union(..) => {
                 let variant = tcx.adt_def(def_id).non_enum_variant();
-                let repr_options = get_repr_options(&tcx, def_id);
+                let repr_options = get_repr_options(tcx, def_id);
 
                 EntryKind::Union(self.lazy(&VariantData {
                     ctor_kind: variant.ctor_kind,
@@ -1647,8 +1652,8 @@ impl<'a, 'b: 'a, 'tcx: 'b> IsolatedEncoder<'a, 'b, 'tcx> {
                 };
                 EntryKind::ForeignFn(self.lazy(&data))
             }
-            hir::ForeignItemKind::Static(_, true) => EntryKind::ForeignMutStatic,
-            hir::ForeignItemKind::Static(_, false) => EntryKind::ForeignImmStatic,
+            hir::ForeignItemKind::Static(_, hir::MutMutable) => EntryKind::ForeignMutStatic,
+            hir::ForeignItemKind::Static(_, hir::MutImmutable) => EntryKind::ForeignImmStatic,
             hir::ForeignItemKind::Type => EntryKind::ForeignType,
         };
 
@@ -1938,7 +1943,7 @@ pub fn encode_metadata<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>)
     EncodedMetadata { raw_data: result }
 }
 
-pub fn get_repr_options<'a, 'tcx, 'gcx>(tcx: &TyCtxt<'a, 'tcx, 'gcx>, did: DefId) -> ReprOptions {
+pub fn get_repr_options<'a, 'tcx, 'gcx>(tcx: TyCtxt<'a, 'tcx, 'gcx>, did: DefId) -> ReprOptions {
     let ty = tcx.type_of(did);
     match ty.sty {
         ty::Adt(ref def, _) => return def.repr,

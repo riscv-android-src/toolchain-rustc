@@ -1,3 +1,5 @@
+// run-rustfix
+
 #![allow(
     unused,
     clippy::no_effect,
@@ -100,6 +102,30 @@ fn test_redundant_closures_containing_method_calls() {
         t.iter().filter(|x| x.trait_foo_ref());
         t.iter().map(|x| x.trait_foo_ref());
     }
+
+    let mut some = Some(|x| x * x);
+    let arr = [Ok(1), Err(2)];
+    let _: Vec<_> = arr.iter().map(|x| x.map_err(|e| some.take().unwrap()(e))).collect();
+}
+
+struct Thunk<T>(Box<FnMut() -> T>);
+
+impl<T> Thunk<T> {
+    fn new<F: 'static + FnOnce() -> T>(f: F) -> Thunk<T> {
+        let mut option = Some(f);
+        // This should not trigger redundant_closure (#1439)
+        Thunk(Box::new(move || option.take().unwrap()()))
+    }
+
+    fn unwrap(self) -> T {
+        let Thunk(mut f) = self;
+        f()
+    }
+}
+
+fn foobar() {
+    let thunk = Thunk::new(|| println!("Hello, world!"));
+    thunk.unwrap()
 }
 
 fn meta<F>(f: F)
@@ -134,4 +160,20 @@ fn divergent(_: u8) -> ! {
 
 fn generic<T>(_: T) -> u8 {
     0
+}
+
+fn passes_fn_mut(mut x: Box<dyn FnMut()>) {
+    requires_fn_once(|| x());
+}
+fn requires_fn_once<T: FnOnce()>(_: T) {}
+
+fn test_redundant_closure_with_function_pointer() {
+    type FnPtrType = fn(u8);
+    let foo_ptr: FnPtrType = foo;
+    let a = Some(1u8).map(|a| foo_ptr(a));
+}
+
+fn test_redundant_closure_with_another_closure() {
+    let closure = |a| println!("{}", a);
+    let a = Some(1u8).map(|a| closure(a));
 }

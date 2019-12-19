@@ -46,6 +46,10 @@ pub fn cli() -> App {
         ))
         .arg_jobs()
         .arg(opt("force", "Force overwriting existing crates or binaries").short("f"))
+        .arg(opt(
+            "no-track",
+            "Do not save tracking information (unstable)",
+        ))
         .arg_features()
         .arg(opt("debug", "Build in debug mode instead of release mode"))
         .arg_targets_bins_examples(
@@ -89,9 +93,8 @@ enables overwriting existing binaries. Thus you can reinstall a crate with
 `cargo install --force <crate>`.
 
 Omitting the <crate> specification entirely will install the crate in the
-current directory. That is, `install` is equivalent to the more explicit
-`install --path .`. This behaviour is deprecated, and no longer supported as
-of the Rust 2018 edition.
+current directory. This behaviour is deprecated, and it no longer works in the
+Rust 2018 edition. Use the more explicit `install --path .` instead.
 
 If the source is crates.io or `--git` then by default the crate will be built
 in a temporary target directory. To avoid this, the target directory can be
@@ -148,6 +151,12 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     let version = args.value_of("version");
     let root = args.value_of("root");
 
+    if args.is_present("no-track") && !config.cli_unstable().install_upgrade {
+        Err(failure::format_err!(
+            "`--no-track` flag is unstable, pass `-Z install-upgrade` to enable it"
+        ))?;
+    };
+
     if args.is_present("list") {
         ops::install_list(root, config)?;
     } else {
@@ -159,6 +168,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
             version,
             &compile_opts,
             args.is_present("force"),
+            args.is_present("no-track"),
         )?;
     }
     Ok(())

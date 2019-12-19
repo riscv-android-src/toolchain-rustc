@@ -1,6 +1,6 @@
 use crate::utils::{span_lint, span_lint_and_then};
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_tool_lint, impl_lint_pass};
 use syntax::ast::*;
 use syntax::attr;
 use syntax::source_map::Span;
@@ -63,19 +63,12 @@ declare_clippy_lint! {
     "unclear name"
 }
 
+#[derive(Copy, Clone)]
 pub struct NonExpressiveNames {
     pub single_char_binding_names_threshold: u64,
 }
 
-impl LintPass for NonExpressiveNames {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(SIMILAR_NAMES, MANY_SINGLE_CHAR_NAMES, JUST_UNDERSCORES_AND_DIGITS)
-    }
-
-    fn name(&self) -> &'static str {
-        "NoneExpressiveNames"
-    }
-}
+impl_lint_pass!(NonExpressiveNames => [SIMILAR_NAMES, MANY_SINGLE_CHAR_NAMES, JUST_UNDERSCORES_AND_DIGITS]);
 
 struct ExistingName {
     interned: LocalInternedString,
@@ -362,7 +355,7 @@ impl EarlyLintPass for NonExpressiveNames {
 }
 
 fn do_check(lint: &mut NonExpressiveNames, cx: &EarlyContext<'_>, attrs: &[Attribute], decl: &FnDecl, blk: &Block) {
-    if !attr::contains_name(attrs, "test") {
+    if !attr::contains_name(attrs, sym!(test)) {
         let mut visitor = SimilarNamesLocalVisitor {
             names: Vec::new(),
             cx,

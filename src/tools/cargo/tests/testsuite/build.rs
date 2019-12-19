@@ -957,261 +957,6 @@ Did you mean `a`?",
 }
 
 #[test]
-fn cargo_compile_path_with_offline() {
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            authors = []
-
-            [dependencies.bar]
-            path = "bar"
-        "#,
-        )
-        .file("src/lib.rs", "")
-        .file("bar/Cargo.toml", &basic_manifest("bar", "0.0.1"))
-        .file("bar/src/lib.rs", "")
-        .build();
-
-    p.cargo("build -Zoffline")
-        .masquerade_as_nightly_cargo()
-        .run();
-}
-
-#[test]
-fn cargo_compile_with_downloaded_dependency_with_offline() {
-    Package::new("present_dep", "1.2.3")
-        .file("Cargo.toml", &basic_manifest("present_dep", "1.2.3"))
-        .file("src/lib.rs", "")
-        .publish();
-
-    {
-        // make package downloaded
-        let p = project()
-            .file(
-                "Cargo.toml",
-                r#"
-            [project]
-            name = "foo"
-            version = "0.1.0"
-
-            [dependencies]
-            present_dep = "1.2.3"
-        "#,
-            )
-            .file("src/lib.rs", "")
-            .build();
-        p.cargo("build").run();
-    }
-
-    let p2 = project()
-        .at("bar")
-        .file(
-            "Cargo.toml",
-            r#"
-            [project]
-            name = "bar"
-            version = "0.1.0"
-
-            [dependencies]
-            present_dep = "1.2.3"
-        "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p2.cargo("build -Zoffline")
-        .masquerade_as_nightly_cargo()
-        .with_stderr(
-            "\
-[COMPILING] present_dep v1.2.3
-[COMPILING] bar v0.1.0 ([..])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]",
-        )
-        .run();
-}
-
-#[test]
-fn cargo_compile_offline_not_try_update() {
-    let p = project()
-        .at("bar")
-        .file(
-            "Cargo.toml",
-            r#"
-            [project]
-            name = "bar"
-            version = "0.1.0"
-
-            [dependencies]
-            not_cached_dep = "1.2.5"
-        "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-
-    p.cargo("build -Zoffline")
-        .masquerade_as_nightly_cargo()
-        .with_status(101)
-        .with_stderr(
-            "\
-error: no matching package named `not_cached_dep` found
-location searched: registry `[..]`
-required by package `bar v0.1.0 ([..])`
-As a reminder, you're using offline mode (-Z offline) \
-which can sometimes cause surprising resolution failures, \
-if this error is too confusing you may wish to retry \
-without the offline flag.",
-        )
-        .run();
-}
-
-#[test]
-fn compile_offline_without_maxvers_cached() {
-    Package::new("present_dep", "1.2.1").publish();
-    Package::new("present_dep", "1.2.2").publish();
-
-    Package::new("present_dep", "1.2.3")
-        .file("Cargo.toml", &basic_manifest("present_dep", "1.2.3"))
-        .file(
-            "src/lib.rs",
-            r#"pub fn get_version()->&'static str {"1.2.3"}"#,
-        )
-        .publish();
-
-    Package::new("present_dep", "1.2.5")
-        .file("Cargo.toml", &basic_manifest("present_dep", "1.2.5"))
-        .file("src/lib.rs", r#"pub fn get_version(){"1.2.5"}"#)
-        .publish();
-
-    {
-        // make package cached
-        let p = project()
-            .file(
-                "Cargo.toml",
-                r#"
-            [project]
-            name = "foo"
-            version = "0.1.0"
-
-            [dependencies]
-            present_dep = "=1.2.3"
-        "#,
-            )
-            .file("src/lib.rs", "")
-            .build();
-        p.cargo("build").run();
-    }
-
-    let p2 = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [project]
-            name = "foo"
-            version = "0.1.0"
-
-            [dependencies]
-            present_dep = "1.2"
-        "#,
-        )
-        .file(
-            "src/main.rs",
-            "\
-extern crate present_dep;
-fn main(){
-    println!(\"{}\", present_dep::get_version());
-}",
-        )
-        .build();
-
-    p2.cargo("run -Zoffline")
-        .masquerade_as_nightly_cargo()
-        .with_stderr(
-            "\
-[COMPILING] present_dep v1.2.3
-[COMPILING] foo v0.1.0 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
-     Running `[..]`",
-        )
-        .with_stdout("1.2.3")
-        .run();
-}
-
-#[test]
-fn offline_unused_target_dep() {
-    // -Z offline with a target dependency that is not used and not downloaded.
-    Package::new("unused_dep", "1.0.0").publish();
-    Package::new("used_dep", "1.0.0").publish();
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [project]
-            name = "foo"
-            version = "0.1.0"
-            [dependencies]
-            used_dep = "1.0"
-            [target.'cfg(unused)'.dependencies]
-            unused_dep = "1.0"
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-    // Do a build that downloads only what is necessary.
-    p.cargo("build")
-        .with_stderr_contains("[DOWNLOADED] used_dep [..]")
-        .with_stderr_does_not_contain("[DOWNLOADED] unused_dep [..]")
-        .run();
-    p.cargo("clean").run();
-    // Build offline, make sure it works.
-    p.cargo("build -Z offline")
-        .masquerade_as_nightly_cargo()
-        .run();
-}
-
-#[test]
-fn offline_missing_optional() {
-    Package::new("opt_dep", "1.0.0").publish();
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [project]
-            name = "foo"
-            version = "0.1.0"
-            [dependencies]
-            opt_dep = { version = "1.0", optional = true }
-            "#,
-        )
-        .file("src/lib.rs", "")
-        .build();
-    // Do a build that downloads only what is necessary.
-    p.cargo("build")
-        .with_stderr_does_not_contain("[DOWNLOADED] opt_dep [..]")
-        .run();
-    p.cargo("clean").run();
-    // Build offline, make sure it works.
-    p.cargo("build -Z offline")
-        .masquerade_as_nightly_cargo()
-        .run();
-    p.cargo("build -Z offline --features=opt_dep")
-        .masquerade_as_nightly_cargo()
-        .with_stderr(
-            "\
-[ERROR] failed to download `opt_dep v1.0.0`
-
-Caused by:
-  can't make HTTP request in the offline mode
-",
-        )
-        .with_status(101)
-        .run();
-}
-
-#[test]
 fn incompatible_dependencies() {
     Package::new("bad", "0.1.0").publish();
     Package::new("bad", "1.0.0").publish();
@@ -1311,58 +1056,6 @@ failed to select a version for `bad` which could resolve this conflict",
 }
 
 #[test]
-fn compile_offline_while_transitive_dep_not_cached() {
-    let baz = Package::new("baz", "1.0.0");
-    let baz_path = baz.archive_dst();
-    baz.publish();
-
-    let mut content = Vec::new();
-
-    let mut file = File::open(baz_path.clone()).ok().unwrap();
-    let _ok = file.read_to_end(&mut content).ok().unwrap();
-    drop(file);
-    drop(File::create(baz_path.clone()).ok().unwrap());
-
-    Package::new("bar", "0.1.0").dep("baz", "1.0.0").publish();
-
-    let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            [project]
-            name = "foo"
-            version = "0.0.1"
-
-            [dependencies]
-            bar = "0.1.0"
-        "#,
-        )
-        .file("src/main.rs", "fn main(){}")
-        .build();
-
-    // simulate download bar, but fail to download baz
-    p.cargo("build")
-        .with_status(101)
-        .with_stderr_contains("[..]failed to verify the checksum of `baz[..]")
-        .run();
-
-    drop(File::create(baz_path).ok().unwrap().write_all(&content));
-
-    p.cargo("build -Zoffline")
-        .masquerade_as_nightly_cargo()
-        .with_status(101)
-        .with_stderr(
-            "\
-[ERROR] failed to download `baz v1.0.0`
-
-Caused by:
-  can't make HTTP request in the offline mode
-",
-        )
-        .run();
-}
-
-#[test]
 fn compile_path_dep_then_change_version() {
     let p = project()
         .file(
@@ -1455,14 +1148,14 @@ fn cargo_default_env_metadata_env_var() {
             "\
 [COMPILING] bar v0.0.1 ([CWD]/bar)
 [RUNNING] `rustc --crate-name bar bar/src/lib.rs --color never --crate-type dylib \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C prefer-dynamic -C debuginfo=2 \
         -C metadata=[..] \
         --out-dir [..] \
         -L dependency=[CWD]/target/debug/deps`
 [COMPILING] foo v0.0.1 ([CWD])
 [RUNNING] `rustc --crate-name foo src/lib.rs --color never --crate-type lib \
-        --emit=dep-info,link -C debuginfo=2 \
+        --emit=[..]link -C debuginfo=2 \
         -C metadata=[..] \
         -C extra-filename=[..] \
         --out-dir [..] \
@@ -1483,14 +1176,14 @@ fn cargo_default_env_metadata_env_var() {
             "\
 [COMPILING] bar v0.0.1 ([CWD]/bar)
 [RUNNING] `rustc --crate-name bar bar/src/lib.rs --color never --crate-type dylib \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C prefer-dynamic -C debuginfo=2 \
         -C metadata=[..] \
         --out-dir [..] \
         -L dependency=[CWD]/target/debug/deps`
 [COMPILING] foo v0.0.1 ([CWD])
 [RUNNING] `rustc --crate-name foo src/lib.rs --color never --crate-type lib \
-        --emit=dep-info,link -C debuginfo=2 \
+        --emit=[..]link -C debuginfo=2 \
         -C metadata=[..] \
         -C extra-filename=[..] \
         --out-dir [..] \
@@ -1864,7 +1557,7 @@ fn lto_build() {
             "\
 [COMPILING] test v0.0.0 ([CWD])
 [RUNNING] `rustc --crate-name test src/main.rs --color never --crate-type bin \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C opt-level=3 \
         -C lto \
         -C metadata=[..] \
@@ -1884,7 +1577,7 @@ fn verbose_build() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [RUNNING] `rustc --crate-name foo src/lib.rs --color never --crate-type lib \
-        --emit=dep-info,link -C debuginfo=2 \
+        --emit=[..]link -C debuginfo=2 \
         -C metadata=[..] \
         --out-dir [..] \
         -L dependency=[CWD]/target/debug/deps`
@@ -1902,7 +1595,7 @@ fn verbose_release_build() {
             "\
 [COMPILING] foo v0.0.1 ([CWD])
 [RUNNING] `rustc --crate-name foo src/lib.rs --color never --crate-type lib \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C opt-level=3 \
         -C metadata=[..] \
         --out-dir [..] \
@@ -1952,7 +1645,7 @@ fn verbose_release_build_deps() {
 [COMPILING] foo v0.0.0 ([CWD]/foo)
 [RUNNING] `rustc --crate-name foo foo/src/lib.rs --color never \
         --crate-type dylib --crate-type rlib \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C prefer-dynamic \
         -C opt-level=3 \
         -C metadata=[..] \
@@ -1960,7 +1653,7 @@ fn verbose_release_build_deps() {
         -L dependency=[CWD]/target/release/deps`
 [COMPILING] test v0.0.0 ([CWD])
 [RUNNING] `rustc --crate-name test src/lib.rs --color never --crate-type lib \
-        --emit=dep-info,link \
+        --emit=[..]link \
         -C opt-level=3 \
         -C metadata=[..] \
         --out-dir [..] \
@@ -2335,7 +2028,7 @@ fn simple_staticlib() {
         .build();
 
     // env var is a test for #1381
-    p.cargo("build").env("RUST_LOG", "nekoneko=trace").run();
+    p.cargo("build").env("CARGO_LOG", "nekoneko=trace").run();
 }
 
 #[test]
@@ -3408,7 +3101,10 @@ fn compiler_json_error_format() {
             "name":"bar",
             "src_path":"[..]lib.rs"
         },
-        "filenames":["[..].rlib"],
+        "filenames":[
+            "[..].rlib",
+            "[..].rmeta"
+        ],
         "fresh": false
     }
 
@@ -3507,7 +3203,10 @@ fn compiler_json_error_format() {
             "name":"bar",
             "src_path":"[..]lib.rs"
         },
-        "filenames":["[..].rlib"],
+        "filenames":[
+            "[..].rlib",
+            "[..].rmeta"
+        ],
         "fresh": true
     }
 
@@ -4439,10 +4138,8 @@ fn building_a_dependent_crate_witout_bin_should_fail() {
 }
 
 #[test]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 fn uplift_dsym_of_bin_on_mac() {
-    if !cfg!(any(target_os = "macos", target_os = "ios")) {
-        return;
-    }
     let p = project()
         .file("src/main.rs", "fn main() { panic!(); }")
         .file("src/bin/b.rs", "fn main() { panic!(); }")
@@ -4451,23 +4148,17 @@ fn uplift_dsym_of_bin_on_mac() {
         .build();
 
     p.cargo("build --bins --examples --tests").run();
-    assert!(p.bin("foo.dSYM").is_dir());
-    assert!(p.bin("b.dSYM").is_dir());
-    assert!(p
-        .bin("b.dSYM")
-        .symlink_metadata()
-        .expect("read metadata from b.dSYM")
-        .file_type()
-        .is_symlink());
-    assert!(!p.bin("c.dSYM").is_dir());
-    assert!(!p.bin("d.dSYM").is_dir());
+    assert!(p.target_debug_dir().join("foo.dSYM").is_dir());
+    assert!(p.target_debug_dir().join("b.dSYM").is_dir());
+    assert!(p.target_debug_dir().join("b.dSYM").is_symlink());
+    assert!(p.target_debug_dir().join("examples/c.dSYM").is_symlink());
+    assert!(!p.target_debug_dir().join("c.dSYM").exists());
+    assert!(!p.target_debug_dir().join("d.dSYM").exists());
 }
 
 #[test]
+#[cfg(all(target_os = "windows", target_env = "msvc"))]
 fn uplift_pdb_of_bin_on_windows() {
-    if !cfg!(all(target_os = "windows", target_env = "msvc")) {
-        return;
-    }
     let p = project()
         .file("src/main.rs", "fn main() { panic!(); }")
         .file("src/bin/b.rs", "fn main() { panic!(); }")
@@ -4478,8 +4169,10 @@ fn uplift_pdb_of_bin_on_windows() {
     p.cargo("build --bins --examples --tests").run();
     assert!(p.target_debug_dir().join("foo.pdb").is_file());
     assert!(p.target_debug_dir().join("b.pdb").is_file());
-    assert!(!p.target_debug_dir().join("c.pdb").is_file());
-    assert!(!p.target_debug_dir().join("d.pdb").is_file());
+    assert!(!p.target_debug_dir().join("examples/c.pdb").exists());
+    assert_eq!(p.glob("target/debug/examples/c-*.pdb").count(), 1);
+    assert!(!p.target_debug_dir().join("c.pdb").exists());
+    assert!(!p.target_debug_dir().join("d.pdb").exists());
 }
 
 // Ensure that `cargo build` chooses the correct profile for building
@@ -4497,11 +4190,11 @@ fn build_filter_infer_profile() {
     p.cargo("build -v")
         .with_stderr_contains(
             "[RUNNING] `rustc --crate-name foo src/lib.rs --color never --crate-type lib \
-             --emit=dep-info,link[..]",
+             --emit=[..]link[..]",
         )
         .with_stderr_contains(
             "[RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
-             --emit=dep-info,link[..]",
+             --emit=[..]link[..]",
         )
         .run();
 
@@ -4509,15 +4202,15 @@ fn build_filter_infer_profile() {
     p.cargo("build -v --test=t1")
         .with_stderr_contains(
             "[RUNNING] `rustc --crate-name foo src/lib.rs --color never --crate-type lib \
-             --emit=dep-info,link -C debuginfo=2 [..]",
+             --emit=[..]link -C debuginfo=2 [..]",
         )
         .with_stderr_contains(
-            "[RUNNING] `rustc --crate-name t1 tests/t1.rs --color never --emit=dep-info,link \
+            "[RUNNING] `rustc --crate-name t1 tests/t1.rs --color never --emit=[..]link \
              -C debuginfo=2 [..]",
         )
         .with_stderr_contains(
             "[RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
-             --emit=dep-info,link -C debuginfo=2 [..]",
+             --emit=[..]link -C debuginfo=2 [..]",
         )
         .run();
 
@@ -4526,16 +4219,16 @@ fn build_filter_infer_profile() {
     p.cargo("build -v --bench=b1")
         .with_stderr_contains(
             "[RUNNING] `rustc --crate-name foo src/lib.rs --color never --crate-type lib \
-             --emit=dep-info,link -C debuginfo=2 [..]",
+             --emit=[..]link -C debuginfo=2 [..]",
         )
         .with_stderr_contains(
-            "[RUNNING] `rustc --crate-name b1 benches/b1.rs --color never --emit=dep-info,link \
+            "[RUNNING] `rustc --crate-name b1 benches/b1.rs --color never --emit=[..]link \
              -C debuginfo=2 [..]",
         )
         .with_stderr_does_not_contain("opt-level")
         .with_stderr_contains(
             "[RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
-             --emit=dep-info,link -C debuginfo=2 [..]",
+             --emit=[..]link -C debuginfo=2 [..]",
         )
         .run();
 }
@@ -4548,18 +4241,18 @@ fn targets_selected_default() {
         .with_stderr_contains(
             "\
              [RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
-             --emit=dep-info,link[..]",
+             --emit=[..]link[..]",
         )
         // Benchmarks.
         .with_stderr_does_not_contain(
             "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=dep-info,link \
+             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C opt-level=3 --test [..]",
         )
         // Unit tests.
         .with_stderr_does_not_contain(
             "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=dep-info,link \
+             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C debuginfo=2 --test [..]",
         )
         .run();
@@ -4573,12 +4266,12 @@ fn targets_selected_all() {
         .with_stderr_contains(
             "\
              [RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
-             --emit=dep-info,link[..]",
+             --emit=[..]link[..]",
         )
         // Unit tests.
         .with_stderr_contains(
             "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=dep-info,link \
+             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C debuginfo=2 --test [..]",
         )
         .run();
@@ -4592,12 +4285,12 @@ fn all_targets_no_lib() {
         .with_stderr_contains(
             "\
              [RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
-             --emit=dep-info,link[..]",
+             --emit=[..]link[..]",
         )
         // Unit tests.
         .with_stderr_contains(
             "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=dep-info,link \
+             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C debuginfo=2 --test [..]",
         )
         .run();
@@ -4816,69 +4509,122 @@ Caused by:
 }
 
 #[test]
-fn json_parse_fail() {
-    // Ensure when JSON parsing fails, and rustc exits with non-zero exit
-    // code, a useful error message is displayed.
+fn tricky_pipelining() {
+    if !crate::support::is_nightly() {
+        return;
+    }
+
     let foo = project()
         .file(
             "Cargo.toml",
             r#"
-            [package]
-            name = "foo"
-            version = "0.1.0"
-            [dependencies]
-            pm = { path = "pm" }
-        "#,
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                [dependencies]
+                bar = { path = "bar" }
+            "#,
         )
-        .file(
-            "src/lib.rs",
-            r#"
-            #[macro_use]
-            extern crate pm;
+        .file("src/lib.rs", "extern crate bar;")
+        .file("bar/Cargo.toml", &basic_lib_manifest("bar"))
+        .file("bar/src/lib.rs", "")
+        .build();
 
-            #[derive(Foo)]
-            pub struct S;
-        "#,
-        )
-        .file(
-            "pm/Cargo.toml",
-            r#"
-            [package]
-            name = "pm"
-            version = "0.1.0"
-            [lib]
-            proc-macro = true
-        "#,
-        )
-        .file(
-            "pm/src/lib.rs",
-            r#"
-            extern crate proc_macro;
-            use proc_macro::TokenStream;
+    foo.cargo("build -p bar")
+        .env("CARGO_BUILD_PIPELINING", "true")
+        .run();
+    foo.cargo("build -p foo")
+        .env("CARGO_BUILD_PIPELINING", "true")
+        .run();
+}
 
-            #[proc_macro_derive(Foo)]
-            pub fn derive(_input: TokenStream) -> TokenStream {
-                eprintln!("{{evil proc macro}}");
-                panic!("something went wrong");
-            }
-        "#,
+#[test]
+fn pipelining_works() {
+    if !crate::support::is_nightly() {
+        return;
+    }
+
+    let foo = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                [dependencies]
+                bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "extern crate bar;")
+        .file("bar/Cargo.toml", &basic_lib_manifest("bar"))
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    foo.cargo("build")
+        .env("CARGO_BUILD_PIPELINING", "true")
+        .with_stdout("")
+        .with_stderr("\
+[COMPILING] [..]
+[COMPILING] [..]
+[FINISHED] [..]
+")
+        .run();
+}
+
+#[test]
+fn forward_rustc_output() {
+    let foo = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = '2018'
+                [dependencies]
+                bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "bar::foo!();")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+                [lib]
+                proc-macro = true
+            "#,
+        )
+        .file(
+            "bar/src/lib.rs",
+            r#"
+                extern crate proc_macro;
+                use proc_macro::*;
+
+                #[proc_macro]
+                pub fn foo(input: TokenStream) -> TokenStream {
+                    println!("a");
+                    println!("b");
+                    println!("{{}}");
+                    eprintln!("c");
+                    eprintln!("d");
+                    eprintln!("{{a"); // "malformed json"
+                    input
+                }
+            "#,
         )
         .build();
 
-    foo.cargo("build --message-format=json")
-        .with_stderr(
-            "\
-[COMPILING] pm [..]
-[COMPILING] foo [..]
-[ERROR] Could not compile `foo`.
-
-Caused by:
-  compiler produced invalid json: `{evil proc macro}`
-
-Caused by:
-  failed to parse process output: `rustc [..]
-",
-        )
-        .with_status(101)
+    foo.cargo("build")
+        .with_stdout("a\nb\n{}")
+        .with_stderr("\
+[COMPILING] [..]
+[COMPILING] [..]
+c
+d
+{a
+[FINISHED] [..]
+")
         .run();
 }

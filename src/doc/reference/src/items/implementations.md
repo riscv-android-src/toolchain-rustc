@@ -5,7 +5,7 @@
 > &nbsp;&nbsp; _InherentImpl_ | _TraitImpl_
 >
 > _InherentImpl_ :\
-> &nbsp;&nbsp; `impl` [_Generics_]&nbsp;[_Type_]&nbsp;[_WhereClause_]<sup>?</sup> `{`\
+> &nbsp;&nbsp; `impl` [_Generics_]<sup>?</sup>&nbsp;[_Type_]&nbsp;[_WhereClause_]<sup>?</sup> `{`\
 > &nbsp;&nbsp; &nbsp;&nbsp; [_InnerAttribute_]<sup>\*</sup>\
 > &nbsp;&nbsp; &nbsp;&nbsp; _InherentImplItem_<sup>\*</sup>\
 > &nbsp;&nbsp; `}`
@@ -17,7 +17,7 @@
 > &nbsp;&nbsp; )
 >
 > _TraitImpl_ :\
-> &nbsp;&nbsp; `unsafe`<sup>?</sup> `impl` [_Generics_] `!`<sup>?</sup>
+> &nbsp;&nbsp; `unsafe`<sup>?</sup> `impl` [_Generics_]<sup>?</sup> `!`<sup>?</sup>
 >              [_TypePath_] `for` [_Type_]\
 > &nbsp;&nbsp; [_WhereClause_]<sup>?</sup>\
 > &nbsp;&nbsp; `{`\
@@ -202,7 +202,6 @@ attributes must come before any associated items. That attributes that have
 meaning here are [`cfg`], [`deprecated`], [`doc`], and [the lint check
 attributes].
 
-[IDENTIFIER]: identifiers.html
 [_ConstantItem_]: items/constant-items.html
 [_Function_]: items/functions.html
 [_Generics_]: items/generics.html

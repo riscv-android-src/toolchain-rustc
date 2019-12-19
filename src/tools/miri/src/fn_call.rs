@@ -3,6 +3,9 @@ use rustc::ty::layout::{Align, LayoutOf, Size};
 use rustc::hir::def_id::DefId;
 use rustc::mir;
 use syntax::attr;
+use syntax::symbol::sym;
+
+use rand::RngCore;
 
 use crate::*;
 
@@ -11,8 +14,8 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
     fn find_fn(
         &mut self,
         instance: ty::Instance<'tcx>,
-        args: &[OpTy<'tcx, Borrow>],
-        dest: Option<PlaceTy<'tcx, Borrow>>,
+        args: &[OpTy<'tcx, Tag>],
+        dest: Option<PlaceTy<'tcx, Tag>>,
         ret: Option<mir::BasicBlock>,
     ) -> EvalResult<'tcx, Option<&'mir mir::Mir<'tcx>>> {
         let this = self.eval_context_mut();
@@ -48,29 +51,114 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
         Ok(Some(this.load_mir(instance.def)?))
     }
 
+    fn malloc(
+        &mut self,
+        size: u64,
+        zero_init: bool,
+    ) -> Scalar<Tag> {
+        let this = self.eval_context_mut();
+        let tcx = &{this.tcx.tcx};
+        if size == 0 {
+            Scalar::from_int(0, this.pointer_size())
+        } else {
+            let align = this.tcx.data_layout.pointer_align.abi;
+            let ptr = this.memory_mut().allocate(Size::from_bytes(size), align, MiriMemoryKind::C.into());
+            if zero_init {
+                // We just allocated this, the access cannot fail
+                this.memory_mut()
+                    .get_mut(ptr.alloc_id).unwrap()
+                    .write_repeat(tcx, ptr, 0, Size::from_bytes(size)).unwrap();
+            }
+            Scalar::Ptr(ptr)
+        }
+    }
+
+    fn free(
+        &mut self,
+        ptr: Scalar<Tag>,
+    ) -> EvalResult<'tcx> {
+        let this = self.eval_context_mut();
+        if !ptr.is_null_ptr(this) {
+            this.memory_mut().deallocate(
+                ptr.to_ptr()?,
+                None,
+                MiriMemoryKind::C.into(),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn realloc(
+        &mut self,
+        old_ptr: Scalar<Tag>,
+        new_size: u64,
+    ) -> EvalResult<'tcx, Scalar<Tag>> {
+        let this = self.eval_context_mut();
+        let align = this.tcx.data_layout.pointer_align.abi;
+        if old_ptr.is_null_ptr(this) {
+            if new_size == 0 {
+                Ok(Scalar::from_int(0, this.pointer_size()))
+            } else {
+                let new_ptr = this.memory_mut().allocate(
+                    Size::from_bytes(new_size),
+                    align,
+                    MiriMemoryKind::C.into()
+                );
+                Ok(Scalar::Ptr(new_ptr))
+            }
+        } else {
+            let old_ptr = old_ptr.to_ptr()?;
+            let memory = this.memory_mut();
+            let old_size = Size::from_bytes(memory.get(old_ptr.alloc_id)?.bytes.len() as u64);
+            if new_size == 0 {
+                memory.deallocate(
+                    old_ptr,
+                    Some((old_size, align)),
+                    MiriMemoryKind::C.into(),
+                )?;
+                Ok(Scalar::from_int(0, this.pointer_size()))
+            } else {
+                let new_ptr = memory.reallocate(
+                    old_ptr,
+                    old_size,
+                    align,
+                    Size::from_bytes(new_size),
+                    align,
+                    MiriMemoryKind::C.into(),
+                )?;
+                Ok(Scalar::Ptr(new_ptr))
+            }
+        }
+    }
+
     /// Emulates calling a foreign item, failing if the item is not supported.
     /// This function will handle `goto_block` if needed.
     fn emulate_foreign_item(
         &mut self,
         def_id: DefId,
-        args: &[OpTy<'tcx, Borrow>],
-        dest: Option<PlaceTy<'tcx, Borrow>>,
+        args: &[OpTy<'tcx, Tag>],
+        dest: Option<PlaceTy<'tcx, Tag>>,
         ret: Option<mir::BasicBlock>,
     ) -> EvalResult<'tcx> {
         let this = self.eval_context_mut();
         let attrs = this.tcx.get_attrs(def_id);
-        let link_name = match attr::first_attr_value_str_by_name(&attrs, "link_name") {
-            Some(name) => name.as_str().get(),
-            None => this.tcx.item_name(def_id).as_str().get(),
+        let link_name = match attr::first_attr_value_str_by_name(&attrs, sym::link_name) {
+            Some(name) => name.as_str(),
+            None => this.tcx.item_name(def_id).as_str(),
         };
         // Strip linker suffixes (seen on 32-bit macOS).
-        let link_name = link_name.trim_end_matches("$UNIX2003");
+        let link_name = link_name.get().trim_end_matches("$UNIX2003");
         let tcx = &{this.tcx.tcx};
 
-        // First: functions that could diverge.
+        // First: functions that diverge.
         match link_name {
             "__rust_start_panic" | "panic_impl" => {
                 return err!(MachineError("the evaluated program panicked".to_string()));
+            }
+            "exit" | "ExitProcess" => {
+                // it's really u32 for ExitProcess, but we have to put it into the `Exit` error variant anyway
+                let code = this.read_scalar(args[0])?.to_i32()?;
+                return err!(Exit(code));
             }
             _ => if dest.is_none() {
                 return err!(Unimplemented(
@@ -85,28 +173,15 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
         match link_name {
             "malloc" => {
                 let size = this.read_scalar(args[0])?.to_usize(this)?;
-                if size == 0 {
-                    this.write_null(dest)?;
-                } else {
-                    let align = this.tcx.data_layout.pointer_align.abi;
-                    let ptr = this.memory_mut().allocate(Size::from_bytes(size), align, MiriMemoryKind::C.into());
-                    this.write_scalar(Scalar::Ptr(ptr.with_default_tag()), dest)?;
-                }
+                let res = this.malloc(size, /*zero_init:*/ false);
+                this.write_scalar(res, dest)?;
             }
             "calloc" => {
                 let items = this.read_scalar(args[0])?.to_usize(this)?;
                 let len = this.read_scalar(args[1])?.to_usize(this)?;
-                let bytes = items.checked_mul(len).ok_or_else(|| InterpError::Overflow(mir::BinOp::Mul))?;
-
-                if bytes == 0 {
-                    this.write_null(dest)?;
-                } else {
-                    let size = Size::from_bytes(bytes);
-                    let align = this.tcx.data_layout.pointer_align.abi;
-                    let ptr = this.memory_mut().allocate(size, align, MiriMemoryKind::C.into()).with_default_tag();
-                    this.memory_mut().get_mut(ptr.alloc_id)?.write_repeat(tcx, ptr, 0, size)?;
-                    this.write_scalar(Scalar::Ptr(ptr), dest)?;
-                }
+                let size = items.checked_mul(len).ok_or_else(|| InterpError::Overflow(mir::BinOp::Mul))?;
+                let res = this.malloc(size, /*zero_init:*/ true);
+                this.write_scalar(res, dest)?;
             }
             "posix_memalign" => {
                 let ret = this.deref_operand(args[0])?;
@@ -130,20 +205,19 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
                         Align::from_bytes(align).unwrap(),
                         MiriMemoryKind::C.into()
                     );
-                    this.write_scalar(Scalar::Ptr(ptr.with_default_tag()), ret.into())?;
+                    this.write_scalar(Scalar::Ptr(ptr), ret.into())?;
                 }
                 this.write_null(dest)?;
             }
-
             "free" => {
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
-                if !ptr.is_null_ptr(this) {
-                    this.memory_mut().deallocate(
-                        ptr.to_ptr()?,
-                        None,
-                        MiriMemoryKind::C.into(),
-                    )?;
-                }
+                this.free(ptr)?;
+            }
+            "realloc" => {
+                let old_ptr = this.read_scalar(args[0])?.not_undef()?;
+                let new_size = this.read_scalar(args[1])?.to_usize(this)?;
+                let res = this.realloc(old_ptr, new_size)?;
+                this.write_scalar(res, dest)?;
             }
 
             "__rust_alloc" => {
@@ -160,8 +234,7 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
                         Size::from_bytes(size),
                         Align::from_bytes(align).unwrap(),
                         MiriMemoryKind::Rust.into()
-                    )
-                    .with_default_tag();
+                    );
                 this.write_scalar(Scalar::Ptr(ptr), dest)?;
             }
             "__rust_alloc_zeroed" => {
@@ -178,8 +251,7 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
                         Size::from_bytes(size),
                         Align::from_bytes(align).unwrap(),
                         MiriMemoryKind::Rust.into()
-                    )
-                    .with_default_tag();
+                    );
                 this.memory_mut()
                     .get_mut(ptr.alloc_id)?
                     .write_repeat(tcx, ptr, 0, Size::from_bytes(size))?;
@@ -220,20 +292,27 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
                     Align::from_bytes(align).unwrap(),
                     MiriMemoryKind::Rust.into(),
                 )?;
-                this.write_scalar(Scalar::Ptr(new_ptr.with_default_tag()), dest)?;
+                this.write_scalar(Scalar::Ptr(new_ptr), dest)?;
             }
 
             "syscall" => {
-                // TODO: read `syscall` IDs like `sysconf` IDs and
-                // figure out some way to actually process some of them.
-                //
+                let sys_getrandom = this.eval_path_scalar(&["libc", "SYS_getrandom"])?
+                    .expect("Failed to get libc::SYS_getrandom")
+                    .to_usize(this)?;
+
                 // `libc::syscall(NR_GETRANDOM, buf.as_mut_ptr(), buf.len(), GRND_NONBLOCK)`
-                // is called if a `HashMap` is created the regular way.
+                // is called if a `HashMap` is created the regular way (e.g. HashMap<K, V>).
                 match this.read_scalar(args[0])?.to_usize(this)? {
-                    318 | 511 => {
-                        return err!(Unimplemented(
-                            "miri does not support random number generators".to_owned(),
-                        ))
+                    id if id == sys_getrandom => {
+                        let ptr = this.read_scalar(args[1])?.not_undef()?;
+                        let len = this.read_scalar(args[2])?.to_usize(this)?;
+
+                        // The only supported flags are GRND_RANDOM and GRND_NONBLOCK,
+                        // neither of which have any effect on our current PRNG
+                        let _flags = this.read_scalar(args[3])?.to_i32()?;
+
+                        gen_random(this, len as usize, ptr)?;
+                        this.write_scalar(Scalar::from_uint(len, dest.layout.size), dest)?;
                     }
                     id => {
                         return err!(Unimplemented(
@@ -414,7 +493,7 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
                         Size::from_bytes((value.len() + 1) as u64),
                         Align::from_bytes(1).unwrap(),
                         MiriMemoryKind::Env.into(),
-                    ).with_default_tag();
+                    );
                     {
                         let alloc = this.memory_mut().get_mut(value_copy.alloc_id)?;
                         alloc.write_bytes(tcx, value_copy, &value)?;
@@ -499,18 +578,13 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
                 ];
                 let mut result = None;
                 for &(path, path_value) in paths {
-                    if let Ok(instance) = this.resolve_path(path) {
-                        let cid = GlobalId {
-                            instance,
-                            promoted: None,
-                        };
-                        let const_val = this.const_eval_raw(cid)?;
-                        let const_val = this.read_scalar(const_val.into())?;
-                        let value = const_val.to_i32()?;
-                        if value == name {
+                    if let Some(val) = this.eval_path_scalar(path)? {
+                        let val = val.to_i32()?;
+                        if val == name {
                             result = Some(path_value);
                             break;
                         }
+
                     }
                 }
                 if let Some(result) = result {
@@ -615,6 +689,11 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
                 this.write_null(dest)?;
             }
 
+            // We don't support fork so we don't have to do anything for atfork.
+            "pthread_atfork" => {
+                this.write_null(dest)?;
+            }
+
             "mmap" => {
                 // This is a horrible hack, but since the guard page mechanism calls mmap and expects a particular return value, we just give it that value.
                 let addr = this.read_scalar(args[0])?.not_undef()?;
@@ -634,8 +713,45 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
             "_NSGetArgv" => {
                 this.write_scalar(Scalar::Ptr(this.machine.argv.unwrap()), dest)?;
             },
+            "SecRandomCopyBytes" => {
+                let len = this.read_scalar(args[1])?.to_usize(this)?;
+                let ptr = this.read_scalar(args[2])?.not_undef()?;
+                gen_random(this, len as usize, ptr)?;
+                this.write_null(dest)?;
+            }
 
             // Windows API stubs.
+            // HANDLE = isize
+            // DWORD = ULONG = u32
+            // BOOL = i32
+            "GetProcessHeap" => {
+                // Just fake a HANDLE
+                this.write_scalar(Scalar::from_int(1, this.pointer_size()), dest)?;
+            }
+            "HeapAlloc" => {
+                let _handle = this.read_scalar(args[0])?.to_isize(this)?;
+                let flags = this.read_scalar(args[1])?.to_u32()?;
+                let size = this.read_scalar(args[2])?.to_usize(this)?;
+                let zero_init = (flags & 0x00000008) != 0; // HEAP_ZERO_MEMORY
+                let res = this.malloc(size, zero_init);
+                this.write_scalar(res, dest)?;
+            }
+            "HeapFree" => {
+                let _handle = this.read_scalar(args[0])?.to_isize(this)?;
+                let _flags = this.read_scalar(args[1])?.to_u32()?;
+                let ptr = this.read_scalar(args[2])?.not_undef()?;
+                this.free(ptr)?;
+                this.write_scalar(Scalar::from_int(1, Size::from_bytes(4)), dest)?;
+            }
+            "HeapReAlloc" => {
+                let _handle = this.read_scalar(args[0])?.to_isize(this)?;
+                let _flags = this.read_scalar(args[1])?.to_u32()?;
+                let ptr = this.read_scalar(args[2])?.not_undef()?;
+                let size = this.read_scalar(args[3])?.to_usize(this)?;
+                let res = this.realloc(ptr, size)?;
+                this.write_scalar(res, dest)?;
+            }
+
             "SetLastError" => {
                 let err = this.read_scalar(args[0])?.to_u32()?;
                 this.machine.last_error = err;
@@ -757,6 +873,13 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
             "GetCommandLineW" => {
                 this.write_scalar(Scalar::Ptr(this.machine.cmd_line.unwrap()), dest)?;
             }
+            // The actual name of 'RtlGenRandom'
+            "SystemFunction036" => {
+                let ptr = this.read_scalar(args[0])?.not_undef()?;
+                let len = this.read_scalar(args[1])?.to_u32()?;
+                gen_random(this, len as usize, ptr)?;
+                this.write_scalar(Scalar::from_bool(true), dest)?;
+            }
 
             // We can't execute anything else.
             _ => {
@@ -771,7 +894,54 @@ pub trait EvalContextExt<'a, 'mir, 'tcx: 'a + 'mir>: crate::MiriEvalContextExt<'
         Ok(())
     }
 
-    fn write_null(&mut self, dest: PlaceTy<'tcx, Borrow>) -> EvalResult<'tcx> {
+    fn write_null(&mut self, dest: PlaceTy<'tcx, Tag>) -> EvalResult<'tcx> {
         self.eval_context_mut().write_scalar(Scalar::from_int(0, dest.layout.size), dest)
     }
+
+    /// Evaluates the scalar at the specified path. Returns Some(val)
+    /// if the path could be resolved, and None otherwise
+    fn eval_path_scalar(&mut self, path: &[&str]) -> EvalResult<'tcx, Option<ScalarMaybeUndef<Tag>>> {
+        let this = self.eval_context_mut();
+        if let Ok(instance) = this.resolve_path(path) {
+            let cid = GlobalId {
+                instance,
+                promoted: None,
+            };
+            let const_val = this.const_eval_raw(cid)?;
+            let const_val = this.read_scalar(const_val.into())?;
+            return Ok(Some(const_val));
+        }
+        return Ok(None);
+    }
+}
+
+fn gen_random<'a, 'mir, 'tcx>(
+    this: &mut MiriEvalContext<'a, 'mir, 'tcx>,
+    len: usize,
+    dest: Scalar<Tag>,
+) -> EvalResult<'tcx>  {
+    if len == 0 {
+        // Nothing to do
+        return Ok(());
+    }
+    let ptr = dest.to_ptr()?;
+
+    let data = match &mut this.machine.rng {
+        Some(rng) => {
+            let mut data = vec![0; len];
+            rng.fill_bytes(&mut data);
+            data
+        }
+        None => {
+            return err!(Unimplemented(
+                "miri does not support gathering system entropy in deterministic mode!
+                Use '-Zmiri-seed=<seed>' to enable random number generation.
+                WARNING: Miri does *not* generate cryptographically secure entropy -
+                do not use Miri to run any program that needs secure random number generation".to_owned(),
+            ));
+        }
+    };
+    let tcx = &{this.tcx.tcx};
+    this.memory_mut().get_mut(ptr.alloc_id)?
+        .write_bytes(tcx, ptr, &data)
 }

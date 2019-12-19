@@ -7,7 +7,7 @@ use failure::{Error, Fail};
 use semver;
 
 use super::context::Context;
-use super::types::{Candidate, ConflictMap, ConflictReason};
+use super::types::{ConflictMap, ConflictReason};
 
 /// Error during resolution providing a path of `PackageId`s.
 pub struct ResolveError {
@@ -50,6 +50,7 @@ impl fmt::Display for ResolveError {
 
 pub type ActivateResult<T> = Result<T, ActivateError>;
 
+#[derive(Debug)]
 pub enum ActivateError {
     Fatal(failure::Error),
     Conflict(PackageId, ConflictReason),
@@ -73,7 +74,7 @@ pub(super) fn activation_error(
     parent: &Summary,
     dep: &Dependency,
     conflicting_activations: &ConflictMap,
-    candidates: &[Candidate],
+    candidates: &[Summary],
     config: Option<&Config>,
 ) -> ResolveError {
     let to_resolve_err = |err| {
@@ -100,7 +101,7 @@ pub(super) fn activation_error(
         msg.push_str(
             &candidates
                 .iter()
-                .map(|v| v.summary.version())
+                .map(|v| v.version())
                 .map(|v| v.to_string())
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -126,7 +127,7 @@ pub(super) fn activation_error(
             msg.push_str(&describe_path(&cx.parents.path_to_bottom(p)));
         }
 
-        let (features_errors, other_errors): (Vec<_>, Vec<_>) = other_errors
+        let (features_errors, mut other_errors): (Vec<_>, Vec<_>) = other_errors
             .drain(..)
             .partition(|&(_, r)| r.is_missing_features());
 
@@ -141,6 +142,29 @@ pub(super) fn activation_error(
                 msg.push_str("` but `");
                 msg.push_str(&*dep.package_name());
                 msg.push_str("` does not have these features.\n");
+            }
+            // p == parent so the full path is redundant.
+        }
+
+        let (required_dependency_as_features_errors, other_errors): (Vec<_>, Vec<_>) = other_errors
+            .drain(..)
+            .partition(|&(_, r)| r.is_required_dependency_as_features());
+
+        for &(p, r) in required_dependency_as_features_errors.iter() {
+            if let ConflictReason::RequiredDependencyAsFeatures(ref features) = *r {
+                msg.push_str("\n\nthe package `");
+                msg.push_str(&*p.name());
+                msg.push_str("` depends on `");
+                msg.push_str(&*dep.package_name());
+                msg.push_str("`, with features: `");
+                msg.push_str(features);
+                msg.push_str("` but `");
+                msg.push_str(&*dep.package_name());
+                msg.push_str("` does not have these features.\n");
+                msg.push_str(
+                    " It has a required dependency with that name, \
+                     but only optional dependencies can be used as features.\n",
+                );
             }
             // p == parent so the full path is redundant.
         }
@@ -275,9 +299,9 @@ pub(super) fn activation_error(
     };
 
     if let Some(config) = config {
-        if config.cli_unstable().offline {
+        if config.offline() {
             msg.push_str(
-                "\nAs a reminder, you're using offline mode (-Z offline) \
+                "\nAs a reminder, you're using offline mode (--offline) \
                  which can sometimes cause surprising resolution failures, \
                  if this error is too confusing you may wish to retry \
                  without the offline flag.",

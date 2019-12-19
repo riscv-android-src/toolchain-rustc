@@ -68,6 +68,7 @@ proptest! {
                 &None,
                 false,
                 false,
+                false,
                 &None,
                 &["minimal-versions".to_string()],
             )
@@ -111,13 +112,13 @@ proptest! {
     ) {
         let reg = registry(input.clone());
         let mut removed_input = input.clone();
-        for (summery_idx, dep_idx) in indexes_to_remove {
+        for (summary_idx, dep_idx) in indexes_to_remove {
             if !removed_input.is_empty() {
-                let summery_idx = summery_idx.index(removed_input.len());
-                let deps = removed_input[summery_idx].dependencies();
+                let summary_idx = summary_idx.index(removed_input.len());
+                let deps = removed_input[summary_idx].dependencies();
                 if !deps.is_empty() {
-                    let new = remove_dep(&removed_input[summery_idx], dep_idx.index(deps.len()));
-                    removed_input[summery_idx] = new;
+                    let new = remove_dep(&removed_input[summary_idx], dep_idx.index(deps.len()));
+                    removed_input[summary_idx] = new;
                 }
             }
         }
@@ -329,7 +330,7 @@ fn public_dependency_filling_in_and_update() {
 }
 
 #[test]
-fn public_dependency_skiping() {
+fn public_dependency_skipping() {
     // When backtracking due to a failed dependency, if Cargo is
     // trying to be clever and skip irrelevant dependencies, care must
     // the effects of pub dep must be accounted for.
@@ -346,7 +347,7 @@ fn public_dependency_skiping() {
 }
 
 #[test]
-fn public_dependency_skiping_in_backtracking() {
+fn public_dependency_skipping_in_backtracking() {
     // When backtracking due to a failed dependency, if Cargo is
     // trying to be clever and skip irrelevant dependencies, care must
     // the effects of pub dep must be accounted for.
@@ -531,6 +532,7 @@ fn test_resolving_minimum_version_with_transitive_deps() {
             1,
             None,
             &None,
+            false,
             false,
             false,
             &None,
@@ -1127,11 +1129,11 @@ fn resolving_with_constrained_sibling_transitive_dep_effects() {
 }
 
 #[test]
-fn incomplete_information_skiping() {
+fn incomplete_information_skipping() {
     // When backtracking due to a failed dependency, if Cargo is
     // trying to be clever and skip irrelevant dependencies, care must
     // be taken to not miss the transitive effects of alternatives.
-    // Fuzzing discovered that for some reason cargo was skiping based
+    // Fuzzing discovered that for some reason cargo was skipping based
     // on incomplete information in the following case:
     // minimized bug found in:
     // https://github.com/rust-lang/cargo/commit/003c29b0c71e5ea28fbe8e72c148c755c9f3f8d9
@@ -1176,11 +1178,11 @@ fn incomplete_information_skiping() {
 }
 
 #[test]
-fn incomplete_information_skiping_2() {
+fn incomplete_information_skipping_2() {
     // When backtracking due to a failed dependency, if Cargo is
     // trying to be clever and skip irrelevant dependencies, care must
     // be taken to not miss the transitive effects of alternatives.
-    // Fuzzing discovered that for some reason cargo was skiping based
+    // Fuzzing discovered that for some reason cargo was skipping based
     // on incomplete information in the following case:
     // https://github.com/rust-lang/cargo/commit/003c29b0c71e5ea28fbe8e72c148c755c9f3f8d9
     let input = vec![
@@ -1245,11 +1247,11 @@ fn incomplete_information_skiping_2() {
 }
 
 #[test]
-fn incomplete_information_skiping_3() {
+fn incomplete_information_skipping_3() {
     // When backtracking due to a failed dependency, if Cargo is
     // trying to be clever and skip irrelevant dependencies, care must
     // be taken to not miss the transitive effects of alternatives.
-    // Fuzzing discovered that for some reason cargo was skiping based
+    // Fuzzing discovered that for some reason cargo was skipping based
     // on incomplete information in the following case:
     // minimized bug found in:
     // https://github.com/rust-lang/cargo/commit/003c29b0c71e5ea28fbe8e72c148c755c9f3f8d9

@@ -1,13 +1,13 @@
 //! A group of attributes that can be attached to Rust code in order
 //! to generate a clippy lint detecting said code automatically.
 
-use crate::utils::get_attr;
+use crate::utils::{get_attr, higher};
 use rustc::hir;
 use rustc::hir::intravisit::{NestedVisitorMap, Visitor};
 use rustc::hir::{BindingAnnotation, Expr, ExprKind, Pat, PatKind, QPath, Stmt, StmtKind, TyKind};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::session::Session;
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::FxHashMap;
 use syntax::ast::{Attribute, LitKind};
 
@@ -48,17 +48,7 @@ declare_clippy_lint! {
     "helper for writing lints"
 }
 
-pub struct Pass;
-
-impl LintPass for Pass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(LINT_AUTHOR)
-    }
-
-    fn name(&self) -> &'static str {
-        "Author"
-    }
-}
+declare_lint_pass!(Author => [LINT_AUTHOR]);
 
 fn prelude() {
     println!("if_chain! {{");
@@ -71,7 +61,7 @@ fn done() {
     println!("}}");
 }
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
         if !has_attr(cx.sess(), &item.attrs) {
             return;
@@ -197,6 +187,32 @@ struct PrintVisitor {
 impl<'tcx> Visitor<'tcx> for PrintVisitor {
     #[allow(clippy::too_many_lines)]
     fn visit_expr(&mut self, expr: &Expr) {
+        // handle if desugarings
+        // TODO add more desugarings here
+        if let Some((cond, then, opt_else)) = higher::if_block(&expr) {
+            let cond_pat = self.next("cond");
+            let then_pat = self.next("then");
+            if let Some(else_) = opt_else {
+                let else_pat = self.next("else_");
+                println!(
+                    "    if let Some((ref {}, ref {}, Some({}))) = higher::if_block(&{});",
+                    cond_pat, then_pat, else_pat, self.current
+                );
+                self.current = else_pat;
+                self.visit_expr(else_);
+            } else {
+                println!(
+                    "    if let Some((ref {}, ref {}, None)) = higher::if_block(&{});",
+                    cond_pat, then_pat, self.current
+                );
+            }
+            self.current = cond_pat;
+            self.visit_expr(cond);
+            self.current = then_pat;
+            self.visit_expr(then);
+            return;
+        }
+
         print!("    if let ExprKind::");
         let current = format!("{}.node", self.current);
         match expr.node {
@@ -305,25 +321,6 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
                 println!("Type(ref {}, _) = {};", cast_pat, current);
                 self.current = cast_pat;
                 self.visit_expr(expr);
-            },
-            ExprKind::If(ref cond, ref then, ref opt_else) => {
-                let cond_pat = self.next("cond");
-                let then_pat = self.next("then");
-                if let Some(ref else_) = *opt_else {
-                    let else_pat = self.next("else_");
-                    println!(
-                        "If(ref {}, ref {}, Some(ref {})) = {};",
-                        cond_pat, then_pat, else_pat, current
-                    );
-                    self.current = else_pat;
-                    self.visit_expr(else_);
-                } else {
-                    println!("If(ref {}, ref {}, None) = {};", cond_pat, then_pat, current);
-                }
-                self.current = cond_pat;
-                self.visit_expr(cond);
-                self.current = then_pat;
-                self.visit_expr(then);
             },
             ExprKind::While(ref cond, ref body, _) => {
                 let cond_pat = self.next("cond");
@@ -504,6 +501,12 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
             },
             ExprKind::Err => {
                 println!("Err = {}", current);
+            },
+            ExprKind::DropTemps(ref expr) => {
+                let expr_pat = self.next("expr");
+                println!("DropTemps(ref {}) = {};", expr_pat, current);
+                self.current = expr_pat;
+                self.visit_expr(expr);
             },
         }
     }
@@ -688,6 +691,11 @@ fn desugaring_name(des: hir::MatchSource) -> String {
             "MatchSource::IfLetDesugar {{ contains_else_clause: {} }}",
             contains_else_clause
         ),
+        hir::MatchSource::IfDesugar { contains_else_clause } => format!(
+            "MatchSource::IfDesugar {{ contains_else_clause: {} }}",
+            contains_else_clause
+        ),
+        hir::MatchSource::AwaitDesugar => "MatchSource::AwaitDesugar".to_string(),
     }
 }
 

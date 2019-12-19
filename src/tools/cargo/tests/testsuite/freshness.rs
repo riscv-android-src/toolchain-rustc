@@ -760,7 +760,7 @@ fn rebuild_if_build_artifacts_move_forward_in_time() {
     p.root().move_into_the_future();
 
     p.cargo("build")
-        .env("RUST_LOG", "")
+        .env("CARGO_LOG", "")
         .with_stdout("")
         .with_stderr(
             "\
@@ -1439,8 +1439,8 @@ fn reuse_panic_pm() {
         .with_stderr_unordered(
             "\
 [COMPILING] bar [..]
-[RUNNING] `rustc --crate-name bar bar/src/lib.rs [..]--crate-type lib --emit=dep-info,link -C debuginfo=2 [..]
-[RUNNING] `rustc --crate-name bar bar/src/lib.rs [..]--crate-type lib --emit=dep-info,link -C panic=abort -C debuginfo=2 [..]
+[RUNNING] `rustc --crate-name bar bar/src/lib.rs [..]--crate-type lib --emit=[..]link -C debuginfo=2 [..]
+[RUNNING] `rustc --crate-name bar bar/src/lib.rs [..]--crate-type lib --emit=[..]link -C panic=abort -C debuginfo=2 [..]
 [COMPILING] somepm [..]
 [RUNNING] `rustc --crate-name somepm [..]
 [COMPILING] foo [..]
@@ -1851,6 +1851,7 @@ fn simulated_docker_deps_stay_cached() {
     zeropath(&paths::home());
 
     if already_zero {
+        println!("already zero");
         // If it was already truncated, then everything stays fresh.
         p.cargo("build -v")
             .with_stderr_unordered(
@@ -1866,8 +1867,16 @@ fn simulated_docker_deps_stay_cached() {
             )
             .run();
     } else {
+        println!("not already zero");
         // It is not ideal that `foo` gets recompiled, but that is the current
         // behavior. Currently mtimes are ignored for registry deps.
+        //
+        // Note that this behavior is due to the fact that `foo` has a build
+        // script in "old" mode where it doesn't print `rerun-if-*`. In this
+        // mode we use `Precalculated` to fingerprint a path dependency, where
+        // `Precalculated` is an opaque string which has the most recent mtime
+        // in it. It differs between builds because one has nsec=0 and the other
+        // likely has a nonzero nsec. Hence, the rebuild.
         p.cargo("build -v")
             .with_stderr_unordered(
                 "\
@@ -1957,4 +1966,61 @@ fn edition_change_invalidates() {
         .with_stderr_contains("[FRESH] foo[..]")
         .run();
     assert_eq!(p.glob("target/debug/deps/libfoo-*.rlib").count(), 1);
+}
+
+#[test]
+fn rename_with_path_deps() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.5.0"
+                authors = []
+
+                [dependencies]
+                a = { path = 'a' }
+            "#,
+        )
+        .file("src/lib.rs", "extern crate a; pub fn foo() { a::foo(); }")
+        .file(
+            "a/Cargo.toml",
+            r#"
+                [project]
+                name = "a"
+                version = "0.5.0"
+                authors = []
+
+                [dependencies]
+                b = { path = 'b' }
+            "#,
+        )
+        .file("a/src/lib.rs", "extern crate b; pub fn foo() { b::foo() }")
+        .file(
+            "a/b/Cargo.toml",
+            r#"
+                [project]
+                name = "b"
+                version = "0.5.0"
+                authors = []
+            "#,
+        )
+        .file("a/b/src/lib.rs", "pub fn foo() { }");
+    let p = p.build();
+
+    p.cargo("build").run();
+
+    // Now rename the root directory and rerun `cargo run`. Not only should we
+    // not build anything but we also shouldn't crash.
+    let mut new = p.root();
+    new.pop();
+    new.push("foo2");
+
+    fs::rename(p.root(), &new).unwrap();
+
+    p.cargo("build")
+        .cwd(&new)
+        .with_stderr("[FINISHED] [..]")
+        .run();
 }

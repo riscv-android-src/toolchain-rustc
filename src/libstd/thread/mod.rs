@@ -157,7 +157,6 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use crate::any::Any;
-use crate::boxed::FnBox;
 use crate::cell::UnsafeCell;
 use crate::ffi::{CStr, CString};
 use crate::fmt;
@@ -270,7 +269,7 @@ impl Builder {
     ///
     /// let builder = thread::Builder::new()
     ///                               .name("foo".into())
-    ///                               .stack_size(10);
+    ///                               .stack_size(32 * 1024);
     ///
     /// let handler = builder.spawn(|| {
     ///     // thread code
@@ -444,6 +443,7 @@ impl Builder {
     /// [`Builder::spawn`]: ../../std/thread/struct.Builder.html#method.spawn
     /// [`io::Result`]: ../../std/io/type.Result.html
     /// [`JoinHandle`]: ../../std/thread/struct.JoinHandle.html
+    /// [`JoinHandle::join`]: ../../std/thread/struct.JoinHandle.html#method.join
     #[unstable(feature = "thread_spawn_unchecked", issue = "55132")]
     pub unsafe fn spawn_unchecked<'a, F, T>(self, f: F) -> io::Result<JoinHandle<T>> where
         F: FnOnce() -> T, F: Send + 'a, T: Send + 'a
@@ -488,7 +488,9 @@ impl Builder {
             // returning.
             native: Some(imp::Thread::new(
                 stack_size,
-                mem::transmute::<Box<dyn FnBox() + 'a>, Box<dyn FnBox() + 'static>>(Box::new(main))
+                mem::transmute::<Box<dyn FnOnce() + 'a>, Box<dyn FnOnce() + 'static>>(Box::new(
+                    main,
+                )),
             )?),
             thread: my_thread,
             packet: Packet(my_packet),

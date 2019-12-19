@@ -30,7 +30,7 @@ struct MiriCompilerCalls {
 impl rustc_driver::Callbacks for MiriCompilerCalls {
     fn after_parsing(&mut self, compiler: &interface::Compiler) -> bool {
         let attr = (
-            String::from("miri"),
+            syntax::symbol::Symbol::intern("miri"),
             syntax::feature_gate::AttributeType::Whitelisted,
         );
         compiler.session().plugin_attributes.borrow_mut().push(attr);
@@ -47,8 +47,8 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                 impl<'a, 'tcx: 'a, 'hir> itemlikevisit::ItemLikeVisitor<'hir> for Visitor<'a, 'tcx> {
                     fn visit_item(&mut self, i: &'hir hir::Item) {
                         if let hir::ItemKind::Fn(.., body_id) = i.node {
-                            if i.attrs.iter().any(|attr| attr.check_name("test")) {
-                                let config = MiriConfig { validate: true, args: vec![] };
+                            if i.attrs.iter().any(|attr| attr.check_name(syntax::symbol::sym::test)) {
+                                let config = MiriConfig { validate: true, args: vec![], seed: None };
                                 let did = self.0.hir().body_owner_def_id(body_id);
                                 println!("running test: {}", self.0.def_path_debug_str(did));
                                 miri::eval_main(self.0, did, config);
@@ -61,7 +61,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                 }
                 tcx.hir().krate().visit_all_item_likes(&mut Visitor(tcx));
             } else if let Some((entry_def_id, _)) = tcx.entry_fn(LOCAL_CRATE) {
-                let config = MiriConfig { validate: true, args: vec![] };
+                let config = MiriConfig { validate: true, args: vec![], seed: None };
                 miri::eval_main(tcx, entry_def_id, config);
 
                 compiler.session().abort_if_errors();

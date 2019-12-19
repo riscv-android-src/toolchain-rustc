@@ -13,6 +13,7 @@ use rustc::infer::opaque_types::may_define_existential_type;
 use syntax::ast;
 use syntax::feature_gate::{self, GateIssue};
 use syntax_pos::Span;
+use syntax::symbol::sym;
 use errors::{DiagnosticBuilder, DiagnosticId};
 
 use rustc::hir::itemlikevisit::ParItemLikeVisitor;
@@ -421,8 +422,8 @@ fn check_where_clauses<'a, 'gcx, 'fcx, 'tcx>(
     return_ty: Option<Ty<'tcx>>,
 ) {
     let predicates = fcx.tcx.predicates_of(def_id);
-
     let generics = tcx.generics_of(def_id);
+
     let is_our_default = |def: &ty::GenericParamDef| {
         match def.kind {
             GenericParamDefKind::Type { has_default, .. } => {
@@ -465,6 +466,7 @@ fn check_where_clauses<'a, 'gcx, 'fcx, 'tcx>(
                 // All regions are identity.
                 fcx.tcx.mk_param_from_def(param)
             }
+
             GenericParamDefKind::Type { .. } => {
                 // If the param has a default,
                 if is_our_default(param) {
@@ -478,25 +480,24 @@ fn check_where_clauses<'a, 'gcx, 'fcx, 'tcx>(
                 // Mark unwanted params as err.
                 fcx.tcx.types.err.into()
             }
+
             GenericParamDefKind::Const => {
                 // FIXME(const_generics:defaults)
-                fcx.tcx.types.err.into()
+                fcx.tcx.consts.err.into()
             }
         }
     });
+
     // Now we build the substituted predicates.
     let default_obligations = predicates.predicates.iter().flat_map(|&(pred, _)| {
         #[derive(Default)]
         struct CountParams { params: FxHashSet<u32> }
         impl<'tcx> ty::fold::TypeVisitor<'tcx> for CountParams {
             fn visit_ty(&mut self, t: Ty<'tcx>) -> bool {
-                match t.sty {
-                    ty::Param(p) => {
-                        self.params.insert(p.idx);
-                        t.super_visit_with(self)
-                    }
-                    _ => t.super_visit_with(self)
+                if let ty::Param(param) = t.sty {
+                    self.params.insert(param.index);
                 }
+                t.super_visit_with(self)
             }
 
             fn visit_region(&mut self, _: ty::Region<'tcx>) -> bool {
@@ -616,7 +617,7 @@ fn check_existential_types<'a, 'fcx, 'gcx, 'tcx>(
     let mut substituted_predicates = Vec::new();
     ty.fold_with(&mut ty::fold::BottomUpFolder {
         tcx: fcx.tcx,
-        fldop: |ty| {
+        ty_op: |ty| {
             if let ty::Opaque(def_id, substs) = ty.sty {
                 trace!("check_existential_types: opaque_ty, {:?}, {:?}", def_id, substs);
                 let generics = tcx.generics_of(def_id);
@@ -739,7 +740,8 @@ fn check_existential_types<'a, 'fcx, 'gcx, 'tcx>(
             } // if let Opaque
             ty
         },
-        reg_op: |reg| reg,
+        lt_op: |lt| lt,
+        ct_op: |ct| ct,
     });
     substituted_predicates
 }
@@ -795,7 +797,7 @@ fn check_method_receiver<'fcx, 'gcx, 'tcx>(fcx: &FnCtxt<'fcx, 'gcx, 'tcx>,
                 // report error, would have worked with arbitrary_self_types
                 feature_gate::feature_err(
                     &fcx.tcx.sess.parse_sess,
-                    "arbitrary_self_types",
+                    sym::arbitrary_self_types,
                     span,
                     GateIssue::Language,
                     &format!(
@@ -938,10 +940,12 @@ fn check_variances_for_type_defn<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                         .map(|(index, _)| Parameter(index as u32))
                         .collect();
 
-    identify_constrained_generic_params(tcx,
-                                     &ty_predicates,
-                                     None,
-                                     &mut constrained_parameters);
+    identify_constrained_generic_params(
+        tcx,
+        &ty_predicates,
+        None,
+        &mut constrained_parameters,
+    );
 
     for (index, _) in variances.iter().enumerate() {
         if constrained_parameters.contains(&Parameter(index as u32)) {
@@ -949,6 +953,7 @@ fn check_variances_for_type_defn<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         }
 
         let param = &hir_generics.params[index];
+
         match param.name {
             hir::ParamName::Error => { }
             _ => report_bivariance(tcx, param.span, param.name.ident().name),
@@ -1123,7 +1128,7 @@ fn error_392<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, span: Span, param_name: ast:
                        -> DiagnosticBuilder<'tcx> {
     let mut err = struct_span_err!(tcx.sess, span, E0392,
                   "parameter `{}` is never used", param_name);
-    err.span_label(span, "unused type parameter");
+    err.span_label(span, "unused parameter");
     err
 }
 

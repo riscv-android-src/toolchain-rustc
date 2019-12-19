@@ -31,6 +31,16 @@ pub enum FnKind<'a> {
     Closure(&'a Expr),
 }
 
+impl<'a> FnKind<'a> {
+    pub fn header(&self) -> Option<&'a FnHeader> {
+        match *self {
+            FnKind::ItemFn(_, header, _, _) => Some(header),
+            FnKind::Method(_, sig, _, _) => Some(&sig.header),
+            FnKind::Closure(_) => None,
+        }
+    }
+}
+
 /// Each method of the Visitor trait is a hook to be potentially
 /// overridden. Each method's default implementation recursively visits
 /// the substructure of the input via the corresponding `walk` method;
@@ -534,6 +544,9 @@ pub fn walk_fn_ret_ty<'a, V: Visitor<'a>>(visitor: &mut V, ret_ty: &'a FunctionR
 pub fn walk_fn_decl<'a, V: Visitor<'a>>(visitor: &mut V, function_declaration: &'a FnDecl) {
     for argument in &function_declaration.inputs {
         visitor.visit_pat(&argument.pat);
+        if let ArgSource::AsyncFn(pat) = &argument.source {
+            visitor.visit_pat(pat);
+        }
         visitor.visit_ty(&argument.ty)
     }
     visitor.visit_fn_ret_ty(&function_declaration.output)
@@ -755,6 +768,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(visitor: &mut V, expression: &'a Expr) {
         ExprKind::Async(_, _, ref body) => {
             visitor.visit_block(body);
         }
+        ExprKind::Await(_, ref expr) => visitor.visit_expr(expr),
         ExprKind::Assign(ref left_hand_expression, ref right_hand_expression) => {
             visitor.visit_expr(left_hand_expression);
             visitor.visit_expr(right_hand_expression);

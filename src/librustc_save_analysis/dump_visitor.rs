@@ -13,7 +13,7 @@
 //! DumpVisitor walks the AST and processes it, and JsonDumper is used for
 //! recording the output.
 
-use rustc::hir::def::Def as HirDef;
+use rustc::hir::def::{Res, DefKind as HirDefKind};
 use rustc::hir::def_id::DefId;
 use rustc::session::config::Input;
 use rustc::span_bug;
@@ -233,8 +233,8 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
     }
 
     fn lookup_def_id(&self, ref_id: NodeId) -> Option<DefId> {
-        match self.save_ctxt.get_path_def(ref_id) {
-            HirDef::PrimTy(..) | HirDef::SelfTy(..) | HirDef::Err => None,
+        match self.save_ctxt.get_path_res(ref_id) {
+            Res::PrimTy(..) | Res::SelfTy(..) | Res::Err => None,
             def => Some(def.def_id()),
         }
     }
@@ -886,7 +886,7 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
                         return;
                     }
                 };
-                let variant = adt.variant_of_def(self.save_ctxt.get_path_def(p.id));
+                let variant = adt.variant_of_res(self.save_ctxt.get_path_res(p.id));
 
                 for &Spanned { node: ref field, .. } in fields {
                     if let Some(index) = self.tcx.find_field_index(field.ident, variant) {
@@ -916,14 +916,14 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
 
         // process collected paths
         for (id, ident, immut) in collector.collected_idents {
-            match self.save_ctxt.get_path_def(id) {
-                HirDef::Local(id) => {
+            match self.save_ctxt.get_path_res(id) {
+                Res::Local(hir_id) => {
                     let mut value = if immut == ast::Mutability::Immutable {
                         self.span.snippet(ident.span)
                     } else {
                         "<mutable>".to_owned()
                     };
-                    let hir_id = self.tcx.hir().node_to_hir_id(id);
+                    let id = self.tcx.hir().hir_to_node_id(hir_id);
                     let typ = self.save_ctxt
                         .tables
                         .node_type_opt(hir_id)
@@ -959,14 +959,14 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> DumpVisitor<'l, 'tcx, 'll, O> {
                         );
                     }
                 }
-                HirDef::Ctor(_, _, _) |
-                HirDef::Const(..) |
-                HirDef::AssociatedConst(..) |
-                HirDef::Struct(..) |
-                HirDef::Variant(..) |
-                HirDef::TyAlias(..) |
-                HirDef::AssociatedTy(..) |
-                HirDef::SelfTy(..) => {
+                Res::Def(HirDefKind::Ctor(..), _) |
+                Res::Def(HirDefKind::Const, _) |
+                Res::Def(HirDefKind::AssociatedConst, _) |
+                Res::Def(HirDefKind::Struct, _) |
+                Res::Def(HirDefKind::Variant, _) |
+                Res::Def(HirDefKind::TyAlias, _) |
+                Res::Def(HirDefKind::AssociatedTy, _) |
+                Res::SelfTy(..) => {
                     self.dump_path_ref(id, &ast::Path::from_ident(ident));
                 }
                 def => error!(
@@ -1540,8 +1540,8 @@ impl<'l, 'tcx: 'l, 'll, O: DumpOutput + 'll> Visitor<'l> for DumpVisitor<'l, 'tc
                     }
                 };
                 let node_id = self.save_ctxt.tcx.hir().hir_to_node_id(hir_expr.hir_id);
-                let def = self.save_ctxt.get_path_def(node_id);
-                self.process_struct_lit(ex, path, fields, adt.variant_of_def(def), base)
+                let res = self.save_ctxt.get_path_res(node_id);
+                self.process_struct_lit(ex, path, fields, adt.variant_of_res(res), base)
             }
             ast::ExprKind::MethodCall(ref seg, ref args) => self.process_method_call(ex, seg, args),
             ast::ExprKind::Field(ref sub_ex, _) => {

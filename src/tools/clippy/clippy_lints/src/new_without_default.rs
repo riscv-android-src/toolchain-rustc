@@ -7,7 +7,7 @@ use rustc::hir::def_id::DefId;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty::{self, Ty};
 use rustc::util::nodemap::NodeSet;
-use rustc::{declare_tool_lint, lint_array};
+use rustc::{declare_tool_lint, impl_lint_pass};
 use rustc_errors::Applicability;
 use syntax::source_map::Span;
 
@@ -89,15 +89,7 @@ pub struct NewWithoutDefault {
     impling_types: Option<NodeSet>,
 }
 
-impl LintPass for NewWithoutDefault {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(NEW_WITHOUT_DEFAULT)
-    }
-
-    fn name(&self) -> &'static str {
-        "NewWithoutDefault"
-    }
-}
+impl_lint_pass!(NewWithoutDefault => [NEW_WITHOUT_DEFAULT]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NewWithoutDefault {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
@@ -128,7 +120,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NewWithoutDefault {
                             // impl of `Default`
                             return;
                         }
-                        if sig.decl.inputs.is_empty() && name == "new" && cx.access_levels.is_reachable(id) {
+                        if sig.decl.inputs.is_empty() && name == sym!(new) && cx.access_levels.is_reachable(id) {
                             let self_did = cx.tcx.hir().local_def_id_from_hir_id(cx.tcx.hir().get_parent_item(id));
                             let self_ty = cx.tcx.type_of(self_did);
                             if_chain! {

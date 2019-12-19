@@ -508,7 +508,8 @@ where
         // callback asking for other authentication methods to try. Check
         // cred_helper_bad to make sure we only try the git credentail helper
         // once, to avoid looping forever.
-        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) && cred_helper_bad.is_none() {
+        if allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) && cred_helper_bad.is_none()
+        {
             let r = git2::Cred::credential_helper(cfg, url, username);
             cred_helper_bad = Some(r.is_err());
             return r;
@@ -702,7 +703,7 @@ pub fn fetch(
     // request we're about to issue.
     maybe_gc_repo(repo)?;
 
-    // Unfortuantely `libgit2` is notably lacking in the realm of authentication
+    // Unfortunately `libgit2` is notably lacking in the realm of authentication
     // when compared to the `git` command line. As a result, allow an escape
     // hatch for users that would prefer to use `git`-the-CLI for fetching
     // repositories instead of `libgit2`-the-library. This should make more
@@ -721,7 +722,7 @@ pub fn fetch(
         // repository. It could also fail, however, for a whole slew of other
         // reasons (aka network related reasons). We want Cargo to automatically
         // recover from corrupt repositories, but we don't want Cargo to stomp
-        // over other legitimate errors.o
+        // over other legitimate errors.
         //
         // Consequently we save off the error of the `fetch` operation and if it
         // looks like a "corrupt repo" error then we blow away the repo and try
@@ -863,7 +864,7 @@ fn reinitialize(repo: &mut git2::Repository) -> CargoResult<()> {
 
 fn init(path: &Path, bare: bool) -> CargoResult<git2::Repository> {
     let mut opts = git2::RepositoryInitOptions::new();
-    // Skip anyting related to templates, they just call all sorts of issues as
+    // Skip anything related to templates, they just call all sorts of issues as
     // we really don't want to use them yet they insist on being used. See #6240
     // for an example issue that comes up.
     opts.external_template(false);

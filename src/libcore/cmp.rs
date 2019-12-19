@@ -265,7 +265,7 @@ pub trait Eq: PartialEq<Self> {
 #[unstable(feature = "derive_eq",
            reason = "deriving hack, should not be public",
            issue = "0")]
-pub struct AssertParamIsEq<T: Eq + ?Sized> { _field: ::marker::PhantomData<T> }
+pub struct AssertParamIsEq<T: Eq + ?Sized> { _field: crate::marker::PhantomData<T> }
 
 /// An `Ordering` is the result of a comparison between two values.
 ///
@@ -286,13 +286,13 @@ pub struct AssertParamIsEq<T: Eq + ?Sized> { _field: ::marker::PhantomData<T> }
 #[derive(Clone, Copy, PartialEq, Debug, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Ordering {
-    /// An ordering where a compared value is less [than another].
+    /// An ordering where a compared value is less than another.
     #[stable(feature = "rust1", since = "1.0.0")]
     Less = -1,
-    /// An ordering where a compared value is equal [to another].
+    /// An ordering where a compared value is equal to another.
     #[stable(feature = "rust1", since = "1.0.0")]
     Equal = 0,
-    /// An ordering where a compared value is greater [than another].
+    /// An ordering where a compared value is greater than another.
     #[stable(feature = "rust1", since = "1.0.0")]
     Greater = 1,
 }
@@ -884,7 +884,7 @@ pub fn max<T: Ord>(v1: T, v2: T) -> T {
 
 // Implementation of PartialEq, Eq, PartialOrd and Ord for primitive types
 mod impls {
-    use cmp::Ordering::{self, Less, Greater, Equal};
+    use crate::cmp::Ordering::{self, Less, Greater, Equal};
 
     macro_rules! partial_eq_impl {
         ($($t:ty)*) => ($(

@@ -86,9 +86,10 @@ where
         })
         .map(|p| ("CARGO_TARGET_DIR", p));
 
-    // Don't run the dogfood tests on beta
+    // Run the dogfood tests directly on nightly cargo. This is required due
+    // to a bug in rustup.rs when running cargo on custom toolchains. See issue #3118.
     if std::env::var_os("CLIPPY_DOGFOOD").is_some() && cfg!(windows) {
-        return Ok(())
+        args.insert(0, "+nightly".to_string());
     }
 
     let exit_status = std::process::Command::new("cargo")

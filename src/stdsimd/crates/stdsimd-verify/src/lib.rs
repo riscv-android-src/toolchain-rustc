@@ -5,11 +5,10 @@ extern crate quote;
 #[macro_use]
 extern crate syn;
 
-use std::fs::File;
-use std::io::Read;
-use std::path::Path;
-
 use proc_macro::TokenStream;
+use proc_macro2::Span;
+use std::{fs::File, io::Read, path::Path};
+use syn::ext::IdentExt;
 
 #[proc_macro]
 pub fn x86_functions(input: TokenStream) -> TokenStream {
@@ -19,6 +18,11 @@ pub fn x86_functions(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn arm_functions(input: TokenStream) -> TokenStream {
     functions(input, &["core_arch/src/arm", "core_arch/src/aarch64"])
+}
+
+#[proc_macro]
+pub fn mips_functions(input: TokenStream) -> TokenStream {
+    functions(input, &["core_arch/src/mips"])
 }
 
 fn functions(input: TokenStream, dirs: &[&str]) -> TokenStream {
@@ -86,7 +90,7 @@ fn functions(input: TokenStream, dirs: &[&str]) -> TokenStream {
                     arguments: &[#(#arguments),*],
                     ret: #ret,
                     target_feature: #target_feature,
-                    instrs: &[#(stringify!(#instrs)),*],
+                    instrs: &[#(#instrs),*],
                     file: stringify!(#path),
                     required_const: &[#(#required_const),*],
                 }
@@ -177,6 +181,18 @@ fn to_type(t: &syn::Type) -> proc_macro2::TokenStream {
             "poly16x4_t" => quote! { &POLY16X4 },
             "poly16x8_t" => quote! { &POLY16X8 },
 
+            "v16i8" => quote! { &v16i8 },
+            "v8i16" => quote! { &v8i16 },
+            "v4i32" => quote! { &v4i32 },
+            "v2i64" => quote! { &v2i64 },
+            "v16u8" => quote! { &v16u8 },
+            "v8u16" => quote! { &v8u16 },
+            "v4u32" => quote! { &v4u32 },
+            "v2u64" => quote! { &v2u64 },
+            "v8f16" => quote! { &v8f16 },
+            "v4f32" => quote! { &v4f32 },
+            "v2f64" => quote! { &v2f64 },
+
             s => panic!("unspported type: \"{}\"", s),
         },
         syn::Type::Ptr(syn::TypePtr { ref elem, .. })
@@ -225,17 +241,17 @@ fn walk(root: &Path, files: &mut Vec<(syn::File, String)>) {
             continue;
         }
         let path = file.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("rs") {
+        if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
             continue;
         }
 
-        if path.file_name().and_then(|s| s.to_str()) == Some("test.rs") {
+        if path.file_name().and_then(std::ffi::OsStr::to_str) == Some("test.rs") {
             continue;
         }
 
         let mut contents = String::new();
         File::open(&path)
-            .expect(&format!("can't open file at path: {}", path.display()))
+            .unwrap_or_else(|_| panic!("can't open file at path: {}", path.display()))
             .read_to_string(&mut contents)
             .expect("failed to read file to string");
 
@@ -246,33 +262,55 @@ fn walk(root: &Path, files: &mut Vec<(syn::File, String)>) {
     }
 }
 
-fn find_instrs(attrs: &[syn::Attribute]) -> Vec<syn::Ident> {
+fn find_instrs(attrs: &[syn::Attribute]) -> Vec<String> {
+    struct AssertInstr {
+        instr: String,
+    }
+
+    // A small custom parser to parse out the instruction in `assert_instr`.
+    //
+    // TODO: should probably just reuse `Invoc` from the `assert-instr-macro`
+    // crate.
+    impl syn::parse::Parse for AssertInstr {
+        fn parse(content: syn::parse::ParseStream) -> syn::parse::Result<Self> {
+            let input;
+            parenthesized!(input in content);
+            let _ = input.parse::<syn::Meta>()?;
+            let _ = input.parse::<Token![,]>()?;
+            let ident = input.parse::<syn::Ident>()?;
+            if ident != "assert_instr" {
+                return Err(input.error("expected `assert_instr`"));
+            }
+            let instrs;
+            parenthesized!(instrs in input);
+
+            let mut instr = String::new();
+            while !instrs.is_empty() {
+                if let Ok(lit) = instrs.parse::<syn::LitStr>() {
+                    instr.push_str(&lit.value());
+                } else if let Ok(ident) = instrs.call(syn::Ident::parse_any) {
+                    instr.push_str(&ident.to_string());
+                } else if instrs.parse::<Token![.]>().is_ok() {
+                    instr.push_str(".");
+                } else if instrs.parse::<Token![,]>().is_ok() {
+                    // consume everything remaining
+                    drop(instrs.parse::<proc_macro2::TokenStream>());
+                    break;
+                } else {
+                    return Err(input.error("failed to parse instruction"));
+                }
+            }
+            Ok(Self { instr })
+        }
+    }
+
     attrs
         .iter()
-        .filter_map(|a| a.interpret_meta())
-        .filter_map(|a| match a {
-            syn::Meta::List(i) => {
-                if i.ident == "cfg_attr" {
-                    i.nested.into_iter().nth(1)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
-        .filter_map(|nested| match nested {
-            syn::NestedMeta::Meta(syn::Meta::List(i)) => {
-                if i.ident == "assert_instr" {
-                    i.nested.into_iter().next()
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        })
-        .filter_map(|nested| match nested {
-            syn::NestedMeta::Meta(syn::Meta::Word(i)) => Some(i),
-            _ => None,
+        .filter(|a| a.path == syn::Ident::new("cfg_attr", Span::call_site()).into())
+        .filter_map(|a| {
+            syn::parse2::<AssertInstr>(a.tts.clone())
+                .ok()
+                .map(|a| a.instr)
         })
         .collect()
 }
@@ -321,7 +359,7 @@ struct RustcArgsRequiredConst {
 }
 
 impl syn::parse::Parse for RustcArgsRequiredConst {
-    #[cfg_attr(feature = "cargo-clippy", allow(clippy::cast_possible_truncation))]
+    #[allow(clippy::cast_possible_truncation)]
     fn parse(input: syn::parse::ParseStream) -> syn::parse::Result<Self> {
         let content;
         parenthesized!(content in input);

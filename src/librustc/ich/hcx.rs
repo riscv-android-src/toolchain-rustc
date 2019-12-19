@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 
 fn compute_ignored_attr_names() -> FxHashSet<Symbol> {
     debug_assert!(ich::IGNORED_ATTRIBUTES.len() > 0);
-    ich::IGNORED_ATTRIBUTES.iter().map(|&s| Symbol::intern(s)).collect()
+    ich::IGNORED_ATTRIBUTES.iter().map(|&s| s).collect()
 }
 
 /// This is the context state available during incr. comp. hashing. It contains
@@ -435,4 +435,3 @@ pub fn hash_stable_trait_impls<'a, 'gcx, W>(
         }
     }
 }
-

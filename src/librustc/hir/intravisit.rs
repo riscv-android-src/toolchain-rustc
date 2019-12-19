@@ -57,6 +57,14 @@ impl<'a> FnKind<'a> {
             FnKind::Closure(attrs) => attrs,
         }
     }
+
+    pub fn header(&self) -> Option<&FnHeader> {
+        match *self {
+            FnKind::ItemFn(_, _, ref header, _, _) => Some(header),
+            FnKind::Method(_, ref sig, _, _) => Some(&sig.header),
+            FnKind::Closure(_) => None,
+        }
+    }
 }
 
 /// Specifies what nested things a visitor wants to visit. The most
@@ -254,6 +262,9 @@ pub trait Visitor<'v> : Sized {
     fn visit_pat(&mut self, p: &'v Pat) {
         walk_pat(self, p)
     }
+    fn visit_argument_source(&mut self, s: &'v ArgSource) {
+        walk_argument_source(self, s)
+    }
     fn visit_anon_const(&mut self, c: &'v AnonConst) {
         walk_anon_const(self, c)
     }
@@ -391,8 +402,15 @@ pub fn walk_body<'v, V: Visitor<'v>>(visitor: &mut V, body: &'v Body) {
     for argument in &body.arguments {
         visitor.visit_id(argument.hir_id);
         visitor.visit_pat(&argument.pat);
+        visitor.visit_argument_source(&argument.source);
     }
     visitor.visit_expr(&body.value);
+}
+
+pub fn walk_argument_source<'v, V: Visitor<'v>>(visitor: &mut V, source: &'v ArgSource) {
+    if let ArgSource::AsyncFn(pat) = source {
+        visitor.visit_pat(pat);
+    }
 }
 
 pub fn walk_local<'v, V: Visitor<'v>>(visitor: &mut V, local: &'v Local) {
@@ -1011,10 +1029,8 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr) {
             visitor.visit_expr(subexpression);
             visitor.visit_ty(typ)
         }
-        ExprKind::If(ref head_expression, ref if_block, ref optional_else) => {
-            visitor.visit_expr(head_expression);
-            visitor.visit_expr(if_block);
-            walk_list!(visitor, visit_expr, optional_else);
+        ExprKind::DropTemps(ref subexpression) => {
+            visitor.visit_expr(subexpression);
         }
         ExprKind::While(ref subexpression, ref block, ref opt_label) => {
             walk_list!(visitor, visit_label, opt_label);

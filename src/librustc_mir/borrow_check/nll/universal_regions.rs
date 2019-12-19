@@ -105,7 +105,7 @@ impl<'tcx> DefiningTy<'tcx> {
     /// Returns a list of all the upvar types for this MIR. If this is
     /// not a closure or generator, there are no upvars, and hence it
     /// will be an empty list. The order of types in this list will
-    /// match up with the `upvar_decls` field of `Mir`.
+    /// match up with the upvar order in the HIR, typesystem, and MIR.
     pub fn upvar_tys(self, tcx: TyCtxt<'_, '_, 'tcx>) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
         match self {
             DefiningTy::Closure(def_id, substs) => Either::Left(substs.upvar_tys(def_id, tcx)),
@@ -224,7 +224,7 @@ impl<'tcx> UniversalRegions<'tcx> {
         closure_base_def_id: DefId,
     ) -> IndexVec<RegionVid, ty::Region<'tcx>> {
         let mut region_mapping = IndexVec::with_capacity(expected_num_vars);
-        region_mapping.push(tcx.types.re_static);
+        region_mapping.push(tcx.lifetimes.re_static);
         tcx.for_each_free_region(&closure_substs, |fr| {
             region_mapping.push(fr);
         });
@@ -542,7 +542,7 @@ impl<'cx, 'gcx, 'tcx> UniversalRegionsBuilder<'cx, 'gcx, 'tcx> {
             DefiningTy::FnDef(_, substs) | DefiningTy::Const(_, substs) => substs,
         };
 
-        let global_mapping = iter::once((gcx.types.re_static, fr_static));
+        let global_mapping = iter::once((gcx.lifetimes.re_static, fr_static));
         let subst_mapping = identity_substs
             .regions()
             .zip(fr_substs.regions().map(|r| r.to_region_vid()));
@@ -580,7 +580,7 @@ impl<'cx, 'gcx, 'tcx> UniversalRegionsBuilder<'cx, 'gcx, 'tcx> {
 
                         tcx.mk_type_list(
                             iter::once(closure_ty)
-                                .chain(inputs.iter().cloned())
+                                .chain(inputs.iter().map(|k| k.expect_ty()))
                                 .chain(iter::once(output)),
                         )
                     },

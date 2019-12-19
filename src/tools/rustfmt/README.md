@@ -1,4 +1,4 @@
-# rustfmt [![Build Status](https://travis-ci.org/rust-lang/rustfmt.svg)](https://travis-ci.org/rust-lang/rustfmt) [![Build Status](https://ci.appveyor.com/api/projects/status/github/rust-lang/rustfmt?svg=true)](https://ci.appveyor.com/project/rust-lang-libs/rustfmt) [![crates.io](https://img.shields.io/crates/v/rustfmt-nightly.svg)](https://crates.io/crates/rustfmt-nightly) [![Travis Configuration Status](https://img.shields.io/travis/davidalber/rustfmt-travis.svg?label=travis%20example)](https://travis-ci.org/davidalber/rustfmt-travis)
+# rustfmt [![Build Status](https://travis-ci.com/rust-lang/rustfmt.svg?branch=master)](https://travis-ci.com/rust-lang/rustfmt) [![Build Status](https://ci.appveyor.com/api/projects/status/github/rust-lang/rustfmt?svg=true)](https://ci.appveyor.com/project/rust-lang-libs/rustfmt) [![crates.io](https://img.shields.io/crates/v/rustfmt-nightly.svg)](https://crates.io/crates/rustfmt-nightly) [![Travis Configuration Status](https://img.shields.io/travis/davidalber/rustfmt-travis.svg?label=travis%20example)](https://travis-ci.org/davidalber/rustfmt-travis)
 
 A tool for formatting Rust code according to style guidelines.
 
@@ -160,7 +160,7 @@ Rustfmt is designed to be very configurable. You can create a TOML file called
 `rustfmt.toml` or `.rustfmt.toml`, place it in the project or any other parent
 directory and it will apply the options in that file. See `rustfmt
 --help=config` for the options which are available, or if you prefer to see
-visual style previews, [Configurations.md](Configurations.md).
+visual style previews, [GitHub page](https://rust-lang.github.io/rustfmt/).
 
 By default, Rustfmt uses a style which conforms to the [Rust style guide][style
 guide] that has been formalized through the [style RFC
@@ -168,7 +168,7 @@ process][fmt rfcs].
 
 Configuration options are either stable or unstable. Stable options can always
 be used, while unstable ones are only available on a nightly toolchain, and opt-in.
-See [Configurations.md](Configurations.md) for details.
+See [GitHub page](https://rust-lang.github.io/rustfmt/) for details.
 
 ### Rust's Editions
 

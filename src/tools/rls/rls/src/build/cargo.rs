@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 use cargo::core::compiler::{BuildConfig, CompileMode, Context, Executor, Unit};
-use cargo::core::Package;
 use cargo::core::resolver::ResolveError;
+use cargo::core::Package;
 use cargo::core::{
     enable_nightly_features, PackageId, Shell, Target, TargetKind, Verbosity, Workspace,
 };
@@ -184,9 +184,11 @@ fn run_cargo_ws(
 
         for package in &packages {
             if ws.members().find(|x| *x.name() == *package).is_none() {
-                warn!("couldn't find member package `{}` specified in `analyze_package` \
-                       configuration",
-                      package);
+                warn!(
+                    "couldn't find member package `{}` specified in `analyze_package` \
+                     configuration",
+                    package
+                );
             }
         }
 
@@ -195,8 +197,11 @@ fn run_cargo_ws(
 
     let spec = Packages::from_flags(all, Vec::new(), packages)?;
 
-    let pkg_names =
-        spec.to_package_id_specs(&ws)?.iter().map(|pkg_spec| pkg_spec.name().to_owned()).collect();
+    let pkg_names = spec
+        .to_package_id_specs(&ws)?
+        .iter()
+        .map(|pkg_spec| pkg_spec.name().as_str().to_owned())
+        .collect();
     trace!("specified packages to be built by Cargo: {:#?}", pkg_names);
 
     // Since the Cargo build routine will try to regenerate the unit dep graph,
@@ -351,7 +356,7 @@ impl Executor for RlsExecutor {
     /// unit of work (may still be modified for runtime-known dependencies, when
     /// the work is actually executed). This is called even for a target that
     /// is fresh and won't be compiled.
-    fn init(&self, cx: &Context<'_, '_>, unit: &Unit<'_>) {
+    fn init<'a>(&self, cx: &Context<'a, '_>, unit: &Unit<'a>) {
         let mut compilation_cx = self.compilation_cx.lock().unwrap();
         let plan = compilation_cx
             .build_plan
@@ -383,6 +388,8 @@ impl Executor for RlsExecutor {
         id: PackageId,
         target: &Target,
         mode: CompileMode,
+        _on_stdout_line: &mut dyn FnMut(&str) -> CargoResult<()>,
+        _on_stderr_line: &mut dyn FnMut(&str) -> CargoResult<()>,
     ) -> CargoResult<()> {
         // Use JSON output so that we can parse the rustc output.
         cargo_cmd.arg("--error-format=json");

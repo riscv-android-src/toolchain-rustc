@@ -2,7 +2,7 @@
 
 //! Hints to compiler that affects how code should be emitted or optimized.
 
-use intrinsics;
+use crate::intrinsics;
 
 /// Informs the compiler that this point in the code is not reachable, enabling
 /// further optimizations.
@@ -21,11 +21,10 @@ use intrinsics;
 /// difficult-to-debug problems.
 ///
 /// Use this function only when you can prove that the code will never call it.
+/// Otherwise, consider using the [`unreachable!`] macro, which does not allow
+/// optimizations but will panic when executed.
 ///
-/// The [`unreachable!()`] macro is the safe counterpart of this function, which
-/// will panic instead when executed.
-///
-/// [`unreachable!()`]: ../macro.unreachable.html
+/// [`unreachable!`]: ../macro.unreachable.html
 ///
 /// # Example
 ///

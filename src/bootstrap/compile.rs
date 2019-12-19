@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, exit};
 use std::str;
 
-use build_helper::{output, mtime, up_to_date};
+use build_helper::{output, mtime, t, up_to_date};
 use filetime::FileTime;
+use serde::Deserialize;
 use serde_json;
 
 use crate::dist;
@@ -167,7 +168,7 @@ pub fn std_cargo(builder: &Builder<'_>,
             .arg("--manifest-path")
             .arg(builder.src.join("src/liballoc/Cargo.toml"))
             .arg("--features")
-            .arg("compiler-builtins-mem");
+            .arg("compiler-builtins-mem compiler-builtins-c");
     } else {
         let features = builder.std_features();
 
