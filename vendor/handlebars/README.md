@@ -21,7 +21,7 @@ extern crate serde_json;
 
 use handlebars::Handlebars;
 
-fn main() -> Result<(), Box<Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let mut reg = Handlebars::new();
     // render without register
     println!(
@@ -55,6 +55,21 @@ Run `cargo run --example render` to see results.
 output).
 
 Checkout `examples/` for more concrete demos of current API.
+
+
+## Minimum Rust Version Policy
+
+Handlebars will track Rust nightly and stable channel. When dropping
+support for previous stable versions, I will bump **minor** version
+and clarify in CHANGELOG.
+
+### Rust compatibility table
+
+| Handlebars version range | Minimum Rust version |
+| --- | --- |
+| ~2.0.0 | 1.32 |
+| ~1.1.0 | 1.30 |
+| ~1.0.0 | 1.23 |
 
 ## Document
 
@@ -102,7 +117,7 @@ prevents you to put too much application logic into your template.
 #### Extensible helper system
 
 You can write your own helper with Rust! It can be a block helper or
-inline helper. Put you logic into the helper and don't repeat
+inline helper. Put your logic into the helper and don't repeat
 yourself.
 
 A helper can be as a simple as a Rust function like:

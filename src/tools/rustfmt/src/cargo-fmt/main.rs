@@ -41,6 +41,10 @@ pub struct Opts {
     #[structopt(short = "p", long = "package", value_name = "package")]
     packages: Vec<String>,
 
+    /// Specify path to Cargo.toml
+    #[structopt(long = "manifest-path", value_name = "manifest-path")]
+    manifest_path: Option<String>,
+
     /// Options passed to rustfmt
     // 'raw = true' to make `--` explicit.
     #[structopt(name = "rustfmt_options", raw(raw = "true"))]
@@ -85,18 +89,45 @@ fn execute() -> i32 {
     };
 
     if opts.version {
-        return handle_command_status(get_version());
+        return handle_command_status(get_rustfmt_info(&[String::from("--version")]));
+    }
+    if opts.rustfmt_options.iter().any(|s| {
+        ["--print-config", "-h", "--help", "-V", "--version"].contains(&s.as_str())
+            || s.starts_with("--help=")
+            || s.starts_with("--print-config=")
+    }) {
+        return handle_command_status(get_rustfmt_info(&opts.rustfmt_options));
     }
 
     let strategy = CargoFmtStrategy::from_opts(&opts);
 
-    handle_command_status(format_crate(verbosity, &strategy, opts.rustfmt_options))
+    if let Some(specified_manifest_path) = opts.manifest_path {
+        if !specified_manifest_path.ends_with("Cargo.toml") {
+            print_usage_to_stderr("the manifest-path must be a path to a Cargo.toml file");
+            return FAILURE;
+        }
+        let manifest_path = PathBuf::from(specified_manifest_path);
+        handle_command_status(format_crate(
+            verbosity,
+            &strategy,
+            opts.rustfmt_options,
+            Some(&manifest_path),
+        ))
+    } else {
+        handle_command_status(format_crate(
+            verbosity,
+            &strategy,
+            opts.rustfmt_options,
+            None,
+        ))
+    }
 }
 
 fn print_usage_to_stderr(reason: &str) {
     eprintln!("{}", reason);
     let app = Opts::clap();
-    app.write_help(&mut io::stderr())
+    app.after_help("")
+        .write_help(&mut io::stderr())
         .expect("failed to write to stderr");
 }
 
@@ -117,10 +148,10 @@ fn handle_command_status(status: Result<i32, io::Error>) -> i32 {
     }
 }
 
-fn get_version() -> Result<i32, io::Error> {
+fn get_rustfmt_info(args: &[String]) -> Result<i32, io::Error> {
     let mut command = Command::new("rustfmt")
         .stdout(std::process::Stdio::inherit())
-        .args(&[String::from("--version")])
+        .args(args)
         .spawn()
         .map_err(|e| match e.kind() {
             io::ErrorKind::NotFound => io::Error::new(
@@ -141,15 +172,9 @@ fn format_crate(
     verbosity: Verbosity,
     strategy: &CargoFmtStrategy,
     rustfmt_args: Vec<String>,
+    manifest_path: Option<&Path>,
 ) -> Result<i32, io::Error> {
-    let targets = if rustfmt_args
-        .iter()
-        .any(|s| ["--print-config", "-h", "--help", "-V", "--version"].contains(&s.as_str()))
-    {
-        BTreeSet::new()
-    } else {
-        get_targets(strategy)?
-    };
+    let targets = get_targets(strategy, manifest_path)?;
 
     // Currently only bin and lib files get formatted.
     run_rustfmt(&targets, &rustfmt_args, verbosity)
@@ -226,13 +251,20 @@ impl CargoFmtStrategy {
 }
 
 /// Based on the specified `CargoFmtStrategy`, returns a set of main source files.
-fn get_targets(strategy: &CargoFmtStrategy) -> Result<BTreeSet<Target>, io::Error> {
+fn get_targets(
+    strategy: &CargoFmtStrategy,
+    manifest_path: Option<&Path>,
+) -> Result<BTreeSet<Target>, io::Error> {
     let mut targets = BTreeSet::new();
 
     match *strategy {
-        CargoFmtStrategy::Root => get_targets_root_only(&mut targets)?,
-        CargoFmtStrategy::All => get_targets_recursive(None, &mut targets, &mut BTreeSet::new())?,
-        CargoFmtStrategy::Some(ref hitlist) => get_targets_with_hitlist(hitlist, &mut targets)?,
+        CargoFmtStrategy::Root => get_targets_root_only(manifest_path, &mut targets)?,
+        CargoFmtStrategy::All => {
+            get_targets_recursive(manifest_path, &mut targets, &mut BTreeSet::new())?
+        }
+        CargoFmtStrategy::Some(ref hitlist) => {
+            get_targets_with_hitlist(manifest_path, hitlist, &mut targets)?
+        }
     }
 
     if targets.is_empty() {
@@ -245,19 +277,44 @@ fn get_targets(strategy: &CargoFmtStrategy) -> Result<BTreeSet<Target>, io::Erro
     }
 }
 
-fn get_targets_root_only(targets: &mut BTreeSet<Target>) -> Result<(), io::Error> {
-    let metadata = get_cargo_metadata(None)?;
-    let current_dir = env::current_dir()?.canonicalize()?;
-    let current_dir_manifest = current_dir.join("Cargo.toml");
+fn get_targets_root_only(
+    manifest_path: Option<&Path>,
+    targets: &mut BTreeSet<Target>,
+) -> Result<(), io::Error> {
+    let metadata = get_cargo_metadata(manifest_path, false)?;
     let workspace_root_path = PathBuf::from(&metadata.workspace_root).canonicalize()?;
-    let in_workspace_root = workspace_root_path == current_dir;
+    let (in_workspace_root, current_dir_manifest) = if let Some(target_manifest) = manifest_path {
+        (
+            workspace_root_path == target_manifest,
+            target_manifest.canonicalize()?,
+        )
+    } else {
+        let current_dir = env::current_dir()?.canonicalize()?;
+        (
+            workspace_root_path == current_dir,
+            current_dir.join("Cargo.toml"),
+        )
+    };
 
-    for package in metadata.packages {
-        if in_workspace_root || PathBuf::from(&package.manifest_path) == current_dir_manifest {
-            for target in package.targets {
-                targets.insert(Target::from_target(&target));
-            }
-        }
+    let package_targets = match metadata.packages.len() {
+        1 => metadata.packages.into_iter().next().unwrap().targets,
+        _ => metadata
+            .packages
+            .into_iter()
+            .filter(|p| {
+                in_workspace_root
+                    || PathBuf::from(&p.manifest_path)
+                        .canonicalize()
+                        .unwrap_or_default()
+                        == current_dir_manifest
+            })
+            .map(|p| p.targets)
+            .flatten()
+            .collect(),
+    };
+
+    for target in package_targets {
+        targets.insert(Target::from_target(&target));
     }
 
     Ok(())
@@ -268,7 +325,8 @@ fn get_targets_recursive(
     mut targets: &mut BTreeSet<Target>,
     visited: &mut BTreeSet<String>,
 ) -> Result<(), io::Error> {
-    let metadata = get_cargo_metadata(manifest_path)?;
+    let metadata = get_cargo_metadata(manifest_path, false)?;
+    let metadata_with_deps = get_cargo_metadata(manifest_path, true)?;
 
     for package in metadata.packages {
         add_targets(&package.targets, &mut targets);
@@ -279,11 +337,19 @@ fn get_targets_recursive(
                 continue;
             }
 
-            let mut manifest_path = PathBuf::from(&package.manifest_path);
-
-            manifest_path.pop();
-            manifest_path.push(&dependency.name);
-            manifest_path.push("Cargo.toml");
+            let dependency_package = metadata_with_deps
+                .packages
+                .iter()
+                .find(|p| p.name == dependency.name && p.source.is_none());
+            let manifest_path = if dependency_package.is_some() {
+                PathBuf::from(&dependency_package.unwrap().manifest_path)
+            } else {
+                let mut package_manifest_path = PathBuf::from(&package.manifest_path);
+                package_manifest_path.pop();
+                package_manifest_path.push(&dependency.name);
+                package_manifest_path.push("Cargo.toml");
+                package_manifest_path
+            };
 
             if manifest_path.exists() {
                 visited.insert(dependency.name);
@@ -296,10 +362,11 @@ fn get_targets_recursive(
 }
 
 fn get_targets_with_hitlist(
+    manifest_path: Option<&Path>,
     hitlist: &[String],
     targets: &mut BTreeSet<Target>,
 ) -> Result<(), io::Error> {
-    let metadata = get_cargo_metadata(None)?;
+    let metadata = get_cargo_metadata(manifest_path, false)?;
 
     let mut workspace_hitlist: BTreeSet<&String> = BTreeSet::from_iter(hitlist);
 
@@ -385,9 +452,14 @@ fn run_rustfmt(
         .unwrap_or(SUCCESS))
 }
 
-fn get_cargo_metadata(manifest_path: Option<&Path>) -> Result<cargo_metadata::Metadata, io::Error> {
+fn get_cargo_metadata(
+    manifest_path: Option<&Path>,
+    include_deps: bool,
+) -> Result<cargo_metadata::Metadata, io::Error> {
     let mut cmd = cargo_metadata::MetadataCommand::new();
-    cmd.no_deps();
+    if !include_deps {
+        cmd.no_deps();
+    }
     if let Some(manifest_path) = manifest_path {
         cmd.manifest_path(manifest_path);
     }

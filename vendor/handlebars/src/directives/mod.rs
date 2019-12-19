@@ -1,7 +1,7 @@
-use context::Context;
-use error::RenderError;
-use registry::Registry;
-use render::{Directive, RenderContext};
+use crate::context::Context;
+use crate::error::RenderError;
+use crate::registry::Registry;
+use crate::render::{Directive, RenderContext};
 
 pub use self::inline::INLINE_DIRECTIVE;
 
@@ -46,7 +46,7 @@ pub type DirectiveResult = Result<(), RenderError>;
 ///
 /// fn override_helper(_: &Decorator, _: &Handlebars, _: &Context, rc: &mut RenderContext)
 ///         -> Result<(), RenderError> {
-///     let new_helper = |h: &Helper, _: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut Output|
+///     let new_helper = |h: &Helper, _: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut dyn Output|
 ///             -> Result<(), RenderError> {
 ///         // your helper logic
 ///         Ok(())
@@ -70,8 +70,12 @@ pub trait DirectiveDef: Send + Sync {
 impl<
         F: Send
             + Sync
-            + for<'reg, 'rc> Fn(&Directive<'reg, 'rc>, &'reg Registry, &'rc Context, &mut RenderContext)
-                -> DirectiveResult,
+            + for<'reg, 'rc> Fn(
+                &Directive<'reg, 'rc>,
+                &'reg Registry,
+                &'rc Context,
+                &mut RenderContext,
+            ) -> DirectiveResult,
     > DirectiveDef for F
 {
     fn call<'reg: 'rc, 'rc>(
@@ -89,12 +93,12 @@ mod inline;
 
 #[cfg(test)]
 mod test {
-    use context::Context;
-    use error::RenderError;
-    use output::Output;
-    use registry::Registry;
-    use render::{Directive, Helper, RenderContext};
-    use value::{as_string, to_json};
+    use crate::context::Context;
+    use crate::error::RenderError;
+    use crate::output::Output;
+    use crate::registry::Registry;
+    use crate::render::{Directive, Helper, RenderContext};
+    use crate::value::{as_string, to_json};
 
     #[test]
     fn test_register_decorator() {
@@ -226,7 +230,7 @@ mod test {
                  _: &Registry,
                  _: &Context,
                  _: &mut RenderContext,
-                 out: &mut Output|
+                 out: &mut dyn Output|
                  -> Result<(), RenderError> {
                     let s = format!(
                         "{}m",
@@ -258,7 +262,7 @@ mod test {
                                            _: &Registry,
                                            _: &Context,
                                            _: &mut RenderContext,
-                                           out: &mut Output|
+                                           out: &mut dyn Output|
                           -> Result<(), RenderError> {
                         let s = format!(
                             "{}{}",

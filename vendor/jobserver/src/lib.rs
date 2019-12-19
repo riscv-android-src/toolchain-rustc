@@ -84,8 +84,8 @@ extern crate log;
 use std::env;
 use std::io;
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Sender};
+use std::sync::Arc;
 
 /// A client of a jobserver
 ///
@@ -193,8 +193,9 @@ impl Client {
     /// any number of times.
     pub unsafe fn from_env() -> Option<Client> {
         let var = match env::var("CARGO_MAKEFLAGS")
-                            .or(env::var("MAKEFLAGS"))
-                            .or(env::var("MFLAGS")) {
+            .or(env::var("MAKEFLAGS"))
+            .or(env::var("MFLAGS"))
+        {
             Ok(s) => s,
             Err(_) => return None,
         };
@@ -211,9 +212,7 @@ impl Client {
         };
 
         let s = var[pos + arg.len()..].split(' ').next().unwrap();
-        imp::Client::open(s).map(|c| {
-            Client { inner: Arc::new(c) }
-        })
+        imp::Client::open(s).map(|c| Client { inner: Arc::new(c) })
     }
 
     /// Acquires a token from this jobserver client.
@@ -254,6 +253,8 @@ impl Client {
     /// On Unix and Windows this will clobber the `CARGO_MAKEFLAGS` environment
     /// variables for the child process, and on Unix this will also allow the
     /// two file descriptors for this client to be inherited to the child.
+    ///
+    /// On platforms other than Unix and Windows this panics.
     pub fn configure(&self, cmd: &mut Command) {
         let arg = self.inner.string_arg();
         // Older implementations of make use `--jobserver-fds` and newer
@@ -343,7 +344,8 @@ impl Client {
     /// odd behavior in some applications, so it's recommended to review and
     /// test thoroughly before using this.
     pub fn into_helper_thread<F>(self, f: F) -> io::Result<HelperThread>
-        where F: FnMut(io::Result<Acquired>) + Send + 'static,
+    where
+        F: FnMut(io::Result<Acquired>) + Send + 'static,
     {
         let (tx, rx) = mpsc::channel();
         Ok(HelperThread {
@@ -414,12 +416,10 @@ mod imp {
     use std::os::unix::prelude::*;
     use std::process::Command;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, AtomicUsize,
-                            ATOMIC_BOOL_INIT, ATOMIC_USIZE_INIT,
-                            Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
     use std::sync::{Arc, Once, ONCE_INIT};
-    use std::thread::{self, JoinHandle, Builder};
+    use std::thread::{self, Builder, JoinHandle};
     use std::time::Duration;
 
     use self::libc::c_int;
@@ -448,20 +448,25 @@ mod imp {
         }
 
         unsafe fn mk() -> io::Result<Client> {
-            static INVALID: AtomicBool = ATOMIC_BOOL_INIT;
             let mut pipes = [0; 2];
 
-            // Attempt atomically-create-with-cloexec if we can.  Note that even
-            // when libc has the symbol, `pipe2` might still not be supported on
-            // the running kernel -> `ENOSYS`, then we need to use the fallback.
-            if cfg!(target_os = "linux") && !INVALID.load(Ordering::SeqCst) {
-                if let Some(pipe2) = pipe2() {
-                    match cvt(pipe2(pipes.as_mut_ptr(), libc::O_CLOEXEC)) {
-                        Ok(_) => return Ok(Client::from_fds(pipes[0], pipes[1])),
-                        Err(ref e) if e.raw_os_error() == Some(libc::ENOSYS) => {
-                            INVALID.store(true, Ordering::SeqCst);
+            // Attempt atomically-create-with-cloexec if we can on Linux,
+            // detected by using the `syscall` function in `libc` to try to work
+            // with as many kernels/glibc implementations as possible.
+            #[cfg(target_os = "linux")]
+            {
+                static PIPE2_AVAILABLE: AtomicBool = AtomicBool::new(true);
+                if PIPE2_AVAILABLE.load(Ordering::SeqCst) {
+                    match libc::syscall(libc::SYS_pipe2, pipes.as_mut_ptr(), libc::O_CLOEXEC) {
+                        -1 => {
+                            let err = io::Error::last_os_error();
+                            if err.raw_os_error() == Some(libc::ENOSYS) {
+                                PIPE2_AVAILABLE.store(false, Ordering::SeqCst);
+                            } else {
+                                return Err(err);
+                            }
                         }
-                        Err(e) => return Err(e),
+                        _ => return Ok(Client::from_fds(pipes[0], pipes[1])),
                     }
                 }
             }
@@ -541,17 +546,19 @@ mod imp {
                 loop {
                     fd.revents = 0;
                     if libc::poll(&mut fd, 1, -1) == -1 {
-                        return Err(io::Error::last_os_error())
+                        return Err(io::Error::last_os_error());
                     }
                     if fd.revents == 0 {
-                        continue
+                        continue;
                     }
                     let mut buf = [0];
                     match (&self.read).read(&mut buf) {
                         Ok(1) => return Ok(Acquired { byte: buf[0] }),
                         Ok(_) => {
-                            return Err(io::Error::new(io::ErrorKind::Other,
-                                                      "early EOF on jobserver pipe"))
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "early EOF on jobserver pipe",
+                            ))
                         }
                         Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
                         Err(e) => return Err(e),
@@ -568,8 +575,10 @@ mod imp {
             let byte = data.map(|d| d.byte).unwrap_or(b'+');
             match (&self.write).write(&[byte])? {
                 1 => Ok(()),
-                _ => Err(io::Error::new(io::ErrorKind::Other,
-                                        "failed to write token back to jobserver")),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "failed to write token back to jobserver",
+                )),
             }
         }
 
@@ -599,11 +608,11 @@ mod imp {
         rx_done: Receiver<()>,
     }
 
-    pub fn spawn_helper(client: ::Client,
-                        rx: Receiver<()>,
-                        mut f: Box<FnMut(io::Result<::Acquired>) + Send>)
-        -> io::Result<Helper>
-    {
+    pub fn spawn_helper(
+        client: ::Client,
+        rx: Receiver<()>,
+        mut f: Box<FnMut(io::Result<::Acquired>) + Send>,
+    ) -> io::Result<Helper> {
         static USR1_INIT: Once = ONCE_INIT;
         let mut err = None;
         USR1_INIT.call_once(|| unsafe {
@@ -616,28 +625,27 @@ mod imp {
         });
 
         if let Some(e) = err.take() {
-            return Err(e)
+            return Err(e);
         }
 
         let quitting = Arc::new(AtomicBool::new(false));
         let quitting2 = quitting.clone();
         let (tx_done, rx_done) = mpsc::channel();
         let thread = Builder::new().spawn(move || {
-            'outer:
-            for () in rx {
+            'outer: for () in rx {
                 loop {
                     let res = client.acquire();
                     if let Err(ref e) = res {
                         if e.kind() == io::ErrorKind::Interrupted {
                             if quitting2.load(Ordering::SeqCst) {
-                                break 'outer
+                                break 'outer;
                             } else {
-                                continue
+                                continue;
                             }
                         }
                     }
                     f(res);
-                    break
+                    break;
                 }
             }
             tx_done.send(()).unwrap();
@@ -662,12 +670,11 @@ mod imp {
                     // return an error, but on other platforms it may not. In
                     // that sense we don't actually know if this will succeed or
                     // not!
-                    libc::pthread_kill(self.thread.as_pthread_t(), libc::SIGUSR1);
+                    libc::pthread_kill(self.thread.as_pthread_t() as _, libc::SIGUSR1);
                     match self.rx_done.recv_timeout(dur) {
-                        Ok(()) |
-                        Err(RecvTimeoutError::Disconnected) => {
+                        Ok(()) | Err(RecvTimeoutError::Disconnected) => {
                             done = true;
-                            break
+                            break;
                         }
                         Err(RecvTimeoutError::Timeout) => {}
                     }
@@ -709,27 +716,11 @@ mod imp {
         }
     }
 
-    unsafe fn pipe2() -> Option<&'static fn(*mut c_int, c_int) -> c_int> {
-        static PIPE2: AtomicUsize = ATOMIC_USIZE_INIT;
-
-        if PIPE2.load(Ordering::SeqCst) == 0 {
-            let name = "pipe2\0";
-            let n = match libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr() as *const _) as usize {
-                0 => 1,
-                n => n,
-            };
-            PIPE2.store(n, Ordering::SeqCst);
-        }
-        if PIPE2.load(Ordering::SeqCst) == 1 {
-            None
-        } else {
-            mem::transmute(&PIPE2)
-        }
-    }
-
-    extern fn sigusr1_handler(_signum: c_int,
-                              _info: *mut libc::siginfo_t,
-                              _ptr: *mut libc::c_void) {
+    extern "C" fn sigusr1_handler(
+        _signum: c_int,
+        _info: *mut libc::siginfo_t,
+        _ptr: *mut libc::c_void,
+    ) {
         // nothing to do
     }
 }
@@ -742,8 +733,8 @@ mod imp {
     use std::io;
     use std::process::Command;
     use std::ptr;
-    use std::sync::Arc;
     use std::sync::mpsc::Receiver;
+    use std::sync::Arc;
     use std::thread::{Builder, JoinHandle};
 
     #[derive(Debug)]
@@ -771,26 +762,35 @@ mod imp {
     extern "system" {
         fn CloseHandle(handle: HANDLE) -> BOOL;
         fn SetEvent(hEvent: HANDLE) -> BOOL;
-        fn WaitForMultipleObjects(ncount: DWORD,
-                                  lpHandles: *const HANDLE,
-                                  bWaitAll: BOOL,
-                                  dwMilliseconds: DWORD) -> DWORD;
-        fn CreateEventA(lpEventAttributes: *mut u8,
-                        bManualReset: BOOL,
-                        bInitialState: BOOL,
-                        lpName: *const i8) -> HANDLE;
-        fn ReleaseSemaphore(hSemaphore: HANDLE,
-                            lReleaseCount: LONG,
-                            lpPreviousCount: *mut LONG) -> BOOL;
-        fn CreateSemaphoreA(lpEventAttributes: *mut u8,
-                            lInitialCount: LONG,
-                            lMaximumCount: LONG,
-                            lpName: *const i8) -> HANDLE;
-        fn OpenSemaphoreA(dwDesiredAccess: DWORD,
-                          bInheritHandle: BOOL,
-                          lpName: *const i8) -> HANDLE;
-        fn WaitForSingleObject(hHandle: HANDLE,
-                               dwMilliseconds: DWORD) -> DWORD;
+        fn WaitForMultipleObjects(
+            ncount: DWORD,
+            lpHandles: *const HANDLE,
+            bWaitAll: BOOL,
+            dwMilliseconds: DWORD,
+        ) -> DWORD;
+        fn CreateEventA(
+            lpEventAttributes: *mut u8,
+            bManualReset: BOOL,
+            bInitialState: BOOL,
+            lpName: *const i8,
+        ) -> HANDLE;
+        fn ReleaseSemaphore(
+            hSemaphore: HANDLE,
+            lReleaseCount: LONG,
+            lpPreviousCount: *mut LONG,
+        ) -> BOOL;
+        fn CreateSemaphoreA(
+            lpEventAttributes: *mut u8,
+            lInitialCount: LONG,
+            lMaximumCount: LONG,
+            lpName: *const i8,
+        ) -> HANDLE;
+        fn OpenSemaphoreA(
+            dwDesiredAccess: DWORD,
+            bInheritHandle: BOOL,
+            lpName: *const i8,
+        ) -> HANDLE;
+        fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) -> DWORD;
     }
 
     impl Client {
@@ -804,22 +804,23 @@ mod imp {
             // slot and then immediately acquire it (without ever releaseing it
             // back).
             for _ in 0..100 {
-                let mut name = format!("__rust_jobserver_semaphore_{}\0",
-                                       rand::random::<u32>());
+                let mut name = format!("__rust_jobserver_semaphore_{}\0", rand::random::<u32>());
                 unsafe {
-                    let create_limit = if limit == 0 {1} else {limit};
-                    let r = CreateSemaphoreA(ptr::null_mut(),
-                                             create_limit as LONG,
-                                             create_limit as LONG,
-                                             name.as_ptr() as *const _);
+                    let create_limit = if limit == 0 { 1 } else { limit };
+                    let r = CreateSemaphoreA(
+                        ptr::null_mut(),
+                        create_limit as LONG,
+                        create_limit as LONG,
+                        name.as_ptr() as *const _,
+                    );
                     if r.is_null() {
-                        return Err(io::Error::last_os_error())
+                        return Err(io::Error::last_os_error());
                     }
                     let handle = Handle(r);
 
                     let err = io::Error::last_os_error();
                     if err.raw_os_error() == Some(ERROR_ALREADY_EXISTS as i32) {
-                        continue
+                        continue;
                     }
                     name.pop(); // chop off the trailing nul
                     let client = Client {
@@ -830,12 +831,14 @@ mod imp {
                         client.acquire()?;
                     }
                     info!("created jobserver {:?}", client);
-                    return Ok(client)
+                    return Ok(client);
                 }
             }
 
-            Err(io::Error::new(io::ErrorKind::Other,
-                               "failed to find a unique name for a semaphore"))
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to find a unique name for a semaphore",
+            ))
         }
 
         pub unsafe fn open(s: &str) -> Option<Client> {
@@ -844,9 +847,7 @@ mod imp {
                 Err(_) => return None,
             };
 
-            let sem = OpenSemaphoreA(SYNCHRONIZE | SEMAPHORE_MODIFY_STATE,
-                                     FALSE,
-                                     name.as_ptr());
+            let sem = OpenSemaphoreA(SYNCHRONIZE | SEMAPHORE_MODIFY_STATE, FALSE, name.as_ptr());
             if sem.is_null() {
                 info!("failed to open environment semaphore {}", s);
                 None
@@ -911,15 +912,15 @@ mod imp {
         thread: JoinHandle<()>,
     }
 
-    pub fn spawn_helper(client: ::Client,
-                        rx: Receiver<()>,
-                        mut f: Box<FnMut(io::Result<::Acquired>) + Send>)
-        -> io::Result<Helper>
-    {
+    pub fn spawn_helper(
+        client: ::Client,
+        rx: Receiver<()>,
+        mut f: Box<FnMut(io::Result<::Acquired>) + Send>,
+    ) -> io::Result<Helper> {
         let event = unsafe {
             let r = CreateEventA(ptr::null_mut(), TRUE, FALSE, ptr::null());
             if r.is_null() {
-                return Err(io::Error::last_os_error())
+                return Err(io::Error::last_os_error());
             } else {
                 Handle(r)
             }
@@ -929,11 +930,9 @@ mod imp {
         let thread = Builder::new().spawn(move || {
             let objects = [event2.0, client.inner.sem.0];
             for () in rx {
-                let r = unsafe {
-                    WaitForMultipleObjects(2, objects.as_ptr(), FALSE, INFINITE)
-                };
+                let r = unsafe { WaitForMultipleObjects(2, objects.as_ptr(), FALSE, INFINITE) };
                 if r == WAIT_OBJECT_0 {
-                    break
+                    break;
                 }
                 if r == WAIT_OBJECT_0 + 1 {
                     f(Ok(::Acquired {
@@ -960,4 +959,93 @@ mod imp {
             drop(self.thread.join());
         }
     }
+}
+
+#[cfg(not(any(unix, windows)))]
+mod imp {
+    use std::io;
+    use std::process::Command;
+    use std::sync::mpsc::{self, Receiver, SyncSender};
+    use std::sync::Mutex;
+    use std::thread::{Builder, JoinHandle};
+
+    #[derive(Debug)]
+    pub struct Client {
+        tx: SyncSender<()>,
+        rx: Mutex<Receiver<()>>,
+    }
+
+    #[derive(Debug)]
+    pub struct Acquired(());
+
+    impl Client {
+        pub fn new(limit: usize) -> io::Result<Client> {
+            let (tx, rx) = mpsc::sync_channel(limit);
+            for _ in 0..limit {
+                tx.send(()).unwrap();
+            }
+            Ok(Client {
+                tx,
+                rx: Mutex::new(rx),
+            })
+        }
+
+        pub unsafe fn open(_s: &str) -> Option<Client> {
+            None
+        }
+
+        pub fn acquire(&self) -> io::Result<Acquired> {
+            self.rx.lock().unwrap().recv().unwrap();
+            Ok(Acquired(()))
+        }
+
+        pub fn release(&self, _data: Option<&Acquired>) -> io::Result<()> {
+            self.tx.send(()).unwrap();
+            Ok(())
+        }
+
+        pub fn string_arg(&self) -> String {
+            panic!(
+                "On this platform there is no cross process jobserver support,
+                 so Client::configure is not supported."
+            );
+        }
+
+        pub fn configure(&self, _cmd: &mut Command) {
+            unreachable!();
+        }
+    }
+
+    #[derive(Debug)]
+    pub struct Helper {
+        thread: JoinHandle<()>,
+    }
+
+    pub fn spawn_helper(
+        client: ::Client,
+        rx: Receiver<()>,
+        mut f: Box<FnMut(io::Result<::Acquired>) + Send>,
+    ) -> io::Result<Helper> {
+        let thread = Builder::new().spawn(move || {
+            for () in rx {
+                let res = client.acquire();
+                f(res);
+            }
+        })?;
+
+        Ok(Helper { thread: thread })
+    }
+
+    impl Helper {
+        pub fn join(self) {
+            drop(self.thread.join());
+        }
+    }
+}
+
+#[test]
+fn no_helper_deadlock() {
+    let x = crate::Client::new(32).unwrap();
+    let _y = x.clone();
+    std::mem::drop(x.into_helper_thread(|_| {}).unwrap());
 }

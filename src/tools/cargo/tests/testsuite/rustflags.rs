@@ -1,8 +1,10 @@
 use std::fs::{self, File};
 use std::io::Write;
 
-use crate::support::rustc_host;
-use crate::support::{basic_lib_manifest, basic_manifest, paths, project, project_in_home};
+use crate::support::registry::Package;
+use crate::support::{
+    basic_lib_manifest, basic_manifest, paths, project, project_in_home, rustc_host,
+};
 
 #[cargo_test]
 fn env_rustflags_normal_source() {
@@ -1361,7 +1363,7 @@ fn env_rustflags_misspelled_build_script() {
 }
 
 #[cargo_test]
-fn reamp_path_prefix_ignored() {
+fn remap_path_prefix_ignored() {
     // Ensure that --remap-path-prefix does not affect metadata hash.
     let p = project().file("src/lib.rs", "").build();
     p.cargo("build").run();
@@ -1372,15 +1374,62 @@ fn reamp_path_prefix_ignored() {
     assert_eq!(rlibs.len(), 1);
     p.cargo("clean").run();
 
+    let check_metadata_same = || {
+        let rlibs2 = p
+            .glob("target/debug/deps/*.rlib")
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(rlibs, rlibs2);
+    };
+
     p.cargo("build")
         .env(
             "RUSTFLAGS",
             "--remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo",
         )
         .run();
-    let rlibs2 = p
-        .glob("target/debug/deps/*.rlib")
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
-    assert_eq!(rlibs, rlibs2);
+    check_metadata_same();
+
+    p.cargo("clean").run();
+    p.cargo("rustc -- --remap-path-prefix=/abc=/zoo --remap-path-prefix /spaced=/zoo")
+        .run();
+    check_metadata_same();
+}
+
+#[cargo_test]
+fn remap_path_prefix_works() {
+    // Check that remap-path-prefix works.
+    Package::new("bar", "0.1.0")
+        .file("src/lib.rs", "pub fn f() -> &'static str { file!() }")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+
+            [dependencies]
+            bar = "0.1"
+            "#,
+        )
+        .file(
+            "src/main.rs",
+            r#"
+            fn main() {
+                println!("{}", bar::f());
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("run")
+        .env(
+            "RUSTFLAGS",
+            format!("--remap-path-prefix={}=/foo", paths::root().display()),
+        )
+        .with_stdout("/foo/home/.cargo/registry/src/[..]/bar-0.1.0/src/lib.rs")
+        .run();
 }

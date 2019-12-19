@@ -4,11 +4,10 @@ use std::io::prelude::*;
 
 use crate::support::paths::{root, CargoPathExt};
 use crate::support::registry::Package;
-use crate::support::ProjectBuilder;
 use crate::support::{
-    basic_bin_manifest, basic_lib_manifest, basic_manifest, rustc_host, sleep_ms,
+    basic_bin_manifest, basic_lib_manifest, basic_manifest, main_file, project, rustc_host,
+    sleep_ms, symlink_supported, Execs, ProjectBuilder,
 };
-use crate::support::{main_file, project, Execs};
 use cargo::util::paths::dylib_path_envvar;
 
 #[cargo_test]
@@ -1495,9 +1494,12 @@ package `test v0.0.0 ([CWD])`",
 }
 
 #[cargo_test]
+/// Make sure broken symlinks don't break the build
+///
+/// This test requires you to be able to make symlinks.
+/// For windows, this may require you to enable developer mode.
 fn ignore_broken_symlinks() {
-    // windows and symlinks don't currently agree that well
-    if cfg!(windows) {
+    if !symlink_supported() {
         return;
     }
 
@@ -3262,11 +3264,10 @@ fn wrong_message_format_option() {
         .build();
 
     p.cargo("build --message-format XML")
-        .with_status(1)
+        .with_status(101)
         .with_stderr_contains(
             "\
-error: 'XML' isn't a valid value for '--message-format <FMT>'
-<tab>[possible values: human, json, short]
+error: invalid message format specifier: `xml`
 ",
         )
         .run();
@@ -4249,20 +4250,17 @@ fn targets_selected_default() {
     p.cargo("build -v")
         // Binaries.
         .with_stderr_contains(
-            "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
+            "[RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
              --emit=[..]link[..]",
         )
         // Benchmarks.
         .with_stderr_does_not_contain(
-            "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
+            "[RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C opt-level=3 --test [..]",
         )
         // Unit tests.
         .with_stderr_does_not_contain(
-            "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
+            "[RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C debuginfo=2 --test [..]",
         )
         .run();
@@ -4274,14 +4272,12 @@ fn targets_selected_all() {
     p.cargo("build -v --all-targets")
         // Binaries.
         .with_stderr_contains(
-            "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
+            "[RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
              --emit=[..]link[..]",
         )
         // Unit tests.
         .with_stderr_contains(
-            "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
+            "[RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C debuginfo=2 --test [..]",
         )
         .run();
@@ -4293,14 +4289,12 @@ fn all_targets_no_lib() {
     p.cargo("build -v --all-targets")
         // Binaries.
         .with_stderr_contains(
-            "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
+            "[RUNNING] `rustc --crate-name foo src/main.rs --color never --crate-type bin \
              --emit=[..]link[..]",
         )
         // Unit tests.
         .with_stderr_contains(
-            "\
-             [RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
+            "[RUNNING] `rustc --crate-name foo src/main.rs --color never --emit=[..]link \
              -C debuginfo=2 --test [..]",
         )
         .run();
@@ -4337,8 +4331,7 @@ fn no_linkable_target() {
         .build();
     p.cargo("build")
         .with_stderr_contains(
-            "\
-             [WARNING] The package `the_lib` provides no linkable [..] \
+            "[WARNING] The package `the_lib` provides no linkable [..] \
              while compiling `foo`. [..] in `the_lib`'s Cargo.toml. [..]",
         )
         .run();
@@ -4580,6 +4573,67 @@ fn pipelining_works() {
 [FINISHED] [..]
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn pipelining_big_graph() {
+    if !crate::support::is_nightly() {
+        return;
+    }
+
+    // Create a crate graph of the form {a,b}{0..29}, where {a,b}(n) depend on {a,b}(n+1)
+    // Then have `foo`, a binary crate, depend on the whole thing.
+    let mut project = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                [dependencies]
+                a1 = { path = "a1" }
+                b1 = { path = "b1" }
+            "#,
+        )
+        .file("src/main.rs", "fn main(){}");
+
+    for n in 0..30 {
+        for x in &["a", "b"] {
+            project = project
+                .file(
+                    &format!("{x}{n}/Cargo.toml", x = x, n = n),
+                    &format!(
+                        r#"
+                            [package]
+                            name = "{x}{n}"
+                            version = "0.1.0"
+                            [dependencies]
+                            a{np1} = {{ path = "../a{np1}" }}
+                            b{np1} = {{ path = "../b{np1}" }}
+                        "#,
+                        x = x,
+                        n = n,
+                        np1 = n + 1
+                    ),
+                )
+                .file(&format!("{x}{n}/src/lib.rs", x = x, n = n), "");
+        }
+    }
+
+    let foo = project
+        .file("a30/Cargo.toml", &basic_lib_manifest("a30"))
+        .file(
+            "a30/src/lib.rs",
+            r#"compile_error!("don't actually build me");"#,
+        )
+        .file("b30/Cargo.toml", &basic_lib_manifest("b30"))
+        .file("b30/src/lib.rs", "")
+        .build();
+    foo.cargo("build -p foo")
+        .env("CARGO_BUILD_PIPELINING", "true")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] Could not compile `a30`[..]")
         .run();
 }
 

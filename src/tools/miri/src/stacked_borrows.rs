@@ -1,3 +1,6 @@
+//! Implements "Stacked Borrows".  See <https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md>
+//! for further information.
+
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -9,7 +12,7 @@ use rustc::hir::{MutMutable, MutImmutable};
 use rustc::mir::RetagKind;
 
 use crate::{
-    InterpResult, InterpError, MiriEvalContext, HelpersEvalContextExt, Evaluator, MutValueVisitor,
+    InterpResult, HelpersEvalContextExt,
     MemoryKind, MiriMemoryKind, RangeMap, AllocId, Pointer, Immediate, ImmTy, PlaceTy, MPlaceTy,
 };
 
@@ -25,7 +28,7 @@ pub enum Tag {
 }
 
 impl fmt::Debug for Tag {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Tag::Tagged(id) => write!(f, "<{}>", id),
             Tag::Untagged => write!(f, "<untagged>"),
@@ -59,7 +62,7 @@ pub struct Item {
 }
 
 impl fmt::Debug for Item {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "[{:?} for {:?}", self.perm, self.tag)?;
         if let Some(call) = self.protector {
             write!(f, " (call {})", call)?;
@@ -114,7 +117,7 @@ pub enum AccessKind {
 }
 
 impl fmt::Display for AccessKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AccessKind::Read => write!(f, "read access"),
             AccessKind::Write => write!(f, "write access"),
@@ -136,7 +139,7 @@ pub enum RefKind {
 }
 
 impl fmt::Display for RefKind {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RefKind::Unique { two_phase: false } => write!(f, "unique"),
             RefKind::Unique { two_phase: true } => write!(f, "unique (two-phase)"),
@@ -270,12 +273,12 @@ impl<'tcx> Stack {
         if let Some(call) = item.protector {
             if global.is_active(call) {
                 if let Some(tag) = tag {
-                    return err!(MachineError(format!(
+                    throw_ub!(UbExperimental(format!(
                         "not granting access to tag {:?} because incompatible item is protected: {:?}",
                         tag, item
                     )));
                 } else {
-                    return err!(MachineError(format!(
+                    throw_ub!(UbExperimental(format!(
                         "deallocating while item is protected: {:?}", item
                     )));
                 }
@@ -296,10 +299,10 @@ impl<'tcx> Stack {
 
         // Step 1: Find granting item.
         let granting_idx = self.find_granting(access, tag)
-            .ok_or_else(|| InterpError::MachineError(format!(
+            .ok_or_else(|| err_ub!(UbExperimental(format!(
                 "no item granting {} to tag {:?} found in borrow stack",
                 access, tag,
-            )))?;
+            ))))?;
 
         // Step 2: Remove incompatible items above them.  Make sure we do not remove protected
         // items.  Behavior differs for reads and writes.
@@ -343,10 +346,10 @@ impl<'tcx> Stack {
     ) -> InterpResult<'tcx> {
         // Step 1: Find granting item.
         self.find_granting(AccessKind::Write, tag)
-            .ok_or_else(|| InterpError::MachineError(format!(
+            .ok_or_else(|| err_ub!(UbExperimental(format!(
                 "no item granting write access for deallocation to tag {:?} found in borrow stack",
                 tag,
-            )))?;
+            ))))?;
 
         // Step 2: Remove all items.  Also checks for protectors.
         for item in self.borrows.drain(..).rev() {
@@ -375,9 +378,9 @@ impl<'tcx> Stack {
         // Now we figure out which item grants our parent (`derived_from`) this kind of access.
         // We use that to determine where to put the new item.
         let granting_idx = self.find_granting(access, derived_from)
-            .ok_or_else(|| InterpError::MachineError(format!(
+            .ok_or_else(|| err_ub!(UbExperimental(format!(
                 "trying to reborrow for {:?}, but parent tag {:?} does not have an appropriate item in the borrow stack", new.perm, derived_from,
-            )))?;
+            ))))?;
 
         // Compute where to put the new item.
         // Either way, we ensure that we insert the new item in a way such that between
@@ -538,6 +541,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         // Get the allocation. It might not be mutable, so we cannot use `get_mut`.
         let alloc = this.memory().get(ptr.alloc_id)?;
+        let stacked_borrows = alloc.extra.stacked_borrows.as_ref().expect("we should have Stacked Borrows data");
         // Update the stacks.
         // Make sure that raw pointers and mutable shared references are reborrowed "weak":
         // There could be existing unique pointers reborrowed from them that should remain valid!
@@ -553,14 +557,14 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     // We are only ever `SharedReadOnly` inside the frozen bits.
                     let perm = if frozen { Permission::SharedReadOnly } else { Permission::SharedReadWrite };
                     let item = Item { perm, tag: new_tag, protector };
-                    alloc.extra.stacked_borrows.for_each(cur_ptr, size, |stack, global| {
+                    stacked_borrows.for_each(cur_ptr, size, |stack, global| {
                         stack.grant(cur_ptr.tag, item, global)
                     })
                 });
             }
         };
         let item = Item { perm, tag: new_tag, protector };
-        alloc.extra.stacked_borrows.for_each(ptr, size, |stack, global| {
+        stacked_borrows.for_each(ptr, size, |stack, global| {
             stack.grant(ptr.tag, item, global)
         })
     }
@@ -583,6 +587,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // Nothing to do for ZSTs.
             return Ok(*val);
         }
+        let place = this.force_mplace_ptr(place)?;
 
         // Compute new borrow.
         let new_tag = match kind {
@@ -627,54 +632,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
         }
 
-        // We need a visitor to visit all references. However, that requires
-        // a `MemPlace`, so we have a fast path for reference types that
-        // avoids allocating.
+        // We only reborrow "bare" references/boxes.
+        // Not traversing into fields helps with <https://github.com/rust-lang/unsafe-code-guidelines/issues/125>,
+        // but might also cost us optimization and analyses. We will have to experiment more with this.
         if let Some((mutbl, protector)) = qualify(place.layout.ty, kind) {
             // Fast path.
             let val = this.read_immediate(this.place_to_op(place)?)?;
             let val = this.retag_reference(val, mutbl, protector)?;
             this.write_immediate(val, place)?;
-            return Ok(());
-        }
-        let place = this.force_allocation(place)?;
-
-        let mut visitor = RetagVisitor { ecx: this, kind };
-        visitor.visit_value(place)?;
-
-        // The actual visitor.
-        struct RetagVisitor<'ecx, 'mir, 'tcx> {
-            ecx: &'ecx mut MiriEvalContext<'mir, 'tcx>,
-            kind: RetagKind,
-        }
-        impl<'ecx, 'mir, 'tcx>
-            MutValueVisitor<'mir, 'tcx, Evaluator<'tcx>>
-        for
-            RetagVisitor<'ecx, 'mir, 'tcx>
-        {
-            type V = MPlaceTy<'tcx, Tag>;
-
-            #[inline(always)]
-            fn ecx(&mut self) -> &mut MiriEvalContext<'mir, 'tcx> {
-                &mut self.ecx
-            }
-
-            // Primitives of reference type, that is the one thing we are interested in.
-            fn visit_primitive(&mut self, place: MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx>
-            {
-                // Cannot use `builtin_deref` because that reports *immutable* for `Box`,
-                // making it useless.
-                if let Some((mutbl, protector)) = qualify(place.layout.ty, self.kind) {
-                    let val = self.ecx.read_immediate(place.into())?;
-                    let val = self.ecx.retag_reference(
-                        val,
-                        mutbl,
-                        protector
-                    )?;
-                    self.ecx.write_immediate(val, place.into())?;
-                }
-                Ok(())
-            }
         }
 
         Ok(())

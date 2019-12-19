@@ -1,9 +1,11 @@
+use crate::{resolve, resolve_frame, trace, Symbol, SymbolName};
+use std::ffi::c_void;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::prelude::v1::*;
 
-use types::c_void;
-use {resolve, resolve_frame, trace, Symbol, SymbolName};
+#[cfg(feature = "serde")]
+use serde::{Serialize, Deserialize};
 
 /// Representation of an owned and self-contained backtrace.
 ///
@@ -19,7 +21,7 @@ use {resolve, resolve_frame, trace, Symbol, SymbolName};
 /// enabled, and the `std` feature is enabled by default.
 #[derive(Clone)]
 #[cfg_attr(feature = "serialize-rustc", derive(RustcDecodable, RustcEncodable))]
-#[cfg_attr(feature = "serialize-serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct Backtrace {
     // Frames here are listed from top-to-bottom of the stack
     frames: Vec<BacktraceFrame>,
@@ -50,7 +52,7 @@ pub struct BacktraceFrame {
 
 #[derive(Clone)]
 enum Frame {
-    Raw(::Frame),
+    Raw(crate::Frame),
     #[allow(dead_code)]
     Deserialized {
         ip: usize,
@@ -85,7 +87,7 @@ impl Frame {
 /// enabled, and the `std` feature is enabled by default.
 #[derive(Clone)]
 #[cfg_attr(feature = "serialize-rustc", derive(RustcDecodable, RustcEncodable))]
-#[cfg_attr(feature = "serialize-serde", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "serde", derive(Deserialize, Serialize))]
 pub struct BacktraceSymbol {
     name: Option<Vec<u8>>,
     addr: Option<usize>,
@@ -122,7 +124,6 @@ impl Backtrace {
     /// enabled, and the `std` feature is enabled by default.
     #[inline(never)] // want to make sure there's a frame here to remove
     pub fn new() -> Backtrace {
-        let _guard = lock_and_platform_init();
         let mut bt = Self::create(Self::new as usize);
         bt.resolve();
         bt
@@ -153,7 +154,6 @@ impl Backtrace {
     /// enabled, and the `std` feature is enabled by default.
     #[inline(never)] // want to make sure there's a frame here to remove
     pub fn new_unresolved() -> Backtrace {
-        let _guard = lock_and_platform_init();
         Self::create(Self::new_unresolved as usize)
     }
 
@@ -203,7 +203,6 @@ impl Backtrace {
     /// This function requires the `std` feature of the `backtrace` crate to be
     /// enabled, and the `std` feature is enabled by default.
     pub fn resolve(&mut self) {
-        let _guard = lock_and_platform_init();
         for frame in self.frames.iter_mut().filter(|f| f.symbols.is_none()) {
             let mut symbols = Vec::new();
             {
@@ -416,51 +415,6 @@ impl fmt::Debug for BacktraceSymbol {
     }
 }
 
-// When using `dbghelp` on Windows this is a performance optimization. If
-// we don't do this then `SymInitializeW` is called once per trace and once per
-// frame during resolution. That function, however, takes quite some time! To
-// help speed it up this function can amortize the calls necessary by ensuring
-// that the scope this is called in only initializes when this is called and
-// doesn't reinitialize for the rest of the scope.
-#[cfg(all(windows, feature = "dbghelp"))]
-fn lock_and_platform_init() -> impl Drop {
-    use std::mem::ManuallyDrop;
-
-    struct Cleanup {
-        _lock: crate::lock::LockGuard,
-
-        // Need to make sure this is cleaned up before `_lock`
-        dbghelp_cleanup: Option<ManuallyDrop<crate::dbghelp::Cleanup>>,
-    }
-
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            if let Some(cleanup) = self.dbghelp_cleanup.as_mut() {
-                // Unsafety here should be ok since we're only dropping this in
-                // `Drop` to ensure it's dropped before the lock, and `Drop`
-                // should only be called once.
-                unsafe {
-                    ManuallyDrop::drop(cleanup);
-                }
-            }
-        }
-    }
-
-    // Unsafety here should be ok because we only acquire the `dbghelp`
-    // initialization (the unsafe part) after acquiring the global lock for this
-    // crate. Note that we're also careful to drop it before the lock is
-    // dropped.
-    unsafe {
-        Cleanup {
-            _lock: crate::lock::lock(),
-            dbghelp_cleanup: crate::dbghelp::init().ok().map(ManuallyDrop::new),
-        }
-    }
-}
-
-#[cfg(not(all(windows, feature = "dbghelp")))]
-fn lock_and_platform_init() {}
-
 #[cfg(feature = "serialize-rustc")]
 mod rustc_serialize_impls {
     use super::*;
@@ -505,7 +459,7 @@ mod rustc_serialize_impls {
     }
 }
 
-#[cfg(feature = "serialize-serde")]
+#[cfg(feature = "serde")]
 mod serde_impls {
     extern crate serde;
 

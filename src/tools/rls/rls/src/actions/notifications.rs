@@ -5,6 +5,7 @@ use crate::Span;
 use log::{debug, trace, warn};
 use rls_vfs::{Change, VfsSpan};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 use crate::build::*;
 use crate::lsp_data::request::{RangeFormatting, RegisterCapability, UnregisterCapability};
@@ -139,9 +140,15 @@ impl BlockingNotificationAction for DidChangeConfiguration {
         use std::collections::HashMap;
         let mut dups = HashMap::new();
         let mut unknowns = vec![];
-        let settings =
-            ChangeConfigSettings::try_deserialize(&params.settings, &mut dups, &mut unknowns);
+        let mut deprecated = vec![];
+        let settings = ChangeConfigSettings::try_deserialize(
+            &params.settings,
+            &mut dups,
+            &mut unknowns,
+            &mut deprecated,
+        );
         crate::server::maybe_notify_unknown_configs(&out, &unknowns);
+        crate::server::maybe_notify_deprecated_configs(&out, &deprecated);
         crate::server::maybe_notify_duplicated_configs(&out, &dups);
 
         let new_config = match settings {
@@ -170,7 +177,7 @@ impl BlockingNotificationAction for DidChangeConfiguration {
 
             if needs_inference {
                 let project_dir = ctx.current_project.clone();
-                let config = ctx.config.clone();
+                let config = Arc::clone(&ctx.config);
                 // Will lock and access Config just outside the current scope
                 thread::spawn(move || {
                     let mut config = config.lock().unwrap();

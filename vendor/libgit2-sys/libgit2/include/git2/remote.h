@@ -56,7 +56,7 @@ typedef enum {
  * Remote creation options structure
  *
  * Initialize with `GIT_REMOTE_CREATE_OPTIONS_INIT`. Alternatively, you can
- * use `git_remote_create_init_options`.
+ * use `git_remote_create_options_init`.
  *
  */
 typedef struct git_remote_create_options {
@@ -94,7 +94,7 @@ typedef struct git_remote_create_options {
  * @param version The struct version; pass `GIT_REMOTE_CREATE_OPTIONS_VERSION`.
  * @return Zero on success; -1 on failure.
  */
-GIT_EXTERN(int) git_remote_create_init_options(
+GIT_EXTERN(int) git_remote_create_options_init(
 		git_remote_create_options *opts,
 		unsigned int version);
 
@@ -415,18 +415,19 @@ GIT_EXTERN(int) git_remote_list(git_strarray *out, git_repository *repo);
  * Argument to the completion callback which tells it which operation
  * finished.
  */
-typedef enum git_remote_completion_type {
+typedef enum git_remote_completion_t {
 	GIT_REMOTE_COMPLETION_DOWNLOAD,
 	GIT_REMOTE_COMPLETION_INDEXING,
 	GIT_REMOTE_COMPLETION_ERROR,
-} git_remote_completion_type;
+} git_remote_completion_t;
 
 /** Push network progress notification function */
-typedef int GIT_CALLBACK(git_push_transfer_progress)(
+typedef int GIT_CALLBACK(git_push_transfer_progress_cb)(
 	unsigned int current,
 	unsigned int total,
 	size_t bytes,
 	void* payload);
+
 /**
  * Represents an update which will be performed on the remote during push
  */
@@ -474,13 +475,28 @@ typedef int GIT_CALLBACK(git_push_negotiation)(const git_push_update **updates, 
 typedef int GIT_CALLBACK(git_push_update_reference_cb)(const char *refname, const char *status, void *data);
 
 /**
+ * Callback to resolve URLs before connecting to remote
+ *
+ * If you return GIT_PASSTHROUGH, you don't need to write anything to
+ * url_resolved.
+ *
+ * @param url_resolved The buffer to write the resolved URL to
+ * @param url The URL to resolve
+ * @param direction GIT_DIRECTION_FETCH or GIT_DIRECTION_PUSH
+ * @param payload Payload provided by the caller
+ * @return 0 on success, GIT_PASSTHROUGH or an error
+ */
+typedef int GIT_CALLBACK(git_url_resolve_cb)(git_buf *url_resolved, const char *url, int direction, void *payload);
+
+/**
  * The callback settings structure
  *
  * Set the callbacks to be called by the remote when informing the user
  * about the progress of the network operations.
  */
 struct git_remote_callbacks {
-	unsigned int version;
+	unsigned int version; /**< The version */
+
 	/**
 	 * Textual progress from the remote. Text send over the
 	 * progress side-band will be passed to this function (this is
@@ -492,7 +508,7 @@ struct git_remote_callbacks {
 	 * Completion is called when different parts of the download
 	 * process are done (currently unused).
 	 */
-	int GIT_CALLBACK(completion)(git_remote_completion_type type, void *data);
+	int GIT_CALLBACK(completion)(git_remote_completion_t type, void *data);
 
 	/**
 	 * This will be called if the remote host requires
@@ -516,7 +532,7 @@ struct git_remote_callbacks {
 	 * called with the current count of progress done by the
 	 * indexer.
 	 */
-	git_transfer_progress_cb transfer_progress;
+	git_indexer_progress_cb transfer_progress;
 
 	/**
 	 * Each time a reference is updated locally, this function
@@ -537,7 +553,7 @@ struct git_remote_callbacks {
 	 * inline with pack building operations, so performance may be
 	 * affected.
 	 */
-	git_push_transfer_progress push_transfer_progress;
+	git_push_transfer_progress_cb push_transfer_progress;
 
 	/**
 	 * See documentation of git_push_update_reference_cb
@@ -561,6 +577,12 @@ struct git_remote_callbacks {
 	 * as the last parameter.
 	 */
 	void *payload;
+
+	/**
+	 * Resolve URL before connecting to remote.
+	 * The returned URL will be used to connect to the remote instead.
+	 */
+	git_url_resolve_cb resolve_url;
 };
 
 #define GIT_REMOTE_CALLBACKS_VERSION 1
@@ -578,6 +600,7 @@ GIT_EXTERN(int) git_remote_init_callbacks(
 	git_remote_callbacks *opts,
 	unsigned int version);
 
+/** Acceptable prune settings when fetching */
 typedef enum {
 	/**
 	 * Use the setting from the configuration
@@ -679,7 +702,7 @@ typedef struct {
  * @param version The struct version; pass `GIT_FETCH_OPTIONS_VERSION`.
  * @return Zero on success; -1 on failure.
  */
-GIT_EXTERN(int) git_fetch_init_options(
+GIT_EXTERN(int) git_fetch_options_init(
 	git_fetch_options *opts,
 	unsigned int version);
 
@@ -729,7 +752,7 @@ typedef struct {
  * @param version The struct version; pass `GIT_PUSH_OPTIONS_VERSION`.
  * @return Zero on success; -1 on failure.
  */
-GIT_EXTERN(int) git_push_init_options(
+GIT_EXTERN(int) git_push_options_init(
 	git_push_options *opts,
 	unsigned int version);
 
@@ -832,7 +855,7 @@ GIT_EXTERN(int) git_remote_push(git_remote *remote,
 /**
  * Get the statistics structure that is filled in by the fetch operation.
  */
-GIT_EXTERN(const git_transfer_progress *) git_remote_stats(git_remote *remote);
+GIT_EXTERN(const git_indexer_progress *) git_remote_stats(git_remote *remote);
 
 /**
  * Retrieve the tag auto-follow setting

@@ -12,10 +12,9 @@
 
 [package]
 name = "phf"
-version = "0.7.22"
+version = "0.7.24"
 authors = ["Steven Fackler <sfackler@gmail.com>"]
 description = "Runtime support for perfect hash function data structures"
-documentation = "https://docs.rs/phf/0.7.22/phf"
 license = "MIT"
 repository = "https://github.com/sfackler/rust-phf"
 
@@ -23,9 +22,14 @@ repository = "https://github.com/sfackler/rust-phf"
 name = "phf"
 path = "src/lib.rs"
 test = false
+[dependencies.phf_macros]
+version = "0.7.24"
+optional = true
+
 [dependencies.phf_shared]
-version = "=0.7.22"
+version = "0.7.24"
 
 [features]
 core = ["phf_shared/core"]
+macros = ["phf_macros"]
 unicase = ["phf_shared/unicase"]

@@ -20,13 +20,20 @@ use error::Error;
 /// When serializing, a value of this type will retain its original formatting
 /// and will not be minified or pretty-printed.
 ///
+/// # Note
+///
+/// `RawValue` is only available if serde\_json is built with the `"raw_value"`
+/// feature.
+///
+/// ```toml
+/// [dependencies]
+/// serde_json = { version = "1.0", features = ["raw_value"] }
+/// ```
+///
 /// # Example
 ///
-/// ```
-/// #[macro_use]
-/// extern crate serde_derive;
-/// extern crate serde_json;
-///
+/// ```edition2018
+/// use serde::{Deserialize, Serialize};
 /// use serde_json::{Result, value::RawValue};
 ///
 /// #[derive(Deserialize)]
@@ -71,11 +78,8 @@ use error::Error;
 ///
 /// The typical usage of `RawValue` will be in the borrowed form:
 ///
-/// ```
-/// # #[macro_use]
-/// # extern crate serde_derive;
-/// # extern crate serde_json;
-/// #
+/// ```edition2018
+/// # use serde::Deserialize;
 /// # use serde_json::value::RawValue;
 /// #
 /// #[derive(Deserialize)]
@@ -83,8 +87,6 @@ use error::Error;
 ///     #[serde(borrow)]
 ///     raw_value: &'a RawValue,
 /// }
-/// #
-/// # fn main() {}
 /// ```
 ///
 /// The borrowed form is suitable when deserializing through
@@ -99,29 +101,14 @@ use error::Error;
 /// [`serde_json::from_slice`]: ../fn.from_slice.html
 /// [`serde_json::from_reader`]: ../fn.from_reader.html
 ///
-/// ```
-/// # #[macro_use]
-/// # extern crate serde_derive;
-/// # extern crate serde_json;
-/// #
+/// ```edition2018
+/// # use serde::Deserialize;
 /// # use serde_json::value::RawValue;
 /// #
 /// #[derive(Deserialize)]
 /// struct SomeStruct {
 ///     raw_value: Box<RawValue>,
 /// }
-/// #
-/// # fn main() {}
-/// ```
-///
-/// # Note
-///
-/// `RawValue` is only available if serde\_json is built with the `"raw_value"`
-/// feature.
-///
-/// ```toml
-/// [dependencies]
-/// serde_json = { version = "1.0", features = ["raw_value"] }
 /// ```
 #[repr(C)]
 pub struct RawValue {
@@ -196,11 +183,8 @@ impl RawValue {
     ///
     /// # Example
     ///
-    /// ```
-    /// #[macro_use]
-    /// extern crate serde_derive;
-    /// extern crate serde_json;
-    ///
+    /// ```edition2018
+    /// use serde::Deserialize;
     /// use serde_json::{Result, value::RawValue};
     ///
     /// #[derive(Deserialize)]

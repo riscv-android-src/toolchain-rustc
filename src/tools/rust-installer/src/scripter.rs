@@ -1,22 +1,11 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use std::io::Write;
-
-use crate::errors::*;
+use failure::ResultExt;
+use crate::Result;
 use crate::util::*;
 
 const TEMPLATE: &'static str = include_str!("../install-template.sh");
 
-
-actor!{
+actor! {
     #[derive(Debug)]
     pub struct Scripter {
         /// The name of the product, for display
@@ -37,26 +26,34 @@ actor!{
 }
 
 impl Scripter {
-    /// Generate the actual installer script
+    /// Generates the actual installer script
     pub fn run(self) -> Result<()> {
         // Replace dashes in the success message with spaces (our arg handling botches spaces)
-        // (TODO: still needed?  kept for compatibility for now...)
+        // TODO: still needed? Kept for compatibility for now.
         let product_name = self.product_name.replace('-', " ");
 
         // Replace dashes in the success message with spaces (our arg handling botches spaces)
-        // (TODO: still needed?  kept for compatibility for now...)
+        // TODO: still needed? Kept for compatibility for now.
         let success_message = self.success_message.replace('-', " ");
 
         let script = TEMPLATE
             .replace("%%TEMPLATE_PRODUCT_NAME%%", &sh_quote(&product_name))
             .replace("%%TEMPLATE_REL_MANIFEST_DIR%%", &self.rel_manifest_dir)
             .replace("%%TEMPLATE_SUCCESS_MESSAGE%%", &sh_quote(&success_message))
-            .replace("%%TEMPLATE_LEGACY_MANIFEST_DIRS%%", &sh_quote(&self.legacy_manifest_dirs))
-            .replace("%%TEMPLATE_RUST_INSTALLER_VERSION%%", &sh_quote(&crate::RUST_INSTALLER_VERSION));
+            .replace(
+                "%%TEMPLATE_LEGACY_MANIFEST_DIRS%%",
+                &sh_quote(&self.legacy_manifest_dirs),
+            )
+            .replace(
+                "%%TEMPLATE_RUST_INSTALLER_VERSION%%",
+                &sh_quote(&crate::RUST_INSTALLER_VERSION),
+            );
 
         create_new_executable(&self.output_script)?
             .write_all(script.as_ref())
-            .chain_err(|| format!("failed to write output script '{}'", self.output_script))
+            .with_context(|_| format!("failed to write output script '{}'", self.output_script))?;
+
+        Ok(())
     }
 }
 

@@ -10,12 +10,14 @@ name = "fabricate"
 path = "src/main.rs"
 
 [dependencies]
-error-chain = "0.12.0"
+failure = "0.1"
 flate2 = "1.0.1"
 rayon = "1.0"
 tar = "0.4.13"
 walkdir = "2"
 xz2 = "0.1.4"
+num_cpus = "1"
+remove_dir_all = "0.5"
 
 [dependencies.clap]
 features = ["yaml"]

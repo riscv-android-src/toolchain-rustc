@@ -13,8 +13,8 @@
 [package]
 edition = "2018"
 name = "pulldown-cmark"
-version = "0.5.2"
-authors = ["Raph Levien <raph.levien@gmail.com>"]
+version = "0.5.3"
+authors = ["Raph Levien <raph.levien@gmail.com>", "Marcus Klaas de Vries <mail@marcusklaas.nl>"]
 build = "build.rs"
 description = "A pull parser for CommonMark"
 readme = "README.md"
@@ -32,7 +32,7 @@ required-features = ["getopts"]
 name = "html_rendering"
 harness = false
 [dependencies.bitflags]
-version = "1.0"
+version = "1.1"
 
 [dependencies.getopts]
 version = "0.2"

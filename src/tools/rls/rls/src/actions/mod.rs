@@ -23,6 +23,7 @@ use crate::project_model::{ProjectModel, RacerFallbackModel, RacerProjectModel};
 use crate::server::Output;
 
 use std::collections::{HashMap, HashSet};
+use std::convert::TryFrom;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -86,9 +87,9 @@ impl ActionContext {
         let ctx = match *self {
             ActionContext::Uninit(ref uninit) => {
                 let ctx = InitActionContext::new(
-                    uninit.analysis.clone(),
-                    uninit.vfs.clone(),
-                    uninit.config.clone(),
+                    Arc::clone(&uninit.analysis),
+                    Arc::clone(&uninit.vfs),
+                    Arc::clone(&uninit.config),
                     client_capabilities,
                     current_project,
                     uninit.pid,
@@ -189,7 +190,7 @@ impl InitActionContext {
         pid: u32,
         client_supports_cmd_run: bool,
     ) -> InitActionContext {
-        let build_queue = BuildQueue::new(vfs.clone(), config.clone());
+        let build_queue = BuildQueue::new(Arc::clone(&vfs), Arc::clone(&config));
         let analysis_queue = Arc::new(AnalysisQueue::init());
         InitActionContext {
             analysis,
@@ -226,7 +227,7 @@ impl InitActionContext {
                 info!("loading cargo project model");
                 let pm = ProjectModel::load(&self.current_project.join("Cargo.toml"), &self.vfs)?;
                 let pm = Arc::new(pm);
-                *self.project_model.lock().unwrap() = Some(pm.clone());
+                *self.project_model.lock().unwrap() = Some(Arc::clone(&pm));
                 Ok(pm)
             }
         }
@@ -245,7 +246,7 @@ impl InitActionContext {
                 }
             }
         }
-        racer::FileCache::new(RacerVfs(self.vfs.clone()))
+        racer::FileCache::new(RacerVfs(Arc::clone(&self.vfs)))
     }
 
     pub fn racer_session<'c>(&self, cache: &'c racer::FileCache) -> racer::Session<'c> {
@@ -281,12 +282,21 @@ impl InitActionContext {
     fn file_edition(&self, file: PathBuf) -> Option<Edition> {
         let files_to_crates = self.file_to_crates.lock().unwrap();
 
-        let editions: HashSet<_> = files_to_crates.get(&file)?.iter().map(|c| c.edition).collect();
+        let editions: HashSet<_> = files_to_crates
+            .get(&file)
+            .map(|crates| crates.iter().map(|c| c.edition).collect())
+            .unwrap_or_default();
 
         let mut iter = editions.into_iter();
         match (iter.next(), iter.next()) {
             (ret @ Some(_), None) => ret,
-            _ => None,
+            (Some(_), Some(_)) => None,
+            _ => {
+                // fall back on checking the root manifest for package edition
+                let manifest_path =
+                    cargo::util::important_paths::find_root_manifest_for_wd(&file).ok()?;
+                edition_from_manifest(manifest_path)
+            }
         }
     }
 
@@ -326,16 +336,16 @@ impl InitActionContext {
         let pbh = {
             let config = self.config.lock().unwrap();
             PostBuildHandler {
-                analysis: self.analysis.clone(),
-                analysis_queue: self.analysis_queue.clone(),
-                previous_build_results: self.previous_build_results.clone(),
-                file_to_crates: self.file_to_crates.clone(),
+                analysis: Arc::clone(&self.analysis),
+                analysis_queue: Arc::clone(&self.analysis_queue),
+                previous_build_results: Arc::clone(&self.previous_build_results),
+                file_to_crates: Arc::clone(&self.file_to_crates),
                 project_path: project_path.to_owned(),
                 show_warnings: config.show_warnings,
                 related_information_support: self.client_capabilities.related_information_support,
-                shown_cargo_error: self.shown_cargo_error.clone(),
-                active_build_count: self.active_build_count.clone(),
-                use_black_list: config.use_crate_blacklist,
+                shown_cargo_error: Arc::clone(&self.shown_cargo_error),
+                active_build_count: Arc::clone(&self.active_build_count),
+                crate_blacklist: config.crate_blacklist.as_ref().clone(),
                 notifier: Box::new(BuildDiagnosticsNotifier::new(out.clone())),
                 blocked_threads: vec![],
                 _token: token,
@@ -422,6 +432,24 @@ impl InitActionContext {
             span::Position::new(pos.row, end),
             file_path,
         )
+    }
+}
+
+/// Read package edition from the Cargo manifest
+fn edition_from_manifest<P: AsRef<Path>>(manifest_path: P) -> Option<Edition> {
+    #[derive(Debug, serde::Deserialize)]
+    struct Manifest {
+        package: Package,
+    }
+    #[derive(Debug, serde::Deserialize)]
+    struct Package {
+        edition: Option<String>,
+    }
+
+    let manifest: Manifest = toml::from_str(&std::fs::read_to_string(manifest_path).ok()?).ok()?;
+    match manifest.package.edition {
+        Some(edition) => Edition::try_from(edition.as_str()).ok(),
+        None => Some(Edition::default()),
     }
 }
 
@@ -661,5 +689,29 @@ mod test {
         assert!(watch.is_relevant_save_doc(&did_save("file:///c:/some/dir/inner/Cargo.toml")));
         assert!(!watch.is_relevant_save_doc(&did_save("file:///c:/some/dir/inner/Cargo.lock")));
         assert!(!watch.is_relevant_save_doc(&did_save("file:///c:/Cargo.toml")));
+    }
+
+    #[test]
+    fn explicit_edition_from_manifest() -> Result<(), std::io::Error> {
+        use std::{fs::File, io::Write};
+
+        let dir = tempfile::tempdir()?;
+
+        let manifest_path = {
+            let path = dir.path().join("Cargo.toml");
+            let mut m = File::create(&path)?;
+            writeln!(
+                m,
+                "[package]\n\
+                 name = \"foo\"\n\
+                 version = \"1.0.0\"\n\
+                 edition = \"2018\""
+            )?;
+            path
+        };
+
+        assert_eq!(edition_from_manifest(manifest_path), Some(Edition::Edition2018));
+
+        Ok(())
     }
 }

@@ -7,7 +7,7 @@ use crate::dummy_book::{assert_contains_strings, assert_doesnt_contain_strings, 
 
 use mdbook::config::Config;
 use mdbook::errors::*;
-use mdbook::utils::fs::{file_to_string, write_file};
+use mdbook::utils::fs::write_file;
 use mdbook::MDBook;
 use select::document::Document;
 use select::predicate::{Class, Name, Predicate};
@@ -31,6 +31,7 @@ const TOC_SECOND_LEVEL: &[&str] = &[
     "1.2. Includes",
     "1.3. Recursive",
     "1.4. Markdown",
+    "1.5. Unicode",
     "2.1. Nested Chapter",
 ];
 
@@ -124,6 +125,9 @@ fn check_correct_relative_links_in_print_page() {
             r##"<a href="second/../first/nested.html">the first section</a>,"##,
             r##"<a href="second/../../std/foo/bar.html">outside</a>"##,
             r##"<img src="second/../images/picture.png" alt="Some image" />"##,
+            r##"<a href="second/nested.html#some-section">fragment link</a>"##,
+            r##"<a href="second/../first/markdown.html">HTML Link</a>"##,
+            r##"<img src="second/../images/picture.png" alt="raw html">"##,
         ],
     );
 }
@@ -220,7 +224,7 @@ fn root_index_html() -> Result<Document> {
         .chain_err(|| "Book building failed")?;
 
     let index_page = temp.path().join("book").join("index.html");
-    let html = file_to_string(&index_page).chain_err(|| "Unable to read index.html")?;
+    let html = fs::read_to_string(&index_page).chain_err(|| "Unable to read index.html")?;
 
     Ok(Document::from(html.as_str()))
 }
@@ -468,14 +472,13 @@ fn markdown_options() {
 #[cfg(feature = "search")]
 mod search {
     use crate::dummy_book::DummyBook;
-    use mdbook::utils::fs::file_to_string;
     use mdbook::MDBook;
-    use std::fs::File;
+    use std::fs::{self, File};
     use std::path::Path;
 
     fn read_book_index(root: &Path) -> serde_json::Value {
         let index = root.join("book/searchindex.js");
-        let index = file_to_string(index).unwrap();
+        let index = fs::read_to_string(index).unwrap();
         let index = index.trim_start_matches("Object.assign(window.search, ");
         let index = index.trim_end_matches(");");
         serde_json::from_str(&index).unwrap()
@@ -511,7 +514,7 @@ mod search {
         assert_eq!(docs[&some_section]["body"], "");
         assert_eq!(
             docs[&summary]["body"],
-            "Dummy Book Introduction First Chapter Nested Chapter Includes Recursive Markdown Second Chapter Nested Chapter Conclusion"
+            "Dummy Book Introduction First Chapter Nested Chapter Includes Recursive Markdown Unicode Second Chapter Nested Chapter Conclusion"
         );
         assert_eq!(docs[&summary]["breadcrumbs"], "First Chapter » Summary");
         assert_eq!(docs[&conclusion]["body"], "I put &lt;HTML&gt; in here!");

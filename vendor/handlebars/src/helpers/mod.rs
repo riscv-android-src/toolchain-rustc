@@ -1,9 +1,9 @@
-use context::Context;
-use error::RenderError;
-use output::Output;
-use registry::Registry;
-use render::{Helper, RenderContext};
-use value::ScopedJson;
+use crate::context::Context;
+use crate::error::RenderError;
+use crate::output::Output;
+use crate::registry::Registry;
+use crate::render::{Helper, RenderContext};
+use crate::value::ScopedJson;
 
 pub use self::helper_each::EACH_HELPER;
 pub use self::helper_if::{IF_HELPER, UNLESS_HELPER};
@@ -22,7 +22,7 @@ pub type HelperResult = Result<(), RenderError>;
 /// * `&Registry`: the global registry, you can find templates by name from registry
 /// * `&Context`: the whole data to render, in most case you can use data from `Helper`
 /// * `&mut RenderContext`: you can access data or modify variables (starts with @)/partials in render context, for example, @index of #each. See its document for detail.
-/// * `&mut Output`: where you write output to
+/// * `&mut dyn Output`: where you write output to
 ///
 /// By default, you can use bare function as helper definition because we have supported unboxed_closure. If you have stateful or configurable helper, you can create a struct to implement `HelperDef`.
 ///
@@ -52,7 +52,7 @@ pub type HelperResult = Result<(), RenderError>;
 ///     r: &'reg Handlebars,
 ///     ctx: &Context,
 ///     rc: &mut RenderContext<'reg>,
-///     out: &mut Output,
+///     out: &mut dyn Output,
 /// ) -> HelperResult {
 ///     h.template()
 ///         .map(|t| t.render(r, ctx, rc, out))
@@ -91,10 +91,14 @@ pub trait HelperDef: Send + Sync {
         r: &'reg Registry,
         ctx: &'rc Context,
         rc: &mut RenderContext<'reg>,
-        out: &mut Output,
+        out: &mut dyn Output,
     ) -> HelperResult {
         if let Some(result) = self.call_inner(h, r, ctx, rc)? {
-            out.write(result.render().as_ref())?;
+            if r.strict_mode() && result.is_missing() {
+                return Err(RenderError::strict_error(None));
+            } else {
+                out.write(result.render().as_ref())?;
+            }
         }
 
         Ok(())
@@ -110,7 +114,7 @@ impl<
                 &'reg Registry,
                 &'rc Context,
                 &mut RenderContext<'reg>,
-                &mut Output,
+                &mut dyn Output,
             ) -> HelperResult,
     > HelperDef for F
 {
@@ -120,7 +124,7 @@ impl<
         r: &'reg Registry,
         ctx: &'rc Context,
         rc: &mut RenderContext<'reg>,
-        out: &mut Output,
+        out: &mut dyn Output,
     ) -> HelperResult {
         (*self)(h, r, ctx, rc, out)
     }
@@ -145,13 +149,13 @@ mod helper_with;
 mod test {
     use std::collections::BTreeMap;
 
-    use context::Context;
-    use error::RenderError;
-    use helpers::HelperDef;
-    use output::Output;
-    use registry::Registry;
-    use render::{Helper, RenderContext, Renderable};
-    use value::JsonRender;
+    use crate::context::Context;
+    use crate::error::RenderError;
+    use crate::helpers::HelperDef;
+    use crate::output::Output;
+    use crate::registry::Registry;
+    use crate::render::{Helper, RenderContext, Renderable};
+    use crate::value::JsonRender;
 
     #[derive(Clone, Copy)]
     struct MetaHelper;
@@ -163,7 +167,7 @@ mod test {
             r: &'reg Registry,
             ctx: &Context,
             rc: &mut RenderContext<'reg>,
-            out: &mut Output,
+            out: &mut dyn Output,
         ) -> Result<(), RenderError> {
             let v = h.param(0).unwrap();
 
@@ -183,16 +187,12 @@ mod test {
     #[test]
     fn test_meta_helper() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{foo this}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string("t1", "{{#bar this}}nice{{/bar}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{foo this}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t1", "{{#bar this}}nice{{/bar}}")
+            .is_ok());
 
         let meta_helper = MetaHelper;
         handlebars.register_helper("helperMissing", Box::new(meta_helper));
@@ -208,11 +208,9 @@ mod test {
     #[test]
     fn test_helper_for_subexpression() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t2", "{{foo value=(bar 0)}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t2", "{{foo value=(bar 0)}}")
+            .is_ok());
 
         handlebars.register_helper(
             "helperMissing",
@@ -221,7 +219,7 @@ mod test {
                  _: &Registry,
                  _: &Context,
                  _: &mut RenderContext,
-                 out: &mut Output|
+                 out: &mut dyn Output|
                  -> Result<(), RenderError> {
                     let output = format!("{}{}", h.name(), h.param(0).unwrap().value());
                     out.write(output.as_ref())?;
@@ -236,7 +234,7 @@ mod test {
                  _: &Registry,
                  _: &Context,
                  _: &mut RenderContext,
-                 out: &mut Output|
+                 out: &mut dyn Output|
                  -> Result<(), RenderError> {
                     let output = format!("{}", h.hash_get("value").unwrap().value().render());
                     out.write(output.as_ref())?;

@@ -2,11 +2,7 @@
 
 mod builtin;
 
-pub use builtin::{
-    cfg_matches, contains_feature_attr, eval_condition, find_crate_name, find_deprecation,
-    find_repr_attrs, find_stability, find_unwind_attr, Deprecation, InlineAttr, OptimizeAttr,
-    IntType, ReprAttr, RustcDeprecation, Stability, StabilityLevel, UnwindAttr,
-};
+pub use builtin::*;
 pub use IntType::*;
 pub use ReprAttr::*;
 pub use StabilityLevel::*;
@@ -20,7 +16,7 @@ use crate::source_map::{BytePos, Spanned, dummy_spanned};
 use crate::parse::lexer::comments::{doc_comment_style, strip_doc_comment_decoration};
 use crate::parse::parser::Parser;
 use crate::parse::{self, ParseSess, PResult};
-use crate::parse::token::{self, Token, TokenKind};
+use crate::parse::token::{self, Token};
 use crate::ptr::P;
 use crate::symbol::{sym, Symbol};
 use crate::ThinVec;
@@ -34,7 +30,7 @@ use std::iter;
 use std::ops::DerefMut;
 
 pub fn mark_used(attr: &Attribute) {
-    debug!("Marking {:?} as used.", attr);
+    debug!("marking {:?} as used", attr);
     GLOBALS.with(|globals| {
         globals.used_attrs.lock().insert(attr.id);
     });
@@ -47,7 +43,7 @@ pub fn is_used(attr: &Attribute) -> bool {
 }
 
 pub fn mark_known(attr: &Attribute) {
-    debug!("Marking {:?} as known.", attr);
+    debug!("marking {:?} as known", attr);
     GLOBALS.with(|globals| {
         globals.known_attrs.lock().insert(attr.id);
     });
@@ -60,7 +56,7 @@ pub fn is_known(attr: &Attribute) -> bool {
 }
 
 pub fn is_known_lint_tool(m_item: Ident) -> bool {
-    ["clippy"].contains(&m_item.as_str().as_ref())
+    [sym::clippy, sym::rustc].contains(&m_item.name)
 }
 
 impl NestedMetaItem {
@@ -440,12 +436,12 @@ pub fn contains_name(attrs: &[Attribute], name: Symbol) -> bool {
     })
 }
 
-pub fn find_by_name<'a>(attrs: &'a [Attribute], name: Symbol) -> Option<&'a Attribute> {
+pub fn find_by_name(attrs: &[Attribute], name: Symbol) -> Option<&Attribute> {
     attrs.iter().find(|attr| attr.check_name(name))
 }
 
-pub fn filter_by_name<'a>(attrs: &'a [Attribute], name: Symbol)
-    -> impl Iterator<Item = &'a Attribute> {
+pub fn filter_by_name(attrs: &[Attribute], name: Symbol)
+                      -> impl Iterator<Item=&Attribute> {
     attrs.iter().filter(move |attr| attr.check_name(name))
 }
 
@@ -467,8 +463,7 @@ impl MetaItem {
                                              segment.ident.span.ctxt());
                 idents.push(TokenTree::token(token::ModSep, mod_sep_span).into());
             }
-            idents.push(TokenTree::token(TokenKind::from_ast_ident(segment.ident),
-                                         segment.ident.span).into());
+            idents.push(TokenTree::Token(Token::from_ast_ident(segment.ident)).into());
             last_pos = segment.ident.span.hi();
         }
         self.node.tokens(self.span).append_to_tree_and_joint_vec(&mut idents);
@@ -724,7 +719,7 @@ macro_rules! derive_has_attrs {
 
 derive_has_attrs! {
     Item, Expr, Local, ast::ForeignItem, ast::StructField, ast::ImplItem, ast::TraitItem, ast::Arm,
-    ast::Field, ast::FieldPat, ast::Variant_
+    ast::Field, ast::FieldPat, ast::Variant_, ast::Arg
 }
 
 pub fn inject(mut krate: ast::Crate, parse_sess: &ParseSess, attrs: &[String]) -> ast::Crate {

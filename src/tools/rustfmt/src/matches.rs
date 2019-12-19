@@ -468,6 +468,9 @@ fn rewrite_match_body(
         next_line_body_shape.width,
     );
     match (orig_body, next_line_body) {
+        (Some(ref orig_str), Some(ref next_line_str)) if orig_str == next_line_str => {
+            combine_orig_body(orig_str)
+        }
         (Some(ref orig_str), Some(ref next_line_str))
             if prefer_next_line(orig_str, next_line_str, RhsTactics::Default) =>
         {
@@ -485,18 +488,10 @@ fn rewrite_match_body(
     }
 }
 
-impl Rewrite for ast::Guard {
-    fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
-        match self {
-            ast::Guard::If(ref expr) => expr.rewrite(context, shape),
-        }
-    }
-}
-
 // The `if ...` guard on a match arm.
 fn rewrite_guard(
     context: &RewriteContext<'_>,
-    guard: &Option<ast::Guard>,
+    guard: &Option<ptr::P<ast::Expr>>,
     shape: Shape,
     // The amount of space used up on this line for the pattern in
     // the arm (excludes offset).
@@ -558,12 +553,10 @@ fn can_flatten_block_around_this(body: &ast::Expr) -> bool {
     match body.node {
         // We do not allow `if` to stay on the same line, since we could easily mistake
         // `pat => if cond { ... }` and `pat if cond => { ... }`.
-        ast::ExprKind::If(..) | ast::ExprKind::IfLet(..) => false,
+        ast::ExprKind::If(..) => false,
         // We do not allow collapsing a block around expression with condition
         // to avoid it being cluttered with match arm.
-        ast::ExprKind::ForLoop(..) | ast::ExprKind::While(..) | ast::ExprKind::WhileLet(..) => {
-            false
-        }
+        ast::ExprKind::ForLoop(..) | ast::ExprKind::While(..) => false,
         ast::ExprKind::Loop(..)
         | ast::ExprKind::Match(..)
         | ast::ExprKind::Block(..)

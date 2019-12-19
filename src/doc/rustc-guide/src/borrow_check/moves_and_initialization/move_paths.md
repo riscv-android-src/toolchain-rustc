@@ -12,7 +12,7 @@ fn foo() {
     
     let b = a.0; // moves a.0
     
-    // a.0 is not initializd, but a.1 still is
+    // a.0 is not initialized, but a.1 still is
 
     let c = a.0; // ERROR
     let d = a.1; // OK
@@ -28,7 +28,7 @@ they are indexed in ways that enable us to do move analysis more
 efficiently.
 
 [`MovePath`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/dataflow/move_paths/struct.MovePath.html
-[`Place`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/mir/enum.Place.html
+[`Place`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/mir/struct.Place.html
 
 ## Move path indices
 
@@ -84,7 +84,7 @@ initialized (which lowers overhead).
 
 ## Looking up a move-path
 
-If you have a [`Place`] and you would like to convert it to a [`MovePathIndex`], you 
+If you have a [`Place`] and you would like to convert it to a [`MovePathIndex`], you
 can do that using the [`MovePathLookup`] structure found in the [`rev_lookup`] field
 of [`MoveData`]. There are two different methods:
 
@@ -122,6 +122,5 @@ which checks whether the dataflow results contain a value for the
 given move-path (e.g., `a.b`) or any child of that move-path (e.g.,
 `a.b.c`).
 
-[`Place`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/mir/enum.Place.html
+[`Place`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/mir/struct.Place.html
 [`has_any_child_of`]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_mir/dataflow/at_location/struct.FlowAtLocation.html#method.has_any_child_of
-

@@ -21,13 +21,10 @@ git_commit_list_node *git_revwalk__commit_lookup(
 	git_revwalk *walk, const git_oid *oid)
 {
 	git_commit_list_node *commit;
-	size_t pos;
-	int ret;
 
 	/* lookup and reserve space if not already present */
-	pos = git_oidmap_lookup_index(walk->commits, oid);
-	if (git_oidmap_valid_index(walk->commits, pos))
-		return git_oidmap_value_at(walk->commits, pos);
+	if ((commit = git_oidmap_get(walk->commits, oid)) != NULL)
+		return commit;
 
 	commit = git_commit_list_alloc_node(walk);
 	if (commit == NULL)
@@ -35,9 +32,8 @@ git_commit_list_node *git_revwalk__commit_lookup(
 
 	git_oid_cpy(&commit->oid, oid);
 
-	pos = git_oidmap_put(walk->commits, &commit->oid, &ret);
-	assert(ret != 0);
-	git_oidmap_set_value_at(walk->commits, pos, commit);
+	if ((git_oidmap_set(walk->commits, &commit->oid, commit)) < 0)
+		return NULL;
 
 	return commit;
 }
@@ -198,10 +194,17 @@ int git_revwalk_push_range(git_revwalk *walk, const char *range)
 	if ((error = git_revparse(&revspec, walk->repo, range)))
 		return error;
 
+	if (!revspec.to) {
+		git_error_set(GIT_ERROR_INVALID, "invalid revspec: range not provided");
+		error = GIT_EINVALIDSPEC;
+		goto out;
+	}
+
 	if (revspec.flags & GIT_REVPARSE_MERGE_BASE) {
 		/* TODO: support "<commit>...<commit>" */
 		git_error_set(GIT_ERROR_INVALID, "symmetric differences not implemented in revwalk");
-		return GIT_EINVALIDSPEC;
+		error = GIT_EINVALIDSPEC;
+		goto out;
 	}
 
 	if ((error = push_commit(walk, git_object_id(revspec.from), 1, false)))
@@ -626,8 +629,8 @@ int git_revwalk_new(git_revwalk **revwalk_out, git_repository *repo)
 	git_revwalk *walk = git__calloc(1, sizeof(git_revwalk));
 	GIT_ERROR_CHECK_ALLOC(walk);
 
-	walk->commits = git_oidmap_alloc();
-	GIT_ERROR_CHECK_ALLOC(walk->commits);
+	if (git_oidmap_new(&walk->commits) < 0)
+		return -1;
 
 	if (git_pqueue_init(&walk->iterator_time, 0, 8, git_commit_list_time_cmp) < 0)
 		return -1;

@@ -25,16 +25,15 @@
 
 #![allow(bad_style)]
 
+use crate::symbolize::dladdr;
+use crate::symbolize::ResolveWhat;
+use crate::types::BytesOrWideString;
+use crate::SymbolName;
+use core::ffi::c_void;
 use core::mem;
 use core::ptr;
 use core::slice;
-
-use libc::{self, c_char, c_int};
-
-use symbolize::ResolveWhat;
-use symbolize::dladdr;
-use types::{c_void, BytesOrWideString};
-use SymbolName;
+use libc::{c_char, c_int};
 
 #[repr(C)]
 #[derive(Copy, Clone, PartialEq)]
@@ -49,17 +48,17 @@ const CSREF_NULL: CSTypeRef = CSTypeRef {
     cpp_obj: 0 as *const c_void,
 };
 
-pub enum Symbol {
+pub enum Symbol<'a> {
     Core {
         path: *const c_char,
         lineno: u32,
         name: *const c_char,
         addr: *mut c_void,
     },
-    Dladdr(dladdr::Symbol),
+    Dladdr(dladdr::Symbol<'a>),
 }
 
-impl Symbol {
+impl Symbol<'_> {
     pub fn name(&self) -> Option<SymbolName> {
         let name = match *self {
             Symbol::Core { name, .. } => name,

@@ -13,10 +13,10 @@ use crate::util::CargoResult;
 use crate::util::Graph;
 
 use super::dep_cache::RegistryQueryer;
-use super::types::{ConflictMap, FeaturesSet, Method};
+use super::types::{ConflictMap, FeaturesSet, ResolveOpts};
 
+pub use super::encode::Metadata;
 pub use super::encode::{EncodableDependency, EncodablePackageId, EncodableResolve};
-pub use super::encode::{Metadata, WorkspaceResolve};
 pub use super::resolve::Resolve;
 
 // A `Context` is basically a bunch of local resolution information which is
@@ -99,8 +99,17 @@ impl Context {
 
     /// Activate this summary by inserting it into our list of known activations.
     ///
-    /// Returns `true` if this summary with the given method is already activated.
-    pub fn flag_activated(&mut self, summary: &Summary, method: &Method) -> CargoResult<bool> {
+    /// The `parent` passed in here is the parent summary/dependency edge which
+    /// cased `summary` to get activated. This may not be present for the root
+    /// crate, for example.
+    ///
+    /// Returns `true` if this summary with the given features is already activated.
+    pub fn flag_activated(
+        &mut self,
+        summary: &Summary,
+        opts: &ResolveOpts,
+        parent: Option<(&Summary, &Dependency)>,
+    ) -> CargoResult<bool> {
         let id = summary.package_id();
         let age: ContextAge = self.age();
         match self.activations.entry(id.as_activations_key()) {
@@ -121,29 +130,49 @@ impl Context {
                     );
                 }
                 v.insert((summary.clone(), age));
+
+                // If we've got a parent dependency which activated us, *and*
+                // the dependency has a different source id listed than the
+                // `summary` itself, then things get interesting. This basically
+                // means that a `[patch]` was used to augment `dep.source_id()`
+                // with `summary`.
+                //
+                // In this scenario we want to consider the activation key, as
+                // viewed from the perspective of `dep.source_id()`, as being
+                // fulfilled. This means that we need to add a second entry in
+                // the activations map for the source that was patched, in
+                // addition to the source of the actual `summary` itself.
+                //
+                // Without this it would be possible to have both 1.0.0 and
+                // 1.1.0 "from crates.io" in a dependency graph if one of those
+                // versions came from a `[patch]` source.
+                if let Some((_, dep)) = parent {
+                    if dep.source_id() != id.source_id() {
+                        let key = (id.name(), dep.source_id(), id.version().into());
+                        let prev = self.activations.insert(key, (summary.clone(), age));
+                        assert!(prev.is_none());
+                    }
+                }
+
                 return Ok(false);
             }
         }
         debug!("checking if {} is already activated", summary.package_id());
-        let (features, use_default) = match method {
-            Method::Everything
-            | Method::Required {
-                all_features: true, ..
-            } => return Ok(false),
-            Method::Required {
-                features,
-                uses_default_features,
-                ..
-            } => (features, uses_default_features),
-        };
+        if opts.all_features {
+            return Ok(false);
+        }
 
         let has_default_feature = summary.features().contains_key("default");
         Ok(match self.resolve_features.get(&id) {
             Some(prev) => {
-                features.is_subset(prev)
-                    && (!use_default || prev.contains("default") || !has_default_feature)
+                opts.features.is_subset(prev)
+                    && (!opts.uses_default_features
+                        || prev.contains("default")
+                        || !has_default_feature)
             }
-            None => features.is_empty() && (!use_default || !has_default_feature),
+            None => {
+                opts.features.is_empty() && (!opts.uses_default_features || !has_default_feature)
+            }
         })
     }
 

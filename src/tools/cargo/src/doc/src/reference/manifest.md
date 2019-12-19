@@ -27,7 +27,7 @@ a keyword. [crates.io][cratesio] imposes even more restrictions, such as
 enforcing only ASCII characters, not a reserved name, not a special Windows
 name such as "nul", is not too long, etc.
 
-[alphanumeric]: ../std/primitive.char.html#method.is_alphanumeric
+[alphanumeric]: ../../std/primitive.char.html#method.is_alphanumeric
 
 #### The `version` field
 
@@ -77,7 +77,7 @@ This field specifies a file in the package root which is a [build script] for
 building native code. More information can be found in the [build script
 guide][build script].
 
-[build script]: reference/build-scripts.html
+[build script]: build-scripts.md
 
 ```toml
 [package]
@@ -91,7 +91,7 @@ This field specifies the name of a native library that is being linked to.
 More information can be found in the [`links`][links] section of the build
 script guide.
 
-[links]: reference/build-scripts.html#the-links-manifest-key
+[links]: build-scripts.md#the-links-manifest-key
 
 ```toml
 [package]
@@ -269,7 +269,7 @@ license-file = "..."
 # Optional specification of badges to be displayed on crates.io.
 #
 # - The badges pertaining to build status that are currently available are
-#   Appveyor, CircleCI, GitLab, Azure DevOps and TravisCI.
+#   Appveyor, CircleCI, Cirrus CI, GitLab, Azure DevOps and TravisCI.
 # - Available badges pertaining to code test coverage are Codecov and
 #   Coveralls.
 # - There are also maintenance-related badges based on isitmaintained.com
@@ -289,6 +289,9 @@ appveyor = { repository = "...", branch = "master", service = "github" }
 
 # Circle CI: `repository` is required. `branch` is optional; default is `master`
 circle-ci = { repository = "...", branch = "master" }
+
+# Cirrus CI: `repository` is required. `branch` is optional; default is `master`
+cirrus-ci = { repository = "...", branch = "master" }
 
 # GitLab: `repository` is required. `branch` is optional; default is `master`
 gitlab = { repository = "...", branch = "master" }
@@ -377,7 +380,7 @@ default-run = "a"
 
 ### Dependency sections
 
-See the [specifying dependencies page](reference/specifying-dependencies.html) for
+See the [specifying dependencies page](specifying-dependencies.md) for
 information on the `[dependencies]`, `[dev-dependencies]`,
 `[build-dependencies]`, and target-specific `[target.*.dependencies]` sections.
 
@@ -625,7 +628,7 @@ dependencies residing in the workspace directory become members. You can add
 additional packages to the workspace by listing them in the `members` key. Note
 that members of the workspaces listed explicitly will also have their path
 dependencies included in the workspace. Sometimes a package may have a lot of
-workspace members and it can be onerous to keep up to date. The path dependency
+workspace members and it can be onerous to keep up to date. The `members` list
 can also use [globs][globs] to match multiple paths. Finally, the `exclude`
 key can be used to blacklist paths from being included in a workspace. This can
 be useful if some path dependencies aren't desired to be in the workspace at
@@ -710,7 +713,7 @@ may be composed of single files or directories with a `main.rs` file.
 To structure your code after you've created the files and folders for your
 package, you should remember to use Rust's module system, which you can read
 about in [the
-book](../book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html).
+book](../../book/ch07-00-managing-growing-projects-with-packages-crates-and-modules.html).
 
 See [Configuring a target](#configuring-a-target) below for more details on
 manually configuring target settings. See [Target
@@ -731,7 +734,7 @@ You can run individual executable examples with the command `cargo run --example
 
 Specify `crate-type` to make an example be compiled as a library (additional
 information about crate types is available in
-[The Rust Reference](../reference/linkage.html)):
+[The Rust Reference](../../reference/linkage.html)):
 
 ```toml
 [[example]]
@@ -909,7 +912,7 @@ The available options are `dylib`, `rlib`, `staticlib`, `cdylib`, and
 `proc-macro`.
 
 You can read more about the different crate types in the
-[Rust Reference Manual](../reference/linkage.html)
+[Rust Reference Manual](../../reference/linkage.html)
 
 ### The `[patch]` Section
 
@@ -953,7 +956,7 @@ technical specification of this feature.
 
 [RFC 1969]: https://github.com/rust-lang/rfcs/pull/1969
 [crates.io]: https://crates.io/
-[replace]: reference/specifying-dependencies.html#overriding-dependencies
+[replace]: specifying-dependencies.md#overriding-dependencies
 
 ### The `[replace]` Section
 
@@ -967,7 +970,7 @@ other copies. The syntax is similar to the `[dependencies]` section:
 ```
 
 Each key in the `[replace]` table is a [package ID
-specification](reference/pkgid-spec.html), which allows arbitrarily choosing a node in the
+specification](pkgid-spec.md), which allows arbitrarily choosing a node in the
 dependency graph to override. The value of each key is the same as the
 `[dependencies]` syntax for specifying dependencies, except that you can't
 specify features. Note that when a crate is overridden the copy it's overridden
@@ -977,11 +980,11 @@ source (e.g., git or a local path).
 More information about overriding dependencies can be found in the [overriding
 dependencies][replace] section of the documentation.
 
-[`cargo build`]: commands/cargo-build.html
-[`cargo init`]: commands/cargo-init.html
-[`cargo new`]: commands/cargo-new.html
-[`cargo run`]: commands/cargo-run.html
-[`cargo test`]: commands/cargo-test.html
+[`cargo build`]: ../commands/cargo-build.md
+[`cargo init`]: ../commands/cargo-init.md
+[`cargo new`]: ../commands/cargo-new.md
+[`cargo run`]: ../commands/cargo-run.md
+[`cargo test`]: ../commands/cargo-test.md
 [spdx-2.1-license-expressions]: https://spdx.org/spdx-specification-21-web-version#h.jxpfx0ykyb60
 [spdx-license-list-2.4]: https://github.com/spdx/license-list-data/tree/v2.4
 [spdx-license-list]: https://spdx.org/licenses/

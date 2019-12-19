@@ -1,9 +1,16 @@
 ## Behavior considered undefined
 
-Rust code, including within `unsafe` blocks and `unsafe` functions is incorrect
-if it exhibits any of the behaviors in the following list. It is the
-programmer's responsibility when writing `unsafe` code that it is not possible
-to let `safe` code exhibit these behaviors.
+Rust code is incorrect if it exhibits any of the behaviors in the following
+list. This includes code within `unsafe` blocks and `unsafe` functions.
+`unsafe` only means that avoiding undefined behavior is on the programmer; it
+does not change anything about the fact that Rust programs must never cause
+undefined behavior.
+
+It is the programmer's responsibility when writing `unsafe` code to ensure that
+any safe code interacting with the `unsafe` code cannot trigger these
+behaviors. `unsafe` code that satisfies this property for any safe client is
+called *sound*; if `unsafe` code can be misused by safe code to exhibit
+undefined behavior, it is *unsound*.
 
 <div class="warning">
 
@@ -52,7 +59,7 @@ code.
 [undef]: http://llvm.org/docs/LangRef.html#undefined-values
 [`offset`]: ../std/primitive.pointer.html#method.offset
 [`std::ptr::copy_nonoverlapping_memory`]: ../std/ptr/fn.copy_nonoverlapping.html
-[`target_feature`]: attributes/codegen.html#the-target_feature-attribute
+[`target_feature`]: attributes/codegen.md#the-target_feature-attribute
 [`UnsafeCell<U>`]: ../std/cell/struct.UnsafeCell.html
 [`read_unaligned`]: ../std/ptr/fn.read_unaligned.html
 [`write_unaligned`]: ../std/ptr/fn.write_unaligned.html

@@ -19,11 +19,11 @@ use crate::parse::Directory;
 use crate::parse::token::{self, DelimToken, Token, TokenKind};
 use crate::print::pprust;
 
-use syntax_pos::{BytePos, Mark, Span, DUMMY_SP};
+use syntax_pos::{BytePos, ExpnId, Span, DUMMY_SP};
 #[cfg(target_arch = "x86_64")]
 use rustc_data_structures::static_assert_size;
 use rustc_data_structures::sync::Lrc;
-use serialize::{Decoder, Decodable, Encoder, Encodable};
+use rustc_serialize::{Decoder, Decodable, Encoder, Encodable};
 use smallvec::{SmallVec, smallvec};
 
 use std::borrow::Cow;
@@ -58,17 +58,6 @@ where
     DelimToken: Send + Sync,
     TokenStream: Send + Sync,
 {}
-
-// These are safe since we ensure that they hold for all fields in the `_dummy` function.
-//
-// These impls are only here because the compiler takes forever to compute the Send and Sync
-// bounds without them.
-// FIXME: Remove these impls when the compiler can compute the bounds quickly again.
-// See https://github.com/rust-lang/rust/issues/60846
-#[cfg(parallel_compiler)]
-unsafe impl Send for TokenTree {}
-#[cfg(parallel_compiler)]
-unsafe impl Sync for TokenTree {}
 
 impl TokenTree {
     /// Use this token tree as a matcher to parse given tts.
@@ -123,14 +112,6 @@ impl TokenTree {
         match self {
             TokenTree::Token(token) => token.span = span,
             TokenTree::Delimited(dspan, ..) => *dspan = DelimSpan::from_single(span),
-        }
-    }
-
-    /// Indicates if the stream is a token that is equal to the provided token.
-    pub fn eq_token(&self, t: TokenKind) -> bool {
-        match self {
-            TokenTree::Token(token) => *token == t,
-            _ => false,
         }
     }
 
@@ -430,11 +411,10 @@ impl TokenStreamBuilder {
         let last_tree_if_joint = self.0.last().and_then(TokenStream::last_tree_if_joint);
         if let Some(TokenTree::Token(last_token)) = last_tree_if_joint {
             if let Some((TokenTree::Token(token), is_joint)) = stream.first_tree_and_joint() {
-                if let Some(glued_tok) = last_token.kind.glue(token.kind) {
+                if let Some(glued_tok) = last_token.glue(token) {
                     let last_stream = self.0.pop().unwrap();
                     self.push_all_but_last_tree(&last_stream);
-                    let glued_span = last_token.span.to(token.span);
-                    let glued_tt = TokenTree::token(glued_tok, glued_span);
+                    let glued_tt = TokenTree::Token(glued_tok);
                     let glued_tokenstream = TokenStream::new(vec![(glued_tt, is_joint)]);
                     self.0.push(glued_tokenstream);
                     self.push_all_but_first_tree(&stream);
@@ -565,10 +545,10 @@ impl DelimSpan {
         self.open.with_hi(self.close.hi())
     }
 
-    pub fn apply_mark(self, mark: Mark) -> Self {
+    pub fn apply_mark(self, expn_id: ExpnId) -> Self {
         DelimSpan {
-            open: self.open.apply_mark(mark),
-            close: self.close.apply_mark(mark),
+            open: self.open.apply_mark(expn_id),
+            close: self.close.apply_mark(expn_id),
         }
     }
 }

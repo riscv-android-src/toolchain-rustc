@@ -3,7 +3,8 @@
 
 An experimental interpreter for [Rust][rust]'s
 [mid-level intermediate representation][mir] (MIR).  It can run binaries and
-test suites of cargo projects and detect certain classes of undefined behavior,
+test suites of cargo projects and detect certain classes of
+[undefined behavior](https://doc.rust-lang.org/reference/behavior-considered-undefined.html),
 for example:
 
 * Out-of-bounds memory accesses and use-after-free
@@ -11,7 +12,7 @@ for example:
 * Violation of intrinsic preconditions (an [`unreachable_unchecked`] being
   reached, calling [`copy_nonoverlapping`] with overlapping ranges, ...)
 * Not sufficiently aligned memory accesses and references
-* Violation of basic type invariants (a `bool` that is not 0 or 1, for example,
+* Violation of *some* basic type invariants (a `bool` that is not 0 or 1, for example,
   or an invalid enum discriminant)
 * WIP: Violations of the rules governing aliasing for reference types
 
@@ -19,27 +20,29 @@ Miri has already discovered some [real-world bugs](#bugs-found-by-miri).  If you
 found a bug with Miri, we'd appreciate if you tell us and we'll add it to the
 list!
 
-Be aware that Miri will not catch all possible errors in your program, and
-cannot run all programs:
+Be aware that Miri will not catch all cases of undefined behavior in your
+program, and cannot run all programs:
 
 * There are still plenty of open questions around the basic invariants for some
   types and when these invariants even have to hold. Miri tries to avoid false
   positives here, so if you program runs fine in Miri right now that is by no
-  means a guarantee that it is UB-free when these questions get answered. In
-  particular, Miri does currently not check that integers are initialized or
-  that references point to valid data.
+  means a guarantee that it is UB-free when these questions get answered.
+
+    In particular, Miri does currently not check that integers are initialized
+  or that references point to valid data.
 * If the program relies on unspecified details of how data is laid out, it will
   still run fine in Miri -- but might break (including causing UB) on different
   compiler versions or different platforms.
-* Miri is fully deterministic and does not actually pick a base address in
-  virtual memory for the program's allocations.  If program behavior depends on
-  the base address of an allocation, Miri will stop execution (with a few
-  exceptions to make some common pointer comparisons work).
+* Program execution is non-deterministic when it depends, for example, on where
+  exactly in memory allocations end up. Miri tests one of many possible
+  executions of your program. If your code is sensitive to allocation base
+  addresses or other non-deterministic data, try running Miri with different
+  values for `-Zmiri-seed` to test different executions.
 * Miri runs the program as a platform-independent interpreter, so the program
   has no access to any platform-specific APIs or FFI. A few APIs have been
   implemented (such as printing to stdout) but most have not: for example, Miri
-  currently does not support concurrency, or networking, or file system access,
-  or gathering entropy from the system.
+  currently does not support concurrency, or SIMD, or networking, or file system
+  access.
 
 [rust]: https://www.rust-lang.org/
 [mir]: https://github.com/rust-lang/rfcs/blob/master/text/1211-mir.md
@@ -70,9 +73,7 @@ Now you can run your project in Miri:
 3. If you have a binary project, you can run it through Miri using `cargo miri run`.
 
 The first time you run Miri, it will perform some extra setup and install some
-dependencies.  It will ask you for confirmation before installing anything.  If
-you run Miri on CI, run `cargo miri setup` to avoid getting interactive
-questions.
+dependencies.  It will ask you for confirmation before installing anything.
 
 You can pass arguments to Miri after the first `--`, and pass arguments to the
 interpreted program or test suite after the second `--`.  For example, `cargo
@@ -112,6 +113,9 @@ cargo miri setup
 cargo miri test -- -- -Zunstable-options --exclude-should-panic
 ```
 
+We use `cargo miri setup` to avoid getting interactive questions about the extra
+setup needed for Miri.
+
 ### Common Problems
 
 When using the above instructions, you may encounter a number of confusing compiler
@@ -135,6 +139,43 @@ This means the sysroot you are using was not compiled with Miri in mind.  This
 should never happen when you use `cargo miri` because that takes care of setting
 up the sysroot.  If you are using `miri` (the Miri driver) directly, see
 [below][testing-miri] for how to set up the sysroot.
+
+
+## Miri `-Z` flags and environment variables
+[miri-flags]: #miri--z-flags-and-environment-variables
+
+Several `-Z` flags are relevant for Miri:
+
+* `-Zmiri-seed=<hex>` is a custom `-Z` flag added by Miri.  It configures the
+  seed of the RNG that Miri uses to resolve non-determinism.  This RNG is used
+  to pick base addresses for allocations, and when the interpreted program
+  requests system entropy.  The default seed is 0.
+  **NOTE**: This entropy is not good enough for cryptographic use!  Do not
+  generate secret keys in Miri or perform other kinds of cryptographic
+  operations that rely on proper random numbers.
+* `-Zmiri-disable-validation` disables enforcing the validity invariant, which
+  is enforced by default.  This is mostly useful for debugging; it means Miri
+  will miss bugs in your program.  However, this can also help to make Miri run
+  faster.
+* `-Zmir-opt-level` controls how many MIR optimizations are performed.  Miri
+  overrides the default to be `0`; be advised that using any higher level can
+  make Miri miss bugs in your program because they got optimized away.
+* `-Zalways-encode-mir` makes rustc dump MIR even for completely monomorphic
+  functions.  This is needed so that Miri can execute such functions, so Miri
+  sets this flag per default.
+* `-Zmir-emit-retag` controls whether `Retag` statements are emitted. Miri
+  enables this per default because it is needed for validation.
+
+Moreover, Miri recognizes some environment variables:
+
+* `MIRI_LOG`, `MIRI_BACKTRACE` control logging and backtrace printing during
+  Miri executions, also [see above][testing-miri].
+* `MIRI_SYSROOT` (recognized by `cargo miri` and the test suite)
+  indicates the sysroot to use.  To do the same thing with `miri`
+  directly, use the `--sysroot` flag.
+* `MIRI_TEST_TARGET` (recognized by the test suite) indicates which target
+  architecture to test against.  `miri` and `cargo miri` accept the `--target`
+  flag for the same purpose.
 
 ## Development and Debugging
 
@@ -242,8 +283,7 @@ The setup for a local rustc works as follows:
 git clone https://github.com/rust-lang/rust/ rustc
 cd rustc
 cp config.toml.example config.toml
-# Now edit `config.toml` and set `debug-assertions = true` and `test-miri = true`.
-# The latter is important to build libstd with the right flags for miri.
+# Now edit `config.toml` and set `debug-assertions = true`.
 # This step can take 30 minutes and more.
 ./x.py build src/rustc
 # If you change something, you can get a faster rebuild by doing
@@ -256,40 +296,6 @@ rustup override set custom
 
 With this, you should now have a working development setup!  See
 [above][testing-miri] for how to proceed working with the Miri driver.
-
-### Miri `-Z` flags and environment variables
-[miri-flags]: #miri--z-flags-and-environment-variables
-
-Several `-Z` flags are relevant for Miri:
-
-* `-Zmiri-seed=<hex>` is a custom `-Z` flag added by Miri.  It enables the
-  interpreted program to seed an RNG with system entropy.  Miri will keep an RNG
-  on its own that is seeded with the given seed, and use that to generate the
-  "system entropy" that seeds the RNG(s) in the interpreted program.
-  **NOTE**: This entropy is not good enough for cryptographic use!  Do not
-  generate secret keys in Miri or perform other kinds of cryptographic
-  operations that rely on proper random numbers.
-* `-Zmiri-disable-validation` disables enforcing the validity invariant, which
-  is enforced by default.  This is mostly useful for debugging; it means Miri
-  will miss bugs in your program.  However, this can also help to make Miri run
-  faster.
-* `-Zmir-opt-level` controls how many MIR optimizations are performed.  Miri
-  overrides the default to be `0`; be advised that using any higher level can
-  make Miri miss bugs in your program because they got optimized away.
-* `-Zalways-encode-mir` makes rustc dump MIR even for completely monomorphic
-  functions.  This is needed so that Miri can execute such functions, so Miri
-  sets this flag per default.
-
-Moreover, Miri recognizes some environment variables:
-
-* `MIRI_LOG`, `MIRI_BACKTRACE` control logging and backtrace printing during
-  Miri executions, also [see above][testing-miri].
-* `MIRI_SYSROOT` (recognized by `cargo miri` and the test suite)
-  indicates the sysroot to use.  To do the same thing with `miri`
-  directly, use the `--sysroot` flag.
-* `MIRI_TEST_TARGET` (recognized by the test suite) indicates which target
-  architecture to test against.  `miri` and `cargo miri` accept the `--target`
-  flag for the same purpose.
 
 ## Contributing and getting help
 
@@ -327,6 +333,7 @@ Miri has already found a number of bugs in the Rust standard library and beyond,
 Definite bugs found:
 
 * [`Debug for vec_deque::Iter` accessing uninitialized memory](https://github.com/rust-lang/rust/issues/53566)
+* [`Vec::into_iter` doing an unaligned ZST read](https://github.com/rust-lang/rust/pull/53804)
 * [`From<&[T]> for Rc` creating a not sufficiently aligned reference](https://github.com/rust-lang/rust/issues/54908)
 * [`BTreeMap` creating a shared reference pointing to a too small allocation](https://github.com/rust-lang/rust/issues/54957)
 * [`Vec::append` creating a dangling reference](https://github.com/rust-lang/rust/pull/61082)
@@ -334,6 +341,7 @@ Definite bugs found:
 * [`str` turning a shared reference into a mutable one](https://github.com/rust-lang/rust/pull/58200)
 * [`rand` performing unaligned reads](https://github.com/rust-random/rand/issues/779)
 * [The Unix allocator calling `posix_memalign` in an invalid way](https://github.com/rust-lang/rust/issues/62251)
+* [`getrandom` calling the `getrandom` syscall in an invalid way](https://github.com/rust-random/getrandom/pull/73)
 
 Violations of Stacked Borrows found that are likely bugs (but Stacked Borrows is currently just an experiment):
 

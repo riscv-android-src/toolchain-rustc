@@ -27,28 +27,20 @@
 
 #![allow(bad_style)]
 
-// This is a hack for compatibility with rustc 1.25.0. The no_std mode of this
-// crate is not supported pre-1.30.0, but in std mode the `char` module here
-// moved in rustc 1.26.0 (ish). As a result, in std mode we use `std::char` to
-// retain compatibility with rustc 1.25.0, but in `no_std` mode (which is
-// 1.30.0+ already) we use `core::char`.
-#[cfg(not(feature = "std"))]
+use crate::backtrace::FrameImp as Frame;
+use crate::dbghelp;
+use crate::symbolize::ResolveWhat;
+use crate::types::BytesOrWideString;
+use crate::windows::*;
+use crate::SymbolName;
 use core::char;
-#[cfg(feature = "std")]
-use std::char;
-
+use core::ffi::c_void;
+use core::marker;
 use core::mem;
 use core::slice;
 
-use backtrace::FrameImp as Frame;
-use dbghelp;
-use symbolize::ResolveWhat;
-use types::{c_void, BytesOrWideString};
-use windows::*;
-use SymbolName;
-
 // Store an OsString on std so we can provide the symbol name and filename.
-pub struct Symbol {
+pub struct Symbol<'a> {
     name: *const [u8],
     addr: *mut c_void,
     line: Option<u32>,
@@ -57,9 +49,10 @@ pub struct Symbol {
     _filename_cache: Option<::std::ffi::OsString>,
     #[cfg(not(feature = "std"))]
     _filename_cache: (),
+    _marker: marker::PhantomData<&'a i32>,
 }
 
-impl Symbol {
+impl Symbol<'_> {
     pub fn name(&self) -> Option<SymbolName> {
         Some(SymbolName::new(unsafe { &*self.name }))
     }
@@ -96,7 +89,7 @@ pub unsafe fn resolve(what: ResolveWhat, cb: &mut FnMut(&super::Symbol)) {
     };
 
     match what {
-        ResolveWhat::Address(addr) => resolve_without_inline(&dbghelp, addr, cb),
+        ResolveWhat::Address(_) => resolve_without_inline(&dbghelp, what.address_or_ip(), cb),
         ResolveWhat::Frame(frame) => match &frame.inner {
             Frame::New(frame) => resolve_with_inline(&dbghelp, frame, cb),
             Frame::Old(_) => resolve_without_inline(&dbghelp, frame.ip(), cb),
@@ -105,7 +98,7 @@ pub unsafe fn resolve(what: ResolveWhat, cb: &mut FnMut(&super::Symbol)) {
 }
 
 unsafe fn resolve_with_inline(
-    dbghelp: &dbghelp::Cleanup,
+    dbghelp: &dbghelp::Init,
     frame: &STACKFRAME_EX,
     cb: &mut FnMut(&super::Symbol),
 ) {
@@ -113,11 +106,7 @@ unsafe fn resolve_with_inline(
         |info| {
             dbghelp.SymFromInlineContextW()(
                 GetCurrentProcess(),
-                // FIXME: why is `-1` used here and below? It seems to produce
-                // more accurate backtraces on Windows (aka passes tests in
-                // rust-lang/rust), but it's unclear why it's required in the
-                // first place.
-                frame.AddrPC.Offset - 1,
+                super::adjust_ip(frame.AddrPC.Offset as *mut _) as u64,
                 frame.InlineFrameContext,
                 &mut 0,
                 info,
@@ -126,7 +115,7 @@ unsafe fn resolve_with_inline(
         |line| {
             dbghelp.SymGetLineFromInlineContextW()(
                 GetCurrentProcess(),
-                frame.AddrPC.Offset - 1,
+                super::adjust_ip(frame.AddrPC.Offset as *mut _) as u64,
                 frame.InlineFrameContext,
                 0,
                 &mut 0,
@@ -138,7 +127,7 @@ unsafe fn resolve_with_inline(
 }
 
 unsafe fn resolve_without_inline(
-    dbghelp: &dbghelp::Cleanup,
+    dbghelp: &dbghelp::Init,
     addr: *mut c_void,
     cb: &mut FnMut(&super::Symbol),
 ) {
@@ -222,6 +211,7 @@ unsafe fn do_resolve(
             line: lineno,
             filename,
             _filename_cache: cache(filename),
+            _marker: marker::PhantomData,
         },
     })
 }

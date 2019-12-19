@@ -20,9 +20,11 @@ fn repeat_char(c: char, n: usize) -> String {
     s.repeat(n)
 }
 
-/// DisplayListFormatter' constructor accepts a single argument which
-/// allows the formatter to optionally apply colors and emphasis
-/// using `ansi_term` crate.
+/// DisplayListFormatter' constructor accepts two arguments:
+///
+/// * `color` allows the formatter to optionally apply colors and emphasis
+/// using the `ansi_term` crate.
+/// * `anonymized_line_numbers` will replace line numbers in the left column with the text `LL`.
 ///
 /// Example:
 ///
@@ -30,7 +32,7 @@ fn repeat_char(c: char, n: usize) -> String {
 /// use annotate_snippets::formatter::DisplayListFormatter;
 /// use annotate_snippets::display_list::{DisplayList, DisplayLine, DisplaySourceLine};
 ///
-/// let dlf = DisplayListFormatter::new(false); // Don't use colors
+/// let dlf = DisplayListFormatter::new(false, false); // Don't use colors, Don't anonymize line numbers
 ///
 /// let dl = DisplayList {
 ///     body: vec![
@@ -47,24 +49,34 @@ fn repeat_char(c: char, n: usize) -> String {
 /// assert_eq!(dlf.format(&dl), "192 | Example line of text");
 /// ```
 pub struct DisplayListFormatter {
-    stylesheet: Box<Stylesheet>,
+    stylesheet: Box<dyn Stylesheet>,
+    anonymized_line_numbers: bool,
 }
 
 impl DisplayListFormatter {
-    /// Constructor for the struct. The argument `color` selects
-    /// the stylesheet depending on the user preferences and `ansi_term`
-    /// crate availability.
-    pub fn new(color: bool) -> Self {
+    const ANONYMIZED_LINE_NUM: &'static str = "LL";
+
+    /// Constructor for the struct.
+    ///
+    /// The argument `color` selects the stylesheet depending on the user preferences and
+    /// `ansi_term` crate availability.
+    ///
+    /// The argument `anonymized_line_numbers` will replace line numbers in the left column with
+    /// the text `LL`. This can be useful to enable when running UI tests, such as in the Rust
+    /// test suite.
+    pub fn new(color: bool, anonymized_line_numbers: bool) -> Self {
         if color {
             Self {
                 #[cfg(feature = "ansi_term")]
                 stylesheet: Box::new(AnsiTermStylesheet {}),
                 #[cfg(not(feature = "ansi_term"))]
                 stylesheet: Box::new(NoColorStylesheet {}),
+                anonymized_line_numbers,
             }
         } else {
             Self {
                 stylesheet: Box::new(NoColorStylesheet {}),
+                anonymized_line_numbers,
             }
         }
     }
@@ -75,7 +87,13 @@ impl DisplayListFormatter {
             DisplayLine::Source {
                 lineno: Some(lineno),
                 ..
-            } => cmp::max(lineno.to_string().len(), max),
+            } => {
+                if self.anonymized_line_numbers {
+                    Self::ANONYMIZED_LINE_NUM.len()
+                } else {
+                    cmp::max(lineno.to_string().len(), max)
+                }
+            },
             _ => max,
         });
         let inline_marks_width = dl.body.iter().fold(0, |max, line| match line {
@@ -101,7 +119,7 @@ impl DisplayListFormatter {
         }
     }
 
-    fn get_annotation_style(&self, annotation_type: &DisplayAnnotationType) -> Box<Style> {
+    fn get_annotation_style(&self, annotation_type: &DisplayAnnotationType) -> Box<dyn Style> {
         self.stylesheet.get_style(match annotation_type {
             DisplayAnnotationType::Error => StyleClass::Error,
             DisplayAnnotationType::Warning => StyleClass::Warning,
@@ -285,7 +303,11 @@ impl DisplayListFormatter {
                 inline_marks,
                 line,
             } => {
-                let lineno = self.format_lineno(*lineno, lineno_width);
+                let lineno = if self.anonymized_line_numbers  && lineno.is_some() {
+                    Self::ANONYMIZED_LINE_NUM.to_string()
+                } else {
+                    self.format_lineno(*lineno, lineno_width)
+                };
                 let marks = self.format_inline_marks(inline_marks, inline_marks_width);
                 let lf = self.format_source_line(line);
                 let lineno_color = self.stylesheet.get_style(StyleClass::LineNo);

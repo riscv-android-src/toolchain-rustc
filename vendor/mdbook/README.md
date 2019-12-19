@@ -41,7 +41,7 @@ There are multiple ways to install mdBook.
 
 2. **From Crates.io**
 
-   This requires at least [Rust] 1.20 and Cargo to be installed. Once you have installed
+   This requires at least [Rust] 1.34 and Cargo to be installed. Once you have installed
    Rust, type the following in the terminal:
 
    ```
@@ -239,6 +239,6 @@ All the code in this repository is released under the ***Mozilla Public License 
 [releases]: https://github.com/rust-lang-nursery/mdBook/releases
 [Rust]: https://www.rust-lang.org/
 [CLI docs]: http://rust-lang-nursery.github.io/mdBook/cli/init.html
-[master-docs]: http://rust-lang-nursery.github.io/mdBook/mdbook/
+[master-docs]: http://rust-lang-nursery.github.io/mdBook/
 [`linkcheck`]: https://crates.io/crates/mdbook-linkcheck
 [`epub`]: https://crates.io/crates/mdbook-epub

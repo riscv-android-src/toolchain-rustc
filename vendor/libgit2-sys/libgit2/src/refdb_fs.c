@@ -10,7 +10,7 @@
 #include "refs.h"
 #include "hash.h"
 #include "repository.h"
-#include "fileops.h"
+#include "futils.h"
 #include "filebuf.h"
 #include "pack.h"
 #include "reflog.h"
@@ -18,6 +18,7 @@
 #include "iterator.h"
 #include "sortedcache.h"
 #include "signature.h"
+#include "wildmatch.h"
 
 #include <git2/tag.h>
 #include <git2/object.h>
@@ -327,21 +328,33 @@ static int refdb_fs_backend__exists(
 	git_refdb_backend *_backend,
 	const char *ref_name)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	git_buf ref_path = GIT_BUF_INIT;
 	int error;
 
 	assert(backend);
 
-	if ((error = packed_reload(backend)) < 0 ||
-		(error = git_buf_joinpath(&ref_path, backend->gitpath, ref_name)) < 0)
-		return error;
+	*exists = 0;
 
-	*exists = git_path_isfile(ref_path.ptr) ||
-		(git_sortedcache_lookup(backend->refcache, ref_name) != NULL);
+	if ((error = git_buf_joinpath(&ref_path, backend->gitpath, ref_name)) < 0)
+		goto out;
 
+	if (git_path_isfile(ref_path.ptr)) {
+		*exists = 1;
+		goto out;
+	}
+
+	if ((error = packed_reload(backend)) < 0)
+		goto out;
+
+	if (git_sortedcache_lookup(backend->refcache, ref_name) != NULL) {
+		*exists = 1;
+		goto out;
+	}
+
+out:
 	git_buf_dispose(&ref_path);
-	return 0;
+	return error;
 }
 
 static const char *loose_parse_symbolic(git_buf *file_content)
@@ -457,7 +470,7 @@ static int refdb_fs_backend__lookup(
 	git_refdb_backend *_backend,
 	const char *ref_name)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	int error;
 
 	assert(backend);
@@ -490,7 +503,7 @@ typedef struct {
 
 static void refdb_fs_backend__iterator_free(git_reference_iterator *_iter)
 {
-	refdb_fs_iter *iter = (refdb_fs_iter *) _iter;
+	refdb_fs_iter *iter = GIT_CONTAINER_OF(_iter, refdb_fs_iter, parent);
 
 	git_vector_free(&iter->loose);
 	git_pool_clear(&iter->pool);
@@ -552,7 +565,6 @@ static int iter_load_loose_paths(refdb_fs_backend *backend, refdb_fs_iter *iter)
 
 	while (!error && !git_iterator_advance(&entry, fsit)) {
 		const char *ref_name;
-		struct packref *ref;
 		char *ref_dup;
 
 		git_buf_truncate(&path, ref_prefix_len);
@@ -560,14 +572,8 @@ static int iter_load_loose_paths(refdb_fs_backend *backend, refdb_fs_iter *iter)
 		ref_name = git_buf_cstr(&path);
 
 		if (git__suffixcmp(ref_name, ".lock") == 0 ||
-			(iter->glob && p_fnmatch(iter->glob, ref_name, 0) != 0))
+			(iter->glob && wildmatch(iter->glob, ref_name, 0) != 0))
 			continue;
-
-		git_sortedcache_rlock(backend->refcache);
-		ref = git_sortedcache_lookup(backend->refcache, ref_name);
-		if (ref)
-			ref->flags |= PACKREF_SHADOWED;
-		git_sortedcache_runlock(backend->refcache);
 
 		ref_dup = git_pool_strdup(&iter->pool, ref_name);
 		if (!ref_dup)
@@ -586,22 +592,22 @@ static int refdb_fs_backend__iterator_next(
 	git_reference **out, git_reference_iterator *_iter)
 {
 	int error = GIT_ITEROVER;
-	refdb_fs_iter *iter = (refdb_fs_iter *)_iter;
-	refdb_fs_backend *backend = (refdb_fs_backend *)iter->parent.db->backend;
+	refdb_fs_iter *iter = GIT_CONTAINER_OF(_iter, refdb_fs_iter, parent);
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(iter->parent.db->backend, refdb_fs_backend, parent);
 	struct packref *ref;
 
 	while (iter->loose_pos < iter->loose.length) {
 		const char *path = git_vector_get(&iter->loose, iter->loose_pos++);
 
-		if (loose_lookup(out, backend, path) == 0)
+		if (loose_lookup(out, backend, path) == 0) {
+			ref = git_sortedcache_lookup(iter->cache, path);
+			if (ref)
+				ref->flags |= PACKREF_SHADOWED;
+
 			return 0;
+		}
 
 		git_error_clear();
-	}
-
-	if (!iter->cache) {
-		if ((error = git_sortedcache_copy(&iter->cache, backend->refcache, 1, NULL, NULL)) < 0)
-			return error;
 	}
 
 	error = GIT_ITEROVER;
@@ -612,7 +618,7 @@ static int refdb_fs_backend__iterator_next(
 
 		if (ref->flags & PACKREF_SHADOWED)
 			continue;
-		if (iter->glob && p_fnmatch(iter->glob, ref->name, 0) != 0)
+		if (iter->glob && wildmatch(iter->glob, ref->name, 0) != 0)
 			continue;
 
 		*out = git_reference__alloc(ref->name, &ref->oid, &ref->peel);
@@ -627,24 +633,24 @@ static int refdb_fs_backend__iterator_next_name(
 	const char **out, git_reference_iterator *_iter)
 {
 	int error = GIT_ITEROVER;
-	refdb_fs_iter *iter = (refdb_fs_iter *)_iter;
-	refdb_fs_backend *backend = (refdb_fs_backend *)iter->parent.db->backend;
+	refdb_fs_iter *iter = GIT_CONTAINER_OF(_iter, refdb_fs_iter, parent);
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(iter->parent.db->backend, refdb_fs_backend, parent);
 	struct packref *ref;
 
 	while (iter->loose_pos < iter->loose.length) {
 		const char *path = git_vector_get(&iter->loose, iter->loose_pos++);
+		struct packref *ref;
 
 		if (loose_lookup(NULL, backend, path) == 0) {
+			ref = git_sortedcache_lookup(iter->cache, path);
+			if (ref)
+				ref->flags |= PACKREF_SHADOWED;
+
 			*out = path;
 			return 0;
 		}
 
 		git_error_clear();
-	}
-
-	if (!iter->cache) {
-		if ((error = git_sortedcache_copy(&iter->cache, backend->refcache, 1, NULL, NULL)) < 0)
-			return error;
 	}
 
 	error = GIT_ITEROVER;
@@ -655,7 +661,7 @@ static int refdb_fs_backend__iterator_next_name(
 
 		if (ref->flags & PACKREF_SHADOWED)
 			continue;
-		if (iter->glob && p_fnmatch(iter->glob, ref->name, 0) != 0)
+		if (iter->glob && wildmatch(iter->glob, ref->name, 0) != 0)
 			continue;
 
 		*out = ref->name;
@@ -669,40 +675,44 @@ static int refdb_fs_backend__iterator_next_name(
 static int refdb_fs_backend__iterator(
 	git_reference_iterator **out, git_refdb_backend *_backend, const char *glob)
 {
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
+	refdb_fs_iter *iter = NULL;
 	int error;
-	refdb_fs_iter *iter;
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
 
 	assert(backend);
-
-	if ((error = packed_reload(backend)) < 0)
-		return error;
 
 	iter = git__calloc(1, sizeof(refdb_fs_iter));
 	GIT_ERROR_CHECK_ALLOC(iter);
 
 	git_pool_init(&iter->pool, 1);
 
-	if (git_vector_init(&iter->loose, 8, NULL) < 0)
-		goto fail;
+	if ((error = git_vector_init(&iter->loose, 8, NULL)) < 0)
+		goto out;
 
 	if (glob != NULL &&
-		(iter->glob = git_pool_strdup(&iter->pool, glob)) == NULL)
-		goto fail;
+	    (iter->glob = git_pool_strdup(&iter->pool, glob)) == NULL) {
+		error = GIT_ERROR_NOMEMORY;
+		goto out;
+	}
+
+	if ((error = iter_load_loose_paths(backend, iter)) < 0)
+		goto out;
+
+	if ((error = packed_reload(backend)) < 0)
+		goto out;
+
+	if ((error = git_sortedcache_copy(&iter->cache, backend->refcache, 1, NULL, NULL)) < 0)
+		goto out;
 
 	iter->parent.next = refdb_fs_backend__iterator_next;
 	iter->parent.next_name = refdb_fs_backend__iterator_next_name;
 	iter->parent.free = refdb_fs_backend__iterator_free;
 
-	if (iter_load_loose_paths(backend, iter) < 0)
-		goto fail;
-
 	*out = (git_reference_iterator *)iter;
-	return 0;
-
-fail:
-	refdb_fs_backend__iterator_free((git_reference_iterator *)iter);
-	return -1;
+out:
+	if (error)
+		refdb_fs_backend__iterator_free((git_reference_iterator *)iter);
+	return error;
 }
 
 static bool ref_is_available(
@@ -829,7 +839,7 @@ static int refdb_fs_backend__lock(void **out, git_refdb_backend *_backend, const
 {
 	int error;
 	git_filebuf *lock;
-	refdb_fs_backend *backend = (refdb_fs_backend *) _backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 
 	lock = git__calloc(1, sizeof(git_filebuf));
 	GIT_ERROR_CHECK_ALLOC(lock);
@@ -1094,7 +1104,7 @@ static int should_write_reflog(int *write, git_repository *repo, const char *nam
 {
 	int error, logall;
 
-	error = git_repository__cvar(&logall, repo, GIT_CVAR_LOGALLREFUPDATES);
+	error = git_repository__configmap_lookup(&logall, repo, GIT_CONFIGMAP_LOGALLREFUPDATES);
 	if (error < 0)
 		return error;
 
@@ -1239,7 +1249,7 @@ static int refdb_fs_backend__write(
 	const git_oid *old_id,
 	const char *old_target)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	git_filebuf file = GIT_FILEBUF_INIT;
 	int error = 0;
 
@@ -1265,7 +1275,7 @@ static int refdb_fs_backend__write_tail(
 	const git_oid *old_id,
 	const char *old_target)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	int error = 0, cmp = 0, should_write;
 	const char *new_target = NULL;
 	const git_oid *new_id = NULL;
@@ -1355,7 +1365,7 @@ static int refdb_fs_backend__delete(
 	const char *ref_name,
 	const git_oid *old_id, const char *old_target)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	git_filebuf file = GIT_FILEBUF_INIT;
 	int error = 0;
 
@@ -1378,7 +1388,7 @@ static int refdb_fs_backend__delete_tail(
 	const char *ref_name,
 	const git_oid *old_id, const char *old_target)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	git_buf loose_path = GIT_BUF_INIT;
 	size_t pack_pos;
 	int error = 0, cmp = 0;
@@ -1446,7 +1456,7 @@ static int refdb_fs_backend__rename(
 	const git_signature *who,
 	const char *message)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	git_reference *old, *new;
 	git_filebuf file = GIT_FILEBUF_INIT;
 	int error;
@@ -1502,7 +1512,7 @@ static int refdb_fs_backend__rename(
 static int refdb_fs_backend__compress(git_refdb_backend *_backend)
 {
 	int error;
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 
 	assert(backend);
 
@@ -1516,7 +1526,7 @@ static int refdb_fs_backend__compress(git_refdb_backend *_backend)
 
 static void refdb_fs_backend__free(git_refdb_backend *_backend)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *)_backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 
 	assert(backend);
 
@@ -1694,7 +1704,7 @@ static int refdb_reflog_fs__ensure_log(git_refdb_backend *_backend, const char *
 
 	assert(_backend && name);
 
-	backend = (refdb_fs_backend *) _backend;
+	backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	repo = backend->repo;
 
 	if ((error = retrieve_reflog_path(&path, repo, name)) < 0)
@@ -1727,7 +1737,7 @@ static int refdb_reflog_fs__has_log(git_refdb_backend *_backend, const char *nam
 
 	assert(_backend && name);
 
-	backend = (refdb_fs_backend *) _backend;
+	backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 
 	return has_reflog(backend->repo, name);
 }
@@ -1743,7 +1753,7 @@ static int refdb_reflog_fs__read(git_reflog **out, git_refdb_backend *_backend, 
 
 	assert(out && _backend && name);
 
-	backend = (refdb_fs_backend *) _backend;
+	backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	repo = backend->repo;
 
 	if (reflog_alloc(&log, name) < 0)
@@ -1853,7 +1863,7 @@ static int refdb_reflog_fs__write(git_refdb_backend *_backend, git_reflog *reflo
 
 	assert(_backend && reflog);
 
-	backend = (refdb_fs_backend *) _backend;
+	backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 
 	if ((error = lock_reflog(&fbuf, backend, reflog->ref_name)) < 0)
 		return -1;
@@ -1975,7 +1985,7 @@ static int refdb_reflog_fs__rename(git_refdb_backend *_backend, const char *old_
 
 	assert(_backend && old_name && new_name);
 
-	backend = (refdb_fs_backend *) _backend;
+	backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	repo = backend->repo;
 
 	if ((error = git_reference__normalize_name(
@@ -2046,7 +2056,7 @@ cleanup:
 
 static int refdb_reflog_fs__delete(git_refdb_backend *_backend, const char *name)
 {
-	refdb_fs_backend *backend = (refdb_fs_backend *) _backend;
+	refdb_fs_backend *backend = GIT_CONTAINER_OF(_backend, refdb_fs_backend, parent);
 	git_buf path = GIT_BUF_INIT;
 	int error;
 
@@ -2104,15 +2114,15 @@ int git_refdb_backend_fs(
 
 	git_buf_dispose(&gitpath);
 
-	if (!git_repository__cvar(&t, backend->repo, GIT_CVAR_IGNORECASE) && t) {
+	if (!git_repository__configmap_lookup(&t, backend->repo, GIT_CONFIGMAP_IGNORECASE) && t) {
 		backend->iterator_flags |= GIT_ITERATOR_IGNORE_CASE;
 		backend->direach_flags  |= GIT_PATH_DIR_IGNORE_CASE;
 	}
-	if (!git_repository__cvar(&t, backend->repo, GIT_CVAR_PRECOMPOSE) && t) {
+	if (!git_repository__configmap_lookup(&t, backend->repo, GIT_CONFIGMAP_PRECOMPOSE) && t) {
 		backend->iterator_flags |= GIT_ITERATOR_PRECOMPOSE_UNICODE;
 		backend->direach_flags  |= GIT_PATH_DIR_PRECOMPOSE_UNICODE;
 	}
-	if ((!git_repository__cvar(&t, backend->repo, GIT_CVAR_FSYNCOBJECTFILES) && t) ||
+	if ((!git_repository__configmap_lookup(&t, backend->repo, GIT_CONFIGMAP_FSYNCOBJECTFILES) && t) ||
 		git_repository__fsync_gitdir)
 		backend->fsync = 1;
 	backend->iterator_flags |= GIT_ITERATOR_DESCEND_SYMLINKS;

@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{self, Write, BufRead};
 use std::path::{PathBuf, Path};
 use std::process::Command;
+use std::ops::Not;
 
 const CARGO_MIRI_HELP: &str = r#"Interprets bin crates and tests in Miri
 
@@ -141,6 +142,13 @@ fn test_sysroot_consistency() {
             .unwrap_or_else(|_| panic!("Failed to canonicalize sysroot: {}", stdout))
     }
 
+    // We let the user skip this check if they really want to.
+    // (`bootstrap` needs this because Miri gets built by the stage1 compiler
+    // but run with the stage2 sysroot.)
+    if std::env::var("MIRI_SKIP_SYSROOT_CHECK").is_ok() {
+        return;
+    }
+
     let rustc_sysroot = get_sysroot(Command::new("rustc"));
     let miri_sysroot = get_sysroot(Command::new(find_miri()));
 
@@ -155,8 +163,26 @@ fn test_sysroot_consistency() {
     }
 }
 
+fn cargo() -> Command {
+    if let Ok(val) = std::env::var("CARGO") {
+        // Bootstrap tells us where to find cargo
+        Command::new(val)
+    } else {
+        Command::new("cargo")
+    }
+}
+
+fn xargo() -> Command {
+    if let Ok(val) = std::env::var("XARGO") {
+        // Bootstrap tells us where to find xargo
+        Command::new(val)
+    } else {
+        Command::new("xargo")
+    }
+}
+
 fn xargo_version() -> Option<(u32, u32, u32)> {
-    let out = Command::new("xargo").arg("--version").output().ok()?;
+    let out = xargo().arg("--version").output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -217,14 +243,17 @@ fn setup(ask_user: bool) {
     }
 
     // First, we need xargo.
-    let xargo = xargo_version();
-    if xargo.map_or(true, |v| v < (0, 3, 14)) {
+    if xargo_version().map_or(true, |v| v < (0, 3, 15)) {
         if ask_user {
             ask("It seems you do not have a recent enough xargo installed. I will run `cargo install xargo -f`. Proceed?");
         } else {
             println!("Installing xargo: `cargo install xargo -f`");
         }
-        if !Command::new("cargo").args(&["install", "xargo", "-f"]).status().unwrap().success() {
+
+        if cargo().args(&["install", "xargo", "-f"]).status()
+            .expect("failed to install xargo")
+            .success().not()
+        {
             show_error(format!("Failed to install xargo"));
         }
     }
@@ -232,16 +261,21 @@ fn setup(ask_user: bool) {
     // Then, unless `XARGO_RUST_SRC` is set, we also need rust-src.
     // Let's see if it is already installed.
     if std::env::var("XARGO_RUST_SRC").is_err() {
-        let sysroot = Command::new("rustc").args(&["--print", "sysroot"]).output().unwrap().stdout;
+        let sysroot = Command::new("rustc").args(&["--print", "sysroot"]).output()
+            .expect("failed to get rustc sysroot")
+            .stdout;
         let sysroot = std::str::from_utf8(&sysroot).unwrap();
         let src = Path::new(sysroot.trim_end_matches('\n')).join("lib").join("rustlib").join("src");
         if !src.exists() {
             if ask_user {
-                ask("It seems you do not have the rust-src component installed. I will run `rustup component add rust-src`. Proceed?");
+                ask("It seems you do not have the rust-src component installed. I will run `rustup component add rust-src` for the selected toolchain. Proceed?");
             } else {
                 println!("Installing rust-src component: `rustup component add rust-src`");
             }
-            if !Command::new("rustup").args(&["component", "add", "rust-src"]).status().unwrap().success() {
+            if !Command::new("rustup").args(&["component", "add", "rust-src"]).status()
+                .expect("failed to install rust-src component")
+                .success()
+            {
                 show_error(format!("Failed to install rust-src component"));
             }
         }
@@ -277,18 +311,24 @@ version = "0.0.0"
 path = "lib.rs"
         "#).unwrap();
     File::create(dir.join("lib.rs")).unwrap();
-    // Run xargo.
+    // Prepare xargo invocation.
     let target = get_arg_flag_value("--target");
     let print_env = !ask_user && has_arg_flag("--env"); // whether we just print the necessary environment variable
-    let mut command = Command::new("xargo");
-    command.arg("build").arg("-q")
-        .current_dir(&dir)
-        .env("RUSTFLAGS", miri::miri_default_args().join(" "))
-        .env("XARGO_HOME", dir.to_str().unwrap());
+    let mut command = xargo();
+    command.arg("build").arg("-q");
+    command.current_dir(&dir);
+    command.env("RUSTFLAGS", miri::miri_default_args().join(" "));
+    command.env("XARGO_HOME", dir.to_str().unwrap());
+    // In bootstrap, make sure we don't get debug assertons into our libstd.
+    command.env("RUSTC_DEBUG_ASSERTIONS", "false");
+    // Handle target flag.
     if let Some(ref target) = target {
         command.arg("--target").arg(&target);
     }
-    if !command.status().unwrap().success()
+    // Finally run it!
+    if command.status()
+        .expect("failed to run xargo")
+        .success().not()
     {
         show_error(format!("Failed to run xargo"));
     }
@@ -335,7 +375,7 @@ fn main() {
 }
 
 fn in_cargo_miri() {
-    let (subcommand, skip) = match std::env::args().nth(2).deref() {
+    let (subcommand, skip) = match std::env::args().nth(2).as_deref() {
         Some("test") => (MiriCommand::Test, 3),
         Some("run") => (MiriCommand::Run, 3),
         Some("setup") => (MiriCommand::Setup, 3),
@@ -369,7 +409,7 @@ fn in_cargo_miri() {
         // Now we run `cargo rustc $FLAGS $ARGS`, giving the user the
         // change to add additional arguments. `FLAGS` is set to identify
         // this target.  The user gets to control what gets actually passed to Miri.
-        let mut cmd = Command::new("cargo");
+        let mut cmd = cargo();
         cmd.arg("rustc");
         match (subcommand, kind.as_str()) {
             (MiriCommand::Run, "bin") => {

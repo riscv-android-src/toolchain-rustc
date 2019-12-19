@@ -1,10 +1,48 @@
 # Change Log
 
+## [2.0.1](https://github.com/sunng87/handlebars-rust/compare/2.0.0...2.0.1) - 2019-07-12
+* [Changed] Fixed issue with block context #275
+* [Changed] Added support for array index in block context #276
+* [Changed] Deprecated RenderContext `concat_path`
+* [Changed] Update hashbrown to 0.5.0
+
+## [2.0.0](https://github.com/sunng87/handlebars-rust/compare/2.0.0-beta3...2.0.0) - 2019-07-02
+* [Changed] Fixed more dyn trait warnings
+* [Changed] #80 Fixed support for zero-param helper
+* [Changed] Changed minimum Rust version to 1.32 as required by
+  getrandom crate
+
+## [2.0.0-beta.3](https://github.com/sunng87/handlebars-rust/compare/2.0.0-beta1...2.0.0-beta.3) - 2019-06-24
+
+* [Changed] Block parameter revamp, fixed cases for #260 and #264
+* [Changed] #265 Fixed block parameter order in `each` helper
+* [Changed] #266 Accept any JSON value in boolean helpers
+* [Changed] `RenderContext` API update, `evaluate_absolute` removed,
+  use `@root` instead
+
+## [2.0.0-beta.1](https://github.com/sunng87/handlebars-rust/compare/1.1.0...2.0.0-beta.1) - 2019-03-16
+
+* [Changed] Everything changed in yanked 1.2.0
+* [Changed] With Pest updated to 2.1, our minimal rust version is set
+  to 1.31
+* [Changed] Using hashbrown `HashMap` internally and externally,
+  performance improvement up to 10%
+* [Changed] strict mode also apply to return value of helper expression
+
+## [1.2.0](https://github.com/sunng87/handlebars-rust/compare/1.1.0...1.2.0) - 2018-12-15
+
+*This release is yanked.*
+
+* [Changed] Using rust 2018 edition
+* [Changed] Improve strict mode and only raise error when accessing
+  missing fields in expression
+* [Changed] Improved `get_helper` and `get_decorator` return type
+
 ## [1.1.0](https://github.com/sunng87/handlebars-rust/compare/1.0.5...1.1.0) - 2018-10-24
 
 * [Added] New option `includeZero` for `if` helper
 * [Added] New option `level` for `log` helper
-* [Changed] Updated Pest to 2.0
+* [Changed] Updated Pest to 2.0, moving minimal Rust version to 1.30
 
 ## [1.0.5](https://github.com/sunng87/handlebars-rust/compare/1.0.4...1.0.5) - 2018-10-04
 

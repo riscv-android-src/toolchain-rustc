@@ -8,7 +8,7 @@
 #include "filter.h"
 
 #include "common.h"
-#include "fileops.h"
+#include "futils.h"
 #include "hash.h"
 #include "repository.h"
 #include "global.h"
@@ -385,7 +385,7 @@ uint16_t git_filter_source_filemode(const git_filter_source *src)
 
 const git_oid *git_filter_source_id(const git_filter_source *src)
 {
-	return git_oid_iszero(&src->oid) ? NULL : &src->oid;
+	return git_oid_is_zero(&src->oid) ? NULL : &src->oid;
 }
 
 git_filter_mode_t git_filter_source_mode(const git_filter_source *src)
@@ -445,7 +445,7 @@ static int filter_list_check_attributes(
 
 	for (i = 0; !error && i < fdef->nattrs; ++i) {
 		const char *want = fdef->attrs[fdef->nattrs + i];
-		git_attr_t want_type, found_type;
+		git_attr_value_t want_type, found_type;
 
 		if (!want)
 			continue;
@@ -455,7 +455,7 @@ static int filter_list_check_attributes(
 
 		if (want_type != found_type)
 			error = GIT_ENOTFOUND;
-		else if (want_type == GIT_ATTR_VALUE_T &&
+		else if (want_type == GIT_ATTR_VALUE_STRING &&
 				strcmp(want, strs[i]) &&
 				strcmp(want, "*"))
 			error = GIT_ENOTFOUND;

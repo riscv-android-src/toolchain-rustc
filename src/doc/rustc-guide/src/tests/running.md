@@ -34,10 +34,10 @@ test" that can be used after modifying rustc to see if things are
 generally working correctly would be the following:
 
 ```bash
-> ./x.py test --stage 1 src/test/{ui,compile-fail,run-pass}
+> ./x.py test --stage 1 src/test/{ui,compile-fail}
 ```
 
-This will run the `ui`, `compile-fail`, and `run-pass` test suites,
+This will run the `ui` and `compile-fail` test suites,
 and only with the stage 1 build. Of course, the choice of test suites
 is somewhat arbitrary, and may not suit the task you are doing. For
 example, if you are hacking on debuginfo, you may be better off with
@@ -107,6 +107,23 @@ Under the hood, the test runner invokes the standard rust test runner
 (the same one you get with `#[test]`), so this command would wind up
 filtering for tests that include "issue-1234" in the name. (Thus
 `--test-args` is a good way to run a collection of related tests.)
+
+## Passing `--pass $mode`
+
+Pass UI tests now have three modes, `check-pass`, `build-pass` and
+`run-pass`. When `--pass $mode` is passed, these tests will be forced
+to run under the given `$mode` unless the directive `// ignore-pass`
+exists in the test file. For example, you can run all the tests in
+`src/test/ui` as `check-pass`:
+
+```bash
+> ./x.py test --stage 1 src/test/ui --pass check
+```
+
+By passing `--pass $mode`, you can reduce the testing time. For each
+mode, please see [here][mode].
+
+[mode]: https://rust-lang.github.io/rustc-guide/tests/adding.html#tests-that-do-not-result-in-compile-errors
 
 ## Using incremental compilation
 

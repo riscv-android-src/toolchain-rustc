@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/handlebars/1.1.0")]
+#![doc(html_root_url = "https://docs.rs/handlebars/2.0.1")]
 //! # Handlebars
 //!
 //! [Handlebars](http://handlebarsjs.com/) is a modern and extensible templating solution originally created in the JavaScript world. It's used by many popular frameworks like [Ember.js](http://emberjs.com) and Chaplin. It's also ported to some other platforms such as [Java](https://github.com/jknack/handlebars.java).
@@ -211,7 +211,7 @@
 //! #  age: i16,
 //! # }
 //!
-//! # fn main() -> Result<(), Box<Error>> {
+//! # fn main() -> Result<(), Box<dyn Error>> {
 //!   let source = "Hello, {{name}}";
 //!
 //!   let mut handlebars = Handlebars::new();
@@ -244,7 +244,7 @@
 //! struct SimpleHelper;
 //!
 //! impl HelperDef for SimpleHelper {
-//!   fn call<'reg: 'rc, 'rc>(&self, h: &Helper, _: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut Output) -> HelperResult {
+//!   fn call<'reg: 'rc, 'rc>(&self, h: &Helper, _: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult {
 //!     let param = h.param(0).unwrap();
 //!
 //!     out.write("1st helper: ")?;
@@ -254,7 +254,7 @@
 //! }
 //!
 //! // implement via bare function
-//! fn another_simple_helper (h: &Helper, _: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut Output) -> HelperResult {
+//! fn another_simple_helper (h: &Helper, _: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut dyn Output) -> HelperResult {
 //!     let param = h.param(0).unwrap();
 //!
 //!     out.write("2nd helper: ")?;
@@ -263,13 +263,13 @@
 //! }
 //!
 //!
-//! # fn main() -> Result<(), Box<Error>> {
+//! # fn main() -> Result<(), Box<dyn Error>> {
 //!   let mut handlebars = Handlebars::new();
 //!   handlebars.register_helper("simple-helper", Box::new(SimpleHelper));
 //!   handlebars.register_helper("another-simple-helper", Box::new(another_simple_helper));
 //!   // via closure
 //!   handlebars.register_helper("closure-helper",
-//!       Box::new(|h: &Helper, r: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut Output| -> HelperResult {
+//!       Box::new(|h: &Helper, r: &Handlebars, _: &Context, rc: &mut RenderContext, out: &mut dyn Output| -> HelperResult {
 //!           let param = h.param(0).ok_or(RenderError::new("param not found"))?;
 //!
 //!           out.write("3rd helper: ")?;
@@ -291,7 +291,7 @@
 //!
 //! #### Built-in Helpers
 //!
-//! * `{{{{#raw}}}} ... {{{{/raw}}}}` escape handlebars expression within the block
+//! * `{{{{raw}}}} ... {{{{/raw}}}}` escape handlebars expression within the block
 //! * `{{#if ...}} ... {{else}} ... {{/if}}` if-else block
 //! * `{{#unless ...}} ... {{else}} .. {{/unless}}` if-not-else block
 //! * `{{#each ...}} ... {{/each}}` iterates over an array or object. Handlebar-rust doesn't support mustache iteration syntax so use this instead.
@@ -349,7 +349,9 @@ extern crate serde_json;
 #[cfg(not(feature = "no_dir_source"))]
 extern crate walkdir;
 
-pub use self::context::Context;
+extern crate hashbrown;
+
+pub use self::context::{BlockParams, Context};
 pub use self::directives::DirectiveDef as DecoratorDef;
 pub use self::error::{RenderError, TemplateError, TemplateFileError, TemplateRenderError};
 pub use self::helpers::{HelperDef, HelperResult};

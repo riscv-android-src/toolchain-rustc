@@ -6,7 +6,7 @@ some `i`). These constraints cannot be expressed by users, but they
 arise from `impl Trait` due to its lifetime capture rules. Consider a
 function such as the following:
 
-```rust
+```rust,ignore
 fn make(a: &'a u32, b: &'b u32) -> impl Trait<'a, 'b> { .. }
 ```
 
@@ -15,7 +15,7 @@ permitted to capture the lifetimes `'a` or `'b`. You can kind of see
 this more clearly by desugaring that `impl Trait` return type into its
 more explicit form:
 
-```rust
+```rust,ignore
 type MakeReturn<'x, 'y> = impl Trait<'x, 'y>;
 fn make(a: &'a u32, b: &'b u32) -> MakeReturn<'a, 'b> { .. }
 ```
@@ -34,14 +34,14 @@ To help us explain member constraints in more detail, let's spell out
 the `make` example in a bit more detail. First off, let's assume that
 you have some dummy trait:
 
-```rust
+```rust,ignore
 trait Trait<'a, 'b> { }
 impl<T> Trait<'_, '_> for T { }
 ```
 
 and this is the `make` function (in desugared form):
 
-```rust
+```rust,ignore
 type MakeReturn<'x, 'y> = impl Trait<'x, 'y>;
 fn make(a: &'a u32, b: &'b u32) -> MakeReturn<'a, 'b> {
   (a, b)
@@ -52,7 +52,7 @@ What happens in this case is that the return type will be `(&'0 u32, &'1 u32)`,
 where `'0` and `'1` are fresh region variables. We will have the following
 region constraints:
 
-```
+```txt
 '0 live at {L}
 '1 live at {L}
 'a: '0
@@ -73,7 +73,7 @@ u32)` -- the region variables reflect that the lifetimes of these
 references could be made smaller. For this value to be created from
 `a` and `b`, however, we do require that:
 
-```
+```txt
 (&'a u32, &'b u32) <: (&'0 u32, &'1 u32)
 ```
 
@@ -176,11 +176,11 @@ region being inferred. However, it is somewhat arbitrary.
 
 In practice, computing upper bounds is a bit inconvenient, because our
 data structures are setup for the opposite. What we do is to compute
-the **reverse SCC graph** (we do this lazilly and cache the result) --
+the **reverse SCC graph** (we do this lazily and cache the result) --
 that is, a graph where `'a: 'b` induces an edge `SCC('b) ->
 SCC('a)`. Like the normal SCC graph, this is a DAG. We can then do a
 depth-first search starting from `SCC('0)` in this graph. This will
-take us to all the SCCs that must outlive `'0`. 
+take us to all the SCCs that must outlive `'0`.
 
 One wrinkle is that, as we walk the "upper bound" SCCs, their values
 will not yet have been fully computed. However, we **have** already
@@ -190,4 +190,3 @@ parameters, their value will contain themselves (i.e., the initial
 value for `'a` includes `'a` and the value for `'b` contains `'b`). So
 we can collect all of the lifetime parameters that are reachable,
 which is precisely what we are interested in.
-

@@ -2,12 +2,108 @@
 
 ## [Unreleased]
 
+## [1.4.4] 2019-08-06
+
+## Fixed
+
+- Fix `cargo fmt` incorrectly formatting crates that is not part of the workspace or the path dependencies.
+- Fix removing a trailing comma from a tuple pattern.
+
+## [1.4.3] 2019-08-02
+
+### Changed
+
+- Update `rustc-ap-*` crates to 546.0.0.
+
+### Fixed
+
+- Fix an underscore pattern getting removed.
+
+## [1.4.2] 2019-07-31
+
+### Changed
+
+- Explicitly require the version of `rustfmt-config_proc_macro` to be 0.1.2 or later.
+
+## [1.4.1] 2019-07-30
+
+### Changed
+
+- Update `rustc-ap-*` crates to 542.0.0.
+
+## [1.4.0] 2019-07-29
+
+### Added
+
+- Add new attribute `rustfmt::skip::attributes` to prevent rustfmt 
+from formatting an attribute #3665
+
+### Changed
+
+- Update `rustc-ap-*` crates to 541.0.0.
+- Remove multiple semicolons.
+
+## [1.3.3] 2019-07-15
+
+### Added
+
+- Add `--manifest-path` support to `cargo fmt` (#3683).
+
+### Fixed
+
+- Fix `cargo fmt -- --help` printing nothing (#3620).
+- Fix inserting an extra comma (#3677).
+- Fix incorrect handling of CRLF with `file-lines` (#3684).
+- Fix `print-config=minimal` option (#3687).
+
+## [1.3.2] 2019-07-06
+
+### Fixed
+
+- Fix rustfmt crashing when `await!` macro call is used in a method chain.
+- Fix rustfmt not recognizing a package whose name differs from its directory's name.
+
+## [1.3.1] 2019-06-30
+
+### Added
+
+- Implement the `Display` trait on the types of `Config`.
+
+### Changed
+
+- `ignore` configuration option now only supports paths separated by `/`. Windows-style paths are not supported.
+- Running `cargo fmt` in a sub-directory of a project is now supported.
+
+### Fixed
+
+- Fix bugs that may cause rustfmt to crash.
+
+## [1.3.0] 2019-06-09
+
+### Added
+
+- Format modules defined inside `cfg_if` macro calls #3600
+
 ### Changed
 
 - Change option `format_doc_comment` to `format_code_in_doc_comment`.
 - `use_small_heuristics` changed to be an enum and stabilised. Configuration
   options are now ready for 1.0.
 - Stabilise `fn_args_density` configuration option and rename it to `fn_args_layout` #3581
+- Update `rustc-ap-*` crates to 486.0.0
+- Ignore sub-modules when skip-children is used #3607
+- Removed bitrig support #3608
+
+### Fixed
+
+- `wrap_comments` should not imply `format_doc_comments` #3535
+- Incorrect handling of const generics #3555
+- Add the handling for `vec!` with paren inside macro #3576
+- Format trait aliases with where clauses #3586
+- Catch panics from the parser while rewriting macro calls #3589
+- Fix erasing inner attributes in struct #3593
+- Inline the attribute with its item even with the `macro_use` attribute or when `reorder_imports` is disabled #3598
+- Fix the bug add unwanted code to impl #3602
 
 ## [1.2.2] 2019-04-24
 

@@ -40,6 +40,9 @@ declare_clippy_lint! {
     /// fn foo(v: Vec<i32>) {
     ///     assert_eq!(v.len(), 42);
     /// }
+    /// ```
+    ///
+    /// ```rust
     /// // should be
     /// fn foo(v: &[i32]) {
     ///     assert_eq!(v.len(), 42);
@@ -107,7 +110,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
         let sized_trait = need!(cx.tcx.lang_items().sized_trait());
 
-        let fn_def_id = cx.tcx.hir().local_def_id_from_hir_id(hir_id);
+        let fn_def_id = cx.tcx.hir().local_def_id(hir_id);
 
         let preds = traits::elaborate_predicates(cx.tcx, cx.param_env.caller_bounds.to_vec())
             .filter(|p| !p.is_global())
@@ -193,7 +196,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
             if_chain! {
                 if !is_self(arg);
-                if !ty.is_mutable_pointer();
+                if !ty.is_mutable_ptr();
                 if !is_copy(cx, ty);
                 if !whitelisted_traits.iter().any(|&t| implements_trait(cx, ty, t, &[]));
                 if !implements_borrow_trait;

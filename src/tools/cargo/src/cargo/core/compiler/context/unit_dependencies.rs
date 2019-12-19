@@ -162,12 +162,6 @@ fn compute_deps<'a, 'cfg, 'tmp>(
                 return false;
             }
 
-            // If the dependency is optional, then we're only activating it
-            // if the corresponding feature was activated
-            if dep.is_optional() && !bcx.resolve.features(id).contains(&*dep.name_in_toml()) {
-                return false;
-            }
-
             // If we've gotten past all that, then this dependency is
             // actually used!
             true
@@ -264,6 +258,13 @@ fn compute_deps_custom_build<'a, 'cfg>(
     unit: &Unit<'a>,
     bcx: &BuildContext<'a, 'cfg>,
 ) -> CargoResult<Vec<(Unit<'a>, UnitFor)>> {
+    if let Some(links) = unit.pkg.manifest().links() {
+        if bcx.script_override(links, unit.kind).is_some() {
+            // Overridden build scripts don't have any dependencies.
+            return Ok(Vec::new());
+        }
+    }
+
     // When not overridden, then the dependencies to run a build script are:
     //
     // 1. Compiling the build script itself.

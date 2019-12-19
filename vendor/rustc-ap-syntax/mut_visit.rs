@@ -131,10 +131,6 @@ pub trait MutVisitor: Sized {
         noop_visit_arm(a, self);
     }
 
-    fn visit_guard(&mut self, g: &mut Guard) {
-        noop_visit_guard(g, self);
-    }
-
     fn visit_pat(&mut self, p: &mut P<Pat>) {
         noop_visit_pat(p, self);
     }
@@ -389,15 +385,9 @@ pub fn noop_visit_arm<T: MutVisitor>(
 ) {
     visit_attrs(attrs, vis);
     visit_vec(pats, |pat| vis.visit_pat(pat));
-    visit_opt(guard, |guard| vis.visit_guard(guard));
+    visit_opt(guard, |guard| vis.visit_expr(guard));
     vis.visit_expr(body);
     vis.visit_span(span);
-}
-
-pub fn noop_visit_guard<T: MutVisitor>(g: &mut Guard, vis: &mut T) {
-    match g {
-        Guard::If(e) => vis.visit_expr(e),
-    }
 }
 
 pub fn noop_visit_ty_constraint<T: MutVisitor>(
@@ -568,9 +558,11 @@ pub fn noop_visit_meta_item<T: MutVisitor>(mi: &mut MetaItem, vis: &mut T) {
     vis.visit_span(span);
 }
 
-pub fn noop_visit_arg<T: MutVisitor>(Arg { id, pat, ty }: &mut Arg, vis: &mut T) {
+pub fn noop_visit_arg<T: MutVisitor>(Arg { attrs, id, pat, span, ty }: &mut Arg, vis: &mut T) {
     vis.visit_id(id);
+    visit_thin_attrs(attrs, vis);
     vis.visit_pat(pat);
+    vis.visit_span(span);
     vis.visit_ty(ty);
 }
 
@@ -749,8 +741,7 @@ pub fn noop_visit_generics<T: MutVisitor>(generics: &mut Generics, vis: &mut T) 
 }
 
 pub fn noop_visit_where_clause<T: MutVisitor>(wc: &mut WhereClause, vis: &mut T) {
-    let WhereClause { id, predicates, span } = wc;
-    vis.visit_id(id);
+    let WhereClause { predicates, span } = wc;
     visit_vec(predicates, |predicate| vis.visit_where_predicate(predicate));
     vis.visit_span(span);
 }
@@ -1030,15 +1021,15 @@ pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
     let Pat { id, node, span } = pat.deref_mut();
     vis.visit_id(id);
     match node {
-        PatKind::Wild => {}
+        PatKind::Wild | PatKind::Rest => {}
         PatKind::Ident(_binding_mode, ident, sub) => {
             vis.visit_ident(ident);
             visit_opt(sub, |sub| vis.visit_pat(sub));
         }
         PatKind::Lit(e) => vis.visit_expr(e),
-        PatKind::TupleStruct(path, pats, _ddpos) => {
+        PatKind::TupleStruct(path, elems) => {
             vis.visit_path(path);
-            visit_vec(pats, |pat| vis.visit_pat(pat));
+            visit_vec(elems, |elem| vis.visit_pat(elem));
         }
         PatKind::Path(qself, path) => {
             vis.visit_qself(qself);
@@ -1053,7 +1044,7 @@ pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
                 vis.visit_span(span);
             };
         }
-        PatKind::Tuple(elts, _ddpos) => visit_vec(elts, |elt| vis.visit_pat(elt)),
+        PatKind::Tuple(elems) => visit_vec(elems, |elem| vis.visit_pat(elem)),
         PatKind::Box(inner) => vis.visit_pat(inner),
         PatKind::Ref(inner, _mutbl) => vis.visit_pat(inner),
         PatKind::Range(e1, e2, Spanned { span: _, node: _ }) => {
@@ -1061,11 +1052,7 @@ pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
             vis.visit_expr(e2);
             vis.visit_span(span);
         }
-        PatKind::Slice(before, slice, after) => {
-            visit_vec(before, |pat| vis.visit_pat(pat));
-            visit_opt(slice, |slice| vis.visit_pat(slice));
-            visit_vec(after, |pat| vis.visit_pat(pat));
-        }
+        PatKind::Slice(elems) => visit_vec(elems, |elem| vis.visit_pat(elem)),
         PatKind::Paren(inner) => vis.visit_pat(inner),
         PatKind::Mac(mac) => vis.visit_mac(mac),
     }
@@ -1110,25 +1097,17 @@ pub fn noop_visit_expr<T: MutVisitor>(Expr { node, id, span, attrs }: &mut Expr,
             vis.visit_ty(ty);
         }
         ExprKind::AddrOf(_m, ohs) => vis.visit_expr(ohs),
+        ExprKind::Let(pats, scrutinee) => {
+            visit_vec(pats, |pat| vis.visit_pat(pat));
+            vis.visit_expr(scrutinee);
+        }
         ExprKind::If(cond, tr, fl) => {
             vis.visit_expr(cond);
             vis.visit_block(tr);
             visit_opt(fl, |fl| vis.visit_expr(fl));
         }
-        ExprKind::IfLet(pats, expr, tr, fl) => {
-            visit_vec(pats, |pat| vis.visit_pat(pat));
-            vis.visit_expr(expr);
-            vis.visit_block(tr);
-            visit_opt(fl, |fl| vis.visit_expr(fl));
-        }
         ExprKind::While(cond, body, label) => {
             vis.visit_expr(cond);
-            vis.visit_block(body);
-            visit_opt(label, |label| vis.visit_label(label));
-        }
-        ExprKind::WhileLet(pats, expr, body, label) => {
-            visit_vec(pats, |pat| vis.visit_pat(pat));
-            vis.visit_expr(expr);
             vis.visit_block(body);
             visit_opt(label, |label| vis.visit_label(label));
         }
@@ -1160,7 +1139,7 @@ pub fn noop_visit_expr<T: MutVisitor>(Expr { node, id, span, attrs }: &mut Expr,
             vis.visit_id(node_id);
             vis.visit_block(body);
         }
-        ExprKind::Await(_origin, expr) => vis.visit_expr(expr),
+        ExprKind::Await(expr) => vis.visit_expr(expr),
         ExprKind::Assign(el, er) => {
             vis.visit_expr(el);
             vis.visit_expr(er);
@@ -1279,7 +1258,6 @@ pub fn noop_visit_vis<T: MutVisitor>(Spanned { node, span }: &mut Visibility, vi
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use crate::ast::{self, Ident};
     use crate::util::parser_testing::{string_to_crate, matches_codepattern};
     use crate::print::pprust;
@@ -1289,7 +1267,7 @@ mod tests {
 
     // this version doesn't care about getting comments or docstrings in.
     fn fake_print_crate(s: &mut pprust::State<'_>,
-                        krate: &ast::Crate) -> io::Result<()> {
+                        krate: &ast::Crate) {
         s.print_mod(&krate.module, &krate.attrs)
     }
 
@@ -1347,7 +1325,7 @@ mod tests {
                 matches_codepattern,
                 "matches_codepattern",
                 pprust::to_string(|s| fake_print_crate(s, &krate)),
-                "macro_rules! zz((zz$zz:zz$(zz $zz:zz)zz+=>(zz$(zz$zz$zz)+)));".to_string());
+                "macro_rules! zz{(zz$zz:zz$(zz $zz:zz)zz+=>(zz$(zz$zz$zz)+))}".to_string());
         })
     }
 }

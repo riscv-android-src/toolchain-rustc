@@ -13,14 +13,14 @@ declare_clippy_lint! {
     /// attribute
     ///
     /// **Example:**
-    /// ```rust
+    /// ```rust,ignore
     /// #[clippy::dump]
     /// extern crate foo;
     /// ```
     ///
     /// prints
     ///
-    /// ```
+    /// ```text
     /// item `foo`
     /// visibility inherited from outer item
     /// extern crate dylib source: "/path/to/foo.so"
@@ -63,8 +63,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DeepCodeInspector {
                 print_expr(cx, &cx.tcx.hir().body(body_id).value, 1);
             },
             hir::ImplItemKind::Method(..) => println!("method"),
-            hir::ImplItemKind::Type(_) => println!("associated type"),
-            hir::ImplItemKind::Existential(_) => println!("existential type"),
+            hir::ImplItemKind::TyAlias(_) => println!("associated type"),
+            hir::ImplItemKind::OpaqueTy(_) => println!("existential type"),
         }
     }
     // fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx
@@ -209,11 +209,6 @@ fn print_expr(cx: &LateContext<'_, '_>, expr: &hir::Expr, indent: usize) {
             print_expr(cx, e, indent + 1);
             println!("{}target type: {:?}", ind, target);
         },
-        hir::ExprKind::While(ref cond, _, _) => {
-            println!("{}While", ind);
-            println!("{}condition:", ind);
-            print_expr(cx, cond, indent + 1);
-        },
         hir::ExprKind::Loop(..) => {
             println!("{}Loop", ind);
         },
@@ -329,7 +324,7 @@ fn print_expr(cx: &LateContext<'_, '_>, expr: &hir::Expr, indent: usize) {
 }
 
 fn print_item(cx: &LateContext<'_, '_>, item: &hir::Item) {
-    let did = cx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+    let did = cx.tcx.hir().local_def_id(item.hir_id);
     println!("item `{}`", item.ident.name);
     match item.vis.node {
         hir::VisibilityKind::Public => println!("public"),
@@ -342,7 +337,7 @@ fn print_item(cx: &LateContext<'_, '_>, item: &hir::Item) {
     }
     match item.node {
         hir::ItemKind::ExternCrate(ref _renamed_from) => {
-            let def_id = cx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
+            let def_id = cx.tcx.hir().local_def_id(item.hir_id);
             if let Some(crate_id) = cx.tcx.extern_mod_stmt_cnum(def_id) {
                 let source = cx.tcx.used_crate_source(crate_id);
                 if let Some(ref src) = source.dylib {
@@ -365,10 +360,10 @@ fn print_item(cx: &LateContext<'_, '_>, item: &hir::Item) {
         hir::ItemKind::Mod(..) => println!("module"),
         hir::ItemKind::ForeignMod(ref fm) => println!("foreign module with abi: {}", fm.abi),
         hir::ItemKind::GlobalAsm(ref asm) => println!("global asm: {:?}", asm),
-        hir::ItemKind::Ty(..) => {
+        hir::ItemKind::TyAlias(..) => {
             println!("type alias for {:?}", cx.tcx.type_of(did));
         },
-        hir::ItemKind::Existential(..) => {
+        hir::ItemKind::OpaqueTy(..) => {
             println!("existential type with real type {:?}", cx.tcx.type_of(did));
         },
         hir::ItemKind::Enum(..) => {

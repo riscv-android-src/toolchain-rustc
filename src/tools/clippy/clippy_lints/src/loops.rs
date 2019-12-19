@@ -41,7 +41,9 @@ declare_clippy_lint! {
     /// **Known problems:** None.
     ///
     /// **Example:**
-    /// ```ignore
+    /// ```rust
+    /// # let src = vec![1];
+    /// # let mut dst = vec![0; 65];
     /// for i in 0..src.len() {
     ///     dst[i + 64] = src[i];
     /// }
@@ -89,16 +91,18 @@ declare_clippy_lint! {
     /// types.
     ///
     /// **Example:**
-    /// ```ignore
+    /// ```rust
     /// // with `y` a `Vec` or slice:
+    /// # let y = vec![1];
     /// for x in y.iter() {
-    ///     ..
+    ///     // ..
     /// }
     /// ```
     /// can be rewritten to
     /// ```rust
+    /// # let y = vec![1];
     /// for x in &y {
-    ///     ..
+    ///     // ..
     /// }
     /// ```
     pub EXPLICIT_ITER_LOOP,
@@ -115,16 +119,18 @@ declare_clippy_lint! {
     /// **Known problems:** None
     ///
     /// **Example:**
-    /// ```ignore
+    /// ```rust
+    /// # let y = vec![1];
     /// // with `y` a `Vec` or slice:
     /// for x in y.into_iter() {
-    ///     ..
+    ///     // ..
     /// }
     /// ```
     /// can be rewritten to
-    /// ```ignore
+    /// ```rust
+    /// # let y = vec![1];
     /// for x in y {
-    ///     ..
+    ///     // ..
     /// }
     /// ```
     pub EXPLICIT_INTO_ITER_LOOP,
@@ -217,18 +223,19 @@ declare_clippy_lint! {
     /// **Known problems:** Sometimes the wrong binding is displayed (#383).
     ///
     /// **Example:**
-    /// ```rust
+    /// ```rust,no_run
+    /// # let y = Some(1);
     /// loop {
     ///     let x = match y {
     ///         Some(x) => x,
     ///         None => break,
-    ///     }
+    ///     };
     ///     // .. do something with x
     /// }
     /// // is easier written as
     /// while let Some(x) = y {
     ///     // .. do something with x
-    /// }
+    /// };
     /// ```
     pub WHILE_LET_LOOP,
     complexity,
@@ -264,8 +271,9 @@ declare_clippy_lint! {
     /// None
     ///
     /// **Example:**
-    /// ```ignore
-    /// let len = iterator.collect::<Vec<_>>().len();
+    /// ```rust
+    /// # let iterator = vec![1].into_iter();
+    /// let len = iterator.clone().collect::<Vec<_>>().len();
     /// // should be
     /// let len = iterator.count();
     /// ```
@@ -309,8 +317,11 @@ declare_clippy_lint! {
     /// **Known problems:** None.
     ///
     /// **Example:**
-    /// ```ignore
-    /// for i in 0..v.len() { foo(v[i]);
+    /// ```rust
+    /// # let v = vec![1];
+    /// # fn foo(bar: usize) {}
+    /// # fn bar(bar: usize, baz: usize) {}
+    /// for i in 0..v.len() { foo(v[i]); }
     /// for i in 0..v.len() { bar(i, v[i]); }
     /// ```
     pub EXPLICIT_COUNTER_LOOP,
@@ -481,16 +492,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Loops {
         }
 
         // check for never_loop
-        match expr.node {
-            ExprKind::While(_, ref block, _) | ExprKind::Loop(ref block, _, _) => {
-                match never_loop_block(block, expr.hir_id) {
-                    NeverLoopResult::AlwaysBreak => {
-                        span_lint(cx, NEVER_LOOP, expr.span, "this loop never actually loops")
-                    },
-                    NeverLoopResult::MayContinueMainLoop | NeverLoopResult::Otherwise => (),
-                }
-            },
-            _ => (),
+        if let ExprKind::Loop(ref block, _, _) = expr.node {
+            match never_loop_block(block, expr.hir_id) {
+                NeverLoopResult::AlwaysBreak => span_lint(cx, NEVER_LOOP, expr.span, "this loop never actually loops"),
+                NeverLoopResult::MayContinueMainLoop | NeverLoopResult::Otherwise => (),
+            }
         }
 
         // check for `loop { if let {} else break }` that could be `while let`
@@ -590,9 +596,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Loops {
             }
         }
 
-        // check for while loops which conditions never change
-        if let ExprKind::While(ref cond, _, _) = expr.node {
-            check_infinite_loop(cx, cond, expr);
+        if let Some((cond, body)) = higher::while_loop(&expr) {
+            check_infinite_loop(cx, cond, body);
         }
 
         check_needless_collect(expr, cx);
@@ -701,12 +706,6 @@ fn never_loop_expr(expr: &Expr, main_loop_id: HirId) -> NeverLoopResult {
             // Break can come from the inner loop so remove them.
             absorb_break(&never_loop_block(b, main_loop_id))
         },
-        ExprKind::While(ref e, ref b, _) => {
-            let e = never_loop_expr(e, main_loop_id);
-            let result = never_loop_block(b, main_loop_id);
-            // Break can come from the inner loop so remove them.
-            combine_seq(e, absorb_break(&result))
-        },
         ExprKind::Match(ref e, ref arms, _) => {
             let e = never_loop_expr(e, main_loop_id);
             if arms.is_empty() {
@@ -727,8 +726,7 @@ fn never_loop_expr(expr: &Expr, main_loop_id: HirId) -> NeverLoopResult {
                 NeverLoopResult::AlwaysBreak
             }
         },
-        ExprKind::Break(_, _) => NeverLoopResult::AlwaysBreak,
-        ExprKind::Ret(ref e) => {
+        ExprKind::Break(_, ref e) | ExprKind::Ret(ref e) => {
             if let Some(ref e) = *e {
                 combine_seq(never_loop_expr(e, main_loop_id), NeverLoopResult::AlwaysBreak)
             } else {
@@ -1103,7 +1101,7 @@ fn check_for_loop_range<'a, 'tcx>(
                 // ensure that the indexed variable was declared before the loop, see #601
                 if let Some(indexed_extent) = indexed_extent {
                     let parent_id = cx.tcx.hir().get_parent_item(expr.hir_id);
-                    let parent_def_id = cx.tcx.hir().local_def_id_from_hir_id(parent_id);
+                    let parent_def_id = cx.tcx.hir().local_def_id(parent_id);
                     let region_scope_tree = cx.tcx.region_scope_tree(parent_def_id);
                     let pat_extent = region_scope_tree.var_scope(pat.hir_id.local_id);
                     if region_scope_tree.is_subscope_of(indexed_extent, pat_extent) {
@@ -1255,7 +1253,7 @@ fn is_end_eq_array_len<'tcx>(
         if let ExprKind::Lit(ref lit) = end.node;
         if let ast::LitKind::Int(end_int, _) = lit.node;
         if let ty::Array(_, arr_len_const) = indexed_ty.sty;
-        if let Some(arr_len) = arr_len_const.assert_usize(cx.tcx);
+        if let Some(arr_len) = arr_len_const.try_eval_usize(cx.tcx, cx.param_env);
         then {
             return match limits {
                 ast::RangeLimits::Closed => end_int + 1 >= arr_len.into(),
@@ -1377,7 +1375,7 @@ fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat, arg: &Expr, expr: &Ex
                     match cx.tables.expr_ty(&args[0]).sty {
                         // If the length is greater than 32 no traits are implemented for array and
                         // therefore we cannot use `&`.
-                        ty::Array(_, size) if size.assert_usize(cx.tcx).expect("array size") > 32 => (),
+                        ty::Array(_, size) if size.eval_usize(cx.tcx, cx.param_env) > 32 => {},
                         _ => lint_iter_method(cx, args, arg, method_name),
                     };
                 } else {
@@ -1793,7 +1791,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                     match res {
                         Res::Local(hir_id) => {
                             let parent_id = self.cx.tcx.hir().get_parent_item(expr.hir_id);
-                            let parent_def_id = self.cx.tcx.hir().local_def_id_from_hir_id(parent_id);
+                            let parent_def_id = self.cx.tcx.hir().local_def_id(parent_id);
                             let extent = self.cx.tcx.region_scope_tree(parent_def_id).var_scope(hir_id.local_id);
                             if indexed_indirectly {
                                 self.indexed_indirectly.insert(seqvar.segments[0].ident.name, Some(extent));
@@ -1990,7 +1988,7 @@ fn is_ref_iterable_type(cx: &LateContext<'_, '_>, e: &Expr) -> bool {
 fn is_iterable_array<'tcx>(ty: Ty<'tcx>, cx: &LateContext<'_, 'tcx>) -> bool {
     // IntoIterator is currently only implemented for array sizes <= 32 in rustc
     match ty.sty {
-        ty::Array(_, n) => (0..=32).contains(&n.assert_usize(cx.tcx).expect("array length")),
+        ty::Array(_, n) => (0..=32).contains(&n.eval_usize(cx.tcx, cx.param_env)),
         _ => false,
     }
 }
@@ -2203,7 +2201,7 @@ fn var_def_id(cx: &LateContext<'_, '_>, expr: &Expr) -> Option<HirId> {
 
 fn is_loop(expr: &Expr) -> bool {
     match expr.node {
-        ExprKind::Loop(..) | ExprKind::While(..) => true,
+        ExprKind::Loop(..) => true,
         _ => false,
     }
 }
@@ -2240,11 +2238,10 @@ fn is_loop_nested(cx: &LateContext<'_, '_>, loop_expr: &Expr, iter_expr: &Expr) 
             return false;
         }
         match cx.tcx.hir().find(parent) {
-            Some(Node::Expr(expr)) => match expr.node {
-                ExprKind::Loop(..) | ExprKind::While(..) => {
+            Some(Node::Expr(expr)) => {
+                if let ExprKind::Loop(..) = expr.node {
                     return true;
-                },
-                _ => (),
+                };
             },
             Some(Node::Block(block)) => {
                 let mut block_visitor = LoopNestVisitor {

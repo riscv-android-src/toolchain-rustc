@@ -121,7 +121,7 @@ the *free variables* meaning they are not bound to the context of the closure.
 
 Other than lazy invocation, one other thing that the distinguishes a closure from a
 normal function is that it can use the upvars. It borrows these upvars from its surrounding
-context; therfore the compiler has to determine the upvar's borrow type. The compiler starts with
+context; therefore the compiler has to determine the upvar's borrow type. The compiler starts with
 assigning an immutable borrow type and lowers the restriction (that is, changes it from
 **immutable** to **mutable** to **move**) as needed, based on the usage. In the Example 1 above, the
 closure only uses the variable for printing but does not modify it in any way and therefore, in the
@@ -140,7 +140,7 @@ declared in the file [`src/librustc/ty/mod.rs`][ty].
 [upvar]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_typeck/check/upvar/index.html
 [ty]:https://doc.rust-lang.org/nightly/nightly-rustc/rustc/ty/index.html
 
-Before we go any further, let's discuss how we can examine the flow of coontrol through the rustc
+Before we go any further, let's discuss how we can examine the flow of control through the rustc
 codebase. For closures specifically, set the `RUST_LOG` env variable as below and collect the
 output in a file:
 

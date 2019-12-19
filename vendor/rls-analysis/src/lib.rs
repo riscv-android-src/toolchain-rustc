@@ -1,22 +1,12 @@
-// Copyright 2016 The RLS Project Developers.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+#![warn(rust_2018_idioms)]
 
 #[macro_use]
 extern crate derive_new;
 #[macro_use]
 extern crate log;
-extern crate fst;
-extern crate itertools;
-extern crate json;
+
 extern crate rls_data as data;
 extern crate rls_span as span;
-extern crate serde;
-extern crate serde_json;
 
 mod analysis;
 mod listings;
@@ -31,10 +21,11 @@ mod util;
 use analysis::Analysis;
 pub use analysis::{Def, Ref};
 pub use loader::{AnalysisLoader, CargoAnalysisLoader, SearchDirectory, Target};
-pub use raw::{name_space_for_def_kind, read_analysis_from_files, CrateId, DefKind};
+pub use raw::{name_space_for_def_kind, read_analysis_from_files, Crate, CrateId, DefKind};
 pub use symbol_query::SymbolQuery;
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Instant, SystemTime};
@@ -95,8 +86,6 @@ impl Id {
 /// Used to indicate a missing index in the Id.
 pub const NULL: Id = Id(u64::MAX);
 
-type Blacklist<'a> = &'a [&'static str];
-
 macro_rules! clone_field {
     ($field: ident) => {
         |x| x.$field.clone()
@@ -136,7 +125,7 @@ impl<L: AnalysisLoader> AnalysisHost<L> {
         analysis: Vec<data::Analysis>,
         path_prefix: &Path,
         base_dir: &Path,
-        blacklist: Blacklist,
+        blacklist: &[impl AsRef<str> + Debug],
     ) -> AResult<()> {
         self.reload_with_blacklist(path_prefix, base_dir, blacklist)?;
 
@@ -153,14 +142,14 @@ impl<L: AnalysisLoader> AnalysisHost<L> {
     }
 
     pub fn reload(&self, path_prefix: &Path, base_dir: &Path) -> AResult<()> {
-        self.reload_with_blacklist(path_prefix, base_dir, &[])
+        self.reload_with_blacklist(path_prefix, base_dir, &[] as &[&str])
     }
 
     pub fn reload_with_blacklist(
         &self,
         path_prefix: &Path,
         base_dir: &Path,
-        blacklist: Blacklist,
+        blacklist: &[impl AsRef<str> + Debug],
     ) -> AResult<()> {
         trace!("reload_with_blacklist {:?} {:?} {:?}", path_prefix, base_dir, blacklist);
         let empty = self.analysis.lock()?.is_none();
@@ -183,14 +172,14 @@ impl<L: AnalysisLoader> AnalysisHost<L> {
 
     /// Reloads the entire project's analysis data.
     pub fn hard_reload(&self, path_prefix: &Path, base_dir: &Path) -> AResult<()> {
-        self.hard_reload_with_blacklist(path_prefix, base_dir, &[])
+        self.hard_reload_with_blacklist(path_prefix, base_dir, &[] as &[&str])
     }
 
     pub fn hard_reload_with_blacklist(
         &self,
         path_prefix: &Path,
         base_dir: &Path,
-        blacklist: Blacklist,
+        blacklist: &[impl AsRef<str> + Debug],
     ) -> AResult<()> {
         trace!("hard_reload {:?} {:?}", path_prefix, base_dir);
         // We're going to create a dummy AnalysisHost that we will fill with data,
@@ -551,8 +540,8 @@ impl<L: AnalysisLoader> AnalysisHost<L> {
 }
 
 impl ::std::fmt::Display for Id {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-        self.0.fmt(f)
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        ::std::fmt::Display::fmt(&self.0, f)
     }
 }
 
@@ -566,7 +555,7 @@ impl ::std::error::Error for AError {
 }
 
 impl ::std::fmt::Display for AError {
-    fn fmt(&self, f: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
         write!(f, "{}", ::std::error::Error::description(self))
     }
 }

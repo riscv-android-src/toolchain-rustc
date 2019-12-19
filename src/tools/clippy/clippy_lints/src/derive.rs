@@ -49,12 +49,12 @@ declare_clippy_lint! {
     /// **Known problems:** Bounds of generic types are sometimes wrong: https://github.com/rust-lang/rust/issues/26925
     ///
     /// **Example:**
-    /// ```rust
+    /// ```rust,ignore
     /// #[derive(Copy)]
     /// struct Foo;
     ///
     /// impl Clone for Foo {
-    ///     ..
+    ///     // ..
     /// }
     /// ```
     pub EXPL_IMPL_CLONE_ON_COPY,
@@ -67,7 +67,7 @@ declare_lint_pass!(Derive => [EXPL_IMPL_CLONE_ON_COPY, DERIVE_HASH_XOR_EQ]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Derive {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
         if let ItemKind::Impl(_, _, _, _, Some(ref trait_ref), _, _) = item.node {
-            let ty = cx.tcx.type_of(cx.tcx.hir().local_def_id_from_hir_id(item.hir_id));
+            let ty = cx.tcx.type_of(cx.tcx.hir().local_def_id(item.hir_id));
             let is_automatically_derived = is_automatically_derived(&*item.attrs);
 
             check_hash_peq(cx, item.span, trait_ref, ty, is_automatically_derived);

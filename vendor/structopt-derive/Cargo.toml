@@ -12,7 +12,7 @@
 
 [package]
 name = "structopt-derive"
-version = "0.2.16"
+version = "0.2.18"
 authors = ["Guillaume Pinot <texitoi@texitoi.eu>"]
 description = "Parse command line argument by defining a struct, derive crate."
 documentation = "https://docs.rs/structopt-derive"
@@ -37,5 +37,6 @@ version = "0.15"
 
 [features]
 nightly = ["proc-macro2/nightly"]
+paw = []
 [badges.travis-ci]
 repository = "TeXitoi/structopt"

@@ -145,7 +145,7 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
     /// target.
     pub fn out_dir(&self, unit: &Unit<'a>) -> PathBuf {
         if unit.mode.is_doc() {
-            self.layout(unit.kind).root().parent().unwrap().join("doc")
+            self.layout(unit.kind).doc().to_path_buf()
         } else if unit.mode.is_doc_test() {
             panic!("doc tests do not have an out dir");
         } else if unit.target.is_custom_build() {
@@ -167,11 +167,6 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
             Some(ref meta) => format!("{}-{}", name, meta),
             None => format!("{}-{}", name, self.target_short_hash(unit)),
         }
-    }
-
-    /// Returns the root of the build output tree for the target
-    pub fn target_root(&self) -> &Path {
-        self.target.as_ref().unwrap_or(&self.host).dest()
     }
 
     /// Returns the root of the build output tree for the host
@@ -261,8 +256,8 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
     /// (eg a dependent lib).
     fn link_stem(&self, unit: &Unit<'a>) -> Option<(PathBuf, String)> {
         let out_dir = self.out_dir(unit);
-        let bin_stem = self.bin_stem(unit);
-        let file_stem = self.file_stem(unit);
+        let bin_stem = self.bin_stem(unit); // Stem without metadata.
+        let file_stem = self.file_stem(unit); // Stem with metadata.
 
         // We currently only lift files up from the `deps` directory. If
         // it was compiled into something like `example/` or `doc/` then
@@ -547,32 +542,36 @@ fn compute_metadata<'a, 'cfg>(
     // settings like debuginfo and whatnot.
     unit.profile.hash(&mut hasher);
     unit.mode.hash(&mut hasher);
-    if let Some(args) = bcx.extra_args_for(unit) {
-        args.hash(&mut hasher);
-    }
 
     // Throw in the rustflags we're compiling with.
     // This helps when the target directory is a shared cache for projects with different cargo configs,
     // or if the user is experimenting with different rustflags manually.
-    let mut flags = if unit.mode.is_doc() {
-        cx.bcx.rustdocflags_args(unit)
+    let mut hash_flags = |flags: &[String]| {
+        // Ignore some flags. These may affect reproducible builds if they affect
+        // the path. The fingerprint will handle recompilation if these change.
+        let mut iter = flags.iter();
+        while let Some(flag) = iter.next() {
+            if flag.starts_with("--remap-path-prefix=") {
+                continue;
+            }
+            if flag == "--remap-path-prefix" {
+                iter.next();
+                continue;
+            }
+            flag.hash(&mut hasher);
+        }
+    };
+    if let Some(args) = bcx.extra_args_for(unit) {
+        // Arguments passed to `cargo rustc`.
+        hash_flags(args);
+    }
+    // Arguments passed in via RUSTFLAGS env var.
+    let flags = if unit.mode.is_doc() {
+        bcx.rustdocflags_args(unit)
     } else {
-        cx.bcx.rustflags_args(unit)
-    }
-    .iter();
-
-    // Ignore some flags. These may affect reproducible builds if they affect
-    // the path. The fingerprint will handle recompilation if these change.
-    while let Some(flag) = flags.next() {
-        if flag.starts_with("--remap-path-prefix=") {
-            continue;
-        }
-        if flag == "--remap-path-prefix" {
-            flags.next();
-            continue;
-        }
-        flag.hash(&mut hasher);
-    }
+        bcx.rustflags_args(unit)
+    };
+    hash_flags(flags);
 
     // Artifacts compiled for the host should have a different metadata
     // piece than those compiled for the target, so make sure we throw in

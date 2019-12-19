@@ -1,25 +1,19 @@
-// Copyright 2016 The RLS Project Developers.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use data::config::Config;
 use data::Analysis;
 pub use data::{
     CratePreludeData, Def, DefKind, GlobalCrateId as CrateId, Import, Ref, Relation, RelationKind,
     SigElement, Signature, SpanData,
 };
-use listings::{DirectoryListing, ListingKind};
-use {AnalysisLoader, Blacklist};
 
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::fs::File;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime};
+
+use crate::listings::{DirectoryListing, ListingKind};
+use crate::AnalysisLoader;
 
 #[derive(Debug)]
 pub struct Crate {
@@ -52,7 +46,7 @@ impl Crate {
 pub fn read_analysis_from_files<L: AnalysisLoader>(
     loader: &L,
     crate_timestamps: HashMap<PathBuf, SystemTime>,
-    crate_blacklist: Blacklist,
+    crate_blacklist: &[impl AsRef<str> + Debug],
 ) -> Vec<Crate> {
     let mut result = vec![];
 
@@ -99,8 +93,8 @@ pub fn read_analysis_from_files<L: AnalysisLoader>(
     result
 }
 
-fn ignore_data(file_name: &str, crate_blacklist: Blacklist) -> bool {
-    crate_blacklist.iter().any(|name| file_name.starts_with(&format!("lib{}-", name)))
+fn ignore_data(file_name: &str, crate_blacklist: &[impl AsRef<str>]) -> bool {
+    crate_blacklist.iter().any(|name| file_name.starts_with(&format!("lib{}-", name.as_ref())))
 }
 
 fn read_file_contents(path: &Path) -> io::Result<String> {

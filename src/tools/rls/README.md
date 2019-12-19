@@ -1,4 +1,5 @@
 [![Build Status](https://travis-ci.com/rust-lang/rls.svg?branch=master)](https://travis-ci.com/rust-lang/rls)
+[![Build Status](https://dev.azure.com/rust-lang/rls/_apis/build/status/rust-lang.rls?branchName=master)](https://dev.azure.com/rust-lang/rls/_build/latest?definitionId=15&branchName=master)
 [![Nightly status](https://img.shields.io/badge/dynamic/json.svg?label=rls%20(Windows)&url=https%3A%2F%2Fraw.githubusercontent.com%2Frust-lang-nursery%2Frust-toolstate%2Fmaster%2F_data%2Flatest.json&query=%24%5B%3F(%40.tool%3D%3D%22rls%22)%5D.windows&colorB=lightgrey)](https://rust-lang-nursery.github.io/rust-toolstate/)
 [![Nightly status](https://img.shields.io/badge/dynamic/json.svg?label=rls%20(Linux)&url=https%3A%2F%2Fraw.githubusercontent.com%2Frust-lang-nursery%2Frust-toolstate%2Fmaster%2F_data%2Flatest.json&query=%24%5B%3F(%40.tool%3D%3D%22rls%22)%5D.linux&colorB=lightgrey)](https://rust-lang-nursery.github.io/rust-toolstate/)
 
@@ -115,8 +116,10 @@ Currently we accept the following options:
 * `all_targets` (`bool`, defaults to `true`) checks the project as if you were
   running `cargo check --all-targets`. I.e., check all targets and integration
   tests too
-* `use_crate_blacklist` (`bool`, defaults to `true`) if disabled, also indexes
-  data from the [blacklisted](https://github.com/nrc/rls-blacklist/blob/master/src/lib.rs) crates
+* `crate_blacklist` (`[String]`, defaults to [this list](https://github.com/rust-dev-tools/rls-blacklist/blob/master/src/lib.rs))
+  allows to specify which crates should be skipped by the RLS.
+  By default skips libraries that are of considerable size but which the user
+  often may not be directly interested in, thus reducing the build latency.
 * `build_on_save` (`bool`, defaults to `false`) toggles whether the RLS should
   perform continuous analysis or only after a file is saved
 * `features` (`[String]`, defaults to empty) list of Cargo features to enable

@@ -1,9 +1,8 @@
 //===------------------------- UnwindCursor.hpp ---------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
-//
-// This file is dual licensed under the MIT and the University of Illinois Open
-// Source Licenses. See LICENSE.TXT for details.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //
 // C++ interface to lower levels of libunwind
@@ -791,6 +790,8 @@ bool UnwindCursor<A, R>::validFloatReg(int regNum) {
   if (regNum >= UNW_ARM_D0 && regNum <= UNW_ARM_D31) return true;
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
   if (regNum >= UNW_ARM64_D0 && regNum <= UNW_ARM64_D31) return true;
+#else
+  (void)regNum;
 #endif
   return false;
 }
@@ -818,6 +819,7 @@ unw_fpreg_t UnwindCursor<A, R>::getFloatReg(int regNum) {
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
   return _msContext.V[regNum - UNW_ARM64_D0].D[0];
 #else
+  (void)regNum;
   _LIBUNWIND_ABORT("float registers unimplemented");
 #endif
 }
@@ -845,6 +847,8 @@ void UnwindCursor<A, R>::setFloatReg(int regNum, unw_fpreg_t value) {
 #elif defined(_LIBUNWIND_TARGET_AARCH64)
   _msContext.V[regNum - UNW_ARM64_D0].D[0] = value;
 #else
+  (void)regNum;
+  (void)value;
   _LIBUNWIND_ABORT("float registers unimplemented");
 #endif
 }
@@ -1736,7 +1740,7 @@ bool UnwindCursor<A, R>::getInfoFromCompactEncodingSection(pint_t pc,
     --personalityIndex; // change 1-based to zero-based index
     if (personalityIndex > sectionHeader.personalityArrayCount()) {
       _LIBUNWIND_DEBUG_LOG("found encoding 0x%08X with personality index %d,  "
-                            "but personality table has only %d entires",
+                            "but personality table has only %d entries",
                             encoding, personalityIndex,
                             sectionHeader.personalityArrayCount());
       return false;

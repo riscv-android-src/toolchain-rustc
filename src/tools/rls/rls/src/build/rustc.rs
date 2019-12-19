@@ -37,7 +37,7 @@ use rls_vfs::Vfs;
 
 use self::rustc::session::config::Input;
 use self::rustc::session::Session;
-use self::rustc_driver::run_compiler;
+use self::rustc_driver::{run_compiler, Compilation};
 use self::rustc_interface::interface;
 use self::rustc_save_analysis as save;
 use self::rustc_save_analysis::CallbackHandler;
@@ -78,14 +78,12 @@ pub(crate) fn rustc(
 
         config.clippy_preference
     };
-    // Required for Clippy not to crash when running outside Cargo?
-    local_envs.entry("CARGO_MANIFEST_DIR".into()).or_insert_with(|| Some(build_dir.into()));
 
     let (guard, _) = env_lock.lock();
     let restore_env = Environment::push_with_lock(&local_envs, cwd, guard);
 
     let buf = Arc::new(Mutex::new(vec![]));
-    let err_buf = buf.clone();
+    let err_buf = Arc::clone(&buf);
     let args: Vec<_> = if cfg!(feature = "clippy") && clippy_preference != ClippyPreference::Off {
         // Allow feature gating in the same way as `cargo clippy`
         let mut clippy_args = vec!["--cfg".to_owned(), r#"feature="cargo-clippy""#.to_owned()];
@@ -155,18 +153,18 @@ impl rustc_driver::Callbacks for RlsRustcCalls {
         config.opts.debugging_opts.save_analysis = true;
     }
 
-    fn after_parsing(&mut self, _compiler: &interface::Compiler) -> bool {
+    fn after_parsing(&mut self, _compiler: &interface::Compiler) -> Compilation {
         #[cfg(feature = "clippy")]
         {
             if self.clippy_preference != ClippyPreference::Off {
                 clippy_after_parse_callback(_compiler);
             }
         }
-        // Continue execution
-        true
+
+        Compilation::Continue
     }
 
-    fn after_analysis(&mut self, compiler: &interface::Compiler) -> bool {
+    fn after_expansion(&mut self, compiler: &interface::Compiler) -> Compilation {
         let sess = compiler.session();
         let input = compiler.input();
         let crate_name = compiler.crate_name().unwrap().peek().clone();
@@ -188,12 +186,20 @@ impl rustc_driver::Callbacks for RlsRustcCalls {
                 RustcEdition::Edition2018 => Edition::Edition2018,
             },
         };
-        let files = fetch_input_files(sess);
 
+        // We populate the file -> edition mapping only after expansion since it
+        // can pull additional input files
         let mut input_files = self.input_files.lock().unwrap();
-        for file in &files {
-            input_files.entry(file.to_path_buf()).or_default().insert(krate.clone());
+        for file in fetch_input_files(sess) {
+            input_files.entry(file).or_default().insert(krate.clone());
         }
+
+        Compilation::Continue
+    }
+
+    fn after_analysis(&mut self, compiler: &interface::Compiler) -> Compilation {
+        let input = compiler.input();
+        let crate_name = compiler.crate_name().unwrap().peek().clone();
 
         // Guaranteed to not be dropped yet in the pipeline thanks to the
         // `config.opts.debugging_opts.save_analysis` value being set to `true`.
@@ -229,7 +235,7 @@ impl rustc_driver::Callbacks for RlsRustcCalls {
             );
         });
 
-        true
+        Compilation::Continue
     }
 }
 
@@ -285,7 +291,6 @@ fn fetch_input_files(sess: &Session) -> Vec<PathBuf> {
         .filter(|fmap| !fmap.is_imported())
         .map(|fmap| fmap.name.to_string())
         .map(|fmap| src_path(Some(cwd), fmap).unwrap())
-        .map(PathBuf::from)
         .collect()
 }
 

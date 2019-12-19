@@ -12,7 +12,7 @@
 
 [package]
 name = "structopt"
-version = "0.2.16"
+version = "0.2.18"
 authors = ["Guillaume Pinot <texitoi@texitoi.eu>", "others"]
 description = "Parse command line argument by defining a struct."
 documentation = "https://docs.rs/structopt"
@@ -26,7 +26,7 @@ version = "2.21"
 default-features = false
 
 [dependencies.structopt-derive]
-version = "0.2.16"
+version = "0.2.18"
 
 [features]
 color = ["clap/color"]
@@ -36,6 +36,7 @@ doc = ["clap/doc"]
 lints = ["clap/lints"]
 nightly = ["structopt-derive/nightly"]
 no_cargo = ["clap/no_cargo"]
+paw = ["structopt-derive/paw"]
 suggestions = ["clap/suggestions"]
 wrap_help = ["clap/wrap_help"]
 yaml = ["clap/yaml"]

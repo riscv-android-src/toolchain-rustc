@@ -1,6 +1,7 @@
 //! Configuration for the workspace that RLS is operating within and options for
 //! tweaking the RLS's behavior itself.
 
+use std::collections::HashMap;
 use std::env;
 use std::fmt;
 use std::fmt::Debug;
@@ -8,6 +9,7 @@ use std::io::sink;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::Arc;
 
 use cargo::core::{Shell, Workspace};
 use cargo::util::{homedir, important_paths, Config as CargoConfig};
@@ -135,7 +137,9 @@ pub struct Config {
     /// `true` to build the project only when a file got saved and not on file change.
     /// Default: `false`.
     pub build_on_save: bool,
-    pub use_crate_blacklist: bool,
+    /// Blacklist of crates for RLS to skip. By default omits `winapi`, Unicode
+    /// table crates, `serde`, `libc`, `glium` and other.
+    pub crate_blacklist: Inferrable<CrateBlacklist>,
     /// The Cargo target directory. If set, overrides the default one.
     pub target_dir: Inferrable<Option<PathBuf>>,
     pub features: Vec<String>,
@@ -169,6 +173,8 @@ pub struct Config {
     /// to be loaded by the RLS. The program given should output a list of
     /// resulting JSON files on stdout.
     pub build_command: Option<String>,
+    /// DEPRECATED: Use `crate_blacklist` instead.
+    pub use_crate_blacklist: Option<bool>,
 }
 
 impl Default for Config {
@@ -185,7 +191,7 @@ impl Default for Config {
             show_warnings: true,
             clear_env_rust_log: true,
             build_on_save: false,
-            use_crate_blacklist: true,
+            crate_blacklist: Inferrable::Inferred(CrateBlacklist::default()),
             target_dir: Inferrable::Inferred(None),
             features: vec![],
             all_features: false,
@@ -198,10 +204,21 @@ impl Default for Config {
             show_hover_context: true,
             rustfmt_path: None,
             build_command: None,
+            use_crate_blacklist: None,
         };
         result.normalise();
         result
     }
+}
+
+lazy_static::lazy_static! {
+    #[derive(Debug)]
+    pub static ref DEPRECATED_OPTIONS: HashMap<&'static str, Option<&'static str>> = {
+        [("use_crate_blacklist", Some("use `crate_blacklist` instead"))]
+            .iter()
+            .map(ToOwned::to_owned)
+            .collect()
+    };
 }
 
 impl Config {
@@ -211,7 +228,8 @@ impl Config {
     pub fn try_deserialize(
         val: &serde_json::value::Value,
         dups: &mut std::collections::HashMap<String, Vec<String>>,
-        unknowns: &mut Vec<(String)>,
+        unknowns: &mut Vec<String>,
+        deprecated: &mut Vec<String>,
     ) -> Result<Config, ()> {
         #[derive(Clone)]
         struct JsonValue(serde_json::value::Value);
@@ -231,6 +249,10 @@ impl Config {
                 vec.push(k.to_string());
 
                 if vec.len() == 1 {
+                    if DEPRECATED_OPTIONS.contains_key(snake_case.as_str()) {
+                        deprecated.push(snake_case.clone());
+                    }
+
                     Some((snake_case, JsonValue(v.to_owned().clone())))
                 } else {
                     None
@@ -432,10 +454,68 @@ impl Default for FmtConfig {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+/// List of crates for which IDE analysis should not be generated
+pub struct CrateBlacklist(pub Arc<[String]>);
+
+impl<'de> Deserialize<'de> for CrateBlacklist {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let boxed = <Box<[String]> as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(CrateBlacklist(boxed.into()))
+    }
+}
+
+impl Default for CrateBlacklist {
+    fn default() -> Self {
+        CrateBlacklist(
+            [
+                "cocoa",
+                "gleam",
+                "glium",
+                "idna",
+                "libc",
+                "openssl",
+                "rustc_serialize",
+                "serde",
+                "serde_json",
+                "typenum",
+                "unicode_normalization",
+                "unicode_segmentation",
+                "winapi",
+            ]
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .into(),
+        )
+    }
+}
+
 #[test]
 fn clippy_preference_from_str() {
     assert_eq!(ClippyPreference::from_str("Optin"), Ok(ClippyPreference::OptIn));
     assert_eq!(ClippyPreference::from_str("OFF"), Ok(ClippyPreference::Off));
     assert_eq!(ClippyPreference::from_str("opt-in"), Ok(ClippyPreference::OptIn));
     assert_eq!(ClippyPreference::from_str("on"), Ok(ClippyPreference::On));
+}
+
+#[test]
+fn blacklist_default() {
+    let value = serde_json::json!({});
+    let config =
+        Config::try_deserialize(&value, &mut Default::default(), &mut vec![], &mut vec![]).unwrap();
+    assert_eq!(config.crate_blacklist.as_ref(), &CrateBlacklist::default());
+    let value = serde_json::json!({"crate_blacklist": []});
+
+    let config =
+        Config::try_deserialize(&value, &mut Default::default(), &mut vec![], &mut vec![]).unwrap();
+    assert_eq!(&*config.crate_blacklist.as_ref().0, &[] as &[String]);
+
+    let value = serde_json::json!({"crate_blacklist": ["serde"]});
+    let config =
+        Config::try_deserialize(&value, &mut Default::default(), &mut vec![], &mut vec![]).unwrap();
+    assert_eq!(&*config.crate_blacklist.as_ref().0, &["serde".to_string()]);
 }

@@ -1,4 +1,4 @@
-// error-pattern: invalid arithmetic on pointers
+// error-pattern: dangling pointer was dereferenced
 
 fn main() {
     // Can't offset an integer pointer by non-zero offset.

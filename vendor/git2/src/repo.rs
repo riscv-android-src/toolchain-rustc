@@ -12,9 +12,10 @@ use crate::oid_array::OidArray;
 use crate::stash::{stash_cb, StashApplyOptions, StashCbData};
 use crate::string_array::StringArray;
 use crate::util::{self, Binding};
+use crate::CherrypickOptions;
 use crate::{
-    init, raw, Buf, Error, Object, Remote, RepositoryOpenFlags, RepositoryState, Revspec,
-    StashFlags,
+    init, raw, AttrCheckFlags, Buf, Error, Object, Remote, RepositoryOpenFlags, RepositoryState,
+    Revspec, StashFlags,
 };
 use crate::{
     AnnotatedCommit, MergeAnalysis, MergeOptions, MergePreference, SubmoduleIgnore, SubmoduleStatus,
@@ -746,7 +747,7 @@ impl Repository {
 
     /// Load all submodules for this repository and return them.
     pub fn submodules(&self) -> Result<Vec<Submodule<'_>>, Error> {
-        struct Data<'a, 'b: 'a> {
+        struct Data<'a, 'b> {
             repo: &'b Repository,
             ret: &'a mut Vec<Submodule<'b>>,
         }
@@ -886,6 +887,40 @@ impl Repository {
         unsafe {
             try_call!(raw::git_repository_config(&mut raw, self.raw()));
             Ok(Binding::from_raw(raw))
+        }
+    }
+
+    /// Get the value of a git attribute for a path as a string.
+    pub fn get_attr(
+        &self,
+        path: &Path,
+        name: &str,
+        flags: AttrCheckFlags,
+    ) -> Result<Option<&str>, Error> {
+        Ok(self
+            .get_attr_bytes(path, name, flags)?
+            .and_then(|a| str::from_utf8(a).ok()))
+    }
+
+    /// Get the value of a git attribute for a path as a byte slice.
+    pub fn get_attr_bytes(
+        &self,
+        path: &Path,
+        name: &str,
+        flags: AttrCheckFlags,
+    ) -> Result<Option<&[u8]>, Error> {
+        let mut ret = ptr::null();
+        let path = path.into_c_string()?;
+        let name = CString::new(name)?;
+        unsafe {
+            try_call!(raw::git_attr_get(
+                &mut ret,
+                self.raw(),
+                flags.bits(),
+                path,
+                name
+            ));
+            Ok(crate::opt_bytes(self, ret))
         }
     }
 
@@ -2346,6 +2381,24 @@ impl Repository {
         }
         Ok(ignored == 1)
     }
+
+    /// Perform a cherrypick
+    pub fn cherrypick(
+        &self,
+        commit: &Commit<'_>,
+        options: Option<&mut CherrypickOptions<'_>>,
+    ) -> Result<(), Error> {
+        let raw_opts = options.map(|o| o.raw());
+        let ptr_raw_opts = match raw_opts.as_ref() {
+            Some(v) => v,
+            None => 0 as *const _,
+        };
+        unsafe {
+            try_call!(raw::git_cherrypick(self.raw(), commit.raw(), ptr_raw_opts));
+
+            Ok(())
+        }
+    }
 }
 
 impl Binding for Repository {
@@ -2525,6 +2578,7 @@ impl RepositoryInitOptions {
 #[cfg(test)]
 mod tests {
     use crate::build::CheckoutBuilder;
+    use crate::CherrypickOptions;
     use crate::{ObjectType, Oid, Repository, ResetType};
     use std::ffi::OsStr;
     use std::fs;
@@ -2901,5 +2955,75 @@ mod tests {
         if cfg!(windows) {
             assert!(!repo.is_path_ignored(Path::new("\\foo\\thing")).unwrap());
         }
+    }
+
+    #[test]
+    fn smoke_cherrypick() {
+        let (_td, repo) = crate::test::repo_init();
+        let sig = repo.signature().unwrap();
+
+        let oid1 = repo.head().unwrap().target().unwrap();
+        let commit1 = repo.find_commit(oid1).unwrap();
+
+        repo.branch("branch_a", &commit1, true).unwrap();
+
+        // Add 2 commits on top of the initial one in branch_a
+        let mut index = repo.index().unwrap();
+        let p1 = Path::new(repo.workdir().unwrap()).join("file_c");
+        fs::File::create(&p1).unwrap();
+        index.add_path(Path::new("file_c")).unwrap();
+        let id = index.write_tree().unwrap();
+        let tree_c = repo.find_tree(id).unwrap();
+        let oid2 = repo
+            .commit(
+                Some("refs/heads/branch_a"),
+                &sig,
+                &sig,
+                "commit 2",
+                &tree_c,
+                &[&commit1],
+            )
+            .unwrap();
+        let commit2 = repo.find_commit(oid2).unwrap();
+        println!("created oid2 {:?}", oid2);
+        assert!(p1.exists());
+
+        let mut index = repo.index().unwrap();
+        let p2 = Path::new(repo.workdir().unwrap()).join("file_d");
+        fs::File::create(&p2).unwrap();
+        index.add_path(Path::new("file_d")).unwrap();
+        let id = index.write_tree().unwrap();
+        let tree_d = repo.find_tree(id).unwrap();
+        let oid3 = repo
+            .commit(
+                Some("refs/heads/branch_a"),
+                &sig,
+                &sig,
+                "commit 3",
+                &tree_d,
+                &[&commit2],
+            )
+            .unwrap();
+        let commit3 = repo.find_commit(oid3).unwrap();
+        println!("created oid3 {:?}", oid3);
+        assert!(p1.exists());
+        assert!(p2.exists());
+
+        // cherry-pick commit3 on top of commit1 in branch b
+        repo.reset(commit1.as_object(), ResetType::Hard, None)
+            .unwrap();
+        let mut cherrypick_opts = CherrypickOptions::new();
+        repo.cherrypick(&commit3, Some(&mut cherrypick_opts))
+            .unwrap();
+        let id = repo.index().unwrap().write_tree().unwrap();
+        let tree_d = repo.find_tree(id).unwrap();
+        let oid4 = repo
+            .commit(Some("HEAD"), &sig, &sig, "commit 4", &tree_d, &[&commit1])
+            .unwrap();
+        let commit4 = repo.find_commit(oid4).unwrap();
+        // should have file from commit3, but not the file from commit2
+        assert_eq!(commit4.parent(0).unwrap().id(), commit1.id());
+        assert!(!p1.exists());
+        assert!(p2.exists());
     }
 }

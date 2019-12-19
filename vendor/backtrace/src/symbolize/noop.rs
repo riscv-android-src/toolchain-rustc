@@ -1,16 +1,19 @@
 //! Empty symbolication strategy used to compile for platforms that have no
 //! support.
 
-use types::{BytesOrWideString, c_void};
-use SymbolName;
-use symbolize::ResolveWhat;
+use crate::symbolize::ResolveWhat;
+use crate::types::BytesOrWideString;
+use crate::SymbolName;
+use core::ffi::c_void;
+use core::marker;
 
-pub unsafe fn resolve(_addr: ResolveWhat, _cb: &mut FnMut(&super::Symbol)) {
+pub unsafe fn resolve(_addr: ResolveWhat, _cb: &mut FnMut(&super::Symbol)) {}
+
+pub struct Symbol<'a> {
+    _marker: marker::PhantomData<&'a i32>,
 }
 
-pub struct Symbol;
-
-impl Symbol {
+impl Symbol<'_> {
     pub fn name(&self) -> Option<SymbolName> {
         None
     }

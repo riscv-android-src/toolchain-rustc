@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,7 +12,7 @@
 
 [package]
 name = "jobserver"
-version = "0.1.13"
+version = "0.1.16"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 description = "An implementation of the GNU make jobserver for Rust\n"
 homepage = "https://github.com/alexcrichton/jobserver-rs"
@@ -43,7 +43,7 @@ harness = false
 name = "helper"
 path = "tests/helper.rs"
 [dependencies.log]
-version = "0.4"
+version = "0.4.6"
 [dev-dependencies.futures]
 version = "0.1"
 
@@ -59,6 +59,6 @@ version = "0.1"
 [dev-dependencies.tokio-process]
 version = "0.2"
 [target."cfg(unix)".dependencies.libc]
-version = "0.2"
+version = "0.2.50"
 [target."cfg(windows)".dependencies.rand]
-version = "0.6"
+version = "0.7.0"

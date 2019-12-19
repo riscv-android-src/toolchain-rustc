@@ -1,6 +1,5 @@
 use std::borrow::Cow;
 use std::cmp::min;
-use std::iter;
 
 use itertools::Itertools;
 use syntax::parse::token::DelimToken;
@@ -33,7 +32,7 @@ use crate::types::{rewrite_path, PathContext};
 use crate::utils::{
     colon_spaces, contains_skip, count_newlines, first_line_ends_with, inner_attributes,
     last_line_extendable, last_line_width, mk_sp, outer_attributes, ptr_vec_to_ref_vec,
-    semicolon_for_expr, semicolon_for_stmt, wrap_str,
+    semicolon_for_expr, unicode_str_width, wrap_str,
 };
 use crate::vertical::rewrite_with_alignment;
 use crate::visitor::FmtVisitor;
@@ -110,12 +109,11 @@ pub(crate) fn format_expr(
         ast::ExprKind::Tup(ref items) => {
             rewrite_tuple(context, items.iter(), expr.span, shape, items.len() == 1)
         }
+        ast::ExprKind::Let(..) => None,
         ast::ExprKind::If(..)
-        | ast::ExprKind::IfLet(..)
         | ast::ExprKind::ForLoop(..)
         | ast::ExprKind::Loop(..)
-        | ast::ExprKind::While(..)
-        | ast::ExprKind::WhileLet(..) => to_control_flow(expr, expr_type)
+        | ast::ExprKind::While(..) => to_control_flow(expr, expr_type)
             .and_then(|control_flow| control_flow.rewrite(context, shape)),
         ast::ExprKind::Block(ref block, opt_label) => {
             match expr_type {
@@ -368,18 +366,7 @@ pub(crate) fn format_expr(
                 ))
             }
         }
-        ast::ExprKind::Await(ast::AwaitOrigin::FieldLike, _) => rewrite_chain(expr, context, shape),
-        ast::ExprKind::Await(ast::AwaitOrigin::MacroLike, ref nested) => {
-            overflow::rewrite_with_parens(
-                context,
-                "await!",
-                iter::once(nested),
-                shape,
-                expr.span,
-                context.config.max_width(),
-                None,
-            )
-        }
+        ast::ExprKind::Await(_) => rewrite_chain(expr, context, shape),
         ast::ExprKind::Err => None,
     };
 
@@ -568,28 +555,6 @@ fn rewrite_block(
     result
 }
 
-impl Rewrite for ast::Stmt {
-    fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
-        skip_out_of_file_lines_range!(context, self.span());
-
-        let result = match self.node {
-            ast::StmtKind::Local(ref local) => local.rewrite(context, shape),
-            ast::StmtKind::Expr(ref ex) | ast::StmtKind::Semi(ref ex) => {
-                let suffix = if semicolon_for_stmt(context, self) {
-                    ";"
-                } else {
-                    ""
-                };
-
-                let shape = shape.sub_width(suffix.len())?;
-                format_expr(ex, ExprType::Statement, context, shape).map(|s| s + suffix)
-            }
-            ast::StmtKind::Mac(..) | ast::StmtKind::Item(..) => None,
-        };
-        result.and_then(|res| recover_comment_removed(res, self.span(), context))
-    }
-}
-
 // Rewrite condition if the given expression has one.
 pub(crate) fn rewrite_cond(
     context: &RewriteContext<'_>,
@@ -632,21 +597,21 @@ struct ControlFlow<'a> {
     span: Span,
 }
 
+fn extract_pats_and_cond(expr: &ast::Expr) -> (Vec<&ast::Pat>, &ast::Expr) {
+    match expr.node {
+        ast::ExprKind::Let(ref pats, ref cond) => (ptr_vec_to_ref_vec(pats), cond),
+        _ => (vec![], expr),
+    }
+}
+
+// FIXME: Refactor this.
 fn to_control_flow(expr: &ast::Expr, expr_type: ExprType) -> Option<ControlFlow<'_>> {
     match expr.node {
-        ast::ExprKind::If(ref cond, ref if_block, ref else_block) => Some(ControlFlow::new_if(
-            cond,
-            vec![],
-            if_block,
-            else_block.as_ref().map(|e| &**e),
-            expr_type == ExprType::SubExpression,
-            false,
-            expr.span,
-        )),
-        ast::ExprKind::IfLet(ref pat, ref cond, ref if_block, ref else_block) => {
+        ast::ExprKind::If(ref cond, ref if_block, ref else_block) => {
+            let (pats, cond) = extract_pats_and_cond(cond);
             Some(ControlFlow::new_if(
                 cond,
-                ptr_vec_to_ref_vec(pat),
+                pats,
                 if_block,
                 else_block.as_ref().map(|e| &**e),
                 expr_type == ExprType::SubExpression,
@@ -660,16 +625,10 @@ fn to_control_flow(expr: &ast::Expr, expr_type: ExprType) -> Option<ControlFlow<
         ast::ExprKind::Loop(ref block, label) => {
             Some(ControlFlow::new_loop(block, label, expr.span))
         }
-        ast::ExprKind::While(ref cond, ref block, label) => Some(ControlFlow::new_while(
-            vec![],
-            cond,
-            block,
-            label,
-            expr.span,
-        )),
-        ast::ExprKind::WhileLet(ref pat, ref cond, ref block, label) => Some(
-            ControlFlow::new_while(ptr_vec_to_ref_vec(pat), cond, block, label, expr.span),
-        ),
+        ast::ExprKind::While(ref cond, ref block, label) => {
+            let (pats, cond) = extract_pats_and_cond(cond);
+            Some(ControlFlow::new_while(pats, cond, block, label, expr.span))
+        }
         _ => None,
     }
 }
@@ -1042,22 +1001,11 @@ impl<'a> Rewrite for ControlFlow<'a> {
                 // from being formatted on a single line.
                 // Note how we're passing the original shape, as the
                 // cost of "else" should not cascade.
-                ast::ExprKind::IfLet(ref pat, ref cond, ref if_block, ref next_else_block) => {
-                    ControlFlow::new_if(
-                        cond,
-                        ptr_vec_to_ref_vec(pat),
-                        if_block,
-                        next_else_block.as_ref().map(|e| &**e),
-                        false,
-                        true,
-                        mk_sp(else_block.span.lo(), self.span.hi()),
-                    )
-                    .rewrite(context, shape)
-                }
                 ast::ExprKind::If(ref cond, ref if_block, ref next_else_block) => {
+                    let (pats, cond) = extract_pats_and_cond(cond);
                     ControlFlow::new_if(
                         cond,
-                        vec![],
+                        pats,
                         if_block,
                         next_else_block.as_ref().map(|e| &**e),
                         false,
@@ -1185,16 +1133,6 @@ pub(crate) fn is_empty_block(
 pub(crate) fn stmt_is_expr(stmt: &ast::Stmt) -> bool {
     match stmt.node {
         ast::StmtKind::Expr(..) => true,
-        _ => false,
-    }
-}
-
-pub(crate) fn stmt_is_if(stmt: &ast::Stmt) -> bool {
-    match stmt.node {
-        ast::StmtKind::Expr(ref e) => match e.node {
-            ast::ExprKind::If(..) => true,
-            _ => false,
-        },
         _ => false,
     }
 }
@@ -1364,11 +1302,9 @@ pub(crate) fn can_be_overflowed_expr(
                 || context.config.overflow_delimited_expr()
         }
         ast::ExprKind::If(..)
-        | ast::ExprKind::IfLet(..)
         | ast::ExprKind::ForLoop(..)
         | ast::ExprKind::Loop(..)
-        | ast::ExprKind::While(..)
-        | ast::ExprKind::WhileLet(..) => {
+        | ast::ExprKind::While(..) => {
             context.config.combine_control_expr() && context.use_block_indent() && args_len == 1
         }
 
@@ -1973,7 +1909,9 @@ fn choose_rhs<R: Rewrite>(
     rhs_tactics: RhsTactics,
 ) -> Option<String> {
     match orig_rhs {
-        Some(ref new_str) if !new_str.contains('\n') && new_str.len() <= shape.width => {
+        Some(ref new_str)
+            if !new_str.contains('\n') && unicode_str_width(new_str) <= shape.width =>
+        {
             Some(format!(" {}", new_str))
         }
         _ => {
@@ -2026,6 +1964,15 @@ fn shape_from_rhs_tactic(
     }
 }
 
+/// Returns true if formatting next_line_rhs is better on a new line when compared to the
+/// original's line formatting.
+///
+/// It is considered better if:
+/// 1. the tactic is ForceNextLineWithoutIndent
+/// 2. next_line_rhs doesn't have newlines
+/// 3. the original line has more newlines than next_line_rhs
+/// 4. the original formatting of the first line ends with `(`, `{`, or `[` and next_line_rhs
+///    doesn't
 pub(crate) fn prefer_next_line(
     orig_rhs: &str,
     next_line_rhs: &str,

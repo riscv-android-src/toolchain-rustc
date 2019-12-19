@@ -1,14 +1,12 @@
-use std::collections::BTreeMap;
-
 use serde_json::value::Value as Json;
 
-use context::Context;
-use error::RenderError;
-use helpers::{HelperDef, HelperResult};
-use output::Output;
-use registry::Registry;
-use render::{Helper, RenderContext, Renderable};
-use value::{to_json, JsonTruthy};
+use crate::context::{BlockParams, Context};
+use crate::error::RenderError;
+use crate::helpers::{HelperDef, HelperResult};
+use crate::output::Output;
+use crate::registry::Registry;
+use crate::render::{Helper, RenderContext, Renderable};
+use crate::value::{to_json, JsonTruthy};
 
 #[derive(Clone, Copy)]
 pub struct EachHelper;
@@ -20,7 +18,7 @@ impl HelperDef for EachHelper {
         r: &'reg Registry,
         ctx: &Context,
         rc: &mut RenderContext<'reg>,
-        out: &mut Output,
+        out: &mut dyn Output,
     ) -> HelperResult {
         let value = h
             .param(0)
@@ -39,6 +37,15 @@ impl HelperDef for EachHelper {
                 let rendered = match (value.value().is_truthy(false), value.value()) {
                     (true, &Json::Array(ref list)) => {
                         let len = list.len();
+
+                        let array_path = value.path().map(|p| {
+                            if value.is_absolute_path() {
+                                p.to_string()
+                            } else {
+                                format!("{}/{}", rc.get_path(), p)
+                            }
+                        });
+
                         for (i, _) in list.iter().enumerate().take(len) {
                             let mut local_rc = rc.derive();
                             if let Some(ref p) = local_path_root {
@@ -49,22 +56,28 @@ impl HelperDef for EachHelper {
                             local_rc.set_local_var("@last".to_string(), to_json(i == len - 1));
                             local_rc.set_local_var("@index".to_string(), to_json(i));
 
-                            if let Some(inner_path) = value.path() {
-                                let new_path =
-                                    format!("{}/{}/[{}]", local_rc.get_path(), inner_path, i);
+                            if let Some(ref p) = array_path {
+                                let new_path = format!("{}/[{}]", p, i);
                                 debug!("each path {:?}", new_path);
                                 local_rc.set_path(new_path);
                             }
 
-                            if let Some(block_param) = h.block_param() {
-                                let mut map = BTreeMap::new();
-                                map.insert(block_param.to_string(), to_json(&list[i]));
-                                local_rc.push_block_context(&map)?;
+                            if let Some(bp_val) = h.block_param() {
+                                let mut params = BlockParams::new();
+                                params.add_path(bp_val, local_rc.get_path())?;
+
+                                local_rc.push_block_context(params)?;
+                            } else if let Some((bp_val, bp_index)) = h.block_param_pair() {
+                                let mut params = BlockParams::new();
+                                params.add_path(bp_val, local_rc.get_path())?;
+                                params.add_value(bp_index, to_json(i))?;
+
+                                local_rc.push_block_context(params)?;
                             }
 
                             t.render(r, ctx, &mut local_rc, out)?;
 
-                            if h.block_param().is_some() {
+                            if h.has_block_param() {
                                 local_rc.pop_block_context();
                             }
 
@@ -76,7 +89,15 @@ impl HelperDef for EachHelper {
                     }
                     (true, &Json::Object(ref obj)) => {
                         let mut first: bool = true;
-                        for (k, v) in obj.iter() {
+                        let obj_path = value.path().map(|p| {
+                            if value.is_absolute_path() {
+                                p.to_string()
+                            } else {
+                                format!("{}/{}", rc.get_path(), p)
+                            }
+                        });
+
+                        for (k, _) in obj.iter() {
                             let mut local_rc = rc.derive();
 
                             if let Some(ref p) = local_path_root {
@@ -89,22 +110,27 @@ impl HelperDef for EachHelper {
 
                             local_rc.set_local_var("@key".to_string(), to_json(k));
 
-                            if let Some(inner_path) = value.path() {
-                                let new_path =
-                                    format!("{}/{}/[{}]", local_rc.get_path(), inner_path, k);
+                            if let Some(ref p) = obj_path {
+                                let new_path = format!("{}/[{}]", p, k);
                                 local_rc.set_path(new_path);
                             }
 
-                            if let Some((bp_key, bp_val)) = h.block_param_pair() {
-                                let mut map = BTreeMap::new();
-                                map.insert(bp_key.to_string(), to_json(k));
-                                map.insert(bp_val.to_string(), to_json(v));
-                                local_rc.push_block_context(&map)?;
+                            if let Some(bp_val) = h.block_param() {
+                                let mut params = BlockParams::new();
+                                params.add_path(bp_val, local_rc.get_path())?;
+
+                                local_rc.push_block_context(params)?;
+                            } else if let Some((bp_val, bp_key)) = h.block_param_pair() {
+                                let mut params = BlockParams::new();
+                                params.add_path(bp_val, local_rc.get_path())?;
+                                params.add_value(bp_key, to_json(&k))?;
+
+                                local_rc.push_block_context(params)?;
                             }
 
                             t.render(r, ctx, &mut local_rc, out)?;
 
-                            if h.block_param().is_some() {
+                            if h.has_block_param() {
                                 local_rc.pop_block_context();
                             }
 
@@ -139,8 +165,8 @@ pub static EACH_HELPER: EachHelper = EachHelper;
 
 #[cfg(test)]
 mod test {
-    use registry::Registry;
-    use value::to_json;
+    use crate::registry::Registry;
+    use crate::value::to_json;
 
     use serde_json::value::Value as Json;
     use std::collections::BTreeMap;
@@ -149,22 +175,15 @@ mod test {
     #[test]
     fn test_each() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t0",
-                    "{{#each this}}{{@first}}|{{@last}}|{{@index}}:{{this}}|{{/each}}"
-                )
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t1",
-                    "{{#each this}}{{@first}}|{{@key}}:{{this}}|{{/each}}"
-                )
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string(
+                "t0",
+                "{{#each this}}{{@first}}|{{@last}}|{{@index}}:{{this}}|{{/each}}"
+            )
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t1", "{{#each this}}{{@first}}|{{@key}}:{{this}}|{{/each}}")
+            .is_ok());
 
         let r0 = handlebars.render("t0", &vec![1u16, 2u16, 3u16]);
         assert_eq!(
@@ -190,11 +209,9 @@ mod test {
         // previously, to access the parent in an each block,
         // a user would need to specify ../../b, as the path
         // that is computed includes the array index: ./a.c.[0]
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#each a.c}} d={{d}} b={{../a.a}} {{/each}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#each a.c}} d={{d}} b={{../a.a}} {{/each}}")
+            .is_ok());
 
         let r1 = handlebars.render("t0", &data);
         assert_eq!(r1.ok().unwrap(), " d=100 b=99  d=200 b=99 ".to_string());
@@ -206,14 +223,12 @@ mod test {
 
         let data = Json::from_str(json_str).unwrap();
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t0",
-                    "{{#each a}}{{#each b}}{{d}}:{{../c}}{{/each}}{{/each}}"
-                )
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string(
+                "t0",
+                "{{#each a}}{{#each b}}{{d}}:{{../c}}{{/each}}{{/each}}"
+            )
+            .is_ok());
 
         let r1 = handlebars.render("t0", &data);
         assert_eq!(r1.ok().unwrap(), "100:200".to_string());
@@ -226,14 +241,12 @@ mod test {
         let data = Json::from_str(json_str).unwrap();
 
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t0",
-                    "{{#each b}}{{#if ../a}}{{#each this}}{{this}}{{/each}}{{/if}}{{/each}}"
-                )
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string(
+                "t0",
+                "{{#each b}}{{#if ../a}}{{#each this}}{{this}}{{/each}}{{/if}}{{/each}}"
+            )
+            .is_ok());
 
         let r1 = handlebars.render("t0", &data);
         assert_eq!(r1.ok().unwrap(), "12345".to_string());
@@ -242,11 +255,9 @@ mod test {
     #[test]
     fn test_nested_array() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#each this.[0]}}{{this}}{{/each}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#each this.[0]}}{{this}}{{/each}}")
+            .is_ok());
 
         let r0 = handlebars.render("t0", &(vec![vec![1, 2, 3]]));
 
@@ -256,11 +267,9 @@ mod test {
     #[test]
     fn test_empty_key() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#each this}}{{@key}}-{{value}}\n{{/each}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#each this}}{{@key}}-{{value}}\n{{/each}}")
+            .is_ok());
 
         let r0 = handlebars
             .render(
@@ -291,18 +300,16 @@ mod test {
     #[test]
     fn test_each_else() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#each a}}1{{else}}empty{{/each}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#each a}}1{{else}}empty{{/each}}")
+            .is_ok());
         let m1 = btreemap! {
             "a".to_string() => Vec::<String>::new(),
         };
         let r0 = handlebars.render("t0", &m1).unwrap();
         assert_eq!(r0, "empty");
 
-        let m2 = btreemap!{
+        let m2 = btreemap! {
             "b".to_string() => Vec::<String>::new()
         };
         let r1 = handlebars.render("t0", &m2).unwrap();
@@ -312,11 +319,9 @@ mod test {
     #[test]
     fn test_block_param() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#each a as |i|}}{{i}}{{/each}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#each a as |i|}}{{i}}{{/each}}")
+            .is_ok());
         let m1 = btreemap! {
             "a".to_string() => vec![1,2,3,4,5]
         };
@@ -327,12 +332,12 @@ mod test {
     #[test]
     fn test_each_object_block_param() {
         let mut handlebars = Registry::new();
-        let template = "{{#each this as |k v|}}\
+        let template = "{{#each this as |v k|}}\
                         {{#with k as |inner_k|}}{{inner_k}}{{/with}}:{{v}}|\
                         {{/each}}";
         assert!(handlebars.register_template_string("t0", template).is_ok());
 
-        let m = btreemap!{
+        let m = btreemap! {
             "ftp".to_string() => 21,
             "http".to_string() => 80
         };
@@ -341,16 +346,30 @@ mod test {
     }
 
     #[test]
+    fn test_each_object_block_param2() {
+        let mut handlebars = Registry::new();
+        let template = "{{#each this as |v k|}}\
+                        {{#with v as |inner_v|}}{{k}}:{{inner_v}}{{/with}}|\
+                        {{/each}}";
+
+        assert!(handlebars.register_template_string("t0", template).is_ok());
+
+        let m = btreemap! {
+            "ftp".to_string() => 21,
+            "http".to_string() => 80
+        };
+        let r0 = handlebars.render("t0", &m);
+        assert_eq!(r0.ok().unwrap(), "ftp:21|http:80|".to_string());
+    }
+
     fn test_nested_each_with_path_ups() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t0",
-                    "{{#each a.b}}{{#each c}}{{../../d}}{{/each}}{{/each}}"
-                )
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string(
+                "t0",
+                "{{#each a.b}}{{#each c}}{{../../d}}{{/each}}{{/each}}"
+            )
+            .is_ok());
 
         let data = btreemap! {
             "a".to_string() => to_json(&btreemap! {
@@ -381,11 +400,9 @@ mod test {
     #[test]
     fn test_key_iteration_with_unicode() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#each this}}{{@key}}: {{this}}\n{{/each}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#each this}}{{@key}}: {{this}}\n{{/each}}")
+            .is_ok());
         let data = json!({
             "normal": 1,
             "你好": 2,

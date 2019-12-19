@@ -21,6 +21,7 @@ pub const GIT_PROXY_OPTIONS_VERSION: c_uint = 1;
 pub const GIT_SUBMODULE_UPDATE_OPTIONS_VERSION: c_uint = 1;
 pub const GIT_ODB_BACKEND_VERSION: c_uint = 1;
 pub const GIT_REFDB_BACKEND_VERSION: c_uint = 1;
+pub const GIT_CHERRYPICK_OPTIONS_VERSION: c_uint = 1;
 
 macro_rules! git_enum {
     (pub enum $name:ident { $($variants:tt)* }) => {
@@ -330,6 +331,7 @@ pub struct git_remote_callbacks {
     pub push_negotiation: Option<git_push_negotiation>,
     pub transport: Option<git_transport_cb>,
     pub payload: *mut c_void,
+    pub resolve_url: Option<git_url_resolve_cb>,
 }
 
 #[repr(C)]
@@ -383,6 +385,8 @@ pub type git_push_negotiation =
 
 pub type git_push_update_reference_cb =
     extern "C" fn(*const c_char, *const c_char, *mut c_void) -> c_int;
+pub type git_url_resolve_cb =
+    extern "C" fn(*mut git_buf, *const c_char, c_int, *mut c_void) -> c_int;
 
 #[repr(C)]
 pub struct git_push_update {
@@ -801,6 +805,20 @@ pub struct git_writestream {
     pub close: extern "C" fn(*mut git_writestream) -> c_int,
     pub free: extern "C" fn(*mut git_writestream),
 }
+
+git_enum! {
+    pub enum git_attr_value_t {
+        GIT_ATTR_VALUE_UNSPECIFIED = 0,
+        GIT_ATTR_VALUE_TRUE,
+        GIT_ATTR_VALUE_FALSE,
+        GIT_ATTR_VALUE_STRING,
+    }
+}
+
+pub const GIT_ATTR_CHECK_FILE_THEN_INDEX: u32 = 0;
+pub const GIT_ATTR_CHECK_INDEX_THEN_FILE: u32 = 1;
+pub const GIT_ATTR_CHECK_INDEX_ONLY: u32 = 2;
+pub const GIT_ATTR_CHECK_NO_SYSTEM: u32 = 1 << 2;
 
 #[repr(C)]
 pub struct git_cred {
@@ -1567,6 +1585,14 @@ pub struct git_rebase_operation {
     pub exec: *const c_char,
 }
 
+#[repr(C)]
+pub struct git_cherrypick_options {
+    pub version: c_uint,
+    pub mainline: c_uint,
+    pub merge_opts: git_merge_options,
+    pub checkout_opts: git_checkout_options,
+}
+
 extern "C" {
     // threads
     pub fn git_libgit2_init() -> c_int;
@@ -2207,7 +2233,7 @@ extern "C" {
         source: *const git_tree,
     ) -> c_int;
     pub fn git_treebuilder_clear(bld: *mut git_treebuilder);
-    pub fn git_treebuilder_entrycount(bld: *mut git_treebuilder) -> c_uint;
+    pub fn git_treebuilder_entrycount(bld: *mut git_treebuilder) -> size_t;
     pub fn git_treebuilder_free(bld: *mut git_treebuilder);
     pub fn git_treebuilder_get(
         bld: *mut git_treebuilder,
@@ -2534,6 +2560,16 @@ extern "C" {
     ) -> c_int;
     pub fn git_config_snapshot(out: *mut *mut git_config, config: *mut git_config) -> c_int;
     pub fn git_config_entry_free(entry: *mut git_config_entry);
+
+    // attr
+    pub fn git_attr_get(
+        value_out: *mut *const c_char,
+        repo: *mut git_repository,
+        flags: u32,
+        path: *const c_char,
+        name: *const c_char,
+    ) -> c_int;
+    pub fn git_attr_value(value: *const c_char) -> git_attr_value_t;
 
     // cred
     pub fn git_cred_default_new(out: *mut *mut git_cred) -> c_int;
@@ -3343,12 +3379,21 @@ extern "C" {
     pub fn git_rebase_abort(rebase: *mut git_rebase) -> c_int;
     pub fn git_rebase_finish(rebase: *mut git_rebase, signature: *const git_signature) -> c_int;
     pub fn git_rebase_free(rebase: *mut git_rebase);
+
+    // cherrypick
+    pub fn git_cherrypick_init_options(opts: *mut git_cherrypick_options, version: c_uint)
+        -> c_int;
+    pub fn git_cherrypick(
+        repo: *mut git_repository,
+        commit: *mut git_commit,
+        options: *const git_cherrypick_options,
+    ) -> c_int;
 }
 
 pub fn init() {
-    use std::sync::{Once, ONCE_INIT};
+    use std::sync::Once;
 
-    static INIT: Once = ONCE_INIT;
+    static INIT: Once = Once::new();
     INIT.call_once(|| unsafe {
         openssl_init();
         ssh_init();

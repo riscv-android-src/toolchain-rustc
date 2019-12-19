@@ -6,6 +6,11 @@
 #
 # Check travis config for `gdb --batch` command to print all crash logs
 
+parameters:
+  # When this parameter is set to anything other than an empty string the tests
+  # will only be executed when the commit updates submodules
+  only_on_updated_submodules: ''
+
 steps:
 
 # Disable automatic line ending conversion, which is enabled by default on
@@ -21,6 +26,22 @@ steps:
 - checkout: self
   fetchDepth: 2
 
+# Set the SKIP_JOB environment variable if this job is supposed to only run
+# when submodules are updated and they were not. The following time consuming
+# tasks will be skipped when the environment variable is present.
+- ${{ if parameters.only_on_updated_submodules }}:
+  - bash: |
+      set -e
+      # Submodules pseudo-files inside git have the 160000 permissions, so when
+      # those files are present in the diff a submodule was updated.
+      if git diff HEAD^ | grep "^index .* 160000" >/dev/null 2>&1; then
+          echo "Executing the job since submodules are updated"
+      else
+          echo "Not executing this job since no submodules were updated"
+          echo "##vso[task.setvariable variable=SKIP_JOB;]1"
+      fi
+    displayName: Decide whether to run this job
+
 # Spawn a background process to collect CPU usage statistics which we'll upload
 # at the end of the build. See the comments in the script here for more
 # information.
@@ -29,10 +50,6 @@ steps:
 
 - bash: printenv | sort
   displayName: Show environment variables
-
-# Log the date, even on failure. Attempting to debug SSL certificate errors.
-- bash: date
-  displayName: Print out date (before build)
 
 - bash: |
     set -e
@@ -44,17 +61,6 @@ steps:
 
 - template: install-sccache.yml
 - template: install-clang.yml
-
-# Install some dependencies needed to build LLDB/Clang, currently only needed
-# during the `dist` target
-- bash: |
-    set -e
-    brew update
-    brew install xz
-    brew install swig@3
-    brew link --force swig@3
-  displayName: Install build dependencies (OSX)
-  condition: and(succeeded(), eq(variables['Agent.OS'], 'Darwin'), eq(variables['SCRIPT'],'./x.py dist'))
 
 # Switch to XCode 9.3 on OSX since it seems to be the last version that supports
 # i686-apple-darwin. We'll eventually want to upgrade this and it will probably
@@ -75,7 +81,7 @@ steps:
     echo '{"ipv6":true,"fixed-cidr-v6":"fd9a:8454:6789:13f7::/64"}' | sudo tee /etc/docker/daemon.json
     sudo service docker restart
   displayName: Enable IPv6
-  condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
+  condition: and(succeeded(), not(variables.SKIP_JOB), eq(variables['Agent.OS'], 'Linux'))
 
 # Disable automatic line ending conversion (again). On Windows, when we're
 # installing dependencies, something switches the git configuration directory or
@@ -91,12 +97,12 @@ steps:
     set -e
     mkdir -p $HOME/rustsrc
     $BUILD_SOURCESDIRECTORY/src/ci/init_repo.sh . $HOME/rustsrc
-  condition: and(succeeded(), ne(variables['Agent.OS'], 'Windows_NT'))
+  condition: and(succeeded(), not(variables.SKIP_JOB), ne(variables['Agent.OS'], 'Windows_NT'))
   displayName: Check out submodules (Unix)
 - script: |
-    if not exist D:\cache\rustsrc\NUL mkdir D:\cache\rustsrc
-    sh src/ci/init_repo.sh . /d/cache/rustsrc
-  condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+    if not exist C:\cache\rustsrc\NUL mkdir C:\cache\rustsrc
+    sh src/ci/init_repo.sh . /c/cache/rustsrc
+  condition: and(succeeded(), not(variables.SKIP_JOB), eq(variables['Agent.OS'], 'Windows_NT'))
   displayName: Check out submodules (Windows)
 
 # See also the disable for autocrlf above, this just checks that it worked
@@ -121,21 +127,17 @@ steps:
 
 # Ensure the `aws` CLI is installed so we can deploy later on, cache docker
 # images, etc.
-- bash: |
-    set -e
-    source src/ci/shared.sh
-    sudo apt-get install -y python3-setuptools
-    retry pip3 install -r src/ci/awscli-requirements.txt --upgrade --user
-    echo "##vso[task.prependpath]$HOME/.local/bin"
-  displayName: Install awscli (Linux)
-  condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
-- script: pip install -r src/ci/awscli-requirements.txt
-  displayName: Install awscli (non-Linux)
-  condition: and(succeeded(), ne(variables['Agent.OS'], 'Linux'))
+- bash: src/ci/install-awscli.sh
+  env:
+    AGENT_OS: $(Agent.OS)
+  condition: and(succeeded(), not(variables.SKIP_JOB))
+  displayName: Install awscli
 
 # Configure our CI_JOB_NAME variable which log analyzers can use for the main
 # step to see what's going on.
-- bash: echo "##vso[task.setvariable variable=CI_JOB_NAME]$SYSTEM_JOBNAME"
+- bash: |
+    builder=$(echo $AGENT_JOBNAME | cut -d ' ' -f 2)
+    echo "##vso[task.setvariable variable=CI_JOB_NAME]$builder"
   displayName: Configure Job Name
 
 # As a quick smoke check on the otherwise very fast mingw-check linux builder
@@ -147,7 +149,7 @@ steps:
     python2.7 "$BUILD_SOURCESDIRECTORY/src/tools/publish_toolstate.py" "$(git rev-parse HEAD)" "$(git log --format=%s -n1 HEAD)" "" ""
     cd ..
     rm -rf rust-toolstate
-  condition: and(succeeded(), eq(variables['IMAGE'], 'mingw-check'))
+  condition: and(succeeded(), not(variables.SKIP_JOB), eq(variables['IMAGE'], 'mingw-check'))
   displayName: Verify the publish_toolstate script works
 
 - bash: |
@@ -166,8 +168,10 @@ steps:
   env:
     CI: true
     SRC: .
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
+    AWS_ACCESS_KEY_ID: $(SCCACHE_AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(SCCACHE_AWS_SECRET_ACCESS_KEY)
     TOOLSTATE_REPO_ACCESS_TOKEN: $(TOOLSTATE_REPO_ACCESS_TOKEN)
+  condition: and(succeeded(), not(variables.SKIP_JOB))
   displayName: Run build
 
 # If we're a deploy builder, use the `aws` command to publish everything to our
@@ -189,8 +193,9 @@ steps:
     fi
     retry aws s3 cp --no-progress --recursive --acl public-read ./$upload_dir s3://$DEPLOY_BUCKET/$deploy_dir/$BUILD_SOURCEVERSION
   env:
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-  condition: and(succeeded(), or(eq(variables.DEPLOY, '1'), eq(variables.DEPLOY_ALT, '1')))
+    AWS_ACCESS_KEY_ID: $(UPLOAD_AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(UPLOAD_AWS_SECRET_ACCESS_KEY)
+  condition: and(succeeded(), not(variables.SKIP_JOB), or(eq(variables.DEPLOY, '1'), eq(variables.DEPLOY_ALT, '1')))
   displayName: Upload artifacts
 
 # Upload CPU usage statistics that we've been gathering this whole time. Always
@@ -198,12 +203,8 @@ steps:
 # errors here ever fail the build since this is just informational.
 - bash: aws s3 cp --acl public-read cpu-usage.csv s3://$DEPLOY_BUCKET/rustc-builds/$BUILD_SOURCEVERSION/cpu-$SYSTEM_JOBNAME.csv
   env:
-    AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY)
-  condition: variables['AWS_SECRET_ACCESS_KEY']
+    AWS_ACCESS_KEY_ID: $(UPLOAD_AWS_ACCESS_KEY_ID)
+    AWS_SECRET_ACCESS_KEY: $(UPLOAD_AWS_SECRET_ACCESS_KEY)
+  condition: variables['UPLOAD_AWS_SECRET_ACCESS_KEY']
   continueOnError: true
   displayName: Upload CPU usage statistics
-
-# Log the date, even on failure. Attempting to debug SSL certificate errors.
-- bash: date
-  continueOnError: true
-  displayName: Print out date (after build)

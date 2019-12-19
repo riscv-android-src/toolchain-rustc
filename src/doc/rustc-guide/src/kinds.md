@@ -15,7 +15,7 @@ For example, given a `HashMap<K, V>` with two type parameters, `K` and `V`, an
 instantiation of the parameters, for example `HashMap<i32, u32>`, would be
 represented by the substitution `&'tcx [tcx.types.i32, tcx.types.u32]`.
 
-`Subst` provides various convenience methods to instantiant substitutions
+`Subst` provides various convenience methods to instantiate substitutions
 given item definitions, which should generally be used rather than explicitly
 constructing such substitution slices.
 
@@ -30,7 +30,7 @@ make use of the safe [`UnpackedKind`](#unpackedkind) abstraction.
 As `Kind` itself is not type-safe, the `UnpackedKind` enum provides a more
 convenient and safe interface for dealing with kinds. An `UnpackedKind` can
 be converted to a raw `Kind` using `Kind::from()` (or simply `.into()` when
-the context is clear). As mentioned earlier, substition lists store raw
+the context is clear). As mentioned earlier, substitution lists store raw
 `Kind`s, so before dealing with them, it is preferable to convert them to
 `UnpackedKind`s first. This is done by calling the `.unpack()` method.
 

@@ -10,16 +10,21 @@
 
 #![doc(html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk.png",
        html_favicon_url = "https://www.rust-lang.org/favicon.ico",
-       html_root_url = "https://docs.rs/rand_chacha/0.1.0")]
+       html_root_url = "https://rust-random.github.io/rand/")]
 
 #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 #![doc(test(attr(allow(unused_variables), deny(warnings))))]
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
-extern crate rand_core;
+pub use rand_core;
 
 mod chacha;
 
-pub use chacha::{ChaChaRng, ChaChaCore};
+pub use crate::chacha::{ChaCha12Core, ChaCha12Rng, ChaCha20Core, ChaCha20Rng, ChaCha8Core, ChaCha8Rng};
+
+/// ChaCha with 20 rounds
+pub type ChaChaRng = ChaCha20Rng;
+/// ChaCha with 20 rounds, low-level interface
+pub type ChaChaCore = ChaCha20Core;

@@ -62,7 +62,14 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-hashbrown = "0.4"
+hashbrown = "0.5"
+```
+
+Then:
+
+```rs
+use hashbrown::HashMap;
+let mut map = HashMap::new();
 ```
 
 This crate has the following Cargo features:

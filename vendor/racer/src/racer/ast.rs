@@ -1,8 +1,10 @@
-use ast_types::Path as RacerPath;
-use ast_types::{self, GenericsArgs, ImplHeader, Pat, PathAlias, PathAliasKind, TraitBounds, Ty};
-use core::{self, BytePos, ByteRange, Match, MatchType, Scope, Session, SessionExt};
-use nameres;
-use typeinf;
+use crate::ast_types::Path as RacerPath;
+use crate::ast_types::{
+    self, GenericsArgs, ImplHeader, Pat, PathAlias, PathAliasKind, TraitBounds, Ty,
+};
+use crate::core::{self, BytePos, ByteRange, Match, MatchType, Scope, Session, SessionExt};
+use crate::nameres;
+use crate::typeinf;
 
 use std::path::Path;
 use std::rc::Rc;
@@ -26,7 +28,7 @@ impl Emitter for DummyEmitter {
 
 /// construct parser from string
 // From syntax/util/parser_testing.rs
-pub fn string_to_parser(ps: &ParseSess, source_str: String) -> Parser {
+pub fn string_to_parser(ps: &ParseSess, source_str: String) -> Parser<'_> {
     parse::new_parser_from_source_str(ps, FileName::Custom("racer-file".to_owned()), source_str)
 }
 
@@ -34,7 +36,7 @@ pub fn string_to_parser(ps: &ParseSess, source_str: String) -> Parser {
 // TODO: use Result insated of Option
 pub fn with_error_checking_parse<F, T>(s: String, f: F) -> Option<T>
 where
-    F: FnOnce(&mut Parser) -> Option<T>,
+    F: FnOnce(&mut Parser<'_>) -> Option<T>,
 {
     // FIXME: Set correct edition based on the edition of the target crate.
     syntax::with_globals(Edition::Edition2018, || {
@@ -165,11 +167,13 @@ impl<'ast> visit::Visitor<'ast> for PatBindVisitor {
 
     fn visit_expr(&mut self, ex: &ast::Expr) {
         // don't visit the RHS or block of an 'if let' or 'for' stmt
-        match ex.node {
-            ExprKind::IfLet(ref pat, ..) | ExprKind::WhileLet(ref pat, ..) => {
-                pat.iter().for_each(|pat| self.visit_pat(pat))
+        match &ex.node {
+            ExprKind::If(let_stmt, ..) | ExprKind::While(let_stmt, ..) => {
+                if let ExprKind::Let(pats, ..) = &let_stmt.node {
+                    pats.iter().for_each(|pat| self.visit_pat(pat))
+                }
             }
-            ExprKind::ForLoop(ref pat, ..) => self.visit_pat(pat),
+            ExprKind::ForLoop(pat, ..) => self.visit_pat(pat),
             _ => visit::walk_expr(self, ex),
         }
     }
@@ -213,7 +217,7 @@ pub struct FnArgVisitor {
 impl<'ast> visit::Visitor<'ast> for FnArgVisitor {
     fn visit_fn(
         &mut self,
-        _fk: visit::FnKind,
+        _fk: visit::FnKind<'_>,
         fd: &ast::FnDecl,
         _: source_map::Span,
         _: ast::NodeId,
@@ -250,7 +254,7 @@ fn destructure_pattern_to_ty(
     point: BytePos,
     ty: &Ty,
     scope: &Scope,
-    session: &Session,
+    session: &Session<'_>,
 ) -> Option<Ty> {
     debug!(
         "destructure_pattern_to_ty point {:?} ty {:?} pat: {:?}",
@@ -268,62 +272,28 @@ fn destructure_pattern_to_ty(
                 );
             }
         }
-        PatKind::Tuple(ref tuple_elements, _) => match *ty {
+        PatKind::Tuple(ref tuple_elements) => match *ty {
             Ty::Tuple(ref typeelems) => {
-                let mut res = None;
                 for (i, p) in tuple_elements.iter().enumerate() {
                     if !point_is_in_span(point, &p.span) {
                         continue;
                     }
                     if let Some(ref ty) = typeelems[i] {
-                        res = destructure_pattern_to_ty(p, point, ty, scope, session);
-                        break;
+                        return destructure_pattern_to_ty(p, point, ty, scope, session);
                     }
                 }
-                res
+                None
             }
             _ => panic!("Expecting TyTuple"),
         },
-        PatKind::TupleStruct(ref path, ref children, _) => {
-            let m = resolve_ast_path(path, &scope.filepath, scope.point, session);
+        PatKind::TupleStruct(ref path, ref children) => {
+            let m = resolve_ast_path(path, &scope.filepath, scope.point, session)?;
             let contextty = path_to_match(ty.clone(), session);
-            if let Some(m) = m {
-                let mut res = None;
-
-                for (i, p) in children.iter().enumerate() {
-                    if point_is_in_span(point, &p.span) {
-                        res = typeinf::get_tuplestruct_field_type(i, &m, session)
-                            .and_then(|ty|
-                                // if context ty is a match, use its generics
-                                if let Some(Ty::Match(ref contextm)) = contextty {
-                                    path_to_match_including_generics(ty, contextm.to_generics(), session)
-                                } else {
-                                    path_to_match(ty, session)
-                                })
-                            .and_then(|ty| destructure_pattern_to_ty(p, point, &ty, scope, session));
-
-                        break;
-                    }
-                }
-                res
-            } else {
-                None
-            }
-        }
-        PatKind::Struct(ref path, ref children, _) => {
-            let m = resolve_ast_path(path, &scope.filepath, scope.point, session);
-            let contextty = path_to_match(ty.clone(), session);
-            if let Some(m) = m {
-                let mut res = None;
-
-                for child in children {
-                    if point_is_in_span(point, &child.span) {
-                        res = typeinf::get_struct_field_type(
-                            &child.node.ident.name.as_str(),
-                            &m,
-                            session,
-                        )
+            for (i, p) in children.iter().enumerate() {
+                if point_is_in_span(point, &p.span) {
+                    return typeinf::get_tuplestruct_field_type(i, &m, session)
                         .and_then(|ty| {
+                            // if context ty is a match, use its generics
                             if let Some(Ty::Match(ref contextm)) = contextty {
                                 path_to_match_including_generics(
                                     ty,
@@ -334,18 +304,34 @@ fn destructure_pattern_to_ty(
                                 path_to_match(ty, session)
                             }
                         })
-                        .and_then(|ty| {
-                            destructure_pattern_to_ty(&child.node.pat, point, &ty, scope, session)
-                        });
-
-                        break;
-                    }
+                        .and_then(|ty| destructure_pattern_to_ty(p, point, &ty, scope, session));
                 }
-
-                res
-            } else {
-                None
             }
+            None
+        }
+        PatKind::Struct(ref path, ref children, _) => {
+            let m = resolve_ast_path(path, &scope.filepath, scope.point, session)?;
+            let contextty = path_to_match(ty.clone(), session);
+            for child in children {
+                if point_is_in_span(point, &child.span) {
+                    return typeinf::get_struct_field_type(
+                        &child.node.ident.name.as_str(),
+                        &m,
+                        session,
+                    )
+                    .and_then(|ty| {
+                        if let Some(Ty::Match(ref contextm)) = contextty {
+                            path_to_match_including_generics(ty, contextm.to_generics(), session)
+                        } else {
+                            path_to_match(ty, session)
+                        }
+                    })
+                    .and_then(|ty| {
+                        destructure_pattern_to_ty(&child.node.pat, point, &ty, scope, session)
+                    });
+                }
+            }
+            None
         }
         _ => {
             debug!("Could not destructure pattern {:?}", pat);
@@ -354,7 +340,7 @@ fn destructure_pattern_to_ty(
     }
 }
 
-struct LetTypeVisitor<'c: 's, 's> {
+struct LetTypeVisitor<'c, 's> {
     scope: Scope,
     session: &'s Session<'c>,
     pos: BytePos, // pos is relative to the srctxt, scope is global
@@ -381,7 +367,7 @@ impl<'c, 's, 'ast> visit::Visitor<'ast> for LetTypeVisitor<'c, 's> {
     }
 }
 
-struct MatchTypeVisitor<'c: 's, 's> {
+struct MatchTypeVisitor<'c, 's> {
     scope: Scope,
     session: &'s Session<'c>,
     pos: BytePos, // pos is relative to the srctxt, scope is global
@@ -426,7 +412,7 @@ fn resolve_ast_path(
     path: &ast::Path,
     filepath: &Path,
     pos: BytePos,
-    session: &Session,
+    session: &Session<'_>,
 ) -> Option<Match> {
     let scope = Scope::new(filepath.to_owned(), pos);
     let path = RacerPath::from_ast(path, &scope);
@@ -443,7 +429,7 @@ fn resolve_ast_path(
     .nth(0)
 }
 
-fn path_to_match(ty: Ty, session: &Session) -> Option<Ty> {
+fn path_to_match(ty: Ty, session: &Session<'_>) -> Option<Ty> {
     match ty {
         Ty::PathSearch(paths) => {
             find_type_match(&paths.path, &paths.filepath, paths.point, session).map(Ty::Match)
@@ -457,7 +443,7 @@ pub(crate) fn find_type_match(
     path: &RacerPath,
     fpath: &Path,
     pos: BytePos,
-    session: &Session,
+    session: &Session<'_>,
 ) -> Option<Match> {
     debug!("find_type_match {:?}, {:?}", path, fpath);
     let mut res = nameres::resolve_path_with_primitive(
@@ -482,7 +468,7 @@ pub(crate) fn find_type_match(
     Some(res)
 }
 
-struct ExprTypeVisitor<'c: 's, 's> {
+struct ExprTypeVisitor<'c, 's> {
     scope: Scope,
     session: &'s Session<'c>,
     // what we have before calling typeinf::get_type_of_match
@@ -715,8 +701,7 @@ impl<'c, 's, 'ast> visit::Visitor<'ast> for ExprTypeVisitor<'c, 's> {
                     }
                 }
             }
-            ExprKind::If(_, ref block, ref else_block)
-            | ExprKind::IfLet(_, _, ref block, ref else_block) => {
+            ExprKind::If(_, ref block, ref else_block) => {
                 debug!("if/iflet expr");
                 if let Some(stmt) = block.stmts.last() {
                     visit::walk_stmt(self, stmt);
@@ -820,7 +805,7 @@ impl<'c, 's, 'ast> visit::Visitor<'ast> for ExprTypeVisitor<'c, 's> {
 fn path_to_match_including_generics(
     mut ty: Ty,
     generics: Option<&GenericsArgs>,
-    session: &Session,
+    session: &Session<'_>,
 ) -> Option<Ty> {
     if let Some(gen) = generics {
         ty = ty.replace_by_generics(gen);
@@ -839,7 +824,7 @@ fn find_type_match_including_generics(
     filepath: &Path,
     pos: BytePos,
     structm: &Match,
-    session: &Session,
+    session: &Session<'_>,
 ) -> Option<Ty> {
     assert_eq!(&structm.filepath, filepath);
     let fieldtypepath = match fieldtype {
@@ -1200,7 +1185,7 @@ pub fn parse_static(s: String, scope: Scope) -> StaticVisitor {
     v
 }
 
-pub fn get_type_of(s: String, fpath: &Path, pos: BytePos, session: &Session) -> Option<Ty> {
+pub fn get_type_of(s: String, fpath: &Path, pos: BytePos, session: &Session<'_>) -> Option<Ty> {
     let startscope = Scope {
         filepath: fpath.to_path_buf(),
         point: pos,
@@ -1213,7 +1198,7 @@ pub fn get_type_of(s: String, fpath: &Path, pos: BytePos, session: &Session) -> 
 }
 
 // pos points to an ident in the lhs of the stmtstr
-pub fn get_let_type(s: String, pos: BytePos, scope: Scope, session: &Session) -> Option<Ty> {
+pub fn get_let_type(s: String, pos: BytePos, scope: Scope, session: &Session<'_>) -> Option<Ty> {
     let mut v = LetTypeVisitor {
         scope,
         session,
@@ -1224,7 +1209,12 @@ pub fn get_let_type(s: String, pos: BytePos, scope: Scope, session: &Session) ->
     v.result
 }
 
-pub fn get_match_arm_type(s: String, pos: BytePos, scope: Scope, session: &Session) -> Option<Ty> {
+pub fn get_match_arm_type(
+    s: String,
+    pos: BytePos,
+    scope: Scope,
+    session: &Session<'_>,
+) -> Option<Ty> {
     let mut v = MatchTypeVisitor {
         scope,
         session,
@@ -1243,7 +1233,7 @@ pub struct FnOutputVisitor {
 impl<'ast> visit::Visitor<'ast> for FnOutputVisitor {
     fn visit_fn(
         &mut self,
-        _: visit::FnKind,
+        _: visit::FnKind<'_>,
         fd: &ast::FnDecl,
         _: source_map::Span,
         _: ast::NodeId,
@@ -1281,7 +1271,7 @@ where
 }
 
 /// Visitor for for ~ in .. statement
-pub(crate) struct ForStmtVisitor<'r, 's: 'r> {
+pub(crate) struct ForStmtVisitor<'r, 's> {
     pub(crate) for_pat: Option<Pat>,
     pub(crate) in_expr: Option<Ty>,
     scope: Scope,
@@ -1316,7 +1306,7 @@ pub(crate) fn parse_for_stmt<'r, 's: 'r>(
 }
 
 /// Visitor for if let / while let statement
-pub(crate) struct IfLetVisitor<'r, 's: 'r> {
+pub(crate) struct IfLetVisitor<'r, 's> {
     pub(crate) let_pat: Option<Pat>,
     pub(crate) rh_expr: Option<Ty>,
     scope: Scope,
@@ -1326,12 +1316,15 @@ pub(crate) struct IfLetVisitor<'r, 's: 'r> {
 impl<'ast, 'r, 's> visit::Visitor<'ast> for IfLetVisitor<'r, 's> {
     fn visit_expr(&mut self, ex: &'ast ast::Expr) {
         match &ex.node {
-            ExprKind::IfLet(pats, expr, _, _) | ExprKind::WhileLet(pats, expr, _, _) => {
-                if let Some(pat) = pats.get(0) {
-                    self.let_pat = Some(Pat::from_ast(&pat.node, &self.scope));
-                    let mut expr_visitor = ExprTypeVisitor::new(self.scope.clone(), self.session);
-                    expr_visitor.visit_expr(expr);
-                    self.rh_expr = expr_visitor.result;
+            ExprKind::If(let_stmt, ..) | ExprKind::While(let_stmt, ..) => {
+                if let ExprKind::Let(pats, expr) = &let_stmt.node {
+                    if let Some(pat) = pats.get(0) {
+                        self.let_pat = Some(Pat::from_ast(&pat.node, &self.scope));
+                        let mut expr_visitor =
+                            ExprTypeVisitor::new(self.scope.clone(), self.session);
+                        expr_visitor.visit_expr(expr);
+                        self.rh_expr = expr_visitor.result;
+                    }
                 }
             }
             _ => {}

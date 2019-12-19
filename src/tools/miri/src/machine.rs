@@ -1,3 +1,6 @@
+//! Global machine state as well as implementation of the interpreter engine
+//! `Machine` trait.
+
 use std::rc::Rc;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -8,14 +11,15 @@ use rand::rngs::StdRng;
 use syntax::attr;
 use syntax::symbol::sym;
 use rustc::hir::def_id::DefId;
-use rustc::ty::{self, layout::{Size, LayoutOf}, query::TyCtxtAt};
+use rustc::ty::{self, layout::{Size, LayoutOf}, TyCtxt};
 use rustc::mir;
 
 use crate::*;
 
 // Some global facts about the emulated machine.
 pub const PAGE_SIZE: u64 = 4*1024; // FIXME: adjust to target architecture
-pub const STACK_ADDR: u64 = 16*PAGE_SIZE; // not really about the "stack", but where we start assigning integer addresses to allocations
+pub const STACK_ADDR: u64 = 32*PAGE_SIZE; // not really about the "stack", but where we start assigning integer addresses to allocations
+pub const STACK_SIZE: u64 = 16*PAGE_SIZE; // whatever
 pub const NUM_CPUS: u64 = 1;
 
 /// Extra memory kinds
@@ -25,6 +29,8 @@ pub enum MiriMemoryKind {
     Rust,
     /// `malloc` memory.
     C,
+    /// Windows `HeapAlloc` memory.
+    WinHeap,
     /// Part of env var emulation.
     Env,
     /// Statics.
@@ -41,25 +47,30 @@ impl Into<MemoryKind<MiriMemoryKind>> for MiriMemoryKind {
 /// Extra per-allocation data
 #[derive(Debug, Clone)]
 pub struct AllocExtra {
-    pub stacked_borrows: stacked_borrows::AllocExtra,
+    /// Stacked Borrows state is only added if validation is enabled.
+    pub stacked_borrows: Option<stacked_borrows::AllocExtra>,
 }
 
 /// Extra global memory data
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct MemoryExtra {
     pub stacked_borrows: stacked_borrows::MemoryExtra,
     pub intptrcast: intptrcast::MemoryExtra,
-    /// The random number generator to use if Miri is running in non-deterministic mode and to
-    /// enable intptrcast
-    pub(crate) rng: Option<RefCell<StdRng>>
+
+    /// The random number generator used for resolving non-determinism.
+    pub(crate) rng: RefCell<StdRng>,
+
+    /// Whether to enforce the validity invariant.
+    pub(crate) validate: bool,
 }
 
 impl MemoryExtra {
-    pub fn with_rng(rng: Option<StdRng>) -> Self {
+    pub fn new(rng: StdRng, validate: bool) -> Self {
         MemoryExtra {
             stacked_borrows: Default::default(),
             intptrcast: Default::default(),
-            rng: rng.map(RefCell::new),
+            rng: RefCell::new(rng),
+            validate,
         }
     }
 }
@@ -82,13 +93,10 @@ pub struct Evaluator<'tcx> {
 
     /// TLS state.
     pub(crate) tls: TlsData<'tcx>,
-
-    /// Whether to enforce the validity invariant.
-    pub(crate) validate: bool,
 }
 
 impl<'tcx> Evaluator<'tcx> {
-    pub(crate) fn new(validate: bool) -> Self {
+    pub(crate) fn new() -> Self {
         Evaluator {
             env_vars: HashMap::default(),
             argc: None,
@@ -96,13 +104,12 @@ impl<'tcx> Evaluator<'tcx> {
             cmd_line: None,
             last_error: 0,
             tls: TlsData::default(),
-            validate,
         }
     }
 }
 
-/// A rustc InterpretCx for Miri.
-pub type MiriEvalContext<'mir, 'tcx> = InterpretCx<'mir, 'tcx, Evaluator<'tcx>>;
+/// A rustc InterpCx for Miri.
+pub type MiriEvalContext<'mir, 'tcx> = InterpCx<'mir, 'tcx, Evaluator<'tcx>>;
 
 /// A little trait that's useful to be inherited by extension traits.
 pub trait MiriEvalContextExt<'mir, 'tcx> {
@@ -128,20 +135,22 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     type MemoryExtra = MemoryExtra;
     type AllocExtra = AllocExtra;
     type PointerTag = Tag;
+    type ExtraFnVal = Dlsym;
 
     type MemoryMap = MonoHashMap<AllocId, (MemoryKind<MiriMemoryKind>, Allocation<Tag, Self::AllocExtra>)>;
 
     const STATIC_KIND: Option<MiriMemoryKind> = Some(MiriMemoryKind::Static);
 
+    const CHECK_ALIGN: bool = true;
+
     #[inline(always)]
-    fn enforce_validity(ecx: &InterpretCx<'mir, 'tcx, Self>) -> bool {
-        ecx.machine.validate
+    fn enforce_validity(ecx: &InterpCx<'mir, 'tcx, Self>) -> bool {
+        ecx.memory().extra.validate
     }
 
-    /// Returns `Ok()` when the function was handled; fail otherwise.
     #[inline(always)]
     fn find_fn(
-        ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
         dest: Option<PlaceTy<'tcx, Tag>>,
@@ -151,8 +160,19 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     }
 
     #[inline(always)]
+    fn call_extra_fn(
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
+        fn_val: Dlsym,
+        args: &[OpTy<'tcx, Tag>],
+        dest: Option<PlaceTy<'tcx, Tag>>,
+        ret: Option<mir::BasicBlock>,
+    ) -> InterpResult<'tcx> {
+        ecx.call_dlsym(fn_val, args, dest, ret)
+    }
+
+    #[inline(always)]
     fn call_intrinsic(
-        ecx: &mut rustc_mir::interpret::InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut rustc_mir::interpret::InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
         dest: PlaceTy<'tcx, Tag>,
@@ -161,17 +181,17 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     }
 
     #[inline(always)]
-    fn ptr_op(
-        ecx: &rustc_mir::interpret::InterpretCx<'mir, 'tcx, Self>,
+    fn binary_ptr_op(
+        ecx: &rustc_mir::interpret::InterpCx<'mir, 'tcx, Self>,
         bin_op: mir::BinOp,
         left: ImmTy<'tcx, Tag>,
         right: ImmTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, (Scalar<Tag>, bool)> {
-        ecx.ptr_op(bin_op, left, right)
+        ecx.binary_ptr_op(bin_op, left, right)
     }
 
     fn box_alloc(
-        ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
         dest: PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
         trace!("box_alloc for {:?}", dest.layout.ty);
@@ -195,12 +215,12 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
 
         // First argument: `size`.
         // (`0` is allowed here -- this is expected to be handled by the lang item).
-        let arg = ecx.eval_place(&mir::Place::Base(mir::PlaceBase::Local(args.next().unwrap())))?;
+        let arg = ecx.local_place(args.next().unwrap())?;
         let size = layout.size.bytes();
         ecx.write_scalar(Scalar::from_uint(size, arg.layout.size), arg)?;
 
         // Second argument: `align`.
-        let arg = ecx.eval_place(&mir::Place::Base(mir::PlaceBase::Local(args.next().unwrap())))?;
+        let arg = ecx.local_place(args.next().unwrap())?;
         let align = layout.align.abi.bytes();
         ecx.write_scalar(Scalar::from_uint(align, arg.layout.size), arg)?;
 
@@ -213,8 +233,8 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     }
 
     fn find_foreign_static(
+        tcx: TyCtxt<'tcx>,
         def_id: DefId,
-        tcx: TyCtxtAt<'tcx>,
     ) -> InterpResult<'tcx, Cow<'tcx, Allocation>> {
         let attrs = tcx.get_attrs(def_id);
         let link_name = match attr::first_attr_value_str_by_name(&attrs, sym::link_name) {
@@ -229,46 +249,56 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
                 let data = vec![0; size.bytes() as usize];
                 Allocation::from_bytes(&data, tcx.data_layout.pointer_align.abi)
             }
-            _ => return err!(Unimplemented(
-                    format!("can't access foreign static: {}", link_name),
-                )),
+            _ => throw_unsup_format!("can't access foreign static: {}", link_name),
         };
         Ok(Cow::Owned(alloc))
     }
 
     #[inline(always)]
-    fn before_terminator(_ecx: &mut InterpretCx<'mir, 'tcx, Self>) -> InterpResult<'tcx>
+    fn before_terminator(_ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx>
     {
         // We are not interested in detecting loops.
         Ok(())
     }
 
     fn tag_allocation<'b>(
+        memory_extra: &MemoryExtra,
         id: AllocId,
         alloc: Cow<'b, Allocation>,
         kind: Option<MemoryKind<Self::MemoryKinds>>,
-        memory: &Memory<'mir, 'tcx, Self>,
     ) -> (Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>, Self::PointerTag) {
         let kind = kind.expect("we set our STATIC_KIND so this cannot be None");
         let alloc = alloc.into_owned();
-        let (stacks, base_tag) = Stacks::new_allocation(
-            id,
-            Size::from_bytes(alloc.bytes.len() as u64),
-            Rc::clone(&memory.extra.stacked_borrows),
-            kind,
-        );
+        let (stacks, base_tag) = if !memory_extra.validate {
+            (None, Tag::Untagged)
+        } else {
+            let (stacks, base_tag) = Stacks::new_allocation(
+                id,
+                Size::from_bytes(alloc.bytes.len() as u64),
+                Rc::clone(&memory_extra.stacked_borrows),
+                kind,
+            );
+            (Some(stacks), base_tag)
+        };
         if kind != MiriMemoryKind::Static.into() {
             assert!(alloc.relocations.is_empty(), "Only statics can come initialized with inner pointers");
             // Now we can rely on the inner pointers being static, too.
         }
-        let mut memory_extra = memory.extra.stacked_borrows.borrow_mut();
+        let mut stacked_borrows = memory_extra.stacked_borrows.borrow_mut();
         let alloc: Allocation<Tag, Self::AllocExtra> = Allocation {
             bytes: alloc.bytes,
             relocations: Relocations::from_presorted(
                 alloc.relocations.iter()
                     // The allocations in the relocations (pointers stored *inside* this allocation)
                     // all get the base pointer tag.
-                    .map(|&(offset, ((), alloc))| (offset, (memory_extra.static_base_ptr(alloc), alloc)))
+                    .map(|&(offset, ((), alloc))| {
+                        let tag = if !memory_extra.validate {
+                            Tag::Untagged
+                        } else {
+                            stacked_borrows.static_base_ptr(alloc)
+                        };
+                        (offset, (tag, alloc))
+                    })
                     .collect()
             ),
             undef_mask: alloc.undef_mask,
@@ -283,24 +313,24 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
 
     #[inline(always)]
     fn tag_static_base_pointer(
+        memory_extra: &MemoryExtra,
         id: AllocId,
-        memory: &Memory<'mir, 'tcx, Self>,
     ) -> Self::PointerTag {
-        memory.extra.stacked_borrows.borrow_mut().static_base_ptr(id)
+        if !memory_extra.validate {
+            Tag::Untagged
+        } else {
+            memory_extra.stacked_borrows.borrow_mut().static_base_ptr(id)
+        }
     }
 
     #[inline(always)]
     fn retag(
-        ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
         kind: mir::RetagKind,
         place: PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
-        if !ecx.tcx.sess.opts.debugging_opts.mir_emit_retag || !Self::enforce_validity(ecx) {
-            // No tracking, or no retagging. The latter is possible because a dependency of ours
-            // might be called with different flags than we are, so there are `Retag`
-            // statements but we do not want to execute them.
-            // Also, honor the whitelist in `enforce_validity` because otherwise we might retag
-            // uninitialized data.
+        if !Self::enforce_validity(ecx) {
+            // No tracking.
              Ok(())
         } else {
             ecx.retag(kind, place)
@@ -309,41 +339,33 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
 
     #[inline(always)]
     fn stack_push(
-        ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
     ) -> InterpResult<'tcx, stacked_borrows::CallId> {
         Ok(ecx.memory().extra.stacked_borrows.borrow_mut().new_call())
     }
 
     #[inline(always)]
     fn stack_pop(
-        ecx: &mut InterpretCx<'mir, 'tcx, Self>,
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
         extra: stacked_borrows::CallId,
     ) -> InterpResult<'tcx> {
         Ok(ecx.memory().extra.stacked_borrows.borrow_mut().end_call(extra))
     }
 
+    #[inline(always)]
     fn int_to_ptr(
-        int: u64,
         memory: &Memory<'mir, 'tcx, Self>,
+        int: u64,
     ) -> InterpResult<'tcx, Pointer<Self::PointerTag>> {
-        if int == 0 {
-            err!(InvalidNullPointerUsage)
-        } else if memory.extra.rng.is_none() {
-            err!(ReadBytesAsPointer)
-        } else {
-           intptrcast::GlobalState::int_to_ptr(int, memory)
-        }
+        intptrcast::GlobalState::int_to_ptr(int, memory)
     }
 
+    #[inline(always)]
     fn ptr_to_int(
-        ptr: Pointer<Self::PointerTag>,
         memory: &Memory<'mir, 'tcx, Self>,
+        ptr: Pointer<Self::PointerTag>,
     ) -> InterpResult<'tcx, u64> {
-        if memory.extra.rng.is_none() {
-            err!(ReadPointerAsBytes)
-        } else {
-            intptrcast::GlobalState::ptr_to_int(ptr, memory)
-        }
+        intptrcast::GlobalState::ptr_to_int(ptr, memory)
     }
 }
 
@@ -354,7 +376,11 @@ impl AllocationExtra<Tag> for AllocExtra {
         ptr: Pointer<Tag>,
         size: Size,
     ) -> InterpResult<'tcx> {
-        alloc.extra.stacked_borrows.memory_read(ptr, size)
+        if let Some(ref stacked_borrows) = alloc.extra.stacked_borrows {
+            stacked_borrows.memory_read(ptr, size)
+        } else {
+            Ok(())
+        }
     }
 
     #[inline(always)]
@@ -363,7 +389,11 @@ impl AllocationExtra<Tag> for AllocExtra {
         ptr: Pointer<Tag>,
         size: Size,
     ) -> InterpResult<'tcx> {
-        alloc.extra.stacked_borrows.memory_written(ptr, size)
+        if let Some(ref mut stacked_borrows) = alloc.extra.stacked_borrows {
+            stacked_borrows.memory_written(ptr, size)
+        } else {
+            Ok(())
+        }
     }
 
     #[inline(always)]
@@ -372,7 +402,11 @@ impl AllocationExtra<Tag> for AllocExtra {
         ptr: Pointer<Tag>,
         size: Size,
     ) -> InterpResult<'tcx> {
-        alloc.extra.stacked_borrows.memory_deallocated(ptr, size)
+        if let Some(ref mut stacked_borrows) = alloc.extra.stacked_borrows {
+            stacked_borrows.memory_deallocated(ptr, size)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -381,7 +415,7 @@ impl MayLeak for MiriMemoryKind {
     fn may_leak(self) -> bool {
         use self::MiriMemoryKind::*;
         match self {
-            Rust | C => false,
+            Rust | C | WinHeap => false,
             Env | Static => true,
         }
     }

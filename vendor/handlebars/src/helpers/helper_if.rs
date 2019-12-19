@@ -1,10 +1,10 @@
-use context::Context;
-use error::RenderError;
-use helpers::{HelperDef, HelperResult};
-use output::Output;
-use registry::Registry;
-use render::{Helper, RenderContext, Renderable};
-use value::JsonTruthy;
+use crate::context::Context;
+use crate::error::RenderError;
+use crate::helpers::{HelperDef, HelperResult};
+use crate::output::Output;
+use crate::registry::Registry;
+use crate::render::{Helper, RenderContext, Renderable};
+use crate::value::JsonTruthy;
 
 #[derive(Clone, Copy)]
 pub struct IfHelper {
@@ -16,9 +16,9 @@ impl HelperDef for IfHelper {
         &self,
         h: &Helper<'reg, 'rc>,
         r: &'reg Registry,
-        ctx: &Context,
+        ctx: &'rc Context,
         rc: &mut RenderContext<'reg>,
-        out: &mut Output,
+        out: &mut dyn Output,
     ) -> HelperResult {
         let param = h
             .param(0)
@@ -47,24 +47,20 @@ pub static UNLESS_HELPER: IfHelper = IfHelper { positive: false };
 
 #[cfg(test)]
 mod test {
-    use helpers::WITH_HELPER;
-    use registry::Registry;
+    use crate::helpers::WITH_HELPER;
+    use crate::registry::Registry;
     use serde_json::value::Value as Json;
     use std::str::FromStr;
 
     #[test]
     fn test_if() {
         let mut handlebars = Registry::new();
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#if this}}hello{{/if}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string("t1", "{{#unless this}}hello{{else}}world{{/unless}}")
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#if this}}hello{{/if}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string("t1", "{{#unless this}}hello{{else}}world{{/unless}}")
+            .is_ok());
 
         let r0 = handlebars.render("t0", &true);
         assert_eq!(r0.ok().unwrap(), "hello".to_string());
@@ -83,25 +79,21 @@ mod test {
 
         let mut handlebars = Registry::new();
         handlebars.register_helper("with", Box::new(WITH_HELPER));
-        assert!(
-            handlebars
-                .register_template_string("t0", "{{#if a.c.d}}hello {{a.b}}{{/if}}")
-                .is_ok()
-        );
-        assert!(
-            handlebars
-                .register_template_string(
-                    "t1",
-                    "{{#with a}}{{#if c.d}}hello {{../a.b}}{{/if}}{{/with}}"
-                )
-                .is_ok()
-        );
+        assert!(handlebars
+            .register_template_string("t0", "{{#if a.c.d}}hello {{a.b}}{{/if}}")
+            .is_ok());
+        assert!(handlebars
+            .register_template_string(
+                "t1",
+                "{{#with a}}{{#if c.d}}hello {{../a.b}}{{/if}}{{/with}}"
+            )
+            .is_ok());
 
         let r0 = handlebars.render("t0", &data);
-        assert_eq!(r0.ok().unwrap(), "hello 99".to_string());
+        assert_eq!(r0.unwrap(), "hello 99".to_string());
 
         let r1 = handlebars.render("t1", &data);
-        assert_eq!(r1.ok().unwrap(), "hello 99".to_string());
+        assert_eq!(r1.unwrap(), "hello 99".to_string());
     }
 
     #[test]

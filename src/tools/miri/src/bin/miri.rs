@@ -17,26 +17,28 @@ extern crate syntax;
 use std::str::FromStr;
 use std::env;
 
+use hex::FromHexError;
+
 use rustc_interface::interface;
 use rustc::hir::def_id::LOCAL_CRATE;
+use rustc_driver::Compilation;
 
 struct MiriCompilerCalls {
     miri_config: miri::MiriConfig,
 }
 
 impl rustc_driver::Callbacks for MiriCompilerCalls {
-    fn after_parsing(&mut self, compiler: &interface::Compiler) -> bool {
+    fn after_parsing(&mut self, compiler: &interface::Compiler) -> Compilation {
         let attr = (
             syntax::symbol::Symbol::intern("miri"),
             syntax::feature_gate::AttributeType::Whitelisted,
         );
         compiler.session().plugin_attributes.borrow_mut().push(attr);
 
-        // Continue execution
-        true
+        Compilation::Continue
     }
 
-    fn after_analysis(&mut self, compiler: &interface::Compiler) -> bool {
+    fn after_analysis(&mut self, compiler: &interface::Compiler) -> Compilation {
         init_late_loggers();
         compiler.session().abort_if_errors();
 
@@ -52,8 +54,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
 
         compiler.session().abort_if_errors();
 
-        // Don't continue execution
-        false
+        Compilation::Stop
     }
 }
 
@@ -153,7 +154,14 @@ fn main() {
                     if seed.is_some() {
                         panic!("Cannot specify -Zmiri-seed multiple times!");
                     }
-                    let seed_raw = hex::decode(arg.trim_start_matches("-Zmiri-seed=")).unwrap();
+                    let seed_raw = hex::decode(arg.trim_start_matches("-Zmiri-seed="))
+                        .unwrap_or_else(|err| match err {
+                            FromHexError::InvalidHexCharacter { .. } => panic!(
+                                "-Zmiri-seed should only contain valid hex digits [0-9a-fA-F]"
+                            ),
+                            FromHexError::OddLength => panic!("-Zmiri-seed should have an even number of digits"),
+                            err => panic!("Unknown error decoding -Zmiri-seed as hex: {:?}", err),
+                        });
                     if seed_raw.len() > 8 {
                         panic!(format!("-Zmiri-seed must be at most 8 bytes, was {}", seed_raw.len()));
                     }
@@ -175,10 +183,10 @@ fn main() {
     // FIXME: Ideally we'd turn a bad build env into a compile-time error, but
     // CTFE does not seem powerful enough for that yet.
     if let Some(sysroot) = compile_time_sysroot() {
-        let sysroot_flag = "--sysroot".to_string();
-        if !rustc_args.contains(&sysroot_flag) {
+        let sysroot_flag = "--sysroot";
+        if !rustc_args.iter().any(|e| e == sysroot_flag) {
             // We need to overwrite the default that librustc would compute.
-            rustc_args.push(sysroot_flag);
+            rustc_args.push(sysroot_flag.to_owned());
             rustc_args.push(sysroot);
         }
     }
