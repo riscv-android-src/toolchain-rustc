@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "jsonrpc-core"
-version = "12.0.0"
+version = "13.1.0"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "Transport agnostic rust implementation of JSON-RPC 2.0 Specification."
 homepage = "https://github.com/paritytech/jsonrpc"

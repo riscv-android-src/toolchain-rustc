@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "getrandom"
-version = "0.1.8"
+version = "0.1.12"
 authors = ["The Rand Project Developers"]
 exclude = ["utils/*", ".*", "appveyor.yml"]
 description = "A small cross-platform library for retrieving random data from system source"
@@ -24,14 +24,28 @@ repository = "https://github.com/rust-random/getrandom"
 [dependencies.cfg-if]
 version = "0.1"
 
+[dependencies.compiler_builtins]
+version = "0.1"
+optional = true
+
+[dependencies.core]
+version = "1.0"
+optional = true
+package = "rustc-std-workspace-core"
+
 [dependencies.log]
 version = "0.4"
 optional = true
 
 [features]
+dummy = []
+rustc-dep-of-std = ["compiler_builtins", "core"]
 std = []
-[target."cfg(any(unix, target_os = \"redox\", target_os = \"wasi\"))".dependencies.libc]
-version = "0.2.60"
+[target."cfg(any(unix, target_os = \"redox\"))".dependencies.libc]
+version = "0.2.62"
+default-features = false
+[target."cfg(target_os = \"wasi\")".dependencies.wasi]
+version = "0.7"
 [target.wasm32-unknown-unknown.dependencies.stdweb]
 version = "0.4.18"
 optional = true

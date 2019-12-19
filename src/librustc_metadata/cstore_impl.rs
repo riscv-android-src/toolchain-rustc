@@ -30,12 +30,10 @@ use syntax::ast;
 use syntax::attr;
 use syntax::source_map;
 use syntax::edition::Edition;
-use syntax::ext::base::{SyntaxExtension, SyntaxExtensionKind};
-use syntax::ext::proc_macro::BangProcMacro;
 use syntax::parse::source_file_to_stream;
 use syntax::parse::parser::emit_unclosed_delims;
-use syntax::symbol::{Symbol, sym};
-use syntax_pos::{Span, NO_EXPANSION, FileName};
+use syntax::symbol::Symbol;
+use syntax_pos::{Span, FileName};
 use rustc_data_structures::bit_set::BitSet;
 
 macro_rules! provide {
@@ -127,21 +125,15 @@ provide! { <'tcx> tcx, def_id, other, cdata,
             bug!("coerce_unsized_info: `{:?}` is missing its info", def_id);
         })
     }
-    optimized_mir => {
-        let mir = cdata.maybe_get_optimized_mir(tcx, def_id.index).unwrap_or_else(|| {
-            bug!("get_optimized_mir: missing MIR for `{:?}`", def_id)
-        });
-
-        let mir = tcx.arena.alloc(mir);
-
-        mir
-    }
+    optimized_mir => { tcx.arena.alloc(cdata.get_optimized_mir(tcx, def_id.index)) }
+    promoted_mir => { tcx.arena.alloc(cdata.get_promoted_mir(tcx, def_id.index)) }
     mir_const_qualif => {
         (cdata.mir_const_qualif(def_id.index), tcx.arena.alloc(BitSet::new_empty(0)))
     }
     fn_sig => { cdata.fn_sig(def_id.index, tcx) }
     inherent_impls => { cdata.get_inherent_implementations_for_type(tcx, def_id.index) }
     is_const_fn_raw => { cdata.is_const_fn_raw(def_id.index) }
+    asyncness => { cdata.asyncness(def_id.index) }
     is_foreign_item => { cdata.is_foreign_item(def_id.index) }
     static_mutability => { cdata.static_mutability(def_id.index) }
     def_kind => { cdata.def_kind(def_id.index) }
@@ -157,7 +149,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     // a `fn` when encoding, so the dep-tracking wouldn't work.
     // This is only used by rustdoc anyway, which shouldn't have
     // incremental recompilation ever enabled.
-    fn_arg_names => { cdata.get_fn_arg_names(def_id.index) }
+    fn_arg_names => { cdata.get_fn_param_names(def_id.index) }
     rendered_const => { cdata.get_rendered_const(def_id.index) }
     impl_parent => { cdata.get_parent_impl(def_id.index) }
     trait_of_item => { cdata.get_trait_of_item(def_id.index) }
@@ -235,6 +227,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     }
     defined_lib_features => { cdata.get_lib_features(tcx) }
     defined_lang_items => { cdata.get_lang_items(tcx) }
+    diagnostic_items => { cdata.get_diagnostic_items(tcx) }
     missing_lang_items => { cdata.get_missing_lang_items(tcx) }
 
     missing_extern_crate_item => {
@@ -426,24 +419,17 @@ impl cstore::CStore {
 
     pub fn load_macro_untracked(&self, id: DefId, sess: &Session) -> LoadedMacro {
         let data = self.get_crate_data(id.krate);
-        if let Some(ref proc_macros) = data.proc_macros {
-            return LoadedMacro::ProcMacro(proc_macros[id.index.to_proc_macro_index()].1.clone());
-        } else if data.name == sym::proc_macro && data.item_name(id.index) == sym::quote {
-            let client = proc_macro::bridge::client::Client::expand1(proc_macro::quote);
-            let kind = SyntaxExtensionKind::Bang(Box::new(BangProcMacro { client }));
-            let ext = SyntaxExtension {
-                allow_internal_unstable: Some([sym::proc_macro_def_site][..].into()),
-                ..SyntaxExtension::default(kind, data.root.edition)
-            };
-            return LoadedMacro::ProcMacro(Lrc::new(ext));
+        if data.is_proc_macro_crate() {
+            return LoadedMacro::ProcMacro(data.load_proc_macro(id.index, sess));
         }
 
         let def = data.get_macro(id.index);
-        let macro_full_name = data.def_path(id.index).to_string_friendly(|_| data.imported_name);
+        let macro_full_name = data.def_path(id.index)
+            .to_string_friendly(|_| data.imported_name);
         let source_name = FileName::Macros(macro_full_name);
 
         let source_file = sess.parse_sess.source_map().new_source_file(source_name, def.body);
-        let local_span = Span::new(source_file.start_pos, source_file.end_pos, NO_EXPANSION);
+        let local_span = Span::with_root_ctxt(source_file.start_pos, source_file.end_pos);
         let (body, mut errors) = source_file_to_stream(&sess.parse_sess, source_file, None);
         emit_unclosed_delims(&mut errors, &sess.diagnostic());
 
@@ -459,7 +445,8 @@ impl cstore::CStore {
             .insert(local_span, (name.to_string(), data.get_span(id.index, sess)));
 
         LoadedMacro::MacroDef(ast::Item {
-            ident: ast::Ident::from_str(&name.as_str()),
+            // FIXME: cross-crate hygiene
+            ident: ast::Ident::with_dummy_span(name.as_symbol()),
             id: ast::DUMMY_NODE_ID,
             span: local_span,
             attrs: attrs.iter().cloned().collect(),

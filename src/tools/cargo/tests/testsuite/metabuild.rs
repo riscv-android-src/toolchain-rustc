@@ -1,4 +1,4 @@
-use crate::support::{
+use cargo_test_support::{
     basic_lib_manifest, basic_manifest, is_coarse_mtime, project, registry::Package, rustc_host,
     Project,
 };
@@ -409,7 +409,7 @@ fn metabuild_workspace() {
         )
         .build();
 
-    p.cargo("build -vv --all")
+    p.cargo("build -vv --workspace")
         .masquerade_as_nightly_cargo()
         .with_stdout_contains("[member1 0.0.1] Hello mb1 [..]member1")
         .with_stdout_contains("[member1 0.0.1] Hello mb2 [..]member1")
@@ -613,7 +613,7 @@ fn metabuild_two_versions() {
         )
         .build();
 
-    p.cargo("build -vv --all")
+    p.cargo("build -vv --workspace")
         .masquerade_as_nightly_cargo()
         .with_stdout_contains("[member1 0.0.1] Hello mb1 [..]member1")
         .with_stdout_contains("[member2 0.0.1] Hello mb2 [..]member2")

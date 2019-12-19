@@ -4,14 +4,14 @@ use crate::{maybe_whole, maybe_recover_from_interpolated_ty_qpath};
 use crate::ptr::P;
 use crate::ast::{self, Ty, TyKind, MutTy, BareFnTy, FunctionRetTy, GenericParam, Lifetime, Ident};
 use crate::ast::{TraitBoundModifier, TraitObjectSyntax, GenericBound, GenericBounds, PolyTraitRef};
-use crate::ast::{Mutability, AnonConst, FnDecl, Mac_};
+use crate::ast::{Mutability, AnonConst, FnDecl, Mac};
 use crate::parse::token::{self, Token};
-use crate::source_map::{respan, Span};
+use crate::source_map::Span;
 use crate::symbol::{kw};
 
 use rustc_target::spec::abi::Abi;
 
-use errors::{Applicability};
+use errors::{Applicability, pluralise};
 
 /// Returns `true` if `IDENT t` can start a type -- `IDENT::a::b`, `IDENT<u8, u8>`,
 /// `IDENT<<u8 as Trait>::AssocTy>`.
@@ -175,13 +175,14 @@ impl<'a> Parser<'a> {
             if self.eat(&token::Not) {
                 // Macro invocation in type position
                 let (delim, tts) = self.expect_delimited_token_tree()?;
-                let node = Mac_ {
+                let mac = Mac {
                     path,
                     tts,
                     delim,
+                    span: lo.to(self.prev_span),
                     prior_type_ascription: self.last_type_ascription,
                 };
-                TyKind::Mac(respan(lo.to(self.prev_span), node))
+                TyKind::Mac(mac)
             } else {
                 // Just a type path or bound list (trait object type) starting with a trait.
                 //   `Type`
@@ -291,7 +292,7 @@ impl<'a> Parser<'a> {
         };
 
         self.expect_keyword(kw::Fn)?;
-        let (inputs, c_variadic) = self.parse_fn_args(false, true)?;
+        let (inputs, c_variadic) = self.parse_fn_params(false, true)?;
         let ret_ty = self.parse_ret_ty(false)?;
         let decl = P(FnDecl {
             inputs,
@@ -396,7 +397,7 @@ impl<'a> Parser<'a> {
         }
 
         if !negative_bounds.is_empty() || was_negative {
-            let plural = negative_bounds.len() > 1;
+            let negative_bounds_len = negative_bounds.len();
             let last_span = negative_bounds.last().map(|sp| *sp);
             let mut err = self.struct_span_err(
                 negative_bounds,
@@ -419,7 +420,7 @@ impl<'a> Parser<'a> {
                 }
                 err.span_suggestion_hidden(
                     bound_list,
-                    &format!("remove the trait bound{}", if plural { "s" } else { "" }),
+                    &format!("remove the trait bound{}", pluralise!(negative_bounds_len)),
                     new_bound_list,
                     Applicability::MachineApplicable,
                 );

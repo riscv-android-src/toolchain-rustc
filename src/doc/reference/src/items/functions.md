@@ -8,7 +8,10 @@
 > &nbsp;&nbsp; &nbsp;&nbsp; [_BlockExpression_]
 >
 > _FunctionQualifiers_ :\
-> &nbsp;&nbsp; `const`<sup>?</sup> `unsafe`<sup>?</sup> (`extern` _Abi_<sup>?</sup>)<sup>?</sup>
+> &nbsp;&nbsp; _AsyncConstQualifiers_<sup>?</sup> `unsafe`<sup>?</sup> (`extern` _Abi_<sup>?</sup>)<sup>?</sup>
+>
+> _AsyncConstQualifiers_ :\
+> &nbsp;&nbsp; `async` | `const`
 >
 > _Abi_ :\
 > &nbsp;&nbsp; [STRING_LITERAL] | [RAW_STRING_LITERAL]
@@ -107,35 +110,73 @@ component after the function name. This might be necessary if there is not
 sufficient context to determine the type parameters. For example,
 `mem::size_of::<u32>() == 4`.
 
-## Extern functions
+## Extern function qualifier
 
-Extern functions are part of Rust's foreign function interface, providing the
-opposite functionality to [external blocks]. Whereas external
-blocks allow Rust code to call foreign code, extern functions with bodies
-defined in Rust code _can be called by foreign code_. They are defined in the
-same way as any other Rust function, except that they have the `extern`
-qualifier.
+The `extern` function qualifier allows providing function _definitions_ that can
+be called with a particular ABI:
+
+```rust,ignore
+extern "ABI" fn foo() { ... }
+```
+
+These are often used in combination with [external block] items which provide
+function _declarations_ that can be used to call functions without providing
+their _definition_:
+
+```rust,ignore
+extern "ABI" {
+  fn foo(); /* no body */
+}
+unsafe { foo() }
+```
+
+When `"extern" Abi?*` is omitted from `FunctionQualifiers` in function items,
+the ABI `"Rust"` is assigned. For example:
 
 ```rust
-// Declares an extern fn, the ABI defaults to "C"
-extern fn new_i32() -> i32 { 0 }
+fn foo() {}
+```
 
-// Declares an extern fn with "stdcall" ABI
+is equivalent to:
+
+```rust
+extern "Rust" fn foo() {}
+```
+
+Functions in Rust can be called by foreign code, and using an ABI that
+differs from Rust allows, for example, to provide functions that can be
+called from other programming languages like C:
+
+```rust
+// Declares a function with the "C" ABI
+extern "C" fn new_i32() -> i32 { 0 }
+
+// Declares a function with the "stdcall" ABI
 # #[cfg(target_arch = "x86_64")]
 extern "stdcall" fn new_i32_stdcall() -> i32 { 0 }
 ```
 
-Unlike normal functions, extern fns have type `extern "ABI" fn()`. This is the
-same type as the functions declared in an extern block.
+Just as with [external block], when the `extern` keyword is used and the `"ABI`
+is omitted, the ABI used defaults to `"C"`. That is, this:
 
 ```rust
-# extern fn new_i32() -> i32 { 0 }
+extern fn new_i32() -> i32 { 0 }
+let fptr: extern fn() -> i32 = new_i32;
+```
+
+is equivalent to:
+
+```rust
+extern "C" fn new_i32() -> i32 { 0 }
 let fptr: extern "C" fn() -> i32 = new_i32;
 ```
 
-As non-Rust calling conventions do not support unwinding, unwinding past the end
-of an extern function will cause the process to abort. In LLVM, this is
-implemented by executing an illegal instruction.
+Functions with an ABI that differs from `"Rust"` do not support unwinding in the
+exact same way that Rust does. Therefore, unwinding past the end of functions
+with such ABIs causes the process to abort.
+
+> **Note**: The LLVM backend of the `rustc` implementation
+aborts the process by executing an illegal instruction.
 
 ## Const functions
 
@@ -169,7 +210,7 @@ Exhaustive list of permitted structures in const functions:
     * lifetimes
     * `Sized` or [`?Sized`]
 
-    This means that `<T: 'a + ?Sized>`, `<T: 'b + Sized>` and `<T>`
+    This means that `<T: 'a + ?Sized>`, `<T: 'b + Sized>`, and `<T>`
     are all permitted.
 
     This rule also applies to type parameters of impl blocks that
@@ -188,6 +229,104 @@ Exhaustive list of permitted structures in const functions:
 * `unsafe` blocks and `const unsafe fn` are allowed, but the body/block may only do
   the following unsafe operations:
     * calls to const unsafe functions
+
+## Async functions
+
+Functions may be qualified as async, and this can also be combined with the
+`unsafe` qualifier:
+
+```rust,edition2018
+async fn regular_example() { }
+async unsafe fn unsafe_example() { }
+```
+
+Async functions do no work when called: instead, they
+capture their arguments into a future. When polled, that future will
+execute the function's body.
+
+An async function is roughly equivalent to a function
+that returns [`impl Future`] and with an [`async move` block][async-blocks] as
+its body:
+
+```rust,edition2018
+// Source
+async fn example(x: &str) -> usize {
+    x.len()
+}
+```
+
+is roughly equivalent to:
+
+```rust,edition2018
+# use std::future::Future;
+// Desugared
+fn example<'a>(x: &'a str) -> impl Future<Output = usize> + 'a {
+    async move { x.len() }
+}
+```
+
+The actual desugaring is more complex:
+
+- The return type in the desugaring is assumed to capture all lifetime
+  parameters from the `async fn` declaration. This can be seen in the
+  desugared example above, which explicitly outlives, and hence
+  captures, `'a`.
+- The [`async move` block][async-blocks] in the body captures all function
+  parameters, including those that are unused or bound to a `_`
+  pattern. This ensures that function parameters are dropped in the
+  same order as they would be if the function were not async, except
+  that the drop occurs when the returned future has been fully
+  awaited.
+
+For more information on the effect of async, see [`async` blocks][async-blocks].
+
+[async-blocks]: ../expressions/block-expr.md#async-blocks
+[`impl Future`]: ../types/impl-trait.md
+
+> **Edition differences**: Async functions are only available beginning with
+> Rust 2018.
+
+### Combining `async` and `unsafe`
+
+It is legal to declare a function that is both async and unsafe. The
+resulting function is unsafe to call and (like any async function)
+returns a future. This future is just an ordinary future and thus an
+`unsafe` context is not required to "await" it:
+
+```rust,edition2018
+// Returns a future that, when awaited, dereferences `x`.
+//
+// Soundness condition: `x` must be safe to dereference until
+// the resulting future is complete.
+async unsafe fn unsafe_example(x: *const i32) -> i32 {
+  *x
+}
+
+async fn safe_example() {
+    // An `unsafe` block is required to invoke the function initially:
+    let p = 22;
+    let future = unsafe { unsafe_example(&p) };
+
+    // But no `unsafe` block required here. This will
+    // read the value of `p`:
+    let q = future.await;
+}
+```
+
+Note that this behavior is a consequence of the desugaring to a
+function that returns an `impl Future` -- in this case, the function
+we desugar to is an `unsafe` function, but the return value remains
+the same.
+
+Unsafe is used on an async function in precisely the same way that it
+is used on other functions: it indicates that the function imposes
+some additional obligations on its caller to ensure soundness. As in any
+other unsafe function, these conditions may extend beyond the initial
+call itself -- in the snippet above, for example, the `unsafe_example`
+function took a pointer `x` as argument, and then (when awaited)
+dereferenced that pointer. This implies that `x` would have to be
+valid until the future is finished executing, and it is the callers
+responsibility to ensure that.
 
 ## Attributes on functions
 
@@ -221,7 +360,7 @@ attributes macros.
 [_Type_]: ../types.md#type-expressions
 [_WhereClause_]: generics.md#where-clauses
 [const context]: ../const_eval.md#const-context
-[external blocks]: external-blocks.md
+[external block]: external-blocks.md
 [path]: ../paths.md
 [block]: ../expressions/block-expr.md
 [variables]: ../variables.md
@@ -243,3 +382,4 @@ attributes macros.
 [`export_name`]: ../abi.md#the-export_name-attribute
 [`link_section`]: ../abi.md#the-link_section-attribute
 [`no_mangle`]: ../abi.md#the-no_mangle-attribute
+[external_block_abi]: external-blocks.md#abi

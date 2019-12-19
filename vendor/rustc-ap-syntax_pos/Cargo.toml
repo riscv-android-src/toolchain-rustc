@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "rustc-ap-syntax_pos"
-version = "546.0.0"
+version = "583.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `syntax_pos` in the rust-lang/rust repository from commit 435236b8877cdb98c82eaebfb7887782277265c5 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `syntax_pos` in the rust-lang/rust repository from commit f7b05af814f02681d8973438df4ed5792f581841 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
@@ -27,16 +27,16 @@ doctest = false
 version = "0.1.2"
 
 [dependencies.rustc-ap-arena]
-version = "546.0.0"
+version = "583.0.0"
 
 [dependencies.rustc-ap-rustc_data_structures]
-version = "546.0.0"
+version = "583.0.0"
 
 [dependencies.rustc-ap-rustc_macros]
-version = "546.0.0"
+version = "583.0.0"
 
 [dependencies.rustc_serialize]
-version = "546.0.0"
+version = "583.0.0"
 package = "rustc-ap-serialize"
 
 [dependencies.scoped-tls]

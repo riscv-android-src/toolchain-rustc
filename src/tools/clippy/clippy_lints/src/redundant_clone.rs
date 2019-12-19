@@ -1,6 +1,6 @@
 use crate::utils::{
-    has_drop, in_macro_or_desugar, is_copy, match_def_path, match_type, paths, snippet_opt, span_lint_hir,
-    span_lint_hir_and_then, walk_ptrs_ty_depth,
+    has_drop, is_copy, match_def_path, match_type, paths, snippet_opt, span_lint_hir, span_lint_hir_and_then,
+    walk_ptrs_ty_depth,
 };
 use if_chain::if_chain;
 use matches::matches;
@@ -91,7 +91,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
         for (bb, bbdata) in mir.basic_blocks().iter_enumerated() {
             let terminator = bbdata.terminator();
 
-            if in_macro_or_desugar(terminator.source_info.span) {
+            if terminator.source_info.span.from_expansion() {
                 continue;
             }
 
@@ -252,13 +252,13 @@ fn find_stmt_assigns_to<'a, 'tcx: 'a>(
     stmts
         .rev()
         .find_map(|stmt| {
-            if let mir::StatementKind::Assign(
+            if let mir::StatementKind::Assign(box (
                 mir::Place {
                     base: mir::PlaceBase::Local(local),
                     ..
                 },
                 v,
-            ) = &stmt.kind
+            )) = &stmt.kind
             {
                 if *local == to {
                     return Some(v);
@@ -269,10 +269,10 @@ fn find_stmt_assigns_to<'a, 'tcx: 'a>(
         })
         .and_then(|v| {
             if by_ref {
-                if let mir::Rvalue::Ref(_, _, ref place) = **v {
+                if let mir::Rvalue::Ref(_, _, ref place) = v {
                     return base_local_and_movability(cx, mir, place);
                 }
-            } else if let mir::Rvalue::Use(mir::Operand::Copy(ref place)) = **v {
+            } else if let mir::Rvalue::Use(mir::Operand::Copy(ref place)) = v {
                 return base_local_and_movability(cx, mir, place);
             }
             None
@@ -291,7 +291,6 @@ fn base_local_and_movability<'tcx>(
     use rustc::mir::Place;
     use rustc::mir::PlaceBase;
     use rustc::mir::PlaceRef;
-    use rustc::mir::Projection;
 
     // Dereference. You cannot move things out from a borrowed value.
     let mut deref = false;
@@ -303,7 +302,7 @@ fn base_local_and_movability<'tcx>(
         mut projection,
     } = place.as_ref();
     if let PlaceBase::Local(local) = place_base {
-        while let Some(box Projection { base, elem }) = projection {
+        while let [base @ .., elem] = projection {
             projection = base;
             deref = matches!(elem, mir::ProjectionElem::Deref);
             field = !field

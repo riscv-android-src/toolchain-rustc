@@ -1,9 +1,9 @@
 use std::fs::File;
 use std::io::prelude::*;
 
-use crate::support::paths::CargoPathExt;
-use crate::support::registry::Package;
-use crate::support::{basic_manifest, project};
+use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{basic_manifest, project, t};
 
 #[cargo_test]
 fn invalid1() {
@@ -1397,7 +1397,7 @@ fn combining_features_and_package() {
         )
         .build();
 
-    p.cargo("build -Z package-features --all --features main")
+    p.cargo("build -Z package-features --workspace --features main")
         .masquerade_as_nightly_cargo()
         .with_status(101)
         .with_stderr_contains("[ERROR] cannot specify features for more than one package")
@@ -1419,7 +1419,7 @@ fn combining_features_and_package() {
         .with_stderr_contains("[ERROR] cannot specify features for packages outside of workspace")
         .run();
 
-    p.cargo("build -Z package-features --all --all-features")
+    p.cargo("build -Z package-features --workspace --all-features")
         .masquerade_as_nightly_cargo()
         .run();
     p.cargo("run -Z package-features --package bar --features main")
@@ -1764,7 +1764,7 @@ fn all_features_all_crates() {
         .file("bar/src/main.rs", "#[cfg(feature = \"foo\")] fn main() {}")
         .build();
 
-    p.cargo("build --all-features --all").run();
+    p.cargo("build --all-features --workspace").run();
 }
 
 #[cargo_test]
@@ -1958,4 +1958,33 @@ fn multi_multi_features() {
         .build();
 
     p.cargo("build --features a --features").arg("b c").run();
+}
+
+#[cargo_test]
+fn cli_parse_ok() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.0.1"
+                authors = []
+
+                [features]
+                a = []
+            "#,
+        )
+        .file(
+            "src/main.rs",
+            r#"
+               #[cfg(feature = "a")]
+               fn main() {
+                    assert_eq!(std::env::args().nth(1).unwrap(), "b");
+               }
+            "#,
+        )
+        .build();
+
+    p.cargo("run --features a b").run();
 }

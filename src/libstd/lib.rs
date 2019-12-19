@@ -228,7 +228,6 @@
 // std is implemented with unstable features, many of which are internal
 // compiler details that will never be stable
 // NB: the following list is sorted to minimize merge conflicts.
-#![cfg_attr(not(bootstrap), feature(__rust_unstable_column))]
 #![feature(alloc_error_handler)]
 #![feature(alloc_layout_extra)]
 #![feature(allocator_api)]
@@ -239,18 +238,18 @@
 #![feature(array_error_internals)]
 #![feature(asm)]
 #![feature(associated_type_bounds)]
-#![feature(bind_by_move_pattern_guards)]
+#![cfg_attr(bootstrap, feature(bind_by_move_pattern_guards))]
 #![feature(box_syntax)]
 #![feature(c_variadic)]
 #![feature(cfg_target_has_atomic)]
 #![feature(cfg_target_thread_local)]
 #![feature(char_error_internals)]
-#![feature(checked_duration_since)]
 #![feature(clamp)]
 #![feature(compiler_builtins_lib)]
 #![feature(concat_idents)]
 #![feature(const_cstr_unchecked)]
 #![feature(const_raw_ptr_deref)]
+#![feature(container_error_extra)]
 #![feature(core_intrinsics)]
 #![feature(custom_test_frameworks)]
 #![feature(doc_alias)]
@@ -453,6 +452,7 @@ pub mod f64;
 #[macro_use]
 pub mod thread;
 pub mod ascii;
+pub mod backtrace;
 pub mod collections;
 pub mod env;
 pub mod error;
@@ -513,7 +513,7 @@ pub use std_detect::detect;
 
 // Re-export macros defined in libcore.
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow(deprecated_in_future)]
+#[allow(deprecated, deprecated_in_future)]
 pub use core::{
     // Stable
     assert_eq,
@@ -531,7 +531,6 @@ pub use core::{
 };
 
 // Re-export built-in macros defined through libcore.
-#[cfg(not(bootstrap))]
 #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
 pub use core::{
     // Stable
@@ -551,7 +550,6 @@ pub use core::{
     option_env,
     stringify,
     // Unstable
-    __rust_unstable_column,
     asm,
     concat_idents,
     format_args_nl,

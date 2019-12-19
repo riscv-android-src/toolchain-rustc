@@ -33,6 +33,7 @@ use arena::SyncDroplessArena;
 use crate::session::DataTypeKind;
 
 use rustc_serialize::{self, Encodable, Encoder};
+use rustc_target::abi::Align;
 use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt;
@@ -45,7 +46,7 @@ use std::ops::Range;
 use syntax::ast::{self, Name, Ident, NodeId};
 use syntax::attr;
 use syntax::ext::hygiene::ExpnId;
-use syntax::symbol::{kw, sym, Symbol, LocalInternedString, InternedString};
+use syntax::symbol::{kw, sym, Symbol, InternedString};
 use syntax_pos::Span;
 
 use smallvec;
@@ -75,7 +76,7 @@ pub use self::binding::BindingMode;
 pub use self::binding::BindingMode::*;
 
 pub use self::context::{TyCtxt, FreeRegionInfo, AllArenas, tls, keep_local};
-pub use self::context::{Lift, TypeckTables, CtxtInterners, GlobalCtxt};
+pub use self::context::{Lift, GeneratorInteriorTypeCause, TypeckTables, CtxtInterners, GlobalCtxt};
 pub use self::context::{
     UserTypeAnnotationIndex, UserType, CanonicalUserType,
     CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, ResolvedOpaqueTy,
@@ -414,61 +415,53 @@ pub struct CReaderCacheKey {
 bitflags! {
     pub struct TypeFlags: u32 {
         const HAS_PARAMS         = 1 << 0;
-        const HAS_SELF           = 1 << 1;
-        const HAS_TY_INFER       = 1 << 2;
-        const HAS_RE_INFER       = 1 << 3;
-        const HAS_RE_PLACEHOLDER = 1 << 4;
+        const HAS_TY_INFER       = 1 << 1;
+        const HAS_RE_INFER       = 1 << 2;
+        const HAS_RE_PLACEHOLDER = 1 << 3;
 
         /// Does this have any `ReEarlyBound` regions? Used to
         /// determine whether substitition is required, since those
         /// represent regions that are bound in a `ty::Generics` and
         /// hence may be substituted.
-        const HAS_RE_EARLY_BOUND = 1 << 5;
+        const HAS_RE_EARLY_BOUND = 1 << 4;
 
         /// Does this have any region that "appears free" in the type?
         /// Basically anything but `ReLateBound` and `ReErased`.
-        const HAS_FREE_REGIONS   = 1 << 6;
+        const HAS_FREE_REGIONS   = 1 << 5;
 
         /// Is an error type reachable?
-        const HAS_TY_ERR         = 1 << 7;
-        const HAS_PROJECTION     = 1 << 8;
+        const HAS_TY_ERR         = 1 << 6;
+        const HAS_PROJECTION     = 1 << 7;
 
         // FIXME: Rename this to the actual property since it's used for generators too
-        const HAS_TY_CLOSURE     = 1 << 9;
+        const HAS_TY_CLOSURE     = 1 << 8;
 
         /// `true` if there are "names" of types and regions and so forth
         /// that are local to a particular fn
-        const HAS_FREE_LOCAL_NAMES    = 1 << 10;
+        const HAS_FREE_LOCAL_NAMES    = 1 << 9;
 
         /// Present if the type belongs in a local type context.
         /// Only set for Infer other than Fresh.
-        const KEEP_IN_LOCAL_TCX  = 1 << 11;
-
-        // Is there a projection that does not involve a bound region?
-        // Currently we can't normalize projections w/ bound regions.
-        const HAS_NORMALIZABLE_PROJECTION = 1 << 12;
+        const KEEP_IN_LOCAL_TCX  = 1 << 10;
 
         /// Does this have any `ReLateBound` regions? Used to check
         /// if a global bound is safe to evaluate.
-        const HAS_RE_LATE_BOUND = 1 << 13;
+        const HAS_RE_LATE_BOUND = 1 << 11;
 
-        const HAS_TY_PLACEHOLDER = 1 << 14;
+        const HAS_TY_PLACEHOLDER = 1 << 12;
 
-        const HAS_CT_INFER = 1 << 15;
-        const HAS_CT_PLACEHOLDER = 1 << 16;
+        const HAS_CT_INFER = 1 << 13;
+        const HAS_CT_PLACEHOLDER = 1 << 14;
 
         const NEEDS_SUBST        = TypeFlags::HAS_PARAMS.bits |
-                                   TypeFlags::HAS_SELF.bits |
                                    TypeFlags::HAS_RE_EARLY_BOUND.bits;
 
         /// Flags representing the nominal content of a type,
         /// computed by FlagsComputation. If you add a new nominal
         /// flag, it should be added here too.
         const NOMINAL_FLAGS     = TypeFlags::HAS_PARAMS.bits |
-                                  TypeFlags::HAS_SELF.bits |
                                   TypeFlags::HAS_TY_INFER.bits |
                                   TypeFlags::HAS_RE_INFER.bits |
-                                  TypeFlags::HAS_CT_INFER.bits |
                                   TypeFlags::HAS_RE_PLACEHOLDER.bits |
                                   TypeFlags::HAS_RE_EARLY_BOUND.bits |
                                   TypeFlags::HAS_FREE_REGIONS.bits |
@@ -479,11 +472,12 @@ bitflags! {
                                   TypeFlags::KEEP_IN_LOCAL_TCX.bits |
                                   TypeFlags::HAS_RE_LATE_BOUND.bits |
                                   TypeFlags::HAS_TY_PLACEHOLDER.bits |
+                                  TypeFlags::HAS_CT_INFER.bits |
                                   TypeFlags::HAS_CT_PLACEHOLDER.bits;
     }
 }
 
-#[cfg_attr(not(bootstrap), allow(rustc::usage_of_ty_tykind))]
+#[allow(rustc::usage_of_ty_tykind)]
 pub struct TyS<'tcx> {
     pub sty: TyKind<'tcx>,
     pub flags: TypeFlags,
@@ -587,6 +581,7 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ty::TyS<'tcx> {
     }
 }
 
+#[cfg_attr(not(bootstrap), rustc_diagnostic_item = "Ty")]
 pub type Ty<'tcx> = &'tcx TyS<'tcx>;
 
 impl<'tcx> rustc_serialize::UseSpecializedEncodable for Ty<'tcx> {}
@@ -595,7 +590,7 @@ impl<'tcx> rustc_serialize::UseSpecializedDecodable for Ty<'tcx> {}
 pub type CanonicalTy<'tcx> = Canonical<'tcx, Ty<'tcx>>;
 
 extern {
-    /// A dummy type used to force List to by unsized without requiring fat pointers
+    /// A dummy type used to force `List` to by unsized without requiring fat pointers.
     type OpaqueListContents;
 }
 
@@ -1734,7 +1729,6 @@ impl<'tcx> ParamEnv<'tcx> {
                 if value.has_placeholders()
                     || value.needs_infer()
                     || value.has_param_types()
-                    || value.has_self_ty()
                 {
                     ParamEnvAnd {
                         param_env: self,
@@ -1944,9 +1938,15 @@ pub struct FieldDef {
     pub vis: Visibility,
 }
 
-/// The definition of an abstract data type -- a struct or enum.
+/// The definition of a user-defined type, e.g., a `struct`, `enum`, or `union`.
 ///
 /// These are all interned (by `intern_adt_def`) into the `adt_defs` table.
+///
+/// The initialism *"Adt"* stands for an [*algebraic data type (ADT)*][adt].
+/// This is slightly wrong because `union`s are not ADTs.
+/// Moreover, Rust only allows recursive data types through indirection.
+///
+/// [adt]: https://en.wikipedia.org/wiki/Algebraic_data_type
 pub struct AdtDef {
     /// `DefId` of the struct, enum or union item.
     pub did: DefId,
@@ -2065,8 +2065,8 @@ impl_stable_hash_for!(struct ReprFlags {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable, Default)]
 pub struct ReprOptions {
     pub int: Option<attr::IntType>,
-    pub align: u32,
-    pub pack: u32,
+    pub align: Option<Align>,
+    pub pack: Option<Align>,
     pub flags: ReprFlags,
 }
 
@@ -2081,18 +2081,19 @@ impl ReprOptions {
     pub fn new(tcx: TyCtxt<'_>, did: DefId) -> ReprOptions {
         let mut flags = ReprFlags::empty();
         let mut size = None;
-        let mut max_align = 0;
-        let mut min_pack = 0;
+        let mut max_align: Option<Align> = None;
+        let mut min_pack: Option<Align> = None;
         for attr in tcx.get_attrs(did).iter() {
             for r in attr::find_repr_attrs(&tcx.sess.parse_sess, attr) {
                 flags.insert(match r {
                     attr::ReprC => ReprFlags::IS_C,
                     attr::ReprPacked(pack) => {
-                        min_pack = if min_pack > 0 {
-                            cmp::min(pack, min_pack)
+                        let pack = Align::from_bytes(pack as u64).unwrap();
+                        min_pack = Some(if let Some(min_pack) = min_pack {
+                            min_pack.min(pack)
                         } else {
                             pack
-                        };
+                        });
                         ReprFlags::empty()
                     },
                     attr::ReprTransparent => ReprFlags::IS_TRANSPARENT,
@@ -2102,7 +2103,7 @@ impl ReprOptions {
                         ReprFlags::empty()
                     },
                     attr::ReprAlign(align) => {
-                        max_align = cmp::max(align, max_align);
+                        max_align = max_align.max(Some(Align::from_bytes(align as u64).unwrap()));
                         ReprFlags::empty()
                     },
                 });
@@ -2121,7 +2122,7 @@ impl ReprOptions {
     #[inline]
     pub fn c(&self) -> bool { self.flags.contains(ReprFlags::IS_C) }
     #[inline]
-    pub fn packed(&self) -> bool { self.pack > 0 }
+    pub fn packed(&self) -> bool { self.pack.is_some() }
     #[inline]
     pub fn transparent(&self) -> bool { self.flags.contains(ReprFlags::IS_TRANSPARENT) }
     #[inline]
@@ -2141,8 +2142,12 @@ impl ReprOptions {
     /// Returns `true` if this `#[repr()]` should inhibit struct field reordering
     /// optimizations, such as with `repr(C)`, `repr(packed(1))`, or `repr(<int>)`.
     pub fn inhibit_struct_field_reordering_opt(&self) -> bool {
-        self.flags.intersects(ReprFlags::IS_UNOPTIMISABLE) || self.pack == 1 ||
-            self.int.is_some()
+        if let Some(pack) = self.pack {
+            if pack.bytes() == 1 {
+                return true;
+            }
+        }
+        self.flags.intersects(ReprFlags::IS_UNOPTIMISABLE) || self.int.is_some()
     }
 
     /// Returns `true` if this `#[repr()]` should inhibit union ABI optimisations.
@@ -2596,12 +2601,12 @@ impl<'tcx> ClosureKind {
 
     pub fn trait_did(&self, tcx: TyCtxt<'tcx>) -> DefId {
         match *self {
-            ClosureKind::Fn => tcx.require_lang_item(FnTraitLangItem),
+            ClosureKind::Fn => tcx.require_lang_item(FnTraitLangItem, None),
             ClosureKind::FnMut => {
-                tcx.require_lang_item(FnMutTraitLangItem)
+                tcx.require_lang_item(FnMutTraitLangItem, None)
             }
             ClosureKind::FnOnce => {
-                tcx.require_lang_item(FnOnceTraitLangItem)
+                tcx.require_lang_item(FnOnceTraitLangItem, None)
             }
         }
     }
@@ -2792,6 +2797,10 @@ impl<'tcx> TyCtxt<'tcx> {
         })
     }
 
+    pub fn opt_item_name(self, def_id: DefId) -> Option<Ident> {
+        self.hir().as_local_hir_id(def_id).and_then(|hir_id| self.hir().get(hir_id).ident())
+    }
+
     pub fn opt_associated_item(self, def_id: DefId) -> Option<AssocItem> {
         let is_associated_item = if let Some(hir_id) = self.hir().as_local_hir_id(def_id) {
             match self.hir().get(hir_id) {
@@ -2895,6 +2904,13 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn impls_are_allowed_to_overlap(self, def_id1: DefId, def_id2: DefId)
                                         -> Option<ImplOverlapKind>
     {
+        // If either trait impl references an error, they're allowed to overlap,
+        // as one of them essentially doesn't exist.
+        if self.impl_trait_ref(def_id1).map_or(false, |tr| tr.references_error()) ||
+            self.impl_trait_ref(def_id2).map_or(false, |tr| tr.references_error()) {
+            return Some(ImplOverlapKind::Permitted);
+        }
+
         let is_legit = if self.features().overlapping_marker_traits {
             let trait1_is_empty = self.impl_trait_ref(def_id1)
                 .map_or(false, |trait_ref| {
@@ -3337,6 +3353,22 @@ fn issue33140_self_ty(tcx: TyCtxt<'_>, def_id: DefId) -> Option<Ty<'_>> {
     }
 }
 
+/// Check if a function is async.
+fn asyncness(tcx: TyCtxt<'_>, def_id: DefId) -> hir::IsAsync {
+    let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap_or_else(|| {
+        bug!("asyncness: expected local `DefId`, got `{:?}`", def_id)
+    });
+
+    let node = tcx.hir().get(hir_id);
+
+    let fn_like = hir::map::blocks::FnLikeNode::from_node(node).unwrap_or_else(|| {
+        bug!("asyncness: expected fn-like node but got `{:?}`", def_id);
+    });
+
+    fn_like.asyncness()
+}
+
+
 pub fn provide(providers: &mut ty::query::Providers<'_>) {
     context::provide(providers);
     erase_regions::provide(providers);
@@ -3344,6 +3376,7 @@ pub fn provide(providers: &mut ty::query::Providers<'_>) {
     util::provide(providers);
     constness::provide(providers);
     *providers = ty::query::Providers {
+        asyncness,
         associated_item,
         associated_item_def_ids,
         adt_sized_constraint,
@@ -3386,10 +3419,6 @@ impl SymbolName {
         SymbolName {
             name: InternedString::intern(name)
         }
-    }
-
-    pub fn as_str(&self) -> LocalInternedString {
-        self.name.as_str()
     }
 }
 

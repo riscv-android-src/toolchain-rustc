@@ -1,3 +1,6 @@
+use std::convert::TryInto;
+
+use rustc_apfloat::Float;
 use rustc::ty::layout::{Align, LayoutOf, Size};
 use rustc::hir::def_id::DefId;
 use rustc::mir;
@@ -135,7 +138,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             None => this.tcx.item_name(def_id).as_str(),
         };
         // Strip linker suffixes (seen on 32-bit macOS).
-        let link_name = link_name.get().trim_end_matches("$UNIX2003");
+        let link_name = link_name.trim_end_matches("$UNIX2003");
         let tcx = &{this.tcx.tcx};
 
         // First: functions that diverge.
@@ -338,7 +341,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // Now we make a function call.
                 // TODO: consider making this reusable? `InterpCx::step` does something similar
                 // for the TLS destructors, and of course `eval_main`.
-                let mir = this.load_mir(f_instance.def)?;
+                let mir = this.load_mir(f_instance.def, None)?;
                 let ret_place = MPlaceTy::dangling(this.layout_of(this.tcx.mk_unit())?, this).into();
                 this.push_stack_frame(
                     f_instance,
@@ -419,78 +422,18 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "getenv" => {
-                let result = {
-                    let name_ptr = this.read_scalar(args[0])?.not_undef()?;
-                    let name = this.memory().read_c_str(name_ptr)?;
-                    match this.machine.env_vars.get(name) {
-                        Some(&var) => Scalar::Ptr(var),
-                        None => Scalar::ptr_null(&*this.tcx),
-                    }
-                };
+                let result = this.getenv(args[0])?;
                 this.write_scalar(result, dest)?;
             }
 
             "unsetenv" => {
-                let mut success = None;
-                {
-                    let name_ptr = this.read_scalar(args[0])?.not_undef()?;
-                    if !this.is_null(name_ptr)? {
-                        let name = this.memory().read_c_str(name_ptr)?.to_owned();
-                        if !name.is_empty() && !name.contains(&b'=') {
-                            success = Some(this.machine.env_vars.remove(&name));
-                        }
-                    }
-                }
-                if let Some(old) = success {
-                    if let Some(var) = old {
-                        this.memory_mut().deallocate(var, None, MiriMemoryKind::Env.into())?;
-                    }
-                    this.write_null(dest)?;
-                } else {
-                    this.write_scalar(Scalar::from_int(-1, dest.layout.size), dest)?;
-                }
+                let result = this.unsetenv(args[0])?;
+                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
             }
 
             "setenv" => {
-                let mut new = None;
-                {
-                    let name_ptr = this.read_scalar(args[0])?.not_undef()?;
-                    let value_ptr = this.read_scalar(args[1])?.not_undef()?;
-                    let value = this.memory().read_c_str(value_ptr)?;
-                    if !this.is_null(name_ptr)? {
-                        let name = this.memory().read_c_str(name_ptr)?;
-                        if !name.is_empty() && !name.contains(&b'=') {
-                            new = Some((name.to_owned(), value.to_owned()));
-                        }
-                    }
-                }
-                if let Some((name, value)) = new {
-                    // `+1` for the null terminator.
-                    let value_copy = this.memory_mut().allocate(
-                        Size::from_bytes((value.len() + 1) as u64),
-                        Align::from_bytes(1).unwrap(),
-                        MiriMemoryKind::Env.into(),
-                    );
-                    // We just allocated these, so the write cannot fail.
-                    let alloc = this.memory_mut().get_mut(value_copy.alloc_id).unwrap();
-                    alloc.write_bytes(tcx, value_copy, &value).unwrap();
-                    let trailing_zero_ptr = value_copy.offset(
-                        Size::from_bytes(value.len() as u64),
-                        tcx,
-                    ).unwrap();
-                    alloc.write_bytes(tcx, trailing_zero_ptr, &[0]).unwrap();
-
-                    if let Some(var) = this.machine.env_vars.insert(
-                        name.to_owned(),
-                        value_copy,
-                    )
-                    {
-                        this.memory_mut().deallocate(var, None, MiriMemoryKind::Env.into())?;
-                    }
-                    this.write_null(dest)?;
-                } else {
-                    this.write_scalar(Scalar::from_int(-1, dest.layout.size), dest)?;
-                }
+                let result = this.setenv(args[0], args[1])?;
+                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
             }
 
             "write" => {
@@ -577,7 +520,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 this.write_scalar(Scalar::from_u64(f.to_bits()), dest)?;
             }
-            // underscore case for windows
+            // underscore case for windows, here and below
+            // (see https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/floating-point-primitives?view=vs-2019)
             "_hypot" | "hypot" | "atan2" => {
                 // FIXME: Using host floats.
                 let f1 = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
@@ -589,16 +533,23 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 this.write_scalar(Scalar::from_u64(n.to_bits()), dest)?;
             }
-            // underscore case for windows
-            "_ldexp" | "ldexp" => {
-                // FIXME: Using host floats.
-                let x = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
+            // For radix-2 (binary) systems, `ldexp` and `scalbn` are the same.
+            "_ldexp" | "ldexp" | "scalbn" => {
+                let x = this.read_scalar(args[0])?.to_f64()?;
                 let exp = this.read_scalar(args[1])?.to_i32()?;
-                extern {
-                    fn ldexp(x: f64, n: i32) -> f64;
-                }
-                let n = unsafe { ldexp(x, exp) };
-                this.write_scalar(Scalar::from_u64(n.to_bits()), dest)?;
+
+                // Saturating cast to i16. Even those are outside the valid exponent range to
+                // `scalbn` below will do its over/underflow handling.
+                let exp = if exp > i16::max_value() as i32 {
+                    i16::max_value()
+                } else if exp < i16::min_value() as i32 {
+                    i16::min_value()
+                } else {
+                    exp.try_into().unwrap()
+                };
+
+                let res = x.scalbn(exp);
+                this.write_scalar(Scalar::from_f64(res), dest)?;
             }
 
             // Some things needed for `sys::thread` initialization to go through.

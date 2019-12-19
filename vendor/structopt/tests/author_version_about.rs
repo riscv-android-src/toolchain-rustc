@@ -6,15 +6,12 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[macro_use]
-extern crate structopt;
-
 use structopt::StructOpt;
 
 #[test]
 fn no_author_version_about() {
     #[derive(StructOpt, PartialEq, Debug)]
-    #[structopt(name = "foo", about = "", author = "", version = "")]
+    #[structopt(name = "foo", no_version)]
     struct Opt {}
 
     let mut output = Vec::new();
@@ -27,13 +24,13 @@ fn no_author_version_about() {
 #[test]
 fn use_env() {
     #[derive(StructOpt, PartialEq, Debug)]
-    #[structopt()]
+    #[structopt(author, about)]
     struct Opt {}
 
     let mut output = Vec::new();
     Opt::clap().write_long_help(&mut output).unwrap();
     let output = String::from_utf8(output).unwrap();
-    assert!(output.starts_with("structopt 0.2."));
+    assert!(output.starts_with("structopt 0."));
     assert!(output.contains("Guillaume Pinot <texitoi@texitoi.eu>, others"));
     assert!(output.contains("Parse command line argument by defining a struct."));
 }

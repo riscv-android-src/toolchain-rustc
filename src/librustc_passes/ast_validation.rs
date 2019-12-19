@@ -602,7 +602,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             }
             ItemKind::Enum(ref def, _) => {
                 for variant in &def.variants {
-                    for field in variant.node.data.fields() {
+                    for field in variant.data.fields() {
                         self.invalid_visibility(&field.vis, None);
                     }
                 }
@@ -813,8 +813,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
         visit::walk_poly_trait_ref(self, t, m);
     }
 
-    fn visit_variant_data(&mut self, s: &'a VariantData, _: Ident,
-                          _: &'a Generics, _: NodeId, _: Span) {
+    fn visit_variant_data(&mut self, s: &'a VariantData) {
         self.with_banned_assoc_ty_bound(|this| visit::walk_struct_def(this, s))
     }
 
@@ -824,7 +823,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             |this| visit::walk_enum_def(this, enum_definition, generics, item_id))
     }
 
-    fn visit_mac(&mut self, mac: &Spanned<Mac_>) {
+    fn visit_mac(&mut self, mac: &Mac) {
         // when a new macro kind is added but the author forgets to set it up for expansion
         // because that's the only part that won't cause a compiler error
         self.session.diagnostic()

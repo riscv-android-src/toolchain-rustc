@@ -1,11 +1,8 @@
-#[macro_use]
-extern crate structopt;
-
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
 struct Opt {
-    #[structopt(raw(required = "true", min_values = "2"))]
+    #[structopt(required = true, min_values = 2)]
     foos: Vec<String>,
 }
 

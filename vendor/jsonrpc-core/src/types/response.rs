@@ -4,6 +4,7 @@ use crate::Result as CoreResult;
 
 /// Successful response
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Success {
 	/// Protocol version
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -16,6 +17,7 @@ pub struct Success {
 
 /// Unsuccessful response
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Failure {
 	/// Protocol Version
 	#[serde(skip_serializing_if = "Option::is_none")]
@@ -28,6 +30,7 @@ pub struct Failure {
 
 /// Represents output - failure or success
 #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum Output {
 	/// Success
@@ -83,6 +86,7 @@ impl From<Output> for CoreResult<Value> {
 
 /// Synchronous response
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum Response {
 	/// Single response
@@ -100,6 +104,17 @@ impl Response {
 			error,
 		}
 		.into()
+	}
+
+	/// Deserialize `Response` from given JSON string.
+	///
+	/// This method will handle an empty string as empty batch response.
+	pub fn from_json(s: &str) -> Result<Self, serde_json::Error> {
+		if s.is_empty() {
+			Ok(Response::Batch(vec![]))
+		} else {
+			serde_json::from_str(s)
+		}
 	}
 }
 
@@ -240,4 +255,39 @@ fn batch_response_deserialize() {
 			})
 		])
 	);
+}
+
+#[test]
+fn handle_incorrect_responses() {
+	use serde_json;
+
+	let dsr = r#"
+{
+	"id": 2,
+	"jsonrpc": "2.0",
+	"result": "0x62d3776be72cc7fa62cad6fe8ed873d9bc7ca2ee576e400d987419a3f21079d5",
+	"error": {
+		"message": "VM Exception while processing transaction: revert",
+		"code": -32000,
+		"data": {}
+	}
+}"#;
+
+	let deserialized: Result<Response, _> = serde_json::from_str(dsr);
+	assert!(
+		deserialized.is_err(),
+		"Expected error when deserializing invalid payload."
+	);
+}
+
+#[test]
+fn should_parse_empty_response_as_batch() {
+	use serde_json;
+
+	let dsr = r#""#;
+
+	let deserialized1: Result<Response, _>= serde_json::from_str(dsr);
+	let deserialized2: Result<Response, _> = Response::from_json(dsr);
+	assert!(deserialized1.is_err(), "Empty string is not valid JSON, so we should get an error.");
+	assert_eq!(deserialized2.unwrap(), Response::Batch(vec![]));
 }

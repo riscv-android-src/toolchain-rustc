@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://docs.rs/libgit2-sys/0.8")]
+#![doc(html_root_url = "https://docs.rs/libgit2-sys/0.9")]
 #![allow(non_camel_case_types, unused_extern_crates)]
 
 // This is required to link libz when libssh2-sys is not included.
@@ -1028,8 +1028,8 @@ pub struct git_diff_options {
     pub flags: u32,
     pub ignore_submodules: git_submodule_ignore_t,
     pub pathspec: git_strarray,
-    pub notify_cb: git_diff_notify_cb,
-    pub progress_cb: git_diff_progress_cb,
+    pub notify_cb: Option<git_diff_notify_cb>,
+    pub progress_cb: Option<git_diff_progress_cb>,
     pub payload: *mut c_void,
     pub context_lines: u32,
     pub interhunk_lines: u32,
@@ -1238,174 +1238,212 @@ pub type git_transport_cb = extern "C" fn(
 #[repr(C)]
 pub struct git_transport {
     pub version: c_uint,
-    pub set_callbacks: extern "C" fn(
-        *mut git_transport,
-        git_transport_message_cb,
-        git_transport_message_cb,
-        git_transport_certificate_check_cb,
-        *mut c_void,
-    ) -> c_int,
-    pub set_custom_headers: extern "C" fn(*mut git_transport, *const git_strarray) -> c_int,
-    pub connect: extern "C" fn(
-        *mut git_transport,
-        *const c_char,
-        git_cred_acquire_cb,
-        *mut c_void,
-        *const git_proxy_options,
-        c_int,
-        c_int,
-    ) -> c_int,
-    pub ls:
+    pub set_callbacks: Option<
+        extern "C" fn(
+            *mut git_transport,
+            git_transport_message_cb,
+            git_transport_message_cb,
+            git_transport_certificate_check_cb,
+            *mut c_void,
+        ) -> c_int,
+    >,
+    pub set_custom_headers: Option<extern "C" fn(*mut git_transport, *const git_strarray) -> c_int>,
+    pub connect: Option<
+        extern "C" fn(
+            *mut git_transport,
+            *const c_char,
+            git_cred_acquire_cb,
+            *mut c_void,
+            *const git_proxy_options,
+            c_int,
+            c_int,
+        ) -> c_int,
+    >,
+    pub ls: Option<
         extern "C" fn(*mut *mut *const git_remote_head, *mut size_t, *mut git_transport) -> c_int,
-    pub push:
+    >,
+    pub push: Option<
         extern "C" fn(*mut git_transport, *mut git_push, *const git_remote_callbacks) -> c_int,
-    pub negotiate_fetch: extern "C" fn(
-        *mut git_transport,
-        *mut git_repository,
-        *const *const git_remote_head,
-        size_t,
-    ) -> c_int,
-    pub download_pack: extern "C" fn(
-        *mut git_transport,
-        *mut git_repository,
-        *mut git_transfer_progress,
-        git_transfer_progress_cb,
-        *mut c_void,
-    ) -> c_int,
-    pub is_connected: extern "C" fn(*mut git_transport) -> c_int,
-    pub read_flags: extern "C" fn(*mut git_transport, *mut c_int) -> c_int,
-    pub cancel: extern "C" fn(*mut git_transport),
-    pub close: extern "C" fn(*mut git_transport) -> c_int,
-    pub free: extern "C" fn(*mut git_transport),
+    >,
+    pub negotiate_fetch: Option<
+        extern "C" fn(
+            *mut git_transport,
+            *mut git_repository,
+            *const *const git_remote_head,
+            size_t,
+        ) -> c_int,
+    >,
+    pub download_pack: Option<
+        extern "C" fn(
+            *mut git_transport,
+            *mut git_repository,
+            *mut git_transfer_progress,
+            git_transfer_progress_cb,
+            *mut c_void,
+        ) -> c_int,
+    >,
+    pub is_connected: Option<extern "C" fn(*mut git_transport) -> c_int>,
+    pub read_flags: Option<extern "C" fn(*mut git_transport, *mut c_int) -> c_int>,
+    pub cancel: Option<extern "C" fn(*mut git_transport)>,
+    pub close: Option<extern "C" fn(*mut git_transport) -> c_int>,
+    pub free: Option<extern "C" fn(*mut git_transport)>,
 }
 
 #[repr(C)]
 pub struct git_odb_backend {
     pub version: c_uint,
     pub odb: *mut git_odb,
-    pub read: extern "C" fn(
-        *mut *mut c_void,
-        *mut size_t,
-        *mut git_object_t,
-        *mut git_odb_backend,
-        *const git_oid,
-    ) -> c_int,
+    pub read: Option<
+        extern "C" fn(
+            *mut *mut c_void,
+            *mut size_t,
+            *mut git_object_t,
+            *mut git_odb_backend,
+            *const git_oid,
+        ) -> c_int,
+    >,
 
-    pub read_prefix: extern "C" fn(
-        *mut git_oid,
-        *mut *mut c_void,
-        *mut size_t,
-        *mut git_object_t,
-        *mut git_odb_backend,
-        *const git_oid,
-        size_t,
-    ) -> c_int,
-    pub read_header: extern "C" fn(
-        *mut size_t,
-        *mut git_object_t,
-        *mut git_odb_backend,
-        *const git_oid,
-    ) -> c_int,
+    pub read_prefix: Option<
+        extern "C" fn(
+            *mut git_oid,
+            *mut *mut c_void,
+            *mut size_t,
+            *mut git_object_t,
+            *mut git_odb_backend,
+            *const git_oid,
+            size_t,
+        ) -> c_int,
+    >,
+    pub read_header: Option<
+        extern "C" fn(
+            *mut size_t,
+            *mut git_object_t,
+            *mut git_odb_backend,
+            *const git_oid,
+        ) -> c_int,
+    >,
 
-    pub write: extern "C" fn(
-        *mut git_odb_backend,
-        *const git_oid,
-        *const c_void,
-        size_t,
-        git_object_t,
-    ) -> c_int,
+    pub write: Option<
+        extern "C" fn(
+            *mut git_odb_backend,
+            *const git_oid,
+            *const c_void,
+            size_t,
+            git_object_t,
+        ) -> c_int,
+    >,
 
-    pub writestream: extern "C" fn(
-        *mut *mut git_odb_stream,
-        *mut git_odb_backend,
-        git_off_t,
-        git_object_t,
-    ) -> c_int,
+    pub writestream: Option<
+        extern "C" fn(
+            *mut *mut git_odb_stream,
+            *mut git_odb_backend,
+            git_off_t,
+            git_object_t,
+        ) -> c_int,
+    >,
 
-    pub readstream: extern "C" fn(
-        *mut *mut git_odb_stream,
-        *mut size_t,
-        *mut git_object_t,
-        *mut git_odb_backend,
-        *const git_oid,
-    ) -> c_int,
+    pub readstream: Option<
+        extern "C" fn(
+            *mut *mut git_odb_stream,
+            *mut size_t,
+            *mut git_object_t,
+            *mut git_odb_backend,
+            *const git_oid,
+        ) -> c_int,
+    >,
 
-    pub exists: extern "C" fn(*mut git_odb_backend, *const git_oid) -> c_int,
+    pub exists: Option<extern "C" fn(*mut git_odb_backend, *const git_oid) -> c_int>,
 
     pub exists_prefix:
-        extern "C" fn(*mut git_oid, *mut git_odb_backend, *const git_oid, size_t) -> c_int,
+        Option<extern "C" fn(*mut git_oid, *mut git_odb_backend, *const git_oid, size_t) -> c_int>,
 
-    pub refresh: extern "C" fn(*mut git_odb_backend) -> c_int,
+    pub refresh: Option<extern "C" fn(*mut git_odb_backend) -> c_int>,
 
-    pub foreach: extern "C" fn(*mut git_odb_backend, git_odb_foreach_cb, *mut c_void) -> c_int,
+    pub foreach:
+        Option<extern "C" fn(*mut git_odb_backend, git_odb_foreach_cb, *mut c_void) -> c_int>,
 
-    pub writepack: extern "C" fn(
-        *mut *mut git_odb_writepack,
-        *mut git_odb_backend,
-        *mut git_odb,
-        git_transfer_progress_cb,
-        *mut c_void,
-    ) -> c_int,
+    pub writepack: Option<
+        extern "C" fn(
+            *mut *mut git_odb_writepack,
+            *mut git_odb_backend,
+            *mut git_odb,
+            git_transfer_progress_cb,
+            *mut c_void,
+        ) -> c_int,
+    >,
 
-    pub freshen: extern "C" fn(*mut git_odb_backend, *const git_oid) -> c_int,
+    pub freshen: Option<extern "C" fn(*mut git_odb_backend, *const git_oid) -> c_int>,
 
-    pub free: extern "C" fn(*mut git_odb_backend),
+    pub free: Option<extern "C" fn(*mut git_odb_backend)>,
 }
 
 #[repr(C)]
 pub struct git_refdb_backend {
     pub version: c_uint,
-    pub exists: extern "C" fn(*mut c_int, *mut git_refdb_backend, *const c_char) -> c_int,
-    pub lookup:
+    pub exists: Option<extern "C" fn(*mut c_int, *mut git_refdb_backend, *const c_char) -> c_int>,
+    pub lookup: Option<
         extern "C" fn(*mut *mut git_reference, *mut git_refdb_backend, *const c_char) -> c_int,
-    pub iterator: extern "C" fn(
-        *mut *mut git_reference_iterator,
-        *mut git_refdb_backend,
-        *const c_char,
-    ) -> c_int,
-    pub write: extern "C" fn(
-        *mut git_refdb_backend,
-        *const git_reference,
-        c_int,
-        *const git_signature,
-        *const c_char,
-        *const git_oid,
-        *const c_char,
-    ) -> c_int,
-    pub rename: extern "C" fn(
-        *mut *mut git_reference,
-        *mut git_refdb_backend,
-        *const c_char,
-        *const c_char,
-        c_int,
-        *const git_signature,
-        *const c_char,
-    ) -> c_int,
-    pub del: extern "C" fn(
-        *mut git_refdb_backend,
-        *const c_char,
-        *const git_oid,
-        *const c_char,
-    ) -> c_int,
-    pub compress: extern "C" fn(*mut git_refdb_backend) -> c_int,
-    pub has_log: extern "C" fn(*mut git_refdb_backend, *const c_char) -> c_int,
-    pub ensure_log: extern "C" fn(*mut git_refdb_backend, *const c_char) -> c_int,
-    pub free: extern "C" fn(*mut git_refdb_backend),
+    >,
+    pub iterator: Option<
+        extern "C" fn(
+            *mut *mut git_reference_iterator,
+            *mut git_refdb_backend,
+            *const c_char,
+        ) -> c_int,
+    >,
+    pub write: Option<
+        extern "C" fn(
+            *mut git_refdb_backend,
+            *const git_reference,
+            c_int,
+            *const git_signature,
+            *const c_char,
+            *const git_oid,
+            *const c_char,
+        ) -> c_int,
+    >,
+    pub rename: Option<
+        extern "C" fn(
+            *mut *mut git_reference,
+            *mut git_refdb_backend,
+            *const c_char,
+            *const c_char,
+            c_int,
+            *const git_signature,
+            *const c_char,
+        ) -> c_int,
+    >,
+    pub del: Option<
+        extern "C" fn(
+            *mut git_refdb_backend,
+            *const c_char,
+            *const git_oid,
+            *const c_char,
+        ) -> c_int,
+    >,
+    pub compress: Option<extern "C" fn(*mut git_refdb_backend) -> c_int>,
+    pub has_log: Option<extern "C" fn(*mut git_refdb_backend, *const c_char) -> c_int>,
+    pub ensure_log: Option<extern "C" fn(*mut git_refdb_backend, *const c_char) -> c_int>,
+    pub free: Option<extern "C" fn(*mut git_refdb_backend)>,
     pub reflog_read:
-        extern "C" fn(*mut *mut git_reflog, *mut git_refdb_backend, *const c_char) -> c_int,
-    pub reflog_write: extern "C" fn(*mut git_refdb_backend, *mut git_reflog) -> c_int,
-    pub reflog_rename: extern "C" fn(*mut git_refdb_backend, *const c_char, *const c_char) -> c_int,
-    pub reflog_delete: extern "C" fn(*mut git_refdb_backend, *const c_char) -> c_int,
-    pub lock: extern "C" fn(*mut *mut c_void, *mut git_refdb_backend, *const c_char) -> c_int,
-    pub unlock: extern "C" fn(
-        *mut git_refdb_backend,
-        *mut c_void,
-        c_int,
-        c_int,
-        *const git_reference,
-        *const git_signature,
-        *const c_char,
-    ) -> c_int,
+        Option<extern "C" fn(*mut *mut git_reflog, *mut git_refdb_backend, *const c_char) -> c_int>,
+    pub reflog_write: Option<extern "C" fn(*mut git_refdb_backend, *mut git_reflog) -> c_int>,
+    pub reflog_rename:
+        Option<extern "C" fn(*mut git_refdb_backend, *const c_char, *const c_char) -> c_int>,
+    pub reflog_delete: Option<extern "C" fn(*mut git_refdb_backend, *const c_char) -> c_int>,
+    pub lock:
+        Option<extern "C" fn(*mut *mut c_void, *mut git_refdb_backend, *const c_char) -> c_int>,
+    pub unlock: Option<
+        extern "C" fn(
+            *mut git_refdb_backend,
+            *mut c_void,
+            c_int,
+            c_int,
+            *const git_reference,
+            *const git_signature,
+            *const c_char,
+        ) -> c_int,
+    >,
 }
 
 #[repr(C)]
@@ -1465,7 +1503,7 @@ pub type git_smart_subtransport_cb =
 
 #[repr(C)]
 pub struct git_smart_subtransport_definition {
-    pub callback: git_smart_subtransport_cb,
+    pub callback: Option<git_smart_subtransport_cb>,
     pub rpc: c_uint,
     pub param: *mut c_void,
 }
@@ -1537,7 +1575,7 @@ pub struct git_stash_apply_options {
     pub version: c_uint,
     pub flags: git_stash_apply_flags,
     pub checkout_options: git_checkout_options,
-    pub progress_cb: git_stash_apply_progress_cb,
+    pub progress_cb: Option<git_stash_apply_progress_cb>,
     pub progress_payload: *mut c_void,
 }
 
@@ -1555,6 +1593,13 @@ pub type git_packbuilder_foreach_cb = extern "C" fn(*const c_void, size_t, *mut 
 
 pub type git_odb_foreach_cb = extern "C" fn(id: *const git_oid, payload: *mut c_void) -> c_int;
 
+pub type git_commit_signing_cb = extern "C" fn(
+    signature: *mut git_buf,
+    signature_field: *mut git_buf,
+    commit_content: *const c_char,
+    payload: *mut c_void,
+) -> c_int;
+
 pub const GIT_REBASE_NO_OPERATION: usize = usize::max_value();
 
 #[repr(C)]
@@ -1565,6 +1610,8 @@ pub struct git_rebase_options {
     pub rewrite_notes_ref: *const c_char,
     pub merge_options: git_merge_options,
     pub checkout_options: git_checkout_options,
+    pub signing_cb: Option<git_commit_signing_cb>,
+    pub payload: *mut c_void,
 }
 
 git_enum! {

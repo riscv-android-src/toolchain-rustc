@@ -67,6 +67,7 @@ struct SerializedPackage<'a> {
     features: &'a FeatureMap,
     manifest_path: &'a Path,
     metadata: Option<&'a toml::Value>,
+    publish: Option<&'a Vec<String>>,
     authors: &'a [String],
     categories: &'a [String],
     keywords: &'a [String],
@@ -125,6 +126,7 @@ impl ser::Serialize for Package {
             edition: &self.manifest.edition().to_string(),
             links: self.manifest.links(),
             metabuild: self.manifest.metabuild(),
+            publish: self.publish().as_ref(),
         }
         .serialize(s)
     }
@@ -451,6 +453,27 @@ impl<'cfg> PackageSet<'cfg> {
 
     pub fn sources_mut(&self) -> RefMut<'_, SourceMap<'cfg>> {
         self.sources.borrow_mut()
+    }
+
+    /// Merge the given set into self.
+    pub fn add_set(&mut self, set: PackageSet<'cfg>) {
+        assert!(!self.downloading.get());
+        assert!(!set.downloading.get());
+        for (pkg_id, p_cell) in set.packages {
+            self.packages.entry(pkg_id).or_insert(p_cell);
+        }
+        let mut sources = self.sources.borrow_mut();
+        let other_sources = set.sources.into_inner();
+        sources.add_source_map(other_sources);
+    }
+
+    /// Get mutable access to an already downloaded package, if it's already
+    /// downoaded and it's part of this set. Does not actually attempt to
+    /// download anything if it's not already downloaded.
+    pub fn lookup_mut(&mut self, id: PackageId) -> Option<&mut Package> {
+        self.packages
+            .get_mut(&id)
+            .and_then(|cell| cell.borrow_mut())
     }
 }
 

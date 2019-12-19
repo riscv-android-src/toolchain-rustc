@@ -60,10 +60,12 @@ impl<'tcx, 'interner> Visitor<'tcx> for ItemLowerer<'tcx, 'interner> {
     fn visit_item(&mut self, item: &'tcx Item) {
         let mut item_hir_id = None;
         self.lctx.with_hir_id_owner(item.id, |lctx| {
-            if let Some(hir_item) = lctx.lower_item(item) {
-                item_hir_id = Some(hir_item.hir_id);
-                lctx.insert_item(hir_item);
-            }
+            lctx.without_in_scope_lifetime_defs(|lctx| {
+                if let Some(hir_item) = lctx.lower_item(item) {
+                    item_hir_id = Some(hir_item.hir_id);
+                    lctx.insert_item(hir_item);
+                }
+            })
         });
 
         if let Some(hir_id) = item_hir_id {
@@ -123,7 +125,7 @@ impl LoweringContext<'_> {
             _ => &[],
         };
         let lt_def_names = parent_generics.iter().filter_map(|param| match param.kind {
-            hir::GenericParamKind::Lifetime { .. } => Some(param.name.ident().modern()),
+            hir::GenericParamKind::Lifetime { .. } => Some(param.name.modern()),
             _ => None,
         });
         self.in_scope_lifetimes.extend(lt_def_names);
@@ -131,6 +133,28 @@ impl LoweringContext<'_> {
         let res = f(self);
 
         self.in_scope_lifetimes.truncate(old_len);
+        res
+    }
+
+    // Clears (and restores) the `in_scope_lifetimes` field. Used when
+    // visiting nested items, which never inherit in-scope lifetimes
+    // from their surrounding environment.
+    fn without_in_scope_lifetime_defs<T>(
+        &mut self,
+        f: impl FnOnce(&mut LoweringContext<'_>) -> T,
+    ) -> T {
+        let old_in_scope_lifetimes = std::mem::replace(&mut self.in_scope_lifetimes, vec![]);
+
+        // this vector is only used when walking over impl headers,
+        // input types, and the like, and should not be non-empty in
+        // between items
+        assert!(self.lifetimes_to_define.is_empty());
+
+        let res = f(self);
+
+        assert!(self.in_scope_lifetimes.is_empty());
+        self.in_scope_lifetimes = old_in_scope_lifetimes;
+
         res
     }
 
@@ -694,9 +718,9 @@ impl LoweringContext<'_> {
                         AnonymousLifetimeMode::PassThrough,
                         |this, _| {
                             (
-                                // Disallow impl Trait in foreign items
+                                // Disallow `impl Trait` in foreign items.
                                 this.lower_fn_decl(fdec, None, false, None),
-                                this.lower_fn_args_to_names(fdec),
+                                this.lower_fn_params_to_names(fdec),
                             )
                         },
                     );
@@ -708,7 +732,7 @@ impl LoweringContext<'_> {
                         self.lower_ty(t, ImplTraitContext::disallowed()), self.lower_mutability(m))
                 }
                 ForeignItemKind::Ty => hir::ForeignItemKind::Type,
-                ForeignItemKind::Macro(_) => panic!("shouldn't exist here"),
+                ForeignItemKind::Macro(_) => panic!("macro shouldn't exist here"),
             },
             vis: self.lower_visibility(&i.vis, None),
             span: i.span,
@@ -726,21 +750,16 @@ impl LoweringContext<'_> {
     }
 
     fn lower_global_asm(&mut self, ga: &GlobalAsm) -> P<hir::GlobalAsm> {
-        P(hir::GlobalAsm {
-            asm: ga.asm,
-            ctxt: ga.ctxt,
-        })
+        P(hir::GlobalAsm { asm: ga.asm })
     }
 
     fn lower_variant(&mut self, v: &Variant) -> hir::Variant {
-        Spanned {
-            node: hir::VariantKind {
-                ident: v.node.ident,
-                id: self.lower_node_id(v.node.id),
-                attrs: self.lower_attrs(&v.node.attrs),
-                data: self.lower_variant_data(&v.node.data),
-                disr_expr: v.node.disr_expr.as_ref().map(|e| self.lower_anon_const(e)),
-            },
+        hir::Variant {
+            attrs: self.lower_attrs(&v.attrs),
+            data: self.lower_variant_data(&v.data),
+            disr_expr: v.disr_expr.as_ref().map(|e| self.lower_anon_const(e)),
+            id: self.lower_node_id(v.id),
+            ident: v.ident,
             span: v.span,
         }
     }
@@ -808,7 +827,7 @@ impl LoweringContext<'_> {
                 ),
             ),
             TraitItemKind::Method(ref sig, None) => {
-                let names = self.lower_fn_args_to_names(&sig.decl);
+                let names = self.lower_fn_params_to_names(&sig.decl);
                 let (generics, sig) = self.lower_method_sig(
                     &i.generics,
                     sig,
@@ -1009,10 +1028,10 @@ impl LoweringContext<'_> {
         }
     }
 
-    fn record_body(&mut self, arguments: HirVec<hir::Arg>, value: hir::Expr) -> hir::BodyId {
+    fn record_body(&mut self, params: HirVec<hir::Param>, value: hir::Expr) -> hir::BodyId {
         let body = hir::Body {
             generator_kind: self.generator_kind,
-            arguments,
+            params,
             value,
         };
         let id = body.id();
@@ -1022,21 +1041,21 @@ impl LoweringContext<'_> {
 
     fn lower_body(
         &mut self,
-        f: impl FnOnce(&mut LoweringContext<'_>) -> (HirVec<hir::Arg>, hir::Expr),
+        f: impl FnOnce(&mut LoweringContext<'_>) -> (HirVec<hir::Param>, hir::Expr),
     ) -> hir::BodyId {
         let prev_gen_kind = self.generator_kind.take();
-        let (arguments, result) = f(self);
-        let body_id = self.record_body(arguments, result);
+        let (parameters, result) = f(self);
+        let body_id = self.record_body(parameters, result);
         self.generator_kind = prev_gen_kind;
         body_id
     }
 
-    fn lower_arg(&mut self, arg: &Arg) -> hir::Arg {
-        hir::Arg {
-            attrs: self.lower_attrs(&arg.attrs),
-            hir_id: self.lower_node_id(arg.id),
-            pat: self.lower_pat(&arg.pat),
-            span: arg.span,
+    fn lower_param(&mut self, param: &Param) -> hir::Param {
+        hir::Param {
+            attrs: self.lower_attrs(&param.attrs),
+            hir_id: self.lower_node_id(param.id),
+            pat: self.lower_pat(&param.pat),
+            span: param.span,
         }
     }
 
@@ -1046,16 +1065,13 @@ impl LoweringContext<'_> {
         body: impl FnOnce(&mut LoweringContext<'_>) -> hir::Expr,
     ) -> hir::BodyId {
         self.lower_body(|this| (
-            decl.inputs.iter().map(|x| this.lower_arg(x)).collect(),
+            decl.inputs.iter().map(|x| this.lower_param(x)).collect(),
             body(this),
         ))
     }
 
     fn lower_fn_body_block(&mut self, decl: &FnDecl, body: &Block) -> hir::BodyId {
-        self.lower_fn_body(decl, |this| {
-            let body = this.lower_block(body, false);
-            this.expr_block(body, ThinVec::new())
-        })
+        self.lower_fn_body(decl, |this| this.lower_block_expr(body))
     }
 
     pub(super) fn lower_const_body(&mut self, expr: &Expr) -> hir::BodyId {
@@ -1074,17 +1090,16 @@ impl LoweringContext<'_> {
         };
 
         self.lower_body(|this| {
-            let mut arguments: Vec<hir::Arg> = Vec::new();
+            let mut parameters: Vec<hir::Param> = Vec::new();
             let mut statements: Vec<hir::Stmt> = Vec::new();
 
-            // Async function arguments are lowered into the closure body so that they are
+            // Async function parameters are lowered into the closure body so that they are
             // captured and so that the drop order matches the equivalent non-async functions.
             //
             // from:
             //
             //     async fn foo(<pattern>: <ty>, <pattern>: <ty>, <pattern>: <ty>) {
-            //       async move {
-            //       }
+            //         <body>
             //     }
             //
             // into:
@@ -1097,18 +1112,26 @@ impl LoweringContext<'_> {
             //         let <pattern> = __arg1;
             //         let __arg0 = __arg0;
             //         let <pattern> = __arg0;
+            //         drop-temps { <body> } // see comments later in fn for details
             //       }
             //     }
             //
             // If `<pattern>` is a simple ident, then it is lowered to a single
             // `let <pattern> = <pattern>;` statement as an optimization.
-            for (index, argument) in decl.inputs.iter().enumerate() {
-                let argument = this.lower_arg(argument);
-                let span = argument.pat.span;
+            //
+            // Note that the body is embedded in `drop-temps`; an
+            // equivalent desugaring would be `return { <body>
+            // };`. The key point is that we wish to drop all the
+            // let-bound variables and temporaries created in the body
+            // (and its tail expression!) before we drop the
+            // parameters (c.f. rust-lang/rust#64512).
+            for (index, parameter) in decl.inputs.iter().enumerate() {
+                let parameter = this.lower_param(parameter);
+                let span = parameter.pat.span;
 
                 // Check if this is a binding pattern, if so, we can optimize and avoid adding a
-                // `let <pat> = __argN;` statement. In this case, we do not rename the argument.
-                let (ident, is_simple_argument) = match argument.pat.node {
+                // `let <pat> = __argN;` statement. In this case, we do not rename the parameter.
+                let (ident, is_simple_parameter) = match parameter.pat.node {
                     hir::PatKind::Binding(hir::BindingAnnotation::Unannotated, _, ident, _) =>
                         (ident, true),
                     _ => {
@@ -1123,32 +1146,32 @@ impl LoweringContext<'_> {
                 let desugared_span =
                     this.mark_span_with_reason(DesugaringKind::Async, span, None);
 
-                // Construct an argument representing `__argN: <ty>` to replace the argument of the
+                // Construct a parameter representing `__argN: <ty>` to replace the parameter of the
                 // async function.
                 //
-                // If this is the simple case, this argument will end up being the same as the
-                // original argument, but with a different pattern id.
+                // If this is the simple case, this parameter will end up being the same as the
+                // original parameter, but with a different pattern id.
                 let mut stmt_attrs = ThinVec::new();
-                stmt_attrs.extend(argument.attrs.iter().cloned());
-                let (new_argument_pat, new_argument_id) = this.pat_ident(desugared_span, ident);
-                let new_argument = hir::Arg {
-                    attrs: argument.attrs,
-                    hir_id: argument.hir_id,
-                    pat: new_argument_pat,
-                    span: argument.span,
+                stmt_attrs.extend(parameter.attrs.iter().cloned());
+                let (new_parameter_pat, new_parameter_id) = this.pat_ident(desugared_span, ident);
+                let new_parameter = hir::Param {
+                    attrs: parameter.attrs,
+                    hir_id: parameter.hir_id,
+                    pat: new_parameter_pat,
+                    span: parameter.span,
                 };
 
 
-                if is_simple_argument {
+                if is_simple_parameter {
                     // If this is the simple case, then we only insert one statement that is
                     // `let <pat> = <pat>;`. We re-use the original argument's pattern so that
                     // `HirId`s are densely assigned.
-                    let expr = this.expr_ident(desugared_span, ident, new_argument_id);
+                    let expr = this.expr_ident(desugared_span, ident, new_parameter_id);
                     let stmt = this.stmt_let_pat(
                         stmt_attrs,
                         desugared_span,
                         Some(P(expr)),
-                        argument.pat,
+                        parameter.pat,
                         hir::LocalSource::AsyncFn
                     );
                     statements.push(stmt);
@@ -1160,7 +1183,7 @@ impl LoweringContext<'_> {
                     // let <pat> = __argN;
                     // ```
                     //
-                    // The first statement moves the argument into the closure and thus ensures
+                    // The first statement moves the parameter into the closure and thus ensures
                     // that the drop order is correct.
                     //
                     // The second statement creates the bindings that the user wrote.
@@ -1170,7 +1193,7 @@ impl LoweringContext<'_> {
                     // statement.
                     let (move_pat, move_id) = this.pat_ident_binding_mode(
                         desugared_span, ident, hir::BindingAnnotation::Mutable);
-                    let move_expr = this.expr_ident(desugared_span, ident, new_argument_id);
+                    let move_expr = this.expr_ident(desugared_span, ident, new_parameter_id);
                     let move_stmt = this.stmt_let_pat(
                         ThinVec::new(),
                         desugared_span,
@@ -1180,13 +1203,13 @@ impl LoweringContext<'_> {
                     );
 
                     // Construct the `let <pat> = __argN;` statement. We re-use the original
-                    // argument's pattern so that `HirId`s are densely assigned.
+                    // parameter's pattern so that `HirId`s are densely assigned.
                     let pattern_expr = this.expr_ident(desugared_span, ident, move_id);
                     let pattern_stmt = this.stmt_let_pat(
                         stmt_attrs,
                         desugared_span,
                         Some(P(pattern_expr)),
-                        argument.pat,
+                        parameter.pat,
                         hir::LocalSource::AsyncFn
                     );
 
@@ -1194,16 +1217,44 @@ impl LoweringContext<'_> {
                     statements.push(pattern_stmt);
                 };
 
-                arguments.push(new_argument);
+                parameters.push(new_parameter);
             }
 
             let async_expr = this.make_async_expr(
                 CaptureBy::Value, closure_id, None, body.span,
                 |this| {
-                    let body = this.lower_block_with_stmts(body, false, statements);
-                    this.expr_block(body, ThinVec::new())
+                    // Create a block from the user's function body:
+                    let user_body = this.lower_block_expr(body);
+
+                    // Transform into `drop-temps { <user-body> }`, an expression:
+                    let desugared_span = this.mark_span_with_reason(
+                        DesugaringKind::Async,
+                        user_body.span,
+                        None,
+                    );
+                    let user_body = this.expr_drop_temps(
+                        desugared_span,
+                        P(user_body),
+                        ThinVec::new(),
+                    );
+
+                    // As noted above, create the final block like
+                    //
+                    // ```
+                    // {
+                    //   let $param_pattern = $raw_param;
+                    //   ...
+                    //   drop-temps { <user-body> }
+                    // }
+                    // ```
+                    let body = this.block_all(
+                        desugared_span,
+                        statements.into(),
+                        Some(P(user_body)),
+                    );
+                    this.expr_block(P(body), ThinVec::new())
                 });
-            (HirVec::from(arguments), this.expr(body.span, async_expr, ThinVec::new()))
+            (HirVec::from(parameters), this.expr(body.span, async_expr, ThinVec::new()))
         })
     }
 

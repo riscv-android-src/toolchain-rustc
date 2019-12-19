@@ -1,5 +1,6 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(nll)]
+#![feature(inner_deref)]
 
 #![recursion_limit="256"]
 
@@ -32,7 +33,7 @@ use syntax::source_map::Spanned;
 use syntax::parse::lexer::comments::strip_doc_comment_decoration;
 use syntax::print::pprust;
 use syntax::visit::{self, Visitor};
-use syntax::print::pprust::{arg_to_string, ty_to_string};
+use syntax::print::pprust::{param_to_string, ty_to_string};
 use syntax_pos::*;
 
 use dump_visitor::DumpVisitor;
@@ -48,6 +49,9 @@ use log::{debug, error, info};
 pub struct SaveContext<'l, 'tcx> {
     tcx: TyCtxt<'tcx>,
     tables: &'l ty::TypeckTables<'tcx>,
+    /// Used as a fallback when nesting the typeck tables during item processing
+    /// (if these are not available for that item, e.g. don't own a body)
+    empty_tables: &'l ty::TypeckTables<'tcx>,
     access_levels: &'l AccessLevels,
     span_utils: SpanUtils<'tcx>,
     config: Config,
@@ -277,7 +281,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
                 filter!(self.span_utils, item.ident.span);
                 let variants_str = def.variants
                     .iter()
-                    .map(|v| v.node.ident.to_string())
+                    .map(|v| v.ident.to_string())
                     .collect::<Vec<_>>()
                     .join(", ");
                 let value = format!("{}::{{{}}}", name, variants_str);
@@ -291,7 +295,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
                     parent: None,
                     children: def.variants
                         .iter()
-                        .map(|v| id_from_node_id(v.node.id, self))
+                        .map(|v| id_from_node_id(v.id, self))
                         .collect(),
                     decl_id: None,
                     docs: self.docs_for_attrs(&item.attrs),
@@ -311,7 +315,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
                     let impl_id = self.next_impl_id();
                     let span = self.span_from_span(sub_span);
 
-                    let type_data = self.lookup_ref_id(typ.id);
+                    let type_data = self.lookup_def_id(typ.id);
                     type_data.map(|type_data| {
                         Data::RelationData(Relation {
                             kind: RelationKind::Impl {
@@ -321,7 +325,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
                             from: id_from_def_id(type_data),
                             to: trait_ref
                                 .as_ref()
-                                .and_then(|t| self.lookup_ref_id(t.ref_id))
+                                .and_then(|t| self.lookup_def_id(t.ref_id))
                                 .map(id_from_def_id)
                                 .unwrap_or_else(|| null_id()),
                         },
@@ -494,7 +498,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
     }
 
     pub fn get_trait_ref_data(&self, trait_ref: &ast::TraitRef) -> Option<Ref> {
-        self.lookup_ref_id(trait_ref.ref_id).and_then(|def_id| {
+        self.lookup_def_id(trait_ref.ref_id).and_then(|def_id| {
             let span = trait_ref.path.span;
             if generated_code(span) {
                 return None;
@@ -869,7 +873,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
         })
     }
 
-    fn lookup_ref_id(&self, ref_id: NodeId) -> Option<DefId> {
+    fn lookup_def_id(&self, ref_id: NodeId) -> Option<DefId> {
         match self.get_path_res(ref_id) {
             Res::PrimTy(_) | Res::SelfTy(..) | Res::Err => None,
             def => Some(def.def_id()),
@@ -934,7 +938,7 @@ fn make_signature(decl: &ast::FnDecl, generics: &ast::Generics) -> String {
     sig.push('(');
     sig.push_str(&decl.inputs
         .iter()
-        .map(arg_to_string)
+        .map(param_to_string)
         .collect::<Vec<_>>()
         .join(", "));
     sig.push(')');
@@ -1114,6 +1118,7 @@ pub fn process_crate<'l, 'tcx, H: SaveHandler>(
         let save_ctxt = SaveContext {
             tcx,
             tables: &ty::TypeckTables::empty(None),
+            empty_tables: &ty::TypeckTables::empty(None),
             access_levels: &access_levels,
             span_utils: SpanUtils::new(&tcx.sess),
             config: find_config(config),
@@ -1156,7 +1161,7 @@ fn escape(s: String) -> String {
 // Helper function to determine if a span came from a
 // macro expansion or syntax extension.
 fn generated_code(span: Span) -> bool {
-    span.ctxt() != NO_EXPANSION || span.is_dummy()
+    span.from_expansion() || span.is_dummy()
 }
 
 // DefId::index is a newtype and so the JSON serialisation is ugly. Therefore

@@ -12,13 +12,13 @@
 //!
 //! | OS               | interface
 //! |------------------|---------------------------------------------------------
-//! | Linux, Android   | [`getrandom`][1] system call if available, otherwise [`/dev/urandom`][2] after reading from `/dev/random` once
+//! | Linux, Android   | [`getrandom`][1] system call if available, otherwise [`/dev/urandom`][2] after successfully polling `/dev/random`
 //! | Windows          | [`RtlGenRandom`][3]
 //! | macOS            | [`getentropy()`][19] if available, otherwise [`/dev/random`][20] (identical to `/dev/urandom`)
 //! | iOS              | [`SecRandomCopyBytes`][4]
 //! | FreeBSD          | [`getrandom()`][21] if available, otherwise [`kern.arandom`][5]
 //! | OpenBSD          | [`getentropy`][6]
-//! | NetBSD           | [`/dev/urandom`][7] after reading from `/dev/random` once
+//! | NetBSD           | [`/dev/urandom`][7] after successfully polling `/dev/random`
 //! | Dragonfly BSD    | [`/dev/random`][8]
 //! | Solaris, illumos | [`getrandom`][9] system call if available, otherwise [`/dev/random`][10]
 //! | Fuchsia OS       | [`cprng_draw`][11]
@@ -36,21 +36,37 @@
 //! systems are using the recommended interface and respect maximum buffer
 //! sizes.
 //!
-//! ## Support for WebAssembly and ams.js
+//! ## Unsupported targets
 //!
-//! The three Emscripten targets `asmjs-unknown-emscripten`,
-//! `wasm32-unknown-emscripten` and `wasm32-experimental-emscripten` use
-//! Emscripten's emulation of `/dev/random` on web browsers and Node.js.
+//! By default, compiling `getrandom` for an unsupported target will result in
+//! a compilation error. If you want to build an application which uses `getrandom`
+//! for such target, you can either:
+//! - Use [`[replace]`][replace] or [`[patch]`][patch] section in your `Cargo.toml`
+//! to switch to a custom implementation with a support of your target.
+//! - Enable the `dummy` feature to have getrandom use an implementation that always
+//! fails at run-time on unsupported targets.
 //!
-//! The bare WASM target `wasm32-unknown-unknown` tries to call the javascript
-//! methods directly, using either `stdweb` or `wasm-bindgen` depending on what
-//! features are activated for this crate. Note that if both features are
-//! enabled `wasm-bindgen` will be used. If neither feature is enabled,
-//! `getrandom` will always fail.
+//! [replace]: https://doc.rust-lang.org/cargo/reference/manifest.html#the-replace-section
+//! [patch]: https://doc.rust-lang.org/cargo/reference/manifest.html#the-patch-section
 //!
-//! The WASI target `wasm32-wasi` uses the `__wasi_random_get` function defined
-//! by the WASI standard.
+//! ## Support for WebAssembly and asm.js
 //!
+//! Getrandom supports all of Rust's current `wasm32` targets, and it works with
+//! both Node.js and web browsers. The three Emscripten targets
+//! `asmjs-unknown-emscripten`, `wasm32-unknown-emscripten`, and
+//! `wasm32-experimental-emscripten` use Emscripten's `/dev/random` emulation.
+//! The WASI target `wasm32-wasi` uses the [`__wasi_random_get`][17] function
+//! defined by the WASI standard.
+//!
+//! Getrandom also supports `wasm32-unknown-unknown` by directly calling
+//! JavaScript methods. Rust currently has two ways to do this: [bindgen] and
+//! [stdweb]. Getrandom supports using either one by enabling the
+//! `wasm-bindgen` or `stdweb` crate features. Note that if both features are
+//! enabled, `wasm-bindgen` will be used. If neither feature is enabled, calls
+//! to `getrandom` will always fail at runtime.
+//!
+//! [bindgen]: https://github.com/rust-lang/rust-bindgen
+//! [stdweb]: https://github.com/koute/stdweb
 //!
 //! ## Early boot
 //!
@@ -92,7 +108,7 @@
 //! [8]: https://leaf.dragonflybsd.org/cgi/web-man?command=random&section=4
 //! [9]: https://docs.oracle.com/cd/E88353_01/html/E37841/getrandom-2.html
 //! [10]: https://docs.oracle.com/cd/E86824_01/html/E54777/random-7d.html
-//! [11]: https://fuchsia.googlesource.com/fuchsia/+/master/zircon/docs/syscalls/cprng_draw.md
+//! [11]: https://fuchsia.dev/fuchsia-src/zircon/syscalls/cprng_draw
 //! [12]: https://github.com/redox-os/randd/blob/master/src/main.rs
 //! [13]: https://github.com/nuxinl/cloudabi#random_get
 //! [14]: https://www.w3.org/TR/WebCryptoAPI/#Crypto-method-getRandomValues
@@ -112,6 +128,7 @@
 )]
 #![no_std]
 #![cfg_attr(feature = "stdweb", recursion_limit = "128")]
+#![warn(rust_2018_idioms, unused_lifetimes, missing_docs)]
 
 #[macro_use]
 extern crate cfg_if;
@@ -126,6 +143,14 @@ cfg_if! {
         macro_rules! error {
             ($($x:tt)*) => {};
         }
+        #[allow(unused)]
+        macro_rules! warn {
+            ($($x:tt)*) => {};
+        }
+        #[allow(unused)]
+        macro_rules! info {
+            ($($x:tt)*) => {};
+        }
     }
 }
 
@@ -134,41 +159,21 @@ pub use crate::error::Error;
 
 #[allow(dead_code)]
 mod util;
-// Unlike the other Unix, Fuchsia and iOS don't use the libc to make any calls.
-#[cfg(any(
-    target_os = "android",
-    target_os = "dragonfly",
-    target_os = "emscripten",
-    target_os = "freebsd",
-    target_os = "haiku",
-    target_os = "illumos",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "redox",
-    target_os = "solaris",
-))]
-#[allow(dead_code)]
-mod util_libc;
 
-// std-only trait definitions (also need for use_file)
-#[cfg(any(
-    feature = "std",
-    target_os = "android",
-    target_os = "dragonfly",
-    target_os = "emscripten",
-    target_os = "freebsd",
-    target_os = "haiku",
-    target_os = "illumos",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "netbsd",
-    target_os = "openbsd",
-    target_os = "redox",
-    target_os = "solaris",
-))]
-mod error_impls;
+cfg_if! {
+    // Unlike the other Unix, Fuchsia and iOS don't use the libc to make any calls.
+    if #[cfg(any(target_os = "android", target_os = "dragonfly", target_os = "emscripten",
+                 target_os = "freebsd", target_os = "haiku",     target_os = "illumos",
+                 target_os = "linux",   target_os = "macos",     target_os = "netbsd",
+                 target_os = "openbsd", target_os = "redox",     target_os = "solaris"))] {
+        #[allow(dead_code)]
+        mod util_libc;
+        // Keep std-only trait definitions for backwards compatiblity
+        mod error_impls;
+    } else if #[cfg(feature = "std")] {
+        mod error_impls;
+    }
+}
 
 // These targets read from a file as a fallback method.
 #[cfg(any(
@@ -216,6 +221,8 @@ cfg_if! {
         #[path = "solaris_illumos.rs"] mod imp;
     } else if #[cfg(target_os = "wasi")] {
         #[path = "wasi.rs"] mod imp;
+    } else if #[cfg(all(windows, getrandom_uwp))] {
+        #[path = "windows_uwp.rs"] mod imp;
     } else if #[cfg(windows)] {
         #[path = "windows.rs"] mod imp;
     } else if #[cfg(all(target_arch = "x86_64", any(
@@ -225,18 +232,25 @@ cfg_if! {
                   target_env = "sgx",
               )))] {
         #[path = "rdrand.rs"] mod imp;
-    } else if #[cfg(target_arch = "wasm32")] {
+    } else if #[cfg(all(target_arch = "wasm32", target_os = "unknown"))] {
         cfg_if! {
             if #[cfg(feature = "wasm-bindgen")] {
                 #[path = "wasm32_bindgen.rs"] mod imp;
             } else if #[cfg(feature = "stdweb")] {
                 #[path = "wasm32_stdweb.rs"] mod imp;
             } else {
+                // Always have an implementation for wasm32-unknown-unknown.
+                // See https://github.com/rust-random/getrandom/issues/87
                 #[path = "dummy.rs"] mod imp;
             }
         }
-    } else {
+    } else if #[cfg(feature = "dummy")] {
         #[path = "dummy.rs"] mod imp;
+    } else {
+        compile_error!("\
+            target is not supported, for more information see: \
+            https://docs.rs/getrandom/#unsupported-targets\
+        ");
     }
 }
 

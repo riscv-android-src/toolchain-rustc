@@ -146,8 +146,8 @@ impl EarlyLintPass for NonCamelCaseTypes {
         }
     }
 
-    fn check_variant(&mut self, cx: &EarlyContext<'_>, v: &ast::Variant, _: &ast::Generics) {
-        self.check_case(cx, "variant", &v.node.ident);
+    fn check_variant(&mut self, cx: &EarlyContext<'_>, v: &ast::Variant) {
+        self.check_case(cx, "variant", &v.ident);
     }
 
     fn check_generic_param(&mut self, cx: &EarlyContext<'_>, param: &ast::GenericParam) {
@@ -350,9 +350,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonSnakeCase {
         &mut self,
         cx: &LateContext<'_, '_>,
         s: &hir::VariantData,
-        _: ast::Name,
-        _: &hir::Generics,
-        _: hir::HirId,
     ) {
         for sf in s.fields() {
             self.check_snake_case(cx, "structure field", &sf.ident);

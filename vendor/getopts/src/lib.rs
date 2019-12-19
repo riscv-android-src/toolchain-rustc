@@ -95,19 +95,10 @@
 #![doc(
     html_logo_url = "https://www.rust-lang.org/logos/rust-logo-128x128-blk-v2.png",
     html_favicon_url = "https://www.rust-lang.org/favicon.ico",
-    html_root_url = "https://docs.rs/getopts/0.2.19"
+    html_root_url = "https://docs.rs/getopts/0.2.20"
 )]
 #![deny(missing_docs)]
 #![cfg_attr(test, deny(warnings))]
-#![cfg_attr(rust_build, feature(staged_api))]
-#![cfg_attr(rust_build, staged_api)]
-#![cfg_attr(
-    rust_build,
-    unstable(
-        feature = "rustc_private",
-        reason = "use the crates.io `getopts` library instead"
-    )
-)]
 
 #[cfg(test)]
 #[macro_use]
@@ -363,7 +354,8 @@ impl Options {
                     .to_str()
                     .ok_or_else(|| Fail::UnrecognizedOption(format!("{:?}", i.as_ref())))
                     .map(|s| s.to_owned())
-            }).collect::<::std::result::Result<Vec<_>, _>>()?;
+            })
+            .collect::<::std::result::Result<Vec<_>, _>>()?;
         let mut args = args.into_iter().peekable();
         let mut arg_pos = 0;
         while let Some(cur) = args.next() {
@@ -514,7 +506,7 @@ impl Options {
 
     /// Derive a custom formatted message from a set of options. The formatted options provided to
     /// a closure as an iterator.
-    pub fn usage_with_format<F: FnMut(&mut Iterator<Item = String>) -> String>(
+    pub fn usage_with_format<F: FnMut(&mut dyn Iterator<Item = String>) -> String>(
         &self,
         mut formatter: F,
     ) -> String {
@@ -522,7 +514,7 @@ impl Options {
     }
 
     /// Derive usage items from a set of options.
-    fn usage_items<'a>(&'a self) -> Box<Iterator<Item = String> + 'a> {
+    fn usage_items<'a>(&'a self) -> Box<dyn Iterator<Item = String> + 'a> {
         let desc_sep = format!("\n{}", repeat(" ").take(24).collect::<String>());
 
         let any_short = self.grps.iter().any(|optref| !optref.short_name.is_empty());
@@ -848,7 +840,8 @@ impl Matches {
             .filter_map(|nm| match self.opt_val(&nm) {
                 Some(Val(s)) => Some(s),
                 _ => None,
-            }).next()
+            })
+            .next()
     }
 
     /// Returns a vector of the arguments provided to all matches of the given
@@ -861,7 +854,8 @@ impl Matches {
             .filter_map(|(_, v)| match v {
                 Val(s) => Some(s),
                 _ => None,
-            }).collect()
+            })
+            .collect()
     }
 
     /// Returns a vector of the arguments provided to all matches of the given
@@ -874,7 +868,8 @@ impl Matches {
             .filter_map(|(p, v)| match v {
                 Val(s) => Some((p, s)),
                 _ => None,
-            }).collect()
+            })
+            .collect()
     }
 
     /// Returns the string argument supplied to a matching option or `None`.
@@ -1022,7 +1017,8 @@ fn each_split_within(desc: &str, lim: usize) -> Vec<String> {
                 else {
                     (words, a, idx)
                 }
-            }).0;
+            })
+            .0;
 
         let mut row = String::new();
         for word in words.iter() {

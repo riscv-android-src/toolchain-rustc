@@ -1,8 +1,7 @@
 use crate::{CrateLint, Module, ModuleKind, ModuleOrUniformRoot};
 use crate::{PathResult, PathSource, Segment};
 use crate::path_names_to_string;
-use crate::diagnostics::{add_typo_suggestion, add_module_candidates};
-use crate::diagnostics::{ImportSuggestion, TypoSuggestion};
+use crate::diagnostics::{add_typo_suggestion, ImportSuggestion, TypoSuggestion};
 use crate::late::{LateResolutionVisitor, RibKind};
 
 use errors::{Applicability, DiagnosticBuilder, DiagnosticId};
@@ -114,7 +113,7 @@ impl<'a> LateResolutionVisitor<'a, '_> {
 
         // Emit special messages for unresolved `Self` and `self`.
         if is_self_type(path, ns) {
-            __diagnostic_used!(E0411);
+            syntax::diagnostic_used!(E0411);
             err.code(DiagnosticId::Error("E0411".into()));
             err.span_label(span, format!("`Self` is only available in impls, traits, \
                                           and type definitions"));
@@ -123,7 +122,7 @@ impl<'a> LateResolutionVisitor<'a, '_> {
         if is_self_value(path, ns) {
             debug!("smart_resolve_path_fragment: E0424, source={:?}", source);
 
-            __diagnostic_used!(E0424);
+            syntax::diagnostic_used!(E0424);
             err.code(DiagnosticId::Error("E0424".into()));
             err.span_label(span, match source {
                 PathSource::Pat => {
@@ -425,7 +424,7 @@ impl<'a> LateResolutionVisitor<'a, '_> {
                 } else {
                     err.note("did you mean to use one of the enum's variants?");
                 }
-            },
+            }
             (Res::Def(DefKind::Struct, def_id), _) if ns == ValueNS => {
                 if let Some((ctor_def, ctor_vis))
                         = self.r.struct_constructors.get(&def_id).cloned() {
@@ -445,6 +444,12 @@ impl<'a> LateResolutionVisitor<'a, '_> {
             (Res::Def(DefKind::Variant, _), _) |
             (Res::Def(DefKind::Ctor(_, CtorKind::Fictive), _), _) if ns == ValueNS => {
                 bad_struct_syntax_suggestion();
+            }
+            (Res::Def(DefKind::Ctor(_, CtorKind::Fn), _), _) if ns == ValueNS => {
+                err.span_label(
+                    span,
+                    format!("did you mean `{} ( /* fields */ )`?", path_str),
+                );
             }
             (Res::SelfTy(..), _) if ns == ValueNS => {
                 err.span_label(span, fallback_label);
@@ -548,7 +553,7 @@ impl<'a> LateResolutionVisitor<'a, '_> {
                 // Items in scope
                 if let RibKind::ModuleRibKind(module) = rib.kind {
                     // Items from this module
-                    add_module_candidates(module, &mut names, &filter_fn);
+                    self.r.add_module_candidates(module, &mut names, &filter_fn);
 
                     if let ModuleKind::Block(..) = module.kind {
                         // We can see through blocks
@@ -577,7 +582,7 @@ impl<'a> LateResolutionVisitor<'a, '_> {
                             }));
 
                             if let Some(prelude) = self.r.prelude {
-                                add_module_candidates(prelude, &mut names, &filter_fn);
+                                self.r.add_module_candidates(prelude, &mut names, &filter_fn);
                             }
                         }
                         break;
@@ -599,7 +604,7 @@ impl<'a> LateResolutionVisitor<'a, '_> {
                 mod_path, Some(TypeNS), false, span, CrateLint::No
             ) {
                 if let ModuleOrUniformRoot::Module(module) = module {
-                    add_module_candidates(module, &mut names, &filter_fn);
+                    self.r.add_module_candidates(module, &mut names, &filter_fn);
                 }
             }
         }
@@ -717,9 +722,7 @@ impl<'a> LateResolutionVisitor<'a, '_> {
             // abort if the module is already found
             if result.is_some() { break; }
 
-            self.r.populate_module_if_necessary(in_module);
-
-            in_module.for_each_child_stable(|ident, _, name_binding| {
+            in_module.for_each_child_stable(self.r, |_, ident, _, name_binding| {
                 // abort if the module is already found or if name_binding is private external
                 if result.is_some() || !name_binding.vis.is_visible_locally() {
                     return
@@ -750,10 +753,8 @@ impl<'a> LateResolutionVisitor<'a, '_> {
 
     fn collect_enum_variants(&mut self, def_id: DefId) -> Option<Vec<Path>> {
         self.find_module(def_id).map(|(enum_module, enum_import_suggestion)| {
-            self.r.populate_module_if_necessary(enum_module);
-
             let mut variants = Vec::new();
-            enum_module.for_each_child_stable(|ident, _, name_binding| {
+            enum_module.for_each_child_stable(self.r, |_, ident, _, name_binding| {
                 if let Res::Def(DefKind::Variant, _) = name_binding.res() {
                     let mut segms = enum_import_suggestion.path.segments.clone();
                     segms.push(ast::PathSegment::from_ident(ident));

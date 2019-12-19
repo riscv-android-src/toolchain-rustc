@@ -1,4 +1,4 @@
-use crate::support::{basic_manifest, project};
+use cargo_test_support::{basic_manifest, project};
 use std::env;
 
 #[cargo_test]
@@ -141,8 +141,8 @@ The lib target `foo` in package `foo2 v0.1.0 ([..]/foo/foo2)` has the same outpu
 filename as the lib target `foo` in package `foo v0.1.0 ([..]/foo)`.
 Colliding filename is: [..]/foo/target/doc/foo/index.html
 The targets should have unique names.
-Consider changing their names to be unique or compiling them separately.
-This may become a hard error in the future; see <https://github.com/rust-lang/cargo/issues/6313>.
+This is a known bug where multiple crates with the same name use
+the same path; see <https://github.com/rust-lang/cargo/issues/6313>.
 ",
         )
         .run();

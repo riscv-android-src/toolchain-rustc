@@ -18,22 +18,15 @@ able to parse any URI, such as `urn:isbn:0451450523`.
 
 #[macro_use]
 extern crate bitflags;
-#[macro_use]
-extern crate num_derive;
-extern crate num_traits;
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
 
-extern crate url;
-extern crate url_serde;
+use serde::{Serialize, Deserialize};
+use serde_json;
+use serde_repr::{Serialize_repr, Deserialize_repr};
 
 pub use url::Url;
 
 use std::collections::HashMap;
 
-use num_traits::FromPrimitive;
 use serde::de;
 use serde::de::Error as Error_;
 use serde_json::Value;
@@ -73,8 +66,8 @@ pub struct Position {
 impl Position {
     pub fn new(line: u64, character: u64) -> Position {
         Position {
-            line: line,
-            character: character,
+            line,
+            character,
         }
     }
 }
@@ -92,8 +85,8 @@ pub struct Range {
 impl Range {
     pub fn new(start: Position, end: Position) -> Range {
         Range {
-            start: start,
-            end: end,
+            start,
+            end,
         }
     }
 }
@@ -101,7 +94,6 @@ impl Range {
 /// Represents a location inside a resource, such as a line inside a text file.
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 pub struct Location {
-    #[serde(with = "url_serde")]
     pub uri: Url,
     pub range: Range,
 }
@@ -109,8 +101,8 @@ pub struct Location {
 impl Location {
     pub fn new(uri: Url, range: Range) -> Location {
         Location {
-            uri: uri,
-            range: range,
+            uri,
+            range,
         }
     }
 }
@@ -127,7 +119,6 @@ pub struct LocationLink {
     pub origin_selection_range: Option<Range>,
 
     /// The target resource identifier of this link.
-    #[serde(with = "url_serde")]
     pub target_uri: Url,
 
     /// The full target range of this link.
@@ -233,14 +224,14 @@ impl<'de> serde::Deserialize<'de> for DiagnosticSeverity {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match try!(u8::deserialize(deserializer)) {
+        Ok(match u8::deserialize(deserializer)? {
             1 => DiagnosticSeverity::Error,
             2 => DiagnosticSeverity::Warning,
             3 => DiagnosticSeverity::Information,
             4 => DiagnosticSeverity::Hint,
             i => {
                 return Err(D::Error::invalid_value(
-                    de::Unexpected::Unsigned(i as u64),
+                    de::Unexpected::Unsigned(u64::from(i)),
                     &"value of 1, 2, 3 or 4",
                 ));
             }
@@ -277,9 +268,9 @@ pub struct Command {
 impl Command {
     pub fn new(title: String, command: String, arguments: Option<Vec<Value>>) -> Command {
         Command {
-            title: title,
-            command: command,
-            arguments: arguments,
+            title,
+            command,
+            arguments,
         }
     }
 }
@@ -303,8 +294,8 @@ pub struct TextEdit {
 impl TextEdit {
     pub fn new(range: Range, new_text: String) -> TextEdit {
         TextEdit {
-            range: range,
-            new_text: new_text,
+            range,
+            new_text,
         }
     }
 }
@@ -357,7 +348,6 @@ pub struct CreateFile {
     /**
      * The resource to create.
      */
-    #[serde(with = "url_serde")]
     pub uri: Url,
     /**
      * Additional options
@@ -393,12 +383,10 @@ pub struct RenameFile {
     /**
      * The old (existing) location.
      */
-    #[serde(with = "url_serde")]
     pub old_uri: Url,
     /**
      * The new location.
      */
-    #[serde(with = "url_serde")]
     pub new_uri: Url,
     /**
      * Rename options.
@@ -434,7 +422,6 @@ pub struct DeleteFile {
     /**
      * The file to delete.
      */
-    #[serde(with = "url_serde")]
     pub uri: Url,
     /**
      * Delete options.
@@ -551,8 +538,8 @@ mod url_map {
 
                 // While there are entries remaining in the input, add them
                 // into our map.
-                while let Some((key, value)) = visitor.next_entry::<url_serde::De<Url>, _>()? {
-                    values.insert(key.into_inner(), value);
+                while let Some((key, value)) = visitor.next_entry::<Url, _>()? {
+                    values.insert(key, value);
                 }
 
                 Ok(values)
@@ -636,13 +623,12 @@ pub struct TextDocumentIdentifier {
     // This modelled by "mixing-in" TextDocumentIdentifier in VersionedTextDocumentIdentifier,
     // so any changes to this type must be effected in the sub-type as well.
     /// The text document's URI.
-    #[serde(with = "url_serde")]
     pub uri: Url,
 }
 
 impl TextDocumentIdentifier {
     pub fn new(uri: Url) -> TextDocumentIdentifier {
-        TextDocumentIdentifier { uri: uri }
+        TextDocumentIdentifier { uri }
     }
 }
 
@@ -651,7 +637,6 @@ impl TextDocumentIdentifier {
 #[serde(rename_all = "camelCase")]
 pub struct TextDocumentItem {
     /// The text document's URI.
-    #[serde(with = "url_serde")]
     pub uri: Url,
 
     /// The text document's language identifier.
@@ -668,10 +653,10 @@ pub struct TextDocumentItem {
 impl TextDocumentItem {
     pub fn new(uri: Url, language_id: String, version: u64, text: String) -> TextDocumentItem {
         TextDocumentItem {
-            uri: uri,
-            language_id: language_id,
-            version: version,
-            text: text,
+            uri,
+            language_id,
+            version,
+            text,
         }
     }
 }
@@ -681,7 +666,6 @@ impl TextDocumentItem {
 pub struct VersionedTextDocumentIdentifier {
     // This field was "mixed-in" from TextDocumentIdentifier
     /// The text document's URI.
-    #[serde(with = "url_serde")]
     pub uri: Url,
 
     /// The version number of this document.
@@ -691,7 +675,7 @@ pub struct VersionedTextDocumentIdentifier {
 impl VersionedTextDocumentIdentifier {
     pub fn new(uri: Url, version: u64) -> VersionedTextDocumentIdentifier {
         VersionedTextDocumentIdentifier {
-            uri: uri,
+            uri,
             version: Some(version),
         }
     }
@@ -718,8 +702,8 @@ impl TextDocumentPositionParams {
         position: Position,
     ) -> TextDocumentPositionParams {
         TextDocumentPositionParams {
-            text_document: text_document,
-            position: position,
+            text_document,
+            position,
         }
     }
 }
@@ -772,7 +756,6 @@ pub struct InitializeParams {
     /// The rootUri of the workspace. Is null if no
     /// folder is open. If both `rootPath` and `rootUri` are set
     /// `rootUri` wins.
-    #[serde(with = "option_url")]
     #[serde(default)]
     pub root_uri: Option<Url>,
 
@@ -812,27 +795,6 @@ pub enum TraceOption {
 impl Default for TraceOption {
     fn default() -> TraceOption {
         TraceOption::Off
-    }
-}
-
-mod option_url {
-    use serde::{self, Serialize};
-    use url::Url;
-    use url_serde::{De, Ser};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Url>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        serde::Deserialize::deserialize(deserializer)
-            .map(|x: Option<De<Url>>| x.map(|url| url.into_inner()))
-    }
-
-    pub fn serialize<S>(self_: &Option<Url>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self_.as_ref().map(Ser::new).serialize(serializer)
     }
 }
 
@@ -909,7 +871,6 @@ pub enum WorkspaceFolderCapabilityChangeNotifications {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFolder {
     /// The associated URI for this workspace folder.
-    #[serde(with = "url_serde")]
     pub uri: Url,
     /// The name of the workspace folder. Defaults to the uri's basename.
     pub name: String,
@@ -1439,13 +1400,13 @@ impl<'de> serde::Deserialize<'de> for TextDocumentSyncKind {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match try!(u8::deserialize(deserializer)) {
+        Ok(match u8::deserialize(deserializer)? {
             0 => TextDocumentSyncKind::None,
             1 => TextDocumentSyncKind::Full,
             2 => TextDocumentSyncKind::Incremental,
             i => {
                 return Err(D::Error::invalid_value(
-                    de::Unexpected::Unsigned(i as u64),
+                    de::Unexpected::Unsigned(u64::from(i)),
                     &"value between 0 and 2 (inclusive)",
                 ));
             }
@@ -1748,14 +1709,14 @@ impl<'de> serde::Deserialize<'de> for MessageType {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match try!(u8::deserialize(deserializer)) {
+        Ok(match u8::deserialize(deserializer)? {
             1 => MessageType::Error,
             2 => MessageType::Warning,
             3 => MessageType::Info,
             4 => MessageType::Log,
             i => {
                 return Err(D::Error::invalid_value(
-                    de::Unexpected::Unsigned(i as u64),
+                    de::Unexpected::Unsigned(u64::from(i)),
                     &"value of 1, 2, 3 or 4",
                 ));
             }
@@ -2009,13 +1970,13 @@ impl<'de> serde::Deserialize<'de> for TextDocumentSaveReason {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match try!(u8::deserialize(deserializer)) {
+        Ok(match u8::deserialize(deserializer)? {
             1 => TextDocumentSaveReason::Manual,
             2 => TextDocumentSaveReason::AfterDelay,
             3 => TextDocumentSaveReason::FocusOut,
             i => {
                 return Err(D::Error::invalid_value(
-                    de::Unexpected::Unsigned(i as u64),
+                    de::Unexpected::Unsigned(u64::from(i)),
                     &"value of 1, 2 or 3",
                 ))
             }
@@ -2070,13 +2031,13 @@ impl<'de> serde::Deserialize<'de> for FileChangeType {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match try!(u8::deserialize(deserializer)) {
+        Ok(match u8::deserialize(deserializer)? {
             1 => FileChangeType::Created,
             2 => FileChangeType::Changed,
             3 => FileChangeType::Deleted,
             i => {
                 return Err(D::Error::invalid_value(
-                    de::Unexpected::Unsigned(i as u64),
+                    de::Unexpected::Unsigned(u64::from(i)),
                     &"value of 1, 2 or 3",
                 ))
             }
@@ -2097,7 +2058,6 @@ impl serde::Serialize for FileChangeType {
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 pub struct FileEvent {
     /// The file's URI.
-    #[serde(with = "url_serde")]
     pub uri: Url,
 
     /// The change type.
@@ -2107,7 +2067,7 @@ pub struct FileEvent {
 
 impl FileEvent {
     pub fn new(uri: Url, typ: FileChangeType) -> FileEvent {
-        FileEvent { uri: uri, typ: typ }
+        FileEvent { uri, typ }
     }
 }
 
@@ -2146,9 +2106,9 @@ impl<'de> serde::Deserialize<'de> for WatchKind {
     where
         D: serde::Deserializer<'de>,
     {
-        let i = try!(u8::deserialize(deserializer));
+        let i = u8::deserialize(deserializer)?;
         WatchKind::from_bits(i).ok_or_else(|| {
-            D::Error::invalid_value(de::Unexpected::Unsigned(i as u64), &"Unknown flag")
+            D::Error::invalid_value(de::Unexpected::Unsigned(u64::from(i)), &"Unknown flag")
         })
     }
 }
@@ -2165,7 +2125,6 @@ impl serde::Serialize for WatchKind {
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 pub struct PublishDiagnosticsParams {
     /// The URI for which diagnostic information is reported.
-    #[serde(with = "url_serde")]
     pub uri: Url,
 
     /// An array of diagnostic information items.
@@ -2175,8 +2134,8 @@ pub struct PublishDiagnosticsParams {
 impl PublishDiagnosticsParams {
     pub fn new(uri: Url, diagnostics: Vec<Diagnostic>) -> PublishDiagnosticsParams {
         PublishDiagnosticsParams {
-            uri: uri,
-            diagnostics: diagnostics,
+            uri,
+            diagnostics,
         }
     }
 }
@@ -2188,16 +2147,25 @@ pub enum CompletionResponse {
     List(CompletionList),
 }
 
+impl From<Vec<CompletionItem>> for CompletionResponse {
+    fn from(items: Vec<CompletionItem>) -> Self {
+        CompletionResponse::Array(items)
+    }
+}
+
+impl From<CompletionList> for CompletionResponse {
+    fn from(list: CompletionList) -> Self {
+        CompletionResponse::List(list)
+    }
+}
+
 #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletionParams {
-    // This field was "mixed-in" from TextDocumentPositionParams
-    /// The text document.
-    pub text_document: TextDocumentIdentifier,
 
     // This field was "mixed-in" from TextDocumentPositionParams
-    /// The position inside the text document.
-    pub position: Position,
+    #[serde(flatten)]
+    pub text_document_position: TextDocumentPositionParams,
 
     // CompletionParams properties:
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2221,35 +2189,12 @@ pub struct CompletionContext {
 }
 
 /// How a completion was triggered.
-#[derive(Debug, PartialEq, Clone, Copy, FromPrimitive)]
+#[derive(Debug, PartialEq, Clone, Copy, Deserialize_repr, Serialize_repr)]
+#[repr(u8)]
 pub enum CompletionTriggerKind {
     Invoked = 1,
     TriggerCharacter = 2,
     TriggerForIncompleteCompletions = 3,
-}
-
-impl<'de> serde::Deserialize<'de> for CompletionTriggerKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let i = try!(u8::deserialize(deserializer));
-        CompletionTriggerKind::from_u8(i).ok_or_else(|| {
-            D::Error::invalid_value(
-                de::Unexpected::Unsigned(i as u64),
-                &"value between 1 and 3 (inclusive)",
-            )
-        })
-    }
-}
-
-impl serde::Serialize for CompletionTriggerKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u8(*self as u8)
-    }
 }
 
 /// Represents a collection of [completion items](#CompletionItem) to be presented
@@ -2350,7 +2295,7 @@ impl CompletionItem {
     /// Create a CompletionItem with the minimum possible info (label and detail).
     pub fn new_simple(label: String, detail: String) -> CompletionItem {
         CompletionItem {
-            label: label,
+            label,
             detail: Some(detail),
             ..Self::default()
         }
@@ -2358,7 +2303,8 @@ impl CompletionItem {
 }
 
 /// The kind of a completion entry.
-#[derive(Debug, Eq, PartialEq, Clone, Copy, FromPrimitive)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum CompletionItemKind {
     Text = 1,
     Method = 2,
@@ -2387,59 +2333,12 @@ pub enum CompletionItemKind {
     TypeParameter = 25,
 }
 
-impl<'de> serde::Deserialize<'de> for CompletionItemKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let i = try!(u8::deserialize(deserializer));
-        CompletionItemKind::from_u8(i).ok_or_else(|| {
-            D::Error::invalid_value(
-                de::Unexpected::Unsigned(i as u64),
-                &"value between 1 and 18 (inclusive)",
-            )
-        })
-    }
-}
-
-impl serde::Serialize for CompletionItemKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u8(*self as u8)
-    }
-}
-
 /// Defines how to interpret the insert text in a completion item
-#[derive(Debug, Eq, PartialEq, Clone, Copy, FromPrimitive)]
+#[derive(Debug, Eq, PartialEq, Clone, Copy, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum InsertTextFormat {
     PlainText = 1,
     Snippet = 2,
-}
-
-impl<'de> serde::Deserialize<'de> for InsertTextFormat {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let i = try!(u8::deserialize(deserializer));
-        InsertTextFormat::from_u8(i).ok_or_else(|| {
-            D::Error::invalid_value(
-                de::Unexpected::Unsigned(i as u64),
-                &"value between 1 and 2 (inclusive)",
-            )
-        })
-    }
-}
-
-impl serde::Serialize for InsertTextFormat {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u8(*self as u8)
-    }
 }
 
 /// The result of a hover request.
@@ -2494,7 +2393,7 @@ impl MarkedString {
 
     pub fn from_language_code(language: String, code_block: String) -> MarkedString {
         MarkedString::LanguageString(LanguageString {
-            language: language,
+            language,
             value: code_block,
         })
     }
@@ -2564,13 +2463,9 @@ pub enum ParameterLabel {
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReferenceParams {
-    // This field was "mixed-in" from TextDocumentPositionParams
-    /// The text document.
-    pub text_document: TextDocumentIdentifier,
-
-    // This field was "mixed-in" from TextDocumentPositionParams
-    /// The position inside the text document.
-    pub position: Position,
+    // Text Document and Position fields
+    #[serde(flatten)]
+    pub text_document_position: TextDocumentPositionParams,
 
     // ReferenceParams properties:
     pub context: ReferenceContext,
@@ -2614,13 +2509,13 @@ impl<'de> serde::Deserialize<'de> for DocumentHighlightKind {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(match try!(u8::deserialize(deserializer)) {
+        Ok(match u8::deserialize(deserializer)? {
             1 => DocumentHighlightKind::Text,
             2 => DocumentHighlightKind::Read,
             3 => DocumentHighlightKind::Write,
             i => {
                 return Err(D::Error::invalid_value(
-                    de::Unexpected::Unsigned(i as u64),
+                    de::Unexpected::Unsigned(u64::from(i)),
                     &"1, 2, or 3",
                 ))
             }
@@ -2658,6 +2553,18 @@ pub struct DocumentSymbolCapability {
 pub enum DocumentSymbolResponse {
     Flat(Vec<SymbolInformation>),
     Nested(Vec<DocumentSymbol>),
+}
+
+impl From<Vec<SymbolInformation>> for DocumentSymbolResponse {
+    fn from(info: Vec<SymbolInformation>) -> Self {
+        DocumentSymbolResponse::Flat(info)
+    }
+}
+
+impl From<Vec<DocumentSymbol>> for DocumentSymbolResponse {
+    fn from(symbols: Vec<DocumentSymbol>) -> Self {
+        DocumentSymbolResponse::Nested(symbols)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -2721,7 +2628,8 @@ pub struct SymbolInformation {
 }
 
 /// A symbol kind.
-#[derive(Debug, Eq, PartialEq, Copy, Clone, FromPrimitive)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
 pub enum SymbolKind {
     File = 1,
     Module = 2,
@@ -2752,25 +2660,6 @@ pub enum SymbolKind {
 
     // Capturing all unknown enums by this lib.
     Unknown = 255,
-}
-
-impl<'de> serde::Deserialize<'de> for SymbolKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let i = try!(u8::deserialize(deserializer));
-        Ok(SymbolKind::from_u8(i).unwrap_or(SymbolKind::Unknown))
-    }
-}
-
-impl serde::Serialize for SymbolKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_u8(*self as u8)
-    }
 }
 
 /// The parameters of a Workspace Symbol Request.
@@ -2835,11 +2724,25 @@ pub struct CodeActionParams {
 }
 
 /// response for CodeActionRequest
-#[derive(Debug, Clone, Deserialize, Serialize)]
+pub type CodeActionResponse = Vec<CodeActionOrCommand>;
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(untagged)]
-pub enum CodeActionResponse {
-    Commands(Vec<Command>),
-    Actions(Vec<CodeAction>),
+pub enum CodeActionOrCommand {
+    Command(Command),
+    CodeAction(CodeAction),
+}
+
+impl From<Command> for CodeActionOrCommand {
+    fn from(comand: Command) -> Self {
+        CodeActionOrCommand::Command(comand)
+    }
+}
+
+impl From<CodeAction> for CodeActionOrCommand {
+    fn from(action: CodeAction) -> Self {
+        CodeActionOrCommand::CodeAction(action)
+    }
 }
 
 /**
@@ -2850,12 +2753,12 @@ pub mod code_action_kind {
     /**
      * Base kind for quickfix actions: 'quickfix'
      */
-    pub const QUICKFIX: &'static str = "quickfix";
+    pub const QUICKFIX: &str = "quickfix";
 
     /**
      * Base kind for refactoring actions: 'refactor'
      */
-    pub const REFACTOR: &'static str = "refactor";
+    pub const REFACTOR: &str = "refactor";
 
     /**
      * Base kind for refactoring extraction actions: 'refactor.extract'
@@ -2868,7 +2771,7 @@ pub mod code_action_kind {
      * - Extract interface from class
      * - ...
      */
-    pub const REFACTOR_EXTRACT: &'static str = "refactor.extract";
+    pub const REFACTOR_EXTRACT: &str = "refactor.extract";
 
     /**
      * Base kind for refactoring inline actions: 'refactor.inline'
@@ -2880,7 +2783,7 @@ pub mod code_action_kind {
      * - Inline constant
      * - ...
      */
-    pub const REFACTOR_INLINE: &'static str = "refactor.inline";
+    pub const REFACTOR_INLINE: &str = "refactor.inline";
 
     /**
      * Base kind for refactoring rewrite actions: 'refactor.rewrite'
@@ -2894,19 +2797,19 @@ pub mod code_action_kind {
      * - Move method to base class
      * - ...
      */
-    pub const REFACTOR_REWRITE: &'static str = "refactor.rewrite";
+    pub const REFACTOR_REWRITE: &str = "refactor.rewrite";
 
     /**
      * Base kind for source actions: `source`
      *
      * Source code actions apply to the entire file.
      */
-    pub const SOURCE: &'static str = "source";
+    pub const SOURCE: &str = "source";
 
     /**
      * Base kind for an organize imports source action: `source.organizeImports`
      */
-    pub const SOURCE_ORGANIZE_IMPORTS: &'static str = "source.organizeImports";
+    pub const SOURCE_ORGANIZE_IMPORTS: &str = "source.organizeImports";
 }
 
 #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
@@ -3011,7 +2914,6 @@ pub struct DocumentLink {
     /**
      * The uri this link points to.
      */
-    #[serde(with = "url_serde")]
     pub target: Url,
 }
 
@@ -3064,11 +2966,9 @@ pub struct DocumentRangeFormattingParams {
 #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentOnTypeFormattingParams {
-    /// The document to format.
-    pub text_document: TextDocumentIdentifier,
-
-    /// The position at which this request was sent.
-    pub position: Position,
+    /// Text Document and Position fields.
+    #[serde(flatten)]
+    pub text_document_position: TextDocumentPositionParams,
 
     /// The character that has been typed.
     pub ch: String,
@@ -3102,11 +3002,9 @@ pub struct DocumentOnTypeFormattingRegistrationOptions {
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenameParams {
-    /// The document to format.
-    pub text_document: TextDocumentIdentifier,
-
-    /// The position at which this request was sent.
-    pub position: Position,
+    /// Text Document and Position fields
+    #[serde(flatten)]
+    pub text_document_position: TextDocumentPositionParams,
 
     /// The new name of the symbol. If the given name is not valid the
     /// request must return a [ResponseError](#ResponseError) with an
@@ -3547,5 +3445,26 @@ mod tests {
             ],
             r#"["create","rename","delete"]"#,
         );
+    }
+
+    #[test]
+    fn test_code_action_response() {
+        test_serialization(
+            &vec![
+                CodeActionOrCommand::Command(Command {
+                    title: "title".to_string(),
+                    command: "command".to_string(),
+                    arguments: None,
+                }),
+                CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "title".to_string(),
+                    kind: Some(code_action_kind::QUICKFIX.to_owned()),
+                    command: None,
+                    diagnostics: None,
+                    edit: None,
+                }),
+            ],
+            r#"[{"title":"title","command":"command"},{"title":"title","kind":"quickfix"}]"#,
+        )
     }
 }

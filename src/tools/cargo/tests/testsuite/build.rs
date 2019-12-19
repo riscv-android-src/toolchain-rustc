@@ -1,14 +1,13 @@
+use cargo::util::paths::dylib_path_envvar;
+use cargo_test_support::paths::{root, CargoPathExt};
+use cargo_test_support::registry::Package;
+use cargo_test_support::{
+    basic_bin_manifest, basic_lib_manifest, basic_manifest, main_file, project, rustc_host,
+    sleep_ms, symlink_supported, t, Execs, ProjectBuilder,
+};
 use std::env;
 use std::fs::{self, File};
 use std::io::prelude::*;
-
-use crate::support::paths::{root, CargoPathExt};
-use crate::support::registry::Package;
-use crate::support::{
-    basic_bin_manifest, basic_lib_manifest, basic_manifest, main_file, project, rustc_host,
-    sleep_ms, symlink_supported, Execs, ProjectBuilder,
-};
-use cargo::util::paths::dylib_path_envvar;
 
 #[cargo_test]
 fn cargo_compile_simple() {
@@ -129,7 +128,7 @@ fn incremental_config() {
 fn cargo_compile_with_workspace_excluded() {
     let p = project().file("src/main.rs", "fn main() {}").build();
 
-    p.cargo("build --all --exclude foo")
+    p.cargo("build --workspace --exclude foo")
         .with_stderr_does_not_contain("[..]virtual[..]")
         .with_stderr_contains("[..]no packages to compile")
         .with_status(101)
@@ -188,7 +187,7 @@ Caused by:
   could not parse input as TOML
 
 Caused by:
-  invalid number at line 3
+  invalid number at line 3 column 19
 ",
         )
         .run();
@@ -208,7 +207,7 @@ Caused by:
   could not parse input as TOML
 
 Caused by:
-  invalid number at line 1
+  invalid number at line 1 column 5
 ",
         )
         .run();
@@ -512,7 +511,7 @@ fn cargo_compile_with_invalid_code() {
         .with_status(101)
         .with_stderr_contains(
             "\
-[ERROR] Could not compile `foo`.
+[ERROR] could not compile `foo`.
 
 To learn more, run the command again with --verbose.\n",
         )
@@ -552,7 +551,7 @@ fn cargo_compile_with_invalid_code_in_deps() {
     p.cargo("build")
         .with_status(101)
         .with_stderr_contains("[..]invalid rust code[..]")
-        .with_stderr_contains("[ERROR] Could not compile [..]")
+        .with_stderr_contains("[ERROR] could not compile [..]")
         .run();
 }
 
@@ -2274,7 +2273,7 @@ Caused by:
   could not parse input as TOML
 
 Caused by:
-  expected an equals, found an identifier at line 1
+  expected an equals, found an identifier at line 1 column 6
 ",
         )
         .run();
@@ -3390,7 +3389,7 @@ fn build_all_workspace() {
         .file("bar/src/lib.rs", "pub fn bar() {}")
         .build();
 
-    p.cargo("build --all")
+    p.cargo("build --workspace")
         .with_stderr(
             "[..] Compiling bar v0.1.0 ([..])\n\
              [..] Compiling foo v0.1.0 ([..])\n\
@@ -3420,7 +3419,7 @@ fn build_all_exclude() {
         .file("baz/src/lib.rs", "pub fn baz() { break_the_build(); }")
         .build();
 
-    p.cargo("build --all --exclude baz")
+    p.cargo("build --workspace --exclude baz")
         .with_stderr_contains("[..]Compiling foo v0.1.0 [..]")
         .with_stderr_contains("[..]Compiling bar v0.1.0 [..]")
         .with_stderr_does_not_contain("[..]Compiling baz v0.1.0 [..]")
@@ -3456,7 +3455,7 @@ fn build_all_workspace_implicit_examples() {
         .file("bar/examples/h.rs", "fn main() {}")
         .build();
 
-    p.cargo("build --all --examples")
+    p.cargo("build --workspace --examples")
         .with_stderr(
             "[..] Compiling bar v0.1.0 ([..])\n\
              [..] Compiling foo v0.1.0 ([..])\n\
@@ -3490,7 +3489,7 @@ fn build_all_virtual_manifest() {
         .build();
 
     // The order in which bar and baz are built is not guaranteed
-    p.cargo("build --all")
+    p.cargo("build --workspace")
         .with_stderr_contains("[..] Compiling baz v0.1.0 ([..])")
         .with_stderr_contains("[..] Compiling bar v0.1.0 ([..])")
         .with_stderr(
@@ -3580,7 +3579,7 @@ fn build_all_virtual_manifest_implicit_examples() {
         .build();
 
     // The order in which bar and baz are built is not guaranteed
-    p.cargo("build --all --examples")
+    p.cargo("build --workspace --examples")
         .with_stderr_contains("[..] Compiling baz v0.1.0 ([..])")
         .with_stderr_contains("[..] Compiling bar v0.1.0 ([..])")
         .with_stderr(
@@ -3625,7 +3624,7 @@ fn build_all_member_dependency_same_name() {
 
     Package::new("a", "0.1.0").publish();
 
-    p.cargo("build --all")
+    p.cargo("build --workspace")
         .with_stderr(
             "[UPDATING] `[..]` index\n\
              [DOWNLOADING] crates ...\n\
@@ -3695,7 +3694,7 @@ fn run_proper_alias_binary_from_src() {
         .file("src/bar.rs", r#"fn main() { println!("bar"); }"#)
         .build();
 
-    p.cargo("build --all").run();
+    p.cargo("build --workspace").run();
     p.process(&p.bin("foo")).with_stdout("foo\n").run();
     p.process(&p.bin("bar")).with_stdout("bar\n").run();
 }
@@ -3719,7 +3718,7 @@ fn run_proper_alias_binary_main_rs() {
         .file("src/main.rs", r#"fn main() { println!("main"); }"#)
         .build();
 
-    p.cargo("build --all").run();
+    p.cargo("build --workspace").run();
     p.process(&p.bin("foo")).with_stdout("main\n").run();
     p.process(&p.bin("bar")).with_stdout("main\n").run();
 }
@@ -4168,6 +4167,34 @@ fn uplift_dsym_of_bin_on_mac() {
 }
 
 #[cargo_test]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn uplift_dsym_of_bin_on_mac_when_broken_link_exists() {
+    let p = project()
+        .file("src/main.rs", "fn main() { panic!(); }")
+        .build();
+    let dsym = p.target_debug_dir().join("foo.dSYM");
+
+    p.cargo("build").run();
+    assert!(dsym.is_dir());
+
+    // Simulate the situation where the underlying dSYM bundle goes missing
+    // but the uplifted symlink to it remains. This would previously cause
+    // builds to permanently fail until the bad symlink was manually removed.
+    dsym.rm_rf();
+    p.symlink(
+        p.target_debug_dir()
+            .join("deps")
+            .join("foo-baaaaaadbaaaaaad.dSYM"),
+        &dsym,
+    );
+    assert!(dsym.is_symlink());
+    assert!(!dsym.exists());
+
+    p.cargo("build").run();
+    assert!(dsym.is_dir());
+}
+
+#[cargo_test]
 #[cfg(all(target_os = "windows", target_env = "msvc"))]
 fn uplift_pdb_of_bin_on_windows() {
     let p = project()
@@ -4501,7 +4528,7 @@ fn signal_display() {
             "\
 [COMPILING] pm [..]
 [COMPILING] foo [..]
-[ERROR] Could not compile `foo`.
+[ERROR] could not compile `foo`.
 
 Caused by:
   process didn't exit successfully: `rustc [..]` (signal: 6, SIGABRT: process abort signal)
@@ -4513,7 +4540,7 @@ Caused by:
 
 #[cargo_test]
 fn tricky_pipelining() {
-    if !crate::support::is_nightly() {
+    if !cargo_test_support::is_nightly() {
         return;
     }
 
@@ -4543,7 +4570,7 @@ fn tricky_pipelining() {
 
 #[cargo_test]
 fn pipelining_works() {
-    if !crate::support::is_nightly() {
+    if !cargo_test_support::is_nightly() {
         return;
     }
 
@@ -4578,7 +4605,7 @@ fn pipelining_works() {
 
 #[cargo_test]
 fn pipelining_big_graph() {
-    if !crate::support::is_nightly() {
+    if !cargo_test_support::is_nightly() {
         return;
     }
 
@@ -4633,7 +4660,7 @@ fn pipelining_big_graph() {
     foo.cargo("build -p foo")
         .env("CARGO_BUILD_PIPELINING", "true")
         .with_status(101)
-        .with_stderr_contains("[ERROR] Could not compile `a30`[..]")
+        .with_stderr_contains("[ERROR] could not compile `a30`[..]")
         .run();
 }
 

@@ -70,7 +70,7 @@ use core::ptr::{self, NonNull};
 use core::slice::{self, SliceIndex};
 
 use crate::borrow::{ToOwned, Cow};
-use crate::collections::CollectionAllocErr;
+use crate::collections::TryReserveError;
 use crate::boxed::Box;
 use crate::raw_vec::RawVec;
 
@@ -291,6 +291,7 @@ use crate::raw_vec::RawVec;
 /// [`reserve`]: ../../std/vec/struct.Vec.html#method.reserve
 /// [owned slice]: ../../std/boxed/struct.Box.html
 #[stable(feature = "rust1", since = "1.0.0")]
+#[cfg_attr(all(not(bootstrap), not(test)), rustc_diagnostic_item = "vec_type")]
 pub struct Vec<T> {
     buf: RawVec<T>,
     len: usize,
@@ -313,10 +314,10 @@ impl<T> Vec<T> {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    #[rustc_const_unstable(feature = "const_vec_new")]
+    #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_vec_new"))]
     pub const fn new() -> Vec<T> {
         Vec {
-            buf: RawVec::new(),
+            buf: RawVec::NEW,
             len: 0,
         }
     }
@@ -498,9 +499,9 @@ impl<T> Vec<T> {
     ///
     /// ```
     /// #![feature(try_reserve)]
-    /// use std::collections::CollectionAllocErr;
+    /// use std::collections::TryReserveError;
     ///
-    /// fn process_data(data: &[u32]) -> Result<Vec<u32>, CollectionAllocErr> {
+    /// fn process_data(data: &[u32]) -> Result<Vec<u32>, TryReserveError> {
     ///     let mut output = Vec::new();
     ///
     ///     // Pre-reserve the memory, exiting if we can't
@@ -516,7 +517,7 @@ impl<T> Vec<T> {
     /// # process_data(&[1, 2, 3]).expect("why is the test harness OOMing on 12 bytes?");
     /// ```
     #[unstable(feature = "try_reserve", reason = "new API", issue="48043")]
-    pub fn try_reserve(&mut self, additional: usize) -> Result<(), CollectionAllocErr> {
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.buf.try_reserve(self.len, additional)
     }
 
@@ -538,9 +539,9 @@ impl<T> Vec<T> {
     ///
     /// ```
     /// #![feature(try_reserve)]
-    /// use std::collections::CollectionAllocErr;
+    /// use std::collections::TryReserveError;
     ///
-    /// fn process_data(data: &[u32]) -> Result<Vec<u32>, CollectionAllocErr> {
+    /// fn process_data(data: &[u32]) -> Result<Vec<u32>, TryReserveError> {
     ///     let mut output = Vec::new();
     ///
     ///     // Pre-reserve the memory, exiting if we can't
@@ -556,7 +557,7 @@ impl<T> Vec<T> {
     /// # process_data(&[1, 2, 3]).expect("why is the test harness OOMing on 12 bytes?");
     /// ```
     #[unstable(feature = "try_reserve", reason = "new API", issue="48043")]
-    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), CollectionAllocErr>  {
+    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError>  {
         self.buf.try_reserve_exact(self.len, additional)
     }
 
@@ -684,21 +685,25 @@ impl<T> Vec<T> {
     /// [`drain`]: #method.drain
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn truncate(&mut self, len: usize) {
-        let current_len = self.len;
-        unsafe {
-            let mut ptr = self.as_mut_ptr().add(self.len);
-            // Set the final length at the end, keeping in mind that
-            // dropping an element might panic. Works around a missed
-            // optimization, as seen in the following issue:
-            // https://github.com/rust-lang/rust/issues/51802
-            let mut local_len = SetLenOnDrop::new(&mut self.len);
+        if mem::needs_drop::<T>() {
+            let current_len = self.len;
+            unsafe {
+                let mut ptr = self.as_mut_ptr().add(self.len);
+                // Set the final length at the end, keeping in mind that
+                // dropping an element might panic. Works around a missed
+                // optimization, as seen in the following issue:
+                // https://github.com/rust-lang/rust/issues/51802
+                let mut local_len = SetLenOnDrop::new(&mut self.len);
 
-            // drop any extra elements
-            for _ in len..current_len {
-                local_len.decrement_len(1);
-                ptr = ptr.offset(-1);
-                ptr::drop_in_place(ptr);
+                // drop any extra elements
+                for _ in len..current_len {
+                    local_len.decrement_len(1);
+                    ptr = ptr.offset(-1);
+                    ptr::drop_in_place(ptr);
+                }
             }
+        } else if len <= self.len {
+            self.len = len;
         }
     }
 

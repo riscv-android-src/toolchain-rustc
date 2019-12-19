@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "libgit2-sys"
-version = "0.8.2"
+version = "0.9.0"
 authors = ["Josh Triplett <josh@joshtriplett.org>", "Alex Crichton <alex@alexcrichton.com>"]
 build = "build.rs"
 links = "git2"

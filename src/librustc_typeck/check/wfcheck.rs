@@ -191,7 +191,7 @@ fn check_associated_item(
         let item = fcx.tcx.associated_item(fcx.tcx.hir().local_def_id(item_id));
 
         let (mut implied_bounds, self_ty) = match item.container {
-            ty::TraitContainer(_) => (vec![], fcx.tcx.mk_self_type()),
+            ty::TraitContainer(_) => (vec![], fcx.tcx.types.self_param),
             ty::ImplContainer(def_id) => (fcx.impl_implied_bounds(def_id, span),
                                           fcx.tcx.type_of(def_id))
         };
@@ -203,7 +203,6 @@ fn check_associated_item(
                 fcx.register_wf_obligation(ty, span, code.clone());
             }
             ty::AssocKind::Method => {
-                reject_shadowing_parameters(fcx.tcx, item.def_id);
                 let sig = fcx.tcx.fn_sig(item.def_id);
                 let sig = fcx.normalize_associated_types_in(span, &sig);
                 check_fn_or_method(tcx, fcx, span, sig,
@@ -288,7 +287,7 @@ fn check_type_defn<'tcx, F>(
                 let last = idx == variant.fields.len() - 1;
                 fcx.register_bound(
                     field.ty,
-                    fcx.tcx.require_lang_item(lang_items::SizedTraitLangItem),
+                    fcx.tcx.require_lang_item(lang_items::SizedTraitLangItem, None),
                     traits::ObligationCause::new(
                         field.span,
                         fcx.body_id,
@@ -376,7 +375,7 @@ fn check_item_type(
         if forbid_unsized {
             fcx.register_bound(
                 item_ty,
-                fcx.tcx.require_lang_item(lang_items::SizedTraitLangItem),
+                fcx.tcx.require_lang_item(lang_items::SizedTraitLangItem, None),
                 traits::ObligationCause::new(ty_span, fcx.body_id, traits::MiscObligation),
             );
         }
@@ -507,7 +506,7 @@ fn check_where_clauses<'tcx, 'fcx>(
     });
 
     // Now we build the substituted predicates.
-    let default_obligations = predicates.predicates.iter().flat_map(|&(pred, _)| {
+    let default_obligations = predicates.predicates.iter().flat_map(|&(pred, sp)| {
         #[derive(Default)]
         struct CountParams { params: FxHashSet<u32> }
         impl<'tcx> ty::fold::TypeVisitor<'tcx> for CountParams {
@@ -540,9 +539,9 @@ fn check_where_clauses<'tcx, 'fcx>(
             // Avoid duplication of predicates that contain no parameters, for example.
             None
         } else {
-            Some(substituted_pred)
+            Some((substituted_pred, sp))
         }
-    }).map(|pred| {
+    }).map(|(pred, sp)| {
         // Convert each of those into an obligation. So if you have
         // something like `struct Foo<T: Copy = String>`, we would
         // take that predicate `T: Copy`, substitute to `String: Copy`
@@ -552,8 +551,8 @@ fn check_where_clauses<'tcx, 'fcx>(
         // Note the subtle difference from how we handle `predicates`
         // below: there, we are not trying to prove those predicates
         // to be *true* but merely *well-formed*.
-        let pred = fcx.normalize_associated_types_in(span, &pred);
-        let cause = traits::ObligationCause::new(span, fcx.body_id, traits::ItemObligation(def_id));
+        let pred = fcx.normalize_associated_types_in(sp, &pred);
+        let cause = traits::ObligationCause::new(sp, fcx.body_id, traits::ItemObligation(def_id));
         traits::Obligation::new(cause, fcx.param_env, pred)
     });
 
@@ -763,19 +762,19 @@ fn check_opaque_types<'fcx, 'tcx>(
     substituted_predicates
 }
 
+const HELP_FOR_SELF_TYPE: &str =
+    "consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, \
+     `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one \
+     of the previous types except `Self`)";
+
 fn check_method_receiver<'fcx, 'tcx>(
     fcx: &FnCtxt<'fcx, 'tcx>,
     method_sig: &hir::MethodSig,
     method: &ty::AssocItem,
     self_ty: Ty<'tcx>,
 ) {
-    const HELP_FOR_SELF_TYPE: &str =
-        "consider changing to `self`, `&self`, `&mut self`, `self: Box<Self>`, \
-         `self: Rc<Self>`, `self: Arc<Self>`, or `self: Pin<P>` (where P is one \
-         of the previous types except `Self`)";
     // Check that the method has a valid receiver type, given the type `Self`.
-    debug!("check_method_receiver({:?}, self_ty={:?})",
-           method, self_ty);
+    debug!("check_method_receiver({:?}, self_ty={:?})", method, self_ty);
 
     if !method.method_has_self_argument {
         return;
@@ -806,12 +805,7 @@ fn check_method_receiver<'fcx, 'tcx>(
     if fcx.tcx.features().arbitrary_self_types {
         if !receiver_is_valid(fcx, span, receiver_ty, self_ty, true) {
             // Report error; `arbitrary_self_types` was enabled.
-            fcx.tcx.sess.diagnostic().mut_span_err(
-                span, &format!("invalid method receiver type: {:?}", receiver_ty)
-            ).note("type of `self` must be `Self` or a type that dereferences to it")
-            .help(HELP_FOR_SELF_TYPE)
-            .code(DiagnosticId::Error("E0307".into()))
-            .emit();
+            e0307(fcx, span, receiver_ty);
         }
     } else {
         if !receiver_is_valid(fcx, span, receiver_ty, self_ty, false) {
@@ -831,15 +825,20 @@ fn check_method_receiver<'fcx, 'tcx>(
                 .emit();
             } else {
                 // Report error; would not have worked with `arbitrary_self_types`.
-                fcx.tcx.sess.diagnostic().mut_span_err(
-                    span, &format!("invalid method receiver type: {:?}", receiver_ty)
-                ).note("type must be `Self` or a type that dereferences to it")
-                .help(HELP_FOR_SELF_TYPE)
-                .code(DiagnosticId::Error("E0307".into()))
-                .emit();
+                e0307(fcx, span, receiver_ty);
             }
         }
     }
+}
+
+fn e0307(fcx: &FnCtxt<'fcx, 'tcx>, span: Span, receiver_ty: Ty<'_>) {
+    fcx.tcx.sess.diagnostic().mut_span_err(
+        span,
+        &format!("invalid `self` parameter type: {:?}", receiver_ty)
+    ).note("type of `self` must be `Self` or a type that dereferences to it")
+    .help(HELP_FOR_SELF_TYPE)
+    .code(DiagnosticId::Error("E0307".into()))
+    .emit();
 }
 
 /// Returns whether `receiver_ty` would be considered a valid receiver type for `self_ty`. If
@@ -998,34 +997,6 @@ fn report_bivariance(tcx: TyCtxt<'_>, span: Span, param_name: ast::Name) {
     err.emit();
 }
 
-fn reject_shadowing_parameters(tcx: TyCtxt<'_>, def_id: DefId) {
-    let generics = tcx.generics_of(def_id);
-    let parent = tcx.generics_of(generics.parent.unwrap());
-    let impl_params: FxHashMap<_, _> = parent.params.iter().flat_map(|param| match param.kind {
-        GenericParamDefKind::Lifetime => None,
-        GenericParamDefKind::Type { .. } | GenericParamDefKind::Const => {
-            Some((param.name, param.def_id))
-        }
-    }).collect();
-
-    for method_param in &generics.params {
-        // Shadowing is checked in `resolve_lifetime`.
-        if let GenericParamDefKind::Lifetime = method_param.kind {
-            continue
-        }
-        if impl_params.contains_key(&method_param.name) {
-            // Tighten up the span to focus on only the shadowing type.
-            let type_span = tcx.def_span(method_param.def_id);
-
-            // The expectation here is that the original trait declaration is
-            // local so it should be okay to just unwrap everything.
-            let trait_def_id = impl_params[&method_param.name];
-            let trait_decl_span = tcx.def_span(trait_def_id);
-            error_194(tcx, type_span, trait_decl_span, &method_param.name.as_str()[..]);
-        }
-    }
-}
-
 /// Feature gates RFC 2056 -- trivial bounds, checking for global bounds that
 /// aren't true.
 fn check_false_global_bounds(fcx: &FnCtxt<'_, '_>, span: Span, id: hir::HirId) {
@@ -1119,7 +1090,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     fn enum_variants(&self, enum_def: &hir::EnumDef) -> Vec<AdtVariant<'tcx>> {
         enum_def.variants.iter()
-            .map(|variant| self.non_enum_variant(&variant.node.data))
+            .map(|variant| self.non_enum_variant(&variant.data))
             .collect()
     }
 
@@ -1151,13 +1122,4 @@ fn error_392(
                   "parameter `{}` is never used", param_name);
     err.span_label(span, "unused parameter");
     err
-}
-
-fn error_194(tcx: TyCtxt<'_>, span: Span, trait_decl_span: Span, name: &str) {
-    struct_span_err!(tcx.sess, span, E0194,
-                     "type parameter `{}` shadows another type parameter of the same name",
-                     name)
-        .span_label(span, "shadows another type parameter")
-        .span_label(trait_decl_span, format!("first `{}` declared here", name))
-        .emit();
 }

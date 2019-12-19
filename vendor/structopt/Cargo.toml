@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "structopt"
-version = "0.2.18"
+version = "0.3.1"
 authors = ["Guillaume Pinot <texitoi@texitoi.eu>", "others"]
 description = "Parse command line argument by defining a struct."
 documentation = "https://docs.rs/structopt"
@@ -22,11 +23,16 @@ categories = ["command-line-interface"]
 license = "Apache-2.0/MIT"
 repository = "https://github.com/TeXitoi/structopt"
 [dependencies.clap]
-version = "2.21"
+version = "2.33"
 default-features = false
 
 [dependencies.structopt-derive]
-version = "0.2.18"
+version = "0.3.1"
+[dev-dependencies.trybuild]
+version = "1.0.5"
+
+[dev-dependencies.version_check]
+version = "0.9"
 
 [features]
 color = ["clap/color"]
@@ -34,7 +40,6 @@ debug = ["clap/debug"]
 default = ["clap/default"]
 doc = ["clap/doc"]
 lints = ["clap/lints"]
-nightly = ["structopt-derive/nightly"]
 no_cargo = ["clap/no_cargo"]
 paw = ["structopt-derive/paw"]
 suggestions = ["clap/suggestions"]

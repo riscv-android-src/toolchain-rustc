@@ -1,6 +1,6 @@
 [package]
 name = "rls"
-version = "1.38.0"
+version = "1.39.0"
 edition = "2018"
 authors = ["Nick Cameron <ncameron@mozilla.com>", "The RLS developers"]
 description = "Rust Language Server - provides information about Rust programs to IDEs and other tools"
@@ -27,30 +27,33 @@ rls-data = "0.19"
 rls-rustc = { version = "0.6.0", path = "rls-rustc" }
 rls-span = "0.5"
 rls-vfs = "0.8"
+rls-ipc = { version = "0.1.0", path = "rls-ipc", optional = true }
 
-cargo = { git = "https://github.com/rust-lang/cargo", rev = "1f74bdf4494f4d51dbe3a6af5474e39c8d194ad6" }
+cargo = { git = "https://github.com/rust-lang/cargo", rev = "cdf7f6380a7a23a5bffc26ab35fc434200f30ad6" }
 cargo_metadata = "0.8"
-clippy_lints = { git = "https://github.com/rust-lang/rust-clippy", rev = "71be6f62fa920c0bd10cdf3a29aeb8c6719a8075", optional = true }
+clippy_lints = { git = "https://github.com/rust-lang/rust-clippy", rev = "72da1015d6d918fe1b29170acbf486d30e0c2695", optional = true }
 env_logger = "0.6"
 failure = "0.1.1"
-home = "0.3"
+futures = { version = "0.1", optional = true }
+home = "0.5"
 itertools = "0.8"
-jsonrpc-core = "12"
-lsp-types = { version = "=0.57.2", features = ["proposed"] }
+jsonrpc-core = "13"
+lsp-types = { version = "0.60", features = ["proposed"] }
 lazy_static = "1"
 log = "0.4"
 num_cpus = "1"
-racer = { version = "2.1.25", default-features = false }
+racer = { version = "2.1.27", default-features = false }
 rand = "0.6"
 rayon = "1"
 rustc_tools_util = "0.2"
-rustfmt-nightly = "1.4.3"
+rustfmt-nightly = "1.4.8"
 rustc-serialize = "0.3"
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"
-serde_ignored = "0.0"
-url = "1"
+serde_ignored = "0.1"
+tokio = { version = "0.1", optional = true }
+url = "2"
 walkdir = "2"
 regex = "1"
 ordslice = "0.3"
@@ -76,4 +79,6 @@ tokio-timer = "0.2"
 rustc_tools_util = "0.2"
 
 [features]
-clippy = ["clippy_lints"]
+clippy = ["clippy_lints", "rls-rustc/clippy"]
+ipc = ["tokio", "futures", "rls-rustc/ipc", "rls-ipc/server"]
+default = []

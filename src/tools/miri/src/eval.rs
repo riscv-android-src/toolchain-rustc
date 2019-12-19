@@ -12,16 +12,22 @@ use crate::{
     InterpResult, InterpError, InterpCx, StackPopCleanup, struct_error,
     Scalar, Tag, Pointer, FnVal,
     MemoryExtra, MiriMemoryKind, Evaluator, TlsEvalContextExt, HelpersEvalContextExt,
+    EnvVars,
 };
 
 /// Configuration needed to spawn a Miri instance.
 #[derive(Clone)]
 pub struct MiriConfig {
+    /// Determine if validity checking and Stacked Borrows are enabled.
     pub validate: bool,
+    /// Determines if communication with the host environment is enabled.
+    pub communicate: bool,
+    /// Environment variables that should always be isolated from the host.
+    pub excluded_env_vars: Vec<String>,
+    /// Command-line arguments passed to the interpreted program.
     pub args: Vec<String>,
-
-    // The seed to use when non-determinism is required (e.g. getrandom())
-    pub seed: Option<u64>
+    /// The seed to use when non-determinism or randomness are required (e.g. ptr-to-int cast, `getrandom()`).
+    pub seed: Option<u64>,
 }
 
 // Used by priroda.
@@ -33,12 +39,15 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     let mut ecx = InterpCx::new(
         tcx.at(syntax::source_map::DUMMY_SP),
         ty::ParamEnv::reveal_all(),
-        Evaluator::new(),
+        Evaluator::new(config.communicate),
         MemoryExtra::new(StdRng::seed_from_u64(config.seed.unwrap_or(0)), config.validate),
     );
+    // Complete initialization.
+    EnvVars::init(&mut ecx, config.excluded_env_vars);
 
+    // Setup first stack-frame
     let main_instance = ty::Instance::mono(ecx.tcx.tcx, main_id);
-    let main_mir = ecx.load_mir(main_instance.def)?;
+    let main_mir = ecx.load_mir(main_instance.def, None)?;
 
     if !main_mir.return_ty().is_unit() || main_mir.arg_count != 0 {
         throw_unsup_format!(
@@ -56,7 +65,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         ecx.tcx.mk_substs(
             ::std::iter::once(ty::subst::Kind::from(main_ret_ty)))
         ).unwrap();
-    let start_mir = ecx.load_mir(start_instance.def)?;
+    let start_mir = ecx.load_mir(start_instance.def, None)?;
 
     if start_mir.arg_count != 3 {
         bug!(
@@ -158,7 +167,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
             cur_ptr = cur_ptr.offset(char_size, tcx)?;
         }
     }
- 
+
     assert!(args.next().is_none(), "start lang item has more arguments than expected");
 
     Ok(ecx)

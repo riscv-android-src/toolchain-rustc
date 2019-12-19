@@ -8,10 +8,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 
-use crate::support::paths::{self, CargoPathExt};
-use crate::support::sleep_ms;
-use crate::support::Project;
-use crate::support::{basic_lib_manifest, basic_manifest, git, main_file, path2url, project};
+use cargo_test_support::paths::{self, CargoPathExt};
+use cargo_test_support::{basic_lib_manifest, basic_manifest, git, main_file, path2url, project};
+use cargo_test_support::{sleep_ms, t, Project};
 
 fn disable_git_cli() -> bool {
     // mingw git on Windows does not support Windows-style file URIs.
@@ -34,8 +33,7 @@ fn cargo_compile_simple_git_dep() {
                 }
             "#,
             )
-    })
-    .unwrap();
+    });
 
     let project = project
         .file(
@@ -97,8 +95,7 @@ fn cargo_compile_git_dep_branch() {
                 }
             "#,
             )
-    })
-    .unwrap();
+    });
 
     // Make a new branch based on the current HEAD commit
     let repo = git2::Repository::open(&git_project.root()).unwrap();
@@ -168,8 +165,7 @@ fn cargo_compile_git_dep_tag() {
                 }
             "#,
             )
-    })
-    .unwrap();
+    });
 
     // Make a tag corresponding to the current HEAD
     let repo = git2::Repository::open(&git_project.root()).unwrap();
@@ -274,8 +270,7 @@ fn cargo_compile_with_nested_paths() {
                 }
             "#,
             )
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -327,8 +322,7 @@ fn cargo_compile_with_malformed_nested_paths() {
             "#,
             )
             .file("vendor/dep2/Cargo.toml", "!INVALID!")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -388,8 +382,7 @@ fn cargo_compile_with_meta_package() {
                 }
             "#,
             )
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -491,8 +484,7 @@ fn two_revs_same_deps() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.0.0"))
             .file("src/lib.rs", "pub fn bar() -> i32 { 1 }")
-    })
-    .unwrap();
+    });
 
     let repo = git2::Repository::open(&bar.root()).unwrap();
     let rev1 = repo.revparse_single("HEAD").unwrap().id();
@@ -579,8 +571,7 @@ fn recompilation() {
         project
             .file("Cargo.toml", &basic_lib_manifest("bar"))
             .file("src/bar.rs", "pub fn bar() {}")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -684,8 +675,7 @@ fn update_with_shared_deps() {
         project
             .file("Cargo.toml", &basic_lib_manifest("bar"))
             .file("src/bar.rs", "pub fn bar() {}")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -840,10 +830,8 @@ fn dep_with_submodule() {
     let project = project();
     let git_project = git::new("dep1", |project| {
         project.file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
-    })
-    .unwrap();
-    let git_project2 =
-        git::new("dep2", |project| project.file("lib.rs", "pub fn dep() {}")).unwrap();
+    });
+    let git_project2 = git::new("dep2", |project| project.file("lib.rs", "pub fn dep() {}"));
 
     let repo = git2::Repository::open(&git_project.root()).unwrap();
     let url = path2url(git_project2.root()).to_string();
@@ -891,10 +879,8 @@ fn dep_with_bad_submodule() {
     let project = project();
     let git_project = git::new("dep1", |project| {
         project.file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
-    })
-    .unwrap();
-    let git_project2 =
-        git::new("dep2", |project| project.file("lib.rs", "pub fn dep() {}")).unwrap();
+    });
+    let git_project2 = git::new("dep2", |project| project.file("lib.rs", "pub fn dep() {}"));
 
     let repo = git2::Repository::open(&git_project.root()).unwrap();
     let url = path2url(git_project2.root()).to_string();
@@ -971,14 +957,12 @@ fn two_deps_only_update_one() {
         project
             .file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let git2 = git::new("dep2", |project| {
         project
             .file("Cargo.toml", &basic_manifest("dep2", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project
         .file(
@@ -1051,8 +1035,7 @@ fn stale_cached_version() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.0.0"))
             .file("src/lib.rs", "pub fn bar() -> i32 { 1 }")
-    })
-    .unwrap();
+    });
 
     // Update the git database in the cache with the current state of the git
     // repo
@@ -1143,18 +1126,15 @@ fn dep_with_changed_submodule() {
     let project = project();
     let git_project = git::new("dep1", |project| {
         project.file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
-    })
-    .unwrap();
+    });
 
     let git_project2 = git::new("dep2", |project| {
         project.file("lib.rs", "pub fn dep() -> &'static str { \"project2\" }")
-    })
-    .unwrap();
+    });
 
     let git_project3 = git::new("dep3", |project| {
         project.file("lib.rs", "pub fn dep() -> &'static str { \"project3\" }")
-    })
-    .unwrap();
+    });
 
     let repo = git2::Repository::open(&git_project.root()).unwrap();
     let mut sub = git::add_submodule(&repo, &git_project2.url().to_string(), Path::new("src"));
@@ -1265,8 +1245,7 @@ fn dev_deps_with_testing() {
             pub fn gimme() -> &'static str { "zoidberg" }
         "#,
             )
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -1344,8 +1323,7 @@ fn git_build_cmd_freshness() {
             .file("build.rs", "fn main() {}")
             .file("src/lib.rs", "pub fn bar() -> i32 { 1 }")
             .file(".gitignore", "src/bar.rs")
-    })
-    .unwrap();
+    });
     foo.root().move_into_the_past();
 
     sleep_ms(1000);
@@ -1380,8 +1358,7 @@ fn git_name_not_always_needed() {
             pub fn gimme() -> &'static str { "zoidberg" }
         "#,
             )
-    })
-    .unwrap();
+    });
 
     let repo = git2::Repository::open(&p2.root()).unwrap();
     let mut cfg = repo.config().unwrap();
@@ -1427,8 +1404,7 @@ fn git_repo_changing_no_rebuild() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
             .file("src/lib.rs", "pub fn bar() -> i32 { 1 }")
-    })
-    .unwrap();
+    });
 
     // Lock p1 to the first rev in the git repo
     let p1 = project()
@@ -1563,8 +1539,7 @@ fn git_dep_build_cmd() {
             }
         "#,
             )
-    })
-    .unwrap();
+    });
 
     p.root().join("bar").move_into_the_past();
 
@@ -1589,8 +1564,7 @@ fn fetch_downloads() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
             .file("src/lib.rs", "pub fn bar() -> i32 { 1 }")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -1625,8 +1599,7 @@ fn warnings_in_git_dep() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
             .file("src/lib.rs", "fn unused() {}")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -1664,14 +1637,12 @@ fn update_ambiguous() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let bar2 = git::new("bar2", |project| {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.6.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let baz = git::new("baz", |project| {
         project
             .file(
@@ -1690,8 +1661,7 @@ fn update_ambiguous() {
                 ),
             )
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -1738,8 +1708,7 @@ fn update_one_dep_in_repo_with_many_deps() {
             .file("src/lib.rs", "")
             .file("a/Cargo.toml", &basic_manifest("a", "0.5.0"))
             .file("a/src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -1774,8 +1743,7 @@ fn switch_deps_does_not_update_transitive() {
         project
             .file("Cargo.toml", &basic_manifest("transitive", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let dep1 = git::new("dep1", |project| {
         project
             .file(
@@ -1794,8 +1762,7 @@ fn switch_deps_does_not_update_transitive() {
                 ),
             )
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let dep2 = git::new("dep2", |project| {
         project
             .file(
@@ -1814,8 +1781,7 @@ fn switch_deps_does_not_update_transitive() {
                 ),
             )
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -1902,8 +1868,7 @@ fn update_one_source_updates_all_packages_in_that_git_source() {
             .file("src/lib.rs", "")
             .file("a/Cargo.toml", &basic_manifest("a", "0.5.0"))
             .file("a/src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -1956,14 +1921,12 @@ fn switch_sources() {
         project
             .file("Cargo.toml", &basic_manifest("a", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let a2 = git::new("a2", |project| {
         project
             .file("Cargo.toml", &basic_manifest("a", "0.5.1"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -2055,9 +2018,8 @@ fn dont_require_submodules_are_checked_out() {
         .file("build.rs", "fn main() {}")
         .file("src/lib.rs", "")
         .file("a/foo", "")
-    })
-    .unwrap();
-    let git2 = git::new("dep2", |p| p).unwrap();
+    });
+    let git2 = git::new("dep2", |p| p);
 
     let repo = git2::Repository::open(&git1.root()).unwrap();
     let url = path2url(git2.root()).to_string();
@@ -2077,8 +2039,7 @@ fn doctest_same_name() {
     let a2 = git::new("a2", |p| {
         p.file("Cargo.toml", &basic_manifest("a", "0.5.0"))
             .file("src/lib.rs", "pub fn a2() {}")
-    })
-    .unwrap();
+    });
 
     let a1 = git::new("a1", |p| {
         p.file(
@@ -2096,8 +2057,7 @@ fn doctest_same_name() {
             ),
         )
         .file("src/lib.rs", "extern crate a; pub fn a1() {}")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -2136,8 +2096,7 @@ fn lints_are_suppressed() {
             use std::option;
         ",
         )
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -2180,8 +2139,7 @@ fn denied_lints_are_allowed() {
             use std::option;
         ",
         )
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -2219,8 +2177,7 @@ fn add_a_git_dep() {
     let git = git::new("git", |p| {
         p.file("Cargo.toml", &basic_manifest("git", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(
@@ -2275,8 +2232,7 @@ fn two_at_rev_instead_of_tag() {
             .file("src/lib.rs", "")
             .file("a/Cargo.toml", &basic_manifest("git2", "0.5.0"))
             .file("a/src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     // Make a tag corresponding to the current HEAD
     let repo = git2::Repository::open(&git.root()).unwrap();
@@ -2338,8 +2294,7 @@ fn include_overrides_gitignore() {
         .file("src/lib.rs", "")
         .file("ignored.txt", "")
         .file("build.rs", "fn main() {}")
-    })
-    .unwrap();
+    });
 
     p.cargo("build").run();
     p.change_file("ignored.txt", "Trigger rebuild.");
@@ -2393,8 +2348,7 @@ fn invalid_git_dependency_manifest() {
                 }
             "#,
             )
-    })
-    .unwrap();
+    });
 
     let project = project
         .file(
@@ -2439,7 +2393,7 @@ fn invalid_git_dependency_manifest() {
              could not parse input as TOML\n\
              \n\
              Caused by:\n  \
-             duplicate key: `categories` for key `project`",
+             duplicate key: `categories` for key `project` at line 10 column 17",
             path2url(&git_root),
             path2url(&git_root),
         ))
@@ -2451,10 +2405,9 @@ fn failed_submodule_checkout() {
     let project = project();
     let git_project = git::new("dep1", |project| {
         project.file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
-    })
-    .unwrap();
+    });
 
-    let git_project2 = git::new("dep2", |project| project.file("lib.rs", "")).unwrap();
+    let git_project2 = git::new("dep2", |project| project.file("lib.rs", ""));
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2536,8 +2489,7 @@ fn use_the_cli() {
         project
             .file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let project = project
         .file(
@@ -2584,14 +2536,12 @@ fn templatedir_doesnt_cause_problems() {
         project
             .file("Cargo.toml", &basic_manifest("dep2", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let git_project = git::new("dep1", |project| {
         project
             .file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
     let p = project()
         .file(
             "Cargo.toml",
@@ -2644,8 +2594,7 @@ fn git_with_cli_force() {
         project
             .file("Cargo.toml", &basic_lib_manifest("dep1"))
             .file("src/lib.rs", r#"pub fn f() { println!("one"); }"#)
-    })
-    .unwrap();
+    });
     let p = project()
         .file(
             "Cargo.toml",
@@ -2706,8 +2655,7 @@ fn git_fetch_cli_env_clean() {
         project
             .file("Cargo.toml", &basic_manifest("dep1", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let git_proj = git::new("foo", |project| {
         project
@@ -2732,8 +2680,7 @@ fn git_fetch_cli_env_clean() {
                 git-fetch-with-cli = true
                 ",
             )
-    })
-    .unwrap();
+    });
 
     // The directory set here isn't too important. Pointing to our own git
     // directory causes git to be confused and fail. Can also point to an
@@ -2742,4 +2689,118 @@ fn git_fetch_cli_env_clean() {
         .cargo("fetch")
         .env("GIT_DIR", git_proj.root().join(".git"))
         .run();
+}
+
+#[cargo_test]
+fn dirty_submodule() {
+    // `cargo package` warns for dirty file in submodule.
+    let (git_project, repo) = git::new_repo("foo", |project| {
+        project
+            .file("Cargo.toml", &basic_manifest("foo", "0.5.0"))
+            // This is necessary because `git::add` is too eager.
+            .file(".gitignore", "/target")
+    });
+    let git_project2 = git::new("src", |project| {
+        project.no_manifest().file("lib.rs", "pub fn f() {}")
+    });
+
+    let url = path2url(git_project2.root()).to_string();
+    git::add_submodule(&repo, &url, Path::new("src"));
+
+    // Submodule added, but not committed.
+    git_project
+        .cargo("package --no-verify")
+        .with_status(101)
+        .with_stderr(
+            "\
+[WARNING] manifest has no [..]
+See [..]
+[ERROR] 1 files in the working directory contain changes that were not yet committed into git:
+
+.gitmodules
+
+to proceed despite [..]
+",
+        )
+        .run();
+
+    git::commit(&repo);
+    git_project.cargo("package --no-verify").run();
+
+    // Modify file, check for warning.
+    git_project.change_file("src/lib.rs", "");
+    git_project
+        .cargo("package --no-verify")
+        .with_status(101)
+        .with_stderr(
+            "\
+[WARNING] manifest has no [..]
+See [..]
+[ERROR] 1 files in the working directory contain changes that were not yet committed into git:
+
+src/lib.rs
+
+to proceed despite [..]
+",
+        )
+        .run();
+    // Commit the change.
+    let sub_repo = git2::Repository::open(git_project.root().join("src")).unwrap();
+    git::add(&sub_repo);
+    git::commit(&sub_repo);
+    git::add(&repo);
+    git::commit(&repo);
+    git_project.cargo("package --no-verify").run();
+
+    // Try with a nested submodule.
+    let git_project3 = git::new("bar", |project| project.no_manifest().file("mod.rs", ""));
+    let url = path2url(git_project3.root()).to_string();
+    git::add_submodule(&sub_repo, &url, Path::new("bar"));
+    git_project
+        .cargo("package --no-verify")
+        .with_status(101)
+        .with_stderr(
+            "\
+[WARNING] manifest has no [..]
+See [..]
+[ERROR] 1 files in the working directory contain changes that were not yet committed into git:
+
+src/.gitmodules
+
+to proceed despite [..]
+",
+        )
+        .run();
+
+    // Commit the submodule addition.
+    git::commit(&sub_repo);
+    git::add(&repo);
+    git::commit(&repo);
+    git_project.cargo("package --no-verify").run();
+    // Modify within nested submodule.
+    git_project.change_file("src/bar/mod.rs", "//test");
+    git_project
+        .cargo("package --no-verify")
+        .with_status(101)
+        .with_stderr(
+            "\
+[WARNING] manifest has no [..]
+See [..]
+[ERROR] 1 files in the working directory contain changes that were not yet committed into git:
+
+src/bar/mod.rs
+
+to proceed despite [..]
+",
+        )
+        .run();
+    // And commit the change.
+    let sub_sub_repo = git2::Repository::open(git_project.root().join("src/bar")).unwrap();
+    git::add(&sub_sub_repo);
+    git::commit(&sub_sub_repo);
+    git::add(&sub_repo);
+    git::commit(&sub_repo);
+    git::add(&repo);
+    git::commit(&repo);
+    git_project.cargo("package --no-verify").run();
 }

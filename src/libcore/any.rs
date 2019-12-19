@@ -153,13 +153,13 @@ impl dyn Any {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn is<T: Any>(&self) -> bool {
-        // Get TypeId of the type this function is instantiated with
+        // Get `TypeId` of the type this function is instantiated with.
         let t = TypeId::of::<T>();
 
-        // Get TypeId of the type in the trait object
+        // Get `TypeId` of the type in the trait object.
         let concrete = self.type_id();
 
-        // Compare both TypeIds on equality
+        // Compare both `TypeId`s on equality.
         t == concrete
     }
 
@@ -470,10 +470,5 @@ impl TypeId {
 #[stable(feature = "type_name", since = "1.38.0")]
 #[rustc_const_unstable(feature = "const_type_name")]
 pub const fn type_name<T: ?Sized>() -> &'static str {
-    #[cfg(bootstrap)]
-    unsafe {
-        intrinsics::type_name::<T>()
-    }
-    #[cfg(not(bootstrap))]
     intrinsics::type_name::<T>()
 }

@@ -5,7 +5,7 @@ use rustc::ty::layout::{self, LayoutOf, Size, Align};
 use rustc::ty;
 
 use crate::{
-    PlaceTy, OpTy, ImmTy, Immediate, Scalar, Tag,
+    PlaceTy, OpTy, Immediate, Scalar, Tag,
     OperatorEvalContextExt
 };
 
@@ -28,8 +28,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // (as opposed to through a place), we have to remember to erase any tag
         // that might still hang around!
 
-        let intrinsic_name = this.tcx.item_name(instance.def_id()).as_str();
-        match intrinsic_name.get() {
+        let intrinsic_name = &*this.tcx.item_name(instance.def_id()).as_str();
+        match intrinsic_name {
             "arith_offset" => {
                 let offset = this.read_scalar(args[1])?.to_isize(this)?;
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
@@ -120,7 +120,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
 
                 // binary_op will bail if either of them is not a scalar
-                let (eq, _) = this.binary_op(mir::BinOp::Eq, old, expect_old)?;
+                let eq = this.overflowing_binary_op(mir::BinOp::Eq, old, expect_old)?.0;
                 let res = Immediate::ScalarPair(old.to_scalar_or_undef(), eq.into());
                 this.write_immediate(res, dest)?; // old value is returned
                 // update ptr depending on comparison
@@ -183,13 +183,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     _ => bug!(),
                 };
                 // Atomics wrap around on overflow.
-                let (val, _overflowed) = this.binary_op(op, old, rhs)?;
+                let val = this.binary_op(op, old, rhs)?;
                 let val = if neg {
-                    this.unary_op(mir::UnOp::Not, ImmTy::from_scalar(val, old.layout))?
+                    this.unary_op(mir::UnOp::Not, val)?
                 } else {
                     val
                 };
-                this.write_scalar(val, place.into())?;
+                this.write_immediate(*val, place.into())?;
             }
 
             "breakpoint" => unimplemented!(), // halt miri
@@ -228,7 +228,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "log10f32" | "log2f32" | "floorf32" | "ceilf32" | "truncf32" | "roundf32" => {
                 // FIXME: Using host floats.
                 let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
-                let f = match intrinsic_name.get() {
+                let f = match intrinsic_name {
                     "sinf32" => f.sin(),
                     "fabsf32" => f.abs(),
                     "cosf32" => f.cos(),
@@ -251,7 +251,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "log10f64" | "log2f64" | "floorf64" | "ceilf64" | "truncf64" | "roundf64" => {
                 // FIXME: Using host floats.
                 let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
-                let f = match intrinsic_name.get() {
+                let f = match intrinsic_name {
                     "sinf64" => f.sin(),
                     "fabsf64" => f.abs(),
                     "cosf64" => f.cos(),
@@ -273,7 +273,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "fadd_fast" | "fsub_fast" | "fmul_fast" | "fdiv_fast" | "frem_fast" => {
                 let a = this.read_immediate(args[0])?;
                 let b = this.read_immediate(args[1])?;
-                let op = match intrinsic_name.get() {
+                let op = match intrinsic_name {
                     "fadd_fast" => mir::BinOp::Add,
                     "fsub_fast" => mir::BinOp::Sub,
                     "fmul_fast" => mir::BinOp::Mul,
@@ -287,7 +287,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "minnumf32" | "maxnumf32" => {
                 let a = this.read_scalar(args[0])?.to_f32()?;
                 let b = this.read_scalar(args[1])?.to_f32()?;
-                let res = if intrinsic_name.get().starts_with("min") {
+                let res = if intrinsic_name.starts_with("min") {
                     a.min(b)
                 } else {
                     a.max(b)
@@ -298,7 +298,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "minnumf64" | "maxnumf64" => {
                 let a = this.read_scalar(args[0])?.to_f64()?;
                 let b = this.read_scalar(args[1])?.to_f64()?;
-                let res = if intrinsic_name.get().starts_with("min") {
+                let res = if intrinsic_name.starts_with("min") {
                     a.min(b)
                 } else {
                     a.max(b)
@@ -312,7 +312,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let a = this.read_immediate(args[0])?;
                 let b = this.read_immediate(args[1])?;
                 // check x % y != 0
-                if this.binary_op(mir::BinOp::Rem, a, b)?.0.to_bits(dest.layout.size)? != 0 {
+                if this.overflowing_binary_op(mir::BinOp::Rem, a, b)?.0.to_bits(dest.layout.size)? != 0 {
                     // Check if `b` is -1, which is the "min_value / -1" case.
                     let minus1 = Scalar::from_int(-1, dest.layout.size);
                     return Err(if b.to_scalar().unwrap() == minus1 {
@@ -509,15 +509,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "unchecked_add" | "unchecked_sub" | "unchecked_mul" => {
                 let l = this.read_immediate(args[0])?;
                 let r = this.read_immediate(args[1])?;
-                let op = match intrinsic_name.get() {
+                let op = match intrinsic_name {
                     "unchecked_add" => mir::BinOp::Add,
                     "unchecked_sub" => mir::BinOp::Sub,
                     "unchecked_mul" => mir::BinOp::Mul,
                     _ => bug!(),
                 };
-                let (res, overflowed) = this.binary_op(op, l, r)?;
+                let (res, overflowed, _ty) = this.overflowing_binary_op(op, l, r)?;
                 if overflowed {
-                    throw_ub_format!("Overflowing arithmetic in {}", intrinsic_name.get());
+                    throw_ub_format!("Overflowing arithmetic in {}", intrinsic_name);
                 }
                 this.write_scalar(res, dest)?;
             }

@@ -9,9 +9,6 @@
 #[macro_use]
 extern crate cargo_test_macro;
 
-#[macro_use]
-mod support;
-
 mod alt_registry;
 mod bad_config;
 mod bad_manifest_path;
@@ -91,6 +88,7 @@ mod rustflags;
 mod search;
 mod shell_quoting;
 mod small_fd_limits;
+mod standard_lib;
 mod test;
 mod tool_paths;
 mod update;
@@ -103,5 +101,5 @@ mod workspaces;
 #[cargo_test]
 fn aaa_trigger_cross_compile_disabled_check() {
     // This triggers the cross compile disabled check to run ASAP, see #5141
-    support::cross_compile::disabled();
+    cargo_test_support::cross_compile::disabled();
 }

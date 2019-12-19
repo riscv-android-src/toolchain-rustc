@@ -19,17 +19,11 @@ Note that if you want unrecognized fields to be an error, consider using the
 ```toml
 [dependencies]
 serde = "1.0"
-serde_ignored = "0.0.4"
+serde_ignored = "0.1"
 ```
 
 ```rust
-#[macro_use]
-extern crate serde_derive;
-
-extern crate serde;
-extern crate serde_json;
-extern crate serde_ignored;
-
+use serde::Deserialize;
 use std::collections::{BTreeSet as Set, BTreeMap as Map};
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -48,7 +42,7 @@ fn main() {
         "name": "demo",
         "dependencies": {
             "serde": {
-                "version": "0.9",
+                "version": "1.0",
                 "typo1": ""
             }
         },
@@ -80,19 +74,19 @@ fn main() {
 }
 ```
 
-## License
+<br>
 
-This crate is licensed under either of
+#### License
 
- * Apache License, Version 2.0, ([LICENSE-APACHE](LICENSE-APACHE) or
-   http://www.apache.org/licenses/LICENSE-2.0)
- * MIT license ([LICENSE-MIT](LICENSE-MIT) or
-   http://opensource.org/licenses/MIT)
+<sup>
+Licensed under either of <a href="LICENSE-APACHE">Apache License, Version
+2.0</a> or <a href="LICENSE-MIT">MIT license</a> at your option.
+</sup>
 
-at your option.
+<br>
 
-### Contribution
-
+<sub>
 Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in this crate by you, as defined in the Apache-2.0 license, shall
 be dual licensed as above, without any additional terms or conditions.
+</sub>

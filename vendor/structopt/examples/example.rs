@@ -6,9 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[macro_use]
-extern crate structopt;
-
 use structopt::StructOpt;
 
 #[derive(StructOpt, Debug)]
@@ -40,7 +37,20 @@ struct Opt {
         long = "log",
         help = "Log file, stdout if no file, no logging if not present"
     )]
+    #[allow(clippy::option_option)]
     log: Option<Option<String>>,
+
+    /// An optional list of values, will be `None` if not present on
+    /// the command line, will be `Some(vec![])` if no argument is
+    /// provided (i.e. `--optv`) and will be `Some(Some(String))` if
+    /// argument list is provided (e.g. `--optv a b c`).
+    #[structopt(long = "optv")]
+    optv: Option<Vec<String>>,
+
+    /// Skipped option: it won't be parsed and will be filled with the
+    /// default value for its type (in this case '').
+    #[structopt(skip)]
+    skipped: String,
 }
 
 fn main() {

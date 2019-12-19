@@ -20,6 +20,7 @@ use crate::clean::{
     self,
     GetDefId,
     ToSource,
+    TypeKind
 };
 
 use super::Clean;
@@ -107,15 +108,16 @@ pub fn try_inline(
             record_extern_fqn(cx, did, clean::TypeKind::Const);
             clean::ConstantItem(build_const(cx, did))
         }
-        // FIXME: proc-macros don't propagate attributes or spans across crates, so they look empty
-        Res::Def(DefKind::Macro(MacroKind::Bang), did) => {
+        Res::Def(DefKind::Macro(kind), did) => {
             let mac = build_macro(cx, did, name);
-            if let clean::MacroItem(..) = mac {
-                record_extern_fqn(cx, did, clean::TypeKind::Macro);
-                mac
-            } else {
-                return None;
-            }
+
+            let type_kind = match kind {
+                MacroKind::Bang => TypeKind::Macro,
+                MacroKind::Attr => TypeKind::Attr,
+                MacroKind::Derive => TypeKind::Derive
+            };
+            record_extern_fqn(cx, did, type_kind);
+            mac
         }
         _ => return None,
     };
@@ -215,10 +217,11 @@ fn build_external_function(cx: &DocContext<'_>, did: DefId) -> clean::Function {
     } else {
         hir::Constness::NotConst
     };
-
+    let asyncness =  cx.tcx.asyncness(did);
     let predicates = cx.tcx.predicates_of(did);
-    let generics = (cx.tcx.generics_of(did), &predicates).clean(cx);
-    let decl = (did, sig).clean(cx);
+    let (generics, decl) = clean::enter_impl_trait(cx, || {
+        ((cx.tcx.generics_of(did), &predicates).clean(cx), (did, sig).clean(cx))
+    });
     let (all_types, ret_types) = clean::get_all_types(&generics, &decl, cx);
     clean::Function {
         decl,
@@ -227,7 +230,7 @@ fn build_external_function(cx: &DocContext<'_>, did: DefId) -> clean::Function {
             unsafety: sig.unsafety(),
             abi: sig.abi(),
             constness,
-            asyncness: hir::IsAsync::NotAsync,
+            asyncness,
         },
         all_types,
         ret_types,
@@ -372,7 +375,9 @@ pub fn build_impl(cx: &DocContext<'_>, did: DefId, attrs: Option<Attrs<'_>>,
                     None
                 }
             }).collect::<Vec<_>>(),
-            (tcx.generics_of(did), &predicates).clean(cx),
+            clean::enter_impl_trait(cx, || {
+                (tcx.generics_of(did), &predicates).clean(cx)
+            }),
         )
     };
     let polarity = tcx.impl_polarity(did);

@@ -4,13 +4,12 @@
 //! conflicts between multiple such attributes attached to the same
 //! item.
 
-
-use crate::ty::TyCtxt;
-use crate::ty::query::Providers;
-
 use crate::hir;
 use crate::hir::def_id::DefId;
 use crate::hir::intravisit::{self, Visitor, NestedVisitorMap};
+use crate::ty::TyCtxt;
+use crate::ty::query::Providers;
+
 use std::fmt::{self, Display};
 use syntax::symbol::sym;
 use syntax_pos::Span;
@@ -336,7 +335,7 @@ impl Visitor<'tcx> for CheckAttrVisitor<'tcx> {
 fn is_c_like_enum(item: &hir::Item) -> bool {
     if let hir::ItemKind::Enum(ref def, _) = item.node {
         for variant in &def.variants {
-            match variant.node.data {
+            match variant.data {
                 hir::VariantData::Unit(..) => { /* continue */ }
                 _ => { return false; }
             }

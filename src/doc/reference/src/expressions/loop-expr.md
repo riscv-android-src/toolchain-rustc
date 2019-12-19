@@ -130,9 +130,9 @@ while let Some(v @ 1) | Some(v @ 2) = vals.pop() {
 
 A `for` expression is a syntactic construct for looping over elements provided
 by an implementation of `std::iter::IntoIterator`. If the iterator yields a
-value, that value is given the specified name and the body of the loop is
-executed, then control returns to the head of the `for` loop. If the iterator
-is empty, the `for` expression completes.
+value, that value is matched against the irrefutable pattern, the body of the
+loop is executed, and then control returns to the head of the `for` loop. If the
+iterator is empty, the `for` expression completes.
 
 An example of a `for` loop over the contents of an array:
 
@@ -181,9 +181,9 @@ is equivalent to
 }
 ```
 
-`IntoIterator`, `Iterator` and `Option` are always the standard library items
+`IntoIterator`, `Iterator`, and `Option` are always the standard library items
 here, not whatever those names resolve to in the current scope. The variable
-names `next`, `iter` and `val` are for exposition only, they do not actually
+names `next`, `iter`, and `val` are for exposition only, they do not actually
 have names the user can type.
 
 > **Note**: that the outer `match` is used to ensure that any
@@ -284,7 +284,7 @@ expression `()`.
 
 [LIFETIME_OR_LABEL]: ../tokens.md#lifetimes-and-loop-labels
 [_BlockExpression_]: block-expr.md
-[_Expression_]: ../     expressions.md
+[_Expression_]: ../expressions.md
 [_MatchArmPatterns_]: match-expr.md
 [_Pattern_]: ../patterns.md
 [`match` expression]: match-expr.md
