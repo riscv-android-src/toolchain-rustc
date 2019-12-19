@@ -94,7 +94,7 @@ declare_clippy_lint! {
 declare_lint_pass!(MapUnit => [OPTION_MAP_UNIT_FN, RESULT_MAP_UNIT_FN]);
 
 fn is_unit_type(ty: Ty<'_>) -> bool {
-    match ty.sty {
+    match ty.kind {
         ty::Tuple(slice) => slice.is_empty(),
         ty::Never => true,
         _ => false,
@@ -104,7 +104,7 @@ fn is_unit_type(ty: Ty<'_>) -> bool {
 fn is_unit_function(cx: &LateContext<'_, '_>, expr: &hir::Expr) -> bool {
     let ty = cx.tables.expr_ty(expr);
 
-    if let ty::FnDef(id, _) = ty.sty {
+    if let ty::FnDef(id, _) = ty.kind {
         if let Some(fn_type) = cx.tcx.fn_sig(id).no_bound_vars() {
             return is_unit_type(fn_type.output());
         }
@@ -125,7 +125,7 @@ fn reduce_unit_expression<'a>(cx: &LateContext<'_, '_>, expr: &'a hir::Expr) -> 
         return None;
     }
 
-    match expr.node {
+    match expr.kind {
         hir::ExprKind::Call(_, _) | hir::ExprKind::MethodCall(_, _, _) => {
             // Calls can't be reduced any more
             Some(expr.span)
@@ -140,7 +140,7 @@ fn reduce_unit_expression<'a>(cx: &LateContext<'_, '_>, expr: &'a hir::Expr) -> 
                 (&[ref inner_stmt], None) => {
                     // If block only contains statements,
                     // reduce `{ X; }` to `X` or `X;`
-                    match inner_stmt.node {
+                    match inner_stmt.kind {
                         hir::StmtKind::Local(ref local) => Some(local.span),
                         hir::StmtKind::Expr(ref e) => Some(e.span),
                         hir::StmtKind::Semi(..) => Some(inner_stmt.span),
@@ -165,7 +165,7 @@ fn unit_closure<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     expr: &'a hir::Expr,
 ) -> Option<(&'tcx hir::Param, &'a hir::Expr)> {
-    if let hir::ExprKind::Closure(_, ref decl, inner_expr_id, _, _) = expr.node {
+    if let hir::ExprKind::Closure(_, ref decl, inner_expr_id, _, _) = expr.kind {
         let body = cx.tcx.hir().body(inner_expr_id);
         let body_expr = &body.value;
 
@@ -188,13 +188,14 @@ fn unit_closure<'a, 'tcx>(
 ///
 /// Anything else will return `_`.
 fn let_binding_name(cx: &LateContext<'_, '_>, var_arg: &hir::Expr) -> String {
-    match &var_arg.node {
+    match &var_arg.kind {
         hir::ExprKind::Field(_, _) => snippet(cx, var_arg.span, "_").replace(".", "_"),
         hir::ExprKind::Path(_) => format!("_{}", snippet(cx, var_arg.span, "")),
         _ => "_".to_string(),
     }
 }
 
+#[must_use]
 fn suggestion_msg(function_type: &str, map_type: &str) -> String {
     format!(
         "called `map(f)` on an {0} value where `f` is a unit {1}",
@@ -217,15 +218,15 @@ fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt, expr: &hir::Expr
     if is_unit_function(cx, fn_arg) {
         let msg = suggestion_msg("function", map_type);
         let suggestion = format!(
-            "if let {0}({1}) = {2} {{ {3}(...) }}",
+            "if let {0}({binding}) = {1} {{ {2}({binding}) }}",
             variant,
-            let_binding_name(cx, var_arg),
             snippet(cx, var_arg.span, "_"),
-            snippet(cx, fn_arg.span, "_")
+            snippet(cx, fn_arg.span, "_"),
+            binding = let_binding_name(cx, var_arg)
         );
 
         span_lint_and_then(cx, lint, expr.span, &msg, |db| {
-            db.span_suggestion(stmt.span, "try this", suggestion, Applicability::Unspecified);
+            db.span_suggestion(stmt.span, "try this", suggestion, Applicability::MachineApplicable);
         });
     } else if let Some((binding, closure_expr)) = unit_closure(cx, fn_arg) {
         let msg = suggestion_msg("closure", map_type);
@@ -250,9 +251,9 @@ fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt, expr: &hir::Expr
                     "if let {0}({1}) = {2} {{ ... }}",
                     variant,
                     snippet(cx, binding.pat.span, "_"),
-                    snippet(cx, var_arg.span, "_")
+                    snippet(cx, var_arg.span, "_"),
                 );
-                db.span_suggestion(stmt.span, "try this", suggestion, Applicability::Unspecified);
+                db.span_suggestion(stmt.span, "try this", suggestion, Applicability::HasPlaceholders);
             }
         });
     }
@@ -264,7 +265,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MapUnit {
             return;
         }
 
-        if let hir::StmtKind::Semi(ref expr) = stmt.node {
+        if let hir::StmtKind::Semi(ref expr) = stmt.kind {
             if let Some(arglists) = method_chain_args(expr, &["map"]) {
                 lint_map_unit_fn(cx, stmt, expr, arglists[0]);
             }

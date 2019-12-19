@@ -6,7 +6,7 @@ use std::os;
 use std::path::Path;
 
 use cargo::core::{enable_nightly_features, Shell};
-use cargo::util::config::{self, Config};
+use cargo::util::config::{self, Config, SslVersionConfig};
 use cargo::util::toml::{self, VecStringOrBool as VSOB};
 use cargo_test_support::{paths, project, t};
 use serde::Deserialize;
@@ -302,51 +302,39 @@ incremental = true
 [profile.dev.build-override]
 opt-level = 1
 
-[profile.dev.overrides.bar]
+[profile.dev.package.bar]
 codegen-units = 9
+
+[profile.no-lto]
+inherits = 'dev'
+dir-name = 'without-lto'
+lto = false
 ",
     );
 
     let config = new_config(&[
         ("CARGO_PROFILE_DEV_CODEGEN_UNITS", "5"),
         ("CARGO_PROFILE_DEV_BUILD_OVERRIDE_CODEGEN_UNITS", "11"),
-        ("CARGO_PROFILE_DEV_OVERRIDES_env_CODEGEN_UNITS", "13"),
-        ("CARGO_PROFILE_DEV_OVERRIDES_bar_OPT_LEVEL", "2"),
+        ("CARGO_PROFILE_DEV_PACKAGE_env_CODEGEN_UNITS", "13"),
+        ("CARGO_PROFILE_DEV_PACKAGE_bar_OPT_LEVEL", "2"),
     ]);
 
     // TODO: don't use actual `tomlprofile`.
     let p: toml::TomlProfile = config.get("profile.dev").unwrap();
-    let mut overrides = collections::BTreeMap::new();
+    let mut packages = collections::BTreeMap::new();
     let key = toml::ProfilePackageSpec::Spec(::cargo::core::PackageIdSpec::parse("bar").unwrap());
     let o_profile = toml::TomlProfile {
         opt_level: Some(toml::TomlOptLevel("2".to_string())),
-        lto: None,
         codegen_units: Some(9),
-        debug: None,
-        debug_assertions: None,
-        rpath: None,
-        panic: None,
-        overflow_checks: None,
-        incremental: None,
-        overrides: None,
-        build_override: None,
+        ..Default::default()
     };
-    overrides.insert(key, o_profile);
+    packages.insert(key, o_profile);
     let key = toml::ProfilePackageSpec::Spec(::cargo::core::PackageIdSpec::parse("env").unwrap());
     let o_profile = toml::TomlProfile {
-        opt_level: None,
-        lto: None,
         codegen_units: Some(13),
-        debug: None,
-        debug_assertions: None,
-        rpath: None,
-        panic: None,
-        overflow_checks: None,
-        incremental: None,
-        overrides: None,
-        build_override: None,
+        ..Default::default()
     };
-    overrides.insert(key, o_profile);
+    packages.insert(key, o_profile);
 
     assert_eq!(
         p,
@@ -360,20 +348,24 @@ codegen-units = 9
             panic: Some("abort".to_string()),
             overflow_checks: Some(true),
             incremental: Some(true),
-            overrides: Some(overrides),
+            package: Some(packages),
             build_override: Some(Box::new(toml::TomlProfile {
                 opt_level: Some(toml::TomlOptLevel("1".to_string())),
-                lto: None,
                 codegen_units: Some(11),
-                debug: None,
-                debug_assertions: None,
-                rpath: None,
-                panic: None,
-                overflow_checks: None,
-                incremental: None,
-                overrides: None,
-                build_override: None
-            }))
+                ..Default::default()
+            })),
+            ..Default::default()
+        }
+    );
+
+    let p: toml::TomlProfile = config.get("profile.no-lto").unwrap();
+    assert_eq!(
+        p,
+        toml::TomlProfile {
+            lto: Some(toml::StringOrBool::Bool(false)),
+            dir_name: Some("without-lto".to_string()),
+            inherits: Some("dev".to_string()),
+            ..Default::default()
         }
     );
 }
@@ -568,10 +560,13 @@ fn config_bad_toml() {
         config.get::<i32>("foo").unwrap_err(),
         "\
 could not load Cargo configuration
+
 Caused by:
   could not parse TOML configuration in `[..]/.cargo/config`
+
 Caused by:
   could not parse input as TOML
+
 Caused by:
   expected an equals, found eof at line 1 column 5",
     );
@@ -651,7 +646,7 @@ expected a list, but found a integer for `l3` in [..]/.cargo/config",
     assert_error(
         config.get::<L>("bad-env").unwrap_err(),
         "error in environment variable `CARGO_BAD_ENV`: \
-         could not parse TOML list: invalid number at line 1 column 10",
+         could not parse TOML list: invalid number at line 1 column 8",
     );
 
     // Try some other sequence-like types.
@@ -714,6 +709,7 @@ ns2 = 456
     let config = new_config(&[("CARGO_NSE", "987"), ("CARGO_NS2", "654")]);
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
+    #[serde(transparent)]
     struct NewS(i32);
     assert_eq!(config.get::<NewS>("ns").unwrap(), NewS(123));
     assert_eq!(config.get::<NewS>("ns2").unwrap(), NewS(654));
@@ -742,35 +738,35 @@ abs = '{}'
         config
             .get::<config::ConfigRelativePath>("p1")
             .unwrap()
-            .path(),
+            .resolve_path(&config),
         paths::root().join("foo/bar")
     );
     assert_eq!(
         config
             .get::<config::ConfigRelativePath>("p2")
             .unwrap()
-            .path(),
+            .resolve_path(&config),
         paths::root().join("../abc")
     );
     assert_eq!(
         config
             .get::<config::ConfigRelativePath>("p3")
             .unwrap()
-            .path(),
+            .resolve_path(&config),
         paths::root().join("d/e")
     );
     assert_eq!(
         config
             .get::<config::ConfigRelativePath>("abs")
             .unwrap()
-            .path(),
+            .resolve_path(&config),
         paths::home()
     );
     assert_eq!(
         config
             .get::<config::ConfigRelativePath>("epath")
             .unwrap()
-            .path(),
+            .resolve_path(&config),
         paths::root().join("a/b")
     );
 }
@@ -832,4 +828,88 @@ i64max = 9223372036854775807
          could not load config key `epos`: \
          invalid value: integer `123456789`, expected i8",
     );
+}
+
+#[cargo_test]
+fn config_get_ssl_version_missing() {
+    write_config(
+        "\
+[http]
+hello = 'world'
+",
+    );
+
+    let config = new_config(&[]);
+
+    assert!(config
+        .get::<Option<SslVersionConfig>>("http.ssl-version")
+        .unwrap()
+        .is_none());
+}
+
+#[cargo_test]
+fn config_get_ssl_version_single() {
+    write_config(
+        "\
+[http]
+ssl-version = 'tlsv1.2'
+",
+    );
+
+    let config = new_config(&[]);
+
+    let a = config
+        .get::<Option<SslVersionConfig>>("http.ssl-version")
+        .unwrap()
+        .unwrap();
+    match a {
+        SslVersionConfig::Single(v) => assert_eq!(&v, "tlsv1.2"),
+        SslVersionConfig::Range(_) => panic!("Did not expect ssl version min/max."),
+    };
+}
+
+#[cargo_test]
+fn config_get_ssl_version_min_max() {
+    write_config(
+        "\
+[http]
+ssl-version.min = 'tlsv1.2'
+ssl-version.max = 'tlsv1.3'
+",
+    );
+
+    let config = new_config(&[]);
+
+    let a = config
+        .get::<Option<SslVersionConfig>>("http.ssl-version")
+        .unwrap()
+        .unwrap();
+    match a {
+        SslVersionConfig::Single(_) => panic!("Did not expect exact ssl version."),
+        SslVersionConfig::Range(range) => {
+            assert_eq!(range.min, Some(String::from("tlsv1.2")));
+            assert_eq!(range.max, Some(String::from("tlsv1.3")));
+        }
+    };
+}
+
+#[cargo_test]
+fn config_get_ssl_version_both_forms_configured() {
+    // this is not allowed
+    write_config(
+        "\
+[http]
+ssl-version = 'tlsv1.1'
+ssl-version.min = 'tlsv1.2'
+ssl-version.max = 'tlsv1.3'
+",
+    );
+
+    let config = new_config(&[]);
+
+    assert!(config.get::<SslVersionConfig>("http.ssl-version").is_err());
+    assert!(config
+        .get::<Option<SslVersionConfig>>("http.ssl-version")
+        .unwrap()
+        .is_none());
 }

@@ -92,7 +92,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
         // Exclude non-inherent impls
         if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
-            if matches!(item.node, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
+            if matches!(item.kind, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
                 ItemKind::Trait(..))
             {
                 return;
@@ -134,18 +134,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
             spans_need_deref,
             ..
         } = {
-            let mut ctx = MovedVariablesCtxt::new(cx);
+            let mut ctx = MovedVariablesCtxt::default();
             let region_scope_tree = &cx.tcx.region_scope_tree(fn_def_id);
-            euv::ExprUseVisitor::new(
-                &mut ctx,
-                cx.tcx,
-                fn_def_id,
-                cx.param_env,
-                region_scope_tree,
-                cx.tables,
-                None,
-            )
-            .consume_body(body);
+            euv::ExprUseVisitor::new(&mut ctx, cx.tcx, fn_def_id, cx.param_env, region_scope_tree, cx.tables)
+                .consume_body(body);
             ctx
         };
 
@@ -160,7 +152,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
             // Ignore `self`s.
             if idx == 0 {
-                if let PatKind::Binding(.., ident, _) = arg.pat.node {
+                if let PatKind::Binding(.., ident, _) = arg.pat.kind {
                     if ident.as_str() == "self" {
                         continue;
                     }
@@ -202,7 +194,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                 if !implements_borrow_trait;
                 if !all_borrowable_trait;
 
-                if let PatKind::Binding(mode, canonical_id, ..) = arg.pat.node;
+                if let PatKind::Binding(mode, canonical_id, ..) = arg.pat.kind;
                 if !moved_vars.contains(&canonical_id);
                 then {
                     if mode == BindingAnnotation::Mutable || mode == BindingAnnotation::RefMut {
@@ -211,7 +203,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
                     // Dereference suggestion
                     let sugg = |db: &mut DiagnosticBuilder<'_>| {
-                        if let ty::Adt(def, ..) = ty.sty {
+                        if let ty::Adt(def, ..) = ty.kind {
                             if let Some(span) = cx.tcx.hir().span_if_local(def.did) {
                                 if cx.param_env.can_type_implement_copy(cx.tcx, ty).is_ok() {
                                     db.span_help(span, "consider marking this type as Copy");
@@ -224,7 +216,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                             if is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type"));
                             if let Some(clone_spans) =
                                 get_spans(cx, Some(body.id()), idx, &[("clone", ".to_owned()")]);
-                            if let TyKind::Path(QPath::Resolved(_, ref path)) = input.node;
+                            if let TyKind::Path(QPath::Resolved(_, ref path)) = input.kind;
                             if let Some(elem_ty) = path.segments.iter()
                                 .find(|seg| seg.ident.name == sym!(Vec))
                                 .and_then(|ps| ps.args.as_ref())
@@ -325,115 +317,34 @@ fn requires_exact_signature(attrs: &[Attribute]) -> bool {
     })
 }
 
-struct MovedVariablesCtxt<'a, 'tcx> {
-    cx: &'a LateContext<'a, 'tcx>,
+#[derive(Default)]
+struct MovedVariablesCtxt {
     moved_vars: FxHashSet<HirId>,
     /// Spans which need to be prefixed with `*` for dereferencing the
     /// suggested additional reference.
     spans_need_deref: FxHashMap<HirId, FxHashSet<Span>>,
 }
 
-impl<'a, 'tcx> MovedVariablesCtxt<'a, 'tcx> {
-    fn new(cx: &'a LateContext<'a, 'tcx>) -> Self {
-        Self {
-            cx,
-            moved_vars: FxHashSet::default(),
-            spans_need_deref: FxHashMap::default(),
-        }
-    }
-
-    fn move_common(&mut self, _consume_id: HirId, _span: Span, cmt: &mc::cmt_<'tcx>) {
+impl MovedVariablesCtxt {
+    fn move_common(&mut self, cmt: &mc::cmt_<'_>) {
         let cmt = unwrap_downcast_or_interior(cmt);
 
         if let mc::Categorization::Local(vid) = cmt.cat {
             self.moved_vars.insert(vid);
         }
     }
-
-    fn non_moving_pat(&mut self, matched_pat: &Pat, cmt: &mc::cmt_<'tcx>) {
-        let cmt = unwrap_downcast_or_interior(cmt);
-
-        if let mc::Categorization::Local(vid) = cmt.cat {
-            let mut id = matched_pat.hir_id;
-            loop {
-                let parent = self.cx.tcx.hir().get_parent_node(id);
-                if id == parent {
-                    // no parent
-                    return;
-                }
-                id = parent;
-
-                if let Some(node) = self.cx.tcx.hir().find(id) {
-                    match node {
-                        Node::Expr(e) => {
-                            // `match` and `if let`
-                            if let ExprKind::Match(ref c, ..) = e.node {
-                                self.spans_need_deref
-                                    .entry(vid)
-                                    .or_insert_with(FxHashSet::default)
-                                    .insert(c.span);
-                            }
-                        },
-
-                        Node::Stmt(s) => {
-                            // `let <pat> = x;`
-                            if_chain! {
-                                if let StmtKind::Local(ref local) = s.node;
-                                then {
-                                    self.spans_need_deref
-                                        .entry(vid)
-                                        .or_insert_with(FxHashSet::default)
-                                        .insert(local.init
-                                            .as_ref()
-                                            .map(|e| e.span)
-                                            .expect("`let` stmt without init aren't caught by match_pat"));
-                                }
-                            }
-                        },
-
-                        _ => {},
-                    }
-                }
-            }
-        }
-    }
 }
 
-impl<'a, 'tcx> euv::Delegate<'tcx> for MovedVariablesCtxt<'a, 'tcx> {
-    fn consume(&mut self, consume_id: HirId, consume_span: Span, cmt: &mc::cmt_<'tcx>, mode: euv::ConsumeMode) {
-        if let euv::ConsumeMode::Move(_) = mode {
-            self.move_common(consume_id, consume_span, cmt);
+impl<'tcx> euv::Delegate<'tcx> for MovedVariablesCtxt {
+    fn consume(&mut self, cmt: &mc::cmt_<'tcx>, mode: euv::ConsumeMode) {
+        if let euv::ConsumeMode::Move = mode {
+            self.move_common(cmt);
         }
     }
 
-    fn matched_pat(&mut self, matched_pat: &Pat, cmt: &mc::cmt_<'tcx>, mode: euv::MatchMode) {
-        if let euv::MatchMode::MovingMatch = mode {
-            self.move_common(matched_pat.hir_id, matched_pat.span, cmt);
-        } else {
-            self.non_moving_pat(matched_pat, cmt);
-        }
-    }
+    fn borrow(&mut self, _: &mc::cmt_<'tcx>, _: ty::BorrowKind) {}
 
-    fn consume_pat(&mut self, consume_pat: &Pat, cmt: &mc::cmt_<'tcx>, mode: euv::ConsumeMode) {
-        if let euv::ConsumeMode::Move(_) = mode {
-            self.move_common(consume_pat.hir_id, consume_pat.span, cmt);
-        }
-    }
-
-    fn borrow(
-        &mut self,
-        _: HirId,
-        _: Span,
-        _: &mc::cmt_<'tcx>,
-        _: ty::Region<'_>,
-        _: ty::BorrowKind,
-        _: euv::LoanCause,
-    ) {
-    }
-
-    fn mutate(&mut self, _: HirId, _: Span, _: &mc::cmt_<'tcx>, _: euv::MutateMode) {}
-
-    fn decl_without_init(&mut self, _: HirId, _: Span) {}
+    fn mutate(&mut self, _: &mc::cmt_<'tcx>) {}
 }
 
 fn unwrap_downcast_or_interior<'a, 'tcx>(mut cmt: &'a mc::cmt_<'tcx>) -> mc::cmt_<'tcx> {

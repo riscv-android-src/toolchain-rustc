@@ -1,4 +1,4 @@
-use crate::utils::{differing_macro_contexts, snippet_opt, span_note_and_lint};
+use crate::utils::{differing_macro_contexts, snippet_opt, span_help_and_lint, span_note_and_lint};
 use if_chain::if_chain;
 use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintPass};
 use rustc::{declare_lint_pass, declare_tool_lint};
@@ -20,6 +20,28 @@ declare_clippy_lint! {
     pub SUSPICIOUS_ASSIGNMENT_FORMATTING,
     style,
     "suspicious formatting of `*=`, `-=` or `!=`"
+}
+
+declare_clippy_lint! {
+    /// **What it does:** Checks the formatting of a unary operator on the right hand side
+    /// of a binary operator. It lints if there is no space between the binary and unary operators,
+    /// but there is a space between the unary and its operand.
+    ///
+    /// **Why is this bad?** This is either a typo in the binary operator or confusing.
+    ///
+    /// **Known problems:** None.
+    ///
+    /// **Example:**
+    /// ```rust,ignore
+    /// if foo <- 30 { // this should be `foo < -30` but looks like a different operator
+    /// }
+    ///
+    /// if foo &&! bar { // this should be `foo && !bar` but looks like a different operator
+    /// }
+    /// ```
+    pub SUSPICIOUS_UNARY_OP_FORMATTING,
+    style,
+    "suspicious formatting of unary `-` or `!` on the RHS of a BinOp"
 }
 
 declare_clippy_lint! {
@@ -80,6 +102,7 @@ declare_clippy_lint! {
 
 declare_lint_pass!(Formatting => [
     SUSPICIOUS_ASSIGNMENT_FORMATTING,
+    SUSPICIOUS_UNARY_OP_FORMATTING,
     SUSPICIOUS_ELSE_FORMATTING,
     POSSIBLE_MISSING_COMMA
 ]);
@@ -87,7 +110,7 @@ declare_lint_pass!(Formatting => [
 impl EarlyLintPass for Formatting {
     fn check_block(&mut self, cx: &EarlyContext<'_>, block: &Block) {
         for w in block.stmts.windows(2) {
-            match (&w[0].node, &w[1].node) {
+            match (&w[0].kind, &w[1].kind) {
                 (&StmtKind::Expr(ref first), &StmtKind::Expr(ref second))
                 | (&StmtKind::Expr(ref first), &StmtKind::Semi(ref second)) => {
                     check_missing_else(cx, first, second);
@@ -99,6 +122,7 @@ impl EarlyLintPass for Formatting {
 
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &Expr) {
         check_assign(cx, expr);
+        check_unop(cx, expr);
         check_else(cx, expr);
         check_array(cx, expr);
     }
@@ -106,10 +130,10 @@ impl EarlyLintPass for Formatting {
 
 /// Implementation of the `SUSPICIOUS_ASSIGNMENT_FORMATTING` lint.
 fn check_assign(cx: &EarlyContext<'_>, expr: &Expr) {
-    if let ExprKind::Assign(ref lhs, ref rhs) = expr.node {
+    if let ExprKind::Assign(ref lhs, ref rhs) = expr.kind {
         if !differing_macro_contexts(lhs.span, rhs.span) && !lhs.span.from_expansion() {
             let eq_span = lhs.span.between(rhs.span);
-            if let ExprKind::Unary(op, ref sub_rhs) = rhs.node {
+            if let ExprKind::Unary(op, ref sub_rhs) = rhs.kind {
                 if let Some(eq_snippet) = snippet_opt(cx, eq_span) {
                     let op = UnOp::to_string(op);
                     let eqop_span = lhs.span.between(sub_rhs.span);
@@ -133,10 +157,49 @@ fn check_assign(cx: &EarlyContext<'_>, expr: &Expr) {
     }
 }
 
+/// Implementation of the `SUSPICIOUS_UNARY_OP_FORMATTING` lint.
+fn check_unop(cx: &EarlyContext<'_>, expr: &Expr) {
+    if_chain! {
+        if let ExprKind::Binary(ref binop, ref lhs, ref rhs) = expr.kind;
+        if !differing_macro_contexts(lhs.span, rhs.span) && !lhs.span.from_expansion();
+        // span between BinOp LHS and RHS
+        let binop_span = lhs.span.between(rhs.span);
+        // if RHS is a UnOp
+        if let ExprKind::Unary(op, ref un_rhs) = rhs.kind;
+        // from UnOp operator to UnOp operand
+        let unop_operand_span = rhs.span.until(un_rhs.span);
+        if let Some(binop_snippet) = snippet_opt(cx, binop_span);
+        if let Some(unop_operand_snippet) = snippet_opt(cx, unop_operand_span);
+        let binop_str = BinOpKind::to_string(&binop.node);
+        // no space after BinOp operator and space after UnOp operator
+        if binop_snippet.ends_with(binop_str) && unop_operand_snippet.ends_with(' ');
+        then {
+            let unop_str = UnOp::to_string(op);
+            let eqop_span = lhs.span.between(un_rhs.span);
+            span_help_and_lint(
+                cx,
+                SUSPICIOUS_UNARY_OP_FORMATTING,
+                eqop_span,
+                &format!(
+                    "by not having a space between `{binop}` and `{unop}` it looks like \
+                     `{binop}{unop}` is a single operator",
+                    binop = binop_str,
+                    unop = unop_str
+                ),
+                &format!(
+                    "put a space between `{binop}` and `{unop}` and remove the space after `{unop}`",
+                    binop = binop_str,
+                    unop = unop_str
+                ),
+            );
+        }
+    }
+}
+
 /// Implementation of the `SUSPICIOUS_ELSE_FORMATTING` lint for weird `else`.
 fn check_else(cx: &EarlyContext<'_>, expr: &Expr) {
     if_chain! {
-        if let ExprKind::If(_, then, Some(else_)) = &expr.node;
+        if let ExprKind::If(_, then, Some(else_)) = &expr.kind;
         if is_block(else_) || is_if(else_);
         if !differing_macro_contexts(then.span, else_.span);
         if !then.span.from_expansion() && !in_external_macro(cx.sess, expr.span);
@@ -172,6 +235,7 @@ fn check_else(cx: &EarlyContext<'_>, expr: &Expr) {
     }
 }
 
+#[must_use]
 fn has_unary_equivalent(bin_op: BinOpKind) -> bool {
     // &, *, -
     bin_op == BinOpKind::And || bin_op == BinOpKind::Mul || bin_op == BinOpKind::Sub
@@ -179,9 +243,9 @@ fn has_unary_equivalent(bin_op: BinOpKind) -> bool {
 
 /// Implementation of the `POSSIBLE_MISSING_COMMA` lint for array
 fn check_array(cx: &EarlyContext<'_>, expr: &Expr) {
-    if let ExprKind::Array(ref array) = expr.node {
+    if let ExprKind::Array(ref array) = expr.kind {
         for element in array {
-            if let ExprKind::Binary(ref op, ref lhs, _) = element.node {
+            if let ExprKind::Binary(ref op, ref lhs, _) = element.kind {
                 if has_unary_equivalent(op.node) && !differing_macro_contexts(lhs.span, op.span) {
                     let space_span = lhs.span.between(op.span);
                     if let Some(space_snippet) = snippet_opt(cx, space_span) {
@@ -237,7 +301,7 @@ fn check_missing_else(cx: &EarlyContext<'_>, first: &Expr, second: &Expr) {
 }
 
 fn is_block(expr: &Expr) -> bool {
-    if let ExprKind::Block(..) = expr.node {
+    if let ExprKind::Block(..) = expr.kind {
         true
     } else {
         false
@@ -246,7 +310,7 @@ fn is_block(expr: &Expr) -> bool {
 
 /// Check if the expression is an `if` or `if let`
 fn is_if(expr: &Expr) -> bool {
-    if let ExprKind::If(..) = expr.node {
+    if let ExprKind::If(..) = expr.kind {
         true
     } else {
         false

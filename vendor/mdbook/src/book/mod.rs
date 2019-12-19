@@ -24,7 +24,7 @@ use crate::errors::*;
 use crate::preprocess::{
     CmdPreprocessor, IndexPreprocessor, LinkPreprocessor, Preprocessor, PreprocessorContext,
 };
-use crate::renderer::{CmdRenderer, HtmlHandlebars, RenderContext, Renderer};
+use crate::renderer::{CmdRenderer, HtmlHandlebars, MarkdownRenderer, RenderContext, Renderer};
 use crate::utils;
 
 use crate::config::Config;
@@ -56,7 +56,7 @@ impl MDBook {
             warn!("This format is no longer used, so you should migrate to the");
             warn!("book.toml format.");
             warn!("Check the user guide for migration information:");
-            warn!("\thttps://rust-lang-nursery.github.io/mdBook/format/config.html");
+            warn!("\thttps://rust-lang.github.io/mdBook/format/config.html");
         }
 
         let mut config = if config_location.exists() {
@@ -189,19 +189,6 @@ impl MDBook {
             self.config.clone(),
             renderer.name().to_string(),
         );
-
-        let name = renderer.name();
-        let build_dir = self.build_dir_for(name);
-        if build_dir.exists() {
-            debug!(
-                "Cleaning build dir for the \"{}\" renderer ({})",
-                name,
-                build_dir.display()
-            );
-
-            utils::fs::remove_dir_content(&build_dir)
-                .chain_err(|| "Unable to clear output directory")?;
-        }
 
         for preprocessor in &self.preprocessors {
             if preprocessor_should_run(&**preprocessor, renderer, &self.config) {
@@ -349,6 +336,8 @@ fn determine_renderers(config: &Config) -> Vec<Box<dyn Renderer>> {
         renderers.extend(output_table.iter().map(|(key, table)| {
             if key == "html" {
                 Box::new(HtmlHandlebars::new()) as Box<dyn Renderer>
+            } else if key == "markdown" {
+                Box::new(MarkdownRenderer::new()) as Box<dyn Renderer>
             } else {
                 interpret_custom_renderer(key, table)
             }

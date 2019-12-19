@@ -1,21 +1,37 @@
 use std::cell::RefCell;
-use std::path::Path;
 
 use serde::ser;
 
+use crate::core::compiler::{CompileKind, CompileTarget};
 use crate::util::ProcessBuilder;
-use crate::util::{CargoResult, CargoResultExt, Config, RustfixDiagnosticServer};
+use crate::util::{CargoResult, Config, RustfixDiagnosticServer};
+
+#[derive(Debug, Clone)]
+pub enum ProfileKind {
+    Dev,
+    Release,
+    Custom(String),
+}
+
+impl ProfileKind {
+    pub fn name(&self) -> &str {
+        match self {
+            ProfileKind::Dev => "dev",
+            ProfileKind::Release => "release",
+            ProfileKind::Custom(name) => name,
+        }
+    }
+}
 
 /// Configuration information for a rustc build.
 #[derive(Debug)]
 pub struct BuildConfig {
-    /// The target arch triple.
-    /// Default: host arch.
-    pub requested_target: Option<String>,
+    /// The requested kind of compilation for this session
+    pub requested_kind: CompileKind,
     /// Number of rustc jobs to run in parallel.
     pub jobs: u32,
-    /// `true` if we are building for release.
-    pub release: bool,
+    /// Build profile
+    pub profile_kind: ProfileKind,
     /// The mode we are compiling in.
     pub mode: CompileMode,
     /// `true` to print stdout in JSON format (for machine reading).
@@ -27,8 +43,6 @@ pub struct BuildConfig {
     /// An optional override of the rustc path for primary units only
     pub primary_unit_rustc: Option<ProcessBuilder>,
     pub rustfix_diagnostic_server: RefCell<Option<RustfixDiagnosticServer>>,
-    /// Whether or not Cargo should cache compiler output on disk.
-    cache_messages: bool,
 }
 
 impl BuildConfig {
@@ -46,36 +60,22 @@ impl BuildConfig {
         requested_target: &Option<String>,
         mode: CompileMode,
     ) -> CargoResult<BuildConfig> {
-        let requested_target = match requested_target {
-            &Some(ref target) if target.ends_with(".json") => {
-                let path = Path::new(target).canonicalize().chain_err(|| {
-                    failure::format_err!("Target path {:?} is not a valid file", target)
-                })?;
-                Some(
-                    path.into_os_string()
-                        .into_string()
-                        .map_err(|_| failure::format_err!("Target path is not valid unicode"))?,
-                )
-            }
-            other => other.clone(),
+        let cfg = config.build_config()?;
+        let requested_kind = match requested_target {
+            Some(s) => CompileKind::Target(CompileTarget::new(s)?),
+            None => match &cfg.target {
+                Some(val) => {
+                    let value = if val.raw_value().ends_with(".json") {
+                        let path = val.clone().resolve_path(config);
+                        path.to_str().expect("must be utf-8 in toml").to_string()
+                    } else {
+                        val.raw_value().to_string()
+                    };
+                    CompileKind::Target(CompileTarget::new(&value)?)
+                }
+                None => CompileKind::Host,
+            },
         };
-        if let Some(ref s) = requested_target {
-            if s.trim().is_empty() {
-                failure::bail!("target was empty")
-            }
-        }
-        let cfg_target = match config.get_string("build.target")? {
-            Some(ref target) if target.val.ends_with(".json") => {
-                let path = target.definition.root(config).join(&target.val);
-                let path_string = path
-                    .into_os_string()
-                    .into_string()
-                    .map_err(|_| failure::format_err!("Target path is not valid unicode"));
-                Some(path_string?)
-            }
-            other => other.map(|t| t.val),
-        };
-        let target = requested_target.or(cfg_target);
 
         if jobs == Some(0) {
             failure::bail!("jobs must be at least 1")
@@ -87,26 +87,19 @@ impl BuildConfig {
                  its environment, ignoring the `-j` parameter",
             )?;
         }
-        let cfg_jobs: Option<u32> = config.get("build.jobs")?;
-        let jobs = jobs.or(cfg_jobs).unwrap_or(::num_cpus::get() as u32);
+        let jobs = jobs.or(cfg.jobs).unwrap_or(::num_cpus::get() as u32);
 
         Ok(BuildConfig {
-            requested_target: target,
+            requested_kind,
             jobs,
-            release: false,
+            profile_kind: ProfileKind::Dev,
             mode,
             message_format: MessageFormat::Human,
             force_rebuild: false,
             build_plan: false,
             primary_unit_rustc: None,
             rustfix_diagnostic_server: RefCell::new(None),
-            cache_messages: config.cli_unstable().cache_messages,
         })
-    }
-
-    /// Whether or not Cargo should cache compiler messages on disk.
-    pub fn cache_messages(&self) -> bool {
-        self.cache_messages
     }
 
     /// Whether or not the *user* wants JSON output. Whether or not rustc
@@ -116,6 +109,10 @@ impl BuildConfig {
             MessageFormat::Json { .. } => true,
             _ => false,
         }
+    }
+
+    pub fn profile_name(&self) -> &str {
+        self.profile_kind.name()
     }
 
     pub fn test(&self) -> bool {

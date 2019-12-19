@@ -20,7 +20,7 @@
 > &nbsp;&nbsp; _FunctionParam_ (`,` _FunctionParam_)<sup>\*</sup> `,`<sup>?</sup>
 >
 > _FunctionParam_ :\
-> &nbsp;&nbsp; [_Pattern_] `:` [_Type_]
+> &nbsp;&nbsp; [_OuterAttribute_]<sup>\*</sup> [_Pattern_] `:` [_Type_]
 >
 > _FunctionReturnType_ :\
 > &nbsp;&nbsp; `->` [_Type_]
@@ -180,12 +180,13 @@ aborts the process by executing an illegal instruction.
 
 ## Const functions
 
-Functions qualified with the `const` keyword are const functions. _Const
-functions_  can be called from within [const context]s. When called from a const
-context, the function is interpreted by the compiler at compile time. The
-interpretation happens in the environment of the compilation target and not the
-host. So `usize` is `32` bits if you are compiling against a `32` bit system,
-irrelevant of whether you are building on a `64` bit or a `32` bit system.
+Functions qualified with the `const` keyword are const functions, as are
+[tuple struct] and [tuple variant] constructors. _Const functions_  can be
+called from within [const context]s. When called from a const context, the
+function is interpreted by the compiler at compile time. The interpretation
+happens in the environment of the compilation target and not the host. So
+`usize` is `32` bits if you are compiling against a `32` bit system, irrelevant
+of whether you are building on a `64` bit or a `32` bit system.
 
 If a const function is called outside a [const context], it is indistinguishable
 from any other function. You can freely do anything with a const function that
@@ -214,7 +215,9 @@ Exhaustive list of permitted structures in const functions:
     are all permitted.
 
     This rule also applies to type parameters of impl blocks that
-    contain const methods
+    contain const methods.
+
+    This does not apply to tuple struct and tuple variant constructors.
 
 * Arithmetic and comparison operators on integers
 * All boolean operators except for `&&` and `||` which are banned since
@@ -345,11 +348,39 @@ fn test_only() {
 > Note: Except for lints, it is idiomatic to only use outer attributes on
 > function items.
 
-The attributes that have meaning on a function are [`cfg`], [`deprecated`],
+The attributes that have meaning on a function are [`cfg`], [`cfg_attr`], [`deprecated`],
 [`doc`], [`export_name`], [`link_section`], [`no_mangle`], [the lint check
 attributes], [`must_use`], [the procedural macro attributes], [the testing
 attributes], and [the optimization hint attributes]. Functions also accept
 attributes macros.
+
+## Attributes on function parameters
+
+[Outer attributes][attributes] are allowed on function parameters and the
+permitted [built-in attributes] are restricted to `cfg`, `cfg_attr`, `allow`,
+`warn`, `deny`, and `forbid`.
+
+```rust
+fn len(
+    #[cfg(windows)] slice: &[u16],
+    #[cfg(not(windows))] slice: &[u8],
+) -> usize {
+    slice.len()
+}
+```
+
+Inert helper attributes used by procedural macro attributes applied to items are also
+allowed but be careful to not include these inert attributes in your final `TokenStream`.
+
+For example, the following code defines an inert `some_inert_attribute` attribute that
+is not formally defined anywhere and the `some_proc_macro_attribute` procedural macro is
+responsible for detecting its presence and removing it from the output token stream.
+
+```rust,ignore
+#[some_proc_macro_attribute]
+fn foo_oof(#[some_inert_attribute] arg: u8) {
+}
+```
 
 [IDENTIFIER]: ../identifiers.md
 [RAW_STRING_LITERAL]: ../tokens.md#raw-string-literals
@@ -359,7 +390,10 @@ attributes macros.
 [_Pattern_]: ../patterns.md
 [_Type_]: ../types.md#type-expressions
 [_WhereClause_]: generics.md#where-clauses
+[_OuterAttribute_]: ../attributes.md
 [const context]: ../const_eval.md#const-context
+[tuple struct]: structs.md
+[tuple variant]: enumerations.md
 [external block]: external-blocks.md
 [path]: ../paths.md
 [block]: ../expressions/block-expr.md
@@ -368,7 +402,8 @@ attributes macros.
 [*function item type*]: ../types/function-item.md
 [Trait]: traits.md
 [attributes]: ../attributes.md
-[`cfg`]: ../conditional-compilation.md
+[`cfg`]: ../conditional-compilation.md#the-cfg-attribute
+[`cfg_attr`]: ../conditional-compilation.md#the-cfg_attr-attribute
 [the lint check attributes]: ../attributes/diagnostics.md#lint-check-attributes
 [the procedural macro attributes]: ../procedural-macros.md
 [the testing attributes]: ../attributes/testing.md
@@ -383,3 +418,4 @@ attributes macros.
 [`link_section`]: ../abi.md#the-link_section-attribute
 [`no_mangle`]: ../abi.md#the-no_mangle-attribute
 [external_block_abi]: external-blocks.md#abi
+[built-in attributes]: ../attributes.html#built-in-attributes-index

@@ -1,19 +1,21 @@
 // aux-build:option_helpers.rs
 // compile-flags: --edition 2018
 
-#![warn(clippy::all, clippy::pedantic, clippy::option_unwrap_used)]
+#![warn(clippy::all, clippy::pedantic)]
 #![allow(
     clippy::blacklisted_name,
-    unused,
-    clippy::print_stdout,
+    clippy::default_trait_access,
+    clippy::missing_docs_in_private_items,
     clippy::non_ascii_literal,
     clippy::new_without_default,
-    clippy::missing_docs_in_private_items,
     clippy::needless_pass_by_value,
-    clippy::default_trait_access,
+    clippy::print_stdout,
+    clippy::must_use_candidate,
     clippy::use_self,
     clippy::useless_format,
-    clippy::wrong_self_convention
+    clippy::wrong_self_convention,
+    clippy::unused_self,
+    unused
 )]
 
 #[macro_use]
@@ -299,8 +301,8 @@ fn search_is_some() {
     let _ = foo.rposition().is_some();
 }
 
-#[allow(clippy::similar_names)]
 fn main() {
-    let opt = Some(0);
-    let _ = opt.unwrap();
+    option_methods();
+    filter_next();
+    search_is_some();
 }

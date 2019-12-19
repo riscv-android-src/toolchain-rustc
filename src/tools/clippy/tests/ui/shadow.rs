@@ -5,12 +5,18 @@
     clippy::shadow_reuse,
     clippy::shadow_unrelated
 )]
-#![allow(unused_parens, unused_variables, clippy::missing_docs_in_private_items)]
+#![allow(
+    unused_parens,
+    unused_variables,
+    clippy::missing_docs_in_private_items,
+    clippy::single_match
+)]
 
 fn id<T>(x: T) -> T {
     x
 }
 
+#[must_use]
 fn first(x: (isize, isize)) -> isize {
     x.0
 }

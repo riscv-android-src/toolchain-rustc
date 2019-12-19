@@ -33,9 +33,9 @@ declare_clippy_lint! {
     /// **Why is this bad?** This is most probably a typo
     ///
     /// **Known problems:**
-    /// 		- Recommends a signed suffix, even though the number might be too big and an unsigned
-    ///		suffix is required
-    /// 		- Does not match on `_128` since that is a valid grouping for decimal and octal numbers
+    /// - Recommends a signed suffix, even though the number might be too big and an unsigned
+    ///   suffix is required
+    /// - Does not match on `_128` since that is a valid grouping for decimal and octal numbers
     ///
     /// **Example:**
     ///
@@ -113,6 +113,7 @@ pub(super) enum Radix {
 
 impl Radix {
     /// Returns a reasonable digit group size for this radix.
+    #[must_use]
     crate fn suggest_grouping(&self) -> usize {
         match *self {
             Self::Binary | Self::Hexadecimal => 4,
@@ -136,6 +137,7 @@ pub(super) struct DigitInfo<'a> {
 }
 
 impl<'a> DigitInfo<'a> {
+    #[must_use]
     crate fn new(lit: &'a str, float: bool) -> Self {
         // Determine delimiter for radix prefix, if present, and radix.
         let radix = if lit.starts_with("0x") {
@@ -347,16 +349,16 @@ impl EarlyLintPass for LiteralDigitGrouping {
             return;
         }
 
-        if let ExprKind::Lit(ref lit) = expr.node {
-            self.check_lit(cx, lit)
+        if let ExprKind::Lit(ref lit) = expr.kind {
+            Self::check_lit(cx, lit)
         }
     }
 }
 
 impl LiteralDigitGrouping {
-    fn check_lit(self, cx: &EarlyContext<'_>, lit: &Lit) {
+    fn check_lit(cx: &EarlyContext<'_>, lit: &Lit) {
         let in_macro = in_macro(lit.span);
-        match lit.node {
+        match lit.kind {
             LitKind::Int(..) => {
                 // Lint integral literals.
                 if_chain! {
@@ -422,6 +424,7 @@ impl LiteralDigitGrouping {
     /// Given the sizes of the digit groups of both integral and fractional
     /// parts, and the length
     /// of both parts, determine if the digits have been grouped consistently.
+    #[must_use]
     fn parts_consistent(int_group_size: usize, frac_group_size: usize, int_size: usize, frac_size: usize) -> bool {
         match (int_group_size, frac_group_size) {
             // No groups on either side of decimal point - trivially consistent.
@@ -492,20 +495,21 @@ impl EarlyLintPass for DecimalLiteralRepresentation {
             return;
         }
 
-        if let ExprKind::Lit(ref lit) = expr.node {
+        if let ExprKind::Lit(ref lit) = expr.kind {
             self.check_lit(cx, lit)
         }
     }
 }
 
 impl DecimalLiteralRepresentation {
+    #[must_use]
     pub fn new(threshold: u64) -> Self {
         Self { threshold }
     }
     fn check_lit(self, cx: &EarlyContext<'_>, lit: &Lit) {
         // Lint integral literals.
         if_chain! {
-            if let LitKind::Int(..) = lit.node;
+            if let LitKind::Int(..) = lit.kind;
             if let Some(src) = snippet_opt(cx, lit.span);
             if let Some(firstch) = src.chars().next();
             if char::to_digit(firstch, 10).is_some();
@@ -573,22 +577,27 @@ impl DecimalLiteralRepresentation {
     }
 }
 
+#[must_use]
 fn is_mistyped_suffix(suffix: &str) -> bool {
     ["_8", "_16", "_32", "_64"].contains(&suffix)
 }
 
+#[must_use]
 fn is_possible_suffix_index(lit: &str, idx: usize, len: usize) -> bool {
     ((len > 3 && idx == len - 3) || (len > 2 && idx == len - 2)) && is_mistyped_suffix(lit.split_at(idx).1)
 }
 
+#[must_use]
 fn is_mistyped_float_suffix(suffix: &str) -> bool {
     ["_32", "_64"].contains(&suffix)
 }
 
+#[must_use]
 fn is_possible_float_suffix_index(lit: &str, idx: usize, len: usize) -> bool {
     (len > 3 && idx == len - 3) && is_mistyped_float_suffix(lit.split_at(idx).1)
 }
 
+#[must_use]
 fn has_possible_float_suffix(lit: &str) -> bool {
     lit.ends_with("_32") || lit.ends_with("_64")
 }

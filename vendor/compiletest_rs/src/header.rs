@@ -297,6 +297,10 @@ impl TestProps {
                     .map(|s| s.to_owned()));
             }
 
+            if let Some(edition) = config.parse_edition(ln) {
+                self.compile_flags.push(format!("--edition={}", edition));
+            }
+
             if let Some(r) = config.parse_revisions(ln) {
                 self.revisions.extend(r);
             }
@@ -396,7 +400,7 @@ impl TestProps {
     }
 }
 
-fn iter_header(testfile: &Path, cfg: Option<&str>, it: &mut FnMut(&str)) {
+fn iter_header(testfile: &Path, cfg: Option<&str>, it: &mut dyn FnMut(&str)) {
     if testfile.is_dir() {
         return;
     }
@@ -608,6 +612,10 @@ impl Config {
 
     fn parse_rustfix_only_machine_applicable(&self, line: &str) -> bool {
         self.parse_name_directive(line, "rustfix-only-machine-applicable")
+    }
+
+    fn parse_edition(&self, line: &str) -> Option<String> {
+        self.parse_name_value_directive(line, "edition")
     }
 }
 

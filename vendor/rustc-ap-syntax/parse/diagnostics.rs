@@ -11,7 +11,7 @@ use crate::ptr::P;
 use crate::symbol::{kw, sym};
 use crate::ThinVec;
 use crate::util::parser::AssocOp;
-use errors::{Applicability, DiagnosticBuilder, DiagnosticId};
+use errors::{Applicability, DiagnosticBuilder, DiagnosticId, pluralise};
 use rustc_data_structures::fx::FxHashSet;
 use syntax_pos::{Span, DUMMY_SP, MultiSpan, SpanSnippetError};
 use log::{debug, trace};
@@ -21,15 +21,22 @@ use std::mem;
 crate fn dummy_arg(ident: Ident) -> Param {
     let pat = P(Pat {
         id: ast::DUMMY_NODE_ID,
-        node: PatKind::Ident(BindingMode::ByValue(Mutability::Immutable), ident, None),
+        kind: PatKind::Ident(BindingMode::ByValue(Mutability::Immutable), ident, None),
         span: ident.span,
     });
     let ty = Ty {
-        node: TyKind::Err,
+        kind: TyKind::Err,
         span: ident.span,
         id: ast::DUMMY_NODE_ID
     };
-    Param { attrs: ThinVec::default(), id: ast::DUMMY_NODE_ID, pat, span: ident.span, ty: P(ty) }
+    Param {
+        attrs: ThinVec::default(),
+        id: ast::DUMMY_NODE_ID,
+        pat,
+        span: ident.span,
+        ty: P(ty),
+        is_placeholder: false,
+    }
 }
 
 pub enum Error {
@@ -128,7 +135,7 @@ impl RecoverQPath for Ty {
     fn recovered(qself: Option<QSelf>, path: ast::Path) -> Self {
         Self {
             span: path.span,
-            node: TyKind::Path(qself, path),
+            kind: TyKind::Path(qself, path),
             id: ast::DUMMY_NODE_ID,
         }
     }
@@ -141,7 +148,7 @@ impl RecoverQPath for Pat {
     fn recovered(qself: Option<QSelf>, path: ast::Path) -> Self {
         Self {
             span: path.span,
-            node: PatKind::Path(qself, path),
+            kind: PatKind::Path(qself, path),
             id: ast::DUMMY_NODE_ID,
         }
     }
@@ -154,7 +161,7 @@ impl RecoverQPath for Expr {
     fn recovered(qself: Option<QSelf>, path: ast::Path) -> Self {
         Self {
             span: path.span,
-            node: ExprKind::Path(qself, path),
+            kind: ExprKind::Path(qself, path),
             attrs: ThinVec::new(),
             id: ast::DUMMY_NODE_ID,
         }
@@ -188,10 +195,6 @@ impl<'a> Parser<'a> {
 
     crate fn span_bug<S: Into<MultiSpan>>(&self, sp: S, m: &str) -> ! {
         self.sess.span_diagnostic.span_bug(sp, m)
-    }
-
-    crate fn cancel(&self, err: &mut DiagnosticBuilder<'_>) {
-        self.sess.span_diagnostic.cancel(err)
     }
 
     crate fn diagnostic(&self) -> &'a errors::Handler {
@@ -419,15 +422,13 @@ impl<'a> Parser<'a> {
     /// Eats and discards tokens until one of `kets` is encountered. Respects token trees,
     /// passes through any errors encountered. Used for error recovery.
     crate fn eat_to_tokens(&mut self, kets: &[&TokenKind]) {
-        let handler = self.diagnostic();
-
         if let Err(ref mut err) = self.parse_seq_to_before_tokens(
             kets,
             SeqSep::none(),
             TokenExpectType::Expect,
             |p| Ok(p.parse_token_tree()),
         ) {
-            handler.cancel(err);
+            err.cancel();
         }
     }
 
@@ -525,15 +526,15 @@ impl<'a> Parser<'a> {
             self.eat_to_tokens(&[&end]);
             let span = lo.until(self.token.span);
 
-            let plural = number_of_gt > 1 || number_of_shr >= 1;
+            let total_num_of_gt = number_of_gt + number_of_shr * 2;
             self.diagnostic()
                 .struct_span_err(
                     span,
-                    &format!("unmatched angle bracket{}", if plural { "s" } else { "" }),
+                    &format!("unmatched angle bracket{}", pluralise!(total_num_of_gt)),
                 )
                 .span_suggestion(
                     span,
-                    &format!("remove extra angle bracket{}", if plural { "s" } else { "" }),
+                    &format!("remove extra angle bracket{}", pluralise!(total_num_of_gt)),
                     String::new(),
                     Applicability::MachineApplicable,
                 )
@@ -548,7 +549,7 @@ impl<'a> Parser<'a> {
         debug_assert!(outer_op.is_comparison(),
                       "check_no_chained_comparison: {:?} is not comparison",
                       outer_op);
-        match lhs.node {
+        match lhs.kind {
             ExprKind::Binary(op, _, _) if op.node.is_comparison() => {
                 // Respan to include both operators.
                 let op_span = op.span.to(self.token.span);
@@ -662,7 +663,7 @@ impl<'a> Parser<'a> {
             pprust::ty_to_string(ty)
         );
 
-        match ty.node {
+        match ty.kind {
             TyKind::Rptr(ref lifetime, ref mut_ty) => {
                 let sum_with_parens = pprust::to_string(|s| {
                     s.s.word("&");
@@ -760,7 +761,7 @@ impl<'a> Parser<'a> {
             );
             if !items.is_empty() {
                 let previous_item = &items[items.len() - 1];
-                let previous_item_kind_name = match previous_item.node {
+                let previous_item_kind_name = match previous_item.kind {
                     // Say "braced struct" because tuple-structs and
                     // braceless-empty-struct declarations do take a semicolon.
                     ItemKind::Struct(..) => Some("braced struct"),
@@ -914,7 +915,7 @@ impl<'a> Parser<'a> {
             .unwrap_or_else(|_| pprust::expr_to_string(&expr));
         let suggestion = format!("{}.await{}", expr_str, if is_question { "?" } else { "" });
         let sp = lo.to(hi);
-        let app = match expr.node {
+        let app = match expr.kind {
             ExprKind::Try(_) => Applicability::MaybeIncorrect, // `await <expr>?`
             _ => Applicability::MachineApplicable,
         };
@@ -977,7 +978,7 @@ impl<'a> Parser<'a> {
                     .emit();
 
                 // Unwrap `(pat)` into `pat` to avoid the `unused_parens` lint.
-                pat.and_then(|pat| match pat.node {
+                pat.and_then(|pat| match pat.kind {
                     PatKind::Paren(pat) => pat,
                     _ => P(pat),
                 })
@@ -1179,7 +1180,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    crate fn expected_semi_or_open_brace(&mut self) -> PResult<'a, ast::TraitItem> {
+    crate fn expected_semi_or_open_brace<T>(&mut self) -> PResult<'a, T> {
         let token_str = self.this_token_descr();
         let mut err = self.fatal(&format!("expected `;` or `{{`, found {}", token_str));
         err.span_label(self.token.span, "expected `;` or `{`");
@@ -1219,6 +1220,7 @@ impl<'a> Parser<'a> {
         err: &mut DiagnosticBuilder<'_>,
         pat: P<ast::Pat>,
         require_name: bool,
+        is_self_allowed: bool,
         is_trait_item: bool,
     ) -> Option<Ident> {
         // If we find a pattern followed by an identifier, it could be an (incorrect)
@@ -1236,18 +1238,31 @@ impl<'a> Parser<'a> {
                 Applicability::HasPlaceholders,
             );
             return Some(ident);
-        } else if let PatKind::Ident(_, ident, _) = pat.node {
+        } else if let PatKind::Ident(_, ident, _) = pat.kind {
             if require_name && (
                 is_trait_item ||
                 self.token == token::Comma ||
+                self.token == token::Lt ||
                 self.token == token::CloseDelim(token::Paren)
-            ) { // `fn foo(a, b) {}` or `fn foo(usize, usize) {}`
-                err.span_suggestion(
-                    pat.span,
-                    "if this was a parameter name, give it a type",
-                    format!("{}: TypeName", ident),
-                    Applicability::HasPlaceholders,
-                );
+            ) { // `fn foo(a, b) {}`, `fn foo(a<x>, b<y>) {}` or `fn foo(usize, usize) {}`
+                if is_self_allowed {
+                    err.span_suggestion(
+                        pat.span,
+                        "if this is a `self` type, give it a parameter name",
+                        format!("self: {}", ident),
+                        Applicability::MaybeIncorrect,
+                    );
+                }
+                // Avoid suggesting that `fn foo(HashMap<u32>)` is fixed with a change to
+                // `fn foo(HashMap: TypeName<u32>)`.
+                if self.token != token::Lt {
+                    err.span_suggestion(
+                        pat.span,
+                        "if this was a parameter name, give it a type",
+                        format!("{}: TypeName", ident),
+                        Applicability::HasPlaceholders,
+                    );
+                }
                 err.span_suggestion(
                     pat.span,
                     "if this is a type, explicitly ignore the parameter name",
@@ -1255,7 +1270,9 @@ impl<'a> Parser<'a> {
                     Applicability::MachineApplicable,
                 );
                 err.note("anonymous parameters are removed in the 2018 edition (see RFC 1685)");
-                return Some(ident);
+
+                // Don't attempt to recover by using the `X` in `X<Y>` as the parameter name.
+                return if self.token == token::Lt { None } else { Some(ident) };
             }
         }
         None
@@ -1282,7 +1299,7 @@ impl<'a> Parser<'a> {
 
         // Pretend the pattern is `_`, to avoid duplicate errors from AST validation.
         let pat = P(Pat {
-            node: PatKind::Wild,
+            kind: PatKind::Wild,
             span: pat.span,
             id: ast::DUMMY_NODE_ID
         });
@@ -1295,7 +1312,7 @@ impl<'a> Parser<'a> {
         is_trait_item: bool,
     ) -> PResult<'a, ast::Param> {
         let sp = param.pat.span;
-        param.ty.node = TyKind::Err;
+        param.ty.kind = TyKind::Err;
         let mut err = self.struct_span_err(sp, "unexpected `self` parameter in function");
         if is_trait_item {
             err.span_label(sp, "must be the first associated function parameter");
@@ -1359,7 +1376,7 @@ impl<'a> Parser<'a> {
         let mut seen_inputs = FxHashSet::default();
         for input in fn_inputs.iter_mut() {
             let opt_ident = if let (PatKind::Ident(_, ident, _), TyKind::Err) = (
-                &input.pat.node, &input.ty.node,
+                &input.pat.kind, &input.ty.kind,
             ) {
                 Some(*ident)
             } else {
@@ -1367,7 +1384,7 @@ impl<'a> Parser<'a> {
             };
             if let Some(ident) = opt_ident {
                 if seen_inputs.contains(&ident) {
-                    input.pat.node = PatKind::Wild;
+                    input.pat.kind = PatKind::Wild;
                 }
                 seen_inputs.insert(ident);
             }

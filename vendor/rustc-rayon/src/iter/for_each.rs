@@ -2,13 +2,13 @@ use super::noop::*;
 use super::plumbing::*;
 use super::ParallelIterator;
 
-pub fn for_each<I, F, T>(pi: I, op: &F)
+pub(super) fn for_each<I, F, T>(pi: I, op: &F)
 where
     I: ParallelIterator<Item = T>,
     F: Fn(T) + Sync,
     T: Send,
 {
-    let consumer = ForEachConsumer { op: op };
+    let consumer = ForEachConsumer { op };
     pi.drive_unindexed(consumer)
 }
 
@@ -52,7 +52,7 @@ where
     where
         I: IntoIterator<Item = T>,
     {
-        iter.into_iter().fold((), |_, item| (self.op)(item));
+        iter.into_iter().for_each(self.op);
         self
     }
 

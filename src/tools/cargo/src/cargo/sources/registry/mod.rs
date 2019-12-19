@@ -463,6 +463,7 @@ impl<'cfg> RegistrySource<'cfg> {
 
         let gz = GzDecoder::new(tarball);
         let mut tar = Archive::new(gz);
+        tar.set_preserve_mtime(false);
         let prefix = unpack_dir.file_name().unwrap();
         let parent = unpack_dir.parent().unwrap();
         for entry in tar.entries()? {
@@ -604,7 +605,7 @@ impl<'cfg> Source for RegistrySource<'cfg> {
 
     fn download(&mut self, package: PackageId) -> CargoResult<MaybePackage> {
         let hash = self.index.hash(package, &mut *self.ops)?;
-        match self.ops.download(package, &hash)? {
+        match self.ops.download(package, hash)? {
             MaybeLock::Ready(file) => self.get_pkg(package, &file).map(MaybePackage::Ready),
             MaybeLock::Download { url, descriptor } => {
                 Ok(MaybePackage::Download { url, descriptor })
@@ -614,7 +615,7 @@ impl<'cfg> Source for RegistrySource<'cfg> {
 
     fn finish_download(&mut self, package: PackageId, data: Vec<u8>) -> CargoResult<Package> {
         let hash = self.index.hash(package, &mut *self.ops)?;
-        let file = self.ops.finish_download(package, &hash, &data)?;
+        let file = self.ops.finish_download(package, hash, &data)?;
         self.get_pkg(package, &file)
     }
 

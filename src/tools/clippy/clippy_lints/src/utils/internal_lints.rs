@@ -1,5 +1,6 @@
 use crate::utils::{
-    match_def_path, match_type, method_calls, paths, span_help_and_lint, span_lint, span_lint_and_sugg, walk_ptrs_ty,
+    is_expn_of, match_def_path, match_type, method_calls, paths, span_help_and_lint, span_lint, span_lint_and_sugg,
+    walk_ptrs_ty,
 };
 use if_chain::if_chain;
 use rustc::hir;
@@ -108,9 +109,9 @@ impl EarlyLintPass for ClippyLintsInternal {
             .iter()
             .find(|item| item.ident.name.as_str() == "utils")
         {
-            if let ItemKind::Mod(ref utils_mod) = utils.node {
+            if let ItemKind::Mod(ref utils_mod) = utils.kind {
                 if let Some(paths) = utils_mod.items.iter().find(|item| item.ident.name.as_str() == "paths") {
-                    if let ItemKind::Mod(ref paths_mod) = paths.node {
+                    if let ItemKind::Mod(ref paths_mod) = paths.kind {
                         let mut last_name: Option<LocalInternedString> = None;
                         for item in &*paths_mod.items {
                             let name = item.ident.as_str();
@@ -144,29 +145,27 @@ impl_lint_pass!(LintWithoutLintPass => [LINT_WITHOUT_LINT_PASS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if let hir::ItemKind::Static(ref ty, MutImmutable, _) = item.node {
+        if let hir::ItemKind::Static(ref ty, MutImmutable, _) = item.kind {
             if is_lint_ref_type(cx, ty) {
                 self.declared_lints.insert(item.ident.name, item.span);
             }
-        } else if let hir::ItemKind::Impl(.., Some(ref trait_ref), _, ref impl_item_refs) = item.node {
-            if_chain! {
-                if let hir::TraitRef{path, ..} = trait_ref;
-                if let Res::Def(DefKind::Trait, def_id) = path.res;
-                if match_def_path(cx, def_id, &paths::LINT_PASS);
-                then {
-                    let mut collector = LintCollector {
-                        output: &mut self.registered_lints,
-                        cx,
-                    };
-                    let body_id = cx.tcx.hir().body_owned_by(
-                        impl_item_refs
-                            .iter()
-                            .find(|iiref| iiref.ident.as_str() == "get_lints")
-                            .expect("LintPass needs to implement get_lints")
-                            .id.hir_id
-                    );
-                    collector.visit_expr(&cx.tcx.hir().body(body_id).value);
-                }
+        } else if is_expn_of(item.span, "impl_lint_pass").is_some()
+            || is_expn_of(item.span, "declare_lint_pass").is_some()
+        {
+            if let hir::ItemKind::Impl(.., None, _, ref impl_item_refs) = item.kind {
+                let mut collector = LintCollector {
+                    output: &mut self.registered_lints,
+                    cx,
+                };
+                let body_id = cx.tcx.hir().body_owned_by(
+                    impl_item_refs
+                        .iter()
+                        .find(|iiref| iiref.ident.as_str() == "get_lints")
+                        .expect("LintPass needs to implement get_lints")
+                        .id
+                        .hir_id,
+                );
+                collector.visit_expr(&cx.tcx.hir().body(body_id).value);
             }
         }
     }
@@ -201,9 +200,9 @@ fn is_lint_ref_type<'tcx>(cx: &LateContext<'_, 'tcx>, ty: &Ty) -> bool {
             ty: ref inner,
             mutbl: MutImmutable,
         },
-    ) = ty.node
+    ) = ty.kind
     {
-        if let TyKind::Path(ref path) = inner.node {
+        if let TyKind::Path(ref path) = inner.kind {
             if let Res::Def(DefKind::Struct, def_id) = cx.tables.qpath_res(path, inner.hir_id) {
                 return match_def_path(cx, def_id, &paths::LINT);
             }
@@ -239,6 +238,7 @@ pub struct CompilerLintFunctions {
 }
 
 impl CompilerLintFunctions {
+    #[must_use]
     pub fn new() -> Self {
         let mut map = FxHashMap::default();
         map.insert("span_lint", "utils::span_lint");
@@ -255,7 +255,7 @@ impl_lint_pass!(CompilerLintFunctions => [COMPILER_LINT_FUNCTIONS]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         if_chain! {
-            if let ExprKind::MethodCall(ref path, _, ref args) = expr.node;
+            if let ExprKind::MethodCall(ref path, _, ref args) = expr.kind;
             let fn_name = path.ident;
             if let Some(sugg) = self.map.get(&*fn_name.as_str());
             let ty = walk_ptrs_ty(cx.tables.expr_ty(&args[0]));
@@ -274,9 +274,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
     }
 }
 
-pub struct OuterExpnDataPass;
-
-impl_lint_pass!(OuterExpnDataPass => [OUTER_EXPN_EXPN_DATA]);
+declare_lint_pass!(OuterExpnDataPass => [OUTER_EXPN_EXPN_DATA]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OuterExpnDataPass {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {

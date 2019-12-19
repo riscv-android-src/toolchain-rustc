@@ -1,6 +1,6 @@
 use rustc::mir::interpret::ErrorHandled;
 use rustc::mir;
-use rustc_data_structures::indexed_vec::Idx;
+use rustc_index::vec::Idx;
 use rustc::ty::{self, Ty};
 use rustc::ty::layout::{self, HasTyCtxt};
 use syntax::source_map::Span;
@@ -23,7 +23,10 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     instance,
                     promoted: None,
                 };
-                self.cx.tcx().const_eval(ty::ParamEnv::reveal_all().and(cid))
+                self.cx.tcx().const_eval(ty::ParamEnv::reveal_all().and(cid)).map_err(|err| {
+                    self.cx.tcx().sess.span_err(constant.span, "erroneous constant encountered");
+                    err
+                })
             },
             _ => Ok(self.monomorphize(&constant.literal)),
         }
@@ -40,7 +43,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         constant
             .map(|c| {
                 let field_ty = c.ty.builtin_index().unwrap();
-                let fields = match c.ty.sty {
+                let fields = match c.ty.kind {
                     ty::Array(_, n) => n.eval_usize(bx.tcx(), ty::ParamEnv::reveal_all()),
                     _ => bug!("invalid simd shuffle type: {}", c.ty),
                 };

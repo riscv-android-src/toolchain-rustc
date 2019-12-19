@@ -3,13 +3,14 @@
 
 #![deny(clippy::missing_docs_in_private_items)]
 
-use crate::utils::{is_expn_of, match_def_path, match_qpath, paths, resolve_node};
+use crate::utils::{is_expn_of, match_def_path, match_qpath, paths};
 use if_chain::if_chain;
 use rustc::lint::LateContext;
 use rustc::{hir, ty};
 use syntax::ast;
 
 /// Converts a hir binary operator to the corresponding `ast` type.
+#[must_use]
 pub fn binop(op: hir::BinOpKind) -> ast::BinOpKind {
     match op {
         hir::BinOpKind::Eq => ast::BinOpKind::Eq,
@@ -54,7 +55,7 @@ pub fn range<'a, 'b, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'b hir::Expr) -> O
         Some(expr)
     }
 
-    let def_path = match cx.tables.expr_ty(expr).sty {
+    let def_path = match cx.tables.expr_ty(expr).kind {
         ty::Adt(def, _) => cx.tcx.def_path(def.did),
         _ => return None,
     };
@@ -63,13 +64,13 @@ pub fn range<'a, 'b, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'b hir::Expr) -> O
     if def_path.data.len() != 3 {
         return None;
     }
-    if def_path.data.get(0)?.data.as_interned_str().as_symbol() != sym!(ops) {
+    if def_path.data.get(0)?.data.as_symbol() != sym!(ops) {
         return None;
     }
-    if def_path.data.get(1)?.data.as_interned_str().as_symbol() != sym!(range) {
+    if def_path.data.get(1)?.data.as_symbol() != sym!(range) {
         return None;
     }
-    let type_name = def_path.data.get(2)?.data.as_interned_str();
+    let type_name = def_path.data.get(2)?.data.as_symbol();
     let range_types = [
         "RangeFrom",
         "RangeFull",
@@ -86,7 +87,7 @@ pub fn range<'a, 'b, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'b hir::Expr) -> O
     // depending on
     // `#[no_std]`. Testing both instead of resolving the paths.
 
-    match expr.node {
+    match expr.kind {
         hir::ExprKind::Path(ref path) => {
             if match_qpath(path, &paths::RANGE_FULL_STD) || match_qpath(path, &paths::RANGE_FULL) {
                 Some(Range {
@@ -99,7 +100,7 @@ pub fn range<'a, 'b, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'b hir::Expr) -> O
             }
         },
         hir::ExprKind::Call(ref path, ref args) => {
-            if let hir::ExprKind::Path(ref path) = path.node {
+            if let hir::ExprKind::Path(ref path) = path.kind {
                 if match_qpath(path, &paths::RANGE_INCLUSIVE_STD_NEW) || match_qpath(path, &paths::RANGE_INCLUSIVE_NEW)
                 {
                     Some(Range {
@@ -159,7 +160,7 @@ pub fn is_from_for_desugar(local: &hir::Local) -> bool {
     // ```
     if_chain! {
         if let Some(ref expr) = local.init;
-        if let hir::ExprKind::Match(_, _, hir::MatchSource::ForLoopDesugar) = expr.node;
+        if let hir::ExprKind::Match(_, _, hir::MatchSource::ForLoopDesugar) = expr.kind;
         then {
             return true;
         }
@@ -184,14 +185,14 @@ pub fn is_from_for_desugar(local: &hir::Local) -> bool {
 /// `for pat in arg { body }` becomes `(pat, arg, body)`.
 pub fn for_loop(expr: &hir::Expr) -> Option<(&hir::Pat, &hir::Expr, &hir::Expr)> {
     if_chain! {
-        if let hir::ExprKind::Match(ref iterexpr, ref arms, hir::MatchSource::ForLoopDesugar) = expr.node;
-        if let hir::ExprKind::Call(_, ref iterargs) = iterexpr.node;
+        if let hir::ExprKind::Match(ref iterexpr, ref arms, hir::MatchSource::ForLoopDesugar) = expr.kind;
+        if let hir::ExprKind::Call(_, ref iterargs) = iterexpr.kind;
         if iterargs.len() == 1 && arms.len() == 1 && arms[0].guard.is_none();
-        if let hir::ExprKind::Loop(ref block, _, _) = arms[0].body.node;
+        if let hir::ExprKind::Loop(ref block, _, _) = arms[0].body.kind;
         if block.expr.is_none();
         if let [ _, _, ref let_stmt, ref body ] = *block.stmts;
-        if let hir::StmtKind::Local(ref local) = let_stmt.node;
-        if let hir::StmtKind::Expr(ref expr) = body.node;
+        if let hir::StmtKind::Local(ref local) = let_stmt.kind;
+        if let hir::StmtKind::Expr(ref expr) = body.kind;
         then {
             return Some((&*local.pat, &iterargs[0], expr));
         }
@@ -203,10 +204,10 @@ pub fn for_loop(expr: &hir::Expr) -> Option<(&hir::Pat, &hir::Expr, &hir::Expr)>
 /// `while cond { body }` becomes `(cond, body)`.
 pub fn while_loop(expr: &hir::Expr) -> Option<(&hir::Expr, &hir::Expr)> {
     if_chain! {
-        if let hir::ExprKind::Loop(block, _, hir::LoopSource::While) = &expr.node;
+        if let hir::ExprKind::Loop(block, _, hir::LoopSource::While) = &expr.kind;
         if let hir::Block { expr: Some(expr), .. } = &**block;
-        if let hir::ExprKind::Match(cond, arms, hir::MatchSource::WhileDesugar) = &expr.node;
-        if let hir::ExprKind::DropTemps(cond) = &cond.node;
+        if let hir::ExprKind::Match(cond, arms, hir::MatchSource::WhileDesugar) = &expr.kind;
+        if let hir::ExprKind::DropTemps(cond) = &cond.kind;
         if let [arm, ..] = &arms[..];
         if let hir::Arm { body, .. } = arm;
         then {
@@ -219,8 +220,8 @@ pub fn while_loop(expr: &hir::Expr) -> Option<(&hir::Expr, &hir::Expr)> {
 /// Recover the essential nodes of a desugared if block
 /// `if cond { then } else { els }` becomes `(cond, then, Some(els))`
 pub fn if_block(expr: &hir::Expr) -> Option<(&hir::Expr, &hir::Expr, Option<&hir::Expr>)> {
-    if let hir::ExprKind::Match(ref cond, ref arms, hir::MatchSource::IfDesugar { contains_else_clause }) = expr.node {
-        let cond = if let hir::ExprKind::DropTemps(ref cond) = cond.node {
+    if let hir::ExprKind::Match(ref cond, ref arms, hir::MatchSource::IfDesugar { contains_else_clause }) = expr.kind {
+        let cond = if let hir::ExprKind::DropTemps(ref cond) = cond.kind {
             cond
         } else {
             panic!("If block desugar must contain DropTemps");
@@ -249,10 +250,10 @@ pub enum VecArgs<'a> {
 /// from `vec!`.
 pub fn vec_macro<'e>(cx: &LateContext<'_, '_>, expr: &'e hir::Expr) -> Option<VecArgs<'e>> {
     if_chain! {
-        if let hir::ExprKind::Call(ref fun, ref args) = expr.node;
-        if let hir::ExprKind::Path(ref path) = fun.node;
+        if let hir::ExprKind::Call(ref fun, ref args) = expr.kind;
+        if let hir::ExprKind::Path(ref qpath) = fun.kind;
         if is_expn_of(fun.span, "vec").is_some();
-        if let Some(fun_def_id) = resolve_node(cx, path, fun.hir_id).opt_def_id();
+        if let Some(fun_def_id) = cx.tables.qpath_res(qpath, fun.hir_id).opt_def_id();
         then {
             return if match_def_path(cx, fun_def_id, &paths::VEC_FROM_ELEM) && args.len() == 2 {
                 // `vec![elem; size]` case
@@ -261,8 +262,8 @@ pub fn vec_macro<'e>(cx: &LateContext<'_, '_>, expr: &'e hir::Expr) -> Option<Ve
             else if match_def_path(cx, fun_def_id, &paths::SLICE_INTO_VEC) && args.len() == 1 {
                 // `vec![a, b, c]` case
                 if_chain! {
-                    if let hir::ExprKind::Box(ref boxed) = args[0].node;
-                    if let hir::ExprKind::Array(ref args) = boxed.node;
+                    if let hir::ExprKind::Box(ref boxed) = args[0].kind;
+                    if let hir::ExprKind::Array(ref args) = boxed.kind;
                     then {
                         return Some(VecArgs::Vec(&*args));
                     }

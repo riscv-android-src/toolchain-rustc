@@ -18,8 +18,9 @@ use super::custom_build::{self, BuildDeps, BuildScriptOutputs, BuildScripts};
 use super::fingerprint::Fingerprint;
 use super::job_queue::JobQueue;
 use super::layout::Layout;
+use super::standard_lib;
 use super::unit_dependencies::{UnitDep, UnitGraph};
-use super::{BuildContext, Compilation, CompileMode, Executor, FileFlavor, Kind};
+use super::{BuildContext, Compilation, CompileKind, CompileMode, Executor, FileFlavor};
 
 mod compilation_files;
 use self::compilation_files::CompilationFiles;
@@ -78,6 +79,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         config: &'cfg Config,
         bcx: &'a BuildContext<'a, 'cfg>,
         unit_dependencies: UnitGraph<'a>,
+        default_kind: CompileKind,
     ) -> CargoResult<Self> {
         // Load up the jobserver that we'll use to manage our parallelism. This
         // is the same as the GNU make implementation of a jobserver, and
@@ -97,15 +99,11 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             }
         };
 
-        let pipelining = bcx
-            .config
-            .get_bool("build.pipelining")?
-            .map(|t| t.val)
-            .unwrap_or(bcx.host_info.supports_pipelining.unwrap());
+        let pipelining = bcx.config.build_config()?.pipelining.unwrap_or(true);
 
         Ok(Self {
             bcx,
-            compilation: Compilation::new(bcx)?,
+            compilation: Compilation::new(bcx, default_kind)?,
             build_script_outputs: Arc::new(Mutex::new(BuildScriptOutputs::default())),
             fingerprints: HashMap::new(),
             mtime_cache: HashMap::new(),
@@ -167,7 +165,8 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
 
         for unit in units.iter() {
             for output in self.outputs(unit)?.iter() {
-                if output.flavor == FileFlavor::DebugInfo {
+                if output.flavor == FileFlavor::DebugInfo || output.flavor == FileFlavor::Auxiliary
+                {
                     continue;
                 }
 
@@ -297,29 +296,22 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         export_dir: Option<PathBuf>,
         units: &[Unit<'a>],
     ) -> CargoResult<()> {
-        let dest = if self.bcx.build_config.release {
-            "release"
-        } else {
-            "debug"
-        };
-        let host_layout = Layout::new(self.bcx.ws, None, dest)?;
-        let target_layout = match self.bcx.build_config.requested_target.as_ref() {
-            Some(target) => Some(Layout::new(self.bcx.ws, Some(target), dest)?),
-            None => None,
-        };
+        let profile_kind = &self.bcx.build_config.profile_kind;
+        let dest = self.bcx.profiles.get_dir_name(profile_kind);
+        let host_layout = Layout::new(self.bcx.ws, None, &dest)?;
+        let mut targets = HashMap::new();
+        if let CompileKind::Target(target) = self.bcx.build_config.requested_kind {
+            let layout = Layout::new(self.bcx.ws, Some(target), &dest)?;
+            standard_lib::prepare_sysroot(&layout)?;
+            targets.insert(target, layout);
+        }
         self.primary_packages
             .extend(units.iter().map(|u| u.pkg.package_id()));
 
         self.record_units_requiring_metadata();
 
-        let files = CompilationFiles::new(
-            units,
-            host_layout,
-            target_layout,
-            export_dir,
-            self.bcx.ws,
-            self,
-        );
+        let files =
+            CompilationFiles::new(units, host_layout, targets, export_dir, self.bcx.ws, self);
         self.files = Some(files);
         Ok(())
     }
@@ -333,7 +325,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             .host
             .prepare()
             .chain_err(|| internal("couldn't prepare build directories"))?;
-        if let Some(ref mut target) = self.files.as_mut().unwrap().target {
+        for target in self.files.as_mut().unwrap().target.values_mut() {
             target
                 .prepare()
                 .chain_err(|| internal("couldn't prepare build directories"))?;
@@ -342,7 +334,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         self.compilation.host_deps_output = self.files_mut().host.deps().to_path_buf();
 
         let files = self.files.as_ref().unwrap();
-        let layout = files.target.as_ref().unwrap_or(&files.host);
+        let layout = files.layout(self.bcx.build_config.requested_kind);
         self.compilation.root_output = layout.dest().to_path_buf();
         self.compilation.deps_output = layout.deps().to_path_buf();
         Ok(())
@@ -446,8 +438,11 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
                     Second unit: {:?}",
                     describe_collision(unit, other_unit, path),
                     suggestion,
-                    crate::version(), self.bcx.host_triple(), self.bcx.target_triple(),
-                    unit, other_unit))
+                    crate::version(),
+                    self.bcx.host_triple(),
+                    unit.kind.short_name(self.bcx),
+                    unit,
+                    other_unit))
             }
         };
 

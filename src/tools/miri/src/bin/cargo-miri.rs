@@ -91,7 +91,7 @@ fn list_targets() -> impl Iterator<Item=cargo_metadata::Target> {
     let mut metadata = if let Ok(metadata) = cmd.exec() {
         metadata
     } else {
-        show_error(format!("Could not obtain Cargo metadata"));
+        show_error(format!("Could not obtain Cargo metadata; likely an ill-formed manifest"));
     };
 
     let current_dir = std::env::current_dir();
@@ -113,7 +113,7 @@ fn list_targets() -> impl Iterator<Item=cargo_metadata::Target> {
                 package_manifest_directory == current_dir
             }
         })
-        .expect("could not find matching package");
+        .unwrap_or_else(|| show_error(format!("This seems to be a workspace, which is not supported by cargo-miri")));
     let package = metadata.packages.remove(package_index);
 
     // Finally we got the list of targets to build
@@ -136,8 +136,12 @@ fn test_sysroot_consistency() {
             .output().expect("Failed to run rustc to get sysroot info");
         let stdout = String::from_utf8(out.stdout).expect("stdout is not valid UTF-8");
         let stderr = String::from_utf8(out.stderr).expect("stderr is not valid UTF-8");
+        assert!(
+            out.status.success(),
+            "Bad status code {} when getting sysroot info via {:?}.\nstdout:\n{}\nstderr:\n{}",
+            out.status, cmd, stdout, stderr,
+        );
         let stdout = stdout.trim();
-        assert!(out.status.success(), "Bad status code when getting sysroot info.\nstdout:\n{}\nstderr:\n{}", stdout, stderr);
         PathBuf::from(stdout).canonicalize()
             .unwrap_or_else(|_| panic!("Failed to canonicalize sysroot: {}", stdout))
     }
@@ -255,6 +259,10 @@ fn setup(ask_user: bool) {
 
     // First, we need xargo.
     if xargo_version().map_or(true, |v| v < (0, 3, 16)) {
+        if std::env::var("XARGO").is_ok() {
+            // The user manually gave us a xargo binary; don't do anything automatically.
+            show_error(format!("Your xargo is too old; please upgrade to the latest version"))
+        }
         let mut cmd = cargo();
         cmd.args(&["install", "xargo", "-f"]);
         ask_to_run(cmd, ask_user, "install a recent enough xargo");
@@ -288,9 +296,7 @@ fn setup(ask_user: bool) {
 default_features = false
 # We need the `panic_unwind` feature because we use the `unwind` panic strategy.
 # Using `abort` works for libstd, but then libtest will not compile.
-# FIXME: Temporarily enabling backtrace feature to work around
-# <https://github.com/rust-lang/rust/issues/64410>.
-features = ["panic_unwind", "backtrace"]
+features = ["panic_unwind"]
 
 [dependencies.test]
         "#).unwrap();
@@ -308,7 +314,7 @@ path = "lib.rs"
     File::create(dir.join("lib.rs")).unwrap();
     // Prepare xargo invocation.
     let target = get_arg_flag_value("--target");
-    let print_env = !ask_user && has_arg_flag("--env"); // whether we just print the necessary environment variable
+    let print_sysroot = !ask_user && has_arg_flag("--print-sysroot"); // whether we just print the sysroot path
     let mut command = xargo();
     command.arg("build").arg("-q");
     command.current_dir(&dir);
@@ -337,8 +343,9 @@ path = "lib.rs"
     };
     let sysroot = if is_host { dir.join("HOST") } else { PathBuf::from(dir) };
     std::env::set_var("MIRI_SYSROOT", &sysroot); // pass the env var to the processes we spawn, which will turn it into "--sysroot" flags
-    if print_env {
-        println!("MIRI_SYSROOT={}", sysroot.display());
+    if print_sysroot {
+        // Print just the sysroot and nothing else; this way we do not need any escaping.
+        println!("{}", sysroot.display());
     } else if !ask_user {
         println!("A libstd for Miri is now available in `{}`.", sysroot.display());
     }

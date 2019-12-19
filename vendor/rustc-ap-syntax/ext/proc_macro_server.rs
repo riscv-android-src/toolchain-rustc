@@ -4,7 +4,7 @@ use crate::parse::{self, token, ParseSess};
 use crate::parse::lexer::comments;
 use crate::tokenstream::{self, DelimSpan, IsJoint::*, TokenStream, TreeAndJoint};
 
-use errors::{Diagnostic, DiagnosticBuilder};
+use errors::Diagnostic;
 use rustc_data_structures::sync::Lrc;
 use syntax_pos::{BytePos, FileName, MultiSpan, Pos, SourceFile, Span};
 use syntax_pos::symbol::{kw, sym, Symbol};
@@ -355,6 +355,7 @@ pub(crate) struct Rustc<'a> {
     sess: &'a ParseSess,
     def_site: Span,
     call_site: Span,
+    mixed_site: Span,
 }
 
 impl<'a> Rustc<'a> {
@@ -364,6 +365,7 @@ impl<'a> Rustc<'a> {
             sess: cx.parse_sess,
             def_site: cx.with_def_site_ctxt(expn_data.def_site),
             call_site: cx.with_call_site_ctxt(expn_data.call_site),
+            mixed_site: cx.with_mixed_site_ctxt(expn_data.call_site),
         }
     }
 
@@ -650,7 +652,7 @@ impl server::Diagnostic for Rustc<'_> {
         diag.sub(level.to_internal(), msg, MultiSpan::from_spans(spans), None);
     }
     fn emit(&mut self, diag: Self::Diagnostic) {
-        DiagnosticBuilder::new_diagnostic(&self.sess.span_diagnostic, diag).emit()
+        self.sess.span_diagnostic.emit_diagnostic(&diag);
     }
 }
 
@@ -663,6 +665,9 @@ impl server::Span for Rustc<'_> {
     }
     fn call_site(&mut self) -> Self::Span {
         self.call_site
+    }
+    fn mixed_site(&mut self) -> Self::Span {
+        self.mixed_site
     }
     fn source_file(&mut self, span: Self::Span) -> Self::SourceFile {
         self.sess.source_map().lookup_char_pos(span.lo()).file

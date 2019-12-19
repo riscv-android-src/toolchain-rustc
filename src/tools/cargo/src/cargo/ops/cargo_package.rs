@@ -1,12 +1,15 @@
 use std::collections::{BTreeSet, HashMap};
+use std::fmt::Display;
 use std::fs::{self, File};
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::path::{self, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use flate2::read::GzDecoder;
+use flate2::write::GzEncoder;
 use flate2::{Compression, GzBuilder};
 use log::debug;
 use serde_json::{self, json};
@@ -152,15 +155,19 @@ fn build_lock(ws: &Workspace<'_>) -> CargoResult<String> {
     // Regenerate Cargo.lock using the old one as a guide.
     let specs = vec![PackageIdSpec::from_package_id(new_pkg.package_id())];
     let tmp_ws = Workspace::ephemeral(new_pkg, ws.config(), None, true)?;
-    let (pkg_set, new_resolve) =
-        ops::resolve_ws_with_opts(&tmp_ws, ResolveOpts::everything(), &specs)?;
+    let new_resolve = ops::resolve_ws_with_opts(&tmp_ws, ResolveOpts::everything(), &specs)?;
 
     if let Some(orig_resolve) = orig_resolve {
-        compare_resolve(config, tmp_ws.current()?, &orig_resolve, &new_resolve)?;
+        compare_resolve(
+            config,
+            tmp_ws.current()?,
+            &orig_resolve,
+            &new_resolve.targeted_resolve,
+        )?;
     }
-    check_yanked(config, &pkg_set, &new_resolve)?;
+    check_yanked(config, &new_resolve.pkg_set, &new_resolve.targeted_resolve)?;
 
-    ops::resolve_to_string(&tmp_ws, &new_resolve)
+    ops::resolve_to_string(&tmp_ws, &new_resolve.targeted_resolve)
 }
 
 // Checks that the package has some piece of metadata that a human can
@@ -206,7 +213,7 @@ fn check_metadata(pkg: &Package, config: &Config) -> CargoResult<()> {
 // Checks that the package dependencies are safe to deploy.
 fn verify_dependencies(pkg: &Package) -> CargoResult<()> {
     for dep in pkg.dependencies() {
-        if dep.source_id().is_path() && !dep.specified_req() {
+        if dep.source_id().is_path() && !dep.specified_req() && dep.is_transitive() {
             failure::bail!(
                 "all path dependencies must have a version specified \
                  when packaging.\ndependency `{}` does not specify \
@@ -290,7 +297,14 @@ fn check_repo_state(
             .filter(|file| {
                 let relative = file.strip_prefix(workdir).unwrap();
                 if let Ok(status) = repo.status_file(relative) {
-                    status != git2::Status::CURRENT
+                    if status == git2::Status::CURRENT {
+                        false
+                    } else if relative.to_str().unwrap_or("") == "Cargo.lock" {
+                        // It is OK to include this file even if it is ignored.
+                        status != git2::Status::IGNORED
+                    } else {
+                        true
+                    }
                 } else {
                     submodule_dirty(file)
                 }
@@ -431,16 +445,8 @@ fn tar(
                 internal(format!("could not archive source file `{}`", relative_str))
             })?;
 
-            let mut header = Header::new_ustar();
             let toml = pkg.to_registry_toml(ws.config())?;
-            header.set_path(&path)?;
-            header.set_entry_type(EntryType::file());
-            header.set_mode(0o644);
-            header.set_size(toml.len() as u64);
-            header.set_cksum();
-            ar.append(&header, toml.as_bytes()).chain_err(|| {
-                internal(format!("could not archive source file `{}`", relative_str))
-            })?;
+            add_generated_file(&mut ar, &path, &toml, relative_str)?;
         } else {
             header.set_cksum();
             ar.append(&header, &mut file).chain_err(|| {
@@ -468,14 +474,7 @@ fn tar(
             .set_path(&path)
             .chain_err(|| format!("failed to add to archive: `{}`", fnd))?;
         let json = format!("{}\n", serde_json::to_string_pretty(json)?);
-        let mut header = Header::new_ustar();
-        header.set_path(&path)?;
-        header.set_entry_type(EntryType::file());
-        header.set_mode(0o644);
-        header.set_size(json.len() as u64);
-        header.set_cksum();
-        ar.append(&header, json.as_bytes())
-            .chain_err(|| internal(format!("could not archive source file `{}`", fnd)))?;
+        add_generated_file(&mut ar, &path, &json, fnd)?;
     }
 
     if pkg.include_lockfile() {
@@ -490,14 +489,7 @@ fn tar(
             pkg.version(),
             path::MAIN_SEPARATOR
         );
-        let mut header = Header::new_ustar();
-        header.set_path(&path)?;
-        header.set_entry_type(EntryType::file());
-        header.set_mode(0o644);
-        header.set_size(new_lock.len() as u64);
-        header.set_cksum();
-        ar.append(&header, new_lock.as_bytes())
-            .chain_err(|| internal("could not archive source file `Cargo.lock`"))?;
+        add_generated_file(&mut ar, &path, &new_lock, "Cargo.lock")?;
     }
 
     let encoder = ar.into_inner()?;
@@ -777,5 +769,28 @@ fn check_filename(file: &Path) -> CargoResult<()> {
             file.display()
         )
     }
+    Ok(())
+}
+
+fn add_generated_file<D: Display>(
+    ar: &mut Builder<GzEncoder<&File>>,
+    path: &str,
+    data: &str,
+    display: D,
+) -> CargoResult<()> {
+    let mut header = Header::new_ustar();
+    header.set_path(path)?;
+    header.set_entry_type(EntryType::file());
+    header.set_mode(0o644);
+    header.set_mtime(
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    );
+    header.set_size(data.len() as u64);
+    header.set_cksum();
+    ar.append(&header, data.as_bytes())
+        .chain_err(|| internal(format!("could not archive source file `{}`", display)))?;
     Ok(())
 }

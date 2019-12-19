@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
 
+use cargo_platform::Platform;
 use failure::bail;
 use log::{debug, trace};
 use semver::{self, VersionReq};
@@ -13,7 +14,7 @@ use serde::ser;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::core::dependency::{Kind, Platform};
+use crate::core::dependency::Kind;
 use crate::core::manifest::{LibKind, ManifestMetadata, TargetSourcePath, Warnings};
 use crate::core::profiles::Profiles;
 use crate::core::{Dependency, InternedString, Manifest, PackageId, Summary, Target};
@@ -67,7 +68,7 @@ fn do_read_manifest(
     let add_unused = |warnings: &mut Warnings| {
         for key in unused {
             warnings.add_warning(format!("unused manifest key: {}", key));
-            if key == "profile.debug" || key == "profiles.debug" {
+            if key == "profiles.debug" {
                 warnings.add_warning("use `[profile.dev]` to configure debug builds".to_string());
             }
         }
@@ -269,30 +270,24 @@ pub struct TomlManifest {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
-pub struct TomlProfiles {
-    pub test: Option<TomlProfile>,
-    pub doc: Option<TomlProfile>,
-    pub bench: Option<TomlProfile>,
-    pub dev: Option<TomlProfile>,
-    pub release: Option<TomlProfile>,
-}
+pub struct TomlProfiles(BTreeMap<String, TomlProfile>);
 
 impl TomlProfiles {
+    pub fn get_all(&self) -> &BTreeMap<String, TomlProfile> {
+        &self.0
+    }
+
+    pub fn get(&self, name: &'static str) -> Option<&TomlProfile> {
+        self.0.get(&String::from(name))
+    }
+
     pub fn validate(&self, features: &Features, warnings: &mut Vec<String>) -> CargoResult<()> {
-        if let Some(ref test) = self.test {
-            test.validate("test", features, warnings)?;
-        }
-        if let Some(ref doc) = self.doc {
-            doc.validate("doc", features, warnings)?;
-        }
-        if let Some(ref bench) = self.bench {
-            bench.validate("bench", features, warnings)?;
-        }
-        if let Some(ref dev) = self.dev {
-            dev.validate("dev", features, warnings)?;
-        }
-        if let Some(ref release) = self.release {
-            release.validate("release", features, warnings)?;
+        for (name, profile) in &self.0 {
+            if name == "debug" {
+                warnings.push("use `[profile.dev]` to configure debug builds".to_string());
+            }
+
+            profile.validate(name, features, warnings)?;
         }
         Ok(())
     }
@@ -413,8 +408,13 @@ pub struct TomlProfile {
     pub panic: Option<String>,
     pub overflow_checks: Option<bool>,
     pub incremental: Option<bool>,
+    // `overrides` has been renamed to `package`, this should be removed when
+    // stabilized.
     pub overrides: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
+    pub package: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
     pub build_override: Option<Box<TomlProfile>>,
+    pub dir_name: Option<String>,
+    pub inherits: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -460,25 +460,59 @@ impl TomlProfile {
     ) -> CargoResult<()> {
         if let Some(ref profile) = self.build_override {
             features.require(Feature::profile_overrides())?;
-            profile.validate_override()?;
+            profile.validate_override("build-override")?;
         }
         if let Some(ref override_map) = self.overrides {
+            warnings.push(
+                "profile key `overrides` has been renamed to `package`, \
+                 please update the manifest to the new key name"
+                    .to_string(),
+            );
             features.require(Feature::profile_overrides())?;
             for profile in override_map.values() {
-                profile.validate_override()?;
+                profile.validate_override("package")?;
+            }
+        }
+        if let Some(ref packages) = self.package {
+            features.require(Feature::profile_overrides())?;
+            for profile in packages.values() {
+                profile.validate_override("package")?;
             }
         }
 
+        // Feature gate definition of named profiles
         match name {
-            "dev" | "release" => {}
+            "dev" | "release" | "bench" | "test" | "doc" => {}
             _ => {
-                if self.overrides.is_some() || self.build_override.is_some() {
-                    bail!(
-                        "Profile overrides may only be specified for \
-                         `dev` or `release` profile, not `{}`.",
-                        name
-                    );
-                }
+                features.require(Feature::named_profiles())?;
+            }
+        }
+
+        // Profile name validation
+        Self::validate_name(name, "profile name")?;
+
+        // Feature gate on uses of keys related to named profiles
+        if self.inherits.is_some() {
+            features.require(Feature::named_profiles())?;
+        }
+
+        if self.dir_name.is_some() {
+            features.require(Feature::named_profiles())?;
+        }
+
+        // `dir-name` validation
+        match &self.dir_name {
+            None => {}
+            Some(dir_name) => {
+                Self::validate_name(dir_name, "dir-name")?;
+            }
+        }
+
+        // `inherits` validation
+        match &self.inherits {
+            None => {}
+            Some(inherits) => {
+                Self::validate_name(inherits, "inherits")?;
             }
         }
 
@@ -506,20 +540,110 @@ impl TomlProfile {
         Ok(())
     }
 
-    fn validate_override(&self) -> CargoResult<()> {
-        if self.overrides.is_some() || self.build_override.is_some() {
-            bail!("Profile overrides cannot be nested.");
+    /// Validate dir-names and profile names according to RFC 2678.
+    pub fn validate_name(name: &str, what: &str) -> CargoResult<()> {
+        if let Some(ch) = name
+            .chars()
+            .find(|ch| !ch.is_alphanumeric() && *ch != '_' && *ch != '-')
+        {
+            failure::bail!("Invalid character `{}` in {}: `{}`", ch, what, name);
+        }
+
+        match name {
+            "package" | "build" => {
+                failure::bail!("Invalid {}: `{}`", what, name);
+            }
+            "debug" if what == "profile" => {
+                if what == "profile name" {
+                    // Allowed, but will emit warnings
+                } else {
+                    failure::bail!("Invalid {}: `{}`", what, name);
+                }
+            }
+            "doc" if what == "dir-name" => {
+                failure::bail!("Invalid {}: `{}`", what, name);
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    fn validate_override(&self, which: &str) -> CargoResult<()> {
+        if self.overrides.is_some() || self.package.is_some() {
+            bail!("package-specific profiles cannot be nested");
+        }
+        if self.build_override.is_some() {
+            bail!("build-override profiles cannot be nested");
         }
         if self.panic.is_some() {
-            bail!("`panic` may not be specified in a profile override.")
+            bail!("`panic` may not be specified in a `{}` profile", which)
         }
         if self.lto.is_some() {
-            bail!("`lto` may not be specified in a profile override.")
+            bail!("`lto` may not be specified in a `{}` profile", which)
         }
         if self.rpath.is_some() {
-            bail!("`rpath` may not be specified in a profile override.")
+            bail!("`rpath` may not be specified in a `{}` profile", which)
         }
         Ok(())
+    }
+
+    pub fn merge(&mut self, profile: &TomlProfile) {
+        if let Some(v) = &profile.opt_level {
+            self.opt_level = Some(v.clone());
+        }
+
+        if let Some(v) = &profile.lto {
+            self.lto = Some(v.clone());
+        }
+
+        if let Some(v) = profile.codegen_units {
+            self.codegen_units = Some(v);
+        }
+
+        if let Some(v) = &profile.debug {
+            self.debug = Some(v.clone());
+        }
+
+        if let Some(v) = profile.debug_assertions {
+            self.debug_assertions = Some(v);
+        }
+
+        if let Some(v) = profile.rpath {
+            self.rpath = Some(v);
+        }
+
+        if let Some(v) = &profile.panic {
+            self.panic = Some(v.clone());
+        }
+
+        if let Some(v) = profile.overflow_checks {
+            self.overflow_checks = Some(v);
+        }
+
+        if let Some(v) = profile.incremental {
+            self.incremental = Some(v);
+        }
+
+        if let Some(v) = &profile.overrides {
+            self.overrides = Some(v.clone());
+        }
+
+        if let Some(v) = &profile.package {
+            self.package = Some(v.clone());
+        }
+
+        if let Some(v) = &profile.build_override {
+            self.build_override = Some(v.clone());
+        }
+
+        if let Some(v) = &profile.inherits {
+            self.inherits = Some(v.clone());
+        }
+
+        if let Some(v) = &profile.dir_name {
+            self.dir_name = Some(v.clone());
+        }
     }
 }
 
@@ -722,6 +846,7 @@ impl TomlManifest {
             .unwrap()
             .clone();
         package.workspace = None;
+        let all = |_d: &TomlDependency| true;
         return Ok(TomlManifest {
             package: Some(package),
             project: None,
@@ -731,12 +856,13 @@ impl TomlManifest {
             example: self.example.clone(),
             test: self.test.clone(),
             bench: self.bench.clone(),
-            dependencies: map_deps(config, self.dependencies.as_ref())?,
+            dependencies: map_deps(config, self.dependencies.as_ref(), all)?,
             dev_dependencies: map_deps(
                 config,
                 self.dev_dependencies
                     .as_ref()
                     .or_else(|| self.dev_dependencies2.as_ref()),
+                TomlDependency::is_version_specified,
             )?,
             dev_dependencies2: None,
             build_dependencies: map_deps(
@@ -744,6 +870,7 @@ impl TomlManifest {
                 self.build_dependencies
                     .as_ref()
                     .or_else(|| self.build_dependencies2.as_ref()),
+                all,
             )?,
             build_dependencies2: None,
             features: self.features.clone(),
@@ -754,12 +881,13 @@ impl TomlManifest {
                         Ok((
                             k.clone(),
                             TomlPlatform {
-                                dependencies: map_deps(config, v.dependencies.as_ref())?,
+                                dependencies: map_deps(config, v.dependencies.as_ref(), all)?,
                                 dev_dependencies: map_deps(
                                     config,
                                     v.dev_dependencies
                                         .as_ref()
                                         .or_else(|| v.dev_dependencies2.as_ref()),
+                                    TomlDependency::is_version_specified,
                                 )?,
                                 dev_dependencies2: None,
                                 build_dependencies: map_deps(
@@ -767,6 +895,7 @@ impl TomlManifest {
                                     v.build_dependencies
                                         .as_ref()
                                         .or_else(|| v.build_dependencies2.as_ref()),
+                                    all,
                                 )?,
                                 build_dependencies2: None,
                             },
@@ -788,6 +917,7 @@ impl TomlManifest {
         fn map_deps(
             config: &Config,
             deps: Option<&BTreeMap<String, TomlDependency>>,
+            filter: impl Fn(&TomlDependency) -> bool,
         ) -> CargoResult<Option<BTreeMap<String, TomlDependency>>> {
             let deps = match deps {
                 Some(deps) => deps,
@@ -795,6 +925,7 @@ impl TomlManifest {
             };
             let deps = deps
                 .iter()
+                .filter(|(_k, v)| filter(v))
                 .map(|(k, v)| Ok((k.clone(), map_dependency(config, v)?)))
                 .collect::<CargoResult<BTreeMap<_, _>>>()?;
             Ok(Some(deps))
@@ -953,7 +1084,7 @@ impl TomlManifest {
                 .or_else(|| me.build_dependencies2.as_ref());
             process_dependencies(&mut cx, build_deps, Some(Kind::Build))?;
 
-            for (name, platform) in me.target.iter().flat_map(|t| t) {
+            for (name, platform) in me.target.iter().flatten() {
                 cx.platform = Some(name.parse()?);
                 process_dependencies(&mut cx, platform.dependencies.as_ref(), None)?;
                 let build_deps = platform
@@ -1209,7 +1340,7 @@ impl TomlManifest {
             bail!("cannot specify both [replace] and [patch]");
         }
         let mut replace = Vec::new();
-        for (spec, replacement) in self.replace.iter().flat_map(|x| x) {
+        for (spec, replacement) in self.replace.iter().flatten() {
             let mut spec = PackageIdSpec::parse(spec).chain_err(|| {
                 format!(
                     "replacements must specify a valid semver \
@@ -1221,11 +1352,7 @@ impl TomlManifest {
                 spec.set_url(CRATES_IO_INDEX.parse().unwrap());
             }
 
-            let version_specified = match *replacement {
-                TomlDependency::Detailed(ref d) => d.version.is_some(),
-                TomlDependency::Simple(..) => true,
-            };
-            if version_specified {
+            if replacement.is_version_specified() {
                 bail!(
                     "replacements cannot specify a version \
                      requirement, but found one for `{}`",
@@ -1251,7 +1378,7 @@ impl TomlManifest {
 
     fn patch(&self, cx: &mut Context<'_, '_>) -> CargoResult<HashMap<Url, Vec<Dependency>>> {
         let mut patch = HashMap::new();
-        for (url, deps) in self.patch.iter().flat_map(|x| x) {
+        for (url, deps) in self.patch.iter().flatten() {
             let url = match &url[..] {
                 CRATES_IO_REGISTRY => CRATES_IO_INDEX.parse().unwrap(),
                 _ => cx
@@ -1328,6 +1455,13 @@ impl TomlDependency {
             }
             .to_dependency(name, cx, kind),
             TomlDependency::Detailed(ref details) => details.to_dependency(name, cx, kind),
+        }
+    }
+
+    fn is_version_specified(&self) -> bool {
+        match self {
+            TomlDependency::Detailed(d) => d.version.is_some(),
+            TomlDependency::Simple(..) => true,
         }
     }
 }
@@ -1468,7 +1602,7 @@ impl DetailedTomlDependency {
             Some(id) => Dependency::parse(pkg_name, version, new_source_id, id, cx.config)?,
             None => Dependency::parse_no_deprecated(pkg_name, version, new_source_id)?,
         };
-        dep.set_features(self.features.iter().flat_map(|x| x))
+        dep.set_features(self.features.iter().flatten())
             .set_default_features(
                 self.default_features
                     .or(self.default_features2)

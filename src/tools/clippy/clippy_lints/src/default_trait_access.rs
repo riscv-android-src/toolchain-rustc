@@ -33,9 +33,9 @@ declare_lint_pass!(DefaultTraitAccess => [DEFAULT_TRAIT_ACCESS]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DefaultTraitAccess {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         if_chain! {
-            if let ExprKind::Call(ref path, ..) = expr.node;
+            if let ExprKind::Call(ref path, ..) = expr.kind;
             if !any_parent_is_automatically_derived(cx.tcx, expr.hir_id);
-            if let ExprKind::Path(ref qpath) = path.node;
+            if let ExprKind::Path(ref qpath) = path.kind;
             if let Some(def_id) = cx.tables.qpath_res(qpath, path.hir_id).opt_def_id();
             if match_def_path(cx, def_id, &paths::DEFAULT_TRAIT_METHOD);
             then {
@@ -44,8 +44,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DefaultTraitAccess {
                         if_chain! {
                             // Detect and ignore <Foo as Default>::default() because these calls do
                             // explicitly name the type.
-                            if let ExprKind::Call(ref method, ref _args) = expr.node;
-                            if let ExprKind::Path(ref p) = method.node;
+                            if let ExprKind::Call(ref method, ref _args) = expr.kind;
+                            if let ExprKind::Path(ref p) = method.kind;
                             if let QPath::Resolved(Some(_ty), _path) = p;
                             then {
                                 return;
@@ -55,7 +55,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DefaultTraitAccess {
                         // TODO: Work out a way to put "whatever the imported way of referencing
                         // this type in this file" rather than a fully-qualified type.
                         let expr_ty = cx.tables.expr_ty(expr);
-                        if let ty::Adt(..) = expr_ty.sty {
+                        if let ty::Adt(..) = expr_ty.kind {
                             let replacement = format!("{}::default()", expr_ty);
                             span_lint_and_sugg(
                                 cx,

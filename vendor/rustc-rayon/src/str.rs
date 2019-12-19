@@ -70,7 +70,7 @@ pub trait ParallelString {
     /// let max = "hello".par_chars().max_by_key(|c| *c as i32);
     /// assert_eq!(Some('o'), max);
     /// ```
-    fn par_chars(&self) -> Chars {
+    fn par_chars(&self) -> Chars<'_> {
         Chars {
             chars: self.as_parallel_string(),
         }
@@ -85,7 +85,7 @@ pub trait ParallelString {
     /// let min = "hello".par_char_indices().min_by_key(|&(_i, c)| c as i32);
     /// assert_eq!(Some((1, 'e')), min);
     /// ```
-    fn par_char_indices(&self) -> CharIndices {
+    fn par_char_indices(&self) -> CharIndices<'_> {
         CharIndices {
             chars: self.as_parallel_string(),
         }
@@ -105,7 +105,7 @@ pub trait ParallelString {
     /// let max = "hello".par_bytes().max();
     /// assert_eq!(Some(b'o'), max);
     /// ```
-    fn par_bytes(&self) -> Bytes {
+    fn par_bytes(&self) -> Bytes<'_> {
         Bytes {
             chars: self.as_parallel_string(),
         }
@@ -129,7 +129,7 @@ pub trait ParallelString {
     /// let utf16_len = text.par_encode_utf16().count();
     /// assert!(utf16_len <= utf8_len);
     /// ```
-    fn par_encode_utf16(&self) -> EncodeUtf16 {
+    fn par_encode_utf16(&self) -> EncodeUtf16<'_> {
         EncodeUtf16 {
             chars: self.as_parallel_string(),
         }
@@ -151,7 +151,7 @@ pub trait ParallelString {
     ///    .sum();
     /// assert_eq!(10, total);
     /// ```
-    fn par_split<P: Pattern>(&self, separator: P) -> Split<P> {
+    fn par_split<P: Pattern>(&self, separator: P) -> Split<'_, P> {
         Split::new(self.as_parallel_string(), separator)
     }
 
@@ -172,7 +172,7 @@ pub trait ParallelString {
     ///     .collect();
     /// assert_eq!(vec!["", "", "1 + 3", " * 2"], parts);
     /// ```
-    fn par_split_terminator<P: Pattern>(&self, terminator: P) -> SplitTerminator<P> {
+    fn par_split_terminator<P: Pattern>(&self, terminator: P) -> SplitTerminator<'_, P> {
         SplitTerminator::new(self.as_parallel_string(), terminator)
     }
 
@@ -191,7 +191,7 @@ pub trait ParallelString {
     ///     .collect();
     /// assert_eq!(vec![11, 7], lengths);
     /// ```
-    fn par_lines(&self) -> Lines {
+    fn par_lines(&self) -> Lines<'_> {
         Lines(self.as_parallel_string())
     }
 
@@ -210,7 +210,7 @@ pub trait ParallelString {
     ///     .max_by_key(|word| word.len());
     /// assert_eq!(Some("longest"), longest);
     /// ```
-    fn par_split_whitespace(&self) -> SplitWhitespace {
+    fn par_split_whitespace(&self) -> SplitWhitespace<'_> {
         SplitWhitespace(self.as_parallel_string())
     }
 
@@ -230,10 +230,10 @@ pub trait ParallelString {
     ///    .sum();
     /// assert_eq!(10, total);
     /// ```
-    fn par_matches<P: Pattern>(&self, pattern: P) -> Matches<P> {
+    fn par_matches<P: Pattern>(&self, pattern: P) -> Matches<'_, P> {
         Matches {
             chars: self.as_parallel_string(),
-            pattern: pattern,
+            pattern,
         }
     }
 
@@ -252,10 +252,10 @@ pub trait ParallelString {
     ///    .collect();
     /// assert_eq!(digits, vec![(0, "1"), (3, "2"), (14, "3"), (17, "4")]);
     /// ```
-    fn par_match_indices<P: Pattern>(&self, pattern: P) -> MatchIndices<P> {
+    fn par_match_indices<P: Pattern>(&self, pattern: P) -> MatchIndices<'_, P> {
         MatchIndices {
             chars: self.as_parallel_string(),
-            pattern: pattern,
+            pattern,
         }
     }
 }
@@ -282,21 +282,26 @@ mod private {
     /// Implementing this trait is not permitted outside of `rayon`.
     pub trait Pattern: Sized + Sync + Send {
         private_decl! {}
-        fn find_in(&self, &str) -> Option<usize>;
-        fn rfind_in(&self, &str) -> Option<usize>;
-        fn is_suffix_of(&self, &str) -> bool;
-        fn fold_splits<'ch, F>(&self, &'ch str, folder: F, skip_last: bool) -> F
+        fn find_in(&self, haystack: &str) -> Option<usize>;
+        fn rfind_in(&self, haystack: &str) -> Option<usize>;
+        fn is_suffix_of(&self, haystack: &str) -> bool;
+        fn fold_splits<'ch, F>(&self, haystack: &'ch str, folder: F, skip_last: bool) -> F
         where
             F: Folder<&'ch str>;
-        fn fold_matches<'ch, F>(&self, &'ch str, folder: F) -> F
+        fn fold_matches<'ch, F>(&self, haystack: &'ch str, folder: F) -> F
         where
             F: Folder<&'ch str>;
-        fn fold_match_indices<'ch, F>(&self, &'ch str, folder: F, base: usize) -> F
+        fn fold_match_indices<'ch, F>(&self, haystack: &'ch str, folder: F, base: usize) -> F
         where
             F: Folder<(usize, &'ch str)>;
     }
 }
 use self::private::Pattern;
+
+#[inline]
+fn offset<T>(base: usize) -> impl Fn((usize, T)) -> (usize, T) {
+    move |(i, x)| (base + i, x)
+}
 
 impl Pattern for char {
     private_impl! {}
@@ -338,7 +343,7 @@ impl Pattern for char {
     where
         F: Folder<(usize, &'ch str)>,
     {
-        folder.consume_iter(chars.match_indices(*self).map(move |(i, s)| (base + i, s)))
+        folder.consume_iter(chars.match_indices(*self).map(offset(base)))
     }
 }
 
@@ -379,7 +384,7 @@ impl<FN: Sync + Send + Fn(char) -> bool> Pattern for FN {
     where
         F: Folder<(usize, &'ch str)>,
     {
-        folder.consume_iter(chars.match_indices(self).map(move |(i, s)| (base + i, s)))
+        folder.consume_iter(chars.match_indices(self).map(offset(base)))
     }
 }
 
@@ -479,7 +484,7 @@ impl<'ch> UnindexedProducer for CharIndicesProducer<'ch> {
         F: Folder<Self::Item>,
     {
         let base = self.index;
-        folder.consume_iter(self.chars.char_indices().map(move |(i, c)| (base + i, c)))
+        folder.consume_iter(self.chars.char_indices().map(offset(base)))
     }
 }
 
@@ -582,10 +587,7 @@ pub struct Split<'ch, P: Pattern> {
 
 impl<'ch, P: Pattern> Split<'ch, P> {
     fn new(chars: &'ch str, separator: P) -> Self {
-        Split {
-            chars: chars,
-            separator: separator,
-        }
+        Split { chars, separator }
     }
 }
 
@@ -651,10 +653,7 @@ struct SplitTerminatorProducer<'ch, 'sep, P: Pattern + 'sep> {
 
 impl<'ch, P: Pattern> SplitTerminator<'ch, P> {
     fn new(chars: &'ch str, terminator: P) -> Self {
-        SplitTerminator {
-            chars: chars,
-            terminator: terminator,
-        }
+        SplitTerminator { chars, terminator }
     }
 }
 
@@ -690,7 +689,7 @@ impl<'ch, 'sep, P: Pattern + 'sep> UnindexedProducer for SplitTerminatorProducer
             self.skip_last = false;
             SplitTerminatorProducer {
                 splitter: right,
-                skip_last: skip_last,
+                skip_last,
             }
         });
         (self, right)
@@ -710,6 +709,15 @@ impl<'ch, 'sep, P: Pattern + 'sep> UnindexedProducer for SplitTerminatorProducer
 #[derive(Debug, Clone)]
 pub struct Lines<'ch>(&'ch str);
 
+#[inline]
+fn no_carriage_return(line: &str) -> &str {
+    if line.ends_with('\r') {
+        &line[..line.len() - 1]
+    } else {
+        line
+    }
+}
+
 impl<'ch> ParallelIterator for Lines<'ch> {
     type Item = &'ch str;
 
@@ -719,13 +727,7 @@ impl<'ch> ParallelIterator for Lines<'ch> {
     {
         self.0
             .par_split_terminator('\n')
-            .map(|line| {
-                if line.ends_with('\r') {
-                    &line[..line.len() - 1]
-                } else {
-                    line
-                }
-            })
+            .map(no_carriage_return)
             .drive_unindexed(consumer)
     }
 }
@@ -736,6 +738,11 @@ impl<'ch> ParallelIterator for Lines<'ch> {
 #[derive(Debug, Clone)]
 pub struct SplitWhitespace<'ch>(&'ch str);
 
+#[inline]
+fn not_empty(s: &&str) -> bool {
+    !s.is_empty()
+}
+
 impl<'ch> ParallelIterator for SplitWhitespace<'ch> {
     type Item = &'ch str;
 
@@ -745,7 +752,7 @@ impl<'ch> ParallelIterator for SplitWhitespace<'ch> {
     {
         self.0
             .par_split(char::is_whitespace)
-            .filter(|string| !string.is_empty())
+            .filter(not_empty)
             .drive_unindexed(consumer)
     }
 }

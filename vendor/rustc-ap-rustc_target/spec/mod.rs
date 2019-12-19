@@ -462,7 +462,6 @@ supported_targets! {
     ("wasm32-unknown-emscripten", wasm32_unknown_emscripten),
     ("wasm32-unknown-unknown", wasm32_unknown_unknown),
     ("wasm32-wasi", wasm32_wasi),
-    ("wasm32-experimental-emscripten", wasm32_experimental_emscripten),
 
     ("thumbv6m-none-eabi", thumbv6m_none_eabi),
     ("thumbv7m-none-eabi", thumbv7m_none_eabi),
@@ -489,10 +488,12 @@ supported_targets! {
     ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
 
     ("aarch64-unknown-none", aarch64_unknown_none),
+    ("aarch64-unknown-none-softfloat", aarch64_unknown_none_softfloat),
 
     ("x86_64-fortanix-unknown-sgx", x86_64_fortanix_unknown_sgx),
 
     ("x86_64-unknown-uefi", x86_64_unknown_uefi),
+    ("i686-unknown-uefi", i686_unknown_uefi),
 
     ("nvptx64-nvidia-cuda", nvptx64_nvidia_cuda),
 
@@ -580,8 +581,10 @@ pub struct TargetOptions {
     /// user-defined libraries.
     pub post_link_args: LinkArgs,
 
-    /// Environment variables to be set before invoking the linker.
+    /// Environment variables to be set for the linker invocation.
     pub link_env: Vec<(String, String)>,
+    /// Environment variables to be removed for the linker invocation.
+    pub link_env_remove: Vec<String>,
 
     /// Extra arguments to pass to the external assembler (when used)
     pub asm_args: Vec<String>,
@@ -843,6 +846,7 @@ impl Default for TargetOptions {
             post_link_objects_crt: Vec::new(),
             late_link_args: LinkArgs::new(),
             link_env: Vec::new(),
+            link_env_remove: Vec::new(),
             archive_format: "gnu".to_string(),
             custom_unwind_resume: false,
             allow_asm: true,
@@ -1118,6 +1122,7 @@ impl Target {
         key!(post_link_objects_crt, list);
         key!(post_link_args, link_args);
         key!(link_env, env);
+        key!(link_env_remove, list);
         key!(asm_args, list);
         key!(cpu);
         key!(features);
@@ -1334,6 +1339,7 @@ impl ToJson for Target {
         target_option_val!(post_link_objects_crt);
         target_option_val!(link_args - post_link_args);
         target_option_val!(env - link_env);
+        target_option_val!(link_env_remove);
         target_option_val!(asm_args);
         target_option_val!(cpu);
         target_option_val!(features);

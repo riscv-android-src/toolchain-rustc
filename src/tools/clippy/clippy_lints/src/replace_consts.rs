@@ -36,10 +36,10 @@ declare_lint_pass!(ReplaceConsts => [REPLACE_CONSTS]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ReplaceConsts {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
         if_chain! {
-            if let hir::ExprKind::Path(ref qp) = expr.node;
+            if let hir::ExprKind::Path(ref qp) = expr.kind;
             if let Res::Def(DefKind::Const, def_id) = cx.tables.qpath_res(qp, expr.hir_id);
             then {
-                for (const_path, repl_snip) in &REPLACEMENTS {
+                for &(ref const_path, repl_snip) in &REPLACEMENTS {
                     if match_def_path(cx, def_id, const_path) {
                         span_lint_and_sugg(
                             cx,

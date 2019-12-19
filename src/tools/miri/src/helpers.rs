@@ -1,8 +1,13 @@
-use std::mem;
+use std::{mem, iter};
+use std::ffi::{OsStr, OsString};
 
-use rustc::ty::{self, layout::{self, Size, Align}};
 use rustc::hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc::mir;
+use rustc::ty::{
+    self,
+    List,
+    layout::{self, LayoutOf, Size, TyLayout},
+};
 
 use rand::RngCore;
 
@@ -54,7 +59,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// Test if this immediate equals 0.
     fn is_null(&self, val: Scalar<Tag>) -> InterpResult<'tcx, bool> {
         let this = self.eval_context_ref();
-        let null = Scalar::from_int(0, this.memory().pointer_size());
+        let null = Scalar::from_int(0, this.memory.pointer_size());
         this.ptr_eq(val, null)
     }
 
@@ -71,7 +76,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// Get the `Place` for a local
     fn local_place(&mut self, local: mir::Local) -> InterpResult<'tcx, PlaceTy<'tcx, Tag>> {
         let this = self.eval_context_mut();
-        let place = mir::Place { base: mir::PlaceBase::Local(local), projection: Box::new([]) };
+        let place = mir::Place { base: mir::PlaceBase::Local(local), projection: List::empty() };
         this.eval_place(&place)
     }
 
@@ -91,12 +96,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         }
         let this = self.eval_context_mut();
 
-        let ptr = this.memory().check_ptr_access(
-            ptr,
-            Size::from_bytes(len as u64),
-            Align::from_bytes(1).unwrap()
-        )?.expect("we already checked for size 0");
-
         let mut data = vec![0; len];
 
         if this.machine.communicate {
@@ -105,12 +104,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 .map_err(|err| err_unsup_format!("getrandom failed: {}", err))?;
         }
         else {
-            let rng = this.memory_mut().extra.rng.get_mut();
+            let rng = this.memory.extra.rng.get_mut();
             rng.fill_bytes(&mut data);
         }
 
-        let tcx = &{this.tcx.tcx};
-        this.memory_mut().get_mut(ptr.alloc_id)?.write_bytes(tcx, ptr, &data)
+        this.memory.write_bytes(ptr, data.iter().copied())
     }
 
     /// Visits the memory covered by `place`, sensitive to freezing: the 3rd parameter
@@ -211,7 +209,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             fn visit_value(&mut self, v: MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx>
             {
                 trace!("UnsafeCellVisitor: {:?} {:?}", *v, v.layout.ty);
-                let is_unsafe_cell = match v.layout.ty.sty {
+                let is_unsafe_cell = match v.layout.ty.kind {
                     ty::Adt(adt, _) => Some(adt.did) == self.ecx.tcx.lang_items().unsafe_cell_type(),
                     _ => false,
                 };
@@ -291,4 +289,174 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
         }
     }
+
+    /// Helper function to get a `libc` constant as a `Scalar`.
+    fn eval_libc(&mut self, name: &str) -> InterpResult<'tcx, Scalar<Tag>> {
+        self.eval_context_mut()
+            .eval_path_scalar(&["libc", name])?
+            .ok_or_else(|| err_unsup_format!("Path libc::{} cannot be resolved.", name))?
+            .not_undef()
+    }
+
+    /// Helper function to get a `libc` constant as an `i32`.
+    fn eval_libc_i32(&mut self, name: &str) -> InterpResult<'tcx, i32> {
+        self.eval_libc(name)?.to_i32()
+    }
+
+    /// Helper function to get the `TyLayout` of a `libc` type
+    fn libc_ty_layout(&mut self, name: &str) -> InterpResult<'tcx, TyLayout<'tcx>> {
+        let this = self.eval_context_mut();
+        let ty = this.resolve_path(&["libc", name])?.ty(*this.tcx);
+        this.layout_of(ty)
+    }
+
+    // Writes several `ImmTy`s contiguosly into memory. This is useful when you have to pack
+    // different values into a struct.
+    fn write_packed_immediates(
+        &mut self,
+        place: &MPlaceTy<'tcx, Tag>,
+        imms: &[ImmTy<'tcx, Tag>],
+    ) -> InterpResult<'tcx> {
+        let this = self.eval_context_mut();
+
+        let mut offset = Size::from_bytes(0);
+
+        for &imm in imms {
+            this.write_immediate_to_mplace(
+                *imm,
+                place.offset(offset, None, imm.layout, &*this.tcx)?,
+            )?;
+            offset += imm.layout.size;
+        }
+        Ok(())
+    }
+
+    /// Helper function used inside the shims of foreign functions to check that isolation is
+    /// disabled. It returns an error using the `name` of the foreign function if this is not the
+    /// case.
+    fn check_no_isolation(&mut self, name: &str) -> InterpResult<'tcx> {
+        if !self.eval_context_mut().machine.communicate {
+            throw_unsup_format!("`{}` not available when isolation is enabled. Pass the flag `-Zmiri-disable-isolation` to disable it.", name)
+        }
+        Ok(())
+    }
+
+    /// Sets the last error variable.
+    fn set_last_error(&mut self, scalar: Scalar<Tag>) -> InterpResult<'tcx> {
+        let this = self.eval_context_mut();
+        let errno_place = this.machine.last_error.unwrap();
+        this.write_scalar(scalar, errno_place.into())
+    }
+
+    /// Gets the last error variable.
+    fn get_last_error(&mut self) -> InterpResult<'tcx, Scalar<Tag>> {
+        let this = self.eval_context_mut();
+        let errno_place = this.machine.last_error.unwrap();
+        this.read_scalar(errno_place.into())?.not_undef()
+    }
+
+    /// Sets the last OS error using a `std::io::Error`. This function tries to produce the most
+    /// similar OS error from the `std::io::ErrorKind` and sets it as the last OS error.
+    fn set_last_error_from_io_error(&mut self, e: std::io::Error) -> InterpResult<'tcx> {
+        use std::io::ErrorKind::*;
+        let this = self.eval_context_mut();
+        let target = &this.tcx.tcx.sess.target.target;
+        let last_error = if target.options.target_family == Some("unix".to_owned()) {
+            this.eval_libc(match e.kind() {
+                ConnectionRefused => "ECONNREFUSED",
+                ConnectionReset => "ECONNRESET",
+                PermissionDenied => "EPERM",
+                BrokenPipe => "EPIPE",
+                NotConnected => "ENOTCONN",
+                ConnectionAborted => "ECONNABORTED",
+                AddrNotAvailable => "EADDRNOTAVAIL",
+                AddrInUse => "EADDRINUSE",
+                NotFound => "ENOENT",
+                Interrupted => "EINTR",
+                InvalidInput => "EINVAL",
+                TimedOut => "ETIMEDOUT",
+                AlreadyExists => "EEXIST",
+                WouldBlock => "EWOULDBLOCK",
+                _ => throw_unsup_format!("The {} error cannot be transformed into a raw os error", e)
+            })?
+        } else {
+            // FIXME: we have to implement the Windows equivalent of this.
+            throw_unsup_format!("Setting the last OS error from an io::Error is unsupported for {}.", target.target_os)
+        };
+        this.set_last_error(last_error)
+    }
+
+    /// Helper function that consumes an `std::io::Result<T>` and returns an
+    /// `InterpResult<'tcx,T>::Ok` instead. In case the result is an error, this function returns
+    /// `Ok(-1)` and sets the last OS error accordingly.
+    ///
+    /// This function uses `T: From<i32>` instead of `i32` directly because some IO related
+    /// functions return different integer types (like `read`, that returns an `i64`).
+    fn try_unwrap_io_result<T: From<i32>>(
+        &mut self,
+        result: std::io::Result<T>,
+    ) -> InterpResult<'tcx, T> {
+        match result {
+            Ok(ok) => Ok(ok),
+            Err(e) => {
+                self.eval_context_mut().set_last_error_from_io_error(e)?;
+                Ok((-1).into())
+            }
+        }
+    }
+
+    /// Helper function to read an OsString from a null-terminated sequence of bytes, which is what
+    /// the Unix APIs usually handle.
+    fn read_os_string_from_c_string(&mut self, scalar: Scalar<Tag>) -> InterpResult<'tcx, OsString> {
+        let bytes = self.eval_context_mut().memory.read_c_str(scalar)?;
+        Ok(bytes_to_os_str(bytes)?.into())
+    }
+
+    /// Helper function to write an OsStr as a null-terminated sequence of bytes, which is what
+    /// the Unix APIs usually handle. This function returns `Ok(false)` without trying to write if
+    /// `size` is not large enough to fit the contents of `os_string` plus a null terminator. It
+    /// returns `Ok(true)` if the writing process was successful.
+    fn write_os_str_to_c_string(
+        &mut self,
+        os_str: &OsStr,
+        scalar: Scalar<Tag>,
+        size: u64
+    ) -> InterpResult<'tcx, bool> {
+        let bytes = os_str_to_bytes(os_str)?;
+        // If `size` is smaller or equal than `bytes.len()`, writing `bytes` plus the required null
+        // terminator to memory using the `ptr` pointer would cause an out-of-bounds access.
+        if size <= bytes.len() as u64 {
+            return Ok(false);
+        }
+        self.eval_context_mut().memory.write_bytes(scalar, bytes.iter().copied().chain(iter::once(0u8)))?;
+        Ok(true)
+    }
+}
+
+#[cfg(target_os = "unix")]
+fn os_str_to_bytes<'tcx, 'a>(os_str: &'a OsStr) -> InterpResult<'tcx, &'a [u8]> {
+    std::os::unix::ffi::OsStringExt::into_bytes(os_str)
+}
+
+#[cfg(target_os = "unix")]
+fn bytes_to_os_str<'tcx, 'a>(bytes: &'a[u8]) -> InterpResult<'tcx, &'a OsStr> {
+    Ok(std::os::unix::ffi::OsStringExt::from_bytes(bytes))
+}
+
+// On non-unix platforms the best we can do to transform bytes from/to OS strings is to do the
+// intermediate transformation into strings. Which invalidates non-utf8 paths that are actually
+// valid.
+#[cfg(not(target_os = "unix"))]
+fn os_str_to_bytes<'tcx, 'a>(os_str: &'a OsStr) -> InterpResult<'tcx, &'a [u8]> {
+    os_str
+        .to_str()
+        .map(|s| s.as_bytes())
+        .ok_or_else(|| err_unsup_format!("{:?} is not a valid utf-8 string", os_str).into())
+}
+
+#[cfg(not(target_os = "unix"))]
+fn bytes_to_os_str<'tcx, 'a>(bytes: &'a[u8]) -> InterpResult<'tcx, &'a OsStr> {
+    let s = std::str::from_utf8(bytes)
+        .map_err(|_| err_unsup_format!("{:?} is not a valid utf-8 string", bytes))?;
+    Ok(&OsStr::new(s))
 }

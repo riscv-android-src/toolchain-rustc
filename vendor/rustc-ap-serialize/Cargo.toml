@@ -13,14 +13,13 @@
 [package]
 edition = "2018"
 name = "rustc-ap-serialize"
-version = "583.0.0"
+version = "606.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `serialize` in the rust-lang/rust repository from commit f7b05af814f02681d8973438df4ed5792f581841 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `serialize` in the rust-lang/rust repository from commit 7870050796e5904a0fc85ecbe6fa6dde1cfe0c91 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
 [lib]
-name = "serialize"
 path = "lib.rs"
 [dependencies.indexmap]
 version = "1"

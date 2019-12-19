@@ -1,4 +1,5 @@
-use cargo_test_support::{basic_manifest, project};
+use cargo_test_support::basic_manifest;
+use cargo_test_support::project;
 use std::env;
 
 #[cargo_test]
@@ -70,7 +71,9 @@ fn collision_example() {
         .file("b/examples/ex1.rs", "fn main() {}")
         .build();
 
-    p.cargo("build --examples")
+    // `j=1` is required because on Windows you'll get an error due to
+    // two processes writing to the file at the same time.
+    p.cargo("build --examples -j=1")
         .with_stderr_contains("\
 [WARNING] output filename collision.
 The example target `ex1` in package `b v1.0.0 ([..]/foo/b)` has the same output filename as the example target `ex1` in package `a v1.0.0 ([..]/foo/a)`.
@@ -83,6 +86,7 @@ This may become a hard error in the future; see <https://github.com/rust-lang/ca
 }
 
 #[cargo_test]
+#[cfg(not(target_env = "msvc"))]
 fn collision_export() {
     // `--out-dir` combines some things which can cause conflicts.
     let p = project()

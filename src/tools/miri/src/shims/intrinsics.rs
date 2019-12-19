@@ -1,8 +1,11 @@
+use std::iter;
+
 use rustc_apfloat::Float;
 use rustc::mir;
 use rustc::mir::interpret::{InterpResult, PointerArithmetic};
 use rustc::ty::layout::{self, LayoutOf, Size, Align};
 use rustc::ty;
+use syntax::source_map::Span;
 
 use crate::{
     PlaceTy, OpTy, Immediate, Scalar, Tag,
@@ -13,12 +16,13 @@ impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tc
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn call_intrinsic(
         &mut self,
+        span: Span,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
         dest: PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        if this.emulate_intrinsic(instance, args, dest)? {
+        if this.emulate_intrinsic(span, instance, args, dest)? {
             return Ok(());
         }
         let tcx = &{this.tcx.tcx};
@@ -28,7 +32,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // (as opposed to through a place), we have to remember to erase any tag
         // that might still hang around!
 
-        let intrinsic_name = &*this.tcx.item_name(instance.def_id()).as_str();
+        let intrinsic_name = &*tcx.item_name(instance.def_id()).as_str();
         match intrinsic_name {
             "arith_offset" => {
                 let offset = this.read_scalar(args[1])?.to_isize(this)?;
@@ -68,7 +72,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
                 // be 8-aligned).
                 let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
-                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+                this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
                 this.write_scalar(val, dest)?;
             }
@@ -83,12 +87,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
                 // be 8-aligned).
                 let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
-                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+                this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
                 this.write_scalar(val, place.into())?;
             }
 
-            "atomic_fence_acq" => {
+            "atomic_fence_acq" |
+            "atomic_fence_rel" |
+            "atomic_fence_acqrel" |
+            "atomic_fence" => {
                 // we are inherently singlethreaded and singlecored, this is a nop
             }
 
@@ -101,7 +108,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
                 // be 8-aligned).
                 let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
-                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+                this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
                 this.write_scalar(old, dest)?; // old value is returned
                 this.write_scalar(new, place.into())?;
@@ -117,7 +124,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
                 // be 8-aligned).
                 let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
-                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+                this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
                 // binary_op will bail if either of them is not a scalar
                 let eq = this.overflowing_binary_op(mir::BinOp::Eq, old, expect_old)?.0;
@@ -170,7 +177,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
                 // be 8-aligned).
                 let align = Align::from_bytes(place.layout.size.bytes()).unwrap();
-                this.memory().check_ptr_access(place.ptr, place.layout.size, align)?;
+                this.memory.check_ptr_access(place.ptr, place.layout.size, align)?;
 
                 this.write_immediate(*old, dest)?; // old value is returned
                 let (op, neg) = match intrinsic_name.split('_').nth(1).unwrap() {
@@ -204,12 +211,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
                 let size = Size::from_bytes(count * elem_size);
                 let src = this.read_scalar(args[0])?.not_undef()?;
-                let src = this.memory().check_ptr_access(src, size, elem_align)?;
+                let src = this.memory.check_ptr_access(src, size, elem_align)?;
                 let dest = this.read_scalar(args[1])?.not_undef()?;
-                let dest = this.memory().check_ptr_access(dest, size, elem_align)?;
+                let dest = this.memory.check_ptr_access(dest, size, elem_align)?;
 
                 if let (Some(src), Some(dest)) = (src, dest) {
-                    this.memory_mut().copy(
+                    this.memory.copy(
                         src,
                         dest,
                         size,
@@ -353,10 +360,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                         _ => {
                             // Do it in memory
                             let mplace = this.force_allocation(dest)?;
-                            assert!(mplace.meta.is_none());
-                            // not a zst, must be valid pointer
-                            let ptr = mplace.ptr.to_ptr()?;
-                            this.memory_mut().get_mut(ptr.alloc_id)?.write_repeat(tcx, ptr, 0, dest.layout.size)?;
+                            mplace.meta.unwrap_none(); // must be sized
+                            this.memory.write_bytes(mplace.ptr, iter::repeat(0u8).take(dest.layout.size.bytes() as usize))?;
                         }
                     }
                 }
@@ -543,9 +548,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                         _ => {
                             // Do it in memory
                             let mplace = this.force_allocation(dest)?;
-                            assert!(mplace.meta.is_none());
+                            mplace.meta.unwrap_none();
                             let ptr = mplace.ptr.to_ptr()?;
-                            this.memory_mut()
+                            // We know the return place is in-bounds
+                            this.memory
                                 .get_mut(ptr.alloc_id)?
                                 .mark_definedness(ptr, dest.layout.size, false);
                         }
@@ -560,16 +566,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let count = this.read_scalar(args[2])?.to_usize(this)?;
                 let byte_count = ty_layout.size * count;
-                match this.memory().check_ptr_access(ptr, byte_count, ty_layout.align.abi)? {
-                    Some(ptr) => {
-                        this.memory_mut()
-                            .get_mut(ptr.alloc_id)?
-                            .write_repeat(tcx, ptr, val_byte, byte_count)?;
-                    }
-                    None => {
-                        // Size is 0, nothing to do.
-                    }
-                }
+                this.memory.write_bytes(ptr, iter::repeat(val_byte).take(byte_count.bytes() as usize))?;
             }
 
             name => throw_unsup_format!("unimplemented intrinsic: {}", name),

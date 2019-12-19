@@ -2,7 +2,7 @@ use super::plumbing::*;
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub fn find<I, P>(pi: I, find_op: P) -> Option<I::Item>
+pub(super) fn find<I, P>(pi: I, find_op: P) -> Option<I::Item>
 where
     I: ParallelIterator,
     P: Fn(&I::Item) -> bool + Sync,
@@ -19,10 +19,7 @@ struct FindConsumer<'p, P: 'p> {
 
 impl<'p, P> FindConsumer<'p, P> {
     fn new(find_op: &'p P, found: &'p AtomicBool) -> Self {
-        FindConsumer {
-            find_op: find_op,
-            found: found,
-        }
+        FindConsumer { find_op, found }
     }
 }
 
@@ -82,6 +79,25 @@ where
         if (self.find_op)(&item) {
             self.found.store(true, Ordering::Relaxed);
             self.item = Some(item);
+        }
+        self
+    }
+
+    fn consume_iter<I>(mut self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+    {
+        fn not_full<T>(found: &AtomicBool) -> impl Fn(&T) -> bool + '_ {
+            move |_| !found.load(Ordering::Relaxed)
+        }
+
+        self.item = iter
+            .into_iter()
+            // stop iterating if another thread has found something
+            .take_while(not_full(&self.found))
+            .find(self.find_op);
+        if self.item.is_some() {
+            self.found.store(true, Ordering::Relaxed)
         }
         self
     }

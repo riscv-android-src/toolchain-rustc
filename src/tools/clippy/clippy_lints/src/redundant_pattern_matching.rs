@@ -46,68 +46,76 @@ declare_lint_pass!(RedundantPatternMatching => [REDUNDANT_PATTERN_MATCHING]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantPatternMatching {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        if let ExprKind::Match(ref op, ref arms, ref match_source) = expr.node {
+        if let ExprKind::Match(ref op, ref arms, ref match_source) = expr.kind {
             match match_source {
                 MatchSource::Normal => find_sugg_for_match(cx, expr, op, arms),
-                MatchSource::IfLetDesugar { .. } => find_sugg_for_if_let(cx, expr, op, arms),
+                MatchSource::IfLetDesugar { contains_else_clause } => {
+                    find_sugg_for_if_let(cx, expr, op, arms, *contains_else_clause)
+                },
                 _ => return,
             }
         }
     }
 }
 
-fn find_sugg_for_if_let<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr, op: &P<Expr>, arms: &HirVec<Arm>) {
-    if arms[0].pats.len() == 1 {
-        let good_method = match arms[0].pats[0].node {
-            PatKind::TupleStruct(ref path, ref patterns, _) if patterns.len() == 1 => {
-                if let PatKind::Wild = patterns[0].node {
-                    if match_qpath(path, &paths::RESULT_OK) {
-                        "is_ok()"
-                    } else if match_qpath(path, &paths::RESULT_ERR) {
-                        "is_err()"
-                    } else if match_qpath(path, &paths::OPTION_SOME) {
-                        "is_some()"
-                    } else {
-                        return;
-                    }
+fn find_sugg_for_if_let<'a, 'tcx>(
+    cx: &LateContext<'a, 'tcx>,
+    expr: &'tcx Expr,
+    op: &P<Expr>,
+    arms: &HirVec<Arm>,
+    has_else: bool,
+) {
+    let good_method = match arms[0].pat.kind {
+        PatKind::TupleStruct(ref path, ref patterns, _) if patterns.len() == 1 => {
+            if let PatKind::Wild = patterns[0].kind {
+                if match_qpath(path, &paths::RESULT_OK) {
+                    "is_ok()"
+                } else if match_qpath(path, &paths::RESULT_ERR) {
+                    "is_err()"
+                } else if match_qpath(path, &paths::OPTION_SOME) {
+                    "is_some()"
                 } else {
                     return;
                 }
-            },
+            } else {
+                return;
+            }
+        },
 
-            PatKind::Path(ref path) if match_qpath(path, &paths::OPTION_NONE) => "is_none()",
+        PatKind::Path(ref path) if match_qpath(path, &paths::OPTION_NONE) => "is_none()",
 
-            _ => return,
-        };
+        _ => return,
+    };
 
-        span_lint_and_then(
-            cx,
-            REDUNDANT_PATTERN_MATCHING,
-            arms[0].pats[0].span,
-            &format!("redundant pattern matching, consider using `{}`", good_method),
-            |db| {
-                let span = expr.span.to(op.span);
-                db.span_suggestion(
-                    span,
-                    "try this",
-                    format!("{}.{}", snippet(cx, op.span, "_"), good_method),
-                    Applicability::MaybeIncorrect, // snippet
-                );
-            },
-        );
-    }
+    let maybe_semi = if has_else { "" } else { ";" };
+
+    span_lint_and_then(
+        cx,
+        REDUNDANT_PATTERN_MATCHING,
+        arms[0].pat.span,
+        &format!("redundant pattern matching, consider using `{}`", good_method),
+        |db| {
+            let span = expr.span.to(op.span);
+            db.span_suggestion(
+                span,
+                "try this",
+                format!("{}.{}{}", snippet(cx, op.span, "_"), good_method, maybe_semi),
+                Applicability::MaybeIncorrect, // snippet
+            );
+        },
+    );
 }
 
 fn find_sugg_for_match<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr, op: &P<Expr>, arms: &HirVec<Arm>) {
     if arms.len() == 2 {
-        let node_pair = (&arms[0].pats[0].node, &arms[1].pats[0].node);
+        let node_pair = (&arms[0].pat.kind, &arms[1].pat.kind);
 
         let found_good_method = match node_pair {
             (
                 PatKind::TupleStruct(ref path_left, ref patterns_left, _),
                 PatKind::TupleStruct(ref path_right, ref patterns_right, _),
             ) if patterns_left.len() == 1 && patterns_right.len() == 1 => {
-                if let (PatKind::Wild, PatKind::Wild) = (&patterns_left[0].node, &patterns_right[0].node) {
+                if let (PatKind::Wild, PatKind::Wild) = (&patterns_left[0].kind, &patterns_right[0].kind) {
                     find_good_method_for_match(
                         arms,
                         path_left,
@@ -125,7 +133,7 @@ fn find_sugg_for_match<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr, o
             | (PatKind::Path(ref path_left), PatKind::TupleStruct(ref path_right, ref patterns, _))
                 if patterns.len() == 1 =>
             {
-                if let PatKind::Wild = patterns[0].node {
+                if let PatKind::Wild = patterns[0].kind {
                     find_good_method_for_match(
                         arms,
                         path_left,
@@ -172,9 +180,9 @@ fn find_good_method_for_match<'a>(
     should_be_right: &'a str,
 ) -> Option<&'a str> {
     let body_node_pair = if match_qpath(path_left, expected_left) && match_qpath(path_right, expected_right) {
-        (&(*arms[0].body).node, &(*arms[1].body).node)
+        (&(*arms[0].body).kind, &(*arms[1].body).kind)
     } else if match_qpath(path_right, expected_left) && match_qpath(path_left, expected_right) {
-        (&(*arms[1].body).node, &(*arms[0].body).node)
+        (&(*arms[1].body).kind, &(*arms[0].body).kind)
     } else {
         return None;
     };

@@ -4,7 +4,9 @@ use std::path::Path;
 
 use crate::core::compiler::unit_dependencies;
 use crate::core::compiler::UnitInterner;
-use crate::core::compiler::{BuildConfig, BuildContext, CompileMode, Context, Kind};
+use crate::core::compiler::{
+    BuildConfig, BuildContext, CompileKind, CompileMode, Context, ProfileKind,
+};
 use crate::core::profiles::UnitFor;
 use crate::core::Workspace;
 use crate::ops;
@@ -19,7 +21,9 @@ pub struct CleanOptions<'a> {
     /// The target arch triple to clean, or None for the host arch
     pub target: Option<String>,
     /// Whether to clean the release directory
-    pub release: bool,
+    pub profile_specified: bool,
+    /// Whether to clean the directory of a certain build profile
+    pub profile_kind: ProfileKind,
     /// Whether to just clean the doc directory
     pub doc: bool,
 }
@@ -35,9 +39,17 @@ pub fn clean(ws: &Workspace<'_>, opts: &CleanOptions<'_>) -> CargoResult<()> {
         return rm_rf(&target_dir.into_path_unlocked(), config);
     }
 
-    // If the release option is set, we set target to release directory
-    if opts.release {
-        target_dir = target_dir.join("release");
+    let profiles = ws.profiles();
+
+    // Check for whether the profile is defined.
+    let _ = profiles.base_profile(&opts.profile_kind)?;
+
+    if opts.profile_specified {
+        // After parsing profiles we know the dir-name of the profile, if a profile
+        // was passed from the command line. If so, delete only the directory of
+        // that profile.
+        let dir_name = profiles.get_dir_name(&opts.profile_kind);
+        target_dir = target_dir.join(dir_name);
     }
 
     // If we have a spec, then we need to delete some packages, otherwise, just
@@ -48,13 +60,12 @@ pub fn clean(ws: &Workspace<'_>, opts: &CleanOptions<'_>) -> CargoResult<()> {
     if opts.spec.is_empty() {
         return rm_rf(&target_dir.into_path_unlocked(), config);
     }
-
     let (packages, resolve) = ops::resolve_ws(ws)?;
 
-    let profiles = ws.profiles();
     let interner = UnitInterner::new();
     let mut build_config = BuildConfig::new(config, Some(1), &opts.target, CompileMode::Build)?;
-    build_config.release = opts.release;
+    let profile_kind = opts.profile_kind.clone();
+    build_config.profile_kind = profile_kind.clone();
     let bcx = BuildContext::new(
         ws,
         &packages,
@@ -73,7 +84,7 @@ pub fn clean(ws: &Workspace<'_>, opts: &CleanOptions<'_>) -> CargoResult<()> {
 
         // Generate all relevant `Unit` targets for this package
         for target in pkg.targets() {
-            for kind in [Kind::Host, Kind::Target].iter() {
+            for kind in [CompileKind::Host, build_config.requested_kind].iter() {
                 for mode in CompileMode::all_modes() {
                     for unit_for in UnitFor::all_values() {
                         let profile = if mode.is_run_custom_build() {
@@ -82,7 +93,7 @@ pub fn clean(ws: &Workspace<'_>, opts: &CleanOptions<'_>) -> CargoResult<()> {
                                 ws.is_member(pkg),
                                 *unit_for,
                                 CompileMode::Build,
-                                opts.release,
+                                profile_kind.clone(),
                             ))
                         } else {
                             profiles.get_profile(
@@ -90,14 +101,13 @@ pub fn clean(ws: &Workspace<'_>, opts: &CleanOptions<'_>) -> CargoResult<()> {
                                 ws.is_member(pkg),
                                 *unit_for,
                                 *mode,
-                                opts.release,
+                                profile_kind.clone(),
                             )
                         };
                         let features = resolve.features_sorted(pkg.package_id());
-                        units.push(
-                            bcx.units
-                                .intern(pkg, target, profile, *kind, *mode, features),
-                        );
+                        units.push(bcx.units.intern(
+                            pkg, target, profile, *kind, *mode, features, /*is_std*/ false,
+                        ));
                     }
                 }
             }
@@ -106,7 +116,7 @@ pub fn clean(ws: &Workspace<'_>, opts: &CleanOptions<'_>) -> CargoResult<()> {
 
     let unit_dependencies =
         unit_dependencies::build_unit_dependencies(&bcx, &resolve, None, &units, &[])?;
-    let mut cx = Context::new(config, &bcx, unit_dependencies)?;
+    let mut cx = Context::new(config, &bcx, unit_dependencies, build_config.requested_kind)?;
     cx.prepare_units(None, &units)?;
 
     for unit in units.iter() {

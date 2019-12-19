@@ -111,8 +111,8 @@ declare_lint_pass!(DropForgetRef => [DROP_REF, FORGET_REF, DROP_COPY, FORGET_COP
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DropForgetRef {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         if_chain! {
-            if let ExprKind::Call(ref path, ref args) = expr.node;
-            if let ExprKind::Path(ref qpath) = path.node;
+            if let ExprKind::Call(ref path, ref args) = expr.kind;
+            if let ExprKind::Path(ref qpath) = path.kind;
             if args.len() == 1;
             if let Some(def_id) = qpath_res(cx, qpath, path.hir_id).opt_def_id();
             then {
@@ -121,7 +121,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DropForgetRef {
                 let arg = &args[0];
                 let arg_ty = cx.tables.expr_ty(arg);
 
-                if let ty::Ref(..) = arg_ty.sty {
+                if let ty::Ref(..) = arg_ty.kind {
                     if match_def_path(cx, def_id, &paths::DROP) {
                         lint = DROP_REF;
                         msg = DROP_REF_SUMMARY.to_string();

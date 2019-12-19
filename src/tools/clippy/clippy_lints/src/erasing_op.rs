@@ -34,7 +34,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ErasingOp {
         if e.span.from_expansion() {
             return;
         }
-        if let ExprKind::Binary(ref cmp, ref left, ref right) = e.node {
+        if let ExprKind::Binary(ref cmp, ref left, ref right) = e.kind {
             match cmp.node {
                 BinOpKind::Mul | BinOpKind::BitAnd => {
                     check(cx, left, e.span);
@@ -48,14 +48,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ErasingOp {
 }
 
 fn check(cx: &LateContext<'_, '_>, e: &Expr, span: Span) {
-    if let Some(Constant::Int(v)) = constant_simple(cx, cx.tables, e) {
-        if v == 0 {
-            span_lint(
-                cx,
-                ERASING_OP,
-                span,
-                "this operation will always return zero. This is likely not the intended outcome",
-            );
-        }
+    if let Some(Constant::Int(0)) = constant_simple(cx, cx.tables, e) {
+        span_lint(
+            cx,
+            ERASING_OP,
+            span,
+            "this operation will always return zero. This is likely not the intended outcome",
+        );
     }
 }

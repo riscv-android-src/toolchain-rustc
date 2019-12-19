@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "racer"
-version = "2.1.27"
+version = "2.1.28"
 authors = ["Phil Dawes <phil@phildawes.net>", "The Racer developers"]
 description = "Code completion for Rust"
 homepage = "https://github.com/racer-rust/racer"
@@ -63,8 +63,9 @@ optional = true
 [dependencies.rls-span]
 version = "0.5.1"
 
-[dependencies.rustc-ap-syntax]
-version = "583.0.0"
+[dependencies.syntax]
+version = "606.0.0"
+package = "rustc-ap-syntax"
 [dev-dependencies.racer-testutils]
 version = "0.1"
 

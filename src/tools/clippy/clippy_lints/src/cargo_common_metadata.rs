@@ -27,7 +27,7 @@ declare_clippy_lint! {
     /// description = "A bunch of helpful lints to avoid common pitfalls in Rust"
     /// repository = "https://github.com/rust-lang/rust-clippy"
     /// readme = "README.md"
-    /// license = "MIT/Apache-2.0"
+    /// license = "MIT OR Apache-2.0"
     /// keywords = ["clippy", "lint", "plugin"]
     /// categories = ["development-tools", "development-tools::cargo-plugins"]
     /// ```
@@ -86,7 +86,7 @@ impl EarlyLintPass for CargoCommonMetadata {
                 missing_warning(cx, &package, "package.repository");
             }
 
-            if is_empty_str(&package.readme) {
+            if is_empty_path(&package.readme) {
                 missing_warning(cx, &package, "package.readme");
             }
 

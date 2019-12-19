@@ -29,7 +29,6 @@ fn test_fun_to_string() {
         let decl = ast::FnDecl {
             inputs: Vec::new(),
             output: ast::FunctionRetTy::Default(syntax_pos::DUMMY_SP),
-            c_variadic: false
         };
         let generics = ast::Generics::default();
         assert_eq!(
@@ -61,6 +60,7 @@ fn test_variant_to_string() {
             data: ast::VariantData::Unit(ast::DUMMY_NODE_ID),
             disr_expr: None,
             span: syntax_pos::DUMMY_SP,
+            is_placeholder: false,
         };
 
         let varstr = variant_to_string(&var);

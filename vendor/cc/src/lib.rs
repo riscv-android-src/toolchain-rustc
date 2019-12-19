@@ -1751,7 +1751,9 @@ impl Build {
                     }
                 } else if target.contains("cloudabi") {
                     format!("{}-{}", target, traditional)
-                } else if target == "wasm32-unknown-wasi" || target == "wasm32-unknown-unknown" {
+                } else if target == "wasm32-wasi" ||
+                          target == "wasm32-unknown-wasi" ||
+                          target == "wasm32-unknown-unknown" {
                     "clang".to_string()
                 } else if self.get_host()? != target {
                     // CROSS_COMPILE is of the form: "arm-linux-gnueabi-"
@@ -1787,6 +1789,12 @@ impl Build {
                         "mipsel-unknown-linux-gnu" => Some("mipsel-linux-gnu"),
                         "mips64-unknown-linux-gnuabi64" => Some("mips64-linux-gnuabi64"),
                         "mips64el-unknown-linux-gnuabi64" => Some("mips64el-linux-gnuabi64"),
+                        "mipsisa32r6-unknown-linux-gnu" => Some("mipsisa32r6-linux-gnu"),
+                        "mipsisa32r6el-unknown-linux-gnu" => Some("mipsisa32r6el-linux-gnu"),
+                        "mipsisa64r6-unknown-linux-gnuabi64" => Some("mipsisa64r6-linux-gnuabi64"),
+                        "mipsisa64r6el-unknown-linux-gnuabi64" => {
+                            Some("mipsisa64r6el-linux-gnuabi64")
+                        }
                         "powerpc-unknown-linux-gnu" => Some("powerpc-linux-gnu"),
                         "powerpc-unknown-linux-gnuspe" => Some("powerpc-linux-gnuspe"),
                         "powerpc-unknown-netbsd" => Some("powerpc--netbsd"),
@@ -2395,7 +2403,8 @@ fn spawn(cmd: &mut Command, program: &str) -> Result<(Child, JoinHandle<()>), Er
 }
 
 fn fail(s: &str) -> ! {
-    panic!("\n\nInternal error occurred: {}\n\n", s)
+    let _ = writeln!(io::stderr(), "\n\nerror occurred: {}\n\n", s);
+    std::process::exit(1);
 }
 
 fn command_add_output_file(cmd: &mut Command, dst: &Path, msvc: bool, is_asm: bool, is_arm: bool) {

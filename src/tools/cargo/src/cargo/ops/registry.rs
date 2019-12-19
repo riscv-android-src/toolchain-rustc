@@ -7,7 +7,7 @@ use std::time::Duration;
 use std::{cmp, env};
 
 use crates_io::{NewCrate, NewCrateDependency, Registry};
-use curl::easy::{Easy, InfoType, SslOpt};
+use curl::easy::{Easy, InfoType, SslOpt, SslVersion};
 use failure::{bail, format_err};
 use log::{log, Level};
 use percent_encoding::{percent_encode, NON_ALPHANUMERIC};
@@ -18,7 +18,7 @@ use crate::core::source::Source;
 use crate::core::{Package, SourceId, Workspace};
 use crate::ops;
 use crate::sources::{RegistrySource, SourceConfigMap, CRATES_IO_REGISTRY};
-use crate::util::config::{self, Config};
+use crate::util::config::{self, Config, SslVersionConfig, SslVersionConfigRange};
 use crate::util::errors::{CargoResult, CargoResultExt};
 use crate::util::important_paths::find_root_manifest_for_wd;
 use crate::util::IntoUrl;
@@ -116,6 +116,10 @@ fn verify_dependencies(
     for dep in pkg.dependencies().iter() {
         if dep.source_id().is_path() || dep.source_id().is_git() {
             if !dep.specified_req() {
+                if !dep.is_transitive() {
+                    // dev-dependencies will be stripped in TomlManifest::prepare_for_publish
+                    continue;
+                }
                 let which = if dep.source_id().is_path() {
                     "path"
                 } else {
@@ -172,6 +176,10 @@ fn transmit(
     let deps = pkg
         .dependencies()
         .iter()
+        .filter(|dep| {
+            // Skip dev-dependency without version.
+            dep.is_transitive() || dep.specified_req()
+        })
         .map(|dep| {
             // If the dependency is from a different registry, then include the
             // registry in the dependency.
@@ -408,37 +416,65 @@ pub fn http_handle_and_timeout(config: &Config) -> CargoResult<(Easy, HttpTimeou
 }
 
 pub fn needs_custom_http_transport(config: &Config) -> CargoResult<bool> {
-    let proxy_exists = http_proxy_exists(config)?;
-    let timeout = HttpTimeout::new(config)?.is_non_default();
-    let cainfo = config.get_path("http.cainfo")?;
-    let check_revoke = config.get_bool("http.check-revoke")?;
-    let user_agent = config.get_string("http.user-agent")?;
-
-    Ok(proxy_exists
-        || timeout
-        || cainfo.is_some()
-        || check_revoke.is_some()
-        || user_agent.is_some())
+    Ok(http_proxy_exists(config)?
+        || *config.http_config()? != Default::default()
+        || env::var_os("HTTP_TIMEOUT").is_some())
 }
 
 /// Configure a libcurl http handle with the defaults options for Cargo
 pub fn configure_http_handle(config: &Config, handle: &mut Easy) -> CargoResult<HttpTimeout> {
+    let http = config.http_config()?;
     if let Some(proxy) = http_proxy(config)? {
         handle.proxy(&proxy)?;
     }
-    if let Some(cainfo) = config.get_path("http.cainfo")? {
-        handle.cainfo(&cainfo.val)?;
+    if let Some(cainfo) = &http.cainfo {
+        let cainfo = cainfo.resolve_path(config);
+        handle.cainfo(&cainfo)?;
     }
-    if let Some(check) = config.get_bool("http.check-revoke")? {
-        handle.ssl_options(SslOpt::new().no_revoke(!check.val))?;
+    if let Some(check) = http.check_revoke {
+        handle.ssl_options(SslOpt::new().no_revoke(!check))?;
     }
-    if let Some(user_agent) = config.get_string("http.user-agent")? {
-        handle.useragent(&user_agent.val)?;
+    if let Some(user_agent) = &http.user_agent {
+        handle.useragent(user_agent)?;
     } else {
         handle.useragent(&version().to_string())?;
     }
 
-    if let Some(true) = config.get::<Option<bool>>("http.debug")? {
+    fn to_ssl_version(s: &str) -> CargoResult<SslVersion> {
+        let version = match s {
+            "default" => SslVersion::Default,
+            "tlsv1" => SslVersion::Tlsv1,
+            "tlsv1.0" => SslVersion::Tlsv10,
+            "tlsv1.1" => SslVersion::Tlsv11,
+            "tlsv1.2" => SslVersion::Tlsv12,
+            "tlsv1.3" => SslVersion::Tlsv13,
+            _ => bail!(
+                "Invalid ssl version `{}`,\
+                 choose from 'default', 'tlsv1', 'tlsv1.0', 'tlsv1.1', 'tlsv1.2', 'tlsv1.3'.",
+                s
+            ),
+        };
+        Ok(version)
+    }
+    if let Some(ssl_version) = &http.ssl_version {
+        match ssl_version {
+            SslVersionConfig::Single(s) => {
+                let version = to_ssl_version(s.as_str())?;
+                handle.ssl_version(version)?;
+            }
+            SslVersionConfig::Range(SslVersionConfigRange { min, max }) => {
+                let min_version = min
+                    .as_ref()
+                    .map_or(Ok(SslVersion::Default), |s| to_ssl_version(s))?;
+                let max_version = max
+                    .as_ref()
+                    .map_or(Ok(SslVersion::Default), |s| to_ssl_version(s))?;
+                handle.ssl_min_max_version(min_version, max_version)?;
+            }
+        }
+    }
+
+    if let Some(true) = http.debug {
         handle.verbose(true)?;
         handle.debug_function(|kind, data| {
             let (prefix, level) = match kind {
@@ -479,21 +515,16 @@ pub struct HttpTimeout {
 
 impl HttpTimeout {
     pub fn new(config: &Config) -> CargoResult<HttpTimeout> {
-        let low_speed_limit = config
-            .get::<Option<u32>>("http.low-speed-limit")?
-            .unwrap_or(10);
+        let config = config.http_config()?;
+        let low_speed_limit = config.low_speed_limit.unwrap_or(10);
         let seconds = config
-            .get::<Option<u64>>("http.timeout")?
+            .timeout
             .or_else(|| env::var("HTTP_TIMEOUT").ok().and_then(|s| s.parse().ok()))
             .unwrap_or(30);
         Ok(HttpTimeout {
             dur: Duration::new(seconds, 0),
             low_speed_limit,
         })
-    }
-
-    fn is_non_default(&self) -> bool {
-        self.dur != Duration::new(30, 0) || self.low_speed_limit != 10
     }
 
     pub fn configure(&self, handle: &mut Easy) -> CargoResult<()> {
@@ -514,8 +545,9 @@ impl HttpTimeout {
 /// Favor cargo's `http.proxy`, then git's `http.proxy`. Proxies specified
 /// via environment variables are picked up by libcurl.
 fn http_proxy(config: &Config) -> CargoResult<Option<String>> {
-    if let Some(s) = config.get_string("http.proxy")? {
-        return Ok(Some(s.val));
+    let http = config.http_config()?;
+    if let Some(s) = &http.proxy {
+        return Ok(Some(s.clone()));
     }
     if let Ok(cfg) = git2::Config::open_default() {
         if let Ok(s) = cfg.get_str("http.proxy") {

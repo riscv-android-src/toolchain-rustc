@@ -41,8 +41,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBorrow {
         if e.span.from_expansion() || self.derived_item.is_some() {
             return;
         }
-        if let ExprKind::AddrOf(MutImmutable, ref inner) = e.node {
-            if let ty::Ref(..) = cx.tables.expr_ty(inner).sty {
+        if let ExprKind::AddrOf(MutImmutable, ref inner) = e.kind {
+            if let ty::Ref(..) = cx.tables.expr_ty(inner).kind {
                 for adj3 in cx.tables.expr_adjustments(e).windows(3) {
                     if let [Adjustment {
                         kind: Adjust::Deref(_), ..
@@ -80,10 +80,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBorrow {
             return;
         }
         if_chain! {
-            if let PatKind::Binding(BindingAnnotation::Ref, .., name, _) = pat.node;
-            if let ty::Ref(_, tam, mutbl) = cx.tables.pat_ty(pat).sty;
+            if let PatKind::Binding(BindingAnnotation::Ref, .., name, _) = pat.kind;
+            if let ty::Ref(_, tam, mutbl) = cx.tables.pat_ty(pat).kind;
             if mutbl == MutImmutable;
-            if let ty::Ref(_, _, mutbl) = tam.sty;
+            if let ty::Ref(_, _, mutbl) = tam.kind;
             // only lint immutable refs, because borrowed `&mut T` cannot be moved out
             if mutbl == MutImmutable;
             then {

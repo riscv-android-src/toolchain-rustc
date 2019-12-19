@@ -8,9 +8,10 @@
 > &nbsp;&nbsp; `}`
 >
 > _ExternalItem_ :\
-> &nbsp;&nbsp; [_OuterAttribute_]<sup>\*</sup>\
-> &nbsp;&nbsp; [_Visibility_]<sup>?</sup>\
-> &nbsp;&nbsp; ( _ExternalStaticItem_ | _ExternalFunctionItem_ )
+> &nbsp;&nbsp; [_OuterAttribute_]<sup>\*</sup> (\
+> &nbsp;&nbsp; &nbsp;&nbsp; &nbsp;&nbsp; [_MacroInvocationSemi_]\
+> &nbsp;&nbsp; &nbsp;&nbsp; | ( [_Visibility_]<sup>?</sup> ( _ExternalStaticItem_ | _ExternalFunctionItem_ ) )\
+> &nbsp;&nbsp; )
 >
 > _ExternalStaticItem_ :\
 > &nbsp;&nbsp; `static` `mut`<sup>?</sup> [IDENTIFIER] `:` [_Type_] `;`
@@ -24,14 +25,14 @@
 > &nbsp;&nbsp; _NamedFunctionParam_ ( `,` _NamedFunctionParam_ )<sup>\*</sup> `,`<sup>?</sup>
 >
 > _NamedFunctionParam_ :\
-> &nbsp;&nbsp; ( [IDENTIFIER] | `_` ) `:` [_Type_]
+> &nbsp;&nbsp; [_OuterAttribute_]<sup>\*</sup> ( [IDENTIFIER] | `_` ) `:` [_Type_]
 >
 > _NamedFunctionParametersWithVariadics_ :\
-> &nbsp;&nbsp; ( _NamedFunctionParam_ `,` )<sup>\*</sup> _NamedFunctionParam_ `,` `...`
+> &nbsp;&nbsp; ( _NamedFunctionParam_ `,` )<sup>\*</sup> _NamedFunctionParam_ `,` [_OuterAttribute_]<sup>\*</sup> `...`
 
 External blocks provide _declarations_ of items that are not _defined_ in the
 current crate and are the basis of Rust's foreign function interface. These are
-akin to unchecked imports. 
+akin to unchecked imports.
 
 Two kind of item _declarations_ are allowed in external blocks: [functions] and
 [statics]. Calling functions or accessing statics that are declared in external
@@ -162,6 +163,11 @@ extern {
 }
 ```
 
+### Attributes on function parameters
+
+Attributes on extern function parameters follow the same rules and
+restrictions as [regular function parameters].
+
 [IDENTIFIER]: ../identifiers.md
 [WebAssembly module]: https://webassembly.github.io/spec/core/syntax/modules.html
 [functions]: functions.md
@@ -170,6 +176,7 @@ extern {
 [_FunctionReturnType_]: functions.md
 [_Generics_]: generics.md
 [_InnerAttribute_]: ../attributes.md
+[_MacroInvocationSemi_]: ../macros.md#macro-invocation
 [_MetaListNameValueStr_]: ../attributes.md#meta-item-attribute-syntax
 [_MetaNameValueStr_]: ../attributes.md#meta-item-attribute-syntax
 [_OuterAttribute_]: ../attributes.md
@@ -177,3 +184,4 @@ extern {
 [_Visibility_]: ../visibility-and-privacy.md
 [_WhereClause_]: generics.md#where-clauses
 [attributes]: ../attributes.md
+[regular function parameters]: functions.md#attributes-on-function-parameters

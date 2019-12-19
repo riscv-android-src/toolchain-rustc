@@ -172,7 +172,7 @@ impl GlobalState {
     pub fn new_call(&mut self) -> CallId {
         let id = self.next_call_id;
         trace!("new_call: Assigning ID {}", id);
-        self.active_calls.insert(id);
+        assert!(self.active_calls.insert(id));
         self.next_call_id = NonZeroU64::new(id.get() + 1).unwrap();
         id
     }
@@ -189,7 +189,7 @@ impl GlobalState {
         self.base_ptr_ids.get(&id).copied().unwrap_or_else(|| {
             let tag = Tag::Tagged(self.new_ptr());
             trace!("New allocation {:?} has base tag {:?}", id, tag);
-            self.base_ptr_ids.insert(id, tag);
+            self.base_ptr_ids.insert(id, tag).unwrap_none();
             tag
         })
     }
@@ -241,7 +241,7 @@ impl<'tcx> Stack {
 
     /// Find the first write-incompatible item above the given one --
     /// i.e, find the height to which the stack will be truncated when writing to `granting`.
-    fn find_first_write_incompaible(&self, granting: usize) -> usize {
+    fn find_first_write_incompatible(&self, granting: usize) -> usize {
         let perm = self.borrows[granting].perm;
         match perm {
             Permission::SharedReadOnly =>
@@ -309,7 +309,7 @@ impl<'tcx> Stack {
         if access == AccessKind::Write {
             // Remove everything above the write-compatible items, like a proper stack. This makes sure read-only and unique
             // pointers become invalid on write accesses (ensures F2a, and ensures U2 for write accesses).
-            let first_incompatible_idx = self.find_first_write_incompaible(granting_idx);
+            let first_incompatible_idx = self.find_first_write_incompatible(granting_idx);
             for item in self.borrows.drain(first_incompatible_idx..).rev() {
                 trace!("access: popping item {:?}", item);
                 Stack::check_protector(&item, Some(tag), global)?;
@@ -391,7 +391,7 @@ impl<'tcx> Stack {
             // access.  Instead of popping the stack, we insert the item at the place the stack would
             // be popped to (i.e., we insert it above all the write-compatible items).
             // This ensures F2b by adding the new item below any potentially existing `SharedReadOnly`.
-            self.find_first_write_incompaible(granting_idx)
+            self.find_first_write_incompatible(granting_idx)
         } else {
             // A "safe" reborrow for a pointer that actually expects some aliasing guarantees.
             // Here, creating a reference actually counts as an access.
@@ -435,7 +435,7 @@ impl<'tcx> Stacks {
 
         Stacks {
             stacks: RefCell::new(RangeMap::new(size, stack)),
-            global: extra, 
+            global: extra,
         }
     }
 
@@ -460,7 +460,7 @@ impl Stacks {
     pub fn new_allocation(
         id: AllocId,
         size: Size,
-        extra: MemoryExtra, 
+        extra: MemoryExtra,
         kind: MemoryKind<MiriMemoryKind>,
     ) -> (Self, Tag) {
         let (tag, perm) = match kind {
@@ -533,14 +533,14 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         let protector = if protect { Some(this.frame().extra) } else { None };
-        let ptr = this.memory().check_ptr_access(place.ptr, size, place.align)
+        let ptr = this.memory.check_ptr_access(place.ptr, size, place.align)
             .expect("validity checks should have excluded dangling/unaligned pointer")
             .expect("we shouldn't get here for ZST");
         trace!("reborrow: {} reference {:?} derived from {:?} (pointee {}): {:?}, size {}",
             kind, new_tag, ptr.tag, place.layout.ty, ptr.erase_tag(), size.bytes());
 
         // Get the allocation. It might not be mutable, so we cannot use `get_mut`.
-        let alloc = this.memory().get(ptr.alloc_id)?;
+        let alloc = this.memory.get(ptr.alloc_id)?;
         let stacked_borrows = alloc.extra.stacked_borrows.as_ref().expect("we should have Stacked Borrows data");
         // Update the stacks.
         // Make sure that raw pointers and mutable shared references are reborrowed "weak":
@@ -592,7 +592,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // Compute new borrow.
         let new_tag = match kind {
             RefKind::Raw { .. } => Tag::Untagged,
-            _ => Tag::Tagged(this.memory().extra.stacked_borrows.borrow_mut().new_ptr()),
+            _ => Tag::Tagged(this.memory.extra.stacked_borrows.borrow_mut().new_ptr()),
         };
 
         // Reborrow.
@@ -616,7 +616,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // Cannot use `builtin_deref` because that reports *immutable* for `Box`,
         // making it useless.
         fn qualify(ty: ty::Ty<'_>, kind: RetagKind) -> Option<(RefKind, bool)> {
-            match ty.sty {
+            match ty.kind {
                 // References are simple.
                 ty::Ref(_, _, MutMutable) =>
                     Some((RefKind::Unique { two_phase: kind == RetagKind::TwoPhase}, kind == RetagKind::FnEntry)),

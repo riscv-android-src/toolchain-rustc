@@ -13,6 +13,8 @@ use crate::symbol::Symbol;
 
 use errors::{Applicability, FatalError, Level, Handler, ColorConfig, Diagnostic, DiagnosticBuilder};
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
+#[cfg(target_arch = "x86_64")]
+use rustc_data_structures::static_assert_size;
 use rustc_data_structures::sync::{Lrc, Lock, Once};
 use syntax_pos::{Span, SourceFile, FileName, MultiSpan};
 use syntax_pos::edition::Edition;
@@ -38,12 +40,15 @@ crate mod unescape_error_reporting;
 
 pub type PResult<'a, T> = Result<T, DiagnosticBuilder<'a>>;
 
+// `PResult` is used a lot. Make sure it doesn't unintentionally get bigger.
+// (See also the comment on `DiagnosticBuilderInner`.)
+#[cfg(target_arch = "x86_64")]
+static_assert_size!(PResult<'_, bool>, 16);
+
 /// Collected spans during parsing for places where a certain feature was
 /// used and should be feature gated accordingly in `check_crate`.
 #[derive(Default)]
 pub struct GatedSpans {
-    /// Spans collected for gating `param_attrs`, e.g. `fn foo(#[attr] x: u8) {}`.
-    pub param_attrs: Lock<Vec<Span>>,
     /// Spans collected for gating `let_chains`, e.g. `if a && let b = c {}`.
     pub let_chains: Lock<Vec<Span>>,
     /// Spans collected for gating `async_closure`, e.g. `async || ..`.
@@ -299,7 +304,7 @@ fn file_to_source_file(sess: &ParseSess, path: &Path, spanopt: Option<Span>)
     match try_file_to_source_file(sess, path, spanopt) {
         Ok(source_file) => source_file,
         Err(d) => {
-            DiagnosticBuilder::new_diagnostic(&sess.span_diagnostic, d).emit();
+            sess.span_diagnostic.emit_diagnostic(&d);
             FatalError.raise();
         }
     }

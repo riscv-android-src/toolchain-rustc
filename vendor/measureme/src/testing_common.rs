@@ -1,8 +1,4 @@
-
-use crate::{
-    Event, Profiler, ProfilingData, SerializationSink, StringId,
-    TimestampKind,
-};
+use crate::{Event, Profiler, ProfilingData, SerializationSink, StringId, TimestampKind};
 use rustc_hash::FxHashMap;
 use std::borrow::Cow;
 use std::default::Default;
@@ -21,7 +17,7 @@ fn mk_filestem(file_name_stem: &str) -> PathBuf {
 }
 
 // Generate some profiling data. This is the part that would run in rustc.
-fn generate_profiling_data<S: SerializationSink>(filestem: &Path) -> Vec<Event> {
+fn generate_profiling_data<S: SerializationSink>(filestem: &Path) -> Vec<Event<'static>> {
     let profiler = Arc::new(Profiler::<S>::new(Path::new(filestem)).unwrap());
 
     let event_id_reserved = StringId::reserved(42);
@@ -87,7 +83,7 @@ fn generate_profiling_data<S: SerializationSink>(filestem: &Path) -> Vec<Event> 
 
 // Process some profiling data. This is the part that would run in a
 // post processing tool.
-fn process_profiling_data(filestem: &Path, expected_events: &[Event]) {
+fn process_profiling_data(filestem: &Path, expected_events: &[Event<'static>]) {
     let profiling_data = ProfilingData::new(filestem).unwrap();
 
     let mut count = 0;
@@ -107,7 +103,7 @@ fn process_profiling_data(filestem: &Path, expected_events: &[Event]) {
 }
 
 pub fn run_end_to_end_serialization_test<S: SerializationSink>(file_name_stem: &str) {
-        let filestem = mk_filestem(file_name_stem);
-        let expected_events = generate_profiling_data::<S>(&filestem);
-        process_profiling_data(&filestem, &expected_events);
+    let filestem = mk_filestem(file_name_stem);
+    let expected_events = generate_profiling_data::<S>(&filestem);
+    process_profiling_data(&filestem, &expected_events);
 }

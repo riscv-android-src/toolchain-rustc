@@ -13,15 +13,15 @@ pub struct Flatten<I: ParallelIterator> {
     base: I,
 }
 
-/// Create a new `Flatten` iterator.
-///
-/// NB: Not part of the public API.
-pub fn new<I, PI>(base: I) -> Flatten<I>
+impl<I, PI> Flatten<I>
 where
     I: ParallelIterator<Item = PI>,
     PI: IntoParallelIterator + Send,
 {
-    Flatten { base: base }
+    /// Create a new `Flatten` iterator.
+    pub(super) fn new(base: I) -> Self {
+        Flatten { base }
+    }
 }
 
 impl<I, PI> ParallelIterator for Flatten<I>
@@ -35,6 +35,10 @@ where
     where
         C: UnindexedConsumer<Self::Item>,
     {
-        self.base.flat_map(|x| x).drive_unindexed(consumer)
+        fn id<T>(x: T) -> T {
+            x
+        }
+
+        self.base.flat_map(id).drive_unindexed(consumer)
     }
 }

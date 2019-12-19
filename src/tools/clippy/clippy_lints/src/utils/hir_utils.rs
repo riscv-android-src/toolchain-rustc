@@ -2,10 +2,11 @@ use crate::consts::{constant_context, constant_simple};
 use crate::utils::differing_macro_contexts;
 use rustc::hir::ptr::P;
 use rustc::hir::*;
+use rustc::ich::StableHashingContextProvider;
 use rustc::lint::LateContext;
 use rustc::ty::TypeckTables;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
+use std::hash::Hash;
 use syntax::ast::Name;
 
 /// Type used to check whether two ast are the same. This is different from the
@@ -42,7 +43,7 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
 
     /// Checks whether two statements are the same.
     pub fn eq_stmt(&mut self, left: &Stmt, right: &Stmt) -> bool {
-        match (&left.node, &right.node) {
+        match (&left.kind, &right.kind) {
             (&StmtKind::Local(ref l), &StmtKind::Local(ref r)) => {
                 self.eq_pat(&l.pat, &r.pat)
                     && both(&l.ty, &r.ty, |l, r| self.eq_ty(l, r))
@@ -76,7 +77,7 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
             }
         }
 
-        match (&left.node, &right.node) {
+        match (&left.kind, &right.kind) {
             (&ExprKind::AddrOf(l_mut, ref le), &ExprKind::AddrOf(r_mut, ref re)) => {
                 l_mut == r_mut && self.eq_expr(le, re)
             },
@@ -124,7 +125,7 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
                     && over(la, ra, |l, r| {
                         self.eq_expr(&l.body, &r.body)
                             && both(&l.guard, &r.guard, |l, r| self.eq_guard(l, r))
-                            && over(&l.pats, &r.pats, |l, r| self.eq_pat(l, r))
+                            && self.eq_pat(&l.pat, &r.pat)
                     })
             },
             (&ExprKind::MethodCall(ref l_path, _, ref l_args), &ExprKind::MethodCall(ref r_path, _, ref r_args)) => {
@@ -169,19 +170,19 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
 
     fn eq_generic_arg(&mut self, left: &GenericArg, right: &GenericArg) -> bool {
         match (left, right) {
-            (GenericArg::Lifetime(l_lt), GenericArg::Lifetime(r_lt)) => self.eq_lifetime(l_lt, r_lt),
+            (GenericArg::Lifetime(l_lt), GenericArg::Lifetime(r_lt)) => Self::eq_lifetime(l_lt, r_lt),
             (GenericArg::Type(l_ty), GenericArg::Type(r_ty)) => self.eq_ty(l_ty, r_ty),
             _ => false,
         }
     }
 
-    fn eq_lifetime(&mut self, left: &Lifetime, right: &Lifetime) -> bool {
+    fn eq_lifetime(left: &Lifetime, right: &Lifetime) -> bool {
         left.name == right.name
     }
 
     /// Checks whether two patterns are the same.
     pub fn eq_pat(&mut self, left: &Pat, right: &Pat) -> bool {
-        match (&left.node, &right.node) {
+        match (&left.kind, &right.kind) {
             (&PatKind::Box(ref l), &PatKind::Box(ref r)) => self.eq_pat(l, r),
             (&PatKind::TupleStruct(ref lp, ref la, ls), &PatKind::TupleStruct(ref rp, ref ra, rs)) => {
                 self.eq_qpath(lp, rp) && over(la, ra, |l, r| self.eq_pat(l, r)) && ls == rs
@@ -258,7 +259,7 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
     }
 
     pub fn eq_ty(&mut self, left: &Ty, right: &Ty) -> bool {
-        self.eq_ty_kind(&left.node, &right.node)
+        self.eq_ty_kind(&left.kind, &right.kind)
     }
 
     #[allow(clippy::similar_names)]
@@ -348,7 +349,7 @@ pub struct SpanlessHash<'a, 'tcx> {
     /// Context used to evaluate constant expressions.
     cx: &'a LateContext<'a, 'tcx>,
     tables: &'a TypeckTables<'tcx>,
-    s: DefaultHasher,
+    s: StableHasher,
 }
 
 impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
@@ -356,11 +357,11 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
         Self {
             cx,
             tables,
-            s: DefaultHasher::new(),
+            s: StableHasher::new(),
         }
     }
 
-    pub fn finish(&self) -> u64 {
+    pub fn finish(self) -> u64 {
         self.s.finish()
     }
 
@@ -394,9 +395,9 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             return e.hash(&mut self.s);
         }
 
-        std::mem::discriminant(&e.node).hash(&mut self.s);
+        std::mem::discriminant(&e.kind).hash(&mut self.s);
 
-        match e.node {
+        match e.kind {
             ExprKind::AddrOf(m, ref e) => {
                 m.hash(&mut self.s);
                 self.hash_expr(e);
@@ -411,7 +412,8 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 self.hash_expr(r);
             },
             ExprKind::AssignOp(ref o, ref l, ref r) => {
-                o.hash(&mut self.s);
+                o.node
+                    .hash_stable(&mut self.cx.tcx.get_stable_hashing_context(), &mut self.s);
                 self.hash_expr(l);
                 self.hash_expr(r);
             },
@@ -419,7 +421,8 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 self.hash_block(b);
             },
             ExprKind::Binary(op, ref l, ref r) => {
-                op.node.hash(&mut self.s);
+                op.node
+                    .hash_stable(&mut self.cx.tcx.get_stable_hashing_context(), &mut self.s);
                 self.hash_expr(l);
                 self.hash_expr(r);
             },
@@ -460,7 +463,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             },
             ExprKind::InlineAsm(..) | ExprKind::Err => {},
             ExprKind::Lit(ref l) => {
-                l.hash(&mut self.s);
+                l.node.hash(&mut self.s);
             },
             ExprKind::Loop(ref b, ref i, _) => {
                 self.hash_block(b);
@@ -519,7 +522,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 self.hash_exprs(v);
             },
             ExprKind::Unary(lop, ref le) => {
-                lop.hash(&mut self.s);
+                lop.hash_stable(&mut self.cx.tcx.get_stable_hashing_context(), &mut self.s);
                 self.hash_expr(le);
             },
         }
@@ -555,9 +558,9 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
     }
 
     pub fn hash_stmt(&mut self, b: &Stmt) {
-        std::mem::discriminant(&b.node).hash(&mut self.s);
+        std::mem::discriminant(&b.kind).hash(&mut self.s);
 
-        match &b.node {
+        match &b.kind {
             StmtKind::Local(local) => {
                 if let Some(ref init) = local.init {
                     self.hash_expr(init);
@@ -595,7 +598,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
     }
 
     pub fn hash_ty(&mut self, ty: &Ty) {
-        self.hash_tykind(&ty.node);
+        self.hash_tykind(&ty.kind);
     }
 
     pub fn hash_tykind(&mut self, ty: &TyKind) {
@@ -669,7 +672,6 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             TyKind::Typeof(anon_const) => {
                 self.hash_expr(&self.cx.tcx.hir().body(anon_const.body).value);
             },
-            TyKind::CVarArgs(lifetime) => self.hash_lifetime(lifetime),
             TyKind::Err | TyKind::Infer | TyKind::Never => {},
         }
     }

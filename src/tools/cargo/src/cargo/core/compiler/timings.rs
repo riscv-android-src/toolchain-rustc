@@ -27,8 +27,6 @@ pub struct Timings<'a, 'cfg> {
     start: Instant,
     /// A rendered string of when compilation started.
     start_str: String,
-    /// Some information to display about rustc.
-    rustc_info: String,
     /// A summary of the root units.
     ///
     /// Tuples of `(package_description, target_descrptions)`.
@@ -118,13 +116,7 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
             })
             .collect();
         let start_str = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
-        let rustc_info = render_rustc_info(bcx);
-        let profile = if bcx.build_config.release {
-            "release"
-        } else {
-            "dev"
-        }
-        .to_string();
+        let profile = bcx.build_config.profile_kind.name().to_owned();
 
         Timings {
             config: bcx.config,
@@ -134,7 +126,6 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
             report_json,
             start: bcx.config.creation_time(),
             start_str,
-            rustc_info,
             root_targets,
             profile,
             total_fresh: 0,
@@ -290,7 +281,7 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
     }
 
     /// Call this when all units are finished.
-    pub fn finished(&mut self) -> CargoResult<()> {
+    pub fn finished(&mut self, bcx: &BuildContext<'_, '_>) -> CargoResult<()> {
         if !self.enabled {
             return Ok(());
         }
@@ -298,14 +289,14 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
         self.unit_times
             .sort_unstable_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
         if self.report_html {
-            self.report_html()?;
+            self.report_html(bcx)?;
         }
         Ok(())
     }
 
     /// Save HTML report to disk.
-    fn report_html(&self) -> CargoResult<()> {
-        let duration = self.start.elapsed().as_secs() as u32 + 1;
+    fn report_html(&self, bcx: &BuildContext<'_, '_>) -> CargoResult<()> {
+        let duration = d_as_f64(self.start.elapsed());
         let timestamp = self.start_str.replace(&['-', ':'][..], "");
         let filename = format!("cargo-timing-{}.html", timestamp);
         let mut f = BufWriter::new(File::create(&filename)?);
@@ -315,14 +306,15 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
             .map(|(name, _targets)| name.as_str())
             .collect();
         f.write_all(HTML_TMPL.replace("{ROOTS}", &roots.join(", ")).as_bytes())?;
-        self.write_summary_table(&mut f, duration)?;
+        self.write_summary_table(&mut f, duration, bcx)?;
         f.write_all(HTML_CANVAS.as_bytes())?;
         self.write_unit_table(&mut f)?;
+        // It helps with pixel alignment to use whole numbers.
         writeln!(
             f,
             "<script>\n\
              DURATION = {};",
-            duration
+            f64::ceil(duration) as u32
         )?;
         self.write_js_data(&mut f)?;
         write!(
@@ -350,20 +342,26 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
     }
 
     /// Render the summary table.
-    fn write_summary_table(&self, f: &mut impl Write, duration: u32) -> CargoResult<()> {
+    fn write_summary_table(
+        &self,
+        f: &mut impl Write,
+        duration: f64,
+        bcx: &BuildContext<'_, '_>,
+    ) -> CargoResult<()> {
         let targets: Vec<String> = self
             .root_targets
             .iter()
             .map(|(name, targets)| format!("{} ({})", name, targets.join(", ")))
             .collect();
         let targets = targets.join("<br>");
-        let time_human = if duration > 60 {
-            format!(" ({}m {:02}s)", duration / 60, duration % 60)
+        let time_human = if duration > 60.0 {
+            format!(" ({}m {:.1}s)", duration as u32 / 60, duration % 60.0)
         } else {
             "".to_string()
         };
-        let total_time = format!("{}s{}", duration, time_human);
+        let total_time = format!("{:.1}s{}", duration, time_human);
         let max_concurrency = self.concurrency.iter().map(|c| c.active).max().unwrap();
+        let rustc_info = render_rustc_info(bcx);
         write!(
             f,
             r#"
@@ -384,7 +382,7 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
     <td>Total units:</td><td>{}</td>
   </tr>
   <tr>
-    <td>Max concurrency:</td><td>{}</td>
+    <td>Max concurrency:</td><td>{} (jobs={} ncpu={})</td>
   </tr>
   <tr>
     <td>Build start:</td><td>{}</td>
@@ -404,9 +402,11 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
             self.total_dirty,
             self.total_fresh + self.total_dirty,
             max_concurrency,
+            bcx.build_config.jobs,
+            num_cpus::get(),
             self.start_str,
             total_time,
-            self.rustc_info,
+            rustc_info,
         )?;
         Ok(())
     }
@@ -444,15 +444,19 @@ impl<'a, 'cfg> Timings<'a, 'cfg> {
                     "todo"
                 }
                 .to_string();
+
+                // These filter on the unlocked units because not all unlocked
+                // units are actually "built". For example, Doctest mode units
+                // don't actually generate artifacts.
                 let unlocked_units: Vec<usize> = ut
                     .unlocked_units
                     .iter()
-                    .map(|unit| unit_map[unit])
+                    .filter_map(|unit| unit_map.get(unit).copied())
                     .collect();
                 let unlocked_rmeta_units: Vec<usize> = ut
                     .unlocked_rmeta_units
                     .iter()
-                    .map(|unit| unit_map[unit])
+                    .filter_map(|unit| unit_map.get(unit).copied())
                     .collect();
                 UnitData {
                     i,
@@ -563,11 +567,7 @@ fn render_rustc_info(bcx: &BuildContext<'_, '_>) -> String {
         .lines()
         .next()
         .expect("rustc version");
-    let requested_target = bcx
-        .build_config
-        .requested_target
-        .as_ref()
-        .map_or("Host", String::as_str);
+    let requested_target = bcx.build_config.requested_kind.short_name(bcx);
     format!(
         "{}<br>Host: {}<br>Target: {}",
         version, bcx.rustc.host, requested_target

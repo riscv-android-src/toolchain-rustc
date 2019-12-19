@@ -92,6 +92,11 @@ fn debug_range() {
 }
 
 #[test]
+fn debug_range_inclusive() {
+    check((0..=10).into_par_iter());
+}
+
+#[test]
 fn debug_str() {
     let s = "a b c d\ne f g";
     check(s.par_chars());
@@ -119,10 +124,11 @@ fn debug_adaptors() {
     let v: Vec<_> = (0..10).collect();
     check(v.par_iter().chain(&v));
     check(v.par_iter().cloned());
+    check(v.par_iter().copied());
     check(v.par_iter().enumerate());
     check(v.par_iter().filter(|_| true));
-    check(v.par_iter().filter_map(|x| Some(x)));
-    check(v.par_iter().flat_map(|x| Some(x)));
+    check(v.par_iter().filter_map(Some));
+    check(v.par_iter().flat_map(Some));
     check(v.par_iter().map(Some).flatten());
     check(v.par_iter().fold(|| 0, |x, _| x));
     check(v.par_iter().fold_with(0, |x, _| x));
@@ -137,6 +143,7 @@ fn debug_adaptors() {
     check(v.par_iter().map(|x| x));
     check(v.par_iter().map_with(0, |_, x| x));
     check(v.par_iter().map_init(|| 0, |_, x| x));
+    check(v.par_iter().panic_fuse());
     check(v.par_iter().rev());
     check(v.par_iter().skip(1));
     check(v.par_iter().take(1));

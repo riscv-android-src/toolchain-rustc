@@ -283,8 +283,8 @@ impl InstallTracker {
         bins: &BTreeSet<String>,
         version_req: Option<String>,
         opts: &CompileOptions<'_>,
-        target: String,
-        rustc: String,
+        target: &str,
+        rustc: &str,
     ) {
         if self.unstable_upgrade {
             self.v2
@@ -430,8 +430,8 @@ impl CrateListingV2 {
         bins: &BTreeSet<String>,
         version_req: Option<String>,
         opts: &CompileOptions<'_>,
-        target: String,
-        rustc: String,
+        target: &str,
+        rustc: &str,
     ) {
         // Remove bins from any other packages.
         for info in &mut self.installs.values_mut() {
@@ -455,9 +455,9 @@ impl CrateListingV2 {
             info.features = feature_set(&opts.features);
             info.all_features = opts.all_features;
             info.no_default_features = opts.no_default_features;
-            info.profile = profile_name(opts.build_config.release).to_string();
-            info.target = Some(target);
-            info.rustc = Some(rustc);
+            info.profile = opts.build_config.profile_name().to_string();
+            info.target = Some(target.to_string());
+            info.rustc = Some(rustc.to_string());
         } else {
             self.installs.insert(
                 pkg.package_id(),
@@ -467,9 +467,9 @@ impl CrateListingV2 {
                     features: feature_set(&opts.features),
                     all_features: opts.all_features,
                     no_default_features: opts.no_default_features,
-                    profile: profile_name(opts.build_config.release).to_string(),
-                    target: Some(target),
-                    rustc: Some(rustc),
+                    profile: opts.build_config.profile_name().to_string(),
+                    target: Some(target.to_string()),
+                    rustc: Some(rustc.to_string()),
                     other: BTreeMap::new(),
                 },
             );
@@ -527,7 +527,7 @@ impl InstallInfo {
         self.features == feature_set(&opts.features)
             && self.all_features == opts.all_features
             && self.no_default_features == opts.no_default_features
-            && self.profile == profile_name(opts.build_config.release)
+            && self.profile == opts.build_config.profile_name()
             && (self.target.is_none() || self.target.as_ref().map(|t| t.as_ref()) == Some(target))
             && &self.bins == exes
     }
@@ -717,14 +717,6 @@ where
         }
         (Some(i), None) => Ok(Some(i)),
         (None, _) => Ok(None),
-    }
-}
-
-fn profile_name(release: bool) -> &'static str {
-    if release {
-        "release"
-    } else {
-        "dev"
     }
 }
 

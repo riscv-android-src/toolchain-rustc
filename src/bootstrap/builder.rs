@@ -443,6 +443,7 @@ impl<'a> Builder<'a> {
                 dist::Rustc,
                 dist::DebuggerScripts,
                 dist::Std,
+                dist::RustcDev,
                 dist::Analysis,
                 dist::Src,
                 dist::PlainSourceTarball,
@@ -817,10 +818,20 @@ impl<'a> Builder<'a> {
 
         let mut rustflags = Rustflags::new(&target);
         if stage != 0 {
+            if let Ok(s) = env::var("CARGOFLAGS_NOT_BOOTSTRAP") {
+                cargo.args(s.split_whitespace());
+            }
             rustflags.env("RUSTFLAGS_NOT_BOOTSTRAP");
         } else {
+            if let Ok(s) = env::var("CARGOFLAGS_BOOTSTRAP") {
+                cargo.args(s.split_whitespace());
+            }
             rustflags.env("RUSTFLAGS_BOOTSTRAP");
             rustflags.arg("--cfg=bootstrap");
+        }
+
+        if let Ok(s) = env::var("CARGOFLAGS") {
+            cargo.args(s.split_whitespace());
         }
 
         match mode {
@@ -875,7 +886,18 @@ impl<'a> Builder<'a> {
         // things still build right, please do!
         match mode {
             Mode::Std => metadata.push_str("std"),
-            _ => {},
+            // When we're building rustc tools, they're built with a search path
+            // that contains things built during the rustc build. For example,
+            // bitflags is built during the rustc build, and is a dependency of
+            // rustdoc as well. We're building rustdoc in a different target
+            // directory, though, which means that Cargo will rebuild the
+            // dependency. When we go on to build rustdoc, we'll look for
+            // bitflags, and find two different copies: one built during the
+            // rustc step and one that we just built. This isn't always a
+            // problem, somehow -- not really clear why -- but we know that this
+            // fixes things.
+            Mode::ToolRustc => metadata.push_str("tool-rustc"),
+            _ => {}
         }
         cargo.env("__CARGO_DEFAULT_LIB_METADATA", &metadata);
 
@@ -970,6 +992,7 @@ impl<'a> Builder<'a> {
                 Some("-Wl,-rpath,@loader_path/../lib")
             } else if !target.contains("windows") &&
                       !target.contains("wasm32") &&
+                      !target.contains("emscripten") &&
                       !target.contains("fuchsia") {
                 Some("-Wl,-rpath,$ORIGIN/../lib")
             } else {

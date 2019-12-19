@@ -1,25 +1,8 @@
 # mdBook
 
-<table>
-    <tr>
-        <td><strong>Linux / OS X</strong></td>
-        <td>
-            <a href="https://travis-ci.com/rust-lang-nursery/mdBook"><img src="https://travis-ci.com/rust-lang-nursery/mdBook.svg?branch=master"></a>
-        </td>
-    </tr>
-    <tr>
-        <td><strong>Windows</strong></td>
-        <td>
-            <a href="https://ci.appveyor.com/project/rust-lang-libs/mdbook"><img src="https://ci.appveyor.com/api/projects/status/ysyke2rvo85sni55?svg=true"></a>
-        </td>
-    </tr>
-    <tr>
-        <td colspan="2">
-            <a href="https://crates.io/crates/mdbook"><img src="https://img.shields.io/crates/v/mdbook.svg"></a>
-            <a href="LICENSE"><img src="https://img.shields.io/github/license/rust-lang-nursery/mdBook.svg"></a>
-        </td>
-    </tr>
-</table>
+[![Build Status](https://github.com/rust-lang/mdBook/workflows/CI/badge.svg)](https://github.com/rust-lang/mdBook/actions?workflow=CI)
+[![crates.io](https://img.shields.io/crates/v/mdbook.svg)](https://crates.io/crates/mdbook)
+[![LICENSE](https://img.shields.io/github/license/rust-lang/mdBook.svg)](LICENSE)
 
 mdBook is a utility to create modern online books from Markdown files.
 
@@ -41,7 +24,7 @@ There are multiple ways to install mdBook.
 
 2. **From Crates.io**
 
-   This requires at least [Rust] 1.34 and Cargo to be installed. Once you have installed
+   This requires at least [Rust] 1.35 and Cargo to be installed. Once you have installed
    Rust, type the following in the terminal:
 
    ```
@@ -72,7 +55,7 @@ There are multiple ways to install mdBook.
    the git version of mdBook yourself. Cargo makes this ***super easy***!
 
    ```
-   cargo install --git https://github.com/rust-lang-nursery/mdBook.git mdbook
+   cargo install --git https://github.com/rust-lang/mdBook.git mdbook
    ```
 
    Again, make sure to add the Cargo bin directory to your `PATH`.
@@ -83,7 +66,7 @@ There are multiple ways to install mdBook.
    your local machine:
 
    ```
-   git clone https://github.com/rust-lang-nursery/mdBook.git
+   git clone https://github.com/rust-lang/mdBook.git
    ```
 
    `cd` into `mdBook/` and run
@@ -169,6 +152,9 @@ format, however there's nothing stopping a renderer from doing static analysis
 of a book in order to validate links or run tests. Some existing renderers are:
 
 - `html` - the built-in renderer which will generate a HTML version of the book
+- `markdown` - the built-in renderer (disabled by default) which will run
+  preprocessors then output the resulting Markdown. Useful for debugging
+  preprocessors.
 - [`linkcheck`] - a backend which will check that all links are valid
 - [`epub`] - an experimental EPUB generator
 
@@ -231,14 +217,14 @@ available, for those hacking on `master`.
 All the code in this repository is released under the ***Mozilla Public License v2.0***, for more information take a look at the [LICENSE] file.
 
 
-[User Guide]: https://rust-lang-nursery.github.io/mdBook/
+[User Guide]: https://rust-lang.github.io/mdBook/
 [API docs]: https://docs.rs/mdbook/*/mdbook/
-[E-Easy]: https://github.com/rust-lang-nursery/mdBook/issues?q=is%3Aopen+is%3Aissue+label%3AE-Easy
-[contribution guide]: https://github.com/rust-lang-nursery/mdBook/blob/master/CONTRIBUTING.md
-[LICENSE]: https://github.com/rust-lang-nursery/mdBook/blob/master/LICENSE
-[releases]: https://github.com/rust-lang-nursery/mdBook/releases
+[E-Easy]: https://github.com/rust-lang/mdBook/issues?q=is%3Aopen+is%3Aissue+label%3AE-Easy
+[contribution guide]: https://github.com/rust-lang/mdBook/blob/master/CONTRIBUTING.md
+[LICENSE]: https://github.com/rust-lang/mdBook/blob/master/LICENSE
+[releases]: https://github.com/rust-lang/mdBook/releases
 [Rust]: https://www.rust-lang.org/
-[CLI docs]: http://rust-lang-nursery.github.io/mdBook/cli/init.html
-[master-docs]: http://rust-lang-nursery.github.io/mdBook/
+[CLI docs]: http://rust-lang.github.io/mdBook/cli/init.html
+[master-docs]: http://rust-lang.github.io/mdBook/
 [`linkcheck`]: https://crates.io/crates/mdbook-linkcheck
 [`epub`]: https://crates.io/crates/mdbook-epub

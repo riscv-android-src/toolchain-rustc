@@ -6,7 +6,7 @@ pub use lint::Lint;
 pub use lint::LINT_LEVELS;
 
 // begin lint list, do not remove this comment, it’s used in `update_lints`
-pub const ALL_LINTS: [Lint; 315] = [
+pub const ALL_LINTS: [Lint; 332] = [
     Lint {
         name: "absurd_extreme_comparisons",
         group: "correctness",
@@ -253,6 +253,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         module: "collapsible_if",
     },
     Lint {
+        name: "comparison_chain",
+        group: "style",
+        desc: "`if`s that can be rewritten with `match` and `cmp`",
+        deprecation: None,
+        module: "comparison_chain",
+    },
+    Lint {
         name: "copy_iterator",
         group: "pedantic",
         desc: "implementing `Iterator` on a `Copy` type",
@@ -272,6 +279,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "`dbg!` macro is intended as a debugging tool",
         deprecation: None,
         module: "dbg_macro",
+    },
+    Lint {
+        name: "debug_assert_with_mut_call",
+        group: "correctness",
+        desc: "mutable arguments in `debug_assert{,_ne,_eq}!`",
+        deprecation: None,
+        module: "mutable_debug_assertion",
     },
     Lint {
         name: "decimal_literal_representation",
@@ -342,6 +356,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "unnecessary double comparisons that can be simplified",
         deprecation: None,
         module: "double_comparison",
+    },
+    Lint {
+        name: "double_must_use",
+        group: "style",
+        desc: "`#[must_use]` attribute on a `#[must_use]`-returning function / method",
+        deprecation: None,
+        module: "functions",
     },
     Lint {
         name: "double_neg",
@@ -722,6 +743,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         module: "bit_mask",
     },
     Lint {
+        name: "inefficient_to_string",
+        group: "perf",
+        desc: "using `to_string` on `&&T` where `T: ToString`",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
         name: "infallible_destructuring_match",
         group: "style",
         desc: "a match statement with a single infallible arm instead of a `let`",
@@ -930,6 +958,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "manually copying items between slices",
         deprecation: None,
         module: "loops",
+    },
+    Lint {
+        name: "manual_mul_add",
+        group: "nursery",
+        desc: "Using `a.mul_add(b, c)` for floating points has higher numerical precision than `a * b + c`",
+        deprecation: None,
+        module: "mul_add",
     },
     Lint {
         name: "manual_saturating_arithmetic",
@@ -1142,6 +1177,20 @@ pub const ALL_LINTS: [Lint; 315] = [
         module: "inherent_impl",
     },
     Lint {
+        name: "must_use_candidate",
+        group: "pedantic",
+        desc: "function or method that could take a `#[must_use]` attribute",
+        deprecation: None,
+        module: "functions",
+    },
+    Lint {
+        name: "must_use_unit",
+        group: "style",
+        desc: "`#[must_use]` attribute on a unit-returning function / method",
+        deprecation: None,
+        module: "functions",
+    },
+    Lint {
         name: "mut_from_ref",
         group: "correctness",
         desc: "fns that create mutable refs from immutable ref args",
@@ -1217,6 +1266,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "`continue` statements that can be replaced by a rearrangement of code",
         deprecation: None,
         module: "needless_continue",
+    },
+    Lint {
+        name: "needless_doctest_main",
+        group: "style",
+        desc: "presence of `fn main() {` in code examples",
+        deprecation: None,
+        module: "doc",
     },
     Lint {
         name: "needless_lifetimes",
@@ -1345,6 +1401,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         module: "methods",
     },
     Lint {
+        name: "option_expect_used",
+        group: "restriction",
+        desc: "using `Option.expect()`, which might be better handled",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
         name: "option_map_or_none",
         group: "style",
         desc: "using `Option.map_or(None, f)`, which is more succinctly expressed as `and_then(f)`",
@@ -1406,6 +1469,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "overflow checks inspired by C which are likely to panic",
         deprecation: None,
         module: "overflow_check_conditional",
+    },
+    Lint {
+        name: "panic",
+        group: "restriction",
+        desc: "usage of the `panic!` macro",
+        deprecation: None,
+        module: "panic_unimplemented",
     },
     Lint {
         name: "panic_params",
@@ -1528,7 +1598,7 @@ pub const ALL_LINTS: [Lint; 315] = [
     },
     Lint {
         name: "redundant_clone",
-        group: "nursery",
+        group: "perf",
         desc: "`clone()` of an owned value that is going to be dropped immediately",
         deprecation: None,
         module: "redundant_clone",
@@ -1602,6 +1672,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "Lint usages of standard library `const`s that could be replaced by `const fn`s",
         deprecation: None,
         module: "replace_consts",
+    },
+    Lint {
+        name: "result_expect_used",
+        group: "restriction",
+        desc: "using `Result.expect()`, which might be better handled",
+        deprecation: None,
+        module: "methods",
     },
     Lint {
         name: "result_map_unit_fn",
@@ -1779,6 +1856,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         module: "suspicious_trait_impl",
     },
     Lint {
+        name: "suspicious_unary_op_formatting",
+        group: "style",
+        desc: "suspicious formatting of unary `-` or `!` on the RHS of a BinOp",
+        deprecation: None,
+        module: "formatting",
+    },
+    Lint {
         name: "temporary_assignment",
         group: "complexity",
         desc: "assignments to temporaries",
@@ -1791,6 +1875,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "getting the inner pointer of a temporary `CString`",
         deprecation: None,
         module: "methods",
+    },
+    Lint {
+        name: "todo",
+        group: "restriction",
+        desc: "`todo!` should not be present in production code",
+        deprecation: None,
+        module: "panic_unimplemented",
     },
     Lint {
         name: "too_many_arguments",
@@ -1989,6 +2080,20 @@ pub const ALL_LINTS: [Lint; 315] = [
         module: "misc_early",
     },
     Lint {
+        name: "unneeded_wildcard_pattern",
+        group: "complexity",
+        desc: "tuple patterns with a wildcard pattern (`_`) is next to a rest pattern (`..`)",
+        deprecation: None,
+        module: "misc_early",
+    },
+    Lint {
+        name: "unreachable",
+        group: "restriction",
+        desc: "`unreachable!` should not be present in production code",
+        deprecation: None,
+        module: "panic_unimplemented",
+    },
+    Lint {
         name: "unreadable_literal",
         group: "style",
         desc: "long integer literal without underscores",
@@ -2010,6 +2115,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         module: "misc_early",
     },
     Lint {
+        name: "unsound_collection_transmute",
+        group: "correctness",
+        desc: "transmute between collections of layout-incompatible types",
+        deprecation: None,
+        module: "transmute",
+    },
+    Lint {
         name: "unused_io_amount",
         group: "correctness",
         desc: "unused written/read amount",
@@ -2022,6 +2134,13 @@ pub const ALL_LINTS: [Lint; 315] = [
         desc: "unused labels",
         deprecation: None,
         module: "unused_label",
+    },
+    Lint {
+        name: "unused_self",
+        group: "pedantic",
+        desc: "methods that contain a `self` argument but don\'t use it",
+        deprecation: None,
+        module: "unused_self",
     },
     Lint {
         name: "unused_unit",

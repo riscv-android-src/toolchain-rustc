@@ -1,5 +1,5 @@
-use crate::parse::ParseSess;
 use crate::parse::token::{self, Token, TokenKind};
+use crate::sess::ParseSess;
 use crate::symbol::{sym, Symbol};
 use crate::parse::unescape_error_reporting::{emit_unescape_error, push_escaped_char};
 
@@ -8,9 +8,7 @@ use syntax_pos::{BytePos, Pos, Span};
 use rustc_lexer::Base;
 use rustc_lexer::unescape;
 
-use std::borrow::Cow;
 use std::char;
-use std::iter;
 use std::convert::TryInto;
 use rustc_data_structures::sync::Lrc;
 use log::debug;
@@ -25,7 +23,7 @@ mod unicode_chars;
 #[derive(Clone, Debug)]
 pub struct UnmatchedBrace {
     pub expected_delim: token::DelimToken,
-    pub found_delim: token::DelimToken,
+    pub found_delim: Option<token::DelimToken>,
     pub found_span: Span,
     pub unclosed_span: Option<Span>,
     pub candidate_span: Option<Span>,
@@ -49,7 +47,7 @@ impl<'a> StringReader<'a> {
                source_file: Lrc<syntax_pos::SourceFile>,
                override_span: Option<Span>) -> Self {
         if source_file.src.is_none() {
-            sess.span_diagnostic.bug(&format!("Cannot lex source_file without source: {}",
+            sess.span_diagnostic.bug(&format!("cannot lex `source_file` without source: {}",
                                               source_file.name));
         }
 
@@ -181,18 +179,7 @@ impl<'a> StringReader<'a> {
                 let string = self.str_from(start);
                 // comments with only more "/"s are not doc comments
                 let tok = if is_doc_comment(string) {
-                    let mut idx = 0;
-                    loop {
-                        idx = match string[idx..].find('\r') {
-                            None => break,
-                            Some(it) => idx + it + 1
-                        };
-                        if string[idx..].chars().next() != Some('\n') {
-                            self.err_span_(start + BytePos(idx as u32 - 1),
-                                            start + BytePos(idx as u32),
-                                            "bare CR not allowed in doc-comment");
-                        }
-                    }
+                    self.forbid_bare_cr(start, string, "bare CR not allowed in doc-comment");
                     token::DocComment(Symbol::intern(string))
                 } else {
                     token::Comment
@@ -217,15 +204,10 @@ impl<'a> StringReader<'a> {
                 }
 
                 let tok = if is_doc_comment {
-                    let has_cr = string.contains('\r');
-                    let string = if has_cr {
-                        self.translate_crlf(start,
-                                            string,
-                                            "bare CR not allowed in block doc-comment")
-                    } else {
-                        string.into()
-                    };
-                    token::DocComment(Symbol::intern(&string[..]))
+                    self.forbid_bare_cr(start,
+                                        string,
+                                        "bare CR not allowed in block doc-comment");
+                    token::DocComment(Symbol::intern(string))
                 } else {
                     token::Comment
                 };
@@ -491,49 +473,16 @@ impl<'a> StringReader<'a> {
         &self.src[self.src_index(start)..self.src_index(end)]
     }
 
-    /// Converts CRLF to LF in the given string, raising an error on bare CR.
-    fn translate_crlf<'b>(&self, start: BytePos, s: &'b str, errmsg: &'b str) -> Cow<'b, str> {
-        let mut chars = s.char_indices().peekable();
-        while let Some((i, ch)) = chars.next() {
-            if ch == '\r' {
-                if let Some((lf_idx, '\n')) = chars.peek() {
-                    return translate_crlf_(self, start, s, *lf_idx, chars, errmsg).into();
-                }
-                let pos = start + BytePos(i as u32);
-                let end_pos = start + BytePos((i + ch.len_utf8()) as u32);
-                self.err_span_(pos, end_pos, errmsg);
-            }
-        }
-        return s.into();
-
-        fn translate_crlf_(rdr: &StringReader<'_>,
-                           start: BytePos,
-                           s: &str,
-                           mut j: usize,
-                           mut chars: iter::Peekable<impl Iterator<Item = (usize, char)>>,
-                           errmsg: &str)
-                           -> String {
-            let mut buf = String::with_capacity(s.len());
-            // Skip first CR
-            buf.push_str(&s[.. j - 1]);
-            while let Some((i, ch)) = chars.next() {
-                if ch == '\r' {
-                    if j < i {
-                        buf.push_str(&s[j..i]);
-                    }
-                    let next = i + ch.len_utf8();
-                    j = next;
-                    if chars.peek().map(|(_, ch)| *ch) != Some('\n') {
-                        let pos = start + BytePos(i as u32);
-                        let end_pos = start + BytePos(next as u32);
-                        rdr.err_span_(pos, end_pos, errmsg);
-                    }
-                }
-            }
-            if j < s.len() {
-                buf.push_str(&s[j..]);
-            }
-            buf
+    fn forbid_bare_cr(&self, start: BytePos, s: &str, errmsg: &str) {
+        let mut idx = 0;
+        loop {
+            idx = match s[idx..].find('\r') {
+                None => break,
+                Some(it) => idx + it + 1
+            };
+            self.err_span_(start + BytePos(idx as u32 - 1),
+                           start + BytePos(idx as u32),
+                           errmsg);
         }
     }
 

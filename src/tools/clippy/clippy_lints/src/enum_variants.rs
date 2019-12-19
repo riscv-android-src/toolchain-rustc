@@ -107,6 +107,7 @@ pub struct EnumVariantNames {
 }
 
 impl EnumVariantNames {
+    #[must_use]
     pub fn new(threshold: u64) -> Self {
         Self {
             modules: Vec::new(),
@@ -123,6 +124,7 @@ impl_lint_pass!(EnumVariantNames => [
 ]);
 
 /// Returns the number of chars that match from the start
+#[must_use]
 fn partial_match(pre: &str, name: &str) -> usize {
     let mut name_iter = name.chars();
     let _ = name_iter.next_back(); // make sure the name is never fully matched
@@ -130,6 +132,7 @@ fn partial_match(pre: &str, name: &str) -> usize {
 }
 
 /// Returns the number of chars that match from the end
+#[must_use]
 fn partial_rmatch(post: &str, name: &str) -> usize {
     let mut name_iter = name.chars();
     let _ = name_iter.next(); // make sure the name is never fully matched
@@ -211,6 +214,7 @@ fn check_variant(
     );
 }
 
+#[must_use]
 fn to_camel_case(item_name: &str) -> String {
     let mut s = String::new();
     let mut up = true;
@@ -249,7 +253,7 @@ impl EarlyLintPass for EnumVariantNames {
                 // constants don't have surrounding modules
                 if !mod_camel.is_empty() {
                     if mod_name == &item.ident.name {
-                        if let ItemKind::Mod(..) = item.node {
+                        if let ItemKind::Mod(..) = item.kind {
                             span_lint(
                                 cx,
                                 MODULE_INCEPTION,
@@ -288,7 +292,7 @@ impl EarlyLintPass for EnumVariantNames {
                 }
             }
         }
-        if let ItemKind::Enum(ref def, _) = item.node {
+        if let ItemKind::Enum(ref def, _) = item.kind {
             let lint = match item.vis.node {
                 VisibilityKind::Public => PUB_ENUM_VARIANT_NAMES,
                 _ => ENUM_VARIANT_NAMES,

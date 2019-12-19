@@ -11,9 +11,28 @@
 //! content of its components. The content of a `TAG_STR_VAL` is its actual
 //! UTF-8 bytes. The content of a `TAG_STR_REF` is the contents of the entry
 //! it references.
+//!
+//! Each string is referred to via a `StringId`. `StringId`s may be generated in two ways:
+//!     1. Calling `StringTable::alloc()` which returns the `StringId` for the allocated string.
+//!     2. Calling `StringTable::alloc_with_reserved_id()` and `StringId::reserved()`.
+//!
+//! Reserved strings allow you to deduplicate strings by allocating a string once and then referring
+//! to it by id over and over. This is a useful trick for strings which are recorded many times and
+//! it can significantly reduce the size of profile trace files.
+//!
+//! `StringId`s are partitioned according to type:
+//!
+//! > [0 .. MAX_PRE_RESERVED_STRING_ID, METADATA_STRING_ID, .. ]
+//!
+//! From `0` to `MAX_PRE_RESERVED_STRING_ID` are the allowed values for reserved strings.
+//! After `MAX_PRE_RESERVED_STRING_ID`, there is one string id (`METADATA_STRING_ID`) which is used
+//! internally by `measureme` to record additional metadata about the profiling session.
+//! After `METADATA_STRING_ID` are all other `StringId` values.
 
-use crate::file_header::{write_file_header, read_file_header, strip_file_header,
-                         FILE_MAGIC_STRINGTABLE_DATA, FILE_MAGIC_STRINGTABLE_INDEX};
+use crate::file_header::{
+    read_file_header, strip_file_header, write_file_header, FILE_MAGIC_STRINGTABLE_DATA,
+    FILE_MAGIC_STRINGTABLE_INDEX,
+};
 use crate::serialization::{Addr, SerializationSink};
 use byteorder::{ByteOrder, LittleEndian};
 use rustc_hash::FxHashMap;
@@ -45,13 +64,17 @@ const TAG_STR_VAL: u8 = 1;
 /// Marks a component that contains the ID of another string.
 const TAG_STR_REF: u8 = 2;
 
+/// The maximum id value a prereserved string may be.
 const MAX_PRE_RESERVED_STRING_ID: u32 = std::u32::MAX / 2;
+
+/// The id of the profile metadata string entry.
+pub(crate) const METADATA_STRING_ID: u32 = MAX_PRE_RESERVED_STRING_ID + 1;
 
 /// Write-only version of the string table
 pub struct StringTableBuilder<S: SerializationSink> {
     data_sink: Arc<S>,
     index_sink: Arc<S>,
-    id_counter: AtomicU32, // initialized to MAX_PRE_RESERVED_STRING_ID + 1
+    id_counter: AtomicU32, // initialized to METADATA_STRING_ID + 1
 }
 
 /// Anything that implements `SerializableString` can be written to a
@@ -120,7 +143,6 @@ fn deserialize_index_entry(bytes: &[u8]) -> (StringId, Addr) {
 
 impl<S: SerializationSink> StringTableBuilder<S> {
     pub fn new(data_sink: Arc<S>, index_sink: Arc<S>) -> StringTableBuilder<S> {
-
         // The first thing in every file we generate must be the file header.
         write_file_header(&*data_sink, FILE_MAGIC_STRINGTABLE_DATA);
         write_file_header(&*index_sink, FILE_MAGIC_STRINGTABLE_INDEX);
@@ -128,7 +150,7 @@ impl<S: SerializationSink> StringTableBuilder<S> {
         StringTableBuilder {
             data_sink,
             index_sink,
-            id_counter: AtomicU32::new(MAX_PRE_RESERVED_STRING_ID + 1),
+            id_counter: AtomicU32::new(METADATA_STRING_ID + 1),
         }
     }
 
@@ -143,10 +165,16 @@ impl<S: SerializationSink> StringTableBuilder<S> {
         id
     }
 
+    pub(crate) fn alloc_metadata<STR: SerializableString + ?Sized>(&self, s: &STR) -> StringId {
+        let id = StringId(METADATA_STRING_ID);
+        self.alloc_unchecked(id, s);
+        id
+    }
+
     #[inline]
     pub fn alloc<STR: SerializableString + ?Sized>(&self, s: &STR) -> StringId {
         let id = StringId(self.id_counter.fetch_add(1, Ordering::SeqCst));
-        debug_assert!(id.0 > MAX_PRE_RESERVED_STRING_ID);
+        debug_assert!(id.0 > METADATA_STRING_ID);
         self.alloc_unchecked(id, s);
         id
     }
@@ -237,9 +265,8 @@ pub struct StringTable {
     index: FxHashMap<StringId, Addr>,
 }
 
-impl<'data> StringTable {
+impl StringTable {
     pub fn new(string_data: Vec<u8>, index_data: Vec<u8>) -> Result<StringTable, Box<dyn Error>> {
-
         let string_data_format = read_file_header(&string_data, FILE_MAGIC_STRINGTABLE_DATA)?;
         let index_data_format = read_file_header(&index_data, FILE_MAGIC_STRINGTABLE_INDEX)?;
 
@@ -248,8 +275,11 @@ impl<'data> StringTable {
         }
 
         if string_data_format != 0 {
-            Err(format!("StringTable file format version '{}' is not supported
-                         by this version of `measureme`.", string_data_format))?;
+            Err(format!(
+                "StringTable file format version '{}' is not supported
+                         by this version of `measureme`.",
+                string_data_format
+            ))?;
         }
 
         assert!(index_data.len() % 8 == 0);
@@ -262,7 +292,7 @@ impl<'data> StringTable {
     }
 
     #[inline]
-    pub fn get(&self, id: StringId) -> StringRef {
+    pub fn get<'a>(&'a self, id: StringId) -> StringRef<'a> {
         StringRef { id, table: self }
     }
 }
