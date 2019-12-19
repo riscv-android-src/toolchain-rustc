@@ -197,11 +197,11 @@ pub struct Compiler {
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug)]
 pub enum DocTests {
-    // Default, run normal tests and doc tests.
+    /// Run normal tests and doc tests (default).
     Yes,
-    // Do not run any doc tests.
+    /// Do not run any doc tests.
     No,
-    // Only run doc tests.
+    /// Only run doc tests.
     Only,
 }
 
@@ -221,10 +221,10 @@ pub enum GitRepo {
 /// methods specifically on this structure itself (to make it easier to
 /// organize).
 pub struct Build {
-    // User-specified configuration via config.toml
+    /// User-specified configuration from `config.toml`.
     config: Config,
 
-    // Derived properties from the above two configurations
+    // Properties derived from the above configuration
     src: PathBuf,
     out: PathBuf,
     rust_info: channel::GitInfo,
@@ -240,12 +240,12 @@ pub struct Build {
     doc_tests: DocTests,
     verbosity: usize,
 
-    // Targets for which to build.
+    // Targets for which to build
     build: Interned<String>,
     hosts: Vec<Interned<String>>,
     targets: Vec<Interned<String>>,
 
-    // Stage 0 (downloaded) compiler and cargo or their local rust equivalents.
+    // Stage 0 (downloaded) compiler and cargo or their local rust equivalents
     initial_rustc: PathBuf,
     initial_cargo: PathBuf,
 
@@ -255,7 +255,7 @@ pub struct Build {
     cxx: HashMap<Interned<String>, cc::Tool>,
     ar: HashMap<Interned<String>, PathBuf>,
     ranlib: HashMap<Interned<String>, PathBuf>,
-    // Misc
+    // Miscellaneous
     crates: HashMap<Interned<String>, Crate>,
     is_sudo: bool,
     ci_env: CiEnv,
@@ -270,14 +270,9 @@ pub struct Build {
 #[derive(Debug)]
 struct Crate {
     name: Interned<String>,
-    version: String,
     deps: HashSet<Interned<String>>,
     id: String,
     path: PathBuf,
-    doc_step: String,
-    build_step: String,
-    test_step: String,
-    bench_step: String,
 }
 
 impl Crate {
@@ -1214,8 +1209,7 @@ impl Build {
     /// when this function is called.
     pub fn cp_r(&self, src: &Path, dst: &Path) {
         if self.config.dry_run { return; }
-        for f in t!(fs::read_dir(src)) {
-            let f = t!(f);
+        for f in self.read_dir(src) {
             let path = f.path();
             let name = path.file_name().unwrap();
             let dst = dst.join(name);

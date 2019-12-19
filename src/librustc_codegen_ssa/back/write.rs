@@ -13,7 +13,7 @@ use rustc::dep_graph::{WorkProduct, WorkProductId, WorkProductFileKind};
 use rustc::dep_graph::cgu_reuse_tracker::CguReuseTracker;
 use rustc::middle::cstore::EncodedMetadata;
 use rustc::session::config::{self, OutputFilenames, OutputType, Passes, Lto,
-                             Sanitizer, PgoGenerate};
+                             Sanitizer, SwitchWithOptPath};
 use rustc::session::Session;
 use rustc::util::nodemap::FxHashMap;
 use rustc::hir::def_id::{CrateNum, LOCAL_CRATE};
@@ -56,8 +56,8 @@ pub struct ModuleConfig {
     /// Some(level) to optimize binary size, or None to not affect program size.
     pub opt_size: Option<config::OptLevel>,
 
-    pub pgo_gen: PgoGenerate,
-    pub pgo_use: String,
+    pub pgo_gen: SwitchWithOptPath,
+    pub pgo_use: Option<PathBuf>,
 
     // Flags indicating which outputs to produce.
     pub emit_pre_lto_bc: bool,
@@ -94,8 +94,8 @@ impl ModuleConfig {
             opt_level: None,
             opt_size: None,
 
-            pgo_gen: PgoGenerate::Disabled,
-            pgo_use: String::new(),
+            pgo_gen: SwitchWithOptPath::Disabled,
+            pgo_use: None,
 
             emit_no_opt_bc: false,
             emit_pre_lto_bc: false,
@@ -375,10 +375,10 @@ fn need_pre_lto_bitcode_for_incr_comp(sess: &Session) -> bool {
 
 pub fn start_async_codegen<B: ExtraBackendMethods>(
     backend: B,
-    tcx: TyCtxt<'_, '_, '_>,
+    tcx: TyCtxt<'_>,
     metadata: EncodedMetadata,
     coordinator_receive: Receiver<Box<dyn Any + Send>>,
-    total_cgus: usize
+    total_cgus: usize,
 ) -> OngoingCodegen<B> {
     let sess = tcx.sess;
     let crate_name = tcx.crate_name(LOCAL_CRATE);
@@ -423,8 +423,8 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
         modules_config.passes.push("insert-gcov-profiling".to_owned())
     }
 
-    modules_config.pgo_gen = sess.opts.debugging_opts.pgo_gen.clone();
-    modules_config.pgo_use = sess.opts.debugging_opts.pgo_use.clone();
+    modules_config.pgo_gen = sess.opts.cg.profile_generate.clone();
+    modules_config.pgo_use = sess.opts.cg.profile_use.clone();
 
     modules_config.opt_level = Some(sess.opts.optimize);
     modules_config.opt_size = Some(sess.opts.optimize);
@@ -996,7 +996,7 @@ enum MainThreadWorkerState {
 
 fn start_executing_work<B: ExtraBackendMethods>(
     backend: B,
-    tcx: TyCtxt<'_, '_, '_>,
+    tcx: TyCtxt<'_>,
     crate_info: &CrateInfo,
     shared_emitter: SharedEmitter,
     codegen_worker_send: Sender<Message<B>>,
@@ -1005,7 +1005,7 @@ fn start_executing_work<B: ExtraBackendMethods>(
     jobserver: Client,
     modules_config: Arc<ModuleConfig>,
     metadata_config: Arc<ModuleConfig>,
-    allocator_config: Arc<ModuleConfig>
+    allocator_config: Arc<ModuleConfig>,
 ) -> thread::JoinHandle<Result<CompiledModules, ()>> {
     let coordinator_send = tcx.tx_to_llvm_workers.lock().clone();
     let sess = tcx.sess;
@@ -1861,9 +1861,11 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
         }, work_products)
     }
 
-    pub fn submit_pre_codegened_module_to_llvm(&self,
-                                                       tcx: TyCtxt<'_, '_, '_>,
-                                                       module: ModuleCodegen<B::Module>) {
+    pub fn submit_pre_codegened_module_to_llvm(
+        &self,
+        tcx: TyCtxt<'_>,
+        module: ModuleCodegen<B::Module>,
+    ) {
         self.wait_for_signal_to_codegen_item();
         self.check_for_errors(tcx.sess);
 
@@ -1872,7 +1874,7 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
         submit_codegened_module_to_llvm(&self.backend, tcx, module, cost);
     }
 
-    pub fn codegen_finished(&self, tcx: TyCtxt<'_, '_, '_>) {
+    pub fn codegen_finished(&self, tcx: TyCtxt<'_>) {
         self.wait_for_signal_to_codegen_item();
         self.check_for_errors(tcx.sess);
         drop(self.coordinator_send.send(Box::new(Message::CodegenComplete::<B>)));
@@ -1911,9 +1913,9 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
 
 pub fn submit_codegened_module_to_llvm<B: ExtraBackendMethods>(
     _backend: &B,
-    tcx: TyCtxt<'_, '_, '_>,
+    tcx: TyCtxt<'_>,
     module: ModuleCodegen<B::Module>,
-    cost: u64
+    cost: u64,
 ) {
     let llvm_work_item = WorkItem::Optimize(module);
     drop(tcx.tx_to_llvm_workers.lock().send(Box::new(Message::CodegenDone::<B> {
@@ -1924,8 +1926,8 @@ pub fn submit_codegened_module_to_llvm<B: ExtraBackendMethods>(
 
 pub fn submit_post_lto_module_to_llvm<B: ExtraBackendMethods>(
     _backend: &B,
-    tcx: TyCtxt<'_, '_, '_>,
-    module: CachedModuleCodegen
+    tcx: TyCtxt<'_>,
+    module: CachedModuleCodegen,
 ) {
     let llvm_work_item = WorkItem::CopyPostLtoArtifacts(module);
     drop(tcx.tx_to_llvm_workers.lock().send(Box::new(Message::CodegenDone::<B> {
@@ -1936,8 +1938,8 @@ pub fn submit_post_lto_module_to_llvm<B: ExtraBackendMethods>(
 
 pub fn submit_pre_lto_module_to_llvm<B: ExtraBackendMethods>(
     _backend: &B,
-    tcx: TyCtxt<'_, '_, '_>,
-    module: CachedModuleCodegen
+    tcx: TyCtxt<'_>,
+    module: CachedModuleCodegen,
 ) {
     let filename = pre_lto_bitcode_filename(&module.name);
     let bc_path = in_incr_comp_dir_sess(tcx.sess, &filename);
@@ -1961,7 +1963,7 @@ pub fn pre_lto_bitcode_filename(module_name: &str) -> String {
     format!("{}.{}", module_name, PRE_LTO_BC_EXT)
 }
 
-fn msvc_imps_needed(tcx: TyCtxt<'_, '_, '_>) -> bool {
+fn msvc_imps_needed(tcx: TyCtxt<'_>) -> bool {
     // This should never be true (because it's not supported). If it is true,
     // something is wrong with commandline arg validation.
     assert!(!(tcx.sess.opts.cg.linker_plugin_lto.enabled() &&

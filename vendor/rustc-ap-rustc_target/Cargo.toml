@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_target"
-version = "407.0.0"
+version = "491.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_target` in the rust-lang/rust repository from commit aa97448caf49ee25271a5ad58482283404b9144f The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_target` in the rust-lang/rust repository from commit 6312b89fdabce0aedf613391266e08c0deef2324 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
@@ -29,10 +29,13 @@ version = "1.0"
 version = "0.4"
 
 [dependencies.rustc-ap-rustc_cratesio_shim]
-version = "407.0.0"
+version = "491.0.0"
 
 [dependencies.rustc-ap-rustc_data_structures]
-version = "407.0.0"
+version = "491.0.0"
 
 [dependencies.rustc-ap-serialize]
-version = "407.0.0"
+version = "491.0.0"
+
+[dependencies.rustc-ap-syntax_pos]
+version = "491.0.0"

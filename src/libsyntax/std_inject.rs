@@ -2,8 +2,8 @@ use crate::ast;
 use crate::attr;
 use crate::edition::Edition;
 use crate::ext::hygiene::{Mark, SyntaxContext};
-use crate::symbol::{Symbol, keywords, sym};
-use crate::source_map::{ExpnInfo, MacroAttribute, dummy_spanned, hygiene, respan};
+use crate::symbol::{Ident, Symbol, kw, sym};
+use crate::source_map::{ExpnInfo, MacroAttribute, dummy_spanned, respan};
 use crate::ptr::P;
 use crate::tokenstream::TokenStream;
 
@@ -14,19 +14,11 @@ use syntax_pos::{DUMMY_SP, Span};
 /// Craft a span that will be ignored by the stability lint's
 /// call to source_map's `is_internal` check.
 /// The expanded code uses the unstable `#[prelude_import]` attribute.
-fn ignored_span(sp: Span) -> Span {
+fn ignored_span(sp: Span, edition: Edition) -> Span {
     let mark = Mark::fresh(Mark::root());
-    mark.set_expn_info(ExpnInfo {
-        call_site: DUMMY_SP,
-        def_site: None,
-        format: MacroAttribute(Symbol::intern("std_inject")),
-        allow_internal_unstable: Some(vec![
-            Symbol::intern("prelude_import"),
-        ].into()),
-        allow_internal_unsafe: false,
-        local_inner_macros: false,
-        edition: hygiene::default_edition(),
-    });
+    mark.set_expn_info(ExpnInfo::with_unstable(
+        MacroAttribute(Symbol::intern("std_inject")), sp, edition, &[sym::prelude_import]
+    ));
     sp.with_ctxt(SyntaxContext::empty().apply_mark(mark))
 }
 
@@ -63,18 +55,15 @@ pub fn maybe_inject_crates_ref(
 
     // .rev() to preserve ordering above in combination with insert(0, ...)
     let alt_std_name = alt_std_name.map(Symbol::intern);
-    for orig_name in names.iter().rev() {
-        let orig_name = Symbol::intern(orig_name);
-        let mut rename = orig_name;
+    for orig_name_str in names.iter().rev() {
         // HACK(eddyb) gensym the injected crates on the Rust 2018 edition,
         // so they don't accidentally interfere with the new import paths.
-        if rust_2018 {
-            rename = orig_name.gensymed();
-        }
-        let orig_name = if rename != orig_name {
-            Some(orig_name)
+        let orig_name_sym = Symbol::intern(orig_name_str);
+        let orig_name_ident = Ident::with_empty_ctxt(orig_name_sym);
+        let (rename, orig_name) = if rust_2018 {
+            (orig_name_ident.gensym(), Some(orig_name_sym))
         } else {
-            None
+            (orig_name_ident, None)
         };
         krate.module.items.insert(0, P(ast::Item {
             attrs: vec![attr::mk_attr_outer(
@@ -84,7 +73,7 @@ pub fn maybe_inject_crates_ref(
             )],
             vis: dummy_spanned(ast::VisibilityKind::Inherited),
             node: ast::ItemKind::ExternCrate(alt_std_name.or(orig_name)),
-            ident: ast::Ident::with_empty_ctxt(rename),
+            ident: rename,
             id: ast::DUMMY_NODE_ID,
             span: DUMMY_SP,
             tokens: None,
@@ -97,11 +86,11 @@ pub fn maybe_inject_crates_ref(
 
     INJECTED_CRATE_NAME.with(|opt_name| opt_name.set(Some(name)));
 
-    let span = ignored_span(DUMMY_SP);
+    let span = ignored_span(DUMMY_SP, edition);
     krate.module.items.insert(0, P(ast::Item {
         attrs: vec![ast::Attribute {
             style: ast::AttrStyle::Outer,
-            path: ast::Path::from_ident(ast::Ident::new(Symbol::intern("prelude_import"), span)),
+            path: ast::Path::from_ident(ast::Ident::new(sym::prelude_import, span)),
             tokens: TokenStream::empty(),
             id: attr::mk_attr_id(),
             is_sugared_doc: false,
@@ -110,7 +99,7 @@ pub fn maybe_inject_crates_ref(
         vis: respan(span.shrink_to_lo(), ast::VisibilityKind::Inherited),
         node: ast::ItemKind::Use(P(ast::UseTree {
             prefix: ast::Path {
-                segments: iter::once(keywords::PathRoot.ident())
+                segments: iter::once(ast::Ident::with_empty_ctxt(kw::PathRoot))
                     .chain(
                         [name, "prelude", "v1"].iter().cloned()
                             .map(ast::Ident::from_str)
@@ -121,7 +110,7 @@ pub fn maybe_inject_crates_ref(
             span,
         })),
         id: ast::DUMMY_NODE_ID,
-        ident: keywords::Invalid.ident(),
+        ident: ast::Ident::invalid(),
         span,
         tokens: None,
     }));

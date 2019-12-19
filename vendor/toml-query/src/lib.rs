@@ -8,9 +8,10 @@
 
 // external crates
 
-#[macro_use] extern crate error_chain;
 #[macro_use] extern crate is_match;
 #[macro_use] extern crate lazy_static;
+#[macro_use] extern crate failure_derive;
+extern crate failure;
 extern crate regex;
 extern crate toml;
 
@@ -31,6 +32,11 @@ extern crate serde_derive;
 
 #[cfg(not(feature = "log"))]
 #[macro_use] pub mod log;
+
+extern crate toml_query_derive;
+
+#[doc(hidden)]
+pub use toml_query_derive::*;
 
 pub mod error;
 pub mod read;

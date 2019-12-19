@@ -41,7 +41,7 @@ impl CognitiveComplexity {
 impl_lint_pass!(CognitiveComplexity => [COGNITIVE_COMPLEXITY]);
 
 impl CognitiveComplexity {
-    fn check<'a, 'tcx: 'a>(&mut self, cx: &'a LateContext<'a, 'tcx>, body: &'tcx Body, span: Span) {
+    fn check<'a, 'tcx>(&mut self, cx: &'a LateContext<'a, 'tcx>, body: &'tcx Body, span: Span) {
         if in_macro_or_desugar(span) {
             return;
         }
@@ -74,7 +74,8 @@ impl CognitiveComplexity {
         let ret_adjust = if match_type(cx, ret_ty, &paths::RESULT) {
             returns
         } else {
-            returns / 2
+            #[allow(clippy::integer_division)]
+            (returns / 2)
         };
 
         if cc + divergence < match_arms + short_circuits {
@@ -131,7 +132,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CognitiveComplexity {
     }
 }
 
-struct CCHelper<'a, 'tcx: 'a> {
+struct CCHelper<'a, 'tcx> {
     match_arms: u64,
     divergence: u64,
     returns: u64,

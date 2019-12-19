@@ -9,9 +9,9 @@ use std::ops::{Bound, RangeBounds};
 
 use typenum::{Add1, Unsigned};
 
-use config::OrdChunkSize as NodeSize;
-use nodes::sized_chunk::Chunk;
-use util::{clone_ref, Ref};
+use crate::config::OrdChunkSize as NodeSize;
+use crate::nodes::sized_chunk::Chunk;
+use crate::util::{clone_ref, Ref};
 
 use self::Insert::*;
 use self::InsertAction::*;
@@ -19,14 +19,17 @@ use self::InsertAction::*;
 const NODE_SIZE: usize = NodeSize::USIZE;
 const MEDIAN: usize = (NODE_SIZE + 1) >> 1;
 
-pub trait BTreeValue: Clone {
+pub trait BTreeValue {
     type Key;
     fn ptr_eq(&self, other: &Self) -> bool;
     fn search_key<BK>(slice: &[Self], key: &BK) -> Result<usize, usize>
     where
         BK: Ord + ?Sized,
+        Self: Sized,
         Self::Key: Borrow<BK>;
-    fn search_value(slice: &[Self], value: &Self) -> Result<usize, usize>;
+    fn search_value(slice: &[Self], value: &Self) -> Result<usize, usize>
+    where
+        Self: Sized;
     fn cmp_keys<BK>(&self, other: &BK) -> Ordering
     where
         BK: Ord + ?Sized,
@@ -90,10 +93,7 @@ impl<A> Default for Node<A> {
     }
 }
 
-impl<A> Node<A>
-where
-    A: Clone,
-{
+impl<A> Node<A> {
     #[inline]
     fn has_room(&self) -> bool {
         self.keys.len() < NODE_SIZE
@@ -180,6 +180,7 @@ impl<A: BTreeValue> Node<A> {
 
     pub fn lookup_mut<BK>(&mut self, key: &BK) -> Option<&mut A>
     where
+        A: Clone,
         BK: Ord + ?Sized,
         A::Key: Borrow<BK>,
     {
@@ -424,7 +425,10 @@ impl<A: BTreeValue> Node<A> {
         self.children.push_back(child);
     }
 
-    pub fn insert(&mut self, value: A) -> Insert<A> {
+    pub fn insert(&mut self, value: A) -> Insert<A>
+    where
+        A: Clone,
+    {
         if self.keys.is_empty() {
             self.keys.push_back(value);
             self.children.push_back(None);
@@ -437,7 +441,7 @@ impl<A: BTreeValue> Node<A> {
             }
             // Key is adjacent to some key in node
             Err(index) => {
-                let mut has_room = self.has_room();
+                let has_room = self.has_room();
                 let action = match self.children[index] {
                     // No child at location, this is the target node.
                     None => InsertAt,
@@ -484,6 +488,7 @@ impl<A: BTreeValue> Node<A> {
 
     pub fn remove<BK>(&mut self, key: &BK) -> Remove<A>
     where
+        A: Clone,
         BK: Ord + ?Sized,
         A::Key: Borrow<BK>,
     {
@@ -493,6 +498,7 @@ impl<A: BTreeValue> Node<A> {
 
     fn remove_index<BK>(&mut self, index: Result<usize, usize>, key: &BK) -> Remove<A>
     where
+        A: Clone,
         BK: Ord + ?Sized,
         A::Key: Borrow<BK>,
     {
@@ -564,7 +570,7 @@ impl<A: BTreeValue> Node<A> {
                 Remove::Removed(pair)
             }
             RemoveAction::PullUp(target_index, pull_to, child_index) => {
-                let mut children = &mut self.children;
+                let children = &mut self.children;
                 let mut update = None;
                 let mut value;
                 if let Some(&mut Some(ref mut child_ref)) = children.get_mut(child_index) {
@@ -618,8 +624,8 @@ impl<A: BTreeValue> Node<A> {
                                 unreachable!()
                             }
                         });
-                    let mut left = Ref::make_mut(children.next().unwrap());
-                    let mut child = Ref::make_mut(children.next().unwrap());
+                    let left = Ref::make_mut(children.next().unwrap());
+                    let child = Ref::make_mut(children.next().unwrap());
                     // Prepare the rebalanced node.
                     child.push_min(
                         left.children.last().unwrap().clone(),
@@ -664,8 +670,8 @@ impl<A: BTreeValue> Node<A> {
                                 unreachable!()
                             }
                         });
-                    let mut child = Ref::make_mut(children.next().unwrap());
-                    let mut right = Ref::make_mut(children.next().unwrap());
+                    let child = Ref::make_mut(children.next().unwrap());
+                    let right = Ref::make_mut(children.next().unwrap());
                     // Prepare the rebalanced node.
                     child.push_max(right.children[0].clone(), self.keys[index].clone());
                     match child.remove(key) {
@@ -1001,7 +1007,7 @@ impl<A: Clone> ConsumingIter<A> {
 
 impl<A> Iterator for ConsumingIter<A>
 where
-    A: BTreeValue,
+    A: BTreeValue + Clone,
 {
     type Item = A;
 
@@ -1037,7 +1043,7 @@ where
 
 impl<A> DoubleEndedIterator for ConsumingIter<A>
 where
-    A: BTreeValue,
+    A: BTreeValue + Clone,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
         loop {
@@ -1065,7 +1071,7 @@ where
     }
 }
 
-impl<A: BTreeValue> ExactSizeIterator for ConsumingIter<A> {}
+impl<A: BTreeValue + Clone> ExactSizeIterator for ConsumingIter<A> {}
 
 // DiffIter
 

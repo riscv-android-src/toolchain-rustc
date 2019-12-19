@@ -2,6 +2,7 @@ use super::TokenStreamExt;
 
 use std::borrow::Cow;
 use std::iter;
+use std::rc::Rc;
 
 use proc_macro2::{Group, Ident, Literal, Punct, Span, TokenStream, TokenTree};
 
@@ -21,12 +22,9 @@ pub trait ToTokens {
     /// Example implementation for a struct representing Rust paths like
     /// `std::cmp::PartialEq`:
     ///
-    /// ```
-    /// extern crate quote;
-    /// use quote::{TokenStreamExt, ToTokens};
-    ///
-    /// extern crate proc_macro2;
+    /// ```edition2018
     /// use proc_macro2::{TokenTree, Spacing, Span, Punct, TokenStream};
+    /// use quote::{TokenStreamExt, ToTokens};
     ///
     /// pub struct Path {
     ///     pub global: bool,
@@ -53,8 +51,6 @@ pub trait ToTokens {
     /// #         unimplemented!()
     /// #     }
     /// # }
-    /// #
-    /// # fn main() {}
     /// ```
     fn to_tokens(&self, tokens: &mut TokenStream);
 
@@ -91,6 +87,12 @@ impl<'a, T: ?Sized + ToOwned + ToTokens> ToTokens for Cow<'a, T> {
 }
 
 impl<T: ?Sized + ToTokens> ToTokens for Box<T> {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        (**self).to_tokens(tokens);
+    }
+}
+
+impl<T: ?Sized + ToTokens> ToTokens for Rc<T> {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         (**self).to_tokens(tokens);
     }

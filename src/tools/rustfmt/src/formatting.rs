@@ -12,6 +12,7 @@ use syntax::errors::{DiagnosticBuilder, Handler};
 use syntax::parse::{self, ParseSess};
 use syntax::source_map::{FilePathMapping, SourceMap, Span, DUMMY_SP};
 
+use self::newline_style::apply_newline_style;
 use crate::comment::{CharClasses, FullCodeCharKind};
 use crate::config::{Config, FileName, Verbosity};
 use crate::ignore_path::IgnorePathSet;
@@ -19,6 +20,8 @@ use crate::issues::BadIssueSeeker;
 use crate::utils::{count_newlines, get_skip_macro_names};
 use crate::visitor::{FmtVisitor, SnippetProvider};
 use crate::{modules, source_file, ErrorKind, FormatReport, Input, Session};
+
+mod newline_style;
 
 // A map of the files of a crate, with their new content
 pub(crate) type SourceFile = Vec<FileRecord>;
@@ -30,11 +33,7 @@ impl<'b, T: Write + 'b> Session<'b, T> {
             return Err(ErrorKind::VersionMismatch);
         }
 
-        syntax::with_globals(|| {
-            syntax_pos::hygiene::set_default_edition(
-                self.config.edition().to_libsyntax_pos_edition(),
-            );
-
+        syntax::with_globals(self.config.edition().to_libsyntax_pos_edition(), || {
             if self.config.disable_all_formatting() {
                 // When the input is from stdin, echo back the input.
                 if let Input::Text(ref buf) = input {
@@ -100,20 +99,20 @@ fn format_project<T: FormatHandler>(
 
     let mut context = FormatContext::new(&krate, report, parse_session, config, handler);
     let files = modules::ModResolver::new(
-        context.parse_session.source_map(),
-        directory_ownership.unwrap_or(parse::DirectoryOwnership::UnownedViaMod(false)),
-        input_is_stdin,
+        &context.parse_session,
+        directory_ownership.unwrap_or(parse::DirectoryOwnership::UnownedViaMod(true)),
+        !(input_is_stdin || config.skip_children()),
     )
     .visit_crate(&krate)
     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-    for (path, (module, _)) in files {
+    for (path, module) in files {
         let should_ignore = !input_is_stdin && ignore_path_set.is_match(&path);
         if (config.skip_children() && path != main_file) || should_ignore {
             continue;
         }
         should_emit_verbose(input_is_stdin, config, || println!("Formatting {}", path));
         let is_root = path == main_file;
-        context.format_file(path, module, is_root)?;
+        context.format_file(path, &module, is_root)?;
     }
     timer = timer.done_formatting();
 
@@ -191,9 +190,12 @@ impl<'a, T: FormatHandler + 'a> FormatContext<'a, T> {
             &self.config,
             &self.report,
         );
-        self.config
-            .newline_style()
-            .apply(&mut visitor.buffer, &big_snippet);
+
+        apply_newline_style(
+            self.config.newline_style(),
+            &mut visitor.buffer,
+            &big_snippet,
+        );
 
         if visitor.macro_rewrite_failure {
             self.report.add_macro_format_failure();
@@ -347,7 +349,7 @@ pub(crate) struct ReportedErrors {
 
 impl ReportedErrors {
     /// Combine two summaries together.
-    pub fn add(&mut self, other: &ReportedErrors) {
+    pub(crate) fn add(&mut self, other: &ReportedErrors) {
         self.has_operational_errors |= other.has_operational_errors;
         self.has_parsing_errors |= other.has_parsing_errors;
         self.has_formatting_errors |= other.has_formatting_errors;
@@ -452,8 +454,7 @@ struct FormatLines<'a> {
     errors: Vec<FormattingError>,
     issue_seeker: BadIssueSeeker,
     line_buffer: String,
-    // `true` if the current line contains a string literal.
-    is_string: bool,
+    current_line_contains_string_literal: bool,
     format_line: bool,
     allow_issue_seek: bool,
     config: &'a Config,
@@ -477,7 +478,7 @@ impl<'a> FormatLines<'a> {
             allow_issue_seek: !issue_seeker.is_disabled(),
             issue_seeker,
             line_buffer: String::with_capacity(config.max_width() * 2),
-            is_string: false,
+            current_line_contains_string_literal: false,
             format_line: config.file_lines().contains_line(name, 1),
             config,
         }
@@ -541,7 +542,7 @@ impl<'a> FormatLines<'a> {
                 && !self.is_skipped_line()
                 && self.should_report_error(kind, &error_kind)
             {
-                let is_string = self.is_string;
+                let is_string = self.current_line_contains_string_literal;
                 self.push_err(error_kind, kind.is_comment(), is_string);
             }
         }
@@ -555,7 +556,7 @@ impl<'a> FormatLines<'a> {
         self.newline_count += 1;
         self.last_was_space = false;
         self.line_buffer.clear();
-        self.is_string = false;
+        self.current_line_contains_string_literal = false;
     }
 
     fn char(&mut self, c: char, kind: FullCodeCharKind) {
@@ -568,7 +569,7 @@ impl<'a> FormatLines<'a> {
         self.last_was_space = c.is_whitespace();
         self.line_buffer.push(c);
         if kind.is_string() {
-            self.is_string = true;
+            self.current_line_contains_string_literal = true;
         }
     }
 
@@ -583,12 +584,14 @@ impl<'a> FormatLines<'a> {
     }
 
     fn should_report_error(&self, char_kind: FullCodeCharKind, error_kind: &ErrorKind) -> bool {
-        let allow_error_report =
-            if char_kind.is_comment() || self.is_string || error_kind.is_comment() {
-                self.config.error_on_unformatted()
-            } else {
-                true
-            };
+        let allow_error_report = if char_kind.is_comment()
+            || self.current_line_contains_string_literal
+            || error_kind.is_comment()
+        {
+            self.config.error_on_unformatted()
+        } else {
+            true
+        };
 
         match error_kind {
             ErrorKind::LineOverflow(..) => {
@@ -680,7 +683,7 @@ fn parse_crate(
 struct SilentEmitter;
 
 impl Emitter for SilentEmitter {
-    fn emit(&mut self, _db: &DiagnosticBuilder<'_>) {}
+    fn emit_diagnostic(&mut self, _db: &DiagnosticBuilder<'_>) {}
 }
 
 fn silent_emitter() -> Box<SilentEmitter> {

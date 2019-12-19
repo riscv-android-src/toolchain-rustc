@@ -3,7 +3,6 @@
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(core_intrinsics)]
-#![feature(custom_attribute)]
 #![feature(libc)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(stmt_expr_attributes)]
@@ -15,7 +14,7 @@
 #![allow(dead_code)]
 #![deny(rust_2018_idioms)]
 #![deny(internal)]
-#![allow(explicit_outlives_requirements)]
+#![deny(unused_lifetimes)]
 
 #![recursion_limit="256"]
 

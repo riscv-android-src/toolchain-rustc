@@ -15,7 +15,7 @@ macro_rules! panic {
         $crate::panic!($msg)
     );
     ($fmt:expr, $($arg:tt)+) => ({
-        $crate::panicking::panic_fmt(format_args!($fmt, $($arg)*),
+        $crate::panicking::panic_fmt(format_args!($fmt, $($arg)+),
                                      &(file!(), line!(), __rust_unstable_column!()))
     });
 }
@@ -445,9 +445,10 @@ macro_rules! writeln {
 /// * Iterators that dynamically terminate.
 ///
 /// If the determination that the code is unreachable proves incorrect, the
-/// program immediately terminates with a [`panic!`]. The function [`unreachable_unchecked`],
-/// which belongs to the [`std::hint`] module, informs the compiler to
-/// optimize the code out of the release version entirely.
+/// program immediately terminates with a [`panic!`].
+///
+/// The unsafe counterpart of this macro is the [`unreachable_unchecked`] function, which
+/// will cause undefined behavior if the code is reached.
 ///
 /// [`panic!`]:  ../std/macro.panic.html
 /// [`unreachable_unchecked`]: ../std/hint/fn.unreachable_unchecked.html
@@ -557,7 +558,7 @@ macro_rules! unreachable {
 #[stable(feature = "rust1", since = "1.0.0")]
 macro_rules! unimplemented {
     () => (panic!("not yet implemented"));
-    ($($arg:tt)+) => (panic!("not yet implemented: {}", format_args!($($arg)*)));
+    ($($arg:tt)+) => (panic!("not yet implemented: {}", format_args!($($arg)+)));
 }
 
 /// Indicates unfinished code.
@@ -616,7 +617,7 @@ macro_rules! unimplemented {
 #[unstable(feature = "todo_macro", issue = "59277")]
 macro_rules! todo {
     () => (panic!("not yet implemented"));
-    ($($arg:tt)+) => (panic!("not yet implemented: {}", format_args!($($arg)*)));
+    ($($arg:tt)+) => (panic!("not yet implemented: {}", format_args!($($arg)+)));
 }
 
 /// Creates an array of [`MaybeUninit`].

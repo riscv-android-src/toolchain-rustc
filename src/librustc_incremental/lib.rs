@@ -2,6 +2,7 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
+#![feature(in_band_lifetimes)]
 #![feature(nll)]
 #![feature(specialization)]
 
@@ -9,6 +10,7 @@
 
 #![deny(rust_2018_idioms)]
 #![deny(internal)]
+#![deny(unused_lifetimes)]
 
 #[macro_use] extern crate rustc;
 #[allow(unused_extern_crates)]

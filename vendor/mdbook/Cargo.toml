@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -11,11 +11,12 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "mdbook"
-version = "0.2.3"
+version = "0.3.0"
 authors = ["Mathieu David <mathieudavid@mathieudavid.org>", "Michael-F-Bryan <michaelfbryan@gmail.com>", "Matt Ickstadt <mattico8@gmail.com>"]
-exclude = ["book-example/*"]
-description = "Create books from markdown files"
+exclude = ["/book-example/*"]
+description = "Creates a book from markdown files"
 documentation = "http://rust-lang-nursery.github.io/mdBook/index.html"
 readme = "README.md"
 keywords = ["book", "gitbook", "rustbook", "markdown"]
@@ -26,7 +27,7 @@ repository = "https://github.com/rust-lang-nursery/mdBook"
 name = "mdbook"
 doc = false
 [dependencies.ammonia]
-version = "1.1"
+version = "2.1"
 optional = true
 
 [dependencies.chrono]
@@ -41,20 +42,22 @@ optional = true
 default-features = false
 
 [dependencies.env_logger]
-version = "0.5"
+version = "0.6"
 
 [dependencies.error-chain]
 version = "0.12"
 
 [dependencies.handlebars]
 version = "1.0"
+features = ["no_dir_source"]
+default-features = false
 
 [dependencies.iron]
 version = "0.6"
 optional = true
 
 [dependencies.itertools]
-version = "0.7"
+version = "0.8"
 
 [dependencies.lazy_static]
 version = "1.0"
@@ -73,7 +76,7 @@ optional = true
 version = "1.1"
 
 [dependencies.pulldown-cmark]
-version = "0.1.2"
+version = "0.5"
 
 [dependencies.regex]
 version = "1.0.0"
@@ -98,19 +101,16 @@ optional = true
 version = "3.0"
 
 [dependencies.toml]
-version = "0.4.8"
+version = "0.5.1"
 
 [dependencies.toml-query]
-version = "0.7"
+version = "0.9"
 
 [dependencies.ws]
-version = "0.7"
+version = "0.8"
 optional = true
 [dev-dependencies.pretty_assertions]
-version = "0.5"
-
-[dev-dependencies.pulldown-cmark-to-cmark]
-version = "1.1.0"
+version = "0.6"
 
 [dev-dependencies.select]
 version = "0.4"

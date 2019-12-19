@@ -133,27 +133,16 @@ static int does_negate_rule(int *out, git_vector *rules, git_attr_fnmatch *match
 				continue;
 		}
 
-		/*
-		 * When dealing with a directory, we add '/<star>' so
-		 * p_fnmatch() honours FNM_PATHNAME. Checking for LEADINGDIR
-		 * alone isn't enough as that's also set for nagations, so we
-		 * need to check that NEGATIVE is off.
-		 */
 		git_buf_clear(&buf);
-		if (rule->containing_dir) {
+		if (rule->containing_dir)
 			git_buf_puts(&buf, rule->containing_dir);
-		}
+		git_buf_puts(&buf, rule->pattern);
 
-		error = git_buf_puts(&buf, rule->pattern);
-
-		if ((rule->flags & (GIT_ATTR_FNMATCH_LEADINGDIR | GIT_ATTR_FNMATCH_NEGATIVE)) == GIT_ATTR_FNMATCH_LEADINGDIR)
-			error = git_buf_PUTS(&buf, "/*");
-
-		if (error < 0)
+		if (git_buf_oom(&buf))
 			goto out;
 
 		if ((error = p_fnmatch(git_buf_cstr(&buf), path, fnflags)) < 0) {
-			giterr_set(GITERR_INVALID, "error matching pattern");
+			git_error_set(GIT_ERROR_INVALID, "error matching pattern");
 			goto out;
 		}
 
@@ -169,7 +158,7 @@ static int does_negate_rule(int *out, git_vector *rules, git_attr_fnmatch *match
 
 out:
 	git__free(path);
-	git_buf_free(&buf);
+	git_buf_dispose(&buf);
 	return error;
 }
 
@@ -182,7 +171,7 @@ static int parse_ignore_file(
 	git_attr_fnmatch *match = NULL;
 
 	if (git_repository__cvar(&ignore_case, repo, GIT_CVAR_IGNORECASE) < 0)
-		giterr_clear();
+		git_error_clear();
 
 	/* if subdir file path, convert context for file paths */
 	if (attrs->entry &&
@@ -191,7 +180,7 @@ static int parse_ignore_file(
 		context = attrs->entry->path;
 
 	if (git_mutex_lock(&attrs->lock) < 0) {
-		giterr_set(GITERR_OS, "failed to lock ignore file");
+		git_error_set(GIT_ERROR_OS, "failed to lock ignore file");
 		return -1;
 	}
 
@@ -203,7 +192,10 @@ static int parse_ignore_file(
 			break;
 		}
 
-		match->flags = GIT_ATTR_FNMATCH_ALLOWSPACE | GIT_ATTR_FNMATCH_ALLOWNEG;
+		match->flags =
+		    GIT_ATTR_FNMATCH_ALLOWSPACE |
+		    GIT_ATTR_FNMATCH_ALLOWNEG |
+		    GIT_ATTR_FNMATCH_NOLEADINGDIR;
 
 		if (!(error = git_attr_fnmatch__parse(
 			match, &attrs->pool, context, &scan)))
@@ -323,7 +315,7 @@ int git_ignore__for_path(
 		    (error = git_path_to_dir(&local)) < 0 ||
 		    (error = git_buf_joinpath(&ignores->dir, workdir, local.ptr)) < 0)
 		{;} /* Nothing, we just want to stop on the first error */
-		git_buf_free(&local);
+		git_buf_dispose(&local);
 	} else {
 		error = git_buf_joinpath(&ignores->dir, path, "");
 	}
@@ -363,7 +355,7 @@ int git_ignore__for_path(
 			git_repository_attr_cache(repo)->cfg_excl_file);
 
 cleanup:
-	git_buf_free(&infopath);
+	git_buf_dispose(&infopath);
 	if (error < 0)
 		git_ignore__free(ignores);
 
@@ -435,7 +427,7 @@ void git_ignore__free(git_ignores *ignores)
 	}
 	git_vector_free(&ignores->ign_global);
 
-	git_buf_free(&ignores->dir);
+	git_buf_dispose(&ignores->dir);
 }
 
 static bool ignore_lookup_in_rules(
@@ -445,6 +437,9 @@ static bool ignore_lookup_in_rules(
 	git_attr_fnmatch *match;
 
 	git_vector_rforeach(&file->rules, j, match) {
+		if (match->flags & GIT_ATTR_FNMATCH_DIRECTORY &&
+		    path->is_dir == GIT_DIR_FLAG_FALSE)
+			continue;
 		if (git_attr_fnmatch__match(match, path)) {
 			*ignored = ((match->flags & GIT_ATTR_FNMATCH_NEGATIVE) == 0) ?
 				GIT_IGNORE_TRUE : GIT_IGNORE_FALSE;
@@ -539,7 +534,9 @@ int git_ignore_path_is_ignored(
 	memset(&path, 0, sizeof(path));
 	memset(&ignores, 0, sizeof(ignores));
 
-	if (git_repository_is_bare(repo))
+	if (!git__suffixcmp(pathname, "/"))
+		dir_flag = GIT_DIR_FLAG_TRUE;
+	else if (git_repository_is_bare(repo))
 		dir_flag = GIT_DIR_FLAG_FALSE;
 
 	if ((error = git_attr_path__init(&path, pathname, workdir, dir_flag)) < 0 ||
@@ -629,7 +626,7 @@ int git_ignore__check_pathspec_for_exact_ignores(
 			break;
 
 		if (ignored) {
-			giterr_set(GITERR_INVALID, "pathspec contains ignored file '%s'",
+			git_error_set(GIT_ERROR_INVALID, "pathspec contains ignored file '%s'",
 				filename);
 			error = GIT_EINVALIDSPEC;
 			break;
@@ -637,7 +634,7 @@ int git_ignore__check_pathspec_for_exact_ignores(
 	}
 
 	git_index_free(idx);
-	git_buf_free(&path);
+	git_buf_dispose(&path);
 
 	return error;
 }

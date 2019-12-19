@@ -7,7 +7,7 @@ use syntax::print::pp::{self, Breaks};
 use syntax::print::pp::Breaks::{Consistent, Inconsistent};
 use syntax::print::pprust::{self, PrintState};
 use syntax::ptr::P;
-use syntax::symbol::keywords;
+use syntax::symbol::kw;
 use syntax::util::parser::{self, AssocOp, Fixity};
 use syntax_pos::{self, BytePos, FileName};
 
@@ -625,10 +625,10 @@ impl<'a> State<'a> {
                         self.word_space("for ?")?;
                         self.print_trait_ref(&ptr.trait_ref)?;
                     } else {
-                        real_bounds.push(b.clone());
+                        real_bounds.push(b);
                     }
                 }
-                self.print_bounds(":", &real_bounds[..])?;
+                self.print_bounds(":", real_bounds)?;
                 self.s.word(";")?;
                 self.end()?; // end the outer ibox
             }
@@ -698,10 +698,10 @@ impl<'a> State<'a> {
                         self.word_space("for ?")?;
                         self.print_trait_ref(&ptr.trait_ref)?;
                     } else {
-                        real_bounds.push(b.clone());
+                        real_bounds.push(b);
                     }
                 }
-                self.print_bounds(":", &real_bounds[..])?;
+                self.print_bounds(":", real_bounds)?;
                 self.print_where_clause(&generics.where_clause)?;
                 self.s.word(" ")?;
                 self.bopen()?;
@@ -724,11 +724,11 @@ impl<'a> State<'a> {
                         self.word_space("for ?")?;
                         self.print_trait_ref(&ptr.trait_ref)?;
                     } else {
-                        real_bounds.push(b.clone());
+                        real_bounds.push(b);
                     }
                 }
                 self.nbsp()?;
-                self.print_bounds("=", &real_bounds[..])?;
+                self.print_bounds("=", real_bounds)?;
                 self.print_where_clause(&generics.where_clause)?;
                 self.s.word(";")?;
             }
@@ -798,7 +798,7 @@ impl<'a> State<'a> {
             hir::VisibilityKind::Restricted { ref path, .. } => {
                 self.s.word("pub(")?;
                 if path.segments.len() == 1 &&
-                   path.segments[0].ident.name == keywords::Super.name() {
+                   path.segments[0].ident.name == kw::Super {
                     // Special case: `super` can print like `pub(super)`.
                     self.s.word("super")?;
                 } else {
@@ -1194,12 +1194,11 @@ impl<'a> State<'a> {
         self.s.word(".")?;
         self.print_ident(segment.ident)?;
 
-        segment.with_generic_args(|generic_args| {
-            if !generic_args.args.is_empty() || !generic_args.bindings.is_empty() {
-                return self.print_generic_args(&generic_args, segment.infer_types, true);
-            }
-            Ok(())
-        })?;
+        let generic_args = segment.generic_args();
+        if !generic_args.args.is_empty() || !generic_args.bindings.is_empty() {
+            self.print_generic_args(generic_args, segment.infer_args, true)?;
+        }
+
         self.print_call_post(base_args)
     }
 
@@ -1249,8 +1248,7 @@ impl<'a> State<'a> {
 
     fn print_literal(&mut self, lit: &hir::Lit) -> io::Result<()> {
         self.maybe_print_comment(lit.span.lo())?;
-        let (token, suffix) = lit.node.to_lit_token();
-        self.writer().word(pprust::literal_to_string(token, suffix))
+        self.writer().word(pprust::literal_to_string(lit.node.to_lit_token()))
     }
 
     pub fn print_expr(&mut self, expr: &hir::Expr) -> io::Result<()> {
@@ -1502,7 +1500,7 @@ impl<'a> State<'a> {
 
                 self.pclose()?;
             }
-            hir::ExprKind::Yield(ref expr) => {
+            hir::ExprKind::Yield(ref expr, _) => {
                 self.word_space("yield")?;
                 self.print_expr_maybe_paren(&expr, parser::PREC_JUMP)?;
             }
@@ -1559,12 +1557,10 @@ impl<'a> State<'a> {
             if i > 0 {
                 self.s.word("::")?
             }
-            if segment.ident.name != keywords::PathRoot.name() {
-               self.print_ident(segment.ident)?;
-               segment.with_generic_args(|generic_args| {
-                   self.print_generic_args(generic_args, segment.infer_types,
-                                           colons_before_params)
-               })?;
+            if segment.ident.name != kw::PathRoot {
+                self.print_ident(segment.ident)?;
+                self.print_generic_args(segment.generic_args(), segment.infer_args,
+                                        colons_before_params)?;
             }
         }
 
@@ -1572,11 +1568,9 @@ impl<'a> State<'a> {
     }
 
     pub fn print_path_segment(&mut self, segment: &hir::PathSegment) -> io::Result<()> {
-        if segment.ident.name != keywords::PathRoot.name() {
-           self.print_ident(segment.ident)?;
-           segment.with_generic_args(|generic_args| {
-               self.print_generic_args(generic_args, segment.infer_types, false)
-           })?;
+        if segment.ident.name != kw::PathRoot {
+            self.print_ident(segment.ident)?;
+            self.print_generic_args(segment.generic_args(), segment.infer_args, false)?;
         }
         Ok(())
     }
@@ -1599,13 +1593,11 @@ impl<'a> State<'a> {
                     if i > 0 {
                         self.s.word("::")?
                     }
-                    if segment.ident.name != keywords::PathRoot.name() {
+                    if segment.ident.name != kw::PathRoot {
                         self.print_ident(segment.ident)?;
-                        segment.with_generic_args(|generic_args| {
-                            self.print_generic_args(generic_args,
-                                                    segment.infer_types,
-                                                    colons_before_params)
-                        })?;
+                        self.print_generic_args(segment.generic_args(),
+                                                segment.infer_args,
+                                                colons_before_params)?;
                     }
                 }
 
@@ -1613,11 +1605,9 @@ impl<'a> State<'a> {
                 self.s.word("::")?;
                 let item_segment = path.segments.last().unwrap();
                 self.print_ident(item_segment.ident)?;
-                item_segment.with_generic_args(|generic_args| {
-                    self.print_generic_args(generic_args,
-                                            item_segment.infer_types,
-                                            colons_before_params)
-                })
+                self.print_generic_args(item_segment.generic_args(),
+                                        item_segment.infer_args,
+                                        colons_before_params)
             }
             hir::QPath::TypeRelative(ref qself, ref item_segment) => {
                 self.s.word("<")?;
@@ -1625,18 +1615,16 @@ impl<'a> State<'a> {
                 self.s.word(">")?;
                 self.s.word("::")?;
                 self.print_ident(item_segment.ident)?;
-                item_segment.with_generic_args(|generic_args| {
-                    self.print_generic_args(generic_args,
-                                            item_segment.infer_types,
-                                            colons_before_params)
-                })
+                self.print_generic_args(item_segment.generic_args(),
+                                        item_segment.infer_args,
+                                        colons_before_params)
             }
         }
     }
 
     fn print_generic_args(&mut self,
                              generic_args: &hir::GenericArgs,
-                             infer_types: bool,
+                             infer_args: bool,
                              colons_before_params: bool)
                              -> io::Result<()> {
         if generic_args.parenthesized {
@@ -1646,7 +1634,7 @@ impl<'a> State<'a> {
 
             self.space_if_not_bol()?;
             self.word_space("->")?;
-            self.print_type(&generic_args.bindings[0].ty)?;
+            self.print_type(generic_args.bindings[0].ty())?;
         } else {
             let start = if colons_before_params { "::<" } else { "<" };
             let empty = Cell::new(true);
@@ -1680,9 +1668,9 @@ impl<'a> State<'a> {
                 })?;
             }
 
-            // FIXME(eddyb) This would leak into error messages, e.g.:
-            // "non-exhaustive patterns: `Some::<..>(_)` not covered".
-            if infer_types && false {
+            // FIXME(eddyb): this would leak into error messages (e.g.,
+            // "non-exhaustive patterns: `Some::<..>(_)` not covered").
+            if infer_args && false {
                 start_or_comma(self)?;
                 self.s.word("..")?;
             }
@@ -1691,8 +1679,15 @@ impl<'a> State<'a> {
                 start_or_comma(self)?;
                 self.print_ident(binding.ident)?;
                 self.s.space()?;
-                self.word_space("=")?;
-                self.print_type(&binding.ty)?;
+                match generic_args.bindings[0].kind {
+                    hir::TypeBindingKind::Equality { ref ty } => {
+                        self.word_space("=")?;
+                        self.print_type(ty)?;
+                    }
+                    hir::TypeBindingKind::Constraint { ref bounds } => {
+                        self.print_bounds(":", bounds)?;
+                    }
+                }
             }
 
             if !empty.get() {
@@ -1862,7 +1857,7 @@ impl<'a> State<'a> {
         self.ann.post(self, AnnNode::Pat(pat))
     }
 
-    fn print_arm(&mut self, arm: &hir::Arm) -> io::Result<()> {
+    pub fn print_arm(&mut self, arm: &hir::Arm) -> io::Result<()> {
         // I have no idea why this check is necessary, but here it
         // is :(
         if arm.attrs.is_empty() {
@@ -2003,31 +1998,34 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn print_bounds(&mut self, prefix: &'static str, bounds: &[hir::GenericBound])
-                        -> io::Result<()> {
-        if !bounds.is_empty() {
-            self.s.word(prefix)?;
-            let mut first = true;
-            for bound in bounds {
-                if !(first && prefix.is_empty()) {
-                    self.nbsp()?;
-                }
-                if first {
-                    first = false;
-                } else {
-                    self.word_space("+")?;
-                }
+    pub fn print_bounds<'b>(
+        &mut self,
+        prefix: &'static str,
+        bounds: impl IntoIterator<Item = &'b hir::GenericBound>,
+    ) -> io::Result<()> {
+        let mut first = true;
+        for bound in bounds {
+            if first {
+                self.s.word(prefix)?;
+            }
+            if !(first && prefix.is_empty()) {
+                self.nbsp()?;
+            }
+            if first {
+                first = false;
+            } else {
+                self.word_space("+")?;
+            }
 
-                match bound {
-                    GenericBound::Trait(tref, modifier) => {
-                        if modifier == &TraitBoundModifier::Maybe {
-                            self.s.word("?")?;
-                        }
-                        self.print_poly_trait_ref(tref)?;
+            match bound {
+                GenericBound::Trait(tref, modifier) => {
+                    if modifier == &TraitBoundModifier::Maybe {
+                        self.s.word("?")?;
                     }
-                    GenericBound::Outlives(lt) => {
-                        self.print_lifetime(lt)?;
-                    }
+                    self.print_poly_trait_ref(tref)?;
+                }
+                GenericBound::Outlives(lt) => {
+                    self.print_lifetime(lt)?;
                 }
             }
         }
@@ -2196,8 +2194,8 @@ impl<'a> State<'a> {
         let generics = hir::Generics {
             params: hir::HirVec::new(),
             where_clause: hir::WhereClause {
-                hir_id: hir::DUMMY_HIR_ID,
                 predicates: hir::HirVec::new(),
+                span: syntax_pos::DUMMY_SP,
             },
             span: syntax_pos::DUMMY_SP,
         };

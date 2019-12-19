@@ -6,13 +6,12 @@ use crate::middle::lang_items::FnOnceTraitLangItem;
 use crate::namespace::Namespace;
 use crate::util::nodemap::FxHashSet;
 use errors::{Applicability, DiagnosticBuilder};
-use rustc_data_structures::sync::Lrc;
 use rustc::hir::{self, ExprKind, Node, QPath};
 use rustc::hir::def::{Res, DefKind};
 use rustc::hir::def_id::{CRATE_DEF_INDEX, LOCAL_CRATE, DefId};
 use rustc::hir::map as hir_map;
 use rustc::hir::print;
-use rustc::infer::type_variable::TypeVariableOrigin;
+use rustc::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc::traits::Obligation;
 use rustc::ty::{self, Ty, TyCtxt, ToPolyTraitRef, ToPredicate, TypeFoldable};
 use rustc::ty::print::with_crate_prefix;
@@ -25,7 +24,7 @@ use std::cmp::Ordering;
 use super::{MethodError, NoMatchData, CandidateSource};
 use super::probe::Mode;
 
-impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn is_fn_ty(&self, ty: Ty<'tcx>, span: Span) -> bool {
         let tcx = self.tcx;
         match ty.sty {
@@ -44,7 +43,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 self.autoderef(span, ty).any(|(ty, _)| {
                     self.probe(|_| {
                         let fn_once_substs = tcx.mk_substs_trait(ty, &[
-                            self.next_ty_var(TypeVariableOrigin::MiscVariable(span)).into()
+                            self.next_ty_var(TypeVariableOrigin {
+                                kind: TypeVariableOriginKind::MiscVariable,
+                                span,
+                            }).into()
                         ]);
                         let trait_ref = ty::TraitRef::new(fn_once, fn_once_substs);
                         let poly_trait_ref = trait_ref.to_poly_trait_ref();
@@ -67,7 +69,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         item_name: ast::Ident,
         source: SelfSource<'b>,
         error: MethodError<'tcx>,
-        args: Option<&'gcx [hir::Expr]>,
+        args: Option<&'tcx [hir::Expr]>,
     ) {
         let orig_span = span;
         let mut span = span;
@@ -197,7 +199,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             }) => {
                 let tcx = self.tcx;
 
-                let actual = self.resolve_type_vars_if_possible(&rcvr_ty);
+                let actual = self.resolve_vars_if_possible(&rcvr_ty);
                 let ty_str = self.ty_to_string(actual);
                 let is_method = mode == Mode::MethodCall;
                 let item_kind = if is_method {
@@ -262,12 +264,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 // local binding
                                 if let &QPath::Resolved(_, ref path) = &qpath {
                                     if let hir::def::Res::Local(hir_id) = path.res {
-                                        let span = tcx.hir().span_by_hir_id(hir_id);
+                                        let span = tcx.hir().span(hir_id);
                                         let snippet = tcx.sess.source_map().span_to_snippet(span);
                                         let filename = tcx.sess.source_map().span_to_filename(span);
 
-                                        let parent_node = self.tcx.hir().get_by_hir_id(
-                                            self.tcx.hir().get_parent_node_by_hir_id(hir_id),
+                                        let parent_node = self.tcx.hir().get(
+                                            self.tcx.hir().get_parent_node(hir_id),
                                         );
                                         let msg = format!(
                                             "you must specify a type for this binding, like `{}`",
@@ -325,6 +327,11 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 );
                             }
                         }
+                        if let ty::RawPtr(_) = &actual.sty {
+                            err.note("try using `<*const T>::as_ref()` to get a reference to the \
+                                      type behind the pointer: https://doc.rust-lang.org/std/\
+                                      primitive.pointer.html#method.as_ref");
+                        }
                         err
                     }
                 } else {
@@ -363,7 +370,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         });
 
                     if let Some((field, field_ty)) = field_receiver {
-                        let scope = self.tcx.hir().get_module_parent_by_hir_id(self.body_id);
+                        let scope = self.tcx.hir().get_module_parent(self.body_id);
                         let is_accessible = field.vis.is_accessible_from(scope, self.tcx);
 
                         if is_accessible {
@@ -382,8 +389,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                     Applicability::MachineApplicable,
                                 );
                             } else {
-                                let call_expr = self.tcx.hir().expect_expr_by_hir_id(
-                                    self.tcx.hir().get_parent_node_by_hir_id(expr.hir_id),
+                                let call_expr = self.tcx.hir().expect_expr(
+                                    self.tcx.hir().get_parent_node(expr.hir_id),
                                 );
 
                                 if let Some(span) = call_expr.span.trim_start(item_name.span) {
@@ -557,7 +564,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                               err: &mut DiagnosticBuilder<'_>,
                               mut msg: String,
                               candidates: Vec<DefId>) {
-        let module_did = self.tcx.hir().get_module_parent_by_hir_id(self.body_id);
+        let module_did = self.tcx.hir().get_module_parent(self.body_id);
         let module_id = self.tcx.hir().as_local_hir_id(module_did).unwrap();
         let krate = self.tcx.hir().krate();
         let (span, found_use) = UsePlacementFinder::check(self.tcx, krate, module_id);
@@ -768,19 +775,19 @@ impl Ord for TraitInfo {
 }
 
 /// Retrieves all traits in this crate and any dependent crates.
-pub fn all_traits<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Vec<TraitInfo> {
+pub fn all_traits<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<TraitInfo> {
     tcx.all_traits(LOCAL_CRATE).iter().map(|&def_id| TraitInfo { def_id }).collect()
 }
 
 /// Computes all traits in this crate and any dependent crates.
-fn compute_all_traits<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Vec<DefId> {
+fn compute_all_traits<'tcx>(tcx: TyCtxt<'tcx>) -> Vec<DefId> {
     use hir::itemlikevisit;
 
     let mut traits = vec![];
 
     // Crate-local:
 
-    struct Visitor<'a, 'tcx: 'a> {
+    struct Visitor<'a, 'tcx> {
         map: &'a hir_map::Map<'tcx>,
         traits: &'a mut Vec<DefId>,
     }
@@ -810,10 +817,12 @@ fn compute_all_traits<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Vec<DefId>
     // Cross-crate:
 
     let mut external_mods = FxHashSet::default();
-    fn handle_external_res(tcx: TyCtxt<'_, '_, '_>,
-                           traits: &mut Vec<DefId>,
-                           external_mods: &mut FxHashSet<DefId>,
-                           res: Res) {
+    fn handle_external_res(
+        tcx: TyCtxt<'_>,
+        traits: &mut Vec<DefId>,
+        external_mods: &mut FxHashSet<DefId>,
+        res: Res,
+    ) {
         match res {
             Res::Def(DefKind::Trait, def_id) |
             Res::Def(DefKind::TraitAlias, def_id) => {
@@ -844,20 +853,20 @@ fn compute_all_traits<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Vec<DefId>
 pub fn provide(providers: &mut ty::query::Providers<'_>) {
     providers.all_traits = |tcx, cnum| {
         assert_eq!(cnum, LOCAL_CRATE);
-        Lrc::new(compute_all_traits(tcx))
+        &tcx.arena.alloc(compute_all_traits(tcx))[..]
     }
 }
 
-struct UsePlacementFinder<'a, 'tcx: 'a, 'gcx: 'tcx> {
+struct UsePlacementFinder<'tcx> {
     target_module: hir::HirId,
     span: Option<Span>,
     found_use: bool,
-    tcx: TyCtxt<'a, 'gcx, 'tcx>
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'a, 'tcx, 'gcx> UsePlacementFinder<'a, 'tcx, 'gcx> {
+impl UsePlacementFinder<'tcx> {
     fn check(
-        tcx: TyCtxt<'a, 'gcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         krate: &'tcx hir::Crate,
         target_module: hir::HirId,
     ) -> (Option<Span>, bool) {
@@ -872,7 +881,7 @@ impl<'a, 'tcx, 'gcx> UsePlacementFinder<'a, 'tcx, 'gcx> {
     }
 }
 
-impl<'a, 'tcx, 'gcx> hir::intravisit::Visitor<'tcx> for UsePlacementFinder<'a, 'tcx, 'gcx> {
+impl hir::intravisit::Visitor<'tcx> for UsePlacementFinder<'tcx> {
     fn visit_mod(
         &mut self,
         module: &'tcx hir::Mod,
@@ -888,12 +897,12 @@ impl<'a, 'tcx, 'gcx> hir::intravisit::Visitor<'tcx> for UsePlacementFinder<'a, '
         }
         // Find a `use` statement.
         for item_id in &module.item_ids {
-            let item = self.tcx.hir().expect_item_by_hir_id(item_id.id);
+            let item = self.tcx.hir().expect_item(item_id.id);
             match item.node {
                 hir::ItemKind::Use(..) => {
                     // Don't suggest placing a `use` before the prelude
                     // import or other generated ones.
-                    if item.span.ctxt().outer().expn_info().is_none() {
+                    if item.span.ctxt().outer_expn_info().is_none() {
                         self.span = Some(item.span.shrink_to_lo());
                         self.found_use = true;
                         return;
@@ -903,7 +912,7 @@ impl<'a, 'tcx, 'gcx> hir::intravisit::Visitor<'tcx> for UsePlacementFinder<'a, '
                 hir::ItemKind::ExternCrate(_) => {}
                 // ...but do place them before the first other item.
                 _ => if self.span.map_or(true, |span| item.span < span ) {
-                    if item.span.ctxt().outer().expn_info().is_none() {
+                    if item.span.ctxt().outer_expn_info().is_none() {
                         // Don't insert between attributes and an item.
                         if item.attrs.is_empty() {
                             self.span = Some(item.span.shrink_to_lo());

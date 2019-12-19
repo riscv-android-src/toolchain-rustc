@@ -9,14 +9,23 @@ use rustc_data_structures::fx::FxHashSet;
 use syntax::source_map::Span;
 
 /// Returns a set of mutated local variable IDs, or `None` if mutations could not be determined.
-pub fn mutated_variables<'a, 'tcx: 'a>(expr: &'tcx Expr, cx: &'a LateContext<'a, 'tcx>) -> Option<FxHashSet<HirId>> {
+pub fn mutated_variables<'a, 'tcx>(expr: &'tcx Expr, cx: &'a LateContext<'a, 'tcx>) -> Option<FxHashSet<HirId>> {
     let mut delegate = MutVarsDelegate {
         used_mutably: FxHashSet::default(),
         skip: false,
     };
     let def_id = def_id::DefId::local(expr.hir_id.owner);
     let region_scope_tree = &cx.tcx.region_scope_tree(def_id);
-    ExprUseVisitor::new(&mut delegate, cx.tcx, cx.param_env, region_scope_tree, cx.tables, None).walk_expr(expr);
+    ExprUseVisitor::new(
+        &mut delegate,
+        cx.tcx,
+        def_id,
+        cx.param_env,
+        region_scope_tree,
+        cx.tables,
+        None,
+    )
+    .walk_expr(expr);
 
     if delegate.skip {
         return None;
@@ -24,16 +33,12 @@ pub fn mutated_variables<'a, 'tcx: 'a>(expr: &'tcx Expr, cx: &'a LateContext<'a,
     Some(delegate.used_mutably)
 }
 
-pub fn is_potentially_mutated<'a, 'tcx: 'a>(
-    variable: &'tcx Path,
-    expr: &'tcx Expr,
-    cx: &'a LateContext<'a, 'tcx>,
-) -> bool {
-    let id = match variable.res {
-        Res::Local(id) | Res::Upvar(id, ..) => id,
-        _ => return true,
-    };
-    mutated_variables(expr, cx).map_or(true, |mutated| mutated.contains(&id))
+pub fn is_potentially_mutated<'a, 'tcx>(variable: &'tcx Path, expr: &'tcx Expr, cx: &'a LateContext<'a, 'tcx>) -> bool {
+    if let Res::Local(id) = variable.res {
+        mutated_variables(expr, cx).map_or(true, |mutated| mutated.contains(&id))
+    } else {
+        true
+    }
 }
 
 struct MutVarsDelegate {

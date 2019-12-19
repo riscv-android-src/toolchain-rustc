@@ -30,7 +30,7 @@ impl Inches {
     }
 }
 
-// `Seconds`, a tuple struct no additional attributes
+// `Seconds`, a tuple struct with no additional attributes
 struct Seconds(i32);
 
 fn main() {
@@ -64,7 +64,7 @@ fn main() {
 ### See also:
 [`derive`][derive]
 
-[attribute]: attribute.html
+[attribute]: ../attribute.md
 [eq]: https://doc.rust-lang.org/std/cmp/trait.Eq.html
 [partial-eq]: https://doc.rust-lang.org/std/cmp/trait.PartialEq.html
 [ord]: https://doc.rust-lang.org/std/cmp/trait.Ord.html

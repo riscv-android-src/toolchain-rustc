@@ -7,7 +7,7 @@ use syntax::source_map::Span;
 use syntax::visit::FnKind;
 use syntax_pos::BytePos;
 
-use crate::utils::{in_macro_or_desugar, match_path_ast, snippet_opt, span_lint_and_then, span_note_and_lint};
+use crate::utils::{in_macro_or_desugar, match_path_ast, snippet_opt, span_lint_and_then};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for return statements at the end of a block.
@@ -83,6 +83,12 @@ declare_clippy_lint! {
     "needless unit expression"
 }
 
+#[derive(PartialEq, Eq, Copy, Clone)]
+enum RetReplacement {
+    Empty,
+    Unit,
+}
+
 declare_lint_pass!(Return => [NEEDLESS_RETURN, LET_AND_RETURN, UNUSED_UNIT]);
 
 impl Return {
@@ -91,7 +97,7 @@ impl Return {
         if let Some(stmt) = block.stmts.last() {
             match stmt.node {
                 ast::StmtKind::Expr(ref expr) | ast::StmtKind::Semi(ref expr) => {
-                    self.check_final_expr(cx, expr, Some(stmt.span));
+                    self.check_final_expr(cx, expr, Some(stmt.span), RetReplacement::Empty);
                 },
                 _ => (),
             }
@@ -99,13 +105,24 @@ impl Return {
     }
 
     // Check a the final expression in a block if it's a return.
-    fn check_final_expr(&mut self, cx: &EarlyContext<'_>, expr: &ast::Expr, span: Option<Span>) {
+    fn check_final_expr(
+        &mut self,
+        cx: &EarlyContext<'_>,
+        expr: &ast::Expr,
+        span: Option<Span>,
+        replacement: RetReplacement,
+    ) {
         match expr.node {
             // simple return is always "bad"
-            ast::ExprKind::Ret(Some(ref inner)) => {
+            ast::ExprKind::Ret(ref inner) => {
                 // allow `#[cfg(a)] return a; #[cfg(b)] return b;`
                 if !expr.attrs.iter().any(attr_is_cfg) {
-                    self.emit_return_lint(cx, span.expect("`else return` is not possible"), inner.span);
+                    self.emit_return_lint(
+                        cx,
+                        span.expect("`else return` is not possible"),
+                        inner.as_ref().map(|i| i.span),
+                        replacement,
+                    );
                 }
             },
             // a whole block? check it!
@@ -117,32 +134,60 @@ impl Return {
             // (except for unit type functions) so we don't match it
             ast::ExprKind::If(_, ref ifblock, Some(ref elsexpr)) => {
                 self.check_block_return(cx, ifblock);
-                self.check_final_expr(cx, elsexpr, None);
+                self.check_final_expr(cx, elsexpr, None, RetReplacement::Empty);
             },
             // a match expr, check all arms
             ast::ExprKind::Match(_, ref arms) => {
                 for arm in arms {
-                    self.check_final_expr(cx, &arm.body, Some(arm.body.span));
+                    self.check_final_expr(cx, &arm.body, Some(arm.body.span), RetReplacement::Unit);
                 }
             },
             _ => (),
         }
     }
 
-    fn emit_return_lint(&mut self, cx: &EarlyContext<'_>, ret_span: Span, inner_span: Span) {
-        if in_external_macro(cx.sess(), inner_span) || in_macro_or_desugar(inner_span) {
-            return;
+    fn emit_return_lint(
+        &mut self,
+        cx: &EarlyContext<'_>,
+        ret_span: Span,
+        inner_span: Option<Span>,
+        replacement: RetReplacement,
+    ) {
+        match inner_span {
+            Some(inner_span) => {
+                if in_external_macro(cx.sess(), inner_span) || in_macro_or_desugar(inner_span) {
+                    return;
+                }
+
+                span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
+                    if let Some(snippet) = snippet_opt(cx, inner_span) {
+                        db.span_suggestion(ret_span, "remove `return`", snippet, Applicability::MachineApplicable);
+                    }
+                })
+            },
+            None => match replacement {
+                RetReplacement::Empty => {
+                    span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
+                        db.span_suggestion(
+                            ret_span,
+                            "remove `return`",
+                            String::new(),
+                            Applicability::MachineApplicable,
+                        );
+                    });
+                },
+                RetReplacement::Unit => {
+                    span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
+                        db.span_suggestion(
+                            ret_span,
+                            "replace `return` with the unit type",
+                            "()".to_string(),
+                            Applicability::MachineApplicable,
+                        );
+                    });
+                },
+            },
         }
-        span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
-            if let Some(snippet) = snippet_opt(cx, inner_span) {
-                db.span_suggestion(
-                    ret_span,
-                    "remove `return` as shown",
-                    snippet,
-                    Applicability::MachineApplicable,
-                );
-            }
-        });
     }
 
     // Check for "let x = EXPR; x"
@@ -164,13 +209,28 @@ impl Return {
             if match_path_ast(path, &[&*ident.name.as_str()]);
             if !in_external_macro(cx.sess(), initexpr.span);
             then {
-                    span_note_and_lint(cx,
-                                       LET_AND_RETURN,
-                                       retexpr.span,
-                                       "returning the result of a let binding from a block. \
-                                       Consider returning the expression directly.",
-                                       initexpr.span,
-                                       "this expression can be directly returned");
+                span_lint_and_then(
+                    cx,
+                    LET_AND_RETURN,
+                    retexpr.span,
+                    "returning the result of a let binding from a block",
+                    |err| {
+                        err.span_label(local.span, "unnecessary let binding");
+
+                        if let Some(snippet) = snippet_opt(cx, initexpr.span) {
+                            err.multipart_suggestion(
+                                "return the expression directly",
+                                vec![
+                                    (local.span, String::new()),
+                                    (retexpr.span, snippet),
+                                ],
+                                Applicability::MachineApplicable,
+                            );
+                        } else {
+                            err.span_help(initexpr.span, "this expression can be directly returned");
+                        }
+                    },
+                );
             }
         }
     }
@@ -180,7 +240,7 @@ impl EarlyLintPass for Return {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, kind: FnKind<'_>, decl: &ast::FnDecl, span: Span, _: ast::NodeId) {
         match kind {
             FnKind::ItemFn(.., block) | FnKind::Method(.., block) => self.check_block_return(cx, block),
-            FnKind::Closure(body) => self.check_final_expr(cx, body, Some(body.span)),
+            FnKind::Closure(body) => self.check_final_expr(cx, body, Some(body.span), RetReplacement::Empty),
         }
         if_chain! {
             if let ast::FunctionRetTy::Ty(ref ty) = decl.output;
@@ -257,7 +317,7 @@ fn attr_is_cfg(attr: &ast::Attribute) -> bool {
 
 // get the def site
 fn get_def(span: Span) -> Option<Span> {
-    span.ctxt().outer().expn_info().and_then(|info| info.def_site)
+    span.ctxt().outer_expn_info().and_then(|info| info.def_site)
 }
 
 // is this expr a `()` unit?

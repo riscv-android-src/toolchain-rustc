@@ -8,7 +8,7 @@ use crate::ty::layout::{Size, Align, LayoutError};
 use rustc_target::spec::abi::Abi;
 use rustc_macros::HashStable;
 
-use super::{RawConst, Pointer, InboundsCheck, ScalarMaybeUndef};
+use super::{RawConst, Pointer, CheckInAllocMsg, ScalarMaybeUndef};
 
 use backtrace::Backtrace;
 
@@ -18,7 +18,7 @@ use errors::DiagnosticBuilder;
 use syntax_pos::{Pos, Span};
 use syntax::symbol::Symbol;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, HashStable)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, HashStable, RustcEncodable, RustcDecodable)]
 pub enum ErrorHandled {
     /// Already reported a lint or an error for this evaluation.
     Reported,
@@ -37,8 +37,12 @@ impl ErrorHandled {
     }
 }
 
+CloneTypeFoldableImpls! {
+    ErrorHandled,
+}
+
 pub type ConstEvalRawResult<'tcx> = Result<RawConst<'tcx>, ErrorHandled>;
-pub type ConstEvalResult<'tcx> = Result<ty::Const<'tcx>, ErrorHandled>;
+pub type ConstEvalResult<'tcx> = Result<&'tcx ty::Const<'tcx>, ErrorHandled>;
 
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable)]
 pub struct ConstEvalErr<'tcx> {
@@ -49,7 +53,8 @@ pub struct ConstEvalErr<'tcx> {
 
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
 pub struct FrameInfo<'tcx> {
-    pub call_site: Span, // this span is in the caller!
+    /// This span is in the caller.
+    pub call_site: Span,
     pub instance: ty::Instance<'tcx>,
     pub lint_root: Option<hir::HirId>,
 }
@@ -73,19 +78,16 @@ impl<'tcx> fmt::Display for FrameInfo<'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> ConstEvalErr<'tcx> {
-    pub fn struct_error(&self,
-        tcx: TyCtxtAt<'a, 'gcx, 'tcx>,
-        message: &str)
-        -> Result<DiagnosticBuilder<'tcx>, ErrorHandled>
-    {
+impl<'tcx> ConstEvalErr<'tcx> {
+    pub fn struct_error(
+        &self,
+        tcx: TyCtxtAt<'tcx>,
+        message: &str,
+    ) -> Result<DiagnosticBuilder<'tcx>, ErrorHandled> {
         self.struct_generic(tcx, message, None)
     }
 
-    pub fn report_as_error(&self,
-        tcx: TyCtxtAt<'a, 'gcx, 'tcx>,
-        message: &str
-    ) -> ErrorHandled {
+    pub fn report_as_error(&self, tcx: TyCtxtAt<'tcx>, message: &str) -> ErrorHandled {
         let err = self.struct_error(tcx, message);
         match err {
             Ok(mut err) => {
@@ -96,8 +98,9 @@ impl<'a, 'gcx, 'tcx> ConstEvalErr<'tcx> {
         }
     }
 
-    pub fn report_as_lint(&self,
-        tcx: TyCtxtAt<'a, 'gcx, 'tcx>,
+    pub fn report_as_lint(
+        &self,
+        tcx: TyCtxtAt<'tcx>,
         message: &str,
         lint_root: hir::HirId,
         span: Option<Span>,
@@ -130,7 +133,7 @@ impl<'a, 'gcx, 'tcx> ConstEvalErr<'tcx> {
 
     fn struct_generic(
         &self,
-        tcx: TyCtxtAt<'a, 'gcx, 'tcx>,
+        tcx: TyCtxtAt<'tcx>,
         message: &str,
         lint_root: Option<hir::HirId>,
     ) -> Result<DiagnosticBuilder<'tcx>, ErrorHandled> {
@@ -171,20 +174,22 @@ impl<'a, 'gcx, 'tcx> ConstEvalErr<'tcx> {
     }
 }
 
-pub fn struct_error<'a, 'gcx, 'tcx>(
-    tcx: TyCtxtAt<'a, 'gcx, 'tcx>,
-    msg: &str,
-) -> DiagnosticBuilder<'tcx> {
+pub fn struct_error<'tcx>(tcx: TyCtxtAt<'tcx>, msg: &str) -> DiagnosticBuilder<'tcx> {
     struct_span_err!(tcx.sess, tcx.span, E0080, "{}", msg)
 }
 
+/// Packages the kind of error we got from the const code interpreter
+/// up with a Rust-level backtrace of where the error occured.
+/// Thsese should always be constructed by calling `.into()` on
+/// a `InterpError`. In `librustc_mir::interpret`, we have the `err!`
+/// macro for this
 #[derive(Debug, Clone)]
-pub struct EvalError<'tcx> {
+pub struct InterpErrorInfo<'tcx> {
     pub kind: InterpError<'tcx, u64>,
-    pub backtrace: Option<Box<Backtrace>>,
+    backtrace: Option<Box<Backtrace>>,
 }
 
-impl<'tcx> EvalError<'tcx> {
+impl<'tcx> InterpErrorInfo<'tcx> {
     pub fn print_backtrace(&mut self) {
         if let Some(ref mut backtrace) = self.backtrace {
             print_backtrace(&mut *backtrace);
@@ -197,15 +202,15 @@ fn print_backtrace(backtrace: &mut Backtrace) {
     eprintln!("\n\nAn error occurred in miri:\n{:?}", backtrace);
 }
 
-impl<'tcx> From<InterpError<'tcx, u64>> for EvalError<'tcx> {
+impl<'tcx> From<InterpError<'tcx, u64>> for InterpErrorInfo<'tcx> {
     fn from(kind: InterpError<'tcx, u64>) -> Self {
         let backtrace = match env::var("RUST_CTFE_BACKTRACE") {
-            // matching RUST_BACKTRACE, we treat "0" the same as "not present".
+            // Matching `RUST_BACKTRACE` -- we treat "0" the same as "not present".
             Ok(ref val) if val != "0" => {
                 let mut backtrace = Backtrace::new_unresolved();
 
                 if val == "immediate" {
-                    // Print it now
+                    // Print it now.
                     print_backtrace(&mut backtrace);
                     None
                 } else {
@@ -214,7 +219,7 @@ impl<'tcx> From<InterpError<'tcx, u64>> for EvalError<'tcx> {
             },
             _ => None,
         };
-        EvalError {
+        InterpErrorInfo {
             kind,
             backtrace,
         }
@@ -247,7 +252,7 @@ pub enum InterpError<'tcx, O> {
     InvalidDiscriminant(ScalarMaybeUndef),
     PointerOutOfBounds {
         ptr: Pointer,
-        check: InboundsCheck,
+        msg: CheckInAllocMsg,
         allocation_size: Size,
     },
     InvalidNullPointerUsage,
@@ -314,7 +319,7 @@ pub enum InterpError<'tcx, O> {
     InfiniteLoop,
 }
 
-pub type EvalResult<'tcx, T = ()> = Result<T, EvalError<'tcx>>;
+pub type InterpResult<'tcx, T = ()> = Result<T, InterpErrorInfo<'tcx>>;
 
 impl<'tcx, O> InterpError<'tcx, O> {
     pub fn description(&self) -> &str {
@@ -450,7 +455,7 @@ impl<'tcx, O> InterpError<'tcx, O> {
     }
 }
 
-impl<'tcx> fmt::Display for EvalError<'tcx> {
+impl<'tcx> fmt::Display for InterpErrorInfo<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.kind)
     }
@@ -466,14 +471,10 @@ impl<'tcx, O: fmt::Debug> fmt::Debug for InterpError<'tcx, O> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use self::InterpError::*;
         match *self {
-            PointerOutOfBounds { ptr, check, allocation_size } => {
-                write!(f, "Pointer must be in-bounds{} at offset {}, but is outside bounds of \
-                           allocation {} which has size {}",
-                       match check {
-                           InboundsCheck::Live => " and live",
-                           InboundsCheck::MaybeDead => "",
-                       },
-                       ptr.offset.bytes(), ptr.alloc_id, allocation_size.bytes())
+            PointerOutOfBounds { ptr, msg, allocation_size } => {
+                write!(f, "{} failed: pointer must be in-bounds at offset {}, \
+                          but is outside bounds of allocation {} which has size {}",
+                    msg, ptr.offset.bytes(), ptr.alloc_id, allocation_size.bytes())
             },
             ValidationFailure(ref err) => {
                 write!(f, "type validation failed: {}", err)

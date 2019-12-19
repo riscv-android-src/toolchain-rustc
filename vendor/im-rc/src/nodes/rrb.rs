@@ -6,8 +6,8 @@ use std::iter::FusedIterator;
 use std::mem::replace;
 use std::ops::Range;
 
-use nodes::chunk::{Chunk, CHUNK_SIZE};
-use util::{
+use crate::nodes::chunk::{Chunk, CHUNK_SIZE};
+use crate::util::{
     clone_ref, Ref,
     Side::{self, Left, Right},
 };
@@ -91,7 +91,8 @@ impl Size {
                 let size_table = Ref::make_mut(size_ref);
                 match side {
                     Left => {
-                        debug_assert_eq!(value, size_table.pop_front());
+                        let first = size_table.pop_front();
+                        debug_assert_eq!(value, first);
                         for entry in size_table.iter_mut() {
                             *entry -= value;
                         }
@@ -120,7 +121,7 @@ impl Size {
 }
 
 pub enum PushResult<A> {
-    Full(A),
+    Full(A, usize),
     Done,
 }
 
@@ -292,7 +293,7 @@ impl<A: Clone> Node<A> {
         let size = if node.is_dense() {
             Size::Size(node.len())
         } else {
-            let mut size_table = Chunk::unit(node.len());
+            let size_table = Chunk::unit(node.len());
             Size::Table(Ref::from(size_table))
         };
         let children = Chunk::unit(node);
@@ -340,7 +341,7 @@ impl<A: Clone> Node<A> {
     pub fn len(&self) -> usize {
         match self.children {
             Entry::Nodes(Size::Size(size), _) => size,
-            Entry::Nodes(Size::Table(ref size_table), _) => *(size_table.last().unwrap()),
+            Entry::Nodes(Size::Table(ref size_table), _) => *(size_table.last().unwrap_or(&0)),
             Entry::Values(ref values) => values.len(),
             Entry::Empty => 0,
         }
@@ -356,6 +357,10 @@ impl<A: Clone> Node<A> {
 
     pub fn is_full(&self) -> bool {
         self.children.is_full()
+    }
+
+    pub fn number_of_children(&self) -> usize {
+        self.children.len()
     }
 
     pub fn first_child(&self) -> &Ref<Self> {
@@ -430,7 +435,7 @@ impl<A: Clone> Node<A> {
             return None;
         }
         if let Entry::Nodes(Size::Table(ref size_table), _) = self.children {
-            if size_table[target_idx] <= index {
+            while size_table[target_idx] <= index {
                 target_idx += 1;
                 if target_idx >= size_table.len() {
                     return None;
@@ -547,17 +552,16 @@ impl<A: Clone> Node<A> {
                     }
                     PushResult::Done
                 } else {
-                    PushResult::Full(chunk)
+                    PushResult::Full(chunk, 0)
                 }
             }
         } else if level == 1 {
             // If rightmost existing node has any room, merge as much as
             // possible over from the new node.
-            match side {
+            let num_drained = match side {
                 Side::Right => {
                     if let Entry::Nodes(ref mut size, ref mut children) = self.children {
-                        let mut rightmost =
-                            Ref::make_mut(Ref::make_mut(children).last_mut().unwrap());
+                        let rightmost = Ref::make_mut(Ref::make_mut(children).last_mut().unwrap());
                         let old_size = rightmost.len();
                         let chunk = Ref::make_mut(&mut chunk);
                         let values = rightmost.children.unwrap_values_mut();
@@ -565,12 +569,14 @@ impl<A: Clone> Node<A> {
                         values.drain_from_front(chunk, to_drain);
                         size.pop(Side::Right, old_size);
                         size.push(Side::Right, values.len());
+                        to_drain
+                    } else {
+                        0
                     }
                 }
                 Side::Left => {
                     if let Entry::Nodes(ref mut size, ref mut children) = self.children {
-                        let mut leftmost =
-                            Ref::make_mut(Ref::make_mut(children).first_mut().unwrap());
+                        let leftmost = Ref::make_mut(Ref::make_mut(children).first_mut().unwrap());
                         let old_size = leftmost.len();
                         let chunk = Ref::make_mut(&mut chunk);
                         let values = leftmost.children.unwrap_values_mut();
@@ -578,14 +584,29 @@ impl<A: Clone> Node<A> {
                         values.drain_from_back(chunk, to_drain);
                         size.pop(Side::Left, old_size);
                         size.push(Side::Left, values.len());
+                        to_drain
+                    } else {
+                        0
                     }
                 }
-            }
+            };
             if is_full {
-                PushResult::Full(chunk)
+                PushResult::Full(chunk, num_drained)
             } else {
-                self.push_size(side, chunk.len());
-                self.push_child_node(side, Ref::new(Node::from_chunk(0, chunk)));
+                // If the chunk is empty after being drained, there might be
+                // more space in existing chunks. To keep the middle dense, we
+                // do not add it here.
+                if !chunk.is_empty() {
+                    if side == Left && chunk.len() < NODE_SIZE {
+                        if let Entry::Nodes(ref mut size, _) = self.children {
+                            if let Size::Size(value) = *size {
+                                *size = Size::table_from_size(level, value);
+                            }
+                        }
+                    }
+                    self.push_size(side, chunk.len());
+                    self.push_child_node(side, Ref::new(Node::from_chunk(0, chunk)));
+                }
                 PushResult::Done
             }
         } else {
@@ -599,9 +620,28 @@ impl<A: Clone> Node<A> {
                 let child = Ref::make_mut(&mut children[index]);
                 match child.push_chunk(level - 1, side, chunk) {
                     PushResult::Done => None,
-                    PushResult::Full(chunk) => {
+                    PushResult::Full(chunk, num_drained) => {
+                        // Our chunk was too large for `child`, so it could not
+                        // be pushed there. However, exactly `num_drained`
+                        // elements were added to the child. We need to reflect
+                        // that change in the size field of the node.
+                        match side {
+                            Right => match self.children {
+                                Entry::Nodes(Size::Table(ref mut sizes), _) => {
+                                    let sizes = Ref::make_mut(sizes);
+                                    sizes[index] += num_drained;
+                                }
+                                Entry::Nodes(Size::Size(ref mut size), _) => {
+                                    *size += num_drained;
+                                }
+                                Entry::Values(_) | Entry::Empty => (),
+                            },
+                            Left => {
+                                self.update_size(0, num_drained as isize);
+                            }
+                        }
                         if is_full {
-                            return PushResult::Full(chunk);
+                            return PushResult::Full(chunk, 0);
                         } else {
                             Some(Node::from_chunk(level - 1, chunk))
                         }
@@ -916,6 +956,39 @@ impl<A: Clone> Node<A> {
                 }
             };
             Self::merge_rebalance(level, left, merged, right)
+        }
+    }
+
+    pub fn assert_invariants(&self) -> usize {
+        // Verifies that the size table matches reality.
+        match self.children {
+            Entry::Empty => 0,
+            Entry::Values(ref values) => {
+                // An empty value node is pointless and should never occur.
+                assert_ne!(0, values.len());
+                values.len()
+            }
+            Entry::Nodes(ref size, ref children) => {
+                // A parent node with no children should never occur.
+                assert_ne!(0, children.len());
+                let mut lengths = Vec::new();
+                for child in &**children {
+                    lengths.push(child.assert_invariants());
+                }
+                match size {
+                    Size::Size(size) => {
+                        let total: usize = lengths.iter().sum();
+                        assert_eq!(*size, total);
+                    }
+                    Size::Table(ref table) => {
+                        for (index, current) in table.iter().enumerate() {
+                            let expected: usize = lengths.iter().take(index + 1).sum();
+                            assert_eq!(expected, *current);
+                        }
+                    }
+                }
+                lengths.iter().sum()
+            }
         }
     }
 

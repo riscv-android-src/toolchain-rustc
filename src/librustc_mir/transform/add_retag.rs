@@ -48,7 +48,7 @@ fn is_stable<'tcx>(
 
 /// Determine whether this type may have a reference in it, recursing below compound types but
 /// not below references.
-fn may_have_reference<'a, 'gcx, 'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> bool {
+fn may_have_reference<'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'tcx>) -> bool {
     match ty.sty {
         // Primitive types that are not references
         ty::Bool | ty::Char |
@@ -74,16 +74,12 @@ fn may_have_reference<'a, 'gcx, 'tcx>(ty: Ty<'tcx>, tcx: TyCtxt<'a, 'gcx, 'tcx>)
 }
 
 impl MirPass for AddRetag {
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _src: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>)
-    {
+    fn run_pass<'tcx>(&self, tcx: TyCtxt<'tcx>, _src: MirSource<'tcx>, body: &mut Body<'tcx>) {
         if !tcx.sess.opts.debugging_opts.mir_emit_retag {
             return;
         }
-        let (span, arg_count) = (mir.span, mir.arg_count);
-        let (basic_blocks, local_decls) = mir.basic_blocks_and_local_decls_mut();
+        let (span, arg_count) = (body.span, body.arg_count);
+        let (basic_blocks, local_decls) = body.basic_blocks_and_local_decls_mut();
         let needs_retag = |place: &Place<'tcx>| {
             // FIXME: Instead of giving up for unstable places, we should introduce
             // a temporary and retag on that.
@@ -100,7 +96,7 @@ impl MirPass for AddRetag {
             };
             // Gather all arguments, skip return value.
             let places = local_decls.iter_enumerated().skip(1).take(arg_count)
-                    .map(|(local, _)| Place::Base(PlaceBase::Local(local)))
+                    .map(|(local, _)| Place::from(local))
                     .filter(needs_retag)
                     .collect::<Vec<_>>();
             // Emit their retags.

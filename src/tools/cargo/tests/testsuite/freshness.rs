@@ -1,5 +1,6 @@
 use filetime::FileTime;
 use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::io::prelude::*;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use crate::support::registry::Package;
 use crate::support::sleep_ms;
 use crate::support::{basic_manifest, is_coarse_mtime, project};
 
-#[test]
+#[cargo_test]
 fn modifying_and_moving() {
     let p = project()
         .file("src/main.rs", "mod a; fn main() {}")
@@ -51,7 +52,7 @@ fn modifying_and_moving() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn modify_only_some_files() {
     let p = project()
         .file("src/lib.rs", "mod a;")
@@ -99,7 +100,7 @@ fn modify_only_some_files() {
     assert!(p.bin("foo").is_file());
 }
 
-#[test]
+#[cargo_test]
 fn rebuild_sub_package_then_while_package() {
     let p = project()
         .file(
@@ -150,7 +151,7 @@ fn rebuild_sub_package_then_while_package() {
     p.cargo("build").run();
 }
 
-#[test]
+#[cargo_test]
 fn changing_lib_features_caches_targets() {
     let p = project()
         .file(
@@ -199,7 +200,7 @@ fn changing_lib_features_caches_targets() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn changing_profiles_caches_targets() {
     let p = project()
         .file(
@@ -253,7 +254,7 @@ fn changing_profiles_caches_targets() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn changing_bin_paths_common_target_features_caches_targets() {
     // Make sure dep_cache crate is built once per feature
     let p = project()
@@ -421,7 +422,7 @@ fn changing_bin_paths_common_target_features_caches_targets() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn changing_bin_features_caches_targets() {
     let p = project()
         .file(
@@ -488,7 +489,7 @@ fn changing_bin_features_caches_targets() {
     p.rename_run("foo", "on2").with_stdout("feature on").run();
 }
 
-#[test]
+#[cargo_test]
 fn rebuild_tests_if_lib_changes() {
     let p = project()
         .file("src/lib.rs", "pub fn foo() {}")
@@ -515,7 +516,7 @@ fn rebuild_tests_if_lib_changes() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn no_rebuild_transitive_target_deps() {
     let p = project()
         .file(
@@ -577,7 +578,7 @@ fn no_rebuild_transitive_target_deps() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn rerun_if_changed_in_dep() {
     let p = project()
         .file(
@@ -618,7 +619,7 @@ fn rerun_if_changed_in_dep() {
     p.cargo("build").with_stdout("").run();
 }
 
-#[test]
+#[cargo_test]
 fn same_build_dir_cached_packages() {
     let p = project()
         .no_manifest()
@@ -705,7 +706,7 @@ fn same_build_dir_cached_packages() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn no_rebuild_if_build_artifacts_move_backwards_in_time() {
     let p = project()
         .file(
@@ -735,7 +736,7 @@ fn no_rebuild_if_build_artifacts_move_backwards_in_time() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn rebuild_if_build_artifacts_move_forward_in_time() {
     let p = project()
         .file(
@@ -772,7 +773,7 @@ fn rebuild_if_build_artifacts_move_forward_in_time() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn rebuild_if_environment_changes() {
     let p = project()
         .file(
@@ -831,7 +832,7 @@ fn rebuild_if_environment_changes() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn no_rebuild_when_rename_dir() {
     let p = project()
         .file(
@@ -863,7 +864,7 @@ fn no_rebuild_when_rename_dir() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn unused_optional_dep() {
     Package::new("registry1", "0.1.0").publish();
     Package::new("registry2", "0.1.0").publish();
@@ -917,7 +918,7 @@ fn unused_optional_dep() {
     p.cargo("build").with_stderr("[FINISHED] [..]").run();
 }
 
-#[test]
+#[cargo_test]
 fn path_dev_dep_registry_updates() {
     Package::new("registry1", "0.1.0").publish();
     Package::new("registry2", "0.1.0").publish();
@@ -971,7 +972,7 @@ fn path_dev_dep_registry_updates() {
     p.cargo("build").with_stderr("[FINISHED] [..]").run();
 }
 
-#[test]
+#[cargo_test]
 fn change_panic_mode() {
     let p = project()
         .file(
@@ -1008,7 +1009,7 @@ fn change_panic_mode() {
     p.cargo("build -p baz").run();
 }
 
-#[test]
+#[cargo_test]
 fn dont_rebuild_based_on_plugins() {
     let p = project()
         .file(
@@ -1065,7 +1066,7 @@ fn dont_rebuild_based_on_plugins() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn reuse_workspace_lib() {
     let p = project()
         .file(
@@ -1098,7 +1099,7 @@ fn reuse_workspace_lib() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn reuse_shared_build_dep() {
     let p = project()
         .file(
@@ -1146,7 +1147,7 @@ fn reuse_shared_build_dep() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn changing_rustflags_is_cached() {
     let p = project().file("src/lib.rs", "").build();
 
@@ -1169,31 +1170,8 @@ fn changing_rustflags_is_cached() {
         .run();
 }
 
-fn simple_deps_cleaner(mut dir: PathBuf, timestamp: filetime::FileTime) {
-    // Cargo is experimenting with letting outside projects develop some
-    // limited forms of GC for target_dir. This is one of the forms.
-    // Specifically, Cargo is updating the mtime of files in
-    // target/profile/deps each time it uses the file.
-    // So a cleaner can remove files older then a time stamp without
-    // effecting any builds that happened since that time stamp.
-    let mut cleand = false;
-    dir.push("deps");
-    for dep in fs::read_dir(&dir).unwrap() {
-        let dep = dep.unwrap();
-        if filetime::FileTime::from_last_modification_time(&dep.metadata().unwrap()) <= timestamp {
-            fs::remove_file(dep.path()).unwrap();
-            println!("remove: {:?}", dep.path());
-            cleand = true;
-        }
-    }
-    assert!(
-        cleand,
-        "called simple_deps_cleaner, but there was nothing to remove"
-    );
-}
-
-#[test]
-fn simple_deps_cleaner_does_not_rebuild() {
+#[cargo_test]
+fn update_dependency_mtime_does_not_rebuild() {
     let p = project()
         .file(
             "Cargo.toml",
@@ -1213,9 +1191,6 @@ fn simple_deps_cleaner_does_not_rebuild() {
 
     p.cargo("build -Z mtime-on-use")
         .masquerade_as_nightly_cargo()
-        .run();
-    p.cargo("build -Z mtime-on-use")
-        .masquerade_as_nightly_cargo()
         .env("RUSTFLAGS", "-C target-cpu=native")
         .with_stderr(
             "\
@@ -1224,35 +1199,17 @@ fn simple_deps_cleaner_does_not_rebuild() {
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]",
         )
         .run();
-    if is_coarse_mtime() {
-        sleep_ms(1000);
-    }
-    let timestamp = filetime::FileTime::from_system_time(SystemTime::now());
-    if is_coarse_mtime() {
-        sleep_ms(1000);
-    }
-    // This does not make new files, but it does update the mtime.
-    p.cargo("build -Z mtime-on-use")
+    // This does not make new files, but it does update the mtime of the dependency.
+    p.cargo("build -p bar -Z mtime-on-use")
         .masquerade_as_nightly_cargo()
         .env("RUSTFLAGS", "-C target-cpu=native")
         .with_stderr("[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]")
         .run();
-    simple_deps_cleaner(p.target_debug_dir(), timestamp);
     // This should not recompile!
     p.cargo("build -Z mtime-on-use")
         .masquerade_as_nightly_cargo()
         .env("RUSTFLAGS", "-C target-cpu=native")
         .with_stderr("[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]")
-        .run();
-    // But this should be cleaned and so need a rebuild
-    p.cargo("build -Z mtime-on-use")
-        .masquerade_as_nightly_cargo()
-        .with_stderr(
-            "\
-[COMPILING] bar v0.0.1 ([..])
-[COMPILING] foo v0.0.1 ([..])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]",
-        )
         .run();
 }
 
@@ -1269,10 +1226,11 @@ fn fingerprint_cleaner(mut dir: PathBuf, timestamp: filetime::FileTime) {
     for fing in fs::read_dir(&dir).unwrap() {
         let fing = fing.unwrap();
 
-        if fs::read_dir(fing.path()).unwrap().all(|f| {
+        let outdated = |f: io::Result<fs::DirEntry>| {
             filetime::FileTime::from_last_modification_time(&f.unwrap().metadata().unwrap())
                 <= timestamp
-        }) {
+        };
+        if fs::read_dir(fing.path()).unwrap().all(outdated) {
             fs::remove_dir_all(fing.path()).unwrap();
             println!("remove: {:?}", fing.path());
             // a real cleaner would remove the big files in deps and build as well
@@ -1287,7 +1245,7 @@ fn fingerprint_cleaner(mut dir: PathBuf, timestamp: filetime::FileTime) {
     );
 }
 
-#[test]
+#[cargo_test]
 fn fingerprint_cleaner_does_not_rebuild() {
     let p = project()
         .file(
@@ -1351,7 +1309,7 @@ fn fingerprint_cleaner_does_not_rebuild() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn reuse_panic_build_dep_test() {
     let p = project()
         .file(
@@ -1393,7 +1351,7 @@ fn reuse_panic_build_dep_test() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn reuse_panic_pm() {
     // foo(panic) -> bar(panic)
     // somepm(nopanic) -> bar(nopanic)
@@ -1451,7 +1409,7 @@ fn reuse_panic_pm() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn bust_patched_dep() {
     Package::new("registry1", "0.1.0").publish();
     Package::new("registry2", "0.1.0")
@@ -1511,7 +1469,7 @@ fn bust_patched_dep() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn rebuild_on_mid_build_file_modification() {
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = server.local_addr().unwrap();
@@ -1618,7 +1576,7 @@ fn rebuild_on_mid_build_file_modification() {
     t.join().ok().unwrap();
 }
 
-#[test]
+#[cargo_test]
 fn dirty_both_lib_and_test() {
     // This tests that all artifacts that depend on the results of a build
     // script will get rebuilt when the build script reruns, even for separate
@@ -1710,7 +1668,7 @@ fn dirty_both_lib_and_test() {
     p.cargo("test --lib").run();
 }
 
-#[test]
+#[cargo_test]
 fn script_fails_stay_dirty() {
     // Check if a script is aborted (such as hitting Ctrl-C) that it will re-run.
     // Steps:
@@ -1749,7 +1707,7 @@ fn script_fails_stay_dirty() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn simulated_docker_deps_stay_cached() {
     // Test what happens in docker where the nanoseconds are zeroed out.
     Package::new("regdep", "1.0.0").publish();
@@ -1895,7 +1853,7 @@ fn simulated_docker_deps_stay_cached() {
     }
 }
 
-#[test]
+#[cargo_test]
 fn metadata_change_invalidates() {
     let p = project()
         .file(
@@ -1933,7 +1891,7 @@ fn metadata_change_invalidates() {
     assert_eq!(p.glob("target/debug/deps/libfoo-*.rlib").count(), 1);
 }
 
-#[test]
+#[cargo_test]
 fn edition_change_invalidates() {
     const MANIFEST: &str = r#"
         [package]
@@ -1968,7 +1926,7 @@ fn edition_change_invalidates() {
     assert_eq!(p.glob("target/debug/deps/libfoo-*.rlib").count(), 1);
 }
 
-#[test]
+#[cargo_test]
 fn rename_with_path_deps() {
     let p = project()
         .file(
@@ -2021,6 +1979,73 @@ fn rename_with_path_deps() {
 
     p.cargo("build")
         .cwd(&new)
+        .with_stderr("[FINISHED] [..]")
+        .run();
+}
+
+#[cargo_test]
+fn move_target_directory_with_path_deps() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.5.0"
+                authors = []
+
+                [dependencies]
+                a = { path = "a" }
+            "#,
+        )
+        .file(
+            "a/Cargo.toml",
+            r#"
+                [project]
+                name = "a"
+                version = "0.5.0"
+                authors = []
+            "#,
+        )
+        .file("src/lib.rs", "extern crate a; pub use a::print_msg;")
+        .file(
+            "a/build.rs",
+            r###"
+            use std::env;
+            use std::fs;
+            use std::path::Path;
+
+            fn main() {
+                println!("cargo:rerun-if-changed=build.rs");
+                let out_dir = env::var("OUT_DIR").unwrap();
+                let dest_path = Path::new(&out_dir).join("hello.rs");
+                fs::write(&dest_path, r#"
+                    pub fn message() -> &'static str {
+                        "Hello, World!"
+                    }
+                "#).unwrap();
+            }
+        "###,
+        )
+        .file(
+            "a/src/lib.rs",
+            r#"
+            include!(concat!(env!("OUT_DIR"), "/hello.rs"));
+            pub fn print_msg() { message(); }
+            "#,
+        );
+    let p = p.build();
+
+    let mut parent = p.root();
+    parent.pop();
+
+    p.cargo("build").run();
+
+    let new_target = p.root().join("target2");
+    fs::rename(p.root().join("target"), &new_target).unwrap();
+
+    p.cargo("build")
+        .env("CARGO_TARGET_DIR", &new_target)
         .with_stderr("[FINISHED] [..]")
         .run();
 }

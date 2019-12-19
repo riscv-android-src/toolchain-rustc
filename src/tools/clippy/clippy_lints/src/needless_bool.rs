@@ -19,7 +19,7 @@ declare_clippy_lint! {
     /// **Why is this bad?** Redundant code.
     ///
     /// **Known problems:** Maybe false positives: Sometimes, the two branches are
-    /// painstakingly documented (which we of course do not detect), so they *may*
+    /// painstakingly documented (which we, of course, do not detect), so they *may*
     /// have some value. Even then, the documentation can be rewritten to match the
     /// shorter code.
     ///
@@ -115,8 +115,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBool {
 }
 
 fn parent_node_is_if_expr<'a, 'b>(expr: &Expr, cx: &LateContext<'a, 'b>) -> bool {
-    let parent_id = cx.tcx.hir().get_parent_node_by_hir_id(expr.hir_id);
-    let parent_node = cx.tcx.hir().get_by_hir_id(parent_id);
+    let parent_id = cx.tcx.hir().get_parent_node(expr.hir_id);
+    let parent_node = cx.tcx.hir().get(parent_id);
 
     if let rustc::hir::Node::Expr(e) = parent_node {
         if higher::if_block(&e).is_some() {

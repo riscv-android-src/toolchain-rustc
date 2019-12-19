@@ -39,13 +39,13 @@ enum Context {
 }
 
 #[derive(Copy, Clone)]
-struct CheckLoopVisitor<'a, 'hir: 'a> {
+struct CheckLoopVisitor<'a, 'hir> {
     sess: &'a Session,
     hir_map: &'a Map<'hir>,
     cx: Context,
 }
 
-fn check_mod_loops<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+fn check_mod_loops<'tcx>(tcx: TyCtxt<'tcx>, module_def_id: DefId) {
     tcx.hir().visit_item_likes_in_module(module_def_id, &mut CheckLoopVisitor {
         sess: &tcx.sess,
         hir_map: &tcx.hir(),
@@ -107,7 +107,7 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
                 };
 
                 if loop_id != hir::DUMMY_HIR_ID {
-                    if let Node::Block(_) = self.hir_map.find_by_hir_id(loop_id).unwrap() {
+                    if let Node::Block(_) = self.hir_map.find(loop_id).unwrap() {
                         return
                     }
                 }
@@ -116,7 +116,7 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
                     let loop_kind = if loop_id == hir::DUMMY_HIR_ID {
                         None
                     } else {
-                        Some(match self.hir_map.expect_expr_by_hir_id(loop_id).node {
+                        Some(match self.hir_map.expect_expr(loop_id).node {
                             hir::ExprKind::While(..) => LoopKind::WhileLoop,
                             hir::ExprKind::Loop(_, _, source) => LoopKind::Loop(source),
                             ref r => span_bug!(e.span,
@@ -155,7 +155,7 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
 
                 match destination.target_id {
                     Ok(loop_id) => {
-                        if let Node::Block(block) = self.hir_map.find_by_hir_id(loop_id).unwrap() {
+                        if let Node::Block(block) = self.hir_map.find(loop_id).unwrap() {
                             struct_span_err!(self.sess, e.span, E0696,
                                             "`continue` pointing to a labeled block")
                                 .span_label(e.span,

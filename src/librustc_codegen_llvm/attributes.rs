@@ -10,7 +10,6 @@ use rustc::ty::{self, TyCtxt, PolyFnSig};
 use rustc::ty::layout::HasTyCtxt;
 use rustc::ty::query::Providers;
 use rustc_data_structures::small_c_str::SmallCStr;
-use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_target::spec::PanicStrategy;
 use rustc_codegen_ssa::traits::*;
@@ -103,8 +102,8 @@ pub fn set_probestack(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
         return
     }
 
-    // probestack doesn't play nice either with pgo-gen.
-    if cx.sess().opts.debugging_opts.pgo_gen.enabled() {
+    // probestack doesn't play nice either with `-C profile-generate`.
+    if cx.sess().opts.cg.profile_generate.enabled() {
         return;
     }
 
@@ -320,11 +319,11 @@ pub fn provide(providers: &mut Providers<'_>) {
         if tcx.sess.opts.actually_rustdoc {
             // rustdoc needs to be able to document functions that use all the features, so
             // whitelist them all
-            Lrc::new(llvm_util::all_known_features()
+            tcx.arena.alloc(llvm_util::all_known_features()
                 .map(|(a, b)| (a.to_string(), b))
                 .collect())
         } else {
-            Lrc::new(llvm_util::target_feature_whitelist(tcx.sess)
+            tcx.arena.alloc(llvm_util::target_feature_whitelist(tcx.sess)
                 .iter()
                 .map(|&(a, b)| (a.to_string(), b))
                 .collect())
@@ -364,11 +363,11 @@ pub fn provide_extern(providers: &mut Providers<'_>) {
             }));
         }
 
-        Lrc::new(ret)
+        tcx.arena.alloc(ret)
     };
 }
 
-fn wasm_import_module(tcx: TyCtxt<'_, '_, '_>, id: DefId) -> Option<CString> {
+fn wasm_import_module(tcx: TyCtxt<'_>, id: DefId) -> Option<CString> {
     tcx.wasm_import_module_map(id.krate)
         .get(&id)
         .map(|s| CString::new(&s[..]).unwrap())

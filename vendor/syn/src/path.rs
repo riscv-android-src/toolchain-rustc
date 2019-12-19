@@ -1,11 +1,3 @@
-// Copyright 2018 Syn Developers
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::*;
 use punctuated::Punctuated;
 
@@ -94,6 +86,7 @@ impl PathArguments {
         }
     }
 
+    #[cfg(feature = "parsing")]
     fn is_none(&self) -> bool {
         match *self {
             PathArguments::None => true,
@@ -239,7 +232,7 @@ pub mod parsing {
                 }
 
                 if input.peek(Lit) {
-                    let lit = input.call(expr::parsing::expr_lit)?;
+                    let lit = input.parse()?;
                     return Ok(GenericArgument::Const(Expr::Lit(lit)));
                 }
 
@@ -300,7 +293,6 @@ pub mod parsing {
         fn parse_helper(input: ParseStream, expr_style: bool) -> Result<Self> {
             if input.peek(Token![super])
                 || input.peek(Token![self])
-                || input.peek(Token![Self])
                 || input.peek(Token![crate])
                 || input.peek(Token![extern])
             {
@@ -308,7 +300,12 @@ pub mod parsing {
                 return Ok(PathSegment::from(ident));
             }
 
-            let ident = input.parse()?;
+            let ident = if input.peek(Token![Self]) {
+                input.call(Ident::parse_any)?
+            } else {
+                input.parse()?
+            };
+
             if !expr_style && input.peek(Token![<]) && !input.peek(Token![<=])
                 || input.peek(Token![::]) && input.peek3(Token![<])
             {
@@ -366,11 +363,8 @@ pub mod parsing {
         ///
         /// # Example
         ///
-        /// ```
-        /// #[macro_use]
-        /// extern crate syn;
-        ///
-        /// use syn::{Path, Result};
+        /// ```edition2018
+        /// use syn::{Path, Result, Token};
         /// use syn::parse::{Parse, ParseStream};
         ///
         /// // A simplified single `use` statement like:
@@ -394,8 +388,6 @@ pub mod parsing {
         ///         })
         ///     }
         /// }
-        /// #
-        /// # fn main() {}
         /// ```
         pub fn parse_mod_style(input: ParseStream) -> Result<Self> {
             Ok(Path {
@@ -440,6 +432,9 @@ pub mod parsing {
         /// - the first path segment has no angle bracketed or parenthesized
         ///   path arguments
         /// - and the ident of the first path segment is equal to the given one.
+        ///
+        /// *This function is available if Syn is built with the `"parsing"`
+        /// feature.*
         pub fn is_ident<I>(&self, ident: I) -> bool
         where
             Ident: PartialEq<I>,
@@ -451,10 +446,6 @@ pub mod parsing {
         }
 
         fn parse_helper(input: ParseStream, expr_style: bool) -> Result<Self> {
-            if input.peek(Token![dyn]) {
-                return Err(input.error("expected path"));
-            }
-
             Ok(Path {
                 leading_colon: input.parse()?,
                 segments: {

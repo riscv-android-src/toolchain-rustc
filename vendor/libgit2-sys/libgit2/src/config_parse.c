@@ -11,10 +11,14 @@
 
 #include <ctype.h>
 
+const char *git_config_escapes = "ntb\"\\";
+const char *git_config_escaped = "\n\t\b\"\\";
+
 static void set_parse_error(git_config_parser *reader, int col, const char *error_str)
 {
-	giterr_set(GITERR_CONFIG, "failed to parse config file: %s (in %s:%"PRIuZ", column %d)",
-		error_str, reader->file->path, reader->ctx.line_num, col);
+	const char *file = reader->file ? reader->file->path : "in-memory";
+	git_error_set(GIT_ERROR_CONFIG, "failed to parse config file: %s (in %s:%"PRIuZ", column %d)",
+		error_str, file, reader->ctx.line_num, col);
 }
 
 
@@ -59,6 +63,7 @@ static int parse_section_header_ext(git_config_parser *reader, const char *line,
 {
 	int c, rpos;
 	char *first_quote, *last_quote;
+	const char *line_start = line;
 	git_buf buf = GIT_BUF_INIT;
 	size_t quoted_len, alloc_len, base_name_len = strlen(base_name);
 
@@ -82,8 +87,8 @@ static int parse_section_header_ext(git_config_parser *reader, const char *line,
 		goto end_error;
 	}
 
-	GITERR_CHECK_ALLOC_ADD(&alloc_len, base_name_len, quoted_len);
-	GITERR_CHECK_ALLOC_ADD(&alloc_len, alloc_len, 2);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloc_len, base_name_len, quoted_len);
+	GIT_ERROR_CHECK_ALLOC_ADD(&alloc_len, alloc_len, 2);
 
 	if (git_buf_grow(&buf, alloc_len) < 0 ||
 	    git_buf_printf(&buf, "%s.", base_name) < 0)
@@ -130,15 +135,15 @@ end_parse:
 
 	if (line[rpos] != '"' || line[rpos + 1] != ']') {
 		set_parse_error(reader, rpos, "Unexpected text after closing quotes");
-		git_buf_free(&buf);
+		git_buf_dispose(&buf);
 		return -1;
 	}
 
 	*section_name = git_buf_detach(&buf);
-	return 0;
+	return &line[rpos + 2] - line_start; /* rpos is at the closing quote */
 
 end_error:
-	git_buf_free(&buf);
+	git_buf_dispose(&buf);
 
 	return -1;
 }
@@ -164,9 +169,9 @@ static int parse_section_header(git_config_parser *reader, char **section_out)
 		return -1;
 	}
 
-	GITERR_CHECK_ALLOC_ADD(&line_len, (size_t)(name_end - line), 1);
+	GIT_ERROR_CHECK_ALLOC_ADD(&line_len, (size_t)(name_end - line), 1);
 	name = git__malloc(line_len);
-	GITERR_CHECK_ALLOC(name);
+	GIT_ERROR_CHECK_ALLOC(name);
 
 	name_length = 0;
 	pos = 0;
@@ -205,7 +210,7 @@ static int parse_section_header(git_config_parser *reader, char **section_out)
 	name[name_length] = 0;
 	*section_out = name;
 
-	return 0;
+	return pos;
 
 fail_parse:
 	git__free(line);
@@ -299,7 +304,7 @@ static int unescape_line(
 				*fixed++ = git_config_escaped[esc - git_config_escapes];
 			} else {
 				git__free(str);
-				giterr_set(GITERR_CONFIG, "invalid escape at %s", ptr);
+				git_error_set(GIT_ERROR_CONFIG, "invalid escape at %s", ptr);
 				return -1;
 			}
 		}
@@ -315,49 +320,51 @@ done:
 
 static int parse_multiline_variable(git_config_parser *reader, git_buf *value, int in_quotes)
 {
-	char *line = NULL, *proc_line = NULL;
 	int quote_count;
-	bool multiline;
+	bool multiline = true;
 
-	/* Check that the next line exists */
-	git_parse_advance_line(&reader->ctx);
-	line = git__strndup(reader->ctx.line, reader->ctx.line_len);
-	if (line == NULL)
-		return -1;
+	while (multiline) {
+		char *line = NULL, *proc_line = NULL;
+		int error;
 
-	/* We've reached the end of the file, there is no continuation.
-	 * (this is not an error).
-	 */
-	if (line[0] == '\0') {
+		/* Check that the next line exists */
+		git_parse_advance_line(&reader->ctx);
+		line = git__strndup(reader->ctx.line, reader->ctx.line_len);
+		GIT_ERROR_CHECK_ALLOC(line);
+
+		/*
+		 * We've reached the end of the file, there is no continuation.
+		 * (this is not an error).
+		 */
+		if (line[0] == '\0') {
+			error = 0;
+			goto out;
+		}
+
+		/* If it was just a comment, pretend it didn't exist */
+		quote_count = strip_comments(line, !!in_quotes);
+		if (line[0] == '\0')
+			goto next;
+
+		if ((error = unescape_line(&proc_line, &multiline,
+					   line, in_quotes)) < 0)
+			goto out;
+
+		/* Add this line to the multiline var */
+		if ((error = git_buf_puts(value, proc_line)) < 0)
+			goto out;
+
+next:
 		git__free(line);
-		return 0;
-	}
+		git__free(proc_line);
+		in_quotes = quote_count;
+		continue;
 
-	quote_count = strip_comments(line, !!in_quotes);
-
-	/* If it was just a comment, pretend it didn't exist */
-	if (line[0] == '\0') {
+out:
 		git__free(line);
-		return parse_multiline_variable(reader, value, quote_count);
-		/* TODO: unbounded recursion. This **could** be exploitable */
+		git__free(proc_line);
+		return error;
 	}
-
-	if (unescape_line(&proc_line, &multiline, line, in_quotes) < 0) {
-		git__free(line);
-		return -1;
-	}
-	/* add this line to the multiline var */
-
-	git_buf_puts(value, proc_line);
-	git__free(line);
-	git__free(proc_line);
-
-	/*
-	 * If we need to continue reading the next line, let's just
-	 * keep putting stuff in the buffer
-	 */
-	if (multiline)
-		return parse_multiline_variable(reader, value, quote_count);
 
 	return 0;
 }
@@ -404,22 +411,21 @@ static int parse_name(
 static int parse_variable(git_config_parser *reader, char **var_name, char **var_value)
 {
 	const char *value_start = NULL;
-	char *line;
-	int quote_count;
+	char *line = NULL, *name = NULL, *value = NULL;
+	int quote_count, error;
 	bool multiline;
+
+	*var_name = NULL;
+	*var_value = NULL;
 
 	git_parse_advance_ws(&reader->ctx);
 	line = git__strndup(reader->ctx.line, reader->ctx.line_len);
-	if (line == NULL)
-		return -1;
+	GIT_ERROR_CHECK_ALLOC(line);
 
 	quote_count = strip_comments(line, 0);
 
-	/* If there is no value, boolean true is assumed */
-	*var_value = NULL;
-
-	if (parse_name(var_name, &value_start, reader, line) < 0)
-		goto on_error;
+	if ((error = parse_name(&name, &value_start, reader, line)) < 0)
+		goto out;
 
 	/*
 	 * Now, let's try to parse the value
@@ -428,30 +434,35 @@ static int parse_variable(git_config_parser *reader, char **var_name, char **var
 		while (git__isspace(value_start[0]))
 			value_start++;
 
-		if (unescape_line(var_value, &multiline, value_start, 0) < 0)
-			goto on_error;
+		if ((error = unescape_line(&value, &multiline, value_start, 0)) < 0)
+			goto out;
 
 		if (multiline) {
 			git_buf multi_value = GIT_BUF_INIT;
-			git_buf_attach(&multi_value, *var_value, 0);
+			git_buf_attach(&multi_value, value, 0);
+			value = NULL;
 
 			if (parse_multiline_variable(reader, &multi_value, quote_count) < 0 ||
-				git_buf_oom(&multi_value)) {
-				git_buf_free(&multi_value);
-				goto on_error;
+			    git_buf_oom(&multi_value)) {
+				error = -1;
+				git_buf_dispose(&multi_value);
+				goto out;
 			}
 
-			*var_value = git_buf_detach(&multi_value);
+			value = git_buf_detach(&multi_value);
 		}
 	}
 
-	git__free(line);
-	return 0;
+	*var_name = name;
+	*var_value = value;
+	name = NULL;
+	value = NULL;
 
-on_error:
-	git__free(*var_name);
+out:
+	git__free(name);
+	git__free(value);
 	git__free(line);
-	return -1;
+	return error;
 }
 
 int git_config_parse(
@@ -463,7 +474,7 @@ int git_config_parse(
 	void *data)
 {
 	git_parse_ctx *ctx;
-	char *current_section = NULL, *var_name, *var_value;
+	char *current_section = NULL, *var_name = NULL, *var_value = NULL;
 	int result = 0;
 
 	ctx = &parser->ctx;
@@ -471,9 +482,13 @@ int git_config_parse(
 	skip_bom(ctx);
 
 	for (; ctx->remain_len > 0; git_parse_advance_line(ctx)) {
-		const char *line_start = parser->ctx.line;
-		size_t line_len = parser->ctx.line_len;
+		const char *line_start;
+		size_t line_len;
 		char c;
+
+	restart:
+		line_start = ctx->line;
+		line_len = ctx->line_len;
 
 		/*
 		 * Get either first non-whitespace character or, if that does
@@ -489,9 +504,24 @@ int git_config_parse(
 			git__free(current_section);
 			current_section = NULL;
 
-			if ((result = parse_section_header(parser, &current_section)) == 0 && on_section) {
+			result = parse_section_header(parser, &current_section);
+			if (result < 0)
+				break;
+
+			git_parse_advance_chars(ctx, result);
+
+			if (on_section)
 				result = on_section(parser, current_section, line_start, line_len, data);
-			}
+			/*
+			 * After we've parsed the section header we may not be
+			 * done with the line. If there's still data in there,
+			 * run the next loop with the rest of the current line
+			 * instead of moving forward.
+			 */
+
+			if (!git_parse_peek(&c, ctx, GIT_PARSE_PEEK_SKIP_WHITESPACE))
+				goto restart;
+
 			break;
 
 		case '\n': /* comment or whitespace-only */
@@ -508,7 +538,10 @@ int git_config_parse(
 		default: /* assume variable declaration */
 			if ((result = parse_variable(parser, &var_name, &var_value)) == 0 && on_variable) {
 				result = on_variable(parser, current_section, var_name, var_value, line_start, line_len, data);
+				git__free(var_name);
+				git__free(var_value);
 			}
+
 			break;
 		}
 

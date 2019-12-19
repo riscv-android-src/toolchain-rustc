@@ -1,4 +1,5 @@
 #![deny(rust_2018_idioms)]
+#![warn(unreachable_pub)]
 
 #[macro_use]
 extern crate derive_new;
@@ -7,8 +8,6 @@ extern crate derive_new;
 extern crate lazy_static;
 #[macro_use]
 extern crate log;
-#[macro_use]
-extern crate serde_derive;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -40,6 +39,9 @@ pub use crate::rustfmt_diff::{ModifiedChunk, ModifiedLines};
 
 #[macro_use]
 mod utils;
+
+#[macro_use]
+mod release_channel;
 
 mod attr;
 mod chains;

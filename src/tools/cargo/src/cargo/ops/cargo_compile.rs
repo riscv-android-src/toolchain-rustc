@@ -35,7 +35,7 @@ use crate::core::{Package, Target};
 use crate::core::{PackageId, PackageIdSpec, TargetKind, Workspace};
 use crate::ops;
 use crate::util::config::Config;
-use crate::util::{lev_distance, profile, CargoResult};
+use crate::util::{closest_msg, profile, CargoResult};
 
 /// Contains information about how a package should be compiled.
 #[derive(Debug)]
@@ -383,7 +383,7 @@ pub fn compile_ws<'a>(
     }
     if let Some(args) = local_rustdoc_args {
         for unit in &units {
-            if unit.mode.is_doc() {
+            if unit.mode.is_doc() || unit.mode.is_doc_test() {
                 bcx.extra_compiler_args.insert(*unit, args.clone());
             }
         }
@@ -701,7 +701,7 @@ fn generate_targets<'a>(
                     filter_targets(packages, Target::is_lib, false, bcx.build_config.mode)
                 {
                     let Proposal { target, pkg, .. } = proposal;
-                    if bcx.build_config.mode == CompileMode::Doctest && !target.doctestable() {
+                    if bcx.build_config.mode.is_doc_test() && !target.doctestable() {
                         ws.config().shell().warn(format!(
                             "doc tests are not supported for crate type(s) `{}` in package `{}`",
                             target.rustc_crate_types().join(", "),
@@ -906,26 +906,18 @@ fn find_named_targets<'a>(
     let filter = |t: &Target| t.name() == target_name && is_expected_kind(t);
     let proposals = filter_targets(packages, filter, true, mode);
     if proposals.is_empty() {
-        let suggestion = packages
-            .iter()
-            .flat_map(|pkg| {
-                pkg.targets()
-                    .iter()
-                    .filter(|target| is_expected_kind(target))
-            })
-            .map(|target| (lev_distance(target_name, target.name()), target))
-            .filter(|&(d, _)| d < 4)
-            .min_by_key(|t| t.0)
-            .map(|t| t.1);
-        match suggestion {
-            Some(s) => failure::bail!(
-                "no {} target named `{}`\n\nDid you mean `{}`?",
-                target_desc,
-                target_name,
-                s.name()
-            ),
-            None => failure::bail!("no {} target named `{}`", target_desc, target_name),
-        }
+        let targets = packages.iter().flat_map(|pkg| {
+            pkg.targets()
+                .iter()
+                .filter(|target| is_expected_kind(target))
+        });
+        let suggestion = closest_msg(target_name, targets, |t| t.name());
+        failure::bail!(
+            "no {} target named `{}`{}",
+            target_desc,
+            target_name,
+            suggestion
+        );
     }
     Ok(proposals)
 }

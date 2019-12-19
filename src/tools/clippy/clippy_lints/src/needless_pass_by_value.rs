@@ -88,11 +88,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
         }
 
         // Exclude non-inherent impls
-        if let Some(Node::Item(item)) = cx
-            .tcx
-            .hir()
-            .find_by_hir_id(cx.tcx.hir().get_parent_node_by_hir_id(hir_id))
-        {
+        if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
             if matches!(item.node, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
                 ItemKind::Trait(..))
             {
@@ -137,8 +133,16 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
         } = {
             let mut ctx = MovedVariablesCtxt::new(cx);
             let region_scope_tree = &cx.tcx.region_scope_tree(fn_def_id);
-            euv::ExprUseVisitor::new(&mut ctx, cx.tcx, cx.param_env, region_scope_tree, cx.tables, None)
-                .consume_body(body);
+            euv::ExprUseVisitor::new(
+                &mut ctx,
+                cx.tcx,
+                fn_def_id,
+                cx.param_env,
+                region_scope_tree,
+                cx.tables,
+                None,
+            )
+            .consume_body(body);
             ctx
         };
 
@@ -318,7 +322,7 @@ fn requires_exact_signature(attrs: &[Attribute]) -> bool {
     })
 }
 
-struct MovedVariablesCtxt<'a, 'tcx: 'a> {
+struct MovedVariablesCtxt<'a, 'tcx> {
     cx: &'a LateContext<'a, 'tcx>,
     moved_vars: FxHashSet<HirId>,
     /// Spans which need to be prefixed with `*` for dereferencing the
@@ -349,14 +353,14 @@ impl<'a, 'tcx> MovedVariablesCtxt<'a, 'tcx> {
         if let mc::Categorization::Local(vid) = cmt.cat {
             let mut id = matched_pat.hir_id;
             loop {
-                let parent = self.cx.tcx.hir().get_parent_node_by_hir_id(id);
+                let parent = self.cx.tcx.hir().get_parent_node(id);
                 if id == parent {
                     // no parent
                     return;
                 }
                 id = parent;
 
-                if let Some(node) = self.cx.tcx.hir().find_by_hir_id(id) {
+                if let Some(node) = self.cx.tcx.hir().find(id) {
                     match node {
                         Node::Expr(e) => {
                             // `match` and `if let`

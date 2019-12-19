@@ -7,19 +7,22 @@ use rustc::ty;
 use rustc::ty::layout::{LayoutOf, Primitive, Size};
 use rustc::mir::BinOp;
 use rustc::mir::interpret::{
-    EvalResult, InterpError, Scalar,
+    InterpResult, InterpError, Scalar,
 };
 
 use super::{
-    Machine, PlaceTy, OpTy, InterpretCx,
+    Machine, PlaceTy, OpTy, InterpretCx, Immediate,
 };
 
+mod type_name;
+
+pub use type_name::*;
 
 fn numeric_intrinsic<'tcx, Tag>(
     name: &str,
     bits: u128,
     kind: Primitive,
-) -> EvalResult<'tcx, Scalar<Tag>> {
+) -> InterpResult<'tcx, Scalar<Tag>> {
     let size = match kind {
         Primitive::Int(integer, _) => integer.size(),
         _ => bug!("invalid `{}` argument: {:?}", name, bits),
@@ -36,14 +39,14 @@ fn numeric_intrinsic<'tcx, Tag>(
     Ok(Scalar::from_uint(bits_out, size))
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
     /// Returns `true` if emulation happened.
     pub fn emulate_intrinsic(
         &mut self,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, M::PointerTag>],
         dest: PlaceTy<'tcx, M::PointerTag>,
-    ) -> EvalResult<'tcx, bool> {
+    ) -> InterpResult<'tcx, bool> {
         let substs = instance.substs;
 
         let intrinsic_name = &self.tcx.item_name(instance.def_id()).as_str()[..];
@@ -75,6 +78,16 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
                 let id_val = Scalar::from_uint(type_id, dest.layout.size);
                 self.write_scalar(id_val, dest)?;
             }
+
+            "type_name" => {
+                let alloc = alloc_type_name(self.tcx.tcx, substs.type_at(0));
+                let name_id = self.tcx.alloc_map.lock().create_memory_alloc(alloc);
+                let id_ptr = self.memory.tag_static_base_pointer(name_id.into());
+                let alloc_len = alloc.bytes.len() as u64;
+                let name_val = Immediate::new_slice(Scalar::Ptr(id_ptr), alloc_len, self);
+                self.write_immediate(name_val, dest)?;
+            }
+
             | "ctpop"
             | "cttz"
             | "cttz_nonzero"
@@ -191,7 +204,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
                 let raw_shift_bits = self.read_scalar(args[1])?.to_bits(layout.size)?;
                 let width_bits = layout.size.bits() as u128;
                 let shift_bits = raw_shift_bits % width_bits;
-                let inv_shift_bits = (width_bits - raw_shift_bits) % width_bits;
+                let inv_shift_bits = (width_bits - shift_bits) % width_bits;
                 let result_bits = if intrinsic_name == "rotate_left" {
                     (val_bits << shift_bits) | (val_bits >> inv_shift_bits)
                 } else {
@@ -218,7 +231,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> 
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, M::PointerTag>],
         dest: Option<PlaceTy<'tcx, M::PointerTag>>,
-    ) -> EvalResult<'tcx, bool> {
+    ) -> InterpResult<'tcx, bool> {
         let def_id = instance.def_id();
         // Some fn calls are actually BinOp intrinsics
         if let Some((op, oflo)) = self.tcx.is_binop_lang_item(def_id) {

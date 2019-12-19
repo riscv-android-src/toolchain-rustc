@@ -8,6 +8,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use syntax::ast::{self, ExprKind, FunctionRetTy, ItemKind, PatKind, UseTree, UseTreeKind};
+use syntax::edition::Edition;
 use syntax::errors::{emitter::Emitter, DiagnosticBuilder, Handler};
 use syntax::parse::parser::Parser;
 use syntax::parse::{self, ParseSess};
@@ -17,7 +18,7 @@ use syntax::{self, visit};
 struct DummyEmitter;
 
 impl Emitter for DummyEmitter {
-    fn emit(&mut self, _db: &DiagnosticBuilder<'_>) {}
+    fn emit_diagnostic(&mut self, _db: &DiagnosticBuilder<'_>) {}
     fn should_show_explain(&self) -> bool {
         false
     }
@@ -35,7 +36,8 @@ pub fn with_error_checking_parse<F, T>(s: String, f: F) -> Option<T>
 where
     F: FnOnce(&mut Parser) -> Option<T>,
 {
-    syntax::with_globals(|| {
+    // FIXME: Set correct edition based on the edition of the target crate.
+    syntax::with_globals(Edition::Edition2018, || {
         let codemap = Rc::new(SourceMap::new(source_map::FilePathMapping::empty()));
         // We use DummyEmitter here not to print error messages to stderr
         let handler = Handler::with_emitter(false, None, Box::new(DummyEmitter {}));
@@ -763,7 +765,7 @@ impl<'c, 's, 'ast> visit::Visitor<'ast> for ExprTypeVisitor<'c, 's> {
                     if name.as_str() == "vec" {
                         let path = RacerPath::from_iter(
                             true,
-                            ["std", "vec", "Vec"].into_iter().map(|s| s.to_string()),
+                            ["std", "vec", "Vec"].iter().map(|s| s.to_string()),
                         );
                         self.result = find_type_match(
                             &path,
@@ -810,11 +812,8 @@ impl<'c, 's, 'ast> visit::Visitor<'ast> for ExprTypeVisitor<'c, 's> {
             }
         };
     }
-
-    fn visit_mac(&mut self, mac: &ast::Mac) {
-        // Just do nothing if we see a macro, but also prevent the panic! in the default impl.
-        debug!("ignoring visit_mac: {:?}", mac);
-    }
+    /// Just do nothing if we see a macro, but also prevent the panic! in the default impl.
+    fn visit_mac(&mut self, _mac: &ast::Mac) {}
 }
 
 // gets generics info from the context match
@@ -983,6 +982,7 @@ impl<'ast> visit::Visitor<'ast> for ExternCrateVisitor {
             }
         }
     }
+    fn visit_mac(&mut self, _mac: &ast::Mac) {}
 }
 
 #[derive(Debug)]

@@ -39,13 +39,13 @@ use rustc::ty::{
     subst::Kind,
     Binder, Ty, TyCtxt,
 };
-use rustc_data_structures::sync::Lrc;
 use rustc_errors::Applicability;
+use smallvec::SmallVec;
 use syntax::ast::{self, LitKind};
 use syntax::attr;
 use syntax::ext::hygiene::ExpnFormat;
 use syntax::source_map::{Span, DUMMY_SP};
-use syntax::symbol::{keywords, Symbol};
+use syntax::symbol::{kw, Symbol};
 
 use crate::reexport::*;
 
@@ -66,7 +66,7 @@ pub fn differing_macro_contexts(lhs: Span, rhs: Span) -> bool {
 /// ```
 pub fn in_constant(cx: &LateContext<'_, '_>, id: HirId) -> bool {
     let parent_id = cx.tcx.hir().get_parent_item(id);
-    match cx.tcx.hir().get_by_hir_id(parent_id) {
+    match cx.tcx.hir().get(parent_id) {
         Node::Item(&Item {
             node: ItemKind::Const(..),
             ..
@@ -94,12 +94,12 @@ pub fn in_constant(cx: &LateContext<'_, '_>, id: HirId) -> bool {
 
 /// Returns `true` if this `expn_info` was expanded by any macro or desugaring
 pub fn in_macro_or_desugar(span: Span) -> bool {
-    span.ctxt().outer().expn_info().is_some()
+    span.ctxt().outer_expn_info().is_some()
 }
 
 /// Returns `true` if this `expn_info` was expanded by any macro.
 pub fn in_macro(span: Span) -> bool {
-    if let Some(info) = span.ctxt().outer().expn_info() {
+    if let Some(info) = span.ctxt().outer_expn_info() {
         if let ExpnFormat::CompilerDesugaring(..) = info.format {
             false
         } else {
@@ -114,7 +114,7 @@ pub fn in_macro(span: Span) -> bool {
 // sources that the user has no control over.
 // For some reason these attributes don't have any expansion info on them, so
 // we have to check it this way until there is a better way.
-pub fn is_present_in_source<'a, T: LintContext<'a>>(cx: &T, span: Span) -> bool {
+pub fn is_present_in_source<T: LintContext>(cx: &T, span: Span) -> bool {
     if let Some(snippet) = snippet_opt(cx, span) {
         if snippet.is_empty() {
             return false;
@@ -248,7 +248,8 @@ pub fn path_to_res(cx: &LateContext<'_, '_>, path: &[&str]) -> Option<(def::Res)
                 None => return None,
             };
 
-            for item in mem::replace(&mut items, Lrc::new(vec![])).iter() {
+            let result = SmallVec::<[_; 8]>::new();
+            for item in mem::replace(&mut items, cx.tcx.arena.alloc_slice(&result)).iter() {
                 if item.ident.name.as_str() == *segment {
                     if path_it.peek().is_none() {
                         return Some(item.res);
@@ -314,14 +315,14 @@ pub fn implements_trait<'a, 'tcx>(
 ///     }
 /// }
 /// ```
-pub fn trait_ref_of_method(cx: &LateContext<'_, '_>, hir_id: HirId) -> Option<TraitRef> {
+pub fn trait_ref_of_method<'tcx>(cx: &LateContext<'_, 'tcx>, hir_id: HirId) -> Option<&'tcx TraitRef> {
     // Get the implemented trait for the current function
     let parent_impl = cx.tcx.hir().get_parent_item(hir_id);
     if_chain! {
         if parent_impl != hir::CRATE_HIR_ID;
-        if let hir::Node::Item(item) = cx.tcx.hir().get_by_hir_id(parent_impl);
+        if let hir::Node::Item(item) = cx.tcx.hir().get(parent_impl);
         if let hir::ItemKind::Impl(_, _, _, _, trait_ref, _, _) = &item.node;
-        then { return trait_ref.clone(); }
+        then { return trait_ref.as_ref(); }
     }
     None
 }
@@ -341,7 +342,7 @@ pub fn resolve_node(cx: &LateContext<'_, '_>, qpath: &QPath, id: HirId) -> Res {
 
 /// Returns the method names and argument list of nested method call expressions that make up
 /// `expr`.
-pub fn method_calls<'a>(expr: &'a Expr, max_depth: usize) -> (Vec<Symbol>, Vec<&'a [Expr]>) {
+pub fn method_calls(expr: &Expr, max_depth: usize) -> (Vec<Symbol>, Vec<&[Expr]>) {
     let mut method_names = Vec::with_capacity(max_depth);
     let mut arg_lists = Vec::with_capacity(max_depth);
 
@@ -403,7 +404,7 @@ pub fn is_entrypoint_fn(cx: &LateContext<'_, '_>, def_id: DefId) -> bool {
 /// Gets the name of the item the expression is in, if available.
 pub fn get_item_name(cx: &LateContext<'_, '_>, expr: &Expr) -> Option<Name> {
     let parent_id = cx.tcx.hir().get_parent_item(expr.hir_id);
-    match cx.tcx.hir().find_by_hir_id(parent_id) {
+    match cx.tcx.hir().find(parent_id) {
         Some(Node::Item(&Item { ref ident, .. })) => Some(ident.name),
         Some(Node::TraitItem(&TraitItem { ident, .. })) | Some(Node::ImplItem(&ImplItem { ident, .. })) => {
             Some(ident.name)
@@ -454,7 +455,7 @@ pub fn contains_name(name: Name, expr: &Expr) -> bool {
 /// ```rust,ignore
 /// snippet(cx, expr.span, "..")
 /// ```
-pub fn snippet<'a, 'b, T: LintContext<'b>>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
+pub fn snippet<'a, T: LintContext>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
     snippet_opt(cx, span).map_or_else(|| Cow::Borrowed(default), From::from)
 }
 
@@ -464,7 +465,7 @@ pub fn snippet<'a, 'b, T: LintContext<'b>>(cx: &T, span: Span, default: &'a str)
 /// - If the span is inside a macro, change the applicability level to `MaybeIncorrect`.
 /// - If the default value is used and the applicability level is `MachineApplicable`, change it to
 /// `HasPlaceholders`
-pub fn snippet_with_applicability<'a, 'b, T: LintContext<'b>>(
+pub fn snippet_with_applicability<'a, T: LintContext>(
     cx: &T,
     span: Span,
     default: &'a str,
@@ -486,12 +487,12 @@ pub fn snippet_with_applicability<'a, 'b, T: LintContext<'b>>(
 
 /// Same as `snippet`, but should only be used when it's clear that the input span is
 /// not a macro argument.
-pub fn snippet_with_macro_callsite<'a, 'b, T: LintContext<'b>>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
+pub fn snippet_with_macro_callsite<'a, T: LintContext>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
     snippet(cx, span.source_callsite(), default)
 }
 
 /// Converts a span to a code snippet. Returns `None` if not available.
-pub fn snippet_opt<'a, T: LintContext<'a>>(cx: &T, span: Span) -> Option<String> {
+pub fn snippet_opt<T: LintContext>(cx: &T, span: Span) -> Option<String> {
     cx.sess().source_map().span_to_snippet(span).ok()
 }
 
@@ -505,14 +506,14 @@ pub fn snippet_opt<'a, T: LintContext<'a>>(cx: &T, span: Span) -> Option<String>
 /// ```rust,ignore
 /// snippet_block(cx, expr.span, "..")
 /// ```
-pub fn snippet_block<'a, 'b, T: LintContext<'b>>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
+pub fn snippet_block<'a, T: LintContext>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
     let snip = snippet(cx, span, default);
     trim_multiline(snip, true)
 }
 
 /// Same as `snippet_block`, but adapts the applicability level by the rules of
 /// `snippet_with_applicabiliy`.
-pub fn snippet_block_with_applicability<'a, 'b, T: LintContext<'b>>(
+pub fn snippet_block_with_applicability<'a, T: LintContext>(
     cx: &T,
     span: Span,
     default: &'a str,
@@ -523,7 +524,7 @@ pub fn snippet_block_with_applicability<'a, 'b, T: LintContext<'b>>(
 }
 
 /// Returns a new Span that covers the full last line of the given Span
-pub fn last_line_of_span<'a, T: LintContext<'a>>(cx: &T, span: Span) -> Span {
+pub fn last_line_of_span<T: LintContext>(cx: &T, span: Span) -> Span {
     let source_map_and_line = cx.sess().source_map().lookup_line(span.lo()).unwrap();
     let line_no = source_map_and_line.line;
     let line_start = &source_map_and_line.sf.lines[line_no];
@@ -532,12 +533,7 @@ pub fn last_line_of_span<'a, T: LintContext<'a>>(cx: &T, span: Span) -> Span {
 
 /// Like `snippet_block`, but add braces if the expr is not an `ExprKind::Block`.
 /// Also takes an `Option<String>` which can be put inside the braces.
-pub fn expr_block<'a, 'b, T: LintContext<'b>>(
-    cx: &T,
-    expr: &Expr,
-    option: Option<String>,
-    default: &'a str,
-) -> Cow<'a, str> {
+pub fn expr_block<'a, T: LintContext>(cx: &T, expr: &Expr, option: Option<String>, default: &'a str) -> Cow<'a, str> {
     let code = snippet_block(cx, expr.span, default);
     let string = option.unwrap_or_default();
     if in_macro_or_desugar(expr.span) {
@@ -596,11 +592,11 @@ fn trim_multiline_inner(s: Cow<'_, str>, ignore_first: bool, ch: char) -> Cow<'_
 pub fn get_parent_expr<'c>(cx: &'c LateContext<'_, '_>, e: &Expr) -> Option<&'c Expr> {
     let map = &cx.tcx.hir();
     let hir_id = e.hir_id;
-    let parent_id = map.get_parent_node_by_hir_id(hir_id);
+    let parent_id = map.get_parent_node(hir_id);
     if hir_id == parent_id {
         return None;
     }
-    map.find_by_hir_id(parent_id).and_then(|node| {
+    map.find(parent_id).and_then(|node| {
         if let Node::Expr(parent) = node {
             Some(parent)
         } else {
@@ -609,11 +605,11 @@ pub fn get_parent_expr<'c>(cx: &'c LateContext<'_, '_>, e: &Expr) -> Option<&'c 
     })
 }
 
-pub fn get_enclosing_block<'a, 'tcx: 'a>(cx: &LateContext<'a, 'tcx>, hir_id: HirId) -> Option<&'tcx Block> {
+pub fn get_enclosing_block<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, hir_id: HirId) -> Option<&'tcx Block> {
     let map = &cx.tcx.hir();
     let enclosing_node = map
         .get_enclosing_scope(hir_id)
-        .and_then(|enclosing_id| map.find_by_hir_id(enclosing_id));
+        .and_then(|enclosing_id| map.find(enclosing_id));
     if let Some(node) = enclosing_node {
         match node {
             Node::Block(block) => Some(block),
@@ -690,11 +686,7 @@ pub fn is_adjusted(cx: &LateContext<'_, '_>, e: &Expr) -> bool {
 /// See also `is_direct_expn_of`.
 pub fn is_expn_of(mut span: Span, name: &str) -> Option<Span> {
     loop {
-        let span_name_span = span
-            .ctxt()
-            .outer()
-            .expn_info()
-            .map(|ei| (ei.format.name(), ei.call_site));
+        let span_name_span = span.ctxt().outer_expn_info().map(|ei| (ei.format.name(), ei.call_site));
 
         match span_name_span {
             Some((mac_name, new_span)) if mac_name.as_str() == name => return Some(new_span),
@@ -714,11 +706,7 @@ pub fn is_expn_of(mut span: Span, name: &str) -> Option<Span> {
 /// `bar!` by
 /// `is_direct_expn_of`.
 pub fn is_direct_expn_of(span: Span, name: &str) -> Option<Span> {
-    let span_name_span = span
-        .ctxt()
-        .outer()
-        .expn_info()
-        .map(|ei| (ei.format.name(), ei.call_site));
+    let span_name_span = span.ctxt().outer_expn_info().map(|ei| (ei.format.name(), ei.call_site));
 
     match span_name_span {
         Some((mac_name, new_span)) if mac_name.as_str() == name => Some(new_span),
@@ -839,7 +827,7 @@ pub fn remove_blocks(expr: &Expr) -> &Expr {
 
 pub fn is_self(slf: &Arg) -> bool {
     if let PatKind::Binding(.., name, _) = slf.pat.node {
-        name.name == keywords::SelfLower.name()
+        name.name == kw::SelfLower
     } else {
         false
     }
@@ -923,7 +911,7 @@ pub fn get_arg_name(pat: &Pat) -> Option<ast::Name> {
     }
 }
 
-pub fn int_bits(tcx: TyCtxt<'_, '_, '_>, ity: ast::IntTy) -> u64 {
+pub fn int_bits(tcx: TyCtxt<'_>, ity: ast::IntTy) -> u64 {
     layout::Integer::from_attr(&tcx, attr::IntType::SignedInt(ity))
         .size()
         .bits()
@@ -931,20 +919,20 @@ pub fn int_bits(tcx: TyCtxt<'_, '_, '_>, ity: ast::IntTy) -> u64 {
 
 #[allow(clippy::cast_possible_wrap)]
 /// Turn a constant int byte representation into an i128
-pub fn sext(tcx: TyCtxt<'_, '_, '_>, u: u128, ity: ast::IntTy) -> i128 {
+pub fn sext(tcx: TyCtxt<'_>, u: u128, ity: ast::IntTy) -> i128 {
     let amt = 128 - int_bits(tcx, ity);
     ((u as i128) << amt) >> amt
 }
 
 #[allow(clippy::cast_sign_loss)]
 /// clip unused bytes
-pub fn unsext(tcx: TyCtxt<'_, '_, '_>, u: i128, ity: ast::IntTy) -> u128 {
+pub fn unsext(tcx: TyCtxt<'_>, u: i128, ity: ast::IntTy) -> u128 {
     let amt = 128 - int_bits(tcx, ity);
     ((u as u128) << amt) >> amt
 }
 
 /// clip unused bytes
-pub fn clip(tcx: TyCtxt<'_, '_, '_>, u: u128, ity: ast::UintTy) -> u128 {
+pub fn clip(tcx: TyCtxt<'_>, u: u128, ity: ast::UintTy) -> u128 {
     let bits = layout::Integer::from_attr(&tcx, attr::IntType::UnsignedInt(ity))
         .size()
         .bits();
@@ -985,12 +973,12 @@ pub fn without_block_comments(lines: Vec<&str>) -> Vec<&str> {
     without
 }
 
-pub fn any_parent_is_automatically_derived(tcx: TyCtxt<'_, '_, '_>, node: HirId) -> bool {
+pub fn any_parent_is_automatically_derived(tcx: TyCtxt<'_>, node: HirId) -> bool {
     let map = &tcx.hir();
     let mut prev_enclosing_node = None;
     let mut enclosing_node = node;
     while Some(enclosing_node) != prev_enclosing_node {
-        if is_automatically_derived(map.attrs_by_hir_id(enclosing_node)) {
+        if is_automatically_derived(map.attrs(enclosing_node)) {
             return true;
         }
         prev_enclosing_node = Some(enclosing_node);
@@ -1122,5 +1110,7 @@ mod test {
 }
 
 pub fn match_def_path<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, did: DefId, syms: &[&str]) -> bool {
+    // HACK: find a way to use symbols from clippy or just go fully to diagnostic items
+    let syms: Vec<_> = syms.iter().map(|sym| Symbol::intern(sym)).collect();
     cx.match_def_path(did, &syms)
 }

@@ -57,7 +57,8 @@ impl<T: 'static> P<T> {
     {
         f(*self.ptr)
     }
-    /// Equivalent to and_then(|x| x)
+
+    /// Equivalent to `and_then(|x| x)`.
     pub fn into_inner(self) -> T {
         *self.ptr
     }
@@ -132,8 +133,15 @@ impl<T: Encodable> Encodable for P<T> {
 }
 
 impl<T> P<[T]> {
-    pub fn new() -> P<[T]> {
-        P { ptr: Default::default() }
+    pub const fn new() -> P<[T]> {
+        // HACK(eddyb) bypass the lack of a `const fn` to create an empty `Box<[T]>`
+        // (as trait methods, `default` in this case, can't be `const fn` yet).
+        P {
+            ptr: unsafe {
+                use std::ptr::NonNull;
+                std::mem::transmute(NonNull::<[T; 0]>::dangling() as NonNull<[T]>)
+            },
+        }
     }
 
     #[inline(never)]

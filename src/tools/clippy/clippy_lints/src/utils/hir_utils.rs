@@ -14,7 +14,7 @@ use syntax::ptr::P;
 /// span.
 ///
 /// Note that some expressions kinds are not considered but could be added.
-pub struct SpanlessEq<'a, 'tcx: 'a> {
+pub struct SpanlessEq<'a, 'tcx> {
     /// Context used to evaluate constant expressions.
     cx: &'a LateContext<'a, 'tcx>,
     tables: &'a TypeckTables<'tcx>,
@@ -23,7 +23,7 @@ pub struct SpanlessEq<'a, 'tcx: 'a> {
     ignore_fn: bool,
 }
 
-impl<'a, 'tcx: 'a> SpanlessEq<'a, 'tcx> {
+impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
     pub fn new(cx: &'a LateContext<'a, 'tcx>) -> Self {
         Self {
             cx,
@@ -237,7 +237,7 @@ impl<'a, 'tcx: 'a> SpanlessEq<'a, 'tcx> {
                 && over(&left.bindings, &right.bindings, |l, r| self.eq_type_binding(l, r))
         } else if left.parenthesized && right.parenthesized {
             over(left.inputs(), right.inputs(), |l, r| self.eq_ty(l, r))
-                && both(&Some(&left.bindings[0].ty), &Some(&right.bindings[0].ty), |l, r| {
+                && both(&Some(&left.bindings[0].ty()), &Some(&right.bindings[0].ty()), |l, r| {
                     self.eq_ty(l, r)
                 })
         } else {
@@ -299,7 +299,7 @@ impl<'a, 'tcx: 'a> SpanlessEq<'a, 'tcx> {
     }
 
     fn eq_type_binding(&mut self, left: &TypeBinding, right: &TypeBinding) -> bool {
-        left.ident.name == right.ident.name && self.eq_ty(&left.ty, &right.ty)
+        left.ident.name == right.ident.name && self.eq_ty(&left.ty(), &right.ty())
     }
 }
 
@@ -349,14 +349,14 @@ where
 /// trait would consider IDs and spans.
 ///
 /// All expressions kind are hashed, but some might have a weaker hash.
-pub struct SpanlessHash<'a, 'tcx: 'a> {
+pub struct SpanlessHash<'a, 'tcx> {
     /// Context used to evaluate constant expressions.
     cx: &'a LateContext<'a, 'tcx>,
     tables: &'a TypeckTables<'tcx>,
     s: DefaultHasher,
 }
 
-impl<'a, 'tcx: 'a> SpanlessHash<'a, 'tcx> {
+impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
     pub fn new(cx: &'a LateContext<'a, 'tcx>, tables: &'a TypeckTables<'tcx>) -> Self {
         Self {
             cx,
@@ -436,7 +436,7 @@ impl<'a, 'tcx: 'a> SpanlessHash<'a, 'tcx> {
                     self.hash_expr(&*j);
                 }
             },
-            ExprKind::Box(ref e) | ExprKind::DropTemps(ref e) | ExprKind::Yield(ref e) => {
+            ExprKind::Box(ref e) | ExprKind::DropTemps(ref e) | ExprKind::Yield(ref e, _) => {
                 self.hash_expr(e);
             },
             ExprKind::Call(ref fun, ref args) => {

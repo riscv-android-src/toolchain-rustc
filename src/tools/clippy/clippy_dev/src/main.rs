@@ -2,8 +2,9 @@ extern crate clap;
 extern crate clippy_dev;
 extern crate regex;
 
-use clap::{App, AppSettings, Arg, SubCommand};
+use clap::{App, Arg, SubCommand};
 use clippy_dev::*;
+mod stderr_length_check;
 
 #[derive(PartialEq)]
 enum UpdateMode {
@@ -13,7 +14,6 @@ enum UpdateMode {
 
 fn main() {
     let matches = App::new("Clippy developer tooling")
-        .setting(AppSettings::SubcommandRequiredElseHelp)
         .subcommand(
             SubCommand::with_name("update_lints")
                 .about("Updates lint registration and information from the source code")
@@ -36,8 +36,16 @@ fn main() {
                         .help("Checks that util/dev update_lints has been run. Used on CI."),
                 ),
         )
+        .arg(
+            Arg::with_name("limit-stderr-length")
+                .long("limit-stderr-length")
+                .help("Ensures that stderr files do not grow longer than a certain amount of lines."),
+        )
         .get_matches();
 
+    if matches.is_present("limit-stderr-length") {
+        stderr_length_check::check();
+    }
     if let Some(matches) = matches.subcommand_matches("update_lints") {
         if matches.is_present("print-only") {
             print_lints();
@@ -79,10 +87,33 @@ fn print_lints() {
 
 fn update_lints(update_mode: &UpdateMode) {
     let lint_list: Vec<Lint> = gather_all().collect();
+
     let usable_lints: Vec<Lint> = Lint::usable_lints(lint_list.clone().into_iter()).collect();
     let lint_count = usable_lints.len();
 
+    let mut sorted_usable_lints = usable_lints.clone();
+    sorted_usable_lints.sort_by_key(|lint| lint.name.clone());
+
     let mut file_change = replace_region_in_file(
+        "../src/lintlist/mod.rs",
+        "begin lint list",
+        "end lint list",
+        false,
+        update_mode == &UpdateMode::Change,
+        || {
+            format!(
+                "pub const ALL_LINTS: [Lint; {}] = {:#?};",
+                sorted_usable_lints.len(),
+                sorted_usable_lints
+            )
+            .lines()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+        },
+    )
+    .changed;
+
+    file_change |= replace_region_in_file(
         "../README.md",
         r#"\[There are \d+ lints included in this crate!\]\(https://rust-lang.github.io/rust-clippy/master/index.html\)"#,
         "",

@@ -20,6 +20,7 @@ use syntax::symbol::LocalInternedString;
 
 use crate::utils::paths;
 use crate::utils::sugg;
+use crate::utils::usage::mutated_variables;
 use crate::utils::{
     get_arg_name, get_parent_expr, get_trait_def_id, has_iter_method, implements_trait, in_macro, is_copy,
     is_ctor_function, is_expn_of, is_self, is_self_ty, iter_input_pats, last_path_segment, match_def_path, match_path,
@@ -946,7 +947,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Methods {
         }
         let name = implitem.ident.name.as_str();
         let parent = cx.tcx.hir().get_parent_item(implitem.hir_id);
-        let item = cx.tcx.hir().expect_item_by_hir_id(parent);
+        let item = cx.tcx.hir().expect_item(parent);
         let def_id = cx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
         let ty = cx.tcx.type_of(def_id);
         if_chain! {
@@ -1045,7 +1046,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Methods {
 
 /// Checks for the `OR_FUN_CALL` lint.
 #[allow(clippy::too_many_lines)]
-fn lint_or_fun_call<'a, 'tcx: 'a>(
+fn lint_or_fun_call<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     expr: &hir::Expr,
     method_span: Span,
@@ -1053,7 +1054,7 @@ fn lint_or_fun_call<'a, 'tcx: 'a>(
     args: &'tcx [hir::Expr],
 ) {
     // Searches an expression for method calls or function calls that aren't ctors
-    struct FunCallFinder<'a, 'tcx: 'a> {
+    struct FunCallFinder<'a, 'tcx> {
         cx: &'a LateContext<'a, 'tcx>,
         found: bool,
     }
@@ -1069,7 +1070,7 @@ fn lint_or_fun_call<'a, 'tcx: 'a>(
 
             if call_found {
                 // don't lint for constant values
-                let owner_def = self.cx.tcx.hir().get_parent_did_by_hir_id(expr.hir_id);
+                let owner_def = self.cx.tcx.hir().get_parent_did(expr.hir_id);
                 let promotable = self
                     .cx
                     .tcx
@@ -1141,7 +1142,7 @@ fn lint_or_fun_call<'a, 'tcx: 'a>(
 
     /// Checks for `*or(foo())`.
     #[allow(clippy::too_many_arguments)]
-    fn check_general_case<'a, 'tcx: 'a>(
+    fn check_general_case<'a, 'tcx>(
         cx: &LateContext<'a, 'tcx>,
         name: &str,
         method_span: Span,
@@ -1422,8 +1423,8 @@ fn lint_clone_on_copy(cx: &LateContext<'_, '_>, expr: &hir::Expr, arg: &hir::Exp
             if cx.tables.expr_ty(arg) == ty {
                 snip = Some(("try removing the `clone` call", format!("{}", snippet)));
             } else {
-                let parent = cx.tcx.hir().get_parent_node_by_hir_id(expr.hir_id);
-                match cx.tcx.hir().get_by_hir_id(parent) {
+                let parent = cx.tcx.hir().get_parent_node(expr.hir_id);
+                match cx.tcx.hir().get(parent) {
                     hir::Node::Expr(parent) => match parent.node {
                         // &*x is a nop, &x.clone() is not
                         hir::ExprKind::AddrOf(..) |
@@ -1647,16 +1648,15 @@ fn lint_unnecessary_fold(cx: &LateContext<'_, '_>, expr: &hir::Expr, fold_args: 
     );
 
     // Check if the first argument to .fold is a suitable literal
-    match fold_args[1].node {
-        hir::ExprKind::Lit(ref lit) => match lit.node {
+    if let hir::ExprKind::Lit(ref lit) = fold_args[1].node {
+        match lit.node {
             ast::LitKind::Bool(false) => check_fold_with_op(cx, fold_args, hir::BinOpKind::Or, "any", true),
             ast::LitKind::Bool(true) => check_fold_with_op(cx, fold_args, hir::BinOpKind::And, "all", true),
             ast::LitKind::Int(0, _) => check_fold_with_op(cx, fold_args, hir::BinOpKind::Add, "sum", false),
             ast::LitKind::Int(1, _) => check_fold_with_op(cx, fold_args, hir::BinOpKind::Mul, "product", false),
-            _ => return,
-        },
-        _ => return,
-    };
+            _ => (),
+        }
+    }
 }
 
 fn lint_iter_nth<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &hir::Expr, iter_args: &'tcx [hir::Expr], is_mut: bool) {
@@ -1772,7 +1772,7 @@ fn derefs_to_slice<'a, 'tcx>(
     expr: &'tcx hir::Expr,
     ty: Ty<'tcx>,
 ) -> Option<&'tcx hir::Expr> {
-    fn may_slice(cx: &LateContext<'_, '_>, ty: Ty<'_>) -> bool {
+    fn may_slice<'a>(cx: &LateContext<'_, 'a>, ty: Ty<'a>) -> bool {
         match ty.sty {
             ty::Slice(_) => true,
             ty::Adt(def, _) if def.is_box() => may_slice(cx, ty.boxed_ty()),
@@ -1880,7 +1880,20 @@ fn lint_map_unwrap_or_else<'a, 'tcx>(
     // lint if the caller of `map()` is an `Option`
     let is_option = match_type(cx, cx.tables.expr_ty(&map_args[0]), &paths::OPTION);
     let is_result = match_type(cx, cx.tables.expr_ty(&map_args[0]), &paths::RESULT);
+
     if is_option || is_result {
+        // Don't make a suggestion that may fail to compile due to mutably borrowing
+        // the same variable twice.
+        let map_mutated_vars = mutated_variables(&map_args[0], cx);
+        let unwrap_mutated_vars = mutated_variables(&unwrap_args[1], cx);
+        if let (Some(map_mutated_vars), Some(unwrap_mutated_vars)) = (map_mutated_vars, unwrap_mutated_vars) {
+            if map_mutated_vars.intersection(&unwrap_mutated_vars).next().is_some() {
+                return;
+            }
+        } else {
+            return;
+        }
+
         // lint message
         let msg = if is_option {
             "called `map(f).unwrap_or_else(g)` on an Option value. This can be done more directly by calling \
@@ -2157,7 +2170,7 @@ fn lint_binary_expr_with_method_call(cx: &LateContext<'_, '_>, info: &mut Binary
     lint_with_both_lhs_and_rhs!(lint_chars_last_cmp_with_unwrap, cx, info);
 }
 
-/// Wrapper fn for `CHARS_NEXT_CMP` and `CHARS_NEXT_CMP` lints.
+/// Wrapper fn for `CHARS_NEXT_CMP` and `CHARS_LAST_CMP` lints.
 fn lint_chars_cmp(
     cx: &LateContext<'_, '_>,
     info: &BinaryExprInfo<'_>,

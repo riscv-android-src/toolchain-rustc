@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,7 +12,7 @@
 
 [package]
 name = "racer"
-version = "2.1.22"
+version = "2.1.23"
 authors = ["Phil Dawes <phil@phildawes.net>", "The Racer developers"]
 description = "Code completion for Rust"
 homepage = "https://github.com/racer-rust/racer"
@@ -63,7 +63,7 @@ optional = true
 version = "0.5.1"
 
 [dependencies.rustc-ap-syntax]
-version = "407.0.0"
+version = "491.0.0"
 [dev-dependencies.racer-testutils]
 version = "0.1"
 

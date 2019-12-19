@@ -12,7 +12,7 @@
 
 [package]
 name = "redox_users"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Jose Narvaez <goyox86@gmail.com>", "Wesley Hershberger <mggmugginsmc@gmail.com>"]
 description = "A Rust library to access Redox users and groups functionality"
 documentation = "https://docs.rs/redox_users"
@@ -27,8 +27,8 @@ default-features = false
 [dependencies.failure]
 version = "0.1.1"
 
-[dependencies.rand]
-version = "0.4"
+[dependencies.rand_os]
+version = "0.1"
 
 [dependencies.redox_syscall]
 version = "0.1"

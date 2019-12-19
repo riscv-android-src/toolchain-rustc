@@ -15,8 +15,8 @@ use rustc::ty::query::TyCtxtAt;
 use rustc_data_structures::indexed_vec::IndexVec;
 use rustc::mir::interpret::{
     ErrorHandled,
-    GlobalId, Scalar, FrameInfo, AllocId,
-    EvalResult, InterpError,
+    GlobalId, Scalar, Pointer, FrameInfo, AllocId,
+    InterpResult, InterpError,
     truncate, sign_extend,
 };
 use rustc_data_structures::fx::FxHashMap;
@@ -26,34 +26,35 @@ use super::{
     Memory, Machine
 };
 
-pub struct InterpretCx<'a, 'mir, 'tcx: 'a + 'mir, M: Machine<'a, 'mir, 'tcx>> {
+pub struct InterpretCx<'mir, 'tcx, M: Machine<'mir, 'tcx>> {
     /// Stores the `Machine` instance.
     pub machine: M,
 
     /// The results of the type checker, from rustc.
-    pub tcx: TyCtxtAt<'a, 'tcx, 'tcx>,
+    pub tcx: TyCtxtAt<'tcx>,
 
     /// Bounds in scope for polymorphic evaluations.
     pub(crate) param_env: ty::ParamEnv<'tcx>,
 
     /// The virtual memory system.
-    pub(crate) memory: Memory<'a, 'mir, 'tcx, M>,
+    pub(crate) memory: Memory<'mir, 'tcx, M>,
 
     /// The virtual call stack.
     pub(crate) stack: Vec<Frame<'mir, 'tcx, M::PointerTag, M::FrameExtra>>,
 
     /// A cache for deduplicating vtables
-    pub(super) vtables: FxHashMap<(Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), AllocId>,
+    pub(super) vtables:
+        FxHashMap<(Ty<'tcx>, Option<ty::PolyExistentialTraitRef<'tcx>>), Pointer<M::PointerTag>>,
 }
 
 /// A stack frame.
 #[derive(Clone)]
-pub struct Frame<'mir, 'tcx: 'mir, Tag=(), Extra=()> {
+pub struct Frame<'mir, 'tcx, Tag=(), Extra=()> {
     ////////////////////////////////////////////////////////////////////////////////
     // Function and callsite information
     ////////////////////////////////////////////////////////////////////////////////
     /// The MIR for the function called on this frame.
-    pub mir: &'mir mir::Mir<'tcx>,
+    pub body: &'mir mir::Body<'tcx>,
 
     /// The def_id and substs of the current function.
     pub instance: ty::Instance<'tcx>,
@@ -132,7 +133,7 @@ pub enum LocalValue<Tag=(), Id=AllocId> {
 }
 
 impl<'tcx, Tag: Copy + 'static> LocalState<'tcx, Tag> {
-    pub fn access(&self) -> EvalResult<'tcx, Operand<Tag>> {
+    pub fn access(&self) -> InterpResult<'tcx, Operand<Tag>> {
         match self.value {
             LocalValue::Dead => err!(DeadLocal),
             LocalValue::Uninitialized =>
@@ -145,7 +146,7 @@ impl<'tcx, Tag: Copy + 'static> LocalState<'tcx, Tag> {
     /// to do so; otherwise return the `MemPlace` to consult instead.
     pub fn access_mut(
         &mut self,
-    ) -> EvalResult<'tcx, Result<&mut LocalValue<Tag>, MemPlace<Tag>>> {
+    ) -> InterpResult<'tcx, Result<&mut LocalValue<Tag>, MemPlace<Tag>>> {
         match self.value {
             LocalValue::Dead => err!(DeadLocal),
             LocalValue::Live(Operand::Indirect(mplace)) => Ok(Err(mplace)),
@@ -157,37 +158,35 @@ impl<'tcx, Tag: Copy + 'static> LocalState<'tcx, Tag> {
     }
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> HasDataLayout
-    for InterpretCx<'a, 'mir, 'tcx, M>
-{
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> HasDataLayout for InterpretCx<'mir, 'tcx, M> {
     #[inline]
     fn data_layout(&self) -> &layout::TargetDataLayout {
         &self.tcx.data_layout
     }
 }
 
-impl<'a, 'mir, 'tcx, M> layout::HasTyCtxt<'tcx> for InterpretCx<'a, 'mir, 'tcx, M>
-    where M: Machine<'a, 'mir, 'tcx>
+impl<'mir, 'tcx, M> layout::HasTyCtxt<'tcx> for InterpretCx<'mir, 'tcx, M>
+where
+    M: Machine<'mir, 'tcx>,
 {
     #[inline]
-    fn tcx<'d>(&'d self) -> TyCtxt<'d, 'tcx, 'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
         *self.tcx
     }
 }
 
-impl<'a, 'mir, 'tcx, M> layout::HasParamEnv<'tcx> for InterpretCx<'a, 'mir, 'tcx, M>
-    where M: Machine<'a, 'mir, 'tcx>
+impl<'mir, 'tcx, M> layout::HasParamEnv<'tcx> for InterpretCx<'mir, 'tcx, M>
+where
+    M: Machine<'mir, 'tcx>,
 {
     fn param_env(&self) -> ty::ParamEnv<'tcx> {
         self.param_env
     }
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> LayoutOf
-    for InterpretCx<'a, 'mir, 'tcx, M>
-{
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> LayoutOf for InterpretCx<'mir, 'tcx, M> {
     type Ty = Ty<'tcx>;
-    type TyLayout = EvalResult<'tcx, TyLayout<'tcx>>;
+    type TyLayout = InterpResult<'tcx, TyLayout<'tcx>>;
 
     #[inline]
     fn layout_of(&self, ty: Ty<'tcx>) -> Self::TyLayout {
@@ -196,12 +195,8 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> LayoutOf
     }
 }
 
-impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> {
-    pub fn new(
-        tcx: TyCtxtAt<'a, 'tcx, 'tcx>,
-        param_env: ty::ParamEnv<'tcx>,
-        machine: M,
-    ) -> Self {
+impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpretCx<'mir, 'tcx, M> {
+    pub fn new(tcx: TyCtxtAt<'tcx>, param_env: ty::ParamEnv<'tcx>, machine: M) -> Self {
         InterpretCx {
             machine,
             tcx,
@@ -213,13 +208,18 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     }
 
     #[inline(always)]
-    pub fn memory(&self) -> &Memory<'a, 'mir, 'tcx, M> {
+    pub fn memory(&self) -> &Memory<'mir, 'tcx, M> {
         &self.memory
     }
 
     #[inline(always)]
-    pub fn memory_mut(&mut self) -> &mut Memory<'a, 'mir, 'tcx, M> {
+    pub fn memory_mut(&mut self) -> &mut Memory<'mir, 'tcx, M> {
         &mut self.memory
+    }
+
+    #[inline(always)]
+    pub fn tag_static_base_pointer(&self, ptr: Pointer) -> Pointer<M::PointerTag> {
+        self.memory.tag_static_base_pointer(ptr)
     }
 
     #[inline(always)]
@@ -244,14 +244,14 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     }
 
     #[inline(always)]
-    pub(super) fn mir(&self) -> &'mir mir::Mir<'tcx> {
-        self.frame().mir
+    pub(super) fn body(&self) -> &'mir mir::Body<'tcx> {
+        self.frame().body
     }
 
     pub(super) fn subst_and_normalize_erasing_regions<T: TypeFoldable<'tcx>>(
         &self,
         substs: T,
-    ) -> EvalResult<'tcx, T> {
+    ) -> InterpResult<'tcx, T> {
         match self.stack.last() {
             Some(frame) => Ok(self.tcx.subst_and_normalize_erasing_regions(
                 frame.instance.substs,
@@ -270,7 +270,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         &self,
         def_id: DefId,
         substs: SubstsRef<'tcx>
-    ) -> EvalResult<'tcx, ty::Instance<'tcx>> {
+    ) -> InterpResult<'tcx, ty::Instance<'tcx>> {
         trace!("resolve: {:?}, {:#?}", def_id, substs);
         trace!("param_env: {:#?}", self.param_env);
         let substs = self.subst_and_normalize_erasing_regions(substs)?;
@@ -294,7 +294,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     pub fn load_mir(
         &self,
         instance: ty::InstanceDef<'tcx>,
-    ) -> EvalResult<'tcx, &'tcx mir::Mir<'tcx>> {
+    ) -> InterpResult<'tcx, &'tcx mir::Body<'tcx>> {
         // do not continue if typeck errors occurred (can only occur in local crate)
         let did = instance.def_id();
         if did.is_local()
@@ -317,9 +317,9 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     pub(super) fn monomorphize<T: TypeFoldable<'tcx> + Subst<'tcx>>(
         &self,
         t: T,
-    ) -> EvalResult<'tcx, T> {
+    ) -> InterpResult<'tcx, T> {
         match self.stack.last() {
-            Some(frame) => Ok(self.monomorphize_with_substs(t, frame.instance.substs)),
+            Some(frame) => Ok(self.monomorphize_with_substs(t, frame.instance.substs)?),
             None => if t.needs_subst() {
                 err!(TooGeneric).into()
             } else {
@@ -332,11 +332,16 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         &self,
         t: T,
         substs: SubstsRef<'tcx>
-    ) -> T {
+    ) -> InterpResult<'tcx, T> {
         // miri doesn't care about lifetimes, and will choke on some crazy ones
         // let's simply get rid of them
         let substituted = t.subst(*self.tcx, substs);
-        self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), substituted)
+
+        if substituted.needs_subst() {
+            return err!(TooGeneric);
+        }
+
+        Ok(self.tcx.normalize_erasing_regions(ty::ParamEnv::reveal_all(), substituted))
     }
 
     pub fn layout_of_local(
@@ -344,12 +349,12 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         frame: &Frame<'mir, 'tcx, M::PointerTag, M::FrameExtra>,
         local: mir::Local,
         layout: Option<TyLayout<'tcx>>,
-    ) -> EvalResult<'tcx, TyLayout<'tcx>> {
+    ) -> InterpResult<'tcx, TyLayout<'tcx>> {
         match frame.locals[local].layout.get() {
             None => {
                 let layout = crate::interpret::operand::from_known_layout(layout, || {
-                    let local_ty = frame.mir.local_decls[local].ty;
-                    let local_ty = self.monomorphize_with_substs(local_ty, frame.instance.substs);
+                    let local_ty = frame.body.local_decls[local].ty;
+                    let local_ty = self.monomorphize_with_substs(local_ty, frame.instance.substs)?;
                     self.layout_of(local_ty)
                 })?;
                 // Layouts of locals are requested a lot, so we cache them.
@@ -360,11 +365,6 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         }
     }
 
-    pub fn str_to_immediate(&mut self, s: &str) -> EvalResult<'tcx, Immediate<M::PointerTag>> {
-        let ptr = self.memory.allocate_static_bytes(s.as_bytes()).with_default_tag();
-        Ok(Immediate::new_slice(Scalar::Ptr(ptr), s.len() as u64, self))
-    }
-
     /// Returns the actual dynamic size and alignment of the place at the given type.
     /// Only the "meta" (metadata) part of the place matters.
     /// This can fail to provide an answer for extern types.
@@ -372,7 +372,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         &self,
         metadata: Option<Scalar<M::PointerTag>>,
         layout: TyLayout<'tcx>,
-    ) -> EvalResult<'tcx, Option<(Size, Align)>> {
+    ) -> InterpResult<'tcx, Option<(Size, Align)>> {
         if !layout.is_unsized() {
             return Ok(Some((layout.size, layout.align.abi)));
         }
@@ -442,7 +442,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
                 Ok(Some((size.align_to(align), align)))
             }
             ty::Dynamic(..) => {
-                let vtable = metadata.expect("dyn trait fat ptr must have vtable").to_ptr()?;
+                let vtable = metadata.expect("dyn trait fat ptr must have vtable");
                 // the second entry in the vtable is the dynamic size of the object.
                 Ok(Some(self.read_size_and_align_from_vtable(vtable)?))
             }
@@ -464,7 +464,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     pub fn size_and_align_of_mplace(
         &self,
         mplace: MPlaceTy<'tcx, M::PointerTag>
-    ) -> EvalResult<'tcx, Option<(Size, Align)>> {
+    ) -> InterpResult<'tcx, Option<(Size, Align)>> {
         self.size_and_align_of(mplace.meta, mplace.layout)
     }
 
@@ -472,10 +472,10 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         &mut self,
         instance: ty::Instance<'tcx>,
         span: source_map::Span,
-        mir: &'mir mir::Mir<'tcx>,
+        body: &'mir mir::Body<'tcx>,
         return_place: Option<PlaceTy<'tcx, M::PointerTag>>,
         return_to_block: StackPopCleanup,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         if self.stack.len() > 0 {
             info!("PAUSING({}) {}", self.cur_frame(), self.frame().instance);
         }
@@ -484,7 +484,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         // first push a stack frame so we have access to the local substs
         let extra = M::stack_push(self)?;
         self.stack.push(Frame {
-            mir,
+            body,
             block: mir::START_BLOCK,
             return_to_block,
             return_place,
@@ -498,13 +498,13 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         });
 
         // don't allocate at all for trivial constants
-        if mir.local_decls.len() > 1 {
+        if body.local_decls.len() > 1 {
             // Locals are initially uninitialized.
             let dummy = LocalState {
                 value: LocalValue::Uninitialized,
                 layout: Cell::new(None),
             };
-            let mut locals = IndexVec::from_elem(dummy, &mir.local_decls);
+            let mut locals = IndexVec::from_elem(dummy, &body.local_decls);
             // Return place is handled specially by the `eval_place` functions, and the
             // entry in `locals` should never be used. Make it dead, to be sure.
             locals[mir::RETURN_PLACE].value = LocalValue::Dead;
@@ -513,10 +513,10 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
                 // statics and constants don't have `Storage*` statements, no need to look for them
                 Some(DefKind::Static)
                 | Some(DefKind::Const)
-                | Some(DefKind::AssociatedConst) => {},
+                | Some(DefKind::AssocConst) => {},
                 _ => {
-                    trace!("push_stack_frame: {:?}: num_bbs: {}", span, mir.basic_blocks().len());
-                    for block in mir.basic_blocks() {
+                    trace!("push_stack_frame: {:?}: num_bbs: {}", span, body.basic_blocks().len());
+                    for block in body.basic_blocks() {
                         for stmt in block.statements.iter() {
                             use rustc::mir::StatementKind::{StorageDead, StorageLive};
                             match stmt.kind {
@@ -543,7 +543,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
         }
     }
 
-    pub(super) fn pop_stack_frame(&mut self) -> EvalResult<'tcx> {
+    pub(super) fn pop_stack_frame(&mut self) -> InterpResult<'tcx> {
         info!("LEAVING({}) {}", self.cur_frame(), self.frame().instance);
         ::log_settings::settings().indentation -= 1;
         let frame = self.stack.pop().expect(
@@ -581,7 +581,6 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
                     self.place_to_op(return_place)?,
                     vec![],
                     None,
-                    /*const_mode*/false,
                 )?;
             }
         } else {
@@ -608,7 +607,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     pub fn storage_live(
         &mut self,
         local: mir::Local
-    ) -> EvalResult<'tcx, LocalValue<M::PointerTag>> {
+    ) -> InterpResult<'tcx, LocalValue<M::PointerTag>> {
         assert!(local != mir::RETURN_PLACE, "Cannot make return place live");
         trace!("{:?} is now live", local);
 
@@ -631,7 +630,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     pub(super) fn deallocate_local(
         &mut self,
         local: LocalValue<M::PointerTag>,
-    ) -> EvalResult<'tcx> {
+    ) -> InterpResult<'tcx> {
         // FIXME: should we tell the user that there was a local which was never written to?
         if let LocalValue::Live(Operand::Indirect(MemPlace { ptr, .. })) = local {
             trace!("deallocating local");
@@ -645,7 +644,10 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     pub fn const_eval_raw(
         &self,
         gid: GlobalId<'tcx>,
-    ) -> EvalResult<'tcx, MPlaceTy<'tcx, M::PointerTag>> {
+    ) -> InterpResult<'tcx, MPlaceTy<'tcx, M::PointerTag>> {
+        // FIXME(oli-obk): make this check an assertion that it's not a static here
+        // FIXME(RalfJ, oli-obk): document that `Place::Static` can never be anything but a static
+        // and `ConstValue::Unevaluated` can never be a static
         let param_env = if self.tcx.is_static(gid.instance.def_id()) {
             ty::ParamEnv::reveal_all()
         } else {
@@ -731,7 +733,7 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     pub fn generate_stacktrace(&self, explicit_span: Option<Span>) -> Vec<FrameInfo<'tcx>> {
         let mut last_span = None;
         let mut frames = Vec::new();
-        for &Frame { instance, span, mir, block, stmt, .. } in self.stack().iter().rev() {
+        for &Frame { instance, span, body, block, stmt, .. } in self.stack().iter().rev() {
             // make sure we don't emit frames that are duplicates of the previous
             if explicit_span == Some(span) {
                 last_span = Some(span);
@@ -744,13 +746,13 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
             } else {
                 last_span = Some(span);
             }
-            let block = &mir.basic_blocks()[block];
+            let block = &body.basic_blocks()[block];
             let source_info = if stmt < block.statements.len() {
                 block.statements[stmt].source_info
             } else {
                 block.terminator().source_info
             };
-            let lint_root = match mir.source_scope_local_data {
+            let lint_root = match body.source_scope_local_data {
                 mir::ClearCrossCrate::Set(ref ivs) => Some(ivs[source_info.scope].lint_root),
                 mir::ClearCrossCrate::Clear => None,
             };
@@ -769,5 +771,22 @@ impl<'a, 'mir, 'tcx: 'mir, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tc
     #[inline(always)]
     pub fn truncate(&self, value: u128, ty: TyLayout<'_>) -> u128 {
         truncate(value, ty.size)
+    }
+
+    #[inline(always)]
+    pub fn force_ptr(
+        &self,
+        scalar: Scalar<M::PointerTag>,
+    ) -> InterpResult<'tcx, Pointer<M::PointerTag>> {
+        self.memory.force_ptr(scalar)
+    }
+
+    #[inline(always)]
+    pub fn force_bits(
+        &self,
+        scalar: Scalar<M::PointerTag>,
+        size: Size
+    ) -> InterpResult<'tcx, u128> {
+        self.memory.force_bits(scalar, size)
     }
 }

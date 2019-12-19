@@ -22,6 +22,7 @@ static MANIFEST_OUTPUT: &'static str = r#"
     "targets":[{
         "kind":["bin"],
         "crate_types":["bin"],
+        "doctest": false,
         "edition": "2015",
         "name":"foo",
         "src_path":"[..]/foo/src/foo.rs"
@@ -31,7 +32,7 @@ static MANIFEST_OUTPUT: &'static str = r#"
     "metadata": null
 }"#;
 
-#[test]
+#[cargo_test]
 fn cargo_read_manifest_path_to_cargo_toml_relative() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -44,7 +45,7 @@ fn cargo_read_manifest_path_to_cargo_toml_relative() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_read_manifest_path_to_cargo_toml_absolute() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -58,7 +59,7 @@ fn cargo_read_manifest_path_to_cargo_toml_absolute() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_read_manifest_path_to_cargo_toml_parent_relative() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -75,7 +76,7 @@ fn cargo_read_manifest_path_to_cargo_toml_parent_relative() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_read_manifest_path_to_cargo_toml_parent_absolute() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
@@ -93,7 +94,7 @@ fn cargo_read_manifest_path_to_cargo_toml_parent_absolute() {
         .run();
 }
 
-#[test]
+#[cargo_test]
 fn cargo_read_manifest_cwd() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))

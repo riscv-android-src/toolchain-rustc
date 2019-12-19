@@ -1,10 +1,8 @@
 /// The query resolver that operates on the AST and the TOML object
 
-use std::collections::BTreeMap;
-
-use toml::Value;
-use tokenizer::Token;
-use error::*;
+use toml::{map::Map, Value};
+use crate::tokenizer::Token;
+use crate::error::{Error, Result};
 
 pub fn resolve<'doc>(toml: &'doc mut Value, tokens: &Token) -> Result<&'doc mut Value> {
 
@@ -34,26 +32,20 @@ pub fn resolve<'doc>(toml: &'doc mut Value, tokens: &Token) -> Result<&'doc mut 
                     } else {
                         match tokens.next() {
                             Some(next) => {
-                                let subdoc = t.entry(ident.clone()).or_insert(Value::Table(BTreeMap::new()));
+                                let subdoc = t.entry(ident.clone()).or_insert(Value::Table(Map::new()));
                                 resolve(subdoc, next)
                             },
-                            None => Ok(t.entry(ident.clone()).or_insert(Value::Table(BTreeMap::new()))),
+                            None => Ok(t.entry(ident.clone()).or_insert(Value::Table(Map::new()))),
                         }
                     }
                 },
-                &mut Value::Array(_) => {
-                    let kind = ErrorKind::NoIdentifierInArray(ident.clone());
-                    Err(Error::from_kind(kind))
-                }
+                &mut Value::Array(_) => Err(Error::NoIdentifierInArray(ident.clone())),
                 _ => unimplemented!()
             }
         }
         Token::Index { idx , .. } => {
             match toml {
-                &mut Value::Table(_) => {
-                    let kind = ErrorKind::NoIndexInTable(idx);
-                    Err(Error::from_kind(kind))
-                },
+                &mut Value::Table(_) => Err(Error::NoIndexInTable(idx)),
                 &mut Value::Array(ref mut ary) => {
                     if ary.len() > idx {
                         match tokens.next() {
@@ -64,7 +56,7 @@ pub fn resolve<'doc>(toml: &'doc mut Value, tokens: &Token) -> Result<&'doc mut 
                         if let Some(next) = tokens.next() {
                             match **next {
                                 Token::Identifier { .. } => {
-                                    ary.push(Value::Table(BTreeMap::new()));
+                                    ary.push(Value::Table(Map::new()));
                                 },
                                 Token::Index { .. } => {
                                     ary.push(Value::Array(vec![]));
@@ -87,7 +79,7 @@ pub fn resolve<'doc>(toml: &'doc mut Value, tokens: &Token) -> Result<&'doc mut 
 mod test {
     use toml::from_str as toml_from_str;
     use toml::Value;
-    use tokenizer::*;
+    use crate::tokenizer::*;
     use super::resolve;
 
     macro_rules! do_resolve {
@@ -140,7 +132,8 @@ mod test {
         assert!(result.is_ok());
         let result = result.unwrap();
 
-        assert!(is_match!(result, &mut Value::Float(1.0)));
+        assert!(is_match!(result, &mut Value::Float(_)));
+        assert_eq!(result.as_float(), Some(1.0));
     }
 
     #[test]
@@ -205,8 +198,10 @@ mod test {
         assert!(is_match!(result, &mut Value::Array(_)));
         match result {
             &mut Value::Array(ref ary) => {
-                assert_eq!(ary[0], Value::Float(1.0));
-                assert_eq!(ary[1], Value::Float(133.25));
+                assert!(is_match!(ary[0], Value::Float(_)));
+                assert_eq!(ary[0].as_float(), Some(1.0));
+                assert!(is_match!(ary[1], Value::Float(_)));
+                assert_eq!(ary[1].as_float(), Some(133.25));
             },
             _ => panic!("What just happened?"),
         }
@@ -280,8 +275,10 @@ mod test {
         assert!(is_match!(result, &mut Value::Array(_)));
         match result {
             &mut Value::Array(ref ary) => {
-                assert_eq!(ary[0], Value::Float(42.0));
-                assert_eq!(ary[1], Value::Float(50.0));
+                assert!(is_match!(ary[0], Value::Float(_)));
+                assert_eq!(ary[0].as_float(), Some(42.0));
+                assert!(is_match!(ary[1], Value::Float(_)));
+                assert_eq!(ary[1].as_float(), Some(50.0));
             },
             _ => panic!("What just happened?"),
         }

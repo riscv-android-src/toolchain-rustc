@@ -7,8 +7,8 @@ use crate::ty::{self, TyCtxt};
 use crate::hir::{self, PatKind};
 use crate::hir::def_id::DefId;
 
-struct CFGBuilder<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct CFGBuilder<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     owner_def_id: DefId,
     tables: &'a ty::TypeckTables<'tcx>,
     graph: CFGGraph,
@@ -30,8 +30,7 @@ struct LoopScope {
     break_index: CFGIndex,    // where to go on a `break`
 }
 
-pub fn construct<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                           body: &hir::Body) -> CFG {
+pub fn construct<'tcx>(tcx: TyCtxt<'tcx>, body: &hir::Body) -> CFG {
     let mut graph = graph::Graph::new();
     let entry = graph.add_node(CFGNodeData::Entry);
 
@@ -43,7 +42,7 @@ pub fn construct<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     let body_exit;
 
     // Find the tables for this body.
-    let owner_def_id = tcx.hir().local_def_id(tcx.hir().body_owner(body.id()));
+    let owner_def_id = tcx.hir().body_owner_def_id(body.id());
     let tables = tcx.typeck_tables_of(owner_def_id);
 
     let mut cfg_builder = CFGBuilder {
@@ -331,7 +330,7 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
             hir::ExprKind::DropTemps(ref e) |
             hir::ExprKind::Unary(_, ref e) |
             hir::ExprKind::Field(ref e, _) |
-            hir::ExprKind::Yield(ref e) |
+            hir::ExprKind::Yield(ref e, _) |
             hir::ExprKind::Repeat(ref e, _) => {
                 self.straightline(expr, pred, Some(&**e).into_iter())
             }
@@ -358,7 +357,7 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
             args: I) -> CFGIndex {
         let func_or_rcvr_exit = self.expr(func_or_rcvr, pred);
         let ret = self.straightline(call_expr, func_or_rcvr_exit, args);
-        let m = self.tcx.hir().get_module_parent_by_hir_id(call_expr.hir_id);
+        let m = self.tcx.hir().get_module_parent(call_expr.hir_id);
         if self.tcx.is_ty_uninhabited_from(m, self.tables.expr_ty(call_expr)) {
             self.add_unreachable_node()
         } else {
@@ -419,7 +418,7 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
         for arm in arms {
             // Add an exit node for when we've visited all the
             // patterns and the guard (if there is one) in the arm.
-            let arm_exit = self.add_dummy_node(&[]);
+            let bindings_exit = self.add_dummy_node(&[]);
 
             for pat in &arm.pats {
                 // Visit the pattern, coming from the discriminant exit
@@ -453,14 +452,16 @@ impl<'a, 'tcx> CFGBuilder<'a, 'tcx> {
 
                 // Add an edge from the exit of this pattern to the
                 // exit of the arm
-                self.add_contained_edge(pat_exit, arm_exit);
+                self.add_contained_edge(pat_exit, bindings_exit);
             }
 
             // Visit the body of this arm
-            let body_exit = self.expr(&arm.body, arm_exit);
+            let body_exit = self.expr(&arm.body, bindings_exit);
+
+            let arm_exit = self.add_ast_node(arm.hir_id.local_id, &[body_exit]);
 
             // Link the body to the exit of the expression
-            self.add_contained_edge(body_exit, expr_exit);
+            self.add_contained_edge(arm_exit, expr_exit);
         }
 
         expr_exit

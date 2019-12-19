@@ -1,4 +1,6 @@
-use crate::utils::{match_def_path, match_type, paths, span_help_and_lint, span_lint, walk_ptrs_ty};
+use crate::utils::{
+    match_def_path, match_type, method_calls, paths, span_help_and_lint, span_lint, span_lint_and_sugg, walk_ptrs_ty,
+};
 use if_chain::if_chain;
 use rustc::hir;
 use rustc::hir::def::{DefKind, Res};
@@ -7,6 +9,7 @@ use rustc::hir::*;
 use rustc::lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintArray, LintPass};
 use rustc::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_errors::Applicability;
 use syntax::ast::{Crate as AstCrate, ItemKind, Name};
 use syntax::source_map::Span;
 use syntax_pos::symbol::LocalInternedString;
@@ -70,6 +73,29 @@ declare_clippy_lint! {
     pub COMPILER_LINT_FUNCTIONS,
     internal,
     "usage of the lint functions of the compiler instead of the utils::* variant"
+}
+
+declare_clippy_lint! {
+    /// **What it does:** Checks for calls to `cx.outer().expn_info()` and suggests to use
+    /// the `cx.outer_expn_info()`
+    ///
+    /// **Why is this bad?** `cx.outer_expn_info()` is faster and more concise.
+    ///
+    /// **Known problems:** None.
+    ///
+    /// **Example:**
+    /// Bad:
+    /// ```rust
+    /// expr.span.ctxt().outer().expn_info()
+    /// ```
+    ///
+    /// Good:
+    /// ```rust
+    /// expr.span.ctxt().outer_expn_info()
+    /// ```
+    pub OUTER_EXPN_INFO,
+    internal,
+    "using `cx.outer().expn_info()` instead of `cx.outer_expn_info()`"
 }
 
 declare_lint_pass!(ClippyLintsInternal => [CLIPPY_LINTS_INTERNAL]);
@@ -156,8 +182,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
             // actual span that invoked `declare_tool_lint!`:
             let lint_span = lint_span
                 .ctxt()
-                .outer()
-                .expn_info()
+                .outer_expn_info()
                 .map(|ei| ei.call_site)
                 .expect("unable to get call_site");
 
@@ -192,12 +217,12 @@ fn is_lint_ref_type<'tcx>(cx: &LateContext<'_, 'tcx>, ty: &Ty) -> bool {
     false
 }
 
-struct LintCollector<'a, 'tcx: 'a> {
+struct LintCollector<'a, 'tcx> {
     output: &'a mut FxHashSet<Name>,
     cx: &'a LateContext<'a, 'tcx>,
 }
 
-impl<'a, 'tcx: 'a> Visitor<'tcx> for LintCollector<'a, 'tcx> {
+impl<'a, 'tcx> Visitor<'tcx> for LintCollector<'a, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr) {
         walk_expr(self, expr);
     }
@@ -214,17 +239,17 @@ impl<'a, 'tcx: 'a> Visitor<'tcx> for LintCollector<'a, 'tcx> {
 
 #[derive(Clone, Default)]
 pub struct CompilerLintFunctions {
-    map: FxHashMap<String, String>,
+    map: FxHashMap<&'static str, &'static str>,
 }
 
 impl CompilerLintFunctions {
     pub fn new() -> Self {
         let mut map = FxHashMap::default();
-        map.insert("span_lint".to_string(), "utils::span_lint".to_string());
-        map.insert("struct_span_lint".to_string(), "utils::span_lint".to_string());
-        map.insert("lint".to_string(), "utils::span_lint".to_string());
-        map.insert("span_lint_note".to_string(), "utils::span_note_and_lint".to_string());
-        map.insert("span_lint_help".to_string(), "utils::span_help_and_lint".to_string());
+        map.insert("span_lint", "utils::span_lint");
+        map.insert("struct_span_lint", "utils::span_lint");
+        map.insert("lint", "utils::span_lint");
+        map.insert("span_lint_note", "utils::span_note_and_lint");
+        map.insert("span_lint_help", "utils::span_help_and_lint");
         Self { map }
     }
 }
@@ -235,8 +260,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         if_chain! {
             if let ExprKind::MethodCall(ref path, _, ref args) = expr.node;
-            let fn_name = path.ident.as_str().to_string();
-            if let Some(sugg) = self.map.get(&fn_name);
+            let fn_name = path.ident;
+            if let Some(sugg) = self.map.get(&*fn_name.as_str());
             let ty = walk_ptrs_ty(cx.tables.expr_ty(&args[0]));
             if match_type(cx, ty, &paths::EARLY_CONTEXT)
                 || match_type(cx, ty, &paths::LATE_CONTEXT);
@@ -247,6 +272,37 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
                     path.ident.span,
                     "usage of a compiler lint function",
                     &format!("please use the Clippy variant of this function: `{}`", sugg),
+                );
+            }
+        }
+    }
+}
+
+pub struct OuterExpnInfoPass;
+
+impl_lint_pass!(OuterExpnInfoPass => [OUTER_EXPN_INFO]);
+
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OuterExpnInfoPass {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+        let (method_names, arg_lists) = method_calls(expr, 2);
+        let method_names: Vec<LocalInternedString> = method_names.iter().map(|s| s.as_str()).collect();
+        let method_names: Vec<&str> = method_names.iter().map(std::convert::AsRef::as_ref).collect();
+        if_chain! {
+            if let ["expn_info", "outer"] = method_names.as_slice();
+            let args = arg_lists[1];
+            if args.len() == 1;
+            let self_arg = &args[0];
+            let self_ty = walk_ptrs_ty(cx.tables.expr_ty(self_arg));
+            if match_type(cx, self_ty, &paths::SYNTAX_CONTEXT);
+            then {
+                span_lint_and_sugg(
+                    cx,
+                    OUTER_EXPN_INFO,
+                    expr.span.trim_start(self_arg.span).unwrap_or(expr.span),
+                    "usage of `outer().expn_info()`",
+                    "try",
+                    ".outer_expn_info()".to_string(),
+                    Applicability::MachineApplicable,
                 );
             }
         }

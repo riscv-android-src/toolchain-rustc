@@ -7,8 +7,10 @@ cfg_if! {
         use std::fmt;
         use std::path::PathBuf;
         use std::prelude::v1::*;
-    } else {
+    } else if #[cfg(rustc_1_30)] {
         pub use core::ffi::c_void;
+    } else {
+        compile_error!("`backtrace` requires Rust >=1.30.0 to support `no_std`.");
     }
 }
 
@@ -27,38 +29,54 @@ pub enum BytesOrWideString<'a> {
 impl<'a> BytesOrWideString<'a> {
     /// Lossy converts to a `Cow<str>`, will allocate if `Bytes` is not valid
     /// UTF-8 or if `BytesOrWideString` is `Wide`.
+    ///
+    /// # Required features
+    ///
+    /// This function requires the `std` feature of the `backtrace` crate to be
+    /// enabled, and the `std` feature is enabled by default.
     pub fn to_str_lossy(&self) -> Cow<'a, str> {
         use self::BytesOrWideString::*;
 
         match self {
-            Bytes(slice) => String::from_utf8_lossy(slice),
-            Wide(wide) => Cow::Owned(String::from_utf16_lossy(wide)),
+            &Bytes(slice) => String::from_utf8_lossy(slice),
+            &Wide(wide) => Cow::Owned(String::from_utf16_lossy(wide)),
         }
     }
 
     /// Provides a `Path` representation of `BytesOrWideString`.
-    #[cfg(not(windows))]
+    ///
+    /// # Required features
+    ///
+    /// This function requires the `std` feature of the `backtrace` crate to be
+    /// enabled, and the `std` feature is enabled by default.
     pub fn into_path_buf(self) -> PathBuf {
-        use self::BytesOrWideString::*;
-        use std::ffi::OsStr;
-        use std::os::unix::ffi::OsStrExt;
+        #[cfg(unix)]
+        {
+            use self::BytesOrWideString::*;
+            use std::ffi::OsStr;
+            use std::os::unix::ffi::OsStrExt;
 
-        match self {
-            Bytes(slice) => PathBuf::from(OsStr::from_bytes(slice)),
-            _ => unreachable!(),
+            match self {
+                Bytes(slice) => PathBuf::from(OsStr::from_bytes(slice)),
+                _ => unreachable!(),
+            }
         }
-    }
 
-    /// Provides a `Path` representation of `BytesOrWideString`.
-    #[cfg(windows)]
-    pub fn into_path_buf(self) -> PathBuf {
-        use self::BytesOrWideString::*;
-        use std::ffi::OsString;
-        use std::os::windows::ffi::OsStringExt;
+        #[cfg(windows)]
+        {
+            use self::BytesOrWideString::*;
+            use std::ffi::OsString;
+            use std::os::windows::ffi::OsStringExt;
 
-        match self {
-            Wide(slice) => PathBuf::from(OsString::from_wide(slice)),
-            _ => unreachable!(),
+            match self {
+                Wide(slice) => PathBuf::from(OsString::from_wide(slice)),
+                _ => unreachable!(),
+            }
+        }
+
+        #[cfg(all(not(windows), not(unix)))]
+        {
+            unreachable!()
         }
     }
 }

@@ -59,7 +59,7 @@
 //! Target flags (test/bench/for_host/edition) | ✓           |
 //! -C incremental=… flag                      | ✓           |
 //! mtime of sources                           | ✓[^3]       |
-//! RUSTFLAGS/RUSTDOCFLAGS                     | ✓           |
+//! RUSTFLAGS/RUSTDOCFLAGS                     | ✓           | ✓
 //!
 //! [^1]: Build script and bin dependencies are not included.
 //!
@@ -549,7 +549,7 @@ impl LocalFingerprint {
             // unit has never been compiled!
             LocalFingerprint::CheckDepInfo { dep_info } => {
                 let dep_info = target_root.join(dep_info);
-                if let Some(paths) = parse_dep_info(pkg_root, &dep_info)? {
+                if let Some(paths) = parse_dep_info(pkg_root, target_root, &dep_info)? {
                     Ok(find_stale_file(&dep_info, paths.iter()))
                 } else {
                     Ok(Some(StaleFile::Missing(dep_info)))
@@ -756,12 +756,7 @@ impl Fingerprint {
     /// dependencies up to this unit as well. This function assumes that the
     /// unit starts out as `FsStatus::Stale` and then it will optionally switch
     /// it to `UpToDate` if it can.
-    fn check_filesystem(
-        &mut self,
-        pkg_root: &Path,
-        target_root: &Path,
-        mtime_on_use: bool,
-    ) -> CargoResult<()> {
+    fn check_filesystem(&mut self, pkg_root: &Path, target_root: &Path) -> CargoResult<()> {
         assert!(!self.fs_status.up_to_date());
 
         let mut mtimes = HashMap::new();
@@ -781,10 +776,6 @@ impl Fingerprint {
                     return Ok(());
                 }
             };
-            if mtime_on_use {
-                let t = FileTime::from_system_time(SystemTime::now());
-                filetime::set_file_times(output, t, t)?;
-            }
             assert!(mtimes.insert(output.clone(), mtime).is_none());
         }
 
@@ -807,7 +798,7 @@ impl Fingerprint {
                 FsStatus::Stale => return Ok(()),
             };
 
-            // If our dependency edge only requires the rmeta fiel to be present
+            // If our dependency edge only requires the rmeta file to be present
             // then we only need to look at that one output file, otherwise we
             // need to consider all output files to see if we're out of date.
             let dep_mtime = if dep.only_requires_rmeta {
@@ -1015,6 +1006,8 @@ fn calculate<'a, 'cfg>(
     }
     let mut fingerprint = if unit.mode.is_run_custom_build() {
         calculate_run_custom_build(cx, unit)?
+    } else if unit.mode.is_doc_test() {
+        panic!("doc tests do not fingerprint");
     } else {
         calculate_normal(cx, unit)?
     };
@@ -1022,8 +1015,7 @@ fn calculate<'a, 'cfg>(
     // After we built the initial `Fingerprint` be sure to update the
     // `fs_status` field of it.
     let target_root = target_root(cx, unit);
-    let mtime_on_use = cx.bcx.config.cli_unstable().mtime_on_use;
-    fingerprint.check_filesystem(unit.pkg.root(), &target_root, mtime_on_use)?;
+    fingerprint.check_filesystem(unit.pkg.root(), &target_root)?;
 
     let fingerprint = Arc::new(fingerprint);
     cx.fingerprints.insert(*unit, Arc::clone(&fingerprint));
@@ -1066,19 +1058,12 @@ fn calculate_normal<'a, 'cfg>(
 
     // Figure out what the outputs of our unit is, and we'll be storing them
     // into the fingerprint as well.
-    let outputs = if unit.mode.is_doc() {
-        vec![cx
-            .files()
-            .out_dir(unit)
-            .join(unit.target.crate_name())
-            .join("index.html")]
-    } else {
-        cx.outputs(unit)?
-            .iter()
-            .filter(|output| output.flavor != FileFlavor::DebugInfo)
-            .map(|output| output.path.clone())
-            .collect()
-    };
+    let outputs = cx
+        .outputs(unit)?
+        .iter()
+        .filter(|output| output.flavor != FileFlavor::DebugInfo)
+        .map(|output| output.path.clone())
+        .collect();
 
     // Fill out a bunch more information that we'll be tracking typically
     // hashed to take up less space on disk as we just need to know when things
@@ -1339,7 +1324,8 @@ fn write_fingerprint(loc: &Path, fingerprint: &Fingerprint) -> CargoResult<()> {
 pub fn prepare_init<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult<()> {
     let new1 = cx.files().fingerprint_dir(unit);
 
-    if fs::metadata(&new1).is_err() {
+    // Doc tests have no output, thus no fingerprint.
+    if !new1.exists() && !unit.mode.is_doc_test() {
         fs::create_dir(&new1)?;
     }
 
@@ -1412,7 +1398,11 @@ fn log_compare(unit: &Unit<'_>, compare: &CargoResult<()>) {
 }
 
 // Parse the dep-info into a list of paths
-pub fn parse_dep_info(pkg_root: &Path, dep_info: &Path) -> CargoResult<Option<Vec<PathBuf>>> {
+pub fn parse_dep_info(
+    pkg_root: &Path,
+    target_root: &Path,
+    dep_info: &Path,
+) -> CargoResult<Option<Vec<PathBuf>>> {
     let data = match paths::read_bytes(dep_info) {
         Ok(data) => data,
         Err(_) => return Ok(None),
@@ -1420,7 +1410,18 @@ pub fn parse_dep_info(pkg_root: &Path, dep_info: &Path) -> CargoResult<Option<Ve
     let paths = data
         .split(|&x| x == 0)
         .filter(|x| !x.is_empty())
-        .map(|p| util::bytes2path(p).map(|p| pkg_root.join(p)))
+        .map(|p| {
+            let ty = match DepInfoPathType::from_byte(p[0]) {
+                Some(ty) => ty,
+                None => return Err(internal("dep-info invalid")),
+            };
+            let path = util::bytes2path(&p[1..])?;
+            match ty {
+                DepInfoPathType::PackageRootRelative => Ok(pkg_root.join(path)),
+                // N.B. path might be absolute here in which case the join will have no effect
+                DepInfoPathType::TargetRootRelative => Ok(target_root.join(path)),
+            }
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if paths.is_empty() {
         Ok(None)
@@ -1507,6 +1508,25 @@ fn filename<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> String {
     format!("{}{}-{}", flavor, kind, file_stem)
 }
 
+#[repr(u8)]
+enum DepInfoPathType {
+    // src/, e.g. src/lib.rs
+    PackageRootRelative = 1,
+    // target/debug/deps/lib...
+    // or an absolute path /.../sysroot/...
+    TargetRootRelative = 2,
+}
+
+impl DepInfoPathType {
+    fn from_byte(b: u8) -> Option<DepInfoPathType> {
+        match b {
+            1 => Some(DepInfoPathType::PackageRootRelative),
+            2 => Some(DepInfoPathType::TargetRootRelative),
+            _ => None,
+        }
+    }
+}
+
 /// Parses the dep-info file coming out of rustc into a Cargo-specific format.
 ///
 /// This function will parse `rustc_dep_info` as a makefile-style dep info to
@@ -1526,8 +1546,9 @@ fn filename<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> String {
 pub fn translate_dep_info(
     rustc_dep_info: &Path,
     cargo_dep_info: &Path,
-    pkg_root: &Path,
     rustc_cwd: &Path,
+    pkg_root: &Path,
+    target_root: &Path,
 ) -> CargoResult<()> {
     let target = parse_rustc_dep_info(rustc_dep_info)?;
     let deps = &target
@@ -1537,9 +1558,20 @@ pub fn translate_dep_info(
 
     let mut new_contents = Vec::new();
     for file in deps {
-        let absolute = rustc_cwd.join(file);
-        let path = absolute.strip_prefix(pkg_root).unwrap_or(&absolute);
-        new_contents.extend(util::path2bytes(path)?);
+        let file = rustc_cwd.join(file);
+        let (ty, path) = if let Ok(stripped) = file.strip_prefix(pkg_root) {
+            (DepInfoPathType::PackageRootRelative, stripped)
+        } else if let Ok(stripped) = file.strip_prefix(target_root) {
+            (DepInfoPathType::TargetRootRelative, stripped)
+        } else {
+            // It's definitely not target root relative, but this is an absolute path (since it was
+            // joined to rustc_cwd) and as such re-joining it later to the target root will have no
+            // effect.
+            assert!(file.is_absolute(), "{:?} is absolute", file);
+            (DepInfoPathType::TargetRootRelative, &*file)
+        };
+        new_contents.push(ty as u8);
+        new_contents.extend(util::path2bytes(&path)?);
         new_contents.push(0);
     }
     paths::write(cargo_dep_info, &new_contents)?;

@@ -25,7 +25,6 @@ early-bound lifetime    |  a lifetime region that is substituted at its definiti
 empty type              |  see "uninhabited type".
 Fat pointer             |  a two word value carrying the address of some value, along with some further information necessary to put the value to use. Rust includes two kinds of "fat pointers": references to slices, and trait objects. A reference to a slice carries the starting address of the slice and its length. A trait object carries a value's address and a pointer to the trait's implementation appropriate to that value. "Fat pointers" are also known as "wide pointers", and "double pointers".
 free variable           |  a "free variable" is one that is not bound within an expression or term; see [the background chapter for more](./background.html#free-vs-bound)
-'gcx                    |  the lifetime of the global arena ([see more](../ty.html))
 generics                |  the set of generic type parameters defined on a type or item
 HIR                     |  the High-level IR, created by lowering and desugaring the AST ([see more](../hir.html))
 HirId                   |  identifies a particular node in the HIR by combining a def-id with an "intra-definition offset".
@@ -51,6 +50,7 @@ newtype                 |  a "newtype" is a wrapper around some other type (e.g.
 NLL                     | [non-lexical lifetimes](../borrow_check/region_inference.html), an extension to Rust's borrowing system to make it be based on the control-flow graph.
 node-id or NodeId       |  an index identifying a particular node in the AST or HIR; gradually being phased out and replaced with `HirId`.
 obligation              |  something that must be proven by the trait system ([see more](../traits/resolution.html))
+point                   |  used in the NLL analysis to refer to some particular location in the MIR; typically used to refer to a node in the control-flow graph.
 projection              |  a general term for a "relative path", e.g. `x.f` is a "field projection", and `T::Item` is an ["associated type projection"](../traits/goals-and-clauses.html#trait-ref)
 promoted constants      |  constants extracted from a function and lifted to static scope; see [this section](../mir/index.html#promoted) for more details.
 provider                |  the function that executes a query ([see more](../query.html))
@@ -66,7 +66,7 @@ soundness               |  soundness is a technical term in type theory. Roughly
 span                    |  a location in the user's source code, used for error reporting primarily. These are like a file-name/line-number/column tuple on steroids: they carry a start/end point, and also track macro expansions and compiler desugaring. All while being packed into a few bytes (really, it's an index into a table). See the Span datatype for more.
 substs                  |  the substitutions for a given generic type or item (e.g. the `i32`, `u32` in `HashMap<i32, u32>`)
 tcx                     |  the "typing context", main data structure of the compiler ([see more](../ty.html))
-'tcx                    |  the lifetime of the currently active inference context ([see more](../ty.html))
+'tcx                    |  the lifetime of the allocation arena ([see more](../ty.html))
 trait reference         |  the name of a trait along with a suitable set of input type/lifetimes ([see more](../traits/goals-and-clauses.html#trait-ref))
 token                   |  the smallest unit of parsing. Tokens are produced after lexing ([see more](../the-parser.html)).
 [TLS]                   |  Thread-Local Storage. Variables may be defined so that each thread has its own copy (rather than all threads sharing the variable). This has some interactions with LLVM. Not all platforms support TLS.

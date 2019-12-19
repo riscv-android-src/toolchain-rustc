@@ -52,12 +52,16 @@ use std::iter::{Chain, FromIterator, FusedIterator};
 use std::mem::{replace, swap};
 use std::ops::{Add, Index, IndexMut, RangeBounds};
 
-use nodes::chunk::{Chunk, Iter as ChunkIter, CHUNK_SIZE};
-use nodes::rrb::{ConsumingIter as ConsumingNodeIter, Node, PopResult, PushResult, SplitResult};
-use sort;
-use util::{clone_ref, swap_indices, to_range, Ref, Side};
+use sized_chunks::{inline_array::Iter as InlineIter, InlineArray};
 
-use self::Vector::{Full, Single};
+use crate::nodes::chunk::{Chunk, Iter as ChunkIter, CHUNK_SIZE};
+use crate::nodes::rrb::{
+    ConsumingIter as ConsumingNodeIter, Node, PopResult, PushResult, SplitResult,
+};
+use crate::sort;
+use crate::util::{clone_ref, swap_indices, to_range, Ref, Side};
+
+use self::Vector::{Full, Inline, Single};
 
 mod focus;
 
@@ -136,6 +140,8 @@ macro_rules! vector {
 /// [VecDeque]: https://doc.rust-lang.org/std/collections/struct.VecDeque.html
 pub enum Vector<A> {
     #[doc(hidden)]
+    Inline(InlineArray<A, RRB<A>>),
+    #[doc(hidden)]
     Single(Ref<Chunk<A>>),
     #[doc(hidden)]
     Full(RRB<A>),
@@ -167,87 +173,69 @@ impl<A> Clone for RRB<A> {
 }
 
 impl<A: Clone> Vector<A> {
-    /// True if a vector is a full single chunk, ie. must be promoted to grow
-    /// further.
+    /// True if a vector is a full inline or single chunk, ie. must be promoted
+    /// to grow further.
     fn needs_promotion(&self) -> bool {
         match self {
+            Inline(chunk) if chunk.is_full() => true,
             Single(chunk) if chunk.is_full() => true,
             _ => false,
         }
     }
 
-    /// Promote a single to a full, with the single chunk becomming inner_f.
-    fn promote_front(&mut self) {
-        let chunk = match self {
-            Single(chunk) => chunk.clone(),
-            _ => return,
-        };
-        *self = Full(RRB {
-            length: chunk.len(),
-            middle_level: 0,
-            outer_f: Ref::new(Chunk::new()),
-            inner_f: chunk,
-            middle: Ref::new(Node::new()),
-            inner_b: Ref::new(Chunk::new()),
-            outer_b: Ref::new(Chunk::new()),
-        })
+    /// Promote an inline to a single.
+    fn promote_inline(&mut self) {
+        if let Inline(chunk) = self {
+            *self = Single(Ref::new(chunk.into()))
+        }
     }
 
-    /// Promote a single to a full, with the single chunk becomming inner_b.
+    /// Promote a single to a full, with the single chunk becoming inner_f, or
+    /// promote an inline to a single.
+    fn promote_front(&mut self) {
+        *self = match self {
+            Inline(chunk) => Single(Ref::new(chunk.into())),
+            Single(chunk) => {
+                let chunk = chunk.clone();
+                Full(RRB {
+                    length: chunk.len(),
+                    middle_level: 0,
+                    outer_f: Ref::new(Chunk::new()),
+                    inner_f: chunk,
+                    middle: Ref::new(Node::new()),
+                    inner_b: Ref::new(Chunk::new()),
+                    outer_b: Ref::new(Chunk::new()),
+                })
+            }
+            Full(_) => return,
+        }
+    }
+
+    /// Promote a single to a full, with the single chunk becoming inner_b, or
+    /// promote an inline to a single.
     fn promote_back(&mut self) {
-        let chunk = match self {
-            Single(chunk) => chunk.clone(),
-            _ => return,
-        };
-        *self = Full(RRB {
-            length: chunk.len(),
-            middle_level: 0,
-            outer_f: Ref::new(Chunk::new()),
-            inner_f: Ref::new(Chunk::new()),
-            middle: Ref::new(Node::new()),
-            inner_b: chunk,
-            outer_b: Ref::new(Chunk::new()),
-        })
+        *self = match self {
+            Inline(chunk) => Single(Ref::new(chunk.into())),
+            Single(chunk) => {
+                let chunk = chunk.clone();
+                Full(RRB {
+                    length: chunk.len(),
+                    middle_level: 0,
+                    outer_f: Ref::new(Chunk::new()),
+                    inner_f: Ref::new(Chunk::new()),
+                    middle: Ref::new(Node::new()),
+                    inner_b: chunk,
+                    outer_b: Ref::new(Chunk::new()),
+                })
+            }
+            Full(_) => return,
+        }
     }
 
     /// Construct an empty vector.
     #[must_use]
     pub fn new() -> Self {
-        Single(Ref::new(Chunk::new()))
-    }
-
-    /// Construct a vector with a single value.
-    ///
-    /// This method has been deprecated; use [`unit`][unit] instead.
-    ///
-    /// [unit]: #method.unit
-    #[inline]
-    #[must_use]
-    #[deprecated(since = "12.3.0", note = "renamed to `unit` for consistency")]
-    pub fn singleton(a: A) -> Self {
-        Self::unit(a)
-    }
-
-    /// Construct a vector with a single value.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # #[macro_use] extern crate im_rc as im;
-    /// # use im::vector::Vector;
-    /// # fn main() {
-    /// let vec = Vector::unit(1337);
-    /// assert_eq!(1, vec.len());
-    /// assert_eq!(
-    ///   vec.get(0),
-    ///   Some(&1337)
-    /// );
-    /// # }
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn unit(a: A) -> Self {
-        Single(Ref::new(Chunk::unit(a)))
+        Inline(InlineArray::new())
     }
 
     /// Get the length of a vector.
@@ -266,6 +254,7 @@ impl<A: Clone> Vector<A> {
     #[must_use]
     pub fn len(&self) -> usize {
         match self {
+            Inline(chunk) => chunk.len(),
             Single(chunk) => chunk.len(),
             Full(tree) => tree.length,
         }
@@ -308,40 +297,6 @@ impl<A: Clone> Vector<A> {
     #[must_use]
     pub fn iter_mut(&mut self) -> IterMut<A> {
         IterMut::new(self)
-    }
-
-    /// Get an iterator over the leaf nodes of a vector.
-    ///
-    /// This method has been deprecated; use [`leaves`][leaves] instead.
-    ///
-    /// Time: O(1)
-    ///
-    /// [leaves]: #method.leaves
-    #[inline]
-    #[must_use]
-    #[deprecated(
-        since = "12.3.0",
-        note = "renamed to `leaves` to avoid confusion with Vec::chunks"
-    )]
-    pub fn chunks(&self) -> Chunks<'_, A> {
-        Chunks::new(self)
-    }
-
-    /// Get a mutable iterator over the leaf nodes of a vector.
-    ///
-    /// This method has been deprecated; use [`leaves_mut`][leaves_mut] instead.
-    ///
-    /// Time: O(1)
-    ///
-    /// [leaves_mut]: #method.leaves_mut
-    #[inline]
-    #[must_use]
-    #[deprecated(
-        since = "12.3.0",
-        note = "renamed to `leaves_mut` to avoid confusion with Vec::chunks"
-    )]
-    pub fn chunks_mut(&mut self) -> ChunksMut<'_, A> {
-        ChunksMut::new(self)
     }
 
     /// Get an iterator over the leaf nodes of a vector.
@@ -420,6 +375,7 @@ impl<A: Clone> Vector<A> {
         }
 
         match self {
+            Inline(chunk) => chunk.get(index),
             Single(chunk) => chunk.get(index),
             Full(tree) => {
                 let mut local_index = index;
@@ -478,6 +434,7 @@ impl<A: Clone> Vector<A> {
         }
 
         match self {
+            Inline(chunk) => chunk.get_mut(index),
             Single(chunk) => Ref::make_mut(chunk).get_mut(index),
             Full(tree) => {
                 let mut local_index = index;
@@ -653,6 +610,127 @@ impl<A: Clone> Vector<A> {
         self.index_of(value).is_some()
     }
 
+    /// Discard all elements from the vector.
+    ///
+    /// This leaves you with an empty vector, and all elements that
+    /// were previously inside it are dropped.
+    ///
+    /// Time: O(n)
+    pub fn clear(&mut self) {
+        if !self.is_empty() {
+            *self = Single(Ref::new(Chunk::new()));
+        }
+    }
+
+    /// Binary search a sorted vector for a given element using a comparator
+    /// function.
+    ///
+    /// Assumes the vector has already been sorted using the same comparator
+    /// function, eg. by using [`sort_by`][sort_by].
+    ///
+    /// If the value is found, it returns `Ok(index)` where `index` is the index
+    /// of the element. If the value isn't found, it returns `Err(index)` where
+    /// `index` is the index at which the element would need to be inserted to
+    /// maintain sorted order.
+    ///
+    /// Time: O(log n)
+    ///
+    /// [sort_by]: #method.sort_by
+    #[must_use]
+    pub fn binary_search_by<F>(&self, mut f: F) -> Result<usize, usize>
+    where
+        F: FnMut(&A) -> Ordering,
+    {
+        let mut size = self.len();
+        if size == 0 {
+            return Err(0);
+        }
+        let mut base = 0;
+        while size > 1 {
+            let half = size / 2;
+            let mid = base + half;
+            base = match f(&self[mid]) {
+                Ordering::Greater => base,
+                _ => mid,
+            };
+            size -= half;
+        }
+        match f(&self[base]) {
+            Ordering::Equal => Ok(base),
+            Ordering::Greater => Err(base),
+            Ordering::Less => Err(base + 1),
+        }
+    }
+
+    /// Binary search a sorted vector for a given element.
+    ///
+    /// If the value is found, it returns `Ok(index)` where `index` is the index
+    /// of the element. If the value isn't found, it returns `Err(index)` where
+    /// `index` is the index at which the element would need to be inserted to
+    /// maintain sorted order.
+    ///
+    /// Time: O(log n)
+    #[must_use]
+    pub fn binary_search(&self, value: &A) -> Result<usize, usize>
+    where
+        A: Ord,
+    {
+        self.binary_search_by(|e| e.cmp(value))
+    }
+
+    /// Binary search a sorted vector for a given element with a key extract
+    /// function.
+    ///
+    /// Assumes the vector has already been sorted using the same key extract
+    /// function, eg. by using [`sort_by_key`][sort_by_key].
+    ///
+    /// If the value is found, it returns `Ok(index)` where `index` is the index
+    /// of the element. If the value isn't found, it returns `Err(index)` where
+    /// `index` is the index at which the element would need to be inserted to
+    /// maintain sorted order.
+    ///
+    /// Time: O(log n)
+    ///
+    /// [sort_by_key]: #method.sort_by_key
+    #[must_use]
+    pub fn binary_search_by_key<B, F>(&self, b: &B, mut f: F) -> Result<usize, usize>
+    where
+        F: FnMut(&A) -> B,
+        B: Ord,
+    {
+        self.binary_search_by(|k| f(k).cmp(b))
+    }
+}
+
+impl<A: Clone> Vector<A> {
+    /// Construct a vector with a single value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::vector::Vector;
+    /// # fn main() {
+    /// let vec = Vector::unit(1337);
+    /// assert_eq!(1, vec.len());
+    /// assert_eq!(
+    ///   vec.get(0),
+    ///   Some(&1337)
+    /// );
+    /// # }
+    /// ```
+    #[inline]
+    #[must_use]
+    pub fn unit(a: A) -> Self {
+        if InlineArray::<A, RRB<A>>::CAPACITY > 0 {
+            let mut array = InlineArray::new();
+            array.push(a);
+            Inline(array)
+        } else {
+            Single(Ref::new(Chunk::unit(a)))
+        }
+    }
+
     /// Create a new vector with the value at index `index` updated.
     ///
     /// Panics if the index is out of bounds.
@@ -715,6 +793,9 @@ impl<A: Clone> Vector<A> {
             self.promote_back();
         }
         match self {
+            Inline(chunk) => {
+                chunk.insert(0, value);
+            }
             Single(chunk) => Ref::make_mut(chunk).push_front(value),
             Full(tree) => tree.push_front(value),
         }
@@ -740,6 +821,9 @@ impl<A: Clone> Vector<A> {
             self.promote_front();
         }
         match self {
+            Inline(chunk) => {
+                chunk.push(value);
+            }
             Single(chunk) => Ref::make_mut(chunk).push_back(value),
             Full(tree) => tree.push_back(value),
         }
@@ -765,6 +849,7 @@ impl<A: Clone> Vector<A> {
             None
         } else {
             match self {
+                Inline(chunk) => chunk.remove(0),
                 Single(chunk) => Some(Ref::make_mut(chunk).pop_front()),
                 Full(tree) => tree.pop_front(),
             }
@@ -791,6 +876,7 @@ impl<A: Clone> Vector<A> {
             None
         } else {
             match self {
+                Inline(chunk) => chunk.pop(),
                 Single(chunk) => Some(Ref::make_mut(chunk).pop_back()),
                 Full(tree) => tree.pop_back(),
             }
@@ -822,14 +908,19 @@ impl<A: Clone> Vector<A> {
             return;
         }
 
+        self.promote_inline();
+        other.promote_inline();
+
         let total_length = self
             .len()
             .checked_add(other.len())
             .expect("Vector length overflow");
 
         match self {
+            Inline(_) => unreachable!("inline vecs should have been promoted"),
             Single(left) => {
                 match other {
+                    Inline(_) => unreachable!("inline vecs should have been promoted"),
                     // If both are single chunks and left has room for right: directly
                     // memcpy right into left
                     Single(ref mut right) if total_length <= CHUNK_SIZE => {
@@ -994,6 +1085,7 @@ impl<A: Clone> Vector<A> {
         assert!(index <= self.len());
 
         match self {
+            Inline(chunk) => Inline(chunk.split_off(index)),
             Single(chunk) => Single(Ref::new(Ref::make_mut(chunk).split_off(index))),
             Full(tree) => {
                 let mut local_index = index;
@@ -1185,7 +1277,17 @@ impl<A: Clone> Vector<A> {
             return self.push_back(value);
         }
         assert!(index < self.len());
+        if if let Inline(chunk) = self {
+            chunk.is_full()
+        } else {
+            false
+        } {
+            self.promote_inline();
+        }
         match self {
+            Inline(chunk) => {
+                chunk.insert(index, value);
+            }
             Single(chunk) if chunk.len() < CHUNK_SIZE => Ref::make_mut(chunk).insert(index, value),
             // TODO a lot of optimisations still possible here
             _ => {
@@ -1215,6 +1317,7 @@ impl<A: Clone> Vector<A> {
     pub fn remove(&mut self, index: usize) -> A {
         assert!(index < self.len());
         match self {
+            Inline(chunk) => chunk.remove(index).unwrap(),
             Single(chunk) => Ref::make_mut(chunk).remove(index),
             _ => {
                 if index == 0 {
@@ -1230,97 +1333,6 @@ impl<A: Clone> Vector<A> {
                 value
             }
         }
-    }
-
-    /// Discard all elements from the vector.
-    ///
-    /// This leaves you with an empty vector, and all elements that
-    /// were previously inside it are dropped.
-    ///
-    /// Time: O(n)
-    pub fn clear(&mut self) {
-        if !self.is_empty() {
-            *self = Single(Ref::new(Chunk::new()));
-        }
-    }
-
-    /// Binary search a sorted vector for a given element using a comparator
-    /// function.
-    ///
-    /// Assumes the vector has already been sorted using the same comparator
-    /// function, eg. by using [`sort_by`][sort_by].
-    ///
-    /// If the value is found, it returns `Ok(index)` where `index` is the index
-    /// of the element. If the value isn't found, it returns `Err(index)` where
-    /// `index` is the index at which the element would need to be inserted to
-    /// maintain sorted order.
-    ///
-    /// Time: O(log n)
-    ///
-    /// [sort_by]: #method.sort_by
-    #[must_use]
-    pub fn binary_search_by<F>(&self, mut f: F) -> Result<usize, usize>
-    where
-        F: FnMut(&A) -> Ordering,
-    {
-        let mut size = self.len();
-        if size == 0 {
-            return Err(0);
-        }
-        let mut base = 0;
-        while size > 1 {
-            let half = size / 2;
-            let mid = base + half;
-            base = match f(&self[mid]) {
-                Ordering::Greater => base,
-                _ => mid,
-            };
-            size -= half;
-        }
-        match f(&self[base]) {
-            Ordering::Equal => Ok(base),
-            Ordering::Greater => Err(base),
-            Ordering::Less => Err(base + 1),
-        }
-    }
-
-    /// Binary search a sorted vector for a given element.
-    ///
-    /// If the value is found, it returns `Ok(index)` where `index` is the index
-    /// of the element. If the value isn't found, it returns `Err(index)` where
-    /// `index` is the index at which the element would need to be inserted to
-    /// maintain sorted order.
-    ///
-    /// Time: O(log n)
-    #[must_use]
-    pub fn binary_search(&self, value: &A) -> Result<usize, usize>
-    where
-        A: Ord,
-    {
-        self.binary_search_by(|e| e.cmp(value))
-    }
-
-    /// Binary search a sorted vector for a given element with a key extract
-    /// function.
-    ///
-    /// Assumes the vector has already been sorted using the same key extract
-    /// function, eg. by using [`sort_by_key`][sort_by_key].
-    ///
-    /// If the value is found, it returns `Ok(index)` where `index` is the index
-    /// of the element. If the value isn't found, it returns `Err(index)` where
-    /// `index` is the index at which the element would need to be inserted to
-    /// maintain sorted order.
-    ///
-    /// Time: O(log n)
-    ///
-    /// [sort_by_key]: #method.sort_by_key
-    #[must_use]
-    pub fn binary_search_by_key<B, F>(&self, b: &B, mut f: F) -> Result<usize, usize>
-    where
-        F: FnMut(&A) -> B,
-        B: Ord,
-    {
-        self.binary_search_by(|k| f(k).cmp(b))
     }
 
     /// Insert an element into a sorted vector.
@@ -1395,6 +1407,13 @@ impl<A: Clone> Vector<A> {
         let len = self.len();
         if len > 1 {
             sort::quicksort(&mut self.focus_mut(), 0, len - 1, &cmp);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn assert_invariants(&self) {
+        if let Vector::Full(ref tree) = self {
+            tree.middle.assert_invariants();
         }
     }
 }
@@ -1528,7 +1547,7 @@ impl<A: Clone> RRB<A> {
             let middle = Ref::make_mut(&mut self.middle);
             match middle.push_chunk(self.middle_level, side, chunk) {
                 PushResult::Done => return,
-                PushResult::Full(chunk) => Ref::from({
+                PushResult::Full(chunk, _num_drained) => Ref::from({
                     match side {
                         Side::Left => Node::from_chunk(self.middle_level, chunk)
                             .join_branches(middle.clone(), self.middle_level),
@@ -1577,6 +1596,7 @@ impl<A: Clone> Default for Vector<A> {
 impl<A: Clone> Clone for Vector<A> {
     fn clone(&self) -> Self {
         match self {
+            Inline(chunk) => Inline(chunk.clone()),
             Single(chunk) => Single(chunk.clone()),
             Full(tree) => Full(tree.clone()),
         }
@@ -1972,6 +1992,7 @@ impl<'a, A: Clone> FusedIterator for IterMut<'a, A> {}
 
 /// A consuming iterator over vectors with values of type `A`.
 pub enum ConsumingIter<A> {
+    Inline(InlineIter<A, RRB<A>>),
     Single(ChunkIter<A>),
     Full(
         Chain<
@@ -1984,6 +2005,7 @@ pub enum ConsumingIter<A> {
 impl<A: Clone> ConsumingIter<A> {
     fn new(seq: Vector<A>) -> Self {
         match seq {
+            Inline(chunk) => ConsumingIter::Inline(chunk.into_iter()),
             Single(chunk) => ConsumingIter::Single(clone_ref(chunk).into_iter()),
             Full(tree) => ConsumingIter::Full(tree.into_iter()),
         }
@@ -1998,6 +2020,7 @@ impl<A: Clone> Iterator for ConsumingIter<A> {
     /// Time: O(1)*
     fn next(&mut self) -> Option<Self::Item> {
         match self {
+            ConsumingIter::Inline(iter) => iter.next(),
             ConsumingIter::Single(iter) => iter.next(),
             ConsumingIter::Full(iter) => iter.next(),
         }
@@ -2005,6 +2028,7 @@ impl<A: Clone> Iterator for ConsumingIter<A> {
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
+            ConsumingIter::Inline(iter) => iter.size_hint(),
             ConsumingIter::Single(iter) => iter.size_hint(),
             ConsumingIter::Full(iter) => iter.size_hint(),
         }
@@ -2017,6 +2041,7 @@ impl<A: Clone> DoubleEndedIterator for ConsumingIter<A> {
     /// Time: O(1)*
     fn next_back(&mut self) -> Option<Self::Item> {
         match self {
+            ConsumingIter::Inline(iter) => iter.next_back(),
             ConsumingIter::Single(iter) => iter.next_back(),
             ConsumingIter::Full(iter) => iter.next_back(),
         }
@@ -2150,8 +2175,10 @@ impl<'a, A: Clone> FusedIterator for ChunksMut<'a, A> {}
 pub mod rayon {
     use super::*;
 
-    use rayon::iter::plumbing::{bridge, Consumer, Producer, ProducerCallback, UnindexedConsumer};
-    use rayon::iter::{
+    use ::rayon::iter::plumbing::{
+        bridge, Consumer, Producer, ProducerCallback, UnindexedConsumer,
+    };
+    use ::rayon::iter::{
         IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
         ParallelIterator,
     };
@@ -2330,8 +2357,11 @@ pub mod rayon {
     mod test {
         use super::super::*;
         use super::proptest::vector;
-        use proptest::num::i32;
-        use rayon::iter::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+        use ::proptest::num::i32;
+        use ::proptest::proptest;
+        use ::rayon::iter::{
+            IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+        };
 
         proptest! {
             #[test]
@@ -2342,8 +2372,8 @@ pub mod rayon {
             #[test]
             fn par_mut_iter(ref mut input in vector(i32::ANY, 0..10000)) {
                 let mut vec = input.clone();
-                vec.par_iter_mut().for_each(|i| *i += 1);
-                let expected: Vector<i32> = input.clone().into_iter().map(|i| i + 1).collect();
+                vec.par_iter_mut().for_each(|i| *i = i.overflowing_add(1).0);
+                let expected: Vector<i32> = input.clone().into_iter().map(|i| i.overflowing_add(1).0).collect();
                 assert_eq!(expected, vec);
             }
         }
@@ -2366,8 +2396,8 @@ impl<A: Arbitrary + Sync + Clone> Arbitrary for Vector<A> {
 #[cfg(any(test, feature = "proptest"))]
 pub mod proptest {
     use super::*;
-    use proptest::collection::vec;
-    use proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
+    use ::proptest::collection::vec;
+    use ::proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
     use std::ops::Range;
 
     /// A strategy for generating a vector of a certain size.
@@ -2400,27 +2430,9 @@ pub mod proptest {
 mod test {
     use super::proptest::vector;
     use super::*;
-    use proptest::collection::vec;
-    use proptest::num::{i32, usize};
-
-    // #[test]
-    // fn push_and_pop_things() {
-    //     let mut seq = Vector::new();
-    //     for i in 0..1000 {
-    //         seq.push_back(i);
-    //     }
-    //     for i in 0..1000 {
-    //         assert_eq!(Some(i), seq.pop_front());
-    //     }
-    //     assert!(seq.is_empty());
-    //     for i in 0..1000 {
-    //         seq.push_front(i);
-    //     }
-    //     for i in 0..1000 {
-    //         assert_eq!(Some(i), seq.pop_back());
-    //     }
-    //     assert!(seq.is_empty());
-    // }
+    use ::proptest::collection::vec;
+    use ::proptest::num::{i32, usize};
+    use ::proptest::proptest;
 
     #[test]
     fn macro_allows_trailing_comma() {
@@ -2496,6 +2508,123 @@ mod test {
         let mut vec1 = Vector::from_iter(0..92);
         let vec2 = Vector::from_iter(0..165);
         vec1.append(vec2);
+    }
+
+    #[test]
+    fn issue_70() {
+        let mut x = Vector::new();
+        for _ in 0..262 {
+            x.push_back(0);
+        }
+        for _ in 0..97 {
+            x.pop_front();
+        }
+        for &offset in &[160, 163, 160] {
+            x.remove(offset);
+        }
+        for _ in 0..64 {
+            x.push_back(0);
+        }
+        // At this point middle contains three chunks of size 64, 64 and 1
+        // respectively. Previously the next `push_back()` would append another
+        // zero-sized chunk to middle even though there is enough space left.
+        match x {
+            Vector::Full(ref tree) => {
+                assert_eq!(129, tree.middle.len());
+                assert_eq!(3, tree.middle.number_of_children());
+            }
+            _ => unreachable!(),
+        }
+        x.push_back(0);
+        match x {
+            Vector::Full(ref tree) => {
+                assert_eq!(131, tree.middle.len());
+                assert_eq!(3, tree.middle.number_of_children())
+            }
+            _ => unreachable!(),
+        }
+        for _ in 0..64 {
+            x.push_back(0);
+        }
+        for _ in x.iter() {}
+    }
+
+    #[test]
+    fn issue_67() {
+        let mut l = Vector::unit(4100);
+        for i in (0..4099).rev() {
+            let mut tmp = Vector::unit(i);
+            tmp.append(l);
+            l = tmp;
+        }
+        assert_eq!(4100, l.len());
+        let len = l.len();
+        let tail = l.slice(1..len);
+        assert_eq!(1, l.len());
+        assert_eq!(4099, tail.len());
+        assert_eq!(Some(&0), l.get(0));
+        assert_eq!(Some(&1), tail.get(0));
+    }
+
+    #[test]
+    fn issue_74_simple_size() {
+        use crate::nodes::rrb::NODE_SIZE;
+        let mut x = Vector::new();
+        for _ in 0..(CHUNK_SIZE
+            * (
+                1 // inner_f
+                + (2 * NODE_SIZE) // middle: two full Entry::Nodes (4096 elements each)
+                + 1 // inner_b
+                + 1
+                // outer_b
+            ))
+        {
+            x.push_back(0u32);
+        }
+        let middle_first_node_start = CHUNK_SIZE;
+        let middle_second_node_start = middle_first_node_start + NODE_SIZE * CHUNK_SIZE;
+        // This reduces the size of the second node to 4095.
+        x.remove(middle_second_node_start);
+        // As outer_b is full, this will cause inner_b (length 64) to be pushed
+        // to middle. The first element will be merged into the second node, the
+        // remaining 63 elements will end up in a new node.
+        x.push_back(0u32);
+        match x {
+            Vector::Full(tree) => {
+                assert_eq!(3, tree.middle.number_of_children());
+                assert_eq!(
+                    2 * NODE_SIZE * CHUNK_SIZE + CHUNK_SIZE - 1,
+                    tree.middle.len()
+                );
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn issue_77() {
+        let mut x = Vector::new();
+        for _ in 0..44 {
+            x.push_back(0);
+        }
+        for _ in 0..20 {
+            x.insert(0, 0);
+        }
+        x.insert(1, 0);
+        for _ in 0..441 {
+            x.push_back(0);
+        }
+        for _ in 0..58 {
+            x.insert(0, 0);
+        }
+        x.insert(514, 0);
+        for _ in 0..73 {
+            x.push_back(0);
+        }
+        for _ in 0..10 {
+            x.insert(0, 0);
+        }
+        x.insert(514, 0);
     }
 
     proptest! {
@@ -2618,10 +2747,10 @@ mod test {
             let mut vec = input.clone();
             {
                 for p in vec.iter_mut() {
-                    *p += 1;
+                    *p = p.overflowing_add(1).0;
                 }
             }
-            let expected: Vector<i32> = input.clone().into_iter().map(|i| i+1).collect();
+            let expected: Vector<i32> = input.clone().into_iter().map(|i| i.overflowing_add(1).0).collect();
             assert_eq!(expected, vec);
         }
 
@@ -2632,10 +2761,10 @@ mod test {
                 let mut focus = vec.focus_mut();
                 for i in 0..input.len() {
                     let p = focus.index_mut(i);
-                    *p += 1;
+                    *p = p.overflowing_add(1).0;
                 }
             }
-            let expected: Vector<i32> = input.clone().into_iter().map(|i| i+1).collect();
+            let expected: Vector<i32> = input.clone().into_iter().map(|i| i.overflowing_add(1).0).collect();
             assert_eq!(expected, vec);
         }
 
@@ -2647,7 +2776,7 @@ mod test {
                 let len = focus.len();
                 if len < 8 {
                     for p in focus {
-                        *p += 1;
+                        *p = p.overflowing_add(1).0;
                     }
                 } else {
                     let (left, right) = focus.split_at(len / 2);
@@ -2658,16 +2787,16 @@ mod test {
 
             split_down(vec.focus_mut());
 
-            let expected: Vector<i32> = input.clone().into_iter().map(|i| i+1).collect();
+            let expected: Vector<i32> = input.clone().into_iter().map(|i| i.overflowing_add(1).0).collect();
             assert_eq!(expected, vec);
         }
 
         #[test]
         fn chunks(ref input in vector(i32::ANY, 0..10000)) {
-            let output: Vector<_> = input.chunks().flat_map(|a|a).cloned().collect();
+            let output: Vector<_> = input.leaves().flat_map(|a|a).cloned().collect();
             assert_eq!(input, &output);
             let rev_in: Vector<_> = input.iter().rev().cloned().collect();
-            let rev_out: Vector<_> = input.chunks().rev().map(|c| c.iter().rev()).flat_map(|a|a).cloned().collect();
+            let rev_out: Vector<_> = input.leaves().rev().map(|c| c.iter().rev()).flat_map(|a|a).cloned().collect();
             assert_eq!(rev_in, rev_out);
         }
 
@@ -2675,10 +2804,10 @@ mod test {
         fn chunks_mut(ref mut input_src in vector(i32::ANY, 0..10000)) {
             let mut input = input_src.clone();
             #[allow(clippy::map_clone)]
-            let output: Vector<_> = input.chunks_mut().flat_map(|a| a).map(|v| *v).collect();
+            let output: Vector<_> = input.leaves_mut().flat_map(|a| a).map(|v| *v).collect();
             assert_eq!(input, output);
             let rev_in: Vector<_> = input.iter().rev().cloned().collect();
-            let rev_out: Vector<_> = input.chunks_mut().rev().map(|c| c.iter().rev()).flat_map(|a|a).cloned().collect();
+            let rev_out: Vector<_> = input.leaves_mut().rev().map(|c| c.iter().rev()).flat_map(|a|a).cloned().collect();
             assert_eq!(rev_in, rev_out);
         }
 

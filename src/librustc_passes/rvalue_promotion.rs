@@ -39,10 +39,7 @@ pub fn provide(providers: &mut Providers<'_>) {
     };
 }
 
-fn const_is_rvalue_promotable_to_static<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                                  def_id: DefId)
-                                                  -> bool
-{
+fn const_is_rvalue_promotable_to_static<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> bool {
     assert!(def_id.is_local());
 
     let hir_id = tcx.hir().as_local_hir_id(def_id)
@@ -51,10 +48,7 @@ fn const_is_rvalue_promotable_to_static<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     tcx.rvalue_promotable_map(def_id).contains(&body_id.hir_id.local_id)
 }
 
-fn rvalue_promotable_map<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                   def_id: DefId)
-                                   -> &'tcx ItemLocalSet
-{
+fn rvalue_promotable_map<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx ItemLocalSet {
     let outer_def_id = tcx.closure_base_def_id(def_id);
     if outer_def_id != def_id {
         return tcx.rvalue_promotable_map(outer_def_id);
@@ -80,8 +74,8 @@ fn rvalue_promotable_map<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     tcx.arena.alloc(visitor.result)
 }
 
-struct CheckCrateVisitor<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct CheckCrateVisitor<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
     in_fn: bool,
     in_static: bool,
     mut_rvalue_borrows: HirIdSet,
@@ -126,9 +120,9 @@ impl BitOr for Promotability {
     }
 }
 
-impl<'a, 'gcx> CheckCrateVisitor<'a, 'gcx> {
+impl<'a, 'tcx> CheckCrateVisitor<'a, 'tcx> {
     // Returns true iff all the values of the type are promotable.
-    fn type_promotability(&mut self, ty: Ty<'gcx>) -> Promotability {
+    fn type_promotability(&mut self, ty: Ty<'tcx>) -> Promotability {
         debug!("type_promotability({})", ty);
 
         if ty.is_freeze(self.tcx, self.param_env, DUMMY_SP) &&
@@ -171,7 +165,7 @@ impl<'a, 'gcx> CheckCrateVisitor<'a, 'gcx> {
 impl<'a, 'tcx> CheckCrateVisitor<'a, 'tcx> {
     fn check_nested_body(&mut self, body_id: hir::BodyId) -> Promotability {
         let item_id = self.tcx.hir().body_owner(body_id);
-        let item_def_id = self.tcx.hir().local_def_id(item_id);
+        let item_def_id = self.tcx.hir().local_def_id_from_hir_id(item_id);
 
         let outer_in_fn = self.in_fn;
         let outer_tables = self.tables;
@@ -199,8 +193,15 @@ impl<'a, 'tcx> CheckCrateVisitor<'a, 'tcx> {
         let param_env = self.param_env;
         let region_scope_tree = self.tcx.region_scope_tree(item_def_id);
         let tables = self.tables;
-        euv::ExprUseVisitor::new(self, tcx, param_env, &region_scope_tree, tables, None)
-            .consume_body(body);
+        euv::ExprUseVisitor::new(
+            self,
+            tcx,
+            item_def_id,
+            param_env,
+            &region_scope_tree,
+            tables,
+            None,
+        ).consume_body(body);
 
         let body_promotable = self.check_expr(&body.value);
         self.in_fn = outer_in_fn;
@@ -351,7 +352,7 @@ fn check_expr_kind<'a, 'tcx>(
                 }
 
                 Res::Def(DefKind::Const, did) |
-                Res::Def(DefKind::AssociatedConst, did) => {
+                Res::Def(DefKind::AssocConst, did) => {
                     let promotable = if v.tcx.trait_of_item(did).is_some() {
                         // Don't peek inside trait associated constants.
                         NotPromotable
@@ -544,7 +545,7 @@ fn check_expr_kind<'a, 'tcx>(
         }
 
         // Generator expressions
-        hir::ExprKind::Yield(ref expr) => {
+        hir::ExprKind::Yield(ref expr, _) => {
             let _ = v.check_expr(&expr);
             NotPromotable
         }
@@ -592,7 +593,7 @@ fn check_adjustments<'a, 'tcx>(
     Promotable
 }
 
-impl<'a, 'gcx, 'tcx> euv::Delegate<'tcx> for CheckCrateVisitor<'a, 'gcx> {
+impl<'a, 'tcx> euv::Delegate<'tcx> for CheckCrateVisitor<'a, 'tcx> {
     fn consume(&mut self,
                _consume_id: hir::HirId,
                _consume_span: Span,

@@ -44,6 +44,7 @@ pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
     let rvalue_promotable_map = bccx.tcx.rvalue_promotable_map(def_id);
     euv::ExprUseVisitor::new(&mut glcx,
                              bccx.tcx,
+                             def_id,
                              param_env,
                              &bccx.region_scope_tree,
                              bccx.tables,
@@ -55,7 +56,7 @@ pub fn gather_loans_in_fn<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
     (all_loans, move_data)
 }
 
-struct GatherLoanCtxt<'a, 'tcx: 'a> {
+struct GatherLoanCtxt<'a, 'tcx> {
     bccx: &'a BorrowckCtxt<'a, 'tcx>,
     move_data: move_data::MoveData<'tcx>,
     move_error_collector: move_error::MoveErrorCollector<'tcx>,
@@ -250,7 +251,7 @@ fn check_mutability<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> GatherLoanCtxt<'a, 'tcx> {
-    pub fn tcx(&self) -> TyCtxt<'a, 'tcx, 'tcx> { self.bccx.tcx }
+    pub fn tcx(&self) -> TyCtxt<'tcx> { self.bccx.tcx }
 
     /// Guarantees that `cmt` is assignable, or reports an error.
     fn guarantee_assignment_valid(&mut self,

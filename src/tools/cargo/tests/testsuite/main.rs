@@ -7,6 +7,9 @@
 #![warn(clippy::redundant_clone)]
 
 #[macro_use]
+extern crate cargo_test_macro;
+
+#[macro_use]
 mod support;
 
 mod alt_registry;
@@ -19,6 +22,7 @@ mod build_lib;
 mod build_plan;
 mod build_script;
 mod build_script_env;
+mod cache_messages;
 mod cargo_alias_config;
 mod cargo_command;
 mod cargo_features;
@@ -88,12 +92,13 @@ mod small_fd_limits;
 mod test;
 mod tool_paths;
 mod update;
+mod vendor;
 mod verify_project;
 mod version;
 mod warn_on_failure;
 mod workspaces;
 
-#[test]
+#[cargo_test]
 fn aaa_trigger_cross_compile_disabled_check() {
     // This triggers the cross compile disabled check to run ASAP, see #5141
     support::cross_compile::disabled();

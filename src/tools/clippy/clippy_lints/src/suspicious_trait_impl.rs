@@ -65,9 +65,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SuspiciousImpl {
             }
             // Check if the binary expression is part of another bi/unary expression
             // as a child node
-            let mut parent_expr = cx.tcx.hir().get_parent_node_by_hir_id(expr.hir_id);
+            let mut parent_expr = cx.tcx.hir().get_parent_node(expr.hir_id);
             while parent_expr != hir::CRATE_HIR_ID {
-                if let hir::Node::Expr(e) = cx.tcx.hir().get_by_hir_id(parent_expr) {
+                if let hir::Node::Expr(e) = cx.tcx.hir().get(parent_expr) {
                     match e.node {
                         hir::ExprKind::Binary(..)
                         | hir::ExprKind::Unary(hir::UnOp::UnNot, _)
@@ -75,7 +75,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SuspiciousImpl {
                         _ => {},
                     }
                 }
-                parent_expr = cx.tcx.hir().get_parent_node_by_hir_id(parent_expr);
+                parent_expr = cx.tcx.hir().get_parent_node(parent_expr);
             }
             // as a parent node
             let mut visitor = BinaryExprVisitor { in_binary_expr: false };
@@ -183,7 +183,7 @@ struct BinaryExprVisitor {
     in_binary_expr: bool,
 }
 
-impl<'a, 'tcx: 'a> Visitor<'tcx> for BinaryExprVisitor {
+impl<'a, 'tcx> Visitor<'tcx> for BinaryExprVisitor {
     fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
         match expr.node {
             hir::ExprKind::Binary(..)

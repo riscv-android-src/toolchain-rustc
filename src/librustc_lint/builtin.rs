@@ -23,7 +23,7 @@
 
 use rustc::hir::def::{Res, DefKind};
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
-use rustc::ty::{self, Ty};
+use rustc::ty::{self, Ty, TyCtxt};
 use rustc::{lint, util};
 use hir::Node;
 use util::nodemap::HirIdSet;
@@ -42,7 +42,7 @@ use syntax::edition::Edition;
 use syntax::feature_gate::{AttributeGate, AttributeTemplate, AttributeType};
 use syntax::feature_gate::{Stability, deprecated_attributes};
 use syntax_pos::{BytePos, Span, SyntaxContext};
-use syntax::symbol::{Symbol, keywords, sym};
+use syntax::symbol::{Symbol, kw, sym};
 use syntax::errors::{Applicability, DiagnosticBuilder};
 use syntax::print::pprust::expr_to_string;
 use syntax::visit::FnKind;
@@ -96,7 +96,7 @@ declare_lint! {
 declare_lint_pass!(BoxPointers => [BOX_POINTERS]);
 
 impl BoxPointers {
-    fn check_heap_type<'a, 'tcx>(&self, cx: &LateContext<'_, '_>, span: Span, ty: Ty<'_>) {
+    fn check_heap_type(&self, cx: &LateContext<'_, '_>, span: Span, ty: Ty<'_>) {
         for leaf_ty in ty.walk() {
             if leaf_ty.is_box() {
                 let m = format!("type uses owned (Box type) pointers: {}", ty);
@@ -158,7 +158,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonShorthandFieldPatterns {
                 if fieldpat.node.is_shorthand {
                     continue;
                 }
-                if fieldpat.span.ctxt().outer().expn_info().is_some() {
+                if fieldpat.span.ctxt().outer_expn_info().is_some() {
                     // Don't lint if this is a macro expansion: macro authors
                     // shouldn't have to worry about this kind of style issue
                     // (Issue #49588)
@@ -196,7 +196,7 @@ declare_lint_pass!(UnsafeCode => [UNSAFE_CODE]);
 
 impl UnsafeCode {
     fn report_unsafe(&self, cx: &EarlyContext<'_>, span: Span, desc: &'static str) {
-        // This comes from a macro that has #[allow_internal_unsafe].
+        // This comes from a macro that has `#[allow_internal_unsafe]`.
         if span.allows_unsafe() {
             return;
         }
@@ -216,7 +216,7 @@ impl EarlyLintPass for UnsafeCode {
 
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
         if let ast::ExprKind::Block(ref blk, _) = e.node {
-            // Don't warn about generated blocks, that'll just pollute the output.
+            // Don't warn about generated blocks; that'll just pollute the output.
             if blk.rules == ast::BlockCheckMode::Unsafe(ast::UserProvided) {
                 self.report_unsafe(cx, blk.span, "usage of an `unsafe` block");
             }
@@ -335,7 +335,7 @@ impl MissingDoc {
 
         // Only check publicly-visible items, using the result from the privacy pass.
         // It's an option so the crate root can also use this function (it doesn't
-        // have a NodeId).
+        // have a `NodeId`).
         if let Some(id) = id {
             if !cx.access_levels.is_exported(id) {
                 return;
@@ -389,7 +389,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
             hir::ItemKind::Struct(..) => "a struct",
             hir::ItemKind::Union(..) => "a union",
             hir::ItemKind::Trait(.., ref trait_item_refs) => {
-                // Issue #11592, traits are always considered exported, even when private.
+                // Issue #11592: traits are always considered exported, even when private.
                 if let hir::VisibilityKind::Inherited = it.vis.node {
                     self.private_traits.insert(it.hir_id);
                     for trait_item_ref in trait_item_refs {
@@ -401,11 +401,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
             }
             hir::ItemKind::Ty(..) => "a type alias",
             hir::ItemKind::Impl(.., Some(ref trait_ref), _, ref impl_item_refs) => {
-                // If the trait is private, add the impl items to private_traits so they don't get
+                // If the trait is private, add the impl items to `private_traits` so they don't get
                 // reported for missing docs.
                 let real_trait = trait_ref.path.res.def_id();
                 if let Some(hir_id) = cx.tcx.hir().as_local_hir_id(real_trait) {
-                    match cx.tcx.hir().find_by_hir_id(hir_id) {
+                    match cx.tcx.hir().find(hir_id) {
                         Some(Node::Item(item)) => {
                             if let hir::VisibilityKind::Inherited = item.vis.node {
                                 for impl_item_ref in impl_item_refs {
@@ -607,7 +607,7 @@ impl EarlyLintPass for AnonymousParameters {
                 for arg in sig.decl.inputs.iter() {
                     match arg.pat.node {
                         ast::PatKind::Ident(_, ident, None) => {
-                            if ident.name == keywords::Invalid.name() {
+                            if ident.name == kw::Invalid {
                                 let ty_snip = cx
                                     .sess
                                     .source_map()
@@ -929,7 +929,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MutableTransmutes {
 
         fn def_id_is_transmute(cx: &LateContext<'_, '_>, def_id: DefId) -> bool {
             cx.tcx.fn_sig(def_id).abi() == RustIntrinsic &&
-            cx.tcx.item_name(def_id) == "transmute"
+            cx.tcx.item_name(def_id) == sym::transmute
         }
     }
 }
@@ -1003,7 +1003,7 @@ impl UnreachablePub {
         let mut applicability = Applicability::MachineApplicable;
         match vis.node {
             hir::VisibilityKind::Public if !cx.access_levels.is_reachable(id) => {
-                if span.ctxt().outer().expn_info().is_some() {
+                if span.ctxt().outer_expn_info().is_some() {
                     applicability = Applicability::MaybeIncorrect;
                 }
                 let def_span = cx.tcx.sess.source_map().def_span(span);
@@ -1088,7 +1088,7 @@ impl TypeAliasBounds {
 
         // We use a HIR visitor to walk the type.
         use rustc::hir::intravisit::{self, Visitor};
-        struct WalkAssocTypes<'a, 'db> where 'db: 'a {
+        struct WalkAssocTypes<'a, 'db> {
             err: &'a mut DiagnosticBuilder<'db>
         }
         impl<'a, 'db, 'v> Visitor<'v> for WalkAssocTypes<'a, 'db> {
@@ -1215,7 +1215,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TrivialConstraints {
         use rustc::ty::fold::TypeFoldable;
         use rustc::ty::Predicate::*;
 
-
         if cx.tcx.features().trivial_bounds {
             let def_id = cx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
             let predicates = cx.tcx.predicates_of(def_id);
@@ -1275,7 +1274,7 @@ declare_lint_pass!(
 
 declare_lint! {
     pub ELLIPSIS_INCLUSIVE_RANGE_PATTERNS,
-    Allow,
+    Warn,
     "`...` range patterns are deprecated"
 }
 
@@ -1415,15 +1414,9 @@ impl KeywordIdents {
     fn check_tokens(&mut self, cx: &EarlyContext<'_>, tokens: TokenStream) {
         for tt in tokens.into_trees() {
             match tt {
-                TokenTree::Token(span, tok) => match tok.ident() {
-                    // only report non-raw idents
-                    Some((ident, false)) => {
-                        self.check_ident_token(cx, UnderMacro(true), ast::Ident {
-                            span: span.substitute_dummy(ident.span),
-                            ..ident
-                        });
-                    }
-                    _ => {},
+                // Only report non-raw idents.
+                TokenTree::Token(token) => if let Some((ident, false)) = token.ident() {
+                    self.check_ident_token(cx, UnderMacro(true), ident);
                 }
                 TokenTree::Delimited(_, _, tts) => {
                     self.check_tokens(cx, tts)
@@ -1439,8 +1432,8 @@ impl KeywordIdents {
     {
         let next_edition = match cx.sess.edition() {
             Edition::Edition2015 => {
-                match &ident.as_str()[..] {
-                    "async" | "await" | "try" => Edition::Edition2018,
+                match ident.name {
+                    kw::Async | kw::Await | kw::Try => Edition::Edition2018,
 
                     // rust-lang/rust#56327: Conservatively do not
                     // attempt to report occurrences of `dyn` within
@@ -1454,7 +1447,7 @@ impl KeywordIdents {
                     // its precise role in the parsed AST and thus are
                     // assured this is truly an attempt to use it as
                     // an identifier.
-                    "dyn" if !under_macro => Edition::Edition2018,
+                    kw::Dyn if !under_macro => Edition::Edition2018,
 
                     _ => return,
                 }
@@ -1464,7 +1457,7 @@ impl KeywordIdents {
             _ => return,
         };
 
-        // don't lint `r#foo`
+        // Don't lint `r#foo`.
         if cx.sess.parse_sess.raw_identifier_spans.borrow().contains(&ident.span) {
             return;
         }
@@ -1501,58 +1494,107 @@ impl EarlyLintPass for KeywordIdents {
 declare_lint_pass!(ExplicitOutlivesRequirements => [EXPLICIT_OUTLIVES_REQUIREMENTS]);
 
 impl ExplicitOutlivesRequirements {
-    fn collect_outlives_bound_spans(
-        &self,
-        cx: &LateContext<'_, '_>,
-        item_def_id: DefId,
-        param_name: &str,
-        bounds: &hir::GenericBounds,
-        infer_static: bool
-    ) -> Vec<(usize, Span)> {
-        // For lack of a more elegant strategy for comparing the `ty::Predicate`s
-        // returned by this query with the params/bounds grabbed from the HIR—and
-        // with some regrets—we're going to covert the param/lifetime names to
-        // strings
-        let inferred_outlives = cx.tcx.inferred_outlives_of(item_def_id);
-
-        let ty_lt_names = inferred_outlives.iter().filter_map(|pred| {
-            let binder = match pred {
-                ty::Predicate::TypeOutlives(binder) => binder,
-                _ => { return None; }
-            };
-            let ty_outlives_pred = binder.skip_binder();
-            let ty_name = match ty_outlives_pred.0.sty {
-                ty::Param(param) => param.name.to_string(),
-                _ => { return None; }
-            };
-            let lt_name = match ty_outlives_pred.1 {
-                ty::RegionKind::ReEarlyBound(region) => {
-                    region.name.to_string()
-                },
-                _ => { return None; }
-            };
-            Some((ty_name, lt_name))
-        }).collect::<Vec<_>>();
-
-        let mut bound_spans = Vec::new();
-        for (i, bound) in bounds.iter().enumerate() {
-            if let hir::GenericBound::Outlives(lifetime) = bound {
-                let is_static = match lifetime.name {
-                    hir::LifetimeName::Static => true,
-                    _ => false
-                };
-                if is_static && !infer_static {
-                    // infer-outlives for 'static is still feature-gated (tracking issue #44493)
-                    continue;
+    fn lifetimes_outliving_lifetime<'tcx>(
+        inferred_outlives: &'tcx [ty::Predicate<'tcx>],
+        index: u32,
+    ) -> Vec<ty::Region<'tcx>> {
+        inferred_outlives.iter().filter_map(|pred| {
+            match pred {
+                ty::Predicate::RegionOutlives(outlives) => {
+                    let outlives = outlives.skip_binder();
+                    match outlives.0 {
+                        ty::ReEarlyBound(ebr) if ebr.index == index => {
+                            Some(outlives.1)
+                        }
+                        _ => None,
+                    }
                 }
-
-                let lt_name = &lifetime.name.ident().to_string();
-                if ty_lt_names.contains(&(param_name.to_owned(), lt_name.to_owned())) {
-                    bound_spans.push((i, bound.span()));
-                }
+                _ => None
             }
+        }).collect()
+    }
+
+    fn lifetimes_outliving_type<'tcx>(
+        inferred_outlives: &'tcx [ty::Predicate<'tcx>],
+        index: u32,
+    ) -> Vec<ty::Region<'tcx>> {
+        inferred_outlives.iter().filter_map(|pred| {
+            match pred {
+                ty::Predicate::TypeOutlives(outlives) => {
+                    let outlives = outlives.skip_binder();
+                    if outlives.0.is_param(index) {
+                        Some(outlives.1)
+                    } else {
+                        None
+                    }
+                }
+                _ => None
+            }
+        }).collect()
+    }
+
+    fn collect_outlived_lifetimes<'tcx>(
+        &self,
+        param: &'tcx hir::GenericParam,
+        tcx: TyCtxt<'tcx>,
+        inferred_outlives: &'tcx [ty::Predicate<'tcx>],
+        ty_generics: &'tcx ty::Generics,
+    ) -> Vec<ty::Region<'tcx>> {
+        let index = ty_generics.param_def_id_to_index[
+            &tcx.hir().local_def_id_from_hir_id(param.hir_id)];
+
+        match param.kind {
+            hir::GenericParamKind::Lifetime { .. } => {
+                Self::lifetimes_outliving_lifetime(inferred_outlives, index)
+            }
+            hir::GenericParamKind::Type { .. } => {
+                Self::lifetimes_outliving_type(inferred_outlives, index)
+            }
+            hir::GenericParamKind::Const { .. } => Vec::new(),
         }
-        bound_spans
+    }
+
+
+    fn collect_outlives_bound_spans<'tcx>(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        bounds: &hir::GenericBounds,
+        inferred_outlives: &[ty::Region<'tcx>],
+        infer_static: bool,
+    ) -> Vec<(usize, Span)> {
+        use rustc::middle::resolve_lifetime::Region;
+
+        bounds
+            .iter()
+            .enumerate()
+            .filter_map(|(i, bound)| {
+                if let hir::GenericBound::Outlives(lifetime) = bound {
+                    let is_inferred = match tcx.named_region(lifetime.hir_id) {
+                        Some(Region::Static) if infer_static => {
+                            inferred_outlives.iter()
+                                .any(|r| if let ty::ReStatic = r { true } else { false })
+                        }
+                        Some(Region::EarlyBound(index, ..)) => inferred_outlives
+                            .iter()
+                            .any(|r| {
+                                if let ty::ReEarlyBound(ebr) = r {
+                                    ebr.index == index
+                                } else {
+                                    false
+                                }
+                            }),
+                        _ => false,
+                    };
+                    if is_inferred {
+                        Some((i, bound.span()))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn consolidate_outlives_bound_spans(
@@ -1576,7 +1618,7 @@ impl ExplicitOutlivesRequirements {
             let mut from_start = true;
             for (i, bound_span) in bound_spans {
                 match last_merged_i {
-                    // If the first bound is inferable, our span should also eat the trailing `+`
+                    // If the first bound is inferable, our span should also eat the leading `+`.
                     None if i == 0 => {
                         merged.push(bound_span.to(bounds[1].span().shrink_to_lo()));
                         last_merged_i = Some(0);
@@ -1614,26 +1656,48 @@ impl ExplicitOutlivesRequirements {
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ExplicitOutlivesRequirements {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
+        use rustc::middle::resolve_lifetime::Region;
+
         let infer_static = cx.tcx.features().infer_static_outlives_requirements;
         let def_id = cx.tcx.hir().local_def_id_from_hir_id(item.hir_id);
-        if let hir::ItemKind::Struct(_, ref generics) = item.node {
+        if let hir::ItemKind::Struct(_, ref hir_generics)
+            | hir::ItemKind::Enum(_, ref hir_generics)
+            | hir::ItemKind::Union(_, ref hir_generics) = item.node
+        {
+            let inferred_outlives = cx.tcx.inferred_outlives_of(def_id);
+            if inferred_outlives.is_empty() {
+                return;
+            }
+
+            let ty_generics = cx.tcx.generics_of(def_id);
+
             let mut bound_count = 0;
             let mut lint_spans = Vec::new();
 
-            for param in &generics.params {
-                let param_name = match param.kind {
-                    hir::GenericParamKind::Lifetime { .. } => continue,
-                    hir::GenericParamKind::Type { .. } => {
-                        match param.name {
-                            hir::ParamName::Fresh(_) => continue,
-                            hir::ParamName::Error => continue,
-                            hir::ParamName::Plain(name) => name.to_string(),
-                        }
+            for param in &hir_generics.params {
+                let has_lifetime_bounds = param.bounds.iter().any(|bound| {
+                    if let hir::GenericBound::Outlives(_) = bound {
+                        true
+                    } else {
+                        false
                     }
-                    hir::GenericParamKind::Const { .. } => continue,
-                };
+                });
+                if !has_lifetime_bounds {
+                    continue;
+                }
+
+                let relevant_lifetimes = self.collect_outlived_lifetimes(
+                    param,
+                    cx.tcx,
+                    inferred_outlives,
+                    ty_generics,
+                );
+                if relevant_lifetimes.is_empty() {
+                    continue;
+                }
+
                 let bound_spans = self.collect_outlives_bound_spans(
-                    cx, def_id, &param_name, &param.bounds, infer_static
+                    cx.tcx, &param.bounds, &relevant_lifetimes, infer_static,
                 );
                 bound_count += bound_spans.len();
                 lint_spans.extend(
@@ -1645,54 +1709,93 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ExplicitOutlivesRequirements {
 
             let mut where_lint_spans = Vec::new();
             let mut dropped_predicate_count = 0;
-            let num_predicates = generics.where_clause.predicates.len();
-            for (i, where_predicate) in generics.where_clause.predicates.iter().enumerate() {
-                if let hir::WherePredicate::BoundPredicate(predicate) = where_predicate {
-                    let param_name = match predicate.bounded_ty.node {
-                        hir::TyKind::Path(ref qpath) => {
-                            if let hir::QPath::Resolved(None, ty_param_path) = qpath {
-                                ty_param_path.segments[0].ident.to_string()
-                            } else {
-                                continue;
-                            }
-                        },
-                        _ => { continue; }
-                    };
-                    let bound_spans = self.collect_outlives_bound_spans(
-                        cx, def_id, &param_name, &predicate.bounds, infer_static
-                    );
-                    bound_count += bound_spans.len();
-
-                    let drop_predicate = bound_spans.len() == predicate.bounds.len();
-                    if drop_predicate {
-                        dropped_predicate_count += 1;
-                    }
-
-                    // If all the bounds on a predicate were inferable and there are
-                    // further predicates, we want to eat the trailing comma
-                    if drop_predicate && i + 1 < num_predicates {
-                        let next_predicate_span = generics.where_clause.predicates[i+1].span();
-                        where_lint_spans.push(
-                            predicate.span.to(next_predicate_span.shrink_to_lo())
-                        );
-                    } else {
-                        where_lint_spans.extend(
-                            self.consolidate_outlives_bound_spans(
-                                predicate.span.shrink_to_lo(),
+            let num_predicates = hir_generics.where_clause.predicates.len();
+            for (i, where_predicate) in hir_generics.where_clause.predicates.iter().enumerate() {
+                let (relevant_lifetimes, bounds, span) = match where_predicate {
+                    hir::WherePredicate::RegionPredicate(predicate) => {
+                        if let Some(Region::EarlyBound(index, ..))
+                            = cx.tcx.named_region(predicate.lifetime.hir_id)
+                        {
+                            (
+                                Self::lifetimes_outliving_lifetime(inferred_outlives, index),
                                 &predicate.bounds,
-                                bound_spans
+                                predicate.span,
                             )
-                        );
+                        } else {
+                            continue;
+                        }
                     }
+                    hir::WherePredicate::BoundPredicate(predicate) => {
+                        // FIXME we can also infer bounds on associated types,
+                        // and should check for them here.
+                        match predicate.bounded_ty.node {
+                            hir::TyKind::Path(hir::QPath::Resolved(
+                                None,
+                                ref path,
+                            )) => {
+                                if let Res::Def(DefKind::TyParam, def_id) = path.res {
+                                    let index = ty_generics.param_def_id_to_index[&def_id];
+                                    (
+                                        Self::lifetimes_outliving_type(inferred_outlives, index),
+                                        &predicate.bounds,
+                                        predicate.span,
+                                    )
+                                } else {
+                                    continue;
+                                }
+                            },
+                            _ => { continue; }
+                        }
+                    }
+                    _ => continue,
+                };
+                if relevant_lifetimes.is_empty() {
+                    continue;
+                }
+
+                let bound_spans = self.collect_outlives_bound_spans(
+                    cx.tcx, bounds, &relevant_lifetimes, infer_static,
+                );
+                bound_count += bound_spans.len();
+
+                let drop_predicate = bound_spans.len() == bounds.len();
+                if drop_predicate {
+                    dropped_predicate_count += 1;
+                }
+
+                // If all the bounds on a predicate were inferable and there are
+                // further predicates, we want to eat the trailing comma.
+                if drop_predicate && i + 1 < num_predicates {
+                    let next_predicate_span = hir_generics.where_clause.predicates[i + 1].span();
+                    where_lint_spans.push(
+                        span.to(next_predicate_span.shrink_to_lo())
+                    );
+                } else {
+                    where_lint_spans.extend(
+                        self.consolidate_outlives_bound_spans(
+                            span.shrink_to_lo(),
+                            bounds,
+                            bound_spans
+                        )
+                    );
                 }
             }
 
             // If all predicates are inferable, drop the entire clause
             // (including the `where`)
             if num_predicates > 0 && dropped_predicate_count == num_predicates {
-                let full_where_span = generics.span.shrink_to_hi()
-                    .to(generics.where_clause.span()
-                    .expect("span of (nonempty) where clause should exist"));
+                let where_span = hir_generics.where_clause.span()
+                    .expect("span of (nonempty) where clause should exist");
+                // Extend the where clause back to the closing `>` of the
+                // generics, except for tuple struct, which have the `where`
+                // after the fields of the struct.
+                let full_where_span = if let hir::ItemKind::Struct(hir::VariantData::Tuple(..), _)
+                        = item.node
+                {
+                    where_span
+                } else {
+                    hir_generics.span.shrink_to_hi().to(where_span)
+                };
                 lint_spans.push(
                     full_where_span
                 );
@@ -1717,8 +1820,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ExplicitOutlivesRequirements {
                 );
                 err.emit();
             }
-
         }
     }
-
 }

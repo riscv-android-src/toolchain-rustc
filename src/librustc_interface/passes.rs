@@ -48,7 +48,7 @@ use syntax::util::node_count::NodeCounter;
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax::symbol::Symbol;
 use syntax::feature_gate::AttributeType;
-use syntax_pos::{FileName, hygiene};
+use syntax_pos::{FileName, edition::Edition, hygiene};
 use syntax_ext;
 
 use serialize::json;
@@ -70,8 +70,6 @@ use std::ops::Generator;
 pub fn parse<'a>(sess: &'a Session, input: &Input) -> PResult<'a, ast::Crate> {
     sess.diagnostic()
         .set_continue_after_error(sess.opts.debugging_opts.continue_parse_after_error);
-    hygiene::set_default_edition(sess.edition());
-
     sess.profiler(|p| p.start_activity("parsing"));
     let krate = time(sess, "parsing", || match *input {
         Input::File(ref file) => parse::parse_crate_from_file(file, &sess.parse_sess),
@@ -180,7 +178,6 @@ impl ExpansionResult {
         ExpansionResult {
             defs: Steal::new(resolver.definitions),
             resolutions: Steal::new(Resolutions {
-                upvars: resolver.upvars,
                 export_map: resolver.export_map,
                 trait_map: resolver.trait_map,
                 glob_map: resolver.glob_map,
@@ -199,7 +196,6 @@ impl ExpansionResult {
         ExpansionResult {
             defs: Steal::new(resolver.definitions.clone()),
             resolutions: Steal::new(Resolutions {
-                upvars: resolver.upvars.clone(),
                 export_map: resolver.export_map.clone(),
                 trait_map: resolver.trait_map.clone(),
                 glob_map: resolver.glob_map.clone(),
@@ -375,7 +371,7 @@ fn configure_and_expand_inner<'a>(
         crate_loader,
         &resolver_arenas,
     );
-    syntax_ext::register_builtins(&mut resolver, plugin_info.syntax_exts);
+    syntax_ext::register_builtins(&mut resolver, plugin_info.syntax_exts, sess.edition());
 
     // Expand all macros
     sess.profiler(|p| p.start_activity("macro expansion"));
@@ -795,14 +791,14 @@ pub fn default_provide_extern(providers: &mut ty::query::Providers<'_>) {
 
 declare_box_region_type!(
     pub BoxedGlobalCtxt,
-    for('gcx),
-    (&'gcx GlobalCtxt<'gcx>) -> ((), ())
+    for('tcx),
+    (&'tcx GlobalCtxt<'tcx>) -> ((), ())
 );
 
 impl BoxedGlobalCtxt {
     pub fn enter<F, R>(&mut self, f: F) -> R
     where
-        F: for<'tcx> FnOnce(TyCtxt<'tcx, 'tcx, 'tcx>) -> R
+        F: for<'tcx> FnOnce(TyCtxt<'tcx>) -> R,
     {
         self.access(|gcx| ty::tls::enter_global(gcx, |tcx| f(tcx)))
     }
@@ -815,7 +811,7 @@ pub fn create_global_ctxt(
     resolutions: Resolutions,
     outputs: OutputFilenames,
     tx: mpsc::Sender<Box<dyn Any + Send>>,
-    crate_name: &str
+    crate_name: &str,
 ) -> BoxedGlobalCtxt {
     let sess = compiler.session().clone();
     let cstore = compiler.cstore.clone();
@@ -870,7 +866,7 @@ pub fn create_global_ctxt(
         });
 
         yield BoxedGlobalCtxt::initial_yield(());
-        box_region_allow_access!(for('gcx), (&'gcx GlobalCtxt<'gcx>), (gcx));
+        box_region_allow_access!(for('tcx), (&'tcx GlobalCtxt<'tcx>), (gcx));
 
         if sess.opts.debugging_opts.query_stats {
             gcx.queries.print_stats();
@@ -882,10 +878,7 @@ pub fn create_global_ctxt(
 
 /// Runs the resolution, type-checking, region checking and other
 /// miscellaneous analysis passes on the crate.
-fn analysis<'tcx>(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
-    cnum: CrateNum,
-) -> Result<()> {
+fn analysis<'tcx>(tcx: TyCtxt<'tcx>, cnum: CrateNum) -> Result<()> {
     assert_eq!(cnum, LOCAL_CRATE);
 
     let sess = tcx.sess;
@@ -966,7 +959,7 @@ fn analysis<'tcx>(
     // lot of annoying errors in the compile-fail tests (basically,
     // lint warnings and so on -- kindck used to do this abort, but
     // kindck is gone now). -nmatsakis
-    if sess.err_count() > 0 {
+    if sess.has_errors() {
         return Err(ErrorReported);
     }
 
@@ -1003,7 +996,7 @@ fn analysis<'tcx>(
 }
 
 fn encode_and_write_metadata<'tcx>(
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     outputs: &OutputFilenames,
 ) -> (middle::cstore::EncodedMetadata, bool) {
     #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -1052,7 +1045,8 @@ fn encode_and_write_metadata<'tcx>(
             tcx.sess.fatal(&format!("failed to write {}: {}", out_filename.display(), e));
         }
         if tcx.sess.opts.debugging_opts.emit_artifact_notifications {
-            tcx.sess.parse_sess.span_diagnostic.emit_artifact_notification(&out_filename);
+            tcx.sess.parse_sess.span_diagnostic
+                .emit_artifact_notification(&out_filename, "metadata");
         }
     }
 
@@ -1065,7 +1059,7 @@ fn encode_and_write_metadata<'tcx>(
 /// be discarded.
 pub fn start_codegen<'tcx>(
     codegen_backend: &dyn CodegenBackend,
-    tcx: TyCtxt<'_, 'tcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
     rx: mpsc::Receiver<Box<dyn Any + Send>>,
     outputs: &OutputFilenames,
 ) -> Box<dyn Any> {

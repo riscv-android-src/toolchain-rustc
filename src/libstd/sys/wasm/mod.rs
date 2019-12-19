@@ -23,8 +23,6 @@ use crate::time::Duration;
 
 pub mod alloc;
 pub mod args;
-#[cfg(feature = "backtrace")]
-pub mod backtrace;
 pub mod cmath;
 pub mod env;
 pub mod fs;
@@ -42,7 +40,7 @@ pub mod stdio;
 
 pub use crate::sys_common::os_str_bytes as os_str;
 
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(target_feature = "atomics")] {
         #[path = "condvar_atomics.rs"]
         pub mod condvar;

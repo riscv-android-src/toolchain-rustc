@@ -1,8 +1,8 @@
 use errors::Applicability;
-use syntax::parse::lexer::{TokenAndSpan, StringReader as Lexer};
+use syntax::parse::lexer::{StringReader as Lexer};
 use syntax::parse::{ParseSess, token};
 use syntax::source_map::FilePathMapping;
-use syntax_pos::FileName;
+use syntax_pos::{InnerSpan, FileName};
 
 use crate::clean;
 use crate::core::DocContext;
@@ -20,7 +20,7 @@ pub fn check_code_block_syntax(krate: clean::Crate, cx: &DocContext<'_>) -> clea
     SyntaxChecker { cx }.fold_crate(krate)
 }
 
-struct SyntaxChecker<'a, 'tcx: 'a> {
+struct SyntaxChecker<'a, 'tcx> {
     cx: &'a DocContext<'tcx>,
 }
 
@@ -33,8 +33,8 @@ impl<'a, 'tcx> SyntaxChecker<'a, 'tcx> {
         );
 
         let errors = Lexer::new_or_buffered_errs(&sess, source_file, None).and_then(|mut lexer| {
-            while let Ok(TokenAndSpan { tok, .. }) = lexer.try_next_token() {
-                if tok == token::Eof {
+            while let Ok(token::Token { kind, .. }) = lexer.try_next_token() {
+                if kind == token::Eof {
                     break;
                 }
             }
@@ -63,7 +63,7 @@ impl<'a, 'tcx> SyntaxChecker<'a, 'tcx> {
                 }
 
                 if code_block.syntax.is_none() && code_block.is_fenced {
-                    let sp = sp.from_inner_byte_pos(0, 3);
+                    let sp = sp.from_inner(InnerSpan::new(0, 3));
                     diag.span_suggestion(
                         sp,
                         "mark blocks that do not contain Rust code as text",

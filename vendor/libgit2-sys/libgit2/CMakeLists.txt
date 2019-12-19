@@ -14,11 +14,14 @@
 PROJECT(libgit2 C)
 CMAKE_MINIMUM_REQUIRED(VERSION 2.8.11)
 CMAKE_POLICY(SET CMP0015 NEW)
-IF (POLICY CMP0051)
+IF(POLICY CMP0051)
 	CMAKE_POLICY(SET CMP0051 NEW)
 ENDIF()
-IF (POLICY CMP0042)
+IF(POLICY CMP0042)
 	CMAKE_POLICY(SET CMP0042 NEW)
+ENDIF()
+IF(POLICY CMP0054)
+	CMAKE_POLICY(SET CMP0054 NEW)
 ENDIF()
 
 # Add find modules to the path
@@ -28,6 +31,7 @@ INCLUDE(CheckLibraryExists)
 INCLUDE(CheckFunctionExists)
 INCLUDE(CheckSymbolExists)
 INCLUDE(CheckStructHasMember)
+INCLUDE(CheckPrototypeDefinition) # Added in CMake 3.0
 INCLUDE(AddCFlagIfSupported)
 INCLUDE(FindPkgLibraries)
 INCLUDE(FindThreads)
@@ -38,63 +42,58 @@ INCLUDE(EnableWarnings)
 
 # Build options
 #
-OPTION( SONAME				"Set the (SO)VERSION of the target"		ON  )
-OPTION( BUILD_SHARED_LIBS	"Build Shared Library (OFF for Static)"	ON  )
-OPTION( THREADSAFE			"Build libgit2 as threadsafe"			ON )
-OPTION( BUILD_CLAR			"Build Tests using the Clar suite"		ON  )
-OPTION( BUILD_EXAMPLES		"Build library usage example apps"		OFF )
-OPTION( TAGS				"Generate tags"							OFF )
-OPTION( PROFILE				"Generate profiling information"		OFF )
-OPTION( ENABLE_TRACE		"Enables tracing support"				OFF )
-OPTION( LIBGIT2_FILENAME	"Name of the produced binary"			OFF )
+OPTION(SONAME				"Set the (SO)VERSION of the target"			 ON)
+OPTION(BUILD_SHARED_LIBS		"Build Shared Library (OFF for Static)"			 ON)
+OPTION(THREADSAFE			"Build libgit2 as threadsafe"				 ON)
+OPTION(BUILD_CLAR			"Build Tests using the Clar suite"			 ON)
+OPTION(BUILD_EXAMPLES			"Build library usage example apps"			OFF)
+OPTION(BUILD_FUZZERS			"Build the fuzz targets"				OFF)
+OPTION(TAGS				"Generate tags"						OFF)
+OPTION(PROFILE				"Generate profiling information"			OFF)
+OPTION(ENABLE_TRACE			"Enables tracing support"				OFF)
+OPTION(LIBGIT2_FILENAME			"Name of the produced binary"				OFF)
 
-SET(SHA1_BACKEND "CollisionDetection" CACHE STRING "Backend to use for SHA1. One of Generic, OpenSSL, Win32, CommonCrypto, mbedTLS, CollisionDetection. ")
-OPTION( USE_SSH				"Link with libssh to enable SSH support" ON )
-OPTION( USE_HTTPS			"Enable HTTPS support. Can be set to a specific backend"	ON )
-OPTION( USE_GSSAPI			"Link with libgssapi for SPNEGO auth"   OFF )
-OPTION( VALGRIND			"Configure build for valgrind"			OFF )
-OPTION( CURL			"Use curl for HTTP if available" ON)
-OPTION( USE_EXT_HTTP_PARSER		"Use system HTTP_Parser if available" ON)
-OPTION( DEBUG_POOL			"Enable debug pool allocator"			OFF )
-OPTION( ENABLE_WERROR			"Enable compilation with -Werror"		OFF )
-OPTION( USE_BUNDLED_ZLIB    "Use the bundled version of zlib"       OFF )
+   SET(SHA1_BACKEND 			"CollisionDetection"			       CACHE STRING
+       "Backend to use for SHA1. One of Generic, OpenSSL, Win32, CommonCrypto, mbedTLS, CollisionDetection.")
+OPTION(USE_SSH				"Link with libssh2 to enable SSH support"		 ON)
+OPTION(USE_HTTPS			"Enable HTTPS support. Can be set to a specific backend" ON)
+OPTION(USE_GSSAPI			"Link with libgssapi for SPNEGO auth"			OFF)
+OPTION(USE_STANDALONE_FUZZERS		"Enable standalone fuzzers (compatible with gcc)"	OFF)
+OPTION(VALGRIND				"Configure build for valgrind"				OFF)
+OPTION(USE_EXT_HTTP_PARSER		"Use system HTTP_Parser if available"			 ON)
+OPTION(DEBUG_POOL			"Enable debug pool allocator"				OFF)
+OPTION(ENABLE_WERROR			"Enable compilation with -Werror"			OFF)
+OPTION(USE_BUNDLED_ZLIB    		"Use the bundled version of zlib"			OFF)
+OPTION(DEPRECATE_HARD			"Do not include deprecated functions in the library"	OFF)
 
 IF (UNIX AND NOT APPLE)
-	OPTION( ENABLE_REPRODUCIBLE_BUILDS	"Enable reproducible builds" 			OFF )
+	OPTION(ENABLE_REPRODUCIBLE_BUILDS "Enable reproducible builds"				OFF)
 ENDIF()
 
 IF (APPLE)
-	OPTION( USE_ICONV			"Link with and use iconv library"		 ON )
+	OPTION(USE_ICONV		"Link with and use iconv library"			 ON)
 ENDIF()
 
 IF(MSVC)
-	# This option is only available when building with MSVC. By default, libgit2
-	# is build using the cdecl calling convention, which is useful if you're
-	# writing C. However, the CLR and Win32 API both expect stdcall.
-	#
-	# If you are writing a CLR program and want to link to libgit2, you'll want
-	# to turn this on by invoking CMake with the "-DSTDCALL=ON" argument.
-	OPTION( STDCALL			"Build libgit2 with the __stdcall convention"	OFF  )
-
 	# This option must match the settings used in your program, in particular if you
 	# are linking statically
-	OPTION( STATIC_CRT		"Link the static CRT libraries"	ON  )
+	OPTION(STATIC_CRT		"Link the static CRT libraries"		 		 ON)
 
 	# If you want to embed a copy of libssh2 into libgit2, pass a
 	# path to libssh2
-	OPTION( EMBED_SSH_PATH		"Path to libssh2 to embed (Windows)" OFF )
+	OPTION(EMBED_SSH_PATH		"Path to libssh2 to embed (Windows)"			OFF)
 ENDIF()
 
 
 IF(WIN32)
 	# By default, libgit2 is built with WinHTTP.  To use the built-in
 	# HTTP transport, invoke CMake with the "-DWINHTTP=OFF" argument.
-	OPTION(	WINHTTP			"Use Win32 WinHTTP routines"	ON	)
+	OPTION(WINHTTP			"Use Win32 WinHTTP routines"				 ON)
 ENDIF()
 
 IF(MSVC)
 	# Enable MSVC CRTDBG memory leak reporting when in debug mode.
-	OPTION(MSVC_CRTDBG "Enable CRTDBG memory leak reporting" OFF)
+	OPTION(MSVC_CRTDBG 		"Enable CRTDBG memory leak reporting"			OFF)
 ENDIF()
 
 FILE(STRINGS "${libgit2_SOURCE_DIR}/include/git2/version.h" GIT2_HEADER REGEX "^#define LIBGIT2_VERSION \"[^\"]*\"$")
@@ -107,8 +106,16 @@ SET(LIBGIT2_VERSION_STRING "${LIBGIT2_VERSION_MAJOR}.${LIBGIT2_VERSION_MINOR}.${
 FILE(STRINGS "${libgit2_SOURCE_DIR}/include/git2/version.h" GIT2_HEADER_SOVERSION REGEX "^#define LIBGIT2_SOVERSION [0-9]+$")
 STRING(REGEX REPLACE "^.*LIBGIT2_SOVERSION ([0-9]+)$" "\\1" LIBGIT2_SOVERSION "${GIT2_HEADER_SOVERSION}")
 
+IF (DEPRECATE_HARD)
+	ADD_DEFINITIONS(-DGIT_DEPRECATE_HARD)
+ENDIF()
+
 # Platform specific compilation flags
 IF (MSVC)
+	IF (STDCALL)
+		MESSAGE(FATAL_ERROR "The STDCALL option is no longer supported; libgit2 is now always built as a cdecl library.  If you're using PInvoke, please add the CallingConventions.Cdecl attribute for support.")
+	ENDIF()
+
 	ADD_DEFINITIONS(-D_SCL_SECURE_NO_WARNINGS)
 	ADD_DEFINITIONS(-D_CRT_SECURE_NO_DEPRECATE)
 	ADD_DEFINITIONS(-D_CRT_NONSTDC_NO_DEPRECATE)
@@ -119,10 +126,8 @@ IF (MSVC)
 	# /MP - Parallel build
 	SET(CMAKE_C_FLAGS "/GF /MP /nologo ${CMAKE_C_FLAGS}")
 
-	IF (STDCALL)
-		# /Gz - stdcall calling convention
-		SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /Gz")
-	ENDIF ()
+	# /Gd - explicitly set cdecl calling convention
+	SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /Gd")
 
 	IF (STATIC_CRT)
 		SET(CRT_FLAG_DEBUG "/MTd")
@@ -161,6 +166,9 @@ IF (MSVC)
 	# /O1 - Optimize for size
 	SET(CMAKE_C_FLAGS_MINSIZEREL "/DNDEBUG /O1 /Oy /GL /Gy ${CRT_FLAG_RELEASE}")
 
+	# /IGNORE:4221 - Ignore empty compilation units
+	SET(CMAKE_STATIC_LINKER_FLAGS "/IGNORE:4221")
+
 	# /DYNAMICBASE - Address space load randomization (ASLR)
 	# /NXCOMPAT - Data execution prevention (DEP)
 	# /LARGEADDRESSAWARE - >2GB user address space on x86
@@ -196,7 +204,7 @@ ELSE ()
 	ENABLE_WARNINGS(extra)
 
 	IF (CMAKE_SYSTEM_NAME MATCHES "(Solaris|SunOS)")
-		SET(CMAKE_C_FLAGS "-std=c99 -D_POSIX_C_SOURCE=200112L -D__EXTENSIONS__ -D_POSIX_PTHREAD_SEMANTICS ${CMAKE_C_FLAGS}")
+		SET(CMAKE_C_FLAGS "-D_POSIX_C_SOURCE=200112L -D__EXTENSIONS__ -D_POSIX_PTHREAD_SEMANTICS ${CMAKE_C_FLAGS}")
 	ENDIF()
 
 	SET(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -D_DEBUG -O0")
@@ -222,12 +230,12 @@ ELSE ()
 	ENABLE_WARNINGS(strict-prototypes)
 	ENABLE_WARNINGS(declaration-after-statement)
 	ENABLE_WARNINGS(shift-count-overflow)
-	DISABLE_WARNINGS(unused-const-variable)
-	DISABLE_WARNINGS(unused-function)
-
-	IF (APPLE) # Apple deprecated OpenSSL
-	    DISABLE_WARNINGS(deprecated-declarations)
-	ENDIF()
+	ENABLE_WARNINGS(unused-const-variable)
+	ENABLE_WARNINGS(unused-function)
+	ENABLE_WARNINGS(format)
+	ENABLE_WARNINGS(format-security)
+	ENABLE_WARNINGS(int-conversion)
+	DISABLE_WARNINGS(documentation-deprecated-sync)
 
 	IF (PROFILE)
 		SET(CMAKE_C_FLAGS "-pg ${CMAKE_C_FLAGS}")
@@ -244,6 +252,14 @@ ELSE()
 	# Using a multi-configuration generator eg MSVC or Xcode
 	# that uses CMAKE_CONFIGURATION_TYPES and not CMAKE_BUILD_TYPE
 ENDIF()
+
+IF(BUILD_FUZZERS AND NOT USE_STANDALONE_FUZZERS)
+	# The actual sanitizer link target will be added when linking the fuzz
+	# targets.
+	SET(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer-no-link")
+	ADD_C_FLAG(-fsanitize=fuzzer-no-link)
+	UNSET(CMAKE_REQUIRED_FLAGS)
+ENDIF ()
 
 ADD_SUBDIRECTORY(src)
 
@@ -281,6 +297,18 @@ ENDIF ()
 IF (BUILD_EXAMPLES)
 	ADD_SUBDIRECTORY(examples)
 ENDIF ()
+
+IF(BUILD_FUZZERS)
+	IF(NOT USE_STANDALONE_FUZZERS)
+		IF(BUILD_EXAMPLES)
+			MESSAGE(FATAL_ERROR "Cannot build the fuzzer targets and the examples together")
+		ENDIF()
+		IF(BUILD_CLAR)
+			MESSAGE(FATAL_ERROR "Cannot build the fuzzer targets and the tests together")
+		ENDIF()
+	ENDIF()
+	ADD_SUBDIRECTORY(fuzzers)
+ENDIF()
 
 IF(CMAKE_VERSION VERSION_GREATER 3)
 	FEATURE_SUMMARY(WHAT ENABLED_FEATURES DESCRIPTION "Enabled features:")

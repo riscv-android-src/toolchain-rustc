@@ -61,7 +61,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UselessFormat {
                         then {
                             let (message, sugg) = if_chain! {
                                 if let ExprKind::MethodCall(ref path, _, _) = format_arg.node;
-                                if path.ident.as_interned_str() == "to_string";
+                                if path.ident.as_interned_str().as_symbol() == sym!(to_string);
                                 then {
                                     ("`to_string()` is enough",
                                     snippet(cx, format_arg.span, "<arg>").to_string())
@@ -92,7 +92,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UselessFormat {
     }
 }
 
-fn span_useless_format<'a, 'tcx: 'a, T: LintContext<'tcx>>(cx: &'a T, span: Span, help: &str, mut sugg: String) {
+fn span_useless_format<T: LintContext>(cx: &T, span: Span, help: &str, mut sugg: String) {
     let to_replace = span.source_callsite();
 
     // The callsite span contains the statement semicolon for some reason.

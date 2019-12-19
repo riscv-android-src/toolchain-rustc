@@ -206,6 +206,20 @@ impl TargetKind {
             TargetKind::CustomBuild => "build-script",
         }
     }
+
+    /// Returns whether production of this artifact requires the object files
+    /// from dependencies to be available.
+    ///
+    /// This only returns `false` when all we're producing is an rlib, otherwise
+    /// it will return `true`.
+    pub fn requires_upstream_objects(&self) -> bool {
+        match self {
+            TargetKind::Lib(kinds) | TargetKind::ExampleLib(kinds) => {
+                kinds.iter().any(|k| k.requires_upstream_objects())
+            }
+            _ => true,
+        }
+    }
 }
 
 /// Information about a binary, a library, an example, etc. that is part of the
@@ -287,6 +301,7 @@ struct SerializedTarget<'a> {
     edition: &'a str,
     #[serde(rename = "required-features", skip_serializing_if = "Option::is_none")]
     required_features: Option<Vec<&'a str>>,
+    doctest: bool,
 }
 
 impl ser::Serialize for Target {
@@ -307,6 +322,7 @@ impl ser::Serialize for Target {
                 .required_features
                 .as_ref()
                 .map(|rf| rf.iter().map(|s| &**s).collect()),
+            doctest: self.doctest && self.doctestable(),
         }
         .serialize(s)
     }
@@ -462,9 +478,6 @@ impl Manifest {
     pub fn publish(&self) -> &Option<Vec<String>> {
         &self.publish
     }
-    pub fn publish_lockfile(&self) -> bool {
-        self.publish_lockfile
-    }
     pub fn replace(&self) -> &[(PackageIdSpec, Dependency)] {
         &self.replace
     }
@@ -503,12 +516,6 @@ impl Manifest {
                          not work properly in England"
                     )
                 })?;
-        }
-
-        if self.default_run.is_some() {
-            self.features
-                .require(Feature::default_run())
-                .chain_err(|| failure::format_err!("the `default-run` manifest key is unstable"))?;
         }
 
         Ok(())
@@ -816,20 +823,6 @@ impl Target {
         match self.kind {
             TargetKind::Lib(ref kinds) => kinds.iter().any(|k| k.linkable()),
             _ => false,
-        }
-    }
-
-    /// Returns whether production of this artifact requires the object files
-    /// from dependencies to be available.
-    ///
-    /// This only returns `false` when all we're producing is an rlib, otherwise
-    /// it will return `true`.
-    pub fn requires_upstream_objects(&self) -> bool {
-        match &self.kind {
-            TargetKind::Lib(kinds) | TargetKind::ExampleLib(kinds) => {
-                kinds.iter().any(|k| k.requires_upstream_objects())
-            }
-            _ => true,
         }
     }
 

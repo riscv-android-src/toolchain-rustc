@@ -4,9 +4,9 @@
 use serde::Serialize;
 use toml::Value;
 
-use tokenizer::Token;
-use tokenizer::tokenize_with_seperator;
-use error::*;
+use crate::tokenizer::Token;
+use crate::tokenizer::tokenize_with_seperator;
+use crate::error::{Error, Result};
 
 pub trait TomlValueInsertExt {
 
@@ -90,7 +90,7 @@ pub trait TomlValueInsertExt {
     /// A convenience method for inserting any arbitrary serializable value.
     #[cfg(feature = "typed")]
     fn insert_serialized<S: Serialize>(&mut self, query: &str, value: S) -> Result<Option<Value>> {
-        let value = Value::try_from(value)?;
+        let value = Value::try_from(value).map_err(Error::TomlSerialize)?;
         self.insert(query, value)
     }
 
@@ -99,12 +99,12 @@ pub trait TomlValueInsertExt {
 impl TomlValueInsertExt for Value {
 
     fn insert_with_seperator(&mut self, query: &str, sep: char, value: Value) -> Result<Option<Value>> {
-        use resolver::mut_creating_resolver::resolve;
+        use crate::resolver::mut_creating_resolver::resolve;
 
-        let mut tokens = try!(tokenize_with_seperator(query, sep));
+        let mut tokens = r#try!(tokenize_with_seperator(query, sep));
         let (val, last) = match tokens.pop_last() {
             None       => (self, Box::new(tokens)),
-            Some(last) => (try!(resolve(self, &tokens)), last),
+            Some(last) => (r#try!(resolve(self, &tokens)), last),
 
         };
 
@@ -114,7 +114,7 @@ impl TomlValueInsertExt for Value {
                     &mut Value::Table(ref mut t) => {
                         Ok(t.insert(ident, value))
                     },
-                    _ => Err(Error::from(ErrorKind::NoIdentifierInArray(ident.clone())))
+                    _ => Err(Error::NoIdentifierInArray(ident.clone()))
                 }
             },
 
@@ -129,7 +129,7 @@ impl TomlValueInsertExt for Value {
                             Ok(None)
                         }
                     },
-                    _ => Err(Error::from(ErrorKind::NoIndexInTable(idx)))
+                    _ => Err(Error::NoIndexInTable(idx))
                 }
             },
         }
@@ -145,8 +145,8 @@ mod test {
 
     #[test]
     fn test_insert_one_token() {
-        use std::collections::BTreeMap;
-        let mut toml = Value::Table(BTreeMap::new());
+        use toml::map::Map;
+        let mut toml = Value::Table(Map::new());
 
         let res = toml.insert(&String::from("value"), Value::Integer(1));
         println!("TOML: {:?}", toml);
@@ -321,7 +321,7 @@ mod test {
         assert!(res.is_err());
 
         let err = res.unwrap_err();
-        assert!(is_match!(err.kind(), &ErrorKind::NoIdentifierInArray(_)));
+        assert!(is_match!(err, Error::NoIdentifierInArray(_)));
     }
 
     #[test]
@@ -335,7 +335,7 @@ mod test {
         assert!(res.is_err());
 
         let err = res.unwrap_err();
-        assert!(is_match!(err.kind(), &ErrorKind::NoIndexInTable(_)));
+        assert!(is_match!(err, Error::NoIndexInTable(_)));
     }
 
     #[test]

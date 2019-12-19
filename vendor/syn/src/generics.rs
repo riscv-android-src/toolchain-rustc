@@ -1,11 +1,3 @@
-// Copyright 2018 Syn Developers
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::*;
 use punctuated::{Iter, IterMut, Punctuated};
 
@@ -300,14 +292,9 @@ impl Generics {
     /// Split a type's generics into the pieces required for impl'ing a trait
     /// for that type.
     ///
-    /// ```
-    /// # #[macro_use]
-    /// # extern crate quote;
-    /// #
-    /// # extern crate proc_macro2;
-    /// # extern crate syn;
-    /// #
+    /// ```edition2018
     /// # use proc_macro2::{Span, Ident};
+    /// # use quote::quote;
     /// #
     /// # fn main() {
     /// #     let generics: syn::Generics = Default::default();
@@ -497,7 +484,8 @@ pub mod parsing {
             let lt_token: Token![<] = input.parse()?;
 
             let mut params = Punctuated::new();
-            let mut has_type_param = false;
+            let mut allow_lifetime_param = true;
+            let mut allow_type_param = true;
             loop {
                 if input.peek(Token![>]) {
                     break;
@@ -505,14 +493,21 @@ pub mod parsing {
 
                 let attrs = input.call(Attribute::parse_outer)?;
                 let lookahead = input.lookahead1();
-                if !has_type_param && lookahead.peek(Lifetime) {
+                if allow_lifetime_param && lookahead.peek(Lifetime) {
                     params.push_value(GenericParam::Lifetime(LifetimeDef {
                         attrs: attrs,
                         ..input.parse()?
                     }));
-                } else if lookahead.peek(Ident) {
-                    has_type_param = true;
+                } else if allow_type_param && lookahead.peek(Ident) {
+                    allow_lifetime_param = false;
                     params.push_value(GenericParam::Type(TypeParam {
+                        attrs: attrs,
+                        ..input.parse()?
+                    }));
+                } else if lookahead.peek(Token![const]) {
+                    allow_lifetime_param = false;
+                    allow_type_param = false;
+                    params.push_value(GenericParam::Const(ConstParam {
                         attrs: attrs,
                         ..input.parse()?
                     }));

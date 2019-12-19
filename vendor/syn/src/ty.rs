@@ -1,11 +1,3 @@
-// Copyright 2018 Syn Developers
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::*;
 use proc_macro2::TokenStream;
 use punctuated::Punctuated;
@@ -499,7 +491,7 @@ pub mod parsing {
             input.parse().map(Type::Reference)
         } else if lookahead.peek(Token![!]) && !input.peek(Token![=]) {
             input.parse().map(Type::Never)
-        } else if lookahead.peek(Token![impl ]) {
+        } else if lookahead.peek(Token![impl]) {
             input.parse().map(Type::ImplTrait)
         } else if lookahead.peek(Token![_]) {
             input.parse().map(Type::Infer)

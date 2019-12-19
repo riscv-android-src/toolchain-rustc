@@ -129,7 +129,7 @@ pub const fn identity<T>(x: T) -> T { x }
 /// # Examples
 ///
 /// By using trait bounds we can accept arguments of different types as long as they can be
-/// converted a the specified type `T`.
+/// converted to the specified type `T`.
 ///
 /// For example: By creating a generic function that takes an `AsRef<str>` we express that we
 /// want to accept all references that can be converted to `&str` as an argument.
@@ -177,8 +177,8 @@ pub trait AsRef<T: ?Sized> {
 ///
 /// Using `AsMut` as trait bound for a generic function we can accept all mutable references
 /// that can be converted to type `&mut T`. Because [`Box<T>`] implements `AsMut<T>` we can
-/// write a function `add_one`that takes all arguments that can be converted to `&mut u64`.
-/// Because [`Box<T>`] implements `AsMut<T>` `add_one` accepts arguments of type
+/// write a function `add_one` that takes all arguments that can be converted to `&mut u64`.
+/// Because [`Box<T>`] implements `AsMut<T>`, `add_one` accepts arguments of type
 /// `&mut Box<u64>` as well:
 ///
 /// ```
@@ -202,9 +202,9 @@ pub trait AsMut<T: ?Sized> {
 /// A value-to-value conversion that consumes the input value. The
 /// opposite of [`From`].
 ///
-/// One should only implement `Into` if a conversion to a type outside the current crate is
-/// required. Otherwise one should always prefer implementing [`From`] over `Into` because
-/// implementing [`From`] automatically provides one with a implementation of `Into` thanks to
+/// One should only implement [`Into`] if a conversion to a type outside the current crate is
+/// required. Otherwise one should always prefer implementing [`From`] over [`Into`] because
+/// implementing [`From`] automatically provides one with a implementation of [`Into`] thanks to
 /// the blanket implementation in the standard library. [`From`] cannot do these type of
 /// conversions because of Rust's orphaning rules.
 ///
@@ -213,9 +213,9 @@ pub trait AsMut<T: ?Sized> {
 /// # Generic Implementations
 ///
 /// - [`From`]`<T> for U` implies `Into<U> for T`
-/// - `Into` is reflexive, which means that `Into<T> for T` is implemented
+/// - [`Into`] is reflexive, which means that `Into<T> for T` is implemented
 ///
-/// # Implementing `Into` for conversions to external types
+/// # Implementing [`Into`] for conversions to external types
 ///
 /// If the destination type is not part of the current crate
 /// then you can't implement [`From`] directly.
@@ -231,7 +231,7 @@ pub trait AsMut<T: ?Sized> {
 /// ```
 /// This will fail to compile because we cannot implement a trait for a type
 /// if both the trait and the type are not defined by the current crate.
-/// This is due to Rust's orphaning rules. To bypass this, you can implement `Into` directly:
+/// This is due to Rust's orphaning rules. To bypass this, you can implement [`Into`] directly:
 ///
 /// ```
 /// struct Wrapper<T>(Vec<T>);
@@ -242,19 +242,19 @@ pub trait AsMut<T: ?Sized> {
 /// }
 /// ```
 ///
-/// It is important to understand that `Into` does not provide a [`From`] implementation
-/// (as [`From`] does with `Into`). Therefore, you should always try to implement [`From`]
-/// and then fall back to `Into` if [`From`] can't be implemented.
+/// It is important to understand that [`Into`] does not provide a [`From`] implementation
+/// (as [`From`] does with [`Into`]). Therefore, you should always try to implement [`From`]
+/// and then fall back to [`Into`] if [`From`] can't be implemented.
 ///
-/// Prefer using `Into` over [`From`] when specifying trait bounds on a generic function
-/// to ensure that types that only implement `Into` can be used as well.
+/// Prefer using [`Into`] over [`From`] when specifying trait bounds on a generic function
+/// to ensure that types that only implement [`Into`] can be used as well.
 ///
 /// # Examples
 ///
 /// [`String`] implements `Into<Vec<u8>>`:
 ///
 /// In order to express that we want a generic function to take all arguments that can be
-/// converted to a specified type `T`, we can use a trait bound of `Into<T>`.
+/// converted to a specified type `T`, we can use a trait bound of [`Into`]`<T>`.
 /// For example: The function `is_hello` takes all arguments that can be converted into a
 /// `Vec<u8>`.
 ///
@@ -273,7 +273,7 @@ pub trait AsMut<T: ?Sized> {
 /// [`Result<T, E>`]: ../../std/result/enum.Result.html
 /// [`String`]: ../../std/string/struct.String.html
 /// [`From`]: trait.From.html
-/// [`into`]: trait.Into.html#tymethod.into
+/// [`Into`]: trait.Into.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Into<T>: Sized {
     /// Performs the conversion.

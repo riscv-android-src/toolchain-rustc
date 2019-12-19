@@ -335,34 +335,10 @@
 
 #![deny(unsafe_code)]
 #![cfg_attr(has_specialisation, feature(specialization))]
-#![cfg_attr(docs_rs_workaround, feature(slice_get_slice))]
-
-extern crate typenum;
 
 #[cfg(test)]
 #[macro_use]
 extern crate pretty_assertions;
-
-#[cfg(feature = "quickcheck")]
-extern crate quickcheck;
-
-#[cfg(any(test, feature = "proptest"))]
-#[macro_use]
-extern crate proptest;
-
-#[cfg(feature = "proptest")]
-proptest! {}
-
-#[cfg(any(test, feature = "serde"))]
-extern crate serde;
-#[cfg(test)]
-extern crate serde_json;
-
-#[cfg(all(threadsafe, any(test, feature = "rayon")))]
-extern crate rayon;
-
-#[cfg(test)]
-extern crate metrohash;
 
 mod config;
 mod nodes;
@@ -372,13 +348,13 @@ mod util;
 
 #[macro_use]
 mod ord;
-pub use ord::map as ordmap;
-pub use ord::set as ordset;
+pub use crate::ord::map as ordmap;
+pub use crate::ord::set as ordset;
 
 #[macro_use]
 mod hash;
-pub use hash::map as hashmap;
-pub use hash::set as hashset;
+pub use crate::hash::map as hashmap;
+pub use crate::hash::set as hashset;
 
 #[macro_use]
 pub mod vector;
@@ -388,16 +364,18 @@ pub mod iter;
 #[cfg(any(test, feature = "serde"))]
 pub mod ser;
 
-pub use nodes::sized_chunk as chunk;
-
-pub use hashmap::HashMap;
-pub use hashset::HashSet;
-pub use ordmap::OrdMap;
-pub use ordset::OrdSet;
-pub use vector::Vector;
+pub use crate::hashmap::HashMap;
+pub use crate::hashset::HashSet;
+pub use crate::ordmap::OrdMap;
+pub use crate::ordset::OrdSet;
+#[doc(inline)]
+pub use crate::vector::Vector;
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod tests;
 
 /// Update a value inside multiple levels of data structures.
 ///

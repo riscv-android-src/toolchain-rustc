@@ -65,7 +65,7 @@ pub mod bytestring;
 pub mod process;
 pub mod fs;
 
-cfg_if! {
+cfg_if::cfg_if! {
     if #[cfg(any(target_os = "cloudabi",
                  target_os = "l4re",
                  target_os = "redox",
@@ -76,12 +76,6 @@ cfg_if! {
         pub mod net;
     }
 }
-
-#[cfg(feature = "backtrace")]
-#[cfg(any(all(unix, not(target_os = "emscripten")),
-          all(windows, target_env = "gnu"),
-          target_os = "redox"))]
-pub mod gnu;
 
 // common error constructors
 

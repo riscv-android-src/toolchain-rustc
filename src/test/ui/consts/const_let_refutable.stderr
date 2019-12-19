@@ -4,7 +4,7 @@ error[E0005]: refutable pattern in function argument: `&[]` not covered
 LL | const fn slice([a, b]: &[i32]) -> i32 {
    |                ^^^^^^ pattern `&[]` not covered
 
-error[E0723]: can only call other `const fn` within a `const fn`, but `const std::ops::Add::add` is not stable as `const fn`
+error[E0723]: can only call other `const fn` within a `const fn`, but `const <&i32 as std::ops::Add>::add` is not stable as `const fn`
   --> $DIR/const_let_refutable.rs:4:5
    |
 LL |     a + b
@@ -21,6 +21,7 @@ LL |     a + b
    |
    = warning: this error has been downgraded to a warning for backwards compatibility with previous releases
    = warning: this represents potential undefined behavior in your code and this warning will become a hard error in the future
+   = note: for more information, try `rustc --explain E0729`
 
 warning[E0381]: use of possibly uninitialized variable: `b`
   --> $DIR/const_let_refutable.rs:4:9
@@ -30,6 +31,7 @@ LL |     a + b
    |
    = warning: this error has been downgraded to a warning for backwards compatibility with previous releases
    = warning: this represents potential undefined behavior in your code and this warning will become a hard error in the future
+   = note: for more information, try `rustc --explain E0729`
 
 error: aborting due to 2 previous errors
 

@@ -9,7 +9,7 @@ use syntax::source_map::Span;
 use crate::utils::{snippet_with_applicability, span_lint_and_sugg, SpanlessEq};
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for double comparions that could be simplified to a single expression.
+    /// **What it does:** Checks for double comparisons that could be simplified to a single expression.
     ///
     ///
     /// **Why is this bad?** Readability.
@@ -36,7 +36,7 @@ declare_lint_pass!(DoubleComparisons => [DOUBLE_COMPARISONS]);
 impl<'a, 'tcx> DoubleComparisons {
     #[allow(clippy::similar_names)]
     fn check_binop(self, cx: &LateContext<'a, 'tcx>, op: BinOpKind, lhs: &'tcx Expr, rhs: &'tcx Expr, span: Span) {
-        let (lkind, llhs, lrhs, rkind, rlhs, rrhs) = match (lhs.node.clone(), rhs.node.clone()) {
+        let (lkind, llhs, lrhs, rkind, rlhs, rrhs) = match (&lhs.node, &rhs.node) {
             (ExprKind::Binary(lb, llhs, lrhs), ExprKind::Binary(rb, rlhs, rrhs)) => {
                 (lb.node, llhs, lrhs, rb.node, rlhs, rrhs)
             },
