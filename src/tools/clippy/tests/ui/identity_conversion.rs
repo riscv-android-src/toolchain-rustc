@@ -1,3 +1,5 @@
+// run-rustfix
+
 #![deny(clippy::identity_conversion)]
 
 fn test_generic<T: Copy>(val: T) -> T {

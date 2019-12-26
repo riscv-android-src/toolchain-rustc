@@ -1,6 +1,6 @@
-use crate::support::git;
-use crate::support::registry::Package;
-use crate::support::{basic_manifest, lines_match, project};
+use cargo_test_support::git;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{basic_manifest, lines_match, project};
 
 #[cargo_test]
 fn oldest_lockfile_still_works() {
@@ -318,8 +318,7 @@ fn listed_checksum_bad_if_we_cannot_compute() {
     let git = git::new("bar", |p| {
         p.file("Cargo.toml", &basic_manifest("bar", "0.1.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let p = project()
         .file(

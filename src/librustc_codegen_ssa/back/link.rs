@@ -13,6 +13,7 @@ use rustc::hir::def_id::CrateNum;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_fs_util::fix_windows_verbatim_for_gcc;
 use rustc_target::spec::{PanicStrategy, RelroLevel, LinkerFlavor};
+use syntax::symbol::Symbol;
 
 use crate::{METADATA_FILENAME, RLIB_BYTECODE_EXTENSION, CrateInfo, CodegenResults};
 use super::archive::ArchiveBuilder;
@@ -32,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio, ExitStatus};
 use std::str;
 use std::env;
+use std::ffi::OsString;
 
 pub use rustc_codegen_utils::link::*;
 
@@ -157,6 +159,36 @@ pub fn get_linker(sess: &Session, linker: &Path, flavor: LinkerFlavor) -> (PathB
             _ => Command::new(linker),
         }
     };
+
+    // UWP apps have API restrictions enforced during Store submissions.
+    // To comply with the Windows App Certification Kit,
+    // MSVC needs to link with the Store versions of the runtime libraries (vcruntime, msvcrt, etc).
+    let t = &sess.target.target;
+    if flavor == LinkerFlavor::Msvc && t.target_vendor == "uwp" {
+        if let Some(ref tool) = msvc_tool {
+            let original_path = tool.path();
+            if let Some(ref root_lib_path) = original_path.ancestors().skip(4).next() {
+                let arch = match t.arch.as_str() {
+                    "x86_64" => Some("x64".to_string()),
+                    "x86" => Some("x86".to_string()),
+                    "aarch64" => Some("arm64".to_string()),
+                    _ => None,
+                };
+                if let Some(ref a) = arch {
+                    let mut arg = OsString::from("/LIBPATH:");
+                    arg.push(format!("{}\\lib\\{}\\store", root_lib_path.display(), a.to_string()));
+                    cmd.arg(&arg);
+                }
+                else {
+                    warn!("arch is not supported");
+                }
+            } else {
+                warn!("MSVC root path lib location not found");
+            }
+        } else {
+            warn!("link.exe not found");
+        }
+    }
 
     // The compiler's sysroot often has some bundled tools, so add it to the
     // PATH for the child.
@@ -285,7 +317,7 @@ fn link_rlib<'a, B: ArchiveBuilder<'a>>(sess: &'a Session,
             NativeLibraryKind::NativeUnknown => continue,
         }
         if let Some(name) = lib.name {
-            ab.add_native_library(&name.as_str());
+            ab.add_native_library(name);
         }
     }
 
@@ -500,6 +532,9 @@ fn link_natively<'a, B: ArchiveBuilder<'a>>(sess: &'a Session,
     }
     for &(ref k, ref v) in &sess.target.target.options.link_env {
         cmd.env(k, v);
+    }
+    for k in &sess.target.target.options.link_env_remove {
+        cmd.env_remove(k);
     }
 
     if sess.opts.debugging_opts.print_link_args {
@@ -1027,6 +1062,7 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
     let t = &sess.target.target;
 
     cmd.include_path(&fix_windows_verbatim_for_gcc(&lib_path));
+
     for obj in codegen_results.modules.iter().filter_map(|m| m.object.as_ref()) {
         cmd.add_object(obj);
     }
@@ -1241,15 +1277,14 @@ pub fn add_local_native_libraries(cmd: &mut dyn Linker,
     let search_path = archive_search_paths(sess);
     for lib in relevant_libs {
         let name = match lib.name {
-            Some(ref l) => l,
+            Some(l) => l,
             None => continue,
         };
         match lib.kind {
-            NativeLibraryKind::NativeUnknown => cmd.link_dylib(&name.as_str()),
-            NativeLibraryKind::NativeFramework => cmd.link_framework(&name.as_str()),
-            NativeLibraryKind::NativeStaticNobundle => cmd.link_staticlib(&name.as_str()),
-            NativeLibraryKind::NativeStatic => cmd.link_whole_staticlib(&name.as_str(),
-                                                                        &search_path)
+            NativeLibraryKind::NativeUnknown => cmd.link_dylib(name),
+            NativeLibraryKind::NativeFramework => cmd.link_framework(name),
+            NativeLibraryKind::NativeStaticNobundle => cmd.link_staticlib(name),
+            NativeLibraryKind::NativeStatic => cmd.link_whole_staticlib(name, &search_path)
         }
     }
 }
@@ -1562,7 +1597,7 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(cmd: &mut dyn Linker,
             cmd.include_path(&fix_windows_verbatim_for_gcc(dir));
         }
         let filestem = cratepath.file_stem().unwrap().to_str().unwrap();
-        cmd.link_rust_dylib(&unlib(&sess.target, filestem),
+        cmd.link_rust_dylib(Symbol::intern(&unlib(&sess.target, filestem)),
                             parent.unwrap_or(Path::new("")));
     }
 }
@@ -1605,22 +1640,22 @@ pub fn add_upstream_native_libraries(cmd: &mut dyn Linker,
     for &(cnum, _) in crates {
         for lib in codegen_results.crate_info.native_libraries[&cnum].iter() {
             let name = match lib.name {
-                Some(ref l) => l,
+                Some(l) => l,
                 None => continue,
             };
             if !relevant_lib(sess, &lib) {
                 continue
             }
             match lib.kind {
-                NativeLibraryKind::NativeUnknown => cmd.link_dylib(&name.as_str()),
-                NativeLibraryKind::NativeFramework => cmd.link_framework(&name.as_str()),
+                NativeLibraryKind::NativeUnknown => cmd.link_dylib(name),
+                NativeLibraryKind::NativeFramework => cmd.link_framework(name),
                 NativeLibraryKind::NativeStaticNobundle => {
                     // Link "static-nobundle" native libs only if the crate they originate from
                     // is being linked statically to the current crate.  If it's linked dynamically
                     // or is an rlib already included via some other dylib crate, the symbols from
                     // native libs will have already been included in that dylib.
                     if data[cnum.as_usize() - 1] == Linkage::Static {
-                        cmd.link_staticlib(&name.as_str())
+                        cmd.link_staticlib(name)
                     }
                 },
                 // ignore statically included native libraries here as we've

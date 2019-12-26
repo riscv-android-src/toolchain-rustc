@@ -6,29 +6,30 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-//! This crate is custom derive for StructOpt. It should not be used
+//! This crate is custom derive for `StructOpt`. It should not be used
 //! directly. See [structopt documentation](https://docs.rs/structopt)
 //! for the usage of `#[derive(StructOpt)]`.
 
 extern crate proc_macro;
-extern crate syn;
-#[macro_use]
-extern crate quote;
-extern crate heck;
-extern crate proc_macro2;
 
 mod attrs;
+mod parse;
+mod spanned;
 
-use attrs::{sub_type, Attrs, CasingStyle, Kind, Parser, Ty};
+use crate::{
+    attrs::{sub_type, Attrs, CasingStyle, Kind, Parser, Ty},
+    spanned::Sp,
+};
+
 use proc_macro2::{Span, TokenStream};
-use syn::punctuated::Punctuated;
-use syn::token::Comma;
-use syn::*;
+use proc_macro_error::{call_site_error, filter_macro_errors, set_dummy, span_error};
+use quote::{quote, quote_spanned};
+use syn::{punctuated::Punctuated, spanned::Spanned, token::Comma, *};
 
 /// Default casing style for generated arguments.
-const DEFAULT_CASING: CasingStyle = CasingStyle::Verbatim;
+const DEFAULT_CASING: CasingStyle = CasingStyle::Kebab;
 
-/// Output for the gen_xxx() methods were we need more than a simple stream of tokens.
+/// Output for the `gen_xxx()` methods were we need more than a simple stream of tokens.
 ///
 /// The output of a generation method is not only the stream of new tokens but also the attribute
 /// information of the current element. These attribute information may contain valuable information
@@ -41,9 +42,11 @@ struct GenOutput {
 /// Generates the `StructOpt` impl.
 #[proc_macro_derive(StructOpt, attributes(structopt))]
 pub fn structopt(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
-    let input: DeriveInput = syn::parse(input).unwrap();
-    let gen = impl_structopt(&input);
-    gen.into()
+    filter_macro_errors! {
+        let input: DeriveInput = syn::parse(input).unwrap();
+        let gen = impl_structopt(&input);
+        gen.into()
+    }
 }
 
 /// Generate a block of code to add arguments/subcommands corresponding to
@@ -53,44 +56,46 @@ fn gen_augmentation(
     app_var: &Ident,
     parent_attribute: &Attrs,
 ) -> TokenStream {
-    let subcmds: Vec<_> = fields
-        .iter()
-        .filter_map(|field| {
-            let attrs = Attrs::from_field(&field, parent_attribute.casing());
-            if let Kind::Subcommand(ty) = attrs.kind() {
-                let subcmd_type = match (ty, sub_type(&field.ty)) {
-                    (Ty::Option, Some(sub_type)) => sub_type,
-                    _ => &field.ty,
-                };
-                let required = if ty == Ty::Option {
-                    quote!()
-                } else {
-                    quote! {
-                        let #app_var = #app_var.setting(
-                            ::structopt::clap::AppSettings::SubcommandRequiredElseHelp
-                        );
-                    }
-                };
-
-                Some(quote! {
-                    let #app_var = <#subcmd_type>::augment_clap( #app_var );
-                    #required
-                })
+    let mut subcmds = fields.iter().filter_map(|field| {
+        let attrs = Attrs::from_field(field, parent_attribute.casing());
+        if let Kind::Subcommand(ty) = &*attrs.kind() {
+            let subcmd_type = match (**ty, sub_type(&field.ty)) {
+                (Ty::Option, Some(sub_type)) => sub_type,
+                _ => &field.ty,
+            };
+            let required = if **ty == Ty::Option {
+                quote!()
             } else {
-                None
-            }
-        })
-        .collect();
+                quote! {
+                    let #app_var = #app_var.setting(
+                        ::structopt::clap::AppSettings::SubcommandRequiredElseHelp
+                    );
+                }
+            };
 
-    assert!(
-        subcmds.len() <= 1,
-        "cannot have more than one nested subcommand"
-    );
+            let span = field.span();
+            let ts = quote! {
+                let #app_var = <#subcmd_type>::augment_clap( #app_var );
+                #required
+            };
+            Some((span, ts))
+        } else {
+            None
+        }
+    });
+
+    let subcmd = subcmds.next().map(|(_, ts)| ts);
+    if let Some((span, _)) = subcmds.next() {
+        span_error!(
+            span,
+            "multiple subcommand sets are not allowed, that's the second"
+        );
+    }
 
     let args = fields.iter().filter_map(|field| {
         let attrs = Attrs::from_field(field, parent_attribute.casing());
-        match attrs.kind() {
-            Kind::Subcommand(_) => None,
+        match &*attrs.kind() {
+            Kind::Subcommand(_) | Kind::Skip => None,
             Kind::FlattenStruct => {
                 let ty = &field.ty;
                 Some(quote! {
@@ -103,40 +108,37 @@ fn gen_augmentation(
                 })
             }
             Kind::Arg(ty) => {
-                let convert_type = match ty {
+                let convert_type = match **ty {
                     Ty::Vec | Ty::Option => sub_type(&field.ty).unwrap_or(&field.ty),
-                    Ty::OptionOption => sub_type(&field.ty).and_then(sub_type).unwrap_or(&field.ty),
+                    Ty::OptionOption | Ty::OptionVec => sub_type(&field.ty).and_then(sub_type).unwrap_or(&field.ty),
                     _ => &field.ty,
                 };
 
-                let occurrences = attrs.parser().0 == Parser::FromOccurrences;
+                let occurrences = *attrs.parser().0 == Parser::FromOccurrences;
 
-                let validator = match *attrs.parser() {
-                    // clippy v0.0.212 (1fac380 2019-02-20) produces `redundant_closure` warnings
-                    // for `.map_err(|e| e.to_string())` when `e` is a reference
-                    // (e.g. `&'static str`). To suppress the warning, we have to write
-                    // `|e| (&e).to_string()` since `e` may be a reference or non-reference.
-                    // When Rust 1.35 is released, this hack will be obsolute because the next
-                    // stable clippy is going to stop triggering the warning for macros.
-                    // https://github.com/rust-lang/rust-clippy/pull/3816
-                    (Parser::TryFromStr, ref f) => quote! {
+                let (parser, f) = attrs.parser();
+                let validator = match **parser {
+                    Parser::TryFromStr => quote! {
                         .validator(|s| {
                             #f(&s)
                             .map(|_: #convert_type| ())
-                            .map_err(|e| (&e).to_string())
+                            .map_err(|e| e.to_string())
                         })
                     },
-                    (Parser::TryFromOsStr, ref f) => quote! {
+                    Parser::TryFromOsStr => quote! {
                         .validator_os(|s| #f(&s).map(|_: #convert_type| ()))
                     },
                     _ => quote!(),
                 };
 
-                let modifier = match ty {
+                let modifier = match **ty {
                     Ty::Bool => quote!( .takes_value(false).multiple(false) ),
                     Ty::Option => quote!( .takes_value(true).multiple(false) #validator ),
                     Ty::OptionOption => {
                         quote! ( .takes_value(true).multiple(false).min_values(0).max_values(1) #validator )
+                    }
+                    Ty::OptionVec => {
+                        quote! ( .takes_value(true).multiple(true).min_values(0) #validator )
                     }
                     Ty::Vec => quote!( .takes_value(true).multiple(true) #validator ),
                     Ty::Other if occurrences => quote!( .takes_value(false).multiple(true) ),
@@ -145,8 +147,9 @@ fn gen_augmentation(
                         quote!( .takes_value(true).multiple(false).required(#required) #validator )
                     }
                 };
-                let methods = attrs.methods();
+
                 let name = attrs.cased_name();
+                let methods = attrs.field_methods();
 
                 Some(quote! {
                     let #app_var = #app_var.arg(
@@ -161,7 +164,7 @@ fn gen_augmentation(
 
     quote! {{
         #( #args )*
-        #( #subcmds )*
+        #subcmd
         #app_var
     }}
 }
@@ -170,40 +173,43 @@ fn gen_constructor(fields: &Punctuated<Field, Comma>, parent_attribute: &Attrs) 
     let fields = fields.iter().map(|field| {
         let attrs = Attrs::from_field(field, parent_attribute.casing());
         let field_name = field.ident.as_ref().unwrap();
-        match attrs.kind() {
+        let kind = attrs.kind();
+        match &*kind {
             Kind::Subcommand(ty) => {
-                let subcmd_type = match (ty, sub_type(&field.ty)) {
+                let subcmd_type = match (**ty, sub_type(&field.ty)) {
                     (Ty::Option, Some(sub_type)) => sub_type,
                     _ => &field.ty,
                 };
-                let unwrapper = match ty {
+                let unwrapper = match **ty {
                     Ty::Option => quote!(),
                     _ => quote!( .unwrap() ),
                 };
                 quote!(#field_name: <#subcmd_type>::from_subcommand(matches.subcommand())#unwrapper)
             }
             Kind::FlattenStruct => quote!(#field_name: ::structopt::StructOpt::from_clap(matches)),
+            Kind::Skip => quote_spanned!(kind.span()=> #field_name: Default::default()),
             Kind::Arg(ty) => {
-                use Parser::*;
-                let (value_of, values_of, parse) = match *attrs.parser() {
-                    (FromStr, ref f) => (quote!(value_of), quote!(values_of), f.clone()),
-                    (TryFromStr, ref f) => (
+                use crate::attrs::Parser::*;
+                let (parser, f) = attrs.parser();
+                let (value_of, values_of, parse) = match **parser {
+                    FromStr => (quote!(value_of), quote!(values_of), f.clone()),
+                    TryFromStr => (
                         quote!(value_of),
                         quote!(values_of),
                         quote!(|s| #f(s).unwrap()),
                     ),
-                    (FromOsStr, ref f) => (quote!(value_of_os), quote!(values_of_os), f.clone()),
-                    (TryFromOsStr, ref f) => (
+                    FromOsStr => (quote!(value_of_os), quote!(values_of_os), f.clone()),
+                    TryFromOsStr => (
                         quote!(value_of_os),
                         quote!(values_of_os),
                         quote!(|s| #f(s).unwrap()),
                     ),
-                    (FromOccurrences, ref f) => (quote!(occurrences_of), quote!(), f.clone()),
+                    FromOccurrences => (quote!(occurrences_of), quote!(), f.clone()),
                 };
 
-                let occurrences = attrs.parser().0 == Parser::FromOccurrences;
+                let occurrences = *attrs.parser().0 == Parser::FromOccurrences;
                 let name = attrs.cased_name();
-                let field_value = match ty {
+                let field_value = match **ty {
                     Ty::Bool => quote!(matches.is_present(#name)),
                     Ty::Option => quote! {
                         matches.#value_of(#name)
@@ -212,6 +218,15 @@ fn gen_constructor(fields: &Punctuated<Field, Comma>, parent_attribute: &Attrs) 
                     Ty::OptionOption => quote! {
                         if matches.is_present(#name) {
                             Some(matches.#value_of(#name).map(#parse))
+                        } else {
+                            None
+                        }
+                    },
+                    Ty::OptionVec => quote! {
+                        if matches.is_present(#name) {
+                            Some(matches.#values_of(#name)
+                                 .map(|v| v.map(#parse).collect())
+                                 .unwrap_or_else(Vec::new))
                         } else {
                             None
                         }
@@ -256,14 +271,12 @@ fn gen_from_clap(
 }
 
 fn gen_clap(attrs: &[Attribute]) -> GenOutput {
-    let name = std::env::var("CARGO_PKG_NAME")
-        .ok()
-        .unwrap_or_else(String::default);
+    let name = std::env::var("CARGO_PKG_NAME").ok().unwrap_or_default();
 
-    let attrs = Attrs::from_struct(attrs, name, DEFAULT_CASING);
+    let attrs = Attrs::from_struct(attrs, Sp::call_site(name), Sp::call_site(DEFAULT_CASING));
     let tokens = {
         let name = attrs.cased_name();
-        let methods = attrs.methods();
+        let methods = attrs.top_level_methods();
 
         quote!(::structopt::clap::App::new(#name)#methods)
     };
@@ -325,8 +338,11 @@ fn gen_augment_clap_enum(
     use syn::Fields::*;
 
     let subcommands = variants.iter().map(|variant| {
-        let name = variant.ident.to_string();
-        let attrs = Attrs::from_struct(&variant.attrs, name, parent_attribute.casing());
+        let attrs = Attrs::from_struct(
+            &variant.attrs,
+            variant.ident.clone().into(),
+            parent_attribute.casing(),
+        );
         let app_var = Ident::new("subcommand", Span::call_site());
         let arg_block = match variant.fields {
             Named(ref fields) => gen_augmentation(&fields.named, &app_var, &attrs),
@@ -346,11 +362,12 @@ fn gen_augment_clap_enum(
                     }
                 }
             }
-            Unnamed(..) => panic!("{}: tuple enum are not supported", variant.ident),
+            Unnamed(..) => call_site_error!("{}: tuple enums are not supported", variant.ident),
         };
 
         let name = attrs.cased_name();
-        let from_attrs = attrs.methods();
+        let from_attrs = attrs.top_level_methods();
+
         quote! {
             .subcommand({
                 let #app_var = ::structopt::clap::SubCommand::with_name(#name);
@@ -388,7 +405,7 @@ fn gen_from_subcommand(
     let match_arms = variants.iter().map(|variant| {
         let attrs = Attrs::from_struct(
             &variant.attrs,
-            variant.ident.to_string(),
+            variant.ident.clone().into(),
             parent_attribute.casing(),
         );
         let sub_name = attrs.cased_name();
@@ -400,7 +417,7 @@ fn gen_from_subcommand(
                 let ty = &fields.unnamed[0];
                 quote!( ( <#ty as ::structopt::StructOpt>::from_clap(matches) ) )
             }
-            Unnamed(..) => panic!("{}: tuple enum are not supported", variant.ident),
+            Unnamed(..) => call_site_error!("{}: tuple enums are not supported", variant.ident),
         };
 
         quote! {
@@ -427,7 +444,7 @@ fn gen_paw_impl(name: &Ident) -> TokenStream {
         impl paw::ParseArgs for #name {
             type Error = std::io::Error;
 
-            fn parse_args() -> Result<Self, Self::Error> {
+            fn parse_args() -> std::result::Result<Self, Self::Error> {
                 Ok(<#name as ::structopt::StructOpt>::from_args())
             }
         }
@@ -502,14 +519,24 @@ fn impl_structopt(input: &DeriveInput) -> TokenStream {
     use syn::Data::*;
 
     let struct_name = &input.ident;
-    let inner_impl = match input.data {
+
+    set_dummy(Some(quote! {
+        impl ::structopt::StructOpt for #struct_name {
+            fn clap<'a, 'b>() -> ::structopt::clap::App<'a, 'b> {
+                unimplemented!()
+            }
+            fn from_clap(_matches: &::structopt::clap::ArgMatches) -> Self {
+                unimplemented!()
+            }
+        }
+    }));
+
+    match input.data {
         Struct(DataStruct {
             fields: syn::Fields::Named(ref fields),
             ..
         }) => impl_structopt_for_struct(struct_name, &fields.named, &input.attrs),
         Enum(ref e) => impl_structopt_for_enum(struct_name, &e.variants, &input.attrs),
-        _ => panic!("structopt only supports non-tuple structs and enums"),
-    };
-
-    quote!(#inner_impl)
+        _ => call_site_error!("structopt only supports non-tuple structs and enums"),
+    }
 }

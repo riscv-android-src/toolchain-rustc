@@ -1,6 +1,6 @@
 //! This module contains `TyKind` and its major components.
 
-#![cfg_attr(not(bootstrap), allow(rustc::usage_of_ty_tykind))]
+#![allow(rustc::usage_of_ty_tykind)]
 
 use crate::hir;
 use crate::hir::def_id::DefId;
@@ -86,6 +86,7 @@ impl BoundRegion {
 /// AST structure in `libsyntax/ast.rs` as well.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash,
          RustcEncodable, RustcDecodable, HashStable, Debug)]
+#[cfg_attr(not(bootstrap), rustc_diagnostic_item = "TyKind")]
 pub enum TyKind<'tcx> {
     /// The primitive boolean type. Written as `bool`.
     Bool,
@@ -385,7 +386,7 @@ impl<'tcx> ClosureSubsts<'tcx> {
         let ty = self.closure_sig_ty(def_id, tcx);
         match ty.sty {
             ty::FnPtr(sig) => sig,
-            _ => bug!("closure_sig_ty is not a fn-ptr: {:?}", ty),
+            _ => bug!("closure_sig_ty is not a fn-ptr: {:?}", ty.sty),
         }
     }
 }
@@ -643,7 +644,7 @@ impl<'tcx> Binder<ExistentialPredicate<'tcx>> {
 impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx List<ExistentialPredicate<'tcx>> {}
 
 impl<'tcx> List<ExistentialPredicate<'tcx>> {
-    /// Returns the "principal def id" of this set of existential predicates.
+    /// Returns the "principal `DefId`" of this set of existential predicates.
     ///
     /// A Rust trait object type consists (in addition to a lifetime bound)
     /// of a set of trait bounds, which are separated into any number
@@ -1051,7 +1052,7 @@ impl<'tcx> PolyGenSig<'tcx> {
     }
 }
 
-/// Signature of a function type, which I have arbitrarily
+/// Signature of a function type, which we have arbitrarily
 /// decided to use to refer to the input/output types.
 ///
 /// - `inputs`: is the list of arguments and their modes.
@@ -1075,7 +1076,8 @@ impl<'tcx> FnSig<'tcx> {
         self.inputs_and_output[self.inputs_and_output.len() - 1]
     }
 
-    // Create a minimal `FnSig` to be used when encountering a `TyKind::Error` in a fallible method
+    // Creates a minimal `FnSig` to be used when encountering a `TyKind::Error` in a fallible
+    // method.
     fn fake() -> FnSig<'tcx> {
         FnSig {
             inputs_and_output: List::empty(),
@@ -1117,7 +1119,6 @@ impl<'tcx> PolyFnSig<'tcx> {
 
 pub type CanonicalPolyFnSig<'tcx> = Canonical<'tcx, Binder<FnSig<'tcx>>>;
 
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord,
          Hash, RustcEncodable, RustcDecodable, HashStable)]
 pub struct ParamTy {
@@ -1140,13 +1141,6 @@ impl<'tcx> ParamTy {
 
     pub fn to_ty(self, tcx: TyCtxt<'tcx>) -> Ty<'tcx> {
         tcx.mk_ty_param(self.index, self.name)
-    }
-
-    pub fn is_self(&self) -> bool {
-        // FIXME(#50125): Ignoring `Self` with `index != 0` might lead to weird behavior elsewhere,
-        // but this should only be possible when using `-Z continue-parse-after-error` like
-        // `compile-fail/issue-36638.rs`.
-        self.name.as_symbol() == kw::SelfUpper && self.index == 0
     }
 }
 
@@ -1790,14 +1784,6 @@ impl<'tcx> TyS<'tcx> {
     }
 
     #[inline]
-    pub fn is_self(&self) -> bool {
-        match self.sty {
-            Param(ref p) => p.is_self(),
-            _ => false,
-        }
-    }
-
-    #[inline]
     pub fn is_slice(&self) -> bool {
         match self.sty {
             RawPtr(TypeAndMut { ty, .. }) | Ref(_, ty, _) => match ty.sty {
@@ -2068,6 +2054,9 @@ impl<'tcx> TyS<'tcx> {
             Error => {  // ignore errors (#54954)
                 ty::Binder::dummy(FnSig::fake())
             }
+            Closure(..) => bug!(
+                "to get the signature of a closure, use `closure_sig()` not `fn_sig()`",
+            ),
             _ => bug!("Ty::fn_sig() called on non-fn type: {:?}", self)
         }
     }
@@ -2311,23 +2300,33 @@ impl<'tcx> Const<'tcx> {
         assert_eq!(self.ty, ty);
         // if `ty` does not depend on generic parameters, use an empty param_env
         let size = tcx.layout_of(param_env.with_reveal_all().and(ty)).ok()?.size;
+        self.eval(tcx, param_env).val.try_to_bits(size)
+    }
+
+    #[inline]
+    pub fn eval(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        param_env: ParamEnv<'tcx>,
+    ) -> &Const<'tcx> {
+        // FIXME(const_generics): this doesn't work right now,
+        // because it tries to relate an `Infer` to a `Param`.
         match self.val {
-            // FIXME(const_generics): this doesn't work right now,
-            // because it tries to relate an `Infer` to a `Param`.
             ConstValue::Unevaluated(did, substs) => {
                 // if `substs` has no unresolved components, use and empty param_env
                 let (param_env, substs) = param_env.with_reveal_all().and(substs).into_parts();
                 // try to resolve e.g. associated constants to their definition on an impl
-                let instance = ty::Instance::resolve(tcx, param_env, did, substs)?;
+                let instance = match ty::Instance::resolve(tcx, param_env, did, substs) {
+                    Some(instance) => instance,
+                    None => return self,
+                };
                 let gid = GlobalId {
                     instance,
                     promoted: None,
                 };
-                let evaluated = tcx.const_eval(param_env.and(gid)).ok()?;
-                evaluated.val.try_to_bits(size)
+                tcx.const_eval(param_env.and(gid)).unwrap_or(self)
             },
-            // otherwise just extract a `ConstValue`'s bits if possible
-            _ => self.val.try_to_bits(size),
+            _ => self,
         }
     }
 

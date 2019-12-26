@@ -6,9 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[macro_use]
-extern crate structopt;
-
 use structopt::StructOpt;
 
 #[test]
@@ -80,7 +77,7 @@ fn option_with_default() {
 fn option_with_raw_default() {
     #[derive(StructOpt, PartialEq, Debug)]
     struct Opt {
-        #[structopt(short = "a", raw(default_value = r#""42""#))]
+        #[structopt(short = "a", default_value = "42")]
         arg: i32,
     }
     assert_eq!(
@@ -157,6 +154,7 @@ fn optional_argument_for_optional_option() {
     #[derive(StructOpt, PartialEq, Debug)]
     struct Opt {
         #[structopt(short = "a")]
+        #[allow(clippy::option_option)]
         arg: Option<Option<i32>>,
     }
     assert_eq!(
@@ -181,6 +179,7 @@ fn optional_argument_for_optional_option() {
 #[test]
 fn two_option_options() {
     #[derive(StructOpt, PartialEq, Debug)]
+    #[allow(clippy::option_option)]
     struct Opt {
         #[structopt(short = "a")]
         arg: Option<Option<i32>>,
@@ -228,6 +227,110 @@ fn two_option_options() {
             arg: None,
             field: None
         },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test"]))
+    );
+}
+
+#[test]
+fn optional_vec() {
+    #[derive(StructOpt, PartialEq, Debug)]
+    struct Opt {
+        #[structopt(short = "a")]
+        arg: Option<Vec<i32>>,
+    }
+    assert_eq!(
+        Opt { arg: Some(vec![1]) },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a", "1"]))
+    );
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1, 2])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a1", "-a2"]))
+    );
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1, 2])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a1", "-a2", "-a"]))
+    );
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1, 2])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a1", "-a", "-a2"]))
+    );
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1, 2])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a", "1", "2"]))
+    );
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1, 2, 3])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a", "1", "2", "-a", "3"]))
+    );
+
+    assert_eq!(
+        Opt { arg: Some(vec![]) },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a"]))
+    );
+
+    assert_eq!(
+        Opt { arg: Some(vec![]) },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a", "-a"]))
+    );
+
+    assert_eq!(
+        Opt { arg: None },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test"]))
+    );
+}
+
+#[test]
+fn two_optional_vecs() {
+    #[derive(StructOpt, PartialEq, Debug)]
+    struct Opt {
+        #[structopt(short = "a")]
+        arg: Option<Vec<i32>>,
+
+        #[structopt(short = "b")]
+        b: Option<Vec<i32>>,
+    }
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1]),
+            b: Some(vec![])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a", "1", "-b"]))
+    );
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1]),
+            b: Some(vec![])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a", "-b", "-a1"]))
+    );
+
+    assert_eq!(
+        Opt {
+            arg: Some(vec![1, 2]),
+            b: Some(vec![1, 2])
+        },
+        Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a1", "-a2", "-b1", "-b2"]))
+    );
+
+    assert_eq!(
+        Opt { arg: None, b: None },
         Opt::from_clap(&Opt::clap().get_matches_from(&["test"]))
     );
 }

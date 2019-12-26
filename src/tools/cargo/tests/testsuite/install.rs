@@ -3,13 +3,14 @@ use std::io::prelude::*;
 
 use git2;
 
-use crate::support;
-use crate::support::cross_compile;
-use crate::support::git;
-use crate::support::install::{assert_has_installed_exe, assert_has_not_installed_exe, cargo_home};
-use crate::support::paths;
-use crate::support::registry::Package;
-use crate::support::{basic_manifest, cargo_process, project};
+use cargo_test_support::cross_compile;
+use cargo_test_support::git;
+use cargo_test_support::install::{
+    assert_has_installed_exe, assert_has_not_installed_exe, cargo_home,
+};
+use cargo_test_support::paths;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{basic_manifest, cargo_process, project};
 
 fn pkg(name: &str, vers: &str) {
     Package::new(name, vers)
@@ -531,6 +532,7 @@ fn install_force_partial_overlap() {
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/foo-bin3[EXE]
 [REPLACING] [CWD]/home/.cargo/bin/foo-bin2[EXE]
+[REMOVING] executable `[..]/bin/foo-bin1[EXE]` from previous version foo v0.0.1 [..]
 [INSTALLED] package `foo v0.2.0 ([..]/foo2)` (executable `foo-bin3[EXE]`)
 [REPLACED] package `foo v0.0.1 ([..]/foo)` with `foo v0.2.0 ([..]/foo2)` (executable `foo-bin2[EXE]`)
 [WARNING] be sure to add `[..]` to your PATH to be able to run the installed binaries
@@ -541,8 +543,6 @@ fn install_force_partial_overlap() {
     cargo_process("install --list")
         .with_stdout(
             "\
-foo v0.0.1 ([..]):
-    foo-bin1[..]
 foo v0.2.0 ([..]):
     foo-bin2[..]
     foo-bin3[..]
@@ -606,7 +606,7 @@ fn compile_failure() {
     found at `[..]target`
 
 Caused by:
-  Could not compile `foo`.
+  could not compile `foo`.
 
 To learn more, run the command again with --verbose.
 ",
@@ -1058,7 +1058,7 @@ fn install_target_native() {
     pkg("foo", "0.1.0");
 
     cargo_process("install foo --target")
-        .arg(support::rustc_host())
+        .arg(cargo_test_support::rustc_host())
         .run();
     assert_has_installed_exe(cargo_home(), "foo");
 }

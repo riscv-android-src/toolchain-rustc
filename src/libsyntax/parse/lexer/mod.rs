@@ -4,7 +4,7 @@ use crate::symbol::{sym, Symbol};
 use crate::parse::unescape_error_reporting::{emit_unescape_error, push_escaped_char};
 
 use errors::{FatalError, DiagnosticBuilder};
-use syntax_pos::{BytePos, Pos, Span, NO_EXPANSION};
+use syntax_pos::{BytePos, Pos, Span};
 use rustc_lexer::Base;
 use rustc_lexer::unescape;
 
@@ -84,7 +84,7 @@ impl<'a> StringReader<'a> {
 
 
     fn mk_sp(&self, lo: BytePos, hi: BytePos) -> Span {
-        self.override_span.unwrap_or_else(|| Span::new(lo, hi, NO_EXPANSION))
+        self.override_span.unwrap_or_else(|| Span::with_root_ctxt(lo, hi))
     }
 
     /// Returns the next token, including trivia like whitespace or comments.
@@ -291,9 +291,6 @@ impl<'a> StringReader<'a> {
             }
             rustc_lexer::TokenKind::Semi => token::Semi,
             rustc_lexer::TokenKind::Comma => token::Comma,
-            rustc_lexer::TokenKind::DotDotDot => token::DotDotDot,
-            rustc_lexer::TokenKind::DotDotEq => token::DotDotEq,
-            rustc_lexer::TokenKind::DotDot => token::DotDot,
             rustc_lexer::TokenKind::Dot => token::Dot,
             rustc_lexer::TokenKind::OpenParen => token::OpenDelim(token::Paren),
             rustc_lexer::TokenKind::CloseParen => token::CloseDelim(token::Paren),
@@ -305,42 +302,20 @@ impl<'a> StringReader<'a> {
             rustc_lexer::TokenKind::Pound => token::Pound,
             rustc_lexer::TokenKind::Tilde => token::Tilde,
             rustc_lexer::TokenKind::Question => token::Question,
-            rustc_lexer::TokenKind::ColonColon => token::ModSep,
             rustc_lexer::TokenKind::Colon => token::Colon,
             rustc_lexer::TokenKind::Dollar => token::Dollar,
-            rustc_lexer::TokenKind::EqEq => token::EqEq,
             rustc_lexer::TokenKind::Eq => token::Eq,
-            rustc_lexer::TokenKind::FatArrow => token::FatArrow,
-            rustc_lexer::TokenKind::Ne => token::Ne,
             rustc_lexer::TokenKind::Not => token::Not,
-            rustc_lexer::TokenKind::Le => token::Le,
-            rustc_lexer::TokenKind::LArrow => token::LArrow,
             rustc_lexer::TokenKind::Lt => token::Lt,
-            rustc_lexer::TokenKind::ShlEq => token::BinOpEq(token::Shl),
-            rustc_lexer::TokenKind::Shl => token::BinOp(token::Shl),
-            rustc_lexer::TokenKind::Ge => token::Ge,
             rustc_lexer::TokenKind::Gt => token::Gt,
-            rustc_lexer::TokenKind::ShrEq => token::BinOpEq(token::Shr),
-            rustc_lexer::TokenKind::Shr => token::BinOp(token::Shr),
-            rustc_lexer::TokenKind::RArrow => token::RArrow,
             rustc_lexer::TokenKind::Minus => token::BinOp(token::Minus),
-            rustc_lexer::TokenKind::MinusEq => token::BinOpEq(token::Minus),
             rustc_lexer::TokenKind::And => token::BinOp(token::And),
-            rustc_lexer::TokenKind::AndEq => token::BinOpEq(token::And),
-            rustc_lexer::TokenKind::AndAnd => token::AndAnd,
             rustc_lexer::TokenKind::Or => token::BinOp(token::Or),
-            rustc_lexer::TokenKind::OrEq => token::BinOpEq(token::Or),
-            rustc_lexer::TokenKind::OrOr => token::OrOr,
             rustc_lexer::TokenKind::Plus => token::BinOp(token::Plus),
-            rustc_lexer::TokenKind::PlusEq => token::BinOpEq(token::Plus),
             rustc_lexer::TokenKind::Star => token::BinOp(token::Star),
-            rustc_lexer::TokenKind::StarEq => token::BinOpEq(token::Star),
             rustc_lexer::TokenKind::Slash => token::BinOp(token::Slash),
-            rustc_lexer::TokenKind::SlashEq => token::BinOpEq(token::Slash),
             rustc_lexer::TokenKind::Caret => token::BinOp(token::Caret),
-            rustc_lexer::TokenKind::CaretEq => token::BinOpEq(token::Caret),
             rustc_lexer::TokenKind::Percent => token::BinOp(token::Percent),
-            rustc_lexer::TokenKind::PercentEq => token::BinOpEq(token::Percent),
 
             rustc_lexer::TokenKind::Unknown => {
                 let c = self.str_from(start).chars().next().unwrap();

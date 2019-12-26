@@ -3,17 +3,18 @@ use crate::parse::token::{self, Token, TokenKind};
 use crate::symbol::{sym, Symbol};
 use crate::parse::unescape_error_reporting::{emit_unescape_error, push_escaped_char};
 
-use errors::{FatalError, Diagnostic, DiagnosticBuilder};
-use syntax_pos::{BytePos, Pos, Span, NO_EXPANSION};
+use errors::{FatalError, DiagnosticBuilder};
+use syntax_pos::{BytePos, Pos, Span};
 use rustc_lexer::Base;
 use rustc_lexer::unescape;
 
-use std::borrow::Cow;
 use std::char;
-use std::iter;
 use std::convert::TryInto;
 use rustc_data_structures::sync::Lrc;
 use log::debug;
+
+#[cfg(test)]
+mod tests;
 
 pub mod comments;
 mod tokentrees;
@@ -36,7 +37,6 @@ pub struct StringReader<'a> {
     pos: BytePos,
     /// Stop reading src at this index.
     end_src_index: usize,
-    fatal_errs: Vec<DiagnosticBuilder<'a>>,
     /// Source text to tokenize.
     src: Lrc<String>,
     override_span: Option<Span>,
@@ -59,7 +59,6 @@ impl<'a> StringReader<'a> {
             pos: source_file.start_pos,
             end_src_index: src.len(),
             src,
-            fatal_errs: Vec::new(),
             override_span,
         }
     }
@@ -83,32 +82,20 @@ impl<'a> StringReader<'a> {
 
 
     fn mk_sp(&self, lo: BytePos, hi: BytePos) -> Span {
-        self.override_span.unwrap_or_else(|| Span::new(lo, hi, NO_EXPANSION))
-    }
-
-    fn unwrap_or_abort(&mut self, res: Result<Token, ()>) -> Token {
-        match res {
-            Ok(tok) => tok,
-            Err(_) => {
-                self.emit_fatal_errors();
-                FatalError.raise();
-            }
-        }
+        self.override_span.unwrap_or_else(|| Span::with_root_ctxt(lo, hi))
     }
 
     /// Returns the next token, including trivia like whitespace or comments.
     ///
     /// `Err(())` means that some errors were encountered, which can be
     /// retrieved using `buffer_fatal_errors`.
-    pub fn try_next_token(&mut self) -> Result<Token, ()> {
-        assert!(self.fatal_errs.is_empty());
-
+    pub fn next_token(&mut self) -> Token {
         let start_src_index = self.src_index(self.pos);
         let text: &str = &self.src[start_src_index..self.end_src_index];
 
         if text.is_empty() {
             let span = self.mk_sp(self.pos, self.pos);
-            return Ok(Token::new(token::Eof, span));
+            return Token::new(token::Eof, span);
         }
 
         {
@@ -122,7 +109,7 @@ impl<'a> StringReader<'a> {
                     let kind = token::Shebang(sym);
 
                     let span = self.mk_sp(start, self.pos);
-                    return Ok(Token::new(kind, span));
+                    return Token::new(kind, span);
                 }
             }
         }
@@ -136,39 +123,10 @@ impl<'a> StringReader<'a> {
 
         // This could use `?`, but that makes code significantly (10-20%) slower.
         // https://github.com/rust-lang/rust/issues/37939
-        let kind = match self.cook_lexer_token(token.kind, start) {
-            Ok(it) => it,
-            Err(err) => return Err(self.fatal_errs.push(err)),
-        };
+        let kind = self.cook_lexer_token(token.kind, start);
 
         let span = self.mk_sp(start, self.pos);
-        Ok(Token::new(kind, span))
-    }
-
-    /// Returns the next token, including trivia like whitespace or comments.
-    ///
-    /// Aborts in case of an error.
-    pub fn next_token(&mut self) -> Token {
-        let res = self.try_next_token();
-        self.unwrap_or_abort(res)
-    }
-
-    fn emit_fatal_errors(&mut self) {
-        for err in &mut self.fatal_errs {
-            err.emit();
-        }
-
-        self.fatal_errs.clear();
-    }
-
-    pub fn buffer_fatal_errors(&mut self) -> Vec<Diagnostic> {
-        let mut buffer = Vec::new();
-
-        for err in self.fatal_errs.drain(..) {
-            err.buffer(&mut buffer);
-        }
-
-        buffer
+        Token::new(kind, span)
     }
 
     /// Report a fatal lexical error with a given span.
@@ -215,24 +173,13 @@ impl<'a> StringReader<'a> {
         &self,
         token: rustc_lexer::TokenKind,
         start: BytePos,
-    ) -> Result<TokenKind, DiagnosticBuilder<'a>> {
-        let kind = match token {
+    ) -> TokenKind {
+        match token {
             rustc_lexer::TokenKind::LineComment => {
                 let string = self.str_from(start);
                 // comments with only more "/"s are not doc comments
                 let tok = if is_doc_comment(string) {
-                    let mut idx = 0;
-                    loop {
-                        idx = match string[idx..].find('\r') {
-                            None => break,
-                            Some(it) => idx + it + 1
-                        };
-                        if string[idx..].chars().next() != Some('\n') {
-                            self.err_span_(start + BytePos(idx as u32 - 1),
-                                            start + BytePos(idx as u32),
-                                            "bare CR not allowed in doc-comment");
-                        }
-                    }
+                    self.forbid_bare_cr(start, string, "bare CR not allowed in doc-comment");
                     token::DocComment(Symbol::intern(string))
                 } else {
                     token::Comment
@@ -257,15 +204,10 @@ impl<'a> StringReader<'a> {
                 }
 
                 let tok = if is_doc_comment {
-                    let has_cr = string.contains('\r');
-                    let string = if has_cr {
-                        self.translate_crlf(start,
-                                            string,
-                                            "bare CR not allowed in block doc-comment")
-                    } else {
-                        string.into()
-                    };
-                    token::DocComment(Symbol::intern(&string[..]))
+                    self.forbid_bare_cr(start,
+                                        string,
+                                        "bare CR not allowed in block doc-comment");
+                    token::DocComment(Symbol::intern(string))
                 } else {
                     token::Comment
                 };
@@ -331,9 +273,6 @@ impl<'a> StringReader<'a> {
             }
             rustc_lexer::TokenKind::Semi => token::Semi,
             rustc_lexer::TokenKind::Comma => token::Comma,
-            rustc_lexer::TokenKind::DotDotDot => token::DotDotDot,
-            rustc_lexer::TokenKind::DotDotEq => token::DotDotEq,
-            rustc_lexer::TokenKind::DotDot => token::DotDot,
             rustc_lexer::TokenKind::Dot => token::Dot,
             rustc_lexer::TokenKind::OpenParen => token::OpenDelim(token::Paren),
             rustc_lexer::TokenKind::CloseParen => token::CloseDelim(token::Paren),
@@ -345,42 +284,20 @@ impl<'a> StringReader<'a> {
             rustc_lexer::TokenKind::Pound => token::Pound,
             rustc_lexer::TokenKind::Tilde => token::Tilde,
             rustc_lexer::TokenKind::Question => token::Question,
-            rustc_lexer::TokenKind::ColonColon => token::ModSep,
             rustc_lexer::TokenKind::Colon => token::Colon,
             rustc_lexer::TokenKind::Dollar => token::Dollar,
-            rustc_lexer::TokenKind::EqEq => token::EqEq,
             rustc_lexer::TokenKind::Eq => token::Eq,
-            rustc_lexer::TokenKind::FatArrow => token::FatArrow,
-            rustc_lexer::TokenKind::Ne => token::Ne,
             rustc_lexer::TokenKind::Not => token::Not,
-            rustc_lexer::TokenKind::Le => token::Le,
-            rustc_lexer::TokenKind::LArrow => token::LArrow,
             rustc_lexer::TokenKind::Lt => token::Lt,
-            rustc_lexer::TokenKind::ShlEq => token::BinOpEq(token::Shl),
-            rustc_lexer::TokenKind::Shl => token::BinOp(token::Shl),
-            rustc_lexer::TokenKind::Ge => token::Ge,
             rustc_lexer::TokenKind::Gt => token::Gt,
-            rustc_lexer::TokenKind::ShrEq => token::BinOpEq(token::Shr),
-            rustc_lexer::TokenKind::Shr => token::BinOp(token::Shr),
-            rustc_lexer::TokenKind::RArrow => token::RArrow,
             rustc_lexer::TokenKind::Minus => token::BinOp(token::Minus),
-            rustc_lexer::TokenKind::MinusEq => token::BinOpEq(token::Minus),
             rustc_lexer::TokenKind::And => token::BinOp(token::And),
-            rustc_lexer::TokenKind::AndEq => token::BinOpEq(token::And),
-            rustc_lexer::TokenKind::AndAnd => token::AndAnd,
             rustc_lexer::TokenKind::Or => token::BinOp(token::Or),
-            rustc_lexer::TokenKind::OrEq => token::BinOpEq(token::Or),
-            rustc_lexer::TokenKind::OrOr => token::OrOr,
             rustc_lexer::TokenKind::Plus => token::BinOp(token::Plus),
-            rustc_lexer::TokenKind::PlusEq => token::BinOpEq(token::Plus),
             rustc_lexer::TokenKind::Star => token::BinOp(token::Star),
-            rustc_lexer::TokenKind::StarEq => token::BinOpEq(token::Star),
             rustc_lexer::TokenKind::Slash => token::BinOp(token::Slash),
-            rustc_lexer::TokenKind::SlashEq => token::BinOpEq(token::Slash),
             rustc_lexer::TokenKind::Caret => token::BinOp(token::Caret),
-            rustc_lexer::TokenKind::CaretEq => token::BinOpEq(token::Caret),
             rustc_lexer::TokenKind::Percent => token::BinOp(token::Percent),
-            rustc_lexer::TokenKind::PercentEq => token::BinOpEq(token::Percent),
 
             rustc_lexer::TokenKind::Unknown => {
                 let c = self.str_from(start).chars().next().unwrap();
@@ -393,16 +310,12 @@ impl<'a> StringReader<'a> {
                 // this should be inside `rustc_lexer`. However, we should first remove compound
                 // tokens like `<<` from `rustc_lexer`, and then add fancier error recovery to it,
                 // as there will be less overall work to do this way.
-                return match unicode_chars::check_for_substitution(self, start, c, &mut err) {
-                    Some(token) => {
-                        err.emit();
-                        Ok(token)
-                    }
-                    None => Err(err),
-                }
+                let token = unicode_chars::check_for_substitution(self, start, c, &mut err)
+                    .unwrap_or_else(|| token::Unknown(self.symbol_from(start)));
+                err.emit();
+                token
             }
-        };
-        Ok(kind)
+        }
     }
 
     fn cook_lexer_literal(
@@ -560,49 +473,16 @@ impl<'a> StringReader<'a> {
         &self.src[self.src_index(start)..self.src_index(end)]
     }
 
-    /// Converts CRLF to LF in the given string, raising an error on bare CR.
-    fn translate_crlf<'b>(&self, start: BytePos, s: &'b str, errmsg: &'b str) -> Cow<'b, str> {
-        let mut chars = s.char_indices().peekable();
-        while let Some((i, ch)) = chars.next() {
-            if ch == '\r' {
-                if let Some((lf_idx, '\n')) = chars.peek() {
-                    return translate_crlf_(self, start, s, *lf_idx, chars, errmsg).into();
-                }
-                let pos = start + BytePos(i as u32);
-                let end_pos = start + BytePos((i + ch.len_utf8()) as u32);
-                self.err_span_(pos, end_pos, errmsg);
-            }
-        }
-        return s.into();
-
-        fn translate_crlf_(rdr: &StringReader<'_>,
-                           start: BytePos,
-                           s: &str,
-                           mut j: usize,
-                           mut chars: iter::Peekable<impl Iterator<Item = (usize, char)>>,
-                           errmsg: &str)
-                           -> String {
-            let mut buf = String::with_capacity(s.len());
-            // Skip first CR
-            buf.push_str(&s[.. j - 1]);
-            while let Some((i, ch)) = chars.next() {
-                if ch == '\r' {
-                    if j < i {
-                        buf.push_str(&s[j..i]);
-                    }
-                    let next = i + ch.len_utf8();
-                    j = next;
-                    if chars.peek().map(|(_, ch)| *ch) != Some('\n') {
-                        let pos = start + BytePos(i as u32);
-                        let end_pos = start + BytePos(next as u32);
-                        rdr.err_span_(pos, end_pos, errmsg);
-                    }
-                }
-            }
-            if j < s.len() {
-                buf.push_str(&s[j..]);
-            }
-            buf
+    fn forbid_bare_cr(&self, start: BytePos, s: &str, errmsg: &str) {
+        let mut idx = 0;
+        loop {
+            idx = match s[idx..].find('\r') {
+                None => break,
+                Some(it) => idx + it + 1
+            };
+            self.err_span_(start + BytePos(idx as u32 - 1),
+                           start + BytePos(idx as u32),
+                           errmsg);
         }
     }
 
@@ -776,263 +656,4 @@ fn is_block_doc_comment(s: &str) -> bool {
                s.starts_with("/*!")) && s.len() >= 5;
     debug!("is {:?} a doc comment? {}", s, res);
     res
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::ast::CrateConfig;
-    use crate::symbol::Symbol;
-    use crate::source_map::{SourceMap, FilePathMapping};
-    use crate::feature_gate::UnstableFeatures;
-    use crate::parse::token;
-    use crate::diagnostics::plugin::ErrorMap;
-    use crate::with_default_globals;
-    use std::io;
-    use std::path::PathBuf;
-    use syntax_pos::{BytePos, Span, NO_EXPANSION, edition::Edition};
-    use rustc_data_structures::fx::{FxHashSet, FxHashMap};
-    use rustc_data_structures::sync::{Lock, Once};
-
-    fn mk_sess(sm: Lrc<SourceMap>) -> ParseSess {
-        let emitter = errors::emitter::EmitterWriter::new(Box::new(io::sink()),
-                                                          Some(sm.clone()),
-                                                          false,
-                                                          false,
-                                                          false);
-        ParseSess {
-            span_diagnostic: errors::Handler::with_emitter(true, None, Box::new(emitter)),
-            unstable_features: UnstableFeatures::from_environment(),
-            config: CrateConfig::default(),
-            included_mod_stack: Lock::new(Vec::new()),
-            source_map: sm,
-            missing_fragment_specifiers: Lock::new(FxHashSet::default()),
-            raw_identifier_spans: Lock::new(Vec::new()),
-            registered_diagnostics: Lock::new(ErrorMap::new()),
-            buffered_lints: Lock::new(vec![]),
-            edition: Edition::from_session(),
-            ambiguous_block_expr_parse: Lock::new(FxHashMap::default()),
-            param_attr_spans: Lock::new(Vec::new()),
-            let_chains_spans: Lock::new(Vec::new()),
-            async_closure_spans: Lock::new(Vec::new()),
-            injected_crate_name: Once::new(),
-        }
-    }
-
-    // open a string reader for the given string
-    fn setup<'a>(sm: &SourceMap,
-                 sess: &'a ParseSess,
-                 teststr: String)
-                 -> StringReader<'a> {
-        let sf = sm.new_source_file(PathBuf::from(teststr.clone()).into(), teststr);
-        StringReader::new(sess, sf, None)
-    }
-
-    #[test]
-    fn t1() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            let mut string_reader = setup(&sm,
-                                        &sh,
-                                        "/* my source file */ fn main() { println!(\"zebra\"); }\n"
-                                            .to_string());
-            assert_eq!(string_reader.next_token(), token::Comment);
-            assert_eq!(string_reader.next_token(), token::Whitespace);
-            let tok1 = string_reader.next_token();
-            let tok2 = Token::new(
-                mk_ident("fn"),
-                Span::new(BytePos(21), BytePos(23), NO_EXPANSION),
-            );
-            assert_eq!(tok1.kind, tok2.kind);
-            assert_eq!(tok1.span, tok2.span);
-            assert_eq!(string_reader.next_token(), token::Whitespace);
-            // read another token:
-            let tok3 = string_reader.next_token();
-            assert_eq!(string_reader.pos.clone(), BytePos(28));
-            let tok4 = Token::new(
-                mk_ident("main"),
-                Span::new(BytePos(24), BytePos(28), NO_EXPANSION),
-            );
-            assert_eq!(tok3.kind, tok4.kind);
-            assert_eq!(tok3.span, tok4.span);
-
-            assert_eq!(string_reader.next_token(), token::OpenDelim(token::Paren));
-            assert_eq!(string_reader.pos.clone(), BytePos(29))
-        })
-    }
-
-    // check that the given reader produces the desired stream
-    // of tokens (stop checking after exhausting the expected vec)
-    fn check_tokenization(mut string_reader: StringReader<'_>, expected: Vec<TokenKind>) {
-        for expected_tok in &expected {
-            assert_eq!(&string_reader.next_token(), expected_tok);
-        }
-    }
-
-    // make the identifier by looking up the string in the interner
-    fn mk_ident(id: &str) -> TokenKind {
-        token::Ident(Symbol::intern(id), false)
-    }
-
-    fn mk_lit(kind: token::LitKind, symbol: &str, suffix: Option<&str>) -> TokenKind {
-        TokenKind::lit(kind, Symbol::intern(symbol), suffix.map(Symbol::intern))
-    }
-
-    #[test]
-    fn doublecolonparsing() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            check_tokenization(setup(&sm, &sh, "a b".to_string()),
-                            vec![mk_ident("a"), token::Whitespace, mk_ident("b")]);
-        })
-    }
-
-    #[test]
-    fn dcparsing_2() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            check_tokenization(setup(&sm, &sh, "a::b".to_string()),
-                            vec![mk_ident("a"), token::ModSep, mk_ident("b")]);
-        })
-    }
-
-    #[test]
-    fn dcparsing_3() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            check_tokenization(setup(&sm, &sh, "a ::b".to_string()),
-                            vec![mk_ident("a"), token::Whitespace, token::ModSep, mk_ident("b")]);
-        })
-    }
-
-    #[test]
-    fn dcparsing_4() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            check_tokenization(setup(&sm, &sh, "a:: b".to_string()),
-                            vec![mk_ident("a"), token::ModSep, token::Whitespace, mk_ident("b")]);
-        })
-    }
-
-    #[test]
-    fn character_a() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            assert_eq!(setup(&sm, &sh, "'a'".to_string()).next_token(),
-                       mk_lit(token::Char, "a", None));
-        })
-    }
-
-    #[test]
-    fn character_space() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            assert_eq!(setup(&sm, &sh, "' '".to_string()).next_token(),
-                       mk_lit(token::Char, " ", None));
-        })
-    }
-
-    #[test]
-    fn character_escaped() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            assert_eq!(setup(&sm, &sh, "'\\n'".to_string()).next_token(),
-                       mk_lit(token::Char, "\\n", None));
-        })
-    }
-
-    #[test]
-    fn lifetime_name() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            assert_eq!(setup(&sm, &sh, "'abc".to_string()).next_token(),
-                       token::Lifetime(Symbol::intern("'abc")));
-        })
-    }
-
-    #[test]
-    fn raw_string() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            assert_eq!(setup(&sm, &sh, "r###\"\"#a\\b\x00c\"\"###".to_string()).next_token(),
-                       mk_lit(token::StrRaw(3), "\"#a\\b\x00c\"", None));
-        })
-    }
-
-    #[test]
-    fn literal_suffixes() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            macro_rules! test {
-                ($input: expr, $tok_type: ident, $tok_contents: expr) => {{
-                    assert_eq!(setup(&sm, &sh, format!("{}suffix", $input)).next_token(),
-                               mk_lit(token::$tok_type, $tok_contents, Some("suffix")));
-                    // with a whitespace separator:
-                    assert_eq!(setup(&sm, &sh, format!("{} suffix", $input)).next_token(),
-                               mk_lit(token::$tok_type, $tok_contents, None));
-                }}
-            }
-
-            test!("'a'", Char, "a");
-            test!("b'a'", Byte, "a");
-            test!("\"a\"", Str, "a");
-            test!("b\"a\"", ByteStr, "a");
-            test!("1234", Integer, "1234");
-            test!("0b101", Integer, "0b101");
-            test!("0xABC", Integer, "0xABC");
-            test!("1.0", Float, "1.0");
-            test!("1.0e10", Float, "1.0e10");
-
-            assert_eq!(setup(&sm, &sh, "2us".to_string()).next_token(),
-                       mk_lit(token::Integer, "2", Some("us")));
-            assert_eq!(setup(&sm, &sh, "r###\"raw\"###suffix".to_string()).next_token(),
-                       mk_lit(token::StrRaw(3), "raw", Some("suffix")));
-            assert_eq!(setup(&sm, &sh, "br###\"raw\"###suffix".to_string()).next_token(),
-                       mk_lit(token::ByteStrRaw(3), "raw", Some("suffix")));
-        })
-    }
-
-    #[test]
-    fn line_doc_comments() {
-        assert!(is_doc_comment("///"));
-        assert!(is_doc_comment("/// blah"));
-        assert!(!is_doc_comment("////"));
-    }
-
-    #[test]
-    fn nested_block_comments() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            let mut lexer = setup(&sm, &sh, "/* /* */ */'a'".to_string());
-            assert_eq!(lexer.next_token(), token::Comment);
-            assert_eq!(lexer.next_token(), mk_lit(token::Char, "a", None));
-        })
-    }
-
-    #[test]
-    fn crlf_comments() {
-        with_default_globals(|| {
-            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
-            let sh = mk_sess(sm.clone());
-            let mut lexer = setup(&sm, &sh, "// test\r\n/// test\r\n".to_string());
-            let comment = lexer.next_token();
-            assert_eq!(comment.kind, token::Comment);
-            assert_eq!((comment.span.lo(), comment.span.hi()), (BytePos(0), BytePos(7)));
-            assert_eq!(lexer.next_token(), token::Whitespace);
-            assert_eq!(lexer.next_token(), token::DocComment(Symbol::intern("/// test")));
-        })
-    }
 }

@@ -21,7 +21,8 @@ use rustc_serialize::{Encodable, Decodable, Encoder, Decoder};
 pub mod edition;
 use edition::Edition;
 pub mod hygiene;
-pub use hygiene::{ExpnId, SyntaxContext, ExpnInfo, ExpnKind, MacroKind, DesugaringKind};
+pub use hygiene::{ExpnId, SyntaxContext, ExpnData, ExpnKind, MacroKind, DesugaringKind};
+use hygiene::Transparency;
 
 mod span_encoding;
 pub use span_encoding::{Span, DUMMY_SP};
@@ -42,11 +43,13 @@ use std::hash::{Hasher, Hash};
 use std::ops::{Add, Sub};
 use std::path::PathBuf;
 
+#[cfg(test)]
+mod tests;
+
 pub struct Globals {
     symbol_interner: Lock<symbol::Interner>,
     span_interner: Lock<span_encoding::SpanInterner>,
     hygiene_data: Lock<hygiene::HygieneData>,
-    edition: Edition,
 }
 
 impl Globals {
@@ -55,7 +58,6 @@ impl Globals {
             symbol_interner: Lock::new(symbol::Interner::fresh()),
             span_interner: Lock::new(span_encoding::SpanInterner::default()),
             hygiene_data: Lock::new(hygiene::HygieneData::new(edition)),
-            edition,
         }
     }
 }
@@ -285,6 +287,17 @@ impl Span {
         span.lo.0 == 0 && span.hi.0 == 0
     }
 
+    /// Returns `true` if this span comes from a macro or desugaring.
+    #[inline]
+    pub fn from_expansion(self) -> bool {
+        self.ctxt() != SyntaxContext::root()
+    }
+
+    #[inline]
+    pub fn with_root_ctxt(lo: BytePos, hi: BytePos) -> Span {
+        Span::new(lo, hi, SyntaxContext::root())
+    }
+
     /// Returns a new span representing an empty span at the beginning of this span
     #[inline]
     pub fn shrink_to_lo(self) -> Span {
@@ -341,20 +354,20 @@ impl Span {
     /// Returns the source span -- this is either the supplied span, or the span for
     /// the macro callsite that expanded to it.
     pub fn source_callsite(self) -> Span {
-        self.ctxt().outer_expn_info().map(|info| info.call_site.source_callsite()).unwrap_or(self)
+        let expn_data = self.ctxt().outer_expn_data();
+        if !expn_data.is_root() { expn_data.call_site.source_callsite() } else { self }
     }
 
     /// The `Span` for the tokens in the previous macro expansion from which `self` was generated,
     /// if any.
     pub fn parent(self) -> Option<Span> {
-        self.ctxt().outer_expn_info().map(|i| i.call_site)
+        let expn_data = self.ctxt().outer_expn_data();
+        if !expn_data.is_root() { Some(expn_data.call_site) } else { None }
     }
 
     /// Edition of the crate from which this span came.
     pub fn edition(self) -> edition::Edition {
-        self.ctxt().outer_expn_info().map_or_else(|| {
-            Edition::from_session()
-        }, |einfo| einfo.edition)
+        self.ctxt().outer_expn_data().edition
     }
 
     #[inline]
@@ -370,52 +383,42 @@ impl Span {
     /// Returns the source callee.
     ///
     /// Returns `None` if the supplied span has no expansion trace,
-    /// else returns the `ExpnInfo` for the macro definition
+    /// else returns the `ExpnData` for the macro definition
     /// corresponding to the source callsite.
-    pub fn source_callee(self) -> Option<ExpnInfo> {
-        fn source_callee(info: ExpnInfo) -> ExpnInfo {
-            match info.call_site.ctxt().outer_expn_info() {
-                Some(info) => source_callee(info),
-                None => info,
-            }
+    pub fn source_callee(self) -> Option<ExpnData> {
+        fn source_callee(expn_data: ExpnData) -> ExpnData {
+            let next_expn_data = expn_data.call_site.ctxt().outer_expn_data();
+            if !next_expn_data.is_root() { source_callee(next_expn_data) } else { expn_data }
         }
-        self.ctxt().outer_expn_info().map(source_callee)
+        let expn_data = self.ctxt().outer_expn_data();
+        if !expn_data.is_root() { Some(source_callee(expn_data)) } else { None }
     }
 
     /// Checks if a span is "internal" to a macro in which `#[unstable]`
     /// items can be used (that is, a macro marked with
     /// `#[allow_internal_unstable]`).
     pub fn allows_unstable(&self, feature: Symbol) -> bool {
-        match self.ctxt().outer_expn_info() {
-            Some(info) => info
-                .allow_internal_unstable
-                .map_or(false, |features| features.iter().any(|&f|
-                    f == feature || f == sym::allow_internal_unstable_backcompat_hack
-                )),
-            None => false,
-        }
+        self.ctxt().outer_expn_data().allow_internal_unstable.map_or(false, |features| {
+            features.iter().any(|&f| {
+                f == feature || f == sym::allow_internal_unstable_backcompat_hack
+            })
+        })
     }
 
     /// Checks if this span arises from a compiler desugaring of kind `kind`.
     pub fn is_desugaring(&self, kind: DesugaringKind) -> bool {
-        match self.ctxt().outer_expn_info() {
-            Some(info) => match info.kind {
-                ExpnKind::Desugaring(k) => k == kind,
-                _ => false,
-            },
-            None => false,
+        match self.ctxt().outer_expn_data().kind {
+            ExpnKind::Desugaring(k) => k == kind,
+            _ => false,
         }
     }
 
     /// Returns the compiler desugaring that created this span, or `None`
     /// if this span is not from a desugaring.
     pub fn desugaring_kind(&self) -> Option<DesugaringKind> {
-        match self.ctxt().outer_expn_info() {
-            Some(info) => match info.kind {
-                ExpnKind::Desugaring(k) => Some(k),
-                _ => None
-            },
-            None => None
+        match self.ctxt().outer_expn_data().kind {
+            ExpnKind::Desugaring(k) => Some(k),
+            _ => None
         }
     }
 
@@ -423,21 +426,23 @@ impl Span {
     /// can be used without triggering the `unsafe_code` lint
     //  (that is, a macro marked with `#[allow_internal_unsafe]`).
     pub fn allows_unsafe(&self) -> bool {
-        match self.ctxt().outer_expn_info() {
-            Some(info) => info.allow_internal_unsafe,
-            None => false,
-        }
+        self.ctxt().outer_expn_data().allow_internal_unsafe
     }
 
     pub fn macro_backtrace(mut self) -> Vec<MacroBacktrace> {
         let mut prev_span = DUMMY_SP;
         let mut result = vec![];
-        while let Some(info) = self.ctxt().outer_expn_info() {
+        loop {
+            let expn_data = self.ctxt().outer_expn_data();
+            if expn_data.is_root() {
+                break;
+            }
             // Don't print recursive invocations.
-            if !info.call_site.source_equal(&prev_span) {
-                let (pre, post) = match info.kind {
+            if !expn_data.call_site.source_equal(&prev_span) {
+                let (pre, post) = match expn_data.kind {
                     ExpnKind::Root => break,
                     ExpnKind::Desugaring(..) => ("desugaring of ", ""),
+                    ExpnKind::AstPass(..) => ("", ""),
                     ExpnKind::Macro(macro_kind, _) => match macro_kind {
                         MacroKind::Bang => ("", "!"),
                         MacroKind::Attr => ("#[", "]"),
@@ -445,14 +450,14 @@ impl Span {
                     }
                 };
                 result.push(MacroBacktrace {
-                    call_site: info.call_site,
-                    macro_decl_name: format!("{}{}{}", pre, info.kind.descr(), post),
-                    def_site_span: info.def_site,
+                    call_site: expn_data.call_site,
+                    macro_decl_name: format!("{}{}{}", pre, expn_data.kind.descr(), post),
+                    def_site_span: expn_data.def_site,
                 });
             }
 
             prev_span = self;
-            self = info.call_site;
+            self = expn_data.call_site;
         }
         result
     }
@@ -465,9 +470,9 @@ impl Span {
         // Return the macro span on its own to avoid weird diagnostic output. It is preferable to
         // have an incomplete span than a completely nonsensical one.
         if span_data.ctxt != end_data.ctxt {
-            if span_data.ctxt == SyntaxContext::empty() {
+            if span_data.ctxt == SyntaxContext::root() {
                 return end;
-            } else if end_data.ctxt == SyntaxContext::empty() {
+            } else if end_data.ctxt == SyntaxContext::root() {
                 return self;
             }
             // Both spans fall within a macro.
@@ -476,7 +481,7 @@ impl Span {
         Span::new(
             cmp::min(span_data.lo, end_data.lo),
             cmp::max(span_data.hi, end_data.hi),
-            if span_data.ctxt == SyntaxContext::empty() { end_data.ctxt } else { span_data.ctxt },
+            if span_data.ctxt == SyntaxContext::root() { end_data.ctxt } else { span_data.ctxt },
         )
     }
 
@@ -487,7 +492,7 @@ impl Span {
         Span::new(
             span.hi,
             end.lo,
-            if end.ctxt == SyntaxContext::empty() { end.ctxt } else { span.ctxt },
+            if end.ctxt == SyntaxContext::root() { end.ctxt } else { span.ctxt },
         )
     }
 
@@ -498,7 +503,7 @@ impl Span {
         Span::new(
             span.lo,
             end.lo,
-            if end.ctxt == SyntaxContext::empty() { end.ctxt } else { span.ctxt },
+            if end.ctxt == SyntaxContext::root() { end.ctxt } else { span.ctxt },
         )
     }
 
@@ -509,10 +514,36 @@ impl Span {
                   span.ctxt)
     }
 
+    /// Equivalent of `Span::def_site` from the proc macro API,
+    /// except that the location is taken from the `self` span.
+    pub fn with_def_site_ctxt(self, expn_id: ExpnId) -> Span {
+        self.with_ctxt_from_mark(expn_id, Transparency::Opaque)
+    }
+
+    /// Equivalent of `Span::call_site` from the proc macro API,
+    /// except that the location is taken from the `self` span.
+    pub fn with_call_site_ctxt(&self, expn_id: ExpnId) -> Span {
+        self.with_ctxt_from_mark(expn_id, Transparency::Transparent)
+    }
+
+    /// Span with a context reproducing `macro_rules` hygiene (hygienic locals, unhygienic items).
+    /// FIXME: This should be eventually replaced either with `with_def_site_ctxt` (preferably),
+    /// or with `with_call_site_ctxt` (where necessary).
+    pub fn with_legacy_ctxt(&self, expn_id: ExpnId) -> Span {
+        self.with_ctxt_from_mark(expn_id, Transparency::SemiTransparent)
+    }
+
+    /// Produces a span with the same location as `self` and context produced by a macro with the
+    /// given ID and transparency, assuming that macro was defined directly and not produced by
+    /// some other macro (which is the case for built-in and procedural macros).
+    pub fn with_ctxt_from_mark(self, expn_id: ExpnId, transparency: Transparency) -> Span {
+        self.with_ctxt(SyntaxContext::root().apply_mark(expn_id, transparency))
+    }
+
     #[inline]
-    pub fn apply_mark(self, mark: ExpnId) -> Span {
+    pub fn apply_mark(self, expn_id: ExpnId, transparency: Transparency) -> Span {
         let span = self.data();
-        span.with_ctxt(span.ctxt.apply_mark(mark))
+        span.with_ctxt(span.ctxt.apply_mark(expn_id, transparency))
     }
 
     #[inline]
@@ -608,7 +639,7 @@ impl rustc_serialize::UseSpecializedDecodable for Span {
         d.read_struct("Span", 2, |d| {
             let lo = d.read_struct_field("lo", 0, Decodable::decode)?;
             let hi = d.read_struct_field("hi", 1, Decodable::decode)?;
-            Ok(Span::new(lo, hi, NO_EXPANSION))
+            Ok(Span::with_root_ctxt(lo, hi))
         })
     }
 }
@@ -751,8 +782,6 @@ impl From<Vec<Span>> for MultiSpan {
         MultiSpan::from_spans(spans)
     }
 }
-
-pub const NO_EXPANSION: SyntaxContext = SyntaxContext::empty();
 
 /// Identifies an offset of a multi-byte character in a `SourceFile`.
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable, Eq, PartialEq, Debug)]
@@ -1042,6 +1071,7 @@ impl SourceFile {
                mut src: String,
                start_pos: BytePos) -> Result<SourceFile, OffsetOverflowError> {
         remove_bom(&mut src);
+        normalize_newlines(&mut src);
 
         let src_hash = {
             let mut hasher: StableHasher<u128> = StableHasher::new();
@@ -1206,6 +1236,61 @@ impl SourceFile {
 fn remove_bom(src: &mut String) {
     if src.starts_with("\u{feff}") {
         src.drain(..3);
+    }
+}
+
+
+/// Replaces `\r\n` with `\n` in-place in `src`.
+///
+/// Returns error if there's a lone `\r` in the string
+fn normalize_newlines(src: &mut String) {
+    if !src.as_bytes().contains(&b'\r') {
+        return;
+    }
+
+    // We replace `\r\n` with `\n` in-place, which doesn't break utf-8 encoding.
+    // While we *can* call `as_mut_vec` and do surgery on the live string
+    // directly, let's rather steal the contents of `src`. This makes the code
+    // safe even if a panic occurs.
+
+    let mut buf = std::mem::replace(src, String::new()).into_bytes();
+    let mut gap_len = 0;
+    let mut tail = buf.as_mut_slice();
+    loop {
+        let idx = match find_crlf(&tail[gap_len..]) {
+            None => tail.len(),
+            Some(idx) => idx + gap_len,
+        };
+        tail.copy_within(gap_len..idx, 0);
+        tail = &mut tail[idx - gap_len..];
+        if tail.len() == gap_len {
+            break;
+        }
+        gap_len += 1;
+    }
+
+    // Account for removed `\r`.
+    // After `set_len`, `buf` is guaranteed to contain utf-8 again.
+    let new_len = buf.len() - gap_len;
+    unsafe {
+        buf.set_len(new_len);
+        *src = String::from_utf8_unchecked(buf);
+    }
+
+    fn find_crlf(src: &[u8]) -> Option<usize> {
+        let mut search_idx = 0;
+        while let Some(idx) = find_cr(&src[search_idx..]) {
+            if src[search_idx..].get(idx + 1) != Some(&b'\n') {
+                search_idx += idx + 1;
+                continue;
+            }
+            return Some(search_idx + idx);
+        }
+        None
+    }
+
+    fn find_cr(src: &[u8]) -> Option<usize> {
+        src.iter().position(|&b| b == b'\r')
     }
 }
 
@@ -1399,6 +1484,7 @@ pub struct MalformedSourceMapPositions {
     pub end_pos: BytePos
 }
 
+/// Range inside of a `Span` used for diagnostics when we only have access to relative positions.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub struct InnerSpan {
     pub start: usize,
@@ -1418,27 +1504,5 @@ fn lookup_line(lines: &[BytePos], pos: BytePos) -> isize {
     match lines.binary_search(&pos) {
         Ok(line) => line as isize,
         Err(line) => line as isize - 1
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{lookup_line, BytePos};
-
-    #[test]
-    fn test_lookup_line() {
-
-        let lines = &[BytePos(3), BytePos(17), BytePos(28)];
-
-        assert_eq!(lookup_line(lines, BytePos(0)), -1);
-        assert_eq!(lookup_line(lines, BytePos(3)),  0);
-        assert_eq!(lookup_line(lines, BytePos(4)),  0);
-
-        assert_eq!(lookup_line(lines, BytePos(16)), 0);
-        assert_eq!(lookup_line(lines, BytePos(17)), 1);
-        assert_eq!(lookup_line(lines, BytePos(18)), 1);
-
-        assert_eq!(lookup_line(lines, BytePos(28)), 2);
-        assert_eq!(lookup_line(lines, BytePos(29)), 2);
     }
 }

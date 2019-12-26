@@ -1,5 +1,5 @@
-use crate::support::is_nightly;
-use crate::support::project;
+use cargo_test_support::is_nightly;
+use cargo_test_support::project;
 
 #[cargo_test]
 fn probe_cfg_before_crate_type_discovery() {
@@ -228,8 +228,8 @@ fn plugin_and_proc_macro() {
             #![feature(plugin_registrar, rustc_private)]
             #![feature(proc_macro, proc_macro_lib)]
 
-            extern crate rustc_plugin;
-            use rustc_plugin::Registry;
+            extern crate rustc_driver;
+            use rustc_driver::plugin::Registry;
 
             extern crate proc_macro;
             use proc_macro::TokenStream;

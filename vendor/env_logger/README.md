@@ -16,7 +16,7 @@ It must be added along with `log` to the project dependencies:
 ```toml
 [dependencies]
 log = "0.4.0"
-env_logger = "0.6.0"
+env_logger = "0.6.2"
 ```
 
 `env_logger` must be initialized as early as possible in the project. After it's initialized, you can use the `log` macros to do actual logging.
@@ -43,6 +43,8 @@ $ RUST_LOG=info ./main
 [2018-11-03T06:09:06Z INFO  default] starting up
 ```
 
+`env_logger` can be configured in other ways besides an environment variable. See [the examples](https://github.com/sebasmagri/env_logger/tree/master/examples) for more approaches.
+
 ### In tests
 
 Tests can use the `env_logger` crate to see log messages generated during that test:
@@ -52,7 +54,7 @@ Tests can use the `env_logger` crate to see log messages generated during that t
 log = "0.4.0"
 
 [dev-dependencies]
-env_logger = { version = "0.6.0", default-features = false }
+env_logger = "0.6.2"
 ```
 
 ```rust
@@ -69,16 +71,22 @@ mod tests {
     use super::*;
     extern crate env_logger;
 
+    fn init() {
+        let _ = env_logger::builder().is_test(true).try_init();
+    }
+
     #[test]
     fn it_adds_one() {
-        let _ = env_logger::try_init();
+        init();
+
         info!("can log from the test too");
         assert_eq!(3, add_one(2));
     }
 
     #[test]
     fn it_handles_negative_numbers() {
-        let _ = env_logger::try_init();
+        init();
+
         info!("logging from another test");
         assert_eq!(-7, add_one(-8));
     }

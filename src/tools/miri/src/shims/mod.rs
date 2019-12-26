@@ -2,6 +2,7 @@ pub mod foreign_items;
 pub mod intrinsics;
 pub mod tls;
 pub mod dlsym;
+pub mod env;
 
 use rustc::{ty, mir};
 
@@ -46,6 +47,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         }
 
         // Otherwise, load the MIR.
-        Ok(Some(this.load_mir(instance.def)?))
+        Ok(Some(this.load_mir(instance.def, None)?))
     }
 }

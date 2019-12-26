@@ -12,22 +12,24 @@ use crate::check::fatally_break_rust;
 use crate::check::report_unexpected_variant_res;
 use crate::check::Needs;
 use crate::check::TupleArgumentsFlag::DontTupleArguments;
-use crate::check::method::SelfSource;
+use crate::check::method::{probe, SelfSource, MethodError};
 use crate::util::common::ErrorReported;
 use crate::util::nodemap::FxHashMap;
 use crate::astconv::AstConv as _;
 
-use errors::{Applicability, DiagnosticBuilder};
+use errors::{Applicability, DiagnosticBuilder, pluralise};
 use syntax::ast;
-use syntax::symbol::{Symbol, LocalInternedString, kw, sym};
+use syntax::symbol::{Symbol, kw, sym};
 use syntax::source_map::Span;
 use syntax::util::lev_distance::find_best_match_for_name;
 use rustc::hir;
 use rustc::hir::{ExprKind, QPath};
+use rustc::hir::def_id::DefId;
 use rustc::hir::def::{CtorKind, Res, DefKind};
 use rustc::hir::ptr::P;
 use rustc::infer;
 use rustc::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
+use rustc::middle::lang_items;
 use rustc::mir::interpret::GlobalId;
 use rustc::ty;
 use rustc::ty::adjustment::{
@@ -159,12 +161,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // Warn for non-block expressions with diverging children.
         match expr.node {
             ExprKind::Block(..) | ExprKind::Loop(..) | ExprKind::Match(..) => {},
+            ExprKind::Call(ref callee, _) =>
+                self.warn_if_unreachable(expr.hir_id, callee.span, "call"),
+            ExprKind::MethodCall(_, ref span, _) =>
+                self.warn_if_unreachable(expr.hir_id, *span, "call"),
             _ => self.warn_if_unreachable(expr.hir_id, expr.span, "expression"),
         }
 
         // Any expression that produces a value of type `!` must have diverged
         if ty.is_never() {
-            self.diverges.set(self.diverges.get() | Diverges::Always);
+            self.diverges.set(self.diverges.get() | Diverges::always(expr.span));
         }
 
         // Record the type, which applies it effects.
@@ -542,7 +548,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // the `enclosing_loops` field and let's coerce the
             // type of `expr_opt` into what is expected.
             let mut enclosing_breakables = self.enclosing_breakables.borrow_mut();
-            let ctxt = enclosing_breakables.find_breakable(target_id);
+            let ctxt = match enclosing_breakables.opt_find_breakable(target_id) {
+                Some(ctxt) => ctxt,
+                None => { // Avoid ICE when `break` is inside a closure (#65383).
+                    self.tcx.sess.delay_span_bug(
+                        expr.span,
+                        "break was outside loop, but no error was emitted",
+                    );
+                    return tcx.types.err;
+                }
+            };
+
             if let Some(ref mut coerce) = ctxt.coerce {
                 if let Some(ref e) = expr_opt {
                     coerce.coerce(self, &cause, e, e_ty);
@@ -568,7 +584,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 }
             } else {
                 // If `ctxt.coerce` is `None`, we can just ignore
-                // the type of the expresison.  This is because
+                // the type of the expression.  This is because
                 // either this was a break *without* a value, in
                 // which case it is always a legal type (`()`), or
                 // else an error would have been flagged by the
@@ -774,35 +790,75 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // no need to check for bot/err -- callee does that
         let rcvr_t = self.structurally_resolved_type(args[0].span, rcvr_t);
 
-        let method = match self.lookup_method(rcvr_t,
-                                              segment,
-                                              span,
-                                              expr,
-                                              rcvr) {
+        let method = match self.lookup_method(rcvr_t, segment, span, expr, rcvr) {
             Ok(method) => {
                 self.write_method_call(expr.hir_id, method);
                 Ok(method)
             }
             Err(error) => {
                 if segment.ident.name != kw::Invalid {
-                    self.report_method_error(span,
-                                             rcvr_t,
-                                             segment.ident,
-                                             SelfSource::MethodCall(rcvr),
-                                             error,
-                                             Some(args));
+                    self.report_extended_method_error(segment, span, args, rcvr_t, error);
                 }
                 Err(())
             }
         };
 
         // Call the generic checker.
-        self.check_method_argument_types(span,
-                                         expr.span,
-                                         method,
-                                         &args[1..],
-                                         DontTupleArguments,
-                                         expected)
+        self.check_method_argument_types(
+            span,
+            expr,
+            method,
+            &args[1..],
+            DontTupleArguments,
+            expected,
+        )
+    }
+
+    fn report_extended_method_error(
+        &self,
+        segment: &hir::PathSegment,
+        span: Span,
+        args: &'tcx [hir::Expr],
+        rcvr_t: Ty<'tcx>,
+        error: MethodError<'tcx>
+    ) {
+        let rcvr = &args[0];
+        let try_alt_rcvr = |err: &mut DiagnosticBuilder<'_>, rcvr_t, lang_item| {
+            if let Some(new_rcvr_t) = self.tcx.mk_lang_item(rcvr_t, lang_item) {
+                if let Ok(pick) = self.lookup_probe(
+                    span,
+                    segment.ident,
+                    new_rcvr_t,
+                    rcvr,
+                    probe::ProbeScope::AllTraits,
+                ) {
+                    err.span_label(
+                        pick.item.ident.span,
+                        &format!("the method is available for `{}` here", new_rcvr_t),
+                    );
+                }
+            }
+        };
+
+        if let Some(mut err) = self.report_method_error(
+            span,
+            rcvr_t,
+            segment.ident,
+            SelfSource::MethodCall(rcvr),
+            error,
+            Some(args),
+        ) {
+            if let ty::Adt(..) = rcvr_t.sty {
+                // Try alternative arbitrary self types that could fulfill this call.
+                // FIXME: probe for all types that *could* be arbitrary self-types, not
+                // just this whitelist.
+                try_alt_rcvr(&mut err, rcvr_t, lang_items::OwnedBoxLangItem);
+                try_alt_rcvr(&mut err, rcvr_t, lang_items::PinTypeLangItem);
+                try_alt_rcvr(&mut err, rcvr_t, lang_items::Arc);
+                try_alt_rcvr(&mut err, rcvr_t, lang_items::Rc);
+            }
+            err.emit();
+        }
     }
 
     fn check_expr_cast(
@@ -1132,7 +1188,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
             struct_span_err!(tcx.sess, span, E0063,
                              "missing field{} {}{} in initializer of `{}`",
-                             if remaining_fields.len() == 1 { "" } else { "s" },
+                             pluralise!(remaining_fields.len()),
                              remaining_fields_names,
                              truncated_fields_error,
                              adt_ty)
@@ -1197,7 +1253,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
             _ => {
                 // prevent all specified fields from being suggested
-                let skip_fields = skip_fields.iter().map(|ref x| x.ident.as_str());
+                let skip_fields = skip_fields.iter().map(|ref x| x.ident.name);
                 if let Some(field_name) = Self::suggest_field_name(
                     variant,
                     &field.ident.as_str(),
@@ -1241,11 +1297,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     // Return an hint about the closest match in field names
     fn suggest_field_name(variant: &'tcx ty::VariantDef,
                           field: &str,
-                          skip: Vec<LocalInternedString>)
+                          skip: Vec<Symbol>)
                           -> Option<Symbol> {
         let names = variant.fields.iter().filter_map(|field| {
             // ignore already set fields and private fields from non-local crates
-            if skip.iter().any(|x| *x == field.ident.as_str()) ||
+            if skip.iter().any(|&x| x == field.ident.name) ||
                (!variant.def_id.is_local() && field.vis != Visibility::Public)
             {
                 None
@@ -1336,114 +1392,187 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         autoderef.unambiguous_final_ty(self);
 
         if let Some((did, field_ty)) = private_candidate {
-            let struct_path = self.tcx().def_path_str(did);
-            let mut err = struct_span_err!(self.tcx().sess, expr.span, E0616,
-                                           "field `{}` of struct `{}` is private",
-                                           field, struct_path);
-            // Also check if an accessible method exists, which is often what is meant.
-            if self.method_exists(field, expr_t, expr.hir_id, false)
-                && !self.expr_in_place(expr.hir_id)
-            {
-                self.suggest_method_call(
-                    &mut err,
-                    &format!("a method `{}` also exists, call it with parentheses", field),
-                    field,
-                    expr_t,
-                    expr.hir_id,
-                );
-            }
-            err.emit();
-            field_ty
-        } else if field.name == kw::Invalid {
-            self.tcx().types.err
-        } else if self.method_exists(field, expr_t, expr.hir_id, true) {
-            let mut err = type_error_struct!(self.tcx().sess, field.span, expr_t, E0615,
-                               "attempted to take value of method `{}` on type `{}`",
-                               field, expr_t);
-
-            if !self.expr_in_place(expr.hir_id) {
-                self.suggest_method_call(
-                    &mut err,
-                    "use parentheses to call the method",
-                    field,
-                    expr_t,
-                    expr.hir_id
-                );
-            } else {
-                err.help("methods are immutable and cannot be assigned to");
-            }
-
-            err.emit();
-            self.tcx().types.err
-        } else {
-            if !expr_t.is_primitive_ty() {
-                let mut err = self.no_such_field_err(field.span, field, expr_t);
-
-                match expr_t.sty {
-                    ty::Adt(def, _) if !def.is_enum() => {
-                        if let Some(suggested_field_name) =
-                            Self::suggest_field_name(def.non_enum_variant(),
-                                                     &field.as_str(), vec![]) {
-                                err.span_suggestion(
-                                    field.span,
-                                    "a field with a similar name exists",
-                                    suggested_field_name.to_string(),
-                                    Applicability::MaybeIncorrect,
-                                );
-                            } else {
-                                err.span_label(field.span, "unknown field");
-                                let struct_variant_def = def.non_enum_variant();
-                                let field_names = self.available_field_names(struct_variant_def);
-                                if !field_names.is_empty() {
-                                    err.note(&format!("available fields are: {}",
-                                                      self.name_series_display(field_names)));
-                                }
-                            };
-                    }
-                    ty::Array(_, len) => {
-                        if let (Some(len), Ok(user_index)) = (
-                            len.try_eval_usize(self.tcx, self.param_env),
-                            field.as_str().parse::<u64>()
-                        ) {
-                            let base = self.tcx.sess.source_map()
-                                .span_to_snippet(base.span)
-                                .unwrap_or_else(|_|
-                                    self.tcx.hir().hir_to_pretty_string(base.hir_id));
-                            let help = "instead of using tuple indexing, use array indexing";
-                            let suggestion = format!("{}[{}]", base, field);
-                            let applicability = if len < user_index {
-                                Applicability::MachineApplicable
-                            } else {
-                                Applicability::MaybeIncorrect
-                            };
-                            err.span_suggestion(
-                                expr.span, help, suggestion, applicability
-                            );
-                        }
-                    }
-                    ty::RawPtr(..) => {
-                        let base = self.tcx.sess.source_map()
-                            .span_to_snippet(base.span)
-                            .unwrap_or_else(|_| self.tcx.hir().hir_to_pretty_string(base.hir_id));
-                        let msg = format!("`{}` is a raw pointer; try dereferencing it", base);
-                        let suggestion = format!("(*{}).{}", base, field);
-                        err.span_suggestion(
-                            expr.span,
-                            &msg,
-                            suggestion,
-                            Applicability::MaybeIncorrect,
-                        );
-                    }
-                    _ => {}
-                }
-                err
-            } else {
-                type_error_struct!(self.tcx().sess, field.span, expr_t, E0610,
-                                   "`{}` is a primitive type and therefore doesn't have fields",
-                                   expr_t)
-            }.emit();
-            self.tcx().types.err
+            self.ban_private_field_access(expr, expr_t, field, did);
+            return field_ty;
         }
+
+        if field.name == kw::Invalid {
+        } else if self.method_exists(field, expr_t, expr.hir_id, true) {
+            self.ban_take_value_of_method(expr, expr_t, field);
+        } else if !expr_t.is_primitive_ty() {
+            let mut err = self.no_such_field_err(field.span, field, expr_t);
+
+            match expr_t.sty {
+                ty::Adt(def, _) if !def.is_enum() => {
+                    self.suggest_fields_on_recordish(&mut err, def, field);
+                }
+                ty::Array(_, len) => {
+                    self.maybe_suggest_array_indexing(&mut err, expr, base, field, len);
+                }
+                ty::RawPtr(..) => {
+                    self.suggest_first_deref_field(&mut err, expr, base, field);
+                }
+                _ => {}
+            }
+
+            if field.name == kw::Await {
+                // We know by construction that `<expr>.await` is either on Rust 2015
+                // or results in `ExprKind::Await`. Suggest switching the edition to 2018.
+                err.note("to `.await` a `Future`, switch to Rust 2018");
+                err.help("set `edition = \"2018\"` in `Cargo.toml`");
+                err.note("for more on editions, read https://doc.rust-lang.org/edition-guide");
+            }
+
+            err.emit();
+        } else {
+            type_error_struct!(
+                self.tcx().sess,
+                field.span,
+                expr_t,
+                E0610,
+                "`{}` is a primitive type and therefore doesn't have fields",
+                expr_t
+            )
+            .emit();
+        }
+
+        self.tcx().types.err
+    }
+
+    fn ban_private_field_access(
+        &self,
+        expr: &hir::Expr,
+        expr_t: Ty<'tcx>,
+        field: ast::Ident,
+        base_did: DefId,
+    ) {
+        let struct_path = self.tcx().def_path_str(base_did);
+        let kind_name = match self.tcx().def_kind(base_did) {
+            Some(def_kind) => def_kind.descr(base_did),
+            _ => " ",
+        };
+        let mut err = struct_span_err!(
+            self.tcx().sess,
+            expr.span,
+            E0616,
+            "field `{}` of {} `{}` is private",
+            field,
+            kind_name,
+            struct_path
+        );
+        // Also check if an accessible method exists, which is often what is meant.
+        if self.method_exists(field, expr_t, expr.hir_id, false)
+            && !self.expr_in_place(expr.hir_id)
+        {
+            self.suggest_method_call(
+                &mut err,
+                &format!("a method `{}` also exists, call it with parentheses", field),
+                field,
+                expr_t,
+                expr.hir_id,
+            );
+        }
+        err.emit();
+    }
+
+    fn ban_take_value_of_method(&self, expr: &hir::Expr, expr_t: Ty<'tcx>, field: ast::Ident) {
+        let mut err = type_error_struct!(
+            self.tcx().sess,
+            field.span,
+            expr_t,
+            E0615,
+            "attempted to take value of method `{}` on type `{}`",
+            field,
+            expr_t
+        );
+
+        if !self.expr_in_place(expr.hir_id) {
+            self.suggest_method_call(
+                &mut err,
+                "use parentheses to call the method",
+                field,
+                expr_t,
+                expr.hir_id
+            );
+        } else {
+            err.help("methods are immutable and cannot be assigned to");
+        }
+
+        err.emit();
+    }
+
+    fn suggest_fields_on_recordish(
+        &self,
+        err: &mut DiagnosticBuilder<'_>,
+        def: &'tcx ty::AdtDef,
+        field: ast::Ident,
+    ) {
+        if let Some(suggested_field_name) =
+            Self::suggest_field_name(def.non_enum_variant(), &field.as_str(), vec![])
+        {
+            err.span_suggestion(
+                field.span,
+                "a field with a similar name exists",
+                suggested_field_name.to_string(),
+                Applicability::MaybeIncorrect,
+            );
+        } else {
+            err.span_label(field.span, "unknown field");
+            let struct_variant_def = def.non_enum_variant();
+            let field_names = self.available_field_names(struct_variant_def);
+            if !field_names.is_empty() {
+                err.note(&format!(
+                    "available fields are: {}",
+                    self.name_series_display(field_names),
+                ));
+            }
+        }
+    }
+
+    fn maybe_suggest_array_indexing(
+        &self,
+        err: &mut DiagnosticBuilder<'_>,
+        expr: &hir::Expr,
+        base: &hir::Expr,
+        field: ast::Ident,
+        len: &ty::Const<'tcx>,
+    ) {
+        if let (Some(len), Ok(user_index)) = (
+            len.try_eval_usize(self.tcx, self.param_env),
+            field.as_str().parse::<u64>()
+        ) {
+            let base = self.tcx.sess.source_map()
+                .span_to_snippet(base.span)
+                .unwrap_or_else(|_| self.tcx.hir().hir_to_pretty_string(base.hir_id));
+            let help = "instead of using tuple indexing, use array indexing";
+            let suggestion = format!("{}[{}]", base, field);
+            let applicability = if len < user_index {
+                Applicability::MachineApplicable
+            } else {
+                Applicability::MaybeIncorrect
+            };
+            err.span_suggestion(expr.span, help, suggestion, applicability);
+        }
+    }
+
+    fn suggest_first_deref_field(
+        &self,
+        err: &mut DiagnosticBuilder<'_>,
+        expr: &hir::Expr,
+        base: &hir::Expr,
+        field: ast::Ident,
+    ) {
+        let base = self.tcx.sess.source_map()
+            .span_to_snippet(base.span)
+            .unwrap_or_else(|_| self.tcx.hir().hir_to_pretty_string(base.hir_id));
+        let msg = format!("`{}` is a raw pointer; try dereferencing it", base);
+        let suggestion = format!("(*{}).{}", base, field);
+        err.span_suggestion(
+            expr.span,
+            &msg,
+            suggestion,
+            Applicability::MaybeIncorrect,
+        );
     }
 
     fn no_such_field_err<T: Display>(&self, span: Span, field: T, expr_t: &ty::TyS<'_>)

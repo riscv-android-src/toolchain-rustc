@@ -1,4 +1,7 @@
+// run-rustfix
+
 #![deny(clippy::wildcard_enum_match_arm)]
+#![allow(unreachable_code, unused_variables)]
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Color {

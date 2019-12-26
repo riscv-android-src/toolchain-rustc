@@ -18,7 +18,6 @@
 #![feature(proc_macro_diagnostic)]
 #![feature(proc_macro_internals)]
 #![feature(proc_macro_span)]
-#![feature(rustc_diagnostic_macros)]
 #![feature(try_trait)]
 #![feature(unicode_internals)]
 
@@ -32,6 +31,9 @@ use rustc_data_structures::bit_set::GrowableBitSet;
 pub use rustc_data_structures::thin_vec::ThinVec;
 use ast::AttrId;
 use syntax_pos::edition::Edition;
+
+#[cfg(test)]
+mod tests;
 
 const MACRO_ARGUMENTS: Option<&'static str> = Some("macro arguments");
 
@@ -120,20 +122,14 @@ scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
 pub mod diagnostics {
     #[macro_use]
     pub mod macros;
-    pub mod plugin;
-    pub mod metadata;
 }
 
-// N.B., this module needs to be declared first so diagnostics are
-// registered before they are used.
 pub mod error_codes;
 
 pub mod util {
     pub mod lev_distance;
     pub mod node_count;
     pub mod parser;
-    #[cfg(test)]
-    pub mod parser_testing;
     pub mod map_in_place;
 }
 
@@ -182,8 +178,3 @@ pub mod ext {
 }
 
 pub mod early_buffered_lints;
-
-#[cfg(test)]
-mod test_snippet;
-
-fn _foo() {}

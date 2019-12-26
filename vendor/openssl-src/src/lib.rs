@@ -1,9 +1,9 @@
 extern crate cc;
 
 use std::env;
-use std::io::{Read, Write};
 use std::fs::{self, File};
-use std::path::{PathBuf, Path};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub fn source_dir() -> PathBuf {
@@ -29,9 +29,7 @@ pub struct Artifacts {
 impl Build {
     pub fn new() -> Build {
         Build {
-            out_dir: env::var_os("OUT_DIR").map(|s| {
-                PathBuf::from(s).join("openssl-build")
-            }),
+            out_dir: env::var_os("OUT_DIR").map(|s| PathBuf::from(s).join("openssl-build")),
             target: env::var("TARGET").ok(),
             host: env::var("HOST").ok(),
         }
@@ -90,18 +88,14 @@ impl Build {
         configure
             // No shared objects, we just want static libraries
             .arg("no-dso")
-
             // Should be off by default on OpenSSL 1.1.0, but let's be extra sure
             .arg("no-ssl3")
-
             // No need to build tests, we won't run them anyway
             .arg("no-unit-test")
-
             // Nothing related to zlib please
             .arg("no-comp")
             .arg("no-zlib")
             .arg("no-zlib-dynamic")
-
             // This actually fails to compile on musl (it needs linux/version.h
             // right now) but we don't actually need this most of the time. This
             // is intended for super-configurable backends and whatnot
@@ -109,7 +103,6 @@ impl Build {
             // "portable" implementation of OpenSSL, so shouldn't be any harm in
             // turning this off.
             .arg("no-engine")
-
             // MUSL doesn't implement some of the libc functions that the async
             // stuff depends on, and we don't bind to any of that in any case.
             .arg("no-async");
@@ -126,8 +119,7 @@ impl Build {
             // just pessimistically assume for now that's not available.
             configure.arg("no-asm");
 
-            let features = env::var("CARGO_CFG_TARGET_FEATURE")
-                      .unwrap_or(String::new());
+            let features = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or(String::new());
             if features.contains("crt-static") {
                 configure.arg("no-shared");
             }
@@ -144,6 +136,8 @@ impl Build {
             // out and say it's linux and hope it works.
             "aarch64-linux-android" => "linux-aarch64",
             "aarch64-unknown-linux-gnu" => "linux-aarch64",
+            "aarch64-unknown-linux-musl" => "linux-aarch64",
+            "aarch64-pc-windows-msvc" => "VC-WIN64-ARM",
             "arm-linux-androideabi" => "linux-armv4",
             "armv7-linux-androideabi" => "linux-armv4",
             "arm-unknown-linux-gnueabi" => "linux-armv4",
@@ -179,8 +173,12 @@ impl Build {
             "x86_64-unknown-netbsd" => "BSD-x86_64",
             "wasm32-unknown-emscripten" => "gcc",
             "wasm32-unknown-unknown" => "gcc",
+            "aarch64-apple-ios" => "ios64-cross",
+            "x86_64-apple-ios" => "iossimulator-xcrun",
             _ => panic!("don't know how to configure OpenSSL for {}", target),
         };
+
+        let mut ios_isysroot: std::option::Option<String> = None;
 
         configure.arg(os);
 
@@ -189,13 +187,15 @@ impl Build {
         // different there and this isn't needed most of the time anyway.
         if !target.contains("msvc") {
             let mut cc = cc::Build::new();
-            cc.target(target)
-                .host(host)
-                .warnings(false)
-                .opt_level(2);
+            cc.target(target).host(host).warnings(false).opt_level(2);
             let compiler = cc.get_compiler();
             configure.env("CC", compiler.path());
             let path = compiler.path().to_str().unwrap();
+
+            // Both `cc::Build` and `./Configure` take into account
+            // `CROSS_COMPILE` environment variable. So to avoid double
+            // prefix, we unset `CROSS_COMPILE` for `./Configure`.
+            configure.env_remove("CROSS_COMPILE");
 
             // Infer ar/ranlib tools from cross compilers if the it looks like
             // we're doing something like `foo-gcc` route that to `foo-ranlib`
@@ -208,13 +208,52 @@ impl Build {
 
             // Make sure we pass extra flags like `-ffunction-sections` and
             // other things like ARM codegen flags.
+            let mut skip_next = false;
+            let mut is_isysroot = false;
             for arg in compiler.args() {
                 // For whatever reason `-static` on MUSL seems to cause
                 // issues...
                 if target.contains("musl") && arg == "-static" {
-                    continue
+                    continue;
                 }
+
+                // cargo-lipo specifies this but OpenSSL complains
+                if target.contains("apple-ios") {
+                    if arg == "-arch" {
+                        skip_next = true;
+                        continue;
+                    }
+
+                    if arg == "-isysroot" {
+                        is_isysroot = true;
+                        continue;
+                    }
+
+                    if is_isysroot {
+                        is_isysroot = false;
+                        ios_isysroot = Some(arg.to_str().unwrap().to_string());
+                        continue;
+                    }
+                }
+
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+
                 configure.arg(arg);
+            }
+
+            if os.contains("iossimulator") {
+                if let Some(ref isysr) = ios_isysroot {
+                    configure.env(
+                        "CC",
+                        &format!(
+                            "xcrun -sdk iphonesimulator cc -isysroot {}",
+                            sanitize_sh(&Path::new(isysr))
+                        ),
+                    );
+                }
             }
 
             if target == "x86_64-pc-windows-gnu" {
@@ -267,13 +306,13 @@ impl Build {
         // On MSVC we use `nmake.exe` with a slightly different invocation, so
         // have that take a different path than the standard `make` below.
         if target.contains("msvc") {
-            let mut build = cc::windows_registry::find(target, "nmake.exe")
-                .expect("failed to find nmake");
+            let mut build =
+                cc::windows_registry::find(target, "nmake.exe").expect("failed to find nmake");
             build.current_dir(&inner_dir);
             self.run_command(build, "building OpenSSL");
 
-            let mut install = cc::windows_registry::find(target, "nmake.exe")
-                .expect("failed to find nmake");
+            let mut install =
+                cc::windows_registry::find(target, "nmake.exe").expect("failed to find nmake");
             install.arg("install_sw").current_dir(&inner_dir);
             self.run_command(install, "installing OpenSSL");
         } else {
@@ -288,6 +327,13 @@ impl Build {
                     build.env("MAKEFLAGS", s);
                 }
             }
+
+            if let Some(ref isysr) = ios_isysroot {
+                let components: Vec<&str> = isysr.split("/SDKs/").collect();
+                build.env("CROSS_TOP", components[0]);
+                build.env("CROSS_SDK", components[1]);
+            }
+
             self.run_command(build, "building OpenSSL");
 
             let mut install = self.cmd_make();
@@ -314,7 +360,8 @@ impl Build {
         println!("running {:?}", command);
         let status = command.status().unwrap();
         if !status.success() {
-            panic!("
+            panic!(
+                "
 
 
 Error {}:
@@ -323,9 +370,8 @@ Error {}:
 
 
     ",
-                desc,
-                command,
-                status);
+                desc, command, status
+            );
         }
     }
 }
@@ -339,7 +385,7 @@ fn cp_r(src: &Path, dst: &Path) {
         // Skip git metadata as it's been known to cause issues (#26) and
         // otherwise shouldn't be required
         if name.to_str() == Some(".git") {
-            continue
+            continue;
         }
 
         let dst = dst.join(name);
@@ -364,14 +410,19 @@ fn apply_patches(target: &str, inner: &Path) {
     let path = inner.join("crypto/rand/rand_unix.c");
     File::open(&path).unwrap().read_to_string(&mut buf).unwrap();
 
-    let buf = buf.replace("asm/unistd.h", "sys/syscall.h").replace("__NR_getrandom", "SYS_getrandom");
+    let buf = buf
+        .replace("asm/unistd.h", "sys/syscall.h")
+        .replace("__NR_getrandom", "SYS_getrandom");
 
-    File::create(&path).unwrap().write_all(buf.as_bytes()).unwrap();
+    File::create(&path)
+        .unwrap()
+        .write_all(buf.as_bytes())
+        .unwrap();
 }
 
 fn sanitize_sh(path: &Path) -> String {
     if !cfg!(windows) {
-        return path.to_str().unwrap().to_string()
+        return path.to_str().unwrap().to_string();
     }
     let path = path.to_str().unwrap().replace("\\", "/");
     return change_drive(&path).unwrap_or(path);
@@ -380,10 +431,10 @@ fn sanitize_sh(path: &Path) -> String {
         let mut ch = s.chars();
         let drive = ch.next().unwrap_or('C');
         if ch.next() != Some(':') {
-            return None
+            return None;
         }
         if ch.next() != Some('/') {
-            return None
+            return None;
         }
         Some(format!("/{}/{}", drive, &s[drive.len_utf8() + 2..]))
     }

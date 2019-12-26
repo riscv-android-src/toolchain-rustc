@@ -3,11 +3,11 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
-use crate::support::paths::CargoPathExt;
-use crate::support::registry::Package;
-use crate::support::{
+use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{
     basic_manifest, cargo_process, git, path2url, paths, project, publish::validate_crate_contents,
-    registry, symlink_supported,
+    registry, symlink_supported, t,
 };
 use git2;
 
@@ -477,12 +477,10 @@ fn package_git_submodule() {
                 "#,
             )
             .file("src/lib.rs", "pub fn foo() {}")
-    })
-    .unwrap();
+    });
     let library = git::new("bar", |library| {
         library.no_manifest().file("Makefile", "all:")
-    })
-    .unwrap();
+    });
 
     let repository = git2::Repository::open(&project.root()).unwrap();
     let url = path2url(library.root()).to_string();
@@ -521,13 +519,11 @@ fn package_symlink_to_submodule() {
 
     let project = git::new("foo", |project| {
         project.file("src/lib.rs", "pub fn foo() {}")
-    })
-    .unwrap();
+    });
 
     let library = git::new("submodule", |library| {
         library.no_manifest().file("Makefile", "all:")
-    })
-    .unwrap();
+    });
 
     let repository = git2::Repository::open(&project.root()).unwrap();
     let url = path2url(library.root()).to_string();

@@ -1,9 +1,6 @@
 // A functional translation of the example at
 // https://docs.rs/clap/2.31.2/clap/struct.App.html#method.group
 
-#[macro_use]
-extern crate structopt;
-
 use structopt::clap::ArgGroup;
 use structopt::StructOpt;
 
@@ -18,7 +15,7 @@ fn vers_arg_group() -> ArgGroup<'static> {
 }
 
 #[derive(StructOpt, Debug)]
-#[structopt(raw(group = "vers_arg_group()"))]
+#[structopt(group = vers_arg_group())]
 struct Opt {
     /// set the version manually
     #[structopt(long = "set-ver", group = "vers")]

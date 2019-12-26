@@ -218,17 +218,28 @@ fn xargo_version() -> Option<(u32, u32, u32)> {
     Some((major, minor, patch))
 }
 
-fn ask(question: &str) {
-    let mut buf = String::new();
-    print!("{} [Y/n] ", question);
-    io::stdout().flush().unwrap();
-    io::stdin().read_line(&mut buf).unwrap();
-    match buf.trim().to_lowercase().as_ref() {
-        // Proceed.
-        "" | "y" | "yes" => {},
-        "n" | "no" => show_error(format!("Aborting as per your request")),
-        a => show_error(format!("I do not understand `{}`", a))
-    };
+fn ask_to_run(mut cmd: Command, ask: bool, text: &str) {
+    if ask {
+        let mut buf = String::new();
+        print!("I will run `{:?}` to {}. Proceed? [Y/n] ", cmd, text);
+        io::stdout().flush().unwrap();
+        io::stdin().read_line(&mut buf).unwrap();
+        match buf.trim().to_lowercase().as_ref() {
+            // Proceed.
+            "" | "y" | "yes" => {},
+            "n" | "no" => show_error(format!("Aborting as per your request")),
+            a => show_error(format!("I do not understand `{}`", a))
+        };
+    } else {
+        println!("Running `{:?}` to {}.", cmd, text);
+    }
+
+    if cmd.status()
+        .expect(&format!("failed to execute {:?}", cmd))
+        .success().not()
+    {
+        show_error(format!("Failed to {}", text));
+    }
 }
 
 /// Performs the setup required to make `cargo miri` work: Getting a custom-built libstd. Then sets
@@ -243,19 +254,10 @@ fn setup(ask_user: bool) {
     }
 
     // First, we need xargo.
-    if xargo_version().map_or(true, |v| v < (0, 3, 15)) {
-        if ask_user {
-            ask("It seems you do not have a recent enough xargo installed. I will run `cargo install xargo -f`. Proceed?");
-        } else {
-            println!("Installing xargo: `cargo install xargo -f`");
-        }
-
-        if cargo().args(&["install", "xargo", "-f"]).status()
-            .expect("failed to install xargo")
-            .success().not()
-        {
-            show_error(format!("Failed to install xargo"));
-        }
+    if xargo_version().map_or(true, |v| v < (0, 3, 16)) {
+        let mut cmd = cargo();
+        cmd.args(&["install", "xargo", "-f"]);
+        ask_to_run(cmd, ask_user, "install a recent enough xargo");
     }
 
     // Then, unless `XARGO_RUST_SRC` is set, we also need rust-src.
@@ -267,17 +269,9 @@ fn setup(ask_user: bool) {
         let sysroot = std::str::from_utf8(&sysroot).unwrap();
         let src = Path::new(sysroot.trim_end_matches('\n')).join("lib").join("rustlib").join("src");
         if !src.exists() {
-            if ask_user {
-                ask("It seems you do not have the rust-src component installed. I will run `rustup component add rust-src` for the selected toolchain. Proceed?");
-            } else {
-                println!("Installing rust-src component: `rustup component add rust-src`");
-            }
-            if !Command::new("rustup").args(&["component", "add", "rust-src"]).status()
-                .expect("failed to install rust-src component")
-                .success()
-            {
-                show_error(format!("Failed to install rust-src component"));
-            }
+            let mut cmd = Command::new("rustup");
+            cmd.args(&["component", "add", "rust-src"]);
+            ask_to_run(cmd, ask_user, "install the rustc-src component for the selected toolchain");
         }
     }
 
@@ -294,10 +288,11 @@ fn setup(ask_user: bool) {
 default_features = false
 # We need the `panic_unwind` feature because we use the `unwind` panic strategy.
 # Using `abort` works for libstd, but then libtest will not compile.
-features = ["panic_unwind"]
+# FIXME: Temporarily enabling backtrace feature to work around
+# <https://github.com/rust-lang/rust/issues/64410>.
+features = ["panic_unwind", "backtrace"]
 
 [dependencies.test]
-stage = 1
         "#).unwrap();
     // The boring bits: a dummy project for xargo.
     File::create(dir.join("Cargo.toml")).unwrap()

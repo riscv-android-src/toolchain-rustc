@@ -6,9 +6,6 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
-#[macro_use]
-extern crate structopt;
-
 use structopt::StructOpt;
 
 use std::ffi::{OsStr, OsString};
@@ -60,11 +57,12 @@ fn parse_hex(input: &str) -> Result<u64, ParseIntError> {
 
 #[derive(StructOpt, PartialEq, Debug)]
 struct HexOpt {
-    #[structopt(short = "n", parse(try_from_str = "parse_hex"))]
+    #[structopt(short = "n", parse(try_from_str = parse_hex))]
     number: u64,
 }
 
 #[test]
+#[allow(clippy::unreadable_literal)]
 fn test_parse_hex() {
     assert_eq!(
         HexOpt { number: 5 },
@@ -96,13 +94,13 @@ fn custom_parser_4(_: &OsStr) -> Result<&'static str, OsString> {
 
 #[derive(StructOpt, PartialEq, Debug)]
 struct NoOpOpt {
-    #[structopt(short = "a", parse(from_str = "custom_parser_1"))]
+    #[structopt(short = "a", parse(from_str = custom_parser_1))]
     a: &'static str,
-    #[structopt(short = "b", parse(try_from_str = "custom_parser_2"))]
+    #[structopt(short = "b", parse(try_from_str = custom_parser_2))]
     b: &'static str,
-    #[structopt(short = "c", parse(from_os_str = "custom_parser_3"))]
+    #[structopt(short = "c", parse(from_os_str = custom_parser_3))]
     c: &'static str,
-    #[structopt(short = "d", parse(try_from_os_str = "custom_parser_4"))]
+    #[structopt(short = "d", parse(try_from_os_str = custom_parser_4))]
     d: &'static str,
 }
 
@@ -178,7 +176,7 @@ struct Occurrences {
     #[structopt(short = "r", parse(from_occurrences))]
     little_unsigned: u8,
 
-    #[structopt(short = "c", long = "custom", parse(from_occurrences = "foo"))]
+    #[structopt(short = "c", long = "custom", parse(from_occurrences = foo))]
     custom: Foo,
 }
 
@@ -209,17 +207,17 @@ fn test_custom_bool() {
     }
     #[derive(StructOpt, PartialEq, Debug)]
     struct Opt {
-        #[structopt(short = "d", parse(try_from_str = "parse_bool"))]
+        #[structopt(short = "d", parse(try_from_str = parse_bool))]
         debug: bool,
         #[structopt(
             short = "v",
             default_value = "false",
-            parse(try_from_str = "parse_bool")
+            parse(try_from_str = parse_bool)
         )]
         verbose: bool,
-        #[structopt(short = "t", parse(try_from_str = "parse_bool"))]
+        #[structopt(short = "t", parse(try_from_str = parse_bool))]
         tribool: Option<bool>,
-        #[structopt(short = "b", parse(try_from_str = "parse_bool"))]
+        #[structopt(short = "b", parse(try_from_str = parse_bool))]
         bitset: Vec<bool>,
     }
 

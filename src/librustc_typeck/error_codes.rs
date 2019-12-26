@@ -1,6 +1,6 @@
 // ignore-tidy-filelength
 
-register_long_diagnostics! {
+syntax::register_diagnostics! {
 
 E0023: r##"
 A pattern used to match against an enum variant must provide a sub-pattern for
@@ -212,7 +212,7 @@ match string {
 E0033: r##"
 This error indicates that a pointer to a trait type cannot be implicitly
 dereferenced by a pattern. Every trait defines a type, but because the
-size of trait implementors isn't fixed, this type has no compile-time size.
+size of trait implementers isn't fixed, this type has no compile-time size.
 Therefore, all accesses to trait types must be through pointers. If you
 encounter this error you should try to avoid dereferencing the pointer.
 
@@ -1718,22 +1718,6 @@ Since we know for certain that `Wrapper<u32>` implements `Clone`, there's no
 reason to also specify it in a `where` clause.
 "##,
 
-E0194: r##"
-A type parameter was declared which shadows an existing one. An example of this
-error:
-
-```compile_fail,E0194
-trait Foo<T> {
-    fn do_something(&self) -> T;
-    fn do_something_else<T: Clone>(&self, bar: T);
-}
-```
-
-In this example, the trait `Foo` and the trait method `do_something_else` both
-define a type parameter `T`. This is not allowed: if the method wishes to
-define a type parameter, it must use a different name for it.
-"##,
-
 E0195: r##"
 Your method's lifetime parameters do not match the trait declaration.
 Erroneous code example:
@@ -2439,6 +2423,87 @@ struct Foo { x: bool }
 
 struct Bar<S, T> { x: Foo<S, T> }
 ```
+"##,
+
+E0307: r##"
+This error indicates that the `self` parameter in a method has an invalid
+"reciever type".
+
+Methods take a special first parameter, of which there are three variants:
+`self`, `&self`, and `&mut self`. These are syntactic sugar for
+`self: Self`, `self: &Self`, and `self: &mut Self` respectively.
+
+```
+# struct Foo;
+trait Trait {
+    fn foo(&self);
+//         ^^^^^ `self` here is a reference to the receiver object
+}
+
+impl Trait for Foo {
+    fn foo(&self) {}
+//         ^^^^^ the receiver type is `&Foo`
+}
+```
+
+The type `Self` acts as an alias to the type of the current trait
+implementer, or "receiver type". Besides the already mentioned `Self`,
+`&Self` and `&mut Self` valid receiver types, the following are also valid:
+`self: Box<Self>`, `self: Rc<Self>`, `self: Arc<Self>`, and `self: Pin<P>`
+(where P is one of the previous types except `Self`). Note that `Self` can
+also be the underlying implementing type, like `Foo` in the following
+example:
+
+```
+# struct Foo;
+# trait Trait {
+#     fn foo(&self);
+# }
+impl Trait for Foo {
+    fn foo(self: &Foo) {}
+}
+```
+
+E0307 will be emitted by the compiler when using an invalid reciver type,
+like in the following example:
+
+```compile_fail,E0307
+# struct Foo;
+# struct Bar;
+# trait Trait {
+#     fn foo(&self);
+# }
+impl Trait for Foo {
+    fn foo(self: &Bar) {}
+}
+```
+
+The nightly feature [Arbintrary self types][AST] extends the accepted
+set of receiver types to also include any type that can dereference to
+`Self`:
+
+```
+#![feature(arbitrary_self_types)]
+
+struct Foo;
+struct Bar;
+
+// Because you can dereference `Bar` into `Foo`...
+impl std::ops::Deref for Bar {
+    type Target = Foo;
+
+    fn deref(&self) -> &Foo {
+        &Foo
+    }
+}
+
+impl Foo {
+    fn foo(self: Bar) {}
+//         ^^^^^^^^^ ...it can be used as the receiver type
+}
+```
+
+[AST]: https://doc.rust-lang.org/unstable-book/language-features/arbitrary-self-types.html
 "##,
 
 E0321: r##"
@@ -4767,7 +4832,6 @@ E0733: r##"
 Recursion in an `async fn` requires boxing. For example, this will not compile:
 
 ```edition2018,compile_fail,E0733
-#![feature(async_await)]
 async fn foo(n: usize) {
     if n > 0 {
         foo(n - 1).await;
@@ -4779,12 +4843,11 @@ To achieve async recursion, the `async fn` needs to be desugared
 such that the `Future` is explicit in the return type:
 
 ```edition2018,compile_fail,E0720
-# #![feature(async_await)]
 use std::future::Future;
-fn foo_desugered(n: usize) -> impl Future<Output = ()> {
+fn foo_desugared(n: usize) -> impl Future<Output = ()> {
     async move {
         if n > 0 {
-            foo_desugered(n - 1).await;
+            foo_desugared(n - 1).await;
         }
     }
 }
@@ -4793,7 +4856,6 @@ fn foo_desugered(n: usize) -> impl Future<Output = ()> {
 Finally, the future is wrapped in a pinned box:
 
 ```edition2018
-# #![feature(async_await)]
 use std::future::Future;
 use std::pin::Pin;
 fn foo_recursive(n: usize) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -4808,10 +4870,7 @@ fn foo_recursive(n: usize) -> Pin<Box<dyn Future<Output = ()>>> {
 The `Box<...>` ensures that the result is of known size,
 and the pin is required to keep it in the same place in memory.
 "##,
-
-}  // (end of detailed error messages)
-
-register_diagnostics! {
+;
 //  E0035, merged into E0087/E0089
 //  E0036, merged into E0087/E0089
 //  E0068,
@@ -4837,6 +4896,7 @@ register_diagnostics! {
 //  E0188, // can not cast an immutable reference to a mutable pointer
 //  E0189, // deprecated: can only cast a boxed pointer to a boxed object
 //  E0190, // deprecated: can only cast a &-pointer to an &-object
+//  E0194, // merged into E0403
 //  E0196, // cannot determine a type for this closure
     E0203, // type parameter has more than one relaxed default bound,
            // and only one is supported
@@ -4867,16 +4927,16 @@ register_diagnostics! {
 //  E0245, // not a trait
 //  E0246, // invalid recursive type
 //  E0247,
-//  E0248, // value used as a type, now reported earlier during resolution as E0412
+//  E0248, // value used as a type, now reported earlier during resolution
+           // as E0412
 //  E0249,
-    E0307, // invalid method `self` type
 //  E0319, // trait impls for defaulted traits allowed just for structs/enums
 //  E0372, // coherence not object safe
     E0377, // the trait `CoerceUnsized` may only be implemented for a coercion
            // between structures with the same definition
 //  E0558, // replaced with a generic attribute input check
     E0533, // `{}` does not name a unit variant, unit struct or a constant
-//  E0563, // cannot determine a type for this `impl Trait`: {} // removed in 6383de15
+//  E0563, // cannot determine a type for this `impl Trait` removed in 6383de15
     E0564, // only named lifetimes are allowed in `impl Trait`,
            // but `{}` was found in the type `{}`
     E0587, // type has conflicting packed and align representation hints
@@ -4885,8 +4945,8 @@ register_diagnostics! {
 //  E0612, // merged into E0609
 //  E0613, // Removed (merged with E0609)
     E0627, // yield statement outside of generator literal
-    E0632, // cannot provide explicit type parameters when `impl Trait` is used in
-           // argument position.
+    E0632, // cannot provide explicit type parameters when `impl Trait` is used
+           // in argument position.
     E0634, // type has conflicting packed representaton hints
     E0640, // infer outlives requirements
     E0641, // cannot cast to/from a pointer with an unknown kind

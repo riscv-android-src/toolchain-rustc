@@ -9,7 +9,7 @@ use std::mem;
 use syntax::ast;
 use syntax::feature_gate;
 use syntax::parse::token;
-use syntax::symbol::{InternedString, LocalInternedString};
+use syntax::symbol::InternedString;
 use syntax::tokenstream;
 use syntax_pos::SourceFile;
 
@@ -35,27 +35,6 @@ impl<'a> ToStableHashKey<StableHashingContext<'a>> for InternedString {
     fn to_stable_hash_key(&self,
                           _: &StableHashingContext<'a>)
                           -> InternedString {
-        self.clone()
-    }
-}
-
-impl<'a> HashStable<StableHashingContext<'a>> for LocalInternedString {
-    #[inline]
-    fn hash_stable<W: StableHasherResult>(&self,
-                                          hcx: &mut StableHashingContext<'a>,
-                                          hasher: &mut StableHasher<W>) {
-        let s: &str = &**self;
-        s.hash_stable(hcx, hasher);
-    }
-}
-
-impl<'a> ToStableHashKey<StableHashingContext<'a>> for LocalInternedString {
-    type KeyType = LocalInternedString;
-
-    #[inline]
-    fn to_stable_hash_key(&self,
-                          _: &StableHashingContext<'a>)
-                          -> LocalInternedString {
         self.clone()
     }
 }
@@ -398,11 +377,11 @@ impl_stable_hash_for!(enum ::syntax_pos::hygiene::Transparency {
     Opaque,
 });
 
-impl_stable_hash_for!(struct ::syntax_pos::hygiene::ExpnInfo {
-    call_site,
+impl_stable_hash_for!(struct ::syntax_pos::hygiene::ExpnData {
     kind,
+    parent -> _,
+    call_site,
     def_site,
-    default_transparency,
     allow_internal_unstable,
     allow_internal_unsafe,
     local_inner_macros,
@@ -412,7 +391,15 @@ impl_stable_hash_for!(struct ::syntax_pos::hygiene::ExpnInfo {
 impl_stable_hash_for!(enum ::syntax_pos::hygiene::ExpnKind {
     Root,
     Macro(kind, descr),
+    AstPass(kind),
     Desugaring(kind)
+});
+
+impl_stable_hash_for!(enum ::syntax_pos::hygiene::AstPass {
+    StdImports,
+    TestHarness,
+    ProcMacroHarness,
+    PluginMacroDefs,
 });
 
 impl_stable_hash_for!(enum ::syntax_pos::hygiene::DesugaringKind {

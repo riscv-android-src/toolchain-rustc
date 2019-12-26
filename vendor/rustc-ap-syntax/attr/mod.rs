@@ -1,4 +1,4 @@
-//! Functions dealing with attributes and meta items
+//! Functions dealing with attributes and meta items.
 
 mod builtin;
 
@@ -6,16 +6,17 @@ pub use builtin::*;
 pub use IntType::*;
 pub use ReprAttr::*;
 pub use StabilityLevel::*;
+pub use crate::ast::Attribute;
 
 use crate::ast;
-use crate::ast::{AttrId, Attribute, AttrStyle, Name, Ident, Path, PathSegment};
+use crate::ast::{AttrId, AttrStyle, Name, Ident, Path, PathSegment};
 use crate::ast::{MetaItem, MetaItemKind, NestedMetaItem};
 use crate::ast::{Lit, LitKind, Expr, Item, Local, Stmt, StmtKind, GenericParam};
 use crate::mut_visit::visit_clobber;
-use crate::source_map::{BytePos, Spanned, dummy_spanned};
+use crate::source_map::{BytePos, Spanned, DUMMY_SP};
 use crate::parse::lexer::comments::{doc_comment_style, strip_doc_comment_decoration};
 use crate::parse::parser::Parser;
-use crate::parse::{self, ParseSess, PResult};
+use crate::parse::{ParseSess, PResult};
 use crate::parse::token::{self, Token};
 use crate::ptr::P;
 use crate::symbol::{sym, Symbol};
@@ -24,7 +25,7 @@ use crate::tokenstream::{TokenStream, TokenTree, DelimSpan};
 use crate::GLOBALS;
 
 use log::debug;
-use syntax_pos::{FileName, Span};
+use syntax_pos::Span;
 
 use std::iter;
 use std::ops::DerefMut;
@@ -60,7 +61,7 @@ pub fn is_known_lint_tool(m_item: Ident) -> bool {
 }
 
 impl NestedMetaItem {
-    /// Returns the MetaItem if self is a NestedMetaItem::MetaItem.
+    /// Returns the `MetaItem` if `self` is a `NestedMetaItem::MetaItem`.
     pub fn meta_item(&self) -> Option<&MetaItem> {
         match *self {
             NestedMetaItem::MetaItem(ref item) => Some(item),
@@ -68,7 +69,7 @@ impl NestedMetaItem {
         }
     }
 
-    /// Returns the Lit if self is a NestedMetaItem::Literal.
+    /// Returns the `Lit` if `self` is a `NestedMetaItem::Literal`s.
     pub fn literal(&self) -> Option<&Lit> {
         match *self {
             NestedMetaItem::Literal(ref lit) => Some(lit),
@@ -81,7 +82,7 @@ impl NestedMetaItem {
         self.meta_item().map_or(false, |meta_item| meta_item.check_name(name))
     }
 
-    /// For a single-segment meta-item returns its name, otherwise returns `None`.
+    /// For a single-segment meta item, returns its name; otherwise, returns `None`.
     pub fn ident(&self) -> Option<Ident> {
         self.meta_item().and_then(|meta_item| meta_item.ident())
     }
@@ -89,13 +90,13 @@ impl NestedMetaItem {
         self.ident().unwrap_or(Ident::invalid()).name
     }
 
-    /// Gets the string value if self is a MetaItem and the MetaItem is a
-    /// MetaItemKind::NameValue variant containing a string, otherwise None.
+    /// Gets the string value if `self` is a `MetaItem` and the `MetaItem` is a
+    /// `MetaItemKind::NameValue` variant containing a string, otherwise `None`.
     pub fn value_str(&self) -> Option<Symbol> {
         self.meta_item().and_then(|meta_item| meta_item.value_str())
     }
 
-    /// Returns a name and single literal value tuple of the MetaItem.
+    /// Returns a name and single literal value tuple of the `MetaItem`.
     pub fn name_value_literal(&self) -> Option<(Name, &Lit)> {
         self.meta_item().and_then(
             |meta_item| meta_item.meta_item_list().and_then(
@@ -111,32 +112,32 @@ impl NestedMetaItem {
                 }))
     }
 
-    /// Gets a list of inner meta items from a list MetaItem type.
+    /// Gets a list of inner meta items from a list `MetaItem` type.
     pub fn meta_item_list(&self) -> Option<&[NestedMetaItem]> {
         self.meta_item().and_then(|meta_item| meta_item.meta_item_list())
     }
 
-    /// Returns `true` if the variant is MetaItem.
+    /// Returns `true` if the variant is `MetaItem`.
     pub fn is_meta_item(&self) -> bool {
         self.meta_item().is_some()
     }
 
-    /// Returns `true` if the variant is Literal.
+    /// Returns `true` if the variant is `Literal`.
     pub fn is_literal(&self) -> bool {
         self.literal().is_some()
     }
 
-    /// Returns `true` if self is a MetaItem and the meta item is a word.
+    /// Returns `true` if `self` is a `MetaItem` and the meta item is a word.
     pub fn is_word(&self) -> bool {
         self.meta_item().map_or(false, |meta_item| meta_item.is_word())
     }
 
-    /// Returns `true` if self is a MetaItem and the meta item is a ValueString.
+    /// Returns `true` if `self` is a `MetaItem` and the meta item is a `ValueString`.
     pub fn is_value_str(&self) -> bool {
         self.value_str().is_some()
     }
 
-    /// Returns `true` if self is a MetaItem and the meta item is a list.
+    /// Returns `true` if `self` is a `MetaItem` and the meta item is a list.
     pub fn is_meta_item_list(&self) -> bool {
         self.meta_item_list().is_some()
     }
@@ -155,7 +156,7 @@ impl Attribute {
         matches
     }
 
-    /// For a single-segment attribute returns its name, otherwise returns `None`.
+    /// For a single-segment attribute, returns its name; otherwise, returns `None`.
     pub fn ident(&self) -> Option<Ident> {
         if self.path.segments.len() == 1 {
             Some(self.path.segments[0].ident)
@@ -186,14 +187,14 @@ impl Attribute {
         self.meta_item_list().is_some()
     }
 
-    /// Indicates if the attribute is a Value String.
+    /// Indicates if the attribute is a `ValueString`.
     pub fn is_value_str(&self) -> bool {
         self.value_str().is_some()
     }
 }
 
 impl MetaItem {
-    /// For a single-segment meta-item returns its name, otherwise returns `None`.
+    /// For a single-segment meta item, returns its name; otherwise, returns `None`.
     pub fn ident(&self) -> Option<Ident> {
         if self.path.segments.len() == 1 {
             Some(self.path.segments[0].ident)
@@ -205,8 +206,9 @@ impl MetaItem {
         self.ident().unwrap_or(Ident::invalid()).name
     }
 
-    // #[attribute(name = "value")]
-    //             ^^^^^^^^^^^^^^
+    // Example:
+    //     #[attribute(name = "value")]
+    //                 ^^^^^^^^^^^^^^
     pub fn name_value_literal(&self) -> Option<&Lit> {
         match &self.node {
             MetaItemKind::NameValue(v) => Some(v),
@@ -254,7 +256,7 @@ impl MetaItem {
 }
 
 impl Attribute {
-    /// Extracts the MetaItem from inside this Attribute.
+    /// Extracts the `MetaItem` from inside this `Attribute`.
     pub fn meta(&self) -> Option<MetaItem> {
         let mut tokens = self.tokens.trees().peekable();
         Some(MetaItem {
@@ -317,8 +319,8 @@ impl Attribute {
         })
     }
 
-    /// Converts self to a normal #[doc="foo"] comment, if it is a
-    /// comment like `///` or `/** */`. (Returns self unchanged for
+    /// Converts `self` to a normal `#[doc="foo"]` comment, if it is a
+    /// comment like `///` or `/** */`. (Returns `self` unchanged for
     /// non-sugared doc attributes.)
     pub fn with_desugared_doc<T, F>(&self, f: F) -> T where
         F: FnOnce(&Attribute) -> T,
@@ -326,15 +328,18 @@ impl Attribute {
         if self.is_sugared_doc {
             let comment = self.value_str().unwrap();
             let meta = mk_name_value_item_str(
-                Ident::with_empty_ctxt(sym::doc),
-                dummy_spanned(Symbol::intern(&strip_doc_comment_decoration(&comment.as_str()))));
-            let mut attr = if self.style == ast::AttrStyle::Outer {
-                mk_attr_outer(self.span, self.id, meta)
-            } else {
-                mk_attr_inner(self.span, self.id, meta)
-            };
-            attr.is_sugared_doc = true;
-            f(&attr)
+                Ident::with_dummy_span(sym::doc),
+                Symbol::intern(&strip_doc_comment_decoration(&comment.as_str())),
+                DUMMY_SP,
+            );
+            f(&Attribute {
+                id: self.id,
+                style: self.style,
+                path: meta.path,
+                tokens: meta.node.tokens(meta.span),
+                is_sugared_doc: true,
+                span: self.span,
+            })
         } else {
             f(self)
         }
@@ -343,18 +348,19 @@ impl Attribute {
 
 /* Constructors */
 
-pub fn mk_name_value_item_str(ident: Ident, value: Spanned<Symbol>) -> MetaItem {
-    let lit_kind = LitKind::Str(value.node, ast::StrStyle::Cooked);
-    mk_name_value_item(ident.span.to(value.span), ident, lit_kind, value.span)
+pub fn mk_name_value_item_str(ident: Ident, str: Symbol, str_span: Span) -> MetaItem {
+    let lit_kind = LitKind::Str(str, ast::StrStyle::Cooked);
+    mk_name_value_item(ident, lit_kind, str_span)
 }
 
-pub fn mk_name_value_item(span: Span, ident: Ident, lit_kind: LitKind, lit_span: Span) -> MetaItem {
+pub fn mk_name_value_item(ident: Ident, lit_kind: LitKind, lit_span: Span) -> MetaItem {
     let lit = Lit::from_lit_kind(lit_kind, lit_span);
+    let span = ident.span.to(lit_span);
     MetaItem { path: Path::from_ident(ident), span, node: MetaItemKind::NameValue(lit) }
 }
 
-pub fn mk_list_item(span: Span, ident: Ident, items: Vec<NestedMetaItem>) -> MetaItem {
-    MetaItem { path: Path::from_ident(ident), span, node: MetaItemKind::List(items) }
+pub fn mk_list_item(ident: Ident, items: Vec<NestedMetaItem>) -> MetaItem {
+    MetaItem { path: Path::from_ident(ident), span: ident.span, node: MetaItemKind::List(items) }
 }
 
 pub fn mk_word_item(ident: Ident) -> MetaItem {
@@ -365,7 +371,7 @@ pub fn mk_nested_word_item(ident: Ident) -> NestedMetaItem {
     NestedMetaItem::MetaItem(mk_word_item(ident))
 }
 
-pub fn mk_attr_id() -> AttrId {
+crate fn mk_attr_id() -> AttrId {
     use std::sync::atomic::AtomicUsize;
     use std::sync::atomic::Ordering;
 
@@ -376,48 +382,35 @@ pub fn mk_attr_id() -> AttrId {
     AttrId(id)
 }
 
-/// Returns an inner attribute with the given value.
-pub fn mk_attr_inner(span: Span, id: AttrId, item: MetaItem) -> Attribute {
-    mk_spanned_attr_inner(span, id, item)
+pub fn mk_attr(style: AttrStyle, path: Path, tokens: TokenStream, span: Span) -> Attribute {
+    Attribute {
+        id: mk_attr_id(),
+        style,
+        path,
+        tokens,
+        is_sugared_doc: false,
+        span,
+    }
 }
 
 /// Returns an inner attribute with the given value and span.
-pub fn mk_spanned_attr_inner(sp: Span, id: AttrId, item: MetaItem) -> Attribute {
-    Attribute {
-        id,
-        style: ast::AttrStyle::Inner,
-        path: item.path,
-        tokens: item.node.tokens(item.span),
-        is_sugared_doc: false,
-        span: sp,
-    }
-}
-
-/// Returns an outer attribute with the given value.
-pub fn mk_attr_outer(span: Span, id: AttrId, item: MetaItem) -> Attribute {
-    mk_spanned_attr_outer(span, id, item)
+pub fn mk_attr_inner(item: MetaItem) -> Attribute {
+    mk_attr(AttrStyle::Inner, item.path, item.node.tokens(item.span), item.span)
 }
 
 /// Returns an outer attribute with the given value and span.
-pub fn mk_spanned_attr_outer(sp: Span, id: AttrId, item: MetaItem) -> Attribute {
-    Attribute {
-        id,
-        style: ast::AttrStyle::Outer,
-        path: item.path,
-        tokens: item.node.tokens(item.span),
-        is_sugared_doc: false,
-        span: sp,
-    }
+pub fn mk_attr_outer(item: MetaItem) -> Attribute {
+    mk_attr(AttrStyle::Outer, item.path, item.node.tokens(item.span), item.span)
 }
 
-pub fn mk_sugared_doc_attr(id: AttrId, text: Symbol, span: Span) -> Attribute {
+pub fn mk_sugared_doc_attr(text: Symbol, span: Span) -> Attribute {
     let style = doc_comment_style(&text.as_str());
     let lit_kind = LitKind::Str(text, ast::StrStyle::Cooked);
     let lit = Lit::from_lit_kind(lit_kind, span);
     Attribute {
-        id,
+        id: mk_attr_id(),
         style,
-        path: Path::from_ident(Ident::with_empty_ctxt(sym::doc).with_span_pos(span)),
+        path: Path::from_ident(Ident::with_dummy_span(sym::doc).with_span_pos(span)),
         tokens: MetaItemKind::NameValue(lit).tokens(span),
         is_sugared_doc: true,
         span,
@@ -719,35 +712,5 @@ macro_rules! derive_has_attrs {
 
 derive_has_attrs! {
     Item, Expr, Local, ast::ForeignItem, ast::StructField, ast::ImplItem, ast::TraitItem, ast::Arm,
-    ast::Field, ast::FieldPat, ast::Variant_, ast::Arg
-}
-
-pub fn inject(mut krate: ast::Crate, parse_sess: &ParseSess, attrs: &[String]) -> ast::Crate {
-    for raw_attr in attrs {
-        let mut parser = parse::new_parser_from_source_str(
-            parse_sess,
-            FileName::cli_crate_attr_source_code(&raw_attr),
-            raw_attr.clone(),
-        );
-
-        let start_span = parser.token.span;
-        let (path, tokens) = panictry!(parser.parse_meta_item_unrestricted());
-        let end_span = parser.token.span;
-        if parser.token != token::Eof {
-            parse_sess.span_diagnostic
-                .span_err(start_span.to(end_span), "invalid crate attribute");
-            continue;
-        }
-
-        krate.attrs.push(Attribute {
-            id: mk_attr_id(),
-            style: AttrStyle::Inner,
-            path,
-            tokens,
-            is_sugared_doc: false,
-            span: start_span.to(end_span),
-        });
-    }
-
-    krate
+    ast::Field, ast::FieldPat, ast::Variant, ast::Param
 }

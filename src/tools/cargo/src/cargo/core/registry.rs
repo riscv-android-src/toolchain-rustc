@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use failure::bail;
 use log::{debug, trace};
 use semver::VersionReq;
 use url::Url;
@@ -8,7 +9,7 @@ use crate::core::PackageSet;
 use crate::core::{Dependency, PackageId, Source, SourceId, SourceMap, Summary};
 use crate::sources::config::SourceConfigMap;
 use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::{profile, Config};
+use crate::util::{profile, CanonicalUrl, Config};
 
 /// Source of information about a group of packages.
 ///
@@ -74,12 +75,33 @@ pub struct PackageRegistry<'cfg> {
     yanked_whitelist: HashSet<PackageId>,
     source_config: SourceConfigMap<'cfg>,
 
-    patches: HashMap<Url, Vec<Summary>>,
+    patches: HashMap<CanonicalUrl, Vec<Summary>>,
     patches_locked: bool,
-    patches_available: HashMap<Url, Vec<PackageId>>,
+    patches_available: HashMap<CanonicalUrl, Vec<PackageId>>,
 }
 
-type LockedMap = HashMap<SourceId, HashMap<String, Vec<(PackageId, Vec<PackageId>)>>>;
+/// A map of all "locked packages" which is filled in when parsing a lock file
+/// and is used to guide dependency resolution by altering summaries as they're
+/// queried from this source.
+///
+/// This map can be thought of as a glorified `Vec<MySummary>` where `MySummary`
+/// has a `PackageId` for which package it represents as well as a list of
+/// `PackageId` for the resolved dependencies. The hash map is otherwise
+/// structured though for easy access throughout this registry.
+type LockedMap = HashMap<
+    // The first level of key-ing done in this hash map is the source that
+    // dependencies come from, identified by a `SourceId`.
+    SourceId,
+    HashMap<
+        // This next level is keyed by the name of the package...
+        String,
+        // ... and the value here is a list of tuples. The first element of each
+        // tuple is a package which has the source/name used to get to this
+        // point. The second element of each tuple is the list of locked
+        // dependencies that the first element has.
+        Vec<(PackageId, Vec<PackageId>)>,
+    >,
+>;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum Kind {
@@ -208,6 +230,8 @@ impl<'cfg> PackageRegistry<'cfg> {
     /// `query` until `lock_patches` is called below, which should be called
     /// once all patches have been added.
     pub fn patch(&mut self, url: &Url, deps: &[Dependency]) -> CargoResult<()> {
+        let canonical = CanonicalUrl::new(url)?;
+
         // First up we need to actually resolve each `deps` specification to
         // precisely one summary. We're not using the `query` method below as it
         // internally uses maps we're building up as part of this method
@@ -262,7 +286,7 @@ impl<'cfg> PackageRegistry<'cfg> {
                         url
                     )
                 }
-                if summary.package_id().source_id().url() == url {
+                if *summary.package_id().source_id().canonical_url() == canonical {
                     failure::bail!(
                         "patch for `{}` in `{}` points to the same source, but \
                          patches must point to different sources",
@@ -275,14 +299,28 @@ impl<'cfg> PackageRegistry<'cfg> {
             .collect::<CargoResult<Vec<_>>>()
             .chain_err(|| failure::format_err!("failed to resolve patches for `{}`", url))?;
 
+        let mut name_and_version = HashSet::new();
+        for summary in unlocked_summaries.iter() {
+            let name = summary.package_id().name();
+            let version = summary.package_id().version();
+            if !name_and_version.insert((name, version)) {
+                bail!(
+                    "cannot have two `[patch]` entries which both resolve \
+                     to `{} v{}`",
+                    name,
+                    version
+                );
+            }
+        }
+
         // Note that we do not use `lock` here to lock summaries! That step
         // happens later once `lock_patches` is invoked. In the meantime though
         // we want to fill in the `patches_available` map (later used in the
         // `lock` method) and otherwise store the unlocked summaries in
         // `patches` to get locked in a future call to `lock_patches`.
         let ids = unlocked_summaries.iter().map(|s| s.package_id()).collect();
-        self.patches_available.insert(url.clone(), ids);
-        self.patches.insert(url.clone(), unlocked_summaries);
+        self.patches_available.insert(canonical.clone(), ids);
+        self.patches.insert(canonical, unlocked_summaries);
 
         Ok(())
     }
@@ -304,8 +342,11 @@ impl<'cfg> PackageRegistry<'cfg> {
         self.patches_locked = true;
     }
 
-    pub fn patches(&self) -> &HashMap<Url, Vec<Summary>> {
-        &self.patches
+    pub fn patches(&self) -> Vec<Summary> {
+        self.patches
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect()
     }
 
     fn load(&mut self, source_id: SourceId, kind: Kind) -> CargoResult<()> {
@@ -330,7 +371,7 @@ impl<'cfg> PackageRegistry<'cfg> {
     fn query_overrides(&mut self, dep: &Dependency) -> CargoResult<Option<Summary>> {
         for &s in self.overrides.iter() {
             let src = self.sources.get_mut(s).unwrap();
-            let dep = Dependency::new_override(&*dep.package_name(), s);
+            let dep = Dependency::new_override(dep.package_name(), s);
             let mut results = src.query_vec(&dep)?;
             if !results.is_empty() {
                 return Ok(Some(results.remove(0)));
@@ -436,7 +477,7 @@ impl<'cfg> Registry for PackageRegistry<'cfg> {
             // This means that `dep.matches(..)` will always return false, when
             // what we really care about is the name/version match.
             let mut patches = Vec::<Summary>::new();
-            if let Some(extra) = self.patches.get(dep.source_id().url()) {
+            if let Some(extra) = self.patches.get(dep.source_id().canonical_url()) {
                 patches.extend(
                     extra
                         .iter()
@@ -569,7 +610,11 @@ impl<'cfg> Registry for PackageRegistry<'cfg> {
     }
 }
 
-fn lock(locked: &LockedMap, patches: &HashMap<Url, Vec<PackageId>>, summary: Summary) -> Summary {
+fn lock(
+    locked: &LockedMap,
+    patches: &HashMap<CanonicalUrl, Vec<PackageId>>,
+    summary: Summary,
+) -> Summary {
     let pair = locked
         .get(&summary.source_id())
         .and_then(|map| map.get(&*summary.name()))
@@ -579,7 +624,7 @@ fn lock(locked: &LockedMap, patches: &HashMap<Url, Vec<PackageId>>, summary: Sum
 
     // Lock the summary's ID if possible
     let summary = match pair {
-        Some(&(ref precise, _)) => summary.override_id(precise.clone()),
+        Some((precise, _)) => summary.override_id(precise.clone()),
         None => summary,
     };
     summary.map_dependencies(|dep| {
@@ -603,18 +648,56 @@ fn lock(locked: &LockedMap, patches: &HashMap<Url, Vec<PackageId>>, summary: Sum
         //    locked version because the dependency needs to be
         //    re-resolved.
         //
-        // 3. We don't have a lock entry for this dependency, in which
+        // 3. We have a lock entry for this dependency, but it's from a
+        //    different source than what's listed. This lock though happens
+        //    through `[patch]`, so we want to preserve it.
+        //
+        // 4. We don't have a lock entry for this dependency, in which
         //    case it was likely an optional dependency which wasn't
         //    included previously so we just pass it through anyway.
         //
-        // Cases 1/2 are handled by `matches_id` and case 3 is handled by
-        // falling through to the logic below.
-        if let Some(&(_, ref locked_deps)) = pair {
-            let locked = locked_deps.iter().find(|&&id| dep.matches_id(id));
+        // Cases 1/2 are handled by `matches_id`, case 3 is handled specially,
+        // and case 4 is handled by falling through to the logic below.
+        if let Some((_, locked_deps)) = pair {
+            let locked = locked_deps.iter().find(|&&id| {
+                // If the dependency matches the package id exactly then we've
+                // found a match, this is the id the dependency was previously
+                // locked to.
+                if dep.matches_id(id) {
+                    return true;
+                }
+
+                // If the name/version doesn't match, then we definitely don't
+                // have a match whatsoever. Otherwise we need to check
+                // `[patch]`...
+                if !dep.matches_ignoring_source(id) {
+                    return false;
+                }
+
+                // ... so here we look up the dependency url in the patches
+                // map, and we see if `id` is contained in the list of patches
+                // for that url. If it is then this lock is still valid,
+                // otherwise the lock is no longer valid.
+                match patches.get(dep.source_id().canonical_url()) {
+                    Some(list) => list.contains(&id),
+                    None => false,
+                }
+            });
+
             if let Some(&locked) = locked {
                 trace!("\tfirst hit on {}", locked);
                 let mut dep = dep;
-                dep.lock_to(locked);
+
+                // If we found a locked version where the sources match, then
+                // we can `lock_to` to get an exact lock on this dependency.
+                // Otherwise we got a lock via `[patch]` so we only lock the
+                // version requirement, not the source.
+                if locked.source_id() == dep.source_id() {
+                    dep.lock_to(locked);
+                } else {
+                    let req = VersionReq::exact(locked.version());
+                    dep.set_version_req(req);
+                }
                 return dep;
             }
         }
@@ -631,33 +714,6 @@ fn lock(locked: &LockedMap, patches: &HashMap<Url, Vec<PackageId>>, summary: Sum
             let mut dep = dep;
             dep.lock_to(id);
             return dep;
-        }
-
-        // Finally we check to see if any registered patches correspond to
-        // this dependency.
-        let v = patches.get(dep.source_id().url()).map(|vec| {
-            let dep2 = dep.clone();
-            let mut iter = vec
-                .iter()
-                .filter(move |&&p| dep2.matches_ignoring_source(p));
-            (iter.next(), iter)
-        });
-        if let Some((Some(patch_id), mut remaining)) = v {
-            assert!(remaining.next().is_none());
-            let patch_source = patch_id.source_id();
-            let patch_locked = locked
-                .get(&patch_source)
-                .and_then(|m| m.get(&*patch_id.name()))
-                .map(|list| list.iter().any(|&(ref id, _)| id == patch_id))
-                .unwrap_or(false);
-
-            if patch_locked {
-                trace!("\tthird hit on {}", patch_id);
-                let req = VersionReq::exact(patch_id.version());
-                let mut dep = dep;
-                dep.set_version_req(req);
-                return dep;
-            }
         }
 
         trace!("\tnope, unlocked");

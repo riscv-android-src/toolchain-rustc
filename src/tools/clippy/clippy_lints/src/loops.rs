@@ -11,7 +11,7 @@ use rustc::{declare_lint_pass, declare_tool_lint};
 // use rustc::middle::region::CodeExtent;
 use crate::consts::{constant, Constant};
 use crate::utils::usage::mutated_variables;
-use crate::utils::{in_macro_or_desugar, sext, sugg};
+use crate::utils::{is_type_diagnostic_item, qpath_res, sext, sugg};
 use rustc::middle::expr_use_visitor::*;
 use rustc::middle::mem_categorization::cmt_;
 use rustc::middle::mem_categorization::Categorization;
@@ -23,11 +23,11 @@ use std::iter::{once, Iterator};
 use std::mem;
 use syntax::ast;
 use syntax::source_map::Span;
-use syntax_pos::BytePos;
+use syntax_pos::{BytePos, Symbol};
 
 use crate::utils::paths;
 use crate::utils::{
-    get_enclosing_block, get_parent_expr, has_iter_method, higher, is_integer_literal, is_refutable, last_path_segment,
+    get_enclosing_block, get_parent_expr, has_iter_method, higher, is_integer_const, is_refutable, last_path_segment,
     match_trait_method, match_type, match_var, multispan_sugg, snippet, snippet_opt, snippet_with_applicability,
     span_help_and_lint, span_lint, span_lint_and_sugg, span_lint_and_then, SpanlessEq,
 };
@@ -47,6 +47,12 @@ declare_clippy_lint! {
     /// for i in 0..src.len() {
     ///     dst[i + 64] = src[i];
     /// }
+    /// ```
+    /// Could be written as:
+    /// ```rust
+    /// # let src = vec![1];
+    /// # let mut dst = vec![0; 65];
+    /// dst[64..(src.len() + 64)].clone_from_slice(&src[..]);
     /// ```
     pub MANUAL_MEMCPY,
     perf,
@@ -243,24 +249,6 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for using `collect()` on an iterator without using
-    /// the result.
-    ///
-    /// **Why is this bad?** It is more idiomatic to use a `for` loop over the
-    /// iterator instead.
-    ///
-    /// **Known problems:** None.
-    ///
-    /// **Example:**
-    /// ```ignore
-    /// vec.iter().map(|x| /* some operation returning () */).collect::<Vec<_>>();
-    /// ```
-    pub UNUSED_COLLECT,
-    perf,
-    "`collect()`ing an iterator without using the result; this is usually better written as a for loop"
-}
-
-declare_clippy_lint! {
     /// **What it does:** Checks for functions collecting an iterator when collect
     /// is not needed.
     ///
@@ -310,19 +298,26 @@ declare_clippy_lint! {
     /// **What it does:** Checks `for` loops over slices with an explicit counter
     /// and suggests the use of `.enumerate()`.
     ///
-    /// **Why is it bad?** Not only is the version using `.enumerate()` more
-    /// readable, the compiler is able to remove bounds checks which can lead to
-    /// faster code in some instances.
+    /// **Why is it bad?** Using `.enumerate()` makes the intent more clear,
+    /// declutters the code and may be faster in some instances.
     ///
     /// **Known problems:** None.
     ///
     /// **Example:**
     /// ```rust
     /// # let v = vec![1];
-    /// # fn foo(bar: usize) {}
     /// # fn bar(bar: usize, baz: usize) {}
-    /// for i in 0..v.len() { foo(v[i]); }
-    /// for i in 0..v.len() { bar(i, v[i]); }
+    /// let mut i = 0;
+    /// for item in &v {
+    ///     bar(i, *item);
+    ///     i += 1;
+    /// }
+    /// ```
+    /// Could be written as
+    /// ```rust
+    /// # let v = vec![1];
+    /// # fn bar(bar: usize, baz: usize) {}
+    /// for (i, item) in v.iter().enumerate() { bar(i, *item); }
     /// ```
     pub EXPLICIT_COUNTER_LOOP,
     complexity,
@@ -467,7 +462,6 @@ declare_lint_pass!(Loops => [
     FOR_LOOP_OVER_RESULT,
     FOR_LOOP_OVER_OPTION,
     WHILE_LET_LOOP,
-    UNUSED_COLLECT,
     NEEDLESS_COLLECT,
     REVERSE_RANGE_LOOP,
     EXPLICIT_COUNTER_LOOP,
@@ -483,7 +477,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Loops {
     #[allow(clippy::too_many_lines)]
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
         // we don't want to check expanded macros
-        if in_macro_or_desugar(expr.span) {
+        if expr.span.from_expansion() {
             return;
         }
 
@@ -601,25 +595,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Loops {
         }
 
         check_needless_collect(expr, cx);
-    }
-
-    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt) {
-        if let StmtKind::Semi(ref expr) = stmt.node {
-            if let ExprKind::MethodCall(ref method, _, ref args) = expr.node {
-                if args.len() == 1
-                    && method.ident.name == sym!(collect)
-                    && match_trait_method(cx, expr, &paths::ITERATOR)
-                {
-                    span_lint(
-                        cx,
-                        UNUSED_COLLECT,
-                        expr.span,
-                        "you are collect()ing an iterator and throwing away the result. \
-                         Consider using an explicit for loop to exhaust the iterator",
-                    );
-                }
-            }
-        }
     }
 }
 
@@ -779,7 +754,7 @@ fn same_var<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &Expr, var: HirId) -> bo
         if let ExprKind::Path(ref qpath) = expr.node;
         if let QPath::Resolved(None, ref path) = *qpath;
         if path.segments.len() == 1;
-        if let Res::Local(local_id) = cx.tables.qpath_res(qpath, expr.hir_id);
+        if let Res::Local(local_id) = qpath_res(cx, qpath, expr.hir_id);
         // our variable!
         if local_id == var;
         then {
@@ -820,7 +795,7 @@ fn is_slice_like<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'_>) -> bool {
         _ => false,
     };
 
-    is_slice || match_type(cx, ty, &paths::VEC) || match_type(cx, ty, &paths::VEC_DEQUE)
+    is_slice || is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) || match_type(cx, ty, &paths::VEC_DEQUE)
 }
 
 fn get_fixed_offset_var<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &Expr, var: HirId) -> Option<FixedOffsetVar> {
@@ -1066,7 +1041,7 @@ fn check_for_loop_range<'a, 'tcx>(
     body: &'tcx Expr,
     expr: &'tcx Expr,
 ) {
-    if in_macro_or_desugar(expr.span) {
+    if expr.span.from_expansion() {
         return;
     }
 
@@ -1121,7 +1096,7 @@ fn check_for_loop_range<'a, 'tcx>(
                     return;
                 }
 
-                let starts_at_zero = is_integer_literal(start, 0);
+                let starts_at_zero = is_integer_const(cx, start, 0);
 
                 let skip = if starts_at_zero {
                     String::new()
@@ -1297,7 +1272,7 @@ fn check_for_loop_reverse_range<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, arg: &'tcx
                     let start_snippet = snippet(cx, start.span, "_");
                     let end_snippet = snippet(cx, end.span, "_");
                     let dots = if limits == ast::RangeLimits::Closed {
-                        "..."
+                        "..="
                     } else {
                         ".."
                     };
@@ -1643,7 +1618,7 @@ fn check_for_mutability(cx: &LateContext<'_, '_>, bound: &Expr) -> Option<HirId>
         if let ExprKind::Path(ref qpath) = bound.node;
         if let QPath::Resolved(None, _) = *qpath;
         then {
-            let res = cx.tables.qpath_res(qpath, bound.hir_id);
+            let res = qpath_res(cx, qpath, bound.hir_id);
             if let Res::Local(node_id) = res {
                 let node_str = cx.tcx.hir().get(node_id);
                 if_chain! {
@@ -1787,7 +1762,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                     if self.prefer_mutable {
                         self.indexed_mut.insert(seqvar.segments[0].ident.name);
                     }
-                    let res = self.cx.tables.qpath_res(seqpath, seqexpr.hir_id);
+                    let res = qpath_res(self.cx, seqpath, seqexpr.hir_id);
                     match res {
                         Res::Local(hir_id) => {
                             let parent_id = self.cx.tcx.hir().get_parent_item(expr.hir_id);
@@ -1849,7 +1824,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
             if let QPath::Resolved(None, ref path) = *qpath;
             if path.segments.len() == 1;
             then {
-                if let Res::Local(local_id) = self.cx.tables.qpath_res(qpath, expr.hir_id) {
+                if let Res::Local(local_id) = qpath_res(self.cx, qpath, expr.hir_id) {
                     if local_id == self.var {
                         self.nonindex = true;
                     } else {
@@ -1975,7 +1950,7 @@ fn is_ref_iterable_type(cx: &LateContext<'_, '_>, e: &Expr) -> bool {
     // will allow further borrows afterwards
     let ty = cx.tables.expr_ty(e);
     is_iterable_array(ty, cx) ||
-    match_type(cx, ty, &paths::VEC) ||
+    is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) ||
     match_type(cx, ty, &paths::LINKED_LIST) ||
     match_type(cx, ty, &paths::HASHMAP) ||
     match_type(cx, ty, &paths::HASHSET) ||
@@ -2028,10 +2003,7 @@ fn extract_first_expr(block: &Block) -> Option<&Expr> {
 fn is_simple_break_expr(expr: &Expr) -> bool {
     match expr.node {
         ExprKind::Break(dest, ref passed_expr) if dest.label.is_none() && passed_expr.is_none() => true,
-        ExprKind::Block(ref b, _) => match extract_first_expr(b) {
-            Some(subexpr) => is_simple_break_expr(subexpr),
-            None => false,
-        },
+        ExprKind::Block(ref b, _) => extract_first_expr(b).map_or(false, |subexpr| is_simple_break_expr(subexpr)),
         _ => false,
     }
 }
@@ -2070,7 +2042,7 @@ impl<'a, 'tcx> Visitor<'tcx> for IncrementVisitor<'a, 'tcx> {
                 match parent.node {
                     ExprKind::AssignOp(op, ref lhs, ref rhs) => {
                         if lhs.hir_id == expr.hir_id {
-                            if op.node == BinOpKind::Add && is_integer_literal(rhs, 1) {
+                            if op.node == BinOpKind::Add && is_integer_const(self.cx, rhs, 1) {
                                 *state = match *state {
                                     VarState::Initial if self.depth == 0 => VarState::IncrOnce,
                                     _ => VarState::DontWarn,
@@ -2122,7 +2094,7 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
                     self.name = Some(ident.name);
 
                     self.state = if let Some(ref init) = local.init {
-                        if is_integer_literal(init, 0) {
+                        if is_integer_const(&self.cx, init, 0) {
                             VarState::Warn
                         } else {
                             VarState::Declared
@@ -2158,7 +2130,7 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
                         self.state = VarState::DontWarn;
                     },
                     ExprKind::Assign(ref lhs, ref rhs) if lhs.hir_id == expr.hir_id => {
-                        self.state = if is_integer_literal(rhs, 0) && self.depth == 0 {
+                        self.state = if is_integer_const(&self.cx, rhs, 0) && self.depth == 0 {
                             VarState::Warn
                         } else {
                             VarState::DontWarn
@@ -2191,7 +2163,7 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
 
 fn var_def_id(cx: &LateContext<'_, '_>, expr: &Expr) -> Option<HirId> {
     if let ExprKind::Path(ref qpath) = expr.node {
-        let path_res = cx.tables.qpath_res(qpath, expr.hir_id);
+        let path_res = qpath_res(cx, qpath, expr.hir_id);
         if let Res::Local(node_id) = path_res {
             return Some(node_id);
         }
@@ -2383,7 +2355,7 @@ impl<'a, 'tcx> VarCollectorVisitor<'a, 'tcx> {
         if_chain! {
             if let ExprKind::Path(ref qpath) = ex.node;
             if let QPath::Resolved(None, _) = *qpath;
-            let res = self.cx.tables.qpath_res(qpath, ex.hir_id);
+            let res = qpath_res(self.cx, qpath, ex.hir_id);
             then {
                 match res {
                     Res::Local(node_id) => {
@@ -2427,7 +2399,7 @@ fn check_needless_collect<'a, 'tcx>(expr: &'tcx Expr, cx: &LateContext<'a, 'tcx>
         if let Some(GenericArg::Type(ref ty)) = generic_args.args.get(0);
         then {
             let ty = cx.tables.node_type(ty.hir_id);
-            if match_type(cx, ty, &paths::VEC) ||
+            if is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) ||
                 match_type(cx, ty, &paths::VEC_DEQUE) ||
                 match_type(cx, ty, &paths::BTREEMAP) ||
                 match_type(cx, ty, &paths::HASHMAP) {

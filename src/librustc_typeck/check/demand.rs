@@ -127,6 +127,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         self.suggest_compatible_variants(&mut err, expr, expected, expr_ty);
         self.suggest_ref_or_into(&mut err, expr, expected, expr_ty);
+        self.suggest_boxing_when_appropriate(&mut err, expr, expected, expr_ty);
         self.suggest_missing_await(&mut err, expr, expected, expr_ty);
 
         (expected, Some(err))
@@ -223,13 +224,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// fn takes_ref(_: &Foo) {}
     /// let ref opt = Some(Foo);
     ///
-    /// opt.map(|arg| takes_ref(arg));
+    /// opt.map(|param| takes_ref(param));
     /// ```
-    /// Suggest using `opt.as_ref().map(|arg| takes_ref(arg));` instead.
+    /// Suggest using `opt.as_ref().map(|param| takes_ref(param));` instead.
     ///
     /// It only checks for `Option` and `Result` and won't work with
     /// ```
-    /// opt.map(|arg| { takes_ref(arg) });
+    /// opt.map(|param| { takes_ref(param) });
     /// ```
     fn can_use_as_ref(
         &self,
@@ -246,13 +247,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
 
         let local_parent = self.tcx.hir().get_parent_node(local_id);
-        let arg_hir_id = match self.tcx.hir().find(local_parent) {
-            Some(Node::Arg(hir::Arg { hir_id, .. })) => hir_id,
+        let param_hir_id = match self.tcx.hir().find(local_parent) {
+            Some(Node::Param(hir::Param { hir_id, .. })) => hir_id,
             _ => return None
         };
 
-        let arg_parent = self.tcx.hir().get_parent_node(*arg_hir_id);
-        let (expr_hir_id, closure_fn_decl) = match self.tcx.hir().find(arg_parent) {
+        let param_parent = self.tcx.hir().get_parent_node(*param_hir_id);
+        let (expr_hir_id, closure_fn_decl) = match self.tcx.hir().find(param_parent) {
             Some(Node::Expr(
                 hir::Expr { hir_id, node: hir::ExprKind::Closure(_, decl, ..), .. }
             )) => (hir_id, decl),
@@ -346,9 +347,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             sp,
         );
 
-        // Check the `expn_info()` to see if this is a macro; if so, it's hard to
-        // extract the text and make a good suggestion, so don't bother.
-        let is_macro = sp.ctxt().outer_expn_info().is_some();
+        // If the span is from a macro, then it's hard to extract the text
+        // and make a good suggestion, so don't bother.
+        let is_macro = sp.from_expansion();
 
         match (&expr.node, &expected.sty, &checked_ty.sty) {
             (_, &ty::Ref(_, exp, _), &ty::Ref(_, check, _)) => match (&exp.sty, &check.sty) {
@@ -548,9 +549,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         checked_ty: Ty<'tcx>,
         expected_ty: Ty<'tcx>,
     ) -> bool {
-        if self.tcx.hir().is_const_scope(expr.hir_id) {
+        if self.tcx.hir().is_const_context(expr.hir_id) {
             // Shouldn't suggest `.into()` on `const`s.
             // FIXME(estebank): modify once we decide to suggest `as` casts
+            return false;
+        }
+        if !self.tcx.sess.source_map().span_to_filename(expr.span).is_real() {
+            // Ignore if span is from within a macro.
             return false;
         }
 
@@ -580,6 +585,30 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if &prefix == "" {
                 // Likely a field was meant, but this field wasn't found. Do not suggest anything.
                 return false;
+            }
+        }
+        if let hir::ExprKind::Call(path, args) = &expr.node {
+            if let (
+                hir::ExprKind::Path(hir::QPath::TypeRelative(base_ty, path_segment)),
+                1,
+            ) = (&path.node, args.len()) {
+                // `expr` is a conversion like `u32::from(val)`, do not suggest anything (#63697).
+                if let (
+                    hir::TyKind::Path(hir::QPath::Resolved(None, base_ty_path)),
+                    sym::from,
+                ) = (&base_ty.node, path_segment.ident.name) {
+                    if let Some(ident) = &base_ty_path.segments.iter().map(|s| s.ident).next() {
+                        match ident.name {
+                            sym::i128 | sym::i64 | sym::i32 | sym::i16 | sym::i8 |
+                            sym::u128 | sym::u64 | sym::u32 | sym::u16 | sym::u8 |
+                            sym::isize | sym::usize
+                            if base_ty_path.segments.len() == 1 => {
+                                return false;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
 

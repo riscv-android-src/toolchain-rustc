@@ -92,7 +92,7 @@ A suffix is a non-raw identifier immediately (without whitespace)
 following the primary part of a literal.
 
 Any kind of literal (string, integer, etc) with any suffix is valid as a token,
-and can be passed to a macro without producing an error.  
+and can be passed to a macro without producing an error.
 The macro itself will decide how to interpret such a token and whether to produce an error or not.
 
 ```rust
@@ -101,7 +101,7 @@ macro_rules! blackhole { ($tt:tt) => () }
 blackhole!("string"suffix); // OK
 ```
 
-However, suffixes on literal tokens parsed as Rust code are restricted.  
+However, suffixes on literal tokens parsed as Rust code are restricted.
 Any suffixes are rejected on non-numeric literal tokens,
 and numeric literal tokens are accepted only with suffixes from the list below.
 
@@ -150,11 +150,12 @@ A _string literal_ is a sequence of any Unicode characters enclosed within two
 `U+0022` (double-quote) characters, with the exception of `U+0022` itself,
 which must be _escaped_ by a preceding `U+005C` character (`\`).
 
-Line-break characters are allowed in string literals. Normally they represent
-themselves (i.e. no translation), but as a special exception, when an unescaped
-`U+005C` character (`\`) occurs immediately before the newline (`U+000A`), the
-`U+005C` character, the newline, and all whitespace at the beginning of the
-next line are ignored. Thus `a` and `b` are equal:
+Line-breaks are allowed in string literals. A line-break is either a newline
+(`U+000A`) or a pair of carriage return and newline (`U+000D`, `U+000A`). Both
+byte sequences are normally translated to `U+000A`, but as a special exception,
+when an unescaped `U+005C` character (`\`) occurs immediately before the
+line-break, the `U+005C` character, the line-break, and all whitespace at the
+beginning of the next line are ignored. Thus `a` and `b` are equal:
 
 ```rust
 let a = "foobar";
@@ -361,7 +362,7 @@ An _integer literal_ has one of four forms:
   mixture of *decimal digits* and _underscores_.
 * A _tuple index_ is either `0`, or starts with a *non-zero decimal digit* and
   continues with zero or more decimal digits. Tuple indexes are used to refer
-  to the fields of [tuples], [tuple structs] and [tuple variants].
+  to the fields of [tuples], [tuple structs], and [tuple variants].
 * A _hex literal_ starts with the character sequence `U+0030` `U+0078`
   (`0x`) and continues as any mixture (with at least one digit) of hex digits
   and underscores.
@@ -429,7 +430,7 @@ Examples of invalid integer literals:
 128_i8;
 256_u8;
 
-// bin, hex and octal literals must have at least one digit
+// bin, hex, and octal literals must have at least one digit
 
 0b_;
 0b____;

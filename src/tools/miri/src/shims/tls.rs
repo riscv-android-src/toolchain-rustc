@@ -18,17 +18,17 @@ pub struct TlsEntry<'tcx> {
     /// The data for this key. None is used to represent NULL.
     /// (We normalize this early to avoid having to do a NULL-ptr-test each time we access the data.)
     /// Will eventually become a map from thread IDs to `Scalar`s, if we ever support more than one thread.
-    pub(crate) data: Option<Scalar<Tag>>,
-    pub(crate) dtor: Option<ty::Instance<'tcx>>,
+    data: Option<Scalar<Tag>>,
+    dtor: Option<ty::Instance<'tcx>>,
 }
 
 #[derive(Debug)]
 pub struct TlsData<'tcx> {
     /// The Key to use for the next thread-local allocation.
-    pub(crate) next_key: TlsKey,
+    next_key: TlsKey,
 
     /// pthreads-style thread-local storage.
-    pub(crate) keys: BTreeMap<TlsKey, TlsEntry<'tcx>>,
+    keys: BTreeMap<TlsKey, TlsEntry<'tcx>>,
 }
 
 impl<'tcx> Default for TlsData<'tcx> {
@@ -148,7 +148,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             assert!(!this.is_null(ptr).unwrap(), "Data can't be NULL when dtor is called!");
             // TODO: Potentially, this has to support all the other possible instances?
             // See eval_fn_call in interpret/terminator/mod.rs
-            let mir = this.load_mir(instance.def)?;
+            let mir = this.load_mir(instance.def, None)?;
             let ret_place = MPlaceTy::dangling(this.layout_of(this.tcx.mk_unit())?, this).into();
             this.push_stack_frame(
                 instance,

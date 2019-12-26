@@ -55,14 +55,32 @@ struct DelegateNotification<T, F> {
 
 impl<T, M, F> RpcNotification<M> for DelegateNotification<T, F>
 where
+	M: Metadata,
 	F: Fn(&T, Params) + 'static,
 	F: Send + Sync + 'static,
 	T: Send + Sync + 'static,
-	M: Metadata,
 {
 	fn execute(&self, params: Params, _meta: M) {
 		let closure = &self.closure;
 		closure(&self.delegate, params)
+	}
+}
+
+struct DelegateNotificationWithMeta<T, F> {
+	delegate: Arc<T>,
+	closure: F,
+}
+
+impl<T, M, F> RpcNotification<M> for DelegateNotificationWithMeta<T, F>
+where
+	M: Metadata,
+	F: Fn(&T, Params, M) + 'static,
+	F: Send + Sync + 'static,
+	T: Send + Sync + 'static,
+{
+	fn execute(&self, params: Params, meta: M) {
+		let closure = &self.closure;
+		closure(&self.delegate, params, meta)
 	}
 }
 
@@ -143,14 +161,42 @@ where
 			})),
 		);
 	}
+
+	/// Adds notification with metadata to the delegate.
+	pub fn add_notification_with_meta<F>(&mut self, name: &str, notification: F)
+	where
+		F: Fn(&T, Params, M),
+		F: Send + Sync + 'static,
+	{
+		self.methods.insert(
+			name.into(),
+			RemoteProcedure::Notification(Arc::new(DelegateNotificationWithMeta {
+				delegate: self.delegate.clone(),
+				closure: notification,
+			})),
+		);
+	}
 }
 
-impl<T, M> Into<HashMap<String, RemoteProcedure<M>>> for IoDelegate<T, M>
+impl<T, M> crate::io::IoHandlerExtension<M> for IoDelegate<T, M>
 where
 	T: Send + Sync + 'static,
 	M: Metadata,
 {
-	fn into(self) -> HashMap<String, RemoteProcedure<M>> {
-		self.methods
+	fn augment<S: crate::Middleware<M>>(self, handler: &mut crate::MetaIoHandler<M, S>) {
+		handler.extend_with(self.methods)
+	}
+}
+
+impl<T, M> IntoIterator for IoDelegate<T, M>
+where
+	T: Send + Sync + 'static,
+	M: Metadata,
+{
+	type Item = (String, RemoteProcedure<M>);
+	type IntoIter = std::collections::hash_map::IntoIter<String, RemoteProcedure<M>>;
+
+	fn into_iter(self) -> Self::IntoIter {
+		self.methods.into_iter()
 	}
 }

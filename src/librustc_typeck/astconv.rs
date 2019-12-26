@@ -23,6 +23,7 @@ use rustc_target::spec::abi;
 use crate::require_c_abi_if_c_variadic;
 use smallvec::SmallVec;
 use syntax::ast;
+use syntax::errors::pluralise;
 use syntax::feature_gate::{GateIssue, emit_feature_err};
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax::symbol::sym;
@@ -377,7 +378,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     quantifier,
                     bound,
                     kind,
-                    if bound != 1 { "s" } else { "" },
+                    pluralise!(bound),
                 ))
             };
 
@@ -635,8 +636,9 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         });
         let default_needs_object_self = |param: &ty::GenericParamDef| {
             if let GenericParamDefKind::Type { has_default, .. } = param.kind {
-                if is_object && has_default {
-                    if tcx.at(span).type_of(param.def_id).has_self_ty() {
+                if is_object && has_default && has_self {
+                    let self_param = tcx.types.self_param;
+                    if tcx.at(span).type_of(param.def_id).walk().any(|ty| ty == self_param) {
                         // There is no suitable inference default for a type parameter
                         // that references self, in an object type.
                         return true;
@@ -1344,7 +1346,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 span,
                 E0191,
                 "the value of the associated type{} {} must be specified",
-                if associated_types.len() == 1 { "" } else { "s" },
+                pluralise!(associated_types.len()),
                 names,
             );
             let (suggest, potential_assoc_types_spans) =
@@ -1460,7 +1462,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         span: Span,
         type_str: &str,
         trait_str: &str,
-        name: &str,
+        name: ast::Name,
     ) {
         let mut err = struct_span_err!(self.tcx().sess, span, E0223, "ambiguous associated type");
         if let (Some(_), Ok(snippet)) = (
@@ -1687,7 +1689,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                         span,
                         &qself_ty.to_string(),
                         "Trait",
-                        &assoc_ident.as_str(),
+                        assoc_ident.name,
                     );
                 }
                 return Err(ErrorReported);
@@ -1760,7 +1762,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 span,
                 "Type",
                 &path_str,
-                &item_segment.ident.as_str(),
+                item_segment.ident.name,
             );
             return tcx.types.err;
         };
@@ -2030,7 +2032,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 // `Self` in trait or type alias.
                 assert_eq!(opt_self_ty, None);
                 self.prohibit_generics(&path.segments);
-                tcx.mk_self_type()
+                tcx.types.self_param
             }
             Res::SelfTy(_, Some(def_id)) => {
                 // `Self` in impl (we know the concrete type).

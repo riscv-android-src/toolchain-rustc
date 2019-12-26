@@ -19,7 +19,7 @@
 //! }
 //! ```
 
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 
 #[macro_use]
 extern crate log;
@@ -39,7 +39,7 @@ pub mod middleware;
 pub mod types;
 
 /// A `Future` trait object.
-pub type BoxFuture<T> = Box<futures::Future<Item = T, Error = Error> + Send>;
+pub type BoxFuture<T> = Box<dyn futures::Future<Item = T, Error = Error> + Send>;
 
 /// A Result type.
 pub type Result<T> = ::std::result::Result<T, Error>;
@@ -47,7 +47,8 @@ pub type Result<T> = ::std::result::Result<T, Error>;
 pub use crate::calls::{Metadata, RemoteProcedure, RpcMethod, RpcMethodSimple, RpcNotification, RpcNotificationSimple};
 pub use crate::delegates::IoDelegate;
 pub use crate::io::{
-	Compatibility, FutureOutput, FutureResponse, FutureResult, FutureRpcResult, IoHandler, MetaIoHandler,
+	Compatibility, FutureOutput, FutureResponse, FutureResult, FutureRpcResult, IoHandler, IoHandlerExtension,
+	MetaIoHandler,
 };
 pub use crate::middleware::{Middleware, Noop as NoopMiddleware};
 pub use crate::types::*;

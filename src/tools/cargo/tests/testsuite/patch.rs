@@ -1,10 +1,10 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
 
-use crate::support::git;
-use crate::support::paths;
-use crate::support::registry::Package;
-use crate::support::{basic_manifest, project};
+use cargo_test_support::git;
+use cargo_test_support::paths;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{basic_manifest, project, t};
 use toml;
 
 #[cargo_test]
@@ -1133,4 +1133,273 @@ package `[..]`
 ",
         )
         .run();
+}
+
+#[cargo_test]
+fn multipatch() {
+    Package::new("a", "1.0.0").publish();
+    Package::new("a", "2.0.0").publish();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+
+                [dependencies]
+                a1 = { version = "1", package = "a" }
+                a2 = { version = "2", package = "a" }
+
+                [patch.crates-io]
+                b1 = { path = "a1", package = "a" }
+                b2 = { path = "a2", package = "a" }
+            "#,
+        )
+        .file("src/lib.rs", "pub fn foo() { a1::f1(); a2::f2(); }")
+        .file(
+            "a1/Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "1.0.0"
+            "#,
+        )
+        .file("a1/src/lib.rs", "pub fn f1() {}")
+        .file(
+            "a2/Cargo.toml",
+            r#"
+                [package]
+                name = "a"
+                version = "2.0.0"
+            "#,
+        )
+        .file("a2/src/lib.rs", "pub fn f2() {}")
+        .build();
+
+    p.cargo("build").run();
+}
+
+#[cargo_test]
+fn patch_same_version() {
+    let bar = git::repo(&paths::root().join("override"))
+        .file("Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("src/lib.rs", "")
+        .build();
+
+    cargo_test_support::registry::init();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                [dependencies]
+                bar = "0.1"
+                [patch.crates-io]
+                bar = {{ path = "bar" }}
+                bar2 = {{ git = '{}', package = 'bar' }}
+            "#,
+                bar.url(),
+            ),
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+            "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("build")
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] [..]
+error: cannot have two `[patch]` entries which both resolve to `bar v0.1.0`
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn two_semver_compatible() {
+    let bar = git::repo(&paths::root().join("override"))
+        .file("Cargo.toml", &basic_manifest("bar", "0.1.1"))
+        .file("src/lib.rs", "")
+        .build();
+
+    cargo_test_support::registry::init();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                [dependencies]
+                bar = "0.1"
+                [patch.crates-io]
+                bar = {{ path = "bar" }}
+                bar2 = {{ git = '{}', package = 'bar' }}
+            "#,
+                bar.url(),
+            ),
+        )
+        .file("src/lib.rs", "pub fn foo() { bar::foo() }")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.2"
+            "#,
+        )
+        .file("bar/src/lib.rs", "pub fn foo() {}")
+        .build();
+
+    // assert the build succeeds and doesn't panic anywhere, and then afterwards
+    // assert that the build succeeds again without updating anything or
+    // building anything else.
+    p.cargo("build").run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+warning: Patch `bar v0.1.1 [..]` was not used in the crate graph.
+Check that [..]
+with the [..]
+what is [..]
+version. [..]
+[FINISHED] [..]",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn multipatch_select_big() {
+    let bar = git::repo(&paths::root().join("override"))
+        .file("Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("src/lib.rs", "")
+        .build();
+
+    cargo_test_support::registry::init();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                [package]
+                name = "foo"
+                version = "0.0.1"
+                [dependencies]
+                bar = "*"
+                [patch.crates-io]
+                bar = {{ path = "bar" }}
+                bar2 = {{ git = '{}', package = 'bar' }}
+            "#,
+                bar.url(),
+            ),
+        )
+        .file("src/lib.rs", "pub fn foo() { bar::foo() }")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.2.0"
+            "#,
+        )
+        .file("bar/src/lib.rs", "pub fn foo() {}")
+        .build();
+
+    // assert the build succeeds, which is only possible if 0.2.0 is selected
+    // since 0.1.0 is missing the function we need. Afterwards assert that the
+    // build succeeds again without updating anything or building anything else.
+    p.cargo("build").run();
+    p.cargo("build")
+        .with_stderr(
+            "\
+warning: Patch `bar v0.1.0 [..]` was not used in the crate graph.
+Check that [..]
+with the [..]
+what is [..]
+version. [..]
+[FINISHED] [..]",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn canonicalize_a_bunch() {
+    let base = git::repo(&paths::root().join("base"))
+        .file("Cargo.toml", &basic_manifest("base", "0.1.0"))
+        .file("src/lib.rs", "")
+        .build();
+
+    let intermediate = git::repo(&paths::root().join("intermediate"))
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "intermediate"
+                    version = "0.1.0"
+
+                    [dependencies]
+                    # Note the lack of trailing slash
+                    base = {{ git = '{}' }}
+                "#,
+                base.url(),
+            ),
+        )
+        .file("src/lib.rs", "pub fn f() { base::f() }")
+        .build();
+
+    let newbase = git::repo(&paths::root().join("newbase"))
+        .file("Cargo.toml", &basic_manifest("base", "0.1.0"))
+        .file("src/lib.rs", "pub fn f() {}")
+        .build();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                    [package]
+                    name = "foo"
+                    version = "0.0.1"
+
+                    [dependencies]
+                    # Note the trailing slashes
+                    base = {{ git = '{base}/' }}
+                    intermediate = {{ git = '{intermediate}/' }}
+
+                    [patch.'{base}'] # Note the lack of trailing slash
+                    base = {{ git = '{newbase}' }}
+                "#,
+                base = base.url(),
+                intermediate = intermediate.url(),
+                newbase = newbase.url(),
+            ),
+        )
+        .file("src/lib.rs", "pub fn a() { base::f(); intermediate::f() }")
+        .build();
+
+    // Once to make sure it actually works
+    p.cargo("build").run();
+
+    // Then a few more times for good measure to ensure no weird warnings about
+    // `[patch]` are printed.
+    p.cargo("build").with_stderr("[FINISHED] [..]").run();
+    p.cargo("build").with_stderr("[FINISHED] [..]").run();
 }

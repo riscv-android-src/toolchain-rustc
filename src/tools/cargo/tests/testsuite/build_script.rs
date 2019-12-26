@@ -4,11 +4,11 @@ use std::io;
 use std::io::prelude::*;
 use std::thread;
 
-use crate::support::paths::CargoPathExt;
-use crate::support::registry::Package;
-use crate::support::{basic_manifest, cross_compile, project};
-use crate::support::{rustc_host, sleep_ms, slow_cpu_multiplier};
 use cargo::util::paths::remove_dir_all;
+use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{basic_manifest, cross_compile, project};
+use cargo_test_support::{rustc_host, sleep_ms, slow_cpu_multiplier};
 
 #[cargo_test]
 fn custom_build_script_failed() {
@@ -255,6 +255,65 @@ fn custom_build_script_rustc_flags() {
 }
 
 #[cargo_test]
+fn custom_build_script_rustc_flags_no_space() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+
+            name = "bar"
+            version = "0.5.0"
+            authors = ["wycats@example.com"]
+
+            [dependencies.foo]
+            path = "foo"
+        "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            "foo/Cargo.toml",
+            r#"
+            [project]
+
+            name = "foo"
+            version = "0.5.0"
+            authors = ["wycats@example.com"]
+            build = "build.rs"
+        "#,
+        )
+        .file("foo/src/lib.rs", "")
+        .file(
+            "foo/build.rs",
+            r#"
+            fn main() {
+                println!("cargo:rustc-flags=-lnonexistinglib -L/dummy/path1 -L/dummy/path2");
+            }
+        "#,
+        )
+        .build();
+
+    p.cargo("build --verbose")
+        .with_stderr(
+            "\
+[COMPILING] foo [..]
+[RUNNING] `rustc --crate-name build_script_build foo/build.rs [..]
+[RUNNING] `[..]build-script-build`
+[RUNNING] `rustc --crate-name foo foo/src/lib.rs [..]\
+    -L dependency=[CWD]/target/debug/deps \
+    -L /dummy/path1 -L /dummy/path2 -l nonexistinglib`
+[COMPILING] bar [..]
+[RUNNING] `rustc --crate-name bar src/main.rs [..]\
+    -L dependency=[CWD]/target/debug/deps \
+    --extern foo=[..]libfoo-[..] \
+    -L /dummy/path1 -L /dummy/path2`
+[FINISHED] dev [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
 fn links_no_build_cmd() {
     let p = project()
         .file(
@@ -274,7 +333,10 @@ fn links_no_build_cmd() {
         .with_status(101)
         .with_stderr(
             "\
-[ERROR] package `foo v0.5.0 ([CWD])` specifies that it links to `a` but does \
+[ERROR] failed to parse manifest at `[..]/foo/Cargo.toml`
+
+Caused by:
+  package `foo v0.5.0 ([CWD])` specifies that it links to `a` but does \
 not have a custom build script
 ",
         )
@@ -327,6 +389,61 @@ package `foo v0.5.0 ([..])`
 
 failed to select a version for `a-sys` which could resolve this conflict
 ").run();
+}
+
+#[cargo_test]
+fn links_duplicates_old_registry() {
+    // Test old links validator. See `validate_links`.
+    Package::new("bar", "0.1.0")
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "bar"
+            version = "0.1.0"
+            links = "a"
+            "#,
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            links = "a"
+
+            [dependencies]
+            bar = "0.1"
+            "#,
+        )
+        .file("build.rs", "fn main() {}")
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build")
+        .with_status(101)
+        .with_stderr(
+            "\
+[UPDATING] `[..]` index
+[DOWNLOADING] crates ...
+[DOWNLOADED] bar v0.1.0 ([..])
+[ERROR] multiple packages link to native library `a`, \
+    but a native library can be linked only once
+
+package `bar v0.1.0`
+    ... which is depended on by `foo v0.1.0 ([..]foo)`
+links to native library `a`
+
+package `foo v0.1.0 ([..]foo)`
+also links to native library `a`
+",
+        )
+        .run();
 }
 
 #[cargo_test]
@@ -696,7 +813,7 @@ fn testing_and_such() {
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
 [RUNNING] `[..]/foo-[..][EXE]`
 [DOCTEST] foo
-[RUNNING] `rustdoc --test [..]`",
+[RUNNING] `rustdoc [..]--test [..]`",
         )
         .with_stdout_contains_n("running 0 tests", 2)
         .run();
@@ -955,7 +1072,7 @@ fn build_deps_not_for_normal() {
         .with_stderr_contains("[..]can't find crate for `aaaaa`[..]")
         .with_stderr_contains(
             "\
-[ERROR] Could not compile `foo`.
+[ERROR] could not compile `foo`.
 
 Caused by:
   process didn't exit successfully: [..]
@@ -2160,7 +2277,7 @@ fn flags_go_into_tests() {
 #[cargo_test]
 fn diamond_passes_args_only_once() {
     // FIXME: when pipelining rides to stable, enable this test on all channels.
-    if !crate::support::is_nightly() {
+    if !cargo_test_support::is_nightly() {
         return;
     }
 
@@ -2630,7 +2747,7 @@ fn doctest_receives_build_link_args() {
 
     p.cargo("test -v")
         .with_stderr_contains(
-            "[RUNNING] `rustdoc --test [..] --crate-name foo [..]-L native=bar[..]`",
+            "[RUNNING] `rustdoc [..]--test [..] --crate-name foo [..]-L native=bar[..]`",
         )
         .run();
 }

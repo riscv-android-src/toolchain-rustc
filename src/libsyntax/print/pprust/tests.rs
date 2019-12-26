@@ -12,8 +12,8 @@ fn fun_to_string(
         s.head("");
         s.print_fn(decl, header, Some(name),
                    generics, &source_map::dummy_spanned(ast::VisibilityKind::Inherited));
-        s.end(); // Close the head box
-        s.end(); // Close the outer box
+        s.end(); // Close the head box.
+        s.end(); // Close the outer box.
     })
 }
 
@@ -54,14 +54,15 @@ fn test_variant_to_string() {
     with_default_globals(|| {
         let ident = ast::Ident::from_str("principal_skinner");
 
-        let var = source_map::respan(syntax_pos::DUMMY_SP, ast::Variant_ {
+        let var = ast::Variant {
             ident,
             attrs: Vec::new(),
             id: ast::DUMMY_NODE_ID,
-            // making this up as I go.... ?
             data: ast::VariantData::Unit(ast::DUMMY_NODE_ID),
             disr_expr: None,
-        });
+            span: syntax_pos::DUMMY_SP,
+            is_placeholder: false,
+        };
 
         let varstr = variant_to_string(&var);
         assert_eq!(varstr, "principal_skinner");

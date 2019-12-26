@@ -21,8 +21,10 @@ pub struct Error(NonZeroU32);
 
 impl Error {
     #[deprecated(since = "0.1.7")]
+    /// Unknown error.
     pub const UNKNOWN: Error = UNSUPPORTED;
     #[deprecated(since = "0.1.7")]
+    /// System entropy source is unavailable.
     pub const UNAVAILABLE: Error = UNSUPPORTED;
 
     /// Codes below this point represent OS Errors (i.e. positive i32 values).
@@ -40,7 +42,7 @@ impl Error {
     /// that it works in `no_std` contexts. If this method returns `None`, the
     /// error value can still be formatted via the `Diplay` implementation.
     #[inline]
-    pub fn raw_os_error(&self) -> Option<i32> {
+    pub fn raw_os_error(self) -> Option<i32> {
         if self.0.get() < Self::INTERNAL_START {
             Some(self.0.get() as i32)
         } else {
@@ -53,30 +55,38 @@ impl Error {
     /// This code can either come from the underlying OS, or be a custom error.
     /// Use [`Error::raw_os_error()`] to disambiguate.
     #[inline]
-    pub fn code(&self) -> NonZeroU32 {
+    pub fn code(self) -> NonZeroU32 {
         self.0
     }
 }
 
-#[cfg(any(unix, target_os = "redox"))]
-fn os_err_desc(errno: i32, buf: &mut [u8]) -> Option<&str> {
-    let buf_ptr = buf.as_mut_ptr() as *mut libc::c_char;
-    if unsafe { libc::strerror_r(errno, buf_ptr, buf.len()) } != 0 {
-        return None;
+cfg_if! {
+    if #[cfg(unix)] {
+        fn os_err_desc(errno: i32, buf: &mut [u8]) -> Option<&str> {
+            let buf_ptr = buf.as_mut_ptr() as *mut libc::c_char;
+            if unsafe { libc::strerror_r(errno, buf_ptr, buf.len()) } != 0 {
+                return None;
+            }
+
+            // Take up to trailing null byte
+            let n = buf.len();
+            let idx = buf.iter().position(|&b| b == 0).unwrap_or(n);
+            core::str::from_utf8(&buf[..idx]).ok()
+        }
+    } else if #[cfg(target_os = "wasi")] {
+        fn os_err_desc(errno: i32, _buf: &mut [u8]) -> Option<&str> {
+            core::num::NonZeroU16::new(errno as u16)
+                .and_then(wasi::wasi_unstable::error_str)
+        }
+    } else {
+        fn os_err_desc(_errno: i32, _buf: &mut [u8]) -> Option<&str> {
+            None
+        }
     }
-
-    // Take up to trailing null byte
-    let idx = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-    core::str::from_utf8(&buf[..idx]).ok()
-}
-
-#[cfg(not(any(unix, target_os = "redox")))]
-fn os_err_desc(_errno: i32, _buf: &mut [u8]) -> Option<&str> {
-    None
 }
 
 impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut dbg = f.debug_struct("Error");
         if let Some(errno) = self.raw_os_error() {
             dbg.field("os_error", &errno);
@@ -95,7 +105,7 @@ impl fmt::Debug for Error {
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(errno) = self.raw_os_error() {
             let mut buf = [0u8; 128];
             match os_err_desc(errno, &mut buf) {

@@ -3,10 +3,13 @@ use std::io::prelude::*;
 
 use cargo;
 
-use crate::support::paths::CargoPathExt;
-use crate::support::registry::Package;
-use crate::support::{basic_bin_manifest, basic_lib_manifest, basic_manifest, cargo_exe, project};
-use crate::support::{rustc_host, sleep_ms};
+use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{
+    basic_bin_manifest, basic_lib_manifest, basic_manifest, cargo_exe, project,
+};
+use cargo_test_support::{cross_compile, is_nightly, paths};
+use cargo_test_support::{rustc_host, sleep_ms};
 
 #[cargo_test]
 fn cargo_test_simple() {
@@ -97,7 +100,7 @@ fn cargo_test_release() {
 [RUNNING] `[..]target/release/deps/foo-[..][EXE]`
 [RUNNING] `[..]target/release/deps/test-[..][EXE]`
 [DOCTEST] foo
-[RUNNING] `rustdoc --test [..]lib.rs[..]`",
+[RUNNING] `rustdoc [..]--test [..]lib.rs[..]`",
         )
         .with_stdout_contains_n("test test ... ok", 2)
         .with_stdout_contains("running 0 tests")
@@ -2702,7 +2705,7 @@ fn pass_correct_cfgs_flags_to_rustdoc() {
         .with_stderr_contains(
             "\
 [DOCTEST] feature_a
-[RUNNING] `rustdoc --test [..]mock_serde_codegen[..]`",
+[RUNNING] `rustdoc [..]--test [..]mock_serde_codegen[..]`",
         )
         .run();
 
@@ -2710,7 +2713,7 @@ fn pass_correct_cfgs_flags_to_rustdoc() {
         .with_stderr_contains(
             "\
 [DOCTEST] foo
-[RUNNING] `rustdoc --test [..]feature_a[..]`",
+[RUNNING] `rustdoc [..]--test [..]feature_a[..]`",
         )
         .run();
 }
@@ -2797,7 +2800,7 @@ fn test_all_workspace() {
         .file("bar/src/lib.rs", "#[test] fn bar_test() {}")
         .build();
 
-    p.cargo("test --all")
+    p.cargo("test --workspace")
         .with_stdout_contains("test foo_test ... ok")
         .with_stdout_contains("test bar_test ... ok")
         .run();
@@ -2824,7 +2827,7 @@ fn test_all_exclude() {
         .file("baz/src/lib.rs", "#[test] pub fn baz() { assert!(false); }")
         .build();
 
-    p.cargo("test --all --exclude baz")
+    p.cargo("test --workspace --exclude baz")
         .with_stdout_contains(
             "running 1 test
 test bar ... ok",
@@ -2848,7 +2851,7 @@ fn test_all_virtual_manifest() {
         .file("b/src/lib.rs", "#[test] fn b() {}")
         .build();
 
-    p.cargo("test --all")
+    p.cargo("test --workspace")
         .with_stdout_contains("test a ... ok")
         .with_stdout_contains("test b ... ok")
         .run();
@@ -2902,7 +2905,7 @@ fn test_all_member_dependency_same_name() {
 
     Package::new("a", "0.1.0").publish();
 
-    p.cargo("test --all")
+    p.cargo("test --workspace")
         .with_stdout_contains("test a ... ok")
         .run();
 }
@@ -3037,7 +3040,7 @@ fn doctest_and_registry() {
 
     Package::new("b", "0.1.0").publish();
 
-    p.cargo("test --all -v").run();
+    p.cargo("test --workspace -v").run();
 }
 
 #[cargo_test]
@@ -3075,7 +3078,7 @@ fn test_order() {
         .file("tests/z.rs", "#[test] fn test_z() {}")
         .build();
 
-    p.cargo("test --all")
+    p.cargo("test --workspace")
         .with_stdout_contains(
             "
 running 1 test
@@ -3117,7 +3120,7 @@ fn cyclic_dev() {
         .file("tests/foo.rs", "extern crate foo;")
         .build();
 
-    p.cargo("test --all").run();
+    p.cargo("test --workspace").run();
 }
 
 #[cargo_test]
@@ -3228,7 +3231,7 @@ fn find_dependency_of_proc_macro_dependency_with_target() {
         .dep("bar", "0.1")
         .file("src/lib.rs", "extern crate bar;")
         .publish();
-    p.cargo("test --all --target").arg(rustc_host()).run();
+    p.cargo("test --workspace --target").arg(rustc_host()).run();
 }
 
 #[cargo_test]
@@ -3310,7 +3313,7 @@ fn test_hint_workspace_nonvirtual() {
         .file("a/src/lib.rs", "#[test] fn t1() {assert!(false)}")
         .build();
 
-    p.cargo("test --all")
+    p.cargo("test --workspace")
         .with_stderr_contains("[ERROR] test failed, to rerun pass '-p a --lib'")
         .with_status(101)
         .run();
@@ -3657,4 +3660,233 @@ fn test_dep_with_dev() {
              and is not a member of the workspace",
         )
         .run();
+}
+
+#[cargo_test]
+fn cargo_test_doctest_xcompile_ignores() {
+    if !is_nightly() {
+        return;
+    }
+    let p = project()
+        .file("Cargo.toml", &basic_lib_manifest("foo"))
+        .file(
+            "src/lib.rs",
+            r#"
+            ///```ignore-x86_64
+            ///assert!(cfg!(not(target_arch = "x86_64")));
+            ///```
+            pub fn foo() -> u8 {
+                4
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("build").run();
+    #[cfg(not(target_arch = "x86_64"))]
+    p.cargo("test")
+        .with_stdout_contains(
+            "\
+             test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\
+             ",
+        )
+        .run();
+    #[cfg(target_arch = "x86_64")]
+    p.cargo("test")
+        .with_status(101)
+        .with_stdout_contains(
+            "\
+             test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\
+             ",
+        )
+        .run();
+
+    #[cfg(not(target_arch = "x86_64"))]
+    p.cargo("test -Zdoctest-xcompile")
+        .masquerade_as_nightly_cargo()
+        .with_stdout_contains(
+            "\
+             test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\
+             ",
+        )
+        .run();
+
+    #[cfg(target_arch = "x86_64")]
+    p.cargo("test -Zdoctest-xcompile")
+        .masquerade_as_nightly_cargo()
+        .with_stdout_contains(
+            "\
+             test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out\
+             ",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn cargo_test_doctest_xcompile() {
+    if !is_nightly() {
+        return;
+    }
+    let p = project()
+        .file("Cargo.toml", &basic_lib_manifest("foo"))
+        .file(
+            "src/lib.rs",
+            r#"
+
+            ///```
+            ///assert!(1 == 1);
+            ///```
+            pub fn foo() -> u8 {
+                4
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("build").run();
+    p.cargo(&format!("test --target {}", cross_compile::alternate()))
+        .with_stdout_contains(
+            "\
+             running 0 tests\
+             ",
+        )
+        .run();
+    p.cargo(&format!(
+        "test --target {} -Zdoctest-xcompile",
+        cross_compile::alternate()
+    ))
+    .masquerade_as_nightly_cargo()
+    .with_stdout_contains(
+        "\
+         test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\
+         ",
+    )
+    .run();
+}
+
+#[cargo_test]
+fn cargo_test_doctest_xcompile_runner() {
+    use std::fs;
+    if !is_nightly() {
+        return;
+    }
+
+    let runner = project()
+        .file("Cargo.toml", &basic_bin_manifest("runner"))
+        .file(
+            "src/main.rs",
+            r#"
+            pub fn main() {
+                eprintln!("this is a runner");
+                let args: Vec<String> = std::env::args().collect();
+                std::process::Command::new(&args[1]).spawn();
+            }
+            "#,
+        )
+        .build();
+
+    runner.cargo("build").run();
+    assert!(runner.bin("runner").is_file());
+    let runner_path = paths::root().join("runner");
+    fs::copy(&runner.bin("runner"), &runner_path).unwrap();
+
+    let config = paths::root().join(".cargo/config");
+
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    File::create(config)
+        .unwrap()
+        .write_all(
+            format!(
+                r#"
+[target.'cfg(target_arch = "x86")']
+runner = "{}"
+"#,
+                runner_path.to_str().unwrap()
+            )
+            .as_bytes(),
+        )
+        .unwrap();
+
+    let p = project()
+        .file("Cargo.toml", &basic_lib_manifest("foo"))
+        .file(
+            "src/lib.rs",
+            r#"
+            ///```
+            ///assert!(cfg!(target_arch = "x86"));
+            ///```
+            pub fn foo() -> u8 {
+                4
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("build").run();
+    p.cargo(&format!("test --target {}", cross_compile::alternate()))
+        .with_stdout_contains(
+            "\
+             running 0 tests\
+             ",
+        )
+        .run();
+    p.cargo(&format!(
+        "test --target {} -Zdoctest-xcompile",
+        cross_compile::alternate()
+    ))
+    .masquerade_as_nightly_cargo()
+    .with_stdout_contains(
+        "\
+         test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\
+         ",
+    )
+    .with_stderr_contains(
+        "\
+         this is a runner\
+         ",
+    )
+    .run();
+}
+
+#[cargo_test]
+fn cargo_test_doctest_xcompile_no_runner() {
+    if !is_nightly() {
+        return;
+    }
+
+    let p = project()
+        .file("Cargo.toml", &basic_lib_manifest("foo"))
+        .file(
+            "src/lib.rs",
+            r#"
+
+            ///```
+            ///assert!(cfg!(target_arch = "x86"));
+            ///```
+            pub fn foo() -> u8 {
+                4
+            }
+            "#,
+        )
+        .build();
+
+    p.cargo("build").run();
+    p.cargo(&format!("test --target {}", cross_compile::alternate()))
+        .with_stdout_contains(
+            "\
+             running 0 tests\
+             ",
+        )
+        .run();
+    p.cargo(&format!(
+        "test --target {} -Zdoctest-xcompile",
+        cross_compile::alternate()
+    ))
+    .masquerade_as_nightly_cargo()
+    .with_stdout_contains(
+        "\
+         test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\
+         ",
+    )
+    .run();
 }

@@ -10,6 +10,7 @@ use rustc::util::common::ErrorReported;
 use errors::{Applicability, DiagnosticId};
 
 use syntax_pos::Span;
+use syntax::errors::pluralise;
 
 use super::{Inherited, FnCtxt, potentially_plural_count};
 
@@ -308,7 +309,7 @@ fn compare_predicate_entailment<'tcx>(
 
             let cause = ObligationCause {
                 span: impl_err_span,
-                ..cause.clone()
+                ..cause
             };
 
             let mut diag = struct_span_err!(tcx.sess,
@@ -518,7 +519,7 @@ fn compare_self_type<'tcx>(
     let self_string = |method: &ty::AssocItem| {
         let untransformed_self_ty = match method.container {
             ty::ImplContainer(_) => impl_trait_ref.self_ty(),
-            ty::TraitContainer(_) => tcx.mk_self_type()
+            ty::TraitContainer(_) => tcx.types.self_param
         };
         let self_arg_ty = *tcx.fn_sig(method.def_id).input(0).skip_binder();
         let param_env = ty::ParamEnv::reveal_all();
@@ -648,9 +649,9 @@ fn compare_number_of_generics<'tcx>(
                      declaration has {} {kind} parameter{}",
                     trait_.ident,
                     impl_count,
-                    if impl_count != 1 { "s" } else { "" },
+                    pluralise!(impl_count),
                     trait_count,
-                    if trait_count != 1 { "s" } else { "" },
+                    pluralise!(trait_count),
                     kind = kind,
                 ),
                 DiagnosticId::Error("E0049".into()),
@@ -665,7 +666,7 @@ fn compare_number_of_generics<'tcx>(
                         "expected {} {} parameter{}",
                         trait_count,
                         kind,
-                        if trait_count != 1 { "s" } else { "" },
+                        pluralise!(trait_count),
                     ));
                 }
                 for span in spans {
@@ -680,7 +681,7 @@ fn compare_number_of_generics<'tcx>(
                     "found {} {} parameter{}{}",
                     impl_count,
                     kind,
-                    if impl_count != 1 { "s" } else { "" },
+                    pluralise!(impl_count),
                     suffix.unwrap_or_else(|| String::new()),
                 ));
             }

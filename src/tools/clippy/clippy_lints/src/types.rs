@@ -15,16 +15,16 @@ use rustc::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_errors::Applicability;
 use rustc_target::spec::abi::Abi;
 use rustc_typeck::hir_ty_to_ty;
-use syntax::ast::{FloatTy, IntTy, UintTy};
+use syntax::ast::{FloatTy, IntTy, LitIntType, LitKind, UintTy};
 use syntax::errors::DiagnosticBuilder;
 use syntax::source_map::Span;
-use syntax::symbol::sym;
+use syntax::symbol::{sym, Symbol};
 
 use crate::consts::{constant, Constant};
 use crate::utils::paths;
 use crate::utils::{
-    clip, comparisons, differing_macro_contexts, higher, in_constant, in_macro_or_desugar, int_bits, last_path_segment,
-    match_def_path, match_path, multispan_sugg, same_tys, sext, snippet, snippet_opt, snippet_with_applicability,
+    clip, comparisons, differing_macro_contexts, higher, in_constant, int_bits, last_path_segment, match_def_path,
+    match_path, multispan_sugg, qpath_res, same_tys, sext, snippet, snippet_opt, snippet_with_applicability,
     snippet_with_macro_callsite, span_help_and_lint, span_lint, span_lint_and_sugg, span_lint_and_then, unsext,
 };
 
@@ -218,7 +218,7 @@ fn match_type_parameter(cx: &LateContext<'_, '_>, qpath: &QPath, path: &[&str]) 
             _ => None,
         });
         if let TyKind::Path(ref qpath) = ty.node;
-        if let Some(did) = cx.tables.qpath_res(qpath, ty.hir_id).opt_def_id();
+        if let Some(did) = qpath_res(cx, qpath, ty.hir_id).opt_def_id();
         if match_def_path(cx, did, path);
         then {
             return true;
@@ -234,13 +234,13 @@ fn match_type_parameter(cx: &LateContext<'_, '_>, qpath: &QPath, path: &[&str]) 
 /// local bindings should only be checked for the `BORROWED_BOX` lint.
 #[allow(clippy::too_many_lines)]
 fn check_ty(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool) {
-    if in_macro_or_desugar(hir_ty.span) {
+    if hir_ty.span.from_expansion() {
         return;
     }
     match hir_ty.node {
         TyKind::Path(ref qpath) if !is_local => {
             let hir_id = hir_ty.hir_id;
-            let res = cx.tables.qpath_res(qpath, hir_id);
+            let res = qpath_res(cx, qpath, hir_id);
             if let Some(def_id) = res.opt_def_id() {
                 if Some(def_id) == cx.tcx.lang_items().owned_box() {
                     if match_type_parameter(cx, qpath, &paths::VEC) {
@@ -253,7 +253,7 @@ fn check_ty(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool) {
                         );
                         return; // don't recurse into the type
                     }
-                } else if match_def_path(cx, def_id, &paths::VEC) {
+                } else if cx.tcx.is_diagnostic_item(Symbol::intern("vec_type"), def_id) {
                     if_chain! {
                         // Get the _ part of Vec<_>
                         if let Some(ref last) = last_path_segment(qpath).args;
@@ -263,7 +263,7 @@ fn check_ty(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool) {
                         });
                         // ty is now _ at this point
                         if let TyKind::Path(ref ty_qpath) = ty.node;
-                        let res = cx.tables.qpath_res(ty_qpath, ty.hir_id);
+                        let res = qpath_res(cx, ty_qpath, ty.hir_id);
                         if let Some(def_id) = res.opt_def_id();
                         if Some(def_id) == cx.tcx.lang_items().owned_box();
                         // At this point, we know ty is Box<T>, now get T
@@ -369,7 +369,7 @@ fn check_ty_rptr(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool, lt:
     match mut_ty.ty.node {
         TyKind::Path(ref qpath) => {
             let hir_id = mut_ty.ty.hir_id;
-            let def = cx.tables.qpath_res(qpath, hir_id);
+            let def = qpath_res(cx, qpath, hir_id);
             if_chain! {
                 if let Some(def_id) = def.opt_def_id();
                 if Some(def_id) == cx.tcx.lang_items().owned_box();
@@ -462,7 +462,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LetUnitValue {
     fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt) {
         if let StmtKind::Local(ref local) = stmt.node {
             if is_unit(cx.tables.pat_ty(&local.pat)) {
-                if in_external_macro(cx.sess(), stmt.span) || in_macro_or_desugar(local.pat.span) {
+                if in_external_macro(cx.sess(), stmt.span) || local.pat.span.from_expansion() {
                     return;
                 }
                 if higher::is_from_for_desugar(local) {
@@ -526,7 +526,7 @@ declare_lint_pass!(UnitCmp => [UNIT_CMP]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnitCmp {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        if in_macro_or_desugar(expr.span) {
+        if expr.span.from_expansion() {
             return;
         }
         if let ExprKind::Binary(ref cmp, ref left, _) = expr.node {
@@ -575,7 +575,7 @@ declare_lint_pass!(UnitArg => [UNIT_ARG]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnitArg {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        if in_macro_or_desugar(expr.span) {
+        if expr.span.from_expansion() {
             return;
         }
 
@@ -765,7 +765,7 @@ declare_clippy_lint! {
     /// }
     /// ```
     pub CAST_LOSSLESS,
-    complexity,
+    pedantic,
     "casts using `as` that are known to be lossless, e.g., `x as u64` where `x: u8`"
 }
 
@@ -1115,14 +1115,13 @@ fn fp_ty_mantissa_nbits(typ: Ty<'_>) -> u32 {
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        if in_macro_or_desugar(expr.span) {
+        if expr.span.from_expansion() {
             return;
         }
         if let ExprKind::Cast(ref ex, _) = expr.node {
             let (cast_from, cast_to) = (cx.tables.expr_ty(ex), cx.tables.expr_ty(expr));
             lint_fn_to_numeric_cast(cx, expr, ex, cast_from, cast_to);
             if let ExprKind::Lit(ref lit) = ex.node {
-                use syntax::ast::{LitIntType, LitKind};
                 if let LitKind::Int(n, _) = lit.node {
                     if cast_to.is_floating_point() {
                         let from_nbits = 128 - n.leading_zeros();
@@ -1159,83 +1158,97 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
                 }
             }
             if cast_from.is_numeric() && cast_to.is_numeric() && !in_external_macro(cx.sess(), expr.span) {
-                match (cast_from.is_integral(), cast_to.is_integral()) {
-                    (true, false) => {
-                        let from_nbits = int_ty_to_nbits(cast_from, cx.tcx);
-                        let to_nbits = if let ty::Float(FloatTy::F32) = cast_to.sty {
-                            32
-                        } else {
-                            64
-                        };
-                        if is_isize_or_usize(cast_from) || from_nbits >= to_nbits {
-                            span_precision_loss_lint(cx, expr, cast_from, to_nbits == 64);
-                        }
-                        if from_nbits < to_nbits {
-                            span_lossless_lint(cx, expr, ex, cast_from, cast_to);
-                        }
-                    },
-                    (false, true) => {
-                        span_lint(
-                            cx,
-                            CAST_POSSIBLE_TRUNCATION,
-                            expr.span,
-                            &format!("casting {} to {} may truncate the value", cast_from, cast_to),
-                        );
-                        if !cast_to.is_signed() {
-                            span_lint(
-                                cx,
-                                CAST_SIGN_LOSS,
-                                expr.span,
-                                &format!("casting {} to {} may lose the sign of the value", cast_from, cast_to),
-                            );
-                        }
-                    },
-                    (true, true) => {
-                        check_loss_of_sign(cx, expr, ex, cast_from, cast_to);
-                        check_truncation_and_wrapping(cx, expr, cast_from, cast_to);
-                        check_lossless(cx, expr, ex, cast_from, cast_to);
-                    },
-                    (false, false) => {
-                        if let (&ty::Float(FloatTy::F64), &ty::Float(FloatTy::F32)) = (&cast_from.sty, &cast_to.sty) {
-                            span_lint(
-                                cx,
-                                CAST_POSSIBLE_TRUNCATION,
-                                expr.span,
-                                "casting f64 to f32 may truncate the value",
-                            );
-                        }
-                        if let (&ty::Float(FloatTy::F32), &ty::Float(FloatTy::F64)) = (&cast_from.sty, &cast_to.sty) {
-                            span_lossless_lint(cx, expr, ex, cast_from, cast_to);
-                        }
-                    },
-                }
+                lint_numeric_casts(cx, expr, ex, cast_from, cast_to);
             }
 
-            if_chain! {
-                if let ty::RawPtr(from_ptr_ty) = &cast_from.sty;
-                if let ty::RawPtr(to_ptr_ty) = &cast_to.sty;
-                if let Ok(from_layout) = cx.layout_of(from_ptr_ty.ty);
-                if let Ok(to_layout) = cx.layout_of(to_ptr_ty.ty);
-                if from_layout.align.abi < to_layout.align.abi;
-                // with c_void, we inherently need to trust the user
-                if !is_c_void(cx, from_ptr_ty.ty);
-                // when casting from a ZST, we don't know enough to properly lint
-                if !from_layout.is_zst();
-                then {
-                    span_lint(
-                        cx,
-                        CAST_PTR_ALIGNMENT,
-                        expr.span,
-                        &format!(
-                            "casting from `{}` to a more-strictly-aligned pointer (`{}`) ({} < {} bytes)",
-                            cast_from,
-                            cast_to,
-                            from_layout.align.abi.bytes(),
-                            to_layout.align.abi.bytes(),
-                        ),
-                    );
-                }
+            lint_cast_ptr_alignment(cx, expr, cast_from, cast_to);
+        }
+    }
+}
+
+fn lint_numeric_casts<'tcx>(
+    cx: &LateContext<'_, 'tcx>,
+    expr: &Expr,
+    cast_expr: &Expr,
+    cast_from: Ty<'tcx>,
+    cast_to: Ty<'tcx>,
+) {
+    match (cast_from.is_integral(), cast_to.is_integral()) {
+        (true, false) => {
+            let from_nbits = int_ty_to_nbits(cast_from, cx.tcx);
+            let to_nbits = if let ty::Float(FloatTy::F32) = cast_to.sty {
+                32
+            } else {
+                64
+            };
+            if is_isize_or_usize(cast_from) || from_nbits >= to_nbits {
+                span_precision_loss_lint(cx, expr, cast_from, to_nbits == 64);
             }
+            if from_nbits < to_nbits {
+                span_lossless_lint(cx, expr, cast_expr, cast_from, cast_to);
+            }
+        },
+        (false, true) => {
+            span_lint(
+                cx,
+                CAST_POSSIBLE_TRUNCATION,
+                expr.span,
+                &format!("casting {} to {} may truncate the value", cast_from, cast_to),
+            );
+            if !cast_to.is_signed() {
+                span_lint(
+                    cx,
+                    CAST_SIGN_LOSS,
+                    expr.span,
+                    &format!("casting {} to {} may lose the sign of the value", cast_from, cast_to),
+                );
+            }
+        },
+        (true, true) => {
+            check_loss_of_sign(cx, expr, cast_expr, cast_from, cast_to);
+            check_truncation_and_wrapping(cx, expr, cast_from, cast_to);
+            check_lossless(cx, expr, cast_expr, cast_from, cast_to);
+        },
+        (false, false) => {
+            if let (&ty::Float(FloatTy::F64), &ty::Float(FloatTy::F32)) = (&cast_from.sty, &cast_to.sty) {
+                span_lint(
+                    cx,
+                    CAST_POSSIBLE_TRUNCATION,
+                    expr.span,
+                    "casting f64 to f32 may truncate the value",
+                );
+            }
+            if let (&ty::Float(FloatTy::F32), &ty::Float(FloatTy::F64)) = (&cast_from.sty, &cast_to.sty) {
+                span_lossless_lint(cx, expr, cast_expr, cast_from, cast_to);
+            }
+        },
+    }
+}
+
+fn lint_cast_ptr_alignment<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr, cast_from: Ty<'tcx>, cast_to: Ty<'tcx>) {
+    if_chain! {
+        if let ty::RawPtr(from_ptr_ty) = &cast_from.sty;
+        if let ty::RawPtr(to_ptr_ty) = &cast_to.sty;
+        if let Ok(from_layout) = cx.layout_of(from_ptr_ty.ty);
+        if let Ok(to_layout) = cx.layout_of(to_ptr_ty.ty);
+        if from_layout.align.abi < to_layout.align.abi;
+        // with c_void, we inherently need to trust the user
+        if !is_c_void(cx, from_ptr_ty.ty);
+        // when casting from a ZST, we don't know enough to properly lint
+        if !from_layout.is_zst();
+        then {
+            span_lint(
+                cx,
+                CAST_PTR_ALIGNMENT,
+                expr.span,
+                &format!(
+                    "casting from `{}` to a more-strictly-aligned pointer (`{}`) ({} < {} bytes)",
+                    cast_from,
+                    cast_to,
+                    from_layout.align.abi.bytes(),
+                    to_layout.align.abi.bytes(),
+                ),
+            );
         }
     }
 }
@@ -1381,7 +1394,7 @@ impl<'a, 'tcx> TypeComplexity {
     }
 
     fn check_type(&self, cx: &LateContext<'_, '_>, ty: &hir::Ty) {
-        if in_macro_or_desugar(ty.span) {
+        if ty.span.from_expansion() {
             return;
         }
         let score = {
@@ -1473,29 +1486,40 @@ declare_clippy_lint! {
     /// ```
     pub CHAR_LIT_AS_U8,
     complexity,
-    "casting a character literal to u8"
+    "casting a character literal to u8 truncates"
 }
 
 declare_lint_pass!(CharLitAsU8 => [CHAR_LIT_AS_U8]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CharLitAsU8 {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        use syntax::ast::LitKind;
+        if_chain! {
+            if !expr.span.from_expansion();
+            if let ExprKind::Cast(e, _) = &expr.node;
+            if let ExprKind::Lit(l) = &e.node;
+            if let LitKind::Char(c) = l.node;
+            if ty::Uint(UintTy::U8) == cx.tables.expr_ty(expr).sty;
+            then {
+                let mut applicability = Applicability::MachineApplicable;
+                let snippet = snippet_with_applicability(cx, e.span, "'x'", &mut applicability);
 
-        if let ExprKind::Cast(ref e, _) = expr.node {
-            if let ExprKind::Lit(ref l) = e.node {
-                if let LitKind::Char(_) = l.node {
-                    if ty::Uint(UintTy::U8) == cx.tables.expr_ty(expr).sty && !in_macro_or_desugar(expr.span) {
-                        let msg = "casting character literal to u8. `char`s \
-                                   are 4 bytes wide in rust, so casting to u8 \
-                                   truncates them";
-                        let help = format!(
-                            "Consider using a byte literal instead:\nb{}",
-                            snippet(cx, e.span, "'x'")
-                        );
-                        span_help_and_lint(cx, CHAR_LIT_AS_U8, expr.span, msg, &help);
-                    }
-                }
+                span_lint_and_then(
+                    cx,
+                    CHAR_LIT_AS_U8,
+                    expr.span,
+                    "casting a character literal to `u8` truncates",
+                    |db| {
+                        db.note("`char` is four bytes wide, but `u8` is a single byte");
+
+                        if c.is_ascii() {
+                            db.span_suggestion(
+                                expr.span,
+                                "use a byte literal instead",
+                                format!("b{}", snippet),
+                                applicability,
+                            );
+                        }
+                });
             }
         }
     }
@@ -1646,7 +1670,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AbsurdExtremeComparisons {
 
         if let ExprKind::Binary(ref cmp, ref lhs, ref rhs) = expr.node {
             if let Some((culprit, result)) = detect_absurd_comparison(cx, cmp.node, lhs, rhs) {
-                if !in_macro_or_desugar(expr.span) {
+                if !expr.span.from_expansion() {
                     let msg = "this comparison involving the minimum or maximum element for this \
                                type contains a case that is always true or always false";
 
@@ -2056,7 +2080,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitHasher {
                             continue;
                         }
                         let generics_suggestion_span = generics.span.substitute_dummy({
-                            let pos = snippet_opt(cx, item.span.until(body.arguments[0].pat.span))
+                            let pos = snippet_opt(cx, item.span.until(body.params[0].pat.span))
                                 .and_then(|snip| {
                                     let i = snip.find("fn")?;
                                     Some(item.span.lo() + BytePos((i + (&snip[i..]).find('(')?) as u32))

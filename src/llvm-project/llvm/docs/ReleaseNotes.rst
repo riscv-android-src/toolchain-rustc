@@ -21,6 +21,15 @@ have questions or comments, the `LLVM Developer's Mailing List
 them.
 
 
+Known Issues
+============
+
+These are issues that couldn't be fixed before the release. See the bug reports
+for the latest status.
+
+* `PR40547 <https://llvm.org/pr40547>`_ Clang gets miscompiled by GCC 9.
+
+
 Non-comprehensive list of changes in this release
 =================================================
 
@@ -338,6 +347,21 @@ IR features such as aliases and intrinsics. Zig uses Clang to provide automatic
 import of .h symbols, including inline functions and simple macros. Zig uses
 LLD combined with lazily building compiler-rt to provide out-of-the-box
 cross-compiling for all supported targets.
+
+
+LDC - the LLVM-based D compiler
+-------------------------------
+
+`D <http://dlang.org>`_ is a language with C-like syntax and static typing. It
+pragmatically combines efficiency, control, and modeling power, with safety and
+programmer productivity. D supports powerful concepts like Compile-Time Function
+Execution (CTFE) and Template Meta-Programming, provides an innovative approach
+to concurrency and offers many classical paradigms.
+
+`LDC <http://wiki.dlang.org/LDC>`_ uses the frontend from the reference compiler
+combined with LLVM as backend to produce efficient native code. LDC targets
+x86/x86_64 systems like Linux, OS X, FreeBSD and Windows and also Linux on ARM
+and PowerPC (32/64 bit). Ports to other architectures are underway.
 
 
 Additional Information

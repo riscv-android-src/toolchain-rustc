@@ -1,4 +1,7 @@
+// run-rustfix
+
 #![warn(clippy::implicit_return)]
+#![allow(clippy::needless_return, unused)]
 
 fn test_end_of_fn() -> bool {
     if true {

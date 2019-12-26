@@ -1,15 +1,16 @@
 use super::{Parser, PResult, Restrictions, PrevTokenKind, SemiColonMode, BlockMode};
 use super::expr::LhsExpr;
 use super::path::PathStyle;
+use super::pat::GateOr;
 
 use crate::ptr::P;
 use crate::{maybe_whole, ThinVec};
-use crate::ast::{self, Stmt, StmtKind, Local, Block, BlockCheckMode, Expr, ExprKind};
-use crate::ast::{Attribute, AttrStyle, VisibilityKind, MacStmtStyle, Mac_, MacDelimiter};
+use crate::ast::{self, DUMMY_NODE_ID, Stmt, StmtKind, Local, Block, BlockCheckMode, Expr, ExprKind};
+use crate::ast::{Attribute, AttrStyle, VisibilityKind, MacStmtStyle, Mac, MacDelimiter};
 use crate::ext::base::DummyResult;
 use crate::parse::{classify, DirectoryOwnership};
 use crate::parse::diagnostics::Error;
-use crate::parse::token::{self};
+use crate::parse::token;
 use crate::source_map::{respan, Span};
 use crate::symbol::{kw, sym};
 
@@ -17,7 +18,7 @@ use std::mem;
 use errors::Applicability;
 
 impl<'a> Parser<'a> {
-    /// Parse a statement. This stops just before trailing semicolons on everything but items.
+    /// Parses a statement. This stops just before trailing semicolons on everything but items.
     /// e.g., a `StmtKind::Semi` parses to a `StmtKind::Expr`, leaving the trailing `;` unconsumed.
     pub fn parse_stmt(&mut self) -> PResult<'a, Option<Stmt>> {
         Ok(self.parse_stmt_(true))
@@ -42,7 +43,7 @@ impl<'a> Parser<'a> {
 
         Ok(Some(if self.eat_keyword(kw::Let) {
             Stmt {
-                id: ast::DUMMY_NODE_ID,
+                id: DUMMY_NODE_ID,
                 node: StmtKind::Local(self.parse_local(attrs.into())?),
                 span: lo.to(self.prev_span),
             }
@@ -52,7 +53,7 @@ impl<'a> Parser<'a> {
             lo,
         )? {
             Stmt {
-                id: ast::DUMMY_NODE_ID,
+                id: DUMMY_NODE_ID,
                 node: StmtKind::Item(macro_def),
                 span: lo.to(self.prev_span),
             }
@@ -84,7 +85,7 @@ impl<'a> Parser<'a> {
                 })?;
 
                 return Ok(Some(Stmt {
-                    id: ast::DUMMY_NODE_ID,
+                    id: DUMMY_NODE_ID,
                     node: StmtKind::Expr(expr),
                     span: lo.to(self.prev_span),
                 }));
@@ -99,12 +100,13 @@ impl<'a> Parser<'a> {
                 MacStmtStyle::NoBraces
             };
 
-            let mac = respan(lo.to(hi), Mac_ {
+            let mac = Mac {
                 path,
                 tts,
                 delim,
+                span: lo.to(hi),
                 prior_type_ascription: self.last_type_ascription,
-            });
+            };
             let node = if delim == MacDelimiter::Brace ||
                           self.token == token::Semi || self.token == token::Eof {
                 StmtKind::Mac(P((mac, style, attrs.into())))
@@ -112,17 +114,17 @@ impl<'a> Parser<'a> {
             // We used to incorrectly stop parsing macro-expanded statements here.
             // If the next token will be an error anyway but could have parsed with the
             // earlier behavior, stop parsing here and emit a warning to avoid breakage.
-            else if macro_legacy_warnings &&
-                    self.token.can_begin_expr() &&
-                    match self.token.kind {
-                // These can continue an expression, so we can't stop parsing and warn.
-                token::OpenDelim(token::Paren) | token::OpenDelim(token::Bracket) |
-                token::BinOp(token::Minus) | token::BinOp(token::Star) |
-                token::BinOp(token::And) | token::BinOp(token::Or) |
-                token::AndAnd | token::OrOr |
-                token::DotDot | token::DotDotDot | token::DotDotEq => false,
-                _ => true,
-            } {
+            else if macro_legacy_warnings && self.token.can_begin_expr() &&
+                match self.token.kind {
+                    // These can continue an expression, so we can't stop parsing and warn.
+                    token::OpenDelim(token::Paren) | token::OpenDelim(token::Bracket) |
+                    token::BinOp(token::Minus) | token::BinOp(token::Star) |
+                    token::BinOp(token::And) | token::BinOp(token::Or) |
+                    token::AndAnd | token::OrOr |
+                    token::DotDot | token::DotDotDot | token::DotDotEq => false,
+                    _ => true,
+                }
+            {
                 self.warn_missing_semicolon();
                 StmtKind::Mac(P((mac, style, attrs.into())))
             } else {
@@ -133,7 +135,7 @@ impl<'a> Parser<'a> {
                 StmtKind::Expr(e)
             };
             Stmt {
-                id: ast::DUMMY_NODE_ID,
+                id: DUMMY_NODE_ID,
                 span: lo.to(hi),
                 node,
             }
@@ -146,7 +148,7 @@ impl<'a> Parser<'a> {
 
             match item {
                 Some(i) => Stmt {
-                    id: ast::DUMMY_NODE_ID,
+                    id: DUMMY_NODE_ID,
                     span: lo.to(i.span),
                     node: StmtKind::Item(i),
                 },
@@ -167,7 +169,22 @@ impl<'a> Parser<'a> {
                     if self.token == token::Semi {
                         unused_attrs(&attrs, self);
                         self.bump();
-                        return Ok(None);
+                        let mut last_semi = lo;
+                        while self.token == token::Semi {
+                            last_semi = self.token.span;
+                            self.bump();
+                        }
+                        // We are encoding a string of semicolons as an
+                        // an empty tuple that spans the excess semicolons
+                        // to preserve this info until the lint stage
+                        return Ok(Some(Stmt {
+                            id: DUMMY_NODE_ID,
+                            span: lo.to(last_semi),
+                            node: StmtKind::Semi(self.mk_expr(lo.to(last_semi),
+                                ExprKind::Tup(Vec::new()),
+                                ThinVec::new()
+                            )),
+                        }));
                     }
 
                     if self.token == token::CloseDelim(token::Brace) {
@@ -179,7 +196,7 @@ impl<'a> Parser<'a> {
                     let e = self.parse_expr_res(
                         Restrictions::STMT_EXPR, Some(attrs.into()))?;
                     Stmt {
-                        id: ast::DUMMY_NODE_ID,
+                        id: DUMMY_NODE_ID,
                         span: lo.to(e.span),
                         node: StmtKind::Expr(e),
                     }
@@ -191,7 +208,7 @@ impl<'a> Parser<'a> {
     /// Parses a local variable declaration.
     fn parse_local(&mut self, attrs: ThinVec<Attribute>) -> PResult<'a, P<Local>> {
         let lo = self.prev_span;
-        let pat = self.parse_top_level_pat()?;
+        let pat = self.parse_top_pat(GateOr::Yes)?;
 
         let (err, ty) = if self.eat(&token::Colon) {
             // Save the state of the parser before parsing type normally, in case there is a `:`
@@ -201,7 +218,7 @@ impl<'a> Parser<'a> {
             match self.parse_ty() {
                 Ok(ty) => (None, Some(ty)),
                 Err(mut err) => {
-                    // Rewind to before attempting to parse the type and continue parsing
+                    // Rewind to before attempting to parse the type and continue parsing.
                     let parser_snapshot_after_type = self.clone();
                     mem::replace(self, parser_snapshot_before_type);
 
@@ -255,7 +272,7 @@ impl<'a> Parser<'a> {
             ty,
             pat,
             init,
-            id: ast::DUMMY_NODE_ID,
+            id: DUMMY_NODE_ID,
             span: lo.to(hi),
             attrs,
         }))
@@ -317,18 +334,18 @@ impl<'a> Parser<'a> {
             //    if (cond)
             //      bar;
             //
-            // Which is valid in other languages, but not Rust.
+            // which is valid in other languages, but not Rust.
             match self.parse_stmt_without_recovery(false) {
                 Ok(Some(stmt)) => {
                     if self.look_ahead(1, |t| t == &token::OpenDelim(token::Brace))
                         || do_not_suggest_help {
-                        // if the next token is an open brace (e.g., `if a b {`), the place-
-                        // inside-a-block suggestion would be more likely wrong than right
+                        // If the next token is an open brace (e.g., `if a b {`), the place-
+                        // inside-a-block suggestion would be more likely wrong than right.
                         e.span_label(sp, "expected `{`");
                         return Err(e);
                     }
                     let mut stmt_span = stmt.span;
-                    // expand the span to include the semicolon, if it exists
+                    // Expand the span to include the semicolon, if it exists.
                     if self.eat(&token::Semi) {
                         stmt_span = stmt_span.with_hi(self.prev_span.hi());
                     }
@@ -337,14 +354,14 @@ impl<'a> Parser<'a> {
                             stmt_span,
                             "try placing this code inside a block",
                             format!("{{ {} }}", snippet),
-                            // speculative, has been misleading in the past (#46836)
+                            // Speculative; has been misleading in the past (#46836).
                             Applicability::MaybeIncorrect,
                         );
                     }
                 }
                 Err(mut e) => {
                     self.recover_stmt_(SemiColonMode::Break, BlockMode::Ignore);
-                    self.cancel(&mut e);
+                    e.cancel();
                 }
                 _ => ()
             }
@@ -382,7 +399,7 @@ impl<'a> Parser<'a> {
                     err.emit();
                     self.recover_stmt_(SemiColonMode::Ignore, BlockMode::Ignore);
                     Some(Stmt {
-                        id: ast::DUMMY_NODE_ID,
+                        id: DUMMY_NODE_ID,
                         node: StmtKind::Expr(DummyResult::raw_expr(self.token.span, true)),
                         span: self.token.span,
                     })
@@ -398,7 +415,7 @@ impl<'a> Parser<'a> {
         }
         Ok(P(ast::Block {
             stmts,
-            id: ast::DUMMY_NODE_ID,
+            id: DUMMY_NODE_ID,
             rules: s,
             span: lo.to(self.prev_span),
         }))
@@ -406,7 +423,7 @@ impl<'a> Parser<'a> {
 
     /// Parses a statement, including the trailing semicolon.
     crate fn parse_full_stmt(&mut self, macro_legacy_warnings: bool) -> PResult<'a, Option<Stmt>> {
-        // skip looking for a trailing semicolon when we have an interpolated statement
+        // Skip looking for a trailing semicolon when we have an interpolated statement.
         maybe_whole!(self, NtStmt, |x| Some(x));
 
         let mut stmt = match self.parse_stmt_without_recovery(macro_legacy_warnings)? {
@@ -452,7 +469,7 @@ impl<'a> Parser<'a> {
         self.diagnostic().struct_span_warn(self.token.span, {
             &format!("expected `;`, found {}", self.this_token_descr())
         }).note({
-            "This was erroneously allowed and will become a hard error in a future release"
+            "this was erroneously allowed and will become a hard error in a future release"
         }).emit();
     }
 }

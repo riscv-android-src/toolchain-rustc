@@ -8,6 +8,7 @@ use super::{Error, Value};
 
 /// Request parameters
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[serde(untagged)]
 pub enum Params {
 	/// No parameters
@@ -24,12 +25,7 @@ impl Params {
 	where
 		D: DeserializeOwned,
 	{
-		let value = match self {
-			Params::Array(vec) => Value::Array(vec),
-			Params::Map(map) => Value::Object(map),
-			Params::None => Value::Null,
-		};
-
+		let value: Value = self.into();
 		from_value(value).map_err(|e| Error::invalid_params(format!("Invalid params: {}.", e)))
 	}
 
@@ -39,6 +35,16 @@ impl Params {
 			Params::None => Ok(()),
 			Params::Array(ref v) if v.is_empty() => Ok(()),
 			p => Err(Error::invalid_params_with_details("No parameters were expected", p)),
+		}
+	}
+}
+
+impl From<Params> for Value {
+	fn from(params: Params) -> Value {
+		match params {
+			Params::Array(vec) => Value::Array(vec),
+			Params::Map(map) => Value::Object(map),
+			Params::None => Value::Null,
 		}
 	}
 }

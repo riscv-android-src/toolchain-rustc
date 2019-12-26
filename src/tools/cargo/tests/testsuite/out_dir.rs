@@ -2,8 +2,8 @@ use std::env;
 use std::fs::{self, File};
 use std::path::Path;
 
-use crate::support::sleep_ms;
-use crate::support::{basic_manifest, project};
+use cargo_test_support::sleep_ms;
+use cargo_test_support::{basic_manifest, project};
 
 #[cargo_test]
 fn binary_with_debug() {
@@ -179,7 +179,7 @@ fn out_dir_is_a_file() {
     p.cargo("build -Z unstable-options --out-dir out")
         .masquerade_as_nightly_cargo()
         .with_status(101)
-        .with_stderr_contains("[ERROR] failed to link or copy [..]")
+        .with_stderr_contains("[ERROR] failed to create directory [..]")
         .run();
 }
 

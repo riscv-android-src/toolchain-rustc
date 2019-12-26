@@ -7,6 +7,8 @@ fn main() {
         rustc_minor_version().expect("Failed to get rustc version");
     let rustc_dep_of_std = env::var("CARGO_FEATURE_RUSTC_DEP_OF_STD").is_ok();
     let align_cargo_feature = env::var("CARGO_FEATURE_ALIGN").is_ok();
+    #[allow(unused)]
+    let libc_ci = env::var("LIBC_CI").is_ok();
 
     if env::var("CARGO_FEATURE_USE_STD").is_ok() {
         println!(
@@ -15,10 +17,15 @@ fn main() {
         );
     }
 
-    if env::var("LIBC_CI").is_ok() {
-        if let Some(12) = which_freebsd() {
-            println!("cargo:rustc-cfg=freebsd12");
-        }
+    // The ABI of libc is backward compatible with FreeBSD 11.
+    //
+    // On CI, we detect the actual FreeBSD version and match its ABI exactly,
+    // running tests to ensure that the ABI is correct.
+    match which_freebsd() {
+        Some(11) if libc_ci => println!("cargo:rustc-cfg=freebsd11"),
+        Some(12) if libc_ci => println!("cargo:rustc-cfg=freebsd12"),
+        Some(13) if libc_ci => println!("cargo:rustc-cfg=freebsd13"),
+        Some(_) | None => println!("cargo:rustc-cfg=freebsd11"),
     }
 
     // Rust >= 1.15 supports private module use:
@@ -100,6 +107,7 @@ fn which_freebsd() -> Option<i32> {
     match &stdout {
         s if s.starts_with("11") => Some(11),
         s if s.starts_with("12") => Some(12),
+        s if s.starts_with("13") => Some(13),
         _ => None,
     }
 }

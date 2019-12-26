@@ -170,7 +170,15 @@ impl TargetInfo {
             }
         };
 
-        let cfg = lines.map(Cfg::from_str).collect::<CargoResult<Vec<_>>>()?;
+        let cfg = lines
+            .map(Cfg::from_str)
+            .collect::<CargoResult<Vec<_>>>()
+            .chain_err(|| {
+                format!(
+                    "failed to parse the cfg from `rustc --print=cfg`, got:\n{}",
+                    output
+                )
+            })?;
 
         Ok(TargetInfo {
             crate_type_process,
@@ -325,7 +333,7 @@ fn parse_crate_type(
 ) -> CargoResult<Option<(String, String)>> {
     let not_supported = error.lines().any(|line| {
         (line.contains("unsupported crate type") || line.contains("unknown crate type"))
-            && line.contains(crate_type)
+            && line.contains(&format!("crate type `{}`", crate_type))
     });
     if not_supported {
         return Ok(None);

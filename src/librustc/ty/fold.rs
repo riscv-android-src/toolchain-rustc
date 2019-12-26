@@ -39,8 +39,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use crate::util::nodemap::FxHashSet;
 
-/// The TypeFoldable trait is implemented for every type that can be folded.
-/// Basically, every type that has a corresponding method in TypeFolder.
+/// This trait is implemented for every type that can be folded.
+/// Basically, every type that has a corresponding method in `TypeFolder`.
 ///
 /// To implement this conveniently, use the
 /// `BraceStructTypeFoldableImpl` etc macros found in `macros.rs`.
@@ -84,9 +84,6 @@ pub trait TypeFoldable<'tcx>: fmt::Debug + Clone {
     }
     fn has_param_types(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_PARAMS)
-    }
-    fn has_self_ty(&self) -> bool {
-        self.has_type_flags(TypeFlags::HAS_SELF)
     }
     fn has_infer_types(&self) -> bool {
         self.has_type_flags(TypeFlags::HAS_TY_INFER)

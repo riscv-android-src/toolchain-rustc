@@ -23,10 +23,11 @@
 #![feature(core_intrinsics)]
 #![feature(integer_atomics)]
 #![feature(test)]
+#![feature(associated_type_bounds)]
 
 #![cfg_attr(unix, feature(libc))]
 
-#![cfg_attr(not(bootstrap), allow(rustc::default_hash_types))]
+#![allow(rustc::default_hash_types)]
 
 #[macro_use]
 extern crate log;

@@ -16,6 +16,7 @@
 #![allow(clippy::too_many_arguments)] // large project
 #![allow(clippy::type_complexity)] // there's an exceptionally complex type
 #![allow(clippy::wrong_self_convention)] // perhaps `Rc` should be special-cased in Clippy?
+#![allow(clippy::write_with_newline)] // too pedantic
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::redundant_clone)]
 // Unit is now interned, and would probably be better as pass-by-copy, but
@@ -24,6 +25,9 @@
 #![allow(clippy::trivially_copy_pass_by_ref)]
 // exhaustively destructuring ensures future fields are handled
 #![allow(clippy::unneeded_field_pattern)]
+// false positives in target-specific code, for details see
+// https://github.com/rust-lang/cargo/pull/7251#pullrequestreview-274914270
+#![allow(clippy::identity_conversion)]
 
 use std::fmt;
 use std::io;

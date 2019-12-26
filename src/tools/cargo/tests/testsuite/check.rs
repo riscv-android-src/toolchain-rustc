@@ -1,9 +1,9 @@
 use std::fmt::{self, Write};
 
-use crate::support::install::exe;
-use crate::support::paths::CargoPathExt;
-use crate::support::registry::Package;
-use crate::support::{basic_manifest, project};
+use cargo_test_support::install::exe;
+use cargo_test_support::paths::CargoPathExt;
+use cargo_test_support::registry::Package;
+use cargo_test_support::{basic_manifest, project};
 
 #[cargo_test]
 fn check_success() {
@@ -396,7 +396,7 @@ fn check_all() {
         .file("b/src/lib.rs", "")
         .build();
 
-    p.cargo("check --all -v")
+    p.cargo("check --workspace -v")
         .with_stderr_contains("[..] --crate-name foo src/lib.rs [..]")
         .with_stderr_contains("[..] --crate-name foo src/main.rs [..]")
         .with_stderr_contains("[..] --crate-name b b/src/lib.rs [..]")
@@ -429,7 +429,7 @@ fn check_virtual_all_implied() {
 #[cargo_test]
 fn exclude_warns_on_non_existing_package() {
     let p = project().file("src/lib.rs", "").build();
-    p.cargo("check --all --exclude bar")
+    p.cargo("check --workspace --exclude bar")
         .with_stdout("")
         .with_stderr(
             r#"[WARNING] excluded package(s) bar not found in workspace `[CWD]`
@@ -684,7 +684,7 @@ fn short_message_format() {
             "\
 src/lib.rs:1:27: error[E0308]: mismatched types
 error: aborting due to previous error
-error: Could not compile `foo`.
+error: could not compile `foo`.
 ",
         )
         .run();

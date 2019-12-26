@@ -10,8 +10,6 @@
 #![cfg(feature = "nightly")] // TODO: remove that when never is stable
 #![feature(never_type)]
 
-extern crate structopt;
-
 use structopt::StructOpt;
 
 fn try_str(s: &str) -> Result<String, !> {
@@ -22,7 +20,7 @@ fn try_str(s: &str) -> Result<String, !> {
 fn warning_never_struct() {
     #[derive(Debug, PartialEq, StructOpt)]
     struct Opt {
-        #[structopt(parse(try_from_str = "try_str"))]
+        #[structopt(parse(try_from_str = try_str))]
         s: String,
     }
     assert_eq!(
@@ -38,7 +36,7 @@ fn warning_never_enum() {
     #[derive(Debug, PartialEq, StructOpt)]
     enum Opt {
         Foo {
-            #[structopt(parse(try_from_str = "try_str"))]
+            #[structopt(parse(try_from_str = try_str))]
             s: String,
         },
     }
@@ -46,6 +44,6 @@ fn warning_never_enum() {
         Opt::Foo {
             s: "foo".to_string()
         },
-        Opt::from_iter(&["test", "Foo", "foo"])
+        Opt::from_iter(&["test", "foo", "foo"])
     );
 }

@@ -1,11 +1,12 @@
 #[cfg(feature = "parsing")]
-use buffer::Cursor;
+use crate::buffer::Cursor;
 #[cfg(feature = "parsing")]
-use lookahead;
+use crate::lookahead;
 #[cfg(feature = "parsing")]
-use parse::{Parse, ParseStream, Result};
+use crate::parse::{Parse, ParseStream, Result};
 #[cfg(feature = "parsing")]
-use token::Token;
+use crate::token::Token;
+use unicode_xid::UnicodeXID;
 
 pub use proc_macro2::Ident;
 
@@ -83,4 +84,18 @@ impl From<Token![_]> for Ident {
     fn from(token: Token![_]) -> Ident {
         Ident::new("_", token.span)
     }
+}
+
+pub fn xid_ok(symbol: &str) -> bool {
+    let mut chars = symbol.chars();
+    let first = chars.next().unwrap();
+    if !(UnicodeXID::is_xid_start(first) || first == '_') {
+        return false;
+    }
+    for ch in chars {
+        if !UnicodeXID::is_xid_continue(ch) {
+            return false;
+        }
+    }
+    true
 }

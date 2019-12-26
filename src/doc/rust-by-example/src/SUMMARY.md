@@ -36,6 +36,7 @@
 
 - [Conversion](conversion.md)
     - [`From` and `Into`](conversion/from_into.md)
+    - [`TryFrom` and `TryInto`](conversion/try_from_try_into.md)
     - [To and from `String`s](conversion/string.md)
 
 - [Expressions](expression.md)
@@ -132,10 +133,14 @@
 
 - [Traits](trait.md)
     - [Derive](trait/derive.md)
+    - [Returning Traits with `dyn`](trait/dyn.md)
     - [Operator Overloading](trait/ops.md)
     - [Drop](trait/drop.md)
     - [Iterators](trait/iter.md)
+    - [`impl Trait`](trait/impl_trait.md)
     - [Clone](trait/clone.md)
+    - [Supertraits](traits/supertraits.md)
+    - [Disambiguating overlapping traits](traits/disambiguating.md)
 
 - [macro_rules!](macros.md)
     - [Syntax](macros/syntax.md)
@@ -149,6 +154,7 @@
 - [Error handling](error.md)
     - [`panic`](error/panic.md)
     - [`Option` & `unwrap`](error/option_unwrap.md)
+        - [Unpacking options with `?`](error/option_unwrap/question_mark.md)
         - [Combinators: `map`](error/option_unwrap/map.md)
         - [Combinators: `and_then`](error/option_unwrap/and_then.md)
     - [`Result`](error/result.md)

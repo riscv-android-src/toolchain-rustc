@@ -1,9 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::support::paths;
-use crate::support::{basic_manifest, git, project};
 use cargo::util::paths as cargopaths;
+use cargo_test_support::paths;
+use cargo_test_support::{basic_manifest, git, project};
 
 #[cargo_test]
 fn deleting_database_files() {
@@ -12,8 +12,7 @@ fn deleting_database_files() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let project = project
         .file(
@@ -71,8 +70,7 @@ fn deleting_checkout_files() {
         project
             .file("Cargo.toml", &basic_manifest("bar", "0.5.0"))
             .file("src/lib.rs", "")
-    })
-    .unwrap();
+    });
 
     let project = project
         .file(

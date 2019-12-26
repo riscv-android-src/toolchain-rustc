@@ -7,7 +7,6 @@ use semver::ReqParseError;
 use semver::VersionReq;
 use serde::ser;
 use serde::Serialize;
-use url::Url;
 
 use crate::core::interning::InternedString;
 use crate::core::{PackageId, SourceId, Summary};
@@ -69,7 +68,7 @@ struct SerializedDependency<'a> {
     target: Option<&'a Platform>,
     /// The registry URL this dependency is from.
     /// If None, then it comes from the default registry (crates.io).
-    registry: Option<Url>,
+    registry: Option<&'a str>,
 }
 
 impl ser::Serialize for Dependency {
@@ -77,6 +76,7 @@ impl ser::Serialize for Dependency {
     where
         S: ser::Serializer,
     {
+        let registry_id = self.registry_id();
         SerializedDependency {
             name: &*self.package_name(),
             source: self.source_id(),
@@ -87,7 +87,7 @@ impl ser::Serialize for Dependency {
             features: self.features(),
             target: self.platform(),
             rename: self.explicit_name_in_toml().map(|s| s.as_str()),
-            registry: self.registry_id().map(|sid| sid.url().clone()),
+            registry: registry_id.as_ref().map(|sid| sid.url().as_str()),
         }
         .serialize(s)
     }
@@ -101,7 +101,7 @@ pub enum Kind {
 }
 
 fn parse_req_with_deprecated(
-    name: &str,
+    name: InternedString,
     req: &str,
     extra: Option<(PackageId, &Config)>,
 ) -> CargoResult<VersionReq> {
@@ -163,12 +163,13 @@ impl ser::Serialize for Kind {
 impl Dependency {
     /// Attempt to create a `Dependency` from an entry in the manifest.
     pub fn parse(
-        name: &str,
+        name: impl Into<InternedString>,
         version: Option<&str>,
         source_id: SourceId,
         inside: PackageId,
         config: &Config,
     ) -> CargoResult<Dependency> {
+        let name = name.into();
         let arg = Some((inside, config));
         let (specified_req, version_req) = match version {
             Some(v) => (true, parse_req_with_deprecated(name, v, arg)?),
@@ -187,10 +188,11 @@ impl Dependency {
 
     /// Attempt to create a `Dependency` from an entry in the manifest.
     pub fn parse_no_deprecated(
-        name: &str,
+        name: impl Into<InternedString>,
         version: Option<&str>,
         source_id: SourceId,
     ) -> CargoResult<Dependency> {
+        let name = name.into();
         let (specified_req, version_req) = match version {
             Some(v) => (true, parse_req_with_deprecated(name, v, None)?),
             None => (false, VersionReq::any()),
@@ -206,11 +208,11 @@ impl Dependency {
         Ok(ret)
     }
 
-    pub fn new_override(name: &str, source_id: SourceId) -> Dependency {
+    pub fn new_override(name: InternedString, source_id: SourceId) -> Dependency {
         assert!(!name.is_empty());
         Dependency {
             inner: Rc::new(Inner {
-                name: InternedString::new(name),
+                name,
                 source_id,
                 registry_id: None,
                 req: VersionReq::any(),
@@ -338,12 +340,9 @@ impl Dependency {
     /// Sets the list of features requested for the package.
     pub fn set_features(
         &mut self,
-        features: impl IntoIterator<Item = impl AsRef<str>>,
+        features: impl IntoIterator<Item = impl Into<InternedString>>,
     ) -> &mut Dependency {
-        Rc::make_mut(&mut self.inner).features = features
-            .into_iter()
-            .map(|s| InternedString::new(s.as_ref()))
-            .collect();
+        Rc::make_mut(&mut self.inner).features = features.into_iter().map(|s| s.into()).collect();
         self
     }
 
@@ -376,8 +375,11 @@ impl Dependency {
         self
     }
 
-    pub fn set_explicit_name_in_toml(&mut self, name: &str) -> &mut Dependency {
-        Rc::make_mut(&mut self.inner).explicit_name_in_toml = Some(InternedString::new(name));
+    pub fn set_explicit_name_in_toml(
+        &mut self,
+        name: impl Into<InternedString>,
+    ) -> &mut Dependency {
+        Rc::make_mut(&mut self.inner).explicit_name_in_toml = Some(name.into());
         self
     }
 

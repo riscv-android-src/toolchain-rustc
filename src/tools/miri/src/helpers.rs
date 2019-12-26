@@ -71,7 +71,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// Get the `Place` for a local
     fn local_place(&mut self, local: mir::Local) -> InterpResult<'tcx, PlaceTy<'tcx, Tag>> {
         let this = self.eval_context_mut();
-        let place = mir::Place { base: mir::PlaceBase::Local(local), projection: None };
+        let place = mir::Place { base: mir::PlaceBase::Local(local), projection: Box::new([]) };
         this.eval_place(&place)
     }
 
@@ -97,9 +97,17 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             Align::from_bytes(1).unwrap()
         )?.expect("we already checked for size 0");
 
-        let rng = this.memory_mut().extra.rng.get_mut();
         let mut data = vec![0; len];
-        rng.fill_bytes(&mut data);
+
+        if this.machine.communicate {
+            // Fill the buffer using the host's rng.
+            getrandom::getrandom(&mut data)
+                .map_err(|err| err_unsup_format!("getrandom failed: {}", err))?;
+        }
+        else {
+            let rng = this.memory_mut().extra.rng.get_mut();
+            rng.fill_bytes(&mut data);
+        }
 
         let tcx = &{this.tcx.tcx};
         this.memory_mut().get_mut(ptr.alloc_id)?.write_bytes(tcx, ptr, &data)
@@ -214,8 +222,26 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     // This is `Freeze`, there cannot be an `UnsafeCell`
                     Ok(())
                 } else {
-                    // Proceed further
-                    self.walk_value(v)
+                    // We want to not actually read from memory for this visit. So, before
+                    // walking this value, we have to make sure it is not a
+                    // `Variants::Multiple`.
+                    match v.layout.variants {
+                        layout::Variants::Multiple { .. } => {
+                            // A multi-variant enum, or generator, or so.
+                            // Treat this like a union: without reading from memory,
+                            // we cannot determine the variant we are in. Reading from
+                            // memory would be subject to Stacked Borrows rules, leading
+                            // to all sorts of "funny" recursion.
+                            // We only end up here if the type is *not* freeze, so we just call the
+                            // `UnsafeCell` action.
+                            (self.unsafe_cell_action)(v)
+                        }
+                        layout::Variants::Single { .. } => {
+                            // Proceed further, try to find where exactly that `UnsafeCell`
+                            // is hiding.
+                            self.walk_value(v)
+                        }
+                    }
                 }
             }
 
