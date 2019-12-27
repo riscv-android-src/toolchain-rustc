@@ -12,6 +12,10 @@
 //!     .rustc-info.json
 //!
 //!     # All final artifacts are linked into this directory from `deps`.
+//!     # Note that named profiles will soon be included as separate directories
+//!     # here. They have a restricted format, similar to Rust identifiers, so
+//!     # Cargo-specific directories added in the future should use some prefix
+//!     # like `.` to avoid name collisions.
 //!     debug/  # or release/
 //!
 //!         # File used to lock the directory to prevent multiple cargo processes
@@ -32,6 +36,9 @@
 //!                 # Detailed information used for logging the reason why
 //!                 # something is being recompiled.
 //!                 lib-$pkgname-$META.json
+//!                 # The console output from the compiler. This is cached
+//!                 # so that warnings can be redisplayed for "fresh" units.
+//!                 output
 //!
 //!         # This is the root directory for all rustc artifacts except build
 //!         # scripts, examples, and test and bench executables. Almost every
@@ -45,6 +52,11 @@
 //!         # Directory used to store incremental data for the compiler (when
 //!         # incremental is enabled.
 //!         incremental/
+//!
+//!         # The sysroot for -Zbuild-std builds. This only appears in
+//!         # target-triple directories (not host), and only if -Zbuild-std is
+//!         # enabled.
+//!         .sysroot/
 //!
 //!     # This is the location at which the output of all custom build
 //!     # commands are rooted.
@@ -90,6 +102,7 @@
 //! When cross-compiling, the layout is the same, except it appears in
 //! `target/$TRIPLE`.
 
+use crate::core::compiler::CompileTarget;
 use crate::core::Workspace;
 use crate::util::paths;
 use crate::util::{CargoResult, FileLock};
@@ -116,6 +129,10 @@ pub struct Layout {
     examples: PathBuf,
     /// The directory for rustdoc output: `$root/doc`
     doc: PathBuf,
+    /// The local sysroot for the build-std feature.
+    sysroot: Option<PathBuf>,
+    /// The "lib" directory within `sysroot`.
+    sysroot_libdir: Option<PathBuf>,
     /// The lockfile for a build (`.cargo-lock`). Will be unlocked when this
     /// struct is `drop`ped.
     _lock: FileLock,
@@ -134,22 +151,14 @@ impl Layout {
     ///
     /// `dest` should be the final artifact directory name. Currently either
     /// "debug" or "release".
-    pub fn new(ws: &Workspace<'_>, triple: Option<&str>, dest: &str) -> CargoResult<Layout> {
+    pub fn new(
+        ws: &Workspace<'_>,
+        target: Option<CompileTarget>,
+        dest: &str,
+    ) -> CargoResult<Layout> {
         let mut root = ws.target_dir();
-        // Flexible target specifications often point at json files, so interpret
-        // the target triple as a Path and then just use the file stem as the
-        // component for the directory name in that case.
-        if let Some(triple) = triple {
-            let triple = Path::new(triple);
-            if triple.extension().and_then(|s| s.to_str()) == Some("json") {
-                root.push(
-                    triple
-                        .file_stem()
-                        .ok_or_else(|| failure::format_err!("invalid target"))?,
-                );
-            } else {
-                root.push(triple);
-            }
+        if let Some(target) = target {
+            root.push(target.short_name());
         }
         let dest = root.join(dest);
         // If the root directory doesn't already exist go ahead and create it
@@ -167,6 +176,21 @@ impl Layout {
         let root = root.into_path_unlocked();
         let dest = dest.into_path_unlocked();
 
+        // Compute the sysroot path for the build-std feature.
+        let build_std = ws.config().cli_unstable().build_std.as_ref();
+        let (sysroot, sysroot_libdir) = if let Some(target) = build_std.and(target) {
+            // This uses a leading dot to avoid collision with named profiles.
+            let sysroot = dest.join(".sysroot");
+            let sysroot_libdir = sysroot
+                .join("lib")
+                .join("rustlib")
+                .join(target.short_name())
+                .join("lib");
+            (Some(sysroot), Some(sysroot_libdir))
+        } else {
+            (None, None)
+        };
+
         Ok(Layout {
             deps: dest.join("deps"),
             build: dest.join("build"),
@@ -176,6 +200,8 @@ impl Layout {
             doc: root.join("doc"),
             root,
             dest,
+            sysroot,
+            sysroot_libdir,
             _lock: lock,
         })
     }
@@ -188,7 +214,7 @@ impl Layout {
         paths::create_dir_all(&self.examples)?;
         paths::create_dir_all(&self.build)?;
 
-        return Ok(());
+        Ok(())
     }
 
     /// Fetch the destination path for final artifacts  (`/…/target/debug`).
@@ -222,6 +248,16 @@ impl Layout {
     /// Fetch the build script path.
     pub fn build(&self) -> &Path {
         &self.build
+    }
+    /// The local sysroot for the build-std feature.
+    ///
+    /// Returns None if build-std is not enabled or this is the Host layout.
+    pub fn sysroot(&self) -> Option<&Path> {
+        self.sysroot.as_ref().map(|p| p.as_ref())
+    }
+    /// The "lib" directory within `sysroot`.
+    pub fn sysroot_libdir(&self) -> Option<&Path> {
+        self.sysroot_libdir.as_ref().map(|p| p.as_ref())
     }
 }
 

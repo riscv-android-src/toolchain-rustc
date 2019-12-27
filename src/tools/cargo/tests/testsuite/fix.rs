@@ -1,7 +1,7 @@
 use std::fs::File;
 
 use cargo_test_support::git;
-use cargo_test_support::{basic_manifest, clippy_is_available, is_nightly, project};
+use cargo_test_support::{basic_manifest, clippy_is_available, project};
 
 use std::io::Write;
 
@@ -1251,12 +1251,6 @@ fn fix_in_existing_repo_weird_ignore() {
 
 #[cargo_test]
 fn fix_with_clippy() {
-    if !is_nightly() {
-        // fix --clippy is unstable
-        eprintln!("skipping test: requires nightly");
-        return;
-    }
-
     if !clippy_is_available() {
         return;
     }
@@ -1294,4 +1288,23 @@ fn fix_with_clippy() {
                 }
     "
     );
+}
+
+#[cargo_test]
+fn fix_color_message() {
+    // Check that color appears in diagnostics.
+    let p = project()
+        .file("src/lib.rs", "std::compile_error!{\"color test\"}")
+        .build();
+
+    p.cargo("fix --allow-no-vcs --color=always")
+        .with_stderr_contains("[..]\x1b[[..]")
+        .with_status(101)
+        .run();
+
+    p.cargo("fix --allow-no-vcs --color=never")
+        .with_stderr_contains("error: color test")
+        .with_stderr_does_not_contain("[..]\x1b[[..]")
+        .with_status(101)
+        .run();
 }

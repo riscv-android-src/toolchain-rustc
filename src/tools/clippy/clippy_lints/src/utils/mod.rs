@@ -36,22 +36,23 @@ use rustc::traits;
 use rustc::ty::{
     self,
     layout::{self, IntegerExt},
-    subst::Kind,
+    subst::GenericArg,
     Binder, Ty, TyCtxt,
 };
 use rustc_errors::Applicability;
 use smallvec::SmallVec;
 use syntax::ast::{self, LitKind};
 use syntax::attr;
-use syntax::ext::hygiene::ExpnKind;
 use syntax::source_map::{Span, DUMMY_SP};
 use syntax::symbol::{kw, Symbol};
+use syntax_pos::hygiene::ExpnKind;
 
 use crate::consts::{constant, Constant};
 use crate::reexport::*;
 
 /// Returns `true` if the two spans come from differing expansions (i.e., one is
 /// from a macro and one isn't).
+#[must_use]
 pub fn differing_macro_contexts(lhs: Span, rhs: Span) -> bool {
     rhs.ctxt() != lhs.ctxt()
 }
@@ -61,7 +62,7 @@ pub fn differing_macro_contexts(lhs: Span, rhs: Span) -> bool {
 /// # Example
 ///
 /// ```rust,ignore
-/// if in_constant(cx, expr.id) {
+/// if in_constant(cx, expr.hir_id) {
 ///     // Do something
 /// }
 /// ```
@@ -69,28 +70,28 @@ pub fn in_constant(cx: &LateContext<'_, '_>, id: HirId) -> bool {
     let parent_id = cx.tcx.hir().get_parent_item(id);
     match cx.tcx.hir().get(parent_id) {
         Node::Item(&Item {
-            node: ItemKind::Const(..),
+            kind: ItemKind::Const(..),
             ..
         })
         | Node::TraitItem(&TraitItem {
-            node: TraitItemKind::Const(..),
+            kind: TraitItemKind::Const(..),
             ..
         })
         | Node::ImplItem(&ImplItem {
-            node: ImplItemKind::Const(..),
+            kind: ImplItemKind::Const(..),
             ..
         })
         | Node::AnonConst(_)
         | Node::Item(&Item {
-            node: ItemKind::Static(..),
+            kind: ItemKind::Static(..),
             ..
         }) => true,
         Node::Item(&Item {
-            node: ItemKind::Fn(_, header, ..),
+            kind: ItemKind::Fn(_, header, ..),
             ..
         }) => header.constness == Constness::Const,
         Node::ImplItem(&ImplItem {
-            node: ImplItemKind::Method(ref sig, _),
+            kind: ImplItemKind::Method(ref sig, _),
             ..
         }) => sig.header.constness == Constness::Const,
         _ => false,
@@ -98,6 +99,7 @@ pub fn in_constant(cx: &LateContext<'_, '_>, id: HirId) -> bool {
 }
 
 /// Returns `true` if this `span` was expanded by any macro.
+#[must_use]
 pub fn in_macro(span: Span) -> bool {
     if span.from_expansion() {
         if let ExpnKind::Desugaring(..) = span.ctxt().outer_expn_data().kind {
@@ -125,7 +127,7 @@ pub fn is_present_in_source<T: LintContext>(cx: &T, span: Span) -> bool {
 
 /// Checks if type is struct, enum or union type with the given def path.
 pub fn match_type(cx: &LateContext<'_, '_>, ty: Ty<'_>, path: &[&str]) -> bool {
-    match ty.sty {
+    match ty.kind {
         ty::Adt(adt, _) => match_def_path(cx, adt.did, path),
         _ => false,
     }
@@ -133,7 +135,7 @@ pub fn match_type(cx: &LateContext<'_, '_>, ty: Ty<'_>, path: &[&str]) -> bool {
 
 /// Checks if the type is equal to a diagnostic item
 pub fn is_type_diagnostic_item(cx: &LateContext<'_, '_>, ty: Ty<'_>, diag_item: Symbol) -> bool {
-    match ty.sty {
+    match ty.kind {
         ty::Adt(adt, _) => cx.tcx.is_diagnostic_item(diag_item, adt.did),
         _ => false,
     }
@@ -152,7 +154,7 @@ pub fn match_trait_method(cx: &LateContext<'_, '_>, expr: &Expr, path: &[&str]) 
 
 /// Checks if an expression references a variable of the given name.
 pub fn match_var(expr: &Expr, var: Name) -> bool {
-    if let ExprKind::Path(QPath::Resolved(None, ref path)) = expr.node {
+    if let ExprKind::Path(QPath::Resolved(None, ref path)) = expr.kind {
         if path.segments.len() == 1 && path.segments[0].ident.name == var {
             return true;
         }
@@ -187,7 +189,7 @@ pub fn single_segment_path(path: &QPath) -> Option<&PathSegment> {
 pub fn match_qpath(path: &QPath, segments: &[&str]) -> bool {
     match *path {
         QPath::Resolved(_, ref path) => match_path(path, segments),
-        QPath::TypeRelative(ref ty, ref segment) => match ty.node {
+        QPath::TypeRelative(ref ty, ref segment) => match ty.kind {
             TyKind::Path(ref inner_path) => {
                 !segments.is_empty()
                     && match_qpath(inner_path, &segments[..(segments.len() - 1)])
@@ -307,7 +309,7 @@ pub fn implements_trait<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     ty: Ty<'tcx>,
     trait_id: DefId,
-    ty_params: &[Kind<'tcx>],
+    ty_params: &[GenericArg<'tcx>],
 ) -> bool {
     let ty = cx.tcx.erase_regions(&ty);
     let obligation = cx.tcx.predicate_for_trait_def(
@@ -344,7 +346,7 @@ pub fn trait_ref_of_method<'tcx>(cx: &LateContext<'_, 'tcx>, hir_id: HirId) -> O
     if_chain! {
         if parent_impl != hir::CRATE_HIR_ID;
         if let hir::Node::Item(item) = cx.tcx.hir().get(parent_impl);
-        if let hir::ItemKind::Impl(_, _, _, _, trait_ref, _, _) = &item.node;
+        if let hir::ItemKind::Impl(_, _, _, _, trait_ref, _, _) = &item.kind;
         then { return trait_ref.as_ref(); }
     }
     None
@@ -358,11 +360,6 @@ pub fn has_drop<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>) -> bool {
     }
 }
 
-/// Resolves the definition of a node from its `HirId`.
-pub fn resolve_node(cx: &LateContext<'_, '_>, qpath: &QPath, id: HirId) -> Res {
-    cx.tables.qpath_res(qpath, id)
-}
-
 /// Returns the method names and argument list of nested method call expressions that make up
 /// `expr`. method/span lists are sorted with the most recent call first.
 pub fn method_calls(expr: &Expr, max_depth: usize) -> (Vec<Symbol>, Vec<&[Expr]>, Vec<Span>) {
@@ -372,7 +369,7 @@ pub fn method_calls(expr: &Expr, max_depth: usize) -> (Vec<Symbol>, Vec<&[Expr]>
 
     let mut current = expr;
     for _ in 0..max_depth {
-        if let ExprKind::MethodCall(path, span, args) = &current.node {
+        if let ExprKind::MethodCall(path, span, args) = &current.kind {
             if args.iter().any(|e| e.span.from_expansion()) {
                 break;
             }
@@ -399,7 +396,7 @@ pub fn method_chain_args<'a>(expr: &'a Expr, methods: &[&str]) -> Option<Vec<&'a
     let mut matched = Vec::with_capacity(methods.len());
     for method_name in methods.iter().rev() {
         // method chains are stored last -> first
-        if let ExprKind::MethodCall(ref path, _, ref args) = current.node {
+        if let ExprKind::MethodCall(ref path, _, ref args) = current.kind {
             if path.ident.name.as_str() == *method_name {
                 if args.iter().any(|e| e.span.from_expansion()) {
                     return None;
@@ -439,7 +436,7 @@ pub fn get_item_name(cx: &LateContext<'_, '_>, expr: &Expr) -> Option<Name> {
 
 /// Gets the name of a `Pat`, if any.
 pub fn get_pat_name(pat: &Pat) -> Option<Name> {
-    match pat.node {
+    match pat.kind {
         PatKind::Binding(.., ref spname, _) => Some(spname.name),
         PatKind::Path(ref qpath) => single_segment_path(qpath).map(|ps| ps.ident.name),
         PatKind::Box(ref p) | PatKind::Ref(ref p, _) => get_pat_name(&*p),
@@ -562,7 +559,7 @@ pub fn expr_block<'a, T: LintContext>(cx: &T, expr: &Expr, option: Option<String
     let string = option.unwrap_or_default();
     if expr.span.from_expansion() {
         Cow::Owned(format!("{{ {} }}", snippet_with_macro_callsite(cx, expr.span, default)))
-    } else if let ExprKind::Block(_, _) = expr.node {
+    } else if let ExprKind::Block(_, _) = expr.kind {
         Cow::Owned(format!("{}{}", code, string))
     } else if string.is_empty() {
         Cow::Owned(format!("{{ {} }}", code))
@@ -638,13 +635,13 @@ pub fn get_enclosing_block<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, hir_id: HirId) 
         match node {
             Node::Block(block) => Some(block),
             Node::Item(&Item {
-                node: ItemKind::Fn(_, _, _, eid),
+                kind: ItemKind::Fn(_, _, _, eid),
                 ..
             })
             | Node::ImplItem(&ImplItem {
-                node: ImplItemKind::Method(_, eid),
+                kind: ImplItemKind::Method(_, eid),
                 ..
-            }) => match cx.tcx.hir().body(eid).value.node {
+            }) => match cx.tcx.hir().body(eid).value.kind {
                 ExprKind::Block(ref block, _) => Some(block),
                 _ => None,
             },
@@ -657,7 +654,7 @@ pub fn get_enclosing_block<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, hir_id: HirId) 
 
 /// Returns the base type for HIR references and pointers.
 pub fn walk_ptrs_hir_ty(ty: &hir::Ty) -> &hir::Ty {
-    match ty.node {
+    match ty.kind {
         TyKind::Ptr(ref mut_ty) | TyKind::Rptr(_, ref mut_ty) => walk_ptrs_hir_ty(&mut_ty.ty),
         _ => ty,
     }
@@ -665,7 +662,7 @@ pub fn walk_ptrs_hir_ty(ty: &hir::Ty) -> &hir::Ty {
 
 /// Returns the base type for references and raw pointers.
 pub fn walk_ptrs_ty(ty: Ty<'_>) -> Ty<'_> {
-    match ty.sty {
+    match ty.kind {
         ty::Ref(_, ty, _) => walk_ptrs_ty(ty),
         _ => ty,
     }
@@ -675,7 +672,7 @@ pub fn walk_ptrs_ty(ty: Ty<'_>) -> Ty<'_> {
 /// depth.
 pub fn walk_ptrs_ty_depth(ty: Ty<'_>) -> (Ty<'_>, usize) {
     fn inner(ty: Ty<'_>, depth: usize) -> (Ty<'_>, usize) {
-        match ty.sty {
+        match ty.kind {
             ty::Ref(_, ty, _) => inner(ty, depth + 1),
             _ => (ty, depth),
         }
@@ -704,7 +701,7 @@ pub fn is_integer_const(cx: &LateContext<'_, '_>, e: &Expr, value: u128) -> bool
 /// Checks whether the given expression is a constant literal of the given value.
 pub fn is_integer_literal(expr: &Expr, value: u128) -> bool {
     // FIXME: use constant folding
-    if let ExprKind::Lit(ref spanned) = expr.node {
+    if let ExprKind::Lit(ref spanned) = expr.kind {
         if let LitKind::Int(v, _) = spanned.node {
             return v == value;
         }
@@ -726,6 +723,7 @@ pub fn is_adjusted(cx: &LateContext<'_, '_>, e: &Expr) -> bool {
 /// Returns the pre-expansion span if is this comes from an expansion of the
 /// macro `name`.
 /// See also `is_direct_expn_of`.
+#[must_use]
 pub fn is_expn_of(mut span: Span, name: &str) -> Option<Span> {
     loop {
         if span.from_expansion() {
@@ -753,6 +751,7 @@ pub fn is_expn_of(mut span: Span, name: &str) -> Option<Span> {
 /// `42` is considered expanded from `foo!` and `bar!` by `is_expn_of` but only
 /// `bar!` by
 /// `is_direct_expn_of`.
+#[must_use]
 pub fn is_direct_expn_of(span: Span, name: &str) -> Option<Span> {
     if span.from_expansion() {
         let data = span.ctxt().outer_expn_data();
@@ -792,24 +791,26 @@ pub fn same_tys<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, a: Ty<'tcx>, b: Ty<'tcx>) 
 
 /// Returns `true` if the given type is an `unsafe` function.
 pub fn type_is_unsafe_function<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>) -> bool {
-    match ty.sty {
+    match ty.kind {
         ty::FnDef(..) | ty::FnPtr(_) => ty.fn_sig(cx.tcx).unsafety() == Unsafety::Unsafe,
         _ => false,
     }
 }
 
 pub fn is_copy<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>) -> bool {
-    ty.is_copy_modulo_regions(cx.tcx.global_tcx(), cx.param_env, DUMMY_SP)
+    ty.is_copy_modulo_regions(cx.tcx, cx.param_env, DUMMY_SP)
 }
 
 /// Checks if an expression is constructing a tuple-like enum variant or struct
-pub fn is_ctor_function(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
-    if let ExprKind::Call(ref fun, _) = expr.node {
-        if let ExprKind::Path(ref qp) = fun.node {
-            return matches!(
-                cx.tables.qpath_res(qp, fun.hir_id),
-                def::Res::Def(DefKind::Variant, ..) | Res::Def(DefKind::Ctor(..), _)
-            );
+pub fn is_ctor_or_promotable_const_function(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
+    if let ExprKind::Call(ref fun, _) = expr.kind {
+        if let ExprKind::Path(ref qp) = fun.kind {
+            let res = cx.tables.qpath_res(qp, fun.hir_id);
+            return match res {
+                def::Res::Def(DefKind::Variant, ..) | Res::Def(DefKind::Ctor(..), _) => true,
+                def::Res::Def(_, def_id) => cx.tcx.is_promotable_const_fn(def_id),
+                _ => false,
+            };
         }
     }
     false
@@ -828,7 +829,7 @@ pub fn is_refutable(cx: &LateContext<'_, '_>, pat: &Pat) -> bool {
         i.any(|pat| is_refutable(cx, pat))
     }
 
-    match pat.node {
+    match pat.kind {
         PatKind::Binding(..) | PatKind::Wild => false,
         PatKind::Box(ref pat) | PatKind::Ref(ref pat, _) => is_refutable(cx, pat),
         PatKind::Lit(..) | PatKind::Range(..) => true,
@@ -865,7 +866,7 @@ pub fn is_automatically_derived(attrs: &[ast::Attribute]) -> bool {
 /// Ie. `x`, `{ x }` and `{{{{ x }}}}` all give `x`. `{ x; y }` and `{}` return
 /// themselves.
 pub fn remove_blocks(expr: &Expr) -> &Expr {
-    if let ExprKind::Block(ref block, _) = expr.node {
+    if let ExprKind::Block(ref block, _) = expr.kind {
         if block.stmts.is_empty() {
             if let Some(ref expr) = block.expr {
                 remove_blocks(expr)
@@ -881,7 +882,7 @@ pub fn remove_blocks(expr: &Expr) -> &Expr {
 }
 
 pub fn is_self(slf: &Param) -> bool {
-    if let PatKind::Binding(.., name, _) = slf.pat.node {
+    if let PatKind::Binding(.., name, _) = slf.pat.kind {
         name.name == kw::SelfLower
     } else {
         false
@@ -890,7 +891,7 @@ pub fn is_self(slf: &Param) -> bool {
 
 pub fn is_self_ty(slf: &hir::Ty) -> bool {
     if_chain! {
-        if let TyKind::Path(ref qp) = slf.node;
+        if let TyKind::Path(ref qp) = slf.kind;
         if let QPath::Resolved(None, ref path) = *qp;
         if let Res::SelfTy(..) = path.res;
         then {
@@ -909,10 +910,10 @@ pub fn iter_input_pats<'tcx>(decl: &FnDecl, body: &'tcx Body) -> impl Iterator<I
 pub fn is_try(expr: &Expr) -> Option<&Expr> {
     fn is_ok(arm: &Arm) -> bool {
         if_chain! {
-            if let PatKind::TupleStruct(ref path, ref pat, None) = arm.pats[0].node;
+            if let PatKind::TupleStruct(ref path, ref pat, None) = arm.pat.kind;
             if match_qpath(path, &paths::RESULT_OK[1..]);
-            if let PatKind::Binding(_, hir_id, _, None) = pat[0].node;
-            if let ExprKind::Path(QPath::Resolved(None, ref path)) = arm.body.node;
+            if let PatKind::Binding(_, hir_id, _, None) = pat[0].kind;
+            if let ExprKind::Path(QPath::Resolved(None, ref path)) = arm.body.kind;
             if let Res::Local(lid) = path.res;
             if lid == hir_id;
             then {
@@ -923,14 +924,14 @@ pub fn is_try(expr: &Expr) -> Option<&Expr> {
     }
 
     fn is_err(arm: &Arm) -> bool {
-        if let PatKind::TupleStruct(ref path, _, _) = arm.pats[0].node {
+        if let PatKind::TupleStruct(ref path, _, _) = arm.pat.kind {
             match_qpath(path, &paths::RESULT_ERR[1..])
         } else {
             false
         }
     }
 
-    if let ExprKind::Match(_, ref arms, ref source) = expr.node {
+    if let ExprKind::Match(_, ref arms, ref source) = expr.kind {
         // desugared from a `?` operator
         if let MatchSource::TryDesugar = *source {
             return Some(expr);
@@ -938,8 +939,8 @@ pub fn is_try(expr: &Expr) -> Option<&Expr> {
 
         if_chain! {
             if arms.len() == 2;
-            if arms[0].pats.len() == 1 && arms[0].guard.is_none();
-            if arms[1].pats.len() == 1 && arms[1].guard.is_none();
+            if arms[0].guard.is_none();
+            if arms[1].guard.is_none();
             if (is_ok(&arms[0]) && is_err(&arms[1])) ||
                 (is_ok(&arms[1]) && is_err(&arms[0]));
             then {
@@ -959,7 +960,7 @@ pub fn is_allowed(cx: &LateContext<'_, '_>, lint: &'static Lint, id: HirId) -> b
 }
 
 pub fn get_arg_name(pat: &Pat) -> Option<ast::Name> {
-    match pat.node {
+    match pat.kind {
         PatKind::Binding(.., ident, None) => Some(ident.name),
         PatKind::Ref(ref subpat, _) => get_arg_name(subpat),
         _ => None,
@@ -1063,12 +1064,12 @@ pub fn has_iter_method(cx: &LateContext<'_, '_>, probably_ref_ty: Ty<'_>) -> Opt
         &paths::RECEIVER,
     ];
 
-    let ty_to_check = match probably_ref_ty.sty {
+    let ty_to_check = match probably_ref_ty.kind {
         ty::Ref(_, ty_to_check, _) => ty_to_check,
         _ => probably_ref_ty,
     };
 
-    let def_id = match ty_to_check.sty {
+    let def_id = match ty_to_check.kind {
         ty::Array(..) => return Some("array"),
         ty::Slice(..) => return Some("slice"),
         ty::Adt(adt, _) => adt.did,
@@ -1080,6 +1081,30 @@ pub fn has_iter_method(cx: &LateContext<'_, '_>, probably_ref_ty: Ty<'_>) -> Opt
             return Some(*path.last().unwrap());
         }
     }
+    None
+}
+
+/// Matches a function call with the given path and returns the arguments.
+///
+/// Usage:
+///
+/// ```rust,ignore
+/// if let Some(args) = match_function_call(cx, begin_panic_call, &paths::BEGIN_PANIC);
+/// ```
+pub fn match_function_call<'a, 'tcx>(
+    cx: &LateContext<'a, 'tcx>,
+    expr: &'tcx Expr,
+    path: &[&str],
+) -> Option<&'tcx [Expr]> {
+    if_chain! {
+        if let ExprKind::Call(ref fun, ref args) = expr.kind;
+        if let ExprKind::Path(ref qpath) = fun.kind;
+        if let Some(fun_def_id) = cx.tables.qpath_res(qpath, fun.hir_id).opt_def_id();
+        if match_def_path(cx, fun_def_id, path);
+        then {
+            return Some(&args)
+        }
+    };
     None
 }
 
@@ -1167,4 +1192,48 @@ mod test {
 pub fn match_def_path<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, did: DefId, syms: &[&str]) -> bool {
     let path = cx.get_def_path(did);
     path.len() == syms.len() && path.into_iter().zip(syms.iter()).all(|(a, &b)| a.as_str() == b)
+}
+
+/// Returns the list of condition expressions and the list of blocks in a
+/// sequence of `if/else`.
+/// E.g., this returns `([a, b], [c, d, e])` for the expression
+/// `if a { c } else if b { d } else { e }`.
+pub fn if_sequence(mut expr: &Expr) -> (SmallVec<[&Expr; 1]>, SmallVec<[&Block; 1]>) {
+    let mut conds = SmallVec::new();
+    let mut blocks: SmallVec<[&Block; 1]> = SmallVec::new();
+
+    while let Some((ref cond, ref then_expr, ref else_expr)) = higher::if_block(&expr) {
+        conds.push(&**cond);
+        if let ExprKind::Block(ref block, _) = then_expr.kind {
+            blocks.push(block);
+        } else {
+            panic!("ExprKind::If node is not an ExprKind::Block");
+        }
+
+        if let Some(ref else_expr) = *else_expr {
+            expr = else_expr;
+        } else {
+            break;
+        }
+    }
+
+    // final `else {..}`
+    if !blocks.is_empty() {
+        if let ExprKind::Block(ref block, _) = expr.kind {
+            blocks.push(&**block);
+        }
+    }
+
+    (conds, blocks)
+}
+
+pub fn parent_node_is_if_expr<'a, 'b>(expr: &Expr, cx: &LateContext<'a, 'b>) -> bool {
+    let parent_id = cx.tcx.hir().get_parent_node(expr.hir_id);
+    let parent_node = cx.tcx.hir().get(parent_id);
+
+    match parent_node {
+        rustc::hir::Node::Expr(e) => higher::if_block(&e).is_some(),
+        rustc::hir::Node::Arm(e) => higher::if_block(&e.body).is_some(),
+        _ => false,
+    }
 }

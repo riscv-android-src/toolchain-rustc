@@ -72,6 +72,7 @@ error: this boolean expression can be simplified
    |
 LL |     let _ = a == b && c == 5 && a == b;
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
 help: try
    |
 LL |     let _ = a == b && c == 5;
@@ -84,6 +85,7 @@ error: this boolean expression can be simplified
    |
 LL |     let _ = a == b && c == 5 && b == a;
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
 help: try
    |
 LL |     let _ = a == b && c == 5;
@@ -120,6 +122,7 @@ error: this boolean expression can be simplified
    |
 LL |     let _ = a != b || !(a != b || c == d);
    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
 help: try
    |
 LL |     let _ = c != d || a != b;
@@ -158,22 +161,22 @@ LL |     let _ = !(a.is_some() && !c);
    |             ^^^^^^^^^^^^^^^^^^^^ help: try: `c || a.is_none()`
 
 error: this boolean expression can be simplified
-  --> $DIR/booleans.rs:54:13
+  --> $DIR/booleans.rs:54:26
    |
 LL |     let _ = !(!c ^ c) || !a.is_some();
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `!(!c ^ c) || a.is_none()`
+   |                          ^^^^^^^^^^^^ help: try: `a.is_none()`
 
 error: this boolean expression can be simplified
-  --> $DIR/booleans.rs:55:13
+  --> $DIR/booleans.rs:55:25
    |
 LL |     let _ = (!c ^ c) || !a.is_some();
-   |             ^^^^^^^^^^^^^^^^^^^^^^^^ help: try: `(!c ^ c) || a.is_none()`
+   |                         ^^^^^^^^^^^^ help: try: `a.is_none()`
 
 error: this boolean expression can be simplified
-  --> $DIR/booleans.rs:56:13
+  --> $DIR/booleans.rs:56:23
    |
 LL |     let _ = !c ^ c || !a.is_some();
-   |             ^^^^^^^^^^^^^^^^^^^^^^ help: try: `!c ^ c || a.is_none()`
+   |                       ^^^^^^^^^^^^ help: try: `a.is_none()`
 
 error: this boolean expression can be simplified
   --> $DIR/booleans.rs:128:8

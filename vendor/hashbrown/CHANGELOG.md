@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 ## [Unreleased]
 
+## [v0.6.2] - 2019-10-23
+
+### Added
+- Added an `inline-more` feature (enabled by default) which allows choosing a tradeoff between 
+  runtime performance and compilation time. (#119)
+
+## [v0.6.1] - 2019-10-04
+
+### Added
+- Added `Entry::insert` and `RawEntryMut::insert`. (#118)
+
+### Changed
+- `Group::static_empty` was changed from a `const` to a `static` (#116).
+
+## [v0.6.0] - 2019-08-13
+
+### Fixed
+- Fixed AHash accidentally depending on `std`. (#110)
+
+### Changed
+- The minimum Rust version has been bumped to 1.32 (due to `rand` dependency).
+
+## ~~[v0.5.1] - 2019-08-04~~
+
+This release was _yanked_ due to a breaking change for users of `no-default-features`.
+
+### Added
+- The experimental and unsafe `RawTable` API is available under the "raw" feature. (#108)
+- Added entry-like methods for `HashSet`. (#98)
+
+### Changed
+- Changed the default hasher from FxHash to AHash. (#97)
+- `hashbrown` is now fully `no_std` on recent Rust versions (1.36+). (#96)
+
+### Fixed
+- We now avoid growing the table during insertions when it wasn't necessary. (#106)
+- `RawOccupiedEntryMut` now properly implements `Send` and `Sync`. (#100)
+- Relaxed `lazy_static` version. (#92)
+
 ## [v0.5.0] - 2019-06-12
 
 ### Fixed
@@ -119,7 +158,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/).
 
 - Initial release
 
-[Unreleased]: https://github.com/rust-lang/hashbrown/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/rust-lang/hashbrown/compare/v0.6.2...HEAD
+[v0.6.2]: https://github.com/rust-lang/hashbrown/compare/v0.6.1...v0.6.2
+[v0.6.1]: https://github.com/rust-lang/hashbrown/compare/v0.6.0...v0.6.1
+[v0.6.0]: https://github.com/rust-lang/hashbrown/compare/v0.5.1...v0.6.0
+[v0.5.1]: https://github.com/rust-lang/hashbrown/compare/v0.5.0...v0.5.1
 [v0.5.0]: https://github.com/rust-lang/hashbrown/compare/v0.4.0...v0.5.0
 [v0.4.0]: https://github.com/rust-lang/hashbrown/compare/v0.3.1...v0.4.0
 [v0.3.1]: https://github.com/rust-lang/hashbrown/compare/v0.3.0...v0.3.1

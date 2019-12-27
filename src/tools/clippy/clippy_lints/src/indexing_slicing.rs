@@ -89,11 +89,11 @@ declare_lint_pass!(IndexingSlicing => [INDEXING_SLICING, OUT_OF_BOUNDS_INDEXING]
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for IndexingSlicing {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
-        if let ExprKind::Index(ref array, ref index) = &expr.node {
+        if let ExprKind::Index(ref array, ref index) = &expr.kind {
             let ty = cx.tables.expr_ty(array);
             if let Some(range) = higher::range(cx, index) {
                 // Ranged indexes, i.e., &x[n..m], &x[n..], &x[..n] and &x[..]
-                if let ty::Array(_, s) = ty.sty {
+                if let ty::Array(_, s) = ty.kind {
                     let size: u128 = s.eval_usize(cx.tcx, cx.param_env).into();
 
                     let const_range = to_const_range(cx, range, size);
@@ -139,7 +139,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for IndexingSlicing {
                 utils::span_help_and_lint(cx, INDEXING_SLICING, expr.span, "slicing may panic.", help_msg);
             } else {
                 // Catchall non-range index, i.e., [n] or [n << m]
-                if let ty::Array(..) = ty.sty {
+                if let ty::Array(..) = ty.kind {
                     // Index is a constant uint.
                     if let Some(..) = constant(cx, cx.tables, index) {
                         // Let rustc's `const_err` lint handle constant `usize` indexing on arrays.

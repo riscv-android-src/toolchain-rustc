@@ -84,6 +84,11 @@ fn clone_range() {
 }
 
 #[test]
+fn clone_range_inclusive() {
+    check((0..=1000).into_par_iter());
+}
+
+#[test]
 fn clone_str() {
     let s = include_str!("clones.rs");
     check(s.par_chars());
@@ -108,6 +113,7 @@ fn clone_adaptors() {
     let v: Vec<_> = (0..1000).map(Some).collect();
     check(v.par_iter().chain(&v));
     check(v.par_iter().cloned());
+    check(v.par_iter().copied());
     check(v.par_iter().enumerate());
     check(v.par_iter().filter(|_| true));
     check(v.par_iter().filter_map(|x| *x));
@@ -126,6 +132,7 @@ fn clone_adaptors() {
     check(v.par_iter().map(|x| x));
     check(v.par_iter().map_with(0, |_, x| x));
     check(v.par_iter().map_init(|| 0, |_, x| x));
+    check(v.par_iter().panic_fuse());
     check(v.par_iter().rev());
     check(v.par_iter().skip(1));
     check(v.par_iter().take(1));

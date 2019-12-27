@@ -9,6 +9,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[must_use]
 fn clippy_driver_path() -> PathBuf {
     if let Some(path) = option_env!("CLIPPY_DRIVER_PATH") {
         PathBuf::from(path)
@@ -17,6 +18,7 @@ fn clippy_driver_path() -> PathBuf {
     }
 }
 
+#[must_use]
 fn host_libs() -> PathBuf {
     if let Some(path) = option_env!("HOST_LIBS") {
         PathBuf::from(path)
@@ -25,10 +27,12 @@ fn host_libs() -> PathBuf {
     }
 }
 
+#[must_use]
 fn rustc_test_suite() -> Option<PathBuf> {
     option_env!("RUSTC_TEST_SUITE").map(PathBuf::from)
 }
 
+#[must_use]
 fn rustc_lib_path() -> PathBuf {
     option_env!("RUSTC_LIB_PATH").unwrap().into()
 }
@@ -38,8 +42,7 @@ fn config(mode: &str, dir: PathBuf) -> compiletest::Config {
 
     let cfg_mode = mode.parse().expect("Invalid mode");
     if let Ok(name) = var::<&str>("TESTNAME") {
-        let s: String = name.to_owned();
-        config.filter = Some(s)
+        config.filter = Some(name)
     }
 
     if rustc_test_suite().is_some() {

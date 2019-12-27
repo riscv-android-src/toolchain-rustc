@@ -203,12 +203,13 @@ fn plugin_deps() {
 
             extern crate rustc_driver;
             extern crate syntax;
+            extern crate syntax_expand;
 
             use rustc_driver::plugin::Registry;
             use syntax::tokenstream::TokenStream;
             use syntax::source_map::Span;
             use syntax::ast::*;
-            use syntax::ext::base::{ExtCtxt, MacEager, MacResult};
+            use syntax_expand::base::{ExtCtxt, MacEager, MacResult};
 
             #[plugin_registrar]
             pub fn foo(reg: &mut Registry) {
@@ -298,13 +299,14 @@ fn plugin_to_the_max() {
 
             extern crate rustc_driver;
             extern crate syntax;
+            extern crate syntax_expand;
             extern crate baz;
 
             use rustc_driver::plugin::Registry;
             use syntax::tokenstream::TokenStream;
             use syntax::source_map::Span;
             use syntax::ast::*;
-            use syntax::ext::base::{ExtCtxt, MacEager, MacResult};
+            use syntax_expand::base::{ExtCtxt, MacEager, MacResult};
             use syntax::ptr::P;
 
             #[plugin_registrar]
@@ -376,7 +378,7 @@ fn linker_and_ar() {
         .with_stderr_contains(&format!(
             "\
 [COMPILING] foo v0.5.0 ([CWD])
-[RUNNING] `rustc --crate-name foo src/foo.rs --color never --crate-type bin \
+[RUNNING] `rustc --crate-name foo src/foo.rs [..]--crate-type bin \
     --emit=[..]link -C debuginfo=2 \
     -C metadata=[..] \
     --out-dir [CWD]/target/{target}/debug/deps \
@@ -533,7 +535,7 @@ fn cross_tests() {
         .with_stderr(&format!(
             "\
 [COMPILING] foo v0.0.0 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+[FINISHED] test [unoptimized + debuginfo] target(s) in [..]
 [RUNNING] target/{triple}/debug/deps/foo-[..][EXE]
 [RUNNING] target/{triple}/debug/deps/bar-[..][EXE]",
             triple = target
@@ -563,7 +565,7 @@ fn no_cross_doctests() {
 
     let host_output = "\
 [COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+[FINISHED] test [unoptimized + debuginfo] target(s) in [..]
 [RUNNING] target/debug/deps/foo-[..][EXE]
 [DOCTEST] foo
 ";
@@ -578,7 +580,7 @@ fn no_cross_doctests() {
         .with_stderr(&format!(
             "\
 [COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+[FINISHED] test [unoptimized + debuginfo] target(s) in [..]
 [RUNNING] target/{triple}/debug/deps/foo-[..][EXE]
 [DOCTEST] foo
 ",
@@ -593,7 +595,7 @@ fn no_cross_doctests() {
         .with_stderr(&format!(
             "\
 [COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+[FINISHED] test [unoptimized + debuginfo] target(s) in [..]
 [RUNNING] target/{triple}/debug/deps/foo-[..][EXE]
 ",
             triple = target
@@ -1221,7 +1223,7 @@ fn cross_test_dylib() {
             "\
 [COMPILING] bar v0.0.1 ([CWD]/bar)
 [COMPILING] foo v0.0.1 ([CWD])
-[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+[FINISHED] test [unoptimized + debuginfo] target(s) in [..]
 [RUNNING] target/{arch}/debug/deps/foo-[..][EXE]
 [RUNNING] target/{arch}/debug/deps/test-[..][EXE]",
             arch = cross_compile::alternate()

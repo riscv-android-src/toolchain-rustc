@@ -1,7 +1,7 @@
 use super::plumbing::*;
 use super::*;
 use std::cell::Cell;
-use std::iter::Fuse;
+use std::iter::{self, Fuse};
 
 /// `Intersperse` is an iterator that inserts a particular item between each
 /// item of the adapted iterator.  This struct is created by the
@@ -20,17 +20,14 @@ where
     item: I::Item,
 }
 
-/// Create a new `Intersperse` iterator
-///
-/// NB: a free fn because it is NOT part of the end-user API.
-pub fn new<I>(base: I, item: I::Item) -> Intersperse<I>
+impl<I> Intersperse<I>
 where
     I: ParallelIterator,
     I::Item: Clone,
 {
-    Intersperse {
-        base: base,
-        item: item,
+    /// Create a new `Intersperse` iterator
+    pub(super) fn new(base: I, item: I::Item) -> Self {
+        Intersperse { base, item }
     }
 }
 
@@ -50,10 +47,9 @@ where
     }
 
     fn opt_len(&self) -> Option<usize> {
-        match self.base.opt_len() {
-            None => None,
-            Some(0) => Some(0),
-            Some(len) => len.checked_add(len - 1),
+        match self.base.opt_len()? {
+            0 => Some(0),
+            len => len.checked_add(len - 1),
         }
     }
 }
@@ -86,9 +82,9 @@ where
     {
         let len = self.len();
         return self.base.with_producer(Callback {
-            callback: callback,
+            callback,
             item: self.item,
-            len: len,
+            len,
         });
 
         struct Callback<CB, T> {
@@ -131,9 +127,9 @@ where
 {
     fn new(base: P, item: P::Item, len: usize) -> Self {
         IntersperseProducer {
-            base: base,
-            item: item,
-            len: len,
+            base,
+            item,
+            len,
             clone_first: false,
         }
     }
@@ -292,8 +288,8 @@ where
 {
     fn new(base: C, item: T) -> Self {
         IntersperseConsumer {
-            base: base,
-            item: item,
+            base,
+            item,
             clone_first: false.into(),
         }
     }
@@ -380,6 +376,28 @@ where
         }
         self.base = self.base.consume(item);
         self
+    }
+
+    fn consume_iter<I>(self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let mut clone_first = self.clone_first;
+        let between_item = self.item;
+        let base = self.base.consume_iter(iter.into_iter().flat_map(|item| {
+            let first = if clone_first {
+                Some(between_item.clone())
+            } else {
+                clone_first = true;
+                None
+            };
+            first.into_iter().chain(iter::once(item))
+        }));
+        IntersperseFolder {
+            base,
+            item: between_item,
+            clone_first,
+        }
     }
 
     fn complete(self) -> C::Result {

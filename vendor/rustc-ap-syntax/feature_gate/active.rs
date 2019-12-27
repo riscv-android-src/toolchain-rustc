@@ -402,9 +402,6 @@ declare_features! (
     /// Allows infering `'static` outlives requirements (RFC 2093).
     (active, infer_static_outlives_requirements, "1.26.0", Some(54185), None),
 
-    /// Allows macro invocations in `extern {}` blocks.
-    (active, macros_in_extern, "1.27.0", Some(49476), None),
-
     /// Allows accessing fields of unions inside `const` functions.
     (active, const_fn_union, "1.27.0", Some(51909), None),
 
@@ -461,9 +458,6 @@ declare_features! (
     /// Allows non-builtin attributes in inner attribute position.
     (active, custom_inner_attributes, "1.30.0", Some(54726), None),
 
-    /// Allows mixing bind-by-move in patterns and references to those identifiers in guards.
-    (active, bind_by_move_pattern_guards, "1.30.0", Some(15287), None),
-
     /// Allows `impl Trait` in bindings (`let`, `const`, `static`).
     (active, impl_trait_in_bindings, "1.30.0", Some(63065), None),
 
@@ -491,9 +485,6 @@ declare_features! (
 
     /// Allows the user of associated type bounds.
     (active, associated_type_bounds, "1.34.0", Some(52662), None),
-
-    /// Attributes on formal function params.
-    (active, param_attrs, "1.36.0", Some(60406), None),
 
     /// Allows calling constructor functions in `const fn`.
     (active, const_constructor, "1.37.0", Some(61456), None),

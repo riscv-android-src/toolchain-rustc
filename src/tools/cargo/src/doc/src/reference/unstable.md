@@ -12,11 +12,23 @@ Some unstable features will require you to specify the `cargo-features` key in
 
 ### no-index-update
 * Original Issue: [#3479](https://github.com/rust-lang/cargo/issues/3479)
+* Tracking Issue: [#7404](https://github.com/rust-lang/cargo/issues/7404)
 
 The `-Z no-index-update` flag ensures that Cargo does not attempt to update
 the registry index. This is intended for tools such as Crater that issue many
 Cargo commands, and you want to avoid the network latency for updating the
 index each time.
+
+### mtime-on-use
+* Original Issue: [#6477](https://github.com/rust-lang/cargo/pull/6477)
+* Cache usage meta tracking issue: [#7150](https://github.com/rust-lang/cargo/issues/7150)
+
+The `-Z mtime-on-use` flag is an experiment to have Cargo update the mtime of
+used files to make it easier for tools like cargo-sweep to detect which files
+are stale. For many workflows this needs to be set on *all* invocations of cargo.
+To make this more practical setting the `unstable.mtime_on_use` flag in `.cargo/config`
+or the corresponding ENV variable will apply the `-Z mtime-on-use` to all
+invocations of nightly cargo. (the config flag is ignored by stable)
 
 ### avoid-dev-deps
 * Original Issue: [#4988](https://github.com/rust-lang/cargo/issues/4988)
@@ -31,6 +43,12 @@ generated if dev-dependencies are skipped.
 ### minimal-versions
 * Original Issue: [#4100](https://github.com/rust-lang/cargo/issues/4100)
 * Tracking Issue: [#5657](https://github.com/rust-lang/cargo/issues/5657)
+
+> Note: It is not recommended to use this feature. Because it enforces minimal
+> versions for all transitive dependencies, its usefulness is limited since
+> not all external dependencies declare proper lower version bounds. It is
+> intended that it will be changed in the future to only enforce minimal
+> versions for direct dependencies.
 
 When a `Cargo.lock` file is generated, the `-Z minimal-versions` flag will
 resolve the dependencies to the minimum semver version that will satisfy the
@@ -58,6 +76,21 @@ directory. Example:
 cargo +nightly build --out-dir=out -Z unstable-options
 ```
 
+### doctest-xcompile
+* Tracking Issue: [#7040](https://github.com/rust-lang/cargo/issues/7040)
+* Tracking Rustc Issue: [#64245](https://github.com/rust-lang/rust/issues/64245)
+
+This flag changes `cargo test`'s behavior when handling doctests when
+a target is passed. Currently, if a target is passed that is different
+from the host cargo will simply skip testing doctests. If this flag is
+present, cargo will continue as normal, passing the tests to doctest,
+while also passing it a `--target` option, as well as enabling
+`-Zunstable-features --enable-per-target-ignores` and passing along
+information from `.cargo/config`. See the rustc issue for more information.
+
+```
+cargo test --target foo -Zdoctest-xcompile
+```
 
 ### Profile Overrides
 * Tracking Issue: [rust-lang/rust#48683](https://github.com/rust-lang/rust/issues/48683)
@@ -77,12 +110,12 @@ opt-level = 0
 debug = true
 
 # the `image` crate will be compiled with -Copt-level=3
-[profile.dev.overrides.image]
+[profile.dev.package.image]
 opt-level = 3
 
 # All dependencies (but not this crate itself or any workspace member)
 # will be compiled with -Copt-level=2 . This includes build dependencies.
-[profile.dev.overrides."*"]
+[profile.dev.package."*"]
 opt-level = 2
 
 # Build scripts or proc-macros and their dependencies will be compiled with
@@ -92,7 +125,66 @@ opt-level = 2
 opt-level = 3
 ```
 
-Overrides can only be specified for dev and release profiles.
+Overrides can be specified for any profile, including custom named profiles.
+
+
+### Custom named profiles
+
+* Tracking Issue: [rust-lang/cargo#6988](https://github.com/rust-lang/cargo/issues/6988)
+* RFC: [#2678](https://github.com/rust-lang/rfcs/pull/2678)
+
+With this feature you can define custom profiles having new names. With the
+custom profile enabled, build artifacts can be emitted by default to
+directories other than `release` or `debug`, based on the custom profile's
+name.
+
+For example:
+
+```toml
+cargo-features = ["named-profiles"]
+
+[profile.release-lto]
+inherits = "release"
+lto = true
+````
+
+An `inherits` key is used in order to receive attributes from other profiles,
+so that a new custom profile can be based on the standard `dev` or `release`
+profile presets. Cargo emits errors in case `inherits` loops are detected. When
+considering inheritance hierarchy, all profiles directly or indirectly inherit
+from either from `release` or from `dev`.
+
+Valid profile names are: must not be empty, use only alphanumeric characters or
+`-` or `_`.
+
+Passing `--profile` with the profile's name to various Cargo commands, directs
+operations to use the profile's attributes. Overrides that are specified in the
+profiles from which the custom profile inherits are inherited too.
+
+For example, using `cargo build` with `--profile` and the manifest from above:
+
+```
+cargo +nightly build --profile release-lto -Z unstable-options
+```
+
+When a custom profile is used, build artifcats go to a different target by
+default. In the example above, you can expect to see the outputs under
+`target/release-lto`.
+
+
+#### New `dir-name` attribute
+
+Some of the paths generated under `target/` have resulted in a de-facto "build
+protocol", where `cargo` is invoked as a part of a larger project build. So, to
+preserve the existing behavior, there is also a new attribute `dir-name`, which
+when left unspecified, defaults to the name of the profile. For example:
+
+```toml
+[profile.release-lto]
+inherits = "release"
+dir-name = "lto"  # Emits to target/lto instead of target/release-lto
+lto = true
+```
 
 
 ### Config Profiles
@@ -237,25 +329,6 @@ my_dep = { version = "1.2.3", public = true }
 private_dep = "2.0.0" # Will be 'private' by default
 ```
 
-### cache-messages
-* Tracking Issue: [#6986](https://github.com/rust-lang/cargo/issues/6986)
-
-The `cache-messages` feature causes Cargo to cache the messages generated by
-the compiler. This is primarily useful if a crate compiles successfully with
-warnings. Previously, re-running Cargo would not display any output. With the
-`cache-messages` feature, it will quickly redisplay the previous warnings.
-
-```
-cargo +nightly check -Z cache-messages
-```
-
-This works with any command that runs the compiler (`build`, `check`, `test`,
-etc.).
-
-This also changes the way Cargo interacts with the compiler, helping to
-prevent interleaved messages when multiple crates attempt to display a message
-at the same time.
-
 ### build-std
 * Tracking Repository: https://github.com/rust-lang/wg-cargo-std-aware
 
@@ -338,6 +411,7 @@ the [issue tracker](https://github.com/rust-lang/wg-cargo-std-aware/issues) of
 the tracking repository, and if it's not there please file a new issue!
 
 ### timings
+* Tracking Issue: [#7405](https://github.com/rust-lang/cargo/issues/7405)
 
 The `timings` feature gives some information about how long each compilation
 takes, and tracks concurrency information over time.
@@ -396,3 +470,28 @@ Tips for addressing compile times:
 - Split large crates into smaller pieces.
 - If there are a large number of crates bottlenecked on a single crate, focus
   your attention on improving that one crate to improve parallelism.
+
+### binary-dep-depinfo
+* Tracking rustc issue: [#63012](https://github.com/rust-lang/rust/issues/63012)
+
+The `-Z binary-dep-depinfo` flag causes Cargo to forward the same flag to
+`rustc` which will then cause `rustc` to include the paths of all binary
+dependencies in the "dep info" file (with the `.d` extension). Cargo then uses
+that information for change-detection (if any binary dependency changes, then
+the crate will be rebuilt). The primary use case is for building the compiler
+itself, which has implicit dependencies on the standard library that would
+otherwise be untracked for change-detection.
+
+### panic-abort-tests
+
+The `-Z panic-abort-tests` flag will enable nightly support to compile test
+harness crates with `-Cpanic=abort`. Without this flag Cargo will compile tests,
+and everything they depend on, with `-Cpanic=unwind` because it's the only way
+`test`-the-crate knows how to operate. As of [rust-lang/rust#64158], however,
+the `test` crate supports `-C panic=abort` with a test-per-process, and can help
+avoid compiling crate graphs multiple times.
+
+It's currently unclear how this feature will be stabilized in Cargo, but we'd
+like to stabilize it somehow!
+
+[rust-lang/rust#64158]: https://github.com/rust-lang/rust/pull/64158

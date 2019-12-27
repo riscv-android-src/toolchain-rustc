@@ -54,7 +54,7 @@ declare_lint_pass!(ApproxConstant => [APPROX_CONSTANT]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ApproxConstant {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
-        if let ExprKind::Lit(lit) = &e.node {
+        if let ExprKind::Lit(lit) = &e.kind {
             check_lit(cx, &lit.node, e);
         }
     }
@@ -93,6 +93,7 @@ fn check_known_consts(cx: &LateContext<'_, '_>, e: &Expr, s: symbol::Symbol, mod
 /// Returns `false` if the number of significant figures in `value` are
 /// less than `min_digits`; otherwise, returns true if `value` is equal
 /// to `constant`, rounded to the number of digits present in `value`.
+#[must_use]
 fn is_approx_const(constant: f64, value: &str, min_digits: usize) -> bool {
     if value.len() <= min_digits {
         false

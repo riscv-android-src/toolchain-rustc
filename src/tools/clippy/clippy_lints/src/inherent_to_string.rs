@@ -9,7 +9,7 @@ use crate::utils::{
 };
 
 declare_clippy_lint! {
-    /// **What id does:** Checks for the definition of inherent methods with a signature of `to_string(&self) -> String`.
+    /// **What it does:** Checks for the definition of inherent methods with a signature of `to_string(&self) -> String`.
     ///
     /// **Why is this bad?** This method is also implicitly defined if a type implements the `Display` trait. As the functionality of `Display` is much more versatile, it should be preferred.
     ///
@@ -46,7 +46,7 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What id does:** Checks for the definition of inherent methods with a signature of `to_string(&self) -> String` and if the type implementing this method also implements the `Display` trait.
+    /// **What it does:** Checks for the definition of inherent methods with a signature of `to_string(&self) -> String` and if the type implementing this method also implements the `Display` trait.
     ///
     /// **Why is this bad?** This method is also implicitly defined if a type implements the `Display` trait. The less versatile inherent method will then shadow the implementation introduced by `Display`.
     ///
@@ -100,7 +100,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InherentToString {
 
         if_chain! {
             // Check if item is a method, called to_string and has a parameter 'self'
-            if let ImplItemKind::Method(ref signature, _) = impl_item.node;
+            if let ImplItemKind::Method(ref signature, _) = impl_item.kind;
             if impl_item.ident.name.as_str() == "to_string";
             let decl = &signature.decl;
             if decl.implicit_self.has_implicit_self();

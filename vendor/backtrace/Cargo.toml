@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "backtrace"
-version = "0.3.37"
+version = "0.3.40"
 authors = ["The Rust Project Developers"]
 autoexamples = true
 autotests = true
@@ -61,7 +61,7 @@ optional = true
 default-features = false
 
 [dependencies.backtrace-sys]
-version = "0.1.17"
+version = "0.1.32"
 optional = true
 
 [dependencies.cfg-if]

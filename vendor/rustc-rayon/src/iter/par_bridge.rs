@@ -1,4 +1,4 @@
-use crossbeam_deque::{Deque, Steal, Stealer};
+use crossbeam_deque::{Steal, Stealer, Worker};
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, TryLockError};
@@ -79,10 +79,10 @@ where
         C: UnindexedConsumer<Self::Item>,
     {
         let split_count = AtomicUsize::new(current_num_threads());
-        let deque = Deque::new();
-        let stealer = deque.stealer();
+        let worker = Worker::new_fifo();
+        let stealer = worker.stealer();
         let done = AtomicBool::new(false);
-        let iter = Mutex::new((self.iter, deque));
+        let iter = Mutex::new((self.iter, worker));
 
         bridge_unindexed(
             IterParallelProducer {
@@ -99,7 +99,7 @@ where
 struct IterParallelProducer<'a, Iter: Iterator + 'a> {
     split_count: &'a AtomicUsize,
     done: &'a AtomicBool,
-    iter: &'a Mutex<(Iter, Deque<Iter::Item>)>,
+    iter: &'a Mutex<(Iter, Worker<Iter::Item>)>,
     items: Stealer<Iter::Item>,
 }
 
@@ -150,7 +150,7 @@ where
     {
         loop {
             match self.items.steal() {
-                Steal::Data(it) => {
+                Steal::Success(it) => {
                     folder = folder.consume(it);
                     if folder.full() {
                         return folder;
@@ -167,11 +167,15 @@ where
                                 let count = current_num_threads();
                                 let count = (count * count) * 2;
 
-                                let (ref mut iter, ref deque) = *guard;
+                                let (ref mut iter, ref worker) = *guard;
 
-                                while deque.len() < count {
+                                // while worker.len() < count {
+                                // FIXME the new deque doesn't let us count items.  We can just
+                                // push a number of items, but that doesn't consider active
+                                // stealers elsewhere.
+                                for _ in 0..count {
                                     if let Some(it) = iter.next() {
-                                        deque.push(it);
+                                        worker.push(it);
                                     } else {
                                         self.done.store(true, Ordering::SeqCst);
                                         break;

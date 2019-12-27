@@ -181,7 +181,7 @@ impl EarlyLintPass for NeedlessContinue {
 /// - The expression node is a block with the first statement being a
 /// `continue`.
 fn needless_continue_in_else(else_expr: &ast::Expr, label: Option<&ast::Label>) -> bool {
-    match else_expr.node {
+    match else_expr.kind {
         ast::ExprKind::Block(ref else_block, _) => is_first_block_stmt_continue(else_block, label),
         ast::ExprKind::Continue(l) => compare_labels(label, l.as_ref()),
         _ => false,
@@ -189,9 +189,9 @@ fn needless_continue_in_else(else_expr: &ast::Expr, label: Option<&ast::Label>) 
 }
 
 fn is_first_block_stmt_continue(block: &ast::Block, label: Option<&ast::Label>) -> bool {
-    block.stmts.get(0).map_or(false, |stmt| match stmt.node {
+    block.stmts.get(0).map_or(false, |stmt| match stmt.kind {
         ast::StmtKind::Semi(ref e) | ast::StmtKind::Expr(ref e) => {
-            if let ast::ExprKind::Continue(ref l) = e.node {
+            if let ast::ExprKind::Continue(ref l) = e.kind {
                 compare_labels(label, l.as_ref())
             } else {
                 false
@@ -221,7 +221,7 @@ where
 {
     if let ast::ExprKind::While(_, loop_block, label)
     | ast::ExprKind::ForLoop(_, _, loop_block, label)
-    | ast::ExprKind::Loop(loop_block, label) = &expr.node
+    | ast::ExprKind::Loop(loop_block, label) = &expr.kind
     {
         func(loop_block, label.as_ref());
     }
@@ -239,9 +239,9 @@ fn with_if_expr<F>(stmt: &ast::Stmt, mut func: F)
 where
     F: FnMut(&ast::Expr, &ast::Expr, &ast::Block, &ast::Expr),
 {
-    match stmt.node {
+    match stmt.kind {
         ast::StmtKind::Semi(ref e) | ast::StmtKind::Expr(ref e) => {
-            if let ast::ExprKind::If(ref cond, ref if_block, Some(ref else_expr)) = e.node {
+            if let ast::ExprKind::If(ref cond, ref if_block, Some(ref else_expr)) = e.kind {
                 func(e, cond, if_block, else_expr);
             }
         },
@@ -405,6 +405,7 @@ fn check_and_warn<'a>(ctx: &EarlyContext<'_>, expr: &'a ast::Expr) {
 ///
 /// NOTE: when there is no closing brace in `s`, `s` is _not_ preserved, i.e.,
 /// an empty string will be returned in that case.
+#[must_use]
 pub fn erode_from_back(s: &str) -> String {
     let mut ret = String::from(s);
     while ret.pop().map_or(false, |c| c != '}') {}
@@ -435,6 +436,7 @@ pub fn erode_from_back(s: &str) -> String {
 ///             inside_a_block();
 ///         }
 /// ```
+#[must_use]
 pub fn erode_from_front(s: &str) -> String {
     s.chars()
         .skip_while(|c| c.is_whitespace())
@@ -447,6 +449,7 @@ pub fn erode_from_front(s: &str) -> String {
 /// tries to get the contents of the block. If there is no closing brace
 /// present,
 /// an empty string is returned.
+#[must_use]
 pub fn erode_block(s: &str) -> String {
     erode_from_back(&erode_from_front(s))
 }

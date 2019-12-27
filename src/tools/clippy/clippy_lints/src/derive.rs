@@ -66,7 +66,7 @@ declare_lint_pass!(Derive => [EXPL_IMPL_CLONE_ON_COPY, DERIVE_HASH_XOR_EQ]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Derive {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if let ItemKind::Impl(_, _, _, _, Some(ref trait_ref), _, _) = item.node {
+        if let ItemKind::Impl(_, _, _, _, Some(ref trait_ref), _, _) = item.kind {
             let ty = cx.tcx.type_of(cx.tcx.hir().local_def_id(item.hir_id));
             let is_automatically_derived = is_automatically_derived(&*item.attrs);
 
@@ -134,20 +134,20 @@ fn check_copy_clone<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, item: &Item, trait_ref
             return;
         }
 
-        match ty.sty {
+        match ty.kind {
             ty::Adt(def, _) if def.is_union() => return,
 
             // Some types are not Clone by default but could be cloned “by hand” if necessary
             ty::Adt(def, substs) => {
                 for variant in &def.variants {
                     for field in &variant.fields {
-                        if let ty::FnDef(..) = field.ty(cx.tcx, substs).sty {
+                        if let ty::FnDef(..) = field.ty(cx.tcx, substs).kind {
                             return;
                         }
                     }
                     for subst in substs {
-                        if let ty::subst::UnpackedKind::Type(subst) = subst.unpack() {
-                            if let ty::Param(_) = subst.sty {
+                        if let ty::subst::GenericArgKind::Type(subst) = subst.unpack() {
+                            if let ty::Param(_) = subst.kind {
                                 return;
                             }
                         }

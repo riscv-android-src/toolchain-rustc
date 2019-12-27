@@ -1,5 +1,4 @@
 use super::{IndexedParallelIterator, IntoParallelIterator, ParallelExtend, ParallelIterator};
-use std::collections::LinkedList;
 use std::slice;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -11,8 +10,8 @@ mod test;
 
 /// Collects the results of the exact iterator into the specified vector.
 ///
-/// This is not directly public, but called by `IndexedParallelIterator::collect_into_vec`.
-pub fn collect_into_vec<I, T>(pi: I, v: &mut Vec<T>)
+/// This is called by `IndexedParallelIterator::collect_into_vec`.
+pub(super) fn collect_into_vec<I, T>(pi: I, v: &mut Vec<T>)
 where
     I: IndexedParallelIterator<Item = T>,
     T: Send,
@@ -46,8 +45,8 @@ where
 
 /// Unzips the results of the exact iterator into the specified vectors.
 ///
-/// This is not directly public, but called by `IndexedParallelIterator::unzip_into_vecs`.
-pub fn unzip_into_vecs<I, A, B>(pi: I, left: &mut Vec<A>, right: &mut Vec<B>)
+/// This is called by `IndexedParallelIterator::unzip_into_vecs`.
+pub(super) fn unzip_into_vecs<I, A, B>(pi: I, left: &mut Vec<A>, right: &mut Vec<B>)
 where
     I: IndexedParallelIterator<Item = (A, B)>,
     A: Send,
@@ -78,13 +77,13 @@ impl<'c, T: Send + 'c> Collect<'c, T> {
     fn new(vec: &'c mut Vec<T>, len: usize) -> Self {
         Collect {
             writes: AtomicUsize::new(0),
-            vec: vec,
-            len: len,
+            vec,
+            len,
         }
     }
 
     /// Create a consumer on a slice of our memory.
-    fn as_consumer(&mut self) -> CollectConsumer<T> {
+    fn as_consumer(&mut self) -> CollectConsumer<'_, T> {
         // Reserve the new space.
         self.vec.reserve(self.len);
 
@@ -138,22 +137,8 @@ where
             }
             None => {
                 // This works like `extend`, but `Vec::append` is more efficient.
-                let list: LinkedList<_> = par_iter
-                    .fold(Vec::new, |mut vec, elem| {
-                        vec.push(elem);
-                        vec
-                    })
-                    .map(|vec| {
-                        let mut list = LinkedList::new();
-                        list.push_back(vec);
-                        list
-                    })
-                    .reduce(LinkedList::new, |mut list1, mut list2| {
-                        list1.append(&mut list2);
-                        list1
-                    });
-
-                self.reserve(list.iter().map(Vec::len).sum());
+                let list = super::extend::collect(par_iter);
+                self.reserve(super::extend::len(&list));
                 for mut vec in list {
                     self.append(&mut vec);
                 }

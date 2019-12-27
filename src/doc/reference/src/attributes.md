@@ -50,6 +50,9 @@ Attributes may be applied to many things in the language:
 * [Generic lifetime or type parameter][generics] accept outer attributes.
 * Expressions accept outer attributes in limited situations, see [Expression
   Attributes] for details.
+* [Function][functions], [closure]] and [function pointer]
+  parameters accept outer attributes. This includes attributes on variadic parameters
+  denoted with `...` in function pointers and [external blocks][variadic functions].
 
 Some examples of attributes:
 
@@ -86,8 +89,7 @@ fn some_unused_variables() {
 ## Meta Item Attribute Syntax
 
 A "meta item" is the syntax used for the _Attr_ rule by most [built-in
-attributes] and the [`meta` macro fragment specifier]. It has the following
-grammar:
+attributes]. It has the following grammar:
 
 > **<sup>Syntax</sup>**\
 > _MetaItem_ :\
@@ -236,6 +238,9 @@ The following is an index of all built-in attributes.
 - Features
   - `feature` — Used to enable unstable or experimental compiler features. See
     [The Unstable Book] for features implemented in `rustc`.
+- Type System
+  - [`non_exhaustive`] — Indicate that a type will have more fields/variants
+    added in future.
 
 [Doc comments]: comments.md#doc-comments
 [ECMA-334]: https://www.ecma-international.org/publications/standards/Ecma-334.htm
@@ -268,7 +273,6 @@ The following is an index of all built-in attributes.
 [`link`]: items/external-blocks.md#the-link-attribute
 [`macro_export`]: macros-by-example.md#path-based-scope
 [`macro_use`]: macros-by-example.md#the-macro_use-attribute
-[`meta` macro fragment specifier]: macros-by-example.md
 [`must_use`]: attributes/diagnostics.md#the-must_use-attribute
 [`no_builtins`]: attributes/codegen.md#the-no_builtins-attribute
 [`no_implicit_prelude`]: items/modules.md#prelude-items
@@ -276,6 +280,7 @@ The following is an index of all built-in attributes.
 [`no_main`]: crates-and-source-files.md#the-no_main-attribute
 [`no_mangle`]: abi.md#the-no_mangle-attribute
 [`no_std`]: crates-and-source-files.md#preludes-and-no_std
+[`non_exhaustive`]: attributes/type_system.md#the-non_exhaustive-attribute
 [`panic_handler`]: runtime.md#the-panic_handler-attribute
 [`path`]: items/modules.md#the-path-attribute
 [`proc_macro_attribute`]: procedural-macros.md#attribute-macros
@@ -306,3 +311,6 @@ The following is an index of all built-in attributes.
 [statements]: statements.md
 [struct]: items/structs.md
 [union]: items/unions.md
+[closure]: expressions/closure-expr.md
+[function pointer]: types/function-pointer.md
+[variadic functions]: items/external-blocks.html#variadic-functions

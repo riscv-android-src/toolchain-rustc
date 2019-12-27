@@ -156,8 +156,6 @@
 //! let output = command.wait().expect("Couldn't get cargo's exit status");
 //! ```
 
-#[macro_use]
-extern crate failure;
 extern crate semver;
 extern crate serde;
 #[macro_use]
@@ -181,7 +179,7 @@ pub use messages::{
 };
 
 mod dependency;
-mod diagnostic;
+pub mod diagnostic;
 mod errors;
 mod messages;
 
@@ -319,8 +317,9 @@ pub struct Package {
     #[serde(default)]
     pub keywords: Vec<String>,
     /// Readme as given in the `Cargo.toml`
-    pub readme: Option<String>,
+    pub readme: Option<PathBuf>,
     /// Repository as given in the `Cargo.toml`
+    // can't use `url::Url` because that requires a more recent stable compiler
     pub repository: Option<String>,
     /// Default Rust edition for the package
     ///
@@ -357,9 +356,31 @@ pub struct Package {
     pub metadata: serde_json::Value,
     /// The name of a native library the package is linking to.
     pub links: Option<String>,
+    /// List of registries to which this package may be published.
+    ///
+    /// Publishing is unrestricted if `None`, and forbidden if the `Vec` is empty.
+    ///
+    /// This is always `None` if running with a version of Cargo older than 1.39.
+    pub publish: Option<Vec<String>>,
     #[doc(hidden)]
     #[serde(skip)]
     __do_not_match_exhaustively: (),
+}
+
+impl Package {
+    /// Full path to the license file if one is present in the manifest
+    pub fn license_file(&self) -> Option<PathBuf> {
+        self.license_file
+            .as_ref()
+            .map(|file| self.manifest_path.join(file))
+    }
+
+    /// Full path to the readme file if one is present in the manifest
+    pub fn readme(&self) -> Option<PathBuf> {
+        self.readme
+            .as_ref()
+            .map(|file| self.manifest_path.join(file))
+    }
 }
 
 /// The source of a package such as crates.io.
@@ -402,9 +423,19 @@ pub struct Target {
     /// Rust edition for this target
     #[serde(default = "edition_default")]
     pub edition: String,
+    /// Whether or not this target has doc tests enabled, and the target is
+    /// compatible with doc testing.
+    ///
+    /// This is always `true` if running with a version of Cargo older than 1.37.
+    #[serde(default = "default_true")]
+    pub doctest: bool,
     #[doc(hidden)]
     #[serde(skip)]
     __do_not_match_exhaustively: (),
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn edition_default() -> String {
@@ -474,16 +505,20 @@ impl MetadataCommand {
     }
     /// Runs configured `cargo metadata` and returns parsed `Metadata`.
     pub fn exec(&mut self) -> Result<Metadata> {
-        let cargo = self.cargo_path.clone()
-            .or_else(|| env::var("CARGO")
-                .map(|s| PathBuf::from(s))
-                .ok())
+        let cargo = self
+            .cargo_path
+            .clone()
+            .or_else(|| env::var("CARGO").map(|s| PathBuf::from(s)).ok())
             .unwrap_or_else(|| PathBuf::from("cargo"));
         let mut cmd = Command::new(cargo);
         cmd.args(&["metadata", "--format-version", "1"]);
 
         if self.no_deps {
             cmd.arg("--no-deps");
+        }
+
+        if let Some(path) = self.current_dir.as_ref() {
+            cmd.current_dir(path);
         }
 
         if let Some(features) = &self.features {
@@ -500,9 +535,14 @@ impl MetadataCommand {
         cmd.args(&self.other_options);
         let output = cmd.output()?;
         if !output.status.success() {
-            return Err(Error::CargoMetadata { stderr: String::from_utf8(output.stderr)? });
+            return Err(Error::CargoMetadata {
+                stderr: String::from_utf8(output.stderr)?,
+            });
         }
-        let stdout = from_utf8(&output.stdout)?;
+        let stdout = from_utf8(&output.stdout)?
+            .lines()
+            .find(|line| line.starts_with('{'))
+            .ok_or_else(|| Error::NoJson)?;
         let meta = serde_json::from_str(stdout)?;
         Ok(meta)
     }

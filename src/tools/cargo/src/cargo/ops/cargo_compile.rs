@@ -31,13 +31,14 @@ use std::sync::Arc;
 use crate::core::compiler::standard_lib;
 use crate::core::compiler::unit_dependencies::build_unit_dependencies;
 use crate::core::compiler::{BuildConfig, BuildContext, Compilation, Context};
-use crate::core::compiler::{CompileMode, Kind, Unit};
+use crate::core::compiler::{CompileKind, CompileMode, Unit};
 use crate::core::compiler::{DefaultExecutor, Executor, UnitInterner};
 use crate::core::profiles::{Profiles, UnitFor};
 use crate::core::resolver::{Resolve, ResolveOpts};
 use crate::core::{LibKind, Package, PackageSet, Target};
 use crate::core::{PackageId, PackageIdSpec, TargetKind, Workspace};
 use crate::ops;
+use crate::ops::resolve::WorkspaceResolve;
 use crate::util::config::Config;
 use crate::util::{closest_msg, profile, CargoResult};
 
@@ -294,22 +295,28 @@ pub fn compile_ws<'a>(
         }
     }
 
-    let default_arch_kind = if build_config.requested_target.is_some() {
-        Kind::Target
-    } else {
-        Kind::Host
-    };
-
     let profiles = ws.profiles();
+
+    // Early check for whether the profile is defined.
+    let _ = profiles.base_profile(&build_config.profile_kind)?;
 
     let specs = spec.to_package_id_specs(ws)?;
     let dev_deps = ws.require_optional_deps() || filter.need_dev_deps(build_config.mode);
     let opts = ResolveOpts::new(dev_deps, features, all_features, !no_default_features);
     let resolve = ops::resolve_ws_with_opts(ws, opts, &specs)?;
-    let (mut packages, resolve_with_overrides) = resolve;
+    let WorkspaceResolve {
+        mut pkg_set,
+        workspace_resolve,
+        targeted_resolve: resolve,
+    } = resolve;
 
     let std_resolve = if let Some(crates) = &config.cli_unstable().build_std {
-        if build_config.requested_target.is_none() {
+        if build_config.build_plan {
+            config
+                .shell()
+                .warn("-Zbuild-std does not currently fully support --build-plan")?;
+        }
+        if build_config.requested_kind.is_host() {
             // TODO: This should eventually be fixed. Unfortunately it is not
             // easy to get the host triple in BuildConfig. Consider changing
             // requested_target to an enum, or some other approach.
@@ -317,7 +324,7 @@ pub fn compile_ws<'a>(
         }
         let (mut std_package_set, std_resolve) = standard_lib::resolve_std(ws, crates)?;
         remove_dylib_crate_type(&mut std_package_set)?;
-        packages.add_set(std_package_set);
+        pkg_set.add_set(std_package_set);
         Some(std_resolve)
     } else {
         None
@@ -328,12 +335,12 @@ pub fn compile_ws<'a>(
     // Vec<PackageIdSpec> to a Vec<&PackageId>.
     let to_build_ids = specs
         .iter()
-        .map(|s| s.query(resolve_with_overrides.iter()))
+        .map(|s| s.query(resolve.iter()))
         .collect::<CargoResult<Vec<_>>>()?;
     // Now get the `Package` for each `PackageId`. This may trigger a download
     // if the user specified `-p` for a dependency that is not downloaded.
     // Dependencies will be downloaded during build_unit_dependencies.
-    let mut to_builds = packages.get_many(to_build_ids)?;
+    let mut to_builds = pkg_set.get_many(to_build_ids)?;
 
     // The ordering here affects some error messages coming out of cargo, so
     // let's be test and CLI friendly by always printing in the same order if
@@ -368,12 +375,15 @@ pub fn compile_ws<'a>(
         );
     }
 
-    profiles.validate_packages(&mut config.shell(), &packages)?;
+    profiles.validate_packages(
+        &mut config.shell(),
+        workspace_resolve.as_ref().unwrap_or(&resolve),
+    )?;
 
     let interner = UnitInterner::new();
     let mut bcx = BuildContext::new(
         ws,
-        &packages,
+        &pkg_set,
         config,
         build_config,
         profiles,
@@ -385,8 +395,8 @@ pub fn compile_ws<'a>(
         profiles,
         &to_builds,
         filter,
-        default_arch_kind,
-        &resolve_with_overrides,
+        build_config.requested_kind,
+        &resolve,
         &bcx,
     )?;
 
@@ -403,7 +413,12 @@ pub fn compile_ws<'a>(
                 crates.push("test".to_string());
             }
         }
-        standard_lib::generate_std_roots(&bcx, &crates, std_resolve.as_ref().unwrap())?
+        standard_lib::generate_std_roots(
+            &bcx,
+            &crates,
+            std_resolve.as_ref().unwrap(),
+            build_config.requested_kind,
+        )?
     } else {
         Vec::new()
     };
@@ -427,17 +442,12 @@ pub fn compile_ws<'a>(
         }
     }
 
-    let unit_dependencies = build_unit_dependencies(
-        &bcx,
-        &resolve_with_overrides,
-        std_resolve.as_ref(),
-        &units,
-        &std_roots,
-    )?;
+    let unit_dependencies =
+        build_unit_dependencies(&bcx, &resolve, std_resolve.as_ref(), &units, &std_roots)?;
 
     let ret = {
         let _p = profile::start("compiling");
-        let cx = Context::new(config, &bcx, unit_dependencies)?;
+        let cx = Context::new(config, &bcx, unit_dependencies, build_config.requested_kind)?;
         cx.compile(&units, export_dir.clone(), exec)?
     };
 
@@ -629,13 +639,13 @@ fn generate_targets<'a>(
     profiles: &Profiles,
     packages: &[&'a Package],
     filter: &CompileFilter,
-    default_arch_kind: Kind,
+    default_arch_kind: CompileKind,
     resolve: &'a Resolve,
     bcx: &BuildContext<'a, '_>,
 ) -> CargoResult<Vec<Unit<'a>>> {
     // Helper for creating a `Unit` struct.
     let new_unit = |pkg: &'a Package, target: &'a Target, target_mode: CompileMode| {
-        let unit_for = if bcx.build_config.mode.is_any_test() {
+        let unit_for = if target_mode.is_any_test() {
             // NOTE: the `UnitFor` here is subtle. If you have a profile
             // with `panic` set, the `panic` flag is cleared for
             // tests/benchmarks and their dependencies. If this
@@ -654,7 +664,7 @@ fn generate_targets<'a>(
             //
             // Forcing the lib to be compiled three times during `cargo
             // test` is probably also not desirable.
-            UnitFor::new_test()
+            UnitFor::new_test(bcx.config)
         } else if target.for_host() {
             // Proc macro / plugin should not have `panic` set.
             UnitFor::new_compiler()
@@ -689,22 +699,24 @@ fn generate_targets<'a>(
             CompileMode::Bench => CompileMode::Test,
             _ => target_mode,
         };
-        // Plugins or proc macros should be built for the host.
-        let kind = if target.for_host() {
-            Kind::Host
-        } else {
-            default_arch_kind
-        };
+        let kind = default_arch_kind.for_target(target);
         let profile = profiles.get_profile(
             pkg.package_id(),
             ws.is_member(pkg),
             unit_for,
             target_mode,
-            bcx.build_config.release,
+            bcx.build_config.profile_kind.clone(),
         );
         let features = resolve.features_sorted(pkg.package_id());
-        bcx.units
-            .intern(pkg, target, profile, kind, target_mode, features)
+        bcx.units.intern(
+            pkg,
+            target,
+            profile,
+            kind,
+            target_mode,
+            features,
+            /*is_std*/ false,
+        )
     };
 
     // Create a list of proposed targets.

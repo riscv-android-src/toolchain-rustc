@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc::channel;
+use std::sync::{Arc, Mutex};
 
 use join;
 use thread_pool::ThreadPool;
@@ -67,14 +68,11 @@ fn sleeper_stop() {
 }
 
 /// Create a start/exit handler that increments an atomic counter.
-fn count_handler() -> (Arc<AtomicUsize>, Box<::StartHandler>) {
+fn count_handler() -> (Arc<AtomicUsize>, impl Fn(usize)) {
     let count = Arc::new(AtomicUsize::new(0));
-    (
-        count.clone(),
-        Box::new(move |_| {
-            count.fetch_add(1, Ordering::SeqCst);
-        }),
-    )
+    (count.clone(), move |_| {
+        count.fetch_add(1, Ordering::SeqCst);
+    })
 }
 
 /// Wait until a counter is no longer shared, then return its value.
@@ -108,8 +106,8 @@ fn failed_thread_stack() {
     let builder = ThreadPoolBuilder::new()
         .num_threads(10)
         .stack_size(stack_size)
-        .start_handler(move |i| start_handler(i))
-        .exit_handler(move |i| exit_handler(i));
+        .start_handler(start_handler)
+        .exit_handler(exit_handler);
 
     let pool = builder.build();
     assert!(pool.is_err(), "thread stack should have failed!");
@@ -127,8 +125,8 @@ fn panic_thread_name() {
     let (exit_count, exit_handler) = count_handler();
     let builder = ThreadPoolBuilder::new()
         .num_threads(10)
-        .start_handler(move |i| start_handler(i))
-        .exit_handler(move |i| exit_handler(i))
+        .start_handler(start_handler)
+        .exit_handler(exit_handler)
         .thread_name(|i| {
             if i >= 5 {
                 panic!();
@@ -204,4 +202,68 @@ fn mutual_install_sleepy() {
 fn check_thread_pool_new() {
     let pool = ThreadPool::new(Configuration::new().num_threads(22)).unwrap();
     assert_eq!(pool.current_num_threads(), 22);
+}
+
+macro_rules! test_scope_order {
+    ($scope:ident => $spawn:ident) => {{
+        let builder = ThreadPoolBuilder::new().num_threads(1);
+        let pool = builder.build().unwrap();
+        pool.install(|| {
+            let vec = Mutex::new(vec![]);
+            pool.$scope(|scope| {
+                let vec = &vec;
+                for i in 0..10 {
+                    scope.$spawn(move |_| {
+                        vec.lock().unwrap().push(i);
+                    });
+                }
+            });
+            vec.into_inner().unwrap()
+        })
+    }};
+}
+
+#[test]
+fn scope_lifo_order() {
+    let vec = test_scope_order!(scope => spawn);
+    let expected: Vec<i32> = (0..10).rev().collect(); // LIFO -> reversed
+    assert_eq!(vec, expected);
+}
+
+#[test]
+fn scope_fifo_order() {
+    let vec = test_scope_order!(scope_fifo => spawn_fifo);
+    let expected: Vec<i32> = (0..10).collect(); // FIFO -> natural order
+    assert_eq!(vec, expected);
+}
+
+macro_rules! test_spawn_order {
+    ($spawn:ident) => {{
+        let builder = ThreadPoolBuilder::new().num_threads(1);
+        let pool = &builder.build().unwrap();
+        let (tx, rx) = channel();
+        pool.install(move || {
+            for i in 0..10 {
+                let tx = tx.clone();
+                pool.$spawn(move || {
+                    tx.send(i).unwrap();
+                });
+            }
+        });
+        rx.iter().collect::<Vec<i32>>()
+    }};
+}
+
+#[test]
+fn spawn_lifo_order() {
+    let vec = test_spawn_order!(spawn);
+    let expected: Vec<i32> = (0..10).rev().collect(); // LIFO -> reversed
+    assert_eq!(vec, expected);
+}
+
+#[test]
+fn spawn_fifo_order() {
+    let vec = test_spawn_order!(spawn_fifo);
+    let expected: Vec<i32> = (0..10).collect(); // FIFO -> natural order
+    assert_eq!(vec, expected);
 }

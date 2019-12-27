@@ -17,8 +17,10 @@ use super::job::{
     Freshness::{self, Dirty, Fresh},
     Job,
 };
+use super::standard_lib;
 use super::timings::Timings;
 use super::{BuildContext, BuildPlan, CompileMode, Context, Unit};
+use crate::core::compiler::ProfileKind;
 use crate::core::{PackageId, TargetKind};
 use crate::handle_error;
 use crate::util;
@@ -40,10 +42,10 @@ pub struct JobQueue<'a, 'cfg> {
     compiled: HashSet<PackageId>,
     documented: HashSet<PackageId>,
     counts: HashMap<PackageId, usize>,
-    is_release: bool,
     progress: Progress<'cfg>,
     next_id: u32,
     timings: Timings<'a, 'cfg>,
+    profile_kind: ProfileKind,
 }
 
 pub struct JobState<'a> {
@@ -144,10 +146,10 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
             compiled: HashSet::new(),
             documented: HashSet::new(),
             counts: HashMap::new(),
-            is_release: bcx.build_config.release,
             progress,
             next_id: 0,
             timings,
+            profile_kind: bcx.build_config.profile_kind.clone(),
         }
     }
 
@@ -415,7 +417,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         }
         self.progress.clear();
 
-        let build_type = if self.is_release { "release" } else { "dev" };
+        let build_type = self.profile_kind.name();
         // NOTE: this may be a bit inaccurate, since this may not display the
         // profile for what was actually built. Profile overrides can change
         // these settings, and in some cases different targets are built with
@@ -423,7 +425,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         // list of Units built, and maybe display a list of the different
         // profiles used. However, to keep it simple and compatible with old
         // behavior, we just display what the base profile is.
-        let profile = cx.bcx.profiles.base_profile(self.is_release);
+        let profile = cx.bcx.profiles.base_profile(&self.profile_kind)?;
         let mut opt_type = String::from(if profile.opt_level.as_str() == "0" {
             "unoptimized"
         } else {
@@ -445,7 +447,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
             if !cx.bcx.build_config.build_plan {
                 cx.bcx.config.shell().status("Finished", message)?;
             }
-            self.timings.finished()?;
+            self.timings.finished(cx.bcx)?;
             Ok(())
         } else {
             debug!("queue: {:#?}", self.queue);
@@ -607,7 +609,7 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         id: u32,
         unit: &Unit<'a>,
         artifact: Artifact,
-        cx: &mut Context<'_, '_>,
+        cx: &mut Context<'a, '_>,
     ) -> CargoResult<()> {
         if unit.mode.is_run_custom_build() && cx.bcx.show_warnings(unit.pkg.package_id()) {
             self.emit_warnings(None, unit, cx)?;
@@ -616,6 +618,23 @@ impl<'a, 'cfg> JobQueue<'a, 'cfg> {
         match artifact {
             Artifact::All => self.timings.unit_finished(id, unlocked),
             Artifact::Metadata => self.timings.unit_rmeta_finished(id, unlocked),
+        }
+        if unit.is_std && !unit.kind.is_host() && !cx.bcx.build_config.build_plan {
+            // This is a bit of an unusual place to copy files around, and
+            // ideally this would be somewhere like the Work closure
+            // (`link_targets`). The tricky issue is handling rmeta files for
+            // pipelining. Since those are emitted asynchronously, the code
+            // path (like `on_stderr_line`) does not have enough information
+            // to know where the sysroot is, and that it is an std unit. If
+            // possible, it might be nice to eventually move this to the
+            // worker thread, but may be tricky to have the paths available.
+            // Another possibility is to disable pipelining between std ->
+            // non-std. The pipelining opportunities are small, and are not a
+            // huge win (in a full build, only proc_macro overlaps for 2
+            // seconds out of a 90s build on my system). Care must also be
+            // taken to properly copy these artifacts for Fresh units.
+            let rmeta = artifact == Artifact::Metadata;
+            standard_lib::add_sysroot_artifact(cx, unit, rmeta)?;
         }
         Ok(())
     }

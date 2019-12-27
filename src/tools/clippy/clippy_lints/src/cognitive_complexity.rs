@@ -29,6 +29,7 @@ pub struct CognitiveComplexity {
 }
 
 impl CognitiveComplexity {
+    #[must_use]
     pub fn new(limit: u64) -> Self {
         Self {
             limit: LimitStack::new(limit),
@@ -110,10 +111,9 @@ struct CCHelper {
 impl<'tcx> Visitor<'tcx> for CCHelper {
     fn visit_expr(&mut self, e: &'tcx Expr) {
         walk_expr(self, e);
-        match e.node {
+        match e.kind {
             ExprKind::Match(_, ref arms, _) => {
-                let arms_n: u64 = arms.iter().map(|arm| arm.pats.len() as u64).sum();
-                if arms_n > 1 {
+                if arms.len() > 1 {
                     self.cc += 1;
                 }
                 self.cc += arms.iter().filter(|arm| arm.guard.is_some()).count() as u64;

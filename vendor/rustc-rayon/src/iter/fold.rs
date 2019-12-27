@@ -3,17 +3,19 @@ use super::*;
 
 use std::fmt::{self, Debug};
 
-pub fn fold<U, I, ID, F>(base: I, identity: ID, fold_op: F) -> Fold<I, ID, F>
+impl<U, I, ID, F> Fold<I, ID, F>
 where
     I: ParallelIterator,
     F: Fn(U, I::Item) -> U + Sync + Send,
     ID: Fn() -> U + Sync + Send,
     U: Send,
 {
-    Fold {
-        base: base,
-        identity: identity,
-        fold_op: fold_op,
+    pub(super) fn new(base: I, identity: ID, fold_op: F) -> Self {
+        Fold {
+            base,
+            identity,
+            fold_op,
+        }
     }
 }
 
@@ -31,7 +33,7 @@ pub struct Fold<I, ID, F> {
 }
 
 impl<I: ParallelIterator + Debug, ID, F> Debug for Fold<I, ID, F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Fold").field("base", &self.base).finish()
     }
 }
@@ -137,7 +139,32 @@ where
         FoldFolder {
             base: self.base,
             fold_op: self.fold_op,
-            item: item,
+            item,
+        }
+    }
+
+    fn consume_iter<I>(self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+    {
+        fn not_full<C, ID, T>(base: &C) -> impl Fn(&T) -> bool + '_
+        where
+            C: Folder<ID>,
+        {
+            move |_| !base.full()
+        }
+
+        let base = self.base;
+        let item = iter
+            .into_iter()
+            // stop iterating if another thread has finished
+            .take_while(not_full(&base))
+            .fold(self.item, self.fold_op);
+
+        FoldFolder {
+            base,
+            item,
+            fold_op: self.fold_op,
         }
     }
 
@@ -152,16 +179,18 @@ where
 
 // ///////////////////////////////////////////////////////////////////////////
 
-pub fn fold_with<U, I, F>(base: I, item: U, fold_op: F) -> FoldWith<I, U, F>
+impl<U, I, F> FoldWith<I, U, F>
 where
     I: ParallelIterator,
     F: Fn(U, I::Item) -> U + Sync + Send,
     U: Send + Clone,
 {
-    FoldWith {
-        base: base,
-        item: item,
-        fold_op: fold_op,
+    pub(super) fn new(base: I, item: U, fold_op: F) -> Self {
+        FoldWith {
+            base,
+            item,
+            fold_op,
+        }
     }
 }
 
@@ -179,7 +208,7 @@ pub struct FoldWith<I, U, F> {
 }
 
 impl<I: ParallelIterator + Debug, U: Debug, F> Debug for FoldWith<I, U, F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FoldWith")
             .field("base", &self.base)
             .field("item", &self.item)

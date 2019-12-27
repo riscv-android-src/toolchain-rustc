@@ -54,6 +54,7 @@ declare_clippy_lint! {
     "functions taking small copyable arguments by reference"
 }
 
+#[derive(Copy, Clone)]
 pub struct TriviallyCopyPassByRef {
     limit: u64,
 }
@@ -82,7 +83,7 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
         // Use lifetimes to determine if we're returning a reference to the
         // argument. In that case we can't switch to pass-by-value as the
         // argument will not live long enough.
-        let output_lts = match fn_sig.output().sty {
+        let output_lts = match fn_sig.output().kind {
             ty::Ref(output_lt, _, _) => vec![output_lt],
             ty::Adt(_, substs) => substs.regions().collect(),
             _ => vec![],
@@ -96,12 +97,12 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
             }
 
             if_chain! {
-                if let ty::Ref(input_lt, ty, Mutability::MutImmutable) = ty.sty;
+                if let ty::Ref(input_lt, ty, Mutability::MutImmutable) = ty.kind;
                 if !output_lts.contains(&input_lt);
                 if is_copy(cx, ty);
                 if let Some(size) = cx.layout_of(ty).ok().map(|l| l.size.bytes());
                 if size <= self.limit;
-                if let hir::TyKind::Rptr(_, MutTy { ty: ref decl_ty, .. }) = input.node;
+                if let hir::TyKind::Rptr(_, MutTy { ty: ref decl_ty, .. }) = input.kind;
                 then {
                     let value_type = if is_self_ty(decl_ty) {
                         "self".into()
@@ -131,7 +132,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TriviallyCopyPassByRef {
             return;
         }
 
-        if let hir::TraitItemKind::Method(method_sig, _) = &item.node {
+        if let hir::TraitItemKind::Method(method_sig, _) = &item.kind {
             self.check_poly_fn(cx, item.hir_id, &*method_sig.decl, None);
         }
     }
@@ -166,7 +167,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TriviallyCopyPassByRef {
 
         // Exclude non-inherent impls
         if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
-            if matches!(item.node, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
+            if matches!(item.kind, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
                 ItemKind::Trait(..))
             {
                 return;

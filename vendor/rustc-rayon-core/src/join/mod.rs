@@ -3,8 +3,8 @@ use latch::{LatchProbe, SpinLatch};
 use log::Event::*;
 use registry::{self, WorkerThread};
 use std::any::Any;
-use unwind;
 use tlv;
+use unwind;
 
 use FnContext;
 
@@ -99,7 +99,12 @@ where
     RA: Send,
     RB: Send,
 {
-    join_context(|_| oper_a(), |_| oper_b())
+    #[inline]
+    fn call<R>(f: impl FnOnce() -> R) -> impl FnOnce(FnContext) -> R {
+        move |_| f()
+    }
+
+    join_context(call(oper_a), call(oper_b))
 }
 
 /// Identical to `join`, except that the closures have a parameter
@@ -116,6 +121,16 @@ where
     RA: Send,
     RB: Send,
 {
+    #[inline]
+    fn call_a<R>(f: impl FnOnce(FnContext) -> R, injected: bool) -> impl FnOnce() -> R {
+        move || f(FnContext::new(injected))
+    }
+
+    #[inline]
+    fn call_b<R>(f: impl FnOnce(FnContext) -> R) -> impl FnOnce(bool) -> R {
+        move |migrated| f(FnContext::new(migrated))
+    }
+
     registry::in_worker(|worker_thread, injected| unsafe {
         log!(Join {
             worker: worker_thread.index()
@@ -125,16 +140,12 @@ where
         // Create virtual wrapper for task b; this all has to be
         // done here so that the stack frame can keep it all live
         // long enough.
-        let job_b = StackJob::new(
-            tlv,
-            |migrated| oper_b(FnContext::new(migrated)),
-            SpinLatch::new(),
-        );
+        let job_b = StackJob::new(tlv, call_b(oper_b), SpinLatch::new());
         let job_b_ref = job_b.as_job_ref();
         worker_thread.push(job_b_ref);
 
         // Execute task a; hopefully b gets stolen in the meantime.
-        let status_a = unwind::halt_unwinding(move || oper_a(FnContext::new(injected)));
+        let status_a = unwind::halt_unwinding(call_a(oper_a, injected));
         let result_a = match status_a {
             Ok(v) => v,
             Err(err) => join_recover_from_panic(worker_thread, &job_b.latch, err, tlv),
@@ -181,7 +192,7 @@ where
         // Restore the TLV since we might have run some jobs overwriting it when waiting for job b.
         tlv::set(tlv);
 
-        return (result_a, job_b.into_result());
+        (result_a, job_b.into_result())
     })
 }
 
@@ -192,7 +203,7 @@ where
 unsafe fn join_recover_from_panic(
     worker_thread: &WorkerThread,
     job_b_latch: &SpinLatch,
-    err: Box<Any + Send>,
+    err: Box<dyn Any + Send>,
     tlv: usize,
 ) -> ! {
     worker_thread.wait_until(job_b_latch);

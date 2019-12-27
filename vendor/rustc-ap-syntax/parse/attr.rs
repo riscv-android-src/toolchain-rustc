@@ -19,13 +19,6 @@ const DEFAULT_UNEXPECTED_INNER_ATTR_ERR_MSG: &str = "an inner attribute is not \
                                                      permitted in this context";
 
 impl<'a> Parser<'a> {
-    crate fn parse_param_attributes(&mut self) -> PResult<'a, Vec<ast::Attribute>> {
-        let attrs = self.parse_outer_attributes()?;
-        self.sess.gated_spans.param_attrs.borrow_mut()
-            .extend(attrs.iter().map(|a| a.span));
-        Ok(attrs)
-    }
-
     /// Parses attributes that appear before an item.
     crate fn parse_outer_attributes(&mut self) -> PResult<'a, Vec<ast::Attribute>> {
         let mut attrs: Vec<ast::Attribute> = Vec::new();
@@ -97,7 +90,7 @@ impl<'a> Parser<'a> {
         debug!("parse_attribute_with_inner_parse_policy: inner_parse_policy={:?} self.token={:?}",
                inner_parse_policy,
                self.token);
-        let (span, path, tokens, style) = match self.token.kind {
+        let (span, item, style) = match self.token.kind {
             token::Pound => {
                 let lo = self.token.span;
                 self.bump();
@@ -114,7 +107,7 @@ impl<'a> Parser<'a> {
                 };
 
                 self.expect(&token::OpenDelim(token::Bracket))?;
-                let (path, tokens) = self.parse_meta_item_unrestricted()?;
+                let item = self.parse_attr_item()?;
                 self.expect(&token::CloseDelim(token::Bracket))?;
                 let hi = self.prev_span;
 
@@ -149,7 +142,7 @@ impl<'a> Parser<'a> {
                     }
                 }
 
-                (attr_sp, path, tokens, style)
+                (attr_sp, item, style)
             }
             _ => {
                 let token_str = self.this_token_to_string();
@@ -158,10 +151,9 @@ impl<'a> Parser<'a> {
         };
 
         Ok(ast::Attribute {
+            item,
             id: attr::mk_attr_id(),
             style,
-            path,
-            tokens,
             is_sugared_doc: false,
             span,
         })
@@ -174,19 +166,19 @@ impl<'a> Parser<'a> {
     ///     PATH `[` TOKEN_STREAM `]`
     ///     PATH `{` TOKEN_STREAM `}`
     ///     PATH
-    ///     PATH `=` TOKEN_TREE
+    ///     PATH `=` UNSUFFIXED_LIT
     /// The delimiters or `=` are still put into the resulting token stream.
-    pub fn parse_meta_item_unrestricted(&mut self) -> PResult<'a, (ast::Path, TokenStream)> {
-        let meta = match self.token.kind {
+    pub fn parse_attr_item(&mut self) -> PResult<'a, ast::AttrItem> {
+        let item = match self.token.kind {
             token::Interpolated(ref nt) => match **nt {
-                Nonterminal::NtMeta(ref meta) => Some(meta.clone()),
+                Nonterminal::NtMeta(ref item) => Some(item.clone()),
                 _ => None,
             },
             _ => None,
         };
-        Ok(if let Some(meta) = meta {
+        Ok(if let Some(item) = item {
             self.bump();
-            (meta.path, meta.node.tokens(meta.span))
+            item
         } else {
             let path = self.parse_path(PathStyle::Mod)?;
             let tokens = if self.check(&token::OpenDelim(DelimToken::Paren)) ||
@@ -213,7 +205,7 @@ impl<'a> Parser<'a> {
             } else {
                 TokenStream::empty()
             };
-            (path, tokens)
+            ast::AttrItem { path, tokens }
         })
     }
 
@@ -256,7 +248,7 @@ impl<'a> Parser<'a> {
         let lit = self.parse_lit()?;
         debug!("checking if {:?} is unusuffixed", lit);
 
-        if !lit.node.is_unsuffixed() {
+        if !lit.kind.is_unsuffixed() {
             let msg = "suffixed literals are not allowed in attributes";
             self.diagnostic().struct_span_err(lit.span, msg)
                              .help("instead of using a suffixed literal \
@@ -270,7 +262,7 @@ impl<'a> Parser<'a> {
 
     /// Matches the following grammar (per RFC 1559).
     ///
-    ///     meta_item : IDENT ( '=' UNSUFFIXED_LIT | '(' meta_item_inner? ')' )? ;
+    ///     meta_item : PATH ( '=' UNSUFFIXED_LIT | '(' meta_item_inner? ')' )? ;
     ///     meta_item_inner : (meta_item | UNSUFFIXED_LIT) (',' meta_item_inner)? ;
     pub fn parse_meta_item(&mut self) -> PResult<'a, ast::MetaItem> {
         let nt_meta = match self.token.kind {
@@ -281,16 +273,21 @@ impl<'a> Parser<'a> {
             _ => None,
         };
 
-        if let Some(meta) = nt_meta {
-            self.bump();
-            return Ok(meta);
+        if let Some(item) = nt_meta {
+            return match item.meta(item.path.span) {
+                Some(meta) => {
+                    self.bump();
+                    Ok(meta)
+                }
+                None => self.unexpected(),
+            }
         }
 
         let lo = self.token.span;
         let path = self.parse_path(PathStyle::Mod)?;
-        let node = self.parse_meta_item_kind()?;
+        let kind = self.parse_meta_item_kind()?;
         let span = lo.to(self.prev_span);
-        Ok(ast::MetaItem { path, node, span })
+        Ok(ast::MetaItem { path, kind, span })
     }
 
     crate fn parse_meta_item_kind(&mut self) -> PResult<'a, ast::MetaItemKind> {
@@ -309,14 +306,14 @@ impl<'a> Parser<'a> {
             Ok(lit) => {
                 return Ok(ast::NestedMetaItem::Literal(lit))
             }
-            Err(ref mut err) => self.diagnostic().cancel(err)
+            Err(ref mut err) => err.cancel(),
         }
 
         match self.parse_meta_item() {
             Ok(mi) => {
                 return Ok(ast::NestedMetaItem::MetaItem(mi))
             }
-            Err(ref mut err) => self.diagnostic().cancel(err)
+            Err(ref mut err) => err.cancel(),
         }
 
         let found = self.this_token_to_string();

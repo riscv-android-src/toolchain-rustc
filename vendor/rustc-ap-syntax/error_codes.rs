@@ -144,6 +144,25 @@ fn deprecated_function() {}
 ```
 "##,
 
+E0550: r##"
+More than one `deprecated` attribute has been put on an item.
+
+Erroneous code example:
+
+```compile_fail,E0550
+#[deprecated(note = "because why not?")]
+#[deprecated(note = "right?")] // error!
+fn the_banished() {}
+```
+
+The `deprecated` attribute can only be present **once** on an item.
+
+```
+#[deprecated(note = "because why not, right?")]
+fn the_banished() {} // ok!
+```
+"##,
+
 E0552: r##"
 A unrecognized representation attribute was used.
 
@@ -187,6 +206,25 @@ Example of erroneous code (on a stable compiler):
 
 If you need the feature, make sure to use a nightly release of the compiler
 (but be warned that the feature may be removed or altered in the future).
+"##,
+
+E0556: r##"
+The `feature` attribute was badly formed.
+
+Erroneous code example:
+
+```compile_fail,E0556
+#![feature(foo_bar_baz, foo(bar), foo = "baz", foo)] // error!
+#![feature] // error!
+#![feature = "foo"] // error!
+```
+
+The `feature` attribute only accept a "feature flag" and can only be used on
+nightly. Example:
+
+```ignore (only works in nightly)
+#![feature(flag)]
+```
 "##,
 
 E0557: r##"
@@ -435,11 +473,9 @@ features in the `-Z allow_features` flag.
     // rustc_deprecated attribute must be paired with either stable or unstable
     // attribute
     E0549,
-    E0550, // multiple deprecated attributes
     E0551, // incorrect meta item
     E0553, // multiple rustc_const_unstable attributes
 //  E0555, // replaced with a generic attribute input check
-    E0556, // malformed feature, expected just one word
     E0584, // file for module `..` found at both .. and ..
     E0629, // missing 'feature' (rustc_const_unstable)
     // rustc_const_unstable attribute must be paired with stable/unstable

@@ -27,9 +27,9 @@ declare_lint_pass!(UnnecessaryMutPassed => [UNNECESSARY_MUT_PASSED]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnnecessaryMutPassed {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
-        match e.node {
+        match e.kind {
             ExprKind::Call(ref fn_expr, ref arguments) => {
-                if let ExprKind::Path(ref path) = fn_expr.node {
+                if let ExprKind::Path(ref path) = fn_expr.kind {
                     check_arguments(
                         cx,
                         arguments,
@@ -50,16 +50,16 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnnecessaryMutPassed {
 }
 
 fn check_arguments<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, arguments: &[Expr], type_definition: Ty<'tcx>, name: &str) {
-    match type_definition.sty {
+    match type_definition.kind {
         ty::FnDef(..) | ty::FnPtr(_) => {
             let parameters = type_definition.fn_sig(cx.tcx).skip_binder().inputs();
             for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
-                match parameter.sty {
+                match parameter.kind {
                     ty::Ref(_, _, MutImmutable)
                     | ty::RawPtr(ty::TypeAndMut {
                         mutbl: MutImmutable, ..
                     }) => {
-                        if let ExprKind::AddrOf(MutMutable, _) = argument.node {
+                        if let ExprKind::AddrOf(MutMutable, _) = argument.kind {
                             span_lint(
                                 cx,
                                 UNNECESSARY_MUT_PASSED,

@@ -6,6 +6,8 @@ extern crate libc;
 extern crate libnghttp2_sys;
 #[cfg(link_libz)]
 extern crate libz_sys;
+#[cfg(feature = "mesalink")]
+extern crate mesalink; // ensure lib is linked to
 #[cfg(link_openssl)]
 extern crate openssl_sys;
 #[cfg(windows)]
@@ -796,7 +798,8 @@ pub const CURLVERSION_SECOND: CURLversion = 1;
 pub const CURLVERSION_THIRD: CURLversion = 2;
 pub const CURLVERSION_FOURTH: CURLversion = 3;
 pub const CURLVERSION_FIFTH: CURLversion = 4;
-pub const CURLVERSION_NOW: CURLversion = CURLVERSION_FIFTH;
+pub const CURLVERSION_SIXTH: CURLversion = 5;
+pub const CURLVERSION_NOW: CURLversion = CURLVERSION_SIXTH;
 
 #[repr(C)]
 pub struct curl_version_info_data {
@@ -816,6 +819,9 @@ pub struct curl_version_info_data {
     pub libssh_version: *const c_char,
     pub brotli_ver_num: c_uint,
     pub brotli_version: *const c_char,
+    pub nghttp2_ver_num: c_uint,
+    pub nghttp2_version: *const c_char,
+    pub quic_version: *const c_char,
 }
 
 pub const CURL_VERSION_IPV6: c_int = 1 << 0;
@@ -897,14 +903,14 @@ pub const CURLMOPT_SOCKETDATA: CURLMoption = CURLOPTTYPE_OBJECTPOINT + 2;
 pub const CURLMOPT_PIPELINING: CURLMoption = CURLOPTTYPE_LONG + 3;
 pub const CURLMOPT_TIMERFUNCTION: CURLMoption = CURLOPTTYPE_FUNCTIONPOINT + 4;
 pub const CURLMOPT_TIMERDATA: CURLMoption = CURLOPTTYPE_OBJECTPOINT + 5;
-// pub const CURLMOPT_MAXCONNECTS: CURLMoption = CURLOPTTYPE_LONG + 6;
+pub const CURLMOPT_MAXCONNECTS: CURLMoption = CURLOPTTYPE_LONG + 6;
 pub const CURLMOPT_MAX_HOST_CONNECTIONS: CURLMoption = CURLOPTTYPE_LONG + 7;
 pub const CURLMOPT_MAX_PIPELINE_LENGTH: CURLMoption = CURLOPTTYPE_LONG + 8;
-// pub const CURLMOPT_CONTENT_LENGTH_PENALTY_SIZE: CURLMoption = CURLOPTTYPE_OFF_T + 9;
-// pub const CURLMOPT_CHUNK_LENGTH_PENALTY_SIZE: CURLMoption = CURLOPTTYPE_OFF_T + 10;
-// pub const CURLMOPT_PIPELINING_SITE_BL: CURLMoption = CURLOPTTYPE_OBJECTPOINT + 11;
-// pub const CURLMOPT_PIPELINING_SERVER_BL: CURLMoption = CURLOPTTYPE_OBJECTPOINT + 12;
-// pub const CURLMOPT_MAX_TOTAL_CONNECTIONS: CURLMoption = CURLOPTTYPE_LONG + 13;
+pub const CURLMOPT_CONTENT_LENGTH_PENALTY_SIZE: CURLMoption = CURLOPTTYPE_OFF_T + 9;
+pub const CURLMOPT_CHUNK_LENGTH_PENALTY_SIZE: CURLMoption = CURLOPTTYPE_OFF_T + 10;
+pub const CURLMOPT_PIPELINING_SITE_BL: CURLMoption = CURLOPTTYPE_OBJECTPOINT + 11;
+pub const CURLMOPT_PIPELINING_SERVER_BL: CURLMoption = CURLOPTTYPE_OBJECTPOINT + 12;
+pub const CURLMOPT_MAX_TOTAL_CONNECTIONS: CURLMoption = CURLOPTTYPE_LONG + 13;
 
 // These enums are for use with the CURLMOPT_PIPELINING option.
 pub const CURLPIPE_NOTHING: c_long = 0;

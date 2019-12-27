@@ -43,12 +43,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnportableVariant {
         if cx.tcx.data_layout.pointer_size.bits() != 64 {
             return;
         }
-        if let ItemKind::Enum(def, _) = &item.node {
+        if let ItemKind::Enum(def, _) = &item.kind {
             for var in &def.variants {
                 if let Some(anon_const) = &var.disr_expr {
                     let param_env = ty::ParamEnv::empty();
                     let def_id = cx.tcx.hir().body_owner_def_id(anon_const.body);
-                    let substs = InternalSubsts::identity_for_item(cx.tcx.global_tcx(), def_id);
+                    let substs = InternalSubsts::identity_for_item(cx.tcx, def_id);
                     let instance = ty::Instance::new(def_id, substs);
                     let c_id = GlobalId {
                         instance,
@@ -57,12 +57,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnportableVariant {
                     let constant = cx.tcx.const_eval(param_env.and(c_id)).ok();
                     if let Some(Constant::Int(val)) = constant.and_then(miri_to_const) {
                         let mut ty = cx.tcx.type_of(def_id);
-                        if let ty::Adt(adt, _) = ty.sty {
+                        if let ty::Adt(adt, _) = ty.kind {
                             if adt.is_enum() {
                                 ty = adt.repr.discr_type().to_ty(cx.tcx);
                             }
                         }
-                        match ty.sty {
+                        match ty.kind {
                             ty::Int(IntTy::Isize) => {
                                 let val = ((val as i128) << 64) >> 64;
                                 if i32::try_from(val).is_ok() {

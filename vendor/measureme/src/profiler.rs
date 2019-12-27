@@ -42,11 +42,26 @@ impl<S: SerializationSink> Profiler<S> {
             Arc::new(S::from_path(&paths.string_index_file)?),
         );
 
-        Ok(Profiler {
+        let profiler = Profiler {
             event_sink,
             string_table,
             start_time: Instant::now(),
-        })
+        };
+
+        let mut args = String::new();
+        for arg in std::env::args() {
+            args.push_str(&arg.escape_default().to_string());
+            args.push(' ');
+        }
+
+        profiler.string_table.alloc_metadata(&*format!(
+            r#"{{ "start_time": {}, "process_id": {}, "cmd": "{}" }}"#,
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::process::id(),
+            args,
+        ));
+
+        Ok(profiler)
     }
 
     #[inline(always)]
@@ -63,6 +78,8 @@ impl<S: SerializationSink> Profiler<S> {
         self.string_table.alloc(s)
     }
 
+    /// Records an event with the given parameters. The event time is computed
+    /// automatically.
     pub fn record_event(
         &self,
         event_kind: StringId,
@@ -75,16 +92,16 @@ impl<S: SerializationSink> Profiler<S> {
             + duration_since_start.subsec_nanos() as u64;
         let timestamp = Timestamp::new(nanos_since_start, timestamp_kind);
 
+        let raw_event = RawEvent {
+            event_kind,
+            id: event_id,
+            thread_id,
+            timestamp,
+        };
+
         self.event_sink
             .write_atomic(std::mem::size_of::<RawEvent>(), |bytes| {
                 debug_assert_eq!(bytes.len(), std::mem::size_of::<RawEvent>());
-
-                let raw_event = RawEvent {
-                    event_kind,
-                    id: event_id,
-                    thread_id,
-                    timestamp,
-                };
 
                 let raw_event_bytes: &[u8] = unsafe {
                     std::slice::from_raw_parts(
@@ -95,5 +112,45 @@ impl<S: SerializationSink> Profiler<S> {
 
                 bytes.copy_from_slice(raw_event_bytes);
             });
+    }
+
+    /// Creates a "start" event and returns a `TimingGuard` that will create
+    /// the corresponding "end" event when it is dropped.
+    pub fn start_recording_interval_event<'a>(
+        &'a self,
+        event_kind: StringId,
+        event_id: StringId,
+        thread_id: u64,
+    ) -> TimingGuard<'a, S> {
+        self.record_event(event_kind, event_id, thread_id, TimestampKind::Start);
+
+        TimingGuard {
+            profiler: self,
+            event_id,
+            event_kind,
+            thread_id,
+        }
+    }
+}
+
+/// When dropped, this `TimingGuard` will record an "end" event in the
+/// `Profiler` it was created by.
+#[must_use]
+pub struct TimingGuard<'a, S: SerializationSink> {
+    profiler: &'a Profiler<S>,
+    event_id: StringId,
+    event_kind: StringId,
+    thread_id: u64,
+}
+
+impl<'a, S: SerializationSink> Drop for TimingGuard<'a, S> {
+    #[inline]
+    fn drop(&mut self) {
+        self.profiler.record_event(
+            self.event_kind,
+            self.event_id,
+            self.thread_id,
+            TimestampKind::End
+        );
     }
 }

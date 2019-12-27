@@ -8,11 +8,9 @@ use curl_sys;
 use libc::{c_char, c_int, c_long, c_short, c_void};
 
 #[cfg(unix)]
-use libc::{fd_set, pollfd, POLLIN, POLLOUT, POLLPRI};
-#[cfg(windows)]
-use winapi::winsock2::fd_set;
+use libc::{pollfd, POLLIN, POLLOUT, POLLPRI};
 
-use easy::{Easy, Easy2};
+use easy::{Easy, Easy2, List};
 use panic;
 use {Error, MultiError};
 
@@ -35,8 +33,8 @@ pub struct Multi {
 }
 
 struct MultiData {
-    socket: Box<FnMut(Socket, SocketEvents, usize) + Send>,
-    timer: Box<FnMut(Option<Duration>) -> bool + Send>,
+    socket: Box<dyn FnMut(Socket, SocketEvents, usize) + Send>,
+    timer: Box<dyn FnMut(Option<Duration>) -> bool + Send>,
 }
 
 /// Message from the `messages` function of a multi handle.
@@ -54,7 +52,7 @@ pub struct Message<'multi> {
 /// from the multi handle when desired.
 pub struct EasyHandle {
     easy: Easy,
-    // This is now effecitvely bound to a `Multi`, so it is no longer sendable.
+    // This is now effectively bound to a `Multi`, so it is no longer sendable.
     _marker: marker::PhantomData<&'static Multi>,
 }
 
@@ -65,7 +63,7 @@ pub struct EasyHandle {
 /// from the multi handle when desired.
 pub struct Easy2Handle<H> {
     easy: Easy2<H>,
-    // This is now effecitvely bound to a `Multi`, so it is no longer sendable.
+    // This is now effectively bound to a `Multi`, so it is no longer sendable.
     _marker: marker::PhantomData<&'static Multi>,
 }
 
@@ -134,16 +132,16 @@ impl Multi {
 
     fn _socket_function(
         &mut self,
-        f: Box<FnMut(Socket, SocketEvents, usize) + Send>,
+        f: Box<dyn FnMut(Socket, SocketEvents, usize) + Send>,
     ) -> Result<(), MultiError> {
         self.data.socket = f;
         let cb: curl_sys::curl_socket_callback = cb;
-        try!(self.setopt_ptr(
+        self.setopt_ptr(
             curl_sys::CURLMOPT_SOCKETFUNCTION,
-            cb as usize as *const c_char
-        ));
+            cb as usize as *const c_char,
+        )?;
         let ptr = &*self.data as *const _;
-        try!(self.setopt_ptr(curl_sys::CURLMOPT_SOCKETDATA, ptr as *const c_char));
+        self.setopt_ptr(curl_sys::CURLMOPT_SOCKETDATA, ptr as *const c_char)?;
         return Ok(());
 
         // TODO: figure out how to expose `_easy`
@@ -196,11 +194,11 @@ impl Multi {
     /// ourselves.
     pub fn assign(&self, socket: Socket, token: usize) -> Result<(), MultiError> {
         unsafe {
-            try!(cvt(curl_sys::curl_multi_assign(
+            cvt(curl_sys::curl_multi_assign(
                 self.raw,
                 socket,
-                token as *mut _
-            )));
+                token as *mut _,
+            ))?;
             Ok(())
         }
     }
@@ -233,16 +231,16 @@ impl Multi {
 
     fn _timer_function(
         &mut self,
-        f: Box<FnMut(Option<Duration>) -> bool + Send>,
+        f: Box<dyn FnMut(Option<Duration>) -> bool + Send>,
     ) -> Result<(), MultiError> {
         self.data.timer = f;
         let cb: curl_sys::curl_multi_timer_callback = cb;
-        try!(self.setopt_ptr(
+        self.setopt_ptr(
             curl_sys::CURLMOPT_TIMERFUNCTION,
-            cb as usize as *const c_char
-        ));
+            cb as usize as *const c_char,
+        )?;
         let ptr = &*self.data as *const _;
-        try!(self.setopt_ptr(curl_sys::CURLMOPT_TIMERDATA, ptr as *const c_char));
+        self.setopt_ptr(curl_sys::CURLMOPT_TIMERDATA, ptr as *const c_char)?;
         return Ok(());
 
         // TODO: figure out how to expose `_multi`
@@ -304,7 +302,7 @@ impl Multi {
     /// Sets the pipeline length.
     ///
     /// This sets the max number that will be used as the maximum amount of
-    /// outstanding reuqests in an HTTP/1.1 pipelined connection. This option
+    /// outstanding requests in an HTTP/1.1 pipelined connection. This option
     /// is only used for HTTP/1.1 pipelining, and not HTTP/2 multiplexing.
     pub fn set_pipeline_length(&mut self, val: usize) -> Result<(), MultiError> {
         self.setopt_long(curl_sys::CURLMOPT_MAX_PIPELINE_LENGTH, val as c_long)
@@ -347,7 +345,7 @@ impl Multi {
         easy.transfer();
 
         unsafe {
-            try!(cvt(curl_sys::curl_multi_add_handle(self.raw, easy.raw())));
+            cvt(curl_sys::curl_multi_add_handle(self.raw, easy.raw()))?;
         }
         Ok(EasyHandle {
             easy: easy,
@@ -358,7 +356,7 @@ impl Multi {
     /// Same as `add`, but works with the `Easy2` type.
     pub fn add2<H>(&self, easy: Easy2<H>) -> Result<Easy2Handle<H>, MultiError> {
         unsafe {
-            try!(cvt(curl_sys::curl_multi_add_handle(self.raw, easy.raw())));
+            cvt(curl_sys::curl_multi_add_handle(self.raw, easy.raw()))?;
         }
         Ok(Easy2Handle {
             easy: easy,
@@ -379,10 +377,10 @@ impl Multi {
     /// All other easy handles and transfers will remain unaffected.
     pub fn remove(&self, easy: EasyHandle) -> Result<Easy, MultiError> {
         unsafe {
-            try!(cvt(curl_sys::curl_multi_remove_handle(
+            cvt(curl_sys::curl_multi_remove_handle(
                 self.raw,
-                easy.easy.raw()
-            )));
+                easy.easy.raw(),
+            ))?;
         }
         Ok(easy.easy)
     }
@@ -390,10 +388,10 @@ impl Multi {
     /// Same as `remove`, but for `Easy2Handle`.
     pub fn remove2<H>(&self, easy: Easy2Handle<H>) -> Result<Easy2<H>, MultiError> {
         unsafe {
-            try!(cvt(curl_sys::curl_multi_remove_handle(
+            cvt(curl_sys::curl_multi_remove_handle(
                 self.raw,
-                easy.easy.raw()
-            )));
+                easy.easy.raw(),
+            ))?;
         }
         Ok(easy.easy)
     }
@@ -411,7 +409,7 @@ impl Multi {
         self._messages(&mut f)
     }
 
-    fn _messages(&self, f: &mut FnMut(Message)) {
+    fn _messages(&self, f: &mut dyn FnMut(Message)) {
         let mut queue = 0;
         unsafe {
             loop {
@@ -451,12 +449,12 @@ impl Multi {
     pub fn action(&self, socket: Socket, events: &Events) -> Result<u32, MultiError> {
         let mut remaining = 0;
         unsafe {
-            try!(cvt(curl_sys::curl_multi_socket_action(
+            cvt(curl_sys::curl_multi_socket_action(
                 self.raw,
                 socket,
                 events.bits,
-                &mut remaining
-            )));
+                &mut remaining,
+            ))?;
             Ok(remaining as u32)
         }
     }
@@ -479,12 +477,12 @@ impl Multi {
     pub fn timeout(&self) -> Result<u32, MultiError> {
         let mut remaining = 0;
         unsafe {
-            try!(cvt(curl_sys::curl_multi_socket_action(
+            cvt(curl_sys::curl_multi_socket_action(
                 self.raw,
                 curl_sys::CURL_SOCKET_BAD,
                 0,
-                &mut remaining
-            )));
+                &mut remaining,
+            ))?;
             Ok(remaining as u32)
         }
     }
@@ -509,7 +507,7 @@ impl Multi {
     pub fn get_timeout(&self) -> Result<Option<Duration>, MultiError> {
         let mut ms = 0;
         unsafe {
-            try!(cvt(curl_sys::curl_multi_timeout(self.raw, &mut ms)));
+            cvt(curl_sys::curl_multi_timeout(self.raw, &mut ms))?;
             if ms == -1 {
                 Ok(None)
             } else {
@@ -555,13 +553,13 @@ impl Multi {
         };
         unsafe {
             let mut ret = 0;
-            try!(cvt(curl_sys::curl_multi_wait(
+            cvt(curl_sys::curl_multi_wait(
                 self.raw,
                 waitfds.as_mut_ptr() as *mut _,
                 waitfds.len() as u32,
                 timeout_ms,
-                &mut ret
-            )));
+                &mut ret,
+            ))?;
             Ok(ret as u32)
         }
     }
@@ -609,7 +607,7 @@ impl Multi {
     pub fn perform(&self) -> Result<u32, MultiError> {
         unsafe {
             let mut ret = 0;
-            try!(cvt(curl_sys::curl_multi_perform(self.raw, &mut ret)));
+            cvt(curl_sys::curl_multi_perform(self.raw, &mut ret))?;
             Ok(ret as u32)
         }
     }
@@ -656,37 +654,9 @@ impl Multi {
             let read = read.map(|r| r as *mut _).unwrap_or(0 as *mut _);
             let write = write.map(|r| r as *mut _).unwrap_or(0 as *mut _);
             let except = except.map(|r| r as *mut _).unwrap_or(0 as *mut _);
-            try!(cvt(curl_sys::curl_multi_fdset(
-                self.raw, read, write, except, &mut ret
-            )));
-            if ret == -1 {
-                Ok(None)
-            } else {
-                Ok(Some(ret))
-            }
-        }
-    }
-
-    #[doc(hidden)]
-    #[deprecated(note = "renamed to fdset2")]
-    pub fn fdset(
-        &self,
-        read: Option<&mut fd_set>,
-        write: Option<&mut fd_set>,
-        except: Option<&mut fd_set>,
-    ) -> Result<Option<i32>, MultiError> {
-        unsafe {
-            let mut ret = 0;
-            let read = read.map(|r| r as *mut _).unwrap_or(0 as *mut _);
-            let write = write.map(|r| r as *mut _).unwrap_or(0 as *mut _);
-            let except = except.map(|r| r as *mut _).unwrap_or(0 as *mut _);
-            try!(cvt(curl_sys::curl_multi_fdset(
-                self.raw,
-                read as *mut _,
-                write as *mut _,
-                except as *mut _,
-                &mut ret
-            )));
+            cvt(curl_sys::curl_multi_fdset(
+                self.raw, read, write, except, &mut ret,
+            ))?;
             if ret == -1 {
                 Ok(None)
             } else {
@@ -725,6 +695,60 @@ impl Drop for Multi {
     }
 }
 
+macro_rules! impl_easy_getters {
+    () => {
+        impl_easy_getters! {
+            time_condition_unmet -> bool,
+            effective_url -> Option<&str>,
+            effective_url_bytes -> Option<&[u8]>,
+            response_code -> u32,
+            http_connectcode -> u32,
+            filetime -> Option<i64>,
+            download_size -> f64,
+            content_length_download -> f64,
+            total_time -> Duration,
+            namelookup_time -> Duration,
+            connect_time -> Duration,
+            appconnect_time -> Duration,
+            pretransfer_time -> Duration,
+            starttransfer_time -> Duration,
+            redirect_time -> Duration,
+            redirect_count -> u32,
+            redirect_url -> Option<&str>,
+            redirect_url_bytes -> Option<&[u8]>,
+            header_size -> u64,
+            request_size -> u64,
+            content_type -> Option<&str>,
+            content_type_bytes -> Option<&[u8]>,
+            os_errno -> i32,
+            primary_ip -> Option<&str>,
+            primary_port -> u16,
+            local_ip -> Option<&str>,
+            local_port -> u16,
+            cookies -> List,
+        }
+    };
+
+    ($($name:ident -> $ret:ty,)*) => {
+        $(
+            impl_easy_getters!($name, $ret, concat!(
+                "Same as [`Easy2::",
+                stringify!($name),
+                "`](../easy/struct.Easy2.html#method.",
+                stringify!($name),
+                ")."
+            ));
+        )*
+    };
+
+    ($name:ident, $ret:ty, $doc:expr) => {
+        #[doc = $doc]
+        pub fn $name(&mut self) -> Result<$ret, Error> {
+            self.easy.$name()
+        }
+    };
+}
+
 impl EasyHandle {
     /// Sets an internal private token for this `EasyHandle`.
     ///
@@ -739,6 +763,8 @@ impl EasyHandle {
             ))
         }
     }
+
+    impl_easy_getters!();
 
     /// Unpause reading on a connection.
     ///
@@ -766,6 +792,11 @@ impl EasyHandle {
     /// when the writing is later unpaused.
     pub fn unpause_write(&self) -> Result<(), Error> {
         self.easy.unpause_write()
+    }
+
+    /// Get a pointer to the raw underlying CURL handle.
+    pub fn raw(&self) -> *mut curl_sys::CURL {
+        self.easy.raw()
     }
 }
 
@@ -797,6 +828,8 @@ impl<H> Easy2Handle<H> {
         }
     }
 
+    impl_easy_getters!();
+
     /// Unpause reading on a connection.
     ///
     /// Using this function, you can explicitly unpause a connection that was
@@ -823,6 +856,11 @@ impl<H> Easy2Handle<H> {
     /// when the writing is later unpaused.
     pub fn unpause_write(&self) -> Result<(), Error> {
         self.easy.unpause_write()
+    }
+
+    /// Get a pointer to the raw underlying CURL handle.
+    pub fn raw(&self) -> *mut curl_sys::CURL {
+        self.easy.raw()
     }
 }
 
@@ -908,11 +946,11 @@ impl<'multi> Message<'multi> {
     pub fn token(&self) -> Result<usize, Error> {
         unsafe {
             let mut p = 0usize;
-            try!(::cvt(curl_sys::curl_easy_getinfo(
+            ::cvt(curl_sys::curl_easy_getinfo(
                 (*self.ptr).easy_handle,
                 curl_sys::CURLINFO_PRIVATE,
-                &mut p
-            )));
+                &mut p,
+            ))?;
             Ok(p)
         }
     }

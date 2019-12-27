@@ -35,6 +35,13 @@ pub enum Annotatable {
     ForeignItem(P<ast::ForeignItem>),
     Stmt(P<ast::Stmt>),
     Expr(P<ast::Expr>),
+    Arm(ast::Arm),
+    Field(ast::Field),
+    FieldPat(ast::FieldPat),
+    GenericParam(ast::GenericParam),
+    Param(ast::Param),
+    StructField(ast::StructField),
+    Variant(ast::Variant),
 }
 
 impl HasAttrs for Annotatable {
@@ -46,6 +53,13 @@ impl HasAttrs for Annotatable {
             Annotatable::ForeignItem(ref foreign_item) => &foreign_item.attrs,
             Annotatable::Stmt(ref stmt) => stmt.attrs(),
             Annotatable::Expr(ref expr) => &expr.attrs,
+            Annotatable::Arm(ref arm) => &arm.attrs,
+            Annotatable::Field(ref field) => &field.attrs,
+            Annotatable::FieldPat(ref fp) => &fp.attrs,
+            Annotatable::GenericParam(ref gp) => &gp.attrs,
+            Annotatable::Param(ref p) => &p.attrs,
+            Annotatable::StructField(ref sf) => &sf.attrs,
+            Annotatable::Variant(ref v) => &v.attrs(),
         }
     }
 
@@ -57,6 +71,13 @@ impl HasAttrs for Annotatable {
             Annotatable::ForeignItem(foreign_item) => foreign_item.visit_attrs(f),
             Annotatable::Stmt(stmt) => stmt.visit_attrs(f),
             Annotatable::Expr(expr) => expr.visit_attrs(f),
+            Annotatable::Arm(arm) => arm.visit_attrs(f),
+            Annotatable::Field(field) => field.visit_attrs(f),
+            Annotatable::FieldPat(fp) => fp.visit_attrs(f),
+            Annotatable::GenericParam(gp) => gp.visit_attrs(f),
+            Annotatable::Param(p) => p.visit_attrs(f),
+            Annotatable::StructField(sf) => sf.visit_attrs(f),
+            Annotatable::Variant(v) => v.visit_attrs(f),
         }
     }
 }
@@ -70,6 +91,13 @@ impl Annotatable {
             Annotatable::ForeignItem(ref foreign_item) => foreign_item.span,
             Annotatable::Stmt(ref stmt) => stmt.span,
             Annotatable::Expr(ref expr) => expr.span,
+            Annotatable::Arm(ref arm) => arm.span,
+            Annotatable::Field(ref field) => field.span,
+            Annotatable::FieldPat(ref fp) => fp.pat.span,
+            Annotatable::GenericParam(ref gp) => gp.ident.span,
+            Annotatable::Param(ref p) => p.span,
+            Annotatable::StructField(ref sf) => sf.span,
+            Annotatable::Variant(ref v) => v.span,
         }
     }
 
@@ -81,6 +109,13 @@ impl Annotatable {
             Annotatable::ForeignItem(foreign_item) => visitor.visit_foreign_item(foreign_item),
             Annotatable::Stmt(stmt) => visitor.visit_stmt(stmt),
             Annotatable::Expr(expr) => visitor.visit_expr(expr),
+            Annotatable::Arm(arm) => visitor.visit_arm(arm),
+            Annotatable::Field(field) => visitor.visit_field(field),
+            Annotatable::FieldPat(fp) => visitor.visit_field_pattern(fp),
+            Annotatable::GenericParam(gp) => visitor.visit_generic_param(gp),
+            Annotatable::Param(p) => visitor.visit_param(p),
+            Annotatable::StructField(sf) =>visitor.visit_struct_field(sf),
+            Annotatable::Variant(v) => visitor.visit_variant(v),
         }
     }
 
@@ -136,9 +171,58 @@ impl Annotatable {
         }
     }
 
+    pub fn expect_arm(self) -> ast::Arm {
+        match self {
+            Annotatable::Arm(arm) => arm,
+            _ => panic!("expected match arm")
+        }
+    }
+
+    pub fn expect_field(self) -> ast::Field {
+        match self {
+            Annotatable::Field(field) => field,
+            _ => panic!("expected field")
+        }
+    }
+
+    pub fn expect_field_pattern(self) -> ast::FieldPat {
+        match self {
+            Annotatable::FieldPat(fp) => fp,
+            _ => panic!("expected field pattern")
+        }
+    }
+
+    pub fn expect_generic_param(self) -> ast::GenericParam {
+        match self {
+            Annotatable::GenericParam(gp) => gp,
+            _ => panic!("expected generic parameter")
+        }
+    }
+
+    pub fn expect_param(self) -> ast::Param {
+        match self {
+            Annotatable::Param(param) => param,
+            _ => panic!("expected parameter")
+        }
+    }
+
+    pub fn expect_struct_field(self) -> ast::StructField {
+        match self {
+            Annotatable::StructField(sf) => sf,
+            _ => panic!("expected struct field")
+        }
+    }
+
+    pub fn expect_variant(self) -> ast::Variant {
+        match self {
+            Annotatable::Variant(v) => v,
+            _ => panic!("expected variant")
+        }
+    }
+
     pub fn derive_allowed(&self) -> bool {
         match *self {
-            Annotatable::Item(ref item) => match item.node {
+            Annotatable::Item(ref item) => match item.kind {
                 ast::ItemKind::Struct(..) |
                 ast::ItemKind::Enum(..) |
                 ast::ItemKind::Union(..) => true,
@@ -279,7 +363,7 @@ macro_rules! make_stmts_default {
         $me.make_expr().map(|e| smallvec![ast::Stmt {
             id: ast::DUMMY_NODE_ID,
             span: e.span,
-            node: ast::StmtKind::Expr(e),
+            kind: ast::StmtKind::Expr(e),
         }])
     }
 }
@@ -323,6 +407,34 @@ pub trait MacResult {
     }
 
     fn make_ty(self: Box<Self>) -> Option<P<ast::Ty>> {
+        None
+    }
+
+    fn make_arms(self: Box<Self>) -> Option<SmallVec<[ast::Arm; 1]>> {
+        None
+    }
+
+    fn make_fields(self: Box<Self>) -> Option<SmallVec<[ast::Field; 1]>> {
+        None
+    }
+
+    fn make_field_patterns(self: Box<Self>) -> Option<SmallVec<[ast::FieldPat; 1]>> {
+        None
+    }
+
+    fn make_generic_params(self: Box<Self>) -> Option<SmallVec<[ast::GenericParam; 1]>> {
+        None
+    }
+
+    fn make_params(self: Box<Self>) -> Option<SmallVec<[ast::Param; 1]>> {
+        None
+    }
+
+    fn make_struct_fields(self: Box<Self>) -> Option<SmallVec<[ast::StructField; 1]>> {
+        None
+    }
+
+    fn make_variants(self: Box<Self>) -> Option<SmallVec<[ast::Variant; 1]>> {
         None
     }
 }
@@ -395,11 +507,11 @@ impl MacResult for MacEager {
             return Some(p);
         }
         if let Some(e) = self.expr {
-            if let ast::ExprKind::Lit(_) = e.node {
+            if let ast::ExprKind::Lit(_) = e.kind {
                 return Some(P(ast::Pat {
                     id: ast::DUMMY_NODE_ID,
                     span: e.span,
-                    node: PatKind::Lit(e),
+                    kind: PatKind::Lit(e),
                 }));
             }
         }
@@ -437,7 +549,7 @@ impl DummyResult {
     pub fn raw_expr(sp: Span, is_error: bool) -> P<ast::Expr> {
         P(ast::Expr {
             id: ast::DUMMY_NODE_ID,
-            node: if is_error { ast::ExprKind::Err } else { ast::ExprKind::Tup(Vec::new()) },
+            kind: if is_error { ast::ExprKind::Err } else { ast::ExprKind::Tup(Vec::new()) },
             span: sp,
             attrs: ThinVec::new(),
         })
@@ -447,7 +559,7 @@ impl DummyResult {
     pub fn raw_pat(sp: Span) -> ast::Pat {
         ast::Pat {
             id: ast::DUMMY_NODE_ID,
-            node: PatKind::Wild,
+            kind: PatKind::Wild,
             span: sp,
         }
     }
@@ -456,7 +568,7 @@ impl DummyResult {
     pub fn raw_ty(sp: Span, is_error: bool) -> P<ast::Ty> {
         P(ast::Ty {
             id: ast::DUMMY_NODE_ID,
-            node: if is_error { ast::TyKind::Err } else { ast::TyKind::Tup(Vec::new()) },
+            kind: if is_error { ast::TyKind::Err } else { ast::TyKind::Tup(Vec::new()) },
             span: sp
         })
     }
@@ -490,13 +602,41 @@ impl MacResult for DummyResult {
     fn make_stmts(self: Box<DummyResult>) -> Option<SmallVec<[ast::Stmt; 1]>> {
         Some(smallvec![ast::Stmt {
             id: ast::DUMMY_NODE_ID,
-            node: ast::StmtKind::Expr(DummyResult::raw_expr(self.span, self.is_error)),
+            kind: ast::StmtKind::Expr(DummyResult::raw_expr(self.span, self.is_error)),
             span: self.span,
         }])
     }
 
     fn make_ty(self: Box<DummyResult>) -> Option<P<ast::Ty>> {
         Some(DummyResult::raw_ty(self.span, self.is_error))
+    }
+
+    fn make_arms(self: Box<DummyResult>) -> Option<SmallVec<[ast::Arm; 1]>> {
+       Some(SmallVec::new())
+    }
+
+    fn make_fields(self: Box<DummyResult>) -> Option<SmallVec<[ast::Field; 1]>> {
+        Some(SmallVec::new())
+    }
+
+    fn make_field_patterns(self: Box<DummyResult>) -> Option<SmallVec<[ast::FieldPat; 1]>> {
+        Some(SmallVec::new())
+    }
+
+    fn make_generic_params(self: Box<DummyResult>) -> Option<SmallVec<[ast::GenericParam; 1]>> {
+        Some(SmallVec::new())
+    }
+
+    fn make_params(self: Box<DummyResult>) -> Option<SmallVec<[ast::Param; 1]>> {
+        Some(SmallVec::new())
+    }
+
+    fn make_struct_fields(self: Box<DummyResult>) -> Option<SmallVec<[ast::StructField; 1]>> {
+        Some(SmallVec::new())
+    }
+
+    fn make_variants(self: Box<DummyResult>) -> Option<SmallVec<[ast::Variant; 1]>> {
+        Some(SmallVec::new())
     }
 }
 
@@ -622,33 +762,9 @@ impl SyntaxExtension {
         name: Name,
         attrs: &[ast::Attribute],
     ) -> SyntaxExtension {
-        let allow_internal_unstable =
-            attr::find_by_name(attrs, sym::allow_internal_unstable).map(|attr| {
-                attr.meta_item_list()
-                    .map(|list| {
-                        list.iter()
-                            .filter_map(|it| {
-                                let name = it.ident().map(|ident| ident.name);
-                                if name.is_none() {
-                                    sess.span_diagnostic.span_err(
-                                        it.span(), "allow internal unstable expects feature names"
-                                    )
-                                }
-                                name
-                            })
-                            .collect::<Vec<Symbol>>()
-                            .into()
-                    })
-                    .unwrap_or_else(|| {
-                        sess.span_diagnostic.span_warn(
-                            attr.span,
-                            "allow_internal_unstable expects list of feature names. In the future \
-                             this will become a hard error. Please use `allow_internal_unstable(\
-                             foo, bar)` to only allow the `foo` and `bar` features",
-                        );
-                        vec![sym::allow_internal_unstable_backcompat_hack].into()
-                    })
-            });
+        let allow_internal_unstable = attr::allow_internal_unstable(
+            &attrs, &sess.span_diagnostic,
+        ).map(|features| features.collect::<Vec<Symbol>>().into());
 
         let mut local_inner_macros = false;
         if let Some(macro_export) = attr::find_by_name(attrs, sym::macro_export) {
@@ -837,11 +953,10 @@ impl<'a> ExtCtxt<'a> {
         span.with_call_site_ctxt(self.current_expansion.id)
     }
 
-    /// Span with a context reproducing `macro_rules` hygiene (hygienic locals, unhygienic items).
-    /// FIXME: This should be eventually replaced either with `with_def_site_ctxt` (preferably),
-    /// or with `with_call_site_ctxt` (where necessary).
-    pub fn with_legacy_ctxt(&self, span: Span) -> Span {
-        span.with_legacy_ctxt(self.current_expansion.id)
+    /// Equivalent of `Span::mixed_site` from the proc macro API,
+    /// except that the location is taken from the span passed as an argument.
+    pub fn with_mixed_site_ctxt(&self, span: Span) -> Span {
+        span.with_mixed_site_ctxt(self.current_expansion.id)
     }
 
     /// Returns span for the macro which originally caused the current expansion to happen.
@@ -908,15 +1023,8 @@ impl<'a> ExtCtxt<'a> {
     pub fn span_err_with_code<S: Into<MultiSpan>>(&self, sp: S, msg: &str, code: DiagnosticId) {
         self.parse_sess.span_diagnostic.span_err_with_code(sp, msg, code);
     }
-    pub fn mut_span_err<S: Into<MultiSpan>>(&self, sp: S, msg: &str)
-                        -> DiagnosticBuilder<'a> {
-        self.parse_sess.span_diagnostic.mut_span_err(sp, msg)
-    }
     pub fn span_warn<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
         self.parse_sess.span_diagnostic.span_warn(sp, msg);
-    }
-    pub fn span_unimpl<S: Into<MultiSpan>>(&self, sp: S, msg: &str) -> ! {
-        self.parse_sess.span_diagnostic.span_unimpl(sp, msg);
     }
     pub fn span_bug<S: Into<MultiSpan>>(&self, sp: S, msg: &str) -> ! {
         self.parse_sess.span_diagnostic.span_bug(sp, msg);
@@ -941,8 +1049,8 @@ impl<'a> ExtCtxt<'a> {
     pub fn set_trace_macros(&mut self, x: bool) {
         self.ecfg.trace_mac = x
     }
-    pub fn ident_of(&self, st: &str) -> ast::Ident {
-        ast::Ident::from_str(st)
+    pub fn ident_of(&self, st: &str, sp: Span) -> ast::Ident {
+        ast::Ident::from_str_and_span(st, sp)
     }
     pub fn std_path(&self, components: &[Symbol]) -> Vec<ast::Ident> {
         let def_site = self.with_def_site_ctxt(DUMMY_SP);
@@ -996,8 +1104,8 @@ pub fn expr_to_spanned_string<'a>(
     // We want to be able to handle e.g., `concat!("foo", "bar")`.
     let expr = cx.expander().fully_expand_fragment(AstFragment::Expr(expr)).make_expr();
 
-    Err(match expr.node {
-        ast::ExprKind::Lit(ref l) => match l.node {
+    Err(match expr.kind {
+        ast::ExprKind::Lit(ref l) => match l.kind {
             ast::LitKind::Str(s, style) => return Ok((s, style, expr.span)),
             ast::LitKind::Err(_) => None,
             _ => Some(cx.struct_span_err(l.span, err_msg))

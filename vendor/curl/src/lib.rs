@@ -59,17 +59,12 @@ extern crate openssl_probe;
 #[cfg(need_openssl_init)]
 extern crate openssl_sys;
 
-#[cfg(windows)]
-extern crate winapi;
-
-#[cfg(target_env = "msvc")]
-extern crate kernel32;
 #[cfg(target_env = "msvc")]
 extern crate schannel;
 
 use std::ffi::CStr;
 use std::str;
-use std::sync::{Once, ONCE_INIT};
+use std::sync::Once;
 
 pub use error::{Error, FormError, MultiError, ShareError};
 mod error;
@@ -86,7 +81,7 @@ mod panic;
 /// It's not required to call this before the library is used, but it's
 /// recommended to do so as soon as the program starts.
 pub fn init() {
-    static INIT: Once = ONCE_INIT;
+    static INIT: Once = Once::new();
     INIT.call_once(|| {
         platform_init();
         unsafe {

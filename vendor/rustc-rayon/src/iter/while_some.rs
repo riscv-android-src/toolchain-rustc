@@ -15,14 +15,14 @@ pub struct WhileSome<I: ParallelIterator> {
     base: I,
 }
 
-/// Create a new `WhileSome` iterator.
-///
-/// NB: a free fn because it is NOT part of the end-user API.
-pub fn new<I>(base: I) -> WhileSome<I>
+impl<I> WhileSome<I>
 where
     I: ParallelIterator,
 {
-    WhileSome { base: base }
+    /// Create a new `WhileSome` iterator.
+    pub(super) fn new(base: I) -> Self {
+        WhileSome { base }
+    }
 }
 
 impl<I, T> ParallelIterator for WhileSome<I>
@@ -119,6 +119,28 @@ where
             Some(item) => self.base = self.base.consume(item),
             None => self.full.store(true, Ordering::Relaxed),
         }
+        self
+    }
+
+    fn consume_iter<I>(mut self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = Option<T>>,
+    {
+        fn some<T>(full: &AtomicBool) -> impl Fn(&Option<T>) -> bool + '_ {
+            move |x| match *x {
+                Some(_) => !full.load(Ordering::Relaxed),
+                None => {
+                    full.store(true, Ordering::Relaxed);
+                    false
+                }
+            }
+        }
+
+        self.base = self.base.consume_iter(
+            iter.into_iter()
+                .take_while(some(self.full))
+                .map(Option::unwrap),
+        );
         self
     }
 

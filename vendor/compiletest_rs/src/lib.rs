@@ -75,6 +75,18 @@ pub fn run_tests(config: &Config) {
         env::set_var("RUST_TEST_TASKS", "1");
     }
 
+    // If we want to collect rustfix coverage information,
+    // we first make sure that the coverage file does not exist.
+    // It will be created later on.
+    if config.rustfix_coverage {
+        let mut coverage_file_path = config.build_base.clone();
+        coverage_file_path.push("rustfix_missing_coverage.txt");
+        if coverage_file_path.exists() {
+            if let Err(e) = fs::remove_file(&coverage_file_path) {
+                panic!("Could not delete {} due to {}", coverage_file_path.display(), e)
+            }
+        }
+    }
     let opts = test_opts(config);
     let tests = make_tests(config);
     // sadly osx needs some file descriptor limits raised for running tests in
@@ -114,6 +126,8 @@ pub fn test_opts(config: &Config) -> test::TestOpts {
         skip: vec![],
         list: false,
         options: test::Options::new(),
+        #[cfg(not(feature = "stable"))]
+        time_options: None,
     }
 }
 
@@ -138,8 +152,8 @@ fn collect_tests_from_dir(config: &Config,
                           -> io::Result<()> {
     // Ignore directories that contain a file
     // `compiletest-ignore-dir`.
-    for file in try!(fs::read_dir(dir)) {
-        let file = try!(file);
+    for file in fs::read_dir(dir)? {
+        let file = file?;
         let name = file.file_name();
         if name == *"compiletest-ignore-dir" {
             return Ok(());
@@ -166,9 +180,9 @@ fn collect_tests_from_dir(config: &Config,
 
     // Add each `.rs` file as a test, and recurse further on any
     // subdirectories we find, except for `aux` directories.
-    let dirs = try!(fs::read_dir(dir));
+    let dirs = fs::read_dir(dir)?;
     for file in dirs {
-        let file = try!(file);
+        let file = file?;
         let file_path = file.path();
         let file_name = file.file_name();
         if is_test(&file_name) {
@@ -199,11 +213,11 @@ fn collect_tests_from_dir(config: &Config,
                 fs::create_dir_all(&build_dir).unwrap();
             } else {
                 debug!("found directory: {:?}", file_path.display());
-                try!(collect_tests_from_dir(config,
+                collect_tests_from_dir(config,
                                        base,
                                        &file_path,
                                        &relative_file_path,
-                                       tests));
+                                       tests)?;
             }
         } else {
             debug!("found other file/directory: {:?}", file_path.display());
@@ -245,6 +259,8 @@ pub fn make_test(config: &Config, testpaths: &TestPaths) -> test::TestDescAndFn 
             ignore: early_props.ignore,
             should_panic: should_panic,
             allow_fail: false,
+            #[cfg(not(feature = "stable"))]
+            test_type: test::TestType::IntegrationTest,
         },
         testfn: make_test_closure(config, testpaths),
     }

@@ -2,15 +2,11 @@
 
 libcurl bindings for Rust
 
-[![Build Status](https://dev.azure.com/alexcrichton/curl-rust/_apis/build/status/alexcrichton.curl-rust?branchName=master)](https://dev.azure.com/alexcrichton/curl-rust/_build/latest?definitionId=6&branchName=master)
-
 [Documentation](https://docs.rs/curl)
 
 ## Quick Start
 
 ```rust
-extern crate curl;
-
 use std::io::{stdout, Write};
 
 use curl::easy::Easy;
@@ -30,8 +26,6 @@ fn main() {
 ```
 
 ```rust
-extern crate curl;
-
 use curl::easy::Easy;
 
 // Capture output into a local `Vec`.
@@ -56,8 +50,6 @@ request, and then `read_function` can be used to specify how data is filled in.
 This interface works particularly well with types that implement `Read`.
 
 ```rust,no_run
-extern crate curl;
-
 use std::io::Read;
 use curl::easy::Easy;
 
@@ -82,8 +74,6 @@ fn main() {
 Custom headers can be specified as part of the request:
 
 ```rust,no_run
-extern crate curl;
-
 use curl::easy::{Easy, List};
 
 fn main() {
@@ -103,8 +93,6 @@ The handle can be re-used across multiple requests. Curl will attempt to
 keep the connections alive.
 
 ```rust,no_run
-extern crate curl;
-
 use curl::easy::Easy;
 
 fn main() {
@@ -131,11 +119,12 @@ By default, this crate will attempt to dynamically link to the system-wide
 libcurl and the system-wide SSL library. Some of this behavior can be customized
 with various Cargo features:
 
-- `ssl`: Enable SSL support. Enabled by default.
+- `ssl`: Enable SSL/TLS support using the platform-default TLS backend. On Windows this is [Schannel], on macOS [Secure Transport], and [OpenSSL] (or equivalent) on all other platforms.  Enabled by default.
+- `mesalink`: Enable SSL/TLS support via [MesaLink], an alternative TLS backend written in Rust based on [Rustls]. MesaLink is always statically linked. Disabled by default.
 - `http2`: Enable HTTP/2 support via libnghttp2. Disabled by default.
 - `static-curl`: Use a bundled libcurl version and statically link to it. Disabled by default.
 - `static-ssl`: Use a bundled OpenSSL version and statically link to it. Only applies on platforms that use OpenSSL. Disabled by default.
-- `spengo`: Enable SPENGO support. Disabled by default.
+- `spnego`: Enable SPNEGO support. Disabled by default.
 
 ## Version Support
 
@@ -169,3 +158,9 @@ In order to avoid this failure you can either
 
 The `curl-rust` crate is licensed under the MIT license, see `LICENSE` for more
 details.
+
+
+[OpenSSL]: https://www.openssl.org/
+[Rustls]: https://github.com/ctz/rustls
+[Schannel]: https://docs.microsoft.com/en-us/windows/win32/com/schannel
+[Secure Transport]: https://developer.apple.com/documentation/security/secure_transport

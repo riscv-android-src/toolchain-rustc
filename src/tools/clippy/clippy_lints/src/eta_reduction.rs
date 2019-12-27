@@ -65,7 +65,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EtaReduction {
             return;
         }
 
-        match expr.node {
+        match expr.kind {
             ExprKind::Call(_, ref args) | ExprKind::MethodCall(_, _, ref args) => {
                 for arg in args {
                     check_closure(cx, arg)
@@ -77,14 +77,14 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EtaReduction {
 }
 
 fn check_closure(cx: &LateContext<'_, '_>, expr: &Expr) {
-    if let ExprKind::Closure(_, ref decl, eid, _, _) = expr.node {
+    if let ExprKind::Closure(_, ref decl, eid, _, _) = expr.kind {
         let body = cx.tcx.hir().body(eid);
         let ex = &body.value;
 
         if_chain!(
-            if let ExprKind::Call(ref caller, ref args) = ex.node;
+            if let ExprKind::Call(ref caller, ref args) = ex.kind;
 
-            if let ExprKind::Path(_) = caller.node;
+            if let ExprKind::Path(_) = caller.kind;
 
             // Not the same number of arguments, there is no way the closure is the same as the function return;
             if args.len() == decl.inputs.len();
@@ -94,7 +94,7 @@ fn check_closure(cx: &LateContext<'_, '_>, expr: &Expr) {
 
             let fn_ty = cx.tables.expr_ty(caller);
 
-            if matches!(fn_ty.sty, ty::FnDef(_, _) | ty::FnPtr(_) | ty::Closure(_, _));
+            if matches!(fn_ty.kind, ty::FnDef(_, _) | ty::FnPtr(_) | ty::Closure(_, _));
 
             if !type_is_unsafe_function(cx, fn_ty);
 
@@ -115,7 +115,7 @@ fn check_closure(cx: &LateContext<'_, '_>, expr: &Expr) {
         );
 
         if_chain!(
-            if let ExprKind::MethodCall(ref path, _, ref args) = ex.node;
+            if let ExprKind::MethodCall(ref path, _, ref args) = ex.kind;
 
             // Not the same number of arguments, there is no way the closure is the same as the function return;
             if args.len() == decl.inputs.len();
@@ -171,7 +171,7 @@ fn get_ufcs_type_name(
 }
 
 fn match_borrow_depth(lhs: Ty<'_>, rhs: Ty<'_>) -> bool {
-    match (&lhs.sty, &rhs.sty) {
+    match (&lhs.kind, &rhs.kind) {
         (ty::Ref(_, t1, mut1), ty::Ref(_, t2, mut2)) => mut1 == mut2 && match_borrow_depth(&t1, &t2),
         (l, r) => match (l, r) {
             (ty::Ref(_, _, _), _) | (_, ty::Ref(_, _, _)) => false,
@@ -181,7 +181,7 @@ fn match_borrow_depth(lhs: Ty<'_>, rhs: Ty<'_>) -> bool {
 }
 
 fn match_types(lhs: Ty<'_>, rhs: Ty<'_>) -> bool {
-    match (&lhs.sty, &rhs.sty) {
+    match (&lhs.kind, &rhs.kind) {
         (ty::Bool, ty::Bool)
         | (ty::Char, ty::Char)
         | (ty::Int(_), ty::Int(_))
@@ -195,7 +195,7 @@ fn match_types(lhs: Ty<'_>, rhs: Ty<'_>) -> bool {
 }
 
 fn get_type_name(cx: &LateContext<'_, '_>, ty: Ty<'_>) -> String {
-    match ty.sty {
+    match ty.kind {
         ty::Adt(t, _) => cx.tcx.def_path_str(t.did),
         ty::Ref(_, r, _) => get_type_name(cx, &r),
         _ => ty.to_string(),
@@ -207,9 +207,9 @@ fn compare_inputs(
     call_args: &mut dyn Iterator<Item = &Expr>,
 ) -> bool {
     for (closure_input, function_arg) in closure_inputs.zip(call_args) {
-        if let PatKind::Binding(_, _, ident, _) = closure_input.pat.node {
+        if let PatKind::Binding(_, _, ident, _) = closure_input.pat.kind {
             // XXXManishearth Should I be checking the binding mode here?
-            if let ExprKind::Path(QPath::Resolved(None, ref p)) = function_arg.node {
+            if let ExprKind::Path(QPath::Resolved(None, ref p)) = function_arg.kind {
                 if p.segments.len() != 1 {
                     // If it's a proper path, it can't be a local variable
                     return false;

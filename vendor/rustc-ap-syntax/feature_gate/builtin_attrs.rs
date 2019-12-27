@@ -79,6 +79,7 @@ pub enum AttributeType {
     CrateLevel,
 }
 
+#[derive(Clone, Copy)]
 pub enum AttributeGate {
     /// Is gated by a given feature gate, reason
     /// and function to check if enabled
@@ -277,10 +278,23 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     ),
 
     // Plugins:
-    ungated!(plugin_registrar, Normal, template!(Word)),
-    gated!(
-        plugin, CrateLevel, template!(List: "name|name(args)"),
-        "compiler plugins are experimental and possibly buggy",
+    (
+        sym::plugin_registrar, Normal, template!(Word),
+        Gated(
+            Stability::Deprecated("https://github.com/rust-lang/rust/issues/29597", None),
+            sym::plugin_registrar,
+            "compiler plugins are deprecated",
+            cfg_fn!(plugin_registrar)
+        )
+    ),
+    (
+        sym::plugin, CrateLevel, template!(List: "name|name(args)"),
+        Gated(
+            Stability::Deprecated("https://github.com/rust-lang/rust/issues/29597", None),
+            sym::plugin,
+            "compiler plugins are deprecated",
+            cfg_fn!(plugin)
+        )
     ),
 
     // Testing:
@@ -456,7 +470,6 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // ==========================================================================
     // Internal attributes, Misc:
     // ==========================================================================
-
     gated!(
         lang, Normal, template!(NameValueStr: "name"), lang_items,
         "language items are subject to change",
@@ -496,6 +509,10 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         "the `#[rustc_inherit_overflow_checks]` attribute is just used to control \
         overflow checking behavior of several libcore functions that are inlined \
         across crates and will never be stable",
+    ),
+    rustc_attr!(rustc_reservation_impl, Normal, template!(NameValueStr: "reservation message"),
+                "the `#[rustc_reservation_impl]` attribute is internally used \
+                 for reserving for `for<T> From<!> for T` impl"
     ),
     rustc_attr!(
         rustc_test_marker, Normal, template!(Word),

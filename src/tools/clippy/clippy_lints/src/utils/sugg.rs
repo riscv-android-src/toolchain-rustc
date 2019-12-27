@@ -46,7 +46,7 @@ impl<'a> Sugg<'a> {
     pub fn hir_opt(cx: &LateContext<'_, '_>, expr: &hir::Expr) -> Option<Self> {
         snippet_opt(cx, expr.span).map(|snippet| {
             let snippet = Cow::Owned(snippet);
-            Self::hir_from_snippet(expr, snippet)
+            Self::hir_from_snippet(cx, expr, snippet)
         })
     }
 
@@ -84,16 +84,24 @@ impl<'a> Sugg<'a> {
     pub fn hir_with_macro_callsite(cx: &LateContext<'_, '_>, expr: &hir::Expr, default: &'a str) -> Self {
         let snippet = snippet_with_macro_callsite(cx, expr.span, default);
 
-        Self::hir_from_snippet(expr, snippet)
+        Self::hir_from_snippet(cx, expr, snippet)
     }
 
     /// Generate a suggestion for an expression with the given snippet. This is used by the `hir_*`
     /// function variants of `Sugg`, since these use different snippet functions.
-    fn hir_from_snippet(expr: &hir::Expr, snippet: Cow<'a, str>) -> Self {
-        match expr.node {
+    fn hir_from_snippet(cx: &LateContext<'_, '_>, expr: &hir::Expr, snippet: Cow<'a, str>) -> Self {
+        if let Some(range) = higher::range(cx, expr) {
+            let op = match range.limits {
+                ast::RangeLimits::HalfOpen => AssocOp::DotDot,
+                ast::RangeLimits::Closed => AssocOp::DotDotEq,
+            };
+            return Sugg::BinOp(op, snippet);
+        }
+
+        match expr.kind {
             hir::ExprKind::AddrOf(..)
             | hir::ExprKind::Box(..)
-            | hir::ExprKind::Closure(.., _)
+            | hir::ExprKind::Closure(..)
             | hir::ExprKind::Unary(..)
             | hir::ExprKind::Match(..) => Sugg::MaybeParen(snippet),
             hir::ExprKind::Continue(..)
@@ -129,7 +137,7 @@ impl<'a> Sugg<'a> {
 
         let snippet = snippet(cx, expr.span, default);
 
-        match expr.node {
+        match expr.kind {
             ast::ExprKind::AddrOf(..)
             | ast::ExprKind::Box(..)
             | ast::ExprKind::Closure(..)
@@ -417,6 +425,7 @@ enum Associativity {
 /// Chained `as` and explicit `:` type coercion never need inner parenthesis so
 /// they are considered
 /// associative.
+#[must_use]
 fn associativity(op: &AssocOp) -> Associativity {
     use syntax::util::parser::AssocOp::*;
 

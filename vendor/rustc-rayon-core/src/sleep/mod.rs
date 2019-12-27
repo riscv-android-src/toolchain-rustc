@@ -1,13 +1,13 @@
 //! Code that decides when workers should go to sleep. See README.md
 //! for an overview.
 
-use DeadlockHandler;
 use log::Event::*;
 use registry::Registry;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::thread;
 use std::usize;
+use DeadlockHandler;
 
 struct SleepData {
     /// The number of threads in the thread pool.
@@ -32,7 +32,7 @@ impl SleepData {
     }
 }
 
-pub struct Sleep {
+pub(super) struct Sleep {
     state: AtomicUsize,
     data: Mutex<SleepData>,
     tickle: Condvar,
@@ -45,7 +45,7 @@ const ROUNDS_UNTIL_SLEEPY: usize = 32;
 const ROUNDS_UNTIL_ASLEEP: usize = 64;
 
 impl Sleep {
-    pub fn new(worker_count: usize) -> Sleep {
+    pub(super) fn new(worker_count: usize) -> Sleep {
         Sleep {
             state: AtomicUsize::new(AWAKE),
             data: Mutex::new(SleepData {
@@ -99,7 +99,7 @@ impl Sleep {
     }
 
     #[inline]
-    pub fn work_found(&self, worker_index: usize, yields: usize) -> usize {
+    pub(super) fn work_found(&self, worker_index: usize, yields: usize) -> usize {
         log!(FoundWork {
             worker: worker_index,
             yields: yields,
@@ -114,7 +114,7 @@ impl Sleep {
     }
 
     #[inline]
-    pub fn no_work_found(
+    pub(super) fn no_work_found(
         &self,
         worker_index: usize,
         yields: usize,
@@ -151,7 +151,7 @@ impl Sleep {
         }
     }
 
-    pub fn tickle(&self, worker_index: usize) {
+    pub(super) fn tickle(&self, worker_index: usize) {
         // As described in README.md, this load must be SeqCst so as to ensure that:
         // - if anyone is sleepy or asleep, we *definitely* see that now (and not eventually);
         // - if anyone after us becomes sleepy or asleep, they see memory events that
@@ -249,11 +249,7 @@ impl Sleep {
         self.worker_is_sleepy(state, worker_index)
     }
 
-    fn sleep(
-        &self,
-        worker_index: usize,
-        registry: &Registry,
-    ) {
+    fn sleep(&self, worker_index: usize, registry: &Registry) {
         loop {
             // Acquire here suffices. If we observe that the current worker is still
             // sleepy, then in fact we know that no writes have occurred, and anyhow

@@ -1,6 +1,7 @@
-#![doc(html_root_url = "https://docs.rs/rayon/1.0")]
+#![doc(html_root_url = "https://docs.rs/rayon/1.2")]
 #![deny(missing_debug_implementations)]
 #![deny(missing_docs)]
+#![deny(unreachable_pub)]
 
 //! Data-parallelism library that makes it easy to convert sequential
 //! computations into parallel
@@ -83,6 +84,14 @@ extern crate rustc_rayon_core as rayon_core;
 
 #[cfg(test)]
 extern crate rand;
+#[cfg(test)]
+extern crate rand_xorshift;
+#[cfg(test)]
+#[macro_use]
+extern crate doc_comment;
+
+#[cfg(test)]
+doctest!("../README.md");
 
 #[macro_use]
 mod delegate;
@@ -97,6 +106,7 @@ pub mod iter;
 pub mod option;
 pub mod prelude;
 pub mod range;
+pub mod range_inclusive;
 pub mod result;
 pub mod slice;
 pub mod str;
@@ -107,11 +117,13 @@ mod par_either;
 
 mod compile_fail;
 
-pub use rayon_core::current_num_threads;
-pub use rayon_core::spawn;
 pub use rayon_core::FnContext;
+pub use rayon_core::ThreadBuilder;
 pub use rayon_core::ThreadPool;
 pub use rayon_core::ThreadPoolBuildError;
 pub use rayon_core::ThreadPoolBuilder;
+pub use rayon_core::{current_num_threads, current_thread_index};
 pub use rayon_core::{join, join_context};
 pub use rayon_core::{scope, Scope};
+pub use rayon_core::{scope_fifo, ScopeFifo};
+pub use rayon_core::{spawn, spawn_fifo};

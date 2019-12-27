@@ -15,15 +15,15 @@ pub struct Skip<I> {
     n: usize,
 }
 
-/// Create a new `Skip` iterator.
-///
-/// NB: a free fn because it is NOT part of the end-user API.
-pub fn new<I>(base: I, n: usize) -> Skip<I>
+impl<I> Skip<I>
 where
     I: IndexedParallelIterator,
 {
-    let n = min(base.len(), n);
-    Skip { base: base, n: n }
+    /// Create a new `Skip` iterator.
+    pub(super) fn new(base: I, n: usize) -> Self {
+        let n = min(base.len(), n);
+        Skip { base, n }
+    }
 }
 
 impl<I> ParallelIterator for Skip<I>
@@ -61,7 +61,7 @@ where
         CB: ProducerCallback<Self::Item>,
     {
         return self.base.with_producer(Callback {
-            callback: callback,
+            callback,
             n: self.n,
         });
 
@@ -80,7 +80,7 @@ where
                 P: Producer<Item = T>,
             {
                 let (before_skip, after_skip) = base.split_at(self.n);
-                bridge_producer_consumer(self.n, before_skip, NoopConsumer::new());
+                bridge_producer_consumer(self.n, before_skip, NoopConsumer);
                 self.callback.callback(after_skip)
             }
         }

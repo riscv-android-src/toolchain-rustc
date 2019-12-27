@@ -18,21 +18,18 @@ pub struct Update<I: ParallelIterator, F> {
 }
 
 impl<I: ParallelIterator + Debug, F> Debug for Update<I, F> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Update").field("base", &self.base).finish()
     }
 }
 
-/// Create a new `Update` iterator.
-///
-/// NB: a free fn because it is NOT part of the end-user API.
-pub fn new<I, F>(base: I, update_op: F) -> Update<I, F>
+impl<I, F> Update<I, F>
 where
     I: ParallelIterator,
 {
-    Update {
-        base: base,
-        update_op: update_op,
+    /// Create a new `Update` iterator.
+    pub(super) fn new(base: I, update_op: F) -> Self {
+        Update { base, update_op }
     }
 }
 
@@ -78,7 +75,7 @@ where
         CB: ProducerCallback<Self::Item>,
     {
         return self.base.with_producer(Callback {
-            callback: callback,
+            callback,
             update_op: self.update_op,
         });
 
@@ -99,7 +96,7 @@ where
                 P: Producer<Item = T>,
             {
                 let producer = UpdateProducer {
-                    base: base,
+                    base,
                     update_op: &self.update_op,
                 };
                 self.callback.callback(producer)
@@ -173,10 +170,7 @@ struct UpdateConsumer<'f, C, F: 'f> {
 
 impl<'f, C, F> UpdateConsumer<'f, C, F> {
     fn new(base: C, update_op: &'f F) -> Self {
-        UpdateConsumer {
-            base: base,
-            update_op: update_op,
-        }
+        UpdateConsumer { base, update_op }
     }
 }
 
@@ -229,6 +223,13 @@ struct UpdateFolder<'f, C, F: 'f> {
     update_op: &'f F,
 }
 
+fn apply<T>(update_op: impl Fn(&mut T)) -> impl Fn(T) -> T {
+    move |mut item| {
+        update_op(&mut item);
+        item
+    }
+}
+
 impl<'f, T, C, F> Folder<T> for UpdateFolder<'f, C, F>
 where
     C: Folder<T>,
@@ -243,6 +244,17 @@ where
             base: self.base.consume(item),
             update_op: self.update_op,
         }
+    }
+
+    fn consume_iter<I>(mut self, iter: I) -> Self
+    where
+        I: IntoIterator<Item = T>,
+    {
+        let update_op = self.update_op;
+        self.base = self
+            .base
+            .consume_iter(iter.into_iter().map(apply(update_op)));
+        self
     }
 
     fn complete(self) -> C::Result {
@@ -265,32 +277,25 @@ struct UpdateSeq<I, F> {
 impl<I, F> Iterator for UpdateSeq<I, F>
 where
     I: Iterator,
-    F: FnMut(&mut I::Item),
+    F: Fn(&mut I::Item),
 {
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(mut v) = self.base.next() {
-            (self.update_op)(&mut v);
-            Some(v)
-        } else {
-            None
-        }
+        let mut v = self.base.next()?;
+        (self.update_op)(&mut v);
+        Some(v)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.base.size_hint()
     }
 
-    fn fold<Acc, G>(self, init: Acc, mut g: G) -> Acc
+    fn fold<Acc, G>(self, init: Acc, g: G) -> Acc
     where
         G: FnMut(Acc, Self::Item) -> Acc,
     {
-        let mut f = self.update_op;
-        self.base.fold(init, move |acc, mut v| {
-            f(&mut v);
-            g(acc, v)
-        })
+        self.base.map(apply(self.update_op)).fold(init, g)
     }
 
     // if possible, re-use inner iterator specializations in collect
@@ -298,34 +303,25 @@ where
     where
         C: ::std::iter::FromIterator<Self::Item>,
     {
-        let mut f = self.update_op;
-        self.base
-            .map(move |mut v| {
-                f(&mut v);
-                v
-            })
-            .collect()
+        self.base.map(apply(self.update_op)).collect()
     }
 }
 
 impl<I, F> ExactSizeIterator for UpdateSeq<I, F>
 where
     I: ExactSizeIterator,
-    F: FnMut(&mut I::Item),
+    F: Fn(&mut I::Item),
 {
 }
 
 impl<I, F> DoubleEndedIterator for UpdateSeq<I, F>
 where
     I: DoubleEndedIterator,
-    F: FnMut(&mut I::Item),
+    F: Fn(&mut I::Item),
 {
     fn next_back(&mut self) -> Option<Self::Item> {
-        if let Some(mut v) = self.base.next_back() {
-            (self.update_op)(&mut v);
-            Some(v)
-        } else {
-            None
-        }
+        let mut v = self.base.next_back()?;
+        (self.update_op)(&mut v);
+        Some(v)
     }
 }

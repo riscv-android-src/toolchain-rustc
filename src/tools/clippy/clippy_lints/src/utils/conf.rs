@@ -14,12 +14,12 @@ use toml;
 pub fn file_from_args(args: &[ast::NestedMetaItem]) -> Result<Option<path::PathBuf>, (&'static str, source_map::Span)> {
     for arg in args.iter().filter_map(syntax::ast::NestedMetaItem::meta_item) {
         if arg.check_name(sym!(conf_file)) {
-            return match arg.node {
+            return match arg.kind {
                 ast::MetaItemKind::Word | ast::MetaItemKind::List(_) => {
                     Err(("`conf_file` must be a named value", arg.span))
                 },
                 ast::MetaItemKind::NameValue(ref value) => {
-                    if let ast::LitKind::Str(ref file, _) = value.node {
+                    if let ast::LitKind::Str(ref file, _) = value.kind {
                         Ok(Some(file.to_string().into()))
                     } else {
                         Err(("`conf_file` value must be a string", value.span))
@@ -90,6 +90,7 @@ macro_rules! define_Conf {
                     }
                 }
 
+                #[must_use]
                 fn $rust_name() -> define_Conf!(TY $($ty)+) {
                     define_Conf!(DEFAULT $($ty)+, $default)
                 }
@@ -153,6 +154,7 @@ define_Conf! {
 }
 
 impl Default for Conf {
+    #[must_use]
     fn default() -> Self {
         toml::from_str("").expect("we never error on empty config files")
     }

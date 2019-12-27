@@ -1,3 +1,5 @@
+use std::convert::TryFrom;
+
 use rustc::ty::{Ty, layout::LayoutOf};
 use rustc::mir;
 
@@ -34,7 +36,7 @@ impl<'mir, 'tcx> EvalContextExt<'tcx> for super::MiriEvalContext<'mir, 'tcx> {
     /// Test if the pointer is in-bounds of a live allocation.
     #[inline]
     fn pointer_inbounds(&self, ptr: Pointer<Tag>) -> InterpResult<'tcx> {
-        let (size, _align) = self.memory().get_size_and_align(ptr.alloc_id, AllocCheck::Live)?;
+        let (size, _align) = self.memory.get_size_and_align(ptr.alloc_id, AllocCheck::Live)?;
         ptr.check_inbounds_alloc(size, CheckInAllocMsg::InboundsTest)
     }
 
@@ -117,8 +119,7 @@ impl<'mir, 'tcx> EvalContextExt<'tcx> for super::MiriEvalContext<'mir, 'tcx> {
         pointee_ty: Ty<'tcx>,
         offset: i64,
     ) -> InterpResult<'tcx, Scalar<Tag>> {
-        // FIXME: assuming here that type size is less than `i64::max_value()`.
-        let pointee_size = self.layout_of(pointee_ty)?.size.bytes() as i64;
+        let pointee_size = i64::try_from(self.layout_of(pointee_ty)?.size.bytes()).unwrap();
         let offset = offset
             .checked_mul(pointee_size)
             .ok_or_else(|| err_panic!(Overflow(mir::BinOp::Mul)))?;

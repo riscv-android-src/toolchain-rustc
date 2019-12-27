@@ -1,11 +1,10 @@
-use crate::utils::{get_parent_expr, higher, same_tys, snippet, span_lint_and_then, span_note_and_lint};
+use crate::utils::{get_parent_expr, higher, if_sequence, same_tys, snippet, span_lint_and_then, span_note_and_lint};
 use crate::utils::{SpanlessEq, SpanlessHash};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::Ty;
 use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::FxHashMap;
-use smallvec::SmallVec;
 use std::collections::hash_map::Entry;
 use std::hash::BuildHasherDefault;
 use syntax::symbol::Symbol;
@@ -177,7 +176,7 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr) {
                 .all(|(name, l_ty)| rhs.get(name).map_or(false, |r_ty| same_tys(cx, l_ty, r_ty)))
     }
 
-    if let ExprKind::Match(_, ref arms, MatchSource::Normal) = expr.node {
+    if let ExprKind::Match(_, ref arms, MatchSource::Normal) = expr.kind {
         let hash = |&(_, arm): &(usize, &Arm)| -> u64 {
             let mut h = SpanlessHash::new(cx, cx.tables);
             h.hash_expr(&arm.body);
@@ -193,7 +192,7 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr) {
             (min_index..=max_index).all(|index| arms[index].guard.is_none()) &&
                 SpanlessEq::new(cx).eq_expr(&lhs.body, &rhs.body) &&
                 // all patterns should have the same bindings
-                same_bindings(cx, &bindings(cx, &lhs.pats[0]), &bindings(cx, &rhs.pats[0]))
+                same_bindings(cx, &bindings(cx, &lhs.pat), &bindings(cx, &rhs.pat))
         };
 
         let indexed_arms: Vec<(usize, &Arm)> = arms.iter().enumerate().collect();
@@ -213,27 +212,22 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr) {
                     // span for the whole pattern, the suggestion is only shown when there is only
                     // one pattern. The user should know about `|` if they are already using it…
 
-                    if i.pats.len() == 1 && j.pats.len() == 1 {
-                        let lhs = snippet(cx, i.pats[0].span, "<pat1>");
-                        let rhs = snippet(cx, j.pats[0].span, "<pat2>");
+                    let lhs = snippet(cx, i.pat.span, "<pat1>");
+                    let rhs = snippet(cx, j.pat.span, "<pat2>");
 
-                        if let PatKind::Wild = j.pats[0].node {
-                            // if the last arm is _, then i could be integrated into _
-                            // note that i.pats[0] cannot be _, because that would mean that we're
-                            // hiding all the subsequent arms, and rust won't compile
-                            db.span_note(
-                                i.body.span,
-                                &format!(
-                                    "`{}` has the same arm body as the `_` wildcard, consider removing it`",
-                                    lhs
-                                ),
-                            );
-                        } else {
-                            db.span_help(
-                                i.pats[0].span,
-                                &format!("consider refactoring into `{} | {}`", lhs, rhs),
-                            );
-                        }
+                    if let PatKind::Wild = j.pat.kind {
+                        // if the last arm is _, then i could be integrated into _
+                        // note that i.pat cannot be _, because that would mean that we're
+                        // hiding all the subsequent arms, and rust won't compile
+                        db.span_note(
+                            i.body.span,
+                            &format!(
+                                "`{}` has the same arm body as the `_` wildcard, consider removing it`",
+                                lhs
+                            ),
+                        );
+                    } else {
+                        db.span_help(i.pat.span, &format!("consider refactoring into `{} | {}`", lhs, rhs));
                     }
                 },
             );
@@ -241,43 +235,10 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr) {
     }
 }
 
-/// Returns the list of condition expressions and the list of blocks in a
-/// sequence of `if/else`.
-/// E.g., this returns `([a, b], [c, d, e])` for the expression
-/// `if a { c } else if b { d } else { e }`.
-fn if_sequence(mut expr: &Expr) -> (SmallVec<[&Expr; 1]>, SmallVec<[&Block; 1]>) {
-    let mut conds = SmallVec::new();
-    let mut blocks: SmallVec<[&Block; 1]> = SmallVec::new();
-
-    while let Some((ref cond, ref then_expr, ref else_expr)) = higher::if_block(&expr) {
-        conds.push(&**cond);
-        if let ExprKind::Block(ref block, _) = then_expr.node {
-            blocks.push(block);
-        } else {
-            panic!("ExprKind::If node is not an ExprKind::Block");
-        }
-
-        if let Some(ref else_expr) = *else_expr {
-            expr = else_expr;
-        } else {
-            break;
-        }
-    }
-
-    // final `else {..}`
-    if !blocks.is_empty() {
-        if let ExprKind::Block(ref block, _) = expr.node {
-            blocks.push(&**block);
-        }
-    }
-
-    (conds, blocks)
-}
-
 /// Returns the list of bindings in a pattern.
 fn bindings<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, pat: &Pat) -> FxHashMap<Symbol, Ty<'tcx>> {
     fn bindings_impl<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, pat: &Pat, map: &mut FxHashMap<Symbol, Ty<'tcx>>) {
-        match pat.node {
+        match pat.kind {
             PatKind::Box(ref pat) | PatKind::Ref(ref pat, _) => bindings_impl(cx, pat, map),
             PatKind::TupleStruct(_, ref pats, _) => {
                 for pat in pats {
@@ -338,14 +299,8 @@ fn search_common_cases<'a, T, Eq>(exprs: &'a [T], eq: &Eq) -> Option<(&'a T, &'a
 where
     Eq: Fn(&T, &T) -> bool,
 {
-    if exprs.len() < 2 {
-        None
-    } else if exprs.len() == 2 {
-        if eq(&exprs[0], &exprs[1]) {
-            Some((&exprs[0], &exprs[1]))
-        } else {
-            None
-        }
+    if exprs.len() == 2 && eq(&exprs[0], &exprs[1]) {
+        Some((&exprs[0], &exprs[1]))
     } else {
         None
     }

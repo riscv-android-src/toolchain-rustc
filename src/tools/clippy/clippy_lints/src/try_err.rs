@@ -1,7 +1,7 @@
 use crate::utils::{match_qpath, paths, snippet, snippet_with_macro_callsite, span_lint_and_sugg};
 use if_chain::if_chain;
 use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
+use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::Ty;
 use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
@@ -54,16 +54,17 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TryErr {
         //         val,
         // };
         if_chain! {
-            if let ExprKind::Match(ref match_arg, _, MatchSource::TryDesugar) = expr.node;
-            if let ExprKind::Call(ref match_fun, ref try_args) = match_arg.node;
-            if let ExprKind::Path(ref match_fun_path) = match_fun.node;
+            if !in_external_macro(cx.tcx.sess, expr.span);
+            if let ExprKind::Match(ref match_arg, _, MatchSource::TryDesugar) = expr.kind;
+            if let ExprKind::Call(ref match_fun, ref try_args) = match_arg.kind;
+            if let ExprKind::Path(ref match_fun_path) = match_fun.kind;
             if match_qpath(match_fun_path, &paths::TRY_INTO_RESULT);
             if let Some(ref try_arg) = try_args.get(0);
-            if let ExprKind::Call(ref err_fun, ref err_args) = try_arg.node;
+            if let ExprKind::Call(ref err_fun, ref err_args) = try_arg.kind;
             if let Some(ref err_arg) = err_args.get(0);
-            if let ExprKind::Path(ref err_fun_path) = err_fun.node;
+            if let ExprKind::Path(ref err_fun_path) = err_fun.kind;
             if match_qpath(err_fun_path, &paths::RESULT_ERR);
-            if let Some(return_type) = find_err_return_type(cx, &expr.node);
+            if let Some(return_type) = find_err_return_type(cx, &expr.kind);
 
             then {
                 let err_type = cx.tables.expr_ty(err_arg);
@@ -106,9 +107,9 @@ fn find_err_return_type<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx ExprKi
 // Check for From::from in one of the match arms.
 fn find_err_return_type_arm<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, arm: &'tcx Arm) -> Option<Ty<'tcx>> {
     if_chain! {
-        if let ExprKind::Ret(Some(ref err_ret)) = arm.body.node;
-        if let ExprKind::Call(ref from_error_path, ref from_error_args) = err_ret.node;
-        if let ExprKind::Path(ref from_error_fn) = from_error_path.node;
+        if let ExprKind::Ret(Some(ref err_ret)) = arm.body.kind;
+        if let ExprKind::Call(ref from_error_path, ref from_error_args) = err_ret.kind;
+        if let ExprKind::Path(ref from_error_fn) = from_error_path.kind;
         if match_qpath(from_error_fn, &paths::TRY_FROM_ERROR);
         if let Some(from_error_arg) = from_error_args.get(0);
         then {

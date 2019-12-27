@@ -113,7 +113,7 @@ fn check_len<I: ExactSizeIterator>(iter: &I, len: usize) {
 #[test]
 fn empty() {
     let v = vec![42];
-    check(&v[..0], || rayon::iter::empty());
+    check(&v[..0], rayon::iter::empty);
 }
 
 #[test]
@@ -132,6 +132,12 @@ fn option() {
 fn range() {
     let v: Vec<_> = (0..10).collect();
     check(&v, || 0..10);
+}
+
+#[test]
+fn range_inclusive() {
+    let v: Vec<_> = (0u16..=10).collect();
+    check(&v, || 0u16..=10);
 }
 
 #[test]
@@ -209,6 +215,12 @@ fn cloned() {
 }
 
 #[test]
+fn copied() {
+    let v: Vec<_> = (0..10).collect();
+    check(&v, || v.par_iter().copied());
+}
+
+#[test]
 fn enumerate() {
     let v: Vec<_> = (0..10).enumerate().collect();
     check(&v, || (0..10).into_par_iter().enumerate());
@@ -265,6 +277,12 @@ fn map_with() {
 fn map_init() {
     let v: Vec<_> = (0..10).collect();
     check(&v, || v.par_iter().map_init(|| vec![0], |_, &x| x));
+}
+
+#[test]
+fn panic_fuse() {
+    let v: Vec<_> = (0..10).collect();
+    check(&v, || (0..10).into_par_iter().panic_fuse());
 }
 
 #[test]

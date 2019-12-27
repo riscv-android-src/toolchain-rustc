@@ -35,6 +35,7 @@ pub struct LargeEnumVariant {
 }
 
 impl LargeEnumVariant {
+    #[must_use]
     pub fn new(maximum_size_difference_allowed: u64) -> Self {
         Self {
             maximum_size_difference_allowed,
@@ -47,7 +48,7 @@ impl_lint_pass!(LargeEnumVariant => [LARGE_ENUM_VARIANT]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LargeEnumVariant {
     fn check_item(&mut self, cx: &LateContext<'_, '_>, item: &Item) {
         let did = cx.tcx.hir().local_def_id(item.hir_id);
-        if let ItemKind::Enum(ref def, _) = item.node {
+        if let ItemKind::Enum(ref def, _) = item.kind {
             let ty = cx.tcx.type_of(did);
             let adt = ty.ty_adt_def().expect("already checked whether this is an enum");
 

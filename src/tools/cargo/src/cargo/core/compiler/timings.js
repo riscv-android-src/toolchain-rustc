@@ -44,15 +44,14 @@ function render_pipeline_graph() {
   const units = UNIT_DATA.filter(unit => unit.duration >= min_time);
 
   const graph_height = Y_TICK_DIST * units.length;
-  const {ctx, width, height} = draw_graph_axes('pipeline-graph', graph_height);
+  const {ctx, graph_width, canvas_width, canvas_height, px_per_sec} = draw_graph_axes('pipeline-graph', graph_height);
   const container = document.getElementById('pipeline-container');
-  container.style.width = width;
-  container.style.height = height;
-  const PX_PER_SEC = document.getElementById('scale').valueAsNumber;
+  container.style.width = canvas_width;
+  container.style.height = canvas_height;
 
   // Canvas for hover highlights. This is a separate layer to improve performance.
-  const linectx = setup_canvas('pipeline-graph-lines', width, height);
-  linectx.clearRect(0, 0, width, height);
+  const linectx = setup_canvas('pipeline-graph-lines', canvas_width, canvas_height);
+  linectx.clearRect(0, 0, canvas_width, canvas_height);
 
   // Draw Y tick marks.
   for (let n=1; n<units.length; n++) {
@@ -79,12 +78,12 @@ function render_pipeline_graph() {
   for (i=0; i<units.length; i++) {
     let unit = units[i];
     let y = i * Y_TICK_DIST + 1;
-    let x = PX_PER_SEC * unit.start;
+    let x = px_per_sec * unit.start;
     let rmeta_x = null;
     if (unit.rmeta_time != null) {
-      rmeta_x = x + PX_PER_SEC * unit.rmeta_time;
+      rmeta_x = x + px_per_sec * unit.rmeta_time;
     }
-    let width = Math.max(PX_PER_SEC * unit.duration, 1.0);
+    let width = Math.max(px_per_sec * unit.duration, 1.0);
     UNIT_COORDS[unit.i] = {x, y, width, rmeta_x};
   }
 
@@ -104,14 +103,17 @@ function render_pipeline_graph() {
       ctx.beginPath();
       ctx.fillStyle = '#aa95e8';
       let ctime = unit.duration - unit.rmeta_time;
-      roundedRect(ctx, rmeta_x, y, PX_PER_SEC * ctime, BOX_HEIGHT, RADIUS);
+      roundedRect(ctx, rmeta_x, y, px_per_sec * ctime, BOX_HEIGHT, RADIUS);
       ctx.fill();
     }
     ctx.fillStyle = "#000";
     ctx.textAlign = 'start';
     ctx.textBaseline = 'hanging';
     ctx.font = '14px sans-serif';
-    ctx.fillText(`${unit.name}${unit.target} ${unit.duration}s`, x + 5.0, y + BOX_HEIGHT / 2 - 6);
+    const label = `${unit.name}${unit.target} ${unit.duration}s`;
+    const text_info = ctx.measureText(label);
+    const label_x = Math.min(x + 5.0, canvas_width - text_info.width - X_LINE);
+    ctx.fillText(label, label_x, y + BOX_HEIGHT / 2 - 6);
     draw_dep_lines(ctx, unit.i, false);
   }
   ctx.restore();
@@ -154,16 +156,15 @@ function render_timing_graph() {
   const TOP_MARGIN = 10;
   const GRAPH_HEIGHT = AXIS_HEIGHT - TOP_MARGIN;
 
-  const {graph_width, ctx} = draw_graph_axes('timing-graph', AXIS_HEIGHT);
+  const {canvas_width, graph_width, ctx} = draw_graph_axes('timing-graph', AXIS_HEIGHT);
 
   // Draw Y tick marks and labels.
   let max_v = 0;
   for (c of CONCURRENCY_DATA) {
     max_v = Math.max(max_v, c.active, c.waiting, c.inactive);
   }
-  let [step, top] = split_ticks(max_v, GRAPH_HEIGHT / MIN_TICK_DIST);
-  let num_ticks = top / step;
-  let tick_dist = GRAPH_HEIGHT / num_ticks;
+  const px_per_v = GRAPH_HEIGHT / max_v;
+  const {step, tick_dist, num_ticks} = split_ticks(max_v, px_per_v, GRAPH_HEIGHT);
   ctx.textAlign = 'end';
   for (n=0; n<num_ticks; n++) {
     let y = HEIGHT - Y_LINE - ((n + 1) * tick_dist);
@@ -195,18 +196,20 @@ function render_timing_graph() {
   }
 
   const cpuFillStyle = 'rgba(250, 119, 0, 0.2)';
-  ctx.beginPath();
-  ctx.fillStyle = cpuFillStyle;
-  let bottomLeft = coord(CPU_USAGE[0][0], 0);
-  ctx.moveTo(bottomLeft.x, bottomLeft.y);
-  for (let i=0; i < CPU_USAGE.length; i++) {
-    let [time, usage] = CPU_USAGE[i];
-    let {x, y} = coord(time, usage / 100.0 * max_v);
-    ctx.lineTo(x, y);
+  if (CPU_USAGE.length > 1) {
+    ctx.beginPath();
+    ctx.fillStyle = cpuFillStyle;
+    let bottomLeft = coord(CPU_USAGE[0][0], 0);
+    ctx.moveTo(bottomLeft.x, bottomLeft.y);
+    for (let i=0; i < CPU_USAGE.length; i++) {
+      let [time, usage] = CPU_USAGE[i];
+      let {x, y} = coord(time, usage / 100.0 * max_v);
+      ctx.lineTo(x, y);
+    }
+    let bottomRight = coord(CPU_USAGE[CPU_USAGE.length - 1][0], 0);
+    ctx.lineTo(bottomRight.x, bottomRight.y);
+    ctx.fill();
   }
-  let bottomRight = coord(CPU_USAGE[CPU_USAGE.length - 1][0], 0);
-  ctx.lineTo(bottomRight.x, bottomRight.y);
-  ctx.fill();
 
   function draw_line(style, key) {
     let first = CONCURRENCY_DATA[0];
@@ -231,7 +234,7 @@ function render_timing_graph() {
   // Draw a legend.
   ctx.restore();
   ctx.save();
-  ctx.translate(graph_width-150, MARGIN);
+  ctx.translate(canvas_width-200, MARGIN);
   // background
   ctx.fillStyle = '#fff';
   ctx.strokeStyle = '#000';
@@ -289,13 +292,18 @@ function setup_canvas(id, width, height) {
 }
 
 function draw_graph_axes(id, graph_height) {
-  const PX_PER_SEC = document.getElementById('scale').valueAsNumber;
-  const graph_width = PX_PER_SEC * DURATION;
-  const width = graph_width + X_LINE + 30;
-  const height = graph_height + MARGIN + Y_LINE;
-  let ctx = setup_canvas(id, width, height);
+  const scale = document.getElementById('scale').valueAsNumber;
+  // Cap the size of the graph. It is hard to view if it is too large, and
+  // browsers may not render a large graph because it takes too much memory.
+  // 4096 is still ridiculously large, and probably won't render on mobile
+  // browsers, but should be ok for many desktop environments.
+  const graph_width = Math.min(scale * DURATION, 4096);
+  const px_per_sec = graph_width / DURATION;
+  const canvas_width = Math.max(graph_width + X_LINE + 30, X_LINE + 250);
+  const canvas_height = graph_height + MARGIN + Y_LINE;
+  let ctx = setup_canvas(id, canvas_width, canvas_height);
   ctx.fillStyle = '#f7f7f7';
-  ctx.fillRect(0, 0, width, height);
+  ctx.fillRect(0, 0, canvas_width, canvas_height);
 
   ctx.lineWidth = 2;
   ctx.font = '16px sans-serif';
@@ -309,19 +317,16 @@ function draw_graph_axes(id, graph_height) {
   ctx.stroke();
 
   // Draw X tick marks.
-  const tick_width = graph_width - 10;
-  const [step, top] = split_ticks(DURATION, tick_width / MIN_TICK_DIST);
-  const num_ticks = top / step;
-  const tick_dist = tick_width / num_ticks;
+  const {step, tick_dist, num_ticks} = split_ticks(DURATION, px_per_sec, graph_width);
   ctx.fillStyle = '#303030';
   for (let n=0; n<num_ticks; n++) {
     const x = X_LINE + ((n + 1) * tick_dist);
     ctx.beginPath();
-    ctx.moveTo(x, height-Y_LINE);
-    ctx.lineTo(x, height-Y_LINE+5);
+    ctx.moveTo(x, canvas_height-Y_LINE);
+    ctx.lineTo(x, canvas_height-Y_LINE+5);
     ctx.stroke();
 
-    ctx.fillText(`${(n+1) * step}s`, x, height - Y_LINE + 20);
+    ctx.fillText(`${(n+1) * step}s`, x, canvas_height - Y_LINE + 20);
   }
 
   // Draw vertical lines.
@@ -336,37 +341,42 @@ function draw_graph_axes(id, graph_height) {
   }
   ctx.strokeStyle = '#000';
   ctx.setLineDash([]);
-  return {width, height, graph_width, graph_height, ctx};
+  return {canvas_width, canvas_height, graph_width, graph_height, ctx, px_per_sec};
 }
 
-function round_up(n, step) {
-  if (n % step == 0) {
-    return n;
-  } else {
-    return (step - n % step) + n;
+// Determine the spacing and number of ticks along an axis.
+function split_ticks(max_value, px_per_v, max_px) {
+  const max_ticks = Math.floor(max_px / MIN_TICK_DIST);
+  if (max_ticks <= 1) {
+    // Graph is too small for even 1 tick.
+    return {step: max_value, tick_dist: max_px, num_ticks: 1};
   }
-}
-
-// Determine the `(step, max_value)` of the number of ticks along an axis.
-function split_ticks(n, max_ticks) {
-  if (n <= max_ticks) {
-    return [1, n];
-  } else if (n <= max_ticks * 2) {
-    return [2, round_up(n, 2)];
-  } else if (n <= max_ticks * 4) {
-    return [4, round_up(n, 4)];
-  } else if (n <= max_ticks * 5) {
-    return [5, round_up(n, 5)];
+  let step;
+  if (max_value <= max_ticks) {
+    step = 1;
+  } else if (max_value <= max_ticks * 2) {
+    step = 2;
+  } else if (max_value <= max_ticks * 4) {
+    step = 4;
+  } else if (max_value <= max_ticks * 5) {
+    step = 5;
   } else {
-    let step = 10;
+    step = 10;
+    let count = 0;
     while (true) {
-      let top = round_up(n, step);
-      if (top <= max_ticks * step) {
-        return [step, top];
+      if (count > 100) {
+        throw Error("tick loop too long");
+      }
+      count += 1;
+      if (max_value <= max_ticks * step) {
+        break;
       }
       step += 10;
     }
   }
+  const tick_dist = px_per_v * step;
+  const num_ticks = Math.floor(max_value / step);
+  return {step, tick_dist, num_ticks};
 }
 
 function codegen_time(unit) {

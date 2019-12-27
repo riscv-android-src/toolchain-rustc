@@ -123,16 +123,14 @@ fn cargo_path() {
         .cargo_path("this does not exist")
         .exec()
     {
-        Err(Error::Io(e)) => assert_eq!(
-            e.kind(), std::io::ErrorKind::NotFound
-        ),
+        Err(Error::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
         _ => unreachable!(),
     }
 }
 
-
 #[test]
 fn metadata_deps() {
+    std::env::set_var("CARGO_PROFILE", "3");
     let metadata = MetadataCommand::new()
         .manifest_path("Cargo.toml")
         .exec()

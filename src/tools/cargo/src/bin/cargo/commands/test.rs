@@ -1,6 +1,7 @@
-use cargo::ops::{self, CompileFilter, FilterRule, LibRule};
-
 use crate::command_prelude::*;
+use cargo::ops::{self, CompileFilter, FilterRule, LibRule};
+use cargo::util::errors;
+use failure::Fail;
 
 pub fn cli() -> App {
     subcommand("test")
@@ -47,6 +48,7 @@ pub fn cli() -> App {
         )
         .arg_jobs()
         .arg_release("Build artifacts in release mode, with optimizations")
+        .arg_profile("Build artifacts with the specified profile")
         .arg_features()
         .arg_target_triple("Build for the target triple")
         .arg_target_dir()
@@ -99,7 +101,18 @@ To get the list of all options available for the test binaries use this:
 pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     let ws = args.workspace(config)?;
 
-    let mut compile_opts = args.compile_options(config, CompileMode::Test, Some(&ws))?;
+    let mut compile_opts = args.compile_options(
+        config,
+        CompileMode::Test,
+        Some(&ws),
+        ProfileChecking::Checked,
+    )?;
+
+    compile_opts.build_config.profile_kind = args.get_profile_kind(
+        config,
+        ProfileKind::Custom("test".to_owned()),
+        ProfileChecking::Checked,
+    )?;
 
     // `TESTNAME` is actually an argument of the test binary, but it's
     // important, so we explicitly mention it and reconfigure.
@@ -152,12 +165,15 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     let err = ops::run_tests(&ws, &ops, &test_args)?;
     match err {
         None => Ok(()),
-        Some(err) => Err(match err.exit.as_ref().and_then(|e| e.code()) {
-            Some(i) => CliError::new(
-                failure::format_err!("{}", err.hint(&ws, &ops.compile_opts)),
-                i,
-            ),
-            None => CliError::new(err.into(), 101),
-        }),
+        Some(err) => {
+            let context = failure::format_err!("{}", err.hint(&ws, &ops.compile_opts));
+            let e = match err.exit.as_ref().and_then(|e| e.code()) {
+                // Don't show "process didn't exit successfully" for simple errors.
+                Some(i) if errors::is_simple_exit_code(i) => CliError::new(context, i),
+                Some(i) => CliError::new(err.context(context).into(), i),
+                None => CliError::new(err.context(context).into(), 101),
+            };
+            Err(e)
+        }
     }
 }

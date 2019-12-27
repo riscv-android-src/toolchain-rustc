@@ -124,7 +124,7 @@ impl Constant {
             (&Self::Str(ref ls), &Self::Str(ref rs)) => Some(ls.cmp(rs)),
             (&Self::Char(ref l), &Self::Char(ref r)) => Some(l.cmp(r)),
             (&Self::Int(l), &Self::Int(r)) => {
-                if let ty::Int(int_ty) = cmp_type.sty {
+                if let ty::Int(int_ty) = cmp_type.kind {
                     Some(sext(tcx, l, int_ty).cmp(&sext(tcx, r, int_ty)))
                 } else {
                     Some(l.cmp(&r))
@@ -163,7 +163,7 @@ pub fn lit_to_constant(lit: &LitKind, ty: Option<Ty<'_>>) -> Constant {
         LitKind::Int(n, _) => Constant::Int(n),
         LitKind::Float(ref is, FloatTy::F32) => Constant::F32(is.as_str().parse().unwrap()),
         LitKind::Float(ref is, FloatTy::F64) => Constant::F64(is.as_str().parse().unwrap()),
-        LitKind::FloatUnsuffixed(ref is) => match ty.expect("type of float is known").sty {
+        LitKind::FloatUnsuffixed(ref is) => match ty.expect("type of float is known").kind {
             ty::Float(FloatTy::F32) => Constant::F32(is.as_str().parse().unwrap()),
             ty::Float(FloatTy::F64) => Constant::F64(is.as_str().parse().unwrap()),
             _ => bug!(),
@@ -224,14 +224,14 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
         if let Some((ref cond, ref then, otherwise)) = higher::if_block(&e) {
             return self.ifthenelse(cond, then, otherwise);
         }
-        match e.node {
+        match e.kind {
             ExprKind::Path(ref qpath) => self.fetch_path(qpath, e.hir_id),
             ExprKind::Block(ref block, _) => self.block(block),
             ExprKind::Lit(ref lit) => Some(lit_to_constant(&lit.node, self.tables.expr_ty_opt(e))),
             ExprKind::Array(ref vec) => self.multi(vec).map(Constant::Vec),
             ExprKind::Tup(ref tup) => self.multi(tup).map(Constant::Tuple),
             ExprKind::Repeat(ref value, _) => {
-                let n = match self.tables.expr_ty(e).sty {
+                let n = match self.tables.expr_ty(e).kind {
                     ty::Array(_, n) => n.eval_usize(self.lcx.tcx, self.lcx.param_env),
                     _ => span_bug!(e.span, "typeck error"),
                 };
@@ -247,7 +247,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
                 // We only handle a few const functions for now.
                 if_chain! {
                     if args.is_empty();
-                    if let ExprKind::Path(qpath) = &callee.node;
+                    if let ExprKind::Path(qpath) = &callee.kind;
                     let res = self.tables.qpath_res(qpath, callee.hir_id);
                     if let Some(def_id) = res.opt_def_id();
                     let get_def_path = self.lcx.get_def_path(def_id, );
@@ -288,7 +288,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
             Bool(b) => Some(Bool(!b)),
             Int(value) => {
                 let value = !value;
-                match ty.sty {
+                match ty.kind {
                     ty::Int(ity) => Some(Int(unsext(self.lcx.tcx, value as i128, ity))),
                     ty::Uint(ity) => Some(Int(clip(self.lcx.tcx, value, ity))),
                     _ => None,
@@ -302,7 +302,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
         use self::Constant::*;
         match *o {
             Int(value) => {
-                let ity = match ty.sty {
+                let ity = match ty.kind {
                     ty::Int(ity) => ity,
                     _ => return None,
                 };
@@ -324,7 +324,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
         vec.iter().map(|elem| self.expr(elem)).collect::<Option<_>>()
     }
 
-    /// Lookup a possibly constant expression from a ExprKind::Path.
+    /// Lookup a possibly constant expression from a `ExprKind::Path`.
     fn fetch_path(&mut self, qpath: &QPath, id: HirId) -> Option<Constant> {
         use rustc::mir::interpret::GlobalId;
 
@@ -380,7 +380,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
         let l = self.expr(left)?;
         let r = self.expr(right);
         match (l, r) {
-            (Constant::Int(l), Some(Constant::Int(r))) => match self.tables.expr_ty(left).sty {
+            (Constant::Int(l), Some(Constant::Int(r))) => match self.tables.expr_ty(left).kind {
                 ty::Int(ity) => {
                     let l = sext(self.lcx.tcx, l, ity);
                     let r = sext(self.lcx.tcx, r, ity);
@@ -472,7 +472,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
 pub fn miri_to_const(result: &ty::Const<'_>) -> Option<Constant> {
     use rustc::mir::interpret::{ConstValue, Scalar};
     match result.val {
-        ConstValue::Scalar(Scalar::Raw { data: d, .. }) => match result.ty.sty {
+        ConstValue::Scalar(Scalar::Raw { data: d, .. }) => match result.ty.kind {
             ty::Bool => Some(Constant::Bool(d == 1)),
             ty::Uint(_) | ty::Int(_) => Some(Constant::Int(d)),
             ty::Float(FloatTy::F32) => Some(Constant::F32(f32::from_bits(
@@ -482,7 +482,7 @@ pub fn miri_to_const(result: &ty::Const<'_>) -> Option<Constant> {
                 d.try_into().expect("invalid f64 bit representation"),
             ))),
             ty::RawPtr(type_and_mut) => {
-                if let ty::Uint(_) = type_and_mut.ty.sty {
+                if let ty::Uint(_) = type_and_mut.ty.kind {
                     return Some(Constant::RawPtr(d));
                 }
                 None
@@ -490,8 +490,8 @@ pub fn miri_to_const(result: &ty::Const<'_>) -> Option<Constant> {
             // FIXME: implement other conversions.
             _ => None,
         },
-        ConstValue::Slice { data, start, end } => match result.ty.sty {
-            ty::Ref(_, tam, _) => match tam.sty {
+        ConstValue::Slice { data, start, end } => match result.ty.kind {
+            ty::Ref(_, tam, _) => match tam.kind {
                 ty::Str => String::from_utf8(
                     data.inspect_with_undef_and_ptr_outside_interpreter(start..end)
                         .to_owned(),

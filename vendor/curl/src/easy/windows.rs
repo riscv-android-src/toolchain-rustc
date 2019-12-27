@@ -4,25 +4,27 @@ use libc::c_void;
 
 #[cfg(target_env = "msvc")]
 mod win {
-    use kernel32;
+    extern crate winapi;
+    use self::winapi::ctypes::*;
+    use self::winapi::um::libloaderapi::*;
+    use self::winapi::um::wincrypt::*;
     use schannel::cert_context::ValidUses;
     use schannel::cert_store::CertStore;
     use std::ffi::CString;
     use std::mem;
     use std::ptr;
-    use winapi::{self, c_int, c_long, c_uchar, c_void};
 
     fn lookup(module: &str, symbol: &str) -> Option<*const c_void> {
         unsafe {
             let symbol = CString::new(symbol).unwrap();
             let mut mod_buf: Vec<u16> = module.encode_utf16().collect();
             mod_buf.push(0);
-            let handle = kernel32::GetModuleHandleW(mod_buf.as_mut_ptr());
-            let n = kernel32::GetProcAddress(handle, symbol.as_ptr());
-            if n == ptr::null() {
+            let handle = GetModuleHandleW(mod_buf.as_mut_ptr());
+            let n = GetProcAddress(handle, symbol.as_ptr());
+            if n == ptr::null_mut() {
                 None
             } else {
-                Some(n)
+                Some(n as *const c_void)
             }
         }
     }
@@ -88,7 +90,7 @@ mod win {
         };
 
         let openssl_store = (openssl.SSL_CTX_get_cert_store)(ssl_ctx as *const SSL_CTX);
-        let mut store = match CertStore::open_current_user("ROOT") {
+        let store = match CertStore::open_current_user("ROOT") {
             Ok(s) => s,
             Err(_) => return,
         };
@@ -103,7 +105,7 @@ mod win {
             match valid_uses {
                 ValidUses::All => {}
                 ValidUses::Oids(ref oids) => {
-                    let oid = winapi::wincrypt::szOID_PKIX_KP_SERVER_AUTH.to_owned();
+                    let oid = szOID_PKIX_KP_SERVER_AUTH.to_owned();
                     if !oids.contains(&oid) {
                         continue;
                     }

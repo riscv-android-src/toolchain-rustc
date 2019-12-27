@@ -12,9 +12,8 @@
 
 [package]
 name = "rustc-rayon"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Niko Matsakis <niko@alum.mit.edu>", "Josh Stone <cuviper@gmail.com>"]
-build = "build.rs"
 exclude = ["/ci/*", "/scripts/*", "/.travis.yml", "/appveyor.yml", "/bors.toml"]
 description = "Simple work-stealing parallelism for Rust - fork for rustc"
 documentation = "https://docs.rs/rustc-rayon/"
@@ -24,14 +23,17 @@ categories = ["concurrency"]
 license = "Apache-2.0/MIT"
 repository = "https://github.com/rust-lang/rustc-rayon"
 [dependencies.crossbeam-deque]
-version = "0.2.0"
+version = "0.7"
 
 [dependencies.either]
 version = "1.0"
 default-features = false
 
 [dependencies.rustc-rayon-core]
-version = "0.2"
+version = "0.3"
+[dev-dependencies.doc-comment]
+version = "0.3"
+
 [dev-dependencies.docopt]
 version = "1"
 
@@ -39,7 +41,10 @@ version = "1"
 version = "1"
 
 [dev-dependencies.rand]
-version = "0.5"
+version = "0.6"
+
+[dev-dependencies.rand_xorshift]
+version = "0.1"
 
 [dev-dependencies.serde]
 version = "1"
