@@ -1,5 +1,6 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 
+#![feature(bool_to_option)]
 #![feature(box_patterns)]
 #![feature(core_intrinsics)]
 #![feature(crate_visibility_modifier)]
@@ -24,20 +25,15 @@ extern crate rustc;
 #[macro_use]
 extern crate rustc_data_structures;
 
-pub mod error_codes;
+pub use rmeta::{provide, provide_extern};
 
-mod encoder;
-mod decoder;
 mod dependency_format;
-mod cstore_impl;
 mod foreign_modules;
 mod link_args;
 mod native_libs;
-mod schema;
-mod table;
+mod rmeta;
 
 pub mod creader;
-pub mod cstore;
 pub mod dynamic_lib;
 pub mod locator;
 

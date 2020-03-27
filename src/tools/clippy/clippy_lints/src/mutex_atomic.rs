@@ -3,10 +3,11 @@
 //! This lint is **warn** by default
 
 use crate::utils::{match_type, paths, span_lint};
+use rustc::declare_lint_pass;
 use rustc::hir::Expr;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::{self, Ty};
-use rustc::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_tool_lint;
 use syntax::ast;
 
 declare_clippy_lint! {
@@ -77,7 +78,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Mutex {
     }
 }
 
-fn get_atomic_name(ty: Ty<'_>) -> Option<(&'static str)> {
+fn get_atomic_name(ty: Ty<'_>) -> Option<&'static str> {
     match ty.kind {
         ty::Bool => Some("AtomicBool"),
         ty::Uint(_) => Some("AtomicUsize"),

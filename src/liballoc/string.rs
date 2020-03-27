@@ -367,6 +367,10 @@ impl String {
     /// let s = String::new();
     /// ```
     #[inline]
+    #[cfg_attr(
+        not(bootstrap),
+        rustc_const_stable(feature = "const_string_new", since = "1.32.0"),
+    )]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn new() -> String {
         String { vec: Vec::new() }
@@ -687,7 +691,7 @@ impl String {
     /// checked:
     ///
     /// * The memory at `ptr` needs to have been previously allocated by the
-    ///   same allocator the standard library uses.
+    ///   same allocator the standard library uses, with a required alignment of exactly 1.
     /// * `length` needs to be less than or equal to `capacity`.
     /// * `capacity` needs to be the correct value.
     ///
@@ -1402,7 +1406,9 @@ impl String {
         &mut self.vec
     }
 
-    /// Returns the length of this `String`, in bytes.
+    /// Returns the length of this `String`, in bytes, not [`char`]s or
+    /// graphemes. In other words, it may not be what a human considers the
+    /// length of the string.
     ///
     /// # Examples
     ///
@@ -1410,8 +1416,11 @@ impl String {
     ///
     /// ```
     /// let a = String::from("foo");
-    ///
     /// assert_eq!(a.len(), 3);
+    ///
+    /// let fancy_f = String::from("ƒoo");
+    /// assert_eq!(fancy_f.len(), 4);
+    /// assert_eq!(fancy_f.chars().count(), 3);
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]

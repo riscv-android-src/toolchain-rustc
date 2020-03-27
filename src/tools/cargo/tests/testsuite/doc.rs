@@ -1,3 +1,5 @@
+//! Tests for the `cargo doc` command.
+
 use std::fs::{self, File};
 use std::io::Read;
 use std::str;
@@ -1313,7 +1315,7 @@ fn doc_cap_lints() {
     p.cargo("doc -vv")
         .with_stderr_contains(
             "\
-[WARNING] `[bad_link]` cannot be resolved, ignoring it...
+[WARNING] `[bad_link]` cannot be resolved[..]
 ",
         )
         .run();
@@ -1358,9 +1360,7 @@ fn short_message_format() {
     let p = project().file("src/lib.rs", BAD_INTRA_LINK_LIB).build();
     p.cargo("doc --message-format=short")
         .with_status(101)
-        .with_stderr_contains(
-            "src/lib.rs:4:6: error: `[bad_link]` cannot be resolved, ignoring it...",
-        )
+        .with_stderr_contains("src/lib.rs:4:6: error: `[bad_link]` cannot be resolved[..]")
         .run();
 }
 
@@ -1400,4 +1400,109 @@ fn doc_example() {
         .join("ex1")
         .join("fn.x.html")
         .exists());
+}
+
+#[cargo_test]
+fn bin_private_items() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+        "#,
+        )
+        .file(
+            "src/main.rs",
+            "
+            pub fn foo_pub() {}
+            fn foo_priv() {}
+            struct FooStruct;
+            enum FooEnum {}
+            trait FooTrait {}
+            type FooType = u32;
+            mod foo_mod {}
+
+        ",
+        )
+        .build();
+
+    p.cargo("doc")
+        .with_stderr(
+            "\
+[DOCUMENTING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+
+    assert!(p.root().join("target/doc/foo/index.html").is_file());
+    assert!(p.root().join("target/doc/foo/fn.foo_pub.html").is_file());
+    assert!(p.root().join("target/doc/foo/fn.foo_priv.html").is_file());
+    assert!(p
+        .root()
+        .join("target/doc/foo/struct.FooStruct.html")
+        .is_file());
+    assert!(p.root().join("target/doc/foo/enum.FooEnum.html").is_file());
+    assert!(p
+        .root()
+        .join("target/doc/foo/trait.FooTrait.html")
+        .is_file());
+    assert!(p.root().join("target/doc/foo/type.FooType.html").is_file());
+    assert!(p.root().join("target/doc/foo/foo_mod/index.html").is_file());
+}
+
+#[cargo_test]
+fn bin_private_items_deps() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.0.1"
+            authors = []
+
+            [dependencies.bar]
+            path = "bar"
+        "#,
+        )
+        .file(
+            "src/main.rs",
+            "
+            fn foo_priv() {}
+            pub fn foo_pub() {}
+        ",
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.0.1"))
+        .file(
+            "bar/src/lib.rs",
+            "
+            #[allow(dead_code)]
+            fn bar_priv() {}
+            pub fn bar_pub() {}
+        ",
+        )
+        .build();
+
+    p.cargo("doc")
+        .with_stderr_unordered(
+            "\
+[DOCUMENTING] bar v0.0.1 ([..])
+[CHECKING] bar v0.0.1 ([..])
+[DOCUMENTING] foo v0.0.1 ([CWD])
+[FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
+",
+        )
+        .run();
+
+    assert!(p.root().join("target/doc/foo/index.html").is_file());
+    assert!(p.root().join("target/doc/foo/fn.foo_pub.html").is_file());
+    assert!(p.root().join("target/doc/foo/fn.foo_priv.html").is_file());
+
+    assert!(p.root().join("target/doc/bar/index.html").is_file());
+    assert!(p.root().join("target/doc/bar/fn.bar_pub.html").is_file());
+    assert!(!p.root().join("target/doc/bar/fn.bar_priv.html").exists());
 }

@@ -3,6 +3,8 @@
 #![allow(clippy::blacklisted_name)]
 #![allow(clippy::explicit_iter_loop)]
 #![allow(clippy::redundant_closure)]
+#![allow(clippy::block_in_if_condition_stmt)] // clippy doesn't agree with rustfmt 😂
+#![allow(clippy::inefficient_to_string)] // this causes suggestions that result in `(*s).to_string()`
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::redundant_clone)]
 
@@ -14,8 +16,6 @@ mod bad_config;
 mod bad_manifest_path;
 mod bench;
 mod build;
-mod build_auth;
-mod build_lib;
 mod build_plan;
 mod build_script;
 mod build_script_env;
@@ -45,6 +45,8 @@ mod fix;
 mod freshness;
 mod generate_lockfile;
 mod git;
+mod git_auth;
+mod git_gc;
 mod init;
 mod install;
 mod install_upgrade;
@@ -57,14 +59,15 @@ mod member_errors;
 mod message_format;
 mod metabuild;
 mod metadata;
+mod minimal_versions;
 mod net_config;
 mod new;
 mod offline;
 mod out_dir;
-mod overrides;
 mod package;
 mod patch;
 mod path;
+mod paths;
 mod plugins;
 mod proc_macro;
 mod profile_config;
@@ -78,8 +81,8 @@ mod publish_lockfile;
 mod read_manifest;
 mod registry;
 mod rename_deps;
+mod replace;
 mod required_features;
-mod resolve;
 mod run;
 mod rustc;
 mod rustc_info_cache;
@@ -88,7 +91,6 @@ mod rustdocflags;
 mod rustflags;
 mod search;
 mod shell_quoting;
-mod small_fd_limits;
 mod standard_lib;
 mod test;
 mod timings;

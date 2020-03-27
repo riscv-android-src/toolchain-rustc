@@ -3,6 +3,8 @@
 //! For more details, see the traits [`Pattern`], [`Searcher`],
 //! [`ReverseSearcher`], and [`DoubleEndedSearcher`].
 
+// ignore-tidy-undocumented-unsafe
+
 #![unstable(feature = "pattern",
             reason = "API not fully fleshed out and ready to be stabilized",
             issue = "27721")]
@@ -294,12 +296,7 @@ unsafe impl<'a> Searcher<'a> for CharSearcher<'a> {
     fn next_match(&mut self) -> Option<(usize, usize)> {
         loop {
             // get the haystack after the last character found
-            let bytes = if let Some(slice) = self.haystack.as_bytes()
-                                                 .get(self.finger..self.finger_back) {
-                slice
-            } else {
-                return None;
-            };
+            let bytes = self.haystack.as_bytes().get(self.finger..self.finger_back)?;
             // the last byte of the utf8 encoded needle
             let last_byte = unsafe { *self.utf8_encoded.get_unchecked(self.utf8_size - 1) };
             if let Some(index) = memchr::memchr(last_byte, bytes) {
@@ -448,21 +445,13 @@ impl<'a> Pattern<'a> for char {
 
     #[inline]
     fn is_prefix_of(self, haystack: &'a str) -> bool {
-        if let Some(ch) = haystack.chars().next() {
-            self == ch
-        } else {
-            false
-        }
+        self.encode_utf8(&mut [0u8; 4]).is_prefix_of(haystack)
     }
 
     #[inline]
     fn is_suffix_of(self, haystack: &'a str) -> bool where Self::Searcher: ReverseSearcher<'a>
     {
-        if let Some(ch) = haystack.chars().next_back() {
-            self == ch
-        } else {
-            false
-        }
+        self.encode_utf8(&mut [0u8; 4]).is_suffix_of(haystack)
     }
 }
 
@@ -713,16 +702,13 @@ impl<'a, 'b> Pattern<'a> for &'b str {
     /// Checks whether the pattern matches at the front of the haystack
     #[inline]
     fn is_prefix_of(self, haystack: &'a str) -> bool {
-        haystack.is_char_boundary(self.len()) &&
-            self == &haystack[..self.len()]
+        haystack.as_bytes().starts_with(self.as_bytes())
     }
 
     /// Checks whether the pattern matches at the back of the haystack
     #[inline]
     fn is_suffix_of(self, haystack: &'a str) -> bool {
-        self.len() <= haystack.len() &&
-            haystack.is_char_boundary(haystack.len() - self.len()) &&
-            self == &haystack[haystack.len() - self.len()..]
+        haystack.as_bytes().ends_with(self.as_bytes())
     }
 }
 

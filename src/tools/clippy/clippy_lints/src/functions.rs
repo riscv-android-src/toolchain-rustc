@@ -1,14 +1,15 @@
 use crate::utils::{
     attrs::is_proc_macro, iter_input_pats, match_def_path, qpath_res, return_ty, snippet, snippet_opt,
-    span_help_and_lint, span_lint, span_lint_and_then, type_is_unsafe_function,
+    span_help_and_lint, span_lint, span_lint_and_then, trait_ref_of_method, type_is_unsafe_function,
 };
 use matches::matches;
 use rustc::hir::{self, def::Res, def_id::DefId, intravisit};
+use rustc::impl_lint_pass;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty::{self, Ty};
-use rustc::{declare_tool_lint, impl_lint_pass};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use rustc_target::spec::abi::Abi;
 use syntax::ast::Attribute;
 use syntax::source_map::Span;
@@ -208,7 +209,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
             match kind {
                 hir::intravisit::FnKind::Method(
                     _,
-                    &hir::MethodSig {
+                    &hir::FnSig {
                         header: hir::FnHeader { abi: Abi::Rust, .. },
                         ..
                     },
@@ -228,20 +229,20 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
 
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
         let attr = must_use_attr(&item.attrs);
-        if let hir::ItemKind::Fn(ref decl, ref _header, ref _generics, ref body_id) = item.kind {
+        if let hir::ItemKind::Fn(ref sig, ref _generics, ref body_id) = item.kind {
             if let Some(attr) = attr {
-                let fn_header_span = item.span.with_hi(decl.output.span().hi());
-                check_needless_must_use(cx, decl, item.hir_id, item.span, fn_header_span, attr);
+                let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
+                check_needless_must_use(cx, &sig.decl, item.hir_id, item.span, fn_header_span, attr);
                 return;
             }
             if cx.access_levels.is_exported(item.hir_id) && !is_proc_macro(&item.attrs) {
                 check_must_use_candidate(
                     cx,
-                    decl,
+                    &sig.decl,
                     cx.tcx.hir().body(*body_id),
                     item.span,
                     item.hir_id,
-                    item.span.with_hi(decl.output.span().hi()),
+                    item.span.with_hi(sig.decl.output.span().hi()),
                     "this function could have a `#[must_use]` attribute",
                 );
             }
@@ -254,7 +255,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
             if let Some(attr) = attr {
                 let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
                 check_needless_must_use(cx, &sig.decl, item.hir_id, item.span, fn_header_span, attr);
-            } else if cx.access_levels.is_exported(item.hir_id) && !is_proc_macro(&item.attrs) {
+            } else if cx.access_levels.is_exported(item.hir_id)
+                && !is_proc_macro(&item.attrs)
+                && trait_ref_of_method(cx, item.hir_id).is_none()
+            {
                 check_must_use_candidate(
                     cx,
                     &sig.decl,
@@ -445,6 +449,7 @@ fn check_must_use_candidate<'a, 'tcx>(
         || mutates_static(cx, body)
         || in_external_macro(cx.sess(), item_span)
         || returns_unit(decl)
+        || !cx.access_levels.is_exported(item_id)
         || is_must_use_ty(cx, return_ty(cx, item_id))
     {
         return;
@@ -548,7 +553,7 @@ fn is_mutable_ty<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>, span: Span,
         Tuple(ref substs) => substs.types().any(|ty| is_mutable_ty(cx, ty, span, tys)),
         Array(ty, _) | Slice(ty) => is_mutable_ty(cx, ty, span, tys),
         RawPtr(ty::TypeAndMut { ty, mutbl }) | Ref(_, ty, mutbl) => {
-            mutbl == hir::Mutability::MutMutable || is_mutable_ty(cx, ty, span, tys)
+            mutbl == hir::Mutability::Mutable || is_mutable_ty(cx, ty, span, tys)
         },
         // calling something constitutes a side effect, so return true on all callables
         // also never calls need not be used, so return true for them, too
@@ -653,7 +658,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for StaticMutVisitor<'a, 'tcx> {
                     tys.clear();
                 }
             },
-            Assign(ref target, _) | AssignOp(_, ref target, _) | AddrOf(hir::Mutability::MutMutable, ref target) => {
+            Assign(ref target, _) | AssignOp(_, ref target, _) | AddrOf(_, hir::Mutability::Mutable, ref target) => {
                 self.mutates_static |= is_mutated_static(self.cx, target)
             },
             _ => {},

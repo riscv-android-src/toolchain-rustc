@@ -92,42 +92,6 @@ information from `.cargo/config`. See the rustc issue for more information.
 cargo test --target foo -Zdoctest-xcompile
 ```
 
-### Profile Overrides
-* Tracking Issue: [rust-lang/rust#48683](https://github.com/rust-lang/rust/issues/48683)
-* RFC: [#2282](https://github.com/rust-lang/rfcs/blob/master/text/2282-profile-dependencies.md)
-
-Profiles can be overridden for specific packages and custom build scripts.
-The general format looks like this:
-
-```toml
-cargo-features = ["profile-overrides"]
-
-[package]
-...
-
-[profile.dev]
-opt-level = 0
-debug = true
-
-# the `image` crate will be compiled with -Copt-level=3
-[profile.dev.package.image]
-opt-level = 3
-
-# All dependencies (but not this crate itself or any workspace member)
-# will be compiled with -Copt-level=2 . This includes build dependencies.
-[profile.dev.package."*"]
-opt-level = 2
-
-# Build scripts or proc-macros and their dependencies will be compiled with
-# `-Copt-level=3`. By default, they use the same rules as the rest of the
-# profile.
-[profile.dev.build-override]
-opt-level = 3
-```
-
-Overrides can be specified for any profile, including custom named profiles.
-
-
 ### Custom named profiles
 
 * Tracking Issue: [rust-lang/cargo#6988](https://github.com/rust-lang/cargo/issues/6988)
@@ -279,38 +243,6 @@ extra-info = "qwerty"
 
 Metabuild packages should have a public function called `metabuild` that
 performs the same actions as a regular `build.rs` script would perform.
-
-### install-upgrade
-* Tracking Issue: [#6797](https://github.com/rust-lang/cargo/issues/6797)
-
-The `install-upgrade` feature changes the behavior of `cargo install` so that
-it will reinstall a package if it is not "up-to-date". If it is "up-to-date",
-it will do nothing and exit with success instead of failing. Example:
-
-```
-cargo +nightly install foo -Z install-upgrade
-```
-
-Cargo tracks some information to determine if a package is "up-to-date",
-including:
-
-- The package version and source.
-- The set of binary names installed.
-- The chosen features.
-- The release mode (`--debug`).
-- The target (`--target`).
-
-If any of these values change, then Cargo will reinstall the package.
-
-Installation will still fail if a different package installs a binary of the
-same name. `--force` may be used to unconditionally reinstall the package.
-
-Installing with `--path` will always build and install, unless there are
-conflicting binaries from another package.
-
-Additionally, a new flag `--no-track` is available to prevent `cargo install`
-from writing tracking information in `$CARGO_HOME` about which packages are
-installed.
 
 ### public-dependency
 * Tracking Issue: [#44663](https://github.com/rust-lang/rust/issues/44663)

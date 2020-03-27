@@ -1,5 +1,5 @@
-#![feature(never_type)]
 #![warn(clippy::result_map_unit_fn)]
+#![feature(never_type)]
 #![allow(unused)]
 
 fn do_nothing<T>(_: T) {}

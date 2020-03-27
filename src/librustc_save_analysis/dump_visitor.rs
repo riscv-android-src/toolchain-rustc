@@ -24,7 +24,7 @@ use std::path::Path;
 use std::env;
 
 use syntax::ast::{self, Attribute, NodeId, PatKind};
-use syntax::parse::token;
+use syntax::token;
 use syntax::visit::{self, Visitor};
 use syntax::print::pprust::{
     bounds_to_string,
@@ -272,7 +272,7 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
 
     fn process_method(
         &mut self,
-        sig: &'l ast::MethodSig,
+        sig: &'l ast::FnSig,
         body: Option<&'l ast::Block>,
         id: ast::NodeId,
         ident: ast::Ident,
@@ -1133,12 +1133,6 @@ impl<'l, 'tcx> DumpVisitor<'l, 'tcx> {
                 // trait.
                 self.visit_ty(ty)
             }
-            ast::ImplItemKind::OpaqueTy(ref bounds) => {
-                // FIXME: uses of the assoc type should ideally point to this
-                // 'def' and the name here should be a ref to the def in the
-                // trait.
-                self.process_bounds(&bounds);
-            }
             ast::ImplItemKind::Macro(_) => {}
         }
     }
@@ -1334,8 +1328,8 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
                     );
                 }
             }
-            Fn(ref decl, ref header, ref ty_params, ref body) => {
-                self.process_fn(item, &decl, &header, ty_params, &body)
+            Fn(ref sig, ref ty_params, ref body) => {
+                self.process_fn(item, &sig.decl, &sig.header, ty_params, &body)
             }
             Static(ref typ, _, ref expr) => self.process_static_or_const_item(item, typ, expr),
             Const(ref typ, ref expr) => self.process_static_or_const_item(item, &typ, &expr),
@@ -1382,38 +1376,6 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
                 }
 
                 self.visit_ty(&ty);
-                self.process_generic_params(ty_params, &qualname, item.id);
-            }
-            OpaqueTy(ref bounds, ref ty_params) => {
-                let qualname = format!("::{}",
-                    self.tcx.def_path_str(self.tcx.hir().local_def_id_from_node_id(item.id)));
-
-                let value = String::new();
-                if !self.span.filter_generated(item.ident.span) {
-                    let span = self.span_from_span(item.ident.span);
-                    let id = id_from_node_id(item.id, &self.save_ctxt);
-                    let hir_id = self.tcx.hir().node_to_hir_id(item.id);
-
-                    self.dumper.dump_def(
-                        &access_from!(self.save_ctxt, item, hir_id),
-                        Def {
-                            kind: DefKind::Type,
-                            id,
-                            span,
-                            name: item.ident.to_string(),
-                            qualname: qualname.clone(),
-                            value,
-                            parent: None,
-                            children: vec![],
-                            decl_id: None,
-                            docs: self.save_ctxt.docs_for_attrs(&item.attrs),
-                            sig: sig::item_signature(item, &self.save_ctxt),
-                            attributes: lower_attributes(item.attrs.clone(), &self.save_ctxt),
-                        },
-                    );
-                }
-
-                self.process_bounds(bounds);
                 self.process_generic_params(ty_params, &qualname, item.id);
             }
             Mac(_) => (),
@@ -1551,14 +1513,6 @@ impl<'l, 'tcx> Visitor<'l> for DumpVisitor<'l, 'tcx> {
             // where we'll index the idents involved just by continuing to walk.
             _ => visit::walk_expr(self, ex),
         }
-    }
-
-    fn visit_mac(&mut self, mac: &'l ast::Mac) {
-        // These shouldn't exist in the AST at this point, log a span bug.
-        span_bug!(
-            mac.span,
-            "macro invocation should have been expanded out of AST"
-        );
     }
 
     fn visit_pat(&mut self, p: &'l ast::Pat) {

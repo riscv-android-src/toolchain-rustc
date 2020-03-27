@@ -30,6 +30,8 @@ use syntax_pos::Span;
 use std::collections::BTreeSet;
 use std::mem::replace;
 
+use rustc_error_codes::*;
+
 mod diagnostics;
 
 type Res = def::Res<NodeId>;
@@ -67,6 +69,7 @@ impl PatternSource {
 /// Denotes whether the context for the set of already bound bindings is a `Product`
 /// or `Or` context. This is used in e.g., `fresh_binding` and `resolve_pattern_inner`.
 /// See those functions for more information.
+#[derive(PartialEq)]
 enum PatBoundCtx {
     /// A product pattern context, e.g., `Variant(a, b)`.
     Product,
@@ -493,11 +496,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LateResolutionVisitor<'a, '_> {
                 GenericParamKind::Lifetime { .. } => None,
                 GenericParamKind::Type { ref default, .. } => {
                     found_default |= default.is_some();
-                    if found_default {
-                        Some((Ident::with_dummy_span(param.ident.name), Res::Err))
-                    } else {
-                        None
-                    }
+                    found_default.then_some((Ident::with_dummy_span(param.ident.name), Res::Err))
                 }
             }));
 
@@ -542,6 +541,52 @@ impl<'a, 'tcx> Visitor<'tcx> for LateResolutionVisitor<'a, '_> {
         }
         for p in &generics.where_clause.predicates {
             self.visit_where_predicate(p);
+        }
+    }
+
+    fn visit_generic_arg(&mut self, arg: &'tcx GenericArg) {
+        debug!("visit_generic_arg({:?})", arg);
+        match arg {
+            GenericArg::Type(ref ty) => {
+                // We parse const arguments as path types as we cannot distiguish them durring
+                // parsing. We try to resolve that ambiguity by attempting resolution the type
+                // namespace first, and if that fails we try again in the value namespace. If
+                // resolution in the value namespace succeeds, we have an generic const argument on
+                // our hands.
+                if let TyKind::Path(ref qself, ref path) = ty.kind {
+                    // We cannot disambiguate multi-segment paths right now as that requires type
+                    // checking.
+                    if path.segments.len() == 1 && path.segments[0].args.is_none() {
+                        let mut check_ns = |ns| self.resolve_ident_in_lexical_scope(
+                            path.segments[0].ident, ns, None, path.span
+                        ).is_some();
+
+                        if !check_ns(TypeNS) && check_ns(ValueNS) {
+                            // This must be equivalent to `visit_anon_const`, but we cannot call it
+                            // directly due to visitor lifetimes so we have to copy-paste some code.
+                            self.with_constant_rib(|this| {
+                                this.smart_resolve_path(
+                                    ty.id,
+                                    qself.as_ref(),
+                                    path,
+                                    PathSource::Expr(None)
+                                );
+
+                                if let Some(ref qself) = *qself {
+                                    this.visit_ty(&qself.ty);
+                                }
+                                this.visit_path(path, ty.id);
+                            });
+
+                            return;
+                        }
+                    }
+                }
+
+                self.visit_ty(ty);
+            }
+            GenericArg::Lifetime(lt) => self.visit_lifetime(lt),
+            GenericArg::Const(ct) => self.visit_anon_const(ct),
         }
     }
 }
@@ -730,8 +775,7 @@ impl<'a, 'b> LateResolutionVisitor<'a, '_> {
 
         match item.kind {
             ItemKind::TyAlias(_, ref generics) |
-            ItemKind::OpaqueTy(_, ref generics) |
-            ItemKind::Fn(_, _, ref generics, _) => {
+            ItemKind::Fn(_, ref generics, _) => {
                 self.with_generic_param_rib(generics, ItemRibKind(HasGenericParams::Yes),
                                             |this| visit::walk_item(this, item));
             }
@@ -1085,18 +1129,6 @@ impl<'a, 'b> LateResolutionVisitor<'a, '_> {
 
                                                 this.visit_ty(ty);
                                             }
-                                            ImplItemKind::OpaqueTy(ref bounds) => {
-                                                // If this is a trait impl, ensure the type
-                                                // exists in trait
-                                                this.check_trait_item(impl_item.ident,
-                                                                      TypeNS,
-                                                                      impl_item.span,
-                                                    |n, s| TypeNotMemberOfTrait(n, s));
-
-                                                for bound in bounds {
-                                                    this.visit_param_bound(bound);
-                                                }
-                                            }
                                             ImplItemKind::Macro(_) =>
                                                 panic!("unexpanded macro in resolve!"),
                                         }
@@ -1382,21 +1414,12 @@ impl<'a, 'b> LateResolutionVisitor<'a, '_> {
         // later passes make about or-patterns.)
         let ident = ident.modern_and_legacy();
 
-        // Walk outwards the stack of products / or-patterns and
-        // find out if the identifier has been bound in any of these.
-        let mut already_bound_and = false;
-        let mut already_bound_or = false;
-        for (is_sum, set) in bindings.iter_mut().rev() {
-            match (is_sum, set.get(&ident).cloned()) {
-                // Already bound in a product pattern, e.g. `(a, a)` which is not allowed.
-                (PatBoundCtx::Product, Some(..)) => already_bound_and = true,
-                // Already bound in an or-pattern, e.g. `V1(a) | V2(a)`.
-                // This is *required* for consistency which is checked later.
-                (PatBoundCtx::Or, Some(..)) => already_bound_or = true,
-                // Not already bound here.
-                _ => {}
-            }
-        }
+        let mut bound_iter = bindings.iter().filter(|(_, set)| set.contains(&ident));
+        // Already bound in a product pattern? e.g. `(a, a)` which is not allowed.
+        let already_bound_and = bound_iter.clone().any(|(ctx, _)| *ctx == PatBoundCtx::Product);
+        // Already bound in an or-pattern? e.g. `V1(a) | V2(a)`.
+        // This is *required* for consistency which is checked later.
+        let already_bound_or = bound_iter.any(|(ctx, _)| *ctx == PatBoundCtx::Or);
 
         if already_bound_and {
             // Overlap in a product pattern somewhere; report an error.
@@ -1539,25 +1562,7 @@ impl<'a, 'b> LateResolutionVisitor<'a, '_> {
                 if is_expected(partial_res.base_res()) || partial_res.base_res() == Res::Err {
                     partial_res
                 } else {
-                    // Add a temporary hack to smooth the transition to new struct ctor
-                    // visibility rules. See #38932 for more details.
-                    let mut res = None;
-                    if let Res::Def(DefKind::Struct, def_id) = partial_res.base_res() {
-                        if let Some((ctor_res, ctor_vis))
-                                = self.r.struct_constructors.get(&def_id).cloned() {
-                            if is_expected(ctor_res) &&
-                               self.r.is_accessible_from(ctor_vis, self.parent_scope.module) {
-                                let lint = lint::builtin::LEGACY_CONSTRUCTOR_VISIBILITY;
-                                self.r.lint_buffer.buffer_lint(lint, id, span,
-                                    "private struct constructors are not usable through \
-                                     re-exports in outer modules",
-                                );
-                                res = Some(PartialRes::new(ctor_res));
-                            }
-                        }
-                    }
-
-                    res.unwrap_or_else(|| report_errors(self, Some(partial_res.base_res())))
+                    report_errors(self, Some(partial_res.base_res()))
                 }
             }
             Some(partial_res) if source.defer_to_typeck() => {
@@ -1783,7 +1788,9 @@ impl<'a, 'b> LateResolutionVisitor<'a, '_> {
 
     fn with_resolved_label(&mut self, label: Option<Label>, id: NodeId, f: impl FnOnce(&mut Self)) {
         if let Some(label) = label {
-            self.diagnostic_metadata.unused_labels.insert(id, label.ident.span);
+            if label.ident.as_str().as_bytes()[1] != b'_' {
+                self.diagnostic_metadata.unused_labels.insert(id, label.ident.span);
+            }
             self.with_label_rib(NormalRibKind, |this| {
                 let ident = label.ident.modern_and_legacy();
                 this.label_ribs.last_mut().unwrap().bindings.insert(ident, id);
@@ -1876,7 +1883,7 @@ impl<'a, 'b> LateResolutionVisitor<'a, '_> {
                                     None
                                 }
                             });
-                            find_best_match_for_name(names, &*ident.as_str(), None)
+                            find_best_match_for_name(names, &ident.as_str(), None)
                         });
                         self.r.record_partial_res(expr.id, PartialRes::new(Res::Err));
                         self.r.report_error(

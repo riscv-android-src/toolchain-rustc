@@ -1,3 +1,5 @@
+//! Tests for the `cargo update` command.
+
 use std::fs::File;
 use std::io::prelude::*;
 
@@ -525,6 +527,12 @@ fn update_precise_first_run() {
         ],
         "deps": [
           {
+            "dep_kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ],
             "name": "serde",
             "pkg": "serde 0.2.0 (registry+https://github.com/rust-lang/crates.io-index)"
           }
@@ -572,7 +580,7 @@ fn preserve_top_comment() {
     let mut lines = lockfile.lines().collect::<Vec<_>>();
     lines.insert(2, "# some other comment");
     let mut lockfile = lines.join("\n");
-    lockfile.push_str("\n"); // .lines/.join loses the last newline
+    lockfile.push_str("\n\n"); // .lines/.join loses the last newline
     println!("saving Cargo.lock contents:\n{}", lockfile);
 
     p.change_file("Cargo.lock", &lockfile);

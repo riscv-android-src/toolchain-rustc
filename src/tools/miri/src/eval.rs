@@ -1,18 +1,15 @@
 //! Main evaluator loop and setting up the initial stack frame.
 
+use std::ffi::OsStr;
+
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 use rustc::hir::def_id::DefId;
-use rustc::ty::layout::{Align, LayoutOf, Size};
+use rustc::ty::layout::{LayoutOf, Size};
 use rustc::ty::{self, TyCtxt};
-use syntax::source_map::DUMMY_SP;
 
-use crate::{
-    struct_error, EnvVars, Evaluator, FnVal, HelpersEvalContextExt, InterpCx, InterpError,
-    InterpResult, MemoryExtra, MiriMemoryKind, Pointer, Scalar, StackPopCleanup, Tag,
-    TlsEvalContextExt,
-};
+use crate::*;
 
 /// Configuration needed to spawn a Miri instance.
 #[derive(Clone)]
@@ -21,6 +18,8 @@ pub struct MiriConfig {
     pub validate: bool,
     /// Determines if communication with the host environment is enabled.
     pub communicate: bool,
+    /// Determines if memory leaks should be ignored.
+    pub ignore_leaks: bool,
     /// Environment variables that should always be isolated from the host.
     pub excluded_env_vars: Vec<String>,
     /// Command-line arguments passed to the interpreted program.
@@ -29,26 +28,32 @@ pub struct MiriConfig {
     pub seed: Option<u64>,
 }
 
-// Used by priroda.
+/// Details of premature program termination.
+pub enum TerminationInfo {
+    Exit(i64),
+    Abort,
+}
+
+/// Returns a freshly created `InterpCx`, along with an `MPlaceTy` representing
+/// the location where the return value of the `start` lang item will be
+/// written to.
+/// Public because this is also used by `priroda`.
 pub fn create_ecx<'mir, 'tcx: 'mir>(
     tcx: TyCtxt<'tcx>,
     main_id: DefId,
     config: MiriConfig,
-) -> InterpResult<'tcx, InterpCx<'mir, 'tcx, Evaluator<'tcx>>> {
+) -> InterpResult<'tcx, (InterpCx<'mir, 'tcx, Evaluator<'tcx>>, MPlaceTy<'tcx, Tag>)> {
     let mut ecx = InterpCx::new(
         tcx.at(syntax::source_map::DUMMY_SP),
         ty::ParamEnv::reveal_all(),
         Evaluator::new(config.communicate),
-        MemoryExtra::new(
-            StdRng::seed_from_u64(config.seed.unwrap_or(0)),
-            config.validate,
-        ),
+        MemoryExtra::new(StdRng::seed_from_u64(config.seed.unwrap_or(0)), config.validate),
     );
     // Complete initialization.
     EnvVars::init(&mut ecx, config.excluded_env_vars);
 
     // Setup first stack-frame
-    let main_instance = ty::Instance::mono(ecx.tcx.tcx, main_id);
+    let main_instance = ty::Instance::mono(tcx, main_id);
     let main_mir = ecx.load_mir(main_instance.def, None)?;
 
     if !main_mir.return_ty().is_unit() || main_mir.arg_count != 0 {
@@ -59,138 +64,120 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     let main_ret_ty = tcx.fn_sig(main_id).output();
     let main_ret_ty = main_ret_ty.no_bound_vars().unwrap();
     let start_instance = ty::Instance::resolve(
-        ecx.tcx.tcx,
+        tcx,
         ty::ParamEnv::reveal_all(),
         start_id,
-        ecx.tcx
-            .mk_substs(::std::iter::once(ty::subst::GenericArg::from(main_ret_ty))),
+        tcx.mk_substs(::std::iter::once(ty::subst::GenericArg::from(main_ret_ty))),
     )
     .unwrap();
-    let start_mir = ecx.load_mir(start_instance.def, None)?;
-
-    if start_mir.arg_count != 3 {
-        bug!(
-            "'start' lang item should have three arguments, but has {}",
-            start_mir.arg_count
-        );
-    }
-
-    // Return value (in static memory so that it does not count as leak).
-    let ret = ecx.layout_of(start_mir.return_ty())?;
-    let ret_ptr = ecx.allocate(ret, MiriMemoryKind::Static.into());
-
-    // Push our stack frame.
-    ecx.push_stack_frame(
-        start_instance,
-        // There is no call site.
-        DUMMY_SP,
-        start_mir,
-        Some(ret_ptr.into()),
-        StackPopCleanup::None { cleanup: true },
-    )?;
-
-    let mut args = ecx.frame().body.args_iter();
 
     // First argument: pointer to `main()`.
     let main_ptr = ecx
         .memory
         .create_fn_alloc(FnVal::Instance(main_instance));
-    let dest = ecx.local_place(args.next().unwrap())?;
-    ecx.write_scalar(Scalar::Ptr(main_ptr), dest)?;
-
-    // Second argument (argc): `1`.
-    let dest = ecx.local_place(args.next().unwrap())?;
-    let argc = Scalar::from_uint(config.args.len() as u128, dest.layout.size);
-    ecx.write_scalar(argc, dest)?;
-    // Store argc for macOS's `_NSGetArgc`.
-    {
-        let argc_place = ecx.allocate(dest.layout, MiriMemoryKind::Env.into());
-        ecx.write_scalar(argc, argc_place.into())?;
-        ecx.machine.argc = Some(argc_place.ptr.to_ptr()?);
-    }
-
+    // Second argument (argc): length of `config.args`.
+    let argc = Scalar::from_uint(config.args.len() as u128, ecx.pointer_size());
     // Third argument (`argv`): created from `config.args`.
-    let dest = ecx.local_place(args.next().unwrap())?;
-    // For Windows, construct a command string with all the aguments.
-    let mut cmd = String::new();
-    for arg in config.args.iter() {
-        if !cmd.is_empty() {
-            cmd.push(' ');
+    let argv = {
+        // Put each argument in memory, collect pointers.
+        let mut argvs = Vec::<Scalar<Tag>>::new();
+        for arg in config.args.iter() {
+            // Make space for `0` terminator.
+            let size = arg.len() as u64 + 1;
+            let arg_type = tcx.mk_array(tcx.types.u8, size);
+            let arg_place = ecx.allocate(ecx.layout_of(arg_type)?, MiriMemoryKind::Env.into());
+            ecx.write_os_str_to_c_str(OsStr::new(arg), arg_place.ptr, size)?;
+            argvs.push(arg_place.ptr);
         }
-        cmd.push_str(&*shell_escape::windows::escape(arg.as_str().into()));
-    }
-    // Don't forget `0` terminator.
-    cmd.push(std::char::from_u32(0).unwrap());
-    // Collect the pointers to the individual strings.
-    let mut argvs = Vec::<Pointer<Tag>>::new();
-    for arg in config.args {
-        // Add `0` terminator.
-        let mut arg = arg.into_bytes();
-        arg.push(0);
-        argvs.push(
-            ecx.memory
-                .allocate_static_bytes(arg.as_slice(), MiriMemoryKind::Static.into()),
-        );
-    }
-    // Make an array with all these pointers, in the Miri memory.
-    let argvs_layout = ecx.layout_of(
-        ecx.tcx
-            .mk_array(ecx.tcx.mk_imm_ptr(ecx.tcx.types.u8), argvs.len() as u64),
-    )?;
-    let argvs_place = ecx.allocate(argvs_layout, MiriMemoryKind::Env.into());
-    for (idx, arg) in argvs.into_iter().enumerate() {
-        let place = ecx.mplace_field(argvs_place, idx as u64)?;
-        ecx.write_scalar(Scalar::Ptr(arg), place.into())?;
-    }
-    ecx.memory
-        .mark_immutable(argvs_place.ptr.assert_ptr().alloc_id)?;
-    // Write a pointer to that place as the argument.
-    let argv = argvs_place.ptr;
-    ecx.write_scalar(argv, dest)?;
-    // Store `argv` for macOS `_NSGetArgv`.
-    {
-        let argv_place = ecx.allocate(dest.layout, MiriMemoryKind::Env.into());
-        ecx.write_scalar(argv, argv_place.into())?;
-        ecx.machine.argv = Some(argv_place.ptr.to_ptr()?);
-    }
-    // Store command line as UTF-16 for Windows `GetCommandLineW`.
-    {
-        let cmd_utf16: Vec<u16> = cmd.encode_utf16().collect();
-        let cmd_ptr = ecx.memory.allocate(
-            Size::from_bytes(cmd_utf16.len() as u64 * 2),
-            Align::from_bytes(2).unwrap(),
-            MiriMemoryKind::Env.into(),
-        );
-        ecx.machine.cmd_line = Some(cmd_ptr);
-        // Store the UTF-16 string. We just allocated so we know the bounds are fine.
-        let char_size = Size::from_bytes(2);
-        let cmd_alloc = ecx.memory.get_mut(cmd_ptr.alloc_id)?;
-        let mut cur_ptr = cmd_ptr;
-        for &c in cmd_utf16.iter() {
-            cmd_alloc.write_scalar(
-                &*ecx.tcx,
-                cur_ptr,
-                Scalar::from_uint(c, char_size).into(),
-                char_size,
-            )?;
-            cur_ptr = cur_ptr.offset(char_size, &*ecx.tcx)?;
+        // Make an array with all these pointers, in the Miri memory.
+        let argvs_layout = ecx.layout_of(
+            tcx.mk_array(tcx.mk_imm_ptr(tcx.types.u8), argvs.len() as u64),
+        )?;
+        let argvs_place = ecx.allocate(argvs_layout, MiriMemoryKind::Env.into());
+        for (idx, arg) in argvs.into_iter().enumerate() {
+            let place = ecx.mplace_field(argvs_place, idx as u64)?;
+            ecx.write_scalar(arg, place.into())?;
         }
-    }
+        ecx.memory
+            .mark_immutable(argvs_place.ptr.assert_ptr().alloc_id)?;
+        // A pointer to that place is the 3rd argument for main.
+        let argv = argvs_place.ptr;
+        // Store `argc` and `argv` for macOS `_NSGetArg{c,v}`.
+        {
+            let argc_place = ecx.allocate(
+                ecx.layout_of(tcx.types.isize)?,
+                MiriMemoryKind::Env.into(),
+            );
+            ecx.write_scalar(argc, argc_place.into())?;
+            ecx.machine.argc = Some(argc_place.ptr);
 
-    args.next().expect_none("start lang item has more arguments than expected");
+            let argv_place = ecx.allocate(
+                ecx.layout_of(tcx.mk_imm_ptr(tcx.types.unit))?,
+                MiriMemoryKind::Env.into(),
+            );
+            ecx.write_scalar(argv, argv_place.into())?;
+            ecx.machine.argv = Some(argv_place.ptr);
+        }
+        // Store command line as UTF-16 for Windows `GetCommandLineW`.
+        {
+            // Construct a command string with all the aguments.
+            let mut cmd = String::new();
+            for arg in config.args.iter() {
+                if !cmd.is_empty() {
+                    cmd.push(' ');
+                }
+                cmd.push_str(&*shell_escape::windows::escape(arg.as_str().into()));
+            }
+            // Don't forget `0` terminator.
+            cmd.push(std::char::from_u32(0).unwrap());
+
+            let cmd_utf16: Vec<u16> = cmd.encode_utf16().collect();
+            let cmd_type = tcx.mk_array(tcx.types.u16, cmd_utf16.len() as u64);
+            let cmd_place = ecx.allocate(ecx.layout_of(cmd_type)?, MiriMemoryKind::Env.into());
+            ecx.machine.cmd_line = Some(cmd_place.ptr);
+            // Store the UTF-16 string. We just allocated so we know the bounds are fine.
+            let char_size = Size::from_bytes(2);
+            for (idx, &c) in cmd_utf16.iter().enumerate() {
+                let place = ecx.mplace_field(cmd_place, idx as u64)?;
+                ecx.write_scalar(Scalar::from_uint(c, char_size), place.into())?;
+            }
+        }
+        argv
+    };
+
+    // Return place (in static memory so that it does not count as leak).
+    let ret_place = ecx.allocate(
+        ecx.layout_of(tcx.types.isize)?,
+        MiriMemoryKind::Env.into(),
+    );
+    // Call start function.
+    ecx.call_function(
+        start_instance,
+        &[main_ptr.into(), argc.into(), argv.into()],
+        Some(ret_place.into()),
+        StackPopCleanup::None { cleanup: true },
+    )?;
 
     // Set the last_error to 0
-    let errno_layout = ecx.layout_of(ecx.tcx.types.u32)?;
-    let errno_place = ecx.allocate(errno_layout, MiriMemoryKind::Static.into());
+    let errno_layout = ecx.layout_of(tcx.types.u32)?;
+    let errno_place = ecx.allocate(errno_layout, MiriMemoryKind::Env.into());
     ecx.write_scalar(Scalar::from_u32(0), errno_place.into())?;
     ecx.machine.last_error = Some(errno_place);
 
-    Ok(ecx)
+    Ok((ecx, ret_place))
 }
 
-pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) {
-    let mut ecx = match create_ecx(tcx, main_id, config) {
-        Ok(ecx) => ecx,
+/// Evaluates the main function specified by `main_id`.
+/// Returns `Some(return_code)` if program executed completed.
+/// Returns `None` if an evaluation error occured.
+pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) -> Option<i64> {
+    // FIXME: We always ignore leaks on some platforms where we do not
+    // correctly implement TLS destructors.
+    let target_os = tcx.sess.target.target.target_os.to_lowercase();
+    let ignore_leaks = config.ignore_leaks || target_os == "windows" || target_os == "macos";
+
+    let (mut ecx, ret_place) = match create_ecx(tcx, main_id, config) {
+        Ok(v) => v,
         Err(mut err) => {
             err.print_backtrace();
             panic!("Miri initialziation error: {}", err.kind)
@@ -198,42 +185,53 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) {
     };
 
     // Perform the main execution.
-    let res: InterpResult<'_> = (|| {
+    let res: InterpResult<'_, i64> = (|| {
         ecx.run()?;
-        ecx.run_tls_dtors()
+        // Read the return code pointer *before* we run TLS destructors, to assert
+        // that it was written to by the time that `start` lang item returned.
+        let return_code = ecx.read_scalar(ret_place.into())?.not_undef()?.to_machine_isize(&ecx)?;
+        ecx.run_tls_dtors()?;
+        Ok(return_code)
     })();
 
     // Process the result.
     match res {
-        Ok(()) => {
-            let leaks = ecx.memory.leak_report();
-            // Disable the leak test on some platforms where we do not
-            // correctly implement TLS destructors.
-            let target_os = ecx.tcx.tcx.sess.target.target.target_os.to_lowercase();
-            let ignore_leaks = target_os == "windows" || target_os == "macos";
-            if !ignore_leaks && leaks != 0 {
-                tcx.sess.err("the evaluated program leaked memory");
+        Ok(return_code) => {
+            if !ignore_leaks {
+                let leaks = ecx.memory.leak_report();
+                if leaks != 0 {
+                    tcx.sess.err("the evaluated program leaked memory");
+                    // Ignore the provided return code - let the reported error
+                    // determine the return code.
+                    return None;
+                }
             }
+            return Some(return_code)
         }
         Err(mut e) => {
             // Special treatment for some error kinds
             let msg = match e.kind {
-                InterpError::Exit(code) => std::process::exit(code),
+                InterpError::MachineStop(ref info) => {
+                    let info = info.downcast_ref::<TerminationInfo>()
+                        .expect("invalid MachineStop payload");
+                    match info {
+                        TerminationInfo::Exit(code) => return Some(*code),
+                        TerminationInfo::Abort =>
+                            format!("the evaluated program aborted execution")
+                    }
+                }
                 err_unsup!(NoMirFor(..)) =>
                     format!("{}. Did you set `MIRI_SYSROOT` to a Miri-enabled sysroot? You can prepare one with `cargo miri setup`.", e),
+                InterpError::InvalidProgram(_) =>
+                    bug!("This error should be impossible in Miri: {}", e),
                 _ => e.to_string()
             };
             e.print_backtrace();
             if let Some(frame) = ecx.stack().last() {
-                let block = &frame.body.basic_blocks()[frame.block];
-                let span = if frame.stmt < block.statements.len() {
-                    block.statements[frame.stmt].source_info.span
-                } else {
-                    block.terminator().source_info.span
-                };
+                let span = frame.current_source_info().unwrap().span;
 
                 let msg = format!("Miri evaluation error: {}", msg);
-                let mut err = struct_error(ecx.tcx.tcx.at(span), msg.as_str());
+                let mut err = ecx.tcx.sess.struct_span_err(span, msg.as_str());
                 let frames = ecx.generate_stacktrace(None);
                 err.span_label(span, msg);
                 // We iterate with indices because we need to look at the next frame (the caller).
@@ -261,6 +259,8 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) {
                     trace!("    local {}: {:?}", i, local.value);
                 }
             }
+            // Let the reported error determine the return code.
+            return None;
         }
     }
 }

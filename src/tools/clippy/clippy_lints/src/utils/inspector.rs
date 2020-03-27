@@ -1,11 +1,12 @@
 //! checks for attributes
 
 use crate::utils::get_attr;
+use rustc::declare_lint_pass;
 use rustc::hir;
 use rustc::hir::print;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::session::Session;
-use rustc::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_tool_lint;
 use syntax::ast::Attribute;
 
 declare_clippy_lint! {
@@ -264,8 +265,9 @@ fn print_expr(cx: &LateContext<'_, '_>, expr: &hir::Expr, indent: usize) {
             println!("{}Relative Path, {:?}", ind, ty);
             println!("{}seg: {:?}", ind, seg);
         },
-        hir::ExprKind::AddrOf(ref muta, ref e) => {
+        hir::ExprKind::AddrOf(kind, ref muta, ref e) => {
             println!("{}AddrOf", ind);
+            println!("kind: {:?}", kind);
             println!("mutability: {:?}", muta);
             print_expr(cx, e, indent + 1);
         },
@@ -282,14 +284,16 @@ fn print_expr(cx: &LateContext<'_, '_>, expr: &hir::Expr, indent: usize) {
                 print_expr(cx, e, indent + 1);
             }
         },
-        hir::ExprKind::InlineAsm(_, ref input, ref output) => {
+        hir::ExprKind::InlineAsm(ref asm) => {
+            let inputs = &asm.inputs_exprs;
+            let outputs = &asm.outputs_exprs;
             println!("{}InlineAsm", ind);
             println!("{}inputs:", ind);
-            for e in input {
+            for e in inputs.iter() {
                 print_expr(cx, e, indent + 1);
             }
             println!("{}outputs:", ind);
-            for e in output {
+            for e in outputs.iter() {
                 print_expr(cx, e, indent + 1);
             }
         },

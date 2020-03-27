@@ -371,13 +371,18 @@ fn registry(
         let mut src = RegistrySource::remote(sid, &HashSet::new(), config);
         // Only update the index if the config is not available or `force` is set.
         let cfg = src.config();
-        let cfg = if force_update || cfg.is_err() {
+        let mut updated_cfg = || {
             src.update()
                 .chain_err(|| format!("failed to update {}", sid))?;
-            cfg.or_else(|_| src.config())?
-        } else {
-            cfg.unwrap()
+            src.config()
         };
+
+        let cfg = if force_update {
+            updated_cfg()?
+        } else {
+            cfg.or_else(|_| updated_cfg())?
+        };
+
         cfg.and_then(|cfg| cfg.api)
             .ok_or_else(|| format_err!("{} does not support API commands", sid))?
     };
@@ -434,6 +439,7 @@ pub fn configure_http_handle(config: &Config, handle: &mut Easy) -> CargoResult<
     if let Some(check) = http.check_revoke {
         handle.ssl_options(SslOpt::new().no_revoke(!check))?;
     }
+
     if let Some(user_agent) = &http.user_agent {
         handle.useragent(user_agent)?;
     } else {
@@ -598,7 +604,8 @@ pub fn registry_login(
                 .read_line(&mut line)
                 .chain_err(|| "failed to read stdin")
                 .map_err(failure::Error::from)?;
-            line.trim().to_string()
+            // Automatically remove `cargo login` from an inputted token to allow direct pastes from `registry.host()`/me.
+            line.replace("cargo login", "").trim().to_string()
         }
     };
 

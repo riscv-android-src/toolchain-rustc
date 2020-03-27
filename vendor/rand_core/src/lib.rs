@@ -35,28 +35,27 @@
 #![deny(missing_debug_implementations)]
 #![doc(test(attr(allow(unused_variables), deny(warnings))))]
 
-#![cfg_attr(not(feature="std"), no_std)]
-#![cfg_attr(all(feature="alloc", not(feature="std")), feature(alloc))]
+#![allow(clippy::unreadable_literal)]
 
-#[cfg(feature="std")] extern crate core;
-#[cfg(all(feature = "alloc", not(feature="std")))] extern crate alloc;
-#[cfg(feature="serde1")] extern crate serde;
-#[cfg(feature="serde1")] #[macro_use] extern crate serde_derive;
+#![cfg_attr(not(feature="std"), no_std)]
 
 
 use core::default::Default;
 use core::convert::AsMut;
 use core::ptr::copy_nonoverlapping;
 
+#[cfg(all(feature="alloc", not(feature="std")))] extern crate alloc;
 #[cfg(all(feature="alloc", not(feature="std")))] use alloc::boxed::Box;
 
 pub use error::Error;
+#[cfg(feature="getrandom")] pub use os::OsRng;
 
 
 mod error;
 pub mod block;
 pub mod impls;
 pub mod le;
+#[cfg(feature="getrandom")] mod os;
 
 
 /// The core of a random number generator.
@@ -141,23 +140,23 @@ pub trait RngCore {
     /// RNGs must implement at least one method from this trait directly. In
     /// the case this method is not implemented directly, it can be implemented
     /// using `self.next_u64() as u32` or via
-    /// [`fill_bytes`][impls::next_u32_via_fill].
+    /// [`fill_bytes`](impls::next_u32_via_fill).
     fn next_u32(&mut self) -> u32;
 
     /// Return the next random `u64`.
     ///
     /// RNGs must implement at least one method from this trait directly. In
     /// the case this method is not implemented directly, it can be implemented
-    /// via [`next_u32`][impls::next_u64_via_u32] or via
-    /// [`fill_bytes`][impls::next_u64_via_fill].
+    /// via [`next_u32`](impls::next_u64_via_u32) or via
+    /// [`fill_bytes`](impls::next_u64_via_fill).
     fn next_u64(&mut self) -> u64;
 
     /// Fill `dest` with random data.
     ///
     /// RNGs must implement at least one method from this trait directly. In
     /// the case this method is not implemented directly, it can be implemented
-    /// via [`next_u*`][impls::fill_bytes_via_next] or
-    /// via [`try_fill_bytes`][RngCore::try_fill_bytes]; if this generator can
+    /// via [`next_u*`](impls::fill_bytes_via_next) or
+    /// via [`try_fill_bytes`](RngCore::try_fill_bytes); if this generator can
     /// fail the implementation must choose how best to handle errors here
     /// (e.g. panic with a descriptive message or log a warning and retry a few
     /// times).
@@ -435,7 +434,7 @@ impl<R: RngCore + ?Sized> RngCore for Box<R> {
 }
 
 #[cfg(feature="std")]
-impl std::io::Read for RngCore {
+impl std::io::Read for dyn RngCore {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
         self.try_fill_bytes(buf)?;
         Ok(buf.len())

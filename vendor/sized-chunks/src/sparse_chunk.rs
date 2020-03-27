@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::{Debug, Error, Formatter};
-use std::mem::{self, ManuallyDrop};
+use std::mem::{self, MaybeUninit};
 use std::ops::Index;
 use std::ops::IndexMut;
 use std::ptr;
@@ -16,8 +16,9 @@ use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 use typenum::U64;
 
-use crate::bitmap::{Bitmap, Iter as BitmapIter};
-use crate::types::{Bits, ChunkLength};
+use bitmaps::{Bitmap, Bits, Iter as BitmapIter};
+
+use crate::types::ChunkLength;
 
 /// A fixed capacity sparse array.
 ///
@@ -58,13 +59,13 @@ use crate::types::{Bits, ChunkLength};
 /// [Unsigned]: https://docs.rs/typenum/1.10.0/typenum/marker_traits/trait.Unsigned.html
 pub struct SparseChunk<A, N: Bits + ChunkLength<A> = U64> {
     map: Bitmap<N>,
-    data: ManuallyDrop<N::SizedType>,
+    data: MaybeUninit<N::SizedType>,
 }
 
 impl<A, N: Bits + ChunkLength<A>> Drop for SparseChunk<A, N> {
     fn drop(&mut self) {
         if mem::needs_drop::<A>() {
-            for index in self.map {
+            for index in &self.map.clone() {
                 unsafe { SparseChunk::force_drop(index, self) }
             }
         }
@@ -74,7 +75,7 @@ impl<A, N: Bits + ChunkLength<A>> Drop for SparseChunk<A, N> {
 impl<A: Clone, N: Bits + ChunkLength<A>> Clone for SparseChunk<A, N> {
     fn clone(&self) -> Self {
         let mut out = Self::new();
-        for index in self.map {
+        for index in &self.map {
             out.insert(index, self[index].clone());
         }
         out
@@ -89,22 +90,12 @@ where
 
     #[inline]
     fn values(&self) -> &[A] {
-        unsafe {
-            from_raw_parts(
-                &self.data as *const ManuallyDrop<N::SizedType> as *const A,
-                N::USIZE,
-            )
-        }
+        unsafe { from_raw_parts(&self.data as *const _ as *const A, N::USIZE) }
     }
 
     #[inline]
     fn values_mut(&mut self) -> &mut [A] {
-        unsafe {
-            from_raw_parts_mut(
-                &mut self.data as *mut ManuallyDrop<N::SizedType> as *mut A,
-                N::USIZE,
-            )
-        }
+        unsafe { from_raw_parts_mut(&mut self.data as *mut _ as *mut A, N::USIZE) }
     }
 
     /// Copy the value at an index, discarding ownership of the copied value
@@ -127,12 +118,10 @@ where
 
     /// Construct a new empty chunk.
     pub fn new() -> Self {
-        let mut chunk: Self;
-        unsafe {
-            chunk = mem::zeroed();
-            ptr::write(&mut chunk.map, Bitmap::new());
+        Self {
+            map: Bitmap::default(),
+            data: MaybeUninit::uninit(),
         }
-        chunk
     }
 
     /// Construct a new chunk with one item.
@@ -175,13 +164,12 @@ where
         if index >= N::USIZE {
             panic!("SparseChunk::insert: index out of bounds");
         }
-        let prev = if self.map.set(index, true) {
-            Some(unsafe { SparseChunk::force_read(index, self) })
+        if self.map.set(index, true) {
+            Some(mem::replace(&mut self.values_mut()[index], value))
         } else {
+            unsafe { SparseChunk::force_write(index, value, self) };
             None
-        };
-        unsafe { SparseChunk::force_write(index, value, self) };
-        prev
+        }
     }
 
     /// Remove the value at a given index.
@@ -251,7 +239,7 @@ where
     /// array.
     pub fn iter_mut(&mut self) -> IterMut<'_, A, N> {
         IterMut {
-            indices: self.indices(),
+            bitmap: self.map.clone(),
             chunk: self,
         }
     }
@@ -300,7 +288,7 @@ where
     N: Bits + ChunkLength<A>,
 {
     fn eq(&self, other: &Self) -> bool {
-        if self.len() != other.len() {
+        if self.map != other.map {
             return false;
         }
         for index in self.indices() {
@@ -367,7 +355,7 @@ where
 }
 
 pub struct Iter<'a, A: 'a, N: 'a + Bits + ChunkLength<A>> {
-    indices: BitmapIter<N>,
+    indices: BitmapIter<'a, N>,
     chunk: &'a SparseChunk<A, N>,
 }
 
@@ -380,7 +368,7 @@ impl<'a, A, N: Bits + ChunkLength<A>> Iterator for Iter<'a, A, N> {
 }
 
 pub struct IterMut<'a, A: 'a, N: 'a + Bits + ChunkLength<A>> {
-    indices: BitmapIter<N>,
+    bitmap: Bitmap<N>,
     chunk: &'a mut SparseChunk<A, N>,
 }
 
@@ -388,7 +376,8 @@ impl<'a, A, N: Bits + ChunkLength<A>> Iterator for IterMut<'a, A, N> {
     type Item = &'a mut A;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(index) = self.indices.next() {
+        if let Some(index) = self.bitmap.first_index() {
+            self.bitmap.set(index, false);
             unsafe {
                 let p: *mut A = &mut self.chunk.values_mut()[index];
                 Some(&mut *p)

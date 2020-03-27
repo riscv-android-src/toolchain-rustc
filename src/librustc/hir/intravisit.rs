@@ -45,7 +45,7 @@ pub enum FnKind<'a> {
     ItemFn(Ident, &'a Generics, FnHeader, &'a Visibility, &'a [Attribute]),
 
     /// `fn foo(&self)`
-    Method(Ident, &'a MethodSig, Option<&'a Visibility>, &'a [Attribute]),
+    Method(Ident, &'a FnSig, Option<&'a Visibility>, &'a [Attribute]),
 
     /// `|x, y| {}`
     Closure(&'a [Attribute]),
@@ -481,13 +481,13 @@ pub fn walk_item<'v, V: Visitor<'v>>(visitor: &mut V, item: &'v Item) {
             visitor.visit_ty(typ);
             visitor.visit_nested_body(body);
         }
-        ItemKind::Fn(ref declaration, header, ref generics, body_id) => {
+        ItemKind::Fn(ref sig, ref generics, body_id) => {
             visitor.visit_fn(FnKind::ItemFn(item.ident,
                                             generics,
-                                            header,
+                                            sig.header,
                                             &item.vis,
                                             &item.attrs),
-                             declaration,
+                             &sig.decl,
                              body_id,
                              item.span,
                              item.hir_id)
@@ -1024,7 +1024,7 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr) {
             visitor.visit_expr(left_expression);
             visitor.visit_expr(right_expression)
         }
-        ExprKind::AddrOf(_, ref subexpression) | ExprKind::Unary(_, ref subexpression) => {
+        ExprKind::AddrOf(_, _, ref subexpression) | ExprKind::Unary(_, ref subexpression) => {
             visitor.visit_expr(subexpression)
         }
         ExprKind::Cast(ref subexpression, ref typ) | ExprKind::Type(ref subexpression, ref typ) => {
@@ -1086,10 +1086,9 @@ pub fn walk_expr<'v, V: Visitor<'v>>(visitor: &mut V, expression: &'v Expr) {
         ExprKind::Ret(ref optional_expression) => {
             walk_list!(visitor, visit_expr, optional_expression);
         }
-        ExprKind::InlineAsm(_, ref outputs, ref inputs) => {
-            for expr in outputs.iter().chain(inputs.iter()) {
-                visitor.visit_expr(expr)
-            }
+        ExprKind::InlineAsm(ref asm) => {
+            walk_list!(visitor, visit_expr, &asm.outputs_exprs);
+            walk_list!(visitor, visit_expr, &asm.inputs_exprs);
         }
         ExprKind::Yield(ref subexpression, _) => {
             visitor.visit_expr(subexpression);

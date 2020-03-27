@@ -1,6 +1,7 @@
+use rustc::declare_lint_pass;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_tool_lint;
 
 use crate::utils::{get_trait_def_id, higher, implements_trait, match_qpath, match_type, paths, span_lint};
 
@@ -163,7 +164,7 @@ fn is_infinite(cx: &LateContext<'_, '_>, expr: &Expr) -> Finiteness {
             Finite
         },
         ExprKind::Block(ref block, _) => block.expr.as_ref().map_or(Finite, |e| is_infinite(cx, e)),
-        ExprKind::Box(ref e) | ExprKind::AddrOf(_, ref e) => is_infinite(cx, e),
+        ExprKind::Box(ref e) | ExprKind::AddrOf(BorrowKind::Ref, _, ref e) => is_infinite(cx, e),
         ExprKind::Call(ref path, _) => {
             if let ExprKind::Path(ref qpath) = path.kind {
                 match_qpath(qpath, &paths::REPEAT).into()

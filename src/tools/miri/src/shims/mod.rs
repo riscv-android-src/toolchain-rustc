@@ -5,54 +5,51 @@ pub mod intrinsics;
 pub mod tls;
 pub mod fs;
 pub mod time;
+pub mod panic;
 
 use rustc::{mir, ty};
-
 use crate::*;
 
 impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
-    fn find_fn(
+    fn find_mir_or_eval_fn(
         &mut self,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
-        dest: Option<PlaceTy<'tcx, Tag>>,
-        ret: Option<mir::BasicBlock>,
+        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        unwind: Option<mir::BasicBlock>
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>> {
         let this = self.eval_context_mut();
         trace!(
             "eval_fn_call: {:#?}, {:?}",
             instance,
-            dest.map(|place| *place)
+            ret.map(|p| *p.0)
         );
 
-        // First, run the common hooks also supported by CTFE.
-        if this.hook_fn(instance, args, dest)? {
-            this.goto_block(ret)?;
-            return Ok(None);
-        }
         // There are some more lang items we want to hook that CTFE does not hook (yet).
         if this.tcx.lang_items().align_offset_fn() == Some(instance.def.def_id()) {
-            let dest = dest.unwrap();
+            let (dest, ret) = ret.unwrap();
             let n = this
                 .align_offset(args[0], args[1])?
                 .unwrap_or_else(|| this.truncate(u128::max_value(), dest.layout));
             this.write_scalar(Scalar::from_uint(n, dest.layout.size), dest)?;
-            this.goto_block(ret)?;
+            this.go_to_block(ret);
             return Ok(None);
         }
 
         // Try to see if we can do something about foreign items.
         if this.tcx.is_foreign_item(instance.def_id()) {
-            // An external function that we cannot find MIR for, but we can still run enough
-            // of them to make miri viable.
-            this.emulate_foreign_item(instance.def_id(), args, dest, ret)?;
-            // `goto_block` already handled.
-            return Ok(None);
+            // An external function call that does not have a MIR body. We either find MIR elsewhere
+            // or emulate its effect.
+            // This will be Ok(None) if we're emulating the intrinsic entirely within Miri (no need
+            // to run extra MIR), and Ok(Some(body)) if we found MIR to run for the
+            // foreign function
+            // Any needed call to `goto_block` will be performed by `emulate_foreign_item`.
+            return this.emulate_foreign_item(instance.def_id(), args, ret, unwind);
         }
 
         // Otherwise, load the MIR.
-        Ok(Some(this.load_mir(instance.def, None)?))
+        Ok(Some(&*this.load_mir(instance.def, None)?))
     }
 
     fn align_offset(
@@ -75,7 +72,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let ptr_scalar = this.read_scalar(ptr_op)?.not_undef()?;
 
         if let Ok(ptr) = this.force_ptr(ptr_scalar) {
-            let cur_align = this.memory.get(ptr.alloc_id)?.align.bytes() as usize;
+            let cur_align = this.memory.get_size_and_align(ptr.alloc_id, AllocCheck::MaybeDead)?.1.bytes() as usize;
             if cur_align >= req_align {
                 // if the allocation alignment is at least the required alignment we use the
                 // libcore implementation

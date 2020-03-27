@@ -15,7 +15,7 @@ use std::sync::{Mutex, Arc};
 use std::io;
 
 
-use rustc_interface::interface;
+use rustc_interface::{interface, Queries};
 use rustc::hir::{self, itemlikevisit};
 use rustc::ty::TyCtxt;
 use rustc::hir::def_id::LOCAL_CRATE;
@@ -29,19 +29,9 @@ struct MiriCompilerCalls {
 }
 
 impl rustc_driver::Callbacks for MiriCompilerCalls {
-    fn after_parsing(&mut self, compiler: &interface::Compiler) -> Compilation {
-        let attr = (
-            syntax::symbol::Symbol::intern("miri"),
-            syntax::feature_gate::AttributeType::Whitelisted,
-        );
-        compiler.session().plugin_attributes.borrow_mut().push(attr);
-
-        Compilation::Continue
-    }
-
-    fn after_analysis(&mut self, compiler: &interface::Compiler) -> Compilation {
+    fn after_analysis<'tcx>(&mut self, compiler: &interface::Compiler, queries: &'tcx Queries<'tcx>) -> Compilation {
         compiler.session().abort_if_errors();
-        compiler.global_ctxt().unwrap().peek_mut().enter(|tcx| {
+        queries.global_ctxt().unwrap().peek_mut().enter(|tcx| {
             if std::env::args().any(|arg| arg == "--test") {
                 struct Visitor<'tcx>(TyCtxt<'tcx>);
                 impl<'tcx, 'hir> itemlikevisit::ItemLikeVisitor<'hir> for Visitor<'tcx> {
@@ -51,6 +41,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                                 let config = MiriConfig {
                                     validate: true,
                                     communicate: false,
+                                    ignore_leaks: false,
                                     excluded_env_vars: vec![],
                                     args: vec![],
                                     seed: None,
@@ -70,6 +61,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                 let config = MiriConfig {
                     validate: true,
                     communicate: false,
+                    ignore_leaks: false,
                     excluded_env_vars: vec![],
                     args: vec![],
                     seed: None

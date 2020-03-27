@@ -1,9 +1,10 @@
 use crate::utils::{match_type, paths, span_lint_and_sugg, walk_ptrs_ty};
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use std::path::{Component, Path};
 use syntax::ast::LitKind;
 
@@ -50,7 +51,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PathBufPushOverwrite {
             if let Some(get_index_arg) = args.get(1);
             if let ExprKind::Lit(ref lit) = get_index_arg.kind;
             if let LitKind::Str(ref path_lit, _) = lit.node;
-            if let pushed_path = Path::new(&path_lit.as_str());
+            if let pushed_path = Path::new(&*path_lit.as_str());
             if let Some(pushed_path_lit) = pushed_path.to_str();
             if pushed_path.has_root();
             if let Some(root) = pushed_path.components().next();

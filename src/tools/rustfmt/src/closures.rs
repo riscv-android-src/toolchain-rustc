@@ -1,6 +1,7 @@
 use syntax::source_map::Span;
 use syntax::{ast, ptr};
 
+use crate::attr::get_attrs_from_stmt;
 use crate::config::lists::*;
 use crate::config::Version;
 use crate::expr::{block_contains_comment, is_simple_block, is_unsafe_block, rewrite_cond};
@@ -91,8 +92,9 @@ fn get_inner_expr<'a>(
 ) -> &'a ast::Expr {
     if let ast::ExprKind::Block(ref block, _) = expr.kind {
         if !needs_block(block, prefix, context) {
-            // block.stmts.len() == 1
-            if let Some(expr) = stmt_expr(&block.stmts[0]) {
+            // block.stmts.len() == 1 except with `|| {{}}`;
+            // https://github.com/rust-lang/rustfmt/issues/3844
+            if let Some(expr) = block.stmts.first().and_then(stmt_expr) {
                 return get_inner_expr(expr, prefix, context);
             }
         }
@@ -103,8 +105,13 @@ fn get_inner_expr<'a>(
 
 // Figure out if a block is necessary.
 fn needs_block(block: &ast::Block, prefix: &str, context: &RewriteContext<'_>) -> bool {
+    let has_attributes = block.stmts.first().map_or(false, |first_stmt| {
+        !get_attrs_from_stmt(first_stmt).is_empty()
+    });
+
     is_unsafe_block(block)
         || block.stmts.len() > 1
+        || has_attributes
         || block_contains_comment(block, context.source_map)
         || prefix.contains('\n')
 }
@@ -163,6 +170,7 @@ fn rewrite_closure_expr(
     fn allow_multi_line(expr: &ast::Expr) -> bool {
         match expr.kind {
             ast::ExprKind::Match(..)
+            | ast::ExprKind::Async(..)
             | ast::ExprKind::Block(..)
             | ast::ExprKind::TryBlock(..)
             | ast::ExprKind::Loop(..)

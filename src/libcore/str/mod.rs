@@ -1,4 +1,5 @@
 // ignore-tidy-filelength
+// ignore-tidy-undocumented-unsafe
 
 //! String manipulation.
 //!
@@ -7,7 +8,7 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use self::pattern::Pattern;
-use self::pattern::{Searcher, ReverseSearcher, DoubleEndedSearcher};
+use self::pattern::{Searcher, SearchStep, ReverseSearcher, DoubleEndedSearcher};
 
 use crate::char;
 use crate::fmt::{self, Write};
@@ -2085,10 +2086,11 @@ impl str {
     /// let len = "foo".len();
     /// assert_eq!(3, len);
     ///
-    /// let len = "ƒoo".len(); // fancy f!
-    /// assert_eq!(4, len);
+    /// assert_eq!("ƒoo".len(), 4); // fancy f!
+    /// assert_eq!("ƒoo".chars().count(), 3);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(not(bootstrap), rustc_const_stable(feature = "const_str_len", since = "1.32.0"))]
     #[inline]
     pub const fn len(&self) -> usize {
         self.as_bytes().len()
@@ -2109,6 +2111,10 @@ impl str {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(
+        not(bootstrap),
+        rustc_const_stable(feature = "const_str_is_empty", since = "1.32.0"),
+    )]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -2165,6 +2171,7 @@ impl str {
     /// assert_eq!(b"bors", bytes);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(not(bootstrap), rustc_const_stable(feature = "str_as_bytes", since = "1.32.0"))]
     #[inline(always)]
     // SAFETY: const sound because we transmute two types with the same layout
     #[allow(unused_attributes)]
@@ -2238,6 +2245,7 @@ impl str {
     /// let ptr = s.as_ptr();
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(not(bootstrap), rustc_const_stable(feature = "rustc_str_as_ptr", since = "1.32.0"))]
     #[inline]
     pub const fn as_ptr(&self) -> *const u8 {
         self as *const str as *const u8
@@ -3370,8 +3378,8 @@ impl str {
     /// An iterator over the disjoint matches of a pattern within the given string
     /// slice.
     ///
-    /// The pattern can be any type that implements the Pattern trait. Notable
-    /// examples are `&str`, [`char`], and closures that determines the split.
+    /// The pattern can be a `&str`, [`char`], or a closure that determines if
+    /// a character matches.
     ///
     /// # Iterator behavior
     ///
@@ -3787,6 +3795,77 @@ impl str {
         unsafe {
             // Searcher is known to return valid indices
             self.get_unchecked(i..self.len())
+        }
+    }
+
+    /// Returns a string slice with the prefix removed.
+    ///
+    /// If the string starts with the pattern `prefix`, `Some` is returned with the substring where
+    /// the prefix is removed. Unlike `trim_start_matches`, this method removes the prefix exactly
+    /// once.
+    ///
+    /// If the string does not start with `prefix`, `None` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(str_strip)]
+    ///
+    /// assert_eq!("foobar".strip_prefix("foo"), Some("bar"));
+    /// assert_eq!("foobar".strip_prefix("bar"), None);
+    /// assert_eq!("foofoo".strip_prefix("foo"), Some("foo"));
+    /// ```
+    #[must_use = "this returns the remaining substring as a new slice, \
+                  without modifying the original"]
+    #[unstable(feature = "str_strip", reason = "newly added", issue = "67302")]
+    pub fn strip_prefix<'a, P: Pattern<'a>>(&'a self, prefix: P) -> Option<&'a str> {
+        let mut matcher = prefix.into_searcher(self);
+        if let SearchStep::Match(start, len) = matcher.next() {
+            debug_assert_eq!(start, 0, "The first search step from Searcher \
+                must include the first character");
+            unsafe {
+                // Searcher is known to return valid indices.
+                Some(self.get_unchecked(len..))
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Returns a string slice with the suffix removed.
+    ///
+    /// If the string ends with the pattern `suffix`, `Some` is returned with the substring where
+    /// the suffix is removed. Unlike `trim_end_matches`, this method removes the suffix exactly
+    /// once.
+    ///
+    /// If the string does not end with `suffix`, `None` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(str_strip)]
+    /// assert_eq!("barfoo".strip_suffix("foo"), Some("bar"));
+    /// assert_eq!("barfoo".strip_suffix("bar"), None);
+    /// assert_eq!("foofoo".strip_suffix("foo"), Some("foo"));
+    /// ```
+    #[must_use = "this returns the remaining substring as a new slice, \
+                  without modifying the original"]
+    #[unstable(feature = "str_strip", reason = "newly added", issue = "67302")]
+    pub fn strip_suffix<'a, P>(&'a self, suffix: P) -> Option<&'a str>
+    where
+        P: Pattern<'a>,
+        <P as Pattern<'a>>::Searcher: ReverseSearcher<'a>,
+    {
+        let mut matcher = suffix.into_searcher(self);
+        if let SearchStep::Match(start, end) = matcher.next_back() {
+            debug_assert_eq!(end, self.len(), "The first search step from ReverseSearcher \
+                must include the last character");
+            unsafe {
+                // Searcher is known to return valid indices.
+                Some(self.get_unchecked(..start))
+            }
+        } else {
+            None
         }
     }
 

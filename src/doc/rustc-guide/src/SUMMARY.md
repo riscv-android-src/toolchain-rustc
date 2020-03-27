@@ -6,9 +6,12 @@
 
 - [Part 1: Building, debugging, and contributing to Rustc](./part-1-intro.md)
     - [About the compiler team](./compiler-team.md)
-    - [How to Build and Run the Compiler](./how-to-build-and-run.md)
-        - [Build and Install distribution artifacts](./build-install-distribution-artifacts.md)
-        - [Documenting Compiler](./compiler-documenting.md)
+    - [How to Build and Run the Compiler](./building/how-to-build-and-run.md)
+        - [Suggested Workflows](./building/suggested.md)
+        - [Bootstrapping](./building/bootstrapping.md)
+        - [Distribution artifacts](./building/build-install-distribution-artifacts.md)
+        - [Documenting Compiler](./building/compiler-documenting.md)
+        - [ctags](./building/ctags.md)
     - [The compiler testing framework](./tests/intro.md)
         - [Running tests](./tests/running.md)
         - [Adding new tests](./tests/adding.md)
@@ -23,7 +26,9 @@
     - [Coding conventions](./conventions.md)
     - [crates.io Dependencies](./crates-io.md)
     - [Emitting Errors and other Diagnostics](diagnostics.md)
-        - [JSON diagnostic format](diagnostics/json-format.md)
+        - [`LintStore`](./diagnostics/lintstore.md)
+    - [ICE-breaker teams](ice-breaker/about.md)
+        - [LLVM ICE-breakers](ice-breaker/llvm.md)
 - [Part 2: How rustc works](./part-2-intro.md)
     - [High-level overview of the compiler source](./high-level-overview.md)
     - [The Rustc Driver and Interface](./rustc-driver.md)
@@ -33,7 +38,8 @@
         - [Incremental compilation](./queries/incremental-compilation.md)
         - [Incremental compilation In Detail](./queries/incremental-compilation-in-detail.md)
         - [Debugging and Testing](./incrcomp-debugging.md)
-    - [The parser](./the-parser.md)
+        - [Salsa](./salsa.md)
+    - [Lexing and Parsing](./the-parser.md)
     - [`#[test]` Implementation](./test-implementation.md)
     - [Macro expansion](./macro-expansion.md)
     - [Name resolution](./name-resolution.md)
@@ -42,7 +48,7 @@
         - [Debugging](./hir-debugging.md)
     - [Closure expansion](./closure.md)
     - [The `ty` module: representing types](./ty.md)
-    - [Kinds](./kinds.md)
+    - [Generic arguments](./generic_arguments.md)
     - [Type inference](./type-inference.md)
     - [Trait solving (old-style)](./traits/resolution.md)
         - [Higher-ranked trait bounds](./traits/hrtb.md)
@@ -90,7 +96,9 @@
     - [Code Generation](./codegen.md)
         - [Updating LLVM](./codegen/updating-llvm.md)
         - [Debugging LLVM](./codegen/debugging.md)
+        - [Backend Agnostic Codegen](./codegen/backend-agnostic.md)
     - [Profile-guided Optimization](./profile-guided-optimization.md)
+    - [Sanitizers Support](./sanitizers.md)
     - [Debugging Support in Rust Compiler](./debugging-support-in-rustc.md)
 
 ---
@@ -99,12 +107,11 @@
 [Appendix B: Background material](./appendix/background.md)
 [Appendix C: Glossary](./appendix/glossary.md)
 [Appendix D: Code Index](./appendix/code-index.md)
-[Appendix E: Bibliography](./appendix/bibliography.md)
+[Appendix E: Compiler Lecture Series](./appendix/compiler-lecture.md)
+[Appendix F: Bibliography](./appendix/bibliography.md)
 
 [Appendix Z: HumorRust](./appendix/humorust.md)
 
 ---
-
-[](./important-links.md)
 
 [pau]: ./borrow_check/region_inference/placeholders_and_universes.md

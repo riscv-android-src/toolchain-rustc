@@ -18,13 +18,12 @@ use rustc::ty::{self, DefIdTree, Ty, TyCtxt, Const, ToPredicate, TypeFoldable};
 use rustc::ty::{GenericParamDef, GenericParamDefKind};
 use rustc::ty::subst::{self, Subst, InternalSubsts, SubstsRef};
 use rustc::ty::wf::object_region_bounds;
-use rustc::mir::interpret::ConstValue;
 use rustc_target::spec::abi;
 use crate::require_c_abi_if_c_variadic;
 use smallvec::SmallVec;
 use syntax::ast;
-use syntax::errors::pluralise;
-use syntax::feature_gate::{GateIssue, emit_feature_err};
+use syntax::errors::pluralize;
+use syntax::feature_gate::feature_err;
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax::symbol::sym;
 use syntax_pos::{DUMMY_SP, Span, MultiSpan};
@@ -37,11 +36,15 @@ use std::slice;
 
 use rustc_data_structures::fx::FxHashSet;
 
+use rustc_error_codes::*;
+
 #[derive(Debug)]
 pub struct PathSeg(pub DefId, pub usize);
 
 pub trait AstConv<'tcx> {
     fn tcx<'a>(&'a self) -> TyCtxt<'tcx>;
+
+    fn item_def_id(&self) -> Option<DefId>;
 
     /// Returns predicates in scope of the form `X: Foo`, where `X` is
     /// a type parameter `X` with the given id `def_id`. This is a
@@ -390,7 +393,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     quantifier,
                     bound,
                     kind,
-                    pluralise!(bound),
+                    pluralize!(bound),
                 ))
             };
 
@@ -911,8 +914,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             } else {
                 "parenthetical notation is only stable when used with `Fn`-family traits"
             };
-            emit_feature_err(&self.tcx().sess.parse_sess, sym::unboxed_closures,
-                             span, GateIssue::Language, msg);
+            feature_err(&self.tcx().sess.parse_sess, sym::unboxed_closures, span, msg).emit();
         }
 
         self.create_substs_for_ast_path(span,
@@ -1146,8 +1148,12 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             let candidates = traits::supertraits(tcx, trait_ref).filter(|r| {
                 self.trait_defines_associated_type_named(r.def_id(), binding.item_name)
             });
-            self.one_bound_for_assoc_type(candidates, &trait_ref.to_string(),
-                                          binding.item_name, binding.span)
+            self.one_bound_for_assoc_type(
+                candidates,
+                &trait_ref.print_only_trait_path().to_string(),
+                binding.item_name,
+                binding.span
+            )
         }?;
 
         let (assoc_ident, def_scope) =
@@ -1348,7 +1354,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 span,
                 E0191,
                 "the value of the associated type{} {} must be specified",
-                pluralise!(associated_types.len()),
+                pluralize!(associated_types.len()),
                 names,
             );
             let (suggest, potential_assoc_types_spans) =
@@ -1586,12 +1592,12 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 if let Some(span) = bound_span {
                     err.span_label(span, format!("ambiguous `{}` from `{}`",
                                                  assoc_name,
-                                                 bound));
+                                                 bound.print_only_trait_path()));
                 } else {
                     span_note!(&mut err, span,
                                "associated type `{}` could derive from `{}`",
                                ty_param_name,
-                               bound);
+                               bound.print_only_trait_path());
                 }
             }
             err.emit();
@@ -1766,7 +1772,10 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                    -> Ty<'tcx>
     {
         let tcx = self.tcx();
+
         let trait_def_id = tcx.parent(item_def_id).unwrap();
+
+        debug!("qpath_to_ty: trait_def_id={:?}", trait_def_id);
 
         self.prohibit_generics(slice::from_ref(item_segment));
 
@@ -1774,9 +1783,30 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             ty
         } else {
             let path_str = tcx.def_path_str(trait_def_id);
+
+            let def_id = self.item_def_id();
+
+            debug!("qpath_to_ty: self.item_def_id()={:?}", def_id);
+
+            let parent_def_id = def_id.and_then(|def_id| tcx.hir().as_local_hir_id(def_id))
+                .map(|hir_id| tcx.hir().get_parent_did(hir_id));
+
+            debug!("qpath_to_ty: parent_def_id={:?}", parent_def_id);
+
+            // If the trait in segment is the same as the trait defining the item,
+            // use the `<Self as ..>` syntax in the error.
+            let is_part_of_self_trait_constraints = def_id == Some(trait_def_id);
+            let is_part_of_fn_in_self_trait = parent_def_id == Some(trait_def_id);
+
+            let type_name = if is_part_of_self_trait_constraints || is_part_of_fn_in_self_trait {
+                "Self"
+            } else {
+                "Type"
+            };
+
             self.report_ambiguous_associated_type(
                 span,
-                "Type",
+                type_name,
                 &path_str,
                 item_segment.ident.name,
             );
@@ -2207,7 +2237,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         let def_id = tcx.hir().local_def_id(ast_const.hir_id);
 
         let mut const_ = ty::Const {
-            val: ConstValue::Unevaluated(
+            val: ty::ConstKind::Unevaluated(
                 def_id,
                 InternalSubsts::identity_for_item(tcx, def_id),
             ),
@@ -2224,7 +2254,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             let generics = tcx.generics_of(item_def_id);
             let index = generics.param_def_id_to_index[&tcx.hir().local_def_id(hir_id)];
             let name = tcx.hir().name(hir_id);
-            const_.val = ConstValue::Param(ty::ParamConst::new(index, name));
+            const_.val = ty::ConstKind::Param(ty::ParamConst::new(index, name));
         }
 
         tcx.mk_const(const_)

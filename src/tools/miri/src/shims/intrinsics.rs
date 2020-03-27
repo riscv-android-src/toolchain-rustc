@@ -7,10 +7,7 @@ use rustc::ty::layout::{self, LayoutOf, Size, Align};
 use rustc::ty;
 use syntax::source_map::Span;
 
-use crate::{
-    PlaceTy, OpTy, Immediate, Scalar, Tag,
-    OperatorEvalContextExt
-};
+use crate::*;
 
 impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
@@ -19,10 +16,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         span: Span,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
-        dest: PlaceTy<'tcx, Tag>,
+        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        unwind: Option<mir::BasicBlock>
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        if this.emulate_intrinsic(span, instance, args, dest)? {
+        if this.emulate_intrinsic(span, instance, args, ret)? {
             return Ok(());
         }
         let tcx = &{this.tcx.tcx};
@@ -31,11 +29,26 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // All these intrinsics take raw pointers, so if we access memory directly
         // (as opposed to through a place), we have to remember to erase any tag
         // that might still hang around!
-
         let intrinsic_name = &*tcx.item_name(instance.def_id()).as_str();
+
+        // Handle diverging intrinsics.
+        let (dest, ret) = match intrinsic_name {
+            "abort" => {
+                throw_machine_stop!(TerminationInfo::Abort);
+            }
+            "miri_start_panic" => return this.handle_miri_start_panic(args, unwind),
+            _ => {
+                if let Some(p) = ret {
+                    p
+                } else {
+                    throw_unsup_format!("unimplemented (diverging) intrinsic: {}", intrinsic_name);
+                }
+            }
+        };
+
         match intrinsic_name {
             "arith_offset" => {
-                let offset = this.read_scalar(args[1])?.to_isize(this)?;
+                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
 
                 let pointee_ty = substs.type_at(0);
@@ -206,7 +219,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let elem_ty = substs.type_at(0);
                 let elem_layout = this.layout_of(elem_ty)?;
                 let elem_size = elem_layout.size.bytes();
-                let count = this.read_scalar(args[2])?.to_usize(this)?;
+                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
                 let elem_align = elem_layout.align.abi;
 
                 let size = Size::from_bytes(count * elem_size);
@@ -291,45 +304,36 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.binop_ignore_overflow(op, a, b, dest)?;
             }
 
-            "minnumf32" | "maxnumf32" => {
+            "minnumf32" | "maxnumf32" | "copysignf32" => {
                 let a = this.read_scalar(args[0])?.to_f32()?;
                 let b = this.read_scalar(args[1])?.to_f32()?;
-                let res = if intrinsic_name.starts_with("min") {
-                    a.min(b)
-                } else {
-                    a.max(b)
+                let res = match intrinsic_name {
+                    "minnumf32" => a.min(b),
+                    "maxnumf32" => a.max(b),
+                    "copysignf32" => a.copy_sign(b),
+                    _ => bug!(),
                 };
                 this.write_scalar(Scalar::from_f32(res), dest)?;
             }
 
-            "minnumf64" | "maxnumf64" => {
+            "minnumf64" | "maxnumf64" | "copysignf64" => {
                 let a = this.read_scalar(args[0])?.to_f64()?;
                 let b = this.read_scalar(args[1])?.to_f64()?;
-                let res = if intrinsic_name.starts_with("min") {
-                    a.min(b)
-                } else {
-                    a.max(b)
+                let res = match intrinsic_name {
+                    "minnumf64" => a.min(b),
+                    "maxnumf64" => a.max(b),
+                    "copysignf64" => a.copy_sign(b),
+                    _ => bug!(),
                 };
                 this.write_scalar(Scalar::from_f64(res), dest)?;
             }
 
-            "exact_div" => {
-                // Performs an exact division, resulting in undefined behavior where
-                // `x % y != 0` or `y == 0` or `x == T::min_value() && y == -1`
-                let a = this.read_immediate(args[0])?;
-                let b = this.read_immediate(args[1])?;
-                // check x % y != 0
-                if this.overflowing_binary_op(mir::BinOp::Rem, a, b)?.0.to_bits(dest.layout.size)? != 0 {
-                    // Check if `b` is -1, which is the "min_value / -1" case.
-                    let minus1 = Scalar::from_int(-1, dest.layout.size);
-                    return Err(if b.to_scalar().unwrap() == minus1 {
-                        err_ub_format!("exact_div: result of dividing MIN by -1 cannot be represented")
-                    } else {
-                        err_ub_format!("exact_div: {:?} cannot be divided by {:?} without remainder", *a, *b)
-                    }.into());
-                }
-                this.binop_ignore_overflow(mir::BinOp::Div, a, b, dest)?;
-            },
+            "exact_div" =>
+                this.exact_div(
+                    this.read_immediate(args[0])?,
+                    this.read_immediate(args[1])?,
+                    dest,
+                )?,
 
             "forget" => {}
 
@@ -382,7 +386,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "offset" => {
-                let offset = this.read_scalar(args[1])?.to_isize(this)?;
+                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let result_ptr = this.pointer_offset_inbounds(ptr, substs.type_at(0), offset)?;
                 this.write_scalar(result_ptr, dest)?;
@@ -392,7 +396,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let ty = substs.type_at(0);
                 let layout = this.layout_of(ty)?;
                 if layout.abi.is_uninhabited() {
-                    throw_ub_format!("Trying to instantiate uninhabited type {}", ty)
+                    // FIXME: This should throw a panic in the interpreted program instead.
+                    throw_unsup_format!("Trying to instantiate uninhabited type {}", ty)
                 }
             }
 
@@ -534,7 +539,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // However, this only affects direct calls of the intrinsic; calls to the stable
                 // functions wrapping them do get their validation.
                 // FIXME: should we check alignment for ZSTs?
-                use crate::ScalarMaybeUndef;
                 if !dest.layout.is_zst() {
                     match dest.layout.abi {
                         layout::Abi::Scalar(..) => {
@@ -552,7 +556,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                             let ptr = mplace.ptr.to_ptr()?;
                             // We know the return place is in-bounds
                             this.memory
-                                .get_mut(ptr.alloc_id)?
+                                .get_raw_mut(ptr.alloc_id)?
                                 .mark_definedness(ptr, dest.layout.size, false);
                         }
                     }
@@ -564,7 +568,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let ty_layout = this.layout_of(ty)?;
                 let val_byte = this.read_scalar(args[1])?.to_u8()?;
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
-                let count = this.read_scalar(args[2])?.to_usize(this)?;
+                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
                 let byte_count = ty_layout.size * count;
                 this.memory.write_bytes(ptr, iter::repeat(val_byte).take(byte_count.bytes() as usize))?;
             }
@@ -572,6 +576,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             name => throw_unsup_format!("unimplemented intrinsic: {}", name),
         }
 
+        this.dump_place(*dest);
+        this.go_to_block(ret);
         Ok(())
     }
 }

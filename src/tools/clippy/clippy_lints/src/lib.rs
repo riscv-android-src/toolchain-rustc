@@ -2,7 +2,6 @@
 
 #![feature(box_syntax)]
 #![feature(box_patterns)]
-#![feature(never_type)]
 #![feature(rustc_private)]
 #![feature(slice_patterns)]
 #![feature(stmt_expr_attributes)]
@@ -13,6 +12,7 @@
 #![cfg_attr(feature = "deny-warnings", deny(warnings))]
 #![feature(crate_visibility_modifier)]
 #![feature(concat_idents)]
+#![feature(result_map_or)]
 
 // FIXME: switch to something more ergonomic here, once available.
 // (Currently there is no way to opt into sysroot crates without `extern crate`.)
@@ -29,7 +29,13 @@ extern crate rustc_errors;
 #[allow(unused_extern_crates)]
 extern crate rustc_index;
 #[allow(unused_extern_crates)]
+extern crate rustc_lexer;
+#[allow(unused_extern_crates)]
 extern crate rustc_mir;
+#[allow(unused_extern_crates)]
+extern crate rustc_parse;
+#[allow(unused_extern_crates)]
+extern crate rustc_session;
 #[allow(unused_extern_crates)]
 extern crate rustc_target;
 #[allow(unused_extern_crates)]
@@ -65,9 +71,11 @@ use toml;
 /// # #![feature(rustc_private)]
 /// # #[allow(unused_extern_crates)]
 /// # extern crate rustc;
+/// # #[allow(unused_extern_crates)]
+/// # extern crate rustc_session;
 /// # #[macro_use]
 /// # use clippy_lints::declare_clippy_lint;
-/// use rustc::declare_tool_lint;
+/// use rustc_session::declare_tool_lint;
 ///
 /// declare_clippy_lint! {
 ///     /// **What it does:** Checks for ... (describe what the lint matches).
@@ -152,6 +160,7 @@ mod utils;
 // begin lints modules, do not remove this comment, it’s used in `update_lints`
 pub mod approx_const;
 pub mod arithmetic;
+pub mod as_conversions;
 pub mod assertions_on_constants;
 pub mod assign_ops;
 pub mod attrs;
@@ -188,6 +197,7 @@ pub mod escape;
 pub mod eta_reduction;
 pub mod eval_order_dependence;
 pub mod excessive_precision;
+pub mod exit;
 pub mod explicit_write;
 pub mod fallible_impl_from;
 pub mod format;
@@ -208,6 +218,7 @@ pub mod int_plus_one;
 pub mod integer_division;
 pub mod items_after_statements;
 pub mod large_enum_variant;
+pub mod large_stack_arrays;
 pub mod len_zero;
 pub mod let_if_seq;
 pub mod lifetimes;
@@ -270,7 +281,9 @@ pub mod slow_vector_initialization;
 pub mod strings;
 pub mod suspicious_trait_impl;
 pub mod swap;
+pub mod tabs_in_doc_comments;
 pub mod temporary_assignment;
+pub mod to_digit_is_some;
 pub mod trait_bounds;
 pub mod transmute;
 pub mod transmuting_null;
@@ -430,6 +443,10 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         "clippy::unused_collect",
         "`collect` has been marked as #[must_use] in rustc and that covers all cases of this lint",
     );
+    store.register_removed(
+        "clippy::into_iter_on_array",
+        "this lint has been uplifted to rustc and is now called `array_into_iter`",
+    );
     // end deprecated lints, do not remove this comment, it’s used in `update_lints`
 
     // begin register lints, do not remove this comment, it’s used in `update_lints`
@@ -437,6 +454,7 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         &approx_const::APPROX_CONSTANT,
         &arithmetic::FLOAT_ARITHMETIC,
         &arithmetic::INTEGER_ARITHMETIC,
+        &as_conversions::AS_CONVERSIONS,
         &assertions_on_constants::ASSERTIONS_ON_CONSTANTS,
         &assign_ops::ASSIGN_OP_PATTERN,
         &assign_ops::MISREFACTORED_ASSIGN_OP,
@@ -463,12 +481,14 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         &copies::IFS_SAME_COND,
         &copies::IF_SAME_THEN_ELSE,
         &copies::MATCH_SAME_ARMS,
+        &copies::SAME_FUNCTIONS_IN_IF_CONDITION,
         &copy_iterator::COPY_ITERATOR,
         &dbg_macro::DBG_MACRO,
         &default_trait_access::DEFAULT_TRAIT_ACCESS,
         &derive::DERIVE_HASH_XOR_EQ,
         &derive::EXPL_IMPL_CLONE_ON_COPY,
         &doc::DOC_MARKDOWN,
+        &doc::MISSING_ERRORS_DOC,
         &doc::MISSING_SAFETY_DOC,
         &doc::NEEDLESS_DOCTEST_MAIN,
         &double_comparison::DOUBLE_COMPARISONS,
@@ -497,6 +517,7 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         &eval_order_dependence::DIVERGING_SUB_EXPRESSION,
         &eval_order_dependence::EVAL_ORDER_DEPENDENCE,
         &excessive_precision::EXCESSIVE_PRECISION,
+        &exit::EXIT,
         &explicit_write::EXPLICIT_WRITE,
         &fallible_impl_from::FALLIBLE_IMPL_FROM,
         &format::USELESS_FORMAT,
@@ -528,6 +549,7 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         &integer_division::INTEGER_DIVISION,
         &items_after_statements::ITEMS_AFTER_STATEMENTS,
         &large_enum_variant::LARGE_ENUM_VARIANT,
+        &large_stack_arrays::LARGE_STACK_ARRAYS,
         &len_zero::LEN_WITHOUT_IS_EMPTY,
         &len_zero::LEN_ZERO,
         &let_if_seq::USELESS_LET_IF_SEQ,
@@ -584,7 +606,6 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         &methods::FLAT_MAP_IDENTITY,
         &methods::GET_UNWRAP,
         &methods::INEFFICIENT_TO_STRING,
-        &methods::INTO_ITER_ON_ARRAY,
         &methods::INTO_ITER_ON_REF,
         &methods::ITER_CLONED_COLLECT,
         &methods::ITER_NTH,
@@ -615,6 +636,7 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         &methods::USELESS_ASREF,
         &methods::WRONG_PUB_SELF_CONVENTION,
         &methods::WRONG_SELF_CONVENTION,
+        &methods::ZST_OFFSET,
         &minmax::MIN_MAX,
         &misc::CMP_NAN,
         &misc::CMP_OWNED,
@@ -707,10 +729,13 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         &suspicious_trait_impl::SUSPICIOUS_OP_ASSIGN_IMPL,
         &swap::ALMOST_SWAPPED,
         &swap::MANUAL_SWAP,
+        &tabs_in_doc_comments::TABS_IN_DOC_COMMENTS,
         &temporary_assignment::TEMPORARY_ASSIGNMENT,
+        &to_digit_is_some::TO_DIGIT_IS_SOME,
         &trait_bounds::TYPE_REPETITION_IN_BOUNDS,
         &transmute::CROSSPOINTER_TRANSMUTE,
         &transmute::TRANSMUTE_BYTES_TO_STR,
+        &transmute::TRANSMUTE_FLOAT_TO_INT,
         &transmute::TRANSMUTE_INT_TO_BOOL,
         &transmute::TRANSMUTE_INT_TO_CHAR,
         &transmute::TRANSMUTE_INT_TO_FLOAT,
@@ -936,14 +961,23 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
     store.register_early_pass(|| box utils::internal_lints::ClippyLintsInternal);
     let enum_variant_name_threshold = conf.enum_variant_name_threshold;
     store.register_early_pass(move || box enum_variants::EnumVariantNames::new(enum_variant_name_threshold));
+    store.register_early_pass(|| box tabs_in_doc_comments::TabsInDocComments);
     store.register_late_pass(|| box unused_self::UnusedSelf);
     store.register_late_pass(|| box mutable_debug_assertion::DebugAssertWithMutCall);
+    store.register_late_pass(|| box exit::Exit);
+    store.register_late_pass(|| box to_digit_is_some::ToDigitIsSome);
+    let array_size_threshold = conf.array_size_threshold;
+    store.register_late_pass(move || box large_stack_arrays::LargeStackArrays::new(array_size_threshold));
+    store.register_early_pass(|| box as_conversions::AsConversions);
+    store.register_early_pass(|| box utils::internal_lints::ProduceIce);
 
     store.register_group(true, "clippy::restriction", Some("clippy_restriction"), vec![
         LintId::of(&arithmetic::FLOAT_ARITHMETIC),
         LintId::of(&arithmetic::INTEGER_ARITHMETIC),
+        LintId::of(&as_conversions::AS_CONVERSIONS),
         LintId::of(&dbg_macro::DBG_MACRO),
         LintId::of(&else_if_without_else::ELSE_IF_WITHOUT_ELSE),
+        LintId::of(&exit::EXIT),
         LintId::of(&implicit_return::IMPLICIT_RETURN),
         LintId::of(&indexing_slicing::INDEXING_SLICING),
         LintId::of(&inherent_impl::MULTIPLE_INHERENT_IMPL),
@@ -976,10 +1010,12 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&attrs::INLINE_ALWAYS),
         LintId::of(&checked_conversions::CHECKED_CONVERSIONS),
         LintId::of(&copies::MATCH_SAME_ARMS),
+        LintId::of(&copies::SAME_FUNCTIONS_IN_IF_CONDITION),
         LintId::of(&copy_iterator::COPY_ITERATOR),
         LintId::of(&default_trait_access::DEFAULT_TRAIT_ACCESS),
         LintId::of(&derive::EXPL_IMPL_CLONE_ON_COPY),
         LintId::of(&doc::DOC_MARKDOWN),
+        LintId::of(&doc::MISSING_ERRORS_DOC),
         LintId::of(&empty_enum::EMPTY_ENUM),
         LintId::of(&enum_glob_use::ENUM_GLOB_USE),
         LintId::of(&enum_variants::MODULE_NAME_REPETITIONS),
@@ -990,6 +1026,7 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&if_not_else::IF_NOT_ELSE),
         LintId::of(&infinite_iter::MAYBE_INFINITE_ITER),
         LintId::of(&items_after_statements::ITEMS_AFTER_STATEMENTS),
+        LintId::of(&large_stack_arrays::LARGE_STACK_ARRAYS),
         LintId::of(&literal_representation::LARGE_DIGIT_GROUPS),
         LintId::of(&loops::EXPLICIT_INTO_ITER_LOOP),
         LintId::of(&loops::EXPLICIT_ITER_LOOP),
@@ -1021,7 +1058,6 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&unicode::NON_ASCII_LITERAL),
         LintId::of(&unicode::UNICODE_NOT_NFC),
         LintId::of(&unused_self::UNUSED_SELF),
-        LintId::of(&use_self::USE_SELF),
     ]);
 
     store.register_group(true, "clippy::internal", Some("clippy_internal"), vec![
@@ -1029,6 +1065,7 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&utils::internal_lints::COMPILER_LINT_FUNCTIONS),
         LintId::of(&utils::internal_lints::LINT_WITHOUT_LINT_PASS),
         LintId::of(&utils::internal_lints::OUTER_EXPN_EXPN_DATA),
+        LintId::of(&utils::internal_lints::PRODUCE_ICE),
     ]);
 
     store.register_group(true, "clippy::all", Some("clippy"), vec![
@@ -1142,7 +1179,6 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&methods::FILTER_NEXT),
         LintId::of(&methods::FLAT_MAP_IDENTITY),
         LintId::of(&methods::INEFFICIENT_TO_STRING),
-        LintId::of(&methods::INTO_ITER_ON_ARRAY),
         LintId::of(&methods::INTO_ITER_ON_REF),
         LintId::of(&methods::ITER_CLONED_COLLECT),
         LintId::of(&methods::ITER_NTH),
@@ -1164,6 +1200,7 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&methods::UNNECESSARY_FOLD),
         LintId::of(&methods::USELESS_ASREF),
         LintId::of(&methods::WRONG_SELF_CONVENTION),
+        LintId::of(&methods::ZST_OFFSET),
         LintId::of(&minmax::MIN_MAX),
         LintId::of(&misc::CMP_NAN),
         LintId::of(&misc::CMP_OWNED),
@@ -1231,7 +1268,9 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&suspicious_trait_impl::SUSPICIOUS_OP_ASSIGN_IMPL),
         LintId::of(&swap::ALMOST_SWAPPED),
         LintId::of(&swap::MANUAL_SWAP),
+        LintId::of(&tabs_in_doc_comments::TABS_IN_DOC_COMMENTS),
         LintId::of(&temporary_assignment::TEMPORARY_ASSIGNMENT),
+        LintId::of(&to_digit_is_some::TO_DIGIT_IS_SOME),
         LintId::of(&transmute::CROSSPOINTER_TRANSMUTE),
         LintId::of(&transmute::TRANSMUTE_BYTES_TO_STR),
         LintId::of(&transmute::TRANSMUTE_INT_TO_BOOL),
@@ -1357,6 +1396,8 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&returns::NEEDLESS_RETURN),
         LintId::of(&returns::UNUSED_UNIT),
         LintId::of(&strings::STRING_LIT_AS_BYTES),
+        LintId::of(&tabs_in_doc_comments::TABS_IN_DOC_COMMENTS),
+        LintId::of(&to_digit_is_some::TO_DIGIT_IS_SOME),
         LintId::of(&try_err::TRY_ERR),
         LintId::of(&types::FN_TO_NUMERIC_CAST),
         LintId::of(&types::FN_TO_NUMERIC_CAST_WITH_TRUNCATION),
@@ -1481,9 +1522,9 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&mem_discriminant::MEM_DISCRIMINANT_NON_ENUM),
         LintId::of(&mem_replace::MEM_REPLACE_WITH_UNINIT),
         LintId::of(&methods::CLONE_DOUBLE_REF),
-        LintId::of(&methods::INTO_ITER_ON_ARRAY),
         LintId::of(&methods::TEMPORARY_CSTRING_AS_PTR),
         LintId::of(&methods::UNINIT_ASSUMED_INIT),
+        LintId::of(&methods::ZST_OFFSET),
         LintId::of(&minmax::MIN_MAX),
         LintId::of(&misc::CMP_NAN),
         LintId::of(&misc::FLOAT_CMP),
@@ -1546,6 +1587,8 @@ pub fn register_plugins(store: &mut lint::LintStore, sess: &Session, conf: &Conf
         LintId::of(&mutex_atomic::MUTEX_INTEGER),
         LintId::of(&needless_borrow::NEEDLESS_BORROW),
         LintId::of(&path_buf_push_overwrite::PATH_BUF_PUSH_OVERWRITE),
+        LintId::of(&transmute::TRANSMUTE_FLOAT_TO_INT),
+        LintId::of(&use_self::USE_SELF),
     ]);
 }
 

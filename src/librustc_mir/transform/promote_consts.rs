@@ -14,10 +14,9 @@
 
 use rustc::hir::def_id::DefId;
 use rustc::mir::*;
-use rustc::mir::interpret::ConstValue;
 use rustc::mir::visit::{PlaceContext, MutatingUseContext, MutVisitor, Visitor};
 use rustc::mir::traversal::ReversePostorder;
-use rustc::ty::{self, List, TyCtxt};
+use rustc::ty::{self, List, TyCtxt, TypeFoldable};
 use rustc::ty::subst::InternalSubsts;
 use rustc::ty::cast::CastTy;
 use syntax::ast::LitKind;
@@ -27,9 +26,50 @@ use syntax_pos::{Span, DUMMY_SP};
 use rustc_index::vec::{IndexVec, Idx};
 use rustc_target::spec::abi::Abi;
 
+use std::cell::Cell;
 use std::{iter, mem, usize};
 
+use crate::transform::{MirPass, MirSource};
 use crate::transform::check_consts::{qualifs, Item, ConstKind, is_lang_panic_fn};
+
+/// A `MirPass` for promotion.
+///
+/// Promotion is the extraction of promotable temps into separate MIR bodies. This pass also emits
+/// errors when promotion of `#[rustc_args_required_const]` arguments fails.
+///
+/// After this pass is run, `promoted_fragments` will hold the MIR body corresponding to each
+/// newly created `StaticKind::Promoted`.
+#[derive(Default)]
+pub struct PromoteTemps<'tcx> {
+    pub promoted_fragments: Cell<IndexVec<Promoted, BodyAndCache<'tcx>>>,
+}
+
+impl<'tcx> MirPass<'tcx> for PromoteTemps<'tcx> {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, src: MirSource<'tcx>, body: &mut BodyAndCache<'tcx>) {
+        // There's not really any point in promoting errorful MIR.
+        //
+        // This does not include MIR that failed const-checking, which we still try to promote.
+        if body.return_ty().references_error() {
+            tcx.sess.delay_span_bug(body.span, "PromoteTemps: MIR had errors");
+            return;
+        }
+
+        if src.promoted.is_some() {
+            return;
+        }
+
+        let def_id = src.def_id();
+
+        let mut rpo = traversal::reverse_postorder(body);
+        let (temps, all_candidates) = collect_temps_and_candidates(tcx, body, &mut rpo);
+
+        let promotable_candidates
+            = validate_candidates(tcx, read_only!(body), def_id, &temps, &all_candidates);
+
+        let promoted = promote_candidates(def_id, body, tcx, temps, promotable_candidates);
+        self.promoted_fragments.set(promoted);
+    }
+}
 
 /// State of a temporary during collection and promotion.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -130,7 +170,7 @@ impl<'tcx> Visitor<'tcx> for Collector<'_, 'tcx> {
 
         // Ignore drops, if the temp gets promoted,
         // then it's constant and thus drop is noop.
-        // Non-uses are also irrelevent.
+        // Non-uses are also irrelevant.
         if context.is_drop() || !context.is_use() {
             debug!(
                 "visit_local: context.is_drop={:?} context.is_use={:?}",
@@ -199,6 +239,8 @@ impl<'tcx> Visitor<'tcx> for Collector<'_, 'tcx> {
                             bb: location.block,
                             index: 2,
                         });
+
+                        return; // Don't double count `simd_shuffle` candidates
                     }
                 }
 
@@ -305,10 +347,14 @@ impl<'tcx> Validator<'_, 'tcx> {
                             while let [proj_base @ .., elem] = place_projection {
                                 // FIXME(eddyb) this is probably excessive, with
                                 // the exception of `union` member accesses.
-                                let ty =
-                                    Place::ty_from(&place.base, proj_base, self.body, self.tcx)
-                                        .projection_ty(self.tcx, elem)
-                                        .ty;
+                                let ty = Place::ty_from(
+                                        &place.base,
+                                        proj_base,
+                                        *self.body,
+                                        self.tcx
+                                    )
+                                    .projection_ty(self.tcx, elem)
+                                    .ty;
                                 if ty.is_freeze(self.tcx, self.param_env, DUMMY_SP) {
                                     has_mut_interior = false;
                                     break;
@@ -327,7 +373,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                         }
 
                         if let BorrowKind::Mut { .. } = kind {
-                            let ty = place.ty(self.body, self.tcx).ty;
+                            let ty = place.ty(*self.body, self.tcx).ty;
 
                             // In theory, any zero-sized value could be borrowed
                             // mutably without consequences. However, only &mut []
@@ -455,34 +501,9 @@ impl<'tcx> Validator<'_, 'tcx> {
                 projection: [],
             } => self.validate_local(*local),
             PlaceRef {
-                base: PlaceBase::Static(box Static {
-                    kind: StaticKind::Promoted { .. },
-                    ..
-                }),
+                base: PlaceBase::Static(_),
                 projection: [],
             } => bug!("qualifying already promoted MIR"),
-            PlaceRef {
-                base: PlaceBase::Static(box Static {
-                    kind: StaticKind::Static,
-                    def_id,
-                    ..
-                }),
-                projection: [],
-            } => {
-                // Only allow statics (not consts) to refer to other statics.
-                // FIXME(eddyb) does this matter at all for promotion?
-                let is_static = self.const_kind.map_or(false, |k| k.is_static());
-                if !is_static {
-                    return Err(Unpromotable);
-                }
-
-                let is_thread_local = self.tcx.has_attr(*def_id, sym::thread_local);
-                if is_thread_local {
-                    return Err(Unpromotable);
-                }
-
-                Ok(())
-            }
             PlaceRef {
                 base: _,
                 projection: [proj_base @ .., elem],
@@ -501,7 +522,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                     ProjectionElem::Field(..) => {
                         if self.const_kind.is_none() {
                             let base_ty =
-                                Place::ty_from(place.base, proj_base, self.body, self.tcx).ty;
+                                Place::ty_from(place.base, proj_base, *self.body, self.tcx).ty;
                             if let Some(def) = base_ty.ty_adt_def() {
                                 // No promotion of union field accesses.
                                 if def.is_union() {
@@ -525,37 +546,32 @@ impl<'tcx> Validator<'_, 'tcx> {
             Operand::Copy(place) |
             Operand::Move(place) => self.validate_place(place.as_ref()),
 
-            Operand::Constant(constant) => {
-                if let ConstValue::Unevaluated(def_id, _) = constant.literal.val {
-                    if self.tcx.trait_of_item(def_id).is_some() {
-                        // Don't peek inside trait associated constants.
-                        // (see below what we do for other consts, for now)
-                    } else {
-                        // HACK(eddyb) ensure that errors propagate correctly.
-                        // FIXME(eddyb) remove this once the old promotion logic
-                        // is gone - we can always promote constants even if they
-                        // fail to pass const-checking, as compilation would've
-                        // errored independently and promotion can't change that.
-                        let (bits, _) = self.tcx.at(constant.span).mir_const_qualif(def_id);
-                        if bits == super::qualify_consts::QUALIF_ERROR_BIT {
-                            self.tcx.sess.delay_span_bug(
-                                constant.span,
-                                "promote_consts: MIR had errors",
-                            );
-                            return Err(Unpromotable);
-                        }
+            // The qualifs for a constant (e.g. `HasMutInterior`) are checked in
+            // `validate_rvalue` upon access.
+            Operand::Constant(c) => {
+                if let Some(def_id) = c.check_static_ptr(self.tcx) {
+                    // Only allow statics (not consts) to refer to other statics.
+                    // FIXME(eddyb) does this matter at all for promotion?
+                    let is_static = self.const_kind.map_or(false, |k| k.is_static());
+                    if !is_static {
+                        return Err(Unpromotable);
+                    }
+
+                    let is_thread_local = self.tcx.has_attr(def_id, sym::thread_local);
+                    if is_thread_local {
+                        return Err(Unpromotable);
                     }
                 }
 
                 Ok(())
-            }
+            },
         }
     }
 
     fn validate_rvalue(&self, rvalue: &Rvalue<'tcx>) -> Result<(), Unpromotable> {
         match *rvalue {
             Rvalue::Cast(CastKind::Misc, ref operand, cast_ty) if self.const_kind.is_none() => {
-                let operand_ty = operand.ty(self.body, self.tcx);
+                let operand_ty = operand.ty(*self.body, self.tcx);
                 let cast_in = CastTy::from_ty(operand_ty).expect("bad input type for cast");
                 let cast_out = CastTy::from_ty(cast_ty).expect("bad output type for cast");
                 match (cast_in, cast_out) {
@@ -569,7 +585,7 @@ impl<'tcx> Validator<'_, 'tcx> {
             }
 
             Rvalue::BinaryOp(op, ref lhs, _) if self.const_kind.is_none() => {
-                if let ty::RawPtr(_) | ty::FnPtr(..) = lhs.ty(self.body, self.tcx).kind {
+                if let ty::RawPtr(_) | ty::FnPtr(..) = lhs.ty(*self.body, self.tcx).kind {
                     assert!(op == BinOp::Eq || op == BinOp::Ne ||
                             op == BinOp::Le || op == BinOp::Lt ||
                             op == BinOp::Ge || op == BinOp::Gt ||
@@ -604,7 +620,7 @@ impl<'tcx> Validator<'_, 'tcx> {
 
             Rvalue::Ref(_, kind, place) => {
                 if let BorrowKind::Mut { .. } = kind {
-                    let ty = place.ty(self.body, self.tcx).ty;
+                    let ty = place.ty(*self.body, self.tcx).ty;
 
                     // In theory, any zero-sized value could be borrowed
                     // mutably without consequences. However, only &mut []
@@ -631,7 +647,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                 let mut place = place.as_ref();
                 if let [proj_base @ .., ProjectionElem::Deref] = &place.projection {
                     let base_ty =
-                        Place::ty_from(&place.base, proj_base, self.body, self.tcx).ty;
+                        Place::ty_from(&place.base, proj_base, *self.body, self.tcx).ty;
                     if let ty::Ref(..) = base_ty.kind {
                         place = PlaceRef {
                             base: &place.base,
@@ -657,7 +673,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                     while let [proj_base @ .., elem] = place_projection {
                         // FIXME(eddyb) this is probably excessive, with
                         // the exception of `union` member accesses.
-                        let ty = Place::ty_from(place.base, proj_base, self.body, self.tcx)
+                        let ty = Place::ty_from(place.base, proj_base, *self.body, self.tcx)
                             .projection_ty(self.tcx, elem)
                             .ty;
                         if ty.is_freeze(self.tcx, self.param_env, DUMMY_SP) {
@@ -690,7 +706,7 @@ impl<'tcx> Validator<'_, 'tcx> {
         callee: &Operand<'tcx>,
         args: &[Operand<'tcx>],
     ) -> Result<(), Unpromotable> {
-        let fn_ty = callee.ty(self.body, self.tcx);
+        let fn_ty = callee.ty(*self.body, self.tcx);
 
         if !self.explicit && self.const_kind.is_none() {
             if let ty::FnDef(def_id, _) = fn_ty.kind {
@@ -726,7 +742,7 @@ impl<'tcx> Validator<'_, 'tcx> {
 // FIXME(eddyb) remove the differences for promotability in `static`, `const`, `const fn`.
 pub fn validate_candidates(
     tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
+    body: ReadOnlyBodyAndCache<'_, 'tcx>,
     def_id: DefId,
     temps: &IndexVec<Local, TempState>,
     candidates: &[Candidate],
@@ -759,8 +775,8 @@ pub fn validate_candidates(
 
 struct Promoter<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
-    source: &'a mut Body<'tcx>,
-    promoted: Body<'tcx>,
+    source: &'a mut BodyAndCache<'tcx>,
+    promoted: BodyAndCache<'tcx>,
     temps: &'a mut IndexVec<Local, TempState>,
 
     /// If true, all nested temps are also kept in the
@@ -908,7 +924,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
         def_id: DefId,
         candidate: Candidate,
         next_promoted_id: usize,
-    ) -> Option<Body<'tcx>> {
+    ) -> Option<BodyAndCache<'tcx>> {
         let mut operand = {
             let promoted = &mut self.promoted;
             let promoted_id = Promoted::new(next_promoted_id);
@@ -1029,11 +1045,11 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Promoter<'a, 'tcx> {
 
 pub fn promote_candidates<'tcx>(
     def_id: DefId,
-    body: &mut Body<'tcx>,
+    body: &mut BodyAndCache<'tcx>,
     tcx: TyCtxt<'tcx>,
     mut temps: IndexVec<Local, TempState>,
     candidates: Vec<Candidate>,
-) -> IndexVec<Promoted, Body<'tcx>> {
+) -> IndexVec<Promoted, BodyAndCache<'tcx>> {
     // Visit candidates in reverse, in case they're nested.
     debug!("promote_candidates({:?})", candidates);
 
@@ -1065,20 +1081,19 @@ pub fn promote_candidates<'tcx>(
         ).collect();
 
         let promoter = Promoter {
-            promoted: Body::new(
+            promoted: BodyAndCache::new(Body::new(
                 IndexVec::new(),
                 // FIXME: maybe try to filter this to avoid blowing up
                 // memory usage?
                 body.source_scopes.clone(),
-                body.source_scope_local_data.clone(),
-                None,
                 initial_locals,
                 IndexVec::new(),
                 0,
                 vec![],
                 body.span,
                 vec![],
-            ),
+                body.generator_kind,
+            )),
             tcx,
             source: body,
             temps: &mut temps,
@@ -1128,18 +1143,18 @@ pub fn promote_candidates<'tcx>(
     promotions
 }
 
-/// This function returns `true` if the `const_in_array_repeat_expression` feature attribute should
+/// This function returns `true` if the `const_in_array_repeat_expressions` feature attribute should
 /// be suggested. This function is probably quite expensive, it shouldn't be run in the happy path.
 /// Feature attribute should be suggested if `operand` can be promoted and the feature is not
 /// enabled.
 crate fn should_suggest_const_in_array_repeat_expressions_attribute<'tcx>(
     tcx: TyCtxt<'tcx>,
     mir_def_id: DefId,
-    body: &Body<'tcx>,
+    body: ReadOnlyBodyAndCache<'_, 'tcx>,
     operand: &Operand<'tcx>,
 ) -> bool {
-    let mut rpo = traversal::reverse_postorder(body);
-    let (temps, _) = collect_temps_and_candidates(tcx, body, &mut rpo);
+    let mut rpo = traversal::reverse_postorder(&body);
+    let (temps, _) = collect_temps_and_candidates(tcx, &body, &mut rpo);
     let validator = Validator {
         item: Item::new(tcx, mir_def_id, body),
         temps: &temps,

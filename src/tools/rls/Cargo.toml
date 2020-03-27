@@ -1,6 +1,6 @@
 [package]
 name = "rls"
-version = "1.40.0"
+version = "1.41.0"
 edition = "2018"
 authors = ["Nick Cameron <ncameron@mozilla.com>", "The RLS developers"]
 description = "Rust Language Server - provides information about Rust programs to IDEs and other tools"
@@ -29,9 +29,9 @@ rls-span = "0.5"
 rls-vfs = "0.8"
 rls-ipc = { version = "0.1.0", path = "rls-ipc", optional = true }
 
-cargo = { git = "https://github.com/rust-lang/cargo", rev = "8b0561d68f12eeb1d72e07ceef464ebf6032a1bc" }
+cargo = { git = "https://github.com/rust-lang/cargo", rev = "626f0f40efd32e6b3dbade50cd53fdfaa08446ba" }
 cargo_metadata = "0.8"
-clippy_lints = { git = "https://github.com/rust-lang/rust-clippy", rev = "000c3ff278852788bc88ce6a911050d02d39af93", optional = true }
+clippy_lints = { git = "https://github.com/rust-lang/rust-clippy", rev = "b245fbd0f2bdbd002611a45d0758f9be44eaf66b", optional = true }
 env_logger = "0.7"
 failure = "0.1.1"
 futures = { version = "0.1", optional = true }
@@ -42,11 +42,11 @@ lsp-types = { version = "0.60", features = ["proposed"] }
 lazy_static = "1"
 log = "0.4"
 num_cpus = "1"
-racer = { version = "2.1.28", default-features = false }
+racer = { version = "2.1.29", default-features = false }
 rand = "0.7"
 rayon = "1"
 rustc_tools_util = "0.2"
-rustfmt-nightly = "1.4.8"
+rustfmt-nightly = "1.4.11"
 serde = "1.0"
 serde_json = "1.0"
 serde_derive = "1.0"

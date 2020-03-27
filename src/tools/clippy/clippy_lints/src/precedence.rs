@@ -1,7 +1,8 @@
 use crate::utils::{snippet_with_applicability, span_lint_and_sugg};
+use rustc::declare_lint_pass;
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use syntax::ast::*;
 use syntax::source_map::Spanned;
 
@@ -90,7 +91,7 @@ impl EarlyLintPass for Precedence {
                 if let Some(slf) = args.first() {
                     if let ExprKind::Lit(ref lit) = slf.kind {
                         match lit.kind {
-                            LitKind::Int(..) | LitKind::Float(..) | LitKind::FloatUnsuffixed(..) => {
+                            LitKind::Int(..) | LitKind::Float(..) => {
                                 let mut applicability = Applicability::MachineApplicable;
                                 span_lint_and_sugg(
                                     cx,

@@ -1,23 +1,24 @@
+use crate::hir;
 use crate::hir::def_id::DefId;
 use crate::ty::{self, BoundRegion, Region, Ty, TyCtxt};
-use std::borrow::Cow;
-use std::fmt;
+
+use errors::{Applicability, DiagnosticBuilder};
 use rustc_target::spec::abi;
 use syntax::ast;
-use syntax::errors::pluralise;
-use errors::{Applicability, DiagnosticBuilder};
+use syntax::errors::pluralize;
 use syntax_pos::Span;
 
-use crate::hir;
+use std::borrow::Cow;
+use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TypeFoldable)]
 pub struct ExpectedFound<T> {
     pub expected: T,
     pub found: T,
 }
 
 // Data structures used in type unification
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, TypeFoldable)]
 pub enum TypeError<'tcx> {
     Mismatch,
     UnsafetyMismatch(ExpectedFound<hir::Unsafety>),
@@ -64,8 +65,11 @@ pub enum UnconstrainedNumeric {
 impl<'tcx> fmt::Display for TypeError<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use self::TypeError::*;
-        fn report_maybe_different(f: &mut fmt::Formatter<'_>,
-                                  expected: &str, found: &str) -> fmt::Result {
+        fn report_maybe_different(
+            f: &mut fmt::Formatter<'_>,
+            expected: &str,
+            found: &str,
+        ) -> fmt::Result {
             // A naive approach to making sure that we're not reporting silly errors such as:
             // (expected closure, found closure).
             if expected == found {
@@ -100,17 +104,17 @@ impl<'tcx> fmt::Display for TypeError<'tcx> {
                 write!(f, "expected a tuple with {} element{}, \
                            found one with {} element{}",
                        values.expected,
-                       pluralise!(values.expected),
+                       pluralize!(values.expected),
                        values.found,
-                       pluralise!(values.found))
+                       pluralize!(values.found))
             }
             FixedArraySize(values) => {
                 write!(f, "expected an array with a fixed size of {} element{}, \
                            found one with {} element{}",
                        values.expected,
-                       pluralise!(values.expected),
+                       pluralize!(values.expected),
                        values.found,
-                       pluralise!(values.found))
+                       pluralize!(values.found))
             }
             ArgCount => {
                 write!(f, "incorrect number of function parameters")
@@ -165,7 +169,7 @@ impl<'tcx> fmt::Display for TypeError<'tcx> {
             ProjectionBoundsLength(ref values) => {
                 write!(f, "expected {} associated type binding{}, found {}",
                        values.expected,
-                       pluralise!(values.expected),
+                       pluralize!(values.expected),
                        values.found)
             },
             ExistentialMismatch(ref values) => {
@@ -183,46 +187,77 @@ impl<'tcx> fmt::Display for TypeError<'tcx> {
     }
 }
 
+impl<'tcx> TypeError<'tcx> {
+    pub fn must_include_note(&self) -> bool {
+        use self::TypeError::*;
+        match self {
+            CyclicTy(_) |
+            UnsafetyMismatch(_) |
+            Mismatch |
+            AbiMismatch(_) |
+            FixedArraySize(_) |
+            Sorts(_) |
+            IntMismatch(_) |
+            FloatMismatch(_) |
+            VariadicMismatch(_) => false,
+
+            Mutability |
+            TupleSize(_) |
+            ArgCount |
+            RegionsDoesNotOutlive(..) |
+            RegionsInsufficientlyPolymorphic(..) |
+            RegionsOverlyPolymorphic(..) |
+            RegionsPlaceholderMismatch |
+            Traits(_) |
+            ProjectionMismatched(_) |
+            ProjectionBoundsLength(_) |
+            ExistentialMismatch(_) |
+            ConstMismatch(_) |
+            IntrinsicCast |
+            ObjectUnsafeCoercion(_) => true,
+        }
+    }
+}
+
 impl<'tcx> ty::TyS<'tcx> {
     pub fn sort_string(&self, tcx: TyCtxt<'_>) -> Cow<'static, str> {
         match self.kind {
             ty::Bool | ty::Char | ty::Int(_) |
-            ty::Uint(_) | ty::Float(_) | ty::Str | ty::Never => self.to_string().into(),
-            ty::Tuple(ref tys) if tys.is_empty() => self.to_string().into(),
+            ty::Uint(_) | ty::Float(_) | ty::Str | ty::Never => format!("`{}`", self).into(),
+            ty::Tuple(ref tys) if tys.is_empty() => format!("`{}`", self).into(),
 
             ty::Adt(def, _) => format!("{} `{}`", def.descr(), tcx.def_path_str(def.did)).into(),
             ty::Foreign(def_id) => format!("extern type `{}`", tcx.def_path_str(def_id)).into(),
-            ty::Array(_, n) => {
+            ty::Array(t, n) => {
                 let n = tcx.lift(&n).unwrap();
                 match n.try_eval_usize(tcx, ty::ParamEnv::empty()) {
-                    Some(n) => {
-                        format!("array of {} element{}", n, pluralise!(n)).into()
-                    }
+                    _ if t.is_simple_ty() => format!("array `{}`", self).into(),
+                    Some(n) => format!("array of {} element{} ", n, pluralize!(n)).into(),
                     None => "array".into(),
                 }
             }
+            ty::Slice(ty) if ty.is_simple_ty() => format!("slice `{}`", self).into(),
             ty::Slice(_) => "slice".into(),
             ty::RawPtr(_) => "*-ptr".into(),
-            ty::Ref(region, ty, mutbl) => {
+            ty::Ref(_, ty, mutbl) => {
                 let tymut = ty::TypeAndMut { ty, mutbl };
                 let tymut_string = tymut.to_string();
-                if tymut_string == "_" ||         //unknown type name,
-                   tymut_string.len() > 10 ||     //name longer than saying "reference",
-                   region.to_string() != "'_"     //... or a complex type
-                {
-                    format!("{}reference", match mutbl {
-                        hir::Mutability::MutMutable => "mutable ",
-                        _ => ""
-                    }).into()
-                } else {
-                    format!("&{}", tymut_string).into()
+                if tymut_string != "_" && (
+                    ty.is_simple_text() || tymut_string.len() < "mutable reference".len()
+                ) {
+                    format!("`&{}`", tymut_string).into()
+                } else { // Unknown type name, it's long or has type arguments
+                    match mutbl {
+                        hir::Mutability::Mutable => "mutable reference",
+                        _ => "reference",
+                    }.into()
                 }
             }
             ty::FnDef(..) => "fn item".into(),
             ty::FnPtr(_) => "fn pointer".into(),
             ty::Dynamic(ref inner, ..) => {
                 if let Some(principal) = inner.principal() {
-                    format!("trait {}", tcx.def_path_str(principal.def_id())).into()
+                    format!("trait `{}`", tcx.def_path_str(principal.def_id())).into()
                 } else {
                     "trait".into()
                 }
@@ -241,9 +276,39 @@ impl<'tcx> ty::TyS<'tcx> {
             ty::Infer(ty::FreshFloatTy(_)) => "fresh floating-point type".into(),
             ty::Projection(_) => "associated type".into(),
             ty::UnnormalizedProjection(_) => "non-normalized associated type".into(),
-            ty::Param(_) => "type parameter".into(),
+            ty::Param(p) => format!("type parameter `{}`", p).into(),
             ty::Opaque(..) => "opaque type".into(),
             ty::Error => "type error".into(),
+        }
+    }
+
+    pub fn prefix_string(&self) -> Cow<'static, str> {
+        match self.kind {
+            ty::Infer(_) | ty::Error | ty::Bool | ty::Char | ty::Int(_) |
+            ty::Uint(_) | ty::Float(_) | ty::Str | ty::Never => "type".into(),
+            ty::Tuple(ref tys) if tys.is_empty() => "unit type".into(),
+            ty::Adt(def, _) => def.descr().into(),
+            ty::Foreign(_) => "extern type".into(),
+            ty::Array(..) => "array".into(),
+            ty::Slice(_) => "slice".into(),
+            ty::RawPtr(_) => "raw pointer".into(),
+            ty::Ref(.., mutbl) => match mutbl {
+                hir::Mutability::Mutable => "mutable reference",
+                _ => "reference"
+            }.into(),
+            ty::FnDef(..) => "fn item".into(),
+            ty::FnPtr(_) => "fn pointer".into(),
+            ty::Dynamic(..) => "trait object".into(),
+            ty::Closure(..) => "closure".into(),
+            ty::Generator(..) => "generator".into(),
+            ty::GeneratorWitness(..) => "generator witness".into(),
+            ty::Tuple(..) => "tuple".into(),
+            ty::Placeholder(..) => "higher-ranked type".into(),
+            ty::Bound(..) => "bound type variable".into(),
+            ty::Projection(_) => "associated type".into(),
+            ty::UnnormalizedProjection(_) => "associated type".into(),
+            ty::Param(_) => "type parameter".into(),
+            ty::Opaque(..) => "opaque type".into(),
         }
     }
 }
@@ -254,6 +319,7 @@ impl<'tcx> TyCtxt<'tcx> {
         db: &mut DiagnosticBuilder<'_>,
         err: &TypeError<'tcx>,
         sp: Span,
+        body_owner_def_id: DefId,
     ) {
         use self::TypeError::*;
 
@@ -288,7 +354,16 @@ impl<'tcx> TyCtxt<'tcx> {
                             );
                         }
                     },
-                    (ty::Param(_), ty::Param(_)) => {
+                    (ty::Param(expected), ty::Param(found)) => {
+                        let generics = self.generics_of(body_owner_def_id);
+                        let e_span = self.def_span(generics.type_param(expected, self).def_id);
+                        if !sp.contains(e_span) {
+                            db.span_label(e_span, "expected type parameter");
+                        }
+                        let f_span = self.def_span(generics.type_param(found, self).def_id);
+                        if !sp.contains(f_span) {
+                            db.span_label(f_span, "found type parameter");
+                        }
                         db.note("a type parameter was expected, but a different one was found; \
                                  you might be missing a type parameter or trait bound");
                         db.note("for more information, visit \
@@ -301,7 +376,12 @@ impl<'tcx> TyCtxt<'tcx> {
                     (ty::Param(_), ty::Projection(_)) | (ty::Projection(_), ty::Param(_)) => {
                         db.note("you might be missing a type parameter or trait bound");
                     }
-                    (ty::Param(_), _) | (_, ty::Param(_)) => {
+                    (ty::Param(p), _) | (_, ty::Param(p)) => {
+                        let generics = self.generics_of(body_owner_def_id);
+                        let p_span = self.def_span(generics.type_param(p, self).def_id);
+                        if !sp.contains(p_span) {
+                            db.span_label(p_span, "this type parameter");
+                        }
                         db.help("type parameters must be constrained to match other types");
                         if self.sess.teach(&db.get_code().unwrap()) {
                             db.help("given a type parameter `T` and a method `foo`:

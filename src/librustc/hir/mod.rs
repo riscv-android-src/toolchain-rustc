@@ -3,9 +3,7 @@
 //! [rustc guide]: https://rust-lang.github.io/rustc-guide/hir.html
 
 pub use self::BlockCheckMode::*;
-pub use self::CaptureClause::*;
 pub use self::FunctionRetTy::*;
-pub use self::Mutability::*;
 pub use self::PrimTy::*;
 pub use self::UnOp::*;
 pub use self::UnsafeSource::*;
@@ -23,6 +21,8 @@ use syntax_pos::{Span, DUMMY_SP, MultiSpan};
 use syntax::source_map::Spanned;
 use syntax::ast::{self, CrateSugar, Ident, Name, NodeId, AsmDialect};
 use syntax::ast::{Attribute, Label, LitKind, StrStyle, FloatTy, IntTy, UintTy};
+pub use syntax::ast::{Mutability, Constness, Unsafety, Movability, CaptureBy};
+pub use syntax::ast::{IsAuto, ImplPolarity, BorrowKind};
 use syntax::attr::{InlineAttr, OptimizeAttr};
 use syntax::symbol::{Symbol, kw};
 use syntax::tokenstream::TokenStream;
@@ -1048,33 +1048,16 @@ pub enum PatKind {
     /// A range pattern (e.g., `1..=2` or `1..2`).
     Range(P<Expr>, P<Expr>, RangeEnd),
 
-    /// `[a, b, ..i, y, z]` is represented as:
-    ///     `PatKind::Slice(box [a, b], Some(i), box [y, z])`.
+    /// A slice pattern, `[before_0, ..., before_n, (slice, after_0, ..., after_n)?]`.
+    ///
+    /// Here, `slice` is lowered from the syntax `($binding_mode $ident @)? ..`.
+    /// If `slice` exists, then `after` can be non-empty.
+    ///
+    /// The representation for e.g., `[a, b, .., c, d]` is:
+    /// ```
+    /// PatKind::Slice([Binding(a), Binding(b)], Some(Wild), [Binding(c), Binding(d)])
+    /// ```
     Slice(HirVec<P<Pat>>, Option<P<Pat>>, HirVec<P<Pat>>),
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, HashStable,
-         RustcEncodable, RustcDecodable, Hash, Debug)]
-pub enum Mutability {
-    MutMutable,
-    MutImmutable,
-}
-
-impl Mutability {
-    /// Returns `MutMutable` only if both `self` and `other` are mutable.
-    pub fn and(self, other: Self) -> Self {
-        match self {
-            MutMutable => other,
-            MutImmutable => MutImmutable,
-        }
-    }
-
-    pub fn invert(self) -> Self {
-        match self {
-            MutMutable => MutImmutable,
-            MutImmutable => MutMutable,
-        }
-    }
 }
 
 #[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -1240,7 +1223,7 @@ impl UnOp {
 }
 
 /// A statement.
-#[derive(RustcEncodable, RustcDecodable)]
+#[derive(RustcEncodable, RustcDecodable, HashStable)]
 pub struct Stmt {
     pub hir_id: HirId,
     pub kind: StmtKind,
@@ -1482,7 +1465,7 @@ pub struct Expr {
 
 // `Expr` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert_size!(Expr, 72);
+static_assert_size!(Expr, 64);
 
 impl Expr {
     pub fn precedence(&self) -> ExprPrecedence {
@@ -1518,8 +1501,20 @@ impl Expr {
         }
     }
 
-    pub fn is_place_expr(&self) -> bool {
-         match self.kind {
+    // Whether this looks like a place expr, without checking for deref
+    // adjustments.
+    // This will return `true` in some potentially surprising cases such as
+    // `CONSTANT.field`.
+    pub fn is_syntactic_place_expr(&self) -> bool {
+        self.is_place_expr(|_| true)
+    }
+
+    // Whether this is a place expression.
+    // `allow_projections_from` should return `true` if indexing a field or
+    // index expression based on the given expression should be considered a
+    // place expression.
+    pub fn is_place_expr(&self, mut allow_projections_from: impl FnMut(&Self) -> bool) -> bool {
+        match self.kind {
             ExprKind::Path(QPath::Resolved(_, ref path)) => {
                 match path.res {
                     Res::Local(..)
@@ -1529,14 +1524,19 @@ impl Expr {
                 }
             }
 
+            // Type ascription inherits its place expression kind from its
+            // operand. See:
+            // https://github.com/rust-lang/rfcs/blob/master/text/0803-type-ascription.md#type-ascription-and-temporaries
             ExprKind::Type(ref e, _) => {
-                e.is_place_expr()
+                e.is_place_expr(allow_projections_from)
             }
 
-            ExprKind::Unary(UnDeref, _) |
-            ExprKind::Field(..) |
-            ExprKind::Index(..) => {
-                true
+            ExprKind::Unary(UnDeref, _) => true,
+
+            ExprKind::Field(ref base, _) |
+            ExprKind::Index(ref base, _) => {
+                allow_projections_from(base)
+                    || base.is_place_expr(allow_projections_from)
             }
 
             // Partially qualified paths in expressions can only legally
@@ -1616,6 +1616,11 @@ pub enum ExprKind {
     /// and the remaining elements are the rest of the arguments.
     /// Thus, `x.foo::<Bar, Baz>(a, b, c, d)` is represented as
     /// `ExprKind::MethodCall(PathSegment { foo, [Bar, Baz] }, [x, a, b, c, d])`.
+    ///
+    /// To resolve the called method to a `DefId`, call [`type_dependent_def_id`] with
+    /// the `hir_id` of the `MethodCall` node itself.
+    ///
+    /// [`type_dependent_def_id`]: ../ty/struct.TypeckTables.html#method.type_dependent_def_id
     MethodCall(P<PathSegment>, Span, HirVec<Expr>),
     /// A tuple (e.g., `(a, b, c, d)`).
     Tup(HirVec<Expr>),
@@ -1647,8 +1652,8 @@ pub enum ExprKind {
     /// The `Span` is the argument block `|...|`.
     ///
     /// This may also be a generator literal or an `async block` as indicated by the
-    /// `Option<GeneratorMovability>`.
-    Closure(CaptureClause, P<FnDecl>, BodyId, Span, Option<GeneratorMovability>),
+    /// `Option<Movability>`.
+    Closure(CaptureBy, P<FnDecl>, BodyId, Span, Option<Movability>),
     /// A block (e.g., `'label: { ... }`).
     Block(P<Block>, Option<Label>),
 
@@ -1666,8 +1671,8 @@ pub enum ExprKind {
     /// Path to a definition, possibly containing lifetime or type parameters.
     Path(QPath),
 
-    /// A referencing operation (i.e., `&a` or `&mut a`).
-    AddrOf(Mutability, P<Expr>),
+    /// A referencing operation (i.e., `&a`, `&mut a`, `&raw const a`, or `&raw mut a`).
+    AddrOf(BorrowKind, Mutability, P<Expr>),
     /// A `break`, with an optional label to break.
     Break(Destination, Option<P<Expr>>),
     /// A `continue`, with an optional label.
@@ -1676,7 +1681,7 @@ pub enum ExprKind {
     Ret(Option<P<Expr>>),
 
     /// Inline assembly (from `asm!`), with its outputs and inputs.
-    InlineAsm(P<InlineAsm>, HirVec<Expr>, HirVec<Expr>),
+    InlineAsm(P<InlineAsm>),
 
     /// A struct or struct-like variant literal expression.
     ///
@@ -1698,6 +1703,10 @@ pub enum ExprKind {
 }
 
 /// Represents an optionally `Self`-qualified value/type path or associated extension.
+///
+/// To resolve the path to a `DefId`, call [`qpath_res`].
+///
+/// [`qpath_res`]: ../ty/struct.TypeckTables.html#method.qpath_res
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub enum QPath {
     /// Path to a definition, optionally "fully-qualified" with a `Self`
@@ -1765,6 +1774,20 @@ pub enum MatchSource {
     AwaitDesugar,
 }
 
+impl MatchSource {
+    pub fn name(self) -> &'static str {
+        use MatchSource::*;
+        match self {
+            Normal => "match",
+            IfDesugar { .. } | IfLetDesugar { .. } => "if",
+            WhileDesugar | WhileLetDesugar => "while",
+            ForLoopDesugar => "for",
+            TryDesugar => "?",
+            AwaitDesugar => ".await",
+        }
+    }
+}
+
 /// The loop type that yielded an `ExprKind::Loop`.
 #[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub enum LoopSource {
@@ -1782,8 +1805,7 @@ impl LoopSource {
     pub fn name(self) -> &'static str {
         match self {
             LoopSource::Loop => "loop",
-            LoopSource::While => "while",
-            LoopSource::WhileLet => "while let",
+            LoopSource::While | LoopSource::WhileLet => "while",
             LoopSource::ForLoop => "for",
         }
     }
@@ -1817,17 +1839,6 @@ pub struct Destination {
     pub target_id: Result<HirId, LoopIdError>,
 }
 
-/// Whether a generator contains self-references, causing it to be `!Unpin`.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, HashStable,
-         RustcEncodable, RustcDecodable, Hash, Debug)]
-pub enum GeneratorMovability {
-    /// May contain self-references, `!Unpin`.
-    Static,
-
-    /// Must not contain self-references, `Unpin`.
-    Movable,
-}
-
 /// The yield kind that caused an `ExprKind::Yield`.
 #[derive(Copy, Clone, PartialEq, Eq, Debug, RustcEncodable, RustcDecodable, HashStable)]
 pub enum YieldSource {
@@ -1846,12 +1857,6 @@ impl fmt::Display for YieldSource {
     }
 }
 
-#[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
-pub enum CaptureClause {
-    CaptureByValue,
-    CaptureByRef,
-}
-
 // N.B., if you change this, you'll probably want to change the corresponding
 // type structure in middle/ty.rs as well.
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -1860,9 +1865,10 @@ pub struct MutTy {
     pub mutbl: Mutability,
 }
 
-/// Represents a method's signature in a trait declaration or implementation.
+/// Represents a function's signature in a trait declaration,
+/// trait implementation, or a free function.
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
-pub struct MethodSig {
+pub struct FnSig {
     pub header: FnHeader,
     pub decl: P<FnDecl>,
 }
@@ -1905,7 +1911,7 @@ pub enum TraitItemKind {
     /// An associated constant with an optional value (otherwise `impl`s must contain a value).
     Const(P<Ty>, Option<BodyId>),
     /// A method with an optional body.
-    Method(MethodSig, TraitMethod),
+    Method(FnSig, TraitMethod),
     /// An associated type with (possibly empty) bounds and optional concrete
     /// type.
     Type(GenericBounds, Option<P<Ty>>),
@@ -1939,7 +1945,7 @@ pub enum ImplItemKind {
     /// of the expression.
     Const(P<Ty>, BodyId),
     /// A method implementation with the given signature and body.
-    Method(MethodSig, BodyId),
+    Method(FnSig, BodyId),
     /// An associated type.
     TyAlias(P<Ty>),
     /// An associated `type = impl Trait`.
@@ -1951,8 +1957,9 @@ pub enum ImplItemKind {
 /// Bindings like `A: Debug` are represented as a special type `A =
 /// $::Debug` that is understood by the astconv code.
 ///
-/// FIXME(alexreg) -- why have a separate type for the binding case,
-/// wouldn't it be better to make the `ty` field an enum like:
+/// FIXME(alexreg): why have a separate type for the binding case,
+/// wouldn't it be better to make the `ty` field an enum like the
+/// following?
 ///
 /// ```
 /// enum TypeBindingKind {
@@ -2084,7 +2091,7 @@ pub enum TyKind {
     Err,
 }
 
-#[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
+#[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, HashStable, PartialEq)]
 pub struct InlineAsmOutput {
     pub constraint: Symbol,
     pub is_rw: bool,
@@ -2094,8 +2101,8 @@ pub struct InlineAsmOutput {
 
 // NOTE(eddyb) This is used within MIR as well, so unlike the rest of the HIR,
 // it needs to be `Clone` and use plain `Vec<T>` instead of `HirVec<T>`.
-#[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
-pub struct InlineAsm {
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable, PartialEq)]
+pub struct InlineAsmInner {
     pub asm: Symbol,
     pub asm_str_style: StrStyle,
     pub outputs: Vec<InlineAsmOutput>,
@@ -2104,6 +2111,13 @@ pub struct InlineAsm {
     pub volatile: bool,
     pub alignstack: bool,
     pub dialect: AsmDialect,
+}
+
+#[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
+pub struct InlineAsm {
+    pub inner: InlineAsmInner,
+    pub outputs_exprs: HirVec<Expr>,
+    pub inputs_exprs: HirVec<Expr>,
 }
 
 /// Represents a parameter in a function header.
@@ -2154,31 +2168,11 @@ impl ImplicitSelfKind {
     }
 }
 
-/// Is the trait definition an auto trait?
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, HashStable)]
-pub enum IsAuto {
-    Yes,
-    No
-}
-
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, HashStable,
          Ord, RustcEncodable, RustcDecodable, Debug)]
 pub enum IsAsync {
     Async,
     NotAsync,
-}
-
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, HashStable,
-         RustcEncodable, RustcDecodable, Hash, Debug)]
-pub enum Unsafety {
-    Unsafe,
-    Normal,
-}
-
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, HashStable)]
-pub enum Constness {
-    Const,
-    NotConst,
 }
 
 #[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, HashStable)]
@@ -2206,33 +2200,6 @@ impl Defaultness {
         }
     }
 }
-
-impl fmt::Display for Unsafety {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Unsafety::Normal => "normal",
-            Unsafety::Unsafe => "unsafe",
-        })
-    }
-}
-
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, HashStable)]
-pub enum ImplPolarity {
-    /// `impl Trait for Type`
-    Positive,
-    /// `impl !Trait for Type`
-    Negative,
-}
-
-impl fmt::Debug for ImplPolarity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            ImplPolarity::Positive => "positive",
-            ImplPolarity::Negative => "negative",
-        })
-    }
-}
-
 
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable)]
 pub enum FunctionRetTy {
@@ -2509,7 +2476,7 @@ pub enum ItemKind {
     /// A `const` item.
     Const(P<Ty>, BodyId),
     /// A function declaration.
-    Fn(P<FnDecl>, FnHeader, Generics, BodyId),
+    Fn(FnSig, Generics, BodyId),
     /// A module.
     Mod(Mod),
     /// An external module, e.g. `extern { .. }`.
@@ -2574,7 +2541,7 @@ impl ItemKind {
 
     pub fn generics(&self) -> Option<&Generics> {
         Some(match *self {
-            ItemKind::Fn(_, _, ref generics, _) |
+            ItemKind::Fn(_, ref generics, _) |
             ItemKind::TyAlias(_, ref generics) |
             ItemKind::OpaqueTy(OpaqueTy { ref generics, impl_trait_fn: None, .. }) |
             ItemKind::Enum(_, ref generics) |
@@ -2667,7 +2634,7 @@ pub struct Upvar {
     pub span: Span
 }
 
-pub type CaptureModeMap = NodeMap<CaptureClause>;
+pub type CaptureModeMap = NodeMap<CaptureBy>;
 
  // The TraitCandidate's import_ids is empty if the trait is defined in the same module, and
  // has length > 0 if the trait is found through an chain of imports, starting with the

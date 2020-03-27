@@ -42,6 +42,8 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use crate::spec::abi::{Abi, lookup as lookup_abi};
 
+use rustc_macros::HashStable_Generic;
+
 pub mod abi;
 mod android_base;
 mod apple_base;
@@ -52,6 +54,7 @@ mod dragonfly_base;
 mod freebsd_base;
 mod haiku_base;
 mod hermit_base;
+mod hermit_kernel_base;
 mod linux_base;
 mod linux_kernel_base;
 mod linux_musl_base;
@@ -153,7 +156,7 @@ flavor_mappings! {
     ((LinkerFlavor::Lld(LldFlavor::Link)), "lld-link"),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable, HashStable_Generic)]
 pub enum PanicStrategy {
     Unwind,
     Abort,
@@ -362,6 +365,7 @@ supported_targets! {
     ("armv7-unknown-linux-gnueabi", armv7_unknown_linux_gnueabi),
     ("armv7-unknown-linux-gnueabihf", armv7_unknown_linux_gnueabihf),
     ("thumbv7neon-unknown-linux-gnueabihf", thumbv7neon_unknown_linux_gnueabihf),
+    ("thumbv7neon-unknown-linux-musleabihf", thumbv7neon_unknown_linux_musleabihf),
     ("armv7-unknown-linux-musleabi", armv7_unknown_linux_musleabi),
     ("armv7-unknown-linux-musleabihf", armv7_unknown_linux_musleabihf),
     ("aarch64-unknown-linux-gnu", aarch64_unknown_linux_gnu),
@@ -394,7 +398,6 @@ supported_targets! {
     ("powerpc64-unknown-freebsd", powerpc64_unknown_freebsd),
     ("x86_64-unknown-freebsd", x86_64_unknown_freebsd),
 
-    ("i686-unknown-dragonfly", i686_unknown_dragonfly),
     ("x86_64-unknown-dragonfly", x86_64_unknown_dragonfly),
 
     ("aarch64-unknown-openbsd", aarch64_unknown_openbsd),
@@ -478,12 +481,14 @@ supported_targets! {
 
     ("aarch64-unknown-hermit", aarch64_unknown_hermit),
     ("x86_64-unknown-hermit", x86_64_unknown_hermit),
+    ("x86_64-unknown-hermit-kernel", x86_64_unknown_hermit_kernel),
 
     ("riscv32i-unknown-none-elf", riscv32i_unknown_none_elf),
     ("riscv32imc-unknown-none-elf", riscv32imc_unknown_none_elf),
     ("riscv32imac-unknown-none-elf", riscv32imac_unknown_none_elf),
     ("riscv64imac-unknown-none-elf", riscv64imac_unknown_none_elf),
     ("riscv64gc-unknown-none-elf", riscv64gc_unknown_none_elf),
+    ("riscv64gc-unknown-linux-gnu", riscv64gc_unknown_linux_gnu),
 
     ("aarch64-unknown-none", aarch64_unknown_none),
     ("aarch64-unknown-none-softfloat", aarch64_unknown_none_softfloat),
@@ -793,7 +798,13 @@ pub struct TargetOptions {
     pub merge_functions: MergeFunctions,
 
     /// Use platform dependent mcount function
-    pub target_mcount: String
+    pub target_mcount: String,
+
+    /// LLVM ABI name, corresponds to the '-mabi' parameter available in multilib C compilers
+    pub llvm_abiname: String,
+
+    /// Whether or not RelaxElfRelocation flag will be passed to the linker
+    pub relax_elf_relocations: bool,
 }
 
 impl Default for TargetOptions {
@@ -880,6 +891,8 @@ impl Default for TargetOptions {
             override_export_symbols: None,
             merge_functions: MergeFunctions::Aliases,
             target_mcount: "mcount".to_string(),
+            llvm_abiname: "".to_string(),
+            relax_elf_relocations: false,
         }
     }
 }
@@ -1196,6 +1209,8 @@ impl Target {
         key!(override_export_symbols, opt_list);
         key!(merge_functions, MergeFunctions)?;
         key!(target_mcount);
+        key!(llvm_abiname);
+        key!(relax_elf_relocations, bool);
 
         if let Some(array) = obj.find("abi-blacklist").and_then(Json::as_array) {
             for name in array.iter().filter_map(|abi| abi.as_string()) {
@@ -1414,6 +1429,8 @@ impl ToJson for Target {
         target_option_val!(override_export_symbols);
         target_option_val!(merge_functions);
         target_option_val!(target_mcount);
+        target_option_val!(llvm_abiname);
+        target_option_val!(relax_elf_relocations);
 
         if default.abi_blacklist != self.options.abi_blacklist {
             d.insert("abi-blacklist".to_string(), self.options.abi_blacklist.iter()

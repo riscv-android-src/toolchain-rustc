@@ -31,8 +31,8 @@ usually have names like `span_err` or `struct_span_err` or `span_warn`, etc...
 There are lots of them; they emit different types of "errors", such as
 warnings, errors, fatal errors, suggestions, etc.
 
-[parsesses]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/parse/struct.ParseSess.html
-[session]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/session/struct.Session.html
+[parsesses]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/sess/struct.ParseSess.html
+[session]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_session/struct.Session.html
 
 In general, there are two class of such methods: ones that emit an error
 directly and ones that allow finer control over what to emit. For example,
@@ -45,8 +45,8 @@ before emitting it by calling the [`emit`][emit] method. (Failing to either
 emit or [cancel][cancel] a `DiagnosticBuilder` will result in an ICE.) See the
 [docs][diagbuild] for more info on what you can do.
 
-[spanerr]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/session/struct.Session.html#method.span_err
-[strspanerr]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/session/struct.Session.html#method.struct_span_err
+[spanerr]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_session/struct.Session.html#method.span_err
+[strspanerr]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_session/struct.Session.html#method.struct_span_err
 [diagbuild]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_errors/diagnostic_builder/struct.DiagnosticBuilder.html
 [emit]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_errors/diagnostic_builder/struct.DiagnosticBuilder.html#method.emit
 [cancel]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_errors/struct.Diagnostic.html#method.cancel
@@ -60,7 +60,7 @@ let mut err = sess.struct_span_err(sp, "oh no! this is an error!");
 
 if let Ok(snippet) = sess.source_map().span_to_snippet(sp) {
     // Use the snippet to generate a suggested fix
-    err.span_suggestion(suggestion_sp, "try using a qux here", format!("qux {}", snip));
+    err.span_suggestion(suggestion_sp, "try using a qux here", format!("qux {}", snippet));
 } else {
     // If we weren't able to generate a snippet, then emit a "help" message
     // instead of a concrete "suggestion". In practice this is unlikely to be
@@ -100,7 +100,7 @@ if let Ok(snippet) = sess.source_map().span_to_snippet(sp) {
     err.span_suggestion(
         suggestion_sp,
         "try using a qux here",
-        format!("qux {}", snip),
+        format!("qux {}", snippet),
         Applicability::MachineApplicable,
     );
 } else {
@@ -171,11 +171,17 @@ crate.
 
 [builtin]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_lint/index.html
 
-Each lint is defined as a `struct` that implements the `LintPass` `trait`. The
-trait implementation allows you to check certain syntactic constructs the
-linter walks the source code. You can then choose to emit lints in a very
-similar way to compile errors. Finally, you register the lint to actually get
-it to be run by the compiler by using the `declare_lint!` macro.
+Every lint is implemented via a `struct` that implements the `LintPass` `trait`
+(you also implement one of the more specific lint pass traits, either
+`EarlyLintPass` or `LateLintPass`).  The trait implementation allows you to
+check certain syntactic constructs as the linter walks the source code. You can
+then choose to emit lints in a very similar way to compile errors.
+
+You also declare the metadata of a particular lint via the `declare_lint!`
+macro. This includes the name, the default level, a short description, and some
+more details.
+
+Note that the lint and the lint pass must be registered with the compiler.
 
 For example, the following lint checks for uses
 of `while true { ... }` and suggests using `loop { ... }` instead.
@@ -196,11 +202,15 @@ declare_lint! {
 #[derive(Copy, Clone)]
 pub struct WhileTrue;
 
-impl LintPass for WhileTrue {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(WHILE_TRUE)
-    }
-}
+// This declares a lint pass, providing a list of associated lints.  The
+// compiler currently doesn't use the associated lints directly (e.g., to not
+// run the pass or otherwise check that the pass emits the appropriate set of
+// lints). However, it's good to be accurate here as it's possible that we're
+// going to register the lints via the get_lints method on our lint pass (that
+// this macro generates).
+impl_lint_pass!(
+    WhileTrue => [WHILE_TRUE],
+);
 
 // LateLintPass has lots of methods. We only override the definition of
 // `check_expr` for this lint because that's all we need, but you could
@@ -242,9 +252,33 @@ declare_lint! {
 This makes the `ANONYMOUS_PARAMETERS` lint allow-by-default in the 2015 edition
 but warn-by-default in the 2018 edition.
 
-Lints that represent an incompatibility (i.e. error) in the upcoming edition
-should also be registered as `FutureIncompatibilityLint`s in
-[`register_builtins`][rbuiltins] function in [`rustc_lint::lib`][builtin].
+A future-incompatible lint should be declared with the `@future_incompatible`
+additional "field":
+
+```rust,ignore
+declare_lint! {
+    pub ANONYMOUS_PARAMETERS,
+    Allow,
+    "detects anonymous parameters",
+    @future_incompatible = FutureIncompatibleInfo {
+        reference: "issue #41686 <https://github.com/rust-lang/rust/issues/41686>",
+        edition: Some(Edition::Edition2018),
+    };
+}
+```
+
+If you need a combination of options that's not supported by the
+`declare_lint!` macro, you can always define your own static with a type of
+`&Lint` but this is currently linted against in the compiler tree.
+
+####  Guidelines for creating a future incompatibility lint
+
+- Create a lint defaulting to warn as normal, with ideally the same error
+  message you would normally give.
+- Add a suitable reference, typically an RFC or tracking issue. Go ahead
+  and include the full URL, sort items in ascending order of issue numbers.
+- Later, change lint to error.
+- Eventually, remove lint.
 
 ### Lint Groups
 
@@ -257,11 +291,11 @@ Lints can be turned on in groups. These groups are declared in the
 For example,
 
 ```rust,ignore
-    add_lint_group!(sess,
-                    "nonstandard_style",
-                    NON_CAMEL_CASE_TYPES,
-                    NON_SNAKE_CASE,
-                    NON_UPPER_CASE_GLOBALS);
+add_lint_group!(sess,
+    "nonstandard_style",
+    NON_CAMEL_CASE_TYPES,
+    NON_SNAKE_CASE,
+    NON_UPPER_CASE_GLOBALS);
 ```
 
 This defines the `nonstandard_style` group which turns on the listed lints. A
@@ -280,8 +314,8 @@ processed. [`Session`][sessbl] and [`ParseSess`][parsebl] both have
 `buffer_lint` methods that allow you to buffer a lint for later. The linting
 system automatically takes care of handling buffered lints later.
 
-[sessbl]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/session/struct.Session.html#method.buffer_lint
-[parsebl]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/parse/struct.ParseSess.html#method.buffer_lint
+[sessbl]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_session/struct.Session.html#method.buffer_lint
+[parsebl]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/sess/struct.ParseSess.html#method.buffer_lint
 
 Thus, to define a lint that runs early in the compilation, one defines a lint
 like normal but invokes the lint with `buffer_lint`.
@@ -296,15 +330,6 @@ infrastructure is defined. That's troublesome!
 To solve this, `libsyntax` defines its own buffered lint type, which
 `ParseSess::buffer_lint` uses. After macro expansion, these buffered lints are
 then dumped into the `Session::buffered_lints` used by the rest of the compiler.
-
-Usage for buffered lints in `libsyntax` is pretty much the same as the rest of
-the compiler with one exception because we cannot import the `LintId`s for
-lints we want to emit. Instead, the [`BufferedEarlyLintId`] type is used. If you
-are defining a new lint, you will want to add an entry to this enum. Then, add
-an appropriate mapping to the body of [`Lint::from_parser_lint_id`][fplid].
-
-[`BufferedEarlyLintId`]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/early_buffered_lints/enum.BufferedEarlyLintId.html
-[fplid]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/lint/struct.Lint.html#method.from_parser_lint_id
 
 ## JSON diagnostic output
 
@@ -342,3 +367,150 @@ The JSON emitter defines [its own `Diagnostic`
 struct](https://github.com/rust-lang/rust/blob/b2c6b8c29f13f8d1f242da89e587960b95337819/src/libsyntax/json.rs#L85-L99)
 (and sub-structs) for the JSON serialization. Don't confuse this with
 [`errors::Diagnostic`](https://doc.rust-lang.org/nightly/nightly-rustc/rustc_errors/struct.Diagnostic.html)!
+
+## `#[rustc_on_unimplemented(...)]`
+
+The `#[rustc_on_unimplemented]` attribute allows trait definitions to add specialized
+notes to error messages when an implementation was expected but not found.
+You can refer to the trait's generic arguments by name and to the resolved type using `Self`.
+
+For example:
+
+```rust,ignore
+#![feature(rustc_attrs)]
+
+#[rustc_on_unimplemented="an iterator over elements of type `{A}` \
+    cannot be built from a collection of type `{Self}`"]
+trait MyIterator<A> {
+    fn next(&mut self) -> A;
+}
+
+fn iterate_chars<I: MyIterator<char>>(i: I) {
+    // ...
+}
+
+fn main() {
+    iterate_chars(&[1, 2, 3][..]);
+}
+```
+
+When the user compiles this, they will see the following;
+
+```txt
+error[E0277]: the trait bound `&[{integer}]: MyIterator<char>` is not satisfied
+  --> <anon>:14:5
+   |
+14 |     iterate_chars(&[1, 2, 3][..]);
+   |     ^^^^^^^^^^^^^ an iterator over elements of type `char` cannot be built from a collection of type `&[{integer}]`
+   |
+   = help: the trait `MyIterator<char>` is not implemented for `&[{integer}]`
+   = note: required by `iterate_chars`
+```
+
+`rustc_on_unimplemented` also supports advanced filtering for better targeting
+of messages, as well as modifying specific parts of the error message. You
+target the text of:
+
+ - the main error message (`message`)
+ - the label (`label`)
+ - an extra note (`note`)
+
+For example, the following attribute
+
+```rust,ignore
+#[rustc_on_unimplemented(
+    message="message",
+    label="label",
+    note="note"
+)]
+trait MyIterator<A> {
+    fn next(&mut self) -> A;
+}
+```
+
+Would generate the following output:
+
+```text
+error[E0277]: message
+  --> <anon>:14:5
+   |
+14 |     iterate_chars(&[1, 2, 3][..]);
+   |     ^^^^^^^^^^^^^ label
+   |
+   = note: note
+   = help: the trait `MyIterator<char>` is not implemented for `&[{integer}]`
+   = note: required by `iterate_chars`
+```
+
+To allow more targeted error messages, it is possible to filter the
+application of these fields based on a variety of attributes when using
+`on`:
+
+ - `crate_local`: whether the code causing the trait bound to not be
+   fulfilled is part of the user's crate. This is used to avoid suggesting
+   code changes that would require modifying a dependency.
+ - Any of the generic arguments that can be substituted in the text can be
+   referred by name as well for filtering, like `Rhs="i32"`, except for
+   `Self`.
+ - `_Self`: to filter only on a particular calculated trait resolution, like
+   `Self="std::iter::Iterator<char>"`. This is needed because `Self` is a
+   keyword which cannot appear in attributes.
+ - `direct`: user-specified rather than derived obligation.
+ - `from_method`: usable both as boolean (whether the flag is present, like
+   `crate_local`) or matching against a particular method. Currently used
+   for `try`.
+ - `from_desugaring`: usable both as boolean (whether the flag is present)
+   or matching against a particular desugaring. The desugaring is identified
+   with its variant name in the `DesugaringKind` enum.
+
+For example, the `Iterator` trait can be annotated in the following way:
+
+```rust,ignore
+#[rustc_on_unimplemented(
+    on(
+        _Self="&str",
+        note="call `.chars()` or `.as_bytes()` on `{Self}"
+    ),
+    message="`{Self}` is not an iterator",
+    label="`{Self}` is not an iterator",
+    note="maybe try calling `.iter()` or a similar method"
+)]
+pub trait Iterator {}
+```
+
+Which would produce the following outputs:
+
+```text
+error[E0277]: `Foo` is not an iterator
+ --> src/main.rs:4:16
+  |
+4 |     for foo in Foo {}
+  |                ^^^ `Foo` is not an iterator
+  |
+  = note: maybe try calling `.iter()` or a similar method
+  = help: the trait `std::iter::Iterator` is not implemented for `Foo`
+  = note: required by `std::iter::IntoIterator::into_iter`
+
+error[E0277]: `&str` is not an iterator
+ --> src/main.rs:5:16
+  |
+5 |     for foo in "" {}
+  |                ^^ `&str` is not an iterator
+  |
+  = note: call `.chars()` or `.bytes() on `&str`
+  = help: the trait `std::iter::Iterator` is not implemented for `&str`
+  = note: required by `std::iter::IntoIterator::into_iter`
+```
+
+If you need to filter on multiple attributes, you can use `all`, `any` or
+`not` in the following way:
+
+```rust,ignore
+#[rustc_on_unimplemented(
+    on(
+        all(_Self="&str", T="std::string::String"),
+        note="you can coerce a `{T}` into a `{Self}` by writing `&*variable`"
+    )
+)]
+pub trait From<T>: Sized { /* ... */ }
+```

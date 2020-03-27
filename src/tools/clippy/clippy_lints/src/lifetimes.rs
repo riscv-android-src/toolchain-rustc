@@ -1,10 +1,11 @@
 use matches::matches;
+use rustc::declare_lint_pass;
 use rustc::hir::def::{DefKind, Res};
 use rustc::hir::intravisit::*;
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_session::declare_tool_lint;
 use syntax::source_map::Span;
 use syntax::symbol::kw;
 
@@ -24,7 +25,13 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust
+    /// // Bad: unnecessary lifetime annotations
     /// fn in_and_out<'a>(x: &'a u8, y: u8) -> &'a u8 {
+    ///     x
+    /// }
+    ///
+    /// // Good
+    /// fn elided(x: &u8, y: u8) -> &u8 {
     ///     x
     /// }
     /// ```
@@ -46,8 +53,14 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust
+    /// // Bad: unnecessary lifetimes
     /// fn unused_lifetime<'a>(x: u8) {
     ///     // ..
+    /// }
+    ///
+    /// // Good
+    /// fn no_lifetime(x: u8) {
+    ///     // ...
     /// }
     /// ```
     pub EXTRA_UNUSED_LIFETIMES,
@@ -59,8 +72,8 @@ declare_lint_pass!(Lifetimes => [NEEDLESS_LIFETIMES, EXTRA_UNUSED_LIFETIMES]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Lifetimes {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if let ItemKind::Fn(ref decl, _, ref generics, id) = item.kind {
-            check_fn_inner(cx, decl, Some(id), generics, item.span, true);
+        if let ItemKind::Fn(ref sig, ref generics, id) = item.kind {
+            check_fn_inner(cx, &sig.decl, Some(id), generics, item.span, true);
         }
     }
 

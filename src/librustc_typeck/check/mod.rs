@@ -88,7 +88,7 @@ pub mod intrinsic;
 mod op;
 
 use crate::astconv::{AstConv, PathSeg};
-use errors::{Applicability, DiagnosticBuilder, DiagnosticId, pluralise};
+use errors::{Applicability, DiagnosticBuilder, DiagnosticId, pluralize};
 use rustc::hir::{self, ExprKind, GenericArg, ItemKind, Node, PatKind, QPath};
 use rustc::hir::def::{CtorOf, Res, DefKind};
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
@@ -103,6 +103,7 @@ use rustc_index::vec::Idx;
 use rustc_target::spec::abi::Abi;
 use rustc::infer::opaque_types::OpaqueTypeDecl;
 use rustc::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
+use rustc::infer::error_reporting::TypeAnnotationNeeded::E0282;
 use rustc::infer::unify_key::{ConstVariableOrigin, ConstVariableOriginKind};
 use rustc::middle::region;
 use rustc::mir::interpret::{ConstValue, GlobalId};
@@ -114,7 +115,7 @@ use rustc::ty::{
 use rustc::ty::adjustment::{
     Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability, PointerCast
 };
-use rustc::ty::fold::TypeFoldable;
+use rustc::ty::fold::{TypeFoldable, TypeFolder};
 use rustc::ty::query::Providers;
 use rustc::ty::subst::{
     GenericArgKind, Subst, InternalSubsts, SubstsRef, UserSelfTy, UserSubsts,
@@ -125,10 +126,12 @@ use syntax_pos::{self, BytePos, Span, MultiSpan};
 use syntax_pos::hygiene::DesugaringKind;
 use syntax::ast;
 use syntax::attr;
-use syntax::feature_gate::{GateIssue, emit_feature_err};
+use syntax::feature_gate::feature_err;
 use syntax::source_map::{DUMMY_SP, original_sp};
-use syntax::symbol::{kw, sym};
+use syntax::symbol::{kw, sym, Ident};
 use syntax::util::parser::ExprPrecedence;
+
+use rustc_error_codes::*;
 
 use std::cell::{Cell, RefCell, Ref, RefMut};
 use std::collections::hash_map::Entry;
@@ -145,7 +148,7 @@ use crate::TypeAndSubsts;
 use crate::lint;
 use crate::util::captures::Captures;
 use crate::util::common::{ErrorReported, indenter};
-use crate::util::nodemap::{DefIdMap, DefIdSet, FxHashSet, HirIdMap};
+use crate::util::nodemap::{DefIdMap, DefIdSet, FxHashMap, FxHashSet, HirIdMap};
 
 pub use self::Expectation::*;
 use self::autoderef::Autoderef;
@@ -228,6 +231,13 @@ pub struct Inherited<'a, 'tcx> {
     // variables to get the concrete type, which can be used to
     // 'de-opaque' OpaqueTypeDecl, after typeck is done with all functions.
     opaque_types: RefCell<DefIdMap<OpaqueTypeDecl<'tcx>>>,
+
+    /// A map from inference variables created from opaque
+    /// type instantiations (`ty::Infer`) to the actual opaque
+    /// type (`ty::Opaque`). Used during fallback to map unconstrained
+    /// opaque type inference variables to their corresponding
+    /// opaque type.
+    opaque_types_vars: RefCell<FxHashMap<Ty<'tcx>, Ty<'tcx>>>,
 
     /// Each type parameter has an implicit region bound that
     /// indicates it must outlive at least the function body (the user
@@ -387,8 +397,8 @@ pub enum Needs {
 impl Needs {
     fn maybe_mut_place(m: hir::Mutability) -> Self {
         match m {
-            hir::MutMutable => Needs::MutPlace,
-            hir::MutImmutable => Needs::None,
+            hir::Mutability::Mutable => Needs::MutPlace,
+            hir::Mutability::Immutable => Needs::None,
         }
     }
 }
@@ -694,6 +704,7 @@ impl Inherited<'a, 'tcx> {
             deferred_cast_checks: RefCell::new(Vec::new()),
             deferred_generator_interiors: RefCell::new(Vec::new()),
             opaque_types: RefCell::new(Default::default()),
+            opaque_types_vars: RefCell::new(Default::default()),
             implicit_region_bound,
             body_id,
         }
@@ -815,8 +826,8 @@ fn primary_body_of(
                 hir::ItemKind::Const(ref ty, body) |
                 hir::ItemKind::Static(ref ty, _, body) =>
                     Some((body, Some(ty), None, None)),
-                hir::ItemKind::Fn(ref decl, ref header, .., body) =>
-                    Some((body, None, Some(header), Some(decl))),
+                hir::ItemKind::Fn(ref sig, .., body) =>
+                    Some((body, None, Some(&sig.header), Some(&sig.decl))),
                 _ =>
                     None,
             }
@@ -862,6 +873,111 @@ fn used_trait_imports(tcx: TyCtxt<'_>, def_id: DefId) -> &DefIdSet {
     &*tcx.typeck_tables_of(def_id).used_trait_imports
 }
 
+/// Inspects the substs of opaque types, replacing any inference variables
+/// with proper generic parameter from the identity substs.
+///
+/// This is run after we normalize the function signature, to fix any inference
+/// variables introduced by the projection of associated types. This ensures that
+/// any opaque types used in the signature continue to refer to generic parameters,
+/// allowing them to be considered for defining uses in the function body
+///
+/// For example, consider this code.
+///
+/// ```rust
+/// trait MyTrait {
+///     type MyItem;
+///     fn use_it(self) -> Self::MyItem
+/// }
+/// impl<T, I> MyTrait for T where T: Iterator<Item = I> {
+///     type MyItem = impl Iterator<Item = I>;
+///     fn use_it(self) -> Self::MyItem {
+///         self
+///     }
+/// }
+/// ```
+///
+/// When we normalize the signature of `use_it` from the impl block,
+/// we will normalize `Self::MyItem` to the opaque type `impl Iterator<Item = I>`
+/// However, this projection result may contain inference variables, due
+/// to the way that projection works. We didn't have any inference variables
+/// in the signature to begin with - leaving them in will cause us to incorrectly
+/// conclude that we don't have a defining use of `MyItem`. By mapping inference
+/// variables back to the actual generic parameters, we will correctly see that
+/// we have a defining use of `MyItem`
+fn fixup_opaque_types<'tcx, T>(tcx: TyCtxt<'tcx>, val: &T) -> T where T: TypeFoldable<'tcx> {
+    struct FixupFolder<'tcx> {
+        tcx: TyCtxt<'tcx>
+    }
+
+    impl<'tcx> TypeFolder<'tcx> for FixupFolder<'tcx> {
+        fn tcx<'a>(&'a self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
+            match ty.kind {
+                ty::Opaque(def_id, substs) => {
+                    debug!("fixup_opaque_types: found type {:?}", ty);
+                    // Here, we replace any inference variables that occur within
+                    // the substs of an opaque type. By definition, any type occuring
+                    // in the substs has a corresponding generic parameter, which is what
+                    // we replace it with.
+                    // This replacement is only run on the function signature, so any
+                    // inference variables that we come across must be the rust of projection
+                    // (there's no other way for a user to get inference variables into
+                    // a function signature).
+                    if ty.needs_infer() {
+                        let new_substs = InternalSubsts::for_item(self.tcx, def_id, |param, _| {
+                            let old_param = substs[param.index as usize];
+                            match old_param.unpack() {
+                                GenericArgKind::Type(old_ty) => {
+                                    if let ty::Infer(_) = old_ty.kind {
+                                        // Replace inference type with a generic parameter
+                                        self.tcx.mk_param_from_def(param)
+                                    } else {
+                                        old_param.fold_with(self)
+                                    }
+                                },
+                                GenericArgKind::Const(old_const) => {
+                                    if let ty::ConstKind::Infer(_) = old_const.val {
+                        // This should never happen - we currently do not support
+                        // 'const projections', e.g.:
+                        // `impl<T: SomeTrait> MyTrait for T where <T as SomeTrait>::MyConst == 25`
+                        // which should be the only way for us to end up with a const inference
+                        // variable after projection. If Rust ever gains support for this kind
+                        // of projection, this should *probably* be changed to
+                        // `self.tcx.mk_param_from_def(param)`
+                                        bug!("Found infer const: `{:?}` in opaque type: {:?}",
+                                             old_const, ty);
+                                    } else {
+                                        old_param.fold_with(self)
+                                    }
+                                }
+                                GenericArgKind::Lifetime(old_region) => {
+                                    if let RegionKind::ReVar(_) = old_region {
+                                        self.tcx.mk_param_from_def(param)
+                                    } else {
+                                        old_param.fold_with(self)
+                                    }
+                                }
+                            }
+                        });
+                        let new_ty = self.tcx.mk_opaque(def_id, new_substs);
+                        debug!("fixup_opaque_types: new type: {:?}", new_ty);
+                        new_ty
+                    } else {
+                        ty
+                    }
+                },
+                _ => ty.super_fold_with(self)
+            }
+        }
+    }
+
+    debug!("fixup_opaque_types({:?})", val);
+    val.fold_with(&mut FixupFolder { tcx })
+}
+
 fn typeck_tables_of(tcx: TyCtxt<'_>, def_id: DefId) -> &ty::TypeckTables<'_> {
     // Closures' tables come from their outermost function,
     // as they are part of the same "inference environment".
@@ -901,6 +1017,8 @@ fn typeck_tables_of(tcx: TyCtxt<'_>, def_id: DefId) -> &ty::TypeckTables<'_> {
                                                   param_env,
                                                   &fn_sig);
 
+            let fn_sig = fixup_opaque_types(tcx, &fn_sig);
+
             let fcx = check_fn(&inh, param_env, fn_sig, decl, id, body, None).0;
             fcx
         } else {
@@ -935,9 +1053,46 @@ fn typeck_tables_of(tcx: TyCtxt<'_>, def_id: DefId) -> &ty::TypeckTables<'_> {
         // All type checking constraints were added, try to fallback unsolved variables.
         fcx.select_obligations_where_possible(false, |_| {});
         let mut fallback_has_occurred = false;
+
+        // We do fallback in two passes, to try to generate
+        // better error messages.
+        // The first time, we do *not* replace opaque types.
         for ty in &fcx.unsolved_variables() {
-            fallback_has_occurred |= fcx.fallback_if_possible(ty);
+            fallback_has_occurred |= fcx.fallback_if_possible(ty, FallbackMode::NoOpaque);
         }
+        // We now see if we can make progress. This might
+        // cause us to unify inference variables for opaque types,
+        // since we may have unified some other type variables
+        // during the first phase of fallback.
+        // This means that we only replace inference variables with their underlying
+        // opaque types as a last resort.
+        //
+        // In code like this:
+        //
+        // ```rust
+        // type MyType = impl Copy;
+        // fn produce() -> MyType { true }
+        // fn bad_produce() -> MyType { panic!() }
+        // ```
+        //
+        // we want to unify the opaque inference variable in `bad_produce`
+        // with the diverging fallback for `panic!` (e.g. `()` or `!`).
+        // This will produce a nice error message about conflicting concrete
+        // types for `MyType`.
+        //
+        // If we had tried to fallback the opaque inference variable to `MyType`,
+        // we will generate a confusing type-check error that does not explicitly
+        // refer to opaque types.
+        fcx.select_obligations_where_possible(fallback_has_occurred, |_| {});
+
+        // We now run fallback again, but this time we allow it to replace
+        // unconstrained opaque type variables, in addition to performing
+        // other kinds of fallback.
+        for ty in &fcx.unsolved_variables() {
+            fallback_has_occurred |= fcx.fallback_if_possible(ty, FallbackMode::All);
+        }
+
+        // See if we can make any more progress.
         fcx.select_obligations_where_possible(fallback_has_occurred, |_| {});
 
         // Even though coercion casts provide type hints, we check casts after fallback for
@@ -1090,7 +1245,7 @@ struct GeneratorTypes<'tcx> {
     interior: Ty<'tcx>,
 
     /// Indicates if the generator is movable or static (immovable).
-    movability: hir::GeneratorMovability,
+    movability: hir::Movability,
 }
 
 /// Helper used for fns and closures. Does the grungy work of checking a function
@@ -1106,7 +1261,7 @@ fn check_fn<'a, 'tcx>(
     decl: &'tcx hir::FnDecl,
     fn_id: hir::HirId,
     body: &'tcx hir::Body,
-    can_be_generator: Option<hir::GeneratorMovability>,
+    can_be_generator: Option<hir::Movability>,
 ) -> (FnCtxt<'a, 'tcx>, Option<GeneratorTypes<'tcx>>) {
     let mut fn_sig = fn_sig.clone();
 
@@ -1267,11 +1422,6 @@ fn check_fn<'a, 'tcx>(
     if let Some(panic_impl_did) = fcx.tcx.lang_items().panic_impl() {
         if panic_impl_did == fcx.tcx.hir().local_def_id(fn_id) {
             if let Some(panic_info_did) = fcx.tcx.lang_items().panic_info() {
-                // at this point we don't care if there are duplicate handlers or if the handler has
-                // the wrong signature as this value we'll be used when writing metadata and that
-                // only happens if compilation succeeded
-                fcx.tcx.sess.has_panic_handler.try_set_same(true);
-
                 if declared_ret_ty.kind != ty::Never {
                     fcx.tcx.sess.span_err(
                         decl.output.span(),
@@ -1286,7 +1436,7 @@ fn check_fn<'a, 'tcx>(
                         ty::Ref(region, ty, mutbl) => match ty.kind {
                             ty::Adt(ref adt, _) => {
                                 adt.did == panic_info_did &&
-                                    mutbl == hir::Mutability::MutImmutable &&
+                                    mutbl == hir::Mutability::Immutable &&
                                     *region != RegionKind::ReStatic
                             },
                             _ => false,
@@ -1302,7 +1452,7 @@ fn check_fn<'a, 'tcx>(
                     }
 
                     if let Node::Item(item) = fcx.tcx.hir().get(fn_id) {
-                        if let ItemKind::Fn(_, _, ref generics, _) = item.kind {
+                        if let ItemKind::Fn(_, ref generics, _) = item.kind {
                             if !generics.params.is_empty() {
                                 fcx.tcx.sess.span_err(
                                     span,
@@ -1350,7 +1500,7 @@ fn check_fn<'a, 'tcx>(
                     }
 
                     if let Node::Item(item) = fcx.tcx.hir().get(fn_id) {
-                        if let ItemKind::Fn(_, _, ref generics, _) = item.kind {
+                        if let ItemKind::Fn(_, ref generics, _) = item.kind {
                             if !generics.params.is_empty() {
                                 fcx.tcx.sess.span_err(
                                     span,
@@ -1693,7 +1843,7 @@ fn maybe_check_static_with_link_section(tcx: TyCtxt<'_>, id: DefId, span: Span) 
     };
     let param_env = ty::ParamEnv::reveal_all();
     if let Ok(static_) = tcx.const_eval(param_env.and(cid)) {
-        let alloc = if let ConstValue::ByRef { alloc, .. } = static_.val {
+        let alloc = if let ty::ConstKind::Value(ConstValue::ByRef { alloc, .. }) = static_.val {
             alloc
         } else {
             bug!("Matching on non-ByRef static")
@@ -1805,12 +1955,12 @@ fn check_specialization_validity<'tcx>(
 
 fn check_impl_items_against_trait<'tcx>(
     tcx: TyCtxt<'tcx>,
-    impl_span: Span,
+    full_impl_span: Span,
     impl_id: DefId,
     impl_trait_ref: ty::TraitRef<'tcx>,
     impl_item_refs: &[hir::ImplItemRef],
 ) {
-    let impl_span = tcx.sess.source_map().def_span(impl_span);
+    let impl_span = tcx.sess.source_map().def_span(full_impl_span);
 
     // If the trait reference itself is erroneous (so the compilation is going
     // to fail), skip checking the items here -- the `impl_item` table in `tcx`
@@ -1853,7 +2003,7 @@ fn check_impl_items_against_trait<'tcx>(
                              "item `{}` is an associated const, \
                               which doesn't match its trait `{}`",
                              ty_impl_item.ident,
-                             impl_trait_ref);
+                             impl_trait_ref.print_only_trait_path());
                          err.span_label(impl_item.span, "does not match trait");
                          // We can only get the spans from local trait definition
                          // Same for E0324 and E0325
@@ -1877,7 +2027,7 @@ fn check_impl_items_against_trait<'tcx>(
                             "item `{}` is an associated method, \
                              which doesn't match its trait `{}`",
                             ty_impl_item.ident,
-                            impl_trait_ref);
+                            impl_trait_ref.print_only_trait_path());
                          err.span_label(impl_item.span, "does not match trait");
                          if let Some(trait_span) = tcx.hir().span_if_local(ty_trait_item.def_id) {
                             err.span_label(trait_span, "item in trait");
@@ -1896,7 +2046,7 @@ fn check_impl_items_against_trait<'tcx>(
                             "item `{}` is an associated type, \
                              which doesn't match its trait `{}`",
                             ty_impl_item.ident,
-                            impl_trait_ref);
+                            impl_trait_ref.print_only_trait_path());
                          err.span_label(impl_item.span, "does not match trait");
                          if let Some(trait_span) = tcx.hir().span_if_local(ty_trait_item.def_id) {
                             err.span_label(trait_span, "item in trait");
@@ -1930,35 +2080,132 @@ fn check_impl_items_against_trait<'tcx>(
     }
 
     if !missing_items.is_empty() {
-        let mut err = struct_span_err!(tcx.sess, impl_span, E0046,
-            "not all trait items implemented, missing: `{}`",
-            missing_items.iter()
-                .map(|trait_item| trait_item.ident.to_string())
-                .collect::<Vec<_>>().join("`, `"));
-        err.span_label(impl_span, format!("missing `{}` in implementation",
-                missing_items.iter()
-                    .map(|trait_item| trait_item.ident.to_string())
-                    .collect::<Vec<_>>().join("`, `")));
-        for trait_item in missing_items {
-            if let Some(span) = tcx.hir().span_if_local(trait_item.def_id) {
-                err.span_label(span, format!("`{}` from trait", trait_item.ident));
-            } else {
-                err.note_trait_signature(trait_item.ident.to_string(),
-                                         trait_item.signature(tcx));
-            }
-        }
-        err.emit();
+        missing_items_err(tcx, impl_span, &missing_items, full_impl_span);
     }
 
     if !invalidated_items.is_empty() {
         let invalidator = overridden_associated_type.unwrap();
-        span_err!(tcx.sess, invalidator.span, E0399,
-                  "the following trait items need to be reimplemented \
-                   as `{}` was overridden: `{}`",
-                  invalidator.ident,
-                  invalidated_items.iter()
-                                   .map(|name| name.to_string())
-                                   .collect::<Vec<_>>().join("`, `"))
+        span_err!(
+            tcx.sess,
+            invalidator.span,
+            E0399,
+            "the following trait items need to be reimplemented as `{}` was overridden: `{}`",
+            invalidator.ident,
+            invalidated_items.iter()
+                .map(|name| name.to_string())
+                .collect::<Vec<_>>().join("`, `")
+        )
+    }
+}
+
+fn missing_items_err(
+    tcx: TyCtxt<'_>,
+    impl_span: Span,
+    missing_items: &[ty::AssocItem],
+    full_impl_span: Span,
+) {
+    let missing_items_msg = missing_items.iter()
+        .map(|trait_item| trait_item.ident.to_string())
+        .collect::<Vec<_>>().join("`, `");
+
+    let mut err = struct_span_err!(
+        tcx.sess,
+        impl_span,
+        E0046,
+        "not all trait items implemented, missing: `{}`",
+        missing_items_msg
+    );
+    err.span_label(impl_span, format!("missing `{}` in implementation", missing_items_msg));
+
+    // `Span` before impl block closing brace.
+    let hi = full_impl_span.hi() - BytePos(1);
+    // Point at the place right before the closing brace of the relevant `impl` to suggest
+    // adding the associated item at the end of its body.
+    let sugg_sp = full_impl_span.with_lo(hi).with_hi(hi);
+    // Obtain the level of indentation ending in `sugg_sp`.
+    let indentation = tcx.sess.source_map().span_to_margin(sugg_sp).unwrap_or(0);
+    // Make the whitespace that will make the suggestion have the right indentation.
+    let padding: String = (0..indentation).map(|_| " ").collect();
+
+    for trait_item in missing_items {
+        let snippet = suggestion_signature(&trait_item, tcx);
+        let code = format!("{}{}\n{}", padding, snippet, padding);
+        let msg = format!("implement the missing item: `{}`", snippet);
+        let appl = Applicability::HasPlaceholders;
+        if let Some(span) = tcx.hir().span_if_local(trait_item.def_id) {
+            err.span_label(span, format!("`{}` from trait", trait_item.ident));
+            err.tool_only_span_suggestion(sugg_sp, &msg, code, appl);
+        } else {
+            err.span_suggestion_hidden(sugg_sp, &msg, code, appl);
+        }
+    }
+    err.emit();
+}
+
+/// Return placeholder code for the given function.
+fn fn_sig_suggestion(sig: &ty::FnSig<'_>, ident: Ident) -> String {
+    let args = sig.inputs()
+        .iter()
+        .map(|ty| Some(match ty.kind {
+            ty::Param(param) if param.name == kw::SelfUpper => "self".to_string(),
+            ty::Ref(reg, ref_ty, mutability) => {
+                let reg = match &format!("{}", reg)[..] {
+                    "'_" | "" => String::new(),
+                    reg => format!("{} ", reg),
+                };
+                match ref_ty.kind {
+                    ty::Param(param) if param.name == kw::SelfUpper => {
+                        format!("&{}{}self", reg, mutability.prefix_str())
+                    }
+                    _ => format!("_: {:?}", ty),
+                }
+            }
+            _ => format!("_: {:?}", ty),
+        }))
+        .chain(std::iter::once(if sig.c_variadic {
+            Some("...".to_string())
+        } else {
+            None
+        }))
+        .filter_map(|arg| arg)
+        .collect::<Vec<String>>()
+        .join(", ");
+    let output = sig.output();
+    let output = if !output.is_unit() {
+        format!(" -> {:?}", output)
+    } else {
+        String::new()
+    };
+
+    let unsafety = sig.unsafety.prefix_str();
+    // FIXME: this is not entirely correct, as the lifetimes from borrowed params will
+    // not be present in the `fn` definition, not will we account for renamed
+    // lifetimes between the `impl` and the `trait`, but this should be good enough to
+    // fill in a significant portion of the missing code, and other subsequent
+    // suggestions can help the user fix the code.
+    format!("{}fn {}({}){} {{ unimplemented!() }}", unsafety, ident, args, output)
+}
+
+/// Return placeholder code for the given associated item.
+/// Similar to `ty::AssocItem::suggestion`, but appropriate for use as the code snippet of a
+/// structured suggestion.
+fn suggestion_signature(assoc: &ty::AssocItem, tcx: TyCtxt<'_>) -> String {
+    match assoc.kind {
+        ty::AssocKind::Method => {
+            // We skip the binder here because the binder would deanonymize all
+            // late-bound regions, and we don't want method signatures to show up
+            // `as for<'r> fn(&'r MyType)`.  Pretty-printing handles late-bound
+            // regions just fine, showing `fn(&MyType)`.
+            fn_sig_suggestion(tcx.fn_sig(assoc.def_id).skip_binder(), assoc.ident)
+        }
+        ty::AssocKind::Type => format!("type {} = Type;", assoc.ident),
+        // FIXME(type_alias_impl_trait): we should print bounds here too.
+        ty::AssocKind::OpaqueTy => format!("type {} = Type;", assoc.ident),
+        ty::AssocKind::Const => {
+            let ty = tcx.type_of(assoc.def_id);
+            let val = expr::ty_kind_suggestion(ty).unwrap_or("value");
+            format!("const {}: {:?} = {};", assoc.ident, ty, val)
+        }
     }
 }
 
@@ -2083,7 +2330,7 @@ fn bad_variant_count<'tcx>(tcx: TyCtxt<'tcx>, adt: &'tcx ty::AdtDef, sp: Span, d
     );
     let mut err = struct_span_err!(tcx.sess, sp, E0731, "transparent enum {}", msg);
     err.span_label(sp, &msg);
-    if let &[ref start @ .., ref end] = &variant_spans[..] {
+    if let [start @ .., end] = &*variant_spans {
         for variant_span in start {
             err.span_label(*variant_span, "");
         }
@@ -2125,31 +2372,32 @@ fn check_transparent(tcx: TyCtxt<'_>, sp: Span, def_id: DefId) {
     }
     let sp = tcx.sess.source_map().def_span(sp);
 
-    if adt.is_enum() {
-        if !tcx.features().transparent_enums {
-            emit_feature_err(
-                &tcx.sess.parse_sess,
-                sym::transparent_enums,
-                sp,
-                GateIssue::Language,
-                "transparent enums are unstable",
-            );
-        }
-        if adt.variants.len() != 1 {
-            bad_variant_count(tcx, adt, sp, def_id);
-            if adt.variants.is_empty() {
-                // Don't bother checking the fields. No variants (and thus no fields) exist.
-                return;
-            }
-        }
+    if adt.is_enum() && !tcx.features().transparent_enums {
+        feature_err(
+            &tcx.sess.parse_sess,
+            sym::transparent_enums,
+            sp,
+            "transparent enums are unstable",
+        )
+        .emit();
     }
 
     if adt.is_union() && !tcx.features().transparent_unions {
-        emit_feature_err(&tcx.sess.parse_sess,
-                         sym::transparent_unions,
-                         sp,
-                         GateIssue::Language,
-                         "transparent unions are unstable");
+        feature_err(
+            &tcx.sess.parse_sess,
+            sym::transparent_unions,
+            sp,
+            "transparent unions are unstable",
+        )
+        .emit();
+    }
+
+    if adt.variants.len() != 1 {
+        bad_variant_count(tcx, adt, sp, def_id);
+        if adt.variants.is_empty() {
+            // Don't bother checking the fields. No variants (and thus no fields) exist.
+            return;
+        }
     }
 
     // For each field, figure out if it's known to be a ZST and align(1)
@@ -2206,11 +2454,13 @@ pub fn check_enum<'tcx>(tcx: TyCtxt<'tcx>, sp: Span, vs: &'tcx [hir::Variant], i
     let repr_type_ty = def.repr.discr_type().to_ty(tcx);
     if repr_type_ty == tcx.types.i128 || repr_type_ty == tcx.types.u128 {
         if !tcx.features().repr128 {
-            emit_feature_err(&tcx.sess.parse_sess,
-                             sym::repr128,
-                             sp,
-                             GateIssue::Language,
-                             "repr with 128-bit type is unstable");
+            feature_err(
+                &tcx.sess.parse_sess,
+                sym::repr128,
+                sp,
+                "repr with 128-bit type is unstable",
+            )
+            .emit();
         }
     }
 
@@ -2277,6 +2527,10 @@ fn report_unexpected_variant_res(tcx: TyCtxt<'_>, res: Res, span: Span, qpath: &
 impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
     fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.tcx
+    }
+
+    fn item_def_id(&self) -> Option<DefId> {
+        None
     }
 
     fn get_type_parameter_bounds(&self, _: Span, def_id: DefId) -> ty::GenericPredicates<'tcx> {
@@ -2399,6 +2653,16 @@ impl<'a, 'tcx> AstConv<'tcx> for FnCtxt<'a, 'tcx> {
 enum TupleArgumentsFlag {
     DontTupleArguments,
     TupleArguments,
+}
+
+/// Controls how we perform fallback for unconstrained
+/// type variables.
+enum FallbackMode {
+    /// Do not fallback type variables to opaque types.
+    NoOpaque,
+    /// Perform all possible kinds of fallback, including
+    /// turning type variables to opaque types.
+    All,
 }
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
@@ -2766,8 +3030,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         );
 
         let mut opaque_types = self.opaque_types.borrow_mut();
+        let mut opaque_types_vars = self.opaque_types_vars.borrow_mut();
         for (ty, decl) in opaque_type_map {
             let _ = opaque_types.insert(ty, decl);
+            let _ = opaque_types_vars.insert(decl.concrete_ty, decl.opaque_type);
         }
 
         value
@@ -2974,13 +3240,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     // Tries to apply a fallback to `ty` if it is an unsolved variable.
-    // Non-numerics get replaced with ! or () (depending on whether
-    // feature(never_type) is enabled, unconstrained ints with i32,
-    // unconstrained floats with f64.
+    //
+    // - Unconstrained ints are replaced with `i32`.
+    //
+    // - Unconstrained floats are replaced with with `f64`.
+    //
+    // - Non-numerics get replaced with `!` when `#![feature(never_type_fallback)]`
+    //   is enabled. Otherwise, they are replaced with `()`.
+    //
     // Fallback becomes very dubious if we have encountered type-checking errors.
     // In that case, fallback to Error.
     // The return value indicates whether fallback has occurred.
-    fn fallback_if_possible(&self, ty: Ty<'tcx>) -> bool {
+    fn fallback_if_possible(&self, ty: Ty<'tcx>, mode: FallbackMode) -> bool {
         use rustc::ty::error::UnconstrainedNumeric::Neither;
         use rustc::ty::error::UnconstrainedNumeric::{UnconstrainedInt, UnconstrainedFloat};
 
@@ -2990,7 +3261,53 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             UnconstrainedInt => self.tcx.types.i32,
             UnconstrainedFloat => self.tcx.types.f64,
             Neither if self.type_var_diverges(ty) => self.tcx.mk_diverging_default(),
-            Neither => return false,
+            Neither => {
+                // This type variable was created from the instantiation of an opaque
+                // type. The fact that we're attempting to perform fallback for it
+                // means that the function neither constrained it to a concrete
+                // type, nor to the opaque type itself.
+                //
+                // For example, in this code:
+                //
+                //```
+                // type MyType = impl Copy;
+                // fn defining_use() -> MyType { true }
+                // fn other_use() -> MyType { defining_use() }
+                // ```
+                //
+                // `defining_use` will constrain the instantiated inference
+                // variable to `bool`, while `other_use` will constrain
+                // the instantiated inference variable to `MyType`.
+                //
+                // When we process opaque types during writeback, we
+                // will handle cases like `other_use`, and not count
+                // them as defining usages
+                //
+                // However, we also need to handle cases like this:
+                //
+                // ```rust
+                // pub type Foo = impl Copy;
+                // fn produce() -> Option<Foo> {
+                //     None
+                //  }
+                //  ```
+                //
+                // In the above snippet, the inference varaible created by
+                // instantiating `Option<Foo>` will be completely unconstrained.
+                // We treat this as a non-defining use by making the inference
+                // variable fall back to the opaque type itself.
+                if let FallbackMode::All = mode {
+                    if let Some(opaque_ty) = self.opaque_types_vars.borrow().get(ty) {
+                        debug!("fallback_if_possible: falling back opaque type var {:?} to {:?}",
+                               ty, opaque_ty);
+                        *opaque_ty
+                    } else {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            },
         };
         debug!("fallback_if_possible: defaulting `{:?}` to `{:?}`", ty, fallback);
         self.demand_eqtype(syntax_pos::DUMMY_SP, ty, fallback);
@@ -3102,8 +3419,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 let mut adjustments = autoderef.adjust_steps(self, needs);
                 if let ty::Ref(region, _, r_mutbl) = method.sig.inputs()[0].kind {
                     let mutbl = match r_mutbl {
-                        hir::MutImmutable => AutoBorrowMutability::Immutable,
-                        hir::MutMutable => AutoBorrowMutability::Mutable {
+                        hir::Mutability::Immutable => AutoBorrowMutability::Immutable,
+                        hir::Mutability::Mutable => AutoBorrowMutability::Mutable {
                             // Indexing can be desugared to a method call,
                             // so maybe we could use two-phase here.
                             // See the documentation of AllowTwoPhase for why that's
@@ -3435,7 +3752,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             formal_tys.clone()
         };
 
-        let mut final_arg_types: Vec<(usize, Ty<'_>)> = vec![];
+        let mut final_arg_types: Vec<(usize, Ty<'_>, Ty<'_>)> = vec![];
 
         // Check the arguments.
         // We do this in a pretty awful way: first we type-check any arguments
@@ -3503,7 +3820,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // We're processing function arguments so we definitely want to use
                 // two-phase borrows.
                 self.demand_coerce(&arg, checked_ty, coerce_ty, AllowTwoPhase::Yes);
-                final_arg_types.push((i, coerce_ty));
+                final_arg_types.push((i, checked_ty, coerce_ty));
 
                 // 3. Relate the expected type and the formal one,
                 //    if the expected type was used for the coercion.
@@ -3550,14 +3867,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         vec![self.tcx.types.err; len]
     }
 
-    /// Given a vec of evaluated `FullfillmentError`s and an `fn` call argument expressions, we
-    /// walk the resolved types for each argument to see if any of the `FullfillmentError`s
-    /// reference a type argument. If they do, and there's only *one* argument that does, we point
-    /// at the corresponding argument's expression span instead of the `fn` call path span.
+    /// Given a vec of evaluated `FulfillmentError`s and an `fn` call argument expressions, we walk
+    /// the checked and coerced types for each argument to see if any of the `FulfillmentError`s
+    /// reference a type argument. The reason to walk also the checked type is that the coerced type
+    /// can be not easily comparable with predicate type (because of coercion). If the types match
+    /// for either checked or coerced type, and there's only *one* argument that does, we point at
+    /// the corresponding argument's expression span instead of the `fn` call path span.
     fn point_at_arg_instead_of_call_if_possible(
         &self,
         errors: &mut Vec<traits::FulfillmentError<'_>>,
-        final_arg_types: &[(usize, Ty<'tcx>)],
+        final_arg_types: &[(usize, Ty<'tcx>, Ty<'tcx>)],
         call_sp: Span,
         args: &'tcx [hir::Expr],
     ) {
@@ -3567,19 +3886,27 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             for error in errors {
                 if let ty::Predicate::Trait(predicate) = error.obligation.predicate {
                     // Collect the argument position for all arguments that could have caused this
-                    // `FullfillmentError`.
+                    // `FulfillmentError`.
                     let mut referenced_in = final_arg_types.iter()
+                        .map(|(i, checked_ty, _)| (i, checked_ty))
+                        .chain(final_arg_types.iter().map(|(i, _, coerced_ty)| (i, coerced_ty)))
                         .flat_map(|(i, ty)| {
                             let ty = self.resolve_vars_if_possible(ty);
                             // We walk the argument type because the argument's type could have
-                            // been `Option<T>`, but the `FullfillmentError` references `T`.
+                            // been `Option<T>`, but the `FulfillmentError` references `T`.
                             ty.walk()
                                 .filter(|&ty| ty == predicate.skip_binder().self_ty())
                                 .map(move |_| *i)
-                        });
-                    if let (Some(ref_in), None) = (referenced_in.next(), referenced_in.next()) {
+                        })
+                        .collect::<Vec<_>>();
+
+                    // Both checked and coerced types could have matched, thus we need to remove
+                    // duplicates.
+                    referenced_in.dedup();
+
+                    if let (Some(ref_in), None) = (referenced_in.pop(), referenced_in.pop()) {
                         // We make sure that only *one* argument matches the obligation failure
-                        // and thet the obligation's span to its expression's.
+                        // and we assign the obligation's span to its expression's.
                         error.obligation.cause.span = args[ref_in].span;
                         error.points_at_arg_span = true;
                     }
@@ -3588,8 +3915,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
-    /// Given a vec of evaluated `FullfillmentError`s and an `fn` call expression, we walk the
-    /// `PathSegment`s and resolve their type parameters to see if any of the `FullfillmentError`s
+    /// Given a vec of evaluated `FulfillmentError`s and an `fn` call expression, we walk the
+    /// `PathSegment`s and resolve their type parameters to see if any of the `FulfillmentError`s
     /// were caused by them. If they were, we point at the corresponding type argument's span
     /// instead of the `fn` call path span.
     fn point_at_type_arg_instead_of_call_if_possible(
@@ -3662,8 +3989,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 });
                 opt_ty.unwrap_or_else(|| self.next_int_var())
             }
-            ast::LitKind::Float(_, t) => tcx.mk_mach_float(t),
-            ast::LitKind::FloatUnsuffixed(_) => {
+            ast::LitKind::Float(_, ast::LitFloatType::Suffixed(t)) => tcx.mk_mach_float(t),
+            ast::LitKind::Float(_, ast::LitFloatType::Unsuffixed) => {
                 let opt_ty = expected.to_option(self).and_then(|ty| {
                     match ty.kind {
                         ty::Float(_) => Some(ty),
@@ -4183,7 +4510,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let node = self.tcx.hir().get(self.tcx.hir().get_parent_item(id));
         match node {
             Node::Item(&hir::Item {
-                kind: hir::ItemKind::Fn(_, _, _, body_id), ..
+                kind: hir::ItemKind::Fn(_, _, body_id), ..
             }) |
             Node::ImplItem(&hir::ImplItem {
                 kind: hir::ImplItemKind::Method(_, body_id), ..
@@ -4208,23 +4535,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn get_node_fn_decl(&self, node: Node<'tcx>) -> Option<(&'tcx hir::FnDecl, ast::Ident, bool)> {
         match node {
             Node::Item(&hir::Item {
-                ident, kind: hir::ItemKind::Fn(ref decl, ..), ..
+                ident, kind: hir::ItemKind::Fn(ref sig, ..), ..
             }) => {
                 // This is less than ideal, it will not suggest a return type span on any
                 // method called `main`, regardless of whether it is actually the entry point,
                 // but it will still present it as the reason for the expected type.
-                Some((decl, ident, ident.name != sym::main))
+                Some((&sig.decl, ident, ident.name != sym::main))
             }
             Node::TraitItem(&hir::TraitItem {
-                ident, kind: hir::TraitItemKind::Method(hir::MethodSig {
-                    ref decl, ..
-                }, ..), ..
-            }) => Some((decl, ident, true)),
+                ident, kind: hir::TraitItemKind::Method(ref sig, ..), ..
+            }) => Some((&sig.decl, ident, true)),
             Node::ImplItem(&hir::ImplItem {
-                ident, kind: hir::ImplItemKind::Method(hir::MethodSig {
-                    ref decl, ..
-                }, ..), ..
-            }) => Some((decl, ident, false)),
+                ident, kind: hir::ImplItemKind::Method(ref sig, ..), ..
+            }) => Some((&sig.decl, ident, false)),
             _ => None,
         }
     }
@@ -4247,7 +4570,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// - Possible missing return type if the return type is the default, and not `fn main()`.
     pub fn suggest_mismatched_types_on_tail(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         expr: &'tcx hir::Expr,
         expected: Ty<'tcx>,
         found: Ty<'tcx>,
@@ -4261,8 +4584,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             pointing_at_return_type = self.suggest_missing_return_type(
                 err, &fn_decl, expected, found, can_suggest);
         }
-        self.suggest_ref_or_into(err, expr, expected, found);
-        self.suggest_boxing_when_appropriate(err, expr, expected, found);
         pointing_at_return_type
     }
 
@@ -4274,7 +4595,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// ```
     fn suggest_fn_call(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         expr: &hir::Expr,
         expected: Ty<'tcx>,
         found: Ty<'tcx>,
@@ -4387,7 +4708,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     pub fn suggest_ref_or_into(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         expr: &hir::Expr,
         expected: Ty<'tcx>,
         found: Ty<'tcx>,
@@ -4455,7 +4776,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// in the heap by calling `Box::new()`.
     fn suggest_boxing_when_appropriate(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         expr: &hir::Expr,
         expected: Ty<'tcx>,
         found: Ty<'tcx>,
@@ -4499,7 +4820,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// it suggests adding a semicolon.
     fn suggest_missing_semicolon(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         expression: &'tcx hir::Expr,
         expected: Ty<'tcx>,
         cause_span: Span,
@@ -4513,9 +4834,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 ExprKind::Loop(..) |
                 ExprKind::Match(..) |
                 ExprKind::Block(..) => {
-                    let sp = self.tcx.sess.source_map().next_point(cause_span);
                     err.span_suggestion(
-                        sp,
+                        cause_span.shrink_to_hi(),
                         "try adding a semicolon",
                         ";".to_string(),
                         Applicability::MachineApplicable);
@@ -4538,7 +4858,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// type.
     fn suggest_missing_return_type(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         fn_decl: &hir::FnDecl,
         expected: Ty<'tcx>,
         found: Ty<'tcx>,
@@ -4604,7 +4924,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// `.await` to the tail of the expression.
     fn suggest_missing_await(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         expr: &hir::Expr,
         expected: Ty<'tcx>,
         found: Ty<'tcx>,
@@ -4634,7 +4954,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     ty: expected,
                 }));
                 let obligation = traits::Obligation::new(self.misc(sp), self.param_env, predicate);
+                debug!("suggest_missing_await: trying obligation {:?}", obligation);
                 if self.infcx.predicate_may_hold(&obligation) {
+                    debug!("suggest_missing_await: obligation held: {:?}", obligation);
                     if let Ok(code) = self.sess().source_map().span_to_snippet(sp) {
                         err.span_suggestion(
                             sp,
@@ -4642,7 +4964,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             format!("{}.await", code),
                             Applicability::MaybeIncorrect,
                         );
+                    } else {
+                        debug!("suggest_missing_await: no snippet for {:?}", sp);
                     }
+                } else {
+                    debug!("suggest_missing_await: obligation did not hold: {:?}", obligation)
                 }
             }
         }
@@ -5023,16 +5349,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                       directly, not through a function pointer");
     }
 
-    // Resolves `typ` by a single level if `typ` is a type variable.
-    // If no resolution is possible, then an error is reported.
-    // Numeric inference variables may be left unresolved.
+    /// Resolves `typ` by a single level if `typ` is a type variable.
+    /// If no resolution is possible, then an error is reported.
+    /// Numeric inference variables may be left unresolved.
     pub fn structurally_resolved_type(&self, sp: Span, ty: Ty<'tcx>) -> Ty<'tcx> {
         let ty = self.resolve_vars_with_obligations(ty);
         if !ty.is_ty_var() {
             ty
         } else {
             if !self.is_tainted_by_errors() {
-                self.need_type_info_err((**self).body_id, sp, ty)
+                self.need_type_info_err((**self).body_id, sp, ty, E0282)
                     .note("type must be known at this point")
                     .emit();
             }
@@ -5164,5 +5490,5 @@ fn fatally_break_rust(sess: &Session) {
 }
 
 fn potentially_plural_count(count: usize, word: &str) -> String {
-    format!("{} {}{}", count, word, pluralise!(count))
+    format!("{} {}{}", count, word, pluralize!(count))
 }

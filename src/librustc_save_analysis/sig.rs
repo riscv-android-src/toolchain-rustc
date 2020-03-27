@@ -30,9 +30,8 @@ use crate::{id_from_def_id, id_from_node_id, SaveContext};
 use rls_data::{SigElement, Signature};
 
 use rustc::hir::def::{Res, DefKind};
-use syntax::ast::{self, NodeId};
+use syntax::ast::{self, Extern, NodeId};
 use syntax::print::pprust;
-
 
 pub fn item_signature(item: &ast::Item, scx: &SaveContext<'_, '_>) -> Option<Signature> {
     if !scx.config.signatures {
@@ -72,7 +71,7 @@ pub fn method_signature(
     id: NodeId,
     ident: ast::Ident,
     generics: &ast::Generics,
-    m: &ast::MethodSig,
+    m: &ast::FnSig,
     scx: &SaveContext<'_, '_>,
 ) -> Option<Signature> {
     if !scx.config.signatures {
@@ -157,6 +156,14 @@ fn text_sig(text: String) -> Signature {
     }
 }
 
+fn push_extern(text: &mut String, ext: Extern) {
+    match ext {
+        Extern::None => {}
+        Extern::Implicit => text.push_str("extern "),
+        Extern::Explicit(abi) => text.push_str(&format!("extern \"{}\" ", abi.symbol)),
+    }
+}
+
 impl Sig for ast::Ty {
     fn make(&self, offset: usize, _parent_id: Option<NodeId>, scx: &SaveContext<'_, '_>) -> Result {
         let id = Some(self.id);
@@ -231,11 +238,7 @@ impl Sig for ast::Ty {
                 if f.unsafety == ast::Unsafety::Unsafe {
                     text.push_str("unsafe ");
                 }
-                if f.abi != rustc_target::spec::abi::Abi::Rust {
-                    text.push_str("extern");
-                    text.push_str(&f.abi.to_string());
-                    text.push(' ');
-                }
+                push_extern(&mut text, f.ext);
                 text.push_str("fn(");
 
                 let mut defs = vec![];
@@ -374,7 +377,7 @@ impl Sig for ast::Item {
 
                 Ok(extend_sig(ty, text, defs, vec![]))
             }
-            ast::ItemKind::Fn(ref decl, header, ref generics, _) => {
+            ast::ItemKind::Fn(ast::FnSig { ref decl, header }, ref generics, _) => {
                 let mut text = String::new();
                 if header.constness.node == ast::Constness::Const {
                     text.push_str("const ");
@@ -385,11 +388,7 @@ impl Sig for ast::Item {
                 if header.unsafety == ast::Unsafety::Unsafe {
                     text.push_str("unsafe ");
                 }
-                if header.abi != rustc_target::spec::abi::Abi::Rust {
-                    text.push_str("extern");
-                    text.push_str(&header.abi.to_string());
-                    text.push(' ');
-                }
+                push_extern(&mut text, header.ext);
                 text.push_str("fn ");
 
                 let mut sig = name_and_generics(text, offset, generics, self.id, self.ident, scx)?;
@@ -448,16 +447,6 @@ impl Sig for ast::Item {
                 sig.text.push(';');
 
                 Ok(merge_sigs(sig.text.clone(), vec![sig, ty]))
-            }
-            ast::ItemKind::OpaqueTy(ref bounds, ref generics) => {
-                let text = "type ".to_owned();
-                let mut sig = name_and_generics(text, offset, generics, self.id, self.ident, scx)?;
-
-                sig.text.push_str(" = impl ");
-                sig.text.push_str(&pprust::bounds_to_string(bounds));
-                sig.text.push(';');
-
-                Ok(sig)
             }
             ast::ItemKind::Enum(_, ref generics) => {
                 let text = "enum ".to_owned();
@@ -934,7 +923,7 @@ fn make_method_signature(
     id: NodeId,
     ident: ast::Ident,
     generics: &ast::Generics,
-    m: &ast::MethodSig,
+    m: &ast::FnSig,
     scx: &SaveContext<'_, '_>,
 ) -> Result {
     // FIXME code dup with function signature
@@ -948,11 +937,7 @@ fn make_method_signature(
     if m.header.unsafety == ast::Unsafety::Unsafe {
         text.push_str("unsafe ");
     }
-    if m.header.abi != rustc_target::spec::abi::Abi::Rust {
-        text.push_str("extern");
-        text.push_str(&m.header.abi.to_string());
-        text.push(' ');
-    }
+    push_extern(&mut text, m.header.ext);
     text.push_str("fn ");
 
     let mut sig = name_and_generics(text, 0, generics, id, ident, scx)?;

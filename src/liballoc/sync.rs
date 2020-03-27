@@ -12,7 +12,7 @@ use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use core::borrow;
 use core::fmt;
-use core::cmp::{self, Ordering};
+use core::cmp::Ordering;
 use core::iter;
 use core::intrinsics::abort;
 use core::mem::{self, align_of, align_of_val, size_of_val};
@@ -195,7 +195,7 @@ const MAX_REFCOUNT: usize = (isize::MAX) as usize;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Arc<T: ?Sized> {
     ptr: NonNull<ArcInner<T>>,
-    phantom: PhantomData<T>,
+    phantom: PhantomData<ArcInner<T>>,
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -338,6 +338,35 @@ impl<T> Arc<T> {
                 Layout::new::<T>(),
                 |mem| mem as *mut ArcInner<mem::MaybeUninit<T>>,
             ))
+        }
+    }
+
+    /// Constructs a new `Arc` with uninitialized contents, with the memory
+    /// being filled with `0` bytes.
+    ///
+    /// See [`MaybeUninit::zeroed`][zeroed] for examples of correct and incorrect usage
+    /// of this method.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(new_uninit)]
+    ///
+    /// use std::sync::Arc;
+    ///
+    /// let zero = Arc::<u32>::new_zeroed();
+    /// let zero = unsafe { zero.assume_init() };
+    ///
+    /// assert_eq!(*zero, 0)
+    /// ```
+    ///
+    /// [zeroed]: ../../std/mem/union.MaybeUninit.html#method.zeroed
+    #[unstable(feature = "new_uninit", issue = "63291")]
+    pub fn new_zeroed() -> Arc<mem::MaybeUninit<T>> {
+        unsafe {
+            let mut uninit = Self::new_uninit();
+            ptr::write_bytes::<T>(Arc::get_mut_unchecked(&mut uninit).as_mut_ptr(), 0, 1);
+            uninit
         }
     }
 
@@ -751,7 +780,7 @@ impl<T: ?Sized> Arc<T> {
         // reference (see #54908).
         let layout = Layout::new::<ArcInner<()>>()
             .extend(value_layout).unwrap().0
-            .pad_to_align().unwrap();
+            .pad_to_align();
 
         let mem = Global.alloc(layout)
             .unwrap_or_else(|_| handle_alloc_error(layout));
@@ -1295,10 +1324,8 @@ impl<T> Weak<T> {
 
     /// Returns a raw pointer to the object `T` pointed to by this `Weak<T>`.
     ///
-    /// It is up to the caller to ensure that the object is still alive when accessing it through
-    /// the pointer.
-    ///
-    /// The pointer may be [`null`] or be dangling in case the object has already been destroyed.
+    /// The pointer is valid only if there are some strong references. The pointer may be dangling
+    /// or even [`null`] otherwise.
     ///
     /// # Examples
     ///
@@ -1379,14 +1406,18 @@ impl<T> Weak<T> {
     /// This can be used to safely get a strong reference (by calling [`upgrade`]
     /// later) or to deallocate the weak count by dropping the `Weak<T>`.
     ///
-    /// It takes ownership of one weak count. In case a [`null`] is passed, a dangling [`Weak`] is
-    /// returned.
+    /// It takes ownership of one weak count (with the exception of pointers created by [`new`],
+    /// as these don't have any corresponding weak count).
     ///
     /// # Safety
     ///
-    /// The pointer must represent one valid weak count. In other words, it must point to `T` which
-    /// is or *was* managed by an [`Arc`] and the weak count of that [`Arc`] must not have reached
-    /// 0. It is allowed for the strong count to be 0.
+    /// The pointer must have originated from the [`into_raw`] (or [`as_raw'], provided there was
+    /// a corresponding [`forget`] on the `Weak<T>`) and must still own its potential weak reference
+    /// count.
+    ///
+    /// It is allowed for the strong count to be 0 at the time of calling this, but the weak count
+    /// must be non-zero or the pointer must have originated from a dangling `Weak<T>` (one created
+    /// by [`new`]).
     ///
     /// # Examples
     ///
@@ -1411,11 +1442,13 @@ impl<T> Weak<T> {
     /// assert!(unsafe { Weak::from_raw(raw_2) }.upgrade().is_none());
     /// ```
     ///
-    /// [`null`]: ../../std/ptr/fn.null.html
+    /// [`as_raw`]: struct.Weak.html#method.as_raw
+    /// [`new`]: struct.Weak.html#method.new
     /// [`into_raw`]: struct.Weak.html#method.into_raw
     /// [`upgrade`]: struct.Weak.html#method.upgrade
     /// [`Weak`]: struct.Weak.html
     /// [`Arc`]: struct.Arc.html
+    /// [`forget`]: ../../std/mem/fn.forget.html
     #[unstable(feature = "weak_into_raw", issue = "60728")]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
         if ptr.is_null() {
@@ -1496,7 +1529,7 @@ impl<T: ?Sized> Weak<T> {
     /// If `self` was created using [`Weak::new`], this will return 0.
     ///
     /// [`Weak::new`]: #method.new
-    #[unstable(feature = "weak_counts", issue = "57977")]
+    #[stable(feature = "weak_counts", since = "1.41.0")]
     pub fn strong_count(&self) -> usize {
         if let Some(inner) = self.inner() {
             inner.strong.load(SeqCst)
@@ -1508,9 +1541,8 @@ impl<T: ?Sized> Weak<T> {
     /// Gets an approximation of the number of `Weak` pointers pointing to this
     /// allocation.
     ///
-    /// If `self` was created using [`Weak::new`], this will return 0. If not,
-    /// the returned value is at least 1, since `self` still points to the
-    /// allocation.
+    /// If `self` was created using [`Weak::new`], or if there are no remaining
+    /// strong pointers, this will return 0.
     ///
     /// # Accuracy
     ///
@@ -1519,31 +1551,22 @@ impl<T: ?Sized> Weak<T> {
     /// `Weak`s pointing to the same allocation.
     ///
     /// [`Weak::new`]: #method.new
-    #[unstable(feature = "weak_counts", issue = "57977")]
-    pub fn weak_count(&self) -> Option<usize> {
-        // Due to the implicit weak pointer added when any strong pointers are
-        // around, we cannot implement `weak_count` correctly since it
-        // necessarily requires accessing the strong count and weak count in an
-        // unsynchronized fashion. So this version is a bit racy.
+    #[stable(feature = "weak_counts", since = "1.41.0")]
+    pub fn weak_count(&self) -> usize {
         self.inner().map(|inner| {
-            let strong = inner.strong.load(SeqCst);
             let weak = inner.weak.load(SeqCst);
+            let strong = inner.strong.load(SeqCst);
             if strong == 0 {
-                // If the last `Arc` has *just* been dropped, it might not yet
-                // have removed the implicit weak count, so the value we get
-                // here might be 1 too high.
-                weak
+                0
             } else {
-                // As long as there's still at least 1 `Arc` around, subtract
-                // the implicit weak pointer.
-                // Note that the last `Arc` might get dropped between the 2
-                // loads we do above, removing the implicit weak pointer. This
-                // means that the value might be 1 too low here. In order to not
-                // return 0 here (which would happen if we're the only weak
-                // pointer), we guard against that specifically.
-                cmp::max(1, weak - 1)
+                // Since we observed that there was at least one strong pointer
+                // after reading the weak count, we know that the implicit weak
+                // reference (present whenever any strong references are alive)
+                // was still around when we observed the weak count, and can
+                // therefore safely subtract it.
+                weak - 1
             }
-        })
+        }).unwrap_or(0)
     }
 
     /// Returns `None` when the pointer is dangling and there is no allocated `ArcInner`,

@@ -3,9 +3,10 @@ use crate::utils::{is_expn_of, match_def_path, match_type, paths, span_help_and_
 use if_chain::if_chain;
 use regex_syntax;
 use rustc::hir::*;
+use rustc::impl_lint_pass;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, impl_lint_pass};
 use rustc_data_structures::fx::FxHashSet;
+use rustc_session::declare_tool_lint;
 use std::convert::TryFrom;
 use syntax::ast::{LitKind, StrStyle};
 use syntax::source_map::{BytePos, Span};
@@ -186,7 +187,7 @@ fn is_trivial_regex(s: &regex_syntax::hir::Hir) -> Option<&'static str> {
 
 fn check_set<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr, utf8: bool) {
     if_chain! {
-        if let ExprKind::AddrOf(_, ref expr) = expr.kind;
+        if let ExprKind::AddrOf(BorrowKind::Ref, _, ref expr) = expr.kind;
         if let ExprKind::Array(ref exprs) = expr.kind;
         then {
             for expr in exprs {

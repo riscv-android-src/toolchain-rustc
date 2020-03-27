@@ -40,14 +40,14 @@ Here are some more examples of caret requirements and the versions that would
 be allowed with them:
 
 ```notrust
-^1.2.3  :=  >=1.2.3 <2.0.0
-^1.2    :=  >=1.2.0 <2.0.0
-^1      :=  >=1.0.0 <2.0.0
-^0.2.3  :=  >=0.2.3 <0.3.0
-^0.2    :=  >=0.2.0 <0.3.0
-^0.0.3  :=  >=0.0.3 <0.0.4
-^0.0    :=  >=0.0.0 <0.1.0
-^0      :=  >=0.0.0 <1.0.0
+^1.2.3  :=  >=1.2.3, <2.0.0
+^1.2    :=  >=1.2.0, <2.0.0
+^1      :=  >=1.0.0, <2.0.0
+^0.2.3  :=  >=0.2.3, <0.3.0
+^0.2    :=  >=0.2.0, <0.3.0
+^0.0.3  :=  >=0.0.3, <0.0.4
+^0.0    :=  >=0.0.0, <0.1.0
+^0      :=  >=0.0.0, <1.0.0
 ```
 
 This compatibility convention is different from SemVer in the way it treats
@@ -65,9 +65,9 @@ version, then minor- and patch-level changes are allowed.
 `~1.2.3` is an example of a tilde requirement.
 
 ```notrust
-~1.2.3  := >=1.2.3 <1.3.0
-~1.2    := >=1.2.0 <1.3.0
-~1      := >=1.0.0 <2.0.0
+~1.2.3  := >=1.2.3, <1.3.0
+~1.2    := >=1.2.0, <1.3.0
+~1      := >=1.0.0, <2.0.0
 ```
 
 ### Wildcard requirements
@@ -79,8 +79,8 @@ positioned.
 
 ```notrust
 *     := >=0.0.0
-1.*   := >=1.0.0 <2.0.0
-1.2.* := >=1.2.0 <1.3.0
+1.*   := >=1.0.0, <2.0.0
+1.2.* := >=1.2.0, <1.3.0
 ```
 
 ### Comparison requirements
@@ -99,8 +99,8 @@ Here are some examples of comparison requirements:
 
 ### Multiple requirements
 
-Multiple version requirements can also be separated with a comma, e.g., `>= 1.2,
-< 1.5`.
+As shown in the examples above, multiple version requirements can be
+separated with a comma, e.g., `>= 1.2, < 1.5`.
 
 ### Specifying dependencies from other registries
 
@@ -483,20 +483,16 @@ winhttp = "0.4.0"
 openssl = "1.0.1"
 ```
 
-If you’re using a custom target specification, quote the full path and file
-name:
+If you’re using a custom target specification (such as `--target
+foo/bar.json`), use the base filename without the `.json` extension:
 
 ```toml
-[target."x86_64/windows.json".dependencies]
+[target.bar.dependencies]
 winhttp = "0.4.0"
 
-[target."i686/linux.json".dependencies]
+[target.my-special-i686-platform.dependencies]
 openssl = "1.0.1"
 native = { path = "native/i686" }
-
-[target."x86_64/linux.json".dependencies]
-openssl = "1.0.1"
-native = { path = "native/x86_64" }
 ```
 
 ### Development dependencies

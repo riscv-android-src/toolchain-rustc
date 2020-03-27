@@ -2,9 +2,10 @@ use crate::utils::{is_direct_expn_of, span_lint};
 use if_chain::if_chain;
 use matches::matches;
 use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc::hir::{Expr, ExprKind, Mutability, StmtKind, UnOp};
+use rustc::hir::{BorrowKind, Expr, ExprKind, Mutability, StmtKind, UnOp};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint, ty};
+use rustc::{declare_lint_pass, ty};
+use rustc_session::declare_tool_lint;
 use syntax_pos::Span;
 
 declare_clippy_lint! {
@@ -77,14 +78,14 @@ fn extract_call<'a, 'tcx>(cx: &'a LateContext<'a, 'tcx>, e: &'tcx Expr) -> Optio
                         if let ExprKind::Tup(ref conditions) = headerexpr.kind;
                         if conditions.len() == 2;
                         then {
-                            if let ExprKind::AddrOf(_, ref lhs) = conditions[0].kind {
+                            if let ExprKind::AddrOf(BorrowKind::Ref, _, ref lhs) = conditions[0].kind {
                                 let mut visitor = MutArgVisitor::new(cx);
                                 visitor.visit_expr(lhs);
                                 if let Some(span) = visitor.expr_span() {
                                     return Some(span);
                                 }
                             }
-                            if let ExprKind::AddrOf(_, ref rhs) = conditions[1].kind {
+                            if let ExprKind::AddrOf(BorrowKind::Ref, _, ref rhs) = conditions[1].kind {
                                 let mut visitor = MutArgVisitor::new(cx);
                                 visitor.visit_expr(rhs);
                                 if let Some(span) = visitor.expr_span() {
@@ -128,7 +129,7 @@ impl<'a, 'tcx> MutArgVisitor<'a, 'tcx> {
 impl<'a, 'tcx> Visitor<'tcx> for MutArgVisitor<'a, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr) {
         match expr.kind {
-            ExprKind::AddrOf(Mutability::MutMutable, _) => {
+            ExprKind::AddrOf(BorrowKind::Ref, Mutability::Mutable, _) => {
                 self.found = true;
                 return;
             },
@@ -136,7 +137,7 @@ impl<'a, 'tcx> Visitor<'tcx> for MutArgVisitor<'a, 'tcx> {
                 if let Some(adj) = self.cx.tables.adjustments().get(expr.hir_id) {
                     if adj
                         .iter()
-                        .any(|a| matches!(a.target.kind, ty::Ref(_, _, Mutability::MutMutable)))
+                        .any(|a| matches!(a.target.kind, ty::Ref(_, _, Mutability::Mutable)))
                     {
                         self.found = true;
                         return;

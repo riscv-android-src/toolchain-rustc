@@ -1,13 +1,13 @@
-use std::io::prelude::*;
 use std::io;
+use std::io::prelude::*;
 
 #[cfg(feature = "tokio")]
 use futures::Poll;
 #[cfg(feature = "tokio")]
 use tokio_io::{AsyncRead, AsyncWrite};
 
-use zio;
-use {Compress, Decompress};
+use crate::zio;
+use crate::{Compress, Decompress};
 
 /// A ZLIB encoder, or compressor.
 ///
@@ -43,7 +43,7 @@ impl<W: Write> ZlibEncoder<W> {
     ///
     /// When this encoder is dropped or unwrapped the final pieces of data will
     /// be flushed.
-    pub fn new(w: W, level: ::Compression) -> ZlibEncoder<W> {
+    pub fn new(w: W, level: crate::Compression) -> ZlibEncoder<W> {
         ZlibEncoder {
             inner: zio::Writer::new(w, Compress::new(level, true)),
         }
@@ -169,7 +169,7 @@ impl<W: Write> Write for ZlibEncoder<W> {
 #[cfg(feature = "tokio")]
 impl<W: AsyncWrite> AsyncWrite for ZlibEncoder<W> {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
-        try_nb!(self.try_finish());
+        self.try_finish()?;
         self.get_mut().shutdown()
     }
 }
@@ -333,7 +333,7 @@ impl<W: Write> Write for ZlibDecoder<W> {
 #[cfg(feature = "tokio")]
 impl<W: AsyncWrite> AsyncWrite for ZlibDecoder<W> {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
-        try_nb!(self.inner.finish());
+        self.inner.finish()?;
         self.inner.get_mut().shutdown()
     }
 }

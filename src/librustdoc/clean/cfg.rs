@@ -7,10 +7,10 @@ use std::mem;
 use std::fmt::{self, Write};
 use std::ops;
 
+use rustc_feature::Features;
 use syntax::symbol::{Symbol, sym};
 use syntax::ast::{MetaItem, MetaItemKind, NestedMetaItem, LitKind};
 use syntax::sess::ParseSess;
-use syntax::feature_gate::Features;
 
 use syntax_pos::Span;
 
@@ -209,6 +209,9 @@ impl ops::Not for Cfg {
 
 impl ops::BitAndAssign for Cfg {
     fn bitand_assign(&mut self, other: Cfg) {
+        if *self == other {
+            return;
+        }
         match (self, other) {
             (&mut Cfg::False, _) | (_, Cfg::True) => {},
             (s, Cfg::False) => *s = Cfg::False,
@@ -238,6 +241,9 @@ impl ops::BitAnd for Cfg {
 
 impl ops::BitOrAssign for Cfg {
     fn bitor_assign(&mut self, other: Cfg) {
+        if *self == other {
+            return;
+        }
         match (self, other) {
             (&mut Cfg::True, _) | (_, Cfg::False) => {},
             (s, Cfg::True) => *s = Cfg::True,
@@ -404,7 +410,7 @@ impl<'a> fmt::Display for Html<'a> {
                 if !human_readable.is_empty() {
                     fmt.write_str(human_readable)
                 } else if let Some(v) = value {
-                    write!(fmt, "<code>{}=\"{}\"</code>", Escape(n), Escape(&*v.as_str()))
+                    write!(fmt, "<code>{}=\"{}\"</code>", Escape(n), Escape(&v.as_str()))
                 } else {
                     write!(fmt, "<code>{}</code>", Escape(n))
                 }

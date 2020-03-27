@@ -2,7 +2,6 @@ use core::f32;
 
 const TOINT: f32 = 1.0 / f32::EPSILON;
 
-#[inline]
 #[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn roundf(mut x: f32) -> f32 {
     let i = x.to_bits();
@@ -12,12 +11,12 @@ pub fn roundf(mut x: f32) -> f32 {
     if e >= 0x7f + 23 {
         return x;
     }
-    if i >> 31 != 0 {
-        x = -x;
-    }
     if e < 0x7f - 1 {
         force_eval!(x + TOINT);
         return 0.0 * x;
+    }
+    if i >> 31 != 0 {
+        x = -x;
     }
     y = x + TOINT - TOINT - x;
     if y > 0.5f32 {
@@ -31,5 +30,15 @@ pub fn roundf(mut x: f32) -> f32 {
         -y
     } else {
         y
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::roundf;
+
+    #[test]
+    fn negative_zero() {
+        assert_eq!(roundf(-0.0_f32).to_bits(), (-0.0_f32).to_bits());
     }
 }

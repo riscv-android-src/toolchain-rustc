@@ -14,18 +14,11 @@ use rustc_data_structures::thin_vec::ThinVec;
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_errors::registry::Registry;
 use rustc_metadata::dynamic_lib::DynamicLibrary;
-use rustc_mir;
-use rustc_passes;
-use rustc_plugin;
-use rustc_privacy;
-use rustc_resolve;
-use rustc_typeck;
+use rustc_resolve::{self, Resolver};
 use std::env;
-use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
 use std::io::{self, Write};
 use std::mem;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 use std::ops::DerefMut;
 use smallvec::SmallVec;
@@ -39,23 +32,6 @@ use syntax::{self, ast, attr};
 use syntax_pos::edition::Edition;
 #[cfg(not(parallel_compiler))]
 use std::{thread, panic};
-
-pub fn diagnostics_registry() -> Registry {
-    let mut all_errors = Vec::new();
-    all_errors.extend_from_slice(&rustc::error_codes::DIAGNOSTICS);
-    all_errors.extend_from_slice(&rustc_typeck::error_codes::DIAGNOSTICS);
-    all_errors.extend_from_slice(&rustc_resolve::error_codes::DIAGNOSTICS);
-    all_errors.extend_from_slice(&rustc_privacy::error_codes::DIAGNOSTICS);
-    // FIXME: need to figure out a way to get these back in here
-    // all_errors.extend_from_slice(get_codegen_backend(sess).diagnostics());
-    all_errors.extend_from_slice(&rustc_metadata::error_codes::DIAGNOSTICS);
-    all_errors.extend_from_slice(&rustc_passes::error_codes::DIAGNOSTICS);
-    all_errors.extend_from_slice(&rustc_plugin::error_codes::DIAGNOSTICS);
-    all_errors.extend_from_slice(&rustc_mir::error_codes::DIAGNOSTICS);
-    all_errors.extend_from_slice(&syntax::error_codes::DIAGNOSTICS);
-
-    Registry::new(&all_errors)
-}
 
 /// Adds `target_feature = "..."` cfgs for a variety of platform
 /// specific features (SSE, NEON etc.).
@@ -88,9 +64,8 @@ pub fn create_session(
     file_loader: Option<Box<dyn FileLoader + Send + Sync + 'static>>,
     input_path: Option<PathBuf>,
     lint_caps: FxHashMap<lint::LintId, lint::Level>,
+    descriptions: Registry,
 ) -> (Lrc<Session>, Lrc<Box<dyn CodegenBackend>>, Lrc<SourceMap>) {
-    let descriptions = diagnostics_registry();
-
     let loader = file_loader.unwrap_or(box RealFileLoader);
     let source_map = Lrc::new(SourceMap::with_file_loader(
         loader,
@@ -104,6 +79,10 @@ pub fn create_session(
         diagnostic_output,
         lint_caps,
     );
+
+    sess.prof.register_queries(|profiler| {
+        rustc::ty::query::QueryName::register_with_profiler(&profiler);
+    });
 
     let codegen_backend = get_codegen_backend(&sess);
 
@@ -126,11 +105,7 @@ const STACK_SIZE: usize = 16 * 1024 * 1024;
 fn get_stack_size() -> Option<usize> {
     // FIXME: Hacks on hacks. If the env is trying to override the stack size
     // then *don't* set it explicitly.
-    if env::var_os("RUST_MIN_STACK").is_none() {
-        Some(STACK_SIZE)
-    } else {
-        None
-    }
+    env::var_os("RUST_MIN_STACK").is_none().then_some(STACK_SIZE)
 }
 
 struct Sink(Arc<Mutex<Vec<u8>>>);
@@ -272,7 +247,7 @@ pub fn get_codegen_backend(sess: &Session) -> Box<dyn CodegenBackend> {
             filename if filename.contains(".") => {
                 load_backend_from_dylib(filename.as_ref())
             }
-            codegen_name => get_codegen_sysroot(codegen_name),
+            codegen_name => get_builtin_codegen_backend(codegen_name),
         };
 
         unsafe {
@@ -304,11 +279,7 @@ fn get_rustc_path_inner(bin_path: &str) -> Option<PathBuf> {
             } else {
                 "rustc"
             });
-            if candidate.exists() {
-                Some(candidate)
-            } else {
-                None
-            }
+            candidate.exists().then_some(candidate)
         })
         .next()
 }
@@ -411,83 +382,16 @@ fn sysroot_candidates() -> Vec<PathBuf> {
     }
 }
 
-pub fn get_codegen_sysroot(backend_name: &str) -> fn() -> Box<dyn CodegenBackend> {
-    // For now we only allow this function to be called once as it'll dlopen a
-    // few things, which seems to work best if we only do that once. In
-    // general this assertion never trips due to the once guard in `get_codegen_backend`,
-    // but there's a few manual calls to this function in this file we protect
-    // against.
-    static LOADED: AtomicBool = AtomicBool::new(false);
-    assert!(!LOADED.fetch_or(true, Ordering::SeqCst),
-            "cannot load the default codegen backend twice");
-
-    let target = session::config::host_triple();
-    let sysroot_candidates = sysroot_candidates();
-
-    let sysroot = sysroot_candidates.iter()
-        .map(|sysroot| {
-            let libdir = filesearch::relative_target_lib_path(&sysroot, &target);
-            sysroot.join(libdir).with_file_name(
-                option_env!("CFG_CODEGEN_BACKENDS_DIR").unwrap_or("codegen-backends"))
-        })
-        .filter(|f| {
-            info!("codegen backend candidate: {}", f.display());
-            f.exists()
-        })
-        .next();
-    let sysroot = sysroot.unwrap_or_else(|| {
-        let candidates = sysroot_candidates.iter()
-            .map(|p| p.display().to_string())
-            .collect::<Vec<_>>()
-            .join("\n* ");
-        let err = format!("failed to find a `codegen-backends` folder \
-                           in the sysroot candidates:\n* {}", candidates);
-        early_error(ErrorOutputType::default(), &err);
-    });
-    info!("probing {} for a codegen backend", sysroot.display());
-
-    let d = sysroot.read_dir().unwrap_or_else(|e| {
-        let err = format!("failed to load default codegen backend, couldn't \
-                           read `{}`: {}", sysroot.display(), e);
-        early_error(ErrorOutputType::default(), &err);
-    });
-
-    let mut file: Option<PathBuf> = None;
-
-    let expected_name = format!("rustc_codegen_llvm-{}", backend_name);
-    for entry in d.filter_map(|e| e.ok()) {
-        let path = entry.path();
-        let filename = match path.file_name().and_then(|s| s.to_str()) {
-            Some(s) => s,
-            None => continue,
-        };
-        if !(filename.starts_with(DLL_PREFIX) && filename.ends_with(DLL_SUFFIX)) {
-            continue
-        }
-        let name = &filename[DLL_PREFIX.len() .. filename.len() - DLL_SUFFIX.len()];
-        if name != expected_name {
-            continue
-        }
-        if let Some(ref prev) = file {
-            let err = format!("duplicate codegen backends found\n\
-                               first:  {}\n\
-                               second: {}\n\
-            ", prev.display(), path.display());
-            early_error(ErrorOutputType::default(), &err);
-        }
-        file = Some(path.clone());
-    }
-
-    match file {
-        Some(ref s) => return load_backend_from_dylib(s),
-        None => {
-            let err = format!("failed to load default codegen backend for `{}`, \
-                               no appropriate codegen dylib found in `{}`",
-                              backend_name, sysroot.display());
-            early_error(ErrorOutputType::default(), &err);
+pub fn get_builtin_codegen_backend(backend_name: &str) -> fn() -> Box<dyn CodegenBackend> {
+    #[cfg(feature = "llvm")]
+    {
+        if backend_name == "llvm" {
+            return rustc_codegen_llvm::LlvmCodegenBackend::new;
         }
     }
 
+    let err = format!("unsupported builtin codegen backend `{}`", backend_name);
+    early_error(ErrorOutputType::default(), &err);
 }
 
 pub(crate) fn compute_crate_disambiguator(session: &Session) -> CrateDisambiguator {
@@ -715,18 +619,18 @@ pub fn build_output_filenames(
 //    ambitious form of the closed RFC #1637. See also [#34511].
 //
 // [#34511]: https://github.com/rust-lang/rust/issues/34511#issuecomment-322340401
-pub struct ReplaceBodyWithLoop<'a> {
+pub struct ReplaceBodyWithLoop<'a, 'b> {
     within_static_or_const: bool,
     nested_blocks: Option<Vec<ast::Block>>,
-    sess: &'a Session,
+    resolver: &'a mut Resolver<'b>,
 }
 
-impl<'a> ReplaceBodyWithLoop<'a> {
-    pub fn new(sess: &'a Session) -> ReplaceBodyWithLoop<'a> {
+impl<'a, 'b> ReplaceBodyWithLoop<'a, 'b> {
+    pub fn new(resolver: &'a mut Resolver<'b>) -> ReplaceBodyWithLoop<'a, 'b> {
         ReplaceBodyWithLoop {
             within_static_or_const: false,
             nested_blocks: None,
-            sess
+            resolver,
         }
     }
 
@@ -786,14 +690,18 @@ impl<'a> ReplaceBodyWithLoop<'a> {
             false
         }
     }
+
+    fn is_sig_const(sig: &ast::FnSig) -> bool {
+        sig.header.constness.node == ast::Constness::Const ||
+            ReplaceBodyWithLoop::should_ignore_fn(&sig.decl)
+    }
 }
 
-impl<'a> MutVisitor for ReplaceBodyWithLoop<'a> {
+impl<'a> MutVisitor for ReplaceBodyWithLoop<'a, '_> {
     fn visit_item_kind(&mut self, i: &mut ast::ItemKind) {
         let is_const = match i {
             ast::ItemKind::Static(..) | ast::ItemKind::Const(..) => true,
-            ast::ItemKind::Fn(ref decl, ref header, _, _) =>
-                header.constness.node == ast::Constness::Const || Self::should_ignore_fn(decl),
+            ast::ItemKind::Fn(ref sig, _, _) => Self::is_sig_const(sig),
             _ => false,
         };
         self.run(is_const, |s| noop_visit_item_kind(i, s))
@@ -802,8 +710,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a> {
     fn flat_map_trait_item(&mut self, i: ast::TraitItem) -> SmallVec<[ast::TraitItem; 1]> {
         let is_const = match i.kind {
             ast::TraitItemKind::Const(..) => true,
-            ast::TraitItemKind::Method(ast::MethodSig { ref decl, ref header, .. }, _) =>
-                header.constness.node == ast::Constness::Const || Self::should_ignore_fn(decl),
+            ast::TraitItemKind::Method(ref sig, _) => Self::is_sig_const(sig),
             _ => false,
         };
         self.run(is_const, |s| noop_flat_map_trait_item(i, s))
@@ -812,8 +719,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a> {
     fn flat_map_impl_item(&mut self, i: ast::ImplItem) -> SmallVec<[ast::ImplItem; 1]> {
         let is_const = match i.kind {
             ast::ImplItemKind::Const(..) => true,
-            ast::ImplItemKind::Method(ast::MethodSig { ref decl, ref header, .. }, _) =>
-                header.constness.node == ast::Constness::Const || Self::should_ignore_fn(decl),
+            ast::ImplItemKind::Method(ref sig, _) => Self::is_sig_const(sig),
             _ => false,
         };
         self.run(is_const, |s| noop_flat_map_impl_item(i, s))
@@ -826,40 +732,40 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a> {
     fn visit_block(&mut self, b: &mut P<ast::Block>) {
         fn stmt_to_block(rules: ast::BlockCheckMode,
                          s: Option<ast::Stmt>,
-                         sess: &Session) -> ast::Block {
+                         resolver: &mut Resolver<'_>) -> ast::Block {
             ast::Block {
                 stmts: s.into_iter().collect(),
                 rules,
-                id: sess.next_node_id(),
+                id: resolver.next_node_id(),
                 span: syntax_pos::DUMMY_SP,
             }
         }
 
-        fn block_to_stmt(b: ast::Block, sess: &Session) -> ast::Stmt {
+        fn block_to_stmt(b: ast::Block, resolver: &mut Resolver<'_>) -> ast::Stmt {
             let expr = P(ast::Expr {
-                id: sess.next_node_id(),
+                id: resolver.next_node_id(),
                 kind: ast::ExprKind::Block(P(b), None),
                 span: syntax_pos::DUMMY_SP,
                 attrs: ThinVec::new(),
             });
 
             ast::Stmt {
-                id: sess.next_node_id(),
+                id: resolver.next_node_id(),
                 kind: ast::StmtKind::Expr(expr),
                 span: syntax_pos::DUMMY_SP,
             }
         }
 
-        let empty_block = stmt_to_block(BlockCheckMode::Default, None, self.sess);
+        let empty_block = stmt_to_block(BlockCheckMode::Default, None, self.resolver);
         let loop_expr = P(ast::Expr {
             kind: ast::ExprKind::Loop(P(empty_block), None),
-            id: self.sess.next_node_id(),
+            id: self.resolver.next_node_id(),
             span: syntax_pos::DUMMY_SP,
                 attrs: ThinVec::new(),
         });
 
         let loop_stmt = ast::Stmt {
-            id: self.sess.next_node_id(),
+            id: self.resolver.next_node_id(),
             span: syntax_pos::DUMMY_SP,
             kind: ast::StmtKind::Expr(loop_expr),
         };
@@ -877,7 +783,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a> {
                     // we put a Some in there earlier with that replace(), so this is valid
                     let new_blocks = self.nested_blocks.take().unwrap();
                     self.nested_blocks = old_blocks;
-                    stmts.extend(new_blocks.into_iter().map(|b| block_to_stmt(b, &self.sess)));
+                    stmts.extend(new_blocks.into_iter().map(|b| block_to_stmt(b, self.resolver)));
                 }
 
                 let mut new_block = ast::Block {
@@ -891,7 +797,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a> {
                         old_blocks.push(new_block);
                     }
 
-                    stmt_to_block(b.rules, Some(loop_stmt), self.sess)
+                    stmt_to_block(b.rules, Some(loop_stmt), &mut self.resolver)
                 } else {
                     //push `loop {}` onto the end of our fresh block and yield that
                     new_block.stmts.push(loop_stmt);

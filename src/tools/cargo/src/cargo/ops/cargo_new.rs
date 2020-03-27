@@ -487,10 +487,14 @@ impl IgnoreList {
             _ => &self.ignore,
         };
 
-        let mut out = "\n\n#Added by cargo\n\
-                       #\n\
-                       #already existing elements are commented out\n\n"
-            .to_string();
+        let mut out = "\n\n#Added by cargo\n".to_string();
+        if ignore_items
+            .iter()
+            .any(|item| existing_items.contains(item))
+        {
+            out.push_str("#\n#already existing elements were commented out\n");
+        }
+        out.push('\n');
 
         for item in ignore_items {
             if existing_items.contains(item) {
@@ -577,7 +581,6 @@ fn mk(config: &Config, opts: &MkOptions<'_>) -> CargoResult<()> {
     // both `ignore` and `hgignore` are in sync.
     let mut ignore = IgnoreList::new();
     ignore.push("/target", "^target/");
-    ignore.push("**/*.rs.bk", "glob:*.rs.bk");
     if !opts.bin {
         ignore.push("Cargo.lock", "glob:Cargo.lock");
     }

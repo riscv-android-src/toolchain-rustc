@@ -15,11 +15,12 @@ extern crate rustc_interface;
 extern crate syntax;
 
 use std::str::FromStr;
+use std::convert::TryFrom;
 use std::env;
 
 use hex::FromHexError;
 
-use rustc_interface::interface;
+use rustc_interface::{interface, Queries};
 use rustc::hir::def_id::LOCAL_CRATE;
 use rustc_driver::Compilation;
 
@@ -28,28 +29,20 @@ struct MiriCompilerCalls {
 }
 
 impl rustc_driver::Callbacks for MiriCompilerCalls {
-    fn after_parsing(&mut self, compiler: &interface::Compiler) -> Compilation {
-        let attr = (
-            syntax::symbol::Symbol::intern("miri"),
-            syntax::feature_gate::AttributeType::Whitelisted,
-        );
-        compiler.session().plugin_attributes.borrow_mut().push(attr);
-
-        Compilation::Continue
-    }
-
-    fn after_analysis(&mut self, compiler: &interface::Compiler) -> Compilation {
+    fn after_analysis<'tcx>(&mut self, compiler: &interface::Compiler, queries: &'tcx Queries<'tcx>) -> Compilation {
         init_late_loggers();
         compiler.session().abort_if_errors();
 
-        compiler.global_ctxt().unwrap().peek_mut().enter(|tcx| {
+        queries.global_ctxt().unwrap().peek_mut().enter(|tcx| {
             let (entry_def_id, _) = tcx.entry_fn(LOCAL_CRATE).expect("no main function found!");
             let mut config = self.miri_config.clone();
 
             // Add filename to `miri` arguments.
             config.args.insert(0, compiler.input().filestem().to_string());
 
-            miri::eval_main(tcx, entry_def_id, config);
+            if let Some(return_code) = miri::eval_main(tcx, entry_def_id, config) {
+                std::process::exit(i32::try_from(return_code).expect("Return value was too large!"));
+            }
         });
 
         compiler.session().abort_if_errors();
@@ -131,6 +124,7 @@ fn main() {
     // Parse our arguments and split them across `rustc` and `miri`.
     let mut validate = true;
     let mut communicate = false;
+    let mut ignore_leaks = false;
     let mut seed: Option<u64> = None;
     let mut rustc_args = vec![];
     let mut miri_args = vec![];
@@ -151,6 +145,9 @@ fn main() {
                 },
                 "-Zmiri-disable-isolation" => {
                     communicate = true;
+                },
+                "-Zmiri-ignore-leaks" => {
+                    ignore_leaks = true;
                 },
                 "--" => {
                     after_dashdash = true;
@@ -207,6 +204,7 @@ fn main() {
     let miri_config = miri::MiriConfig {
         validate,
         communicate,
+        ignore_leaks,
         excluded_env_vars,
         seed,
         args: miri_args,

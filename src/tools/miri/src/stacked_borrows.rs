@@ -8,7 +8,7 @@ use std::fmt;
 use std::num::NonZeroU64;
 
 use rustc::ty::{self, layout::Size};
-use rustc::hir::{MutMutable, MutImmutable};
+use rustc::hir::Mutability::{Mutable, Immutable};
 use rustc::mir::RetagKind;
 
 use crate::{
@@ -472,12 +472,17 @@ impl Stacks {
                 // and in particular, *all* raw pointers.
                 (Tag::Tagged(extra.borrow_mut().new_ptr()), Permission::Unique),
             MemoryKind::Machine(MiriMemoryKind::Static) =>
+                // Static memory can be referenced by "global" pointers from `tcx`.
+                // Thus we call `static_base_ptr` such that the global pointers get the same tag
+                // as what we use here.
+                // The base pointer is not unique, so the base permission is `SharedReadWrite`.
                 (extra.borrow_mut().static_base_ptr(id), Permission::SharedReadWrite),
             _ =>
+                // Everything else we handle entirely untagged for now.
+                // FIXME: experiment with more precise tracking.
                 (Tag::Untagged, Permission::SharedReadWrite),
         };
-        let stack = Stacks::new(size, perm, tag, extra);
-        (stack, tag)
+        (Stacks::new(size, perm, tag, extra), tag)
     }
 
     #[inline(always)]
@@ -532,16 +537,14 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         protect: bool,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        let protector = if protect { Some(this.frame().extra) } else { None };
-        let ptr = this.memory.check_ptr_access(place.ptr, size, place.align)
-            .expect("validity checks should have excluded dangling/unaligned pointer")
-            .expect("we shouldn't get here for ZST");
+        let protector = if protect { Some(this.frame().extra.call_id) } else { None };
+        let ptr = place.ptr.to_ptr().expect("we should have a proper pointer");
         trace!("reborrow: {} reference {:?} derived from {:?} (pointee {}): {:?}, size {}",
             kind, new_tag, ptr.tag, place.layout.ty, ptr.erase_tag(), size.bytes());
 
         // Get the allocation. It might not be mutable, so we cannot use `get_mut`.
-        let alloc = this.memory.get(ptr.alloc_id)?;
-        let stacked_borrows = alloc.extra.stacked_borrows.as_ref().expect("we should have Stacked Borrows data");
+        let extra = &this.memory.get_raw(ptr.alloc_id)?.extra;
+        let stacked_borrows = extra.stacked_borrows.as_ref().expect("we should have Stacked Borrows data");
         // Update the stacks.
         // Make sure that raw pointers and mutable shared references are reborrowed "weak":
         // There could be existing unique pointers reborrowed from them that should remain valid!
@@ -583,15 +586,22 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let size = this.size_and_align_of_mplace(place)?
             .map(|(size, _)| size)
             .unwrap_or_else(|| place.layout.size);
+        // We can see dangling ptrs in here e.g. after a Box's `Unique` was
+        // updated using "self.0 = ..." (can happen in Box::from_raw); see miri#1050.
+        let place = this.mplace_access_checked(place)?;
         if size == Size::ZERO {
             // Nothing to do for ZSTs.
             return Ok(*val);
         }
-        let place = this.force_mplace_ptr(place)?;
 
         // Compute new borrow.
         let new_tag = match kind {
+            // Give up tracking for raw pointers.
+            // FIXME: Experiment with more precise tracking. Blocked on `&raw`
+            // because `Rc::into_raw` currently creates intermediate references,
+            // breaking `Rc::from_raw`.
             RefKind::Raw { .. } => Tag::Untagged,
+            // All other pointesr are properly tracked.
             _ => Tag::Tagged(this.memory.extra.stacked_borrows.borrow_mut().new_ptr()),
         };
 
@@ -618,13 +628,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         fn qualify(ty: ty::Ty<'_>, kind: RetagKind) -> Option<(RefKind, bool)> {
             match ty.kind {
                 // References are simple.
-                ty::Ref(_, _, MutMutable) =>
+                ty::Ref(_, _, Mutable) =>
                     Some((RefKind::Unique { two_phase: kind == RetagKind::TwoPhase}, kind == RetagKind::FnEntry)),
-                ty::Ref(_, _, MutImmutable) =>
+                ty::Ref(_, _, Immutable) =>
                     Some((RefKind::Shared, kind == RetagKind::FnEntry)),
                 // Raw pointers need to be enabled.
                 ty::RawPtr(tym) if kind == RetagKind::Raw =>
-                    Some((RefKind::Raw { mutable: tym.mutbl == MutMutable }, false)),
+                    Some((RefKind::Raw { mutable: tym.mutbl == Mutable }, false)),
                 // Boxes do not get a protector: protectors reflect that references outlive the call
                 // they were passed in to; that's just not the case for boxes.
                 ty::Adt(..) if ty.is_box() => Some((RefKind::Unique { two_phase: false }, false)),

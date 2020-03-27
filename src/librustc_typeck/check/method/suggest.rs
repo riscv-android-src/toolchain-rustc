@@ -5,7 +5,7 @@ use crate::check::FnCtxt;
 use crate::middle::lang_items::FnOnceTraitLangItem;
 use crate::namespace::Namespace;
 use crate::util::nodemap::FxHashSet;
-use errors::{Applicability, DiagnosticBuilder, pluralise};
+use errors::{Applicability, DiagnosticBuilder, pluralize};
 use rustc::hir::{self, ExprKind, Node, QPath};
 use rustc::hir::def::{Res, DefKind};
 use rustc::hir::def_id::{CRATE_DEF_INDEX, LOCAL_CRATE, DefId};
@@ -17,6 +17,8 @@ use rustc::ty::print::with_crate_prefix;
 use syntax_pos::{Span, FileName};
 use syntax::ast;
 use syntax::util::lev_distance;
+
+use rustc_error_codes::*;
 
 use std::cmp::Ordering;
 
@@ -500,7 +502,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
                 if !unsatisfied_predicates.is_empty() {
                     let mut bound_list = unsatisfied_predicates.iter()
-                        .map(|p| format!("`{} : {}`", p.self_ty(), p))
+                        .map(|p| format!("`{} : {}`", p.self_ty(), p.print_only_trait_path()))
                         .collect::<Vec<_>>();
                     bound_list.sort();
                     bound_list.dedup();  // #35677
@@ -601,7 +603,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         "{an}other candidate{s} {were} found in the following trait{s}, perhaps \
                          add a `use` for {one_of_them}:",
                         an = if candidates.len() == 1 {"an" } else { "" },
-                        s = pluralise!(candidates.len()),
+                        s = pluralize!(candidates.len()),
                         were = if candidates.len() == 1 { "was" } else { "were" },
                         one_of_them = if candidates.len() == 1 {
                             "it"
@@ -835,11 +837,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                     sp,
                                     &message(format!(
                                         "restrict type parameter `{}` with",
-                                        param.name.ident().as_str(),
+                                        param.name.ident(),
                                     )),
                                     candidates.iter().map(|t| format!(
                                         "{}{} {}{}",
-                                        param.name.ident().as_str(),
+                                        param.name.ident(),
                                         if impl_trait { " +" } else { ":" },
                                         self.tcx.def_path_str(t.def_id),
                                         if has_bounds.is_some() { " + "} else { "" },

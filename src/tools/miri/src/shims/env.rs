@@ -57,7 +57,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         Ok(match this.machine.env_vars.map.get(name) {
             // The offset is used to strip the "{name}=" part of the string.
             Some(var_ptr) => {
-                Scalar::Ptr(var_ptr.offset(Size::from_bytes(name.len() as u64 + 1), this)?)
+                Scalar::from(var_ptr.offset(Size::from_bytes(name.len() as u64 + 1), this)?)
             }
             None => Scalar::ptr_null(&*this.tcx),
         })
@@ -124,11 +124,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.check_no_isolation("getcwd")?;
 
         let buf = this.read_scalar(buf_op)?.not_undef()?;
-        let size = this.read_scalar(size_op)?.to_usize(&*this.tcx)?;
+        let size = this.read_scalar(size_op)?.to_machine_usize(&*this.tcx)?;
         // If we cannot get the current directory, we return null
         match env::current_dir() {
             Ok(cwd) => {
-                if this.write_os_str_to_c_string(&OsString::from(cwd), buf, size)? {
+                if this.write_os_str_to_c_str(&OsString::from(cwd), buf, size)? {
                     return Ok(buf);
                 }
                 let erange = this.eval_libc("ERANGE")?;
@@ -144,7 +144,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("chdir")?;
 
-        let path = this.read_os_string_from_c_string(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
 
         match env::set_current_dir(path) {
             Ok(()) => Ok(0),

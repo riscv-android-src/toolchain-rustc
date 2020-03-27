@@ -802,11 +802,15 @@ fn format_impl_ref_and_type(
         result.push_str(format_defaultness(defaultness));
         result.push_str(format_unsafety(unsafety));
 
-        let shape = generics_shape_from_config(
-            context.config,
-            Shape::indented(offset + last_line_width(&result), context.config),
-            0,
-        )?;
+        let shape = if context.config.version() == Version::Two {
+            Shape::indented(offset + last_line_width(&result), context.config)
+        } else {
+            generics_shape_from_config(
+                context.config,
+                Shape::indented(offset + last_line_width(&result), context.config),
+                0,
+            )?
+        };
         let generics_str = rewrite_generics(context, "impl", generics, shape)?;
         result.push_str(&generics_str);
 
@@ -1613,7 +1617,7 @@ pub(crate) fn rewrite_struct_field(
         shape,
         attrs_extendable,
     )?;
-    let overhead = last_line_width(&attr_prefix);
+    let overhead = trimmed_last_line_width(&attr_prefix);
     let lhs_offset = lhs_max_width.saturating_sub(overhead);
     for _ in 0..lhs_offset {
         spacing.push(' ');
@@ -2214,10 +2218,16 @@ fn rewrite_fn_base(
             .map_or(false, |last_line| last_line.contains("//"));
 
         if context.config.version() == Version::Two {
-            result.push(')');
-            if closing_paren_overflow_max_width || params_last_line_contains_comment {
+            if closing_paren_overflow_max_width {
+                result.push(')');
                 result.push_str(&indent.to_string_with_newline(context.config));
                 no_params_and_over_max_width = true;
+            } else if params_last_line_contains_comment {
+                result.push_str(&indent.to_string_with_newline(context.config));
+                result.push(')');
+                no_params_and_over_max_width = true;
+            } else {
+                result.push(')');
             }
         } else {
             if closing_paren_overflow_max_width || params_last_line_contains_comment {
@@ -2609,11 +2619,7 @@ fn rewrite_generics(
     overflow::rewrite_with_angle_brackets(context, ident, params, shape, generics.span)
 }
 
-pub(crate) fn generics_shape_from_config(
-    config: &Config,
-    shape: Shape,
-    offset: usize,
-) -> Option<Shape> {
+fn generics_shape_from_config(config: &Config, shape: Shape, offset: usize) -> Option<Shape> {
     match config.indent_style() {
         IndentStyle::Visual => shape.visual_indent(1 + offset).sub_width(offset + 2),
         IndentStyle::Block => {

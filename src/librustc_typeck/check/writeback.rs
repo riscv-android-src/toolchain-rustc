@@ -3,18 +3,21 @@
 // substitutions.
 
 use crate::check::FnCtxt;
+
 use rustc::hir;
 use rustc::hir::def_id::{DefId, DefIndex};
 use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc::infer::InferCtxt;
+use rustc::infer::error_reporting::TypeAnnotationNeeded::E0282;
 use rustc::ty::adjustment::{Adjust, Adjustment, PointerCast};
 use rustc::ty::fold::{TypeFoldable, TypeFolder};
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::util::nodemap::DefIdSet;
 use rustc_data_structures::sync::Lrc;
-use std::mem;
 use syntax::symbol::sym;
 use syntax_pos::Span;
+
+use std::mem;
 
 ///////////////////////////////////////////////////////////////////////////
 // Entry point
@@ -481,8 +484,10 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
             if let ty::Opaque(defin_ty_def_id, _substs) = definition_ty.kind {
                 if let hir::OpaqueTyOrigin::TypeAlias = opaque_defn.origin {
                     if def_id == defin_ty_def_id {
-                        debug!("Skipping adding concrete definition for opaque type {:?} {:?}",
-                               opaque_defn, defin_ty_def_id);
+                        debug!(
+                            "skipping adding concrete definition for opaque type {:?} {:?}",
+                            opaque_defn, defin_ty_def_id
+                        );
                         skip_add = true;
                     }
                 }
@@ -507,8 +512,8 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                         if old.concrete_type != definition_ty || old.substs != opaque_defn.substs {
                             span_bug!(
                                 span,
-                                "visit_opaque_types tried to write different types for the same \
-                                opaque type: {:?}, {:?}, {:?}, {:?}",
+                                "`visit_opaque_types` tried to write different types for the same \
+                                 opaque type: {:?}, {:?}, {:?}, {:?}",
                                 def_id,
                                 definition_ty,
                                 opaque_defn,
@@ -713,7 +718,7 @@ impl<'cx, 'tcx> Resolver<'cx, 'tcx> {
     fn report_error(&self, t: Ty<'tcx>) {
         if !self.tcx.sess.has_errors() {
             self.infcx
-                .need_type_info_err(Some(self.body.id()), self.span.to_span(self.tcx), t)
+                .need_type_info_err(Some(self.body.id()), self.span.to_span(self.tcx), t, E0282)
                 .emit();
         }
     }

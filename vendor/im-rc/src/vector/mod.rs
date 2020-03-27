@@ -1413,7 +1413,7 @@ impl<A: Clone> Vector<A> {
     #[allow(dead_code)]
     pub(crate) fn assert_invariants(&self) {
         if let Vector::Full(ref tree) = self {
-            tree.middle.assert_invariants();
+            tree.assert_invariants();
         }
     }
 }
@@ -1449,6 +1449,14 @@ impl<A: Clone> RRB<A> {
             inner_b: Ref::new(Chunk::new()),
             outer_b: Ref::new(Chunk::new()),
         }
+    }
+
+    fn assert_invariants(&self) {
+        let ml = self.middle.assert_invariants(self.middle_level);
+        assert_eq!(
+            self.length,
+            self.outer_f.len() + self.inner_f.len() + ml + self.inner_b.len() + self.outer_b.len()
+        );
     }
 
     fn prune(&mut self) {
@@ -2627,6 +2635,33 @@ mod test {
         x.insert(514, 0);
     }
 
+    #[test]
+    fn issue_105() {
+        let mut v = Vector::new();
+
+        for i in 0..270_000 {
+            v.push_front(i);
+        }
+
+        while !v.is_empty() {
+            v = v.take(v.len() - 1);
+        }
+    }
+
+    #[test]
+    fn issue_107_split_off_causes_overflow() {
+        let mut vec = Vector::from_iter(0..4289);
+        let mut control = Vec::from_iter(0..4289);
+        let chunk = 64;
+
+        while vec.len() >= chunk {
+            vec = vec.split_off(chunk);
+            control = control.split_off(chunk);
+            assert_eq!(vec.len(), control.len());
+            assert_eq!(control, vec.iter().cloned().collect::<Vec<_>>());
+        }
+    }
+
     proptest! {
         #[test]
         fn iter(ref vec in vec(i32::ANY, 0..1000)) {
@@ -2793,10 +2828,10 @@ mod test {
 
         #[test]
         fn chunks(ref input in vector(i32::ANY, 0..10000)) {
-            let output: Vector<_> = input.leaves().flat_map(|a|a).cloned().collect();
+            let output: Vector<_> = input.leaves().flatten().cloned().collect();
             assert_eq!(input, &output);
             let rev_in: Vector<_> = input.iter().rev().cloned().collect();
-            let rev_out: Vector<_> = input.leaves().rev().map(|c| c.iter().rev()).flat_map(|a|a).cloned().collect();
+            let rev_out: Vector<_> = input.leaves().rev().map(|c| c.iter().rev()).flatten().cloned().collect();
             assert_eq!(rev_in, rev_out);
         }
 
@@ -2804,10 +2839,10 @@ mod test {
         fn chunks_mut(ref mut input_src in vector(i32::ANY, 0..10000)) {
             let mut input = input_src.clone();
             #[allow(clippy::map_clone)]
-            let output: Vector<_> = input.leaves_mut().flat_map(|a| a).map(|v| *v).collect();
+            let output: Vector<_> = input.leaves_mut().flatten().map(|v| *v).collect();
             assert_eq!(input, output);
             let rev_in: Vector<_> = input.iter().rev().cloned().collect();
-            let rev_out: Vector<_> = input.leaves_mut().rev().map(|c| c.iter().rev()).flat_map(|a|a).cloned().collect();
+            let rev_out: Vector<_> = input.leaves_mut().rev().map(|c| c.iter().rev()).flatten().cloned().collect();
             assert_eq!(rev_in, rev_out);
         }
 

@@ -1,13 +1,14 @@
-use crate::utils::span_lint;
+use crate::utils::{match_type, paths, return_ty, span_lint};
 use itertools::Itertools;
 use pulldown_cmark;
 use rustc::hir;
+use rustc::impl_lint_pass;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, impl_lint_pass};
 use rustc_data_structures::fx::FxHashSet;
+use rustc_session::declare_tool_lint;
 use std::ops::Range;
-use syntax::ast::Attribute;
-use syntax::source_map::{BytePos, Span};
+use syntax::ast::{AttrKind, Attribute};
+use syntax::source_map::{BytePos, MultiSpan, Span};
 use syntax_pos::Pos;
 use url::Url;
 
@@ -44,7 +45,7 @@ declare_clippy_lint! {
     ///
     /// **Known problems:** None.
     ///
-    /// **Examples**:
+    /// **Examples:**
     /// ```rust
     ///# type Universe = ();
     /// /// This function should really be documented
@@ -67,6 +68,35 @@ declare_clippy_lint! {
     pub MISSING_SAFETY_DOC,
     style,
     "`pub unsafe fn` without `# Safety` docs"
+}
+
+declare_clippy_lint! {
+    /// **What it does:** Checks the doc comments of publicly visible functions that
+    /// return a `Result` type and warns if there is no `# Errors` section.
+    ///
+    /// **Why is this bad?** Documenting the type of errors that can be returned from a
+    /// function can help callers write code to handle the errors appropriately.
+    ///
+    /// **Known problems:** None.
+    ///
+    /// **Examples:**
+    ///
+    /// Since the following function returns a `Result` it has an `# Errors` section in
+    /// its doc comment:
+    ///
+    /// ```rust
+    ///# use std::io;
+    /// /// # Errors
+    /// ///
+    /// /// Will return `Err` if `filename` does not exist or the user does not have
+    /// /// permission to read it.
+    /// pub fn read(filename: String) -> io::Result<String> {
+    ///     unimplemented!();
+    /// }
+    /// ```
+    pub MISSING_ERRORS_DOC,
+    pedantic,
+    "`pub fn` returns `Result` without `# Errors` in doc comment"
 }
 
 declare_clippy_lint! {
@@ -113,7 +143,7 @@ impl DocMarkdown {
     }
 }
 
-impl_lint_pass!(DocMarkdown => [DOC_MARKDOWN, MISSING_SAFETY_DOC, NEEDLESS_DOCTEST_MAIN]);
+impl_lint_pass!(DocMarkdown => [DOC_MARKDOWN, MISSING_SAFETY_DOC, MISSING_ERRORS_DOC, NEEDLESS_DOCTEST_MAIN]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
     fn check_crate(&mut self, cx: &LateContext<'a, 'tcx>, krate: &'tcx hir::Crate) {
@@ -121,20 +151,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
     }
 
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
-        if check_attrs(cx, &self.valid_idents, &item.attrs) {
-            return;
-        }
-        // no safety header
+        let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
         match item.kind {
-            hir::ItemKind::Fn(_, ref header, ..) => {
-                if cx.access_levels.is_exported(item.hir_id) && header.unsafety == hir::Unsafety::Unsafe {
-                    span_lint(
-                        cx,
-                        MISSING_SAFETY_DOC,
-                        item.span,
-                        "unsafe function's docs miss `# Safety` section",
-                    );
-                }
+            hir::ItemKind::Fn(ref sig, ..) => {
+                lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
             },
             hir::ItemKind::Impl(_, _, _, _, ref trait_ref, ..) => {
                 self.in_trait_impl = trait_ref.is_some();
@@ -150,37 +170,48 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem) {
-        if check_attrs(cx, &self.valid_idents, &item.attrs) {
-            return;
-        }
-        // no safety header
+        let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
         if let hir::TraitItemKind::Method(ref sig, ..) = item.kind {
-            if cx.access_levels.is_exported(item.hir_id) && sig.header.unsafety == hir::Unsafety::Unsafe {
-                span_lint(
-                    cx,
-                    MISSING_SAFETY_DOC,
-                    item.span,
-                    "unsafe function's docs miss `# Safety` section",
-                );
-            }
+            lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
         }
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ImplItem) {
-        if check_attrs(cx, &self.valid_idents, &item.attrs) || self.in_trait_impl {
+        let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
+        if self.in_trait_impl {
             return;
         }
-        // no safety header
         if let hir::ImplItemKind::Method(ref sig, ..) = item.kind {
-            if cx.access_levels.is_exported(item.hir_id) && sig.header.unsafety == hir::Unsafety::Unsafe {
-                span_lint(
-                    cx,
-                    MISSING_SAFETY_DOC,
-                    item.span,
-                    "unsafe function's docs miss `# Safety` section",
-                );
-            }
+            lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
         }
+    }
+}
+
+fn lint_for_missing_headers<'a, 'tcx>(
+    cx: &LateContext<'a, 'tcx>,
+    hir_id: hir::HirId,
+    span: impl Into<MultiSpan> + Copy,
+    sig: &hir::FnSig,
+    headers: DocHeaders,
+) {
+    if !cx.access_levels.is_exported(hir_id) {
+        return; // Private functions do not require doc comments
+    }
+    if !headers.safety && sig.header.unsafety == hir::Unsafety::Unsafe {
+        span_lint(
+            cx,
+            MISSING_SAFETY_DOC,
+            span,
+            "unsafe function's docs miss `# Safety` section",
+        );
+    }
+    if !headers.errors && match_type(cx, return_ty(cx, hir_id), &paths::RESULT) {
+        span_lint(
+            cx,
+            MISSING_ERRORS_DOC,
+            span,
+            "docs for function returning `Result` missing `# Errors` section",
+        );
     }
 }
 
@@ -242,21 +273,29 @@ pub fn strip_doc_comment_decoration(comment: &str, span: Span) -> (String, Vec<(
     panic!("not a doc-comment: {}", comment);
 }
 
-pub fn check_attrs<'a>(cx: &LateContext<'_, '_>, valid_idents: &FxHashSet<String>, attrs: &'a [Attribute]) -> bool {
+#[derive(Copy, Clone)]
+struct DocHeaders {
+    safety: bool,
+    errors: bool,
+}
+
+fn check_attrs<'a>(cx: &LateContext<'_, '_>, valid_idents: &FxHashSet<String>, attrs: &'a [Attribute]) -> DocHeaders {
     let mut doc = String::new();
     let mut spans = vec![];
 
     for attr in attrs {
-        if attr.is_sugared_doc {
-            if let Some(ref current) = attr.value_str() {
-                let current = current.to_string();
-                let (current, current_spans) = strip_doc_comment_decoration(&current, attr.span);
-                spans.extend_from_slice(&current_spans);
-                doc.push_str(&current);
-            }
+        if let AttrKind::DocComment(ref comment) = attr.kind {
+            let comment = comment.to_string();
+            let (comment, current_spans) = strip_doc_comment_decoration(&comment, attr.span);
+            spans.extend_from_slice(&current_spans);
+            doc.push_str(&comment);
         } else if attr.check_name(sym!(doc)) {
             // ignore mix of sugared and non-sugared doc
-            return true; // don't trigger the safety check
+            // don't trigger the safety or errors check
+            return DocHeaders {
+                safety: true,
+                errors: true,
+            };
         }
     }
 
@@ -268,7 +307,10 @@ pub fn check_attrs<'a>(cx: &LateContext<'_, '_>, valid_idents: &FxHashSet<String
     }
 
     if doc.is_empty() {
-        return false;
+        return DocHeaders {
+            safety: false,
+            errors: false,
+        };
     }
 
     let parser = pulldown_cmark::Parser::new(&doc).into_offset_iter();
@@ -296,12 +338,15 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     valid_idents: &FxHashSet<String>,
     events: Events,
     spans: &[(usize, Span)],
-) -> bool {
+) -> DocHeaders {
     // true if a safety header was found
     use pulldown_cmark::Event::*;
     use pulldown_cmark::Tag::*;
 
-    let mut safety_header = false;
+    let mut headers = DocHeaders {
+        safety: false,
+        errors: false,
+    };
     let mut in_code = false;
     let mut in_link = None;
     let mut in_heading = false;
@@ -324,7 +369,8 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
                     // text "http://example.com" by pulldown-cmark
                     continue;
                 }
-                safety_header |= in_heading && text.trim() == "Safety";
+                headers.safety |= in_heading && text.trim() == "Safety";
+                headers.errors |= in_heading && text.trim() == "Errors";
                 let index = match spans.binary_search_by(|c| c.0.cmp(&range.start)) {
                     Ok(o) => o,
                     Err(e) => e - 1,
@@ -341,11 +387,11 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
             },
         }
     }
-    safety_header
+    headers
 }
 
 fn check_code(cx: &LateContext<'_, '_>, text: &str, span: Span) {
-    if text.contains("fn main() {") {
+    if text.contains("fn main() {") && !(text.contains("static") || text.contains("fn main() {}")) {
         span_lint(cx, NEEDLESS_DOCTEST_MAIN, span, "needless `fn main` in doctest");
     }
 }

@@ -34,6 +34,7 @@
 use ffi;
 use foreign_types::{ForeignType, ForeignTypeRef};
 use libc::c_int;
+use std::fmt;
 use std::ptr;
 
 use bn::{BigNumContextRef, BigNumRef};
@@ -163,7 +164,8 @@ impl EcGroupRef {
                 a.as_ptr(),
                 b.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -192,7 +194,28 @@ impl EcGroupRef {
                 a.as_ptr(),
                 b.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
+        }
+    }
+
+    /// Places the cofactor of the group in the provided `BigNum`.
+    ///
+    /// OpenSSL documentation at [`EC_GROUP_get_cofactor`]
+    ///
+    /// [`EC_GROUP_get_cofactor`]: https://www.openssl.org/docs/man1.1.0/crypto/EC_GROUP_get_cofactor.html
+    pub fn cofactor(
+        &self,
+        cofactor: &mut BigNumRef,
+        ctx: &mut BigNumContextRef,
+    ) -> Result<(), ErrorStack> {
+        unsafe {
+            cvt(ffi::EC_GROUP_get_cofactor(
+                self.as_ptr(),
+                cofactor.as_ptr(),
+                ctx.as_ptr(),
+            ))
+            .map(|_| ())
         }
     }
 
@@ -203,6 +226,18 @@ impl EcGroupRef {
     /// [`EC_GROUP_get_degree`]: https://www.openssl.org/docs/man1.1.0/crypto/EC_GROUP_get_degree.html
     pub fn degree(&self) -> u32 {
         unsafe { ffi::EC_GROUP_get_degree(self.as_ptr()) as u32 }
+    }
+
+    /// Returns the generator for the given curve as a [`EcPoint`].
+    ///
+    /// OpenSSL documentation at [`EC_GROUP_get0_generator`]
+    ///
+    /// [`EC_GROUP_get0_generator`]: https://www.openssl.org/docs/man1.1.0/man3/EC_GROUP_get0_generator.html
+    pub fn generator(&self) -> &EcPointRef {
+        unsafe {
+            let ptr = ffi::EC_GROUP_get0_generator(self.as_ptr());
+            EcPointRef::from_ptr(ptr as *mut _)
+        }
     }
 
     /// Places the order of the curve in the provided `BigNum`.
@@ -220,7 +255,8 @@ impl EcGroupRef {
                 self.as_ptr(),
                 order.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -233,6 +269,16 @@ impl EcGroupRef {
         unsafe {
             ffi::EC_GROUP_set_asn1_flag(self.as_ptr(), flag.0);
         }
+    }
+
+    /// Returns the name of the curve, if a name is associated.
+    ///
+    /// OpenSSL documentation at [`EC_GROUP_get_curve_name`]
+    ///
+    /// [`EC_GROUP_get_curve_name`]: https://www.openssl.org/docs/man1.1.0/crypto/EC_GROUP_get_curve_name.html
+    pub fn curve_name(&self) -> Option<Nid> {
+        let nid = unsafe { ffi::EC_GROUP_get_curve_name(self.as_ptr()) };
+        if nid > 0 { Some(Nid::from_raw(nid)) } else { None }
     }
 }
 
@@ -272,7 +318,8 @@ impl EcPointRef {
                 a.as_ptr(),
                 b.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -296,11 +343,12 @@ impl EcPointRef {
                 q.as_ptr(),
                 m.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
-    /// Computes `generator * n`, storing the result ing `self`.
+    /// Computes `generator * n`, storing the result in `self`.
     pub fn mul_generator(
         &mut self,
         group: &EcGroupRef,
@@ -315,7 +363,8 @@ impl EcPointRef {
                 ptr::null(),
                 ptr::null(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -336,7 +385,8 @@ impl EcPointRef {
                 q.as_ptr(),
                 m.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -351,7 +401,8 @@ impl EcPointRef {
                 group.as_ptr(),
                 self.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -392,6 +443,20 @@ impl EcPointRef {
             } else {
                 Ok(buf)
             }
+        }
+    }
+
+    /// Creates a new point on the specified curve with the same value.
+    ///
+    /// OpenSSL documentation at [`EC_POINT_dup`]
+    ///
+    /// [`EC_POINT_dup`]: https://www.openssl.org/docs/man1.1.0/crypto/EC_POINT_dup.html
+    pub fn to_owned(
+        &self,
+        group: &EcGroupRef,
+    ) -> Result<EcPoint, ErrorStack> {
+        unsafe {
+            cvt_p(ffi::EC_POINT_dup(self.as_ptr(), group.as_ptr())).map(EcPoint)
         }
     }
 
@@ -437,7 +502,8 @@ impl EcPointRef {
                 x.as_ptr(),
                 y.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -462,7 +528,8 @@ impl EcPointRef {
                 x.as_ptr(),
                 y.as_ptr(),
                 ctx.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 }
@@ -688,7 +755,8 @@ impl EcKey<Public> {
                     cvt(ffi::EC_KEY_set_public_key(
                         key.as_ptr(),
                         public_key.as_ptr(),
-                    )).map(|_| key)
+                    ))
+                    .map(|_| key)
                 })
         }
     }
@@ -710,7 +778,8 @@ impl EcKey<Public> {
                         key.as_ptr(),
                         x.as_ptr(),
                         y.as_ptr(),
-                    )).map(|_| key)
+                    ))
+                    .map(|_| key)
                 })
         }
     }
@@ -745,13 +814,15 @@ impl EcKey<Private> {
                     cvt(ffi::EC_KEY_set_private_key(
                         key.as_ptr(),
                         private_number.as_ptr(),
-                    )).map(|_| key)
+                    ))
+                    .map(|_| key)
                 })
                 .and_then(|key| {
                     cvt(ffi::EC_KEY_set_public_key(
                         key.as_ptr(),
                         public_key.as_ptr(),
-                    )).map(|_| key)
+                    ))
+                    .map(|_| key)
                 })
         }
     }
@@ -801,11 +872,18 @@ impl<T> Clone for EcKey<T> {
     }
 }
 
+impl<T> fmt::Debug for EcKey<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "EcKey")
+    }
+}
+
 #[cfg(test)]
 mod test {
+    use hex::FromHex;
+
     use super::*;
     use bn::{BigNum, BigNumContext};
-    use data_encoding::BASE64URL_NOPAD;
     use nid::Nid;
 
     #[test]
@@ -817,6 +895,16 @@ mod test {
     fn generate() {
         let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
         EcKey::generate(&group).unwrap();
+    }
+
+    #[test]
+    fn cofactor() {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let mut ctx = BigNumContext::new().unwrap();
+	let mut cofactor = BigNum::new().unwrap();
+        group.cofactor(&mut cofactor, &mut ctx).unwrap();
+        let one = BigNum::from_u32(1).unwrap();
+        assert_eq!(cofactor, one);
     }
 
     #[test]
@@ -846,6 +934,16 @@ mod test {
     }
 
     #[test]
+    fn point_owned() {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let key = EcKey::generate(&group).unwrap();
+        let point = key.public_key();
+        let owned = point.to_owned(&group).unwrap();
+        let mut ctx = BigNumContext::new().unwrap();
+        assert!(owned.eq(&group, point, &mut ctx).unwrap());
+    }
+
+    #[test]
     fn mul_generator() {
         let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
         let key = EcKey::generate(&group).unwrap();
@@ -855,6 +953,17 @@ mod test {
             .mul_generator(&group, key.private_key(), &mut ctx)
             .unwrap();
         assert!(public_key.eq(&group, key.public_key(), &mut ctx).unwrap());
+    }
+
+    #[test]
+    fn generator() {
+        let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+        let gen = group.generator();
+        let one = BigNum::from_u32(1).unwrap();
+        let mut ctx = BigNumContext::new().unwrap();
+        let mut ecp = EcPoint::new(&group).unwrap();
+        ecp.mul_generator(&group, &one, &mut ctx).unwrap();
+        assert!(ecp.eq(&group, gen, &mut ctx).unwrap());
     }
 
     #[test]
@@ -889,11 +998,9 @@ mod test {
     #[test]
     fn key_from_affine_coordinates() {
         let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let x = BASE64URL_NOPAD
-            .decode("MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4".as_bytes())
+        let x = Vec::from_hex("30a0424cd21c2944838a2d75c92b37e76ea20d9f00893a3b4eee8a3c0aafec3e")
             .unwrap();
-        let y = BASE64URL_NOPAD
-            .decode("4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM".as_bytes())
+        let y = Vec::from_hex("e04b65e92456d9888b52b379bdfbd51ee869ef1f0fc65b6659695b6cce081723")
             .unwrap();
 
         let xbn = BigNum::from_slice(&x).unwrap();
@@ -906,11 +1013,9 @@ mod test {
     #[test]
     fn get_affine_coordinates() {
         let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
-        let x = BASE64URL_NOPAD
-            .decode("MKBCTNIcKUSDii11ySs3526iDZ8AiTo7Tu6KPAqv7D4".as_bytes())
+        let x = Vec::from_hex("30a0424cd21c2944838a2d75c92b37e76ea20d9f00893a3b4eee8a3c0aafec3e")
             .unwrap();
-        let y = BASE64URL_NOPAD
-            .decode("4Etl6SRW2YiLUrN5vfvVHuhp7x8PxltmWWlbbM4IFyM".as_bytes())
+        let y = Vec::from_hex("e04b65e92456d9888b52b379bdfbd51ee869ef1f0fc65b6659695b6cce081723")
             .unwrap();
 
         let xbn = BigNum::from_slice(&x).unwrap();

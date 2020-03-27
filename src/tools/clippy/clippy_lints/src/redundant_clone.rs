@@ -4,6 +4,7 @@ use crate::utils::{
 };
 use if_chain::if_chain;
 use matches::matches;
+use rustc::declare_lint_pass;
 use rustc::hir::intravisit::FnKind;
 use rustc::hir::{def_id, Body, FnDecl, HirId};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
@@ -12,13 +13,13 @@ use rustc::mir::{
     visit::{MutatingUseContext, PlaceContext, Visitor as _},
 };
 use rustc::ty::{self, fold::TypeVisitor, Ty};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::{fx::FxHashMap, transitive_relation::TransitiveRelation};
 use rustc_errors::Applicability;
 use rustc_index::bit_set::{BitSet, HybridBitSet};
 use rustc_mir::dataflow::{
     do_dataflow, BitDenotation, BottomValue, DataflowResults, DataflowResultsCursor, DebugFormatted, GenKillSet,
 };
+use rustc_session::declare_tool_lint;
 use std::convert::TryFrom;
 use syntax::source_map::{BytePos, Span};
 
@@ -81,6 +82,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
     ) {
         let def_id = cx.tcx.hir().body_owner_def_id(body.id());
         let mir = cx.tcx.optimized_mir(def_id);
+        let mir_read_only = mir.unwrap_read_only();
 
         let dead_unwinds = BitSet::new_empty(mir.basic_blocks().len());
         let maybe_storage_live_result = do_dataflow(
@@ -94,7 +96,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
         );
         let mut possible_borrower = {
             let mut vis = PossibleBorrowerVisitor::new(cx, mir);
-            vis.visit_body(mir);
+            vis.visit_body(mir_read_only);
             vis.into_map(cx, maybe_storage_live_result)
         };
 
@@ -146,7 +148,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
                 // `arg` is a reference as it is `.deref()`ed in the previous block.
                 // Look into the predecessor block and find out the source of deref.
 
-                let ps = mir.predecessors_for(bb);
+                let ps = mir_read_only.predecessors_for(bb);
                 if ps.len() != 1 {
                     continue;
                 }
@@ -208,11 +210,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
 
             if !used_later {
                 let span = terminator.source_info.span;
-                let node = if let mir::ClearCrossCrate::Set(scope_local_data) = &mir.source_scope_local_data {
-                    scope_local_data[terminator.source_info.scope].lint_root
-                } else {
-                    unreachable!()
-                };
+                let scope = terminator.source_info.scope;
+                let node = mir.source_scopes[scope]
+                    .local_data
+                    .as_ref()
+                    .assert_crate_local()
+                    .lint_root;
 
                 if_chain! {
                     if let Some(snip) = snippet_opt(cx, span);

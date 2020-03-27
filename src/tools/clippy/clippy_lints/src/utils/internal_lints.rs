@@ -8,12 +8,15 @@ use rustc::hir::def::{DefKind, Res};
 use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc::hir::*;
 use rustc::lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
+use rustc::{declare_lint_pass, impl_lint_pass};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
+use syntax::ast;
 use syntax::ast::{Crate as AstCrate, ItemKind, Name};
 use syntax::source_map::Span;
-use syntax_pos::symbol::LocalInternedString;
+use syntax::visit::FnKind;
+use syntax_pos::symbol::SymbolStr;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for various things we like to keep tidy in clippy.
@@ -99,6 +102,24 @@ declare_clippy_lint! {
     "using `cx.outer_expn().expn_data()` instead of `cx.outer_expn_data()`"
 }
 
+declare_clippy_lint! {
+    /// **What it does:** Not an actual lint. This lint is only meant for testing our customized internal compiler
+    /// error message by calling `panic`.
+    ///
+    /// **Why is this bad?** ICE in large quantities can damage your teeth
+    ///
+    /// **Known problems:** None
+    ///
+    /// **Example:**
+    /// Bad:
+    /// ```rust,ignore
+    /// 🍦🍦🍦🍦🍦
+    /// ```
+    pub PRODUCE_ICE,
+    internal,
+    "this message should not appear anywhere as we ICE before and don't emit the lint"
+}
+
 declare_lint_pass!(ClippyLintsInternal => [CLIPPY_LINTS_INTERNAL]);
 
 impl EarlyLintPass for ClippyLintsInternal {
@@ -112,7 +133,7 @@ impl EarlyLintPass for ClippyLintsInternal {
             if let ItemKind::Mod(ref utils_mod) = utils.kind {
                 if let Some(paths) = utils_mod.items.iter().find(|item| item.ident.name.as_str() == "paths") {
                     if let ItemKind::Mod(ref paths_mod) = paths.kind {
-                        let mut last_name: Option<LocalInternedString> = None;
+                        let mut last_name: Option<SymbolStr> = None;
                         for item in &*paths_mod.items {
                             let name = item.ident.as_str();
                             if let Some(ref last_name) = last_name {
@@ -145,7 +166,7 @@ impl_lint_pass!(LintWithoutLintPass => [LINT_WITHOUT_LINT_PASS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if let hir::ItemKind::Static(ref ty, MutImmutable, _) = item.kind {
+        if let hir::ItemKind::Static(ref ty, Mutability::Immutable, _) = item.kind {
             if is_lint_ref_type(cx, ty) {
                 self.declared_lints.insert(item.ident.name, item.span);
             }
@@ -198,7 +219,7 @@ fn is_lint_ref_type<'tcx>(cx: &LateContext<'_, 'tcx>, ty: &Ty) -> bool {
         _,
         MutTy {
             ty: ref inner,
-            mutbl: MutImmutable,
+            mutbl: Mutability::Immutable,
         },
     ) = ty.kind
     {
@@ -279,8 +300,8 @@ declare_lint_pass!(OuterExpnDataPass => [OUTER_EXPN_EXPN_DATA]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OuterExpnDataPass {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
         let (method_names, arg_lists, spans) = method_calls(expr, 2);
-        let method_names: Vec<LocalInternedString> = method_names.iter().map(|s| s.as_str()).collect();
-        let method_names: Vec<&str> = method_names.iter().map(std::convert::AsRef::as_ref).collect();
+        let method_names: Vec<SymbolStr> = method_names.iter().map(|s| s.as_str()).collect();
+        let method_names: Vec<&str> = method_names.iter().map(|s| &**s).collect();
         if_chain! {
             if let ["expn_data", "outer_expn"] = method_names.as_slice();
             let args = arg_lists[1];
@@ -300,5 +321,24 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OuterExpnDataPass {
                 );
             }
         }
+    }
+}
+
+declare_lint_pass!(ProduceIce => [PRODUCE_ICE]);
+
+impl EarlyLintPass for ProduceIce {
+    fn check_fn(&mut self, _: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: &ast::FnDecl, _: Span, _: ast::NodeId) {
+        if is_trigger_fn(fn_kind) {
+            panic!("Testing the ICE message");
+        }
+    }
+}
+
+fn is_trigger_fn(fn_kind: FnKind<'_>) -> bool {
+    match fn_kind {
+        FnKind::ItemFn(ident, ..) | FnKind::Method(ident, ..) => {
+            ident.name.as_str() == "it_looks_like_you_are_trying_to_kill_clippy"
+        },
+        FnKind::Closure(..) => false,
     }
 }

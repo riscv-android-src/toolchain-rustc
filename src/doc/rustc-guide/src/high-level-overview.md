@@ -8,7 +8,7 @@ standard library and the compiler.  This document, of course, focuses
 on the latter.
 
 Rustc consists of a number of crates, including `syntax`,
-`rustc`, `rustc_back`, `rustc_codegen`, `rustc_driver`, and
+`rustc`, `rustc_target`, `rustc_codegen`, `rustc_driver`, and
 many more. The source for each crate can be found in a directory
 like `src/libXXX`, where `XXX` is the crate name.
 
@@ -65,10 +65,6 @@ the `rustc_` prefix, but they are really just as much an internal part
 of the compiler and not intended to be stable (though they do wind up
 getting used by some crates in the wild; a practice we hope to
 gradually phase out).
-
-Each crate has a `README.md` file that describes, at a high-level,
-what it contains, and tries to give some kind of explanation (some
-better than others).
 
 ## The main stages of compilation
 

@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_target"
-version = "606.0.0"
+version = "610.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_target` in the rust-lang/rust repository from commit 7870050796e5904a0fc85ecbe6fa6dde1cfe0c91 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_target` in the rust-lang/rust repository from commit 4b42e919d640f7c714a7e87c91b4f3a9089552d0 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
@@ -28,17 +28,17 @@ version = "1.0"
 version = "0.4"
 
 [dependencies.rustc_data_structures]
-version = "606.0.0"
+version = "610.0.0"
 package = "rustc-ap-rustc_data_structures"
 
 [dependencies.rustc_index]
-version = "606.0.0"
+version = "610.0.0"
 package = "rustc-ap-rustc_index"
 
 [dependencies.rustc_serialize]
-version = "606.0.0"
+version = "610.0.0"
 package = "rustc-ap-serialize"
 
 [dependencies.syntax_pos]
-version = "606.0.0"
+version = "610.0.0"
 package = "rustc-ap-syntax_pos"

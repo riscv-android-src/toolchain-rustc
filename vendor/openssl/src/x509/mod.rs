@@ -255,7 +255,8 @@ impl X509Builder {
             cvt(ffi::X509_set_serialNumber(
                 self.0.as_ptr(),
                 serial_number.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -265,7 +266,8 @@ impl X509Builder {
             cvt(ffi::X509_set_issuer_name(
                 self.0.as_ptr(),
                 issuer_name.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -292,7 +294,8 @@ impl X509Builder {
             cvt(ffi::X509_set_subject_name(
                 self.0.as_ptr(),
                 subject_name.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -528,6 +531,23 @@ impl X509Ref {
         }
     }
 
+    /// Check if the certificate is signed using the given public key.
+    ///
+    /// Only the signature is checked: no other checks (such as certificate chain validity)
+    /// are performed.
+    ///
+    /// Returns `true` if verification succeeds.
+    ///
+    /// This corresponds to [`X509_verify"].
+    ///
+    /// [`X509_verify`]: https://www.openssl.org/docs/man1.1.0/crypto/X509_verify.html
+    pub fn verify<T>(&self, key: &PKeyRef<T>) -> Result<bool, ErrorStack>
+    where
+        T: HasPublic,
+    {
+        unsafe { cvt_n(ffi::X509_verify(self.as_ptr(), key.as_ptr())).map(|n| n != 0) }
+    }
+
     /// Returns this certificate's serial number.
     ///
     /// This corresponds to [`X509_get_serialNumber`].
@@ -756,7 +776,8 @@ impl X509NameBuilder {
                 value.len() as c_int,
                 -1,
                 0,
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -776,7 +797,8 @@ impl X509NameBuilder {
                 value.len() as c_int,
                 -1,
                 0,
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -830,7 +852,7 @@ impl X509NameRef {
         X509NameEntries {
             name: self,
             nid: None,
-            loc: -1
+            loc: -1,
         }
     }
 }
@@ -945,7 +967,8 @@ impl X509ReqBuilder {
             cvt(ffi::X509_REQ_set_subject_name(
                 self.0.as_ptr(),
                 subject_name.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -994,7 +1017,8 @@ impl X509ReqBuilder {
             cvt(ffi::X509_REQ_add_extensions(
                 self.0.as_ptr(),
                 extensions.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -1012,7 +1036,8 @@ impl X509ReqBuilder {
                 self.0.as_ptr(),
                 key.as_ptr(),
                 hash.as_ptr(),
-            )).map(|_| ())
+            ))
+            .map(|_| ())
         }
     }
 
@@ -1118,6 +1143,20 @@ impl X509ReqRef {
             let key = cvt_p(ffi::X509_REQ_get_pubkey(self.as_ptr()))?;
             Ok(PKey::from_ptr(key))
         }
+    }
+
+    /// Check if the certificate request is signed using the given public key.
+    ///
+    /// Returns `true` if verification succeeds.
+    ///
+    /// This corresponds to [`X509_REQ_verify"].
+    ///
+    /// [`X509_REQ_verify`]: https://www.openssl.org/docs/man1.1.0/crypto/X509_REQ_verify.html
+    pub fn verify<T>(&self, key: &PKeyRef<T>) -> Result<bool, ErrorStack>
+    where
+        T: HasPublic,
+    {
+        unsafe { cvt_n(ffi::X509_REQ_verify(self.as_ptr(), key.as_ptr())).map(|n| n != 0) }
     }
 
     /// Returns the extensions of the certificate request.

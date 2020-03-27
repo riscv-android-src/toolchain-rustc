@@ -1,3 +1,22 @@
+## v1.10.1
+
+#### Fixes
+
+- improve `haiku` CPU detection
+
+## v1.10.0
+
+#### Features
+
+- add `illumos` target OS support
+- add default fallback if target is unknown to `1`
+
+## v1.9.0
+
+#### Features
+
+- add `sgx` target env support
+
 ## v1.8.0
 
 #### Features

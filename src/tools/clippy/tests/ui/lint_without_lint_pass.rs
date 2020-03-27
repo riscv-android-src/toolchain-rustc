@@ -3,27 +3,29 @@
 
 #[macro_use]
 extern crate rustc;
+#[macro_use]
+extern crate rustc_session;
 use rustc::lint::{LintArray, LintPass};
 
-#[macro_use]
-extern crate clippy_lints;
-
-declare_clippy_lint! {
-    pub TEST_LINT,
-    correctness,
-    ""
+declare_tool_lint! {
+    pub clippy::TEST_LINT,
+    Warn,
+    "",
+    report_in_external_macro: true
 }
 
-declare_clippy_lint! {
-    pub TEST_LINT_REGISTERED,
-    correctness,
-    ""
+declare_tool_lint! {
+    pub clippy::TEST_LINT_REGISTERED,
+    Warn,
+    "",
+    report_in_external_macro: true
 }
 
-declare_clippy_lint! {
-    pub TEST_LINT_REGISTERED_ONLY_IMPL,
-    correctness,
-    ""
+declare_tool_lint! {
+    pub clippy::TEST_LINT_REGISTERED_ONLY_IMPL,
+    Warn,
+    "",
+    report_in_external_macro: true
 }
 
 pub struct Pass;

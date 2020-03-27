@@ -4,12 +4,12 @@ use crate::mbe::macro_parser::{MatchedNonterminal, MatchedSeq, NamedMatch};
 
 use syntax::ast::{Ident, Mac};
 use syntax::mut_visit::{self, MutVisitor};
-use syntax::parse::token::{self, NtTT, Token};
+use syntax::token::{self, NtTT, Token};
 use syntax::tokenstream::{DelimSpan, TokenStream, TokenTree, TreeAndJoint};
 
 use smallvec::{smallvec, SmallVec};
 
-use errors::pluralise;
+use errors::pluralize;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
 use syntax_pos::hygiene::{ExpnId, Transparency};
@@ -27,13 +27,6 @@ impl MutVisitor for Marker {
 
     fn visit_mac(&mut self, mac: &mut Mac) {
         mut_visit::noop_visit_mac(mac, self)
-    }
-}
-
-impl Marker {
-    fn visit_delim_span(&mut self, dspan: &mut DelimSpan) {
-        self.visit_span(&mut dspan.open);
-        self.visit_span(&mut dspan.close);
     }
 }
 
@@ -271,7 +264,7 @@ pub(super) fn transcribe(
             // jump back out of the Delimited, pop the result_stack and add the new results back to
             // the previous results (from outside the Delimited).
             mbe::TokenTree::Delimited(mut span, delimited) => {
-                marker.visit_delim_span(&mut span);
+                mut_visit::visit_delim_span(&mut span, &mut marker);
                 stack.push(Frame::Delimited { forest: delimited, idx: 0, span });
                 result_stack.push(mem::take(&mut result));
             }
@@ -306,7 +299,7 @@ fn lookup_cur_matched<'a>(
         for &(idx, _) in repeats {
             match matched {
                 MatchedNonterminal(_) => break,
-                MatchedSeq(ref ads, _) => matched = ads.get(idx).unwrap(),
+                MatchedSeq(ref ads) => matched = ads.get(idx).unwrap(),
             }
         }
 
@@ -350,10 +343,10 @@ impl LockstepIterSize {
                         "meta-variable `{}` repeats {} time{}, but `{}` repeats {} time{}",
                         l_id,
                         l_len,
-                        pluralise!(l_len),
+                        pluralize!(l_len),
                         r_id,
                         r_len,
-                        pluralise!(r_len),
+                        pluralize!(r_len),
                     );
                     LockstepIterSize::Contradiction(msg)
                 }
@@ -389,7 +382,7 @@ fn lockstep_iter_size(
             match lookup_cur_matched(name, interpolations, repeats) {
                 Some(matched) => match matched {
                     MatchedNonterminal(_) => LockstepIterSize::Unconstrained,
-                    MatchedSeq(ref ads, _) => LockstepIterSize::Constraint(ads.len(), name),
+                    MatchedSeq(ref ads) => LockstepIterSize::Constraint(ads.len(), name),
                 },
                 _ => LockstepIterSize::Unconstrained,
             }

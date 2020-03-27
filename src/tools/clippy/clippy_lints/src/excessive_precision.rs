@@ -1,10 +1,12 @@
 use crate::utils::span_lint_and_sugg;
+use crate::utils::sugg::format_numeric_literal;
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use std::f32;
 use std::f64;
 use std::fmt;
@@ -43,7 +45,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ExcessivePrecision {
             let ty = cx.tables.expr_ty(expr);
             if let ty::Float(fty) = ty.kind;
             if let hir::ExprKind::Lit(ref lit) = expr.kind;
-            if let LitKind::Float(sym, _) | LitKind::FloatUnsuffixed(sym) = lit.node;
+            if let LitKind::Float(sym, _) = lit.node;
             if let Some(sugg) = Self::check(sym, fty);
             then {
                 span_lint_and_sugg(
@@ -86,8 +88,7 @@ impl ExcessivePrecision {
             if sym_str == s {
                 None
             } else {
-                let di = super::literal_representation::DigitInfo::new(&s, true);
-                Some(di.grouping_hint())
+                Some(format_numeric_literal(&s, None, true))
             }
         } else {
             None

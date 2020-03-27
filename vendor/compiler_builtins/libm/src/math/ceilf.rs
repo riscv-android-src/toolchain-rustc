@@ -3,7 +3,6 @@ use core::f32;
 /// Ceil (f32)
 ///
 /// Finds the nearest integer greater than or equal to `x`.
-#[inline]
 #[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub fn ceilf(x: f32) -> f32 {
     // On wasm32 we know that LLVM's intrinsic will compile to an optimized
@@ -39,4 +38,26 @@ pub fn ceilf(x: f32) -> f32 {
         }
     }
     f32::from_bits(ui)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::f32::*;
+
+    #[test]
+    fn sanity_check() {
+        assert_eq!(ceilf(1.1), 2.0);
+        assert_eq!(ceilf(2.9), 3.0);
+    }
+
+    /// The spec: https://en.cppreference.com/w/cpp/numeric/math/ceil
+    #[test]
+    fn spec_tests() {
+        // Not Asserted: that the current rounding mode has no effect.
+        assert!(ceilf(NAN).is_nan());
+        for f in [0.0, -0.0, INFINITY, NEG_INFINITY].iter().copied() {
+            assert_eq!(ceilf(f), f);
+        }
+    }
 }

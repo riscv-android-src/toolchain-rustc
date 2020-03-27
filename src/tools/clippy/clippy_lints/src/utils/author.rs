@@ -2,14 +2,15 @@
 //! to generate a clippy lint detecting said code automatically.
 
 use crate::utils::{get_attr, higher};
+use rustc::declare_lint_pass;
 use rustc::hir;
 use rustc::hir::intravisit::{NestedVisitorMap, Visitor};
 use rustc::hir::{BindingAnnotation, Block, Expr, ExprKind, Pat, PatKind, QPath, Stmt, StmtKind, TyKind};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::session::Session;
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_data_structures::fx::FxHashMap;
-use syntax::ast::{Attribute, LitKind};
+use rustc_session::declare_tool_lint;
+use syntax::ast::{Attribute, LitFloatType, LitKind};
 
 declare_clippy_lint! {
     /// **What it does:** Generates clippy code that detects the offending pattern
@@ -288,10 +289,14 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
                     LitKind::Byte(b) => println!("    if let LitKind::Byte({}) = {}.node;", b, lit_pat),
                     // FIXME: also check int type
                     LitKind::Int(i, _) => println!("    if let LitKind::Int({}, _) = {}.node;", i, lit_pat),
-                    LitKind::Float(..) => println!("    if let LitKind::Float(..) = {}.node;", lit_pat),
-                    LitKind::FloatUnsuffixed(_) => {
-                        println!("    if let LitKind::FloatUnsuffixed(_) = {}.node;", lit_pat)
-                    },
+                    LitKind::Float(_, LitFloatType::Suffixed(_)) => println!(
+                        "    if let LitKind::Float(_, LitFloatType::Suffixed(_)) = {}.node;",
+                        lit_pat
+                    ),
+                    LitKind::Float(_, LitFloatType::Unsuffixed) => println!(
+                        "    if let LitKind::Float(_, LitFloatType::Unsuffixed) = {}.node;",
+                        lit_pat
+                    ),
                     LitKind::ByteStr(ref vec) => {
                         let vec_pat = self.next("vec");
                         println!("    if let LitKind::ByteStr(ref {}) = {}.node;", vec_pat, lit_pat);
@@ -421,9 +426,12 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
                 self.current = path_pat;
                 self.print_qpath(path);
             },
-            ExprKind::AddrOf(mutability, ref inner) => {
+            ExprKind::AddrOf(kind, mutability, ref inner) => {
                 let inner_pat = self.next("inner");
-                println!("AddrOf({:?}, ref {}) = {};", mutability, inner_pat, current);
+                println!(
+                    "AddrOf(BorrowKind::{:?}, Mutability::{:?}, ref {}) = {};",
+                    kind, mutability, inner_pat, current
+                );
                 self.current = inner_pat;
                 self.visit_expr(inner);
             },
@@ -454,8 +462,8 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
                     println!("Ret(None) = {};", current);
                 }
             },
-            ExprKind::InlineAsm(_, ref _input, ref _output) => {
-                println!("InlineAsm(_, ref input, ref output) = {};", current);
+            ExprKind::InlineAsm(_) => {
+                println!("InlineAsm(_) = {};", current);
                 println!("    // unimplemented: `ExprKind::InlineAsm` is not further destructured at the moment");
             },
             ExprKind::Struct(ref path, ref fields, ref opt_base) => {

@@ -6,16 +6,17 @@ use crate::utils::{
     span_lint_and_then, without_block_comments,
 };
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir::*;
 use rustc::lint::{
     in_external_macro, CheckLintNameResult, EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintArray,
     LintContext, LintPass,
 };
 use rustc::ty;
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use semver::Version;
-use syntax::ast::{AttrStyle, Attribute, Lit, LitKind, MetaItemKind, NestedMetaItem};
+use syntax::ast::{AttrKind, AttrStyle, Attribute, Lit, LitKind, MetaItemKind, NestedMetaItem};
 use syntax::source_map::Span;
 use syntax_pos::symbol::Symbol;
 
@@ -355,7 +356,7 @@ fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
 }
 
 fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item) -> bool {
-    if let ItemKind::Fn(_, _, _, eid) = item.kind {
+    if let ItemKind::Fn(_, _, eid) = item.kind {
         is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value)
     } else {
         true
@@ -417,11 +418,14 @@ fn check_attrs(cx: &LateContext<'_, '_>, span: Span, name: Name, attrs: &[Attrib
     }
 
     for attr in attrs {
-        if attr.is_sugared_doc {
-            return;
-        }
+        let attr_item = if let AttrKind::Normal(ref attr) = attr.kind {
+            attr
+        } else {
+            continue;
+        };
+
         if attr.style == AttrStyle::Outer {
-            if attr.tokens.is_empty() || !is_present_in_source(cx, attr.span) {
+            if attr_item.args.inner_tokens().is_empty() || !is_present_in_source(cx, attr.span) {
                 return;
             }
 

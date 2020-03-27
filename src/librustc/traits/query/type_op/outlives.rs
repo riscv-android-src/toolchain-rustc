@@ -1,9 +1,9 @@
 use crate::infer::canonical::{Canonicalized, CanonicalizedQueryResponse};
-use crate::traits::query::dropck_outlives::DropckOutlivesResult;
+use crate::traits::query::dropck_outlives::{DropckOutlivesResult, trivial_dropck_outlives};
 use crate::traits::query::Fallible;
 use crate::ty::{ParamEnvAnd, Ty, TyCtxt};
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, HashStable, TypeFoldable, Lift)]
 pub struct DropckOutlives<'tcx> {
     dropped_ty: Ty<'tcx>,
 }
@@ -21,7 +21,7 @@ impl super::QueryTypeOp<'tcx> for DropckOutlives<'tcx> {
         tcx: TyCtxt<'tcx>,
         key: &ParamEnvAnd<'tcx, Self>,
     ) -> Option<Self::QueryResponse> {
-        if tcx.trivial_dropck_outlives(key.value.dropped_ty) {
+        if trivial_dropck_outlives(tcx, key.value.dropped_ty) {
             Some(DropckOutlivesResult::default())
         } else {
             None
@@ -52,21 +52,4 @@ impl super::QueryTypeOp<'tcx> for DropckOutlives<'tcx> {
 
         tcx.dropck_outlives(canonicalized)
     }
-}
-
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for DropckOutlives<'tcx> {
-        dropped_ty
-    }
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for DropckOutlives<'a> {
-        type Lifted = DropckOutlives<'tcx>;
-        dropped_ty
-    }
-}
-
-impl_stable_hash_for! {
-    struct DropckOutlives<'tcx> { dropped_ty }
 }

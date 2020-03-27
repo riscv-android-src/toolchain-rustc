@@ -3,11 +3,10 @@ pub use Primitive::*;
 
 use crate::spec::Target;
 
-use std::fmt;
 use std::ops::{Add, Deref, Sub, Mul, AddAssign, Range, RangeInclusive};
 
 use rustc_index::vec::{Idx, IndexVec};
-use syntax_pos::symbol::{sym, Symbol};
+use rustc_macros::HashStable_Generic;
 use syntax_pos::Span;
 
 pub mod call;
@@ -244,6 +243,7 @@ pub enum Endian {
 
 /// Size of a type in bytes.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(HashStable_Generic)]
 pub struct Size {
     raw: u64
 }
@@ -367,6 +367,7 @@ impl AddAssign for Size {
 
 /// Alignment of a type in bytes (always a power of two).
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(HashStable_Generic)]
 pub struct Align {
     pow2: u8,
 }
@@ -425,6 +426,7 @@ impl Align {
 
 /// A pair of aligments, ABI-mandated and preferred.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(HashStable_Generic)]
 pub struct AbiAndPrefAlign {
     pub abi: Align,
     pub pref: Align,
@@ -454,7 +456,7 @@ impl AbiAndPrefAlign {
 }
 
 /// Integers, also used for enum discriminants.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, HashStable_Generic)]
 pub enum Integer {
     I8,
     I16,
@@ -534,51 +536,8 @@ impl Integer {
     }
 }
 
-
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Hash, Copy,
-         PartialOrd, Ord)]
-pub enum FloatTy {
-    F32,
-    F64,
-}
-
-impl fmt::Debug for FloatTy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl fmt::Display for FloatTy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.ty_to_string())
-    }
-}
-
-impl FloatTy {
-    pub fn ty_to_string(self) -> &'static str {
-        match self {
-            FloatTy::F32 => "f32",
-            FloatTy::F64 => "f64",
-        }
-    }
-
-    pub fn to_symbol(self) -> Symbol {
-        match self {
-            FloatTy::F32 => sym::f32,
-            FloatTy::F64 => sym::f64,
-        }
-    }
-
-    pub fn bit_width(self) -> usize {
-        match self {
-            FloatTy::F32 => 32,
-            FloatTy::F64 => 64,
-        }
-    }
-}
-
 /// Fundamental unit of memory access and layout.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub enum Primitive {
     /// The `bool` is the signedness of the `Integer` type.
     ///
@@ -588,7 +547,8 @@ pub enum Primitive {
     /// a negative integer passed by zero-extension will appear positive in
     /// the callee, and most operations on it will produce the wrong values.
     Int(Integer, bool),
-    Float(FloatTy),
+    F32,
+    F64,
     Pointer
 }
 
@@ -598,8 +558,8 @@ impl Primitive {
 
         match self {
             Int(i, _) => i.size(),
-            Float(FloatTy::F32) => Size::from_bits(32),
-            Float(FloatTy::F64) => Size::from_bits(64),
+            F32 => Size::from_bits(32),
+            F64 => Size::from_bits(64),
             Pointer => dl.pointer_size
         }
     }
@@ -609,15 +569,15 @@ impl Primitive {
 
         match self {
             Int(i, _) => i.align(dl),
-            Float(FloatTy::F32) => dl.f32_align,
-            Float(FloatTy::F64) => dl.f64_align,
+            F32 => dl.f32_align,
+            F64 => dl.f64_align,
             Pointer => dl.pointer_align
         }
     }
 
     pub fn is_float(self) -> bool {
         match self {
-            Float(_) => true,
+            F32 | F64 => true,
             _ => false
         }
     }
@@ -632,6 +592,7 @@ impl Primitive {
 
 /// Information about one scalar component of a Rust type.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(HashStable_Generic)]
 pub struct Scalar {
     pub value: Primitive,
 
@@ -680,7 +641,7 @@ impl Scalar {
 }
 
 /// Describes how the fields of a type are located in memory.
-#[derive(PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub enum FieldPlacement {
     /// All fields start at no offset. The `usize` is the field count.
     ///
@@ -796,7 +757,7 @@ impl FieldPlacement {
 
 /// Describes how values of the type are passed by target ABIs,
 /// in terms of categories of C types there are ABI rules for.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub enum Abi {
     Uninhabited,
     Scalar(Scalar),
@@ -841,13 +802,23 @@ impl Abi {
             _ => false,
         }
     }
+
+    /// Returns `true` is this is a scalar type
+    pub fn is_scalar(&self) -> bool {
+        match *self {
+            Abi::Scalar(_) => true,
+            _ => false,
+        }
+    }
 }
 
 rustc_index::newtype_index! {
-    pub struct VariantIdx { .. }
+    pub struct VariantIdx {
+        derive [HashStable_Generic]
+    }
 }
 
-#[derive(PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub enum Variants {
     /// Single enum variants, structs/tuples, unions, and all non-ADTs.
     Single {
@@ -865,7 +836,7 @@ pub enum Variants {
     },
 }
 
-#[derive(PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub enum DiscriminantKind {
     /// Integer tag holding the discriminant value itself.
     Tag,
@@ -886,7 +857,7 @@ pub enum DiscriminantKind {
     },
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub struct Niche {
     pub offset: Size,
     pub scalar: Scalar,
@@ -950,7 +921,7 @@ impl Niche {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq, Eq, Hash, Debug, HashStable_Generic)]
 pub struct LayoutDetails {
     pub variants: Variants,
     pub fields: FieldPlacement,

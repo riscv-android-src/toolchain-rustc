@@ -46,9 +46,10 @@ rand = "0.7"
 # for more information.
 rustc-workspace-hack = "1.0.0"
 
-# Depend on num-traits with default features to avoid having to rebuild
+# Some extra dependency for better feature control to avoid having to rebuild
 # between "cargo build" and "cargo intall".
 num-traits = "*"
+serde = { version = "*", features = ["derive"] }
 
 [build-dependencies]
 vergen = "3"
@@ -59,5 +60,5 @@ cargo_miri = ["cargo_metadata", "directories", "rustc_version"]
 rustc_tests = []
 
 [dev-dependencies]
-compiletest_rs = { version = "0.3.24", features = ["tmp"] }
+compiletest_rs = { version = "0.4", features = ["tmp"] }
 colored = "1.6"

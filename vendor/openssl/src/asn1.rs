@@ -27,13 +27,14 @@
 use ffi;
 use foreign_types::{ForeignType, ForeignTypeRef};
 use libc::{c_char, c_int, c_long};
+use std::ffi::CString;
 use std::fmt;
 use std::ptr;
 use std::slice;
 use std::str;
 
 use bio::MemBio;
-use bn::BigNum;
+use bn::{BigNum, BigNumRef};
 use error::ErrorStack;
 use nid::Nid;
 use string::OpensslString;
@@ -105,6 +106,15 @@ impl fmt::Display for Asn1TimeRef {
 }
 
 impl Asn1Time {
+    fn new() -> Result<Asn1Time, ErrorStack> {
+        ffi::init();
+
+        unsafe {
+            let handle = cvt_p(ffi::ASN1_TIME_new())?;
+            Ok(Asn1Time::from_ptr(handle))
+        }
+    }
+
     fn from_period(period: c_long) -> Result<Asn1Time, ErrorStack> {
         ffi::init();
 
@@ -117,6 +127,41 @@ impl Asn1Time {
     /// Creates a new time on specified interval in days from now
     pub fn days_from_now(days: u32) -> Result<Asn1Time, ErrorStack> {
         Asn1Time::from_period(days as c_long * 60 * 60 * 24)
+    }
+
+    /// Creates a new time corresponding to the specified ASN1 time string.
+    ///
+    /// This corresponds to [`ASN1_TIME_set_string`].
+    ///
+    /// [`ASN1_TIME_set_string`]: https://www.openssl.org/docs/manmaster/man3/ASN1_TIME_set_string.html
+    pub fn from_str(s: &str) -> Result<Asn1Time, ErrorStack> {
+        unsafe {
+            let s = CString::new(s).unwrap();
+
+            let time = Asn1Time::new()?;
+            cvt(ffi::ASN1_TIME_set_string(time.as_ptr(), s.as_ptr()))?;
+
+            Ok(time)
+        }
+    }
+
+    /// Creates a new time corresponding to the specified X509 time string.
+    ///
+    /// This corresponds to [`ASN1_TIME_set_string_X509`].
+    ///
+    /// Requires OpenSSL 1.1.1 or newer.
+    ///
+    /// [`ASN1_TIME_set_string_X509`]: https://www.openssl.org/docs/manmaster/man3/ASN1_TIME_set_string.html
+    #[cfg(ossl111)]
+    pub fn from_str_x509(s: &str) -> Result<Asn1Time, ErrorStack> {
+        unsafe {
+            let s = CString::new(s).unwrap();
+
+            let time = Asn1Time::new()?;
+            cvt(ffi::ASN1_TIME_set_string_X509(time.as_ptr(), s.as_ptr()))?;
+
+            Ok(time)
+        }
     }
 }
 
@@ -189,6 +234,19 @@ foreign_type_and_impl_send_sync! {
     ///
     /// [`Asn1Integer`]: struct.Asn1Integer.html
     pub struct Asn1IntegerRef;
+}
+
+impl Asn1Integer {
+    /// Converts a bignum to an `Asn1Integer`.
+    ///
+    /// Corresponds to [`BN_to_ASN1_INTEGER`]. Also see
+    /// [`BigNumRef::to_asn1_integer`].
+    ///
+    /// [`BN_to_ASN1_INTEGER`]: https://www.openssl.org/docs/man1.1.0/crypto/BN_to_ASN1_INTEGER.html
+    /// [`BigNumRef::to_asn1_integer`]: ../bn/struct.BigNumRef.html#method.to_asn1_integer
+    pub fn from_bn(bn: &BigNumRef) -> Result<Self, ErrorStack> {
+        bn.to_asn1_integer()
+    }
 }
 
 impl Asn1IntegerRef {
@@ -304,5 +362,33 @@ cfg_if! {
         unsafe fn ASN1_STRING_get0_data(s: *mut ffi::ASN1_STRING) -> *const ::libc::c_uchar {
             ffi::ASN1_STRING_data(s)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use bn::BigNum;
+
+    /// Tests conversion between BigNum and Asn1Integer.
+    #[test]
+    fn bn_cvt() {
+        fn roundtrip(bn: BigNum) {
+            let large = Asn1Integer::from_bn(&bn).unwrap();
+            assert_eq!(large.to_bn().unwrap(), bn);
+        }
+
+        roundtrip(BigNum::from_dec_str("1000000000000000000000000000000000").unwrap());
+        roundtrip(-BigNum::from_dec_str("1000000000000000000000000000000000").unwrap());
+        roundtrip(BigNum::from_u32(1234).unwrap());
+        roundtrip(-BigNum::from_u32(1234).unwrap());
+    }
+
+    #[test]
+    fn time_from_str() {
+        Asn1Time::from_str("99991231235959Z").unwrap();
+        #[cfg(ossl111)]
+        Asn1Time::from_str_x509("99991231235959Z").unwrap();
     }
 }

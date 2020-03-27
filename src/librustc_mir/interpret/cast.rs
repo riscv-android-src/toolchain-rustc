@@ -26,7 +26,9 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.unsize_into(src, dest)?;
             }
 
-            Misc | Pointer(PointerCast::MutToConstPointer) => {
+            Misc
+            | Pointer(PointerCast::MutToConstPointer)
+            | Pointer(PointerCast::ArrayToPointer) => {
                 let src = self.read_immediate(src)?;
                 let res = self.cast_immediate(src, dest.layout)?;
                 self.write_immediate(res, dest)?;
@@ -53,7 +55,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                         ).ok_or_else(|| err_inval!(TooGeneric))?;
 
                         let fn_ptr = self.memory.create_fn_alloc(FnVal::Instance(instance));
-                        self.write_scalar(Scalar::Ptr(fn_ptr.into()), dest)?;
+                        self.write_scalar(fn_ptr, dest)?;
                     }
                     _ => bug!("reify fn pointer on {:?}", src.layout.ty),
                 }
@@ -86,8 +88,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                             ty::ClosureKind::FnOnce,
                         );
                         let fn_ptr = self.memory.create_fn_alloc(FnVal::Instance(instance));
-                        let val = Immediate::Scalar(Scalar::Ptr(fn_ptr.into()).into());
-                        self.write_immediate(val, dest)?;
+                        self.write_scalar(fn_ptr, dest)?;
                     }
                     _ => bug!("closure fn pointer on {:?}", src.layout.ty),
                 }
@@ -260,7 +261,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
         match (&src_pointee_ty.kind, &dest_pointee_ty.kind) {
             (&ty::Array(_, length), &ty::Slice(_)) => {
-                let ptr = self.read_immediate(src)?.to_scalar_ptr()?;
+                let ptr = self.read_immediate(src)?.to_scalar()?;
                 // u64 cast is from usize to u64, which is always good
                 let val = Immediate::new_slice(
                     ptr,
@@ -279,7 +280,7 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             (_, &ty::Dynamic(ref data, _)) => {
                 // Initial cast from sized to dyn trait
                 let vtable = self.get_vtable(src_pointee_ty, data.principal())?;
-                let ptr = self.read_immediate(src)?.to_scalar_ptr()?;
+                let ptr = self.read_immediate(src)?.to_scalar()?;
                 let val = Immediate::new_dyn_trait(ptr, vtable);
                 self.write_immediate(val, dest)
             }

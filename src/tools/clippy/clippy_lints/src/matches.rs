@@ -6,12 +6,13 @@ use crate::utils::{
     snippet_with_applicability, span_lint_and_sugg, span_lint_and_then, span_note_and_lint, walk_ptrs_ty,
 };
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir::def::CtorKind;
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty::{self, Ty};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use std::cmp::Ordering;
 use std::collections::Bound;
 use syntax::ast::LitKind;
@@ -570,7 +571,7 @@ fn is_panic_block(block: &Block) -> bool {
 fn check_match_ref_pats(cx: &LateContext<'_, '_>, ex: &Expr, arms: &[Arm], expr: &Expr) {
     if has_only_ref_pats(arms) {
         let mut suggs = Vec::new();
-        let (title, msg) = if let ExprKind::AddrOf(Mutability::MutImmutable, ref inner) = ex.kind {
+        let (title, msg) = if let ExprKind::AddrOf(BorrowKind::Ref, Mutability::Immutable, ref inner) = ex.kind {
             let span = ex.span.source_callsite();
             suggs.push((span, Sugg::hir_with_macro_callsite(cx, inner, "..").to_string()));
             (

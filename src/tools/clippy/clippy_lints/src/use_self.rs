@@ -1,4 +1,5 @@
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir;
 use rustc::hir::def::{DefKind, Res};
 use rustc::hir::intravisit::{walk_item, walk_path, walk_ty, NestedVisitorMap, Visitor};
@@ -6,8 +7,8 @@ use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty;
 use rustc::ty::{DefIdTree, Ty};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use syntax_pos::symbol::kw;
 
 use crate::utils::{differing_macro_contexts, span_lint_and_sugg};
@@ -43,7 +44,7 @@ declare_clippy_lint! {
     /// }
     /// ```
     pub USE_SELF,
-    pedantic,
+    nursery,
     "Unnecessary structure name repetition whereas `Self` is applicable"
 }
 
@@ -193,7 +194,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UseSelf {
                     if let Some(impl_trait_ref) = impl_trait_ref {
                         for impl_item_ref in refs {
                             let impl_item = cx.tcx.hir().impl_item(impl_item_ref.id);
-                            if let ImplItemKind::Method(MethodSig{ decl: impl_decl, .. }, impl_body_id)
+                            if let ImplItemKind::Method(FnSig{ decl: impl_decl, .. }, impl_body_id)
                                     = &impl_item.kind {
                                 let item_type = cx.tcx.type_of(impl_def_id);
                                 check_trait_method_impl_decl(cx, item_type, impl_item, impl_decl, &impl_trait_ref);
@@ -223,30 +224,32 @@ struct UseSelfVisitor<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for UseSelfVisitor<'a, 'tcx> {
     fn visit_path(&mut self, path: &'tcx Path, _id: HirId) {
-        if path.segments.len() >= 2 {
-            let last_but_one = &path.segments[path.segments.len() - 2];
-            if last_but_one.ident.name != kw::SelfUpper {
-                let enum_def_id = match path.res {
-                    Res::Def(DefKind::Variant, variant_def_id) => self.cx.tcx.parent(variant_def_id),
-                    Res::Def(DefKind::Ctor(def::CtorOf::Variant, _), ctor_def_id) => {
-                        let variant_def_id = self.cx.tcx.parent(ctor_def_id);
-                        variant_def_id.and_then(|def_id| self.cx.tcx.parent(def_id))
-                    },
-                    _ => None,
-                };
+        if !path.segments.iter().any(|p| p.ident.span.is_dummy()) {
+            if path.segments.len() >= 2 {
+                let last_but_one = &path.segments[path.segments.len() - 2];
+                if last_but_one.ident.name != kw::SelfUpper {
+                    let enum_def_id = match path.res {
+                        Res::Def(DefKind::Variant, variant_def_id) => self.cx.tcx.parent(variant_def_id),
+                        Res::Def(DefKind::Ctor(def::CtorOf::Variant, _), ctor_def_id) => {
+                            let variant_def_id = self.cx.tcx.parent(ctor_def_id);
+                            variant_def_id.and_then(|def_id| self.cx.tcx.parent(def_id))
+                        },
+                        _ => None,
+                    };
 
-                if self.item_path.res.opt_def_id() == enum_def_id {
-                    span_use_self_lint(self.cx, path, Some(last_but_one));
+                    if self.item_path.res.opt_def_id() == enum_def_id {
+                        span_use_self_lint(self.cx, path, Some(last_but_one));
+                    }
                 }
             }
-        }
 
-        if path.segments.last().expect(SEGMENTS_MSG).ident.name != kw::SelfUpper {
-            if self.item_path.res == path.res {
-                span_use_self_lint(self.cx, path, None);
-            } else if let Res::Def(DefKind::Ctor(def::CtorOf::Struct, _), ctor_def_id) = path.res {
-                if self.item_path.res.opt_def_id() == self.cx.tcx.parent(ctor_def_id) {
+            if path.segments.last().expect(SEGMENTS_MSG).ident.name != kw::SelfUpper {
+                if self.item_path.res == path.res {
                     span_use_self_lint(self.cx, path, None);
+                } else if let Res::Def(DefKind::Ctor(def::CtorOf::Struct, _), ctor_def_id) = path.res {
+                    if self.item_path.res.opt_def_id() == self.cx.tcx.parent(ctor_def_id) {
+                        span_use_self_lint(self.cx, path, None);
+                    }
                 }
             }
         }

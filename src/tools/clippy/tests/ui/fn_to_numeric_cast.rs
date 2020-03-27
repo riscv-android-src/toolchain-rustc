@@ -1,4 +1,4 @@
-// only-64bit
+// ignore-32bit
 
 #![warn(clippy::fn_to_numeric_cast, clippy::fn_to_numeric_cast_with_truncation)]
 

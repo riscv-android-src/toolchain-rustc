@@ -11,11 +11,12 @@ use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty::layout::LayoutOf;
 use rustc::ty::{self, InferTy, Ty, TyCtxt, TypeckTables};
-use rustc::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
+use rustc::{declare_lint_pass, impl_lint_pass};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use rustc_target::spec::abi::Abi;
 use rustc_typeck::hir_ty_to_ty;
-use syntax::ast::{FloatTy, IntTy, LitIntType, LitKind, UintTy};
+use syntax::ast::{FloatTy, IntTy, LitFloatType, LitIntType, LitKind, UintTy};
 use syntax::errors::DiagnosticBuilder;
 use syntax::source_map::Span;
 use syntax::symbol::{sym, Symbol};
@@ -25,8 +26,9 @@ use crate::consts::{constant, Constant};
 use crate::utils::paths;
 use crate::utils::{
     clip, comparisons, differing_macro_contexts, higher, in_constant, int_bits, last_path_segment, match_def_path,
-    match_path, multispan_sugg, qpath_res, same_tys, sext, snippet, snippet_opt, snippet_with_applicability,
-    snippet_with_macro_callsite, span_help_and_lint, span_lint, span_lint_and_sugg, span_lint_and_then, unsext,
+    match_path, method_chain_args, multispan_sugg, qpath_res, same_tys, sext, snippet, snippet_opt,
+    snippet_with_applicability, snippet_with_macro_callsite, span_help_and_lint, span_lint, span_lint_and_sugg,
+    span_lint_and_then, unsext,
 };
 
 declare_clippy_lint! {
@@ -393,7 +395,7 @@ fn check_ty_rptr(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool, lt:
                     } else {
                         format!("{} ", lt.name.ident().as_str())
                     };
-                    let mutopt = if mut_ty.mutbl == Mutability::MutMutable {
+                    let mutopt = if mut_ty.mutbl == Mutability::Mutable {
                         "mut "
                     } else {
                         ""
@@ -1020,14 +1022,22 @@ fn check_loss_of_sign(cx: &LateContext<'_, '_>, expr: &Expr, op: &Expr, cast_fro
         }
     }
 
-    // don't lint for the result of `abs`
-    // `abs` is an inherent impl of `i{N}`, so a method call with ident `abs` will always
-    // resolve to that spesific method
-    if_chain! {
-        if let ExprKind::MethodCall(ref path, _, _) = op.kind;
-        if path.ident.name.as_str() == "abs";
-        then {
-            return
+    // don't lint for the result of methods that always return non-negative values
+    if let ExprKind::MethodCall(ref path, _, _) = op.kind {
+        let mut method_name = path.ident.name.as_str();
+        let whitelisted_methods = ["abs", "checked_abs", "rem_euclid", "checked_rem_euclid"];
+
+        if_chain! {
+            if method_name == "unwrap";
+            if let Some(arglist) = method_chain_args(op, &["unwrap"]);
+            if let ExprKind::MethodCall(ref inner_path, _, _) = &arglist[0][0].kind;
+            then {
+                method_name = inner_path.ident.name.as_str();
+            }
+        }
+
+        if whitelisted_methods.iter().any(|&name| method_name == name) {
+            return;
         }
     }
 
@@ -1186,7 +1196,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
                     }
                 }
                 match lit.node {
-                    LitKind::Int(_, LitIntType::Unsuffixed) | LitKind::FloatUnsuffixed(_) => {},
+                    LitKind::Int(_, LitIntType::Unsuffixed) | LitKind::Float(_, LitFloatType::Unsuffixed) => {},
                     _ => {
                         if cast_from.kind == cast_to.kind && !in_external_macro(cx.sess(), expr.span) {
                             span_lint(
@@ -1408,7 +1418,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeComplexity {
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem) {
         match item.kind {
             TraitItemKind::Const(ref ty, _) | TraitItemKind::Type(_, Some(ref ty)) => self.check_type(cx, ty),
-            TraitItemKind::Method(MethodSig { ref decl, .. }, TraitMethod::Required(_)) => self.check_fndecl(cx, decl),
+            TraitItemKind::Method(FnSig { ref decl, .. }, TraitMethod::Required(_)) => self.check_fndecl(cx, decl),
             // methods with default impl are covered by check_fn
             _ => (),
         }
@@ -2118,10 +2128,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitHasher {
                     );
                 }
             },
-            ItemKind::Fn(ref decl, .., ref generics, body_id) => {
+            ItemKind::Fn(ref sig, ref generics, body_id) => {
                 let body = cx.tcx.hir().body(body_id);
 
-                for ty in &decl.inputs {
+                for ty in &sig.decl.inputs {
                     let mut vis = ImplicitHasherTypeVisitor::new(cx);
                     vis.visit_ty(ty);
 
@@ -2377,9 +2387,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RefToMut {
         if_chain! {
             if let ExprKind::Unary(UnOp::UnDeref, e) = &expr.kind;
             if let ExprKind::Cast(e, t) = &e.kind;
-            if let TyKind::Ptr(MutTy { mutbl: Mutability::MutMutable, .. }) = t.kind;
+            if let TyKind::Ptr(MutTy { mutbl: Mutability::Mutable, .. }) = t.kind;
             if let ExprKind::Cast(e, t) = &e.kind;
-            if let TyKind::Ptr(MutTy { mutbl: Mutability::MutImmutable, .. }) = t.kind;
+            if let TyKind::Ptr(MutTy { mutbl: Mutability::Immutable, .. }) = t.kind;
             if let ty::Ref(..) = cx.tables.node_type(e.hir_id).kind;
             then {
                 span_lint(

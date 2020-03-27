@@ -35,7 +35,7 @@ of concept so that people can see what you are talking about.
 
 That starts a "proposed final comment period" (pFCP), which requires
 all members of the team to sign off the FCP. After they all do so,
-there's a week long "final comment period" where everybody can comment,
+there's a 10 day long "final comment period" where everybody can comment,
 and if no new concerns are raised, the PR/issue gets FCP approval.
 
 ## The logistics of writing features
@@ -99,15 +99,15 @@ for YOUR FEATURE".
 For tracking issues for features (as opposed to future-compat
 warnings), I don't think the description has to contain
 anything specific. Generally we put the list of items required
-for stabilization using a github list, e.g.
+for stabilization in a checklist, e.g.,
 
 ```txt
-    **Steps:**
+**Steps:**
 
-    - [ ] Implement the RFC (cc @rust-lang/compiler -- can anyone write
-          up mentoring instructions?)
-    - [ ] Adjust documentation ([see instructions on forge][doc-guide])
-    - Note: no stabilization step here.
+- [ ] Implement the RFC. (CC @rust-lang/compiler -- can anyone write
+      up mentoring instructions?)
+- [ ] Adjust the documentation. ([See instructions on rustc-guide.](https://rust-lang.github.io/rustc-guide/stabilization_guide.html#documentation-prs))
+- [ ] Stabilize the feature. ([See instructions on rustc-guide.](https://rust-lang.github.io/rustc-guide/stabilization_guide.html#stabilization-pr))
 ```
 
 <a name="stability-in-code"></a>
@@ -119,29 +119,32 @@ a new unstable feature:
 1. Open a [tracking issue] -
    if you have an RFC, you can use the tracking issue for the RFC.
 
+   The tracking issue should be labeled with at least `C-tracking-issue`.
+   For a language feature, a label `F-feature_name` should be added as well.
+
 2. Pick a name for the feature gate (for RFCs, use the name
    in the RFC).
 
-3. Add a feature gate declaration to `libsyntax/feature_gate.rs`
+3. Add a feature gate declaration to `libsyntax/feature_gate/active.rs`
    in the active `declare_features` block:
 
-```rust,ignore
-    // description of feature
-    (active, $feature_name, "$current_nightly_version", Some($tracking_issue_number), $edition)
-```
+   ```rust,ignore
+   // description of feature
+   (active, $feature_name, "$current_nightly_version", Some($tracking_issue_number), $edition)
+   ```
 
-where `$edition` has the type `Option<Edition>`, and is typically
-just `None`.
+   where `$edition` has the type `Option<Edition>`, and is typically
+   just `None`.
 
-For example:
+   For example:
 
-```rust,ignore
-    // allow '|' at beginning of match arms (RFC 1925)
-(   active, match_beginning_vert, "1.21.0", Some(44101), None),
-```
+   ```rust,ignore
+   /// Allows defining identifiers beyond ASCII.
+   (active, non_ascii_idents, "1.0.0", Some(55467), None),
+   ```
 
-The current version is not actually important – the important
-version is when you are stabilizing a feature.
+   When added, the current version should be the one for the current nightly.
+   Once the feature is moved to `accepted.rs`, the version is changed to that nightly version.
 
 4. Prevent usage of the new feature unless the feature gate is set.
    You can check it in most places in the compiler using the
@@ -153,10 +156,14 @@ version is when you are stabilizing a feature.
     the pre-feature behavior or raise an error, depending on
     what makes sense.
 
+   For features introducing new syntax, pre-expansion gating should be used instead.
+   To do so, extend the [`GatedSpans`] struct, add spans to it during parsing,
+   and then finally feature-gate all the spans in [`feature_gate::check::check_crate`].
+
 5. Add a test to ensure the feature cannot be used without
    a feature gate, by creating `feature-gate-$feature_name.rs`
    and `feature-gate-$feature_name.stderr` files under the
-   `src/test/ui/feature-gates` directory.
+   directory where the other tests for your feature reside.
 
 6. Add a section to the unstable book, in
    `src/doc/unstable-book/src/language-features/$feature_name.md`.
@@ -167,7 +174,9 @@ version is when you are stabilizing a feature.
 8. Get your PR reviewed and land it. You have now successfully
    implemented a feature in Rust!
 
+[`GatedSpans`]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/sess/struct.GatedSpans.html
+[`feature_gate::check::check_crate`]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/feature_gate/check/fn.check_crate.html
 [value the stability of Rust]: https://github.com/rust-lang/rfcs/blob/master/text/1122-language-semver.md
 [stability in code]: #stability-in-code
-[here]: https://rust-lang.github.io/rustc-guide/stabilization_guide.html
+[here]: ./stabilization_guide.md
 [tracking issue]: #tracking-issue

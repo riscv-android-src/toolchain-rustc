@@ -130,11 +130,7 @@ impl char {
             }
         };
 
-        if val < radix {
-            Some(val)
-        } else {
-            None
-        }
+        if val < radix { Some(val) } else { None }
     }
 
     /// Returns an iterator that yields the hexadecimal Unicode escape of a
@@ -438,6 +434,7 @@ impl char {
     #[inline]
     pub fn encode_utf8(self, dst: &mut [u8]) -> &mut str {
         let code = self as u32;
+        // SAFETY: each arm checks the size of the slice and only uses `get_unchecked` unsafe ops
         unsafe {
             let len = if code < MAX_ONE_B && !dst.is_empty() {
                 *dst.get_unchecked_mut(0) = code as u8;
@@ -507,6 +504,7 @@ impl char {
     #[inline]
     pub fn encode_utf16(self, dst: &mut [u16]) -> &mut [u16] {
         let mut code = self as u32;
+        // SAFETY: each arm checks whether there are enough bits to write into
         unsafe {
             if (code & 0xFFFF) == code && !dst.is_empty() {
                 // The BMP falls through (assuming non-surrogate, as it should)
@@ -555,8 +553,7 @@ impl char {
     pub fn is_alphabetic(self) -> bool {
         match self {
             'a'..='z' | 'A'..='Z' => true,
-            c if c > '\x7f' => derived_property::Alphabetic(c),
-            _ => false,
+            c => c > '\x7f' && derived_property::Alphabetic(c),
         }
     }
 
@@ -587,8 +584,7 @@ impl char {
     pub fn is_lowercase(self) -> bool {
         match self {
             'a'..='z' => true,
-            c if c > '\x7f' => derived_property::Lowercase(c),
-            _ => false,
+            c => c > '\x7f' && derived_property::Lowercase(c),
         }
     }
 
@@ -619,8 +615,7 @@ impl char {
     pub fn is_uppercase(self) -> bool {
         match self {
             'A'..='Z' => true,
-            c if c > '\x7f' => derived_property::Uppercase(c),
-            _ => false,
+            c => c > '\x7f' && derived_property::Uppercase(c),
         }
     }
 
@@ -648,8 +643,7 @@ impl char {
     pub fn is_whitespace(self) -> bool {
         match self {
             ' ' | '\x09'..='\x0d' => true,
-            c if c > '\x7f' => property::White_Space(c),
-            _ => false,
+            c => c > '\x7f' && property::White_Space(c),
         }
     }
 
@@ -746,8 +740,7 @@ impl char {
     pub fn is_numeric(self) -> bool {
         match self {
             '0'..='9' => true,
-            c if c > '\x7f' => general_category::N(c),
-            _ => false,
+            c => c > '\x7f' && general_category::N(c),
         }
     }
 
@@ -918,6 +911,10 @@ impl char {
     /// assert!(!non_ascii.is_ascii());
     /// ```
     #[stable(feature = "ascii_methods_on_intrinsics", since = "1.23.0")]
+    #[cfg_attr(
+        not(bootstrap),
+        rustc_const_stable(feature = "const_ascii_methods_on_intrinsics", since = "1.32.0"),
+    )]
     #[inline]
     pub const fn is_ascii(&self) -> bool {
         *self as u32 <= 0x7F
@@ -948,11 +945,7 @@ impl char {
     #[stable(feature = "ascii_methods_on_intrinsics", since = "1.23.0")]
     #[inline]
     pub fn to_ascii_uppercase(&self) -> char {
-        if self.is_ascii() {
-            (*self as u8).to_ascii_uppercase() as char
-        } else {
-            *self
-        }
+        if self.is_ascii() { (*self as u8).to_ascii_uppercase() as char } else { *self }
     }
 
     /// Makes a copy of the value in its ASCII lower case equivalent.
@@ -980,11 +973,7 @@ impl char {
     #[stable(feature = "ascii_methods_on_intrinsics", since = "1.23.0")]
     #[inline]
     pub fn to_ascii_lowercase(&self) -> char {
-        if self.is_ascii() {
-            (*self as u8).to_ascii_lowercase() as char
-        } else {
-            *self
-        }
+        if self.is_ascii() { (*self as u8).to_ascii_lowercase() as char } else { *self }
     }
 
     /// Checks that two values are an ASCII case-insensitive match.

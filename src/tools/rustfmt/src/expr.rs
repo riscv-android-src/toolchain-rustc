@@ -9,8 +9,8 @@ use syntax::{ast, ptr};
 use crate::chains::rewrite_chain;
 use crate::closures;
 use crate::comment::{
-    combine_strs_with_missing_comments, contains_comment, recover_comment_removed, rewrite_comment,
-    rewrite_missing_comment, CharClasses, FindUncommented,
+    combine_strs_with_missing_comments, comment_style, contains_comment, recover_comment_removed,
+    rewrite_comment, rewrite_missing_comment, CharClasses, FindUncommented,
 };
 use crate::config::lists::*;
 use crate::config::{Config, ControlBraceStyle, IndentStyle, Version};
@@ -257,6 +257,7 @@ pub(crate) fn format_expr(
                         }
                         _ => false,
                     },
+                    ast::ExprKind::Unary(_, ref expr) => needs_space_before_range(context, &expr),
                     _ => false,
                 }
             }
@@ -807,7 +808,7 @@ impl<'a> ControlFlow<'a> {
         debug!("rewrite_pat_expr {:?} {:?} {:?}", shape, self.pat, expr);
 
         let cond_shape = shape.offset_left(offset)?;
-        if !self.pat.is_none() {
+        if let Some(pat) = self.pat {
             let matcher = if self.matcher.is_empty() {
                 self.matcher.to_owned()
             } else {
@@ -816,12 +817,41 @@ impl<'a> ControlFlow<'a> {
             let pat_shape = cond_shape
                 .offset_left(matcher.len())?
                 .sub_width(self.connector.len())?;
-            let pat_string = if let Some(pat) = self.pat {
-                pat.rewrite(context, pat_shape)?
+            let pat_string = pat.rewrite(context, pat_shape)?;
+            let comments_lo = context
+                .snippet_provider
+                .span_after(self.span, self.connector.trim());
+            let missing_comments = if let Some(comment) =
+                rewrite_missing_comment(mk_sp(comments_lo, expr.span.lo()), cond_shape, context)
+            {
+                if !self.connector.is_empty() && !comment.is_empty() {
+                    if comment_style(&comment, false).is_line_comment() || comment.contains("\n") {
+                        let newline = &pat_shape
+                            .indent
+                            .block_indent(context.config)
+                            .to_string_with_newline(context.config);
+                        // An extra space is added when the lhs and rhs are joined
+                        // so we need to remove one space from the end to ensure
+                        // the comment and rhs are aligned.
+                        let mut suffix = newline.as_ref().to_string();
+                        if !suffix.is_empty() {
+                            suffix.truncate(suffix.len() - 1);
+                        }
+                        format!("{}{}{}", newline, comment, suffix)
+                    } else {
+                        format!(" {}", comment)
+                    }
+                } else {
+                    comment
+                }
             } else {
                 "".to_owned()
             };
-            let result = format!("{}{}{}", matcher, pat_string, self.connector);
+
+            let result = format!(
+                "{}{}{}{}",
+                matcher, pat_string, self.connector, missing_comments
+            );
             return rewrite_assign_rhs(context, result, expr, cond_shape);
         }
 
@@ -1186,27 +1216,9 @@ fn rewrite_string_lit(context: &RewriteContext<'_>, span: Span, shape: Shape) ->
             .lines()
             .dropping_back(1)
             .all(|line| line.ends_with('\\'))
+            && context.config.version() == Version::Two
         {
-            let new_indent = shape.visual_indent(1).indent;
-            let indented_string_lit = String::from(
-                string_lit
-                    .lines()
-                    .map(|line| {
-                        format!(
-                            "{}{}",
-                            new_indent.to_string(context.config),
-                            line.trim_start()
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .trim_start(),
-            );
-            return if context.config.version() == Version::Two {
-                Some(indented_string_lit)
-            } else {
-                wrap_str(indented_string_lit, context.config.max_width(), shape)
-            };
+            return Some(string_lit.to_owned());
         } else {
             return wrap_str(string_lit.to_owned(), context.config.max_width(), shape);
         }

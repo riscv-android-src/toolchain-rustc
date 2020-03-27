@@ -1,9 +1,10 @@
 use crate::utils::{has_drop, qpath_res, snippet_opt, span_lint, span_lint_and_sugg};
+use rustc::declare_lint_pass;
 use rustc::hir::def::{DefKind, Res};
 use rustc::hir::{BinOpKind, BlockCheckMode, Expr, ExprKind, Stmt, StmtKind, UnsafeSource};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use std::ops::Deref;
 
 declare_clippy_lint! {
@@ -58,7 +59,7 @@ fn has_no_effect(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
         | ExprKind::Type(ref inner, _)
         | ExprKind::Unary(_, ref inner)
         | ExprKind::Field(ref inner, _)
-        | ExprKind::AddrOf(_, ref inner)
+        | ExprKind::AddrOf(_, _, ref inner)
         | ExprKind::Box(ref inner) => has_no_effect(cx, inner),
         ExprKind::Struct(_, ref fields, ref base) => {
             !has_drop(cx, cx.tables.expr_ty(expr))
@@ -134,7 +135,7 @@ fn reduce_expression<'a>(cx: &LateContext<'_, '_>, expr: &'a Expr) -> Option<Vec
         | ExprKind::Type(ref inner, _)
         | ExprKind::Unary(_, ref inner)
         | ExprKind::Field(ref inner, _)
-        | ExprKind::AddrOf(_, ref inner)
+        | ExprKind::AddrOf(_, _, ref inner)
         | ExprKind::Box(ref inner) => reduce_expression(cx, inner).or_else(|| Some(vec![inner])),
         ExprKind::Struct(_, ref fields, ref base) => {
             if has_drop(cx, cx.tables.expr_ty(expr)) {

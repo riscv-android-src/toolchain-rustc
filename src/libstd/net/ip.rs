@@ -319,6 +319,7 @@ impl Ipv4Addr {
     /// let addr = Ipv4Addr::new(127, 0, 0, 1);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(not(bootstrap), rustc_const_stable(feature = "const_ipv4", since = "1.32.0"))]
     pub const fn new(a: u8, b: u8, c: u8, d: u8) -> Ipv4Addr {
         // FIXME: should just be u32::from_be_bytes([a, b, c, d]),
         // once that method is no longer rustc_const_unstable
@@ -406,6 +407,7 @@ impl Ipv4Addr {
     /// assert_eq!(Ipv4Addr::new(45, 22, 13, 197).is_unspecified(), false);
     /// ```
     #[stable(feature = "ip_shared", since = "1.12.0")]
+    #[cfg_attr(not(bootstrap), rustc_const_stable(feature = "const_ipv4", since = "1.32.0"))]
     pub const fn is_unspecified(&self) -> bool {
         self.inner.s_addr == 0
     }
@@ -536,7 +538,7 @@ impl Ipv4Addr {
     /// // the broadcast address is not global
     /// assert_eq!(Ipv4Addr::new(255, 255, 255, 255).is_global(), false);
     ///
-    /// // the broadcast address is not global
+    /// // the address space designated for documentation is not global
     /// assert_eq!(Ipv4Addr::new(192, 0, 2, 255).is_global(), false);
     /// assert_eq!(Ipv4Addr::new(198, 51, 100, 65).is_global(), false);
     /// assert_eq!(Ipv4Addr::new(203, 0, 113, 6).is_global(), false);
@@ -633,8 +635,8 @@ impl Ipv4Addr {
     /// network devices benchmarking. This range is defined in [IETF RFC 2544] as `192.18.0.0`
     /// through `198.19.255.255` but [errata 423] corrects it to `198.18.0.0/15`.
     ///
-    /// [IETF RFC 1112]: https://tools.ietf.org/html/rfc1112
-    /// [errate 423]: https://www.rfc-editor.org/errata/eid423
+    /// [IETF RFC 2544]: https://tools.ietf.org/html/rfc2544
+    /// [errata 423]: https://www.rfc-editor.org/errata/eid423
     /// [`true`]: ../../std/primitive.bool.html
     ///
     /// # Examples
@@ -1015,6 +1017,7 @@ impl Ipv6Addr {
     /// let addr = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2ff);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(not(bootstrap), rustc_const_stable(feature = "const_ipv6", since = "1.32.0"))]
     pub const fn new(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16,
                      g: u16, h: u16) -> Ipv6Addr {
         Ipv6Addr {
@@ -1130,7 +1133,7 @@ impl Ipv6Addr {
     /// The following return [`false`]:
     ///
     /// - the loopback address
-    /// - link-local, site-local, and unique local unicast addresses
+    /// - link-local and unique local unicast addresses
     /// - interface-, link-, realm-, admin- and site-local multicast addresses
     ///
     /// [`true`]: ../../std/primitive.bool.html
@@ -1480,6 +1483,7 @@ impl Ipv6Addr {
     ///            [255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     /// ```
     #[stable(feature = "ipv6_to_octets", since = "1.12.0")]
+    #[cfg_attr(not(bootstrap), rustc_const_stable(feature = "const_ipv6", since = "1.32.0"))]
     pub const fn octets(&self) -> [u8; 16] {
         self.inner.s6_addr
     }

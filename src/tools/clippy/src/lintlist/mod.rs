@@ -6,7 +6,7 @@ pub use lint::Lint;
 pub use lint::LINT_LEVELS;
 
 // begin lint list, do not remove this comment, it’s used in `update_lints`
-pub const ALL_LINTS: [Lint; 332] = [
+pub const ALL_LINTS: [Lint; 340] = [
     Lint {
         name: "absurd_extreme_comparisons",
         group: "correctness",
@@ -27,6 +27,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         desc: "the approximate of a known float constant (in `std::fXX::consts`)",
         deprecation: None,
         module: "approx_const",
+    },
+    Lint {
+        name: "as_conversions",
+        group: "restriction",
+        desc: "using a potentially dangerous silent `as` conversion",
+        deprecation: None,
+        module: "as_conversions",
     },
     Lint {
         name: "assertions_on_constants",
@@ -491,6 +498,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         module: "excessive_precision",
     },
     Lint {
+        name: "exit",
+        group: "restriction",
+        desc: "`std::process::exit` is called, terminating the program",
+        deprecation: None,
+        module: "exit",
+    },
+    Lint {
         name: "expect_fun_call",
         group: "perf",
         desc: "using any `expect` method with a function call",
@@ -813,13 +827,6 @@ pub const ALL_LINTS: [Lint; 332] = [
         module: "integer_division",
     },
     Lint {
-        name: "into_iter_on_array",
-        group: "correctness",
-        desc: "using `.into_iter()` on an array",
-        deprecation: None,
-        module: "methods",
-    },
-    Lint {
         name: "into_iter_on_ref",
         group: "style",
         desc: "using `.into_iter()` on a reference",
@@ -902,6 +909,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         desc: "large size difference between variants on an enum",
         deprecation: None,
         module: "large_enum_variant",
+    },
+    Lint {
+        name: "large_stack_arrays",
+        group: "pedantic",
+        desc: "allocating large arrays on stack may cause stack overflow",
+        deprecation: None,
+        module: "large_stack_arrays",
     },
     Lint {
         name: "len_without_is_empty",
@@ -1112,6 +1126,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         desc: "detects missing documentation for public and private members",
         deprecation: None,
         module: "missing_doc",
+    },
+    Lint {
+        name: "missing_errors_doc",
+        group: "pedantic",
+        desc: "`pub fn` returns `Result` without `# Errors` in doc comment",
+        deprecation: None,
+        module: "doc",
     },
     Lint {
         name: "missing_inline_in_public_items",
@@ -1690,7 +1711,7 @@ pub const ALL_LINTS: [Lint; 332] = [
     Lint {
         name: "result_map_unwrap_or_else",
         group: "pedantic",
-        desc: "using `Result.map(f).unwrap_or_else(g)`, which is more succinctly expressed as `.ok().map_or_else(g, f)`",
+        desc: "using `Result.map(f).unwrap_or_else(g)`, which is more succinctly expressed as `.map_or_else(g, f)`",
         deprecation: None,
         module: "methods",
     },
@@ -1707,6 +1728,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         desc: "iteration over an empty range, such as `10..0` or `5..5`",
         deprecation: None,
         module: "loops",
+    },
+    Lint {
+        name: "same_functions_in_if_condition",
+        group: "pedantic",
+        desc: "consecutive `ifs` with the same function call",
+        deprecation: None,
+        module: "copies",
     },
     Lint {
         name: "search_is_some",
@@ -1863,6 +1891,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         module: "formatting",
     },
     Lint {
+        name: "tabs_in_doc_comments",
+        group: "style",
+        desc: "using tabs in doc comments is not recommended",
+        deprecation: None,
+        module: "tabs_in_doc_comments",
+    },
+    Lint {
         name: "temporary_assignment",
         group: "complexity",
         desc: "assignments to temporaries",
@@ -1875,6 +1910,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         desc: "getting the inner pointer of a temporary `CString`",
         deprecation: None,
         module: "methods",
+    },
+    Lint {
+        name: "to_digit_is_some",
+        group: "style",
+        desc: "`char.is_digit()` is clearer",
+        deprecation: None,
+        module: "to_digit_is_some",
     },
     Lint {
         name: "todo",
@@ -1908,6 +1950,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         name: "transmute_bytes_to_str",
         group: "complexity",
         desc: "transmutes from a `&[u8]` to a `&str`",
+        deprecation: None,
+        module: "transmute",
+    },
+    Lint {
+        name: "transmute_float_to_int",
+        group: "nursery",
+        desc: "transmutes from a float to an integer",
         deprecation: None,
         module: "transmute",
     },
@@ -2158,7 +2207,7 @@ pub const ALL_LINTS: [Lint; 332] = [
     },
     Lint {
         name: "use_self",
-        group: "pedantic",
+        group: "nursery",
         desc: "Unnecessary structure name repetition whereas `Self` is applicable",
         deprecation: None,
         module: "use_self",
@@ -2330,6 +2379,13 @@ pub const ALL_LINTS: [Lint; 332] = [
         desc: "using a zero-width space in a string literal, which is confusing",
         deprecation: None,
         module: "unicode",
+    },
+    Lint {
+        name: "zst_offset",
+        group: "correctness",
+        desc: "Check for offset calculations on raw pointers to zero-sized types",
+        deprecation: None,
+        module: "methods",
     },
 ];
 // end lint list, do not remove this comment, it’s used in `update_lints`

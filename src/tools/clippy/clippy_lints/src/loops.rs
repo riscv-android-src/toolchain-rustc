@@ -1,24 +1,23 @@
 use crate::reexport::*;
 use if_chain::if_chain;
 use itertools::Itertools;
+use rustc::declare_lint_pass;
 use rustc::hir::def::{DefKind, Res};
 use rustc::hir::def_id;
 use rustc::hir::intravisit::{walk_block, walk_expr, walk_pat, walk_stmt, NestedVisitorMap, Visitor};
 use rustc::hir::*;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::middle::region;
-use rustc::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_tool_lint;
 // use rustc::middle::region::CodeExtent;
 use crate::consts::{constant, Constant};
 use crate::utils::usage::mutated_variables;
 use crate::utils::{is_type_diagnostic_item, qpath_res, sext, sugg};
-use rustc::middle::expr_use_visitor::*;
-use rustc::middle::mem_categorization::cmt_;
-use rustc::middle::mem_categorization::Categorization;
 use rustc::ty::subst::Subst;
 use rustc::ty::{self, Ty};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
+use rustc_typeck::expr_use_visitor::*;
 use std::iter::{once, Iterator};
 use std::mem;
 use syntax::ast;
@@ -674,7 +673,7 @@ fn never_loop_expr(expr: &Expr, main_loop_id: HirId) -> NeverLoopResult {
         | ExprKind::Cast(ref e, _)
         | ExprKind::Type(ref e, _)
         | ExprKind::Field(ref e, _)
-        | ExprKind::AddrOf(_, ref e)
+        | ExprKind::AddrOf(_, _, ref e)
         | ExprKind::Struct(_, _, Some(ref e))
         | ExprKind::Repeat(ref e, _)
         | ExprKind::DropTemps(ref e) => never_loop_expr(e, main_loop_id),
@@ -720,7 +719,7 @@ fn never_loop_expr(expr: &Expr, main_loop_id: HirId) -> NeverLoopResult {
         ExprKind::Struct(_, _, None)
         | ExprKind::Yield(_, _)
         | ExprKind::Closure(_, _, _, _, _)
-        | ExprKind::InlineAsm(_, _, _)
+        | ExprKind::InlineAsm(_)
         | ExprKind::Path(_)
         | ExprKind::Lit(_)
         | ExprKind::Err => NeverLoopResult::Otherwise,
@@ -1504,17 +1503,19 @@ fn make_iterator_snippet(cx: &LateContext<'_, '_>, arg: &Expr, applic_ref: &mut 
         // (&x).into_iter() ==> x.iter()
         // (&mut x).into_iter() ==> x.iter_mut()
         match &arg.kind {
-            ExprKind::AddrOf(mutability, arg_inner) if has_iter_method(cx, cx.tables.expr_ty(&arg_inner)).is_some() => {
+            ExprKind::AddrOf(BorrowKind::Ref, mutability, arg_inner)
+                if has_iter_method(cx, cx.tables.expr_ty(&arg_inner)).is_some() =>
+            {
                 let meth_name = match mutability {
-                    MutMutable => "iter_mut",
-                    MutImmutable => "iter",
+                    Mutability::Mutable => "iter_mut",
+                    Mutability::Immutable => "iter",
                 };
                 format!(
                     "{}.{}()",
                     sugg::Sugg::hir_with_applicability(cx, &arg_inner, "_", applic_ref).maybe_par(),
                     meth_name,
                 )
-            },
+            }
             _ => format!(
                 "{}.into_iter()",
                 sugg::Sugg::hir_with_applicability(cx, arg, "_", applic_ref).maybe_par()
@@ -1539,17 +1540,17 @@ fn check_for_loop_over_map_kv<'a, 'tcx>(
             let (new_pat_span, kind, ty, mutbl) = match cx.tables.expr_ty(arg).kind {
                 ty::Ref(_, ty, mutbl) => match (&pat[0].kind, &pat[1].kind) {
                     (key, _) if pat_is_wild(key, body) => (pat[1].span, "value", ty, mutbl),
-                    (_, value) if pat_is_wild(value, body) => (pat[0].span, "key", ty, MutImmutable),
+                    (_, value) if pat_is_wild(value, body) => (pat[0].span, "key", ty, Mutability::Immutable),
                     _ => return,
                 },
                 _ => return,
             };
             let mutbl = match mutbl {
-                MutImmutable => "",
-                MutMutable => "_mut",
+                Mutability::Immutable => "",
+                Mutability::Mutable => "_mut",
             };
             let arg = match arg.kind {
-                ExprKind::AddrOf(_, ref expr) => &**expr,
+                ExprKind::AddrOf(BorrowKind::Ref, _, ref expr) => &**expr,
                 _ => arg,
             };
 
@@ -1584,11 +1585,11 @@ struct MutatePairDelegate {
 }
 
 impl<'tcx> Delegate<'tcx> for MutatePairDelegate {
-    fn consume(&mut self, _: &cmt_<'tcx>, _: ConsumeMode) {}
+    fn consume(&mut self, _: &Place<'tcx>, _: ConsumeMode) {}
 
-    fn borrow(&mut self, cmt: &cmt_<'tcx>, bk: ty::BorrowKind) {
+    fn borrow(&mut self, cmt: &Place<'tcx>, bk: ty::BorrowKind) {
         if let ty::BorrowKind::MutBorrow = bk {
-            if let Categorization::Local(id) = cmt.cat {
+            if let PlaceBase::Local(id) = cmt.base {
                 if Some(id) == self.hir_id_low {
                     self.span_low = Some(cmt.span)
                 }
@@ -1599,8 +1600,8 @@ impl<'tcx> Delegate<'tcx> for MutatePairDelegate {
         }
     }
 
-    fn mutate(&mut self, cmt: &cmt_<'tcx>) {
-        if let Categorization::Local(id) = cmt.cat {
+    fn mutate(&mut self, cmt: &Place<'tcx>) {
+        if let PlaceBase::Local(id) = cmt.base {
             if Some(id) == self.hir_id_low {
                 self.span_low = Some(cmt.span)
             }
@@ -1678,16 +1679,9 @@ fn check_for_mutation(
         span_high: None,
     };
     let def_id = def_id::DefId::local(body.hir_id.owner);
-    let region_scope_tree = &cx.tcx.region_scope_tree(def_id);
-    ExprUseVisitor::new(
-        &mut delegate,
-        cx.tcx,
-        def_id,
-        cx.param_env,
-        region_scope_tree,
-        cx.tables,
-    )
-    .walk_expr(body);
+    cx.tcx.infer_ctxt().enter(|infcx| {
+        ExprUseVisitor::new(&mut delegate, &infcx, def_id, cx.param_env, cx.tables).walk_expr(body);
+    });
     delegate.mutation_span()
 }
 
@@ -1873,8 +1867,8 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
                 self.prefer_mutable = false;
                 self.visit_expr(rhs);
             },
-            ExprKind::AddrOf(mutbl, ref expr) => {
-                if mutbl == MutMutable {
+            ExprKind::AddrOf(BorrowKind::Ref, mutbl, ref expr) => {
+                if mutbl == Mutability::Mutable {
                     self.prefer_mutable = true;
                 }
                 self.visit_expr(expr);
@@ -1885,7 +1879,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
                     let ty = self.cx.tables.expr_ty_adjusted(expr);
                     self.prefer_mutable = false;
                     if let ty::Ref(_, _, mutbl) = ty.kind {
-                        if mutbl == MutMutable {
+                        if mutbl == Mutability::Mutable {
                             self.prefer_mutable = true;
                         }
                     }
@@ -1897,7 +1891,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
                 for (ty, expr) in self.cx.tcx.fn_sig(def_id).inputs().skip_binder().iter().zip(args) {
                     self.prefer_mutable = false;
                     if let ty::Ref(_, _, mutbl) = ty.kind {
-                        if mutbl == MutMutable {
+                        if mutbl == Mutability::Mutable {
                             self.prefer_mutable = true;
                         }
                     }
@@ -1993,7 +1987,13 @@ fn is_ref_iterable_type(cx: &LateContext<'_, '_>, e: &Expr) -> bool {
 fn is_iterable_array<'tcx>(ty: Ty<'tcx>, cx: &LateContext<'_, 'tcx>) -> bool {
     // IntoIterator is currently only implemented for array sizes <= 32 in rustc
     match ty.kind {
-        ty::Array(_, n) => (0..=32).contains(&n.eval_usize(cx.tcx, cx.param_env)),
+        ty::Array(_, n) => {
+            if let Some(val) = n.try_eval_usize(cx.tcx, cx.param_env) {
+                (0..=32).contains(&val)
+            } else {
+                false
+            }
+        },
         _ => false,
     }
 }
@@ -2084,7 +2084,9 @@ impl<'a, 'tcx> Visitor<'tcx> for IncrementVisitor<'a, 'tcx> {
                         }
                     },
                     ExprKind::Assign(ref lhs, _) if lhs.hir_id == expr.hir_id => *state = VarState::DontWarn,
-                    ExprKind::AddrOf(mutability, _) if mutability == MutMutable => *state = VarState::DontWarn,
+                    ExprKind::AddrOf(BorrowKind::Ref, mutability, _) if mutability == Mutability::Mutable => {
+                        *state = VarState::DontWarn
+                    },
                     _ => (),
                 }
             }
@@ -2166,7 +2168,9 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
                             VarState::DontWarn
                         }
                     },
-                    ExprKind::AddrOf(mutability, _) if mutability == MutMutable => self.state = VarState::DontWarn,
+                    ExprKind::AddrOf(BorrowKind::Ref, mutability, _) if mutability == Mutability::Mutable => {
+                        self.state = VarState::DontWarn
+                    },
                     _ => (),
                 }
             }
@@ -2186,8 +2190,9 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
         }
         walk_expr(self, expr);
     }
+
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::None
+        NestedVisitorMap::OnlyBodies(&self.cx.tcx.hir())
     }
 }
 
@@ -2358,14 +2363,54 @@ fn check_infinite_loop<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, cond: &'tcx Expr, e
         return;
     };
     let mutable_static_in_cond = var_visitor.def_ids.iter().any(|(_, v)| *v);
+
+    let mut has_break_or_return_visitor = HasBreakOrReturnVisitor {
+        has_break_or_return: false,
+    };
+    has_break_or_return_visitor.visit_expr(expr);
+    let has_break_or_return = has_break_or_return_visitor.has_break_or_return;
+
     if no_cond_variable_mutated && !mutable_static_in_cond {
-        span_lint(
+        span_lint_and_then(
             cx,
             WHILE_IMMUTABLE_CONDITION,
             cond.span,
-            "Variable in the condition are not mutated in the loop body. \
-             This either leads to an infinite or to a never running loop.",
+            "variables in the condition are not mutated in the loop body",
+            |db| {
+                db.note("this may lead to an infinite or to a never running loop");
+
+                if has_break_or_return {
+                    db.note("this loop contains `return`s or `break`s");
+                    db.help("rewrite it as `if cond { loop { } }`");
+                }
+            },
         );
+    }
+}
+
+struct HasBreakOrReturnVisitor {
+    has_break_or_return: bool,
+}
+
+impl<'a, 'tcx> Visitor<'tcx> for HasBreakOrReturnVisitor {
+    fn visit_expr(&mut self, expr: &'tcx Expr) {
+        if self.has_break_or_return {
+            return;
+        }
+
+        match expr.kind {
+            ExprKind::Ret(_) | ExprKind::Break(_, _) => {
+                self.has_break_or_return = true;
+                return;
+            },
+            _ => {},
+        }
+
+        walk_expr(self, expr);
+    }
+
+    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+        NestedVisitorMap::None
     }
 }
 

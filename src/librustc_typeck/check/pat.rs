@@ -1,6 +1,6 @@
 use crate::check::FnCtxt;
 use crate::util::nodemap::FxHashMap;
-use errors::{Applicability, DiagnosticBuilder, pluralise};
+use errors::{Applicability, DiagnosticBuilder, pluralize};
 use rustc::hir::{self, PatKind, Pat, HirId};
 use rustc::hir::def::{Res, DefKind, CtorKind};
 use rustc::hir::pat_util::EnumerateAndAdjustIterator;
@@ -13,6 +13,8 @@ use syntax::ast;
 use syntax::util::lev_distance::find_best_match_for_name;
 use syntax_pos::Span;
 use syntax_pos::hygiene::DesugaringKind;
+
+use rustc_error_codes::*;
 
 use std::collections::hash_map::Entry::{Occupied, Vacant};
 use std::cmp;
@@ -30,7 +32,7 @@ https://doc.rust-lang.org/reference/types.html#trait-objects";
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     pub fn check_pat_top(&self, pat: &'tcx Pat, expected: Ty<'tcx>, discrim_span: Option<Span>) {
-        let def_bm = BindingMode::BindByValue(hir::Mutability::MutImmutable);
+        let def_bm = BindingMode::BindByValue(hir::Mutability::Immutable);
         self.check_pat(pat, expected, def_bm, discrim_span);
     }
 
@@ -45,7 +47,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// 4 |    let temp: usize = match a + b {
     ///   |                            ----- this expression has type `usize`
     /// 5 |         Ok(num) => num,
-    ///   |         ^^^^^^^ expected usize, found enum `std::result::Result`
+    ///   |         ^^^^^^^ expected `usize`, found enum `std::result::Result`
     ///   |
     ///   = note: expected type `usize`
     ///              found type `std::result::Result<_, _>`
@@ -194,7 +196,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             //
             // See issue #46688.
             let def_bm = match pat.kind {
-                PatKind::Ref(..) => ty::BindByValue(hir::MutImmutable),
+                PatKind::Ref(..) => ty::BindByValue(hir::Mutability::Immutable),
                 _ => def_bm,
             };
             (expected, def_bm)
@@ -275,10 +277,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // (depending on whether we observe `&` or `&mut`).
                 ty::BindByValue(_) |
                 // When `ref mut`, stay a `ref mut` (on `&mut`) or downgrade to `ref` (on `&`).
-                ty::BindByReference(hir::Mutability::MutMutable) => inner_mutability,
+                ty::BindByReference(hir::Mutability::Mutable) => inner_mutability,
                 // Once a `ref`, always a `ref`.
                 // This is because a `& &mut` cannot mutate the underlying value.
-                ty::BindByReference(m @ hir::Mutability::MutImmutable) => m,
+                ty::BindByReference(m @ hir::Mutability::Immutable) => m,
             });
         }
 
@@ -362,37 +364,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             || ty.is_char()
             || ty.references_error()
         };
-        let lhs_compat = numeric_or_char(lhs_ty);
-        let rhs_compat = numeric_or_char(rhs_ty);
+        let lhs_fail = !numeric_or_char(lhs_ty);
+        let rhs_fail = !numeric_or_char(rhs_ty);
 
-        if !lhs_compat || !rhs_compat {
-            let span = if !lhs_compat && !rhs_compat {
-                span
-            } else if !lhs_compat {
-                begin.span
-            } else {
-                end.span
-            };
-
-            let mut err = struct_span_err!(
-                self.tcx.sess,
-                span,
-                E0029,
-                "only char and numeric types are allowed in range patterns"
+        if lhs_fail || rhs_fail {
+            self.emit_err_pat_range(
+                span, begin.span, end.span, lhs_fail, rhs_fail, lhs_ty, rhs_ty
             );
-            err.span_label(span, "ranges require char or numeric types");
-            err.note(&format!("start type: {}", self.ty_to_string(lhs_ty)));
-            err.note(&format!("end type: {}", self.ty_to_string(rhs_ty)));
-            if self.tcx.sess.teach(&err.get_code().unwrap()) {
-                err.note(
-                    "In a match expression, only numbers and characters can be matched \
-                        against a range. This is because the compiler checks that the range \
-                        is non-empty at compile-time, and is unable to evaluate arbitrary \
-                        comparison functions. If you want to capture values of an orderable \
-                        type between two end-points, you can use a guard."
-                    );
-            }
-            err.emit();
             return None;
         }
 
@@ -404,6 +382,62 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self.demand_eqtype_pat(span, expected, lhs_ty, discrim_span);
         self.demand_eqtype_pat(span, expected, rhs_ty, discrim_span);
         Some(common_type)
+    }
+
+    fn emit_err_pat_range(
+        &self,
+        span: Span,
+        begin_span: Span,
+        end_span: Span,
+        lhs_fail: bool,
+        rhs_fail: bool,
+        lhs_ty: Ty<'tcx>,
+        rhs_ty: Ty<'tcx>,
+    ) {
+        let span = if lhs_fail && rhs_fail {
+            span
+        } else if lhs_fail {
+            begin_span
+        } else {
+            end_span
+        };
+
+        let mut err = struct_span_err!(
+            self.tcx.sess,
+            span,
+            E0029,
+            "only char and numeric types are allowed in range patterns"
+        );
+        let msg = |ty| {
+            format!("this is of type `{}` but it should be `char` or numeric", ty)
+        };
+        let mut one_side_err = |first_span, first_ty, second_span, second_ty: Ty<'_>| {
+            err.span_label(first_span, &msg(first_ty));
+            if !second_ty.references_error() {
+                err.span_label(
+                    second_span,
+                    &format!("this is of type `{}`", second_ty)
+                );
+            }
+        };
+        if lhs_fail && rhs_fail {
+            err.span_label(begin_span, &msg(lhs_ty));
+            err.span_label(end_span, &msg(rhs_ty));
+        } else if lhs_fail {
+            one_side_err(begin_span, lhs_ty, end_span, rhs_ty);
+        } else {
+            one_side_err(end_span, rhs_ty, begin_span, lhs_ty);
+        }
+        if self.tcx.sess.teach(&err.get_code().unwrap()) {
+            err.note(
+                "In a match expression, only numbers and characters can be matched \
+                    against a range. This is because the compiler checks that the range \
+                    is non-empty at compile-time, and is unable to evaluate arbitrary \
+                    comparison functions. If you want to capture values of an orderable \
+                    type between two end-points, you can use a guard."
+                );
+        }
+        err.emit();
     }
 
     fn check_pat_ident(
@@ -504,7 +538,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
-    pub fn check_dereferencable(&self, span: Span, expected: Ty<'tcx>, inner: &Pat) -> bool {
+    pub fn check_dereferenceable(&self, span: Span, expected: Ty<'tcx>, inner: &Pat) -> bool {
         if let PatKind::Binding(..) = inner.kind {
             if let Some(mt) = self.shallow_resolve(expected).builtin_deref(true) {
                 if let ty::Dynamic(..) = mt.ty.kind {
@@ -707,8 +741,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         expected: Ty<'tcx>,
         had_err: bool,
     ) {
-        let subpats_ending = pluralise!(subpats.len());
-        let fields_ending = pluralise!(fields.len());
+        let subpats_ending = pluralize!(subpats.len());
+        let fields_ending = pluralize!(fields.len());
         let res_span = self.tcx.def_span(res.def_id());
         let mut err = struct_span_err!(
             self.tcx.sess,
@@ -985,7 +1019,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     );
 
                     // we don't want to throw `E0027` in case we have thrown `E0026` for them
-                    unmentioned_fields.retain(|&x| x.as_str() != suggested_name.as_str());
+                    unmentioned_fields.retain(|&x| x.name != suggested_name);
                 }
             }
         }
@@ -1048,7 +1082,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         discrim_span: Option<Span>,
     ) -> Ty<'tcx> {
         let tcx = self.tcx;
-        let (box_ty, inner_ty) = if self.check_dereferencable(span, expected, &inner) {
+        let (box_ty, inner_ty) = if self.check_dereferenceable(span, expected, &inner) {
             // Here, `demand::subtype` is good enough, but I don't
             // think any errors can be introduced by using `demand::eqtype`.
             let inner_ty = self.next_ty_var(TypeVariableOrigin {
@@ -1076,7 +1110,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ) -> Ty<'tcx> {
         let tcx = self.tcx;
         let expected = self.shallow_resolve(expected);
-        let (rptr_ty, inner_ty) = if self.check_dereferencable(pat.span, expected, &inner) {
+        let (rptr_ty, inner_ty) = if self.check_dereferenceable(pat.span, expected, &inner) {
             // `demand::subtype` would be good enough, but using `eqtype` turns
             // out to be equally general. See (note_1) for details.
 
@@ -1120,6 +1154,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         self.tcx.mk_ref(region, mt)
     }
 
+    /// Type check a slice pattern.
+    ///
+    /// Syntactically, these look like `[pat_0, ..., pat_n]`.
+    /// Semantically, we are type checking a pattern with structure:
+    /// ```
+    /// [before_0, ..., before_n, (slice, after_0, ... after_n)?]
+    /// ```
+    /// The type of `slice`, if it is present, depends on the `expected` type.
+    /// If `slice` is missing, then so is `after_i`.
+    /// If `slice` is present, it can still represent 0 elements.
     fn check_pat_slice(
         &self,
         span: Span,
@@ -1133,27 +1177,39 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let tcx = self.tcx;
         let expected_ty = self.structurally_resolved_type(span, expected);
         let (inner_ty, slice_ty) = match expected_ty.kind {
+            // An array, so we might have something like `let [a, b, c] = [0, 1, 2];`.
             ty::Array(inner_ty, size) => {
                 let slice_ty = if let Some(size) = size.try_eval_usize(tcx, self.param_env) {
+                    // Now we know the length...
                     let min_len = before.len() as u64 + after.len() as u64;
                     if slice.is_none() {
+                        // ...and since there is no variable-length pattern,
+                        // we require an exact match between the number of elements
+                        // in the array pattern and as provided by the matched type.
                         if min_len != size {
                             self.error_scrutinee_inconsistent_length(span, min_len, size)
                         }
                         tcx.types.err
                     } else if let Some(rest) = size.checked_sub(min_len) {
+                        // The variable-length pattern was there,
+                        // so it has an array type with the remaining elements left as its size...
                         tcx.mk_array(inner_ty, rest)
                     } else {
+                        // ...however, in this case, there were no remaining elements.
+                        // That is, the slice pattern requires more than the array type offers.
                         self.error_scrutinee_with_rest_inconsistent_length(span, min_len, size);
                         tcx.types.err
                     }
                 } else {
+                    // No idea what the length is, which happens if we have e.g.,
+                    // `let [a, b] = arr` where `arr: [T; N]` where `const N: usize`.
                     self.error_scrutinee_unfixed_length(span);
                     tcx.types.err
                 };
                 (inner_ty, slice_ty)
             }
             ty::Slice(inner_ty) => (inner_ty, expected_ty),
+            // The expected type must be an array or slice, but was neither, so error.
             _ => {
                 if !expected_ty.references_error() {
                     self.error_expected_array_or_slice(span, expected_ty);
@@ -1162,12 +1218,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
         };
 
+        // Type check all the patterns before `slice`.
         for elt in before {
             self.check_pat(&elt, inner_ty, def_bm, discrim_span);
         }
+        // Type check the `slice`, if present, against its expected type.
         if let Some(slice) = slice {
             self.check_pat(&slice, slice_ty, def_bm, discrim_span);
         }
+        // Type check the elements after `slice`, if present.
         for elt in after {
             self.check_pat(&elt, inner_ty, def_bm, discrim_span);
         }
@@ -1181,10 +1240,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             E0527,
             "pattern requires {} element{} but array has {}",
             min_len,
-            pluralise!(min_len),
+            pluralize!(min_len),
             size,
         )
-        .span_label(span, format!("expected {} element{}", size, pluralise!(size)))
+        .span_label(span, format!("expected {} element{}", size, pluralize!(size)))
         .emit();
     }
 
@@ -1195,14 +1254,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             E0528,
             "pattern requires at least {} element{} but array has {}",
             min_len,
-            pluralise!(min_len),
+            pluralize!(min_len),
             size,
         ).span_label(
             span,
             format!(
                 "pattern cannot match array of {} element{}",
                 size,
-                pluralise!(size),
+                pluralize!(size),
             ),
         ).emit();
     }

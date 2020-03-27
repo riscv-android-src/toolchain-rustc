@@ -76,16 +76,16 @@ use TokenTreeOrTokenTreeSlice::*;
 
 use crate::mbe::{self, TokenTree};
 
+use rustc_parse::Directory;
+use rustc_parse::parser::{Parser, PathStyle, FollowedByType};
 use syntax::ast::{Ident, Name};
-use syntax::parse::{Directory, PResult};
-use syntax::parse::parser::{Parser, PathStyle};
-use syntax::parse::token::{self, DocComment, Nonterminal, Token};
 use syntax::print::pprust;
 use syntax::sess::ParseSess;
 use syntax::symbol::{kw, sym, Symbol};
-use syntax::tokenstream::{DelimSpan, TokenStream};
+use syntax::token::{self, DocComment, Nonterminal, Token};
+use syntax::tokenstream::TokenStream;
 
-use errors::FatalError;
+use errors::{PResult, FatalError};
 use smallvec::{smallvec, SmallVec};
 use syntax_pos::Span;
 
@@ -163,11 +163,6 @@ struct MatcherPos<'root, 'tt> {
 
     /// The position of the "dot" in this matcher
     idx: usize,
-
-    /// The first span of source that the beginning of this matcher corresponds to. In other
-    /// words, the token in the source whose span is `sp_open` is matched against the first token of
-    /// the matcher.
-    sp_open: Span,
 
     /// For each named metavar in the matcher, we keep track of token trees matched against the
     /// metavar by the black box parser. In particular, there may be more than one match per
@@ -307,8 +302,8 @@ fn create_matches(len: usize) -> Box<[Lrc<NamedMatchVec>]> {
 }
 
 /// Generates the top-level matcher position in which the "dot" is before the first token of the
-/// matcher `ms` and we are going to start matching at the span `open` in the source.
-fn initial_matcher_pos<'root, 'tt>(ms: &'tt [TokenTree], open: Span) -> MatcherPos<'root, 'tt> {
+/// matcher `ms`.
+fn initial_matcher_pos<'root, 'tt>(ms: &'tt [TokenTree]) -> MatcherPos<'root, 'tt> {
     let match_idx_hi = count_names(ms);
     let matches = create_matches(match_idx_hi);
     MatcherPos {
@@ -316,8 +311,6 @@ fn initial_matcher_pos<'root, 'tt>(ms: &'tt [TokenTree], open: Span) -> MatcherP
         top_elts: TtSeq(ms), // "elts" is an abbr. for "elements"
         // The "dot" is before the first token of the matcher
         idx: 0,
-        // We start matching at the span `open` in the source code
-        sp_open: open,
 
         // Initialize `matches` to a bunch of empty `Vec`s -- one for each metavar in `top_elts`.
         // `match_lo` for `top_elts` is 0 and `match_hi` is `matches.len()`. `match_cur` is 0 since
@@ -355,7 +348,7 @@ fn initial_matcher_pos<'root, 'tt>(ms: &'tt [TokenTree], open: Span) -> MatcherP
 /// token tree it was derived from.
 #[derive(Debug, Clone)]
 crate enum NamedMatch {
-    MatchedSeq(Lrc<NamedMatchVec>, DelimSpan),
+    MatchedSeq(Lrc<NamedMatchVec>),
     MatchedNonterminal(Lrc<Nonterminal>),
 }
 
@@ -497,8 +490,7 @@ fn inner_parse_loop<'root, 'tt>(
                     // Add matches from this repetition to the `matches` of `up`
                     for idx in item.match_lo..item.match_hi {
                         let sub = item.matches[idx].clone();
-                        let span = DelimSpan::from_pair(item.sp_open, token.span);
-                        new_pos.push_match(idx, MatchedSeq(sub, span));
+                        new_pos.push_match(idx, MatchedSeq(sub));
                     }
 
                     // Move the "dot" past the repetition in `up`
@@ -552,7 +544,7 @@ fn inner_parse_loop<'root, 'tt>(
                         new_item.match_cur += seq.num_captures;
                         new_item.idx += 1;
                         for idx in item.match_cur..item.match_cur + seq.num_captures {
-                            new_item.push_match(idx, MatchedSeq(Lrc::new(smallvec![]), sp));
+                            new_item.push_match(idx, MatchedSeq(Lrc::new(smallvec![])));
                         }
                         cur_items.push(new_item);
                     }
@@ -568,7 +560,6 @@ fn inner_parse_loop<'root, 'tt>(
                         match_cur: item.match_cur,
                         match_hi: item.match_cur + seq.num_captures,
                         up: Some(item),
-                        sp_open: sp.open,
                         top_elts: Tt(TokenTree::Sequence(sp, seq)),
                     })));
                 }
@@ -652,7 +643,7 @@ pub(super) fn parse(
         directory,
         recurse_into_modules,
         true,
-        syntax::MACRO_ARGUMENTS,
+        rustc_parse::MACRO_ARGUMENTS,
     );
 
     // A queue of possible matcher positions. We initialize it with the matcher position in which
@@ -663,7 +654,7 @@ pub(super) fn parse(
     //
     // This MatcherPos instance is allocated on the stack. All others -- and
     // there are frequently *no* others! -- are allocated on the heap.
-    let mut initial = initial_matcher_pos(ms, parser.token.span);
+    let mut initial = initial_matcher_pos(ms);
     let mut cur_items = smallvec![MatcherPosHandle::Ref(&mut initial)];
     let mut next_items = Vec::new();
 
@@ -717,7 +708,7 @@ pub(super) fn parse(
                     Token::new(token::Eof, if parser.token.span.is_dummy() {
                         parser.token.span
                     } else {
-                        sess.source_map().next_point(parser.token.span)
+                        parser.token.span.shrink_to_hi()
                     }),
                     "missing tokens in macro arguments",
                 );
@@ -933,7 +924,7 @@ fn parse_nt_inner<'a>(p: &mut Parser<'a>, sp: Span, name: Symbol) -> PResult<'a,
         }
         sym::path => token::NtPath(p.parse_path(PathStyle::Type)?),
         sym::meta => token::NtMeta(p.parse_attr_item()?),
-        sym::vis => token::NtVis(p.parse_visibility(true)?),
+        sym::vis => token::NtVis(p.parse_visibility(FollowedByType::Yes)?),
         sym::lifetime => if p.check_lifetime() {
             token::NtLifetime(p.expect_lifetime().ident)
         } else {

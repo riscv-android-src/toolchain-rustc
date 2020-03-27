@@ -2,13 +2,13 @@ error[E0308]: mismatched types
   --> $DIR/issue-13853.rs:14:9
    |
 LL |     fn nodes<'a, I: Iterator<Item=&'a N>>(&self) -> I
-   |                                                     - expected `I` because of return type
+   |                  - this type parameter              - expected `I` because of return type
 ...
 LL |         self.iter()
-   |         ^^^^^^^^^^^ expected type parameter, found struct `std::slice::Iter`
+   |         ^^^^^^^^^^^ expected type parameter `I`, found struct `std::slice::Iter`
    |
-   = note: expected type `I`
-              found type `std::slice::Iter<'_, N>`
+   = note: expected type parameter `I`
+                      found struct `std::slice::Iter<'_, N>`
    = help: type parameters must be constrained to match other types
    = note: for more information, visit https://doc.rust-lang.org/book/ch10-02-traits.html#traits-as-parameters
 
@@ -27,8 +27,8 @@ LL |     iterate(graph);
    |             expected reference, found struct `std::vec::Vec`
    |             help: consider borrowing here: `&graph`
    |
-   = note: expected type `&_`
-              found type `std::vec::Vec<Stuff>`
+   = note: expected reference `&_`
+                 found struct `std::vec::Vec<Stuff>`
 
 error: aborting due to 3 previous errors
 

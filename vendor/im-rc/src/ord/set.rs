@@ -428,7 +428,7 @@ where
                 }
                 Insert::Update(root) => Ref::from(root),
                 Insert::Split(left, median, right) => {
-                    Ref::from(Node::from_split(left, median, right))
+                    Ref::from(Node::new_from_split(left, median, right))
                 }
             }
         };
@@ -606,6 +606,8 @@ where
     /// assert_eq!(expected, set1.difference(set2));
     /// # }
     /// ```
+    ///
+    /// [symmetric_difference]: #method.symmetric_difference
     #[must_use]
     pub fn difference(self, other: Self) -> Self {
         self.symmetric_difference(other)

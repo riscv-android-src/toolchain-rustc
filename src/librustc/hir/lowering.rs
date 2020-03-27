@@ -44,8 +44,7 @@ use crate::hir::def::{Namespace, Res, DefKind, PartialRes, PerNS};
 use crate::hir::{GenericArg, ConstArg};
 use crate::hir::ptr::P;
 use crate::lint;
-use crate::lint::builtin::{self, PARENTHESIZED_PARAMS_IN_TYPES_AND_MODULES,
-                    ELIDED_LIFETIMES_IN_PATHS};
+use crate::lint::builtin::{self, ELIDED_LIFETIMES_IN_PATHS};
 use crate::middle::cstore::CrateStore;
 use crate::session::Session;
 use crate::session::config::nightly_options;
@@ -65,9 +64,8 @@ use syntax::ast;
 use syntax::ptr::P as AstP;
 use syntax::ast::*;
 use syntax::errors;
-use syntax::expand::SpecialDerives;
 use syntax::print::pprust;
-use syntax::parse::token::{self, Nonterminal, Token};
+use syntax::token::{self, Nonterminal, Token};
 use syntax::tokenstream::{TokenStream, TokenTree};
 use syntax::sess::ParseSess;
 use syntax::source_map::{respan, ExpnData, ExpnKind, DesugaringKind, Spanned};
@@ -75,6 +73,8 @@ use syntax::symbol::{kw, sym, Symbol};
 use syntax::visit::{self, Visitor};
 use syntax_pos::hygiene::ExpnId;
 use syntax_pos::Span;
+
+use rustc_error_codes::*;
 
 const HIR_ID_COUNTER_LOCKED: u32 = 0xFFFFFFFF;
 
@@ -184,9 +184,9 @@ pub trait Resolver {
         ns: Namespace,
     ) -> (ast::Path, Res<NodeId>);
 
-    fn has_derives(&self, node_id: NodeId, derives: SpecialDerives) -> bool;
-
     fn lint_buffer(&mut self) -> &mut lint::LintBuffer;
+
+    fn next_node_id(&mut self) -> NodeId;
 }
 
 type NtToTokenstream = fn(&Nonterminal, &ParseSess, Span) -> TokenStream;
@@ -301,7 +301,6 @@ enum ParamMode {
 
 enum ParenthesizedGenericArgs {
     Ok,
-    Warn,
     Err,
 }
 
@@ -455,7 +454,6 @@ impl<'a> LoweringContext<'a> {
                     | ItemKind::Union(_, ref generics)
                     | ItemKind::Enum(_, ref generics)
                     | ItemKind::TyAlias(_, ref generics)
-                    | ItemKind::OpaqueTy(_, ref generics)
                     | ItemKind::Trait(_, _, ref generics, ..) => {
                         let def_id = self.lctx.resolver.definitions().local_def_id(item.id);
                         let count = generics
@@ -677,7 +675,8 @@ impl<'a> LoweringContext<'a> {
     }
 
     fn next_id(&mut self) -> hir::HirId {
-        self.lower_node_id(self.sess.next_node_id())
+        let node_id = self.resolver.next_node_id();
+        self.lower_node_id(node_id)
     }
 
     fn lower_res(&mut self, res: Res<NodeId>) -> Res {
@@ -786,7 +785,7 @@ impl<'a> LoweringContext<'a> {
         hir_name: ParamName,
         parent_index: DefIndex,
     ) -> hir::GenericParam {
-        let node_id = self.sess.next_node_id();
+        let node_id = self.resolver.next_node_id();
 
         // Get the name we'll use to make the def-path. Note
         // that collisions are ok here and this shouldn't
@@ -1000,15 +999,31 @@ impl<'a> LoweringContext<'a> {
         // Note that we explicitly do not walk the path. Since we don't really
         // lower attributes (we use the AST version) there is nowhere to keep
         // the `HirId`s. We don't actually need HIR version of attributes anyway.
+        let kind = match attr.kind {
+            AttrKind::Normal(ref item) => {
+                AttrKind::Normal(AttrItem {
+                    path: item.path.clone(),
+                    args: self.lower_mac_args(&item.args),
+                })
+            }
+            AttrKind::DocComment(comment) => AttrKind::DocComment(comment)
+        };
+
         Attribute {
-            item: AttrItem {
-                path: attr.path.clone(),
-                tokens: self.lower_token_stream(attr.tokens.clone()),
-            },
+            kind,
             id: attr.id,
             style: attr.style,
-            is_sugared_doc: attr.is_sugared_doc,
             span: attr.span,
+        }
+    }
+
+    fn lower_mac_args(&mut self, args: &MacArgs) -> MacArgs {
+        match *args {
+            MacArgs::Empty => MacArgs::Empty,
+            MacArgs::Delimited(dspan, delim, ref tokens) =>
+                MacArgs::Delimited(dspan, delim, self.lower_token_stream(tokens.clone())),
+            MacArgs::Eq(eq_span, ref tokens) =>
+                MacArgs::Eq(eq_span, self.lower_token_stream(tokens.clone())),
         }
     }
 
@@ -1105,7 +1120,7 @@ impl<'a> LoweringContext<'a> {
                     // Desugar `AssocTy: Bounds` into `AssocTy = impl Bounds`. We do this by
                     // constructing the HIR for `impl bounds...` and then lowering that.
 
-                    let impl_trait_node_id = self.sess.next_node_id();
+                    let impl_trait_node_id = self.resolver.next_node_id();
                     let parent_def_index = self.current_hir_id_owner.last().unwrap().0;
                     self.resolver.definitions().create_def_with_parent(
                         parent_def_index,
@@ -1116,9 +1131,10 @@ impl<'a> LoweringContext<'a> {
                     );
 
                     self.with_dyn_type_scope(false, |this| {
+                        let node_id = this.resolver.next_node_id();
                         let ty = this.lower_ty(
                             &Ty {
-                                id: this.sess.next_node_id(),
+                                id: node_id,
                                 kind: TyKind::ImplTrait(impl_trait_node_id, bounds.clone()),
                                 span: constraint.span,
                             },
@@ -1149,13 +1165,64 @@ impl<'a> LoweringContext<'a> {
         }
     }
 
-    fn lower_generic_arg(&mut self,
-                         arg: &ast::GenericArg,
-                         itctx: ImplTraitContext<'_>)
-                         -> hir::GenericArg {
+    fn lower_generic_arg(
+        &mut self,
+        arg: &ast::GenericArg,
+        itctx: ImplTraitContext<'_>
+    ) -> hir::GenericArg {
         match arg {
             ast::GenericArg::Lifetime(lt) => GenericArg::Lifetime(self.lower_lifetime(&lt)),
-            ast::GenericArg::Type(ty) => GenericArg::Type(self.lower_ty_direct(&ty, itctx)),
+            ast::GenericArg::Type(ty) => {
+                // We parse const arguments as path types as we cannot distiguish them durring
+                // parsing. We try to resolve that ambiguity by attempting resolution in both the
+                // type and value namespaces. If we resolved the path in the value namespace, we
+                // transform it into a generic const argument.
+                if let TyKind::Path(ref qself, ref path) = ty.kind {
+                    if let Some(partial_res) = self.resolver.get_partial_res(ty.id) {
+                        let res = partial_res.base_res();
+                        if !res.matches_ns(Namespace::TypeNS) {
+                            debug!(
+                                "lower_generic_arg: Lowering type argument as const argument: {:?}",
+                                ty,
+                            );
+
+                            // Construct a AnonConst where the expr is the "ty"'s path.
+
+                            let parent_def_index =
+                                self.current_hir_id_owner.last().unwrap().0;
+                            let node_id = self.resolver.next_node_id();
+
+                            // Add a definition for the in-band const def.
+                            self.resolver.definitions().create_def_with_parent(
+                                parent_def_index,
+                                node_id,
+                                DefPathData::AnonConst,
+                                ExpnId::root(),
+                                ty.span,
+                            );
+
+                            let path_expr = Expr {
+                                id: ty.id,
+                                kind: ExprKind::Path(qself.clone(), path.clone()),
+                                span: ty.span,
+                                attrs: ThinVec::new(),
+                            };
+
+                            let ct = self.with_new_scopes(|this| {
+                                hir::AnonConst {
+                                    hir_id: this.lower_node_id(node_id),
+                                    body: this.lower_const_body(&path_expr),
+                                }
+                            });
+                            return GenericArg::Const(ConstArg {
+                                value: ct,
+                                span: ty.span,
+                            });
+                        }
+                    }
+                }
+                GenericArg::Type(self.lower_ty_direct(&ty, itctx))
+            }
             ast::GenericArg::Const(ct) => {
                 GenericArg::Const(ConstArg {
                     value: self.lower_anon_const(&ct),
@@ -1212,8 +1279,8 @@ impl<'a> LoweringContext<'a> {
                                     &NodeMap::default(),
                                     ImplTraitContext::disallowed(),
                                 ),
-                                unsafety: this.lower_unsafety(f.unsafety),
-                                abi: f.abi,
+                                unsafety: f.unsafety,
+                                abi: this.lower_extern(f.ext),
                                 decl: this.lower_fn_decl(&f.decl, None, false, None),
                                 param_names: this.lower_fn_params_to_names(&f.decl),
                             }))
@@ -1585,7 +1652,7 @@ impl<'a> LoweringContext<'a> {
                         name,
                     }));
 
-                    let def_node_id = self.context.sess.next_node_id();
+                    let def_node_id = self.context.resolver.next_node_id();
                     let hir_id =
                         self.context.lower_node_id_with_owner(def_node_id, self.opaque_ty_id);
                     self.context.resolver.definitions().create_def_with_parent(
@@ -1698,29 +1765,19 @@ impl<'a> LoweringContext<'a> {
                     };
                     let parenthesized_generic_args = match partial_res.base_res() {
                         // `a::b::Trait(Args)`
-                        Res::Def(DefKind::Trait, _)
-                            if i + 1 == proj_start => ParenthesizedGenericArgs::Ok,
+                        Res::Def(DefKind::Trait, _) if i + 1 == proj_start => {
+                            ParenthesizedGenericArgs::Ok
+                        }
                         // `a::b::Trait(Args)::TraitItem`
-                        Res::Def(DefKind::Method, _)
-                        | Res::Def(DefKind::AssocConst, _)
-                        | Res::Def(DefKind::AssocTy, _)
-                            if i + 2 == proj_start =>
-                        {
+                        Res::Def(DefKind::Method, _) |
+                        Res::Def(DefKind::AssocConst, _) |
+                        Res::Def(DefKind::AssocTy, _) if i + 2 == proj_start => {
                             ParenthesizedGenericArgs::Ok
                         }
                         // Avoid duplicated errors.
                         Res::Err => ParenthesizedGenericArgs::Ok,
                         // An error
-                        Res::Def(DefKind::Struct, _)
-                        | Res::Def(DefKind::Enum, _)
-                        | Res::Def(DefKind::Union, _)
-                        | Res::Def(DefKind::TyAlias, _)
-                        | Res::Def(DefKind::Variant, _) if i + 1 == proj_start =>
-                        {
-                            ParenthesizedGenericArgs::Err
-                        }
-                        // A warning for now, for compatibility reasons.
-                        _ => ParenthesizedGenericArgs::Warn,
+                        _ => ParenthesizedGenericArgs::Err,
                     };
 
                     let num_lifetimes = type_def_id.map_or(0, |def_id| {
@@ -1783,7 +1840,7 @@ impl<'a> LoweringContext<'a> {
                 segment,
                 param_mode,
                 0,
-                ParenthesizedGenericArgs::Warn,
+                ParenthesizedGenericArgs::Err,
                 itctx.reborrow(),
                 None,
             ));
@@ -1859,15 +1916,6 @@ impl<'a> LoweringContext<'a> {
                 }
                 GenericArgs::Parenthesized(ref data) => match parenthesized_generic_args {
                     ParenthesizedGenericArgs::Ok => self.lower_parenthesized_parameter_data(data),
-                    ParenthesizedGenericArgs::Warn => {
-                        self.resolver.lint_buffer().buffer_lint(
-                            PARENTHESIZED_PARAMS_IN_TYPES_AND_MODULES,
-                            CRATE_NODE_ID,
-                            data.span,
-                            msg.into(),
-                        );
-                        (hir::GenericArgs::none(), true)
-                    }
                     ParenthesizedGenericArgs::Err => {
                         let mut err = struct_span_err!(self.sess, data.span, E0214, "{}", msg);
                         err.span_label(data.span, "only `Fn` traits may use parentheses");
@@ -2096,13 +2144,6 @@ impl<'a> LoweringContext<'a> {
         }, ids)
     }
 
-    fn lower_mutability(&mut self, m: Mutability) -> hir::Mutability {
-        match m {
-            Mutability::Mutable => hir::MutMutable,
-            Mutability::Immutable => hir::MutImmutable,
-        }
-    }
-
     fn lower_fn_params_to_names(&mut self, decl: &FnDecl) -> hir::HirVec<Ident> {
         // Skip the `...` (`CVarArgs`) trailing arguments from the AST,
         // as they are not explicit in HIR/Ty function signatures.
@@ -2139,6 +2180,16 @@ impl<'a> LoweringContext<'a> {
         impl_trait_return_allow: bool,
         make_ret_async: Option<NodeId>,
     ) -> P<hir::FnDecl> {
+        debug!("lower_fn_decl(\
+            fn_decl: {:?}, \
+            in_band_ty_params: {:?}, \
+            impl_trait_return_allow: {}, \
+            make_ret_async: {:?})",
+            decl,
+            in_band_ty_params,
+            impl_trait_return_allow,
+            make_ret_async,
+        );
         let lt_mode = if make_ret_async.is_some() {
             // In `async fn`, argument-position elided lifetimes
             // must be transformed into fresh generic parameters so that
@@ -2431,7 +2482,7 @@ impl<'a> LoweringContext<'a> {
 
         hir::FunctionRetTy::Return(P(hir::Ty {
             kind: opaque_ty_ref,
-            span,
+            span: opaque_ty_span,
             hir_id: self.next_id(),
         }))
     }
@@ -2541,7 +2592,7 @@ impl<'a> LoweringContext<'a> {
         hir::Lifetime {
             hir_id: self.lower_node_id(id),
             span,
-            name: name,
+            name,
         }
     }
 
@@ -2672,7 +2723,7 @@ impl<'a> LoweringContext<'a> {
     fn lower_mt(&mut self, mt: &MutTy, itctx: ImplTraitContext<'_>) -> hir::MutTy {
         hir::MutTy {
             ty: self.lower_ty(&mt.ty, itctx),
-            mutbl: self.lower_mutability(mt.mutbl),
+            mutbl: mt.mutbl,
         }
     }
 
@@ -2773,7 +2824,7 @@ impl<'a> LoweringContext<'a> {
             }
             PatKind::Box(ref inner) => hir::PatKind::Box(self.lower_pat(inner)),
             PatKind::Ref(ref inner, mutbl) => {
-                hir::PatKind::Ref(self.lower_pat(inner), self.lower_mutability(mutbl))
+                hir::PatKind::Ref(self.lower_pat(inner), mutbl)
             }
             PatKind::Range(ref e1, ref e2, Spanned { node: ref end, .. }) => hir::PatKind::Range(
                 P(self.lower_expr(e1)),
@@ -2801,19 +2852,23 @@ impl<'a> LoweringContext<'a> {
         let mut rest = None;
 
         let mut iter = pats.iter().enumerate();
-        while let Some((idx, pat)) = iter.next() {
-            // Interpret the first `..` pattern as a subtuple pattern.
+        for (idx, pat) in iter.by_ref() {
+            // Interpret the first `..` pattern as a sub-tuple pattern.
+            // Note that unlike for slice patterns,
+            // where `xs @ ..` is a legal sub-slice pattern,
+            // it is not a legal sub-tuple pattern.
             if pat.is_rest() {
                 rest = Some((idx, pat.span));
                 break;
             }
-            // It was not a subslice pattern so lower it normally.
+            // It was not a sub-tuple pattern so lower it normally.
             elems.push(self.lower_pat(pat));
         }
 
-        while let Some((_, pat)) = iter.next() {
-            // There was a previous subtuple pattern; make sure we don't allow more.
+        for (_, pat) in iter {
+            // There was a previous sub-tuple pattern; make sure we don't allow more...
             if pat.is_rest() {
+                // ...but there was one again, so error.
                 self.ban_extra_rest_pat(pat.span, rest.unwrap().1, ctx);
             } else {
                 elems.push(self.lower_pat(pat));
@@ -2823,6 +2878,12 @@ impl<'a> LoweringContext<'a> {
         (elems.into(), rest.map(|(ddpos, _)| ddpos))
     }
 
+    /// Lower a slice pattern of form `[pat_0, ..., pat_n]` into
+    /// `hir::PatKind::Slice(before, slice, after)`.
+    ///
+    /// When encountering `($binding_mode $ident @)? ..` (`slice`),
+    /// this is interpreted as a sub-slice pattern semantically.
+    /// Patterns that follow, which are not like `slice` -- or an error occurs, are in `after`.
     fn lower_pat_slice(&mut self, pats: &[AstP<Pat>]) -> hir::PatKind {
         let mut before = Vec::new();
         let mut after = Vec::new();
@@ -2830,14 +2891,17 @@ impl<'a> LoweringContext<'a> {
         let mut prev_rest_span = None;
 
         let mut iter = pats.iter();
-        while let Some(pat) = iter.next() {
-            // Interpret the first `((ref mut?)? x @)? ..` pattern as a subslice pattern.
+        // Lower all the patterns until the first occurence of a sub-slice pattern.
+        for pat in iter.by_ref() {
             match pat.kind {
+                // Found a sub-slice pattern `..`. Record, lower it to `_`, and stop here.
                 PatKind::Rest => {
                     prev_rest_span = Some(pat.span);
                     slice = Some(self.pat_wild_with_node_id_of(pat));
                     break;
                 },
+                // Found a sub-slice pattern `$binding_mode $ident @ ..`.
+                // Record, lower it to `$binding_mode $ident @ _`, and stop here.
                 PatKind::Ident(ref bm, ident, Some(ref sub)) if sub.is_rest() => {
                     prev_rest_span = Some(sub.span);
                     let lower_sub = |this: &mut Self| Some(this.pat_wild_with_node_id_of(sub));
@@ -2845,14 +2909,13 @@ impl<'a> LoweringContext<'a> {
                     slice = Some(self.pat_with_node_id_of(pat, node));
                     break;
                 },
-                _ => {}
+                // It was not a subslice pattern so lower it normally.
+                _ => before.push(self.lower_pat(pat)),
             }
-
-            // It was not a subslice pattern so lower it normally.
-            before.push(self.lower_pat(pat));
         }
 
-        while let Some(pat) = iter.next() {
+        // Lower all the patterns after the first sub-slice pattern.
+        for pat in iter {
             // There was a previous subslice pattern; make sure we don't allow more.
             let rest_span = match pat.kind {
                 PatKind::Rest => Some(pat.span),
@@ -2864,8 +2927,10 @@ impl<'a> LoweringContext<'a> {
                 _ => None,
             };
             if let Some(rest_span) = rest_span {
+                // We have e.g., `[a, .., b, ..]`. That's no good, error!
                 self.ban_extra_rest_pat(rest_span, prev_rest_span.unwrap(), "slice");
             } else {
+                // Lower the pattern normally.
                 after.push(self.lower_pat(pat));
             }
         }
@@ -3253,7 +3318,7 @@ impl<'a> LoweringContext<'a> {
             Some(id) => (id, "`'_` cannot be used here", "`'_` is a reserved lifetime name"),
 
             None => (
-                self.sess.next_node_id(),
+                self.resolver.next_node_id(),
                 "`&` without an explicit lifetime name cannot be used here",
                 "explicit lifetime name needed here",
             ),
@@ -3290,7 +3355,7 @@ impl<'a> LoweringContext<'a> {
                     span,
                     "expected 'implicit elided lifetime not allowed' error",
                 );
-                let id = self.sess.next_node_id();
+                let id = self.resolver.next_node_id();
                 self.new_named_lifetime(id, span, hir::LifetimeName::Error)
             }
             // `PassThrough` is the normal case.
@@ -3386,7 +3451,7 @@ pub fn is_range_literal(sess: &Session, expr: &hir::Expr) -> bool {
     // either in std or core, i.e. has either a `::std::ops::Range` or
     // `::core::ops::Range` prefix.
     fn is_range_path(path: &Path) -> bool {
-        let segs: Vec<_> = path.segments.iter().map(|seg| seg.ident.as_str().to_string()).collect();
+        let segs: Vec<_> = path.segments.iter().map(|seg| seg.ident.to_string()).collect();
         let segs: Vec<_> = segs.iter().map(|seg| &**seg).collect();
 
         // "{{root}}" is the equivalent of `::` prefix in `Path`.
@@ -3427,7 +3492,7 @@ pub fn is_range_literal(sess: &Session, expr: &hir::Expr) -> bool {
         ExprKind::Call(ref func, _) => {
             if let ExprKind::Path(QPath::TypeRelative(ref ty, ref segment)) = func.kind {
                 if let TyKind::Path(QPath::Resolved(None, ref path)) = ty.kind {
-                    let new_call = segment.ident.as_str() == "new";
+                    let new_call = segment.ident.name == sym::new;
                     return is_range_path(&path) && is_lit(sess, &expr.span) && new_call;
                 }
             }

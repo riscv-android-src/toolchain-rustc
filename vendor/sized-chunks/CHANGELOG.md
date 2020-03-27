@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic
 Versioning](http://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2019-09-09
+
+### CHANGED
+
+- The `Bitmap` type (and its helper type, `Bits`) has been split off into a
+  separate crate, named `bitmaps`. If you need it, it's in that crate now.
+  `sized-chunks` does not re-export it. Of course, this means `sized-chunks` has
+  gained `bitmaps` as its second hard dependency.
+
+## [0.4.0] - 2019-09-02
+
+### CHANGED
+
+- The 0.3.2 release increased the minimum rustc version required, which should
+  have been a major version bump, so 0.3.2 is being yanked and re-tagged as
+  0.4.0.
+
+## [0.3.2] - 2019-08-29
+
+### ADDED
+
+- Chunk/bitmap sizes up to 1024 are now supported.
+
+### FIXED
+
+- Replaced `ManuallyDrop` in implementations with `MaybeUninit`, along with a
+  general unsafe code cleanup. (#3)
+
+## [0.3.1] - 2019-08-03
+
+### ADDED
+
+- Chunk sizes up to 256 are now supported.
+
 ## [0.3.0] - 2019-05-18
 
 ### ADDED

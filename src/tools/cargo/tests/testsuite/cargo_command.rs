@@ -1,3 +1,5 @@
+//! Tests for custom cargo commands and other global command features.
+
 use std::env;
 use std::fs::{self, File};
 use std::io::prelude::*;
@@ -165,6 +167,49 @@ error: no such subcommand: `biuld`
             "    build                Compile a local package and all of its dependencies\n",
         )
         .with_stdout_contains("    biuld\n")
+        .run();
+}
+
+#[cargo_test]
+fn find_closest_alias() {
+    let root = paths::root();
+    let my_home = root.join("my_home");
+    fs::create_dir(&my_home).unwrap();
+    File::create(&my_home.join("config"))
+        .unwrap()
+        .write_all(
+            br#"
+        [alias]
+        myalias = "build"
+    "#,
+        )
+        .unwrap();
+
+    cargo_process("myalais")
+        .env("CARGO_HOME", &my_home)
+        .with_status(101)
+        .with_stderr_contains(
+            "\
+error: no such subcommand: `myalais`
+
+<tab>Did you mean `myalias`?
+",
+        )
+        .run();
+
+    // But, if no alias is defined, it must not suggest one!
+    cargo_process("myalais")
+        .with_status(101)
+        .with_stderr_contains(
+            "\
+error: no such subcommand: `myalais`
+",
+        )
+        .with_stderr_does_not_contain(
+            "\
+<tab>Did you mean `myalias`?
+",
+        )
         .run();
 }
 

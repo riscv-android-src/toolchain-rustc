@@ -1,16 +1,16 @@
-use crate::llvm::{self, AttributePlace};
 use crate::builder::Builder;
 use crate::context::CodegenCx;
+use crate::llvm::{self, AttributePlace};
 use crate::type_::Type;
+use crate::type_of::LayoutLlvmExt;
 use crate::value::Value;
-use crate::type_of::{LayoutLlvmExt};
+
 use rustc_codegen_ssa::MemFlags;
 use rustc_codegen_ssa::mir::place::PlaceRef;
 use rustc_codegen_ssa::mir::operand::OperandValue;
-use rustc_target::abi::call::ArgType;
-
+use rustc::bug;
 use rustc_codegen_ssa::traits::*;
-
+use rustc_target::abi::call::ArgAbi;
 use rustc_target::abi::{HasDataLayout, LayoutOf};
 use rustc::ty::{Ty};
 use rustc::ty::layout::{self};
@@ -163,7 +163,7 @@ impl LlvmType for CastTarget {
     }
 }
 
-pub trait ArgTypeExt<'ll, 'tcx> {
+pub trait ArgAbiExt<'ll, 'tcx> {
     fn memory_ty(&self, cx: &CodegenCx<'ll, 'tcx>) -> &'ll Type;
     fn store(
         &self,
@@ -179,14 +179,14 @@ pub trait ArgTypeExt<'ll, 'tcx> {
     );
 }
 
-impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
+impl ArgAbiExt<'ll, 'tcx> for ArgAbi<'tcx, Ty<'tcx>> {
     /// Gets the LLVM type for a place of the original Rust type of
     /// this argument/return, i.e., the result of `type_of::type_of`.
     fn memory_ty(&self, cx: &CodegenCx<'ll, 'tcx>) -> &'ll Type {
         self.layout.llvm_type(cx)
     }
 
-    /// Stores a direct/indirect value described by this ArgType into a
+    /// Stores a direct/indirect value described by this ArgAbi into a
     /// place for the original Rust type of this argument/return.
     /// Can be used for both storing formal arguments into Rust variables
     /// or results of call/invoke instructions into their destinations.
@@ -202,7 +202,7 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
         if self.is_sized_indirect() {
             OperandValue::Ref(val, None, self.layout.align.abi).store(bx, dst)
         } else if self.is_unsized_indirect() {
-            bug!("unsized ArgType must be handled through store_fn_arg");
+            bug!("unsized `ArgAbi` must be handled through `store_fn_arg`");
         } else if let PassMode::Cast(cast) = self.mode {
             // FIXME(eddyb): Figure out when the simpler Store is safe, clang
             // uses it for i16 -> {i8, i8}, but not for i24 -> {i8, i8, i8}.
@@ -232,10 +232,10 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
                 let llscratch = bx.alloca(cast.llvm_type(bx), scratch_align);
                 bx.lifetime_start(llscratch, scratch_size);
 
-                // ...where we first store the value...
+                // ... where we first store the value...
                 bx.store(val, llscratch, scratch_align);
 
-                // ...and then memcpy it to the intended destination.
+                // ... and then memcpy it to the intended destination.
                 bx.memcpy(
                     dst.llval,
                     self.layout.align.abi,
@@ -279,28 +279,28 @@ impl ArgTypeExt<'ll, 'tcx> for ArgType<'tcx, Ty<'tcx>> {
     }
 }
 
-impl ArgTypeMethods<'tcx> for Builder<'a, 'll, 'tcx> {
+impl ArgAbiMethods<'tcx> for Builder<'a, 'll, 'tcx> {
     fn store_fn_arg(
         &mut self,
-        ty: &ArgType<'tcx, Ty<'tcx>>,
+        arg_abi: &ArgAbi<'tcx, Ty<'tcx>>,
         idx: &mut usize, dst: PlaceRef<'tcx, Self::Value>
     ) {
-        ty.store_fn_arg(self, idx, dst)
+        arg_abi.store_fn_arg(self, idx, dst)
     }
-    fn store_arg_ty(
+    fn store_arg(
         &mut self,
-        ty: &ArgType<'tcx, Ty<'tcx>>,
+        arg_abi: &ArgAbi<'tcx, Ty<'tcx>>,
         val: &'ll Value,
         dst: PlaceRef<'tcx, &'ll Value>
     ) {
-        ty.store(self, val, dst)
+        arg_abi.store(self, val, dst)
     }
-    fn memory_ty(&self, ty: &ArgType<'tcx, Ty<'tcx>>) -> &'ll Type {
-        ty.memory_ty(self)
+    fn arg_memory_ty(&self, arg_abi: &ArgAbi<'tcx, Ty<'tcx>>) -> &'ll Type {
+        arg_abi.memory_ty(self)
     }
 }
 
-pub trait FnTypeLlvmExt<'tcx> {
+pub trait FnAbiLlvmExt<'tcx> {
     fn llvm_type(&self, cx: &CodegenCx<'ll, 'tcx>) -> &'ll Type;
     fn ptr_to_llvm_type(&self, cx: &CodegenCx<'ll, 'tcx>) -> &'ll Type;
     fn llvm_cconv(&self) -> llvm::CallConv;
@@ -308,7 +308,7 @@ pub trait FnTypeLlvmExt<'tcx> {
     fn apply_attrs_callsite(&self, bx: &mut Builder<'a, 'll, 'tcx>, callsite: &'ll Value);
 }
 
-impl<'tcx> FnTypeLlvmExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
+impl<'tcx> FnAbiLlvmExt<'tcx> for FnAbi<'tcx, Ty<'tcx>> {
     fn llvm_type(&self, cx: &CodegenCx<'ll, 'tcx>) -> &'ll Type {
         let args_capacity: usize = self.args.iter().map(|arg|
             if arg.pad.is_some() { 1 } else { 0 } +
@@ -373,7 +373,7 @@ impl<'tcx> FnTypeLlvmExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
 
     fn llvm_cconv(&self) -> llvm::CallConv {
         match self.conv {
-            Conv::C => llvm::CCallConv,
+            Conv::C | Conv::Rust => llvm::CCallConv,
             Conv::AmdGpuKernel => llvm::AmdGpuKernel,
             Conv::ArmAapcs => llvm::ArmAapcsCallConv,
             Conv::Msp430Intr => llvm::Msp430Intr,
@@ -389,6 +389,11 @@ impl<'tcx> FnTypeLlvmExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
     }
 
     fn apply_attrs_llfn(&self, cx: &CodegenCx<'ll, 'tcx>, llfn: &'ll Value) {
+        // FIXME(eddyb) can this also be applied to callsites?
+        if self.ret.layout.abi.is_uninhabited() {
+            llvm::Attribute::NoReturn.apply_llfn(llvm::AttributePlace::Function, llfn);
+        }
+
         let mut i = 0;
         let mut apply = |attrs: &ArgAttributes, ty: Option<&Type>| {
             attrs.apply_llfn(llvm::AttributePlace::Argument(i), llfn, ty);
@@ -478,10 +483,10 @@ impl<'tcx> FnTypeLlvmExt<'tcx> for FnType<'tcx, Ty<'tcx>> {
 impl AbiBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
     fn apply_attrs_callsite(
         &mut self,
-        ty: &FnType<'tcx, Ty<'tcx>>,
+        fn_abi: &FnAbi<'tcx, Ty<'tcx>>,
         callsite: Self::Value
     ) {
-        ty.apply_attrs_callsite(self, callsite)
+        fn_abi.apply_attrs_callsite(self, callsite)
     }
 
     fn get_param(&self, index: usize) -> Self::Value {

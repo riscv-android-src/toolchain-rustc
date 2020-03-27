@@ -141,17 +141,28 @@ pub fn check(path: &Path, bad: &mut bool) {
     super::walk(path, &mut super::filter_dirs, &mut |entry, contents| {
         let file = entry.path();
         let filename = file.file_name().unwrap().to_string_lossy();
-        let extensions = [".rs", ".py", ".js", ".sh", ".c", ".cpp", ".h"];
+        let extensions = [".rs", ".py", ".js", ".sh", ".c", ".cpp", ".h", ".md"];
         if extensions.iter().all(|e| !filename.ends_with(e)) ||
            filename.starts_with(".#") {
             return
+        }
+
+        if filename.ends_with(".md") &&
+           file.parent()
+               .unwrap()
+               .file_name()
+               .unwrap()
+               .to_string_lossy() != "error_codes" {
+            // We don't want to check all ".md" files (almost of of them aren't compliant
+            // currently), just the long error code explanation ones.
+            return;
         }
 
         if contents.is_empty() {
             tidy_error!(bad, "{}: empty file", file.display());
         }
 
-        let max_columns = if filename == "error_codes.rs" {
+        let max_columns = if filename == "error_codes.rs" || filename.ends_with(".md") {
             ERROR_CODE_COLS
         } else {
             COLS
@@ -160,6 +171,8 @@ pub fn check(path: &Path, bad: &mut bool) {
         let can_contain = contents.contains("// ignore-tidy-") ||
             contents.contains("# ignore-tidy-");
         let mut skip_cr = contains_ignore_directive(can_contain, &contents, "cr");
+        let mut skip_undocumented_unsafe =
+            contains_ignore_directive(can_contain, &contents, "undocumented-unsafe");
         let mut skip_tab = contains_ignore_directive(can_contain, &contents, "tab");
         let mut skip_line_length = contains_ignore_directive(can_contain, &contents, "linelength");
         let mut skip_file_length = contains_ignore_directive(can_contain, &contents, "filelength");
@@ -171,6 +184,7 @@ pub fn check(path: &Path, bad: &mut bool) {
         let mut leading_new_lines = false;
         let mut trailing_new_lines = 0;
         let mut lines = 0;
+        let mut last_safety_comment = false;
         for (i, line) in contents.split('\n').enumerate() {
             let mut err = |msg: &str| {
                 tidy_error!(bad, "{}:{}: {}", file.display(), i + 1, msg);
@@ -199,6 +213,20 @@ pub fn check(path: &Path, bad: &mut bool) {
                 if line.contains("//") && line.contains(" XXX") {
                     err("XXX is deprecated; use FIXME")
                 }
+            }
+            let is_test = || file.components().any(|c| c.as_os_str() == "tests");
+            // for now we just check libcore
+            if line.contains("unsafe {") && !line.trim().starts_with("//") && !last_safety_comment {
+                if file.components().any(|c| c.as_os_str() == "libcore") && !is_test() {
+                    suppressible_tidy_err!(err, skip_undocumented_unsafe, "undocumented unsafe");
+                }
+            }
+            if line.contains("// SAFETY: ") || line.contains("// Safety: ") {
+                last_safety_comment = true;
+            } else if line.trim().starts_with("//") || line.trim().is_empty() {
+                // keep previous value
+            } else {
+                last_safety_comment = false;
             }
             if (line.starts_with("// Copyright") ||
                 line.starts_with("# Copyright") ||

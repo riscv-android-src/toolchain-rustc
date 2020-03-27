@@ -18,7 +18,7 @@ graphs and desugaring), you may enjoy the
 MIR is defined in the [`src/librustc/mir/`][mir] module, but much of the code
 that manipulates it is found in [`src/librustc_mir`][mirmanip].
 
-[RFC 1211]: http://rust-lang.github.io/rfcs/1211-mir.html
+[RFC 1211]: https://rust-lang.github.io/rfcs/1211-mir.html
 
 Some of the key characteristics of MIR are:
 
@@ -185,7 +185,7 @@ only reference places and constants. Moreover, when you use a place,
 we indicate whether we are **copying it** (which requires that the
 place have a type `T` where `T: Copy`) or **moving it** (which works
 for a place of any type). So, for example, if we had the expression `x
-= a + b + c` in Rust, that would get compile to two statements and a
+= a + b + c` in Rust, that would get compiled to two statements and a
 temporary:
 
 ```mir

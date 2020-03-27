@@ -78,8 +78,8 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
         }
 
         match (&left.kind, &right.kind) {
-            (&ExprKind::AddrOf(l_mut, ref le), &ExprKind::AddrOf(r_mut, ref re)) => {
-                l_mut == r_mut && self.eq_expr(le, re)
+            (&ExprKind::AddrOf(lb, l_mut, ref le), &ExprKind::AddrOf(rb, r_mut, ref re)) => {
+                lb == rb && l_mut == r_mut && self.eq_expr(le, re)
             },
             (&ExprKind::Continue(li), &ExprKind::Continue(ri)) => {
                 both(&li.label, &ri.label, |l, r| l.ident.as_str() == r.ident.as_str())
@@ -398,7 +398,12 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
         std::mem::discriminant(&e.kind).hash(&mut self.s);
 
         match e.kind {
-            ExprKind::AddrOf(m, ref e) => {
+            ExprKind::AddrOf(kind, m, ref e) => {
+                match kind {
+                    BorrowKind::Ref => 0,
+                    BorrowKind::Raw => 1,
+                }
+                .hash(&mut self.s);
                 m.hash(&mut self.s);
                 self.hash_expr(e);
             },
@@ -447,10 +452,11 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             },
             ExprKind::Closure(cap, _, eid, _, _) => {
                 match cap {
-                    CaptureClause::CaptureByValue => 0,
-                    CaptureClause::CaptureByRef => 1,
+                    CaptureBy::Value => 0,
+                    CaptureBy::Ref => 1,
                 }
                 .hash(&mut self.s);
+                // closures inherit TypeckTables
                 self.hash_expr(&self.cx.tcx.hir().body(eid).value);
             },
             ExprKind::Field(ref e, ref f) => {
@@ -490,10 +496,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             },
             ExprKind::Repeat(ref e, ref l_id) => {
                 self.hash_expr(e);
-                let full_table = self.tables;
-                self.tables = self.cx.tcx.body_tables(l_id.body);
-                self.hash_expr(&self.cx.tcx.hir().body(l_id.body).value);
-                self.tables = full_table;
+                self.hash_body(l_id.body);
             },
             ExprKind::Ret(ref e) => {
                 if let Some(ref e) = *e {
@@ -609,7 +612,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             },
             TyKind::Array(ty, anon_const) => {
                 self.hash_ty(ty);
-                self.hash_expr(&self.cx.tcx.hir().body(anon_const.body).value);
+                self.hash_body(anon_const.body);
             },
             TyKind::Ptr(mut_ty) => {
                 self.hash_ty(&mut_ty.ty);
@@ -660,9 +663,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                     match arg {
                         GenericArg::Lifetime(ref l) => self.hash_lifetime(l),
                         GenericArg::Type(ref ty) => self.hash_ty(&ty),
-                        GenericArg::Const(ref ca) => {
-                            self.hash_expr(&self.cx.tcx.hir().body(ca.value.body).value);
-                        },
+                        GenericArg::Const(ref ca) => self.hash_body(ca.value.body),
                     }
                 }
             },
@@ -670,9 +671,17 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 self.hash_lifetime(lifetime);
             },
             TyKind::Typeof(anon_const) => {
-                self.hash_expr(&self.cx.tcx.hir().body(anon_const.body).value);
+                self.hash_body(anon_const.body);
             },
             TyKind::Err | TyKind::Infer | TyKind::Never => {},
         }
+    }
+
+    pub fn hash_body(&mut self, body_id: BodyId) {
+        // swap out TypeckTables when hashing a body
+        let old_tables = self.tables;
+        self.tables = self.cx.tcx.body_tables(body_id);
+        self.hash_expr(&self.cx.tcx.hir().body(body_id).value);
+        self.tables = old_tables;
     }
 }

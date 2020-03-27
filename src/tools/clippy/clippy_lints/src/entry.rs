@@ -2,11 +2,12 @@ use crate::utils::SpanlessEq;
 use crate::utils::{get_item_name, higher, match_type, paths, snippet, snippet_opt};
 use crate::utils::{snippet_with_applicability, span_lint_and_then, walk_ptrs_ty};
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use syntax::source_map::Span;
 
 declare_clippy_lint! {
@@ -105,7 +106,7 @@ fn check_cond<'a, 'tcx, 'b>(
         if let ExprKind::MethodCall(ref path, _, ref params) = check.kind;
         if params.len() >= 2;
         if path.ident.name == sym!(contains_key);
-        if let ExprKind::AddrOf(_, ref key) = params[1].kind;
+        if let ExprKind::AddrOf(BorrowKind::Ref, _, ref key) = params[1].kind;
         then {
             let map = &params[0];
             let obj_ty = walk_ptrs_ty(cx.tables.expr_ty(map));

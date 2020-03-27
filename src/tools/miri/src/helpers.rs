@@ -1,11 +1,13 @@
 use std::{mem, iter};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsStr;
 
+use syntax::source_map::DUMMY_SP;
 use rustc::hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc::mir;
 use rustc::ty::{
     self,
     List,
+    TyCtxt,
     layout::{self, LayoutOf, Size, TyLayout},
 };
 
@@ -15,40 +17,46 @@ use crate::*;
 
 impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 
-pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
-    /// Gets an instance for a path.
-    fn resolve_path(&self, path: &[&str]) -> InterpResult<'tcx, ty::Instance<'tcx>> {
-        let this = self.eval_context_ref();
-        this.tcx
-            .crates()
-            .iter()
-            .find(|&&krate| this.tcx.original_crate_name(krate).as_str() == path[0])
-            .and_then(|krate| {
-                let krate = DefId {
-                    krate: *krate,
-                    index: CRATE_DEF_INDEX,
-                };
-                let mut items = this.tcx.item_children(krate);
-                let mut path_it = path.iter().skip(1).peekable();
+/// Gets an instance for a path.
+fn resolve_did<'mir, 'tcx>(tcx: TyCtxt<'tcx>, path: &[&str]) -> InterpResult<'tcx, DefId> {
+    tcx
+        .crates()
+        .iter()
+        .find(|&&krate| tcx.original_crate_name(krate).as_str() == path[0])
+        .and_then(|krate| {
+            let krate = DefId {
+                krate: *krate,
+                index: CRATE_DEF_INDEX,
+            };
+            let mut items = tcx.item_children(krate);
+            let mut path_it = path.iter().skip(1).peekable();
 
-                while let Some(segment) = path_it.next() {
-                    for item in mem::replace(&mut items, Default::default()).iter() {
-                        if item.ident.name.as_str() == *segment {
-                            if path_it.peek().is_none() {
-                                return Some(ty::Instance::mono(this.tcx.tcx, item.res.def_id()));
-                            }
-
-                            items = this.tcx.item_children(item.res.def_id());
-                            break;
+            while let Some(segment) = path_it.next() {
+                for item in mem::replace(&mut items, Default::default()).iter() {
+                    if item.ident.name.as_str() == *segment {
+                        if path_it.peek().is_none() {
+                            return Some(item.res.def_id())
                         }
+
+                        items = tcx.item_children(item.res.def_id());
+                        break;
                     }
                 }
-                None
-            })
-            .ok_or_else(|| {
-                let path = path.iter().map(|&s| s.to_owned()).collect();
-                err_unsup!(PathNotFound(path)).into()
-            })
+            }
+            None
+        })
+        .ok_or_else(|| {
+            let path = path.iter().map(|&s| s.to_owned()).collect();
+            err_unsup!(PathNotFound(path)).into()
+        })
+}
+
+
+pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
+
+    /// Gets an instance for a path.
+    fn resolve_path(&self, path: &[&str]) -> InterpResult<'tcx, ty::Instance<'tcx>> {
+        Ok(ty::Instance::mono(self.eval_context_ref().tcx.tcx, resolve_did(self.eval_context_ref().tcx.tcx, path)?))
     }
 
     /// Write a 0 of the appropriate size to `dest`.
@@ -109,6 +117,44 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         }
 
         this.memory.write_bytes(ptr, data.iter().copied())
+    }
+
+    /// Call a function: Push the stack frame and pass the arguments.
+    /// For now, arguments must be scalars (so that the caller does not have to know the layout).
+    fn call_function(
+        &mut self,
+        f: ty::Instance<'tcx>,
+        args: &[Immediate<Tag>],
+        dest: Option<PlaceTy<'tcx, Tag>>,
+        stack_pop: StackPopCleanup,
+    ) -> InterpResult<'tcx> {
+        let this = self.eval_context_mut();
+
+        // Push frame.
+        let mir = &*this.load_mir(f.def, None)?;
+        let span = this.stack().last()
+            .and_then(Frame::current_source_info)
+            .map(|si| si.span)
+            .unwrap_or(DUMMY_SP);
+        this.push_stack_frame(
+            f,
+            span,
+            mir,
+            dest,
+            stack_pop,
+        )?;
+
+        // Initialize arguments.
+        let mut callee_args = this.frame().body.args_iter();
+        for arg in args {
+            let callee_arg = this.local_place(
+                callee_args.next().expect("callee has fewer arguments than expected")
+            )?;
+            this.write_immediate(*arg, callee_arg)?;
+        }
+        callee_args.next().expect_none("callee has more arguments than expected");
+
+        Ok(())
     }
 
     /// Visits the memory covered by `place`, sensitive to freezing: the 3rd parameter
@@ -407,16 +453,19 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     /// Helper function to read an OsString from a null-terminated sequence of bytes, which is what
     /// the Unix APIs usually handle.
-    fn read_os_string_from_c_string(&mut self, scalar: Scalar<Tag>) -> InterpResult<'tcx, OsString> {
-        let bytes = self.eval_context_mut().memory.read_c_str(scalar)?;
-        Ok(bytes_to_os_str(bytes)?.into())
+    fn read_os_str_from_c_str<'a>(&'a self, scalar: Scalar<Tag>) -> InterpResult<'tcx, &'a OsStr>
+        where 'tcx: 'a, 'mir: 'a
+    {
+        let this = self.eval_context_ref();
+        let bytes = this.memory.read_c_str(scalar)?;
+        bytes_to_os_str(bytes)
     }
 
     /// Helper function to write an OsStr as a null-terminated sequence of bytes, which is what
     /// the Unix APIs usually handle. This function returns `Ok(false)` without trying to write if
     /// `size` is not large enough to fit the contents of `os_string` plus a null terminator. It
     /// returns `Ok(true)` if the writing process was successful.
-    fn write_os_str_to_c_string(
+    fn write_os_str_to_c_str(
         &mut self,
         os_str: &OsStr,
         scalar: Scalar<Tag>,
@@ -455,7 +504,7 @@ fn os_str_to_bytes<'tcx, 'a>(os_str: &'a OsStr) -> InterpResult<'tcx, &'a [u8]> 
 }
 
 #[cfg(not(target_os = "unix"))]
-fn bytes_to_os_str<'tcx, 'a>(bytes: &'a[u8]) -> InterpResult<'tcx, &'a OsStr> {
+fn bytes_to_os_str<'tcx, 'a>(bytes: &'a [u8]) -> InterpResult<'tcx, &'a OsStr> {
     let s = std::str::from_utf8(bytes)
         .map_err(|_| err_unsup_format!("{:?} is not a valid utf-8 string", bytes))?;
     Ok(&OsStr::new(s))

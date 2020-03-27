@@ -8,12 +8,8 @@ use std::rc::Rc;
 use rand::rngs::StdRng;
 
 use rustc::hir::def_id::DefId;
+use rustc::ty::{self, layout::{Size, LayoutOf}, Ty, TyCtxt};
 use rustc::mir;
-use rustc::ty::{
-    self,
-    layout::{LayoutOf, Size},
-    Ty, TyCtxt,
-};
 use syntax::{attr, source_map::Span, symbol::sym};
 
 use crate::*;
@@ -24,6 +20,20 @@ pub const STACK_ADDR: u64 = 32 * PAGE_SIZE; // not really about the "stack", but
 pub const STACK_SIZE: u64 = 16 * PAGE_SIZE; // whatever
 pub const NUM_CPUS: u64 = 1;
 
+/// Extra data stored with each stack frame
+#[derive(Debug)]
+pub struct FrameData<'tcx> {
+    /// Extra data for Stacked Borrows.
+    pub call_id: stacked_borrows::CallId,
+
+    /// If this is Some(), then this is a special "catch unwind" frame (the frame of the closure
+    /// called by `__rustc_maybe_catch_panic`). When this frame is popped during unwinding a panic,
+    /// we stop unwinding, use the `CatchUnwindData` to
+    /// store the panic payload, and continue execution in the parent frame.
+    pub catch_panic: Option<CatchUnwindData<'tcx>>,
+}
+
+
 /// Extra memory kinds
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum MiriMemoryKind {
@@ -33,9 +43,9 @@ pub enum MiriMemoryKind {
     C,
     /// Windows `HeapAlloc` memory.
     WinHeap,
-    /// Part of env var emulation.
+    /// Memory for env vars and args, errno and other parts of the machine-managed environment.
     Env,
-    /// Statics.
+    /// Rust statics.
     Static,
 }
 
@@ -86,9 +96,9 @@ pub struct Evaluator<'tcx> {
     /// Program arguments (`Option` because we can only initialize them after creating the ecx).
     /// These are *pointers* to argc/argv because macOS.
     /// We also need the full command line as one string because of Windows.
-    pub(crate) argc: Option<Pointer<Tag>>,
-    pub(crate) argv: Option<Pointer<Tag>>,
-    pub(crate) cmd_line: Option<Pointer<Tag>>,
+    pub(crate) argc: Option<Scalar<Tag>>,
+    pub(crate) argv: Option<Scalar<Tag>>,
+    pub(crate) cmd_line: Option<Scalar<Tag>>,
 
     /// Last OS error location in memory. It is a 32-bit integer.
     pub(crate) last_error: Option<MPlaceTy<'tcx, Tag>>,
@@ -101,6 +111,10 @@ pub struct Evaluator<'tcx> {
     pub(crate) communicate: bool,
 
     pub(crate) file_handler: FileHandler,
+
+    /// The temporary used for storing the argument of
+    /// the call to `miri_start_panic` (the panic payload) when unwinding.
+    pub(crate) panic_payload: Option<ImmTy<'tcx, Tag>>
 }
 
 impl<'tcx> Evaluator<'tcx> {
@@ -116,6 +130,7 @@ impl<'tcx> Evaluator<'tcx> {
             tls: TlsData::default(),
             communicate,
             file_handler: Default::default(),
+            panic_payload: None
         }
     }
 }
@@ -125,8 +140,8 @@ pub type MiriEvalContext<'mir, 'tcx> = InterpCx<'mir, 'tcx, Evaluator<'tcx>>;
 
 /// A little trait that's useful to be inherited by extension traits.
 pub trait MiriEvalContextExt<'mir, 'tcx> {
-    fn eval_context_ref(&self) -> &MiriEvalContext<'mir, 'tcx>;
-    fn eval_context_mut(&mut self) -> &mut MiriEvalContext<'mir, 'tcx>;
+    fn eval_context_ref<'a>(&'a self) -> &'a MiriEvalContext<'mir, 'tcx>;
+    fn eval_context_mut<'a>(&'a mut self) -> &'a mut MiriEvalContext<'mir, 'tcx>;
 }
 impl<'mir, 'tcx> MiriEvalContextExt<'mir, 'tcx> for MiriEvalContext<'mir, 'tcx> {
     #[inline(always)]
@@ -143,7 +158,7 @@ impl<'mir, 'tcx> MiriEvalContextExt<'mir, 'tcx> for MiriEvalContext<'mir, 'tcx> 
 impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     type MemoryKinds = MiriMemoryKind;
 
-    type FrameExtra = stacked_borrows::CallId;
+    type FrameExtra = FrameData<'tcx>;
     type MemoryExtra = MemoryExtra;
     type AllocExtra = AllocExtra;
     type PointerTag = Tag;
@@ -167,14 +182,14 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     }
 
     #[inline(always)]
-    fn find_fn(
+    fn find_mir_or_eval_fn(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
-        dest: Option<PlaceTy<'tcx, Tag>>,
-        ret: Option<mir::BasicBlock>,
+        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx, Option<&'mir mir::Body<'tcx>>> {
-        ecx.find_fn(instance, args, dest, ret)
+        ecx.find_mir_or_eval_fn(instance, args, ret, unwind)
     }
 
     #[inline(always)]
@@ -182,10 +197,10 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         fn_val: Dlsym,
         args: &[OpTy<'tcx, Tag>],
-        dest: Option<PlaceTy<'tcx, Tag>>,
-        ret: Option<mir::BasicBlock>,
+        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        _unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
-        ecx.call_dlsym(fn_val, args, dest, ret)
+        ecx.call_dlsym(fn_val, args, ret)
     }
 
     #[inline(always)]
@@ -194,9 +209,20 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         span: Span,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
-        dest: PlaceTy<'tcx, Tag>,
+        ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
+        unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
-        ecx.call_intrinsic(span, instance, args, dest)
+        ecx.call_intrinsic(span, instance, args, ret, unwind)
+    }
+
+    #[inline(always)]
+    fn assert_panic(
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
+        span: Span,
+        msg: &AssertMessage<'tcx>,
+        unwind: Option<mir::BasicBlock>,
+    ) -> InterpResult<'tcx> {
+        ecx.assert_panic(span, msg, unwind)
     }
 
     #[inline(always)]
@@ -214,37 +240,26 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         dest: PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
         trace!("box_alloc for {:?}", dest.layout.ty);
+        let layout = ecx.layout_of(dest.layout.ty.builtin_deref(false).unwrap().ty)?;
+        // First argument: `size`.
+        // (`0` is allowed here -- this is expected to be handled by the lang item).
+        let size = Scalar::from_uint(layout.size.bytes(), ecx.pointer_size());
+
+        // Second argument: `align`.
+        let align = Scalar::from_uint(layout.align.abi.bytes(), ecx.pointer_size());
+
         // Call the `exchange_malloc` lang item.
         let malloc = ecx.tcx.lang_items().exchange_malloc_fn().unwrap();
         let malloc = ty::Instance::mono(ecx.tcx.tcx, malloc);
-        let malloc_mir = ecx.load_mir(malloc.def, None)?;
-        ecx.push_stack_frame(
+        ecx.call_function(
             malloc,
-            malloc_mir.span,
-            malloc_mir,
+            &[size.into(), align.into()],
             Some(dest),
             // Don't do anything when we are done. The `statement()` function will increment
             // the old stack frame's stmt counter to the next statement, which means that when
             // `exchange_malloc` returns, we go on evaluating exactly where we want to be.
             StackPopCleanup::None { cleanup: true },
         )?;
-
-        let mut args = ecx.frame().body.args_iter();
-        let layout = ecx.layout_of(dest.layout.ty.builtin_deref(false).unwrap().ty)?;
-
-        // First argument: `size`.
-        // (`0` is allowed here -- this is expected to be handled by the lang item).
-        let arg = ecx.local_place(args.next().unwrap())?;
-        let size = layout.size.bytes();
-        ecx.write_scalar(Scalar::from_uint(size, arg.layout.size), arg)?;
-
-        // Second argument: `align`.
-        let arg = ecx.local_place(args.next().unwrap())?;
-        let align = layout.align.abi.bytes();
-        ecx.write_scalar(Scalar::from_uint(align, arg.layout.size), arg)?;
-
-        // No more arguments.
-        args.next().expect_none("`exchange_malloc` lang item has more arguments than expected");
         Ok(())
     }
 
@@ -276,20 +291,15 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         Ok(())
     }
 
-    fn tag_allocation<'b>(
+    fn init_allocation_extra<'b>(
         memory_extra: &MemoryExtra,
         id: AllocId,
         alloc: Cow<'b, Allocation>,
         kind: Option<MemoryKind<Self::MemoryKinds>>,
-    ) -> (
-        Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>,
-        Self::PointerTag,
-    ) {
+    ) -> (Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>, Self::PointerTag) {
         let kind = kind.expect("we set our STATIC_KIND so this cannot be None");
         let alloc = alloc.into_owned();
-        let (stacks, base_tag) = if !memory_extra.validate {
-            (None, Tag::Untagged)
-        } else {
+        let (stacks, base_tag) = if memory_extra.validate {
             let (stacks, base_tag) = Stacks::new_allocation(
                 id,
                 alloc.size,
@@ -297,6 +307,9 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
                 kind,
             );
             (Some(stacks), base_tag)
+        } else {
+            // No stacks, no tag.
+            (None, Tag::Untagged)
         };
         let mut stacked_borrows = memory_extra.stacked_borrows.borrow_mut();
         let alloc: Allocation<Tag, Self::AllocExtra> = alloc.with_tags_and_extra(
@@ -345,21 +358,20 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     #[inline(always)]
     fn stack_push(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
-    ) -> InterpResult<'tcx, stacked_borrows::CallId> {
-        Ok(ecx.memory.extra.stacked_borrows.borrow_mut().new_call())
+    ) -> InterpResult<'tcx, FrameData<'tcx>> {
+        Ok(FrameData {
+            call_id: ecx.memory.extra.stacked_borrows.borrow_mut().new_call(),
+            catch_panic: None,
+        })
     }
 
     #[inline(always)]
     fn stack_pop(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        extra: stacked_borrows::CallId,
-    ) -> InterpResult<'tcx> {
-        Ok(ecx
-            .memory
-            .extra
-            .stacked_borrows
-            .borrow_mut()
-            .end_call(extra))
+        extra: FrameData<'tcx>,
+        unwinding: bool
+    ) -> InterpResult<'tcx, StackPopInfo> {
+        ecx.handle_stack_pop(extra, unwinding)
     }
 
     #[inline(always)]

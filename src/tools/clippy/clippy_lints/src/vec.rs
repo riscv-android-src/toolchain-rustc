@@ -1,11 +1,12 @@
 use crate::consts::constant;
 use crate::utils::{higher, is_copy, snippet_with_applicability, span_lint_and_sugg};
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::{self, Ty};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use syntax::source_map::Span;
 
 declare_clippy_lint! {
@@ -33,7 +34,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UselessVec {
         if_chain! {
             if let ty::Ref(_, ty, _) = cx.tables.expr_ty_adjusted(expr).kind;
             if let ty::Slice(..) = ty.kind;
-            if let ExprKind::AddrOf(_, ref addressee) = expr.kind;
+            if let ExprKind::AddrOf(BorrowKind::Ref, _, ref addressee) = expr.kind;
             if let Some(vec_args) = higher::vec_macro(cx, addressee);
             then {
                 check_vec_macro(cx, &vec_args, expr.span);

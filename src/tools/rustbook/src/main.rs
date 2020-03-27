@@ -8,6 +8,11 @@ use clap::{App, AppSettings, ArgMatches, SubCommand};
 use mdbook::errors::Result as Result3;
 use mdbook::MDBook;
 
+#[cfg(feature = "linkcheck")]
+use failure::Error;
+#[cfg(feature = "linkcheck")]
+use mdbook::renderer::RenderContext;
+
 fn main() {
     let d_message = "-d, --dest-dir=[dest-dir]
 'The output directory for your book{n}(Defaults to ./book when omitted)'";
@@ -46,10 +51,36 @@ fn main() {
             }
         }
         ("linkcheck", Some(sub_matches)) => {
-            println!("mdbook-linkcheck is disabled, but arguments were passed: {:?}", sub_matches);
+            #[cfg(feature = "linkcheck")]
+            {
+                if let Err(err) = linkcheck(sub_matches) {
+                    eprintln!("Error: {}", err);
+                    std::process::exit(101);
+                }
+            }
+
+            #[cfg(not(feature = "linkcheck"))]
+            {
+                // This avoids the `unused_binding` lint.
+                println!(
+                    "mdbook-linkcheck is disabled, but arguments were passed: {:?}",
+                    sub_matches
+                );
+            }
         }
         (_, _) => unreachable!(),
     };
+}
+
+#[cfg(feature = "linkcheck")]
+pub fn linkcheck(args: &ArgMatches<'_>) -> Result<(), Error> {
+    let book_dir = get_book_dir(args);
+    let book = MDBook::load(&book_dir).unwrap();
+    let cfg = book.config;
+    let render_ctx = RenderContext::new(&book_dir, book.book, cfg, &book_dir);
+    let cache_file = render_ctx.destination.join("cache.json");
+    let color = codespan_reporting::term::termcolor::ColorChoice::Auto;
+    mdbook_linkcheck::run(&cache_file, color, &render_ctx)
 }
 
 // Build command implementation

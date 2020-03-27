@@ -570,7 +570,12 @@ impl Step for Clippy {
             let host_libs = builder
                 .stage_out(compiler, Mode::ToolRustc)
                 .join(builder.cargo_dir());
+            let target_libs = builder
+                .stage_out(compiler, Mode::ToolRustc)
+                .join(&self.host)
+                .join(builder.cargo_dir());
             cargo.env("HOST_LIBS", host_libs);
+            cargo.env("TARGET_LIBS", target_libs);
             // clippy tests need to find the driver
             cargo.env("CLIPPY_DRIVER_PATH", clippy);
 
@@ -1768,7 +1773,7 @@ impl Step for Crate {
             }
             Mode::Rustc => {
                 builder.ensure(compile::Rustc { compiler, target });
-                compile::rustc_cargo(builder, &mut cargo);
+                compile::rustc_cargo(builder, &mut cargo, target);
             }
             _ => panic!("can only test libraries"),
         };

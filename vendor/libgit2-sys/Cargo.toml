@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "libgit2-sys"
-version = "0.9.0"
+version = "0.9.1"
 authors = ["Josh Triplett <josh@joshtriplett.org>", "Alex Crichton <alex@alexcrichton.com>"]
 build = "build.rs"
 links = "git2"
@@ -35,7 +35,8 @@ optional = true
 [dependencies.libz-sys]
 version = "1.0.22"
 [build-dependencies.cc]
-version = "1.0.25"
+version = "1.0.42"
+features = ["parallel"]
 
 [build-dependencies.pkg-config]
 version = "0.3.7"

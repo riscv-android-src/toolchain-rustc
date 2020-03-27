@@ -1,9 +1,10 @@
 use crate::utils::span_lint;
+use rustc::declare_lint_pass;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::subst::Subst;
 use rustc::ty::{self, Ty};
-use rustc::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_tool_lint;
 
 declare_clippy_lint! {
     /// **What it does:** Detects giving a mutable reference to a function that only
@@ -55,11 +56,12 @@ fn check_arguments<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, arguments: &[Expr], typ
             let parameters = type_definition.fn_sig(cx.tcx).skip_binder().inputs();
             for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
                 match parameter.kind {
-                    ty::Ref(_, _, MutImmutable)
+                    ty::Ref(_, _, Mutability::Immutable)
                     | ty::RawPtr(ty::TypeAndMut {
-                        mutbl: MutImmutable, ..
+                        mutbl: Mutability::Immutable,
+                        ..
                     }) => {
-                        if let ExprKind::AddrOf(MutMutable, _) = argument.kind {
+                        if let ExprKind::AddrOf(BorrowKind::Ref, Mutability::Mutable, _) = argument.kind {
                             span_lint(
                                 cx,
                                 UNNECESSARY_MUT_PASSED,

@@ -1057,7 +1057,7 @@ extern "C" {
 }
 
 cfg_if! {
-    if #[cfg(ossl110)] {
+    if #[cfg(any(ossl110, libressl291))] {
         extern "C" {
             pub fn TLS_method() -> *const SSL_METHOD;
 
@@ -1092,6 +1092,9 @@ extern "C" {
     pub fn SSL_shutdown(ssl: *mut SSL) -> c_int;
 
     pub fn SSL_CTX_set_client_CA_list(ctx: *mut SSL_CTX, list: *mut stack_st_X509_NAME);
+
+    #[cfg(not(libressl))]
+    pub fn SSL_CTX_add_client_CA(ctx: *mut SSL_CTX, cacert: *mut X509) -> c_int;
 
     pub fn SSL_CTX_set_default_verify_paths(ctx: *mut SSL_CTX) -> c_int;
     pub fn SSL_CTX_load_verify_locations(
@@ -1311,7 +1314,11 @@ extern "C" {
 }
 
 cfg_if! {
-    if #[cfg(ossl110)] {
+    if #[cfg(ossl111c)] {
+        extern "C" {
+            pub fn SSL_session_reused(ssl: *const SSL) -> c_int;
+        }
+    } else if #[cfg(ossl110)] {
         extern "C" {
             pub fn SSL_session_reused(ssl: *mut SSL) -> c_int;
         }

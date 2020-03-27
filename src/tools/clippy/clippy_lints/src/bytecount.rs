@@ -3,11 +3,12 @@ use crate::utils::{
     span_lint_and_sugg, walk_ptrs_ty,
 };
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use syntax::ast::{Name, UintTy};
 
 declare_clippy_lint! {
@@ -101,7 +102,9 @@ fn check_arg(name: Name, arg: Name, needle: &Expr) -> bool {
 
 fn get_path_name(expr: &Expr) -> Option<Name> {
     match expr.kind {
-        ExprKind::Box(ref e) | ExprKind::AddrOf(_, ref e) | ExprKind::Unary(UnOp::UnDeref, ref e) => get_path_name(e),
+        ExprKind::Box(ref e) | ExprKind::AddrOf(BorrowKind::Ref, _, ref e) | ExprKind::Unary(UnOp::UnDeref, ref e) => {
+            get_path_name(e)
+        },
         ExprKind::Block(ref b, _) => {
             if b.stmts.is_empty() {
                 b.expr.as_ref().and_then(|p| get_path_name(p))

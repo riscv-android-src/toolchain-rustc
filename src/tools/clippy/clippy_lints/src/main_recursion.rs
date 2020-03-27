@@ -1,6 +1,8 @@
 use rustc::hir::{Crate, Expr, ExprKind, QPath};
+use rustc::impl_lint_pass;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, impl_lint_pass};
+use rustc_session::declare_tool_lint;
+use syntax::ast::AttrKind;
 use syntax::symbol::sym;
 
 use crate::utils::{is_entrypoint_fn, snippet, span_help_and_lint};
@@ -34,7 +36,13 @@ impl_lint_pass!(MainRecursion => [MAIN_RECURSION]);
 
 impl LateLintPass<'_, '_> for MainRecursion {
     fn check_crate(&mut self, _: &LateContext<'_, '_>, krate: &Crate) {
-        self.has_no_std_attr = krate.attrs.iter().any(|attr| attr.path == sym::no_std);
+        self.has_no_std_attr = krate.attrs.iter().any(|attr| {
+            if let AttrKind::Normal(ref attr) = attr.kind {
+                attr.path == sym::no_std
+            } else {
+                false
+            }
+        });
     }
 
     fn check_expr_post(&mut self, cx: &LateContext<'_, '_>, expr: &Expr) {

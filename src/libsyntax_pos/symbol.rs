@@ -5,9 +5,10 @@
 use arena::DroplessArena;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_index::vec::Idx;
-use rustc_macros::symbols;
+use rustc_macros::{symbols, HashStable_Generic};
 use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use rustc_serialize::{UseSpecializedDecodable, UseSpecializedEncodable};
+use rustc_data_structures::stable_hasher::{HashStable, ToStableHashKey, StableHasher};
 
 use std::cmp::{PartialEq, PartialOrd, Ord};
 use std::fmt;
@@ -97,6 +98,7 @@ symbols! {
         Auto:               "auto",
         Catch:              "catch",
         Default:            "default",
+        Raw:                "raw",
         Union:              "union",
     }
 
@@ -119,6 +121,7 @@ symbols! {
         abi_vectorcall,
         abi_x86_interrupt,
         aborts,
+        add_with_overflow,
         advanced_slice_patterns,
         adx_target_feature,
         alias,
@@ -148,6 +151,7 @@ symbols! {
         associated_type_bounds,
         associated_type_defaults,
         associated_types,
+        assume_init,
         async_await,
         async_closure,
         attr,
@@ -168,12 +172,16 @@ symbols! {
         box_patterns,
         box_syntax,
         braced_empty_structs,
+        bswap,
+        bitreverse,
         C,
+        caller_location,
         cdylib,
         cfg,
         cfg_attr,
         cfg_attr_multi,
         cfg_doctest,
+        cfg_sanitize,
         cfg_target_feature,
         cfg_target_has_atomic,
         cfg_target_thread_local,
@@ -201,9 +209,12 @@ symbols! {
         const_fn,
         const_fn_union,
         const_generics,
+        const_if_match,
         const_indexing,
         const_in_array_repeat_expressions,
         const_let,
+        const_loop,
+        const_mut_refs,
         const_panic,
         const_raw_ptr_deref,
         const_raw_ptr_to_usize_cast,
@@ -221,6 +232,11 @@ symbols! {
         crate_name,
         crate_type,
         crate_visibility_modifier,
+        ctpop,
+        cttz,
+        cttz_nonzero,
+        ctlz,
+        ctlz_nonzero,
         custom_attribute,
         custom_derive,
         custom_inner_attributes,
@@ -235,6 +251,7 @@ symbols! {
         default_lib_allocator,
         default_type_parameter_fallback,
         default_type_params,
+        delay_span_bug_from_inside_query,
         deny,
         deprecated,
         deref,
@@ -274,6 +291,7 @@ symbols! {
         Err,
         Eq,
         Equal,
+        enclosing_scope,
         except,
         exclusive_range_pattern,
         exhaustive_integer_patterns,
@@ -417,10 +435,14 @@ symbols! {
         match_beginning_vert,
         match_default_bindings,
         may_dangle,
-        mem,
+        maybe_uninit_uninit,
+        maybe_uninit_zeroed,
+        mem_uninitialized,
+        mem_zeroed,
         member_constraints,
         message,
         meta,
+        min_align_of,
         min_const_fn,
         min_const_unsafe_fn,
         mips_target_feature,
@@ -428,16 +450,20 @@ symbols! {
         module,
         module_path,
         more_struct_aliases,
+        move_val_init,
         movbe_target_feature,
+        mul_with_overflow,
         must_use,
         naked,
         naked_functions,
         name,
         needs_allocator,
+        needs_drop,
         needs_panic_runtime,
         negate_unsigned,
         never,
         never_type,
+        never_type_fallback,
         new,
         next,
         __next,
@@ -508,6 +534,7 @@ symbols! {
         poll_with_tls_context,
         powerpc_target_feature,
         precise_pointer_size_matching,
+        pref_align_of,
         prelude,
         prelude_import,
         primitive,
@@ -524,6 +551,7 @@ symbols! {
         proc_macro_non_items,
         proc_macro_path_invoc,
         profiler_runtime,
+        ptr_offset_from,
         pub_restricted,
         pushpop_unsafe,
         quad_precision_float,
@@ -537,11 +565,14 @@ symbols! {
         RangeToInclusive,
         raw_dylib,
         raw_identifiers,
+        raw_ref_op,
         Ready,
         reason,
         recursion_limit,
         reexport_test_harness_main,
         reflect,
+        register_attr,
+        register_tool,
         relaxed_adts,
         repr,
         repr128,
@@ -556,6 +587,8 @@ symbols! {
         Return,
         rhs,
         rlib,
+        rotate_left,
+        rotate_right,
         rt,
         rtm_target_feature,
         rust,
@@ -573,6 +606,7 @@ symbols! {
         rustc_builtin_macro,
         rustc_clean,
         rustc_const_unstable,
+        rustc_const_stable,
         rustc_conversion_suggestion,
         rustc_def_path,
         rustc_deprecated,
@@ -616,21 +650,27 @@ symbols! {
         rustc_test_marker,
         rustc_then_this_would_need,
         rustc_variance,
-        rustdoc,
         rustfmt,
         rust_eh_personality,
         rust_eh_unwind_resume,
         rust_oom,
         rvalue_static_promotion,
+        sanitize,
         sanitizer_runtime,
+        saturating_add,
+        saturating_sub,
         _Self,
         self_in_typedefs,
         self_struct_ctor,
+        send_trait,
         should_panic,
         simd,
+        simd_extract,
         simd_ffi,
+        simd_insert,
         since,
         size,
+        size_of,
         slice_patterns,
         slicing_syntax,
         soft,
@@ -658,7 +698,9 @@ symbols! {
         structural_match,
         struct_variant,
         sty,
+        sub_with_overflow,
         suggestion,
+        sync_trait,
         target_feature,
         target_has_atomic,
         target_has_atomic_load_store,
@@ -693,6 +735,8 @@ symbols! {
         Ty,
         ty,
         type_alias_impl_trait,
+        type_id,
+        type_name,
         TyCtxt,
         TyKind,
         type_alias_enum_variants,
@@ -705,11 +749,12 @@ symbols! {
         u64,
         u8,
         unboxed_closures,
+        unchecked_shl,
+        unchecked_shr,
         underscore_const_names,
         underscore_imports,
         underscore_lifetimes,
         uniform_paths,
-        uninitialized,
         universal_impl_trait,
         unmarked_api,
         unreachable_code,
@@ -734,18 +779,19 @@ symbols! {
         visible_private_types,
         volatile,
         warn,
-        warn_directory_ownership,
         wasm_import_module,
         wasm_target_feature,
         while_let,
         windows,
         windows_subsystem,
+        wrapping_add,
+        wrapping_sub,
+        wrapping_mul,
         Yield,
-        zeroed,
     }
 }
 
-#[derive(Copy, Clone, Eq)]
+#[derive(Copy, Clone, Eq, HashStable_Generic)]
 pub struct Ident {
     pub name: Symbol,
     pub span: Span,
@@ -806,9 +852,9 @@ impl Ident {
         Ident::new(self.name, self.span.modern_and_legacy())
     }
 
-    /// Convert the name to a `LocalInternedString`. This is a slowish
-    /// operation because it requires locking the symbol interner.
-    pub fn as_str(self) -> LocalInternedString {
+    /// Convert the name to a `SymbolStr`. This is a slowish operation because
+    /// it requires locking the symbol interner.
+    pub fn as_str(self) -> SymbolStr {
         self.name.as_str()
     }
 }
@@ -828,12 +874,18 @@ impl Hash for Ident {
 
 impl fmt::Debug for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_raw_guess() {
+            write!(f, "r#")?;
+        }
         write!(f, "{}{:?}", self.name, self.span.ctxt())
     }
 }
 
 impl fmt::Display for Ident {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_raw_guess() {
+            write!(f, "r#")?;
+        }
         fmt::Display::fmt(&self.name, f)
     }
 }
@@ -896,11 +948,11 @@ impl Symbol {
         })
     }
 
-    /// Convert to a `LocalInternedString`. This is a slowish operation because
-    /// it requires locking the symbol interner.
-    pub fn as_str(self) -> LocalInternedString {
+    /// Convert to a `SymbolStr`. This is a slowish operation because it
+    /// requires locking the symbol interner.
+    pub fn as_str(self) -> SymbolStr {
         with_interner(|interner| unsafe {
-            LocalInternedString {
+            SymbolStr {
                 string: std::mem::transmute::<&str, &str>(interner.get(self))
             }
         })
@@ -932,6 +984,22 @@ impl Encodable for Symbol {
 impl Decodable for Symbol {
     fn decode<D: Decoder>(d: &mut D) -> Result<Symbol, D::Error> {
         Ok(Symbol::intern(&d.read_str()?))
+    }
+}
+
+impl<CTX> HashStable<CTX> for Symbol {
+    #[inline]
+    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
+        self.as_str().hash_stable(hcx, hasher);
+    }
+}
+
+impl<CTX> ToStableHashKey<CTX> for Symbol {
+    type KeyType = SymbolStr;
+
+    #[inline]
+    fn to_stable_hash_key(&self, _: &CTX) -> SymbolStr {
+        self.as_str()
     }
 }
 
@@ -973,6 +1041,7 @@ impl Interner {
         self.names.insert(string, name);
         name
     }
+
     // Get the symbol as a string. `Symbol::as_str()` should be used in
     // preference to this function.
     pub fn get(&self, symbol: Symbol) -> &str {
@@ -1078,7 +1147,6 @@ impl Ident {
     }
 }
 
-// If an interner exists, return it. Otherwise, prepare a fresh one.
 #[inline]
 fn with_interner<T, F: FnOnce(&mut Interner) -> T>(f: F) -> T {
     GLOBALS.with(|globals| f(&mut *globals.symbol_interner.lock()))
@@ -1092,47 +1160,59 @@ fn with_interner<T, F: FnOnce(&mut Interner) -> T>(f: F) -> T {
 /// safely treat `string` which points to interner data, as an immortal string,
 /// as long as this type never crosses between threads.
 //
-// FIXME: ensure that the interner outlives any thread which uses
-// `LocalInternedString`, by creating a new thread right after constructing the
-// interner.
+// FIXME: ensure that the interner outlives any thread which uses `SymbolStr`,
+// by creating a new thread right after constructing the interner.
 #[derive(Clone, Eq, PartialOrd, Ord)]
-pub struct LocalInternedString {
+pub struct SymbolStr {
     string: &'static str,
 }
 
-impl<U: ?Sized> std::convert::AsRef<U> for LocalInternedString
-where
-    str: std::convert::AsRef<U>
-{
-    #[inline]
-    fn as_ref(&self) -> &U {
-        self.string.as_ref()
-    }
-}
-
-impl<T: std::ops::Deref<Target = str>> std::cmp::PartialEq<T> for LocalInternedString {
+// This impl allows a `SymbolStr` to be directly equated with a `String` or
+// `&str`.
+impl<T: std::ops::Deref<Target = str>> std::cmp::PartialEq<T> for SymbolStr {
     fn eq(&self, other: &T) -> bool {
         self.string == other.deref()
     }
 }
 
-impl !Send for LocalInternedString {}
-impl !Sync for LocalInternedString {}
+impl !Send for SymbolStr {}
+impl !Sync for SymbolStr {}
 
-impl std::ops::Deref for LocalInternedString {
+/// This impl means that if `ss` is a `SymbolStr`:
+/// - `*ss` is a `str`;
+/// - `&*ss` is a `&str`;
+/// - `&ss as &str` is a `&str`, which means that `&ss` can be passed to a
+///   function expecting a `&str`.
+impl std::ops::Deref for SymbolStr {
     type Target = str;
     #[inline]
     fn deref(&self) -> &str { self.string }
 }
 
-impl fmt::Debug for LocalInternedString {
+impl fmt::Debug for SymbolStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self.string, f)
     }
 }
 
-impl fmt::Display for LocalInternedString {
+impl fmt::Display for SymbolStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.string, f)
+    }
+}
+
+impl<CTX> HashStable<CTX> for SymbolStr {
+    #[inline]
+    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
+        self.string.hash_stable(hcx, hasher)
+    }
+}
+
+impl<CTX> ToStableHashKey<CTX> for SymbolStr {
+    type KeyType = SymbolStr;
+
+    #[inline]
+    fn to_stable_hash_key(&self, _: &CTX) -> SymbolStr {
+        self.clone()
     }
 }

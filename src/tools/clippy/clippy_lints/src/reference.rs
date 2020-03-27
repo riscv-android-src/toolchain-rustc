@@ -1,8 +1,9 @@
 use crate::utils::{in_macro, snippet_with_applicability, span_lint_and_sugg};
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use syntax::ast::{Expr, ExprKind, UnOp};
 
 declare_clippy_lint! {
@@ -37,7 +38,7 @@ impl EarlyLintPass for DerefAddrOf {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &Expr) {
         if_chain! {
             if let ExprKind::Unary(UnOp::Deref, ref deref_target) = e.kind;
-            if let ExprKind::AddrOf(_, ref addrof_target) = without_parens(deref_target).kind;
+            if let ExprKind::AddrOf(_, _, ref addrof_target) = without_parens(deref_target).kind;
             if !in_macro(addrof_target.span);
             then {
                 let mut applicability = Applicability::MachineApplicable;
@@ -80,7 +81,7 @@ impl EarlyLintPass for RefInDeref {
         if_chain! {
             if let ExprKind::Field(ref object, _) = e.kind;
             if let ExprKind::Paren(ref parened) = object.kind;
-            if let ExprKind::AddrOf(_, ref inner) = parened.kind;
+            if let ExprKind::AddrOf(_, _, ref inner) = parened.kind;
             then {
                 let mut applicability = Applicability::MachineApplicable;
                 span_lint_and_sugg(

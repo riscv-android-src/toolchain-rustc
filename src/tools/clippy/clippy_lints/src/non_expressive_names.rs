@@ -1,11 +1,12 @@
 use crate::utils::{span_lint, span_lint_and_then};
+use rustc::impl_lint_pass;
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_tool_lint, impl_lint_pass};
+use rustc_session::declare_tool_lint;
 use std::cmp::Ordering;
 use syntax::ast::*;
 use syntax::attr;
 use syntax::source_map::Span;
-use syntax::symbol::LocalInternedString;
+use syntax::symbol::SymbolStr;
 use syntax::visit::{walk_block, walk_expr, walk_pat, Visitor};
 
 declare_clippy_lint! {
@@ -72,7 +73,7 @@ pub struct NonExpressiveNames {
 impl_lint_pass!(NonExpressiveNames => [SIMILAR_NAMES, MANY_SINGLE_CHAR_NAMES, JUST_UNDERSCORES_AND_DIGITS]);
 
 struct ExistingName {
-    interned: LocalInternedString,
+    interned: SymbolStr,
     span: Span,
     len: usize,
     whitelist: &'static [&'static str],
@@ -352,8 +353,8 @@ impl<'a, 'tcx> Visitor<'tcx> for SimilarNamesLocalVisitor<'a, 'tcx> {
 
 impl EarlyLintPass for NonExpressiveNames {
     fn check_item(&mut self, cx: &EarlyContext<'_>, item: &Item) {
-        if let ItemKind::Fn(ref decl, _, _, ref blk) = item.kind {
-            do_check(self, cx, &item.attrs, decl, blk);
+        if let ItemKind::Fn(ref sig, _, ref blk) = item.kind {
+            do_check(self, cx, &item.attrs, &sig.decl, blk);
         }
     }
 

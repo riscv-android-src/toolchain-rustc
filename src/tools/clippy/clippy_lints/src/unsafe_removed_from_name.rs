@@ -1,9 +1,10 @@
 use crate::utils::span_lint;
+use rustc::declare_lint_pass;
 use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_tool_lint;
 use syntax::ast::*;
 use syntax::source_map::Span;
-use syntax::symbol::LocalInternedString;
+use syntax::symbol::SymbolStr;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for imports that remove "unsafe" from an item's
@@ -73,6 +74,6 @@ fn unsafe_to_safe_check(old_name: Ident, new_name: Ident, cx: &EarlyContext<'_>,
 }
 
 #[must_use]
-fn contains_unsafe(name: &LocalInternedString) -> bool {
+fn contains_unsafe(name: &SymbolStr) -> bool {
     name.contains("Unsafe") || name.contains("unsafe")
 }

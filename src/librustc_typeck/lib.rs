@@ -59,6 +59,7 @@ This API is completely unstable and subject to change.
 
 #![allow(non_camel_case_types)]
 
+#![feature(bool_to_option)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(crate_visibility_modifier)]
@@ -75,7 +76,8 @@ This API is completely unstable and subject to change.
 
 #[macro_use] extern crate rustc;
 
-pub mod error_codes;
+// This is used by Clippy.
+pub mod expr_use_visitor;
 
 mod astconv;
 mod check;
@@ -85,6 +87,7 @@ mod collect;
 mod constrained_generic_params;
 mod structured_errors;
 mod impl_wf_check;
+mod mem_categorization;
 mod namespace;
 mod outlives;
 mod variance;
@@ -106,11 +109,11 @@ use rustc::util;
 use syntax_pos::{DUMMY_SP, Span};
 use util::common::time;
 
+use rustc_error_codes::*;
+
 use std::iter;
 
 use astconv::{AstConv, Bounds};
-pub use collect::checked_type_of;
-
 pub struct TypeAndSubsts<'tcx> {
     substs: SubstsRef<'tcx>,
     ty: Ty<'tcx>,

@@ -7,46 +7,22 @@
 // or type checking or some other kind of complex analysis.
 
 use std::mem;
-use syntax::print::pprust;
 use rustc::lint;
-use rustc::lint::builtin::{BuiltinLintDiagnostics, NESTED_IMPL_TRAIT};
 use rustc::session::Session;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_parse::validate_attr;
 use syntax::ast::*;
 use syntax::attr;
 use syntax::expand::is_proc_macro_attr;
-use syntax::feature_gate::is_builtin_attr;
+use syntax::print::pprust;
 use syntax::source_map::Spanned;
 use syntax::symbol::{kw, sym};
 use syntax::visit::{self, Visitor};
 use syntax::{span_err, struct_span_err, walk_list};
-use syntax_pos::{Span, MultiSpan};
+use syntax_pos::Span;
 use errors::{Applicability, FatalError};
 
-#[derive(Copy, Clone, Debug)]
-struct OuterImplTrait {
-    span: Span,
-
-    /// rust-lang/rust#57979: a bug in original implementation caused
-    /// us to fail sometimes to record an outer `impl Trait`.
-    /// Therefore, in order to reliably issue a warning (rather than
-    /// an error) in the *precise* places where we are newly injecting
-    /// the diagnostic, we have to distinguish between the places
-    /// where the outer `impl Trait` has always been recorded, versus
-    /// the places where it has only recently started being recorded.
-    only_recorded_since_pull_request_57730: bool,
-}
-
-impl OuterImplTrait {
-    /// This controls whether we should downgrade the nested impl
-    /// trait diagnostic to a warning rather than an error, based on
-    /// whether the outer impl trait had been improperly skipped in
-    /// earlier implementations of the analysis on the stable
-    /// compiler.
-    fn should_warn_instead_of_error(&self) -> bool {
-        self.only_recorded_since_pull_request_57730
-    }
-}
+use rustc_error_codes::*;
 
 struct AstValidator<'a> {
     session: &'a Session,
@@ -55,7 +31,7 @@ struct AstValidator<'a> {
     /// Used to ban nested `impl Trait`, e.g., `impl Into<impl Debug>`.
     /// Nested `impl Trait` _is_ allowed in associated type position,
     /// e.g., `impl Iterator<Item = impl Debug>`.
-    outer_impl_trait: Option<OuterImplTrait>,
+    outer_impl_trait: Option<Span>,
 
     /// Used to ban `impl Trait` in path projections like `<impl Iterator>::Item`
     /// or `Foo::Bar<impl Trait>`
@@ -65,26 +41,10 @@ struct AstValidator<'a> {
     /// certain positions.
     is_assoc_ty_bound_banned: bool,
 
-    /// rust-lang/rust#57979: the ban of nested `impl Trait` was buggy
-    /// until PRs #57730 and #57981 landed: it would jump directly to
-    /// walk_ty rather than visit_ty (or skip recurring entirely for
-    /// impl trait in projections), and thus miss some cases. We track
-    /// whether we should downgrade to a warning for short-term via
-    /// these booleans.
-    warning_period_57979_didnt_record_next_impl_trait: bool,
-    warning_period_57979_impl_trait_in_proj: bool,
-
     lint_buffer: &'a mut lint::LintBuffer,
 }
 
 impl<'a> AstValidator<'a> {
-    fn with_impl_trait_in_proj_warning<T>(&mut self, v: bool, f: impl FnOnce(&mut Self) -> T) -> T {
-        let old = mem::replace(&mut self.warning_period_57979_impl_trait_in_proj, v);
-        let ret = f(self);
-        self.warning_period_57979_impl_trait_in_proj = old;
-        ret
-    }
-
     fn with_banned_impl_trait(&mut self, f: impl FnOnce(&mut Self)) {
         let old = mem::replace(&mut self.is_impl_trait_banned, true);
         f(self);
@@ -97,7 +57,7 @@ impl<'a> AstValidator<'a> {
         self.is_assoc_ty_bound_banned = old;
     }
 
-    fn with_impl_trait(&mut self, outer: Option<OuterImplTrait>, f: impl FnOnce(&mut Self)) {
+    fn with_impl_trait(&mut self, outer: Option<Span>, f: impl FnOnce(&mut Self)) {
         let old = mem::replace(&mut self.outer_impl_trait, outer);
         f(self);
         self.outer_impl_trait = old;
@@ -105,14 +65,7 @@ impl<'a> AstValidator<'a> {
 
     fn visit_assoc_ty_constraint_from_generic_args(&mut self, constraint: &'a AssocTyConstraint) {
         match constraint.kind {
-            AssocTyConstraintKind::Equality { ref ty } => {
-                // rust-lang/rust#57979: bug in old `visit_generic_args` called
-                // `walk_ty` rather than `visit_ty`, skipping outer `impl Trait`
-                // if it happened to occur at `ty`.
-                if let TyKind::ImplTrait(..) = ty.kind {
-                    self.warning_period_57979_didnt_record_next_impl_trait = true;
-                }
-            }
+            AssocTyConstraintKind::Equality { .. } => {}
             AssocTyConstraintKind::Bound { .. } => {
                 if self.is_assoc_ty_bound_banned {
                     self.err_handler().span_err(constraint.span,
@@ -124,37 +77,11 @@ impl<'a> AstValidator<'a> {
         self.visit_assoc_ty_constraint(constraint);
     }
 
-    fn visit_ty_from_generic_args(&mut self, ty: &'a Ty) {
-        // rust-lang/rust#57979: bug in old `visit_generic_args` called
-        // `walk_ty` rather than `visit_ty`, skippping outer `impl Trait`
-        // if it happened to occur at `ty`.
-        if let TyKind::ImplTrait(..) = ty.kind {
-            self.warning_period_57979_didnt_record_next_impl_trait = true;
-        }
-        self.visit_ty(ty);
-    }
-
-    fn outer_impl_trait(&mut self, span: Span) -> OuterImplTrait {
-        let only_recorded_since_pull_request_57730 =
-            self.warning_period_57979_didnt_record_next_impl_trait;
-
-        // (This flag is designed to be set to `true`, and then only
-        // reach the construction point for the outer impl trait once,
-        // so its safe and easiest to unconditionally reset it to
-        // false.)
-        self.warning_period_57979_didnt_record_next_impl_trait = false;
-
-        OuterImplTrait {
-            span, only_recorded_since_pull_request_57730,
-        }
-    }
-
     // Mirrors `visit::walk_ty`, but tracks relevant state.
     fn walk_ty(&mut self, t: &'a Ty) {
         match t.kind {
             TyKind::ImplTrait(..) => {
-                let outer_impl_trait = self.outer_impl_trait(t.span);
-                self.with_impl_trait(Some(outer_impl_trait), |this| visit::walk_ty(this, t))
+                self.with_impl_trait(Some(t.span), |this| visit::walk_ty(this, t))
             }
             TyKind::Path(ref qself, ref path) => {
                 // We allow these:
@@ -231,22 +158,25 @@ impl<'a> AstValidator<'a> {
         err.emit();
     }
 
-    fn check_decl_no_pat<F: FnMut(Span, bool)>(decl: &FnDecl, mut report_err: F) {
-        for arg in &decl.inputs {
-            match arg.pat.kind {
+    fn check_decl_no_pat(decl: &FnDecl, mut report_err: impl FnMut(Span, bool)) {
+        for Param { pat, .. } in &decl.inputs {
+            match pat.kind {
                 PatKind::Ident(BindingMode::ByValue(Mutability::Immutable), _, None) |
                 PatKind::Wild => {}
                 PatKind::Ident(BindingMode::ByValue(Mutability::Mutable), _, None) =>
-                    report_err(arg.pat.span, true),
-                _ => report_err(arg.pat.span, false),
+                    report_err(pat.span, true),
+                _ => report_err(pat.span, false),
             }
         }
     }
 
     fn check_trait_fn_not_async(&self, span: Span, asyncness: IsAsync) {
         if asyncness.is_async() {
-            struct_span_err!(self.session, span, E0706,
-                             "trait fns cannot be declared `async`").emit()
+            struct_span_err!(self.session, span, E0706, "trait fns cannot be declared `async`")
+                .note("`async` trait functions are not currently supported")
+                .note("consider using the `async-trait` crate: \
+                       https://crates.io/crates/async-trait")
+                .emit();
         }
     }
 
@@ -326,9 +256,9 @@ impl<'a> AstValidator<'a> {
             .flat_map(|i| i.attrs.as_ref())
             .filter(|attr| {
                 let arr = [sym::allow, sym::cfg, sym::cfg_attr, sym::deny, sym::forbid, sym::warn];
-                !arr.contains(&attr.name_or_empty()) && is_builtin_attr(attr)
+                !arr.contains(&attr.name_or_empty()) && attr::is_builtin_attr(attr)
             })
-            .for_each(|attr| if attr.is_sugared_doc {
+            .for_each(|attr| if attr.is_doc_comment() {
                 let mut err = self.err_handler().struct_span_err(
                     attr.span,
                     "documentation comments cannot be applied to function parameters"
@@ -444,6 +374,10 @@ fn validate_generics_order<'a>(
 }
 
 impl<'a> Visitor<'a> for AstValidator<'a> {
+    fn visit_attribute(&mut self, attr: &Attribute) {
+        validate_attr::check_meta(&self.session.parse_sess, attr);
+    }
+
     fn visit_expr(&mut self, expr: &'a Expr) {
         match &expr.kind {
             ExprKind::Closure(_, _, _, fn_decl, _, _) => {
@@ -484,32 +418,21 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             }
             TyKind::ImplTrait(_, ref bounds) => {
                 if self.is_impl_trait_banned {
-                    if self.warning_period_57979_impl_trait_in_proj {
-                        self.lint_buffer.buffer_lint(
-                            NESTED_IMPL_TRAIT, ty.id, ty.span,
-                            "`impl Trait` is not allowed in path parameters");
-                    } else {
-                        struct_span_err!(self.session, ty.span, E0667,
-                            "`impl Trait` is not allowed in path parameters").emit();
-                    }
+                    struct_span_err!(
+                        self.session, ty.span, E0667,
+                        "`impl Trait` is not allowed in path parameters"
+                    )
+                    .emit();
                 }
 
-                if let Some(outer_impl_trait) = self.outer_impl_trait {
-                    if outer_impl_trait.should_warn_instead_of_error() {
-                        self.lint_buffer.buffer_lint_with_diagnostic(
-                            NESTED_IMPL_TRAIT, ty.id, ty.span,
-                            "nested `impl Trait` is not allowed",
-                            BuiltinLintDiagnostics::NestedImplTrait {
-                                outer_impl_trait_span: outer_impl_trait.span,
-                                inner_impl_trait_span: ty.span,
-                            });
-                    } else {
-                        struct_span_err!(self.session, ty.span, E0666,
-                            "nested `impl Trait` is not allowed")
-                            .span_label(outer_impl_trait.span, "outer `impl Trait`")
-                            .span_label(ty.span, "nested `impl Trait` here")
-                            .emit();
-                    }
+                if let Some(outer_impl_trait_sp) = self.outer_impl_trait {
+                    struct_span_err!(
+                        self.session, ty.span, E0666,
+                        "nested `impl Trait` is not allowed"
+                    )
+                    .span_label(outer_impl_trait_sp, "outer `impl Trait`")
+                    .span_label(ty.span, "nested `impl Trait` here")
+                    .emit();
                 }
 
                 if !bounds.iter()
@@ -517,7 +440,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                     self.err_handler().span_err(ty.span, "at least one trait must be specified");
                 }
 
-                self.with_impl_trait_in_proj_warning(true, |this| this.walk_ty(ty));
+                self.walk_ty(ty);
                 return;
             }
             _ => {}
@@ -575,12 +498,12 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                         .note("only trait implementations may be annotated with default").emit();
                 }
             }
-            ItemKind::Fn(ref decl, ref header, ref generics, _) => {
-                self.visit_fn_header(header);
-                self.check_fn_decl(decl);
+            ItemKind::Fn(ref sig, ref generics, _) => {
+                self.visit_fn_header(&sig.header);
+                self.check_fn_decl(&sig.decl);
                 // We currently do not permit const generics in `const fn`, as
                 // this is tantamount to allowing compile-time dependent typing.
-                if header.constness.node == Constness::Const {
+                if sig.header.constness.node == Constness::Const {
                     // Look for const generics and error if we find any.
                     for param in &generics.params {
                         match param.kind {
@@ -605,6 +528,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             }
             ItemKind::Enum(ref def, _) => {
                 for variant in &def.variants {
+                    self.invalid_visibility(&variant.vis, None);
                     for field in variant.data.fields() {
                         self.invalid_visibility(&field.vis, None);
                     }
@@ -654,11 +578,6 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             ItemKind::Mod(_) => {
                 // Ensure that `path` attributes on modules are recorded as used (cf. issue #35584).
                 attr::first_attr_value_str_by_name(&item.attrs, sym::path);
-                if attr::contains_name(&item.attrs, sym::warn_directory_ownership) {
-                    let lint = lint::builtin::LEGACY_DIRECTORY_OWNERSHIP;
-                    let msg = "cannot declare a new module at this location";
-                    self.lint_buffer.buffer_lint(lint, item.id, item.span, msg);
-                }
             }
             ItemKind::Union(ref vdata, _) => {
                 if let VariantData::Tuple(..) | VariantData::Unit(..) = vdata {
@@ -668,14 +587,6 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                 if vdata.fields().is_empty() {
                     self.err_handler().span_err(item.span,
                                                 "unions cannot have zero fields");
-                }
-            }
-            ItemKind::OpaqueTy(ref bounds, _) => {
-                if !bounds.iter()
-                          .any(|b| if let GenericBound::Trait(..) = *b { true } else { false }) {
-                    let msp = MultiSpan::from_spans(bounds.iter()
-                        .map(|bound| bound.span()).collect());
-                    self.err_handler().span_err(msp, "at least one trait must be specified");
                 }
             }
             _ => {}
@@ -731,7 +642,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                 if let Some(ref type_) = data.output {
                     // `-> Foo` syntax is essentially an associated type binding,
                     // so it is also allowed to contain nested `impl Trait`.
-                    self.with_impl_trait(None, |this| this.visit_ty_from_generic_args(type_));
+                    self.with_impl_trait(None, |this| this.visit_ty(type_));
                 }
             }
         }
@@ -826,19 +737,16 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
             |this| visit::walk_enum_def(this, enum_definition, generics, item_id))
     }
 
-    fn visit_mac(&mut self, mac: &Mac) {
-        // when a new macro kind is added but the author forgets to set it up for expansion
-        // because that's the only part that won't cause a compiler error
-        self.session.diagnostic()
-            .span_bug(mac.span, "macro invocation missed in expansion; did you forget to override \
-                                 the relevant `fold_*()` method in `PlaceholderExpander`?");
-    }
-
     fn visit_impl_item(&mut self, ii: &'a ImplItem) {
         if let ImplItemKind::Method(ref sig, _) = ii.kind {
             self.check_fn_decl(&sig.decl);
         }
         visit::walk_impl_item(self, ii);
+    }
+
+    fn visit_trait_item(&mut self, ti: &'a TraitItem) {
+        self.invalid_visibility(&ti.vis, None);
+        visit::walk_trait_item(self, ti);
     }
 }
 
@@ -849,8 +757,6 @@ pub fn check_crate(session: &Session, krate: &Crate, lints: &mut lint::LintBuffe
         outer_impl_trait: None,
         is_impl_trait_banned: false,
         is_assoc_ty_bound_banned: false,
-        warning_period_57979_didnt_record_next_impl_trait: false,
-        warning_period_57979_impl_trait_in_proj: false,
         lint_buffer: lints,
     };
     visit::walk_crate(&mut validator, krate);

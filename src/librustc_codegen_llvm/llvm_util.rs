@@ -6,8 +6,9 @@ use rustc::session::config::PrintRequest;
 use rustc_target::spec::{MergeFunctions, PanicStrategy};
 use libc::c_int;
 use std::ffi::CString;
-use syntax::feature_gate::UnstableFeatures;
+use rustc_feature::UnstableFeatures;
 use syntax::symbol::sym;
+use rustc::bug;
 
 use std::str;
 use std::slice;
@@ -62,6 +63,9 @@ unsafe fn configure_llvm(sess: &Session) {
         if sess.opts.debugging_opts.disable_instrumentation_preinliner {
             add("-disable-preinline");
         }
+        if sess.opts.debugging_opts.generate_arange_section {
+            add("-generate-arange-section");
+        }
         if get_major_version() >= 8 {
             match sess.opts.debugging_opts.merge_functions
                   .unwrap_or(sess.target.target.options.merge_functions) {
@@ -105,6 +109,8 @@ const ARM_WHITELIST: &[(&str, Option<Symbol>)] = &[
     ("rclass", Some(sym::arm_target_feature)),
     ("dsp", Some(sym::arm_target_feature)),
     ("neon", Some(sym::arm_target_feature)),
+    ("crc", Some(sym::arm_target_feature)),
+    ("crypto", Some(sym::arm_target_feature)),
     ("v5te", Some(sym::arm_target_feature)),
     ("v6", Some(sym::arm_target_feature)),
     ("v6k", Some(sym::arm_target_feature)),

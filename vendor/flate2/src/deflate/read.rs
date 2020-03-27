@@ -1,13 +1,13 @@
-use std::io::prelude::*;
 use std::io;
+use std::io::prelude::*;
 
 #[cfg(feature = "tokio")]
 use futures::Poll;
 #[cfg(feature = "tokio")]
 use tokio_io::{AsyncRead, AsyncWrite};
 
-use bufreader::BufReader;
 use super::bufread;
+use crate::bufreader::BufReader;
 
 /// A DEFLATE encoder, or compressor.
 ///
@@ -45,7 +45,7 @@ pub struct DeflateEncoder<R> {
 impl<R: Read> DeflateEncoder<R> {
     /// Creates a new encoder which will read uncompressed data from the given
     /// stream and emit the compressed stream.
-    pub fn new(r: R, level: ::Compression) -> DeflateEncoder<R> {
+    pub fn new(r: R, level: crate::Compression) -> DeflateEncoder<R> {
         DeflateEncoder {
             inner: bufread::DeflateEncoder::new(BufReader::new(r), level),
         }

@@ -1,5 +1,4 @@
 use self::collector::NodeCollector;
-pub use self::def_collector::DefCollector;
 pub use self::definitions::{
     Definitions, DefKey, DefPath, DefPathData, DisambiguatedDefPathData, DefPathHash
 };
@@ -25,7 +24,6 @@ use syntax_pos::{Span, DUMMY_SP};
 
 pub mod blocks;
 mod collector;
-mod def_collector;
 pub mod definitions;
 mod hir_id_validator;
 
@@ -49,21 +47,21 @@ impl<'hir> Entry<'hir> {
         match self.node {
             Node::Item(ref item) => {
                 match item.kind {
-                    ItemKind::Fn(ref fn_decl, _, _, _) => Some(fn_decl),
+                    ItemKind::Fn(ref sig, _, _) => Some(&sig.decl),
                     _ => None,
                 }
             }
 
             Node::TraitItem(ref item) => {
                 match item.kind {
-                    TraitItemKind::Method(ref method_sig, _) => Some(&method_sig.decl),
+                    TraitItemKind::Method(ref sig, _) => Some(&sig.decl),
                     _ => None
                 }
             }
 
             Node::ImplItem(ref item) => {
                 match item.kind {
-                    ImplItemKind::Method(ref method_sig, _) => Some(&method_sig.decl),
+                    ImplItemKind::Method(ref sig, _) => Some(&sig.decl),
                     _ => None,
                 }
             }
@@ -79,13 +77,40 @@ impl<'hir> Entry<'hir> {
         }
     }
 
+    fn fn_sig(&self) -> Option<&'hir FnSig> {
+        match &self.node {
+            Node::Item(item) => {
+                match &item.kind {
+                    ItemKind::Fn(sig, _, _) => Some(sig),
+                    _ => None,
+                }
+            }
+
+            Node::TraitItem(item) => {
+                match &item.kind {
+                    TraitItemKind::Method(sig, _) => Some(sig),
+                    _ => None
+                }
+            }
+
+            Node::ImplItem(item) => {
+                match &item.kind {
+                    ImplItemKind::Method(sig, _) => Some(sig),
+                    _ => None,
+                }
+            }
+
+            _ => None,
+        }
+    }
+
     fn associated_body(self) -> Option<BodyId> {
         match self.node {
             Node::Item(item) => {
                 match item.kind {
                     ItemKind::Const(_, body) |
                     ItemKind::Static(.., body) |
-                    ItemKind::Fn(_, _, _, body) => Some(body),
+                    ItemKind::Fn(.., body) => Some(body),
                     _ => None,
                 }
             }
@@ -175,7 +200,7 @@ pub struct Map<'hir> {
 
     map: HirEntryMap<'hir>,
 
-    definitions: &'hir Definitions,
+    definitions: Definitions,
 
     /// The reverse mapping of `node_to_hir_id`.
     hir_to_node_id: FxHashMap<HirId, NodeId>,
@@ -242,8 +267,8 @@ impl<'hir> Map<'hir> {
     }
 
     #[inline]
-    pub fn definitions(&self) -> &'hir Definitions {
-        self.definitions
+    pub fn definitions(&self) -> &Definitions {
+        &self.definitions
     }
 
     pub fn def_key(&self, def_id: DefId) -> DefKey {
@@ -450,6 +475,14 @@ impl<'hir> Map<'hir> {
         }
     }
 
+    pub fn fn_sig_by_hir_id(&self, hir_id: HirId) -> Option<&'hir FnSig> {
+        if let Some(entry) = self.find_entry(hir_id) {
+            entry.fn_sig()
+        } else {
+            bug!("no entry for hir_id `{}`", hir_id)
+        }
+    }
+
     /// Returns the `HirId` that corresponds to the definition of
     /// which this is the body of, i.e., a `fn`, `const` or `static`
     /// item (possibly associated), a closure, or a `hir::AnonConst`.
@@ -605,7 +638,7 @@ impl<'hir> Map<'hir> {
                 Node::TraitItem(ref trait_item) => Some(&trait_item.generics),
                 Node::Item(ref item) => {
                     match item.kind {
-                        ItemKind::Fn(_, _, ref generics, _) |
+                        ItemKind::Fn(_, ref generics, _) |
                         ItemKind::TyAlias(_, ref generics) |
                         ItemKind::Enum(_, ref generics) |
                         ItemKind::Struct(_, ref generics) |
@@ -702,9 +735,9 @@ impl<'hir> Map<'hir> {
                 ..
             }) => true,
             Node::Item(&Item {
-                kind: ItemKind::Fn(_, header, ..),
+                kind: ItemKind::Fn(ref sig, ..),
                 ..
-            }) => header.constness == Constness::Const,
+            }) => sig.header.constness == Constness::Const,
             _ => false,
         }
     }
@@ -983,8 +1016,8 @@ impl<'hir> Map<'hir> {
         }
     }
 
-    pub fn name(&self, id: HirId) -> Name {
-        match self.get(id) {
+    pub fn opt_name(&self, id: HirId) -> Option<Name> {
+        Some(match self.get(id) {
             Node::Item(i) => i.ident.name,
             Node::ForeignItem(fi) => fi.ident.name,
             Node::ImplItem(ii) => ii.ident.name,
@@ -995,7 +1028,14 @@ impl<'hir> Map<'hir> {
             Node::GenericParam(param) => param.name.ident().name,
             Node::Binding(&Pat { kind: PatKind::Binding(_, _, l, _), .. }) => l.name,
             Node::Ctor(..) => self.name(self.get_parent_item(id)),
-            _ => bug!("no name for {}", self.node_to_string(id))
+            _ => return None,
+        })
+    }
+
+    pub fn name(&self, id: HirId) -> Name {
+        match self.opt_name(id) {
+            Some(name) => name,
+            None => bug!("no name for {}", self.node_to_string(id)),
         }
     }
 
@@ -1218,7 +1258,7 @@ impl Named for ImplItem { fn name(&self) -> Name { self.ident.name } }
 pub fn map_crate<'hir>(sess: &crate::session::Session,
                        cstore: &CrateStoreDyn,
                        forest: &'hir Forest,
-                       definitions: &'hir Definitions)
+                       definitions: Definitions)
                        -> Map<'hir> {
     let _prof_timer = sess.prof.generic_activity("build_hir_map");
 
@@ -1227,7 +1267,7 @@ pub fn map_crate<'hir>(sess: &crate::session::Session,
         .map(|(node_id, &hir_id)| (hir_id, node_id)).collect();
 
     let (map, crate_hash) = {
-        let hcx = crate::ich::StableHashingContext::new(sess, &forest.krate, definitions, cstore);
+        let hcx = crate::ich::StableHashingContext::new(sess, &forest.krate, &definitions, cstore);
 
         let mut collector = NodeCollector::root(sess,
                                                 &forest.krate,

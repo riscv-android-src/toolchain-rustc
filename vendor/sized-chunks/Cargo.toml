@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "sized-chunks"
-version = "0.3.0"
+version = "0.5.0"
 authors = ["Bodil Stokke <bodil@bodil.org>"]
 exclude = ["release.toml", "proptest-regressions/**"]
 description = "Efficient sized chunk datatypes"
@@ -23,6 +23,9 @@ keywords = ["sparse-array"]
 categories = ["data-structures"]
 license = "MPL-2.0+"
 repository = "https://github.com/bodil/sized-chunks"
+[dependencies.bitmaps]
+version = "2.0.0"
+
 [dependencies.typenum]
 version = "1.10.0"
 [dev-dependencies.proptest]

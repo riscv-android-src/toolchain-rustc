@@ -1,3 +1,5 @@
+//! Tests for profiles defined in config files.
+
 use cargo_test_support::{basic_lib_manifest, paths, project};
 
 #[cargo_test]
@@ -27,16 +29,7 @@ fn profile_config_gated() {
 #[cargo_test]
 fn profile_config_validate_warnings() {
     let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            cargo-features = ["profile-overrides"]
-
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            "#,
-        )
+        .file("Cargo.toml", &basic_lib_manifest("foo"))
         .file("src/lib.rs", "")
         .file(
             ".cargo/config",
@@ -113,16 +106,7 @@ Caused by:
 #[cargo_test]
 fn profile_config_validate_errors() {
     let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            cargo-features = ["profile-overrides"]
-
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            "#,
-        )
+        .file("Cargo.toml", &basic_lib_manifest("foo"))
         .file("src/lib.rs", "")
         .file(
             ".cargo/config",
@@ -181,8 +165,6 @@ fn profile_config_override_spec_multiple() {
         .file(
             "Cargo.toml",
             r#"
-            cargo-features = ["profile-overrides"]
-
             [package]
             name = "foo"
             version = "0.0.1"
@@ -202,16 +184,7 @@ fn profile_config_override_spec_multiple() {
         "#,
         )
         .file("src/lib.rs", "")
-        .file(
-            "bar/Cargo.toml",
-            r#"
-            cargo-features = ["profile-overrides"]
-
-            [package]
-            name = "bar"
-            version = "0.5.0"
-        "#,
-        )
+        .file("bar/Cargo.toml", &basic_lib_manifest("bar"))
         .file("bar/src/lib.rs", "")
         .build();
 
@@ -279,8 +252,6 @@ fn profile_config_override_precedence() {
         .file(
             "Cargo.toml",
             r#"
-            cargo-features = ["profile-overrides"]
-
             [package]
             name = "foo"
             version = "0.0.1"
@@ -296,16 +267,7 @@ fn profile_config_override_precedence() {
         "#,
         )
         .file("src/lib.rs", "")
-        .file(
-            "bar/Cargo.toml",
-            r#"
-            cargo-features = ["profile-overrides"]
-
-            [package]
-            name = "bar"
-            version = "0.0.1"
-            "#,
-        )
+        .file("bar/Cargo.toml", &basic_lib_manifest("bar"))
         .file("bar/src/lib.rs", "")
         .file(
             ".cargo/config",
@@ -332,16 +294,7 @@ fn profile_config_override_precedence() {
 #[cargo_test]
 fn profile_config_no_warn_unknown_override() {
     let p = project()
-        .file(
-            "Cargo.toml",
-            r#"
-            cargo-features = ["profile-overrides"]
-
-            [package]
-            name = "foo"
-            version = "0.0.1"
-            "#,
-        )
+        .file("Cargo.toml", &basic_lib_manifest("foo"))
         .file("src/lib.rs", "")
         .file(
             ".cargo/config",

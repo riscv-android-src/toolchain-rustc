@@ -246,11 +246,13 @@ fn place_components_conflict<'tcx>(
                     debug!("borrow_conflicts_with_place: shallow access behind ptr");
                     return false;
                 }
-                (ProjectionElem::Deref, ty::Ref(_, _, hir::MutImmutable), _) => {
+                (ProjectionElem::Deref, ty::Ref(_, _, hir::Mutability::Immutable), _) => {
                     // Shouldn't be tracked
                     bug!("Tracking borrow behind shared reference.");
                 }
-                (ProjectionElem::Deref, ty::Ref(_, _, hir::MutMutable), AccessDepth::Drop) => {
+                (ProjectionElem::Deref,
+                 ty::Ref(_, _, hir::Mutability::Mutable),
+                 AccessDepth::Drop) => {
                     // Values behind a mutable reference are not access either by dropping a
                     // value, or by StorageDead
                     debug!("borrow_conflicts_with_place: drop access behind ptr");
@@ -501,34 +503,62 @@ fn place_projection_conflict<'tcx>(
                 Overlap::Disjoint
             }
         }
-        (ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
-         ProjectionElem::Subslice {from, .. })
-        | (ProjectionElem::Subslice {from, .. },
-            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false }) => {
-            if offset >= from {
-                debug!(
-                    "place_element_conflict: DISJOINT-OR-EQ-ARRAY-CONSTANT-INDEX-SUBSLICE");
+        (
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
+            ProjectionElem::Subslice { from, to, from_end: false }
+        )
+        | (
+            ProjectionElem::Subslice { from, to, from_end: false },
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false }
+        ) => {
+            if (from..to).contains(&offset) {
+                debug!("place_element_conflict: DISJOINT-OR-EQ-ARRAY-CONSTANT-INDEX-SUBSLICE");
                 Overlap::EqualOrDisjoint
             } else {
                 debug!("place_element_conflict: DISJOINT-ARRAY-CONSTANT-INDEX-SUBSLICE");
                 Overlap::Disjoint
             }
         }
-        (ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true },
-         ProjectionElem::Subslice {from: _, to })
-        | (ProjectionElem::Subslice {from: _, to },
-            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true }) => {
-            if offset > to {
-                debug!("place_element_conflict: \
-                       DISJOINT-OR-EQ-ARRAY-CONSTANT-INDEX-SUBSLICE-FE");
+        (ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false },
+         ProjectionElem::Subslice {from, .. })
+        | (ProjectionElem::Subslice {from, .. },
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: false }) => {
+            if offset >= from {
+                debug!(
+                    "place_element_conflict: DISJOINT-OR-EQ-SLICE-CONSTANT-INDEX-SUBSLICE");
                 Overlap::EqualOrDisjoint
             } else {
-                debug!("place_element_conflict: DISJOINT-ARRAY-CONSTANT-INDEX-SUBSLICE-FE");
+                debug!("place_element_conflict: DISJOINT-SLICE-CONSTANT-INDEX-SUBSLICE");
                 Overlap::Disjoint
             }
         }
+        (ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true },
+         ProjectionElem::Subslice { to, from_end: true, .. })
+        | (ProjectionElem::Subslice { to, from_end: true, .. },
+            ProjectionElem::ConstantIndex { offset, min_length: _, from_end: true }) => {
+            if offset > to {
+                debug!("place_element_conflict: \
+                       DISJOINT-OR-EQ-SLICE-CONSTANT-INDEX-SUBSLICE-FE");
+                Overlap::EqualOrDisjoint
+            } else {
+                debug!("place_element_conflict: DISJOINT-SLICE-CONSTANT-INDEX-SUBSLICE-FE");
+                Overlap::Disjoint
+            }
+        }
+        (
+            ProjectionElem::Subslice { from: f1, to: t1, from_end: false },
+            ProjectionElem::Subslice { from: f2, to: t2, from_end: false }
+        ) => {
+            if f2 >= t1 || f1 >= t2 {
+                debug!("place_element_conflict: DISJOINT-ARRAY-SUBSLICES");
+                Overlap::Disjoint
+            } else {
+                debug!("place_element_conflict: DISJOINT-OR-EQ-ARRAY-SUBSLICES");
+                Overlap::EqualOrDisjoint
+            }
+        }
         (ProjectionElem::Subslice { .. }, ProjectionElem::Subslice { .. }) => {
-            debug!("place_element_conflict: DISJOINT-OR-EQ-ARRAY-SUBSLICES");
+            debug!("place_element_conflict: DISJOINT-OR-EQ-SLICE-SUBSLICES");
              Overlap::EqualOrDisjoint
         }
         (ProjectionElem::Deref, _)

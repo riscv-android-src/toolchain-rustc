@@ -45,7 +45,9 @@ option.</p>
 <dl>
 <dt class="hdlist1"><strong>--open</strong></dt>
 <dd>
-<p>Open the docs in a browser after building them.</p>
+<p>Open the docs in a browser after building them. This will use your default
+browser unless you define another one in the <code>BROWSER</code> environment
+variable.</p>
 </dd>
 </dl>
 </div>
@@ -253,7 +255,9 @@ and consists of comma-separated values. Valid values:</p>
 <p><code>short</code>: Emit shorter, human-readable text messages.</p>
 </li>
 <li>
-<p><code>json</code>: Emit JSON messages to stdout.</p>
+<p><code>json</code>: Emit JSON messages to stdout. See
+<a href="../reference/external-tools.html#json-messages">the reference</a>
+for more details.</p>
 </li>
 <li>
 <p><code>json-diagnostic-short</code>: Ensure the <code>rendered</code> field of JSON messages contains
@@ -357,7 +361,7 @@ the number of CPUs.</p>
 <div class="paragraph">
 <p>Profiles may be used to configure compiler options such as optimization levels
 and debug settings. See
-<a href="../reference/manifest.html#the-profile-sections">the reference</a>
+<a href="../reference/profiles.html">the reference</a>
 for more details.</p>
 </div>
 <div class="paragraph">

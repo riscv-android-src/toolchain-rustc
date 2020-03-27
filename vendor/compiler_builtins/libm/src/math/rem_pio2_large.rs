@@ -222,7 +222,6 @@ const PIO2: [f64; 8] = [
 /// skip the part of the product that are known to be a huge integer (
 /// more accurately, = 0 mod 8 ). Thus the number of operations are
 /// independent of the exponent of the input.
-#[inline]
 #[cfg_attr(all(test, assert_no_panic), no_panic::no_panic)]
 pub(crate) fn rem_pio2_large(x: &[f64], y: &mut [f64], e0: i32, prec: usize) -> i32 {
     let x1p24 = f64::from_bits(0x4170000000000000); // 0x1p24 === 2 ^ 24
@@ -256,7 +255,7 @@ pub(crate) fn rem_pio2_large(x: &[f64], y: &mut [f64], e0: i32, prec: usize) -> 
     let jv = jv as usize;
 
     /* set up f[0] to f[jx+jk] where f[jx+jk] = ipio2[jv+jk] */
-    let mut j = (jv - jx) as i32;
+    let mut j = (jv as i32) - (jx as i32);
     let m = jx + jk;
     for i in 0..=m {
         i!(f, i, =, if j < 0 {
@@ -462,9 +461,9 @@ pub(crate) fn rem_pio2_large(x: &[f64], y: &mut [f64], e0: i32, prec: usize) -> 
                 i!(y, 2, =, -fw);
             }
         }
-        #[cfg(feature = "checked")]
+        #[cfg(debug_assertions)]
         _ => unreachable!(),
-        #[cfg(not(feature = "checked"))]
+        #[cfg(not(debug_assertions))]
         _ => {}
     }
     n & 7

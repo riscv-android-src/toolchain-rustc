@@ -11,6 +11,7 @@
 #![feature(nll)]
 #![feature(rustc_private)]
 #![feature(unicode_internals)]
+#![feature(bool_to_option)]
 
 pub use Piece::*;
 pub use Position::*;
@@ -35,7 +36,7 @@ impl InnerOffset {
 
 /// A piece is a portion of the format string which represents the next part
 /// to emit. These are emitted as a stream by the `Parser` class.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Piece<'a> {
     /// A literal string which should directly be emitted
     String(&'a str),
@@ -45,7 +46,7 @@ pub enum Piece<'a> {
 }
 
 /// Representation of an argument specification.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Argument<'a> {
     /// Where to find this argument
     pub position: Position,
@@ -54,7 +55,7 @@ pub struct Argument<'a> {
 }
 
 /// Specification for the formatting of an argument in the format string.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FormatSpec<'a> {
     /// Optionally specified character to fill alignment with.
     pub fill: Option<char>,
@@ -74,10 +75,12 @@ pub struct FormatSpec<'a> {
     /// this argument, this can be empty or any number of characters, although
     /// it is required to be one word.
     pub ty: &'a str,
+    /// The span of the descriptor string (for diagnostics).
+    pub ty_span: Option<InnerSpan>,
 }
 
 /// Enum describing where an argument for a format can be located.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Position {
     /// The argument is implied to be located at an index
     ArgumentImplicitlyIs(usize),
@@ -97,7 +100,7 @@ impl Position {
 }
 
 /// Enum of alignments which are supported.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Alignment {
     /// The value will be aligned to the left.
     AlignLeft,
@@ -111,7 +114,7 @@ pub enum Alignment {
 
 /// Various flags which can be applied to format strings. The meaning of these
 /// flags is defined by the formatters themselves.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Flag {
     /// A `+` will be used to denote positive numbers.
     FlagSignPlus,
@@ -131,7 +134,7 @@ pub enum Flag {
 
 /// A count is used for the precision and width parameters of an integer, and
 /// can reference either an argument or a literal integer.
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Count {
     /// The count is specified explicitly.
     CountIs(usize),
@@ -440,20 +443,9 @@ impl<'a> Parser<'a> {
             Some(ArgumentIs(i))
         } else {
             match self.cur.peek() {
-                Some(&(_, c)) if c.is_alphabetic() => {
+                Some(&(_, c)) if rustc_lexer::is_id_start(c) => {
                     Some(ArgumentNamed(Symbol::intern(self.word())))
                 }
-                Some(&(pos, c)) if c == '_' => {
-                    let invalid_name = self.string(pos);
-                    self.err_with_note(format!("invalid argument name `{}`", invalid_name),
-                                       "invalid argument name",
-                                       "argument names cannot start with an underscore",
-                                        self.to_span_index(pos).to(
-                                            self.to_span_index(pos + invalid_name.len())
-                                        ),
-                                        );
-                    Some(ArgumentNamed(Symbol::intern(invalid_name)))
-                },
 
                 // This is an `ArgumentNext`.
                 // Record the fact and do the resolution after parsing the
@@ -475,6 +467,7 @@ impl<'a> Parser<'a> {
             width: CountImplied,
             width_span: None,
             ty: &self.input[..0],
+            ty_span: None,
         };
         if !self.consume(':') {
             return spec;
@@ -548,6 +541,7 @@ impl<'a> Parser<'a> {
                 spec.precision_span = sp;
             }
         }
+        let ty_span_start = self.cur.peek().map(|(pos, _)| *pos);
         // Optional radix followed by the actual format specifier
         if self.consume('x') {
             if self.consume('?') {
@@ -567,6 +561,12 @@ impl<'a> Parser<'a> {
             spec.ty = "?";
         } else {
             spec.ty = self.word();
+            let ty_span_end = self.cur.peek().map(|(pos, _)| *pos);
+            if !spec.ty.is_empty() {
+                spec.ty_span = ty_span_start
+                    .and_then(|s| ty_span_end.map(|e| (s, e)))
+                    .map(|(start, end)| self.to_span_index(start).to(self.to_span_index(end)));
+            }
         }
         spec
     }
@@ -601,22 +601,34 @@ impl<'a> Parser<'a> {
     /// Rust identifier, except that it can't start with `_` character.
     fn word(&mut self) -> &'a str {
         let start = match self.cur.peek() {
-            Some(&(pos, c)) if c != '_' && rustc_lexer::is_id_start(c) => {
+            Some(&(pos, c)) if rustc_lexer::is_id_start(c) => {
                 self.cur.next();
                 pos
             }
             _ => {
-                return &self.input[..0];
+                return "";
             }
         };
+        let mut end = None;
         while let Some(&(pos, c)) = self.cur.peek() {
             if rustc_lexer::is_id_continue(c) {
                 self.cur.next();
             } else {
-                return &self.input[start..pos];
+                end = Some(pos);
+                break;
             }
         }
-        &self.input[start..self.input.len()]
+        let end = end.unwrap_or(self.input.len());
+        let word = &self.input[start..end];
+        if word == "_" {
+            self.err_with_note(
+                "invalid argument name `_`",
+                "invalid argument name",
+                "argument name cannot be a single underscore",
+                self.to_span_index(start).to(self.to_span_index(end)),
+            );
+        }
+        word
     }
 
     /// Optionally parses an integer at the current position. This doesn't deal
@@ -633,11 +645,7 @@ impl<'a> Parser<'a> {
                 break;
             }
         }
-        if found {
-            Some(cur)
-        } else {
-            None
-        }
+        found.then_some(cur)
     }
 }
 

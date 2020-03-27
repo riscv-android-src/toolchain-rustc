@@ -17,6 +17,7 @@ use rustc::ty::{self, CanonicalUserTypeAnnotation, Ty};
 use rustc::ty::layout::VariantIdx;
 use rustc_index::bit_set::BitSet;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use smallvec::{SmallVec, smallvec};
 use syntax::ast::Name;
 use syntax_pos::Span;
 
@@ -68,8 +69,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// 3. Create the decision tree and record the places that we bind or test.
     /// 4. Determine the fake borrows that are needed from the above places.
     ///    Create the required temporaries for them.
-    /// 5. Create everything else: Create everything else: the guards and the
-    ///    arms.
+    /// 5. Create everything else: the guards and the arms.
     ///
     /// ## Fake Reads and borrows
     ///
@@ -131,13 +131,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         // check safety.
 
         let source_info = self.source_info(scrutinee_span);
-        self.cfg.push(block, Statement {
-            source_info,
-            kind: StatementKind::FakeRead(
-                FakeReadCause::ForMatchedPlace,
-                box(scrutinee_place.clone()),
-            ),
-        });
+        let cause_matched_place = FakeReadCause::ForMatchedPlace;
+        self.cfg.push_fake_read(block, source_info, cause_matched_place, scrutinee_place.clone());
 
         // Step 2. Create the otherwise and prebinding blocks.
 
@@ -166,7 +161,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         |(pattern, pre_binding_block)| {
                             Candidate {
                                 span: pattern.span,
-                                match_pairs: vec![
+                                match_pairs: smallvec![
                                     MatchPair::new(scrutinee_place.clone(), pattern),
                                 ],
                                 bindings: vec![],
@@ -313,16 +308,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     self.storage_live_binding(block, var, irrefutable_pat.span, OutsideGuard);
                 unpack!(block = self.into(&place, block, initializer));
 
-
                 // Inject a fake read, see comments on `FakeReadCause::ForLet`.
                 let source_info = self.source_info(irrefutable_pat.span);
-                self.cfg.push(
-                    block,
-                    Statement {
-                        source_info,
-                        kind: StatementKind::FakeRead(FakeReadCause::ForLet, box(place)),
-                    },
-                );
+                self.cfg.push_fake_read(block, source_info, FakeReadCause::ForLet, place);
 
                 self.schedule_drop_for_binding(var, irrefutable_pat.span, OutsideGuard);
                 block.unit()
@@ -358,13 +346,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                 // Inject a fake read, see comments on `FakeReadCause::ForLet`.
                 let pattern_source_info = self.source_info(irrefutable_pat.span);
-                self.cfg.push(
-                    block,
-                    Statement {
-                        source_info: pattern_source_info,
-                        kind: StatementKind::FakeRead(FakeReadCause::ForLet, box(place.clone())),
-                    },
-                );
+                let cause_let = FakeReadCause::ForLet;
+                self.cfg.push_fake_read(block, pattern_source_info, cause_let, place.clone());
 
                 let ty_source_info = self.source_info(user_ty_span);
                 let user_ty = pat_ascription_ty.user_ty(
@@ -421,7 +404,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         // create a dummy candidate
         let mut candidate = Candidate {
             span: irrefutable_pat.span,
-            match_pairs: vec![MatchPair::new(initializer.clone(), &irrefutable_pat)],
+            match_pairs: smallvec![MatchPair::new(initializer.clone(), &irrefutable_pat)],
             bindings: vec![],
             ascriptions: vec![],
 
@@ -458,10 +441,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             for binding in &candidate.bindings {
                 let local = self.var_local_id(binding.var_id, OutsideGuard);
 
-                if let Some(ClearCrossCrate::Set(BindingForm::Var(VarBindingForm {
+                if let LocalInfo::User(ClearCrossCrate::Set(BindingForm::Var(VarBindingForm {
                     opt_match_place: Some((ref mut match_place, _)),
                     ..
-                }))) = self.local_decls[local].is_user_variable
+                }))) = self.local_decls[local].local_info
                 {
                     *match_place = Some(initializer.clone());
                 } else {
@@ -671,7 +654,7 @@ pub struct Candidate<'pat, 'tcx> {
     span: Span,
 
     // all of these must be satisfied...
-    match_pairs: Vec<MatchPair<'pat, 'tcx>>,
+    match_pairs: SmallVec<[MatchPair<'pat, 'tcx>; 1]>,
 
     // ...these bindings established...
     bindings: Vec<Binding<'tcx>>,
@@ -1515,13 +1498,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             );
 
             for &(_, temp) in fake_borrows {
-                self.cfg.push(post_guard_block, Statement {
-                    source_info: guard_end,
-                    kind: StatementKind::FakeRead(
-                        FakeReadCause::ForMatchGuard,
-                        box(Place::from(temp)),
-                    ),
-                });
+                let cause = FakeReadCause::ForMatchGuard;
+                self.cfg.push_fake_read(post_guard_block, guard_end, cause, Place::from(temp));
             }
 
             self.exit_scope(
@@ -1564,14 +1542,8 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // place they refer to can't be modified by the guard.
             for binding in by_value_bindings.clone() {
                 let local_id = self.var_local_id(binding.var_id, RefWithinGuard);
-                let place = Place::from(local_id);
-                self.cfg.push(
-                    post_guard_block,
-                    Statement {
-                        source_info: guard_end,
-                        kind: StatementKind::FakeRead(FakeReadCause::ForGuardBinding, box(place)),
-                    },
-                );
+                let cause = FakeReadCause::ForGuardBinding;
+                self.cfg.push_fake_read(post_guard_block, guard_end, cause, Place::from(local_id));
             }
             self.bind_matched_candidate_for_arm_body(
                 post_guard_block,
@@ -1720,6 +1692,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         );
 
         let tcx = self.hir.tcx();
+        let debug_source_info = SourceInfo {
+            span: source_info.span,
+            scope: visibility_scope,
+        };
         let binding_mode = match mode {
             BindingMode::ByValue => ty::BindingMode::BindByValue(mutability.into()),
             BindingMode::ByRef(_) => ty::BindingMode::BindByReference(mutability.into()),
@@ -1729,23 +1705,28 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             mutability,
             ty: var_ty,
             user_ty,
-            name: Some(name),
             source_info,
-            visibility_scope,
             internal: false,
             is_block_tail: None,
-            is_user_variable: Some(ClearCrossCrate::Set(BindingForm::Var(VarBindingForm {
-                binding_mode,
-                // hypothetically, `visit_bindings` could try to unzip
-                // an outermost hir::Ty as we descend, matching up
-                // idents in pat; but complex w/ unclear UI payoff.
-                // Instead, just abandon providing diagnostic info.
-                opt_ty_info: None,
-                opt_match_place,
-                pat_span,
-            }))),
+            local_info: LocalInfo::User(ClearCrossCrate::Set(BindingForm::Var(
+                VarBindingForm {
+                    binding_mode,
+                    // hypothetically, `visit_bindings` could try to unzip
+                    // an outermost hir::Ty as we descend, matching up
+                    // idents in pat; but complex w/ unclear UI payoff.
+                    // Instead, just abandon providing diagnostic info.
+                    opt_ty_info: None,
+                    opt_match_place,
+                    pat_span,
+                },
+            ))),
         };
         let for_arm_body = self.local_decls.push(local);
+        self.var_debug_info.push(VarDebugInfo {
+            name,
+            source_info: debug_source_info,
+            place: for_arm_body.into(),
+        });
         let locals = if has_guard.0 {
             let ref_for_guard = self.local_decls.push(LocalDecl::<'tcx> {
                 // This variable isn't mutated but has a name, so has to be
@@ -1753,12 +1734,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 mutability: Mutability::Not,
                 ty: tcx.mk_imm_ref(tcx.lifetimes.re_erased, var_ty),
                 user_ty: UserTypeProjections::none(),
-                name: Some(name),
                 source_info,
-                visibility_scope,
                 internal: false,
                 is_block_tail: None,
-                is_user_variable: Some(ClearCrossCrate::Set(BindingForm::RefForGuard)),
+                local_info: LocalInfo::User(ClearCrossCrate::Set(BindingForm::RefForGuard)),
+            });
+            self.var_debug_info.push(VarDebugInfo {
+                name,
+                source_info: debug_source_info,
+                place: ref_for_guard.into(),
             });
             LocalsForNode::ForGuard {
                 ref_for_guard,

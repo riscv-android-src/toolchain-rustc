@@ -1,14 +1,11 @@
+//! Tests for the cache file for the rustc version info.
+
 use cargo_test_support::paths::CargoPathExt;
 use cargo_test_support::{basic_manifest, project};
 use std::env;
 
 #[cargo_test]
 fn rustc_info_cache() {
-    // FIXME: when pipelining rides to stable, enable this test on all channels.
-    if !cargo_test_support::is_nightly() {
-        return;
-    }
-
     let p = project()
         .file("src/main.rs", r#"fn main() { println!("hello"); }"#)
         .build();

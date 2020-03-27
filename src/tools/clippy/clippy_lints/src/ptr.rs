@@ -6,12 +6,13 @@ use crate::utils::{
     walk_ptrs_hir_ty,
 };
 use if_chain::if_chain;
+use rustc::declare_lint_pass;
 use rustc::hir::QPath;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use std::borrow::Cow;
 use syntax::source_map::Span;
 use syntax_pos::{MultiSpan, Symbol};
@@ -101,8 +102,8 @@ declare_lint_pass!(Ptr => [PTR_ARG, CMP_NULL, MUT_FROM_REF]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Ptr {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if let ItemKind::Fn(ref decl, _, _, body_id) = item.kind {
-            check_fn(cx, decl, item.hir_id, Some(body_id));
+        if let ItemKind::Fn(ref sig, _, body_id) = item.kind {
+            check_fn(cx, &sig.decl, item.hir_id, Some(body_id));
         }
     }
 
@@ -150,7 +151,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl, fn_id: HirId, opt_body_id: 
     let fn_ty = sig.skip_binder();
 
     for (idx, (arg, ty)) in decl.inputs.iter().zip(fn_ty.inputs()).enumerate() {
-        if let ty::Ref(_, ty, MutImmutable) = ty.kind {
+        if let ty::Ref(_, ty, Mutability::Immutable) = ty.kind {
             if is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) {
                 let mut ty_snippet = None;
                 if_chain! {
@@ -254,7 +255,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl, fn_id: HirId, opt_body_id: 
     }
 
     if let FunctionRetTy::Return(ref ty) = decl.output {
-        if let Some((out, MutMutable, _)) = get_rptr_lm(ty) {
+        if let Some((out, Mutability::Mutable, _)) = get_rptr_lm(ty) {
             let mut immutables = vec![];
             for (_, ref mutbl, ref argspan) in decl
                 .inputs
@@ -262,7 +263,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl, fn_id: HirId, opt_body_id: 
                 .filter_map(|ty| get_rptr_lm(ty))
                 .filter(|&(lt, _, _)| lt.name == out.name)
             {
-                if *mutbl == MutMutable {
+                if *mutbl == Mutability::Mutable {
                     return;
                 }
                 immutables.push(*argspan);

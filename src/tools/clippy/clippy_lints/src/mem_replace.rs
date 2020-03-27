@@ -2,10 +2,11 @@ use crate::utils::{
     match_def_path, match_qpath, paths, snippet_with_applicability, span_help_and_lint, span_lint_and_sugg,
 };
 use if_chain::if_chain;
-use rustc::hir::{Expr, ExprKind, MutMutable, QPath};
+use rustc::declare_lint_pass;
+use rustc::hir::{BorrowKind, Expr, ExprKind, Mutability, QPath};
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for `mem::replace()` on an `Option` with
@@ -90,7 +91,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MemReplace {
                         // argument's type. All that's left is to get
                         // replacee's path.
                         let replaced_path = match func_args[0].kind {
-                            ExprKind::AddrOf(MutMutable, ref replaced) => {
+                            ExprKind::AddrOf(BorrowKind::Ref, Mutability::Mutable, ref replaced) => {
                                 if let ExprKind::Path(QPath::Resolved(None, ref replaced_path)) = replaced.kind {
                                     replaced_path
                                 } else {

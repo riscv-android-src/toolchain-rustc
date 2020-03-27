@@ -1,11 +1,12 @@
 use if_chain::if_chain;
 use matches::matches;
+use rustc::declare_lint_pass;
 use rustc::hir::intravisit::FnKind;
 use rustc::hir::*;
 use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc::{declare_lint_pass, declare_tool_lint};
 use rustc_errors::Applicability;
+use rustc_session::declare_tool_lint;
 use syntax::ast::LitKind;
 use syntax::source_map::{ExpnKind, Span};
 
@@ -627,8 +628,8 @@ fn check_cast(cx: &LateContext<'_, '_>, span: Span, e: &Expr, ty: &Ty) {
         if !in_constant(cx, e.hir_id);
         then {
             let (msg, sugg_fn) = match mut_ty.mutbl {
-                Mutability::MutMutable => ("`0 as *mut _` detected", "std::ptr::null_mut"),
-                Mutability::MutImmutable => ("`0 as *const _` detected", "std::ptr::null"),
+                Mutability::Mutable => ("`0 as *mut _` detected", "std::ptr::null_mut"),
+                Mutability::Immutable => ("`0 as *const _` detected", "std::ptr::null"),
             };
 
             let (sugg, appl) = if let TyKind::Infer = mut_ty.ty.kind {

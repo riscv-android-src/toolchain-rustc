@@ -8,6 +8,9 @@ fn main() {
 
     println!("cargo:compiler-rt={}", cwd.join("compiler-rt").display());
 
+    // Activate libm's unstable features to make full use of Nightly.
+    println!("cargo:rustc-cfg=feature=\"unstable\"");
+
     // Emscripten's runtime includes all the builtins
     if target.contains("emscripten") {
         return;
@@ -422,6 +425,11 @@ mod c {
         if !root.exists() {
             panic!("RUST_COMPILER_RT_ROOT={} does not exist", root.display());
         }
+
+        // Support deterministic builds by remapping the __FILE__ prefix if the
+        // compiler supports it.  This fixes the nondeterminism caused by the
+        // use of that macro in lib/builtins/int_util.h in compiler-rt.
+        cfg.flag_if_supported(&format!("-ffile-prefix-map={}=.", root.display()));
 
         let src_dir = root.join("lib/builtins");
         for (sym, src) in sources.map.iter() {

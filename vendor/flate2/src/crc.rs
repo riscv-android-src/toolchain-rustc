@@ -1,7 +1,7 @@
 //! Simple CRC bindings backed by miniz.c
 
-use std::io::prelude::*;
 use std::io;
+use std::io::prelude::*;
 
 use crc32fast::Hasher;
 
@@ -26,7 +26,10 @@ pub struct CrcReader<R> {
 impl Crc {
     /// Create a new CRC.
     pub fn new() -> Crc {
-        Crc { amt: 0, hasher: Hasher::new() }
+        Crc {
+            amt: 0,
+            hasher: Hasher::new(),
+        }
     }
 
     /// Returns the current crc32 checksum.
@@ -164,7 +167,7 @@ impl<W: Write> CrcWriter<W> {
 
 impl<W: Write> Write for CrcWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let amt = try!(self.inner.write(buf));
+        let amt = self.inner.write(buf)?;
         self.crc.update(&buf[..amt]);
         Ok(amt)
     }

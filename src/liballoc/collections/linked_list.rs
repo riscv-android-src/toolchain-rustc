@@ -3,11 +3,11 @@
 //! The `LinkedList` allows pushing and popping elements at either end
 //! in constant time.
 //!
-//! Almost always it is better to use `Vec` or [`VecDeque`] instead of
-//! [`LinkedList`]. In general, array-based containers are faster,
-//! more memory efficient and make better use of CPU cache.
+//! NOTE: It is almost always better to use [`Vec`] or [`VecDeque`] because
+//! array-based containers are generally faster,
+//! more memory efficient, and make better use of CPU cache.
 //!
-//! [`LinkedList`]: ../linked_list/struct.LinkedList.html
+//! [`Vec`]: ../../vec/struct.Vec.html
 //! [`VecDeque`]: ../vec_deque/struct.VecDeque.html
 
 #![stable(feature = "rust1", since = "1.0.0")]
@@ -31,9 +31,9 @@ mod tests;
 /// The `LinkedList` allows pushing and popping elements at either end
 /// in constant time.
 ///
-/// Almost always it is better to use `Vec` or `VecDeque` instead of
-/// `LinkedList`. In general, array-based containers are faster,
-/// more memory efficient and make better use of CPU cache.
+/// NOTE: It is almost always better to use `Vec` or `VecDeque` because
+/// array-based containers are generally faster,
+/// more memory efficient, and make better use of CPU cache.
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct LinkedList<T> {
     head: Option<NonNull<Node<T>>>,
@@ -90,7 +90,7 @@ impl<T> Clone for Iter<'_, T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct IterMut<'a, T: 'a> {
     // We do *not* exclusively own the entire list here, references to node's `element`
-    // have been handed out by the iterator!  So be careful when using this; the methods
+    // have been handed out by the iterator! So be careful when using this; the methods
     // called must be aware that there can be aliasing pointers to `element`.
     list: &'a mut LinkedList<T>,
     head: Option<NonNull<Node<T>>>,
@@ -275,6 +275,10 @@ impl<T> LinkedList<T> {
     /// let list: LinkedList<u32> = LinkedList::new();
     /// ```
     #[inline]
+    #[cfg_attr(
+        not(bootstrap),
+        rustc_const_stable(feature = "const_linked_list_new", since = "1.32.0"),
+    )]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn new() -> Self {
         LinkedList {
@@ -808,7 +812,21 @@ impl<T> LinkedList<T> {
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<#[may_dangle] T> Drop for LinkedList<T> {
     fn drop(&mut self) {
-        while let Some(_) = self.pop_front_node() {}
+        struct DropGuard<'a, T>(&'a mut LinkedList<T>);
+
+        impl<'a, T> Drop for DropGuard<'a, T> {
+            fn drop(&mut self) {
+                // Continue the same loop we do below. This only runs when a destructor has
+                // panicked. If another one panics this will abort.
+                while let Some(_) = self.0.pop_front_node() {}
+            }
+        }
+
+        while let Some(node) = self.pop_front_node() {
+            let guard = DropGuard(self);
+            drop(node);
+            mem::forget(guard);
+        }
     }
 }
 

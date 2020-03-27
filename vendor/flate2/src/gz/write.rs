@@ -9,9 +9,9 @@ use tokio_io::{AsyncRead, AsyncWrite};
 
 use super::bufread::{corrupt, read_gz_header};
 use super::{GzBuilder, GzHeader};
-use crc::{Crc, CrcWriter};
-use zio;
-use {Compress, Compression, Decompress, Status};
+use crate::crc::{Crc, CrcWriter};
+use crate::zio;
+use crate::{Compress, Compression, Decompress, Status};
 
 /// A gzip streaming encoder
 ///
@@ -161,7 +161,7 @@ impl<W: Write> Write for GzEncoder<W> {
 #[cfg(feature = "tokio")]
 impl<W: AsyncWrite> AsyncWrite for GzEncoder<W> {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
-        try_nb!(self.try_finish());
+        self.try_finish()?;
         self.get_mut().shutdown()
     }
 }
@@ -388,7 +388,7 @@ impl<W: Write> Write for GzDecoder<W> {
 #[cfg(feature = "tokio")]
 impl<W: AsyncWrite> AsyncWrite for GzDecoder<W> {
     fn shutdown(&mut self) -> Poll<(), io::Error> {
-        try_nb!(self.try_finish());
+        self.try_finish()?;
         self.inner.get_mut().get_mut().shutdown()
     }
 }
@@ -476,5 +476,4 @@ mod tests {
         let return_string = String::from_utf8(writer).expect("String parsing error");
         assert_eq!(return_string, STR);
     }
-
 }

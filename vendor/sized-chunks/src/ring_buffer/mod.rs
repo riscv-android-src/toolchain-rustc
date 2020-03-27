@@ -11,7 +11,7 @@ use std::cmp::Ordering;
 use std::fmt::{Debug, Error, Formatter};
 use std::hash::{Hash, Hasher};
 use std::iter::FromIterator;
-use std::mem::ManuallyDrop;
+use std::mem::MaybeUninit;
 use std::ops::{Bound, Range, RangeBounds};
 use std::ops::{Index, IndexMut};
 
@@ -58,7 +58,7 @@ where
 {
     origin: RawIndex<A, N>,
     length: usize,
-    data: ManuallyDrop<N::SizedType>,
+    data: MaybeUninit<N::SizedType>,
 }
 
 impl<A, N: ChunkLength<A>> Drop for RingBuffer<A, N> {
@@ -190,24 +190,23 @@ where
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        let mut buffer: Self;
-        unsafe {
-            buffer = std::mem::zeroed();
-            std::ptr::write(&mut buffer.origin, 0.into());
-            std::ptr::write(&mut buffer.length, 0);
+        Self {
+            origin: 0.into(),
+            length: 0,
+            data: MaybeUninit::uninit(),
         }
-        buffer
     }
 
     /// Construct a ring buffer with a single item.
     #[inline]
     #[must_use]
     pub fn unit(value: A) -> Self {
-        let mut buffer: Self;
+        let mut buffer = Self {
+            origin: 0.into(),
+            length: 1,
+            data: MaybeUninit::uninit(),
+        };
         unsafe {
-            buffer = std::mem::zeroed();
-            std::ptr::write(&mut buffer.origin, 0.into());
-            std::ptr::write(&mut buffer.length, 1);
             buffer.force_write(0.into(), value);
         }
         buffer
@@ -217,11 +216,12 @@ where
     #[inline]
     #[must_use]
     pub fn pair(value1: A, value2: A) -> Self {
-        let mut buffer: Self;
+        let mut buffer = Self {
+            origin: 0.into(),
+            length: 2,
+            data: MaybeUninit::uninit(),
+        };
         unsafe {
-            buffer = std::mem::zeroed();
-            std::ptr::write(&mut buffer.origin, 0.into());
-            std::ptr::write(&mut buffer.length, 2);
             buffer.force_write(0.into(), value1);
             buffer.force_write(1.into(), value2);
         }
@@ -347,7 +347,7 @@ where
 
     /// Get a `Slice` for a subset of the ring buffer.
     #[must_use]
-    pub fn slice<'a, R: RangeBounds<usize>>(&'a self, range: R) -> Slice<'a, A, N> {
+    pub fn slice<R: RangeBounds<usize>>(&self, range: R) -> Slice<A, N> {
         Slice {
             buffer: self,
             range: self.parse_range(range),
@@ -356,7 +356,7 @@ where
 
     /// Get a `SliceMut` for a subset of the ring buffer.
     #[must_use]
-    pub fn slice_mut<'a, R: RangeBounds<usize>>(&'a mut self, range: R) -> SliceMut<'a, A, N> {
+    pub fn slice_mut<R: RangeBounds<usize>>(&mut self, range: R) -> SliceMut<A, N> {
         SliceMut {
             range: self.parse_range(range),
             buffer: self,
@@ -365,7 +365,7 @@ where
 
     /// Get a reference to the value at a given index.
     #[must_use]
-    pub fn get<'a>(&'a self, index: usize) -> Option<&'a A> {
+    pub fn get(&self, index: usize) -> Option<&A> {
         if index >= self.len() {
             None
         } else {
@@ -375,7 +375,7 @@ where
 
     /// Get a mutable reference to the value at a given index.
     #[must_use]
-    pub fn get_mut<'a>(&'a mut self, index: usize) -> Option<&'a mut A> {
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut A> {
         if index >= self.len() {
             None
         } else {
@@ -851,8 +851,8 @@ impl<N: ChunkLength<u8>> std::io::Read for RingBuffer<u8, N> {
         if read_size == 0 {
             Ok(0)
         } else {
-            for i in 0..read_size {
-                buf[i] = self.pop_front().unwrap();
+            for p in buf.iter_mut().take(read_size) {
+                *p = self.pop_front().unwrap();
             }
             Ok(read_size)
         }

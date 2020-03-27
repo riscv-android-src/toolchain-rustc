@@ -1,16 +1,23 @@
 //! Parsing and validation of builtin attributes
 
+use super::{mark_used, MetaItemKind};
 use crate::ast::{self, Attribute, MetaItem, NestedMetaItem};
-use crate::early_buffered_lints::BufferedEarlyLintId;
-use crate::feature_gate::{Features, GatedCfg};
+use crate::feature_gate::feature_err;
 use crate::print::pprust;
 use crate::sess::ParseSess;
 
 use errors::{Applicability, Handler};
+use std::num::NonZeroU32;
 use syntax_pos::hygiene::Transparency;
 use syntax_pos::{symbol::Symbol, symbol::sym, Span};
+use rustc_feature::{Features, find_gated_cfg, GatedCfg, is_builtin_attr_name};
+use rustc_macros::HashStable_Generic;
 
-use super::{mark_used, MetaItemKind};
+use rustc_error_codes::*;
+
+pub fn is_builtin_attr(attr: &Attribute) -> bool {
+    attr.ident().filter(|ident| is_builtin_attr_name(ident.name)).is_some()
+}
 
 enum AttrError {
     MultipleItem(String),
@@ -19,31 +26,6 @@ enum AttrError {
     MissingFeature,
     MultipleStabilityLevels,
     UnsupportedLiteral(&'static str, /* is_bytestr */ bool),
-}
-
-/// A template that the attribute input must match.
-/// Only top-level shape (`#[attr]` vs `#[attr(...)]` vs `#[attr = ...]`) is considered now.
-#[derive(Clone, Copy)]
-pub struct AttributeTemplate {
-    crate word: bool,
-    crate list: Option<&'static str>,
-    crate name_value_str: Option<&'static str>,
-}
-
-impl AttributeTemplate {
-    pub fn only_word() -> Self {
-        Self { word: true, list: None, name_value_str: None }
-    }
-
-    /// Checks that the given meta-item is compatible with this template.
-    fn compatible(&self, meta_item_kind: &ast::MetaItemKind) -> bool {
-        match meta_item_kind {
-            ast::MetaItemKind::Word => self.word,
-            ast::MetaItemKind::List(..) => self.list.is_some(),
-            ast::MetaItemKind::NameValue(lit) if lit.kind.is_str() => self.name_value_str.is_some(),
-            ast::MetaItemKind::NameValue(..) => false,
-        }
-    }
 }
 
 fn handle_errors(sess: &ParseSess, span: Span, error: AttrError) {
@@ -138,16 +120,21 @@ pub fn find_unwind_attr(diagnostic: Option<&Handler>, attrs: &[Attribute]) -> Op
     })
 }
 
-/// Represents the #[stable], #[unstable], #[rustc_{deprecated,const_unstable}] attributes.
-#[derive(RustcEncodable, RustcDecodable, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+/// Represents the #[stable], #[unstable], #[rustc_deprecated] attributes.
+#[derive(RustcEncodable, RustcDecodable, Copy, Clone, Debug,
+         PartialEq, Eq, Hash, HashStable_Generic)]
 pub struct Stability {
     pub level: StabilityLevel,
     pub feature: Symbol,
     pub rustc_depr: Option<RustcDeprecation>,
-    /// `None` means the function is stable but needs to be a stable const fn, too
-    /// `Some` contains the feature gate required to be able to use the function
-    /// as const fn
-    pub const_stability: Option<Symbol>,
+}
+
+/// Represents the #[rustc_const_unstable] and #[rustc_const_stable] attributes.
+#[derive(RustcEncodable, RustcDecodable, Copy, Clone, Debug,
+         PartialEq, Eq, Hash, HashStable_Generic)]
+pub struct ConstStability {
+    pub level: StabilityLevel,
+    pub feature: Symbol,
     /// whether the function has a `#[rustc_promotable]` attribute
     pub promotable: bool,
     /// whether the function has a `#[rustc_allow_const_fn_ptr]` attribute
@@ -155,10 +142,11 @@ pub struct Stability {
 }
 
 /// The available stability levels.
-#[derive(RustcEncodable, RustcDecodable, PartialEq, PartialOrd, Copy, Clone, Debug, Eq, Hash)]
+#[derive(RustcEncodable, RustcDecodable, PartialEq, PartialOrd,
+         Copy, Clone, Debug, Eq, Hash, HashStable_Generic)]
 pub enum StabilityLevel {
     // Reason for the current stability level and the relevant rust-lang issue
-    Unstable { reason: Option<Symbol>, issue: u32, is_soft: bool },
+    Unstable { reason: Option<Symbol>, issue: Option<NonZeroU32>, is_soft: bool },
     Stable { since: Symbol },
 }
 
@@ -179,7 +167,8 @@ impl StabilityLevel {
     }
 }
 
-#[derive(RustcEncodable, RustcDecodable, PartialEq, PartialOrd, Copy, Clone, Debug, Eq, Hash)]
+#[derive(RustcEncodable, RustcDecodable, PartialEq, PartialOrd,
+         Copy, Clone, Debug, Eq, Hash, HashStable_Generic)]
 pub struct RustcDeprecation {
     pub since: Symbol,
     pub reason: Symbol,
@@ -201,21 +190,21 @@ pub fn contains_feature_attr(attrs: &[Attribute], feature_name: Symbol) -> bool 
 /// Collects stability info from all stability attributes in `attrs`.
 /// Returns `None` if no stability attributes are found.
 pub fn find_stability(sess: &ParseSess, attrs: &[Attribute],
-                      item_sp: Span) -> Option<Stability> {
+                      item_sp: Span) -> (Option<Stability>, Option<ConstStability>) {
     find_stability_generic(sess, attrs.iter(), item_sp)
 }
 
 fn find_stability_generic<'a, I>(sess: &ParseSess,
                                  attrs_iter: I,
                                  item_sp: Span)
-                                 -> Option<Stability>
+                                 -> (Option<Stability>, Option<ConstStability>)
     where I: Iterator<Item = &'a Attribute>
 {
     use StabilityLevel::*;
 
     let mut stab: Option<Stability> = None;
     let mut rustc_depr: Option<RustcDeprecation> = None;
-    let mut rustc_const_unstable: Option<Symbol> = None;
+    let mut const_stab: Option<ConstStability> = None;
     let mut promotable = false;
     let mut allow_const_fn_ptr = false;
     let diagnostic = &sess.span_diagnostic;
@@ -224,11 +213,12 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
         if ![
             sym::rustc_deprecated,
             sym::rustc_const_unstable,
+            sym::rustc_const_stable,
             sym::unstable,
             sym::stable,
             sym::rustc_promotable,
             sym::rustc_allow_const_fn_ptr,
-        ].iter().any(|&s| attr.path == s) {
+        ].iter().any(|&s| attr.has_name(s)) {
             continue // not a stability level
         }
 
@@ -236,10 +226,10 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
 
         let meta = attr.meta();
 
-        if attr.path == sym::rustc_promotable {
+        if attr.has_name(sym::rustc_promotable) {
             promotable = true;
         }
-        if attr.path == sym::rustc_allow_const_fn_ptr {
+        if attr.has_name(sym::rustc_allow_const_fn_ptr) {
             allow_const_fn_ptr = true;
         }
         // attributes with data
@@ -302,7 +292,8 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                 }
             }
 
-            match meta.name_or_empty() {
+            let meta_name = meta.name_or_empty();
+            match meta_name {
                 sym::rustc_deprecated => {
                     if rustc_depr.is_some() {
                         span_err!(diagnostic, item_sp, E0540,
@@ -330,23 +321,12 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                         }
                     }
                 }
-                sym::rustc_const_unstable => {
-                    if rustc_const_unstable.is_some() {
-                        span_err!(diagnostic, item_sp, E0553,
-                                  "multiple rustc_const_unstable attributes");
-                        continue 'outer
-                    }
-
-                    get_meta!(feature);
-                    if let Some(feature) = feature {
-                        rustc_const_unstable = Some(feature);
-                    } else {
-                        span_err!(diagnostic, attr.span, E0629, "missing 'feature'");
-                        continue
-                    }
-                }
+                sym::rustc_const_unstable |
                 sym::unstable => {
-                    if stab.is_some() {
+                    if meta_name == sym::unstable && stab.is_some() {
+                        handle_errors(sess, attr.span, AttrError::MultipleStabilityLevels);
+                        break
+                    } else if meta_name == sym::rustc_const_unstable && const_stab.is_some() {
                         handle_errors(sess, attr.span, AttrError::MultipleStabilityLevels);
                         break
                     }
@@ -395,26 +375,43 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
 
                     match (feature, reason, issue) {
                         (Some(feature), reason, Some(issue)) => {
-                            stab = Some(Stability {
-                                level: Unstable {
-                                    reason,
-                                    issue: {
-                                        if let Ok(issue) = issue.as_str().parse() {
-                                            issue
-                                        } else {
-                                            span_err!(diagnostic, attr.span, E0545,
-                                                      "incorrect 'issue'");
-                                            continue
-                                        }
-                                    },
-                                    is_soft,
-                                },
-                                feature,
-                                rustc_depr: None,
-                                const_stability: None,
-                                promotable: false,
-                                allow_const_fn_ptr: false,
-                            })
+                            let issue = match &*issue.as_str() {
+                                // FIXME(rossmacarthur): remove "0" because "none" should be used
+                                // See #41260
+                                "none" | "0" => None,
+                                issue => {
+                                    if let Ok(num) = issue.parse() {
+                                        NonZeroU32::new(num)
+                                    } else {
+                                        span_err!(
+                                            diagnostic,
+                                            attr.span,
+                                            E0545,
+                                            "incorrect 'issue'"
+                                        );
+                                        continue
+                                    }
+                                }
+                            };
+                            let level = Unstable {
+                                reason,
+                                issue,
+                                is_soft,
+                            };
+                            if sym::unstable == meta_name {
+                                stab = Some(Stability {
+                                    level,
+                                    feature,
+                                    rustc_depr: None,
+                                });
+                            } else {
+                                const_stab = Some(ConstStability {
+                                    level,
+                                    feature,
+                                    promotable: false,
+                                    allow_const_fn_ptr: false,
+                                });
+                            }
                         }
                         (None, _, _) => {
                             handle_errors(sess, attr.span, AttrError::MissingFeature);
@@ -426,8 +423,12 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
                         }
                     }
                 }
+                sym::rustc_const_stable |
                 sym::stable => {
-                    if stab.is_some() {
+                    if meta_name == sym::stable && stab.is_some() {
+                        handle_errors(sess, attr.span, AttrError::MultipleStabilityLevels);
+                        break
+                    } else if meta_name == sym::rustc_const_stable &&const_stab.is_some() {
                         handle_errors(sess, attr.span, AttrError::MultipleStabilityLevels);
                         break
                     }
@@ -469,16 +470,21 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
 
                     match (feature, since) {
                         (Some(feature), Some(since)) => {
-                            stab = Some(Stability {
-                                level: Stable {
-                                    since,
-                                },
-                                feature,
-                                rustc_depr: None,
-                                const_stability: None,
-                                promotable: false,
-                                allow_const_fn_ptr: false,
-                            })
+                            let level =  Stable { since };
+                            if sym::stable == meta_name {
+                                stab = Some(Stability {
+                                    level,
+                                    feature,
+                                    rustc_depr: None,
+                                });
+                            } else {
+                                const_stab = Some(ConstStability {
+                                    level,
+                                    feature,
+                                    promotable: false,
+                                    allow_const_fn_ptr: false,
+                                });
+                            }
                         }
                         (None, _) => {
                             handle_errors(sess, attr.span, AttrError::MissingFeature);
@@ -507,29 +513,19 @@ fn find_stability_generic<'a, I>(sess: &ParseSess,
     }
 
     // Merge the const-unstable info into the stability info
-    if let Some(feature) = rustc_const_unstable {
-        if let Some(ref mut stab) = stab {
-            stab.const_stability = Some(feature);
-        } else {
-            span_err!(diagnostic, item_sp, E0630,
-                      "rustc_const_unstable attribute must be paired with \
-                       either stable or unstable attribute");
-        }
-    }
-
-    // Merge the const-unstable info into the stability info
     if promotable || allow_const_fn_ptr {
-        if let Some(ref mut stab) = stab {
+        if let Some(ref mut stab) = const_stab {
             stab.promotable = promotable;
             stab.allow_const_fn_ptr = allow_const_fn_ptr;
         } else {
             span_err!(diagnostic, item_sp, E0717,
                       "rustc_promotable and rustc_allow_const_fn_ptr attributes \
-                      must be paired with either stable or unstable attribute");
+                      must be paired with either a rustc_const_unstable or a rustc_const_stable \
+                      attribute");
         }
     }
 
-    stab
+    (stab, const_stab)
 }
 
 pub fn find_crate_name(attrs: &[Attribute]) -> Option<Symbol> {
@@ -539,8 +535,9 @@ pub fn find_crate_name(attrs: &[Attribute]) -> Option<Symbol> {
 /// Tests if a cfg-pattern matches the cfg set
 pub fn cfg_matches(cfg: &ast::MetaItem, sess: &ParseSess, features: Option<&Features>) -> bool {
     eval_condition(cfg, sess, &mut |cfg| {
-        if let (Some(feats), Some(gated_cfg)) = (features, GatedCfg::gate(cfg)) {
-            gated_cfg.check_and_emit(sess, feats);
+        let gate = find_gated_cfg(|sym| cfg.check_name(sym));
+        if let (Some(feats), Some(gated_cfg)) = (features, gate) {
+            gate_cfg(&gated_cfg, cfg.span, sess, feats);
         }
         let error = |span, msg| { sess.span_diagnostic.span_err(span, msg); true };
         if cfg.path.segments.len() != 1 {
@@ -569,12 +566,21 @@ pub fn cfg_matches(cfg: &ast::MetaItem, sess: &ParseSess, features: Option<&Feat
     })
 }
 
+fn gate_cfg(gated_cfg: &GatedCfg, cfg_span: Span, sess: &ParseSess, features: &Features) {
+    let (cfg, feature, has_feature) = gated_cfg;
+    if !has_feature(features) && !cfg_span.allows_unstable(*feature) {
+        let explain = format!("`cfg({})` is experimental and subject to change", cfg);
+        feature_err(sess, *feature, cfg_span, &explain).emit()
+    }
+}
+
 /// Evaluate a cfg-like condition (with `any` and `all`), using `eval` to
 /// evaluate individual items.
-pub fn eval_condition<F>(cfg: &ast::MetaItem, sess: &ParseSess, eval: &mut F)
-                         -> bool
-    where F: FnMut(&ast::MetaItem) -> bool
-{
+pub fn eval_condition(
+    cfg: &ast::MetaItem,
+    sess: &ParseSess,
+    eval: &mut impl FnMut(&ast::MetaItem) -> bool,
+) -> bool {
     match cfg.kind {
         ast::MetaItemKind::List(ref mis) => {
             for mi in mis.iter() {
@@ -624,7 +630,7 @@ pub fn eval_condition<F>(cfg: &ast::MetaItem, sess: &ParseSess, eval: &mut F)
     }
 }
 
-#[derive(RustcEncodable, RustcDecodable, Clone)]
+#[derive(RustcEncodable, RustcDecodable, Clone, HashStable_Generic)]
 pub struct Deprecation {
     pub since: Option<Symbol>,
     pub note: Option<Symbol>,
@@ -751,7 +757,7 @@ pub enum ReprAttr {
     ReprAlign(u32),
 }
 
-#[derive(Eq, PartialEq, Debug, RustcEncodable, RustcDecodable, Copy, Clone)]
+#[derive(Eq, PartialEq, Debug, RustcEncodable, RustcDecodable, Copy, Clone, HashStable_Generic)]
 pub enum IntType {
     SignedInt(ast::IntTy),
     UnsignedInt(ast::UintTy)
@@ -781,7 +787,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
 
     let mut acc = Vec::new();
     let diagnostic = &sess.span_diagnostic;
-    if attr.path == sym::repr {
+    if attr.has_name(sym::repr) {
         if let Some(items) = attr.meta_item_list() {
             mark_used(attr);
             for item in items {
@@ -940,70 +946,4 @@ pub fn find_transparency(
     }
     let fallback = if is_legacy { Transparency::SemiTransparent } else { Transparency::Opaque };
     (transparency.map_or(fallback, |t| t.0), error)
-}
-
-pub fn check_builtin_attribute(
-    sess: &ParseSess, attr: &ast::Attribute, name: Symbol, template: AttributeTemplate
-) {
-    // Some special attributes like `cfg` must be checked
-    // before the generic check, so we skip them here.
-    let should_skip = |name| name == sym::cfg;
-    // Some of previously accepted forms were used in practice,
-    // report them as warnings for now.
-    let should_warn = |name| name == sym::doc || name == sym::ignore ||
-                             name == sym::inline || name == sym::link ||
-                             name == sym::test || name == sym::bench;
-
-    match attr.parse_meta(sess) {
-        Ok(meta) => if !should_skip(name) && !template.compatible(&meta.kind) {
-            let error_msg = format!("malformed `{}` attribute input", name);
-            let mut msg = "attribute must be of the form ".to_owned();
-            let mut suggestions = vec![];
-            let mut first = true;
-            if template.word {
-                first = false;
-                let code = format!("#[{}]", name);
-                msg.push_str(&format!("`{}`", &code));
-                suggestions.push(code);
-            }
-            if let Some(descr) = template.list {
-                if !first {
-                    msg.push_str(" or ");
-                }
-                first = false;
-                let code = format!("#[{}({})]", name, descr);
-                msg.push_str(&format!("`{}`", &code));
-                suggestions.push(code);
-            }
-            if let Some(descr) = template.name_value_str {
-                if !first {
-                    msg.push_str(" or ");
-                }
-                let code = format!("#[{} = \"{}\"]", name, descr);
-                msg.push_str(&format!("`{}`", &code));
-                suggestions.push(code);
-            }
-            if should_warn(name) {
-                sess.buffer_lint(
-                    BufferedEarlyLintId::IllFormedAttributeInput,
-                    meta.span,
-                    ast::CRATE_NODE_ID,
-                    &msg,
-                );
-            } else {
-                sess.span_diagnostic.struct_span_err(meta.span, &error_msg)
-                    .span_suggestions(
-                        meta.span,
-                        if suggestions.len() == 1 {
-                            "must be of the form"
-                        } else {
-                            "the following are the possible correct uses"
-                        },
-                        suggestions.into_iter(),
-                        Applicability::HasPlaceholders,
-                    ).emit();
-            }
-        }
-        Err(mut err) => err.emit(),
-    }
 }

@@ -525,7 +525,7 @@ impl<'tcx> DepNodeParams<'tcx> for CrateNum {
     }
 
     fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
-        tcx.crate_name(*self).as_str().to_string()
+        tcx.crate_name(*self).to_string()
     }
 }
 
@@ -578,7 +578,7 @@ impl<'tcx> DepNodeParams<'tcx> for HirId {
 /// the need to be mapped or unmapped. (This ensures we can serialize
 /// them even in the absence of a tcx.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
-         RustcEncodable, RustcDecodable)]
+         RustcEncodable, RustcDecodable, HashStable)]
 pub struct WorkProductId {
     hash: Fingerprint
 }
@@ -599,7 +599,3 @@ impl WorkProductId {
         }
     }
 }
-
-impl_stable_hash_for!(struct crate::dep_graph::WorkProductId {
-    hash
-});

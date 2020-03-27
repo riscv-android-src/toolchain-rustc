@@ -1,3 +1,27 @@
+//! Module for generating dep-info files.
+//!
+//! `rustc` generates a dep-info file with a `.d` extension at the same
+//! location of the output artifacts as a result of using `--emit=dep-info`.
+//! This dep-info file is a Makefile-like syntax that indicates the
+//! dependencies needed to build the artifact. Example:
+//!
+//! ```makefile
+//! /path/to/target/debug/deps/cargo-b6219d178925203d: src/bin/main.rs src/bin/cargo/cli.rs # … etc.
+//! ```
+//!
+//! The fingerprint module has code to parse these files, and stores them as
+//! binary format in the fingerprint directory. These are used to quickly scan
+//! for any changed files.
+//!
+//! On top of all this, Cargo emits its own dep-info files in the output
+//! directory. This is done for every "uplifted" artifact. These are intended
+//! to be used with external build systems so that they can detect if Cargo
+//! needs to be re-executed. It includes all the entries from the `rustc`
+//! dep-info file, and extends it with any `rerun-if-changed` entries from
+//! build scripts. It also includes sources from any path dependencies. Registry
+//! dependencies are not included under the assumption that changes to them can
+//! be detected via changes to `Cargo.lock`.
+
 use std::collections::{BTreeSet, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -66,15 +90,19 @@ fn add_deps_for_unit<'a, 'b>(
     }
 
     // Recursively traverse all transitive dependencies
-    for dep_unit in context.dep_targets(unit).iter() {
-        let source_id = dep_unit.pkg.package_id().source_id();
+    let unit_deps = Vec::from(context.unit_deps(unit)); // Create vec due to mutable borrow.
+    for dep in unit_deps {
+        let source_id = dep.unit.pkg.package_id().source_id();
         if source_id.is_path() {
-            add_deps_for_unit(deps, context, dep_unit, visited)?;
+            add_deps_for_unit(deps, context, &dep.unit, visited)?;
         }
     }
     Ok(())
 }
 
+/// Save a `.d` dep-info file for the given unit.
+///
+/// This only saves files for uplifted artifacts.
 pub fn output_depinfo<'a, 'b>(cx: &mut Context<'a, 'b>, unit: &Unit<'a>) -> CargoResult<()> {
     let bcx = cx.bcx;
     let mut deps = BTreeSet::new();

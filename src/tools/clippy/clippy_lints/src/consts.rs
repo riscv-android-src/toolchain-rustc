@@ -161,9 +161,11 @@ pub fn lit_to_constant(lit: &LitKind, ty: Option<Ty<'_>>) -> Constant {
         LitKind::ByteStr(ref s) => Constant::Binary(Lrc::clone(s)),
         LitKind::Char(c) => Constant::Char(c),
         LitKind::Int(n, _) => Constant::Int(n),
-        LitKind::Float(ref is, FloatTy::F32) => Constant::F32(is.as_str().parse().unwrap()),
-        LitKind::Float(ref is, FloatTy::F64) => Constant::F64(is.as_str().parse().unwrap()),
-        LitKind::FloatUnsuffixed(ref is) => match ty.expect("type of float is known").kind {
+        LitKind::Float(ref is, LitFloatType::Suffixed(fty)) => match fty {
+            FloatTy::F32 => Constant::F32(is.as_str().parse().unwrap()),
+            FloatTy::F64 => Constant::F64(is.as_str().parse().unwrap()),
+        },
+        LitKind::Float(ref is, LitFloatType::Unsuffixed) => match ty.expect("type of float is known").kind {
             ty::Float(FloatTy::F32) => Constant::F32(is.as_str().parse().unwrap()),
             ty::Float(FloatTy::F64) => Constant::F64(is.as_str().parse().unwrap()),
             _ => bug!(),
@@ -472,7 +474,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
 pub fn miri_to_const(result: &ty::Const<'_>) -> Option<Constant> {
     use rustc::mir::interpret::{ConstValue, Scalar};
     match result.val {
-        ConstValue::Scalar(Scalar::Raw { data: d, .. }) => match result.ty.kind {
+        ty::ConstKind::Value(ConstValue::Scalar(Scalar::Raw { data: d, .. })) => match result.ty.kind {
             ty::Bool => Some(Constant::Bool(d == 1)),
             ty::Uint(_) | ty::Int(_) => Some(Constant::Int(d)),
             ty::Float(FloatTy::F32) => Some(Constant::F32(f32::from_bits(
@@ -490,7 +492,7 @@ pub fn miri_to_const(result: &ty::Const<'_>) -> Option<Constant> {
             // FIXME: implement other conversions.
             _ => None,
         },
-        ConstValue::Slice { data, start, end } => match result.ty.kind {
+        ty::ConstKind::Value(ConstValue::Slice { data, start, end }) => match result.ty.kind {
             ty::Ref(_, tam, _) => match tam.kind {
                 ty::Str => String::from_utf8(
                     data.inspect_with_undef_and_ptr_outside_interpreter(start..end)

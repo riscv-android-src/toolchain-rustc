@@ -1,16 +1,25 @@
 #![cfg_attr(feature = "deny-warnings", deny(warnings))]
+#![feature(result_map_or)]
 #![feature(rustc_private)]
 
 // FIXME: switch to something more ergonomic here, once available.
 // (Currently there is no way to opt into sysroot crates without `extern crate`.)
 #[allow(unused_extern_crates)]
+extern crate rustc;
+#[allow(unused_extern_crates)]
 extern crate rustc_driver;
+#[allow(unused_extern_crates)]
+extern crate rustc_errors;
 #[allow(unused_extern_crates)]
 extern crate rustc_interface;
 
+use rustc::ty::TyCtxt;
 use rustc_interface::interface;
 use rustc_tools_util::*;
 
+use lazy_static::lazy_static;
+use std::borrow::Cow;
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
@@ -75,6 +84,12 @@ impl rustc_driver::Callbacks for ClippyCallbacks {
             clippy_lints::register_pre_expansion_lints(&mut lint_store, &conf);
             clippy_lints::register_renamed(&mut lint_store);
         }));
+
+        // FIXME: #4825; This is required, because Clippy lints that are based on MIR have to be
+        // run on the unoptimized MIR. On the other hand this results in some false negatives. If
+        // MIR passes can be enabled / disabled separately, we should figure out, what passes to
+        // use for Clippy.
+        config.opts.debugging_opts.mir_opt_level = 0;
     }
 }
 
@@ -214,9 +229,64 @@ You can use tool lints to allow or deny lints from your code, eg.:
     );
 }
 
+const BUG_REPORT_URL: &str = "https://github.com/rust-lang/rust-clippy/issues/new";
+
+lazy_static! {
+    static ref ICE_HOOK: Box<dyn Fn(&panic::PanicInfo<'_>) + Sync + Send + 'static> = {
+        let hook = panic::take_hook();
+        panic::set_hook(Box::new(|info| report_clippy_ice(info, BUG_REPORT_URL)));
+        hook
+    };
+}
+
+fn report_clippy_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
+    // Invoke our ICE handler, which prints the actual panic message and optionally a backtrace
+    (*ICE_HOOK)(info);
+
+    // Separate the output with an empty line
+    eprintln!();
+
+    let emitter = Box::new(rustc_errors::emitter::EmitterWriter::stderr(
+        rustc_errors::ColorConfig::Auto,
+        None,
+        false,
+        false,
+        None,
+        false,
+    ));
+    let handler = rustc_errors::Handler::with_emitter(true, None, emitter);
+
+    // a .span_bug or .bug call has already printed what
+    // it wants to print.
+    if !info.payload().is::<rustc_errors::ExplicitBug>() {
+        let d = rustc_errors::Diagnostic::new(rustc_errors::Level::Bug, "unexpected panic");
+        handler.emit_diagnostic(&d);
+        handler.abort_if_errors_and_should_abort();
+    }
+
+    let version_info = rustc_tools_util::get_version_info!();
+
+    let xs: Vec<Cow<'static, str>> = vec![
+        "the compiler unexpectedly panicked. this is a bug.".into(),
+        format!("we would appreciate a bug report: {}", bug_report_url).into(),
+        format!("Clippy version: {}", version_info).into(),
+    ];
+
+    for note in &xs {
+        handler.note_without_error(&note);
+    }
+
+    // If backtraces are enabled, also print the query stack
+    let backtrace = std::env::var_os("RUST_BACKTRACE").map_or(false, |x| &x != "0");
+
+    if backtrace {
+        TyCtxt::try_print_query_stack(&handler);
+    }
+}
+
 pub fn main() {
     rustc_driver::init_rustc_env_logger();
-    rustc_driver::install_ice_hook();
+    lazy_static::initialize(&ICE_HOOK);
     exit(
         rustc_driver::catch_fatal_errors(move || {
             use std::env;
@@ -268,14 +338,14 @@ pub fn main() {
 
             // Setting RUSTC_WRAPPER causes Cargo to pass 'rustc' as the first argument.
             // We're invoking the compiler programmatically, so we ignore this/
-            let wrapper_mode = Path::new(&orig_args[1]).file_stem() == Some("rustc".as_ref());
+            let wrapper_mode = orig_args.get(1).map(Path::new).and_then(Path::file_stem) == Some("rustc".as_ref());
 
             if wrapper_mode {
                 // we still want to be able to invoke it normally though
                 orig_args.remove(1);
             }
 
-            if !wrapper_mode && std::env::args().any(|a| a == "--help" || a == "-h") {
+            if !wrapper_mode && (orig_args.iter().any(|a| a == "--help" || a == "-h") || orig_args.len() == 1) {
                 display_help();
                 exit(0);
             }
@@ -311,10 +381,9 @@ pub fn main() {
             };
 
             // this check ensures that dependencies are built but not linted and the final
-            // crate is
-            // linted but not built
-            let clippy_enabled = env::var("CLIPPY_TESTS").ok().map_or(false, |val| val == "true")
-                || arg_value(&orig_args, "--emit", |val| val.split(',').any(|e| e == "metadata")).is_some();
+            // crate is linted but not built
+            let clippy_enabled = env::var("CLIPPY_TESTS").map_or(false, |val| val == "true")
+                || arg_value(&orig_args, "--cap-lints", |val| val == "allow").is_none();
 
             if clippy_enabled {
                 args.extend_from_slice(&["--cfg".to_owned(), r#"feature="cargo-clippy""#.to_owned()]);

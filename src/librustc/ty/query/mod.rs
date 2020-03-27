@@ -39,10 +39,9 @@ use crate::ty::util::NeedsDrop;
 use crate::ty::subst::SubstsRef;
 use crate::util::nodemap::{DefIdSet, DefIdMap};
 use crate::util::common::ErrorReported;
-use crate::util::profiling::ProfileCategory::*;
+use rustc_data_structures::profiling::ProfileCategory::*;
 
 use rustc_data_structures::svh::Svh;
-use rustc_index::bit_set::BitSet;
 use rustc_index::vec::IndexVec;
 use rustc_data_structures::fx::{FxIndexMap, FxHashMap, FxHashSet};
 use rustc_data_structures::stable_hasher::StableVec;
@@ -57,7 +56,6 @@ use std::any::type_name;
 use syntax_pos::{Span, DUMMY_SP};
 use syntax::attr;
 use syntax::ast;
-use syntax::feature_gate;
 use syntax::symbol::Symbol;
 
 #[macro_use]

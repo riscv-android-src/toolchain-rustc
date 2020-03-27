@@ -1,10 +1,16 @@
-use crate::utils::{snippet_with_applicability, span_lint, span_lint_and_sugg, span_lint_and_then};
-use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, declare_tool_lint};
-use rustc_errors::Applicability;
 use std::borrow::Cow;
+use std::ops::Range;
+
+use crate::utils::{snippet_with_applicability, span_lint, span_lint_and_sugg, span_lint_and_then};
+use rustc::declare_lint_pass;
+use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
+use rustc_errors::Applicability;
+use rustc_lexer::unescape::{self, EscapeError};
+use rustc_parse::parser;
+use rustc_session::declare_tool_lint;
 use syntax::ast::*;
-use syntax::parse::{parser, token};
+use syntax::symbol::Symbol;
+use syntax::token;
 use syntax::tokenstream::TokenStream;
 use syntax_pos::{BytePos, Span};
 
@@ -184,13 +190,13 @@ declare_lint_pass!(Write => [
 impl EarlyLintPass for Write {
     fn check_mac(&mut self, cx: &EarlyContext<'_>, mac: &Mac) {
         if mac.path == sym!(println) {
-            span_lint(cx, PRINT_STDOUT, mac.span, "use of `println!`");
-            if let (Some(fmt_str), _) = check_tts(cx, &mac.tts, false) {
-                if fmt_str.contents.is_empty() {
+            span_lint(cx, PRINT_STDOUT, mac.span(), "use of `println!`");
+            if let (Some(fmt_str), _) = check_tts(cx, &mac.args.inner_tokens(), false) {
+                if fmt_str.symbol == Symbol::intern("") {
                     span_lint_and_sugg(
                         cx,
                         PRINTLN_EMPTY_STRING,
-                        mac.span,
+                        mac.span(),
                         "using `println!(\"\")`",
                         "replace it with",
                         "println!()".to_string(),
@@ -199,20 +205,20 @@ impl EarlyLintPass for Write {
                 }
             }
         } else if mac.path == sym!(print) {
-            span_lint(cx, PRINT_STDOUT, mac.span, "use of `print!`");
-            if let (Some(fmt_str), _) = check_tts(cx, &mac.tts, false) {
+            span_lint(cx, PRINT_STDOUT, mac.span(), "use of `print!`");
+            if let (Some(fmt_str), _) = check_tts(cx, &mac.args.inner_tokens(), false) {
                 if check_newlines(&fmt_str) {
                     span_lint_and_then(
                         cx,
                         PRINT_WITH_NEWLINE,
-                        mac.span,
+                        mac.span(),
                         "using `print!()` with a format string that ends in a single newline",
                         |err| {
                             err.multipart_suggestion(
                                 "use `println!` instead",
                                 vec![
                                     (mac.path.span, String::from("println")),
-                                    (fmt_str.newline_span(), String::new()),
+                                    (newline_span(&fmt_str), String::new()),
                                 ],
                                 Applicability::MachineApplicable,
                             );
@@ -221,19 +227,19 @@ impl EarlyLintPass for Write {
                 }
             }
         } else if mac.path == sym!(write) {
-            if let (Some(fmt_str), _) = check_tts(cx, &mac.tts, true) {
+            if let (Some(fmt_str), _) = check_tts(cx, &mac.args.inner_tokens(), true) {
                 if check_newlines(&fmt_str) {
                     span_lint_and_then(
                         cx,
                         WRITE_WITH_NEWLINE,
-                        mac.span,
+                        mac.span(),
                         "using `write!()` with a format string that ends in a single newline",
                         |err| {
                             err.multipart_suggestion(
                                 "use `writeln!()` instead",
                                 vec![
                                     (mac.path.span, String::from("writeln")),
-                                    (fmt_str.newline_span(), String::new()),
+                                    (newline_span(&fmt_str), String::new()),
                                 ],
                                 Applicability::MachineApplicable,
                             );
@@ -242,8 +248,8 @@ impl EarlyLintPass for Write {
                 }
             }
         } else if mac.path == sym!(writeln) {
-            if let (Some(fmt_str), expr) = check_tts(cx, &mac.tts, true) {
-                if fmt_str.contents.is_empty() {
+            if let (Some(fmt_str), expr) = check_tts(cx, &mac.args.inner_tokens(), true) {
+                if fmt_str.symbol == Symbol::intern("") {
                     let mut applicability = Applicability::MachineApplicable;
                     let suggestion = expr.map_or_else(
                         move || {
@@ -256,7 +262,7 @@ impl EarlyLintPass for Write {
                     span_lint_and_sugg(
                         cx,
                         WRITELN_EMPTY_STRING,
-                        mac.span,
+                        mac.span(),
                         format!("using `writeln!({}, \"\")`", suggestion).as_str(),
                         "replace it with",
                         format!("writeln!({})", suggestion),
@@ -268,37 +274,27 @@ impl EarlyLintPass for Write {
     }
 }
 
-/// The arguments of a `print[ln]!` or `write[ln]!` invocation.
-struct FmtStr {
-    /// The contents of the format string (inside the quotes).
-    contents: String,
-    style: StrStyle,
-    /// The span of the format string, including quotes, the raw marker, and any raw hashes.
-    span: Span,
-}
+/// Given a format string that ends in a newline and its span, calculates the span of the
+/// newline.
+fn newline_span(fmtstr: &StrLit) -> Span {
+    let sp = fmtstr.span;
+    let contents = &fmtstr.symbol.as_str();
 
-impl FmtStr {
-    /// Given a format string that ends in a newline and its span, calculates the span of the
-    /// newline.
-    fn newline_span(&self) -> Span {
-        let sp = self.span;
-
-        let newline_sp_hi = sp.hi()
-            - match self.style {
-                StrStyle::Cooked => BytePos(1),
-                StrStyle::Raw(hashes) => BytePos((1 + hashes).into()),
-            };
-
-        let newline_sp_len = if self.contents.ends_with('\n') {
-            BytePos(1)
-        } else if self.contents.ends_with(r"\n") {
-            BytePos(2)
-        } else {
-            panic!("expected format string to contain a newline");
+    let newline_sp_hi = sp.hi()
+        - match fmtstr.style {
+            StrStyle::Cooked => BytePos(1),
+            StrStyle::Raw(hashes) => BytePos((1 + hashes).into()),
         };
 
-        sp.with_lo(newline_sp_hi - newline_sp_len).with_hi(newline_sp_hi)
-    }
+    let newline_sp_len = if contents.ends_with('\n') {
+        BytePos(1)
+    } else if contents.ends_with(r"\n") {
+        BytePos(2)
+    } else {
+        panic!("expected format string to contain a newline");
+    };
+
+    sp.with_lo(newline_sp_hi - newline_sp_len).with_hi(newline_sp_hi)
 }
 
 /// Checks the arguments of `print[ln]!` and `write[ln]!` calls. It will return a tuple of two
@@ -321,7 +317,7 @@ impl FmtStr {
 /// (Some("string to write: {}"), Some(buf))
 /// ```
 #[allow(clippy::too_many_lines)]
-fn check_tts<'a>(cx: &EarlyContext<'a>, tts: &TokenStream, is_write: bool) -> (Option<FmtStr>, Option<Expr>) {
+fn check_tts<'a>(cx: &EarlyContext<'a>, tts: &TokenStream, is_write: bool) -> (Option<StrLit>, Option<Expr>) {
     use fmt_macros::*;
     let tts = tts.clone();
 
@@ -338,12 +334,11 @@ fn check_tts<'a>(cx: &EarlyContext<'a>, tts: &TokenStream, is_write: bool) -> (O
         }
     }
 
-    let (fmtstr, fmtstyle) = match parser.parse_str().map_err(|mut err| err.cancel()) {
-        Ok((fmtstr, fmtstyle)) => (fmtstr.to_string(), fmtstyle),
+    let fmtstr = match parser.parse_str_lit() {
+        Ok(fmtstr) => fmtstr,
         Err(_) => return (None, expr),
     };
-    let fmtspan = parser.prev_span;
-    let tmp = fmtstr.clone();
+    let tmp = fmtstr.symbol.as_str();
     let mut args = vec![];
     let mut fmt_parser = Parser::new(&tmp, None, Vec::new(), false);
     while let Some(piece) = fmt_parser.next() {
@@ -370,28 +365,15 @@ fn check_tts<'a>(cx: &EarlyContext<'a>, tts: &TokenStream, is_write: bool) -> (O
             width: CountImplied,
             width_span: None,
             ty: "",
+            ty_span: None,
         };
         if !parser.eat(&token::Comma) {
-            return (
-                Some(FmtStr {
-                    contents: fmtstr,
-                    style: fmtstyle,
-                    span: fmtspan,
-                }),
-                expr,
-            );
+            return (Some(fmtstr), expr);
         }
         let token_expr = if let Ok(expr) = parser.parse_expr().map_err(|mut err| err.cancel()) {
             expr
         } else {
-            return (
-                Some(FmtStr {
-                    contents: fmtstr,
-                    style: fmtstyle,
-                    span: fmtspan,
-                }),
-                None,
-            );
+            return (Some(fmtstr), None);
         };
         match &token_expr.kind {
             ExprKind::Lit(_) => {
@@ -440,38 +422,33 @@ fn check_tts<'a>(cx: &EarlyContext<'a>, tts: &TokenStream, is_write: bool) -> (O
     }
 }
 
-/// Checks if the format string constains a single newline that terminates it.
+/// Checks if the format string contains a single newline that terminates it.
 ///
 /// Literal and escaped newlines are both checked (only literal for raw strings).
-fn check_newlines(fmt_str: &FmtStr) -> bool {
-    let s = &fmt_str.contents;
+fn check_newlines(fmtstr: &StrLit) -> bool {
+    let mut has_internal_newline = false;
+    let mut last_was_cr = false;
+    let mut should_lint = false;
 
-    if s.ends_with('\n') {
-        return true;
-    } else if let StrStyle::Raw(_) = fmt_str.style {
-        return false;
-    }
+    let contents = &fmtstr.symbol.as_str();
 
-    if s.len() < 2 {
-        return false;
-    }
+    let mut cb = |r: Range<usize>, c: Result<char, EscapeError>| {
+        let c = c.unwrap();
 
-    let bytes = s.as_bytes();
-    if bytes[bytes.len() - 2] != b'\\' || bytes[bytes.len() - 1] != b'n' {
-        return false;
-    }
-
-    let mut escaping = false;
-    for (index, &byte) in bytes.iter().enumerate() {
-        if escaping {
-            if byte == b'n' {
-                return index == bytes.len() - 1;
+        if r.end == contents.len() && c == '\n' && !last_was_cr && !has_internal_newline {
+            should_lint = true;
+        } else {
+            last_was_cr = c == '\r';
+            if c == '\n' {
+                has_internal_newline = true;
             }
-            escaping = false;
-        } else if byte == b'\\' {
-            escaping = true;
         }
+    };
+
+    match fmtstr.style {
+        StrStyle::Cooked => unescape::unescape_str(contents, &mut cb),
+        StrStyle::Raw(_) => unescape::unescape_raw_str(contents, &mut cb),
     }
 
-    false
+    should_lint
 }

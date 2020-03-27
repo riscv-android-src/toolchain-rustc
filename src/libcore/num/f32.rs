@@ -7,9 +7,10 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+#[cfg(not(bootstrap))]
+use crate::convert::FloatToInt;
 #[cfg(not(test))]
 use crate::intrinsics;
-
 use crate::mem;
 use crate::num::FpCategory;
 
@@ -26,7 +27,7 @@ pub const DIGITS: u32 = 6;
 
 /// [Machine epsilon] value for `f32`.
 ///
-/// This is the difference between `1.0` and the next largest representable number.
+/// This is the difference between `1.0` and the next larger representable number.
 ///
 /// [Machine epsilon]: https://en.wikipedia.org/wiki/Machine_epsilon
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -74,6 +75,12 @@ pub mod consts {
     /// Archimedes' constant (π)
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const PI: f32 = 3.14159265358979323846264338327950288_f32;
+
+    /// The full circle constant (τ)
+    ///
+    /// Equal to 2π.
+    #[unstable(feature = "tau_constant", issue = "66770")]
+    pub const TAU: f32 = 6.28318530717958647692528676655900577_f32;
 
     /// π/2
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -394,6 +401,35 @@ impl f32 {
         intrinsics::minnumf32(self, other)
     }
 
+    /// Rounds toward zero and converts to any primitive integer type,
+    /// assuming that the value is finite and fits in that type.
+    ///
+    /// ```
+    /// #![feature(float_approx_unchecked_to)]
+    ///
+    /// let value = 4.6_f32;
+    /// let rounded = unsafe { value.approx_unchecked_to::<u16>() };
+    /// assert_eq!(rounded, 4);
+    ///
+    /// let value = -128.9_f32;
+    /// let rounded = unsafe { value.approx_unchecked_to::<i8>() };
+    /// assert_eq!(rounded, std::i8::MIN);
+    /// ```
+    ///
+    /// # Safety
+    ///
+    /// The value must:
+    ///
+    /// * Not be `NaN`
+    /// * Not be infinite
+    /// * Be representable in the return type `Int`, after truncating off its fractional part
+    #[cfg(not(bootstrap))]
+    #[unstable(feature = "float_approx_unchecked_to", issue = "67058")]
+    #[inline]
+    pub unsafe fn approx_unchecked_to<Int>(self) -> Int where Self: FloatToInt<Int> {
+        FloatToInt::<Int>::approx_unchecked(self)
+    }
+
     /// Raw transmutation to `u32`.
     ///
     /// This is currently identical to `transmute::<f32, u32>(self)` on all platforms.
@@ -414,6 +450,7 @@ impl f32 {
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[inline]
     pub fn to_bits(self) -> u32 {
+        // SAFETY: `u32` is a plain old datatype so we can always transmute to it
         unsafe { mem::transmute(self) }
     }
 
@@ -456,6 +493,7 @@ impl f32 {
     #[stable(feature = "float_bits_conv", since = "1.20.0")]
     #[inline]
     pub fn from_bits(v: u32) -> Self {
+        // SAFETY: `u32` is a plain old datatype so we can always transmute from it
         // It turns out the safety issues with sNaN were overblown! Hooray!
         unsafe { mem::transmute(v) }
     }

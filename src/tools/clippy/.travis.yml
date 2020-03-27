@@ -1,5 +1,8 @@
 dist: xenial
 language: bash
+git:
+  depth: 1
+  quiet: true
 
 branches:
   # Don't build these branches
@@ -12,7 +15,8 @@ cache:
   directories:
     - $HOME/.cargo
 before_cache:
-  - cargo install -Z install-upgrade cargo-cache --debug
+  - cargo install cargo-cache --debug
+  - find $HOME/.cargo/bin/ ! -type d -exec strip {} \;
   - cargo cache --autoclean
 
 env:
@@ -21,13 +25,14 @@ env:
    - secure: "OKulfkA5OGd/d1IhvBKzRkHQwMcWjzrzbimo7+5NhkUkWxndAzl+719TB3wWvIh1i2wXXrEXsyZkXM5FtRrHm55v1VKQ5ibjEvFg1w3NIg81iDyoLq186fLqywvxGkOAFPrsePPsBj5USd5xvhwwbrjO6L7/RK6Z8shBwOSc41s="
 
 before_install:
+  - export CARGO_TARGET_DIR="$TRAVIS_BUILD_DIR/target"
   - curl -sSL https://sh.rustup.rs | sh -s -- -y --default-toolchain=nightly --profile=minimal
   - export PATH="$HOME/.cargo/bin:$PATH"
 install:
   - |
     if [[ -z ${INTEGRATION} ]]; then
       if ! rustup component add rustfmt; then
-        cargo install -Z install-upgrade --git https://github.com/rust-lang/rustfmt --bin rustfmt
+        cargo install --git https://github.com/rust-lang/rustfmt --bin rustfmt
       fi
       if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then
         . $HOME/.nvm/nvm.sh
@@ -46,8 +51,16 @@ matrix:
   fast_finish: true
   include:
     # Builds that are executed for every PR
-    - os: osx # run base tests on both platforms
     - os: linux
+    # i686 toolchain could run on x86_64 system.
+    - os: linux
+      env: HOST_TOOLCHAIN=i686-unknown-linux-gnu
+      addons:
+        apt:
+          packages:
+            - gcc-multilib
+            - libssl-dev:i386     # openssl dev in Cargo.toml
+      if: branch IN (auto, try)
     - os: windows
       env: CARGO_INCREMENTAL=0 OS_WINDOWS=true
 
@@ -55,23 +68,25 @@ matrix:
     # We don't want to run these always because they go towards
     # the build limit within the Travis rust-lang account.
     # The jobs are approximately sorted by execution time
+    - os: osx
+      if: branch IN (auto, try)
+    - env: INTEGRATION=rust-lang/rls
+      if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=rust-lang/cargo
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    - env: INTEGRATION=rust-lang-nursery/chalk
-      if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    - env: INTEGRATION=rust-lang/rls
+    - env: INTEGRATION=rust-lang/chalk
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=Geal/nom
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    # FIXME blocked on https://github.com/rust-lang/rust-clippy/issues/4742
-    #- env: INTEGRATION=rust-lang/rustfmt
-    #  if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
+    - env: INTEGRATION=rust-lang/rustfmt
+      if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=hyperium/hyper
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=bluss/rust-itertools
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    - env: INTEGRATION=serde-rs/serde
-      if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
+    # FIXME: rustc ICE on `serde_test_suite`
+    # - env: INTEGRATION=serde-rs/serde
+    #   if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=rust-lang-nursery/stdsimd
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=rust-random/rand
@@ -112,7 +127,7 @@ before_script:
     SYSROOT=$(rustc --print sysroot)
     case "$TRAVIS_OS_NAME" in
       windows ) export PATH="${SYSROOT}/bin:${PATH}" ;;
-      linux ) export LD_LIBRARY_PATH="${SYSROOT}/lib" ;;
+      linux ) export LD_LIBRARY_PATH="${SYSROOT}/lib${LD_LIBRARY_PATH+:${LD_LIBRARY_PATH}}" ;;
       osx )
         # See <https://github.com/nteract/nteract/issues/1523#issuecomment-301623519>
         sudo mkdir -p /usr/local/lib
@@ -123,7 +138,7 @@ before_script:
 script:
   - |
     if [[ -n ${INTEGRATION} ]]; then
-      ./ci/integration-tests.sh && sleep 5
+      cargo test --test integration --features integration && sleep 5
     else
       ./ci/base-tests.sh && sleep 5
     fi

@@ -13,17 +13,22 @@ use crate::ty::query::Providers;
 use crate::middle::privacy::AccessLevels;
 use crate::session::{DiagnosticMessageId, Session};
 use errors::DiagnosticBuilder;
+use rustc_feature::GateIssue;
 use syntax::symbol::{Symbol, sym};
 use syntax_pos::{Span, MultiSpan};
 use syntax::ast::{Attribute, CRATE_NODE_ID};
 use syntax::errors::Applicability;
-use syntax::feature_gate::{GateIssue, emit_feature_err};
-use syntax::attr::{self, Stability, Deprecation, RustcDeprecation};
+use syntax::feature_gate::{feature_err, feature_err_issue};
+use syntax::attr::{self, Stability, Deprecation, RustcDeprecation, ConstStability};
 use crate::ty::{self, TyCtxt};
 use crate::util::nodemap::{FxHashSet, FxHashMap};
 
-use std::mem::replace;
 use std::cmp::Ordering;
+use std::mem::replace;
+use std::num::NonZeroU32;
+
+use rustc_error_codes::*;
+
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub enum StabilityLevel {
@@ -48,7 +53,7 @@ enum AnnotationKind {
 }
 
 /// An entry in the `depr_map`.
-#[derive(Clone)]
+#[derive(Clone, HashStable)]
 pub struct DeprecationEntry {
     /// The metadata of the attribute associated with this entry.
     pub attr: Deprecation,
@@ -56,11 +61,6 @@ pub struct DeprecationEntry {
     /// `DefId`'s.
     origin: Option<HirId>,
 }
-
-impl_stable_hash_for!(struct self::DeprecationEntry {
-    attr,
-    origin
-});
 
 impl DeprecationEntry {
     fn local(attr: Deprecation, id: HirId) -> DeprecationEntry {
@@ -86,10 +86,12 @@ impl DeprecationEntry {
 }
 
 /// A stability index, giving the stability level for items and methods.
+#[derive(HashStable)]
 pub struct Index<'tcx> {
     /// This is mostly a cache, except the stabilities of local items
     /// are filled by the annotator.
     stab_map: FxHashMap<HirId, &'tcx Stability>,
+    const_stab_map: FxHashMap<HirId, &'tcx ConstStability>,
     depr_map: FxHashMap<HirId, DeprecationEntry>,
 
     /// Maps for each crate whether it is part of the staged API.
@@ -98,13 +100,6 @@ pub struct Index<'tcx> {
     /// Features enabled for this crate.
     active_features: FxHashSet<Symbol>,
 }
-
-impl_stable_hash_for!(struct self::Index<'tcx> {
-    stab_map,
-    depr_map,
-    staged_api,
-    active_features
-});
 
 // A private tree-walker for producing an Index.
 struct Annotator<'a, 'tcx> {
@@ -129,8 +124,14 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
                 self.tcx.sess.span_err(item_sp, "`#[deprecated]` cannot be used in staged API; \
                                                  use `#[rustc_deprecated]` instead");
             }
-            if let Some(mut stab) = attr::find_stability(&self.tcx.sess.parse_sess,
-                                                         attrs, item_sp) {
+            let (stab, const_stab) = attr::find_stability(
+                &self.tcx.sess.parse_sess, attrs, item_sp,
+            );
+            if let Some(const_stab) = const_stab {
+                let const_stab = self.tcx.intern_const_stability(const_stab);
+                self.index.const_stab_map.insert(hir_id, const_stab);
+            }
+            if let Some(mut stab) = stab {
                 // Error if prohibited, or can't inherit anything from a container.
                 if kind == AnnotationKind::Prohibited ||
                    (kind == AnnotationKind::Container &&
@@ -195,9 +196,15 @@ impl<'a, 'tcx> Annotator<'a, 'tcx> {
             }
         } else {
             // Emit errors for non-staged-api crates.
+            let unstable_attrs = [
+                sym::unstable, sym::stable,
+                sym::rustc_deprecated,
+                sym::rustc_const_unstable,
+                sym::rustc_const_stable,
+            ];
             for attr in attrs {
                 let name = attr.name_or_empty();
-                if [sym::unstable, sym::stable, sym::rustc_deprecated].contains(&name) {
+                if unstable_attrs.contains(&name) {
                     attr::mark_used(attr);
                     struct_span_err!(
                         self.tcx.sess,
@@ -405,6 +412,7 @@ impl<'tcx> Index<'tcx> {
         let mut index = Index {
             staged_api,
             stab_map: Default::default(),
+            const_stab_map: Default::default(),
             depr_map: Default::default(),
             active_features: Default::default(),
         };
@@ -441,14 +449,11 @@ impl<'tcx> Index<'tcx> {
                 let stability = tcx.intern_stability(Stability {
                     level: attr::StabilityLevel::Unstable {
                         reason: Some(Symbol::intern(reason)),
-                        issue: 27812,
+                        issue: NonZeroU32::new(27812),
                         is_soft: false,
                     },
                     feature: sym::rustc_private,
                     rustc_depr: None,
-                    const_stability: None,
-                    promotable: false,
-                    allow_const_fn_ptr: false,
                 });
                 annotator.parent_stab = Some(stability);
             }
@@ -464,6 +469,10 @@ impl<'tcx> Index<'tcx> {
 
     pub fn local_stability(&self, id: HirId) -> Option<&'tcx Stability> {
         self.stab_map.get(&id).cloned()
+    }
+
+    pub fn local_const_stability(&self, id: HirId) -> Option<&'tcx ConstStability> {
+        self.const_stab_map.get(&id).cloned()
     }
 
     pub fn local_deprecation_entry(&self, id: HirId) -> Option<DeprecationEntry> {
@@ -488,7 +497,7 @@ pub fn report_unstable(
     sess: &Session,
     feature: Symbol,
     reason: Option<Symbol>,
-    issue: u32,
+    issue: Option<NonZeroU32>,
     is_soft: bool,
     span: Span,
     soft_handler: impl FnOnce(&'static lint::Lint, Span, &str),
@@ -519,9 +528,8 @@ pub fn report_unstable(
         if is_soft {
             soft_handler(lint::builtin::SOFT_UNSTABLE, span, &msg)
         } else {
-            emit_feature_err(
-                &sess.parse_sess, feature, span, GateIssue::Library(Some(issue)), &msg
-            );
+            feature_err_issue(&sess.parse_sess, feature, span, GateIssue::Library(issue), &msg)
+                .emit();
         }
     }
 }
@@ -637,7 +645,7 @@ pub enum EvalResult {
     Deny {
         feature: Symbol,
         reason: Option<Symbol>,
-        issue: u32,
+        issue: Option<NonZeroU32>,
         is_soft: bool,
     },
     /// The item does not have the `#[stable]` or `#[unstable]` marker assigned.
@@ -758,7 +766,7 @@ impl<'tcx> TyCtxt<'tcx> {
                 // the `-Z force-unstable-if-unmarked` flag present (we're
                 // compiling a compiler crate), then let this missing feature
                 // annotation slide.
-                if feature == sym::rustc_private && issue == 27812 {
+                if feature == sym::rustc_private && issue == NonZeroU32::new(27812) {
                     if self.sess.opts.debugging_opts.force_unstable_if_unmarked {
                         return EvalResult::Allow;
                     }
@@ -849,15 +857,19 @@ impl Visitor<'tcx> for Checker<'tcx> {
                 let ty = self.tcx.type_of(def_id);
 
                 if adt_def.has_dtor(self.tcx) {
-                    emit_feature_err(&self.tcx.sess.parse_sess,
-                                     sym::untagged_unions, item.span, GateIssue::Language,
-                                     "unions with `Drop` implementations are unstable");
+                    feature_err(
+                        &self.tcx.sess.parse_sess, sym::untagged_unions, item.span,
+                        "unions with `Drop` implementations are unstable"
+                    )
+                    .emit();
                 } else {
                     let param_env = self.tcx.param_env(def_id);
                     if !param_env.can_type_implement_copy(self.tcx, ty).is_ok() {
-                        emit_feature_err(&self.tcx.sess.parse_sess,
-                                         sym::untagged_unions, item.span, GateIssue::Language,
-                                         "unions with non-`Copy` fields are unstable");
+                        feature_err(
+                            &self.tcx.sess.parse_sess, sym::untagged_unions, item.span,
+                            "unions with non-`Copy` fields are unstable"
+                        )
+                        .emit();
                     }
                 }
             }

@@ -38,12 +38,12 @@ pub use self::intrinsic::IntrinsicCallMethods;
 pub use self::misc::MiscMethods;
 pub use self::statics::{StaticMethods, StaticBuilderMethods};
 pub use self::type_::{
-    ArgTypeMethods, BaseTypeMethods, DerivedTypeMethods, LayoutTypeMethods, TypeMethods,
+    ArgAbiMethods, BaseTypeMethods, DerivedTypeMethods, LayoutTypeMethods, TypeMethods,
 };
 pub use self::write::{ModuleBufferMethods, ThinBufferMethods, WriteBackendMethods};
-use rustc::ty::layout::{HasParamEnv, HasTyCtxt};
-use rustc_target::spec::{HasTargetSpec};
 
+use rustc::ty::layout::{HasParamEnv, HasTyCtxt};
+use rustc_target::spec::HasTargetSpec;
 
 use std::fmt;
 

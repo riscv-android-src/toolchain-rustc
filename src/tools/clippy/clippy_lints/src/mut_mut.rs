@@ -1,9 +1,10 @@
 use crate::utils::{higher, span_lint};
+use rustc::declare_lint_pass;
 use rustc::hir;
 use rustc::hir::intravisit;
 use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc::ty;
-use rustc::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_tool_lint;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for instances of `mut mut` references.
@@ -57,15 +58,15 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for MutVisitor<'a, 'tcx> {
             // Let's ignore the generated code.
             intravisit::walk_expr(self, arg);
             intravisit::walk_expr(self, body);
-        } else if let hir::ExprKind::AddrOf(hir::MutMutable, ref e) = expr.kind {
-            if let hir::ExprKind::AddrOf(hir::MutMutable, _) = e.kind {
+        } else if let hir::ExprKind::AddrOf(hir::BorrowKind::Ref, hir::Mutability::Mutable, ref e) = expr.kind {
+            if let hir::ExprKind::AddrOf(hir::BorrowKind::Ref, hir::Mutability::Mutable, _) = e.kind {
                 span_lint(
                     self.cx,
                     MUT_MUT,
                     expr.span,
                     "generally you want to avoid `&mut &mut _` if possible",
                 );
-            } else if let ty::Ref(_, _, hir::MutMutable) = self.cx.tables.expr_ty(e).kind {
+            } else if let ty::Ref(_, _, hir::Mutability::Mutable) = self.cx.tables.expr_ty(e).kind {
                 span_lint(
                     self.cx,
                     MUT_MUT,
@@ -81,14 +82,15 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for MutVisitor<'a, 'tcx> {
             _,
             hir::MutTy {
                 ty: ref pty,
-                mutbl: hir::MutMutable,
+                mutbl: hir::Mutability::Mutable,
             },
         ) = ty.kind
         {
             if let hir::TyKind::Rptr(
                 _,
                 hir::MutTy {
-                    mutbl: hir::MutMutable, ..
+                    mutbl: hir::Mutability::Mutable,
+                    ..
                 },
             ) = pty.kind
             {
