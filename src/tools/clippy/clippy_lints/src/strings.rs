@@ -1,9 +1,9 @@
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
+use rustc::lint::in_external_macro;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Spanned;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Spanned;
 
 use if_chain::if_chain;
 
@@ -79,7 +79,7 @@ declare_clippy_lint! {
 declare_lint_pass!(StringAdd => [STRING_ADD, STRING_ADD_ASSIGN]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringAdd {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         if in_external_macro(cx.sess(), e.span) {
             return;
         }
@@ -96,7 +96,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringAdd {
                 if !is_allowed(cx, STRING_ADD_ASSIGN, e.hir_id) {
                     let parent = get_parent_expr(cx, e);
                     if let Some(p) = parent {
-                        if let ExprKind::Assign(ref target, _) = p.kind {
+                        if let ExprKind::Assign(ref target, _, _) = p.kind {
                             // avoid duplicate matches
                             if SpanlessEq::new(cx).eq_expr(target, left) {
                                 return;
@@ -111,7 +111,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringAdd {
                     "you added something to a string. Consider using `String::push_str()` instead",
                 );
             }
-        } else if let ExprKind::Assign(ref target, ref src) = e.kind {
+        } else if let ExprKind::Assign(ref target, ref src, _) = e.kind {
             if is_string(cx, target) && is_add(cx, src, target) {
                 span_lint(
                     cx,
@@ -125,11 +125,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringAdd {
     }
 }
 
-fn is_string(cx: &LateContext<'_, '_>, e: &Expr) -> bool {
+fn is_string(cx: &LateContext<'_, '_>, e: &Expr<'_>) -> bool {
     match_type(cx, walk_ptrs_ty(cx.tables.expr_ty(e)), &paths::STRING)
 }
 
-fn is_add(cx: &LateContext<'_, '_>, src: &Expr, target: &Expr) -> bool {
+fn is_add(cx: &LateContext<'_, '_>, src: &Expr<'_>, target: &Expr<'_>) -> bool {
     match src.kind {
         ExprKind::Binary(
             Spanned {
@@ -151,7 +151,7 @@ const MAX_LENGTH_BYTE_STRING_LIT: usize = 32;
 declare_lint_pass!(StringLitAsBytes => [STRING_LIT_AS_BYTES]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringLitAsBytes {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         use crate::utils::{snippet, snippet_with_applicability};
         use syntax::ast::LitKind;
 

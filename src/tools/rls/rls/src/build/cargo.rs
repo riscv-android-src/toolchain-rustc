@@ -17,10 +17,9 @@ use cargo::core::{
 };
 use cargo::ops::{compile_with_exec, CompileFilter, CompileOptions, Packages};
 use cargo::util::{
-    errors::ManifestError, homedir, important_paths, CargoResult, Config as CargoConfig,
+    config as cargo_config, errors::ManifestError, homedir, important_paths, CargoResult,
     ConfigValue, ProcessBuilder,
 };
-use failure::{self, format_err, Fail};
 use log::{debug, trace, warn};
 use rls_data::Analysis;
 use rls_vfs::Vfs;
@@ -75,7 +74,7 @@ pub(super) fn cargo(
         }
     });
 
-    match handle.join().map_err(|_| failure::err_msg("thread panicked")).and_then(|res| res) {
+    match handle.join().map_err(|_| anyhow::Error::msg("thread panicked")).and_then(|res| res) {
         Ok(ref cwd) => {
             let diagnostics = Arc::try_unwrap(diagnostics).unwrap().into_inner().unwrap();
             let analysis = Arc::try_unwrap(analysis).unwrap().into_inner().unwrap();
@@ -105,7 +104,7 @@ fn run_cargo(
     input_files: Arc<Mutex<HashMap<PathBuf, HashSet<Crate>>>>,
     out: Arc<Mutex<Vec<u8>>>,
     progress_sender: Sender<ProgressUpdate>,
-) -> Result<PathBuf, failure::Error> {
+) -> Result<PathBuf, anyhow::Error> {
     // Lock early to guarantee synchronized access to env var for the scope of Cargo routine.
     // Additionally we need to pass inner lock to `RlsExecutor`, since it needs to hand it down
     // during `exec()` callback when calling linked compiler in parallel, for which we need to
@@ -166,7 +165,7 @@ fn run_cargo_ws(
     inner_lock: environment::InnerLock,
     mut restore_env: Environment<'_>,
     manifest_path: &PathBuf,
-    config: &CargoConfig,
+    config: &cargo_config::Config,
     ws: &Workspace<'_>,
 ) -> CargoResult<PathBuf> {
     let (all, packages) = match package_arg {
@@ -281,7 +280,7 @@ fn run_cargo_ws(
     }
 
     if !reached_primary.load(Ordering::SeqCst) {
-        return Err(format_err!("error compiling dependent crate"));
+        return Err(anyhow::format_err!("error compiling dependent crate"));
     }
 
     Ok(compilation_cx
@@ -577,7 +576,7 @@ impl Executor for RlsExecutor {
             }
 
             if !success {
-                return Err(format_err!("Build error"));
+                return Err(anyhow::format_err!("Build error"));
             }
         }
 
@@ -649,8 +648,8 @@ pub fn make_cargo_config(
     target_dir: Option<&Path>,
     cwd: &Path,
     shell: Shell,
-) -> CargoConfig {
-    let config = CargoConfig::new(shell, cwd.to_path_buf(), homedir(build_dir).unwrap());
+) -> cargo_config::Config {
+    let config = cargo_config::Config::new(shell, cwd.to_path_buf(), homedir(build_dir).unwrap());
 
     // Cargo is expecting the config to come from a config file and keeps
     // track of the path to that file. We'll make one up, it shouldn't be
@@ -662,9 +661,10 @@ pub fn make_cargo_config(
 
     let mut config_value_map = config.load_values().unwrap();
     {
-        let build_value = config_value_map
-            .entry("build".to_owned())
-            .or_insert_with(|| ConfigValue::Table(HashMap::new(), config_path.clone()));
+        let build_value = config_value_map.entry("build".to_owned()).or_insert_with(|| {
+            let def = cargo_config::Definition::Path(config_path.clone());
+            ConfigValue::Table(HashMap::new(), def)
+        });
 
         let target_dir = target_dir.map(|d| d.to_str().unwrap().to_owned()).unwrap_or_else(|| {
             // Try to use .cargo/config build.target-dir + "/rls"
@@ -686,7 +686,8 @@ pub fn make_cargo_config(
             cargo_target.join("rls").to_str().unwrap().to_owned()
         });
 
-        let td_value = ConfigValue::String(target_dir, config_path);
+        let def = cargo_config::Definition::Path(config_path);
+        let td_value = ConfigValue::String(target_dir, def);
         if let ConfigValue::Table(ref mut build_table, _) = *build_value {
             build_table.insert("target-dir".to_owned(), td_value);
         } else {
@@ -789,14 +790,14 @@ fn filter_arg(args: &[OsString], key: &str) -> Vec<String> {
 /// Error wrapper that tries to figure out which manifest the cause best relates to in the project
 #[derive(Debug)]
 pub struct ManifestAwareError {
-    cause: failure::Error,
+    cause: anyhow::Error,
     /// The path to a manifest file within the project that seems the closest to the error's origin.
     nearest_project_manifest: PathBuf,
     manifest_error_range: Range,
 }
 
 impl ManifestAwareError {
-    fn new(cause: failure::Error, root_manifest: &Path, ws: Option<&Workspace<'_>>) -> Self {
+    fn new(cause: anyhow::Error, root_manifest: &Path, ws: Option<&Workspace<'_>>) -> Self {
         let project_dir = root_manifest.parent().unwrap();
         let mut err_path = root_manifest;
         // Cover whole manifest if we haven't any better idea.
@@ -811,12 +812,16 @@ impl ManifestAwareError {
             if is_project_manifest(last_cause.manifest_path()) {
                 // Manifest with the issue is inside the project.
                 err_path = last_cause.manifest_path().as_path();
-                if let Some((line, col)) = (last_cause as &dyn Fail)
-                    .iter_chain()
-                    .filter_map(|e| e.downcast_ref::<toml::de::Error>())
-                    .next()
-                    .and_then(|e| e.line_col())
-                {
+                // This can be replaced by Error::chain when it is stabilized.
+                fn find_toml_error(
+                    err: &(dyn std::error::Error + 'static),
+                ) -> Option<(usize, usize)> {
+                    match err.downcast_ref::<toml::de::Error>() {
+                        Some(toml_err) => toml_err.line_col(),
+                        None => find_toml_error(err.source()?),
+                    }
+                }
+                if let Some((line, col)) = find_toml_error(last_cause) {
                     // Use TOML deserializiation error position.
                     err_range.start = Position::new(line as _, col as _);
                     err_range.end = Position::new(line as _, col as u64 + 1);
@@ -860,11 +865,7 @@ impl fmt::Display for ManifestAwareError {
         self.cause.fmt(f)
     }
 }
-impl failure::Fail for ManifestAwareError {
-    fn cause(&self) -> Option<&dyn Fail> {
-        self.cause.as_fail().cause()
-    }
-}
+impl std::error::Error for ManifestAwareError {}
 
 #[cfg(test)]
 mod test {

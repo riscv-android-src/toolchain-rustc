@@ -1,7 +1,6 @@
 use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
-use std::collections::HashMap;
 use std::env;
 use std::ffi::OsStr;
 use std::fmt::Debug;
@@ -25,12 +24,9 @@ use crate::native;
 use crate::test;
 use crate::tool;
 use crate::util::{self, add_lib_path, exe, libdir};
-use crate::{Build, DocTests, Mode, GitRepo};
+use crate::{Build, DocTests, GitRepo, Mode};
 
 pub use crate::Compiler;
-
-use petgraph::graph::NodeIndex;
-use petgraph::Graph;
 
 pub struct Builder<'a> {
     pub build: &'a Build,
@@ -40,9 +36,6 @@ pub struct Builder<'a> {
     stack: RefCell<Vec<Box<dyn Any>>>,
     time_spent_on_dependencies: Cell<Duration>,
     pub paths: Vec<PathBuf>,
-    graph_nodes: RefCell<HashMap<String, NodeIndex>>,
-    graph: RefCell<Graph<String, bool>>,
-    parent: Cell<Option<NodeIndex>>,
 }
 
 impl<'a> Deref for Builder<'a> {
@@ -129,11 +122,7 @@ impl PathSet {
 
     fn path(&self, builder: &Builder<'_>) -> PathBuf {
         match self {
-            PathSet::Set(set) => set
-                .iter()
-                .next()
-                .unwrap_or(&builder.build.src)
-                .to_path_buf(),
+            PathSet::Set(set) => set.iter().next().unwrap_or(&builder.build.src).to_path_buf(),
             PathSet::Suite(path) => PathBuf::from(path),
         }
     }
@@ -187,10 +176,8 @@ impl StepDescription {
     }
 
     fn run(v: &[StepDescription], builder: &Builder<'_>, paths: &[PathBuf]) {
-        let should_runs = v
-            .iter()
-            .map(|desc| (desc.should_run)(ShouldRun::new(builder)))
-            .collect::<Vec<_>>();
+        let should_runs =
+            v.iter().map(|desc| (desc.should_run)(ShouldRun::new(builder))).collect::<Vec<_>>();
 
         // sanity checks on rules
         for (desc, should_run) in v.iter().zip(&should_runs) {
@@ -287,8 +274,7 @@ impl<'a> ShouldRun<'a> {
 
     // multiple aliases for the same job
     pub fn paths(mut self, paths: &[&str]) -> Self {
-        self.paths
-            .insert(PathSet::Set(paths.iter().map(PathBuf::from).collect()));
+        self.paths.insert(PathSet::Set(paths.iter().map(PathBuf::from).collect()));
         self
     }
 
@@ -321,6 +307,7 @@ pub enum Kind {
     Check,
     Clippy,
     Fix,
+    Format,
     Test,
     Bench,
     Dist,
@@ -356,15 +343,14 @@ impl<'a> Builder<'a> {
                 tool::Rustdoc,
                 tool::Clippy,
                 native::Llvm,
+                native::Sanitizers,
                 tool::Rustfmt,
                 tool::Miri,
                 native::Lld
             ),
-            Kind::Check | Kind::Clippy | Kind::Fix => describe!(
-                check::Std,
-                check::Rustc,
-                check::Rustdoc
-            ),
+            Kind::Check | Kind::Clippy | Kind::Fix | Kind::Format => {
+                describe!(check::Std, check::Rustc, check::Rustdoc)
+            }
             Kind::Test => describe!(
                 crate::toolstate::ToolStateCheck,
                 test::Tidy,
@@ -490,9 +476,6 @@ impl<'a> Builder<'a> {
             stack: RefCell::new(Vec::new()),
             time_spent_on_dependencies: Cell::new(Duration::new(0, 0)),
             paths: vec![],
-            graph_nodes: RefCell::new(HashMap::new()),
-            graph: RefCell::new(Graph::new()),
-            parent: Cell::new(None),
         };
 
         let builder = &builder;
@@ -524,7 +507,7 @@ impl<'a> Builder<'a> {
             Subcommand::Bench { ref paths, .. } => (Kind::Bench, &paths[..]),
             Subcommand::Dist { ref paths } => (Kind::Dist, &paths[..]),
             Subcommand::Install { ref paths } => (Kind::Install, &paths[..]),
-            Subcommand::Clean { .. } => panic!(),
+            Subcommand::Format { .. } | Subcommand::Clean { .. } => panic!(),
         };
 
         let builder = Builder {
@@ -535,17 +518,13 @@ impl<'a> Builder<'a> {
             stack: RefCell::new(Vec::new()),
             time_spent_on_dependencies: Cell::new(Duration::new(0, 0)),
             paths: paths.to_owned(),
-            graph_nodes: RefCell::new(HashMap::new()),
-            graph: RefCell::new(Graph::new()),
-            parent: Cell::new(None),
         };
 
         builder
     }
 
-    pub fn execute_cli(&self) -> Graph<String, bool> {
+    pub fn execute_cli(&self) {
         self.run_step_descriptions(&Builder::get_step_descriptions(self.kind), &self.paths);
-        self.graph.borrow().clone()
     }
 
     pub fn default_doc(&self, paths: Option<&[PathBuf]>) {
@@ -562,9 +541,7 @@ impl<'a> Builder<'a> {
     /// obtained through this function, since it ensures that they are valid
     /// (i.e., built and assembled).
     pub fn compiler(&self, stage: u32, host: Interned<String>) -> Compiler {
-        self.ensure(compile::Assemble {
-            target_compiler: Compiler { stage, host },
-        })
+        self.ensure(compile::Assemble { target_compiler: Compiler { stage, host } })
     }
 
     /// Similar to `compiler`, except handles the full-bootstrap option to
@@ -640,9 +617,10 @@ impl<'a> Builder<'a> {
             self.rustc_snapshot_libdir()
         } else {
             match self.config.libdir_relative() {
-                Some(relative_libdir) if compiler.stage >= 1
-                    => self.sysroot(compiler).join(relative_libdir),
-                _ => self.sysroot(compiler).join(libdir(&compiler.host))
+                Some(relative_libdir) if compiler.stage >= 1 => {
+                    self.sysroot(compiler).join(relative_libdir)
+                }
+                _ => self.sysroot(compiler).join(libdir(&compiler.host)),
             }
         }
     }
@@ -657,9 +635,8 @@ impl<'a> Builder<'a> {
             libdir(&self.config.build).as_ref()
         } else {
             match self.config.libdir_relative() {
-                Some(relative_libdir) if compiler.stage >= 1
-                    => relative_libdir,
-                _ => libdir(&compiler.host).as_ref()
+                Some(relative_libdir) if compiler.stage >= 1 => relative_libdir,
+                _ => libdir(&compiler.host).as_ref(),
             }
         }
     }
@@ -670,9 +647,8 @@ impl<'a> Builder<'a> {
     /// For example this returns `lib` on Unix and Windows.
     pub fn sysroot_libdir_relative(&self, compiler: Compiler) -> &Path {
         match self.config.libdir_relative() {
-            Some(relative_libdir) if compiler.stage >= 1
-                => relative_libdir,
-            _ => Path::new("lib")
+            Some(relative_libdir) if compiler.stage >= 1 => relative_libdir,
+            _ => Path::new("lib"),
         }
     }
 
@@ -694,9 +670,7 @@ impl<'a> Builder<'a> {
         if compiler.is_snapshot(self) {
             self.initial_rustc.clone()
         } else {
-            self.sysroot(compiler)
-                .join("bin")
-                .join(exe("rustc", &compiler.host))
+            self.sysroot(compiler).join("bin").join(exe("rustc", &compiler.host))
         }
     }
 
@@ -753,17 +727,10 @@ impl<'a> Builder<'a> {
             self.clear_if_dirty(&my_out, &rustdoc);
         }
 
-        cargo
-            .env("CARGO_TARGET_DIR", out_dir)
-            .arg(cmd)
-            .arg("-Zconfig-profile");
+        cargo.env("CARGO_TARGET_DIR", &out_dir).arg(cmd).arg("-Zconfig-profile");
 
         let profile_var = |name: &str| {
-            let profile = if self.config.rust_optimize {
-                "RELEASE"
-            } else {
-                "DEV"
-            };
+            let profile = if self.config.rust_optimize { "RELEASE" } else { "DEV" };
             format!("CARGO_PROFILE_{}_{}", profile, name)
         };
 
@@ -775,8 +742,7 @@ impl<'a> Builder<'a> {
         }
 
         if cmd != "install" {
-            cargo.arg("--target")
-                 .arg(target);
+            cargo.arg("--target").arg(target);
         } else {
             assert_eq!(target, compiler.host);
         }
@@ -814,14 +780,14 @@ impl<'a> Builder<'a> {
         }
 
         match mode {
-            Mode::Std | Mode::ToolBootstrap | Mode::ToolStd => {},
+            Mode::Std | Mode::ToolBootstrap | Mode::ToolStd => {}
             Mode::Rustc | Mode::Codegen | Mode::ToolRustc => {
                 // Build proc macros both for the host and the target
                 if target != compiler.host && cmd != "check" {
                     cargo.arg("-Zdual-proc-macros");
                     rustflags.arg("-Zdual-proc-macros");
                 }
-            },
+            }
         }
 
         // This tells Cargo (and in turn, rustc) to output more complete
@@ -897,12 +863,20 @@ impl<'a> Builder<'a> {
         assert!(!use_snapshot || stage == 0 || self.local_rebuild);
 
         let maybe_sysroot = self.sysroot(compiler);
-        let sysroot = if use_snapshot {
-            self.rustc_snapshot_sysroot()
-        } else {
-            &maybe_sysroot
-        };
+        let sysroot = if use_snapshot { self.rustc_snapshot_sysroot() } else { &maybe_sysroot };
         let libdir = self.rustc_libdir(compiler);
+
+        // Clear the output directory if the real rustc we're using has changed;
+        // Cargo cannot detect this as it thinks rustc is bootstrap/debug/rustc.
+        //
+        // Avoid doing this during dry run as that usually means the relevant
+        // compiler is not yet linked/copied properly.
+        //
+        // Only clear out the directory if we're compiling std; otherwise, we
+        // should let Cargo take care of things for us (via depdep info)
+        if !self.config.dry_run && mode == Mode::Std && cmd == "build" {
+            self.clear_if_dirty(&out_dir, &self.rustc(compiler));
+        }
 
         // Customize the compiler we're running. Specify the compiler to cargo
         // as our shim and then pass it some various options used to configure
@@ -915,10 +889,7 @@ impl<'a> Builder<'a> {
             .env("RUSTC", self.out.join("bootstrap/debug/rustc"))
             .env("RUSTC_REAL", self.rustc(compiler))
             .env("RUSTC_STAGE", stage.to_string())
-            .env(
-                "RUSTC_DEBUG_ASSERTIONS",
-                self.config.rust_debug_assertions.to_string(),
-            )
+            .env("RUSTC_DEBUG_ASSERTIONS", self.config.rust_debug_assertions.to_string())
             .env("RUSTC_SYSROOT", &sysroot)
             .env("RUSTC_LIBDIR", &libdir)
             .env("RUSTDOC", self.out.join("bootstrap/debug/rustdoc"))
@@ -961,7 +932,6 @@ impl<'a> Builder<'a> {
         // to change a flag in a binary?
         if self.config.rust_rpath && util::use_host_linker(&target) {
             let rpath = if target.contains("apple") {
-
                 // Note that we need to take one extra step on macOS to also pass
                 // `-Wl,-instal_name,@rpath/...` to get things to work right. To
                 // do that we pass a weird flag to the compiler to get it to do
@@ -993,8 +963,9 @@ impl<'a> Builder<'a> {
         let debuginfo_level = match mode {
             Mode::Rustc | Mode::Codegen => self.config.rust_debuginfo_level_rustc,
             Mode::Std => self.config.rust_debuginfo_level_std,
-            Mode::ToolBootstrap | Mode::ToolStd |
-            Mode::ToolRustc => self.config.rust_debuginfo_level_tools,
+            Mode::ToolBootstrap | Mode::ToolStd | Mode::ToolRustc => {
+                self.config.rust_debuginfo_level_tools
+            }
         };
         cargo.env(profile_var("DEBUG"), debuginfo_level.to_string());
 
@@ -1115,14 +1086,11 @@ impl<'a> Builder<'a> {
             cargo.env(format!("CC_{}", target), &cc);
 
             let cflags = self.cflags(target, GitRepo::Rustc).join(" ");
-            cargo
-                .env(format!("CFLAGS_{}", target), cflags.clone());
+            cargo.env(format!("CFLAGS_{}", target), cflags.clone());
 
             if let Some(ar) = self.ar(target) {
                 let ranlib = format!("{} s", ar.display());
-                cargo
-                    .env(format!("AR_{}", target), ar)
-                    .env(format!("RANLIB_{}", target), ranlib);
+                cargo.env(format!("AR_{}", target), ar).env(format!("RANLIB_{}", target), ranlib);
             }
 
             if let Ok(cxx) = self.cxx(target) {
@@ -1133,15 +1101,14 @@ impl<'a> Builder<'a> {
             }
         }
 
-        if mode == Mode::Std
-            && self.config.extended
-            && compiler.is_final_stage(self)
-        {
+        if mode == Mode::Std && self.config.extended && compiler.is_final_stage(self) {
             rustflags.arg("-Zsave-analysis");
-            cargo.env("RUST_SAVE_ANALYSIS_CONFIG",
-                      "{\"output_file\": null,\"full_docs\": false,\
+            cargo.env(
+                "RUST_SAVE_ANALYSIS_CONFIG",
+                "{\"output_file\": null,\"full_docs\": false,\
                        \"pub_only\": true,\"reachable_only\": false,\
-                       \"distro_crate\": true,\"signatures\": false,\"borrow_data\": false}");
+                       \"distro_crate\": true,\"signatures\": false,\"borrow_data\": false}",
+            );
         }
 
         // For `cargo doc` invocations, make rustdoc print the Rust version into the docs
@@ -1195,8 +1162,7 @@ impl<'a> Builder<'a> {
         }
 
         match (mode, self.config.rust_codegen_units_std, self.config.rust_codegen_units) {
-            (Mode::Std, Some(n), _) |
-            (_, _, Some(n)) => {
+            (Mode::Std, Some(n), _) | (_, _, Some(n)) => {
                 cargo.env(profile_var("CODEGEN_UNITS"), n.to_string());
             }
             _ => {
@@ -1230,10 +1196,22 @@ impl<'a> Builder<'a> {
             rustflags.arg("-Cprefer-dynamic");
         }
 
-        Cargo {
-            command: cargo,
-            rustflags,
+        // When building incrementally we default to a lower ThinLTO import limit
+        // (unless explicitly specified otherwise). This will produce a somewhat
+        // slower code but give way better compile times.
+        {
+            let limit = match self.config.rust_thin_lto_import_instr_limit {
+                Some(limit) => Some(limit),
+                None if self.config.incremental => Some(10),
+                _ => None,
+            };
+
+            if let Some(limit) = limit {
+                rustflags.arg(&format!("-Cllvm-args=-import-instr-limit={}", limit));
+            }
         }
+
+        Cargo { command: cargo, rustflags }
     }
 
     /// Ensure that a given step is built, returning its output. This will
@@ -1244,10 +1222,7 @@ impl<'a> Builder<'a> {
             let mut stack = self.stack.borrow_mut();
             for stack_step in stack.iter() {
                 // should skip
-                if stack_step
-                    .downcast_ref::<S>()
-                    .map_or(true, |stack_step| *stack_step != step)
-                {
+                if stack_step.downcast_ref::<S>().map_or(true, |stack_step| *stack_step != step) {
                     continue;
                 }
                 let mut out = String::new();
@@ -1260,39 +1235,10 @@ impl<'a> Builder<'a> {
             if let Some(out) = self.cache.get(&step) {
                 self.verbose(&format!("{}c {:?}", "  ".repeat(stack.len()), step));
 
-                {
-                    let mut graph = self.graph.borrow_mut();
-                    let parent = self.parent.get();
-                    let us = *self
-                        .graph_nodes
-                        .borrow_mut()
-                        .entry(format!("{:?}", step))
-                        .or_insert_with(|| graph.add_node(format!("{:?}", step)));
-                    if let Some(parent) = parent {
-                        graph.add_edge(parent, us, false);
-                    }
-                }
-
                 return out;
             }
             self.verbose(&format!("{}> {:?}", "  ".repeat(stack.len()), step));
             stack.push(Box::new(step.clone()));
-        }
-
-        let prev_parent = self.parent.get();
-
-        {
-            let mut graph = self.graph.borrow_mut();
-            let parent = self.parent.get();
-            let us = *self
-                .graph_nodes
-                .borrow_mut()
-                .entry(format!("{:?}", step))
-                .or_insert_with(|| graph.add_node(format!("{:?}", step)));
-            self.parent.set(Some(us));
-            if let Some(parent) = parent {
-                graph.add_edge(parent, us, true);
-            }
         }
 
         let (out, dur) = {
@@ -1304,8 +1250,6 @@ impl<'a> Builder<'a> {
             let deps = self.time_spent_on_dependencies.replace(parent + dur);
             (out, dur - deps)
         };
-
-        self.parent.set(prev_parent);
 
         if self.config.print_step_timings && dur > Duration::from_millis(100) {
             println!(
@@ -1321,11 +1265,7 @@ impl<'a> Builder<'a> {
             let cur_step = stack.pop().expect("step stack empty");
             assert_eq!(cur_step.downcast_ref(), Some(&step));
         }
-        self.verbose(&format!(
-            "{}< {:?}",
-            "  ".repeat(self.stack.borrow().len()),
-            step
-        ));
+        self.verbose(&format!("{}< {:?}", "  ".repeat(self.stack.borrow().len()), step));
         self.cache.put(step, out.clone());
         out
     }
@@ -1388,7 +1328,9 @@ impl Cargo {
     }
 
     pub fn args<I, S>(&mut self, args: I) -> &mut Cargo
-        where I: IntoIterator<Item=S>, S: AsRef<OsStr>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
     {
         for arg in args {
             self.arg(arg.as_ref());

@@ -1,10 +1,10 @@
-use crate::borrow_check::{nll::ToRegionVid, region_infer::RegionInferenceContext};
 use crate::borrow_check::Upvar;
-use rustc::mir::{Local, Body};
+use crate::borrow_check::{nll::ToRegionVid, region_infer::RegionInferenceContext};
+use rustc::mir::{Body, Local};
 use rustc::ty::{RegionVid, TyCtxt};
 use rustc_index::vec::{Idx, IndexVec};
-use syntax::source_map::Span;
-use syntax_pos::symbol::Symbol;
+use rustc_span::source_map::Span;
+use rustc_span::symbol::Symbol;
 
 impl<'tcx> RegionInferenceContext<'tcx> {
     crate fn get_var_name_and_span_for_region(
@@ -16,13 +16,12 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         fr: RegionVid,
     ) -> Option<(Option<Symbol>, Span)> {
         debug!("get_var_name_and_span_for_region(fr={:?})", fr);
-        assert!(self.universal_regions.is_universal_region(fr));
+        assert!(self.universal_regions().is_universal_region(fr));
 
         debug!("get_var_name_and_span_for_region: attempting upvar");
         self.get_upvar_index_for_region(tcx, fr)
             .map(|index| {
-                let (name, span) =
-                    self.get_upvar_name_and_span_for_region(tcx, upvars, index);
+                let (name, span) = self.get_upvar_name_and_span_for_region(tcx, upvars, index);
                 (Some(name), span)
             })
             .or_else(|| {
@@ -35,11 +34,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
     /// Search the upvars (if any) to find one that references fr. Return its index.
     crate fn get_upvar_index_for_region(&self, tcx: TyCtxt<'tcx>, fr: RegionVid) -> Option<usize> {
-        let upvar_index = self
-            .universal_regions
-            .defining_ty
-            .upvar_tys(tcx)
-            .position(|upvar_ty| {
+        let upvar_index =
+            self.universal_regions().defining_ty.upvar_tys(tcx).position(|upvar_ty| {
                 debug!("get_upvar_index_for_region: upvar_ty={:?}", upvar_ty);
                 tcx.any_free_region_meets(&upvar_ty, |r| {
                     let r = r.to_region_vid();
@@ -48,11 +44,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
                 })
             })?;
 
-        let upvar_ty = self
-            .universal_regions
-            .defining_ty
-            .upvar_tys(tcx)
-            .nth(upvar_index);
+        let upvar_ty = self.universal_regions().defining_ty.upvar_tys(tcx).nth(upvar_index);
 
         debug!(
             "get_upvar_index_for_region: found {:?} in upvar {} which has type {:?}",
@@ -75,8 +67,10 @@ impl<'tcx> RegionInferenceContext<'tcx> {
 
         let upvar_name = tcx.hir().name(upvar_hir_id);
         let upvar_span = tcx.hir().span(upvar_hir_id);
-        debug!("get_upvar_name_and_span_for_region: upvar_name={:?} upvar_span={:?}",
-               upvar_name, upvar_span);
+        debug!(
+            "get_upvar_name_and_span_for_region: upvar_name={:?} upvar_span={:?}",
+            upvar_name, upvar_span
+        );
 
         (upvar_name, upvar_span)
     }
@@ -91,23 +85,20 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         tcx: TyCtxt<'tcx>,
         fr: RegionVid,
     ) -> Option<usize> {
-        let implicit_inputs = self.universal_regions.defining_ty.implicit_inputs();
-        let argument_index = self
-            .universal_regions
-            .unnormalized_input_tys
-            .iter()
-            .skip(implicit_inputs)
-            .position(|arg_ty| {
-                debug!(
-                    "get_argument_index_for_region: arg_ty = {:?}",
-                    arg_ty
-                );
-                tcx.any_free_region_meets(arg_ty, |r| r.to_region_vid() == fr)
-            })?;
+        let implicit_inputs = self.universal_regions().defining_ty.implicit_inputs();
+        let argument_index =
+            self.universal_regions().unnormalized_input_tys.iter().skip(implicit_inputs).position(
+                |arg_ty| {
+                    debug!("get_argument_index_for_region: arg_ty = {:?}", arg_ty);
+                    tcx.any_free_region_meets(arg_ty, |r| r.to_region_vid() == fr)
+                },
+            )?;
 
         debug!(
             "get_argument_index_for_region: found {:?} in argument {} which has type {:?}",
-            fr, argument_index, self.universal_regions.unnormalized_input_tys[argument_index],
+            fr,
+            argument_index,
+            self.universal_regions().unnormalized_input_tys[argument_index],
         );
 
         Some(argument_index)
@@ -121,14 +112,16 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         local_names: &IndexVec<Local, Option<Symbol>>,
         argument_index: usize,
     ) -> (Option<Symbol>, Span) {
-        let implicit_inputs = self.universal_regions.defining_ty.implicit_inputs();
+        let implicit_inputs = self.universal_regions().defining_ty.implicit_inputs();
         let argument_local = Local::new(implicit_inputs + argument_index + 1);
         debug!("get_argument_name_and_span_for_region: argument_local={:?}", argument_local);
 
         let argument_name = local_names[argument_local];
         let argument_span = body.local_decls[argument_local].source_info.span;
-        debug!("get_argument_name_and_span_for_region: argument_name={:?} argument_span={:?}",
-               argument_name, argument_span);
+        debug!(
+            "get_argument_name_and_span_for_region: argument_name={:?} argument_span={:?}",
+            argument_name, argument_span
+        );
 
         (argument_name, argument_span)
     }

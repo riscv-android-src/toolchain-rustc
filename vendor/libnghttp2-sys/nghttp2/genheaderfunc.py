@@ -9,6 +9,7 @@ HEADERS = [
     ':scheme',
     ':status',
     ':host', # for spdy
+    ':protocol',
     'expect',
     'host',
     'if-modified-since',
@@ -32,6 +33,8 @@ HEADERS = [
     "date",
     "content-type",
     "early-data",
+    "sec-websocket-accept",
+    "sec-websocket-key",
     # disallowed h1 headers
     'connection',
     'keep-alive',
@@ -41,4 +44,4 @@ HEADERS = [
 ]
 
 if __name__ == '__main__':
-    gentokenlookup(HEADERS, 'HD')
+    gentokenlookup(HEADERS, 'HD_')

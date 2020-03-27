@@ -47,7 +47,7 @@
 //!
 //!   Additionally, each modification to the index is just appending a line at
 //!   the end of a file (the exact format is described later). This means that
-//!   the commits for an index are quite small and easily applied/compressable.
+//!   the commits for an index are quite small and easily applied/compressible.
 //!
 //! ## The format of the Index
 //!
@@ -171,7 +171,7 @@ use semver::{Version, VersionReq};
 use serde::Deserialize;
 use tar::Archive;
 
-use crate::core::dependency::{Dependency, Kind};
+use crate::core::dependency::{DepKind, Dependency};
 use crate::core::source::MaybePackage;
 use crate::core::{InternedString, Package, PackageId, Source, SourceId, Summary};
 use crate::sources::PathSource;
@@ -316,9 +316,9 @@ impl<'a> RegistryDependency<'a> {
             dep.set_explicit_name_in_toml(name);
         }
         let kind = match kind.as_ref().map(|s| &s[..]).unwrap_or("") {
-            "dev" => Kind::Development,
-            "build" => Kind::Build,
-            _ => Kind::Normal,
+            "dev" => DepKind::Development,
+            "build" => DepKind::Build,
+            _ => DepKind::Normal,
         };
 
         let platform = match target {
@@ -480,7 +480,7 @@ impl<'cfg> RegistrySource<'cfg> {
             // crates.io should also block uploads with these sorts of tarballs,
             // but be extra sure by adding a check here as well.
             if !entry_path.starts_with(prefix) {
-                failure::bail!(
+                anyhow::bail!(
                     "invalid tarball downloaded, contains \
                      a file at {:?} which isn't under {:?}",
                     entry_path,

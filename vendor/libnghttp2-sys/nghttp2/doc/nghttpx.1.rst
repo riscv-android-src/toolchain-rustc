@@ -122,12 +122,14 @@ Connections
     parameters       are:      "proto=<PROTO>",       "tls",
     "sni=<SNI_HOST>",         "fall=<N>",        "rise=<N>",
     "affinity=<METHOD>",    "dns",    "redirect-if-not-tls",
-    "upgrade-scheme",  and  "mruby=<PATH>".   The  parameter
-    consists of keyword, and  optionally followed by "=" and
-    value.  For  example, the parameter  "proto=h2" consists
-    of the  keyword "proto"  and value "h2".   The parameter
-    "tls" consists of the keyword "tls" without value.  Each
-    parameter is described as follows.
+    "upgrade-scheme",                        "mruby=<PATH>",
+    "read-timeout=<DURATION>",   "write-timeout=<DURATION>",
+    "group=<GROUP>",  "group-weight=<N>", and  "weight=<N>".
+    The  parameter  consists   of  keyword,  and  optionally
+    followed by  "=" and value.  For  example, the parameter
+    "proto=h2"  consists of  the keyword  "proto" and  value
+    "h2".  The parameter "tls" consists of the keyword "tls"
+    without value.  Each parameter is described as follows.
 
     The backend application protocol  can be specified using
     optional  "proto"   parameter,  and   in  the   form  of
@@ -224,6 +226,39 @@ Connections
     script  file  which  is  invoked when  this  pattern  is
     matched.  All backends which share the same pattern must
     have the same mruby path.
+
+    "read-timeout=<DURATION>" and "write-timeout=<DURATION>"
+    parameters  specify the  read and  write timeout  of the
+    backend connection  when this  pattern is  matched.  All
+    backends which share the same pattern must have the same
+    timeouts.  If these timeouts  are entirely omitted for a
+    pattern,            :option:`--backend-read-timeout`           and
+    :option:`--backend-write-timeout` are used.
+
+    "group=<GROUP>"  parameter specifies  the name  of group
+    this backend address belongs to.  By default, it belongs
+    to  the unnamed  default group.   The name  of group  is
+    unique   per   pattern.   "group-weight=<N>"   parameter
+    specifies the  weight of  the group.  The  higher weight
+    gets  more frequently  selected  by  the load  balancing
+    algorithm.  <N> must be  [1, 256] inclusive.  The weight
+    8 has 4 times more weight  than 2.  <N> must be the same
+    for  all addresses  which  share the  same <GROUP>.   If
+    "group-weight" is  omitted in an address,  but the other
+    address  which  belongs  to  the  same  group  specifies
+    "group-weight",   its    weight   is   used.     If   no
+    "group-weight"  is  specified  for  all  addresses,  the
+    weight of a group becomes 1.  "group" and "group-weight"
+    are ignored if session affinity is enabled.
+
+    "weight=<N>"  parameter  specifies  the  weight  of  the
+    backend  address  inside  a  group  which  this  address
+    belongs  to.  The  higher  weight  gets more  frequently
+    selected by  the load balancing algorithm.   <N> must be
+    [1,  256] inclusive.   The  weight 8  has  4 times  more
+    weight  than weight  2.  If  this parameter  is omitted,
+    weight  becomes  1.   "weight"  is  ignored  if  session
+    affinity is enabled.
 
     Since ";" and ":" are  used as delimiter, <PATTERN> must
     not  contain these  characters.  Since  ";" has  special
@@ -559,15 +594,37 @@ SSL/TLS
 
     Set allowed  cipher list  for frontend  connection.  The
     format of the string is described in OpenSSL ciphers(1).
+    This option  sets cipher suites for  TLSv1.2 or earlier.
+    Use :option:`--tls13-ciphers` for TLSv1.3.
 
     Default: ``ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256``
+
+.. option:: --tls13-ciphers=<SUITE>
+
+    Set allowed  cipher list  for frontend  connection.  The
+    format of the string is described in OpenSSL ciphers(1).
+    This  option  sets  cipher   suites  for  TLSv1.3.   Use
+    :option:`--ciphers` for TLSv1.2 or earlier.
+
+    Default: ``TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256``
 
 .. option:: --client-ciphers=<SUITE>
 
     Set  allowed cipher  list for  backend connection.   The
     format of the string is described in OpenSSL ciphers(1).
+    This option  sets cipher suites for  TLSv1.2 or earlier.
+    Use :option:`--tls13-client-ciphers` for TLSv1.3.
 
     Default: ``ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256``
+
+.. option:: --tls13-client-ciphers=<SUITE>
+
+    Set  allowed cipher  list for  backend connection.   The
+    format of the string is described in OpenSSL ciphers(1).
+    This  option  sets  cipher   suites  for  TLSv1.3.   Use
+    :option:`--tls13-client-ciphers` for TLSv1.2 or earlier.
+
+    Default: ``TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256``
 
 .. option:: --ecdh-curves=<LIST>
 
@@ -679,7 +736,7 @@ SSL/TLS
     ciphers are  included in :option:`--ciphers` option.   The default
     cipher  list  only   includes  ciphers  compatible  with
     TLSv1.2 or above.  The available versions are:
-    TLSv1.2, TLSv1.1, and TLSv1.0
+    TLSv1.3, TLSv1.2, TLSv1.1, and TLSv1.0
 
     Default: ``TLSv1.2``
 
@@ -691,9 +748,9 @@ SSL/TLS
     enabled.  If the protocol list advertised by client does
     not  overlap  this range,  you  will  receive the  error
     message "unknown protocol".  The available versions are:
-    TLSv1.2, TLSv1.1, and TLSv1.0
+    TLSv1.3, TLSv1.2, TLSv1.1, and TLSv1.0
 
-    Default: ``TLSv1.2``
+    Default: ``TLSv1.3``
 
 .. option:: --tls-ticket-key-file=<PATH>
 
@@ -920,6 +977,22 @@ SSL/TLS
     HTTP/2.   To  use  those   cipher  suites  with  HTTP/2,
     consider   to  use   :option:`--client-no-http2-cipher-black-list`
     option.  But be aware its implications.
+
+.. option:: --tls-no-postpone-early-data
+
+    By default,  nghttpx postpones forwarding  HTTP requests
+    sent in early data, including those sent in partially in
+    it, until TLS handshake finishes.  If all backend server
+    recognizes "Early-Data" header  field, using this option
+    makes nghttpx  not postpone  forwarding request  and get
+    full potential of 0-RTT data.
+
+.. option:: --tls-max-early-data=<SIZE>
+
+    Sets  the  maximum  amount  of 0-RTT  data  that  server
+    accepts.
+
+    Default: ``16K``
 
 
 HTTP/2
@@ -1236,6 +1309,11 @@ HTTP
 
     Don't append to  Via header field.  If  Via header field
     is received, it is left unaltered.
+
+.. option:: --no-strip-incoming-early-data
+
+    Don't strip Early-Data header  field from inbound client
+    requests.
 
 .. option:: --no-location-rewrite
 
@@ -1926,6 +2004,14 @@ respectively.
     .. rb:attr_reader:: alpn
 
         Return ALPN identifier negotiated in this connection.
+
+    .. rb:attr_reader:: tls_handshake_finished
+
+        Return true if SSL/TLS handshake has finished.  If it returns
+        false in the request phase hook, the request is received in
+        TLSv1.3 early data (0-RTT) and might be vulnerable to the
+        replay attack.  nghttpx will send Early-Data header field to
+        backend servers to indicate this.
 
 .. rb:class:: Request
 

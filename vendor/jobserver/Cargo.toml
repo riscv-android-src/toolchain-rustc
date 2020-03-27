@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "jobserver"
-version = "0.1.16"
+version = "0.1.21"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 description = "An implementation of the GNU make jobserver for Rust\n"
 homepage = "https://github.com/alexcrichton/jobserver-rs"
@@ -42,8 +43,6 @@ harness = false
 [[test]]
 name = "helper"
 path = "tests/helper.rs"
-[dependencies.log]
-version = "0.4.6"
 [dev-dependencies.futures]
 version = "0.1"
 
@@ -60,5 +59,3 @@ version = "0.1"
 version = "0.2"
 [target."cfg(unix)".dependencies.libc]
 version = "0.2.50"
-[target."cfg(windows)".dependencies.rand]
-version = "0.7.0"

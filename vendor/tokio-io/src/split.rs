@@ -1,8 +1,8 @@
 use std::io::{self, Read, Write};
 
-use futures::{Async, Poll};
-use futures::sync::BiLock;
 use bytes::{Buf, BufMut};
+use futures::sync::BiLock;
+use futures::{Async, Poll};
 
 use {AsyncRead, AsyncWrite};
 
@@ -12,10 +12,42 @@ pub struct ReadHalf<T> {
     handle: BiLock<T>,
 }
 
+impl<T: AsyncRead + AsyncWrite> ReadHalf<T> {
+    /// Reunite with a previously split `WriteHalf`.
+    ///
+    /// # Panics
+    ///
+    /// If this `ReadHalf` and the given `WriteHalf` do not originate from
+    /// the same `AsyncRead::split` operation this method will panic.
+    pub fn unsplit(self, w: WriteHalf<T>) -> T {
+        if let Ok(x) = self.handle.reunite(w.handle) {
+            x
+        } else {
+            panic!("Unrelated `WriteHalf` passed to `ReadHalf::unsplit`.")
+        }
+    }
+}
+
 /// The writable half of an object returned from `AsyncRead::split`.
 #[derive(Debug)]
 pub struct WriteHalf<T> {
     handle: BiLock<T>,
+}
+
+impl<T: AsyncRead + AsyncWrite> WriteHalf<T> {
+    /// Reunite with a previously split `ReadHalf`.
+    ///
+    /// # panics
+    ///
+    /// If this `WriteHalf` and the given `ReadHalf` do not originate from
+    /// the same `AsyncRead::split` operation this method will panic.
+    pub fn unsplit(self, r: ReadHalf<T>) -> T {
+        if let Ok(x) = self.handle.reunite(r.handle) {
+            x
+        } else {
+            panic!("Unrelated `ReadHalf` passed to `WriteHalf::unsplit`.")
+        }
+    }
 }
 
 pub fn split<T: AsyncRead + AsyncWrite>(t: T) -> (ReadHalf<T>, WriteHalf<T>) {
@@ -66,7 +98,8 @@ impl<T: AsyncWrite> AsyncWrite for WriteHalf<T> {
     }
 
     fn write_buf<B: Buf>(&mut self, buf: &mut B) -> Poll<usize, io::Error>
-        where Self: Sized,
+    where
+        Self: Sized,
     {
         let mut l = try_ready!(wrap_as_io(self.handle.poll_lock()));
         l.write_buf(buf)
@@ -83,8 +116,8 @@ mod tests {
 
     use super::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
     use bytes::{BytesMut, IntoBuf};
-    use futures::{Async, Poll, future::lazy, future::ok};
     use futures::sync::BiLock;
+    use futures::{future::lazy, future::ok, Async, Poll};
 
     use std::io::{self, Read, Write};
 
@@ -138,7 +171,8 @@ mod tests {
             assert!(rx.read_buf(&mut buf).unwrap().is_ready());
 
             ok::<(), ()>(())
-        })).unwrap();
+        }))
+        .unwrap();
     }
 
     #[test]
@@ -166,6 +200,48 @@ mod tests {
             assert!(tx.write_buf(&mut buf).unwrap().is_ready());
 
             ok::<(), ()>(())
-        })).unwrap();
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn unsplit_ok() {
+        let (r, w) = RW.split();
+        r.unsplit(w);
+
+        let (r, w) = RW.split();
+        w.unsplit(r);
+    }
+
+    #[test]
+    #[should_panic]
+    fn unsplit_err1() {
+        let (r, _) = RW.split();
+        let (_, w) = RW.split();
+        r.unsplit(w);
+    }
+
+    #[test]
+    #[should_panic]
+    fn unsplit_err2() {
+        let (_, w) = RW.split();
+        let (r, _) = RW.split();
+        r.unsplit(w);
+    }
+
+    #[test]
+    #[should_panic]
+    fn unsplit_err3() {
+        let (_, w) = RW.split();
+        let (r, _) = RW.split();
+        w.unsplit(r);
+    }
+
+    #[test]
+    #[should_panic]
+    fn unsplit_err4() {
+        let (r, _) = RW.split();
+        let (_, w) = RW.split();
+        w.unsplit(r);
     }
 }

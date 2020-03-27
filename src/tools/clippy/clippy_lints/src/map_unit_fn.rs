@@ -1,13 +1,12 @@
 use crate::utils::paths;
 use crate::utils::{iter_input_pats, match_type, method_chain_args, snippet, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::{self, Ty};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir as hir;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for usage of `option.map(f)` where f is a function
@@ -48,7 +47,7 @@ declare_clippy_lint! {
     /// ```
     pub OPTION_MAP_UNIT_FN,
     complexity,
-    "using `option.map(f)`, where f is a function or closure that returns ()"
+    "using `option.map(f)`, where `f` is a function or closure that returns `()`"
 }
 
 declare_clippy_lint! {
@@ -89,7 +88,7 @@ declare_clippy_lint! {
     /// ```
     pub RESULT_MAP_UNIT_FN,
     complexity,
-    "using `result.map(f)`, where f is a function or closure that returns ()"
+    "using `result.map(f)`, where `f` is a function or closure that returns `()`"
 }
 
 declare_lint_pass!(MapUnit => [OPTION_MAP_UNIT_FN, RESULT_MAP_UNIT_FN]);
@@ -102,7 +101,7 @@ fn is_unit_type(ty: Ty<'_>) -> bool {
     }
 }
 
-fn is_unit_function(cx: &LateContext<'_, '_>, expr: &hir::Expr) -> bool {
+fn is_unit_function(cx: &LateContext<'_, '_>, expr: &hir::Expr<'_>) -> bool {
     let ty = cx.tables.expr_ty(expr);
 
     if let ty::FnDef(id, _) = ty.kind {
@@ -113,7 +112,7 @@ fn is_unit_function(cx: &LateContext<'_, '_>, expr: &hir::Expr) -> bool {
     false
 }
 
-fn is_unit_expression(cx: &LateContext<'_, '_>, expr: &hir::Expr) -> bool {
+fn is_unit_expression(cx: &LateContext<'_, '_>, expr: &hir::Expr<'_>) -> bool {
     is_unit_type(cx.tables.expr_ty(expr))
 }
 
@@ -121,7 +120,7 @@ fn is_unit_expression(cx: &LateContext<'_, '_>, expr: &hir::Expr) -> bool {
 /// semicolons, which causes problems when generating a suggestion. Given an
 /// expression that evaluates to '()' or '!', recursively remove useless braces
 /// and semi-colons until is suitable for including in the suggestion template
-fn reduce_unit_expression<'a>(cx: &LateContext<'_, '_>, expr: &'a hir::Expr) -> Option<Span> {
+fn reduce_unit_expression<'a>(cx: &LateContext<'_, '_>, expr: &'a hir::Expr<'_>) -> Option<Span> {
     if !is_unit_expression(cx, expr) {
         return None;
     }
@@ -164,8 +163,8 @@ fn reduce_unit_expression<'a>(cx: &LateContext<'_, '_>, expr: &'a hir::Expr) -> 
 
 fn unit_closure<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
-    expr: &'a hir::Expr,
-) -> Option<(&'tcx hir::Param, &'a hir::Expr)> {
+    expr: &'a hir::Expr<'a>,
+) -> Option<(&'tcx hir::Param<'tcx>, &'a hir::Expr<'a>)> {
     if let hir::ExprKind::Closure(_, ref decl, inner_expr_id, _, _) = expr.kind {
         let body = cx.tcx.hir().body(inner_expr_id);
         let body_expr = &body.value;
@@ -188,7 +187,7 @@ fn unit_closure<'a, 'tcx>(
 /// `y` => `_y`
 ///
 /// Anything else will return `_`.
-fn let_binding_name(cx: &LateContext<'_, '_>, var_arg: &hir::Expr) -> String {
+fn let_binding_name(cx: &LateContext<'_, '_>, var_arg: &hir::Expr<'_>) -> String {
     match &var_arg.kind {
         hir::ExprKind::Field(_, _) => snippet(cx, var_arg.span, "_").replace(".", "_"),
         hir::ExprKind::Path(_) => format!("_{}", snippet(cx, var_arg.span, "")),
@@ -199,12 +198,12 @@ fn let_binding_name(cx: &LateContext<'_, '_>, var_arg: &hir::Expr) -> String {
 #[must_use]
 fn suggestion_msg(function_type: &str, map_type: &str) -> String {
     format!(
-        "called `map(f)` on an {0} value where `f` is a unit {1}",
+        "called `map(f)` on an `{0}` value where `f` is a unit {1}",
         map_type, function_type
     )
 }
 
-fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt, expr: &hir::Expr, map_args: &[hir::Expr]) {
+fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt<'_>, expr: &hir::Expr<'_>, map_args: &[hir::Expr<'_>]) {
     let var_arg = &map_args[0];
 
     let (map_type, variant, lint) = if match_type(cx, cx.tables.expr_ty(var_arg), &paths::OPTION) {
@@ -261,7 +260,7 @@ fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt, expr: &hir::Expr
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MapUnit {
-    fn check_stmt(&mut self, cx: &LateContext<'_, '_>, stmt: &hir::Stmt) {
+    fn check_stmt(&mut self, cx: &LateContext<'_, '_>, stmt: &hir::Stmt<'_>) {
         if stmt.span.from_expansion() {
             return;
         }

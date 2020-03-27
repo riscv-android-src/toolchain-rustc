@@ -4,13 +4,12 @@
 
 use crate::utils::sugg::Sugg;
 use crate::utils::{higher, parent_node_is_if_expr, span_lint, span_lint_and_sugg};
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Spanned;
 use syntax::ast::LitKind;
-use syntax::source_map::Spanned;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for expressions of the form `if c { true } else {
@@ -62,7 +61,7 @@ declare_clippy_lint! {
 declare_lint_pass!(NeedlessBool => [NEEDLESS_BOOL]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBool {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         use self::Expression::*;
         if let Some((ref pred, ref then_block, Some(ref else_expr))) = higher::if_block(&e) {
             let reduce = |ret, not| {
@@ -113,7 +112,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBool {
                     _ => (),
                 }
             } else {
-                panic!("IfExpr 'then' node is not an ExprKind::Block");
+                panic!("IfExpr `then` node is not an `ExprKind::Block`");
             }
         }
     }
@@ -122,7 +121,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBool {
 declare_lint_pass!(BoolComparison => [BOOL_COMPARISON]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoolComparison {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         if e.span.from_expansion() {
             return;
         }
@@ -185,7 +184,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoolComparison {
 
 fn check_comparison<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
-    e: &'tcx Expr,
+    e: &'tcx Expr<'_>,
     left_true: Option<(impl FnOnce(Sugg<'a>) -> Sugg<'a>, &str)>,
     left_false: Option<(impl FnOnce(Sugg<'a>) -> Sugg<'a>, &str)>,
     right_true: Option<(impl FnOnce(Sugg<'a>) -> Sugg<'a>, &str)>,
@@ -232,8 +231,8 @@ fn check_comparison<'a, 'tcx>(
 
 fn suggest_bool_comparison<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
-    e: &'tcx Expr,
-    expr: &Expr,
+    e: &'tcx Expr<'_>,
+    expr: &Expr<'_>,
     mut applicability: Applicability,
     message: &str,
     conv_hint: impl FnOnce(Sugg<'a>) -> Sugg<'a>,
@@ -256,7 +255,7 @@ enum Expression {
     Other,
 }
 
-fn fetch_bool_block(block: &Block) -> Expression {
+fn fetch_bool_block(block: &Block<'_>) -> Expression {
     match (&*block.stmts, block.expr.as_ref()) {
         (&[], Some(e)) => fetch_bool_expr(&**e),
         (&[ref e], None) => {
@@ -274,7 +273,7 @@ fn fetch_bool_block(block: &Block) -> Expression {
     }
 }
 
-fn fetch_bool_expr(expr: &Expr) -> Expression {
+fn fetch_bool_expr(expr: &Expr<'_>) -> Expression {
     match expr.kind {
         ExprKind::Block(ref block, _) => fetch_bool_block(block),
         ExprKind::Lit(ref lit_ptr) => {

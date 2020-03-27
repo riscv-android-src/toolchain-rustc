@@ -1,3 +1,27 @@
+# 0.2.12 (November 27, 2019)
+
+### Added
+- `timer::set_default`, which functions like `timer::with_default`, but
+  returns a drop guard (#1725).
+- `clock::set_default`, which functions like `clock::with_default`, but
+  returns a drop guard (#1725).
+
+# 0.2.11 (May 14, 2019)
+
+### Added
+- `Handle::timeout` API, replacing the deprecated `Handle::deadline` (#1074).
+
+# 0.2.10 (February 4, 2019)
+
+### Fixed
+- `DelayQueue` when multiple delays are reset (#871).
+
+# 0.2.9 (January 24, 2019)
+
+### Fixed
+- `DelayQueue` timing logic when inserting / resetting a delay (#851, #863).
+- Documentation links (#842, #844, #845)
+
 # 0.2.8 (November 21, 2018)
 
 * Implement throttle combinator (#736).

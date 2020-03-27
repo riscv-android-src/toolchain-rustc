@@ -2,11 +2,10 @@
 
 use crate::utils::span_lint_and_then;
 use crate::utils::sugg::DiagnosticBuilderExt;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast::{Attribute, Name};
 
 declare_clippy_lint! {
@@ -32,7 +31,7 @@ declare_clippy_lint! {
 declare_lint_pass!(InlineFnWithoutBody => [INLINE_FN_WITHOUT_BODY]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InlineFnWithoutBody {
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
         if let TraitItemKind::Method(_, TraitMethod::Required(_)) = item.kind {
             check_attrs(cx, item.ident.name, &item.attrs);
         }

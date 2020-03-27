@@ -1089,6 +1089,41 @@ impl Repository {
         }
     }
 
+    /// Create a commit object and return that as a Buf.
+    ///
+    /// That can be converted to a string like this `str::from_utf8(&buf).unwrap().to_string()`.
+    /// And that string can be passed to the `commit_signed` function,
+    /// the arguments behave the same as in the `commit` function.
+    pub fn commit_create_buffer(
+        &self,
+        author: &Signature<'_>,
+        committer: &Signature<'_>,
+        message: &str,
+        tree: &Tree<'_>,
+        parents: &[&Commit<'_>],
+    ) -> Result<Buf, Error> {
+        let mut parent_ptrs = parents
+            .iter()
+            .map(|p| p.raw() as *const raw::git_commit)
+            .collect::<Vec<_>>();
+        let message = CString::new(message)?;
+        let buf = Buf::new();
+        unsafe {
+            try_call!(raw::git_commit_create_buffer(
+                buf.raw(),
+                self.raw(),
+                author.raw(),
+                committer.raw(),
+                ptr::null(),
+                message,
+                tree.raw(),
+                parents.len() as size_t,
+                parent_ptrs.as_mut_ptr()
+            ));
+            Ok(buf)
+        }
+    }
+
     /// Create a commit object from the given buffer and signature
     ///
     /// Given the unsigned commit object's contents, its signature and the
@@ -1156,7 +1191,7 @@ impl Repository {
         }
     }
 
-    /// Creates a `AnnotatedCommit` from the given commit id.
+    /// Creates an `AnnotatedCommit` from the given commit id.
     pub fn find_annotated_commit(&self, id: Oid) -> Result<AnnotatedCommit<'_>, Error> {
         unsafe {
             let mut raw = ptr::null_mut();
@@ -1671,7 +1706,7 @@ impl Repository {
     ///
     /// For compatibility with git, the repository is put into a merging state.
     /// Once the commit is done (or if the user wishes to abort), you should
-    /// clear this state by calling git_repository_state_cleanup().
+    /// clear this state by calling cleanup_state().
     pub fn merge(
         &self,
         annotated_commits: &[&AnnotatedCommit<'_>],
@@ -2431,6 +2466,54 @@ impl Repository {
             try_call!(raw::git_cherrypick(self.raw(), commit.raw(), ptr_raw_opts));
 
             Ok(())
+        }
+    }
+
+    /// Create an index of uncommitted changes, representing the result of
+    /// cherry-picking.
+    pub fn cherrypick_commit(
+        &self,
+        cherrypick_commit: &Commit<'_>,
+        our_commit: &Commit<'_>,
+        mainline: u32,
+        options: Option<&MergeOptions>,
+    ) -> Result<Index, Error> {
+        let mut ret = ptr::null_mut();
+        unsafe {
+            try_call!(raw::git_cherrypick_commit(
+                &mut ret,
+                self.raw(),
+                cherrypick_commit.raw(),
+                our_commit.raw(),
+                mainline,
+                options.map(|o| o.raw())
+            ));
+            Ok(Binding::from_raw(ret))
+        }
+    }
+
+    /// Retrieves the name of the reference supporting the remote tracking branch,
+    /// given the name of a local branch reference.
+    pub fn branch_upstream_name(&self, refname: &str) -> Result<Buf, Error> {
+        let refname = CString::new(refname)?;
+        unsafe {
+            let buf = Buf::new();
+            try_call!(raw::git_branch_upstream_name(buf.raw(), self.raw, refname));
+            Ok(buf)
+        }
+    }
+
+    /// Retrieve the name of the upstream remote of a local branch.
+    pub fn branch_upstream_remote(&self, refname: &str) -> Result<Buf, Error> {
+        let refname = CString::new(refname)?;
+        unsafe {
+            let buf = Buf::new();
+            try_call!(raw::git_branch_upstream_remote(
+                buf.raw(),
+                self.raw,
+                refname
+            ));
+            Ok(buf)
         }
     }
 }

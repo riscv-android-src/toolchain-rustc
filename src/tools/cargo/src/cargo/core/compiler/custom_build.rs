@@ -1,3 +1,10 @@
+use super::job::{Freshness, Job, Work};
+use super::{fingerprint, CompileKind, Context, Unit};
+use crate::core::compiler::job_queue::JobState;
+use crate::core::{profiles::ProfileRoot, PackageId};
+use crate::util::errors::{CargoResult, CargoResultExt};
+use crate::util::machine_message::{self, Message};
+use crate::util::{self, internal, paths, profile};
 use cargo_platform::Cfg;
 use std::collections::hash_map::{Entry, HashMap};
 use std::collections::{BTreeSet, HashSet};
@@ -5,17 +12,8 @@ use std::path::{Path, PathBuf};
 use std::str;
 use std::sync::Arc;
 
-use crate::core::compiler::job_queue::JobState;
-use crate::core::{profiles::ProfileRoot, PackageId};
-use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::machine_message::{self, Message};
-use crate::util::{self, internal, paths, profile};
-
-use super::job::{Freshness, Job, Work};
-use super::{fingerprint, CompileKind, Context, Unit};
-
 /// Contains the parsed output of a custom build script.
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Debug, Hash, Default)]
 pub struct BuildOutput {
     /// Paths to pass to rustc with the `-L` flag.
     pub library_paths: Vec<PathBuf>,
@@ -181,7 +179,10 @@ fn build_work<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoRes
         .inherit_jobserver(&cx.jobserver);
 
     if let Some(linker) = &bcx.target_config(unit.kind).linker {
-        cmd.env("RUSTC_LINKER", linker);
+        cmd.env(
+            "RUSTC_LINKER",
+            linker.val.clone().resolve_program(bcx.config),
+        );
     }
 
     if let Some(links) = unit.pkg.manifest().links() {
@@ -459,7 +460,7 @@ impl BuildOutput {
             let (key, value) = match (key, value) {
                 (Some(a), Some(b)) => (a, b.trim_end()),
                 // Line started with `cargo:` but didn't match `key=value`.
-                _ => failure::bail!("Wrong output in {}: `{}`", whence, line),
+                _ => anyhow::bail!("Wrong output in {}: `{}`", whence, line),
             };
 
             // This will rewrite paths if the target directory has been moved.
@@ -519,7 +520,7 @@ impl BuildOutput {
                 if value.is_empty() {
                     value = match flags_iter.next() {
                         Some(v) => v,
-                        None => failure::bail! {
+                        None => anyhow::bail! {
                             "Flag in rustc-flags has no value in {}: {}",
                             whence,
                             value
@@ -535,7 +536,7 @@ impl BuildOutput {
                     _ => unreachable!(),
                 };
             } else {
-                failure::bail!(
+                anyhow::bail!(
                     "Only `-l` and `-L` flags are allowed in {}: `{}`",
                     whence,
                     value
@@ -551,7 +552,7 @@ impl BuildOutput {
         let val = iter.next();
         match (name, val) {
             (Some(n), Some(v)) => Ok((n.to_owned(), v.to_owned())),
-            _ => failure::bail!("Variable rustc-env has no value in {}: {}", whence, value),
+            _ => anyhow::bail!("Variable rustc-env has no value in {}: {}", whence, value),
         }
     }
 }

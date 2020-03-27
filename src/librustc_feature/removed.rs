@@ -1,7 +1,7 @@
 //! List of the removed feature gates.
 
-use super::{State, Feature};
-use syntax_pos::symbol::sym;
+use super::{Feature, State};
+use rustc_span::symbol::sym;
 
 macro_rules! declare_features {
     ($(
@@ -41,6 +41,7 @@ macro_rules! declare_features {
     };
 }
 
+#[rustfmt::skip]
 declare_features! (
     // -------------------------------------------------------------------------
     // feature-group-start: removed features
@@ -73,6 +74,8 @@ declare_features! (
     (removed, pushpop_unsafe, "1.2.0", None, None, None),
     (removed, needs_allocator, "1.4.0", Some(27389), None,
      Some("subsumed by `#![feature(allocator_internals)]`")),
+    /// Allows identifying crates that contain sanitizer runtimes.
+    (removed, sanitizer_runtime, "1.17.0", None, None, None),
     (removed, proc_macro_mod, "1.27.0", Some(54727), None,
      Some("subsumed by `#![feature(proc_macro_hygiene)]`")),
     (removed, proc_macro_expr, "1.27.0", Some(54727), None,
@@ -111,6 +114,7 @@ declare_features! (
     // -------------------------------------------------------------------------
 );
 
+#[rustfmt::skip]
 declare_features! (
     (stable_removed, no_stack_check, "1.0.0", None, None),
 );

@@ -3,13 +3,13 @@ use crate::utils::{
     span_lint_and_then,
 };
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintContext, LintPass};
+use rustc::lint::in_external_macro;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 use syntax::ast::*;
-use syntax::source_map::Span;
 use syntax::visit::{walk_expr, FnKind, Visitor};
 
 declare_clippy_lint! {
@@ -451,7 +451,7 @@ impl EarlyLintPass for MiscEarlyLints {
                 if let ExprKind::Closure(..) = t.kind;
                 if let PatKind::Ident(_, ident, _) = local.pat.kind;
                 if let StmtKind::Semi(ref second) = w[1].kind;
-                if let ExprKind::Assign(_, ref call) = second.kind;
+                if let ExprKind::Assign(_, ref call, _) = second.kind;
                 if let ExprKind::Call(ref closure, _) = call.kind;
                 if let ExprKind::Path(_, ref path) = closure.kind;
                 then {

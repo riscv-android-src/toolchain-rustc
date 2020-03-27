@@ -379,7 +379,18 @@ impl DirEntryRaw {
         })
     }
 
-    #[cfg(not(unix))]
+    // Placeholder implementation to allow compiling on non-standard platforms (e.g. wasm32).
+    #[cfg(not(any(windows, unix)))]
+    fn from_entry_os(
+        depth: usize,
+        ent: &fs::DirEntry,
+        ty: fs::FileType,
+    ) -> Result<DirEntryRaw, Error> {
+        Err(Error::Io(io::Error::new(
+            io::ErrorKind::Other, "unsupported platform")))
+    }
+
+    #[cfg(windows)]
     fn from_path(
         depth: usize,
         pb: PathBuf,
@@ -415,6 +426,17 @@ impl DirEntryRaw {
             depth: depth,
             ino: md.ino(),
         })
+    }
+
+    // Placeholder implementation to allow compiling on non-standard platforms (e.g. wasm32).
+    #[cfg(not(any(windows, unix)))]
+    fn from_path(
+        depth: usize,
+        pb: PathBuf,
+        link: bool,
+    ) -> Result<DirEntryRaw, Error> {
+        Err(Error::Io(io::Error::new(
+            io::ErrorKind::Other, "unsupported platform")))
     }
 }
 
@@ -481,8 +503,8 @@ pub struct WalkBuilder {
 
 #[derive(Clone)]
 enum Sorter {
-    ByName(Arc<Fn(&OsStr, &OsStr) -> cmp::Ordering + Send + Sync + 'static>),
-    ByPath(Arc<Fn(&Path, &Path) -> cmp::Ordering + Send + Sync + 'static>),
+    ByName(Arc<dyn Fn(&OsStr, &OsStr) -> cmp::Ordering + Send + Sync + 'static>),
+    ByPath(Arc<dyn Fn(&Path, &Path) -> cmp::Ordering + Send + Sync + 'static>),
 }
 
 impl fmt::Debug for WalkBuilder {
@@ -1075,7 +1097,7 @@ impl WalkParallel {
     pub fn run<F>(
         self,
         mut mkf: F,
-    ) where F: FnMut() -> Box<FnMut(Result<DirEntry, Error>) -> WalkState + Send + 'static> {
+    ) where F: FnMut() -> Box<dyn FnMut(Result<DirEntry, Error>) -> WalkState + Send + 'static> {
         let mut f = mkf();
         let threads = self.threads();
         // TODO: Figure out how to use a bounded channel here. With an
@@ -1253,7 +1275,7 @@ impl Work {
 /// Note that a worker is *both* a producer and a consumer.
 struct Worker {
     /// The caller's callback.
-    f: Box<FnMut(Result<DirEntry, Error>) -> WalkState + Send + 'static>,
+    f: Box<dyn FnMut(Result<DirEntry, Error>) -> WalkState + Send + 'static>,
     /// The push side of our mpmc queue.
     tx: channel::Sender<Message>,
     /// The receive side of our mpmc queue.
@@ -1708,8 +1730,7 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
-    use tempfile::{self, TempDir};
-
+    use tests::TempDir;
     use super::{DirEntry, WalkBuilder, WalkState};
 
     fn wfile<P: AsRef<Path>>(path: P, contents: &str) {
@@ -1796,7 +1817,7 @@ mod tests {
     }
 
     fn tmpdir(prefix: &str) -> TempDir {
-        tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
+        TempDir::new().unwrap()
     }
 
     fn assert_paths(

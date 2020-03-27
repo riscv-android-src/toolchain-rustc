@@ -1,3 +1,4 @@
+// run-rustfix
 // aux-build:proc_macro_derive.rs
 
 #![warn(clippy::useless_attribute)]
@@ -44,4 +45,13 @@ mod a {
     pub use self::b::C;
 }
 
-fn main() {}
+fn test_indented_attr() {
+    #[allow(clippy::almost_swapped)]
+    use std::collections::HashSet;
+
+    let _ = HashSet::<u32>::default();
+}
+
+fn main() {
+    test_indented_attr();
+}

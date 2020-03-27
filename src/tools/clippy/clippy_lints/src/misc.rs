@@ -1,14 +1,13 @@
 use if_chain::if_chain;
 use matches::matches;
-use rustc::declare_lint_pass;
-use rustc::hir::intravisit::FnKind;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::intravisit::FnKind;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::{ExpnKind, Span};
 use syntax::ast::LitKind;
-use syntax::source_map::{ExpnKind, Span};
 
 use crate::consts::{constant, Constant};
 use crate::utils::sugg::Sugg;
@@ -63,7 +62,7 @@ declare_clippy_lint! {
     /// ```
     pub CMP_NAN,
     correctness,
-    "comparisons to NAN, which will always return false, probably not intended"
+    "comparisons to `NAN`, which will always return false, probably not intended"
 }
 
 declare_clippy_lint! {
@@ -194,7 +193,7 @@ declare_clippy_lint! {
     /// ```
     pub ZERO_PTR,
     style,
-    "using 0 as *{const, mut} T"
+    "using `0 as *{const, mut} T`"
 }
 
 declare_clippy_lint! {
@@ -237,8 +236,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
         &mut self,
         cx: &LateContext<'a, 'tcx>,
         k: FnKind<'tcx>,
-        decl: &'tcx FnDecl,
-        body: &'tcx Body,
+        decl: &'tcx FnDecl<'_>,
+        body: &'tcx Body<'_>,
         _: Span,
         _: HirId,
     ) {
@@ -262,7 +261,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
         }
     }
 
-    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt) {
+    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt<'_>) {
         if_chain! {
             if let StmtKind::Local(ref local) = stmt.kind;
             if let PatKind::Binding(an, .., name, None) = local.pat.kind;
@@ -334,7 +333,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
         };
     }
 
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         match expr.kind {
             ExprKind::Cast(ref e, ref ty) => {
                 check_cast(cx, expr.span, e, ty);
@@ -343,12 +342,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
             ExprKind::Binary(ref cmp, ref left, ref right) => {
                 let op = cmp.node;
                 if op.is_comparison() {
-                    if let ExprKind::Path(QPath::Resolved(_, ref path)) = left.kind {
-                        check_nan(cx, path, expr);
-                    }
-                    if let ExprKind::Path(QPath::Resolved(_, ref path)) = right.kind {
-                        check_nan(cx, path, expr);
-                    }
+                    check_nan(cx, left, expr);
+                    check_nan(cx, right, expr);
                     check_to_owned(cx, left, right);
                     check_to_owned(cx, right, left);
                 }
@@ -374,9 +369,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
                         }
                     }
                     let (lint, msg) = if is_named_constant(cx, left) || is_named_constant(cx, right) {
-                        (FLOAT_CMP_CONST, "strict comparison of f32 or f64 constant")
+                        (FLOAT_CMP_CONST, "strict comparison of `f32` or `f64` constant")
                     } else {
-                        (FLOAT_CMP, "strict comparison of f32 or f64")
+                        (FLOAT_CMP, "strict comparison of `f32` or `f64`")
                     };
                     span_lint_and_then(cx, lint, expr.span, msg, |db| {
                         let lhs = Sugg::hir(cx, left, "..");
@@ -392,7 +387,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
                             ),
                             Applicability::HasPlaceholders, // snippet
                         );
-                        db.span_note(expr.span, "std::f32::EPSILON and std::f64::EPSILON are available.");
+                        db.span_note(expr.span, "`std::f32::EPSILON` and `std::f64::EPSILON` are available.");
                     });
                 } else if op == BinOpKind::Rem && is_integer_const(cx, right, 1) {
                     span_lint(cx, MODULO_ONE, expr.span, "any number modulo 1 will be 0");
@@ -444,22 +439,30 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
     }
 }
 
-fn check_nan(cx: &LateContext<'_, '_>, path: &Path, expr: &Expr) {
-    if !in_constant(cx, expr.hir_id) {
-        if let Some(seg) = path.segments.last() {
-            if seg.ident.name == sym!(NAN) {
+fn check_nan(cx: &LateContext<'_, '_>, expr: &Expr<'_>, cmp_expr: &Expr<'_>) {
+    if_chain! {
+        if !in_constant(cx, cmp_expr.hir_id);
+        if let Some((value, _)) = constant(cx, cx.tables, expr);
+        then {
+            let needs_lint = match value {
+                Constant::F32(num) => num.is_nan(),
+                Constant::F64(num) => num.is_nan(),
+                _ => false,
+            };
+
+            if needs_lint {
                 span_lint(
                     cx,
                     CMP_NAN,
-                    expr.span,
-                    "doomed comparison with NAN, use `std::{f32,f64}::is_nan()` instead",
+                    cmp_expr.span,
+                    "doomed comparison with `NAN`, use `std::{f32,f64}::is_nan()` instead",
                 );
             }
         }
     }
 }
 
-fn is_named_constant<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> bool {
+fn is_named_constant<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> bool {
     if let Some((_, res)) = constant(cx, cx.tables, expr) {
         res
     } else {
@@ -467,7 +470,7 @@ fn is_named_constant<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> 
     }
 }
 
-fn is_allowed<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> bool {
+fn is_allowed<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> bool {
     match constant(cx, cx.tables, expr) {
         Some((Constant::F32(f), _)) => f == 0.0 || f.is_infinite(),
         Some((Constant::F64(f), _)) => f == 0.0 || f.is_infinite(),
@@ -476,9 +479,9 @@ fn is_allowed<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> bool {
 }
 
 // Return true if `expr` is the result of `signum()` invoked on a float value.
-fn is_signum(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
+fn is_signum(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
     // The negation of a signum is still a signum
-    if let ExprKind::Unary(UnNeg, ref child_expr) = expr.kind {
+    if let ExprKind::Unary(UnOp::UnNeg, ref child_expr) = expr.kind {
         return is_signum(cx, &child_expr);
     }
 
@@ -494,11 +497,11 @@ fn is_signum(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
     false
 }
 
-fn is_float(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
+fn is_float(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
     matches!(walk_ptrs_ty(cx.tables.expr_ty(expr)).kind, ty::Float(_))
 }
 
-fn check_to_owned(cx: &LateContext<'_, '_>, expr: &Expr, other: &Expr) {
+fn check_to_owned(cx: &LateContext<'_, '_>, expr: &Expr<'_>, other: &Expr<'_>) {
     let (arg_ty, snip) = match expr.kind {
         ExprKind::MethodCall(.., ref args) if args.len() == 1 => {
             if match_trait_method(cx, expr, &paths::TO_STRING) || match_trait_method(cx, expr, &paths::TO_OWNED) {
@@ -540,7 +543,7 @@ fn check_to_owned(cx: &LateContext<'_, '_>, expr: &Expr, other: &Expr) {
     }
 
     let other_gets_derefed = match other.kind {
-        ExprKind::Unary(UnDeref, _) => true,
+        ExprKind::Unary(UnOp::UnDeref, _) => true,
         _ => false,
     };
 
@@ -583,10 +586,12 @@ fn check_to_owned(cx: &LateContext<'_, '_>, expr: &Expr, other: &Expr) {
 /// Heuristic to see if an expression is used. Should be compatible with
 /// `unused_variables`'s idea
 /// of what it means for an expression to be "used".
-fn is_used(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
+fn is_used(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
     if let Some(parent) = get_parent_expr(cx, expr) {
         match parent.kind {
-            ExprKind::Assign(_, ref rhs) | ExprKind::AssignOp(_, _, ref rhs) => SpanlessEq::new(cx).eq_expr(rhs, expr),
+            ExprKind::Assign(_, ref rhs, _) | ExprKind::AssignOp(_, _, ref rhs) => {
+                SpanlessEq::new(cx).eq_expr(rhs, expr)
+            },
             _ => is_used(cx, parent),
         }
     } else {
@@ -596,8 +601,8 @@ fn is_used(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
 
 /// Tests whether an expression is in a macro expansion (e.g., something
 /// generated by `#[derive(...)]` or the like).
-fn in_attributes_expansion(expr: &Expr) -> bool {
-    use syntax_pos::hygiene::MacroKind;
+fn in_attributes_expansion(expr: &Expr<'_>) -> bool {
+    use rustc_span::hygiene::MacroKind;
     if expr.span.from_expansion() {
         let data = expr.span.ctxt().outer_expn_data();
 
@@ -620,7 +625,7 @@ fn non_macro_local(cx: &LateContext<'_, '_>, res: def::Res) -> bool {
     }
 }
 
-fn check_cast(cx: &LateContext<'_, '_>, span: Span, e: &Expr, ty: &Ty) {
+fn check_cast(cx: &LateContext<'_, '_>, span: Span, e: &Expr<'_>, ty: &Ty<'_>) {
     if_chain! {
         if let TyKind::Ptr(ref mut_ty) = ty.kind;
         if let ExprKind::Lit(ref lit) = e.kind;
@@ -628,8 +633,8 @@ fn check_cast(cx: &LateContext<'_, '_>, span: Span, e: &Expr, ty: &Ty) {
         if !in_constant(cx, e.hir_id);
         then {
             let (msg, sugg_fn) = match mut_ty.mutbl {
-                Mutability::Mutable => ("`0 as *mut _` detected", "std::ptr::null_mut"),
-                Mutability::Immutable => ("`0 as *const _` detected", "std::ptr::null"),
+                Mutability::Mut => ("`0 as *mut _` detected", "std::ptr::null_mut"),
+                Mutability::Not => ("`0 as *const _` detected", "std::ptr::null"),
             };
 
             let (sugg, appl) = if let TyKind::Infer = mut_ty.ty.kind {

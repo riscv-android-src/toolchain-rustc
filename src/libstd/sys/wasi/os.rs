@@ -6,7 +6,6 @@ use crate::io;
 use crate::marker::PhantomData;
 use crate::os::wasi::prelude::*;
 use crate::path::{self, PathBuf};
-use crate::ptr;
 use crate::str;
 use crate::sys::memchr;
 use crate::sys::{unsupported, Void};
@@ -78,6 +77,7 @@ impl fmt::Display for JoinPathsError {
 }
 
 impl StdError for JoinPathsError {
+    #[allow(deprecated)]
     fn description(&self) -> &str {
         "not supported on wasm yet"
     }
@@ -106,11 +106,13 @@ pub fn env() -> Env {
         let _guard = env_lock();
         let mut environ = libc::environ;
         let mut result = Vec::new();
-        while environ != ptr::null_mut() && *environ != ptr::null_mut() {
-            if let Some(key_value) = parse(CStr::from_ptr(*environ).to_bytes()) {
-                result.push(key_value);
+        if !environ.is_null() {
+            while !(*environ).is_null() {
+                if let Some(key_value) = parse(CStr::from_ptr(*environ).to_bytes()) {
+                    result.push(key_value);
+                }
+                environ = environ.add(1);
             }
-            environ = environ.offset(1);
         }
         return Env { iter: result.into_iter(), _dont_send_or_sync_me: PhantomData };
     }
@@ -150,7 +152,7 @@ pub fn setenv(k: &OsStr, v: &OsStr) -> io::Result<()> {
 
     unsafe {
         let _guard = env_lock();
-        cvt(libc::setenv(k.as_ptr(), v.as_ptr(), 1)).map(|_| ())
+        cvt(libc::setenv(k.as_ptr(), v.as_ptr(), 1)).map(drop)
     }
 }
 
@@ -159,7 +161,7 @@ pub fn unsetenv(n: &OsStr) -> io::Result<()> {
 
     unsafe {
         let _guard = env_lock();
-        cvt(libc::unsetenv(nbuf.as_ptr())).map(|_| ())
+        cvt(libc::unsetenv(nbuf.as_ptr())).map(drop)
     }
 }
 

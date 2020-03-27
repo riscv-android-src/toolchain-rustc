@@ -1,10 +1,9 @@
 use crate::utils::{match_type, paths, span_lint, walk_ptrs_ty};
-use rustc::declare_lint_pass;
-use rustc::hir::{Expr, ExprKind};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_hir::{Expr, ExprKind};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::{Span, Spanned};
 use syntax::ast::LitKind;
-use syntax::source_map::{Span, Spanned};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for duplicate open options as well as combinations
@@ -29,7 +28,7 @@ declare_clippy_lint! {
 declare_lint_pass!(OpenOptions => [NONSENSICAL_OPEN_OPTIONS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OpenOptions {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         if let ExprKind::MethodCall(ref path, _, ref arguments) = e.kind {
             let obj_ty = walk_ptrs_ty(cx.tables.expr_ty(&arguments[0]));
             if path.ident.name == sym!(open) && match_type(cx, obj_ty, &paths::OPEN_OPTIONS) {
@@ -57,7 +56,7 @@ enum OpenOption {
     Append,
 }
 
-fn get_open_options(cx: &LateContext<'_, '_>, argument: &Expr, options: &mut Vec<(OpenOption, Argument)>) {
+fn get_open_options(cx: &LateContext<'_, '_>, argument: &Expr<'_>, options: &mut Vec<(OpenOption, Argument)>) {
     if let ExprKind::MethodCall(ref path, _, ref arguments) = argument.kind {
         let obj_ty = walk_ptrs_ty(cx.tables.expr_ty(&arguments[0]));
 
@@ -123,7 +122,7 @@ fn check_open_options(cx: &LateContext<'_, '_>, options: &[(OpenOption, Argument
                         cx,
                         NONSENSICAL_OPEN_OPTIONS,
                         span,
-                        "the method \"create\" is called more than once",
+                        "the method `create` is called more than once",
                     );
                 } else {
                     create = true
@@ -136,7 +135,7 @@ fn check_open_options(cx: &LateContext<'_, '_>, options: &[(OpenOption, Argument
                         cx,
                         NONSENSICAL_OPEN_OPTIONS,
                         span,
-                        "the method \"append\" is called more than once",
+                        "the method `append` is called more than once",
                     );
                 } else {
                     append = true
@@ -149,7 +148,7 @@ fn check_open_options(cx: &LateContext<'_, '_>, options: &[(OpenOption, Argument
                         cx,
                         NONSENSICAL_OPEN_OPTIONS,
                         span,
-                        "the method \"truncate\" is called more than once",
+                        "the method `truncate` is called more than once",
                     );
                 } else {
                     truncate = true
@@ -162,7 +161,7 @@ fn check_open_options(cx: &LateContext<'_, '_>, options: &[(OpenOption, Argument
                         cx,
                         NONSENSICAL_OPEN_OPTIONS,
                         span,
-                        "the method \"read\" is called more than once",
+                        "the method `read` is called more than once",
                     );
                 } else {
                     read = true
@@ -175,7 +174,7 @@ fn check_open_options(cx: &LateContext<'_, '_>, options: &[(OpenOption, Argument
                         cx,
                         NONSENSICAL_OPEN_OPTIONS,
                         span,
-                        "the method \"write\" is called more than once",
+                        "the method `write` is called more than once",
                     );
                 } else {
                     write = true
@@ -190,7 +189,7 @@ fn check_open_options(cx: &LateContext<'_, '_>, options: &[(OpenOption, Argument
             cx,
             NONSENSICAL_OPEN_OPTIONS,
             span,
-            "file opened with \"truncate\" and \"read\"",
+            "file opened with `truncate` and `read`",
         );
     }
     if append && truncate && append_arg && truncate_arg {
@@ -198,7 +197,7 @@ fn check_open_options(cx: &LateContext<'_, '_>, options: &[(OpenOption, Argument
             cx,
             NONSENSICAL_OPEN_OPTIONS,
             span,
-            "file opened with \"append\" and \"truncate\"",
+            "file opened with `append` and `truncate`",
         );
     }
 }

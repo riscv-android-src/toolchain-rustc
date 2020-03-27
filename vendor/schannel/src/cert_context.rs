@@ -11,10 +11,10 @@ use winapi::shared::ntdef;
 use winapi::shared::winerror;
 use winapi::um::wincrypt;
 
-use Inner;
-use ncrypt_key::NcryptKey;
-use crypt_prov::{CryptProv, ProviderType};
-use cert_store::CertStore;
+use crate::Inner;
+use crate::ncrypt_key::NcryptKey;
+use crate::crypt_prov::{CryptProv, ProviderType};
+use crate::cert_store::CertStore;
 
 /// A supported hashing algorithm
 pub struct HashAlgorithm(winapi::DWORD, usize);
@@ -84,6 +84,38 @@ impl CertContext {
     /// Get certificate in binary DER form
     pub fn to_der<'a>(&'a self) -> &'a [u8] {
         self.get_encoded_bytes()
+    }
+
+    /// Certificate subject public key info
+    pub fn subject_public_key_info_der(&self) -> io::Result<Vec<u8>> {
+        unsafe {
+            let mut len:u32 = 0;
+            let ok = wincrypt::CryptEncodeObjectEx(wincrypt::X509_ASN_ENCODING,
+                                                   wincrypt::CERT_INFO_SUBJECT_PUBLIC_KEY_INFO_FLAG as *const u32 as *const _,
+                                                   &(*(*self.0).pCertInfo).SubjectPublicKeyInfo as *const wincrypt::CERT_PUBLIC_KEY_INFO as _,
+                                                   0,
+                                                   ptr::null_mut(),
+                                                   ptr::null_mut(),
+                                                   &mut len as *mut _);
+            if ok != winapi::TRUE {
+                return Err(io::Error::last_os_error());
+            }
+            if len > 0 {
+                let mut buf = vec![0; len as usize];
+                let ok = wincrypt::CryptEncodeObjectEx(wincrypt::X509_ASN_ENCODING,
+                                                  wincrypt::CERT_INFO_SUBJECT_PUBLIC_KEY_INFO_FLAG as *const u32 as *const _,
+                                                  &(*(*self.0).pCertInfo).SubjectPublicKeyInfo as *const wincrypt::CERT_PUBLIC_KEY_INFO as _,
+                                                  0,
+                                                  ptr::null_mut(),
+                                                  buf.as_mut_ptr() as _,
+                                                  &mut len as *mut _);
+                if ok != winapi::TRUE {
+                    return Err(io::Error::last_os_error());
+                }
+                return Ok(buf);
+            }
+        }
+        Err(io::Error::last_os_error())
     }
 
     /// Decodes a PEM-formatted X509 certificate.
@@ -178,7 +210,7 @@ impl CertContext {
     #[deprecated(note = "please use fingerprint instead")]
     pub fn sha1(&self) -> io::Result<[u8; 20]> {
         let mut out = [0u8; 20];
-        out.copy_from_slice(&try!(self.fingerprint(HashAlgorithm::sha1())));
+        out.copy_from_slice(&self.fingerprint(HashAlgorithm::sha1())?);
         Ok(out)
     }
 

@@ -1,5 +1,4 @@
 use crate::command_prelude::*;
-
 use cargo::ops::{self, TestOptions};
 
 pub fn cli() -> App {
@@ -80,11 +79,8 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         ProfileChecking::Checked,
     )?;
 
-    compile_opts.build_config.profile_kind = args.get_profile_kind(
-        config,
-        ProfileKind::Custom("bench".to_owned()),
-        ProfileChecking::Checked,
-    )?;
+    compile_opts.build_config.requested_profile =
+        args.get_profile_name(config, "bench", ProfileChecking::Checked)?;
 
     let ops = TestOptions {
         no_run: args.is_present("no-run"),
@@ -100,7 +96,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     match err {
         None => Ok(()),
         Some(err) => Err(match err.exit.as_ref().and_then(|e| e.code()) {
-            Some(i) => CliError::new(failure::format_err!("bench failed"), i),
+            Some(i) => CliError::new(anyhow::format_err!("bench failed"), i),
             None => CliError::new(err.into(), 101),
         }),
     }

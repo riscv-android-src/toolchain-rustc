@@ -12,11 +12,11 @@
 
 [package]
 name = "tokio-current-thread"
-version = "0.1.4"
+version = "0.1.6"
 authors = ["Carl Lerche <me@carllerche.com>"]
 description = "Single threaded executor which manage many tasks concurrently on the current thread.\n"
 homepage = "https://github.com/tokio-rs/tokio"
-documentation = "https://docs.rs/tokio-current-thread/0.1.4/tokio_current_thread"
+documentation = "https://docs.rs/tokio-current-thread/0.1.6/tokio_current_thread"
 keywords = ["futures", "tokio"]
 categories = ["concurrency", "asynchronous"]
 license = "MIT"
@@ -25,4 +25,4 @@ repository = "https://github.com/tokio-rs/tokio"
 version = "0.1.19"
 
 [dependencies.tokio-executor]
-version = "0.1.5"
+version = "0.1.7"

@@ -1,25 +1,26 @@
 #![feature(rustc_private)]
-extern crate miri;
 extern crate getopts;
+extern crate miri;
 extern crate rustc;
-extern crate rustc_metadata;
+extern crate rustc_codegen_utils;
 extern crate rustc_driver;
 extern crate rustc_errors;
-extern crate rustc_codegen_utils;
+extern crate rustc_hir;
 extern crate rustc_interface;
-extern crate syntax;
+extern crate rustc_metadata;
+extern crate rustc_span;
 
-use std::path::Path;
-use std::io::Write;
-use std::sync::{Mutex, Arc};
 use std::io;
+use std::io::Write;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
-
-use rustc_interface::{interface, Queries};
-use rustc::hir::{self, itemlikevisit};
+use rustc_hir as hir;
+use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_hir::itemlikevisit;
 use rustc::ty::TyCtxt;
-use rustc::hir::def_id::LOCAL_CRATE;
 use rustc_driver::Compilation;
+use rustc_interface::{interface, Queries};
 
 use miri::MiriConfig;
 
@@ -29,7 +30,11 @@ struct MiriCompilerCalls {
 }
 
 impl rustc_driver::Callbacks for MiriCompilerCalls {
-    fn after_analysis<'tcx>(&mut self, compiler: &interface::Compiler, queries: &'tcx Queries<'tcx>) -> Compilation {
+    fn after_analysis<'tcx>(
+        &mut self,
+        compiler: &interface::Compiler,
+        queries: &'tcx Queries<'tcx>,
+    ) -> Compilation {
         compiler.session().abort_if_errors();
         queries.global_ctxt().unwrap().peek_mut().enter(|tcx| {
             if std::env::args().any(|arg| arg == "--test") {
@@ -37,7 +42,8 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                 impl<'tcx, 'hir> itemlikevisit::ItemLikeVisitor<'hir> for Visitor<'tcx> {
                     fn visit_item(&mut self, i: &'hir hir::Item) {
                         if let hir::ItemKind::Fn(.., body_id) = i.kind {
-                            if i.attrs.iter().any(|attr| attr.check_name(syntax::symbol::sym::test)) {
+                            if i.attrs.iter().any(|attr| attr.check_name(rustc_span::symbol::sym::test))
+                            {
                                 let config = MiriConfig {
                                     validate: true,
                                     communicate: false,
@@ -45,6 +51,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                                     excluded_env_vars: vec![],
                                     args: vec![],
                                     seed: None,
+                                    tracked_pointer_tag: None,
                                 };
                                 let did = self.0.hir().body_owner_def_id(body_id);
                                 println!("running test: {}", self.0.def_path_debug_str(did));
@@ -64,7 +71,8 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                     ignore_leaks: false,
                     excluded_env_vars: vec![],
                     args: vec![],
-                    seed: None
+                    seed: None,
+                    tracked_pointer_tag: None,
                 };
                 miri::eval_main(tcx, entry_def_id, config);
 
@@ -80,12 +88,10 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
 }
 
 fn main() {
-    let path = option_env!("MIRI_RUSTC_TEST")
-        .map(String::from)
-        .unwrap_or_else(|| {
-            std::env::var("MIRI_RUSTC_TEST")
-                .expect("need to set MIRI_RUSTC_TEST to path of rustc tests")
-        });
+    let path = option_env!("MIRI_RUSTC_TEST").map(String::from).unwrap_or_else(|| {
+        std::env::var("MIRI_RUSTC_TEST")
+            .expect("need to set MIRI_RUSTC_TEST to path of rustc tests")
+    });
 
     let mut mir_not_found = Vec::new();
     let mut crate_not_found = Vec::new();
@@ -113,14 +119,16 @@ fn main() {
         let stderr = std::io::stderr();
         write!(stderr.lock(), "test [miri-pass] {} ... ", path.display()).unwrap();
         let mut host_target = false;
-        let mut args: Vec<String> = std::env::args().filter(|arg| {
-            if arg == "--miri_host_target" {
-                host_target = true;
-                false // remove the flag, rustc doesn't know it
-            } else {
-                true
-            }
-        }).collect();
+        let mut args: Vec<String> = std::env::args()
+            .filter(|arg| {
+                if arg == "--miri_host_target" {
+                    host_target = true;
+                    false // remove the flag, rustc doesn't know it
+                } else {
+                    true
+                }
+            })
+            .collect();
         args.splice(1..1, miri::miri_default_args().iter().map(ToString::to_string));
         // file to process
         args.push(path.display().to_string());
@@ -128,7 +136,13 @@ fn main() {
         let sysroot_flag = String::from("--sysroot");
         if !args.contains(&sysroot_flag) {
             args.push(sysroot_flag);
-            args.push(Path::new(&std::env::var("HOME").unwrap()).join(".xargo").join("HOST").display().to_string());
+            args.push(
+                Path::new(&std::env::var("HOME").unwrap())
+                    .join(".xargo")
+                    .join("HOST")
+                    .display()
+                    .to_string(),
+            );
         }
 
         // A threadsafe buffer for writing.
@@ -146,14 +160,19 @@ fn main() {
         let buf = BufWriter::default();
         let output = buf.clone();
         let result = std::panic::catch_unwind(|| {
-            let _ = rustc_driver::run_compiler(&args, &mut MiriCompilerCalls { host_target }, None, Some(Box::new(buf)));
+            let _ = rustc_driver::run_compiler(
+                &args,
+                &mut MiriCompilerCalls { host_target },
+                None,
+                Some(Box::new(buf)),
+            );
         });
 
         match result {
             Ok(()) => {
                 success += 1;
                 writeln!(stderr.lock(), "ok").unwrap()
-            },
+            }
             Err(_) => {
                 let output = output.0.lock().unwrap();
                 let output_err = std::str::from_utf8(&output).unwrap();
@@ -176,7 +195,8 @@ fn main() {
                         if text.starts_with(c_abi) {
                             c_abi_fns.push(text[c_abi.len()..end].to_string());
                         } else if text.starts_with(unimplemented_intrinsic_s) {
-                            unimplemented_intrinsic.push(text[unimplemented_intrinsic_s.len()..end].to_string());
+                            unimplemented_intrinsic
+                                .push(text[unimplemented_intrinsic_s.len()..end].to_string());
                         } else if text.starts_with(unsupported_s) {
                             unsupported.push(text[unsupported_s.len()..end].to_string());
                         } else if text.starts_with(abi_s) {
@@ -194,10 +214,19 @@ fn main() {
     }
     let stderr = std::io::stderr();
     let mut stderr = stderr.lock();
-    writeln!(stderr, "{} success, {} no mir, {} crate not found, {} failed, \
-                        {} C fn, {} ABI, {} unsupported, {} intrinsic",
-                        success, mir_not_found.len(), crate_not_found.len(), failed.len(),
-                        c_abi_fns.len(), abi.len(), unsupported.len(), unimplemented_intrinsic.len()).unwrap();
+    writeln!(
+        stderr,
+        "{} success, {} no mir, {} crate not found, {} failed, {} C fn, {} ABI, {} unsupported, {} intrinsic",
+        success,
+        mir_not_found.len(),
+        crate_not_found.len(),
+        failed.len(),
+        c_abi_fns.len(),
+        abi.len(),
+        unsupported.len(),
+        unimplemented_intrinsic.len()
+    )
+    .unwrap();
     writeln!(stderr, "# The \"other reasons\" errors").unwrap();
     writeln!(stderr, "(sorted, deduplicated)").unwrap();
     print_vec(&mut stderr, failed);

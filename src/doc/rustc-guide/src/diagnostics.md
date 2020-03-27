@@ -9,14 +9,14 @@ This chapter is about how to emit compile errors and lints from the compiler.
 location in the code being compiled. `Span`s are attached to most constructs in
 HIR and MIR, allowing for more informative error reporting.
 
-[span]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/source_map/struct.Span.html
+[span]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_span/struct.Span.html
 
 A `Span` can be looked up in a [`SourceMap`][sourcemap] to get a "snippet"
 useful for displaying errors with [`span_to_snippet`][sptosnip] and other
 similar methods on the `SourceMap`.
 
-[sourcemap]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/source_map/struct.SourceMap.html
-[sptosnip]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/source_map/struct.SourceMap.html#method.span_to_snippet
+[sourcemap]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_span/source_map/struct.SourceMap.html
+[sptosnip]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_span/source_map/struct.SourceMap.html#method.span_to_snippet
 
 ## Error messages
 
@@ -34,7 +34,7 @@ warnings, errors, fatal errors, suggestions, etc.
 [parsesses]: https://doc.rust-lang.org/nightly/nightly-rustc/syntax/sess/struct.ParseSess.html
 [session]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_session/struct.Session.html
 
-In general, there are two class of such methods: ones that emit an error
+In general, there are two classes of such methods: ones that emit an error
 directly and ones that allow finer control over what to emit. For example,
 [`span_err`][spanerr] emits the given error message at the given `Span`, but
 [`struct_span_err`][strspanerr] instead returns a
@@ -357,14 +357,12 @@ string; this was introduced so that UI tests could both make use of
 the structured JSON and see the "human" output (well, _sans_ colors)
 without having to compile everything twice.
 
-The JSON emitter currently lives in libsyntax/json.rs. (But arguably
-it should live in librustc_errors along with the "human" emitter? It's
-not obvious to the present author why it wasn't moved from libsyntax
-to librustc_errors at the same [time the "human" emitter was
-moved](https://github.com/rust-lang/rust/commit/6ae3502134).)
+The "human" readable and the json format emitter can be found under
+librustc_errors, both were moved from the libsyntax crate to the
+[librustc_errors crate](https://doc.rust-lang.org/nightly/nightly-rustc/rustc_errors/index.html).
 
 The JSON emitter defines [its own `Diagnostic`
-struct](https://github.com/rust-lang/rust/blob/b2c6b8c29f13f8d1f242da89e587960b95337819/src/libsyntax/json.rs#L85-L99)
+struct](https://doc.rust-lang.org/nightly/nightly-rustc/rustc_errors/json/struct.Diagnostic.html)
 (and sub-structs) for the JSON serialization. Don't confuse this with
 [`errors::Diagnostic`](https://doc.rust-lang.org/nightly/nightly-rustc/rustc_errors/struct.Diagnostic.html)!
 

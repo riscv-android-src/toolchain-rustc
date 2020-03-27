@@ -164,7 +164,7 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
         let object = entry.to_object(repo)?;
         let blob = match object.as_blob() {
             Some(blob) => blob,
-            None => failure::bail!("path `{}` is not a blob in the git repo", path.display()),
+            None => anyhow::bail!("path `{}` is not a blob in the git repo", path.display()),
         };
         data(blob.content())
     }
@@ -184,18 +184,6 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
 
     fn update_index(&mut self) -> CargoResult<()> {
         if self.config.offline() {
-            if self.repo()?.is_empty()? {
-                // An empty repository is guaranteed to fail, since hitting
-                // this path means we need at least one crate. This is an
-                // attempt to provide a better error message other than "no
-                // matching package named …".
-                failure::bail!(
-                    "unable to fetch {} in offline mode\n\
-                     Try running without the offline flag, or try running \
-                     `cargo fetch` within your project directory before going offline.",
-                    self.source_id
-                );
-            }
             return Ok(());
         }
         if self.config.cli_unstable().no_index_update {
@@ -284,7 +272,7 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
         // Verify what we just downloaded
         let actual = Sha256::new().update(data).finish_hex();
         if actual != checksum {
-            failure::bail!("failed to verify the checksum of `{}`", pkg)
+            anyhow::bail!("failed to verify the checksum of `{}`", pkg)
         }
 
         let filename = self.filename(pkg);

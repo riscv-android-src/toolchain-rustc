@@ -6,19 +6,17 @@ use crate::utils::{
     span_lint_and_then, without_block_comments,
 };
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{
-    in_external_macro, CheckLintNameResult, EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintArray,
-    LintContext, LintPass,
-};
+use rustc::lint::in_external_macro;
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{CheckLintNameResult, EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
+use rustc_span::symbol::Symbol;
 use semver::Version;
 use syntax::ast::{AttrKind, AttrStyle, Attribute, Lit, LitKind, MetaItemKind, NestedMetaItem};
-use syntax::source_map::Span;
-use syntax_pos::symbol::Symbol;
+use syntax::util::lev_distance::find_best_match_for_name;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for items annotated with `#[inline(always)]`,
@@ -186,7 +184,7 @@ declare_clippy_lint! {
     /// ```
     pub DEPRECATED_CFG_ATTR,
     complexity,
-    "usage of `cfg_attr(rustfmt)` instead of `tool_attributes`"
+    "usage of `cfg_attr(rustfmt)` instead of tool attributes"
 }
 
 declare_lint_pass!(Attributes => [
@@ -224,7 +222,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
         }
     }
 
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
         if is_relevant_item(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
@@ -232,7 +230,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
             ItemKind::ExternCrate(..) | ItemKind::Use(..) => {
                 let skip_unused_imports = item.attrs.iter().any(|attr| attr.check_name(sym!(macro_use)));
 
-                for attr in &item.attrs {
+                for attr in item.attrs {
                     if in_external_macro(cx.sess(), attr.span) {
                         return;
                     }
@@ -295,13 +293,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
         }
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem<'_>) {
         if is_relevant_impl(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
         if is_relevant_trait(cx, item) {
             check_attrs(cx, item.span, item.ident.name, &item.attrs)
         }
@@ -329,24 +327,30 @@ fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
                     lint.span(),
                     &format!("unknown clippy lint: clippy::{}", name),
                     |db| {
-                        if name.as_str().chars().any(char::is_uppercase) {
-                            let name_lower = name.as_str().to_lowercase();
-                            match lint_store.check_lint_name(
-                                &name_lower,
-                                Some(tool_name.name)
-                            ) {
-                                // FIXME: can we suggest similar lint names here?
-                                // https://github.com/rust-lang/rust/pull/56992
-                                CheckLintNameResult::NoLint(None) => (),
-                                _ => {
-                                    db.span_suggestion(
-                                        lint.span(),
-                                        "lowercase the lint name",
-                                        name_lower,
-                                        Applicability::MaybeIncorrect,
-                                    );
-                                }
-                            }
+                        let name_lower = name.as_str().to_lowercase();
+                        let symbols = lint_store.get_lints().iter().map(
+                            |l| Symbol::intern(&l.name_lower())
+                        ).collect::<Vec<_>>();
+                        let sugg = find_best_match_for_name(
+                            symbols.iter(),
+                            &format!("clippy::{}", name_lower),
+                            None,
+                        );
+                        if name.as_str().chars().any(char::is_uppercase)
+                            && lint_store.find_lints(&format!("clippy::{}", name_lower)).is_ok() {
+                            db.span_suggestion(
+                                lint.span(),
+                                "lowercase the lint name",
+                                format!("clippy::{}", name_lower),
+                                Applicability::MachineApplicable,
+                            );
+                        } else if let Some(sugg) = sugg {
+                            db.span_suggestion(
+                                lint.span(),
+                                "did you mean",
+                                sugg.to_string(),
+                                Applicability::MachineApplicable,
+                            );
                         }
                     }
                 );
@@ -355,7 +359,7 @@ fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
     }
 }
 
-fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item) -> bool {
+fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item<'_>) -> bool {
     if let ItemKind::Fn(_, _, eid) = item.kind {
         is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value)
     } else {
@@ -363,14 +367,14 @@ fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item) -> bool {
     }
 }
 
-fn is_relevant_impl(cx: &LateContext<'_, '_>, item: &ImplItem) -> bool {
+fn is_relevant_impl(cx: &LateContext<'_, '_>, item: &ImplItem<'_>) -> bool {
     match item.kind {
         ImplItemKind::Method(_, eid) => is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value),
         _ => false,
     }
 }
 
-fn is_relevant_trait(cx: &LateContext<'_, '_>, item: &TraitItem) -> bool {
+fn is_relevant_trait(cx: &LateContext<'_, '_>, item: &TraitItem<'_>) -> bool {
     match item.kind {
         TraitItemKind::Method(_, TraitMethod::Required(_)) => true,
         TraitItemKind::Method(_, TraitMethod::Provided(eid)) => {
@@ -380,7 +384,7 @@ fn is_relevant_trait(cx: &LateContext<'_, '_>, item: &TraitItem) -> bool {
     }
 }
 
-fn is_relevant_block(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, block: &Block) -> bool {
+fn is_relevant_block(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, block: &Block<'_>) -> bool {
     if let Some(stmt) = block.stmts.first() {
         match &stmt.kind {
             StmtKind::Local(_) => true,
@@ -392,7 +396,7 @@ fn is_relevant_block(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, bl
     }
 }
 
-fn is_relevant_expr(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, expr: &Expr) -> bool {
+fn is_relevant_expr(cx: &LateContext<'_, '_>, tables: &ty::TypeckTables<'_>, expr: &Expr<'_>) -> bool {
     match &expr.kind {
         ExprKind::Block(block, _) => is_relevant_block(cx, tables, block),
         ExprKind::Ret(Some(e)) => is_relevant_expr(cx, tables, e),
@@ -442,7 +446,7 @@ fn check_attrs(cx: &LateContext<'_, '_>, span: Span, name: Name, attrs: &[Attrib
                         EMPTY_LINE_AFTER_OUTER_ATTR,
                         begin_of_attr_to_item,
                         "Found an empty line after an outer attribute. \
-                         Perhaps you forgot to add a '!' to make it an inner attribute?",
+                         Perhaps you forgot to add a `!` to make it an inner attribute?",
                     );
                 }
             }
@@ -513,7 +517,7 @@ impl EarlyLintPass for DeprecatedCfgAttribute {
                     cx,
                     DEPRECATED_CFG_ATTR,
                     attr.span,
-                    "`cfg_attr` is deprecated for rustfmt and got replaced by tool_attributes",
+                    "`cfg_attr` is deprecated for rustfmt and got replaced by tool attributes",
                     "use",
                     "#[rustfmt::skip]".to_string(),
                     Applicability::MachineApplicable,

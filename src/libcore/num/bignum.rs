@@ -15,7 +15,7 @@
 #![unstable(
     feature = "core_private_bignum",
     reason = "internal routines only exposed for testing",
-    issue = "0"
+    issue = "none"
 )]
 #![macro_use]
 
@@ -455,8 +455,8 @@ macro_rules! define_bignum {
         }
 
         impl crate::clone::Clone for $name {
-            fn clone(&self) -> $name {
-                $name { size: self.size, base: self.base }
+            fn clone(&self) -> Self {
+                Self { size: self.size, base: self.base }
             }
         }
 

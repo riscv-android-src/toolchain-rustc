@@ -2,7 +2,7 @@
 
 UDP bindings for `tokio`.
 
-[Documentation](https://tokio-rs.github.io/tokio/tokio_udp/)
+[Documentation](https://docs.rs/tokio-udp/0.1.5/tokio_udp/)
 
 ## License
 

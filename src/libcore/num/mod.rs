@@ -61,10 +61,7 @@ assert_eq!(size_of::<Option<core::num::", stringify!($Ty), ">>(), size_of::<", s
                 ///
                 /// The value must not be zero.
                 #[$stability]
-                #[cfg_attr(
-                    not(bootstrap),
-                    rustc_const_stable(feature = "nonzero", since = "1.34.0"),
-                )]
+                #[rustc_const_stable(feature = "nonzero", since = "1.34.0")]
                 #[inline]
                 pub const unsafe fn new_unchecked(n: $Int) -> Self {
                     Self(n)
@@ -85,10 +82,7 @@ assert_eq!(size_of::<Option<core::num::", stringify!($Ty), ">>(), size_of::<", s
                 /// Returns the value as a primitive type.
                 #[$stability]
                 #[inline]
-                #[cfg_attr(
-                    not(bootstrap),
-                    rustc_const_stable(feature = "nonzero", since = "1.34.0"),
-                )]
+                #[rustc_const_stable(feature = "nonzero", since = "1.34.0")]
                 pub const fn get(self) -> $Int {
                     self.0
                 }
@@ -264,10 +258,7 @@ $EndFeature, "
             #[stable(feature = "rust1", since = "1.0.0")]
             #[inline(always)]
             #[rustc_promotable]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_min_value", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_min_value", since = "1.32.0")]
             pub const fn min_value() -> Self {
                 !0 ^ ((!0 as $UnsignedT) >> 1) as Self
             }
@@ -287,10 +278,7 @@ $EndFeature, "
             #[stable(feature = "rust1", since = "1.0.0")]
             #[inline(always)]
             #[rustc_promotable]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_max_value", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_max_value", since = "1.32.0")]
             pub const fn max_value() -> Self {
                 !Self::min_value()
             }
@@ -340,10 +328,7 @@ $EndFeature, "
 ```
 "),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn count_ones(self) -> u32 { (self as $UnsignedT).count_ones() }
         }
@@ -359,10 +344,7 @@ Basic usage:
 ", $Feature, "assert_eq!(", stringify!($SelfT), "::max_value().count_zeros(), 1);", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn count_zeros(self) -> u32 {
                 (!self).count_ones()
@@ -383,10 +365,7 @@ assert_eq!(n.leading_zeros(), 0);",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn leading_zeros(self) -> u32 {
                 (self as $UnsignedT).leading_zeros()
@@ -407,13 +386,52 @@ assert_eq!(n.trailing_zeros(), 2);",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn trailing_zeros(self) -> u32 {
                 (self as $UnsignedT).trailing_zeros()
+            }
+        }
+
+        doc_comment! {
+            concat!("Returns the number of leading ones in the binary representation of `self`.
+
+# Examples
+
+Basic usage:
+
+```
+", $Feature, "#![feature(leading_trailing_ones)]
+let n = -1", stringify!($SelfT), ";
+
+assert_eq!(n.leading_ones(), ", stringify!($BITS), ");",
+$EndFeature, "
+```"),
+            #[unstable(feature = "leading_trailing_ones", issue = "57969")]
+            #[inline]
+            pub const fn leading_ones(self) -> u32 {
+                (self as $UnsignedT).leading_ones()
+            }
+        }
+
+        doc_comment! {
+            concat!("Returns the number of trailing ones in the binary representation of `self`.
+
+# Examples
+
+Basic usage:
+
+```
+", $Feature, "#![feature(leading_trailing_ones)]
+let n = 3", stringify!($SelfT), ";
+
+assert_eq!(n.trailing_ones(), 2);",
+$EndFeature, "
+```"),
+            #[unstable(feature = "leading_trailing_ones", issue = "57969")]
+            #[inline]
+            pub const fn trailing_ones(self) -> u32 {
+                (self as $UnsignedT).trailing_ones()
             }
         }
 
@@ -434,10 +452,7 @@ let m = ", $rot_result, ";
 assert_eq!(n.rotate_left(", $rot, "), m);
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -464,10 +479,7 @@ let m = ", $rot_op, ";
 assert_eq!(n.rotate_right(", $rot, "), m);
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -491,10 +503,7 @@ let m = n.swap_bytes();
 assert_eq!(m, ", $swapped, ");
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn swap_bytes(self) -> Self {
                 (self as $UnsignedT).swap_bytes() as Self
@@ -515,10 +524,7 @@ let m = n.reverse_bits();
 assert_eq!(m, ", $reversed, ");
 ```"),
             #[stable(feature = "reverse_bits", since = "1.37.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             #[must_use]
             pub const fn reverse_bits(self) -> Self {
@@ -546,10 +552,7 @@ if cfg!(target_endian = \"big\") {
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_conversions", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_conversions", since = "1.32.0")]
             #[inline]
             pub const fn from_be(x: Self) -> Self {
                 #[cfg(target_endian = "big")]
@@ -583,10 +586,7 @@ if cfg!(target_endian = \"little\") {
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_conversions", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_conversions", since = "1.32.0")]
             #[inline]
             pub const fn from_le(x: Self) -> Self {
                 #[cfg(target_endian = "little")]
@@ -620,10 +620,7 @@ if cfg!(target_endian = \"big\") {
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_conversions", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_conversions", since = "1.32.0")]
             #[inline]
             pub const fn to_be(self) -> Self { // or not to be?
                 #[cfg(target_endian = "big")]
@@ -657,10 +654,7 @@ if cfg!(target_endian = \"little\") {
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_conversions", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_conversions", since = "1.32.0")]
             #[inline]
             pub const fn to_le(self) -> Self {
                 #[cfg(target_endian = "little")]
@@ -1013,11 +1007,7 @@ $EndFeature, "
 ```"),
 
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_saturating_int_methods"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1043,11 +1033,7 @@ assert_eq!(", stringify!($SelfT), "::max_value().saturating_sub(-1), ", stringif
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_saturating_int_methods"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1187,10 +1173,7 @@ assert_eq!(", stringify!($SelfT), "::max_value().wrapping_add(2), ", stringify!(
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1214,10 +1197,7 @@ stringify!($SelfT), "::max_value());",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1240,10 +1220,7 @@ assert_eq!(11i8.wrapping_mul(12), -124);",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1388,10 +1365,7 @@ assert_eq!(", stringify!($SelfT), "::min_value().wrapping_neg(), ", stringify!($
 $EndFeature, "
 ```"),
             #[stable(feature = "num_wrapping", since = "1.2.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn wrapping_neg(self) -> Self {
                 self.overflowing_neg().0
@@ -1417,10 +1391,7 @@ assert_eq!((-1", stringify!($SelfT), ").wrapping_shl(128), -1);",
 $EndFeature, "
 ```"),
             #[stable(feature = "num_wrapping", since = "1.2.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1452,10 +1423,7 @@ assert_eq!((-128i16).wrapping_shr(64), -128);",
 $EndFeature, "
 ```"),
             #[stable(feature = "num_wrapping", since = "1.2.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1489,22 +1457,16 @@ assert_eq!((-128i8).wrapping_abs() as u8, 128);",
 $EndFeature, "
 ```"),
             #[stable(feature = "no_panic_abs", since = "1.13.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
+            #[allow(unused_attributes)]
+            #[allow_internal_unstable(const_if_match)]
             #[inline]
             pub const fn wrapping_abs(self) -> Self {
-                // sign is -1 (all ones) for negative numbers, 0 otherwise.
-                let sign = self >> ($BITS - 1);
-                // For positive self, sign == 0 so the expression is simply
-                // (self ^ 0).wrapping_sub(0) == self == abs(self).
-                //
-                // For negative self, self ^ sign == self ^ all_ones.
-                // But all_ones ^ self == all_ones - self == -1 - self.
-                // So for negative numbers, (self ^ sign).wrapping_sub(sign) is
-                // (-1 - self).wrapping_sub(-1) == -self == abs(self).
-                (self ^ sign).wrapping_sub(sign)
+                 if self.is_negative() {
+                     self.wrapping_neg()
+                 } else {
+                     self
+                 }
             }
         }
 
@@ -1567,10 +1529,7 @@ assert_eq!(", stringify!($SelfT), "::MAX.overflowing_add(1), (", stringify!($Sel
 "::MIN, true));", $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1598,10 +1557,7 @@ assert_eq!(", stringify!($SelfT), "::MIN.overflowing_sub(1), (", stringify!($Sel
 "::MAX, true));", $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1627,10 +1583,7 @@ assert_eq!(1_000_000_000i32.overflowing_mul(10), (1410065408, true));",
 $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1798,12 +1751,15 @@ assert_eq!(", stringify!($SelfT), "::MIN.overflowing_neg(), (", stringify!($Self
 ```"),
             #[inline]
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
+            #[allow(unused_attributes)]
+            #[allow_internal_unstable(const_if_match)]
             pub const fn overflowing_neg(self) -> (Self, bool) {
-                ((!self).wrapping_add(1), self == Self::min_value())
+                if self == Self::min_value() {
+                    (Self::min_value(), true)
+                } else {
+                    (-self, false)
+                }
             }
         }
 
@@ -1824,10 +1780,7 @@ assert_eq!(0x1i32.overflowing_shl(36), (0x10, true));",
 $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1853,10 +1806,7 @@ assert_eq!(0x10i32.overflowing_shr(36), (0x1, true));",
 $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -1885,10 +1835,7 @@ assert_eq!((", stringify!($SelfT), "::min_value()).overflowing_abs(), (", string
 $EndFeature, "
 ```"),
             #[stable(feature = "no_panic_abs", since = "1.13.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn overflowing_abs(self) -> (Self, bool) {
                 (self.wrapping_abs(), self == Self::min_value())
@@ -2093,31 +2040,20 @@ assert_eq!((-10", stringify!($SelfT), ").abs(), 10);",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
+            #[allow(unused_attributes)]
+            #[allow_internal_unstable(const_if_match)]
             #[inline]
             #[rustc_inherit_overflow_checks]
             pub const fn abs(self) -> Self {
                 // Note that the #[inline] above means that the overflow
                 // semantics of the subtraction depend on the crate we're being
                 // inlined into.
-
-                // sign is -1 (all ones) for negative numbers, 0 otherwise.
-                let sign = self >> ($BITS - 1);
-                // For positive self, sign == 0 so the expression is simply
-                // (self ^ 0) - 0 == self == abs(self).
-                //
-                // For negative self, self ^ sign == self ^ all_ones.
-                // But all_ones ^ self == all_ones - self == -1 - self.
-                // So for negative numbers, (self ^ sign) - sign is
-                // (-1 - self) - -1 == -self == abs(self).
-                //
-                // The subtraction overflows when self is min_value(), because
-                // (-1 - min_value()) - -1 is max_value() - -1 which overflows.
-                // This is exactly when we want self.abs() to overflow.
-                (self ^ sign) - sign
+                if self.is_negative() {
+                    -self
+                } else {
+                    self
+                }
             }
         }
 
@@ -2139,14 +2075,14 @@ assert_eq!((-10", stringify!($SelfT), ").signum(), -1);",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_sign"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_sign", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_sign", issue = "53718")]
             #[inline]
             pub const fn signum(self) -> Self {
-                (self > 0) as Self - (self < 0) as Self
+                match self {
+                    n if n > 0 =>  1,
+                    0          =>  0,
+                    _          => -1,
+                }
             }
         }
 
@@ -2164,10 +2100,7 @@ assert!(!(-10", stringify!($SelfT), ").is_positive());",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn is_positive(self) -> bool { self > 0 }
         }
@@ -2186,10 +2119,7 @@ assert!(!10", stringify!($SelfT), ".is_negative());",
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_int_methods", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_int_methods", since = "1.32.0")]
             #[inline]
             pub const fn is_negative(self) -> bool { self < 0 }
         }
@@ -2207,11 +2137,7 @@ let bytes = ", $swap_op, stringify!($SelfT), ".to_be_bytes();
 assert_eq!(bytes, ", $be_bytes, ");
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn to_be_bytes(self) -> [u8; mem::size_of::<Self>()] {
                 self.to_be().to_ne_bytes()
@@ -2231,11 +2157,7 @@ let bytes = ", $swap_op, stringify!($SelfT), ".to_le_bytes();
 assert_eq!(bytes, ", $le_bytes, ");
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn to_le_bytes(self) -> [u8; mem::size_of::<Self>()] {
                 self.to_le().to_ne_bytes()
@@ -2270,11 +2192,7 @@ assert_eq!(
 );
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn to_ne_bytes(self) -> [u8; mem::size_of::<Self>()] {
                 // SAFETY: integers are plain old datatypes so we can always transmute them to
@@ -2308,11 +2226,7 @@ fn read_be_", stringify!($SelfT), "(input: &mut &[u8]) -> ", stringify!($SelfT),
 }
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn from_be_bytes(bytes: [u8; mem::size_of::<Self>()]) -> Self {
                 Self::from_be(Self::from_ne_bytes(bytes))
@@ -2345,11 +2259,7 @@ fn read_le_", stringify!($SelfT), "(input: &mut &[u8]) -> ", stringify!($SelfT),
 }
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn from_le_bytes(bytes: [u8; mem::size_of::<Self>()]) -> Self {
                 Self::from_le(Self::from_ne_bytes(bytes))
@@ -2392,11 +2302,7 @@ fn read_ne_", stringify!($SelfT), "(input: &mut &[u8]) -> ", stringify!($SelfT),
 }
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn from_ne_bytes(bytes: [u8; mem::size_of::<Self>()]) -> Self {
                 // SAFETY: integers are plain old datatypes so we can always transmute to them
@@ -2490,10 +2396,7 @@ Basic usage:
             #[stable(feature = "rust1", since = "1.0.0")]
             #[rustc_promotable]
             #[inline(always)]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_min_value", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_min_value", since = "1.32.0")]
             pub const fn min_value() -> Self { 0 }
         }
 
@@ -2511,10 +2414,7 @@ stringify!($MaxV), ");", $EndFeature, "
             #[stable(feature = "rust1", since = "1.0.0")]
             #[rustc_promotable]
             #[inline(always)]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_max_value", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_max_value", since = "1.32.0")]
             pub const fn max_value() -> Self { !0 }
         }
 
@@ -2561,10 +2461,7 @@ Basic usage:
 assert_eq!(n.count_ones(), 3);", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn count_ones(self) -> u32 {
                 intrinsics::ctpop(self as $ActualT) as u32
@@ -2582,10 +2479,7 @@ Basic usage:
 ", $Feature, "assert_eq!(", stringify!($SelfT), "::max_value().count_zeros(), 0);", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn count_zeros(self) -> u32 {
                 (!self).count_ones()
@@ -2605,10 +2499,7 @@ Basic usage:
 assert_eq!(n.leading_zeros(), 2);", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn leading_zeros(self) -> u32 {
                 intrinsics::ctlz(self as $ActualT) as u32
@@ -2629,13 +2520,51 @@ Basic usage:
 assert_eq!(n.trailing_zeros(), 3);", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn trailing_zeros(self) -> u32 {
                 intrinsics::cttz(self) as u32
+            }
+        }
+
+        doc_comment! {
+            concat!("Returns the number of leading ones in the binary representation of `self`.
+
+# Examples
+
+Basic usage:
+
+```
+", $Feature, "#![feature(leading_trailing_ones)]
+let n = !(", stringify!($SelfT), "::max_value() >> 2);
+
+assert_eq!(n.leading_ones(), 2);", $EndFeature, "
+```"),
+            #[unstable(feature = "leading_trailing_ones", issue = "57969")]
+            #[inline]
+            pub const fn leading_ones(self) -> u32 {
+                (!self).leading_zeros()
+            }
+        }
+
+        doc_comment! {
+            concat!("Returns the number of trailing ones in the binary representation
+of `self`.
+
+# Examples
+
+Basic usage:
+
+```
+", $Feature, "#![feature(leading_trailing_ones)]
+let n = 0b1010111", stringify!($SelfT), ";
+
+assert_eq!(n.trailing_ones(), 3);", $EndFeature, "
+```"),
+            #[unstable(feature = "leading_trailing_ones", issue = "57969")]
+            #[inline]
+            pub const fn trailing_ones(self) -> u32 {
+                (!self).trailing_zeros()
             }
         }
 
@@ -2656,10 +2585,7 @@ let m = ", $rot_result, ";
 assert_eq!(n.rotate_left(", $rot, "), m);
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -2686,10 +2612,7 @@ let m = ", $rot_op, ";
 assert_eq!(n.rotate_right(", $rot, "), m);
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -2713,10 +2636,7 @@ let m = n.swap_bytes();
 assert_eq!(m, ", $swapped, ");
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn swap_bytes(self) -> Self {
                 intrinsics::bswap(self as $ActualT) as Self
@@ -2737,10 +2657,7 @@ let m = n.reverse_bits();
 assert_eq!(m, ", $reversed, ");
 ```"),
             #[stable(feature = "reverse_bits", since = "1.37.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             #[must_use]
             pub const fn reverse_bits(self) -> Self {
@@ -2768,10 +2685,7 @@ if cfg!(target_endian = \"big\") {
 }", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn from_be(x: Self) -> Self {
                 #[cfg(target_endian = "big")]
@@ -2805,10 +2719,7 @@ if cfg!(target_endian = \"little\") {
 }", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn from_le(x: Self) -> Self {
                 #[cfg(target_endian = "little")]
@@ -2842,10 +2753,7 @@ if cfg!(target_endian = \"big\") {
 }", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn to_be(self) -> Self { // or not to be?
                 #[cfg(target_endian = "big")]
@@ -2879,10 +2787,7 @@ if cfg!(target_endian = \"little\") {
 }", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_math", since = "1.32.0")]
             #[inline]
             pub const fn to_le(self) -> Self {
                 #[cfg(target_endian = "little")]
@@ -3188,11 +3093,7 @@ assert_eq!(200u8.saturating_add(127), 255);", $EndFeature, "
             #[stable(feature = "rust1", since = "1.0.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_saturating_int_methods"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718")]
             #[inline]
             pub const fn saturating_add(self, rhs: Self) -> Self {
                 intrinsics::saturating_add(self, rhs)
@@ -3214,11 +3115,7 @@ assert_eq!(13", stringify!($SelfT), ".saturating_sub(127), 0);", $EndFeature, "
             #[stable(feature = "rust1", since = "1.0.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_saturating_int_methods"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_saturating_int_methods", issue = "53718")]
             #[inline]
             pub const fn saturating_sub(self, rhs: Self) -> Self {
                 intrinsics::saturating_sub(self, rhs)
@@ -3290,10 +3187,7 @@ assert_eq!(200", stringify!($SelfT), ".wrapping_add(", stringify!($SelfT), "::ma
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -3316,10 +3210,7 @@ assert_eq!(100", stringify!($SelfT), ".wrapping_sub(", stringify!($SelfT), "::ma
 $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -3343,10 +3234,7 @@ $EndFeature, "
         /// assert_eq!(25u8.wrapping_mul(12), 44);
         /// ```
         #[stable(feature = "rust1", since = "1.0.0")]
-        #[cfg_attr(
-            not(bootstrap),
-            rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-        )]
+        #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
         #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
         #[inline]
@@ -3476,10 +3364,7 @@ assert_eq!(100", stringify!($SelfT), ".wrapping_rem_euclid(10), 0);
         /// assert_eq!((-128i8).wrapping_neg(), -128);
         /// ```
         #[stable(feature = "num_wrapping", since = "1.2.0")]
-        #[cfg_attr(
-            not(bootstrap),
-            rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-        )]
+        #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
         #[inline]
         pub const fn wrapping_neg(self) -> Self {
             self.overflowing_neg().0
@@ -3506,10 +3391,7 @@ Basic usage:
 assert_eq!(1", stringify!($SelfT), ".wrapping_shl(128), 1);", $EndFeature, "
 ```"),
             #[stable(feature = "num_wrapping", since = "1.2.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -3543,10 +3425,7 @@ Basic usage:
 assert_eq!(128", stringify!($SelfT), ".wrapping_shr(128), 128);", $EndFeature, "
 ```"),
             #[stable(feature = "num_wrapping", since = "1.2.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -3616,10 +3495,7 @@ assert_eq!(5", stringify!($SelfT), ".overflowing_add(2), (7, false));
 assert_eq!(", stringify!($SelfT), "::MAX.overflowing_add(1), (0, true));", $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -3648,10 +3524,7 @@ assert_eq!(0", stringify!($SelfT), ".overflowing_sub(1), (", stringify!($SelfT),
 $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -3679,10 +3552,7 @@ $EndFeature, "
         /// assert_eq!(1_000_000_000u32.overflowing_mul(10), (1410065408, true));
         /// ```
         #[stable(feature = "wrapping", since = "1.7.0")]
-        #[cfg_attr(
-            not(bootstrap),
-            rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-        )]
+        #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
         #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
         #[inline]
@@ -3828,10 +3698,7 @@ assert_eq!(2", stringify!($SelfT), ".overflowing_neg(), (-2i32 as ", stringify!(
 ```"),
             #[inline]
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             pub const fn overflowing_neg(self) -> (Self, bool) {
                 ((!self).wrapping_add(1), self != 0)
             }
@@ -3855,10 +3722,7 @@ Basic usage
 assert_eq!(0x1", stringify!($SelfT), ".overflowing_shl(132), (0x10, true));", $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -3885,10 +3749,7 @@ Basic usage
 assert_eq!(0x10", stringify!($SelfT), ".overflowing_shr(132), (0x1, true));", $EndFeature, "
 ```"),
             #[stable(feature = "wrapping", since = "1.7.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_wrapping_math", since = "1.32.0")]
             #[must_use = "this returns the result of the operation, \
                           without modifying the original"]
             #[inline]
@@ -4054,10 +3915,7 @@ Basic usage:
 assert!(!10", stringify!($SelfT), ".is_power_of_two());", $EndFeature, "
 ```"),
             #[stable(feature = "rust1", since = "1.0.0")]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_stable(feature = "const_is_power_of_two", since = "1.32.0"),
-            )]
+            #[rustc_const_stable(feature = "const_is_power_of_two", since = "1.32.0")]
             #[inline]
             pub const fn is_power_of_two(self) -> bool {
                 self.count_ones() == 1
@@ -4169,11 +4027,7 @@ let bytes = ", $swap_op, stringify!($SelfT), ".to_be_bytes();
 assert_eq!(bytes, ", $be_bytes, ");
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn to_be_bytes(self) -> [u8; mem::size_of::<Self>()] {
                 self.to_be().to_ne_bytes()
@@ -4193,11 +4047,7 @@ let bytes = ", $swap_op, stringify!($SelfT), ".to_le_bytes();
 assert_eq!(bytes, ", $le_bytes, ");
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn to_le_bytes(self) -> [u8; mem::size_of::<Self>()] {
                 self.to_le().to_ne_bytes()
@@ -4232,11 +4082,7 @@ assert_eq!(
 );
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn to_ne_bytes(self) -> [u8; mem::size_of::<Self>()] {
                 // SAFETY: integers are plain old datatypes so we can always transmute them to
@@ -4270,11 +4116,7 @@ fn read_be_", stringify!($SelfT), "(input: &mut &[u8]) -> ", stringify!($SelfT),
 }
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn from_be_bytes(bytes: [u8; mem::size_of::<Self>()]) -> Self {
                 Self::from_be(Self::from_ne_bytes(bytes))
@@ -4307,11 +4149,7 @@ fn read_le_", stringify!($SelfT), "(input: &mut &[u8]) -> ", stringify!($SelfT),
 }
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn from_le_bytes(bytes: [u8; mem::size_of::<Self>()]) -> Self {
                 Self::from_le(Self::from_ne_bytes(bytes))
@@ -4354,11 +4192,7 @@ fn read_ne_", stringify!($SelfT), "(input: &mut &[u8]) -> ", stringify!($SelfT),
 }
 ```"),
             #[stable(feature = "int_to_from_bytes", since = "1.32.0")]
-            #[cfg_attr(bootstrap, rustc_const_unstable(feature = "const_int_conversion"))]
-            #[cfg_attr(
-                not(bootstrap),
-                rustc_const_unstable(feature = "const_int_conversion", issue = "53718"),
-            )]
+            #[rustc_const_unstable(feature = "const_int_conversion", issue = "53718")]
             #[inline]
             pub const fn from_ne_bytes(bytes: [u8; mem::size_of::<Self>()]) -> Self {
                 // SAFETY: integers are plain old datatypes so we can always transmute to them
@@ -4535,10 +4369,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_alphabetic(&self) -> bool {
-        match *self {
-            b'A'..=b'Z' | b'a'..=b'z' => true,
-            _ => false,
-        }
+        matches!(*self, b'A'..=b'Z' | b'a'..=b'z')
     }
 
     /// Checks if the value is an ASCII uppercase character:
@@ -4570,10 +4401,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_uppercase(&self) -> bool {
-        match *self {
-            b'A'..=b'Z' => true,
-            _ => false,
-        }
+        matches!(*self, b'A'..=b'Z')
     }
 
     /// Checks if the value is an ASCII lowercase character:
@@ -4605,10 +4433,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_lowercase(&self) -> bool {
-        match *self {
-            b'a'..=b'z' => true,
-            _ => false,
-        }
+        matches!(*self, b'a'..=b'z')
     }
 
     /// Checks if the value is an ASCII alphanumeric character:
@@ -4643,10 +4468,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_alphanumeric(&self) -> bool {
-        match *self {
-            b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' => true,
-            _ => false,
-        }
+        matches!(*self, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z')
     }
 
     /// Checks if the value is an ASCII decimal digit:
@@ -4678,10 +4500,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_digit(&self) -> bool {
-        match *self {
-            b'0'..=b'9' => true,
-            _ => false,
-        }
+        matches!(*self, b'0'..=b'9')
     }
 
     /// Checks if the value is an ASCII hexadecimal digit:
@@ -4716,10 +4535,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_hexdigit(&self) -> bool {
-        match *self {
-            b'0'..=b'9' | b'A'..=b'F' | b'a'..=b'f' => true,
-            _ => false,
-        }
+        matches!(*self, b'0'..=b'9' | b'A'..=b'F' | b'a'..=b'f')
     }
 
     /// Checks if the value is an ASCII punctuation character:
@@ -4755,10 +4571,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_punctuation(&self) -> bool {
-        match *self {
-            b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~' => true,
-            _ => false,
-        }
+        matches!(*self, b'!'..=b'/' | b':'..=b'@' | b'['..=b'`' | b'{'..=b'~')
     }
 
     /// Checks if the value is an ASCII graphic character:
@@ -4790,10 +4603,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_graphic(&self) -> bool {
-        match *self {
-            b'!'..=b'~' => true,
-            _ => false,
-        }
+        matches!(*self, b'!'..=b'~')
     }
 
     /// Checks if the value is an ASCII whitespace character:
@@ -4842,10 +4652,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_whitespace(&self) -> bool {
-        match *self {
-            b'\t' | b'\n' | b'\x0C' | b'\r' | b' ' => true,
-            _ => false,
-        }
+        matches!(*self, b'\t' | b'\n' | b'\x0C' | b'\r' | b' ')
     }
 
     /// Checks if the value is an ASCII control character:
@@ -4879,10 +4686,7 @@ impl u8 {
     #[stable(feature = "ascii_ctype_on_intrinsics", since = "1.24.0")]
     #[inline]
     pub fn is_ascii_control(&self) -> bool {
-        match *self {
-            b'\0'..=b'\x1F' | b'\x7F' => true,
-            _ => false,
-        }
+        matches!(*self, b'\0'..=b'\x1F' | b'\x7F')
     }
 }
 
@@ -5017,7 +4821,7 @@ impl TryFromIntError {
         feature = "int_error_internals",
         reason = "available through Error trait and this method should \
                   not be exposed publicly",
-        issue = "0"
+        issue = "none"
     )]
     #[doc(hidden)]
     pub fn __description(&self) -> &str {
@@ -5216,7 +5020,7 @@ impl ParseIntError {
         feature = "int_error_internals",
         reason = "available through Error trait and this method should \
                   not be exposed publicly",
-        issue = "0"
+        issue = "none"
     )]
     #[doc(hidden)]
     pub fn __description(&self) -> &str {

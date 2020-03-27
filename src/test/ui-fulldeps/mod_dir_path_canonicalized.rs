@@ -5,13 +5,13 @@
 #![feature(rustc_private)]
 
 extern crate syntax;
-extern crate syntax_expand;
 extern crate rustc_parse;
+extern crate rustc_span;
 
 use rustc_parse::new_parser_from_file;
+use rustc_span::source_map::FilePathMapping;
 use std::path::Path;
 use syntax::sess::ParseSess;
-use syntax::source_map::FilePathMapping;
 
 #[path = "mod_dir_simple/test.rs"]
 mod gravy;

@@ -1,5 +1,5 @@
+use super::{LinkerFlavor, LldFlavor, PanicStrategy, TargetOptions};
 use std::collections::BTreeMap;
-use super::{LldFlavor, TargetOptions, PanicStrategy, LinkerFlavor};
 
 pub fn options() -> TargetOptions {
     let mut lld_args = Vec::new();
@@ -81,7 +81,7 @@ pub fn options() -> TargetOptions {
         dynamic_linking: true,
         only_cdylib: true,
 
-        // This means we'll just embed a `start` function in the wasm module
+        // This means we'll just embed a `#[start]` function in the wasm module
         executables: true,
 
         // relatively self-explanatory!
@@ -143,6 +143,6 @@ pub fn options() -> TargetOptions {
         // gdb scripts don't work on wasm blobs
         emit_debug_gdb_scripts: false,
 
-        .. Default::default()
+        ..Default::default()
     }
 }

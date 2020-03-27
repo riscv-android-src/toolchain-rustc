@@ -42,13 +42,13 @@ pub struct Dep {
 }
 
 impl ProjectModel {
-    pub fn load(ws_manifest: &Path, vfs: &Vfs) -> Result<ProjectModel, failure::Error> {
+    pub fn load(ws_manifest: &Path, vfs: &Vfs) -> Result<ProjectModel, anyhow::Error> {
         assert!(ws_manifest.ends_with("Cargo.toml"));
         let mut config = Config::default()?;
         // Enable nightly flag for cargo(see #1043)
         cargo::core::enable_nightly_features();
         // frozen = false, locked = false, offline = false
-        config.configure(0, Some(true), &None, false, false, false, &None, &[])?;
+        config.configure(0, Some(true), None, false, false, false, &None, &[], &[])?;
         let ws = Workspace::new(&ws_manifest, &config)?;
         // get resolve from lock file
         let prev = {

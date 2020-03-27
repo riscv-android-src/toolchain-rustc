@@ -32,7 +32,7 @@ impl Version {
     /// Returns the libcurl version that this library is currently linked against.
     pub fn get() -> Version {
         unsafe {
-            let ptr = curl_sys::curl_version_info(curl_sys::CURLVERSION_FOURTH);
+            let ptr = curl_sys::curl_version_info(curl_sys::CURLVERSION_NOW);
             assert!(!ptr.is_null());
             Version { inner: ptr }
         }
@@ -245,6 +245,39 @@ impl Version {
             }
         }
     }
+
+    /// If available, the version of nghttp2 libcurl is linked against.
+    pub fn nghttp2_version_num(&self) -> Option<u32> {
+        unsafe {
+            if (*self.inner).age >= curl_sys::CURLVERSION_SIXTH {
+                Some((*self.inner).nghttp2_ver_num)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// If available, the version of nghttp2 libcurl is linked against.
+    pub fn nghttp2_version(&self) -> Option<&str> {
+        unsafe {
+            if (*self.inner).age >= curl_sys::CURLVERSION_SIXTH {
+                ::opt_str((*self.inner).nghttp2_version)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// If available, the version of quic libcurl is linked against.
+    pub fn quic_version(&self) -> Option<&str> {
+        unsafe {
+            if (*self.inner).age >= curl_sys::CURLVERSION_SIXTH {
+                ::opt_str((*self.inner).quic_version)
+            } else {
+                None
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Version {
@@ -258,15 +291,18 @@ impl fmt::Debug for Version {
             .field("feature_ntlm", &self.feature_ntlm())
             .field("feature_gss_negotiate", &self.feature_gss_negotiate())
             .field("feature_debug", &self.feature_debug())
-            .field("feature_spnego", &self.feature_debug())
-            .field("feature_largefile", &self.feature_debug())
-            .field("feature_idn", &self.feature_debug())
-            .field("feature_sspi", &self.feature_debug())
-            .field("feature_async_dns", &self.feature_debug())
-            .field("feature_conv", &self.feature_debug())
-            .field("feature_tlsauth_srp", &self.feature_debug())
-            .field("feature_ntlm_wb", &self.feature_debug())
-            .field("feature_unix_domain_socket", &self.feature_debug());
+            .field("feature_spnego", &self.feature_spnego())
+            .field("feature_largefile", &self.feature_largefile())
+            .field("feature_idn", &self.feature_idn())
+            .field("feature_sspi", &self.feature_sspi())
+            .field("feature_async_dns", &self.feature_async_dns())
+            .field("feature_conv", &self.feature_conv())
+            .field("feature_tlsauth_srp", &self.feature_tlsauth_srp())
+            .field("feature_ntlm_wb", &self.feature_ntlm_wb())
+            .field(
+                "feature_unix_domain_socket",
+                &self.feature_unix_domain_socket(),
+            );
 
         if let Some(s) = self.ssl_version() {
             f.field("ssl_version", &s);
@@ -285,6 +321,21 @@ impl fmt::Debug for Version {
         }
         if let Some(s) = self.libssh_version() {
             f.field("libssh_version", &s);
+        }
+        if let Some(s) = self.brotli_version_num() {
+            f.field("brotli_version_num", &format!("{:x}", s));
+        }
+        if let Some(s) = self.brotli_version() {
+            f.field("brotli_version", &s);
+        }
+        if let Some(s) = self.nghttp2_version_num() {
+            f.field("nghttp2_version_num", &format!("{:x}", s));
+        }
+        if let Some(s) = self.nghttp2_version() {
+            f.field("nghttp2_version", &s);
+        }
+        if let Some(s) = self.quic_version() {
+            f.field("quic_version", &s);
         }
 
         f.field("protocols", &self.protocols().collect::<Vec<_>>());

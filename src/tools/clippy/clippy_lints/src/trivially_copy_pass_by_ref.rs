@@ -3,18 +3,17 @@ use std::cmp;
 use crate::utils::{is_copy, is_self_ty, snippet, span_lint_and_sugg};
 use if_chain::if_chain;
 use matches::matches;
-use rustc::hir;
-use rustc::hir::intravisit::FnKind;
-use rustc::hir::*;
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::session::config::Config as SessionConfig;
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir as hir;
+use rustc_hir::intravisit::FnKind;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::Span;
 use rustc_target::abi::LayoutOf;
 use rustc_target::spec::abi::Abi;
-use syntax_pos::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for functions taking arguments by reference, where
@@ -75,7 +74,7 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
         Self { limit }
     }
 
-    fn check_poly_fn(&mut self, cx: &LateContext<'_, 'tcx>, hir_id: HirId, decl: &FnDecl, span: Option<Span>) {
+    fn check_poly_fn(&mut self, cx: &LateContext<'_, 'tcx>, hir_id: HirId, decl: &FnDecl<'_>, span: Option<Span>) {
         let fn_def_id = cx.tcx.hir().local_def_id(hir_id);
 
         let fn_sig = cx.tcx.fn_sig(fn_def_id);
@@ -98,7 +97,7 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
             }
 
             if_chain! {
-                if let ty::Ref(input_lt, ty, Mutability::Immutable) = ty.kind;
+                if let ty::Ref(input_lt, ty, Mutability::Not) = ty.kind;
                 if !output_lts.contains(&input_lt);
                 if is_copy(cx, ty);
                 if let Some(size) = cx.layout_of(ty).ok().map(|l| l.size.bytes());
@@ -128,7 +127,7 @@ impl<'a, 'tcx> TriviallyCopyPassByRef {
 impl_lint_pass!(TriviallyCopyPassByRef => [TRIVIALLY_COPY_PASS_BY_REF]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TriviallyCopyPassByRef {
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem<'_>) {
         if item.span.from_expansion() {
             return;
         }
@@ -142,8 +141,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TriviallyCopyPassByRef {
         &mut self,
         cx: &LateContext<'a, 'tcx>,
         kind: FnKind<'tcx>,
-        decl: &'tcx FnDecl,
-        _body: &'tcx Body,
+        decl: &'tcx FnDecl<'_>,
+        _body: &'tcx Body<'_>,
         span: Span,
         hir_id: HirId,
     ) {
@@ -168,7 +167,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TriviallyCopyPassByRef {
 
         // Exclude non-inherent impls
         if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
-            if matches!(item.kind, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
+            if matches!(item.kind, ItemKind::Impl{ of_trait: Some(_), .. } |
                 ItemKind::Trait(..))
             {
                 return;

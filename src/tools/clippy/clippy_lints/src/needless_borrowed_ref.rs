@@ -4,11 +4,10 @@
 
 use crate::utils::{snippet_with_applicability, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::{BindingAnnotation, Mutability, Node, Pat, PatKind};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::{BindingAnnotation, Mutability, Node, Pat, PatKind};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for useless borrowed references.
@@ -54,7 +53,7 @@ declare_clippy_lint! {
 declare_lint_pass!(NeedlessBorrowedRef => [NEEDLESS_BORROWED_REFERENCE]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBorrowedRef {
-    fn check_pat(&mut self, cx: &LateContext<'a, 'tcx>, pat: &'tcx Pat) {
+    fn check_pat(&mut self, cx: &LateContext<'a, 'tcx>, pat: &'tcx Pat<'_>) {
         if pat.span.from_expansion() {
             // OK, simple enough, lints doesn't check in macro.
             return;
@@ -62,7 +61,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBorrowedRef {
 
         if_chain! {
             // Only lint immutable refs, because `&mut ref T` may be useful.
-            if let PatKind::Ref(ref sub_pat, Mutability::Immutable) = pat.kind;
+            if let PatKind::Ref(ref sub_pat, Mutability::Not) = pat.kind;
 
             // Check sub_pat got a `ref` keyword (excluding `ref mut`).
             if let PatKind::Binding(BindingAnnotation::Ref, .., spanned_name, _) = sub_pat.kind;

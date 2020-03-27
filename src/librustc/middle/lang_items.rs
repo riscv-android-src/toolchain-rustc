@@ -9,21 +9,20 @@
 
 pub use self::LangItem::*;
 
-use crate::hir::def_id::DefId;
 use crate::hir::check_attr::Target;
-use crate::ty::{self, TyCtxt};
-use crate::middle::weak_lang_items;
 use crate::middle::cstore::ExternCrate;
-use crate::util::nodemap::FxHashMap;
+use crate::middle::weak_lang_items;
+use crate::ty::{self, TyCtxt};
 
-use syntax::ast;
-use syntax::symbol::{Symbol, sym};
-use syntax_pos::Span;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_errors::struct_span_err;
+use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
+use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_macros::HashStable;
-use crate::hir::itemlikevisit::ItemLikeVisitor;
-use crate::hir;
-
-use rustc_error_codes::*;
+use rustc_span::symbol::{sym, Symbol};
+use rustc_span::Span;
+use syntax::ast;
 
 // The actual lang items defined come at the end of this file in one handy table.
 // So you probably just want to nip down to the end.
@@ -113,7 +112,7 @@ struct LanguageItemCollector<'tcx> {
 }
 
 impl ItemLikeVisitor<'v> for LanguageItemCollector<'tcx> {
-    fn visit_item(&mut self, item: &hir::Item) {
+    fn visit_item(&mut self, item: &hir::Item<'_>) {
         if let Some((value, span)) = extract(&item.attrs) {
             let actual_target = Target::from_item(item);
             match self.item_refs.get(&*value.as_str()).cloned() {
@@ -151,11 +150,11 @@ impl ItemLikeVisitor<'v> for LanguageItemCollector<'tcx> {
         }
     }
 
-    fn visit_trait_item(&mut self, _trait_item: &hir::TraitItem) {
+    fn visit_trait_item(&mut self, _trait_item: &hir::TraitItem<'_>) {
         // At present, lang items are always items, not trait items.
     }
 
-    fn visit_impl_item(&mut self, _impl_item: &hir::ImplItem) {
+    fn visit_impl_item(&mut self, _impl_item: &hir::ImplItem<'_>) {
         // At present, lang items are always items, not impl items.
     }
 }
@@ -183,8 +182,9 @@ impl LanguageItemCollector<'tcx> {
                         self.tcx.sess,
                         span,
                         E0152,
-                        "duplicate lang item found: `{}`.",
-                        name),
+                        "found duplicate lang item `{}`",
+                        name
+                    ),
                     None => {
                         match self.tcx.extern_crate(item_def_id) {
                             Some(ExternCrate {dependency_of, ..}) => {
@@ -204,12 +204,12 @@ impl LanguageItemCollector<'tcx> {
                     },
                 };
                 if let Some(span) = self.tcx.hir().span_if_local(original_def_id) {
-                    span_note!(&mut err, span, "first defined here.");
+                    err.span_note(span, "first defined here");
                 } else {
                     match self.tcx.extern_crate(original_def_id) {
                         Some(ExternCrate {dependency_of, ..}) => {
                             err.note(&format!(
-                            "first defined in crate `{}` (which `{}` depends on).",
+                            "first defined in crate `{}` (which `{}` depends on)",
                                       self.tcx.crate_name(original_def_id.krate),
                                       self.tcx.crate_name(*dependency_of)));
                         },

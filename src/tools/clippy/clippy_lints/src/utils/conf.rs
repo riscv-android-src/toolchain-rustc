@@ -3,12 +3,12 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use lazy_static::lazy_static;
+use rustc_span::source_map;
 use std::default::Default;
 use std::io::Read;
 use std::sync::Mutex;
 use std::{env, fmt, fs, io, path};
-use syntax::{ast, source_map};
-use toml;
+use syntax::ast;
 
 /// Gets the configuration file from arguments.
 pub fn file_from_args(args: &[ast::NestedMetaItem]) -> Result<Option<path::PathBuf>, (&'static str, source_map::Span)> {
@@ -77,7 +77,6 @@ macro_rules! define_Conf {
             }
             $(
                 mod $rust_name {
-                    use serde;
                     use serde::Deserialize;
                     crate fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D)
                     -> Result<define_Conf!(TY $($ty)+), D::Error> {
@@ -153,6 +152,8 @@ define_Conf! {
     (too_many_lines_threshold, "too_many_lines_threshold", 100 => u64),
     /// Lint: LARGE_STACK_ARRAYS. The maximum allowed size for arrays on the stack
     (array_size_threshold, "array_size_threshold", 512_000 => u64),
+    /// Lint: VEC_BOX. The size of the boxed type in bytes, where boxing in a `Vec` is allowed
+    (vec_box_size_threshold, "vec_box_size_threshold", 4096 => u64),
 }
 
 impl Default for Conf {

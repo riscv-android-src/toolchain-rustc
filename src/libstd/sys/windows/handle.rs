@@ -1,4 +1,4 @@
-#![unstable(issue = "0", feature = "windows_handle")]
+#![unstable(issue = "none", feature = "windows_handle")]
 
 use crate::cmp;
 use crate::io::{self, ErrorKind, IoSlice, IoSliceMut, Read};
@@ -156,7 +156,7 @@ impl RawHandle {
     }
 
     pub fn cancel_io(&self) -> io::Result<()> {
-        unsafe { cvt(c::CancelIo(self.raw())).map(|_| ()) }
+        unsafe { cvt(c::CancelIo(self.raw())).map(drop) }
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {

@@ -1,10 +1,9 @@
 use crate::consts::constant_simple;
 use crate::utils::span_lint;
-use rustc::hir;
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir as hir;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for plain integer arithmetic.
@@ -54,7 +53,7 @@ pub struct Arithmetic {
 impl_lint_pass!(Arithmetic => [INTEGER_ARITHMETIC, FLOAT_ARITHMETIC]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Arithmetic {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
         if self.expr_span.is_some() {
             return;
         }
@@ -107,13 +106,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Arithmetic {
         }
     }
 
-    fn check_expr_post(&mut self, _: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+    fn check_expr_post(&mut self, _: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
         if Some(expr.span) == self.expr_span {
             self.expr_span = None;
         }
     }
 
-    fn check_body(&mut self, cx: &LateContext<'_, '_>, body: &hir::Body) {
+    fn check_body(&mut self, cx: &LateContext<'_, '_>, body: &hir::Body<'_>) {
         let body_owner = cx.tcx.hir().body_owner(body.id());
 
         match cx.tcx.hir().body_owner_kind(body_owner) {
@@ -131,7 +130,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Arithmetic {
         }
     }
 
-    fn check_body_post(&mut self, cx: &LateContext<'_, '_>, body: &hir::Body) {
+    fn check_body_post(&mut self, cx: &LateContext<'_, '_>, body: &hir::Body<'_>) {
         let body_owner = cx.tcx.hir().body_owner(body.id());
         let body_span = cx.tcx.hir().span(body_owner);
 

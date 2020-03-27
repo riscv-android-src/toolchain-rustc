@@ -34,7 +34,7 @@ pub fn error_string(mut errnum: i32) -> String {
 
         // NTSTATUS errors may be encoded as HRESULT, which may returned from
         // GetLastError. For more information about Windows error codes, see
-        // `[MS-ERREF]`: https://msdn.microsoft.com/en-us/library/cc231198.aspx
+        // `[MS-ERREF]`: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/0642cb2f-2075-4469-918c-4441e69c548a
         if (errnum & c::FACILITY_NT_BIT as i32) != 0 {
             // format according to https://support.microsoft.com/en-us/help/259693
             const NTDLL_DLL: &[u16] = &[
@@ -43,7 +43,7 @@ pub fn error_string(mut errnum: i32) -> String {
             ];
             module = c::GetModuleHandleW(NTDLL_DLL.as_ptr());
 
-            if module != ptr::null_mut() {
+            if !module.is_null() {
                 errnum ^= c::FACILITY_NT_BIT as i32;
                 flags = c::FORMAT_MESSAGE_FROM_HMODULE;
             }
@@ -225,6 +225,7 @@ impl fmt::Display for JoinPathsError {
 }
 
 impl StdError for JoinPathsError {
+    #[allow(deprecated)]
     fn description(&self) -> &str {
         "failed to join paths"
     }
@@ -246,7 +247,7 @@ pub fn chdir(p: &path::Path) -> io::Result<()> {
     let mut p = p.encode_wide().collect::<Vec<_>>();
     p.push(0);
 
-    cvt(unsafe { c::SetCurrentDirectoryW(p.as_ptr()) }).map(|_| ())
+    cvt(unsafe { c::SetCurrentDirectoryW(p.as_ptr()) }).map(drop)
 }
 
 pub fn getenv(k: &OsStr) -> io::Result<Option<OsString>> {
@@ -271,12 +272,12 @@ pub fn setenv(k: &OsStr, v: &OsStr) -> io::Result<()> {
     let k = to_u16s(k)?;
     let v = to_u16s(v)?;
 
-    cvt(unsafe { c::SetEnvironmentVariableW(k.as_ptr(), v.as_ptr()) }).map(|_| ())
+    cvt(unsafe { c::SetEnvironmentVariableW(k.as_ptr(), v.as_ptr()) }).map(drop)
 }
 
 pub fn unsetenv(n: &OsStr) -> io::Result<()> {
     let v = to_u16s(n)?;
-    cvt(unsafe { c::SetEnvironmentVariableW(v.as_ptr(), ptr::null()) }).map(|_| ())
+    cvt(unsafe { c::SetEnvironmentVariableW(v.as_ptr(), ptr::null()) }).map(drop)
 }
 
 pub fn temp_dir() -> PathBuf {

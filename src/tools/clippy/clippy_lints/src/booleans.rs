@@ -3,14 +3,15 @@ use crate::utils::{
     span_lint_and_then, SpanlessEq,
 };
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::intravisit::*;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
+use rustc::hir::map::Map;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::intravisit;
+use rustc_hir::intravisit::*;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 use syntax::ast::LitKind;
-use syntax::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for boolean expressions that can be written more
@@ -60,8 +61,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonminimalBool {
         &mut self,
         cx: &LateContext<'a, 'tcx>,
         _: intravisit::FnKind<'tcx>,
-        _: &'tcx FnDecl,
-        body: &'tcx Body,
+        _: &'tcx FnDecl<'_>,
+        body: &'tcx Body<'_>,
         _: Span,
         _: HirId,
     ) {
@@ -75,12 +76,12 @@ struct NonminimalBoolVisitor<'a, 'tcx> {
 
 use quine_mc_cluskey::Bool;
 struct Hir2Qmm<'a, 'tcx, 'v> {
-    terminals: Vec<&'v Expr>,
+    terminals: Vec<&'v Expr<'v>>,
     cx: &'a LateContext<'a, 'tcx>,
 }
 
 impl<'a, 'tcx, 'v> Hir2Qmm<'a, 'tcx, 'v> {
-    fn extract(&mut self, op: BinOpKind, a: &[&'v Expr], mut v: Vec<Bool>) -> Result<Vec<Bool>, String> {
+    fn extract(&mut self, op: BinOpKind, a: &[&'v Expr<'_>], mut v: Vec<Bool>) -> Result<Vec<Bool>, String> {
         for a in a {
             if let ExprKind::Binary(binop, lhs, rhs) = &a.kind {
                 if binop.node == op {
@@ -93,7 +94,7 @@ impl<'a, 'tcx, 'v> Hir2Qmm<'a, 'tcx, 'v> {
         Ok(v)
     }
 
-    fn run(&mut self, e: &'v Expr) -> Result<Bool, String> {
+    fn run(&mut self, e: &'v Expr<'_>) -> Result<Bool, String> {
         fn negate(bin_op_kind: BinOpKind) -> Option<BinOpKind> {
             match bin_op_kind {
                 BinOpKind::Eq => Some(BinOpKind::Ne),
@@ -109,7 +110,7 @@ impl<'a, 'tcx, 'v> Hir2Qmm<'a, 'tcx, 'v> {
         // prevent folding of `cfg!` macros and the like
         if !e.span.from_expansion() {
             match &e.kind {
-                ExprKind::Unary(UnNot, inner) => return Ok(Bool::Not(box self.run(inner)?)),
+                ExprKind::Unary(UnOp::UnNot, inner) => return Ok(Bool::Not(box self.run(inner)?)),
                 ExprKind::Binary(binop, lhs, rhs) => match &binop.node {
                     BinOpKind::Or => return Ok(Bool::Or(self.extract(BinOpKind::Or, &[lhs, rhs], Vec::new())?)),
                     BinOpKind::And => return Ok(Bool::And(self.extract(BinOpKind::And, &[lhs, rhs], Vec::new())?)),
@@ -154,7 +155,7 @@ impl<'a, 'tcx, 'v> Hir2Qmm<'a, 'tcx, 'v> {
 }
 
 struct SuggestContext<'a, 'tcx, 'v> {
-    terminals: &'v [&'v Expr],
+    terminals: &'v [&'v Expr<'v>],
     cx: &'a LateContext<'a, 'tcx>,
     output: String,
 }
@@ -206,7 +207,7 @@ impl<'a, 'tcx, 'v> SuggestContext<'a, 'tcx, 'v> {
                 }
             },
             Or(v) => {
-                for (index, inner) in v.iter().enumerate() {
+                for (index, inner) in v.iter().rev().enumerate() {
                     if index > 0 {
                         self.output.push_str(" || ");
                     }
@@ -222,7 +223,7 @@ impl<'a, 'tcx, 'v> SuggestContext<'a, 'tcx, 'v> {
     }
 }
 
-fn simplify_not(cx: &LateContext<'_, '_>, expr: &Expr) -> Option<String> {
+fn simplify_not(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> Option<String> {
     match &expr.kind {
         ExprKind::Binary(binop, lhs, rhs) => {
             if !implements_ord(cx, lhs) {
@@ -266,7 +267,7 @@ fn simplify_not(cx: &LateContext<'_, '_>, expr: &Expr) -> Option<String> {
     }
 }
 
-fn suggest(cx: &LateContext<'_, '_>, suggestion: &Bool, terminals: &[&Expr]) -> String {
+fn suggest(cx: &LateContext<'_, '_>, suggestion: &Bool, terminals: &[&Expr<'_>]) -> String {
     let mut suggest_context = SuggestContext {
         terminals,
         cx,
@@ -332,7 +333,7 @@ fn terminal_stats(b: &Bool) -> Stats {
 }
 
 impl<'a, 'tcx> NonminimalBoolVisitor<'a, 'tcx> {
-    fn bool_expr(&self, e: &'tcx Expr) {
+    fn bool_expr(&self, e: &'tcx Expr<'_>) {
         let mut h2q = Hir2Qmm {
             terminals: Vec::new(),
             cx: self.cx,
@@ -437,7 +438,9 @@ impl<'a, 'tcx> NonminimalBoolVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for NonminimalBoolVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, e: &'tcx Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, e: &'tcx Expr<'_>) {
         if in_macro(e.span) {
             return;
         }
@@ -445,7 +448,7 @@ impl<'a, 'tcx> Visitor<'tcx> for NonminimalBoolVisitor<'a, 'tcx> {
             ExprKind::Binary(binop, _, _) if binop.node == BinOpKind::Or || binop.node == BinOpKind::And => {
                 self.bool_expr(e)
             },
-            ExprKind::Unary(UnNot, inner) => {
+            ExprKind::Unary(UnOp::UnNot, inner) => {
                 if self.cx.tables.node_types()[inner.hir_id].is_bool() {
                     self.bool_expr(e);
                 } else {
@@ -455,12 +458,12 @@ impl<'a, 'tcx> Visitor<'tcx> for NonminimalBoolVisitor<'a, 'tcx> {
             _ => walk_expr(self, e),
         }
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
 
-fn implements_ord<'a, 'tcx>(cx: &'a LateContext<'a, 'tcx>, expr: &Expr) -> bool {
+fn implements_ord<'a, 'tcx>(cx: &'a LateContext<'a, 'tcx>, expr: &Expr<'_>) -> bool {
     let ty = cx.tables.expr_ty(expr);
     get_trait_def_id(cx, &paths::ORD).map_or(false, |id| implements_trait(cx, ty, id, &[]))
 }
@@ -470,8 +473,10 @@ struct NotSimplificationVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for NotSimplificationVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, expr: &'tcx Expr) {
-        if let ExprKind::Unary(UnNot, inner) = &expr.kind {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
+        if let ExprKind::Unary(UnOp::UnNot, inner) = &expr.kind {
             if let Some(suggestion) = simplify_not(self.cx, inner) {
                 span_lint_and_sugg(
                     self.cx,
@@ -487,7 +492,7 @@ impl<'a, 'tcx> Visitor<'tcx> for NotSimplificationVisitor<'a, 'tcx> {
 
         walk_expr(self, expr);
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }

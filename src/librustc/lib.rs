@@ -27,16 +27,13 @@
 //! This API is completely unstable and subject to change.
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
-
 #![feature(arbitrary_self_types)]
 #![feature(bool_to_option)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![feature(const_fn)]
 #![feature(const_transmute)]
 #![feature(core_intrinsics)]
 #![feature(drain_filter)]
-#![cfg_attr(windows, feature(libc))]
 #![feature(never_type)]
 #![feature(exhaustive_patterns)]
 #![feature(overlapping_marker_traits)]
@@ -45,7 +42,7 @@
 #![feature(optin_builtin_traits)]
 #![feature(option_expect_none)]
 #![feature(range_is_empty)]
-#![feature(slice_patterns)]
+#![cfg_attr(bootstrap, feature(slice_patterns))]
 #![feature(specialization)]
 #![feature(unboxed_closures)]
 #![feature(thread_local)]
@@ -61,18 +58,20 @@
 #![feature(associated_type_bounds)]
 #![feature(rustc_attrs)]
 #![feature(hash_raw_entry)]
+#![recursion_limit = "512"]
 
-#![recursion_limit="512"]
-
-#[macro_use] extern crate bitflags;
-#[macro_use] extern crate scoped_tls;
-#[cfg(windows)]
-extern crate libc;
-#[macro_use] extern crate rustc_macros;
-#[macro_use] extern crate rustc_data_structures;
-#[macro_use] extern crate log;
-#[macro_use] extern crate syntax;
-#[macro_use] extern crate smallvec;
+#[macro_use]
+extern crate bitflags;
+#[macro_use]
+extern crate scoped_tls;
+#[macro_use]
+extern crate rustc_macros;
+#[macro_use]
+extern crate rustc_data_structures;
+#[macro_use]
+extern crate log;
+#[macro_use]
+extern crate smallvec;
 
 #[cfg(test)]
 mod tests;
@@ -90,34 +89,15 @@ pub mod hir;
 pub mod ich;
 pub mod infer;
 pub mod lint;
-
-pub mod middle {
-    pub mod cstore;
-    pub mod dependency_format;
-    pub mod diagnostic_items;
-    pub mod exported_symbols;
-    pub mod free_region;
-    pub mod lib_features;
-    pub mod lang_items;
-    pub mod privacy;
-    pub mod reachable;
-    pub mod region;
-    pub mod recursion_limit;
-    pub mod resolve_lifetime;
-    pub mod stability;
-    pub mod weak_lang_items;
-}
-
+pub mod middle;
 pub mod mir;
 pub use rustc_session as session;
 pub mod traits;
 pub mod ty;
 
 pub mod util {
-    pub mod captures;
-    pub mod common;
-    pub mod nodemap;
     pub mod bug;
+    pub mod common;
 }
 
 // Allows macros to refer to this crate as `::rustc`

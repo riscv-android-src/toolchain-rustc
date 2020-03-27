@@ -1,12 +1,12 @@
 use crate::utils::paths::{BEGIN_PANIC, BEGIN_PANIC_FMT, FROM_TRAIT, OPTION, RESULT};
 use crate::utils::{is_expn_of, match_def_path, method_chain_args, span_lint_and_then, walk_ptrs_ty};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
+use rustc::hir::map::Map;
 use rustc::ty::{self, Ty};
-use rustc_session::declare_tool_lint;
-use syntax_pos::Span;
+use rustc_hir as hir;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for impls of `From<..>` that contain `panic!()` or `unwrap()`
@@ -32,11 +32,11 @@ declare_clippy_lint! {
 declare_lint_pass!(FallibleImplFrom => [FALLIBLE_IMPL_FROM]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for FallibleImplFrom {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item<'_>) {
         // check for `impl From<???> for ..`
         let impl_def_id = cx.tcx.hir().local_def_id(item.hir_id);
         if_chain! {
-            if let hir::ItemKind::Impl(.., ref impl_items) = item.kind;
+            if let hir::ItemKind::Impl{ items: impl_items, .. } = item.kind;
             if let Some(impl_trait_ref) = cx.tcx.impl_trait_ref(impl_def_id);
             if match_def_path(cx, impl_trait_ref.def_id, &FROM_TRAIT);
             then {
@@ -46,9 +46,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for FallibleImplFrom {
     }
 }
 
-fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_items: &hir::HirVec<hir::ImplItemRef>) {
-    use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
-    use rustc::hir::*;
+fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_items: &[hir::ImplItemRef<'_>]) {
+    use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+    use rustc_hir::*;
 
     struct FindPanicUnwrap<'a, 'tcx> {
         lcx: &'a LateContext<'a, 'tcx>,
@@ -57,7 +57,9 @@ fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_it
     }
 
     impl<'a, 'tcx> Visitor<'tcx> for FindPanicUnwrap<'a, 'tcx> {
-        fn visit_expr(&mut self, expr: &'tcx Expr) {
+        type Map = Map<'tcx>;
+
+        fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
             // check for `begin_panic`
             if_chain! {
                 if let ExprKind::Call(ref func_expr, _) = expr.kind;
@@ -83,7 +85,7 @@ fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_it
             intravisit::walk_expr(self, expr);
         }
 
-        fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+        fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
             NestedVisitorMap::None
         }
     }

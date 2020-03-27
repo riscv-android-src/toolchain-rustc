@@ -1,4 +1,5 @@
 use crate::core::compiler::{BuildConfig, MessageFormat};
+use crate::core::InternedString;
 use crate::core::Workspace;
 use crate::ops::{CompileFilter, CompileOptions, NewOptions, Packages, VersionControl};
 use crate::sources::CRATES_IO_REGISTRY;
@@ -9,13 +10,13 @@ use crate::util::{
     print_available_tests,
 };
 use crate::CargoResult;
+use anyhow::bail;
 use clap::{self, SubCommand};
-use failure::bail;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::PathBuf;
 
-pub use crate::core::compiler::{CompileMode, ProfileKind};
+pub use crate::core::compiler::CompileMode;
 pub use crate::{CliError, CliResult, Config};
 pub use clap::{AppSettings, Arg, ArgMatches};
 
@@ -264,10 +265,10 @@ pub trait ArgMatchesExt {
             // but in this particular case we need it to fix #3586.
             let path = paths::normalize_path(&path);
             if !path.ends_with("Cargo.toml") {
-                failure::bail!("the manifest-path must be a path to a Cargo.toml file")
+                anyhow::bail!("the manifest-path must be a path to a Cargo.toml file")
             }
             if fs::metadata(&path).is_err() {
-                failure::bail!(
+                anyhow::bail!(
                     "manifest path `{}` does not exist",
                     self._value_of("manifest-path").unwrap()
                 )
@@ -289,7 +290,8 @@ pub trait ArgMatchesExt {
             for flag in &["features", "no-default-features"] {
                 if self._is_present(flag) {
                     bail!(
-                        "--{} is not allowed in the root of a virtual workspace",
+                        "--{} is not allowed in the root of a virtual workspace\n\
+                         note: while this was previously accepted, it didn't actually do anything",
                         flag
                     );
                 }
@@ -306,19 +308,17 @@ pub trait ArgMatchesExt {
         self._value_of("target").map(|s| s.to_string())
     }
 
-    fn get_profile_kind(
+    fn get_profile_name(
         &self,
         config: &Config,
-        default: ProfileKind,
+        default: &str,
         profile_checking: ProfileChecking,
-    ) -> CargoResult<ProfileKind> {
+    ) -> CargoResult<InternedString> {
         let specified_profile = match self._value_of("profile") {
             None => None,
-            Some("dev") => Some(ProfileKind::Dev),
-            Some("release") => Some(ProfileKind::Release),
             Some(name) => {
                 TomlProfile::validate_name(name, "profile name")?;
-                Some(ProfileKind::Custom(name.to_string()))
+                Some(InternedString::new(name))
             }
         };
 
@@ -326,31 +326,35 @@ pub trait ArgMatchesExt {
             ProfileChecking::Unchecked => {}
             ProfileChecking::Checked => {
                 if specified_profile.is_some() && !config.cli_unstable().unstable_options {
-                    failure::bail!("Usage of `--profile` requires `-Z unstable-options`")
+                    anyhow::bail!("Usage of `--profile` requires `-Z unstable-options`")
                 }
             }
         }
 
         if self._is_present("release") {
             if !config.cli_unstable().unstable_options {
-                Ok(ProfileKind::Release)
+                Ok(InternedString::new("release"))
             } else {
                 match specified_profile {
-                    None | Some(ProfileKind::Release) => Ok(ProfileKind::Release),
-                    _ => failure::bail!("Conflicting usage of --profile and --release"),
+                    Some(name) if name != "release" => {
+                        anyhow::bail!("Conflicting usage of --profile and --release")
+                    }
+                    _ => Ok(InternedString::new("release")),
                 }
             }
         } else if self._is_present("debug") {
             if !config.cli_unstable().unstable_options {
-                Ok(ProfileKind::Dev)
+                Ok(InternedString::new("dev"))
             } else {
                 match specified_profile {
-                    None | Some(ProfileKind::Dev) => Ok(ProfileKind::Dev),
-                    _ => failure::bail!("Conflicting usage of --profile and --debug"),
+                    Some(name) if name != "dev" => {
+                        anyhow::bail!("Conflicting usage of --profile and --debug")
+                    }
+                    _ => Ok(InternedString::new("dev")),
                 }
             }
         } else {
-            Ok(specified_profile.unwrap_or(default))
+            Ok(specified_profile.unwrap_or_else(|| InternedString::new(default)))
         }
     }
 
@@ -432,8 +436,7 @@ pub trait ArgMatchesExt {
 
         let mut build_config = BuildConfig::new(config, self.jobs()?, &self.target(), mode)?;
         build_config.message_format = message_format.unwrap_or(MessageFormat::Human);
-        build_config.profile_kind =
-            self.get_profile_kind(config, ProfileKind::Dev, profile_checking)?;
+        build_config.requested_profile = self.get_profile_name(config, "dev", profile_checking)?;
         build_config.build_plan = self._is_present("build-plan");
         if build_config.build_plan {
             config

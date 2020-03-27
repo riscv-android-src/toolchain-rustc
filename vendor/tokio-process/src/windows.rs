@@ -23,10 +23,12 @@ use std::io;
 use std::os::windows::prelude::*;
 use std::os::windows::process::ExitStatusExt;
 use std::process::{self, ExitStatus};
+use std::ptr;
 
 use futures::future::Fuse;
 use futures::sync::oneshot;
-use futures::{Future, Poll, Async} ;
+use futures::{Future, Poll, Async};
+use kill::Kill;
 use self::mio_named_pipes::NamedPipe;
 use self::winapi::shared::minwindef::*;
 use self::winapi::shared::winerror::*;
@@ -36,6 +38,7 @@ use self::winapi::um::synchapi::*;
 use self::winapi::um::threadpoollegacyapiset::*;
 use self::winapi::um::winbase::*;
 use self::winapi::um::winnt::*;
+use super::SpawnedChild;
 use tokio_reactor::{Handle, PollEvented};
 
 #[must_use = "futures do nothing unless polled"]
@@ -63,38 +66,40 @@ struct Waiting {
 unsafe impl Sync for Waiting {}
 unsafe impl Send for Waiting {}
 
-impl Child {
-    pub fn new(child: process::Child, _handle: &Handle) -> Child {
-        Child {
-            child: child,
+pub(crate) fn spawn_child(cmd: &mut process::Command, handle: &Handle) -> io::Result<SpawnedChild> {
+    let mut child = cmd.spawn()?;
+    let stdin = stdio(child.stdin.take(), handle)?;
+    let stdout = stdio(child.stdout.take(), handle)?;
+    let stderr = stdio(child.stderr.take(), handle)?;
+
+    Ok(SpawnedChild {
+        child: Child {
+            child,
             waiting: None,
-        }
-    }
+        },
+        stdin,
+        stdout,
+        stderr,
+    })
+}
 
-    pub fn register_stdin(&mut self, handle: &Handle)
-                          -> io::Result<Option<ChildStdin>> {
-        stdio(self.child.stdin.take(), handle)
-    }
-
-    pub fn register_stdout(&mut self, handle: &Handle)
-                           -> io::Result<Option<ChildStdout>> {
-        stdio(self.child.stdout.take(), handle)
-    }
-
-    pub fn register_stderr(&mut self, handle: &Handle)
-                           -> io::Result<Option<ChildStderr>> {
-        stdio(self.child.stderr.take(), handle)
-    }
-
+impl Child {
     pub fn id(&self) -> u32 {
         self.child.id()
     }
+}
 
-    pub fn kill(&mut self) -> io::Result<()> {
+impl Kill for Child {
+    fn kill(&mut self) -> io::Result<()> {
         self.child.kill()
     }
+}
 
-    pub fn poll_exit(&mut self) -> Poll<ExitStatus, io::Error> {
+impl Future for Child {
+    type Item = ExitStatus;
+    type Error = io::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
         loop {
             if let Some(ref mut w) = self.waiting {
                 match w.rx.poll().expect("should not be canceled") {
@@ -110,7 +115,7 @@ impl Child {
             }
             let (tx, rx) = oneshot::channel();
             let ptr = Box::into_raw(Box::new(Some(tx)));
-            let mut wait_object = 0 as *mut _;
+            let mut wait_object = ptr::null_mut();
             let rc = unsafe {
                 RegisterWaitForSingleObject(&mut wait_object,
                                             self.child.as_raw_handle(),
@@ -127,7 +132,7 @@ impl Child {
             }
             self.waiting = Some(Waiting {
                 rx: rx.fuse(),
-                wait_object: wait_object,
+                wait_object,
                 tx: ptr,
             });
         }
@@ -149,7 +154,7 @@ impl Drop for Waiting {
 unsafe extern "system" fn callback(ptr: PVOID,
                                    _timer_fired: BOOLEAN) {
     let complete = &mut *(ptr as *mut Option<oneshot::Sender<()>>);
-    drop(complete.take().unwrap().send(()));
+    let _ = complete.take().unwrap().send(());
 }
 
 pub fn try_wait(child: &process::Child) -> io::Result<Option<ExitStatus>> {

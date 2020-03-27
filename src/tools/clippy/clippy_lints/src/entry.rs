@@ -2,13 +2,13 @@ use crate::utils::SpanlessEq;
 use crate::utils::{get_item_name, higher, match_type, paths, snippet, snippet_opt};
 use crate::utils::{snippet_with_applicability, span_lint_and_then, walk_ptrs_ty};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
+use rustc::hir::map::Map;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for uses of `contains_key` + `insert` on `HashMap`
@@ -53,7 +53,7 @@ declare_clippy_lint! {
 declare_lint_pass!(HashMapPass => [MAP_ENTRY]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for HashMapPass {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if let Some((ref check, ref then_block, ref else_block)) = higher::if_block(&expr) {
             if let ExprKind::Unary(UnOp::UnNot, ref check) = check.kind {
                 if let Some((ty, map, key)) = check_cond(cx, check) {
@@ -100,8 +100,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for HashMapPass {
 
 fn check_cond<'a, 'tcx, 'b>(
     cx: &'a LateContext<'a, 'tcx>,
-    check: &'b Expr,
-) -> Option<(&'static str, &'b Expr, &'b Expr)> {
+    check: &'b Expr<'b>,
+) -> Option<(&'static str, &'b Expr<'b>, &'b Expr<'b>)> {
     if_chain! {
         if let ExprKind::MethodCall(ref path, _, ref params) = check.kind;
         if params.len() >= 2;
@@ -130,13 +130,15 @@ struct InsertVisitor<'a, 'tcx, 'b> {
     cx: &'a LateContext<'a, 'tcx>,
     span: Span,
     ty: &'static str,
-    map: &'b Expr,
-    key: &'b Expr,
+    map: &'b Expr<'b>,
+    key: &'b Expr<'b>,
     sole_expr: bool,
 }
 
 impl<'a, 'tcx, 'b> Visitor<'tcx> for InsertVisitor<'a, 'tcx, 'b> {
-    fn visit_expr(&mut self, expr: &'tcx Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::MethodCall(ref path, _, ref params) = expr.kind;
             if params.len() == 3;
@@ -179,7 +181,7 @@ impl<'a, 'tcx, 'b> Visitor<'tcx> for InsertVisitor<'a, 'tcx, 'b> {
             walk_expr(self, expr);
         }
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }

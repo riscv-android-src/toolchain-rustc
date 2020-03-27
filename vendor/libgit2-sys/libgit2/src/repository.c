@@ -800,7 +800,7 @@ int git_repository_open_ext(
 	unsigned is_worktree;
 	git_buf gitdir = GIT_BUF_INIT, workdir = GIT_BUF_INIT,
 		gitlink = GIT_BUF_INIT, commondir = GIT_BUF_INIT;
-	git_repository *repo;
+	git_repository *repo = NULL;
 	git_config *config = NULL;
 
 	if (flags & GIT_REPOSITORY_OPEN_FROM_ENV)
@@ -813,7 +813,7 @@ int git_repository_open_ext(
 		&gitdir, &workdir, &gitlink, &commondir, start_path, flags, ceiling_dirs);
 
 	if (error < 0 || !repo_ptr)
-		return error;
+		goto cleanup;
 
 	repo = repository_alloc();
 	GIT_ERROR_CHECK_ALLOC(repo);
@@ -859,11 +859,14 @@ int git_repository_open_ext(
 cleanup:
 	git_buf_dispose(&gitdir);
 	git_buf_dispose(&workdir);
+	git_buf_dispose(&gitlink);
+	git_buf_dispose(&commondir);
 	git_config_free(config);
 
 	if (error < 0)
 		git_repository_free(repo);
-	else
+
+	if (repo_ptr)
 		*repo_ptr = repo;
 
 	return error;
@@ -2482,7 +2485,7 @@ int git_repository__set_orig_head(git_repository *repo, const git_oid *orig_head
 	git_oid_fmt(orig_head_str, orig_head);
 
 	if ((error = git_buf_joinpath(&file_path, repo->gitdir, GIT_ORIG_HEAD_FILE)) == 0 &&
-		(error = git_filebuf_open(&file, file_path.ptr, GIT_FILEBUF_FORCE, GIT_MERGE_FILE_MODE)) == 0 &&
+		(error = git_filebuf_open(&file, file_path.ptr, GIT_FILEBUF_CREATE_LEADING_DIRS, GIT_MERGE_FILE_MODE)) == 0 &&
 		(error = git_filebuf_printf(&file, "%.*s\n", GIT_OID_HEXSZ, orig_head_str)) == 0)
 		error = git_filebuf_commit(&file);
 
@@ -2542,7 +2545,7 @@ int git_repository_hashfile(
 	int error;
 	git_filter_list *fl = NULL;
 	git_file fd = -1;
-	git_off_t len;
+	uint64_t len;
 	git_buf full_path = GIT_BUF_INIT;
 
 	assert(out && path && repo); /* as_path can be NULL */
@@ -2579,11 +2582,8 @@ int git_repository_hashfile(
 		goto cleanup;
 	}
 
-	len = git_futils_filesize(fd);
-	if (len < 0) {
-		error = (int)len;
+	if ((error = git_futils_filesize(&len, fd)) < 0)
 		goto cleanup;
-	}
 
 	if (!git__is_sizet(len)) {
 		git_error_set(GIT_ERROR_OS, "file size overflow for 32-bit systems");

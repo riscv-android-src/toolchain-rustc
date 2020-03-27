@@ -2,15 +2,15 @@ use crate::utils::paths;
 use crate::utils::sugg::DiagnosticBuilderExt;
 use crate::utils::{get_trait_def_id, implements_trait, return_ty, same_tys, span_lint_hir_and_then};
 use if_chain::if_chain;
-use rustc::hir;
-use rustc::hir::def_id::DefId;
-use rustc::impl_lint_pass;
-use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
+use rustc::lint::in_external_macro;
 use rustc::ty::{self, Ty};
-use rustc::util::nodemap::HirIdSet;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
+use rustc_hir::HirIdSet;
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for types with a `fn new() -> Self` method and no
@@ -93,8 +93,12 @@ pub struct NewWithoutDefault {
 impl_lint_pass!(NewWithoutDefault => [NEW_WITHOUT_DEFAULT]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NewWithoutDefault {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
-        if let hir::ItemKind::Impl(_, _, _, _, None, _, ref items) = item.kind {
+    #[allow(clippy::too_many_lines)]
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item<'_>) {
+        if let hir::ItemKind::Impl {
+            of_trait: None, items, ..
+        } = item.kind
+        {
             for assoc_item in items {
                 if let hir::AssocItemKind::Method { has_self: false } = assoc_item.kind {
                     let impl_item = cx.tcx.hir().impl_item(assoc_item.id);

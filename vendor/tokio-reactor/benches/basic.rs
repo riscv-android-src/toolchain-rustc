@@ -1,5 +1,4 @@
 #![feature(test)]
-#![deny(warnings)]
 
 extern crate futures;
 extern crate mio;
@@ -16,10 +15,10 @@ mod threadpool {
     use super::*;
     use std::sync::mpsc;
 
-    use test::Bencher;
     use futures::{future, Async};
-    use tokio_reactor::Registration;
+    use test::Bencher;
     use tokio::runtime::Runtime;
+    use tokio_reactor::Registration;
 
     #[bench]
     fn notify_many(b: &mut Bencher) {
@@ -42,22 +41,20 @@ mod threadpool {
                         let mut r = Some(r);
                         let tx = tx.clone();
 
-                        tokio::spawn(future::poll_fn(move || {
-                            loop {
-                                let is_ready = registration.poll_read_ready().unwrap().is_ready();
+                        tokio::spawn(future::poll_fn(move || loop {
+                            let is_ready = registration.poll_read_ready().unwrap().is_ready();
 
-                                if is_ready {
-                                    rem -= 1;
+                            if is_ready {
+                                rem -= 1;
 
-                                    if rem == 0 {
-                                        r.take().unwrap();
-                                        tx.send(()).unwrap();
-                                        return Ok(Async::Ready(()));
-                                    }
-                                } else {
-                                    s.set_readiness(mio::Ready::readable()).unwrap();
-                                    return Ok(Async::NotReady);
+                                if rem == 0 {
+                                    r.take().unwrap();
+                                    tx.send(()).unwrap();
+                                    return Ok(Async::Ready(()));
                                 }
+                            } else {
+                                s.set_readiness(mio::Ready::readable()).unwrap();
+                                return Ok(Async::NotReady);
                             }
                         }));
 
@@ -66,7 +63,8 @@ mod threadpool {
                 }
 
                 Ok(())
-            })).unwrap();
+            }))
+            .unwrap();
 
             for _ in 0..tasks {
                 rx.recv().unwrap();
@@ -105,22 +103,20 @@ mod io_pool {
                         let mut r = Some(r);
                         let tx = tx.clone();
 
-                        tokio::spawn(future::poll_fn(move || {
-                            loop {
-                                let is_ready = registration.poll_read_ready().unwrap().is_ready();
+                        tokio::spawn(future::poll_fn(move || loop {
+                            let is_ready = registration.poll_read_ready().unwrap().is_ready();
 
-                                if is_ready {
-                                    rem -= 1;
+                            if is_ready {
+                                rem -= 1;
 
-                                    if rem == 0 {
-                                        r.take().unwrap();
-                                        tx.send(()).unwrap();
-                                        return Ok(Async::Ready(()));
-                                    }
-                                } else {
-                                    s.set_readiness(mio::Ready::readable()).unwrap();
-                                    return Ok(Async::NotReady);
+                                if rem == 0 {
+                                    r.take().unwrap();
+                                    tx.send(()).unwrap();
+                                    return Ok(Async::Ready(()));
                                 }
+                            } else {
+                                s.set_readiness(mio::Ready::readable()).unwrap();
+                                return Ok(Async::NotReady);
                             }
                         }));
 
@@ -129,7 +125,8 @@ mod io_pool {
                 }
 
                 Ok(())
-            })).unwrap();
+            }))
+            .unwrap();
 
             for _ in 0..tasks {
                 rx.recv().unwrap();

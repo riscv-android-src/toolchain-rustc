@@ -1,11 +1,10 @@
 use crate::utils::{is_allowed, snippet, span_lint_and_sugg};
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 use syntax::ast::LitKind;
-use syntax::source_map::Span;
 use unicode_normalization::UnicodeNormalization;
 
 declare_clippy_lint! {
@@ -67,7 +66,7 @@ declare_clippy_lint! {
 declare_lint_pass!(Unicode => [ZERO_WIDTH_SPACE, NON_ASCII_LITERAL, UNICODE_NOT_NFC]);
 
 impl LateLintPass<'_, '_> for Unicode {
-    fn check_expr(&mut self, cx: &LateContext<'_, '_>, expr: &'_ Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'_, '_>, expr: &'_ Expr<'_>) {
         if let ExprKind::Lit(ref lit) = expr.kind {
             if let LitKind::Str(_, _) = lit.node {
                 check_str(cx, lit.span, expr.hir_id)

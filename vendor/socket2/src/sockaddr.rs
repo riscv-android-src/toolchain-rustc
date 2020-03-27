@@ -4,18 +4,21 @@ use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ptr;
 
 #[cfg(any(unix, target_os = "redox"))]
-use libc::{sa_family_t, sockaddr, sockaddr_in, sockaddr_storage, socklen_t, AF_INET6,
-           sockaddr_in6, AF_INET};
+use libc::{
+    sa_family_t, sockaddr, sockaddr_in, sockaddr_in6, sockaddr_storage, socklen_t, AF_INET,
+    AF_INET6,
+};
 #[cfg(windows)]
-use winapi::shared::ws2def::{ADDRESS_FAMILY as sa_family_t, AF_INET6, SOCKADDR as sockaddr,
-                             SOCKADDR_IN as sockaddr_in, SOCKADDR_STORAGE as sockaddr_storage,
-                             AF_INET};
-#[cfg(windows)]
-use winapi::um::ws2tcpip::socklen_t;
+use winapi::shared::ws2def::{
+    ADDRESS_FAMILY as sa_family_t, AF_INET, AF_INET6, SOCKADDR as sockaddr,
+    SOCKADDR_IN as sockaddr_in, SOCKADDR_STORAGE as sockaddr_storage,
+};
 #[cfg(windows)]
 use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH as sockaddr_in6;
+#[cfg(windows)]
+use winapi::um::ws2tcpip::socklen_t;
 
-use SockAddr;
+use crate::SockAddr;
 
 impl fmt::Debug for SockAddr {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
@@ -59,10 +62,10 @@ impl SockAddr {
     where
         P: AsRef<::std::path::Path>,
     {
+        use libc::{c_char, sockaddr_un, AF_UNIX};
         use std::cmp::Ordering;
         use std::io;
         use std::os::unix::ffi::OsStrExt;
-        use libc::{c_char, sockaddr_un, AF_UNIX};
 
         unsafe {
             let mut addr = mem::zeroed::<sockaddr_un>();
@@ -123,7 +126,7 @@ impl SockAddr {
         unsafe { self.as_(AF_INET as sa_family_t) }
     }
 
-    /// Returns this address as a `SocketAddrV4` if it is in the `AF_INET6`
+    /// Returns this address as a `SocketAddrV6` if it is in the `AF_INET6`
     /// family.
     pub fn as_inet6(&self) -> Option<SocketAddrV6> {
         unsafe { self.as_(AF_INET6 as sa_family_t) }

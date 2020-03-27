@@ -12,7 +12,7 @@ let git_project = git::new("dep1", |project| {
     project
         .file("Cargo.toml", &basic_manifest("dep1"))
         .file("src/lib.rs", r#"pub fn f() { println!("hi!"); } "#)
-}).unwrap();
+});
 
 // Use the `url()` method to get the file url to the new repository.
 let p = project()
@@ -197,7 +197,7 @@ pub fn add_submodule<'a>(
     default_repo_cfg(&subrepo);
     t!(subrepo.remote_add_fetch("origin", "refs/heads/*:refs/heads/*"));
     let mut origin = t!(subrepo.find_remote("origin"));
-    t!(origin.fetch(&[], None, None));
+    t!(origin.fetch(&Vec::<String>::new(), None, None));
     t!(subrepo.checkout_head(None));
     t!(s.add_finalize());
     s

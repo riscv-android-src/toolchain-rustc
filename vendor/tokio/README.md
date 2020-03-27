@@ -14,29 +14,22 @@ the Rust programming language. It is:
 
 [![Crates.io][crates-badge]][crates-url]
 [![MIT licensed][mit-badge]][mit-url]
-[![Travis Build Status][travis-badge]][travis-url]
-[![Appveyor Build Status][appveyor-badge]][appveyor-url]
+[![Build Status][azure-badge]][azure-url]
 [![Gitter chat][gitter-badge]][gitter-url]
 
 [crates-badge]: https://img.shields.io/crates/v/tokio.svg
 [crates-url]: https://crates.io/crates/tokio
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [mit-url]: LICENSE-MIT
-[travis-badge]: https://travis-ci.org/tokio-rs/tokio.svg?branch=master
-[travis-url]: https://travis-ci.org/tokio-rs/tokio
-[appveyor-badge]: https://ci.appveyor.com/api/projects/status/s83yxhy9qeb58va7/branch/master?svg=true
-[appveyor-url]: https://ci.appveyor.com/project/carllerche/tokio/branch/master
+[azure-badge]: https://dev.azure.com/tokio-rs/Tokio/_apis/build/status/tokio-rs.tokio?branchName=master
+[azure-url]: https://dev.azure.com/tokio-rs/Tokio/_build/latest?definitionId=1&branchName=master
 [gitter-badge]: https://img.shields.io/gitter/room/tokio-rs/tokio.svg
 [gitter-url]: https://gitter.im/tokio-rs/tokio
 
 [Website](https://tokio.rs) |
 [Guides](https://tokio.rs/docs/getting-started/hello-world/) |
-[API Docs](https://docs.rs/tokio/0.1.14/tokio) |
+[API Docs](https://docs.rs/tokio/0.1.22/tokio) |
 [Chat](https://gitter.im/tokio-rs/tokio)
-
-The API docs for the master branch are published [here][master-dox].
-
-[master-dox]: https://tokio-rs.github.io/tokio/tokio/
 
 ## Overview
 
@@ -52,9 +45,9 @@ level, it provides a few major components:
 These components provide the runtime components necessary for building
 an asynchronous application.
 
-[net]: https://docs.rs/tokio/0.1/tokio/net/index.html
-[reactor]: https://docs.rs/tokio/0.1/tokio/reactor/index.html
-[scheduler]: https://tokio-rs.github.io/tokio/tokio/runtime/index.html
+[net]: https://docs.rs/tokio/0.1.22/tokio/net/index.html
+[reactor]: https://docs.rs/tokio/0.1.22/tokio/reactor/index.html
+[scheduler]: https://docs.rs/tokio/0.1.22/tokio/runtime/index.html
 
 ## Example
 
@@ -112,63 +105,6 @@ question.  Last, if that doesn't work, try opening an [issue] with the question.
 
 [chat]: https://gitter.im/tokio-rs/tokio
 [issue]: https://github.com/tokio-rs/tokio/issues/new
-
-## Contributing
-
-:balloon: Thanks for your help improving the project! We are so happy to have
-you! We have a [contributing guide][guide] to help you get involved in the Tokio
-project.
-
-[guide]: CONTRIBUTING.md
-
-## Project layout
-
-The `tokio` crate, found at the root, is primarily intended for use by
-application developers.  Library authors should depend on the sub crates, which
-have greater guarantees of stability.
-
-The crates included as part of Tokio are:
-
-* [`tokio-async-await`]: Experimental `async` / `await` support.
-
-* [`tokio-codec`]: Utilities for encoding and decoding protocol frames.
-
-* [`tokio-current-thread`]: Schedule the execution of futures on the current
-  thread.
-
-* [`tokio-executor`]: Task execution related traits and utilities.
-
-* [`tokio-fs`]: Filesystem (and standard in / out) APIs.
-
-* [`tokio-io`]: Asynchronous I/O related traits and utilities.
-
-* [`tokio-reactor`]: Event loop that drives I/O resources (like TCP and UDP
-  sockets).
-
-* [`tokio-tcp`]: TCP bindings for use with `tokio-io` and `tokio-reactor`.
-
-* [`tokio-threadpool`]: Schedules the execution of futures across a pool of
-  threads.
-
-* [ `tokio-timer`]: Time related APIs.
-
-* [`tokio-udp`]: UDP bindings for use with `tokio-io` and `tokio-reactor`.
-
-* [`tokio-uds`]: Unix Domain Socket bindings for use with `tokio-io` and
-  `tokio-reactor`.
-
-[`tokio-async-await`]: tokio-async-await
-[`tokio-codec`]: tokio-codec
-[`tokio-current-thread`]: tokio-current-thread
-[`tokio-executor`]: tokio-executor
-[`tokio-fs`]: tokio-fs
-[`tokio-io`]: tokio-io
-[`tokio-reactor`]: tokio-reactor
-[`tokio-tcp`]: tokio-tcp
-[`tokio-threadpool`]: tokio-threadpool
-[`tokio-timer`]: tokio-timer
-[`tokio-udp`]: tokio-udp
-[`tokio-uds`]: tokio-uds
 
 ## Supported Rust Versions
 

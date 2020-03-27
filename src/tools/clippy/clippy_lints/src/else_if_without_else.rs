@@ -1,8 +1,8 @@
 //! Lint on if expressions with an else if, but without a final else branch.
 
-use rustc::declare_lint_pass;
-use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintContext, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc::lint::in_external_macro;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast::*;
 
 use crate::utils::span_help_and_lint;
@@ -43,7 +43,7 @@ declare_clippy_lint! {
     /// ```
     pub ELSE_IF_WITHOUT_ELSE,
     restriction,
-    "if expression with an `else if`, but without a final `else` branch"
+    "`if` expression with an `else if`, but without a final `else` branch"
 }
 
 declare_lint_pass!(ElseIfWithoutElse => [ELSE_IF_WITHOUT_ELSE]);
@@ -60,7 +60,7 @@ impl EarlyLintPass for ElseIfWithoutElse {
                     cx,
                     ELSE_IF_WITHOUT_ELSE,
                     els.span,
-                    "if expression with an `else if`, but without a final `else`",
+                    "`if` expression with an `else if`, but without a final `else`",
                     "add an `else` block here",
                 );
             }

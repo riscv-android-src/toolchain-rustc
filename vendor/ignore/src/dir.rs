@@ -197,7 +197,12 @@ impl Ignore {
             errs.maybe_push(err);
             igtmp.is_absolute_parent = true;
             igtmp.absolute_base = Some(absolute_base.clone());
-            igtmp.has_git = parent.join(".git").exists();
+            igtmp.has_git =
+                if self.0.opts.git_ignore {
+                    parent.join(".git").exists()
+                } else {
+                    false
+                };
             ig = Ignore(Arc::new(igtmp));
             compiled.insert(parent.as_os_str().to_os_string(), ig.clone());
         }
@@ -275,6 +280,12 @@ impl Ignore {
                 errs.maybe_push(err);
                 m
             };
+        let has_git =
+            if self.0.opts.git_ignore {
+                dir.join(".git").exists()
+            } else {
+                false
+            };
         let ig = IgnoreInner {
             compiled: self.0.compiled.clone(),
             dir: dir.to_path_buf(),
@@ -290,7 +301,7 @@ impl Ignore {
             git_global_matcher: self.0.git_global_matcher.clone(),
             git_ignore_matcher: gi_matcher,
             git_exclude_matcher: gi_exclude_matcher,
-            has_git: dir.join(".git").exists(),
+            has_git: has_git,
             opts: self.0.opts,
         };
         (ig, errs.into_error_option())
@@ -710,10 +721,9 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
-    use tempfile::{self, TempDir};
-
     use dir::IgnoreBuilder;
     use gitignore::Gitignore;
+    use tests::TempDir;
     use Error;
 
     fn wfile<P: AsRef<Path>>(path: P, contents: &str) {
@@ -733,7 +743,7 @@ mod tests {
     }
 
     fn tmpdir(prefix: &str) -> TempDir {
-        tempfile::Builder::new().prefix(prefix).tempdir().unwrap()
+        TempDir::new().unwrap()
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc::lint::in_external_macro;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 use crate::utils::{self, paths, span_lint};
 
@@ -46,7 +46,7 @@ declare_clippy_lint! {
 declare_lint_pass!(NoNegCompOpForPartialOrd => [NEG_CMP_OP_ON_PARTIAL_ORD]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NoNegCompOpForPartialOrd {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
 
             if !in_external_macro(cx.sess(), expr.span);

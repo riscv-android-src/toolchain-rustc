@@ -11,17 +11,17 @@
 use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{self, Ipv4Addr, Ipv6Addr, Shutdown};
-use std::time::Duration;
 #[cfg(all(unix, feature = "unix"))]
 use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
+use std::time::Duration;
 
 #[cfg(any(unix, target_os = "redox"))]
 use libc as c;
 #[cfg(windows)]
 use winapi::shared::ws2def as c;
 
-use sys;
-use {Domain, Protocol, SockAddr, Socket, Type};
+use crate::sys;
+use crate::{Domain, Protocol, SockAddr, Socket, Type};
 
 impl Socket {
     /// Creates a new socket ready to be configured.
@@ -632,20 +632,20 @@ impl Socket {
     ///
     /// This function is only available on Unix when the `reuseport` feature is
     /// enabled.
-    #[cfg(all(unix, feature = "reuseport"))]
+    #[cfg(all(unix, not(target_os = "solaris"), feature = "reuseport"))]
     pub fn reuse_port(&self) -> io::Result<bool> {
         self.inner.reuse_port()
     }
 
     /// Set value for the `SO_REUSEPORT` option on this socket.
     ///
-    /// This indicates that futher calls to `bind` may allow reuse of local
+    /// This indicates that further calls to `bind` may allow reuse of local
     /// addresses. For IPv4 sockets this means that a socket may bind even when
     /// there's a socket already listening on this port.
     ///
     /// This function is only available on Unix when the `reuseport` feature is
     /// enabled.
-    #[cfg(all(unix, feature = "reuseport"))]
+    #[cfg(all(unix, not(target_os = "solaris"), feature = "reuseport"))]
     pub fn set_reuse_port(&self, reuse: bool) -> io::Result<()> {
         self.inner.set_reuse_port(reuse)
     }
@@ -838,25 +838,25 @@ impl Type {
     }
 }
 
-impl ::Protocol {
+impl crate::Protocol {
     /// Protocol corresponding to `ICMPv4`
     pub fn icmpv4() -> Self {
-        ::Protocol(sys::IPPROTO_ICMP)
+        crate::Protocol(sys::IPPROTO_ICMP)
     }
 
     /// Protocol corresponding to `ICMPv6`
     pub fn icmpv6() -> Self {
-        ::Protocol(sys::IPPROTO_ICMPV6)
+        crate::Protocol(sys::IPPROTO_ICMPV6)
     }
 
     /// Protocol corresponding to `TCP`
     pub fn tcp() -> Self {
-        ::Protocol(sys::IPPROTO_TCP)
+        crate::Protocol(sys::IPPROTO_TCP)
     }
 
     /// Protocol corresponding to `UDP`
     pub fn udp() -> Self {
-        ::Protocol(sys::IPPROTO_UDP)
+        crate::Protocol(sys::IPPROTO_UDP)
     }
 }
 
@@ -981,5 +981,17 @@ mod test {
         socket.set_keepalive(None).unwrap();
         #[cfg(unix)]
         assert_eq!(socket.keepalive().unwrap(), None);
+    }
+
+    #[test]
+    fn nodelay() {
+        let socket = Socket::new(Domain::ipv4(), Type::stream(), None).unwrap();
+
+        assert!(socket.set_nodelay(true).is_ok());
+
+        let result = socket.nodelay();
+
+        assert!(result.is_ok());
+        assert!(result.unwrap());
     }
 }

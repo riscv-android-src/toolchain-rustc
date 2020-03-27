@@ -12,7 +12,7 @@
 # > cmake --build . --target install
 
 PROJECT(libgit2 C)
-CMAKE_MINIMUM_REQUIRED(VERSION 2.8.11)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.5.1)
 CMAKE_POLICY(SET CMP0015 NEW)
 IF(POLICY CMP0051)
 	CMAKE_POLICY(SET CMP0051 NEW)
@@ -50,7 +50,7 @@ OPTION(BUILD_EXAMPLES			"Build library usage example apps"			OFF)
 OPTION(BUILD_FUZZERS			"Build the fuzz targets"				OFF)
 OPTION(TAGS				"Generate tags"						OFF)
 OPTION(PROFILE				"Generate profiling information"			OFF)
-OPTION(ENABLE_TRACE			"Enables tracing support"				OFF)
+OPTION(ENABLE_TRACE			"Enables tracing support"				ON)
 OPTION(LIBGIT2_FILENAME			"Name of the produced binary"				OFF)
 OPTION(USE_SSH				"Link with libssh2 to enable SSH support"		 ON)
 OPTION(USE_HTTPS			"Enable HTTPS support. Can be set to a specific backend" ON)
@@ -263,6 +263,11 @@ ELSE ()
 	ENDIF ()
 ENDIF()
 
+# Ensure that MinGW provides the correct header files.
+IF (WIN32 AND NOT CYGWIN)
+	ADD_DEFINITIONS(-DWIN32 -D_WIN32_WINNT=0x0600)
+ENDIF()
+
 IF( NOT CMAKE_CONFIGURATION_TYPES )
 	# Build Debug by default
 	IF (NOT CMAKE_BUILD_TYPE)
@@ -330,10 +335,5 @@ IF(BUILD_FUZZERS)
 	ADD_SUBDIRECTORY(fuzzers)
 ENDIF()
 
-IF(CMAKE_VERSION VERSION_GREATER 3)
-	FEATURE_SUMMARY(WHAT ENABLED_FEATURES DESCRIPTION "Enabled features:")
-	FEATURE_SUMMARY(WHAT DISABLED_FEATURES DESCRIPTION "Disabled features:")
-ELSE()
-	PRINT_ENABLED_FEATURES()
-	PRINT_DISABLED_FEATURES()
-ENDIF()
+FEATURE_SUMMARY(WHAT ENABLED_FEATURES DESCRIPTION "Enabled features:")
+FEATURE_SUMMARY(WHAT DISABLED_FEATURES DESCRIPTION "Disabled features:")

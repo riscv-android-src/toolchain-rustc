@@ -1,12 +1,11 @@
 use crate::utils::{span_lint, span_lint_and_then};
-use rustc::impl_lint_pass;
-use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::source_map::Span;
+use rustc_span::symbol::SymbolStr;
 use std::cmp::Ordering;
 use syntax::ast::*;
 use syntax::attr;
-use syntax::source_map::Span;
-use syntax::symbol::SymbolStr;
 use syntax::visit::{walk_block, walk_expr, walk_pat, Visitor};
 
 declare_clippy_lint! {
@@ -358,8 +357,8 @@ impl EarlyLintPass for NonExpressiveNames {
         }
     }
 
-    fn check_impl_item(&mut self, cx: &EarlyContext<'_>, item: &ImplItem) {
-        if let ImplItemKind::Method(ref sig, ref blk) = item.kind {
+    fn check_impl_item(&mut self, cx: &EarlyContext<'_>, item: &AssocItem) {
+        if let AssocItemKind::Fn(ref sig, Some(ref blk)) = item.kind {
             do_check(self, cx, &item.attrs, &sig.decl, blk);
         }
     }

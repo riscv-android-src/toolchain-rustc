@@ -65,9 +65,9 @@ pub use core::time::Duration;
 ///
 /// |  Platform |               System call                                            |
 /// |:---------:|:--------------------------------------------------------------------:|
-/// | Cloud ABI | [clock_time_get (Monotonic Clock)]                                   |
+/// | CloudABI  | [clock_time_get (Monotonic Clock)]                                   |
 /// | SGX       | [`insecure_time` usercall]. More information on [timekeeping in SGX] |
-/// | UNIX      | [clock_time_get (Monotonic Clock)]                                   |
+/// | UNIX      | [clock_gettime (Monotonic Clock)]                                    |
 /// | Darwin    | [mach_absolute_time]                                                 |
 /// | VXWorks   | [clock_gettime (Monotonic Clock)]                                    |
 /// | WASI      | [__wasi_clock_time_get (Monotonic Clock)]                            |
@@ -79,7 +79,7 @@ pub use core::time::Duration;
 /// [__wasi_clock_time_get (Monotonic Clock)]: https://github.com/CraneStation/wasmtime/blob/master/docs/WASI-api.md#clock_time_get
 /// [clock_gettime (Monotonic Clock)]: https://linux.die.net/man/3/clock_gettime
 /// [mach_absolute_time]: https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/KernelProgramming/services/services.html
-/// [clock_time_get (Monotonic Clock)]: https://github.com/NuxiNL/cloudabi/blob/master/cloudabi.txt
+/// [clock_time_get (Monotonic Clock)]: https://nuxi.nl/cloudabi/#clock_time_get
 ///
 /// **Disclaimer:** These system calls might change over time.
 ///
@@ -144,7 +144,7 @@ pub struct Instant(time::Instant);
 ///
 /// |  Platform |               System call                                            |
 /// |:---------:|:--------------------------------------------------------------------:|
-/// | Cloud ABI | [clock_time_get (Realtime Clock)]                                    |
+/// | CloudABI  | [clock_time_get (Realtime Clock)]                                    |
 /// | SGX       | [`insecure_time` usercall]. More information on [timekeeping in SGX] |
 /// | UNIX      | [clock_gettime (Realtime Clock)]                                     |
 /// | DARWIN    | [gettimeofday]                                                       |
@@ -152,7 +152,9 @@ pub struct Instant(time::Instant);
 /// | WASI      | [__wasi_clock_time_get (Realtime Clock)]                             |
 /// | Windows   | [GetSystemTimeAsFileTime]                                            |
 ///
-/// [clock_time_get (Realtime Clock)]: https://github.com/NuxiNL/cloudabi/blob/master/cloudabi.txt
+/// [clock_time_get (Realtime Clock)]: https://nuxi.nl/cloudabi/#clock_time_get
+/// [`insecure_time` usercall]: https://edp.fortanix.com/docs/api/fortanix_sgx_abi/struct.Usercalls.html#method.insecure_time
+/// [timekeeping in SGX]: https://edp.fortanix.com/docs/concepts/rust-std/#codestdtimecode
 /// [gettimeofday]: http://man7.org/linux/man-pages/man2/gettimeofday.2.html
 /// [clock_gettime (Realtime Clock)]: https://linux.die.net/man/3/clock_gettime
 /// [__wasi_clock_time_get (Realtime Clock)]: https://github.com/CraneStation/wasmtime/blob/master/docs/WASI-api.md#clock_time_get
@@ -621,6 +623,7 @@ impl SystemTimeError {
 
 #[stable(feature = "time2", since = "1.8.0")]
 impl Error for SystemTimeError {
+    #[allow(deprecated)]
     fn description(&self) -> &str {
         "other time was not earlier than self"
     }

@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::iter::FromIterator;
 
-use crate::core::dependency::Kind;
+use crate::core::dependency::DepKind;
 use crate::core::{Dependency, PackageId, PackageIdSpec, Summary, Target};
 use crate::util::errors::CargoResult;
 use crate::util::Graph;
@@ -87,7 +87,7 @@ impl Resolve {
                     .edges(p)
                     .filter(|(_, deps)| {
                         deps.iter()
-                            .any(|d| d.kind() == Kind::Normal && d.is_public())
+                            .any(|d| d.kind() == DepKind::Normal && d.is_public())
                     })
                     .map(|(dep_package, _)| *dep_package)
                     .collect::<HashSet<PackageId>>();
@@ -150,7 +150,7 @@ impl Resolve {
                 // desires stronger checksum guarantees than can be afforded
                 // elsewhere.
                 if cksum.is_none() {
-                    failure::bail!(
+                    anyhow::bail!(
                         "\
 checksum for `{}` was not previously calculated, but a checksum could now \
 be calculated
@@ -172,7 +172,7 @@ this could be indicative of a few possible situations:
                 // more realistically we were overridden with a source that does
                 // not have checksums.
                 } else if mine.is_none() {
-                    failure::bail!(
+                    anyhow::bail!(
                         "\
 checksum for `{}` could not be calculated, but a checksum is listed in \
 the existing lock file
@@ -193,7 +193,7 @@ unable to verify that `{0}` is the same as when the lockfile was generated
                 // must both be Some, in which case the checksum now differs.
                 // That's quite bad!
                 } else {
-                    failure::bail!(
+                    anyhow::bail!(
                         "\
 checksum for `{}` changed between lock files
 
@@ -338,7 +338,7 @@ unable to verify that `{0}` is the same as when the lockfile was generated
         });
         let name = names.next().unwrap_or_else(|| crate_name.clone());
         for n in names {
-            failure::ensure!(
+            anyhow::ensure!(
                 n == name,
                 "the crate `{}` depends on crate `{}` multiple times with different names",
                 from,

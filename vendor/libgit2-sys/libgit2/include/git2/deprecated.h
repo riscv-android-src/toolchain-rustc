@@ -7,6 +7,7 @@
 #ifndef INCLUDE_git_deprecated_h__
 #define INCLUDE_git_deprecated_h__
 
+#include "attr.h"
 #include "config.h"
 #include "common.h"
 #include "blame.h"
@@ -66,6 +67,8 @@ GIT_BEGIN_DECL
 #define GIT_ATTR_FALSE(attr) GIT_ATTR_IS_FALSE(attr)
 #define GIT_ATTR_UNSPECIFIED(attr) GIT_ATTR_IS_UNSPECIFIED(attr)
 
+typedef git_attr_value_t git_attr_t;
+
 /**@}*/
 
 /** @name Deprecated Blob Functions
@@ -89,6 +92,13 @@ GIT_EXTERN(int) git_blob_create_fromstream_commit(
 	git_writestream *stream);
 GIT_EXTERN(int) git_blob_create_frombuffer(
 	git_oid *id, git_repository *repo, const void *buffer, size_t len);
+
+/** Deprecated in favor of @see git_blob_filter */
+GIT_EXTERN(int) git_blob_filtered_content(
+	git_buf *out,
+	git_blob *blob,
+	const char *as_path,
+	int check_for_binary_data);
 
 /**@}*/
 

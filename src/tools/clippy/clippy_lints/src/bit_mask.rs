@@ -2,13 +2,12 @@ use crate::consts::{constant, Constant};
 use crate::utils::sugg::Sugg;
 use crate::utils::{span_lint, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::hir::*;
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::source_map::Span;
 use syntax::ast::LitKind;
-use syntax::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for incompatible bit masks in comparisons.
@@ -112,7 +111,7 @@ impl BitMask {
 impl_lint_pass!(BitMask => [BAD_BIT_MASK, INEFFECTIVE_BIT_MASK, VERBOSE_BIT_MASK]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BitMask {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         if let ExprKind::Binary(cmp, left, right) = &e.kind {
             if cmp.node.is_comparison() {
                 if let Some(cmp_opt) = fetch_int_literal(cx, right) {
@@ -165,7 +164,7 @@ fn invert_cmp(cmp: BinOpKind) -> BinOpKind {
     }
 }
 
-fn check_compare(cx: &LateContext<'_, '_>, bit_op: &Expr, cmp_op: BinOpKind, cmp_value: u128, span: Span) {
+fn check_compare(cx: &LateContext<'_, '_>, bit_op: &Expr<'_>, cmp_op: BinOpKind, cmp_value: u128, span: Span) {
     if let ExprKind::Binary(op, left, right) = &bit_op.kind {
         if op.node != BinOpKind::BitAnd && op.node != BinOpKind::BitOr {
             return;
@@ -319,7 +318,7 @@ fn check_ineffective_gt(cx: &LateContext<'_, '_>, span: Span, m: u128, c: u128, 
     }
 }
 
-fn fetch_int_literal(cx: &LateContext<'_, '_>, lit: &Expr) -> Option<u128> {
+fn fetch_int_literal(cx: &LateContext<'_, '_>, lit: &Expr<'_>) -> Option<u128> {
     match constant(cx, cx.tables, lit)?.0 {
         Constant::Int(n) => Some(n),
         _ => None,

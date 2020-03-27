@@ -1,11 +1,10 @@
 //! Lint on unnecessary double comparisons. Some examples:
 
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 
 use crate::utils::{snippet_with_applicability, span_lint_and_sugg, SpanlessEq};
 
@@ -40,7 +39,7 @@ declare_lint_pass!(DoubleComparisons => [DOUBLE_COMPARISONS]);
 
 impl<'a, 'tcx> DoubleComparisons {
     #[allow(clippy::similar_names)]
-    fn check_binop(cx: &LateContext<'a, 'tcx>, op: BinOpKind, lhs: &'tcx Expr, rhs: &'tcx Expr, span: Span) {
+    fn check_binop(cx: &LateContext<'a, 'tcx>, op: BinOpKind, lhs: &'tcx Expr<'_>, rhs: &'tcx Expr<'_>, span: Span) {
         let (lkind, llhs, lrhs, rkind, rlhs, rrhs) = match (&lhs.kind, &rhs.kind) {
             (ExprKind::Binary(lb, llhs, lrhs), ExprKind::Binary(rb, rlhs, rrhs)) => {
                 (lb.node, llhs, lrhs, rb.node, rlhs, rrhs)
@@ -88,7 +87,7 @@ impl<'a, 'tcx> DoubleComparisons {
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DoubleComparisons {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if let ExprKind::Binary(ref kind, ref lhs, ref rhs) = expr.kind {
             Self::check_binop(cx, kind.node, lhs, rhs, expr.span);
         }

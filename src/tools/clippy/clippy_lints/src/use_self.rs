@@ -1,15 +1,16 @@
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::hir::def::{DefKind, Res};
-use rustc::hir::intravisit::{walk_item, walk_path, walk_ty, NestedVisitorMap, Visitor};
-use rustc::hir::*;
-use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
+use rustc::hir::map::Map;
+use rustc::lint::in_external_macro;
 use rustc::ty;
 use rustc::ty::{DefIdTree, Ty};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax_pos::symbol::kw;
+use rustc_hir as hir;
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::intravisit::{walk_item, walk_path, walk_ty, NestedVisitorMap, Visitor};
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::symbol::kw;
 
 use crate::utils::{differing_macro_contexts, span_lint_and_sugg};
 
@@ -52,7 +53,7 @@ declare_lint_pass!(UseSelf => [USE_SELF]);
 
 const SEGMENTS_MSG: &str = "segments should be composed of at least 1 element";
 
-fn span_use_self_lint(cx: &LateContext<'_, '_>, path: &Path, last_segment: Option<&PathSegment>) {
+fn span_use_self_lint(cx: &LateContext<'_, '_>, path: &Path<'_>, last_segment: Option<&PathSegment<'_>>) {
     let last_segment = last_segment.unwrap_or_else(|| path.segments.last().expect(SEGMENTS_MSG));
 
     // Path segments only include actual path, no methods or fields.
@@ -84,7 +85,9 @@ struct TraitImplTyVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for TraitImplTyVisitor<'a, 'tcx> {
-    fn visit_ty(&mut self, t: &'tcx hir::Ty) {
+    type Map = Map<'tcx>;
+
+    fn visit_ty(&mut self, t: &'tcx hir::Ty<'_>) {
         let trait_ty = self.trait_type_walker.next();
         let impl_ty = self.impl_type_walker.next();
 
@@ -107,7 +110,7 @@ impl<'a, 'tcx> Visitor<'tcx> for TraitImplTyVisitor<'a, 'tcx> {
         walk_ty(self, t)
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -115,8 +118,8 @@ impl<'a, 'tcx> Visitor<'tcx> for TraitImplTyVisitor<'a, 'tcx> {
 fn check_trait_method_impl_decl<'a, 'tcx>(
     cx: &'a LateContext<'a, 'tcx>,
     item_type: Ty<'tcx>,
-    impl_item: &ImplItem,
-    impl_decl: &'tcx FnDecl,
+    impl_item: &ImplItem<'_>,
+    impl_decl: &'tcx FnDecl<'_>,
     impl_trait_ref: &ty::TraitRef<'_>,
 ) {
     let trait_method = cx
@@ -165,12 +168,12 @@ fn check_trait_method_impl_decl<'a, 'tcx>(
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UseSelf {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
         if in_external_macro(cx.sess(), item.span) {
             return;
         }
         if_chain! {
-            if let ItemKind::Impl(.., ref item_type, ref refs) = item.kind;
+            if let ItemKind::Impl{ self_ty: ref item_type, items: refs, .. } = item.kind;
             if let TyKind::Path(QPath::Resolved(_, ref item_path)) = item_type.kind;
             then {
                 let parameters = &item_path.segments.last().expect(SEGMENTS_MSG).args;
@@ -218,12 +221,14 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UseSelf {
 }
 
 struct UseSelfVisitor<'a, 'tcx> {
-    item_path: &'a Path,
+    item_path: &'a Path<'a>,
     cx: &'a LateContext<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for UseSelfVisitor<'a, 'tcx> {
-    fn visit_path(&mut self, path: &'tcx Path, _id: HirId) {
+    type Map = Map<'tcx>;
+
+    fn visit_path(&mut self, path: &'tcx Path<'_>, _id: HirId) {
         if !path.segments.iter().any(|p| p.ident.span.is_dummy()) {
             if path.segments.len() >= 2 {
                 let last_but_one = &path.segments[path.segments.len() - 2];
@@ -257,14 +262,14 @@ impl<'a, 'tcx> Visitor<'tcx> for UseSelfVisitor<'a, 'tcx> {
         walk_path(self, path);
     }
 
-    fn visit_item(&mut self, item: &'tcx Item) {
+    fn visit_item(&mut self, item: &'tcx Item<'_>) {
         match item.kind {
             ItemKind::Use(..)
             | ItemKind::Static(..)
             | ItemKind::Enum(..)
             | ItemKind::Struct(..)
             | ItemKind::Union(..)
-            | ItemKind::Impl(..)
+            | ItemKind::Impl { .. }
             | ItemKind::Fn(..) => {
                 // Don't check statements that shadow `Self` or where `Self` can't be used
             },
@@ -272,7 +277,7 @@ impl<'a, 'tcx> Visitor<'tcx> for UseSelfVisitor<'a, 'tcx> {
         }
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::All(&self.cx.tcx.hir())
     }
 }

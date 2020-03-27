@@ -1,10 +1,9 @@
 use crate::utils::{
     get_trait_def_id, if_sequence, implements_trait, parent_node_is_if_expr, paths, span_help_and_lint, SpanlessEq,
 };
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks comparison chains written with `if` that can be
@@ -54,7 +53,7 @@ declare_clippy_lint! {
 declare_lint_pass!(ComparisonChain => [COMPARISON_CHAIN]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ComparisonChain {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if expr.span.from_expansion() {
             return;
         }

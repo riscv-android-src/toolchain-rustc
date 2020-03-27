@@ -1,14 +1,14 @@
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintContext, LintPass};
+use rustc::lint::in_external_macro;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
+use rustc_span::BytePos;
 use syntax::ast;
-use syntax::source_map::Span;
 use syntax::visit::FnKind;
-use syntax_pos::BytePos;
 
-use crate::utils::{match_path_ast, snippet_opt, span_lint_and_then};
+use crate::utils::{in_macro, match_path_ast, snippet_opt, span_lint_and_then};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for return statements at the end of a block.
@@ -154,7 +154,7 @@ impl Return {
                     return;
                 }
 
-                span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
+                span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded `return` statement", |db| {
                     if let Some(snippet) = snippet_opt(cx, inner_span) {
                         db.span_suggestion(ret_span, "remove `return`", snippet, Applicability::MachineApplicable);
                     }
@@ -162,7 +162,7 @@ impl Return {
             },
             None => match replacement {
                 RetReplacement::Empty => {
-                    span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
+                    span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded `return` statement", |db| {
                         db.span_suggestion(
                             ret_span,
                             "remove `return`",
@@ -172,7 +172,7 @@ impl Return {
                     });
                 },
                 RetReplacement::Block => {
-                    span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded return statement", |db| {
+                    span_lint_and_then(cx, NEEDLESS_RETURN, ret_span, "unneeded `return` statement", |db| {
                         db.span_suggestion(
                             ret_span,
                             "replace `return` with an empty block",
@@ -205,14 +205,15 @@ impl Return {
             if !in_external_macro(cx.sess(), initexpr.span);
             if !in_external_macro(cx.sess(), retexpr.span);
             if !in_external_macro(cx.sess(), local.span);
+            if !in_macro(local.span);
             then {
                 span_lint_and_then(
                     cx,
                     LET_AND_RETURN,
                     retexpr.span,
-                    "returning the result of a let binding from a block",
+                    "returning the result of a `let` binding from a block",
                     |err| {
-                        err.span_label(local.span, "unnecessary let binding");
+                        err.span_label(local.span, "unnecessary `let` binding");
 
                         if let Some(snippet) = snippet_opt(cx, initexpr.span) {
                             err.multipart_suggestion(

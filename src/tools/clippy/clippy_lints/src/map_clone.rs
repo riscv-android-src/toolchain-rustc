@@ -3,14 +3,13 @@ use crate::utils::{
     is_copy, match_trait_method, match_type, remove_blocks, snippet_with_applicability, span_lint_and_sugg,
 };
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir as hir;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 use syntax::ast::Ident;
-use syntax::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for usage of `iterator.map(|x| x.clone())` and suggests
@@ -43,7 +42,7 @@ declare_clippy_lint! {
 declare_lint_pass!(MapClone => [MAP_CLONE]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MapClone {
-    fn check_expr(&mut self, cx: &LateContext<'_, '_>, e: &hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'_, '_>, e: &hir::Expr<'_>) {
         if e.span.from_expansion() {
             return;
         }
@@ -69,8 +68,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MapClone {
                     hir::PatKind::Binding(hir::BindingAnnotation::Unannotated, .., name, None) => {
                         match closure_expr.kind {
                             hir::ExprKind::Unary(hir::UnOp::UnDeref, ref inner) => {
-                                if ident_eq(name, inner) && !cx.tables.expr_ty(inner).is_box() {
-                                    lint(cx, e.span, args[0].span, true);
+                                if ident_eq(name, inner) {
+                                    if let ty::Ref(..) = cx.tables.expr_ty(inner).kind {
+                                        lint(cx, e.span, args[0].span, true);
+                                    }
                                 }
                             },
                             hir::ExprKind::MethodCall(ref method, _, ref obj) => {
@@ -96,7 +97,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MapClone {
     }
 }
 
-fn ident_eq(name: Ident, path: &hir::Expr) -> bool {
+fn ident_eq(name: Ident, path: &hir::Expr<'_>) -> bool {
     if let hir::ExprKind::Path(hir::QPath::Resolved(None, ref path)) = path.kind {
         path.segments.len() == 1 && path.segments[0].ident == name
     } else {
@@ -110,7 +111,7 @@ fn lint_needless_cloning(cx: &LateContext<'_, '_>, root: Span, receiver: Span) {
         MAP_CLONE,
         root.trim_start(receiver).unwrap(),
         "You are needlessly cloning iterator elements",
-        "Remove the map call",
+        "Remove the `map` call",
         String::new(),
         Applicability::MachineApplicable,
     )

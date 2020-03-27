@@ -1,10 +1,9 @@
 use crate::utils::{is_copy, match_def_path, paths, qpath_res, span_note_and_lint};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for calls to `std::mem::drop` with a reference
@@ -102,15 +101,15 @@ const DROP_REF_SUMMARY: &str = "calls to `std::mem::drop` with a reference inste
                                 Dropping a reference does nothing.";
 const FORGET_REF_SUMMARY: &str = "calls to `std::mem::forget` with a reference instead of an owned value. \
                                   Forgetting a reference does nothing.";
-const DROP_COPY_SUMMARY: &str = "calls to `std::mem::drop` with a value that implements Copy. \
+const DROP_COPY_SUMMARY: &str = "calls to `std::mem::drop` with a value that implements `Copy`. \
                                  Dropping a copy leaves the original intact.";
-const FORGET_COPY_SUMMARY: &str = "calls to `std::mem::forget` with a value that implements Copy. \
+const FORGET_COPY_SUMMARY: &str = "calls to `std::mem::forget` with a value that implements `Copy`. \
                                    Forgetting a copy leaves the original intact.";
 
 declare_lint_pass!(DropForgetRef => [DROP_REF, FORGET_REF, DROP_COPY, FORGET_COPY]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DropForgetRef {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Call(ref path, ref args) = expr.kind;
             if let ExprKind::Path(ref qpath) = path.kind;
@@ -137,7 +136,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DropForgetRef {
                                        expr.span,
                                        &msg,
                                        arg.span,
-                                       &format!("argument has type {}", arg_ty));
+                                       &format!("argument has type `{}`", arg_ty));
                 } else if is_copy(cx, arg_ty) {
                     if match_def_path(cx, def_id, &paths::DROP) {
                         lint = DROP_COPY;

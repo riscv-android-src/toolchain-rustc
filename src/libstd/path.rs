@@ -2,7 +2,7 @@
 
 //! Cross-platform path manipulation.
 //!
-//! This module provides two types, [`PathBuf`] and [`Path`][`Path`] (akin to [`String`]
+//! This module provides two types, [`PathBuf`] and [`Path`] (akin to [`String`]
 //! and [`str`]), for working with paths abstractly. These types are thin wrappers
 //! around [`OsString`] and [`OsStr`] respectively, meaning that they work directly
 //! on strings according to the local platform's path syntax.
@@ -224,18 +224,12 @@ impl<'a> Prefix<'a> {
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn is_verbatim(&self) -> bool {
         use self::Prefix::*;
-        match *self {
-            Verbatim(_) | VerbatimDisk(_) | VerbatimUNC(..) => true,
-            _ => false,
-        }
+        matches!(*self, Verbatim(_) | VerbatimDisk(_) | VerbatimUNC(..))
     }
 
     #[inline]
     fn is_drive(&self) -> bool {
-        match *self {
-            Prefix::Disk(_) => true,
-            _ => false,
-        }
+        matches!(*self, Prefix::Disk(_))
     }
 
     #[inline]
@@ -296,6 +290,13 @@ where
 }
 
 // See note at the top of this module to understand why these are used:
+//
+// These casts are safe as OsStr is internally a wrapper around [u8] on all
+// platforms.
+//
+// Note that currently this relies on the special knowledge that libstd has;
+// these types are single-element structs but are not marked repr(transparent)
+// or repr(C) which would make these casts allowable outside std.
 fn os_str_as_u8_slice(s: &OsStr) -> &[u8] {
     unsafe { &*(s as *const OsStr as *const [u8]) }
 }
@@ -1474,6 +1475,7 @@ impl From<OsString> for PathBuf {
     /// Converts a `OsString` into a `PathBuf`
     ///
     /// This conversion does not allocate or copy memory.
+    #[inline]
     fn from(s: OsString) -> PathBuf {
         PathBuf { inner: s }
     }
@@ -1534,7 +1536,7 @@ impl fmt::Debug for PathBuf {
 #[stable(feature = "rust1", since = "1.0.0")]
 impl ops::Deref for PathBuf {
     type Target = Path;
-
+    #[inline]
     fn deref(&self) -> &Path {
         Path::new(&self.inner)
     }
@@ -2654,6 +2656,7 @@ impl AsRef<Path> for OsString {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl AsRef<Path> for str {
+    #[inline]
     fn as_ref(&self) -> &Path {
         Path::new(self)
     }
@@ -2668,6 +2671,7 @@ impl AsRef<Path> for String {
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl AsRef<Path> for PathBuf {
+    #[inline]
     fn as_ref(&self) -> &Path {
         self
     }
@@ -2786,6 +2790,7 @@ impl_cmp_os_str!(Cow<'a, Path>, OsString);
 
 #[stable(since = "1.7.0", feature = "strip_prefix")]
 impl fmt::Display for StripPrefixError {
+    #[allow(deprecated, deprecated_in_future)]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.description().fmt(f)
     }
@@ -2793,6 +2798,7 @@ impl fmt::Display for StripPrefixError {
 
 #[stable(since = "1.7.0", feature = "strip_prefix")]
 impl Error for StripPrefixError {
+    #[allow(deprecated)]
     fn description(&self) -> &str {
         "prefix not found"
     }

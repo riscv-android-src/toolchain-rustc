@@ -1,10 +1,9 @@
 use super::utils::{get_arg_name, match_var, remove_blocks, snippet_with_applicability, span_lint_and_sugg};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for matches being used to destructure a single-variant enum
@@ -38,13 +37,13 @@ declare_clippy_lint! {
     /// ```
     pub INFALLIBLE_DESTRUCTURING_MATCH,
     style,
-    "a match statement with a single infallible arm instead of a `let`"
+    "a `match` statement with a single infallible arm instead of a `let`"
 }
 
 declare_lint_pass!(InfallibleDestructingMatch => [INFALLIBLE_DESTRUCTURING_MATCH]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InfallibleDestructingMatch {
-    fn check_local(&mut self, cx: &LateContext<'a, 'tcx>, local: &'tcx Local) {
+    fn check_local(&mut self, cx: &LateContext<'a, 'tcx>, local: &'tcx Local<'_>) {
         if_chain! {
             if let Some(ref expr) = local.init;
             if let ExprKind::Match(ref target, ref arms, MatchSource::Normal) = expr.kind;
@@ -61,7 +60,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InfallibleDestructingMatch {
                     cx,
                     INFALLIBLE_DESTRUCTURING_MATCH,
                     local.span,
-                    "you seem to be trying to use match to destructure a single infallible pattern. \
+                    "you seem to be trying to use `match` to destructure a single infallible pattern. \
                      Consider using `let`",
                     "try this",
                     format!(

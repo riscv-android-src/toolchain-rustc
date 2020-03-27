@@ -4,7 +4,7 @@ use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
-use failure::{bail, format_err};
+use anyhow::{bail, format_err};
 use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 
@@ -427,7 +427,7 @@ impl CrateListingV2 {
             info.features = feature_set(&opts.features);
             info.all_features = opts.all_features;
             info.no_default_features = opts.no_default_features;
-            info.profile = opts.build_config.profile_name().to_string();
+            info.profile = opts.build_config.requested_profile.to_string();
             info.target = Some(target.to_string());
             info.rustc = Some(rustc.to_string());
         } else {
@@ -439,7 +439,7 @@ impl CrateListingV2 {
                     features: feature_set(&opts.features),
                     all_features: opts.all_features,
                     no_default_features: opts.no_default_features,
-                    profile: opts.build_config.profile_name().to_string(),
+                    profile: opts.build_config.requested_profile.to_string(),
                     target: Some(target.to_string()),
                     rustc: Some(rustc.to_string()),
                     other: BTreeMap::new(),
@@ -499,7 +499,7 @@ impl InstallInfo {
         self.features == feature_set(&opts.features)
             && self.all_features == opts.all_features
             && self.no_default_features == opts.no_default_features
-            && self.profile == opts.build_config.profile_name()
+            && self.profile.as_str() == opts.build_config.requested_profile.as_str()
             && (self.target.is_none() || self.target.as_ref().map(|t| t.as_ref()) == Some(target))
             && &self.bins == exes
     }
@@ -552,7 +552,7 @@ where
             // version range, otherwise parse it as a specific version
             let first = v
                 .chars()
-                .nth(0)
+                .next()
                 .ok_or_else(|| format_err!("no version provided for the `--vers` flag"))?;
 
             let is_req = "<>=^~".contains(first) || v.contains('*');

@@ -10,7 +10,6 @@ path = "lib.rs"
 crate-type = ["dylib"]
 
 [dependencies]
-graphviz = { path = "../libgraphviz" }
 lazy_static = "1.0"
 log = "0.4"
 env_logger = { version = "0.7", default-features = false }
@@ -18,8 +17,9 @@ rustc = { path = "../librustc" }
 rustc_target = { path = "../librustc_target" }
 rustc_lint = { path = "../librustc_lint" }
 rustc_data_structures = { path = "../librustc_data_structures" }
-errors = { path = "../librustc_errors", package = "rustc_errors" }
+rustc_errors = { path = "../librustc_errors" }
 rustc_feature = { path = "../librustc_feature" }
+rustc_hir = { path = "../librustc_hir" }
 rustc_metadata = { path = "../librustc_metadata" }
 rustc_mir = { path = "../librustc_mir" }
 rustc_parse = { path = "../librustc_parse" }
@@ -29,9 +29,11 @@ rustc_codegen_utils = { path = "../librustc_codegen_utils" }
 rustc_error_codes = { path = "../librustc_error_codes" }
 rustc_interface = { path = "../librustc_interface" }
 rustc_serialize = { path = "../libserialize", package = "serialize" }
-rustc_resolve = { path = "../librustc_resolve" }
 syntax = { path = "../libsyntax" }
-syntax_pos = { path = "../libsyntax_pos" }
+rustc_span = { path = "../librustc_span" }
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["consoleapi", "debugapi", "processenv"] }
 
 [features]
 llvm = ['rustc_interface/llvm']

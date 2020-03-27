@@ -1,10 +1,9 @@
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Spanned;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Spanned;
 
 use crate::consts::{constant, Constant};
 use crate::utils::paths;
@@ -34,7 +33,7 @@ declare_clippy_lint! {
 declare_lint_pass!(DurationSubsec => [DURATION_SUBSEC]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DurationSubsec {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Binary(Spanned { node: BinOpKind::Div, .. }, ref left, ref right) = expr.kind;
             if let ExprKind::MethodCall(ref method_path, _ , ref args) = left.kind;

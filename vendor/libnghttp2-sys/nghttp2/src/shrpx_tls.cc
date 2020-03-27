@@ -329,8 +329,8 @@ int tls_session_new_cb(SSL *ssl, SSL_SESSION *session) {
     LOG(INFO) << "Memcached: cache session, id=" << util::format_hex(id, idlen);
   }
 
-  auto req = make_unique<MemcachedRequest>();
-  req->op = MEMCACHED_OP_ADD;
+  auto req = std::make_unique<MemcachedRequest>();
+  req->op = MemcachedOp::ADD;
   req->key = MEMCACHED_SESSION_CACHE_KEY_PREFIX.str();
   req->key +=
       util::format_hex(balloc, StringRef{id, static_cast<size_t>(idlen)});
@@ -343,12 +343,14 @@ int tls_session_new_cb(SSL *ssl, SSL_SESSION *session) {
   req->cb = [](MemcachedRequest *req, MemcachedResult res) {
     if (LOG_ENABLED(INFO)) {
       LOG(INFO) << "Memcached: session cache done.  key=" << req->key
-                << ", status_code=" << res.status_code << ", value="
+                << ", status_code=" << static_cast<uint16_t>(res.status_code)
+                << ", value="
                 << std::string(std::begin(res.value), std::end(res.value));
     }
-    if (res.status_code != 0) {
+    if (res.status_code != MemcachedStatusCode::NO_ERROR) {
       LOG(WARN) << "Memcached: failed to cache session key=" << req->key
-                << ", status_code=" << res.status_code << ", value="
+                << ", status_code=" << static_cast<uint16_t>(res.status_code)
+                << ", value="
                 << std::string(std::begin(res.value), std::end(res.value));
     }
   };
@@ -362,11 +364,11 @@ int tls_session_new_cb(SSL *ssl, SSL_SESSION *session) {
 
 namespace {
 SSL_SESSION *tls_session_get_cb(SSL *ssl,
-#if OPENSSL_1_1_API
+#if OPENSSL_1_1_API || LIBRESSL_2_7_API
                                 const unsigned char *id,
-#else  // !OPENSSL_1_1_API
+#else  // !(OPENSSL_1_1_API || LIBRESSL_2_7_API)
                                 unsigned char *id,
-#endif // !OPENSSL_1_1_API
+#endif // !(OPENSSL_1_1_API || LIBRESSL_2_7_API)
                                 int idlen, int *copy) {
   auto conn = static_cast<Connection *>(SSL_get_app_data(ssl));
   auto handler = static_cast<ClientHandler *>(conn->data);
@@ -397,14 +399,15 @@ SSL_SESSION *tls_session_get_cb(SSL *ssl,
               << util::format_hex(id, idlen);
   }
 
-  auto req = make_unique<MemcachedRequest>();
-  req->op = MEMCACHED_OP_GET;
+  auto req = std::make_unique<MemcachedRequest>();
+  req->op = MemcachedOp::GET;
   req->key = MEMCACHED_SESSION_CACHE_KEY_PREFIX.str();
   req->key +=
       util::format_hex(balloc, StringRef{id, static_cast<size_t>(idlen)});
   req->cb = [conn](MemcachedRequest *, MemcachedResult res) {
     if (LOG_ENABLED(INFO)) {
-      LOG(INFO) << "Memcached: returned status code " << res.status_code;
+      LOG(INFO) << "Memcached: returned status code "
+                << static_cast<uint16_t>(res.status_code);
     }
 
     // We might stop reading, so start it again
@@ -415,8 +418,8 @@ SSL_SESSION *tls_session_get_cb(SSL *ssl,
     ev_timer_again(conn->loop, &conn->wt);
 
     conn->tls.cached_session_lookup_req = nullptr;
-    if (res.status_code != 0) {
-      conn->tls.handshake_state = TLS_CONN_CANCEL_SESSION_CACHE;
+    if (res.status_code != MemcachedStatusCode::NO_ERROR) {
+      conn->tls.handshake_state = TLSHandshakeState::CANCEL_SESSION_CACHE;
       return;
     }
 
@@ -427,15 +430,15 @@ SSL_SESSION *tls_session_get_cb(SSL *ssl,
       if (LOG_ENABLED(INFO)) {
         LOG(INFO) << "cannot materialize session";
       }
-      conn->tls.handshake_state = TLS_CONN_CANCEL_SESSION_CACHE;
+      conn->tls.handshake_state = TLSHandshakeState::CANCEL_SESSION_CACHE;
       return;
     }
 
     conn->tls.cached_session = session;
-    conn->tls.handshake_state = TLS_CONN_GOT_SESSION_CACHE;
+    conn->tls.handshake_state = TLSHandshakeState::GOT_SESSION_CACHE;
   };
 
-  conn->tls.handshake_state = TLS_CONN_WAIT_FOR_SESSION_CACHE;
+  conn->tls.handshake_state = TLSHandshakeState::WAIT_FOR_SESSION_CACHE;
   conn->tls.cached_session_lookup_req = req.get();
 
   dispatcher->add_request(std::move(req));
@@ -591,7 +594,7 @@ int sct_add_cb(SSL *ssl, unsigned int ext_type, unsigned int context,
 
   if (LOG_ENABLED(INFO)) {
     LOG(INFO) << "sct_add_cb is called, chainidx=" << chainidx << ", x=" << x
-              << ", context=" << std::hex << context;
+              << ", context=" << log::hex << context;
   }
 
   // We only have SCTs for leaf certificate.
@@ -958,7 +961,8 @@ SSL_CTX *create_ssl_context(const char *private_key_file, const char *cert_file,
   SSL_CTX_set_alpn_select_cb(ssl_ctx, alpn_select_proto_cb, nullptr);
 #endif // OPENSSL_VERSION_NUMBER >= 0x10002000L
 
-#if !LIBRESSL_IN_USE && OPENSSL_VERSION_NUMBER >= 0x10002000L
+#if !LIBRESSL_IN_USE && OPENSSL_VERSION_NUMBER >= 0x10002000L &&               \
+    !defined(OPENSSL_IS_BORINGSSL)
   // SSL_extension_supported(TLSEXT_TYPE_signed_certificate_timestamp)
   // returns 1, which means OpenSSL internally handles it.  But
   // OpenSSL handles signed_certificate_timestamp extension specially,
@@ -989,7 +993,8 @@ SSL_CTX *create_ssl_context(const char *private_key_file, const char *cert_file,
     }
 #  endif // !OPENSSL_1_1_1_API
   }
-#endif // !LIBRESSL_IN_USE && OPENSSL_VERSION_NUMBER >= 0x10002000L
+#endif // !LIBRESSL_IN_USE && OPENSSL_VERSION_NUMBER >= 0x10002000L &&
+       // !defined(OPENSSL_IS_BORINGSSL)
 
 #if OPENSSL_1_1_1_API
   if (SSL_CTX_set_max_early_data(ssl_ctx, tlsconf.max_early_data) != 1) {
@@ -1049,9 +1054,9 @@ int select_next_proto_cb(SSL *ssl, unsigned char **out, unsigned char *outlen,
                          void *arg) {
   auto conn = static_cast<Connection *>(SSL_get_app_data(ssl));
   switch (conn->proto) {
-  case PROTO_HTTP1:
+  case Proto::HTTP1:
     return select_h1_next_proto_cb(ssl, out, outlen, in, inlen, arg);
-  case PROTO_HTTP2:
+  case Proto::HTTP2:
     return select_h2_next_proto_cb(ssl, out, outlen, in, inlen, arg);
   default:
     return SSL_TLSEXT_ERR_NOACK;
@@ -1831,7 +1836,7 @@ std::unique_ptr<CertLookupTree> create_cert_lookup_tree() {
   if (!upstream_tls_enabled(config->conn)) {
     return nullptr;
   }
-  return make_unique<CertLookupTree>();
+  return std::make_unique<CertLookupTree>();
 }
 
 namespace {
@@ -1856,7 +1861,7 @@ void try_cache_tls_session(TLSSessionCache *cache, SSL_SESSION *session,
 
   if (LOG_ENABLED(INFO)) {
     LOG(INFO) << "Update client cache entry "
-              << "timestamp = " << std::fixed << std::setprecision(6) << t;
+              << "timestamp = " << t;
   }
 
   cache->session_data = serialize_ssl_session(session);
@@ -1906,6 +1911,11 @@ int verify_ocsp_response(SSL_CTX *ssl_ctx, const uint8_t *ocsp_resp,
     return -1;
   }
   auto resp_deleter = defer(OCSP_RESPONSE_free, resp);
+
+  if (OCSP_response_status(resp) != OCSP_RESPONSE_STATUS_SUCCESSFUL) {
+    LOG(ERROR) << "OCSP response status is not successful";
+    return -1;
+  }
 
   ERR_clear_error();
 
@@ -2020,7 +2030,7 @@ StringRef get_x509_issuer_name(BlockAllocator &balloc, X509 *x) {
 #endif /* !WORDS_BIGENDIAN */
 
 StringRef get_x509_serial(BlockAllocator &balloc, X509 *x) {
-#if OPENSSL_1_1_API
+#if OPENSSL_1_1_API && !defined(OPENSSL_IS_BORINGSSL)
   auto sn = X509_get0_serialNumber(x);
   uint64_t r;
   if (ASN1_INTEGER_get_uint64(&r, sn) != 1) {
@@ -2030,17 +2040,17 @@ StringRef get_x509_serial(BlockAllocator &balloc, X509 *x) {
   r = bswap64(r);
   return util::format_hex(
       balloc, StringRef{reinterpret_cast<uint8_t *>(&r), sizeof(r)});
-#else  // !OPENSSL_1_1_API
+#else  // !OPENSSL_1_1_API || OPENSSL_IS_BORINGSSL
   auto sn = X509_get_serialNumber(x);
   auto bn = BN_new();
   auto bn_d = defer(BN_free, bn);
-  if (!ASN1_INTEGER_to_BN(sn, bn)) {
+  if (!ASN1_INTEGER_to_BN(sn, bn) || BN_num_bytes(bn) > 20) {
     return StringRef{};
   }
 
-  std::array<uint8_t, 8> b;
+  std::array<uint8_t, 20> b;
   auto n = BN_bn2bin(bn, b.data());
-  assert(n == b.size());
+  assert(n <= 20);
 
   return util::format_hex(balloc, StringRef{std::begin(b), std::end(b)});
 #endif // !OPENSSL_1_1_API
@@ -2060,7 +2070,7 @@ int time_t_from_asn1_time(time_t &t, const ASN1_TIME *at) {
   }
 
   t = nghttp2_timegm(&tm);
-#else  // !OPENSSL_1_1_1_API
+#else // !OPENSSL_1_1_1_API
   auto b = BIO_new(BIO_s_mem());
   if (!b) {
     return -1;
@@ -2073,7 +2083,11 @@ int time_t_from_asn1_time(time_t &t, const ASN1_TIME *at) {
     return -1;
   }
 
+#  if defined(OPENSSL_IS_BORINGSSL)
+  char *s;
+#  else
   unsigned char *s;
+#  endif
   auto slen = BIO_get_mem_data(b, &s);
   auto tt = util::parse_openssl_asn1_time_print(
       StringRef{s, static_cast<size_t>(slen)});

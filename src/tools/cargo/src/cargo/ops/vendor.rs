@@ -4,7 +4,7 @@ use crate::ops;
 use crate::sources::path::PathSource;
 use crate::util::Sha256;
 use crate::util::{paths, CargoResult, CargoResultExt, Config};
-use failure::bail;
+use anyhow::bail;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 pub struct VendorOptions<'a> {
     pub no_delete: bool,
+    pub versioned_dirs: bool,
     pub destination: &'a Path,
     pub extra: Vec<PathBuf>,
 }
@@ -186,7 +187,7 @@ fn sync(
             .parent()
             .expect("manifest_path should point to a file");
         let max_version = *versions[&id.name()].iter().rev().next().unwrap().0;
-        let dir_has_version_suffix = id.version() != max_version;
+        let dir_has_version_suffix = opts.versioned_dirs || id.version() != max_version;
         let dst_name = if dir_has_version_suffix {
             // Eg vendor/futures-0.1.13
             format!("{}-{}", id.name(), id.version())
@@ -255,6 +256,12 @@ fn sync(
         let source = if source_id.is_default_registry() {
             VendorSource::Registry {
                 registry: None,
+                replace_with: merged_source_name.to_string(),
+            }
+        } else if source_id.is_remote_registry() {
+            let registry = source_id.url().to_string();
+            VendorSource::Registry {
+                registry: Some(registry),
                 replace_with: merged_source_name.to_string(),
             }
         } else if source_id.is_git() {

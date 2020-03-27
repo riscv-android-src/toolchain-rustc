@@ -1,27 +1,27 @@
-use rustc::hir::def::Namespace::TypeNS;
-use rustc::hir::def_id::{CrateNum, DefId, DefIndex, LOCAL_CRATE};
-use rustc::hir::HirId;
-use rustc::lint;
 use rustc::middle::cstore::CrateStore;
 use rustc::middle::privacy::AccessLevels;
 use rustc::session::config::ErrorOutputType;
 use rustc::session::DiagnosticOutput;
 use rustc::session::{self, config};
 use rustc::ty::{Ty, TyCtxt};
-use rustc::util::nodemap::{FxHashMap, FxHashSet};
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_driver::abort_on_err;
 use rustc_feature::UnstableFeatures;
+use rustc_hir::def::Namespace::TypeNS;
+use rustc_hir::def_id::{CrateNum, DefId, DefIndex, LOCAL_CRATE};
+use rustc_hir::HirId;
 use rustc_interface::interface;
 use rustc_lint;
 use rustc_resolve as resolve;
+use rustc_session::lint;
 
-use errors::emitter::{Emitter, EmitterWriter};
-use errors::json::JsonEmitter;
+use rustc_errors::emitter::{Emitter, EmitterWriter};
+use rustc_errors::json::JsonEmitter;
+use rustc_span::source_map;
+use rustc_span::symbol::sym;
+use rustc_span::DUMMY_SP;
 use syntax::ast::CRATE_NODE_ID;
 use syntax::attr;
-use syntax::source_map;
-use syntax::symbol::sym;
-use syntax_pos::DUMMY_SP;
 
 use rustc_data_structures::sync::{self, Lrc};
 use std::cell::RefCell;
@@ -35,7 +35,7 @@ use crate::html::render::RenderInfo;
 
 use crate::passes::{self, Condition::*, ConditionalPass};
 
-pub use rustc::session::config::{CodegenOptions, Input, Options};
+pub use rustc::session::config::{CodegenOptions, DebuggingOptions, Input, Options};
 pub use rustc::session::search_paths::SearchPath;
 
 pub type ExternalPaths = FxHashMap<DefId, (Vec<String>, clean::TypeKind)>;
@@ -125,7 +125,7 @@ impl<'tcx> DocContext<'tcx> {
 
         let mut fake_ids = self.fake_def_ids.borrow_mut();
 
-        let def_id = fake_ids.entry(crate_num).or_insert(start_def_id).clone();
+        let def_id = *fake_ids.entry(crate_num).or_insert(start_def_id);
         fake_ids.insert(
             crate_num,
             DefId { krate: crate_num, index: DefIndex::from(def_id.index.index() + 1) },
@@ -137,7 +137,7 @@ impl<'tcx> DocContext<'tcx> {
 
         self.all_fake_def_ids.borrow_mut().insert(def_id);
 
-        def_id.clone()
+        def_id
     }
 
     /// Like the function of the same name on the HIR map, but skips calling it on fake DefIds.
@@ -170,12 +170,8 @@ impl<'tcx> DocContext<'tcx> {
 pub fn new_handler(
     error_format: ErrorOutputType,
     source_map: Option<Lrc<source_map::SourceMap>>,
-    treat_err_as_bug: Option<usize>,
-    ui_testing: bool,
-) -> errors::Handler {
-    // rustdoc doesn't override (or allow to override) anything from this that is relevant here, so
-    // stick to the defaults
-    let sessopts = Options::default();
+    debugging_opts: &DebuggingOptions,
+) -> rustc_errors::Handler {
     let emitter: Box<dyn Emitter + sync::Send> = match error_format {
         ErrorOutputType::HumanReadable(kind) => {
             let (short, color_config) = kind.unzip();
@@ -184,33 +180,27 @@ pub fn new_handler(
                     color_config,
                     source_map.map(|cm| cm as _),
                     short,
-                    sessopts.debugging_opts.teach,
-                    sessopts.debugging_opts.terminal_width,
+                    debugging_opts.teach,
+                    debugging_opts.terminal_width,
                     false,
                 )
-                .ui_testing(ui_testing),
+                .ui_testing(debugging_opts.ui_testing()),
             )
         }
         ErrorOutputType::Json { pretty, json_rendered } => {
             let source_map = source_map.unwrap_or_else(|| {
-                Lrc::new(source_map::SourceMap::new(sessopts.file_path_mapping()))
+                Lrc::new(source_map::SourceMap::new(source_map::FilePathMapping::empty()))
             });
             Box::new(
                 JsonEmitter::stderr(None, source_map, pretty, json_rendered, false)
-                    .ui_testing(ui_testing),
+                    .ui_testing(debugging_opts.ui_testing()),
             )
         }
     };
 
-    errors::Handler::with_emitter_and_flags(
+    rustc_errors::Handler::with_emitter_and_flags(
         emitter,
-        errors::HandlerFlags {
-            can_emit_warnings: true,
-            treat_err_as_bug,
-            report_delayed_bugs: false,
-            external_macro_backtrace: false,
-            ..Default::default()
-        },
+        debugging_opts.diagnostic_handler_flags(true),
     )
 }
 
@@ -421,7 +411,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
 
                 let mut krate = clean::krate(&mut ctxt);
 
-                fn report_deprecated_attr(name: &str, diag: &errors::Handler) {
+                fn report_deprecated_attr(name: &str, diag: &rustc_errors::Handler) {
                     let mut msg = diag.struct_warn(&format!(
                         "the `#![doc({})]` attribute is \
                                                          considered deprecated",

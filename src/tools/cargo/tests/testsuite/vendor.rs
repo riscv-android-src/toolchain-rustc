@@ -1,4 +1,8 @@
 //! Tests for the `cargo vendor` command.
+//!
+//! Note that every test here uses `--respect-source-config` so that the
+//! "fake" crates.io is used. Otherwise `vendor` would download the crates.io
+//! index from the network.
 
 use cargo_test_support::git;
 use cargo_test_support::registry::Package;
@@ -80,6 +84,51 @@ fn two_versions() {
     p.cargo("vendor --respect-source-config").run();
 
     let lock = p.read_file("vendor/bitflags/Cargo.toml");
+    assert!(lock.contains("version = \"0.8.0\""));
+    let lock = p.read_file("vendor/bitflags-0.7.0/Cargo.toml");
+    assert!(lock.contains("version = \"0.7.0\""));
+
+    add_vendor_config(&p);
+    p.cargo("build").run();
+}
+
+#[cargo_test]
+fn two_explicit_versions() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bitflags = "0.8.0"
+                bar = { path = "bar" }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "bar/Cargo.toml",
+            r#"
+                [package]
+                name = "bar"
+                version = "0.1.0"
+
+                [dependencies]
+                bitflags = "0.7.0"
+            "#,
+        )
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    Package::new("bitflags", "0.7.0").publish();
+    Package::new("bitflags", "0.8.0").publish();
+
+    p.cargo("vendor --respect-source-config --versioned-dirs")
+        .run();
+
+    let lock = p.read_file("vendor/bitflags-0.8.0/Cargo.toml");
     assert!(lock.contains("version = \"0.8.0\""));
     let lock = p.read_file("vendor/bitflags-0.7.0/Cargo.toml");
     assert!(lock.contains("version = \"0.7.0\""));
@@ -538,4 +587,47 @@ fn ignore_hidden() {
         .unwrap()
         .iter()
         .all(|status| status.status() == git2::Status::CURRENT));
+}
+
+#[cargo_test]
+fn config_instructions_works() {
+    // Check that the config instructions work for all dependency kinds.
+    Package::new("dep", "0.1.0").publish();
+    Package::new("altdep", "0.1.0").alternative(true).publish();
+    let git_project = git::new("gitdep", |project| {
+        project
+            .file("Cargo.toml", &basic_lib_manifest("gitdep"))
+            .file("src/lib.rs", "")
+    });
+    let p = project()
+        .file(
+            "Cargo.toml",
+            &format!(
+                r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                dep = "0.1"
+                altdep = {{version="0.1", registry="alternative"}}
+                gitdep = {{git='{}'}}
+                "#,
+                git_project.url()
+            ),
+        )
+        .file("src/lib.rs", "")
+        .build();
+    let output = p
+        .cargo("vendor --respect-source-config")
+        .exec_with_output()
+        .unwrap();
+    let output = String::from_utf8(output.stdout).unwrap();
+    p.change_file(".cargo/config", &output);
+
+    p.cargo("check -v")
+        .with_stderr_contains("[..]foo/vendor/dep/src/lib.rs[..]")
+        .with_stderr_contains("[..]foo/vendor/altdep/src/lib.rs[..]")
+        .with_stderr_contains("[..]foo/vendor/gitdep/src/lib.rs[..]")
+        .run();
 }

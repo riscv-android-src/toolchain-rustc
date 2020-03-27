@@ -3,11 +3,10 @@
 //! This lint is **warn** by default
 
 use crate::utils::{match_type, paths, span_lint};
-use rustc::declare_lint_pass;
-use rustc::hir::Expr;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::{self, Ty};
-use rustc_session::declare_tool_lint;
+use rustc_hir::Expr;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast;
 
 declare_clippy_lint! {
@@ -56,15 +55,15 @@ declare_clippy_lint! {
 declare_lint_pass!(Mutex => [MUTEX_ATOMIC, MUTEX_INTEGER]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Mutex {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         let ty = cx.tables.expr_ty(expr);
         if let ty::Adt(_, subst) = ty.kind {
             if match_type(cx, ty, &paths::MUTEX) {
                 let mutex_param = subst.type_at(0);
                 if let Some(atomic_name) = get_atomic_name(mutex_param) {
                     let msg = format!(
-                        "Consider using an {} instead of a Mutex here. If you just want the locking \
-                         behaviour and not the internal type, consider using Mutex<()>.",
+                        "Consider using an `{}` instead of a `Mutex` here. If you just want the locking \
+                         behavior and not the internal type, consider using `Mutex<()>`.",
                         atomic_name
                     );
                     match mutex_param.kind {

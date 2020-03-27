@@ -5,12 +5,16 @@ use reactor::Reactor;
 use std::io;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::any::Any;
 
 use num_cpus;
 use tokio_reactor;
 use tokio_threadpool::Builder as ThreadPoolBuilder;
 use tokio_timer::clock::{self, Clock};
 use tokio_timer::timer::{self, Timer};
+
+#[cfg(feature = "experimental-tracing")]
+use tracing_core as trace;
 
 /// Builds Tokio Runtime with custom configuration values.
 ///
@@ -90,15 +94,46 @@ impl Builder {
 
     /// Set builder to set up the thread pool instance.
     #[deprecated(
-        since="0.1.9",
-        note="use the `core_threads`, `blocking_threads`, `name_prefix`, \
-              `keep_alive`, and `stack_size` functions on `runtime::Builder`, \
-              instead")]
+        since = "0.1.9",
+        note = "use the `core_threads`, `blocking_threads`, `name_prefix`, \
+                `keep_alive`, and `stack_size` functions on `runtime::Builder`, \
+                instead")]
     #[doc(hidden)]
     pub fn threadpool_builder(&mut self, val: ThreadPoolBuilder) -> &mut Self {
         self.threadpool_builder = val;
         self
     }
+
+    /// Sets a callback to handle panics in futures.
+    ///
+    /// The callback is triggered when a panic during a future bubbles up to
+    /// Tokio. By default Tokio catches these panics, and they will be ignored.
+    /// The parameter passed to this callback is the same error value returned
+    /// from `std::panic::catch_unwind()`. To abort the process on panics, use
+    /// `std::panic::resume_unwind()` in this callback as shown below.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # extern crate tokio;
+    /// # extern crate futures;
+    /// # use tokio::runtime;
+    ///
+    /// # pub fn main() {
+    /// let mut rt = runtime::Builder::new()
+    ///     .panic_handler(|err| std::panic::resume_unwind(err))
+    ///     .build()
+    ///     .unwrap();
+    /// # }
+    /// ```
+    pub fn panic_handler<F>(&mut self, f: F) -> &mut Self
+    where
+        F: Fn(Box<Any + Send>) + Send + Sync + 'static,
+    {
+        self.threadpool_builder.panic_handler(f);
+        self
+    }
+
 
     /// Set the maximum number of worker threads for the `Runtime`'s thread pool.
     ///
@@ -330,13 +365,28 @@ impl Builder {
         // Get a handle to the clock for the runtime.
         let clock = self.clock.clone();
 
-        let pool = self.threadpool_builder
+        // Get the current trace dispatcher.
+        // TODO(eliza): when `tracing-core` is stable enough to take a
+        // public API dependency, we should allow users to set a custom
+        // subscriber for the runtime.
+        #[cfg(feature = "experimental-tracing")]
+        let dispatch = trace::dispatcher::get_default(trace::Dispatch::clone);
+
+        let pool = self
+            .threadpool_builder
             .around_worker(move |w, enter| {
                 let index = w.id().to_usize();
 
                 tokio_reactor::with_default(&reactor_handles[index], enter, |enter| {
                     clock::with_default(&clock, enter, |enter| {
                         timer::with_default(&timer_handles[index], enter, |_| {
+
+                            #[cfg(feature = "experimental-tracing")]
+                            trace::dispatcher::with_default(&dispatch, || {
+                                w.run();
+                            });
+
+                            #[cfg(not(feature = "experimental-tracing"))]
                             w.run();
                         });
                     })

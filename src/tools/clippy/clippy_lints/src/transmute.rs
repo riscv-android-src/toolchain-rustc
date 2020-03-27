@@ -1,11 +1,12 @@
-use crate::utils::{last_path_segment, match_def_path, paths, snippet, span_lint, span_lint_and_then, sugg};
+use crate::utils::{
+    is_normalizable, last_path_segment, match_def_path, paths, snippet, span_lint, span_lint_and_then, sugg,
+};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::{self, Ty};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use std::borrow::Cow;
 use syntax::ast;
 
@@ -208,7 +209,7 @@ declare_clippy_lint! {
     /// let _: u32 = 1f32.to_bits();
     /// ```
     pub TRANSMUTE_FLOAT_TO_INT,
-    nursery,
+    complexity,
     "transmutes from a float to an integer"
 }
 
@@ -292,7 +293,7 @@ static COLLECTIONS: &[&[&str]] = &[
 ];
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Transmute {
     #[allow(clippy::similar_names, clippy::too_many_lines)]
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Call(ref path_expr, ref args) = e.kind;
             if let ExprKind::Path(ref qpath) = path_expr.kind;
@@ -385,7 +386,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Transmute {
                         ),
                         |db| {
                             let arg = sugg::Sugg::hir(cx, &args[0], "..");
-                            let (deref, cast) = if mutbl == Mutability::Mutable {
+                            let (deref, cast) = if mutbl == Mutability::Mut {
                                 ("&mut *", "*mut")
                             } else {
                                 ("&*", "*const")
@@ -433,7 +434,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Transmute {
                             if let ty::Uint(ast::UintTy::U8) = slice_ty.kind;
                             if from_mutbl == to_mutbl;
                             then {
-                                let postfix = if from_mutbl == Mutability::Mutable {
+                                let postfix = if from_mutbl == Mutability::Mut {
                                     "_mut"
                                 } else {
                                     ""
@@ -473,7 +474,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Transmute {
                                             let sugg_paren = arg
                                                 .as_ty(cx.tcx.mk_ptr(ty_from_and_mut))
                                                 .as_ty(cx.tcx.mk_ptr(ty_to_and_mut));
-                                            let sugg = if to_mutbl == Mutability::Mutable {
+                                            let sugg = if to_mutbl == Mutability::Mut {
                                                 sugg_paren.mut_addr_deref()
                                             } else {
                                                 sugg_paren.addr_deref()
@@ -618,7 +619,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Transmute {
 /// the type's `ToString` implementation. In weird cases it could lead to types
 /// with invalid `'_`
 /// lifetime, but it should be rare.
-fn get_type_snippet(cx: &LateContext<'_, '_>, path: &QPath, to_ref_ty: Ty<'_>) -> String {
+fn get_type_snippet(cx: &LateContext<'_, '_>, path: &QPath<'_>, to_ref_ty: Ty<'_>) -> String {
     let seg = last_path_segment(path);
     if_chain! {
         if let Some(ref params) = seg.args;
@@ -639,8 +640,13 @@ fn get_type_snippet(cx: &LateContext<'_, '_>, path: &QPath, to_ref_ty: Ty<'_>) -
 // check if the component types of the transmuted collection and the result have different ABI,
 // size or alignment
 fn is_layout_incompatible<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, from: Ty<'tcx>, to: Ty<'tcx>) -> bool {
-    let from_ty_layout = cx.tcx.layout_of(ty::ParamEnv::empty().and(from));
-    let to_ty_layout = cx.tcx.layout_of(ty::ParamEnv::empty().and(to));
+    let empty_param_env = ty::ParamEnv::empty();
+    // check if `from` and `to` are normalizable to avoid ICE (#4968)
+    if !(is_normalizable(cx, empty_param_env, from) && is_normalizable(cx, empty_param_env, to)) {
+        return false;
+    }
+    let from_ty_layout = cx.tcx.layout_of(empty_param_env.and(from));
+    let to_ty_layout = cx.tcx.layout_of(empty_param_env.and(to));
     if let (Ok(from_layout), Ok(to_layout)) = (from_ty_layout, to_ty_layout) {
         from_layout.size != to_layout.size || from_layout.align != to_layout.align || from_layout.abi != to_layout.abi
     } else {

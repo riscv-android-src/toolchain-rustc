@@ -63,38 +63,30 @@
 
 #![doc(html_root_url = "https://docs.rs/pkg-config/0.3")]
 
-#[allow(unused_imports)] // Required for Rust <1.23
-use std::ascii::AsciiExt;
 use std::collections::HashMap;
 use std::env;
 use std::error;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io;
-use std::path::{PathBuf, Path};
+use std::ops::{Bound, RangeBounds};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::str;
 
-pub fn target_supported() -> bool {
-    let target = env::var("TARGET").unwrap_or_else(|_| String::new());
-    let host = env::var("HOST").unwrap_or_else(|_| String::new());
-
-    // Only use pkg-config in host == target situations by default (allowing an
-    // override).
-    (host == target || env::var_os("PKG_CONFIG_ALLOW_CROSS").is_some())
-}
-
-#[derive(Clone, Default)]
+#[derive(Clone, Debug)]
 pub struct Config {
     statik: Option<bool>,
-    atleast_version: Option<String>,
+    min_version: Bound<String>,
+    max_version: Bound<String>,
     extra_args: Vec<OsString>,
     cargo_metadata: bool,
     env_metadata: bool,
     print_system_libs: bool,
+    print_system_cflags: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Library {
     pub libs: Vec<String>,
     pub link_paths: Vec<PathBuf>,
@@ -107,6 +99,7 @@ pub struct Library {
 }
 
 /// Represents all reasons `pkg-config` might not succeed or be run at all.
+#[derive(Debug)]
 pub enum Error {
     /// Aborted because of `*_NO_PKG_CONFIG` environment variable.
     ///
@@ -147,7 +140,7 @@ impl error::Error for Error {
         }
     }
 
-    fn cause(&self) -> Option<&error::Error> {
+    fn cause(&self) -> Option<&dyn error::Error> {
         match *self {
             Error::Command { ref cause, .. } => Some(cause),
             _ => None,
@@ -155,76 +148,30 @@ impl error::Error for Error {
     }
 }
 
-// Workaround for temporary lack of impl Debug for Output in stable std
-struct OutputDebugger<'a>(&'a Output);
-
-// Lifted from 1.7 std
-impl<'a> fmt::Debug for OutputDebugger<'a> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let stdout_utf8 = str::from_utf8(&self.0.stdout);
-        let stdout_debug: &fmt::Debug = match stdout_utf8 {
-            Ok(ref str) => str,
-            Err(_) => &self.0.stdout
-        };
-
-        let stderr_utf8 = str::from_utf8(&self.0.stderr);
-        let stderr_debug: &fmt::Debug = match stderr_utf8 {
-            Ok(ref str) => str,
-            Err(_) => &self.0.stderr
-        };
-
-        fmt.debug_struct("Output")
-           .field("status", &self.0.status)
-           .field("stdout", stdout_debug)
-           .field("stderr", stderr_debug)
-           .finish()
-    }
-}
-
-// Workaround for temporary lack of impl Debug for Output in stable std, continued
-impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        match *self {
-            Error::EnvNoPkgConfig(ref name) => {
-                f.debug_tuple("EnvNoPkgConfig")
-                 .field(name)
-                 .finish()
-            }
-            Error::CrossCompilation => write!(f, "CrossCompilation"),
-            Error::Command { ref command, ref cause } => {
-                f.debug_struct("Command")
-                 .field("command", command)
-                 .field("cause", cause)
-                 .finish()
-            }
-            Error::Failure { ref command, ref output } => {
-                f.debug_struct("Failure")
-                 .field("command", command)
-                 .field("output", &OutputDebugger(output))
-                 .finish()
-            }
-            Error::__Nonexhaustive => panic!(),
-        }
-    }
-}
-
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
         match *self {
-            Error::EnvNoPkgConfig(ref name) => {
-                write!(f, "Aborted because {} is set", name)
-            }
-            Error::CrossCompilation => {
-                write!(f, "Cross compilation detected. \
-                       Use PKG_CONFIG_ALLOW_CROSS=1 to override")
-            }
-            Error::Command { ref command, ref cause } => {
-                write!(f, "Failed to run `{}`: {}", command, cause)
-            }
-            Error::Failure { ref command, ref output } => {
+            Error::EnvNoPkgConfig(ref name) => write!(f, "Aborted because {} is set", name),
+            Error::CrossCompilation => write!(
+                f,
+                "Cross compilation detected. \
+                 Use PKG_CONFIG_ALLOW_CROSS=1 to override"
+            ),
+            Error::Command {
+                ref command,
+                ref cause,
+            } => write!(f, "Failed to run `{}`: {}", command, cause),
+            Error::Failure {
+                ref command,
+                ref output,
+            } => {
                 let stdout = str::from_utf8(&output.stdout).unwrap();
                 let stderr = str::from_utf8(&output.stderr).unwrap();
-                write!(f, "`{}` did not exit successfully: {}", command, output.status)?;
+                write!(
+                    f,
+                    "`{}` did not exit successfully: {}",
+                    command, output.status
+                )?;
                 if !stdout.is_empty() {
                     write!(f, "\n--- stdout\n{}", stdout)?;
                 }
@@ -255,7 +202,7 @@ pub fn get_variable(package: &str, variable: &str) -> Result<String, Error> {
     let arg = format!("--variable={}", variable);
     let cfg = Config::new();
     let out = run(cfg.command(package, &[&arg]))?;
-    Ok(str::from_utf8(&out).unwrap().trim_right().to_owned())
+    Ok(str::from_utf8(&out).unwrap().trim_end().to_owned())
 }
 
 impl Config {
@@ -264,8 +211,10 @@ impl Config {
     pub fn new() -> Config {
         Config {
             statik: None,
-            atleast_version: None,
+            min_version: Bound::Unbounded,
+            max_version: Bound::Unbounded,
             extra_args: vec![],
+            print_system_cflags: true,
             print_system_libs: true,
             cargo_metadata: true,
             env_metadata: false,
@@ -283,7 +232,33 @@ impl Config {
 
     /// Indicate that the library must be at least version `vers`.
     pub fn atleast_version(&mut self, vers: &str) -> &mut Config {
-        self.atleast_version = Some(vers.to_string());
+        self.min_version = Bound::Included(vers.to_string());
+        self.max_version = Bound::Unbounded;
+        self
+    }
+
+    /// Indicate that the library must be equal to version `vers`.
+    pub fn exactly_version(&mut self, vers: &str) -> &mut Config {
+        self.min_version = Bound::Included(vers.to_string());
+        self.max_version = Bound::Included(vers.to_string());
+        self
+    }
+
+    /// Indicate that the library's version must be in `range`.
+    pub fn range_version<'a, R>(&mut self, range: R) -> &mut Config
+    where
+        R: RangeBounds<&'a str>,
+    {
+        self.min_version = match range.start_bound() {
+            Bound::Included(vers) => Bound::Included(vers.to_string()),
+            Bound::Excluded(vers) => Bound::Excluded(vers.to_string()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
+        self.max_version = match range.end_bound() {
+            Bound::Included(vers) => Bound::Included(vers.to_string()),
+            Bound::Excluded(vers) => Bound::Excluded(vers.to_string()),
+            Bound::Unbounded => Bound::Unbounded,
+        };
         self
     }
 
@@ -319,6 +294,15 @@ impl Config {
         self
     }
 
+    /// Enable or disable the `PKG_CONFIG_ALLOW_SYSTEM_CFLAGS` environment
+    /// variable.
+    ///
+    /// This env var is enabled by default.
+    pub fn print_system_cflags(&mut self, print: bool) -> &mut Config {
+        self.print_system_cflags = print;
+        self
+    }
+
     /// Deprecated in favor fo the `probe` function
     #[doc(hidden)]
     pub fn find(&self, name: &str) -> Result<Library, String> {
@@ -332,8 +316,8 @@ impl Config {
     pub fn probe(&self, name: &str) -> Result<Library, Error> {
         let abort_var_name = format!("{}_NO_PKG_CONFIG", envify(name));
         if self.env_var_os(&abort_var_name).is_some() {
-            return Err(Error::EnvNoPkgConfig(abort_var_name))
-        } else if !target_supported() {
+            return Err(Error::EnvNoPkgConfig(abort_var_name));
+        } else if !self.target_supported() {
             return Err(Error::CrossCompilation);
         }
 
@@ -346,6 +330,31 @@ impl Config {
         library.parse_modversion(str::from_utf8(&output).unwrap());
 
         Ok(library)
+    }
+
+    pub fn target_supported(&self) -> bool {
+        let target = env::var("TARGET").unwrap_or_default();
+        let host = env::var("HOST").unwrap_or_default();
+
+        // Only use pkg-config in host == target situations by default (allowing an
+        // override).
+        if host == target {
+            return true;
+        }
+
+        // pkg-config may not be aware of cross-compilation, and require
+        // a wrapper script that sets up platform-specific prefixes.
+        match self.targetted_env_var("PKG_CONFIG_ALLOW_CROSS") {
+            // don't use pkg-config if explicitly disabled
+            Ok(ref val) if val == "0" => false,
+            Ok(_) => true,
+            Err(_) => {
+                // if not disabled, and pkg-config is customized,
+                // then assume it's prepared for cross-compilation
+                self.targetted_env_var("PKG_CONFIG").is_ok()
+                    || self.targetted_env_var("PKG_CONFIG_SYSROOT_DIR").is_ok()
+            }
+        }
     }
 
     /// Deprecated in favor of the top level `get_variable` function
@@ -388,13 +397,14 @@ impl Config {
     }
 
     fn command(&self, name: &str, args: &[&str]) -> Command {
-        let exe = self.env_var("PKG_CONFIG").unwrap_or_else(|_| String::from("pkg-config"));
+        let exe = self
+            .env_var("PKG_CONFIG")
+            .unwrap_or_else(|_| String::from("pkg-config"));
         let mut cmd = Command::new(exe);
         if self.is_static(name) {
             cmd.arg("--static");
         }
-        cmd.args(args)
-           .args(&self.extra_args);
+        cmd.args(args).args(&self.extra_args);
 
         if let Ok(value) = self.targetted_env_var("PKG_CONFIG_PATH") {
             cmd.env("PKG_CONFIG_PATH", value);
@@ -408,10 +418,27 @@ impl Config {
         if self.print_system_libs {
             cmd.env("PKG_CONFIG_ALLOW_SYSTEM_LIBS", "1");
         }
-        if let Some(ref version) = self.atleast_version {
-            cmd.arg(&format!("{} >= {}", name, version));
-        } else {
-            cmd.arg(name);
+        if self.print_system_cflags {
+            cmd.env("PKG_CONFIG_ALLOW_SYSTEM_CFLAGS", "1");
+        }
+        cmd.arg(name);
+        match self.min_version {
+            Bound::Included(ref version) => {
+                cmd.arg(&format!("{} >= {}", name, version));
+            }
+            Bound::Excluded(ref version) => {
+                cmd.arg(&format!("{} > {}", name, version));
+            }
+            _ => (),
+        }
+        match self.max_version {
+            Bound::Included(ref version) => {
+                cmd.arg(&format!("{} <= {}", name, version));
+            }
+            Bound::Excluded(ref version) => {
+                cmd.arg(&format!("{} < {}", name, version));
+            }
+            _ => (),
         }
         cmd
     }
@@ -434,6 +461,22 @@ impl Config {
             false
         } else {
             false
+        }
+    }
+}
+
+// Implement Default manualy since Bound does not implement Default.
+impl Default for Config {
+    fn default() -> Config {
+        Config {
+            statik: None,
+            min_version: Bound::Unbounded,
+            max_version: Bound::Unbounded,
+            extra_args: vec![],
+            print_system_cflags: false,
+            print_system_libs: false,
+            cargo_metadata: false,
+            env_metadata: false,
         }
     }
 }
@@ -461,10 +504,11 @@ impl Library {
         }
 
         let words = split_flags(output);
-        let parts = words.iter()
-                          .filter(|l| l.len() > 2)
-                          .map(|arg| (&arg[0..2], &arg[2..]))
-                          .collect::<Vec<_>>();
+        let parts = words
+            .iter()
+            .filter(|l| l.len() > 2)
+            .map(|arg| (&arg[0..2], &arg[2..]))
+            .collect::<Vec<_>>();
 
         let mut dirs = Vec::new();
         let statik = config.is_static(name);
@@ -501,22 +545,26 @@ impl Library {
                     self.libs.push(val.to_string());
                 }
                 "-D" => {
-                    let mut iter = val.split("=");
-                    self.defines.insert(iter.next().unwrap().to_owned(), iter.next().map(|s| s.to_owned()));
+                    let mut iter = val.split('=');
+                    self.defines.insert(
+                        iter.next().unwrap().to_owned(),
+                        iter.next().map(|s| s.to_owned()),
+                    );
                 }
                 _ => {}
             }
         }
 
-        let mut iter = words.iter()
-                            .flat_map(|arg| if arg.starts_with("-Wl,") {
-                                 arg[4..].split(',').collect()
-                             } else {
-                                 vec![arg.as_ref()]
-                             });
+        let mut iter = words.iter().flat_map(|arg| {
+            if arg.starts_with("-Wl,") {
+                arg[4..].split(',').collect()
+            } else {
+                vec![arg.as_ref()]
+            }
+        });
         while let Some(part) = iter.next() {
             if part != "-framework" {
-                continue
+                continue;
             }
             if let Some(lib) = iter.next() {
                 let meta = format!("rustc-link-lib=framework={}", lib);
@@ -527,14 +575,15 @@ impl Library {
     }
 
     fn parse_modversion(&mut self, output: &str) {
-        self.version.push_str(output.trim());
+        self.version.push_str(output.lines().nth(0).unwrap().trim());
     }
 }
 
 fn envify(name: &str) -> String {
-    name.chars().map(|c| c.to_ascii_uppercase()).map(|c| {
-        if c == '-' {'_'} else {c}
-    }).collect()
+    name.chars()
+        .map(|c| c.to_ascii_uppercase())
+        .map(|c| if c == '-' { '_' } else { c })
+        .collect()
 }
 
 /// System libraries should only be linked dynamically
@@ -547,8 +596,7 @@ fn is_static_available(name: &str, dirs: &[PathBuf]) -> bool {
     };
 
     dirs.iter().any(|dir| {
-        !system_roots.iter().any(|sys| dir.starts_with(sys)) &&
-        dir.join(&libname).exists()
+        !system_roots.iter().any(|sys| dir.starts_with(sys)) && dir.join(&libname).exists()
     })
 }
 
@@ -560,13 +608,13 @@ fn run(mut cmd: Command) -> Result<Vec<u8>, Error> {
             } else {
                 Err(Error::Failure {
                     command: format!("{:?}", cmd),
-                    output: output,
+                    output,
                 })
             }
         }
         Err(cause) => Err(Error::Command {
             command: format!("{:?}", cmd),
-            cause: cause,
+            cause,
         }),
     }
 }
@@ -589,9 +637,7 @@ fn split_flags(output: &[u8]) -> Vec<String> {
                 escaped = false;
                 word.push(b);
             }
-            b'\\' => {
-                escaped = true
-            }
+            b'\\' => escaped = true,
             b'\t' | b'\n' | b'\r' | b' ' => {
                 if !word.is_empty() {
                     words.push(String::from_utf8(word).unwrap());
@@ -612,19 +658,44 @@ fn split_flags(output: &[u8]) -> Vec<String> {
 #[test]
 #[cfg(target_os = "macos")]
 fn system_library_mac_test() {
-    assert!(!is_static_available("PluginManager", &[PathBuf::from("/Library/Frameworks")]));
-    assert!(!is_static_available("python2.7", &[PathBuf::from("/System/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/config")]));
-    assert!(!is_static_available("ffi_convenience", &[PathBuf::from("/Library/Ruby/Gems/2.0.0/gems/ffi-1.9.10/ext/ffi_c/libffi-x86_64/.libs")]));
+    assert!(!is_static_available(
+        "PluginManager",
+        &[PathBuf::from("/Library/Frameworks")]
+    ));
+    assert!(!is_static_available(
+        "python2.7",
+        &[PathBuf::from(
+            "/System/Library/Frameworks/Python.framework/Versions/2.7/lib/python2.7/config"
+        )]
+    ));
+    assert!(!is_static_available(
+        "ffi_convenience",
+        &[PathBuf::from(
+            "/Library/Ruby/Gems/2.0.0/gems/ffi-1.9.10/ext/ffi_c/libffi-x86_64/.libs"
+        )]
+    ));
 
     // Homebrew is in /usr/local, and it's not a part of the OS
     if Path::new("/usr/local/lib/libpng16.a").exists() {
-        assert!(is_static_available("png16", &[PathBuf::from("/usr/local/lib")]));
+        assert!(is_static_available(
+            "png16",
+            &[PathBuf::from("/usr/local/lib")]
+        ));
+
+        let libpng = Config::new()
+            .range_version("1".."99")
+            .probe("libpng16")
+            .unwrap();
+        assert!(libpng.version.find('\n').is_none());
     }
 }
 
 #[test]
 #[cfg(target_os = "linux")]
 fn system_library_linux_test() {
-    assert!(!is_static_available("util", &[PathBuf::from("/usr/lib/x86_64-linux-gnu")]));
+    assert!(!is_static_available(
+        "util",
+        &[PathBuf::from("/usr/lib/x86_64-linux-gnu")]
+    ));
     assert!(!is_static_available("dialog", &[PathBuf::from("/usr/lib")]));
 }

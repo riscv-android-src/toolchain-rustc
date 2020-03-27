@@ -1,10 +1,9 @@
 use crate::utils::span_lint;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::subst::Subst;
 use rustc::ty::{self, Ty};
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Detects giving a mutable reference to a function that only
@@ -27,7 +26,7 @@ declare_clippy_lint! {
 declare_lint_pass!(UnnecessaryMutPassed => [UNNECESSARY_MUT_PASSED]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnnecessaryMutPassed {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         match e.kind {
             ExprKind::Call(ref fn_expr, ref arguments) => {
                 if let ExprKind::Path(ref path) = fn_expr.kind {
@@ -50,18 +49,22 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnnecessaryMutPassed {
     }
 }
 
-fn check_arguments<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, arguments: &[Expr], type_definition: Ty<'tcx>, name: &str) {
+fn check_arguments<'a, 'tcx>(
+    cx: &LateContext<'a, 'tcx>,
+    arguments: &[Expr<'_>],
+    type_definition: Ty<'tcx>,
+    name: &str,
+) {
     match type_definition.kind {
         ty::FnDef(..) | ty::FnPtr(_) => {
             let parameters = type_definition.fn_sig(cx.tcx).skip_binder().inputs();
             for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
                 match parameter.kind {
-                    ty::Ref(_, _, Mutability::Immutable)
+                    ty::Ref(_, _, Mutability::Not)
                     | ty::RawPtr(ty::TypeAndMut {
-                        mutbl: Mutability::Immutable,
-                        ..
+                        mutbl: Mutability::Not, ..
                     }) => {
-                        if let ExprKind::AddrOf(BorrowKind::Ref, Mutability::Mutable, _) = argument.kind {
+                        if let ExprKind::AddrOf(BorrowKind::Ref, Mutability::Mut, _) = argument.kind {
                             span_lint(
                                 cx,
                                 UNNECESSARY_MUT_PASSED,

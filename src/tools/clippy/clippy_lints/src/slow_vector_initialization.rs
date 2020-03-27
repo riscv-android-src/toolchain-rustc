@@ -1,14 +1,14 @@
 use crate::utils::sugg::Sugg;
 use crate::utils::{get_enclosing_block, match_qpath, span_lint_and_then, SpanlessEq};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::intravisit::{walk_block, walk_expr, walk_stmt, NestedVisitorMap, Visitor};
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, Lint, LintArray, LintPass};
+use rustc::hir::map::Map;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::intravisit::{walk_block, walk_expr, walk_stmt, NestedVisitorMap, Visitor};
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, Lint};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::symbol::Symbol;
 use syntax::ast::LitKind;
-use syntax_pos::symbol::Symbol;
 
 declare_clippy_lint! {
     /// **What it does:** Checks slow zero-filled vector initialization
@@ -43,27 +43,27 @@ struct VecAllocation<'tcx> {
     variable_name: Symbol,
 
     /// Reference to the expression which allocates the vector
-    allocation_expr: &'tcx Expr,
+    allocation_expr: &'tcx Expr<'tcx>,
 
     /// Reference to the expression used as argument on `with_capacity` call. This is used
     /// to only match slow zero-filling idioms of the same length than vector initialization.
-    len_expr: &'tcx Expr,
+    len_expr: &'tcx Expr<'tcx>,
 }
 
 /// Type of slow initialization
 enum InitializationType<'tcx> {
     /// Extend is a slow initialization with the form `vec.extend(repeat(0).take(..))`
-    Extend(&'tcx Expr),
+    Extend(&'tcx Expr<'tcx>),
 
     /// Resize is a slow initialization with the form `vec.resize(.., 0)`
-    Resize(&'tcx Expr),
+    Resize(&'tcx Expr<'tcx>),
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SlowVectorInit {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         // Matches initialization on reassignements. For example: `vec = Vec::with_capacity(100)`
         if_chain! {
-            if let ExprKind::Assign(ref left, ref right) = expr.kind;
+            if let ExprKind::Assign(ref left, ref right, _) = expr.kind;
 
             // Extract variable name
             if let ExprKind::Path(QPath::Resolved(_, ref path)) = left.kind;
@@ -84,7 +84,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SlowVectorInit {
         }
     }
 
-    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt) {
+    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt<'_>) {
         // Matches statements which initializes vectors. For example: `let mut vec = Vec::with_capacity(10)`
         if_chain! {
             if let StmtKind::Local(ref local) = stmt.kind;
@@ -108,7 +108,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SlowVectorInit {
 impl SlowVectorInit {
     /// Checks if the given expression is `Vec::with_capacity(..)`. It will return the expression
     /// of the first argument of `with_capacity` call if it matches or `None` if it does not.
-    fn is_vec_with_capacity(expr: &Expr) -> Option<&Expr> {
+    fn is_vec_with_capacity<'tcx>(expr: &Expr<'tcx>) -> Option<&'tcx Expr<'tcx>> {
         if_chain! {
             if let ExprKind::Call(ref func, ref args) = expr.kind;
             if let ExprKind::Path(ref path) = func.kind;
@@ -163,7 +163,7 @@ impl SlowVectorInit {
 
     fn emit_lint<'tcx>(
         cx: &LateContext<'_, 'tcx>,
-        slow_fill: &Expr,
+        slow_fill: &Expr<'_>,
         vec_alloc: &VecAllocation<'_>,
         msg: &str,
         lint: &'static Lint,
@@ -198,7 +198,7 @@ struct VectorInitializationVisitor<'a, 'tcx> {
 
 impl<'a, 'tcx> VectorInitializationVisitor<'a, 'tcx> {
     /// Checks if the given expression is extending a vector with `repeat(0).take(..)`
-    fn search_slow_extend_filling(&mut self, expr: &'tcx Expr) {
+    fn search_slow_extend_filling(&mut self, expr: &'tcx Expr<'_>) {
         if_chain! {
             if self.initialization_found;
             if let ExprKind::MethodCall(ref path, _, ref args) = expr.kind;
@@ -215,7 +215,7 @@ impl<'a, 'tcx> VectorInitializationVisitor<'a, 'tcx> {
     }
 
     /// Checks if the given expression is resizing a vector with 0
-    fn search_slow_resize_filling(&mut self, expr: &'tcx Expr) {
+    fn search_slow_resize_filling(&mut self, expr: &'tcx Expr<'_>) {
         if_chain! {
             if self.initialization_found;
             if let ExprKind::MethodCall(ref path, _, ref args) = expr.kind;
@@ -238,7 +238,7 @@ impl<'a, 'tcx> VectorInitializationVisitor<'a, 'tcx> {
     }
 
     /// Returns `true` if give expression is `repeat(0).take(...)`
-    fn is_repeat_take(&self, expr: &Expr) -> bool {
+    fn is_repeat_take(&self, expr: &Expr<'_>) -> bool {
         if_chain! {
             if let ExprKind::MethodCall(ref take_path, _, ref take_args) = expr.kind;
             if take_path.ident.name == sym!(take);
@@ -260,7 +260,7 @@ impl<'a, 'tcx> VectorInitializationVisitor<'a, 'tcx> {
     }
 
     /// Returns `true` if given expression is `repeat(0)`
-    fn is_repeat_zero(expr: &Expr) -> bool {
+    fn is_repeat_zero(expr: &Expr<'_>) -> bool {
         if_chain! {
             if let ExprKind::Call(ref fn_expr, ref repeat_args) = expr.kind;
             if let ExprKind::Path(ref qpath_repeat) = fn_expr.kind;
@@ -279,7 +279,9 @@ impl<'a, 'tcx> VectorInitializationVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for VectorInitializationVisitor<'a, 'tcx> {
-    fn visit_stmt(&mut self, stmt: &'tcx Stmt) {
+    type Map = Map<'tcx>;
+
+    fn visit_stmt(&mut self, stmt: &'tcx Stmt<'_>) {
         if self.initialization_found {
             match stmt.kind {
                 StmtKind::Expr(ref expr) | StmtKind::Semi(ref expr) => {
@@ -295,7 +297,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VectorInitializationVisitor<'a, 'tcx> {
         }
     }
 
-    fn visit_block(&mut self, block: &'tcx Block) {
+    fn visit_block(&mut self, block: &'tcx Block<'_>) {
         if self.initialization_found {
             if let Some(ref s) = block.stmts.get(0) {
                 self.visit_stmt(s)
@@ -307,7 +309,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VectorInitializationVisitor<'a, 'tcx> {
         }
     }
 
-    fn visit_expr(&mut self, expr: &'tcx Expr) {
+    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         // Skip all the expressions previous to the vector initialization
         if self.vec_alloc.allocation_expr.hir_id == expr.hir_id {
             self.initialization_found = true;
@@ -316,7 +318,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VectorInitializationVisitor<'a, 'tcx> {
         walk_expr(self, expr);
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }

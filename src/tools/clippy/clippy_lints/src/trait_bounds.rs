@@ -1,9 +1,8 @@
 use crate::utils::{in_macro, snippet, span_help_and_lint, SpanlessHash};
-use rustc::hir::*;
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 #[derive(Copy, Clone)]
 pub struct TraitBounds;
@@ -32,7 +31,7 @@ declare_clippy_lint! {
 impl_lint_pass!(TraitBounds => [TYPE_REPETITION_IN_BOUNDS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TraitBounds {
-    fn check_generics(&mut self, cx: &LateContext<'a, 'tcx>, gen: &'tcx Generics) {
+    fn check_generics(&mut self, cx: &LateContext<'a, 'tcx>, gen: &'tcx Generics<'_>) {
         if in_macro(gen.span) {
             return;
         }
@@ -42,7 +41,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TraitBounds {
             hasher.finish()
         };
         let mut map = FxHashMap::default();
-        for bound in &gen.where_clause.predicates {
+        for bound in gen.where_clause.predicates {
             if let WherePredicate::BoundPredicate(ref p) = bound {
                 let h = hash(&p.bounded_ty);
                 if let Some(ref v) = map.insert(h, p.bounds.iter().collect::<Vec<_>>()) {

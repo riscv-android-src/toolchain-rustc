@@ -128,13 +128,13 @@ pub trait Unpark: Sync + Send + 'static {
     fn unpark(&self);
 }
 
-impl Unpark for Box<Unpark> {
+impl Unpark for Box<dyn Unpark> {
     fn unpark(&self) {
         (**self).unpark()
     }
 }
 
-impl Unpark for Arc<Unpark> {
+impl Unpark for Arc<dyn Unpark> {
     fn unpark(&self) {
         (**self).unpark()
     }
@@ -190,7 +190,8 @@ impl ParkThread {
 
     /// Get a reference to the `ParkThread` handle for this thread.
     fn with_current<F, R>(&self, f: F) -> R
-        where F: FnOnce(&Parker) -> R,
+    where
+        F: FnOnce(&Parker) -> R,
     {
         CURRENT_PARKER.with(|inner| f(inner))
     }

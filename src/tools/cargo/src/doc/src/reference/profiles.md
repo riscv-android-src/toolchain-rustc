@@ -187,7 +187,7 @@ case `rustc` uses an internal heuristic to split the crate.
 
 #### rpath
 
-The `rpath` setting controlls the [`-C rpath` flag] which controls
+The `rpath` setting controls the [`-C rpath` flag] which controls
 whether or not [`rpath`] is enabled.
 
 [`-C rpath` flag]: ../../rustc/codegen-options/index.html#rpath
@@ -303,6 +303,9 @@ library is built for unit tests, then the library is built with the `test`
 profile. However, when building an integration test target, the library target
 is built with the `dev` profile and linked into the integration test
 executable.
+
+![Profile selection for cargo test](../images/profile-selection.svg)
+
 
 [`cargo bench`]: ../commands/cargo-bench.md
 [`cargo build`]: ../commands/cargo-build.md

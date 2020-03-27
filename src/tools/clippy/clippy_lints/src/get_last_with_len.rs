@@ -2,14 +2,13 @@
 
 use crate::utils::{is_type_diagnostic_item, snippet_with_applicability, span_lint_and_sugg, SpanlessEq};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::{BinOpKind, Expr, ExprKind};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::{BinOpKind, Expr, ExprKind};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Spanned;
+use rustc_span::symbol::Symbol;
 use syntax::ast::LitKind;
-use syntax::source_map::Spanned;
-use syntax::symbol::Symbol;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for using `x.get(x.len() - 1)` instead of
@@ -46,7 +45,7 @@ declare_clippy_lint! {
 declare_lint_pass!(GetLastWithLen => [GET_LAST_WITH_LEN]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for GetLastWithLen {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             // Is a method call
             if let ExprKind::MethodCall(ref path, _, ref args) = expr.kind;

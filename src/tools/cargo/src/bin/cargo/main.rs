@@ -35,7 +35,6 @@ fn main() {
     let result = match cargo::ops::fix_maybe_exec_rustc() {
         Ok(true) => Ok(()),
         Ok(false) => {
-            init_git_transports(&config);
             let _token = cargo::util::job::setup();
             cli::main(&mut config)
         }
@@ -134,7 +133,7 @@ fn execute_external_subcommand(config: &Config, cmd: &str, args: &[&str]) -> Cli
             let aliases = list_aliases(config);
             let suggestions = commands.iter().chain(aliases.iter());
             let did_you_mean = closest_msg(cmd, suggestions, |c| c);
-            let err = failure::format_err!("no such subcommand: `{}`{}", cmd, did_you_mean);
+            let err = anyhow::format_err!("no such subcommand: `{}`{}", cmd, did_you_mean);
             return Err(CliError::new(err, 101));
         }
     };

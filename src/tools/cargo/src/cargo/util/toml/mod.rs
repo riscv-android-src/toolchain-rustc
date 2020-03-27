@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
 
+use anyhow::{anyhow, bail};
 use cargo_platform::Platform;
-use failure::bail;
 use log::{debug, trace};
 use semver::{self, VersionReq};
 use serde::de;
@@ -14,9 +14,8 @@ use serde::ser;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::core::dependency::Kind;
+use crate::core::dependency::DepKind;
 use crate::core::manifest::{LibKind, ManifestMetadata, TargetSourcePath, Warnings};
-use crate::core::profiles::Profiles;
 use crate::core::{Dependency, InternedString, Manifest, PackageId, Summary, Target};
 use crate::core::{Edition, EitherManifest, Feature, Features, VirtualManifest};
 use crate::core::{GitReference, PackageIdSpec, SourceId, WorkspaceConfig, WorkspaceRootConfig};
@@ -162,7 +161,7 @@ and this will become a hard error in the future.",
         return Ok(ret);
     }
 
-    let first_error = failure::Error::from(first_error);
+    let first_error = anyhow::Error::from(first_error);
     Err(first_error.context("could not parse input as TOML").into())
 }
 
@@ -270,23 +269,19 @@ pub struct TomlManifest {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default)]
-pub struct TomlProfiles(BTreeMap<String, TomlProfile>);
+pub struct TomlProfiles(BTreeMap<InternedString, TomlProfile>);
 
 impl TomlProfiles {
-    pub fn get_all(&self) -> &BTreeMap<String, TomlProfile> {
+    pub fn get_all(&self) -> &BTreeMap<InternedString, TomlProfile> {
         &self.0
     }
 
-    pub fn get(&self, name: &'static str) -> Option<&TomlProfile> {
-        self.0.get(&String::from(name))
+    pub fn get(&self, name: &str) -> Option<&TomlProfile> {
+        self.0.get(name)
     }
 
     pub fn validate(&self, features: &Features, warnings: &mut Vec<String>) -> CargoResult<()> {
         for (name, profile) in &self.0 {
-            if name == "debug" {
-                warnings.push("use `[profile.dev]` to configure debug builds".to_string());
-            }
-
             profile.validate(name, features, warnings)?;
         }
         Ok(())
@@ -408,13 +403,10 @@ pub struct TomlProfile {
     pub panic: Option<String>,
     pub overflow_checks: Option<bool>,
     pub incremental: Option<bool>,
-    // `overrides` has been renamed to `package`, this should be removed when
-    // stabilized.
-    pub overrides: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
     pub package: Option<BTreeMap<ProfilePackageSpec, TomlProfile>>,
     pub build_override: Option<Box<TomlProfile>>,
-    pub dir_name: Option<String>,
-    pub inherits: Option<String>,
+    pub dir_name: Option<InternedString>,
+    pub inherits: Option<InternedString>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -458,20 +450,13 @@ impl TomlProfile {
         features: &Features,
         warnings: &mut Vec<String>,
     ) -> CargoResult<()> {
+        if name == "debug" {
+            warnings.push("use `[profile.dev]` to configure debug builds".to_string());
+        }
+
         if let Some(ref profile) = self.build_override {
             features.require(Feature::profile_overrides())?;
             profile.validate_override("build-override")?;
-        }
-        if let Some(ref override_map) = self.overrides {
-            warnings.push(
-                "profile key `overrides` has been renamed to `package`, \
-                 please update the manifest to the new key name"
-                    .to_string(),
-            );
-            features.require(Feature::profile_overrides())?;
-            for profile in override_map.values() {
-                profile.validate_override("package")?;
-            }
         }
         if let Some(ref packages) = self.package {
             features.require(Feature::profile_overrides())?;
@@ -546,22 +531,22 @@ impl TomlProfile {
             .chars()
             .find(|ch| !ch.is_alphanumeric() && *ch != '_' && *ch != '-')
         {
-            failure::bail!("Invalid character `{}` in {}: `{}`", ch, what, name);
+            bail!("Invalid character `{}` in {}: `{}`", ch, what, name);
         }
 
         match name {
             "package" | "build" => {
-                failure::bail!("Invalid {}: `{}`", what, name);
+                bail!("Invalid {}: `{}`", what, name);
             }
             "debug" if what == "profile" => {
                 if what == "profile name" {
                     // Allowed, but will emit warnings
                 } else {
-                    failure::bail!("Invalid {}: `{}`", what, name);
+                    bail!("Invalid {}: `{}`", what, name);
                 }
             }
             "doc" if what == "dir-name" => {
-                failure::bail!("Invalid {}: `{}`", what, name);
+                bail!("Invalid {}: `{}`", what, name);
             }
             _ => {}
         }
@@ -570,7 +555,7 @@ impl TomlProfile {
     }
 
     fn validate_override(&self, which: &str) -> CargoResult<()> {
-        if self.overrides.is_some() || self.package.is_some() {
+        if self.package.is_some() {
             bail!("package-specific profiles cannot be nested");
         }
         if self.build_override.is_some() {
@@ -588,6 +573,7 @@ impl TomlProfile {
         Ok(())
     }
 
+    /// Overwrite self's values with the given profile.
     pub fn merge(&mut self, profile: &TomlProfile) {
         if let Some(v) = &profile.opt_level {
             self.opt_level = Some(v.clone());
@@ -625,24 +611,35 @@ impl TomlProfile {
             self.incremental = Some(v);
         }
 
-        if let Some(v) = &profile.overrides {
-            self.overrides = Some(v.clone());
+        if let Some(other_package) = &profile.package {
+            match &mut self.package {
+                Some(self_package) => {
+                    for (spec, other_pkg_profile) in other_package {
+                        match self_package.get_mut(spec) {
+                            Some(p) => p.merge(other_pkg_profile),
+                            None => {
+                                self_package.insert(spec.clone(), other_pkg_profile.clone());
+                            }
+                        }
+                    }
+                }
+                None => self.package = Some(other_package.clone()),
+            }
         }
 
-        if let Some(v) = &profile.package {
-            self.package = Some(v.clone());
-        }
-
-        if let Some(v) = &profile.build_override {
-            self.build_override = Some(v.clone());
+        if let Some(other_bo) = &profile.build_override {
+            match &mut self.build_override {
+                Some(self_bo) => self_bo.merge(other_bo),
+                None => self.build_override = Some(other_bo.clone()),
+            }
         }
 
         if let Some(v) = &profile.inherits {
-            self.inherits = Some(v.clone());
+            self.inherits = Some(*v);
         }
 
         if let Some(v) = &profile.dir_name {
-            self.dir_name = Some(v.clone());
+            self.dir_name = Some(*v);
         }
     }
 }
@@ -724,7 +721,7 @@ impl<'de> de::Deserialize<'de> for StringOrBool {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(PartialEq, Clone, Debug, Serialize)]
 #[serde(untagged)]
 pub enum VecStringOrBool {
     VecString(Vec<String>),
@@ -973,7 +970,7 @@ impl TomlManifest {
         let features = Features::new(cargo_features, &mut warnings)?;
 
         let project = me.project.as_ref().or_else(|| me.package.as_ref());
-        let project = project.ok_or_else(|| failure::format_err!("no `package` section found"))?;
+        let project = project.ok_or_else(|| anyhow!("no `package` section found"))?;
 
         let package_name = project.name.trim();
         if package_name.is_empty() {
@@ -1057,7 +1054,7 @@ impl TomlManifest {
             fn process_dependencies(
                 cx: &mut Context<'_, '_>,
                 new_deps: Option<&BTreeMap<String, TomlDependency>>,
-                kind: Option<Kind>,
+                kind: Option<DepKind>,
             ) -> CargoResult<()> {
                 let dependencies = match new_deps {
                     Some(dependencies) => dependencies,
@@ -1077,26 +1074,30 @@ impl TomlManifest {
                 .dev_dependencies
                 .as_ref()
                 .or_else(|| me.dev_dependencies2.as_ref());
-            process_dependencies(&mut cx, dev_deps, Some(Kind::Development))?;
+            process_dependencies(&mut cx, dev_deps, Some(DepKind::Development))?;
             let build_deps = me
                 .build_dependencies
                 .as_ref()
                 .or_else(|| me.build_dependencies2.as_ref());
-            process_dependencies(&mut cx, build_deps, Some(Kind::Build))?;
+            process_dependencies(&mut cx, build_deps, Some(DepKind::Build))?;
 
             for (name, platform) in me.target.iter().flatten() {
-                cx.platform = Some(name.parse()?);
+                cx.platform = {
+                    let platform: Platform = name.parse()?;
+                    platform.check_cfg_attributes(&mut cx.warnings);
+                    Some(platform)
+                };
                 process_dependencies(&mut cx, platform.dependencies.as_ref(), None)?;
                 let build_deps = platform
                     .build_dependencies
                     .as_ref()
                     .or_else(|| platform.build_dependencies2.as_ref());
-                process_dependencies(&mut cx, build_deps, Some(Kind::Build))?;
+                process_dependencies(&mut cx, build_deps, Some(DepKind::Build))?;
                 let dev_deps = platform
                     .dev_dependencies
                     .as_ref()
                     .or_else(|| platform.dev_dependencies2.as_ref());
-                process_dependencies(&mut cx, dev_deps, Some(Kind::Development))?;
+                process_dependencies(&mut cx, dev_deps, Some(DepKind::Development))?;
             }
 
             replace = me.replace(&mut cx)?;
@@ -1169,7 +1170,10 @@ impl TomlManifest {
                  `[workspace]`, only one can be specified"
             ),
         };
-        let profiles = Profiles::new(me.profile.as_ref(), config, &features, &mut warnings)?;
+        let profiles = me.profile.clone();
+        if let Some(profiles) = &profiles {
+            profiles.validate(&features, &mut warnings)?;
+        }
         let publish = match project.publish {
             Some(VecStringOrBool::VecString(ref vecstring)) => Some(vecstring.clone()),
             Some(VecStringOrBool::Bool(false)) => Some(vec![]),
@@ -1317,7 +1321,10 @@ impl TomlManifest {
             };
             (me.replace(&mut cx)?, me.patch(&mut cx)?)
         };
-        let profiles = Profiles::new(me.profile.as_ref(), config, &features, &mut warnings)?;
+        let profiles = me.profile.clone();
+        if let Some(profiles) = &profiles {
+            profiles.validate(&features, &mut warnings)?;
+        }
         let workspace_config = match me.workspace {
             Some(ref config) => WorkspaceConfig::Root(WorkspaceRootConfig::new(
                 root,
@@ -1363,7 +1370,7 @@ impl TomlManifest {
             let mut dep = replacement.to_dependency(spec.name().as_str(), cx, None)?;
             {
                 let version = spec.version().ok_or_else(|| {
-                    failure::format_err!(
+                    anyhow!(
                         "replacements must specify a version \
                          to replace, but `{}` does not",
                         spec
@@ -1446,7 +1453,7 @@ impl TomlDependency {
         &self,
         name: &str,
         cx: &mut Context<'_, '_>,
-        kind: Option<Kind>,
+        kind: Option<DepKind>,
     ) -> CargoResult<Dependency> {
         match *self {
             TomlDependency::Simple(ref version) => DetailedTomlDependency {
@@ -1471,7 +1478,7 @@ impl DetailedTomlDependency {
         &self,
         name_in_toml: &str,
         cx: &mut Context<'_, '_>,
-        kind: Option<Kind>,
+        kind: Option<DepKind>,
     ) -> CargoResult<Dependency> {
         if self.version.is_none() && self.path.is_none() && self.git.is_none() {
             let msg = format!(
@@ -1631,7 +1638,7 @@ impl DetailedTomlDependency {
         if let Some(p) = self.public {
             cx.features.require(Feature::public_dependency())?;
 
-            if dep.kind() != Kind::Normal {
+            if dep.kind() != DepKind::Normal {
                 bail!("'public' specifier can only be used on regular dependencies, not {:?} dependencies", dep.kind());
             }
 

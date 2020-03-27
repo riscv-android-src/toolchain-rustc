@@ -1,12 +1,11 @@
 //! lint on `use`ing all variants of an enum
 
 use crate::utils::span_lint;
-use rustc::declare_lint_pass;
-use rustc::hir::def::{DefKind, Res};
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for `use Enum::*`.
@@ -29,16 +28,16 @@ declare_clippy_lint! {
 declare_lint_pass!(EnumGlobUse => [ENUM_GLOB_USE]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EnumGlobUse {
-    fn check_mod(&mut self, cx: &LateContext<'a, 'tcx>, m: &'tcx Mod, _: Span, _: HirId) {
+    fn check_mod(&mut self, cx: &LateContext<'a, 'tcx>, m: &'tcx Mod<'_>, _: Span, _: HirId) {
         let map = cx.tcx.hir();
         // only check top level `use` statements
-        for item in &m.item_ids {
+        for item in m.item_ids {
             lint_item(cx, map.expect_item(item.id));
         }
     }
 }
 
-fn lint_item(cx: &LateContext<'_, '_>, item: &Item) {
+fn lint_item(cx: &LateContext<'_, '_>, item: &Item<'_>) {
     if item.vis.node.is_pub() {
         return; // re-exports are fine
     }

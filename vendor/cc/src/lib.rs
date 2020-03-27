@@ -167,6 +167,8 @@ impl Display for Error {
     }
 }
 
+impl std::error::Error for Error {}
+
 /// Configuration used to represent an invocation of a C compiler.
 ///
 /// This can be used to figure out what compiler is in use, what the arguments
@@ -1099,9 +1101,13 @@ impl Build {
                 return client;
             }
 
-            // ... but if that fails for whatever reason fall back to the number
-            // of cpus on the system or the `NUM_JOBS` env var.
-            let mut parallelism = num_cpus::get();
+            // ... but if that fails for whatever reason select something
+            // reasonable and crate a new jobserver. Use `NUM_JOBS` if set (it's
+            // configured by Cargo) and otherwise just fall back to a
+            // semi-reasonable number. Note that we could use `num_cpus` here
+            // but it's an extra dependency that will almost never be used, so
+            // it's generally not too worth it.
+            let mut parallelism = 4;
             if let Ok(amt) = env::var("NUM_JOBS") {
                 if let Ok(amt) = amt.parse() {
                     parallelism = amt;
@@ -1365,11 +1371,11 @@ impl Build {
                     cmd.push_cc_arg("-ffunction-sections".into());
                     cmd.push_cc_arg("-fdata-sections".into());
                 }
-                // Disable generation of PIC on RISC-V for now: rust-lld doesn't support this yet
-                if self
-                    .pic
-                    .unwrap_or(!target.contains("windows-gnu") && !target.contains("riscv"))
-                {
+                // Disable generation of PIC on bare-metal RISC-V for now: rust-lld doesn't support this yet
+                if self.pic.unwrap_or(
+                    !target.contains("windows-gnu")
+                        && !(target.contains("riscv") && target.contains("-none-")),
+                ) {
                     cmd.push_cc_arg("-fPIC".into());
                     // PLT only applies if code is compiled with PIC support,
                     // and only for ELF targets.
@@ -1588,9 +1594,11 @@ impl Build {
                     if let Some(arch) = parts.next() {
                         let arch = &arch[5..];
                         cmd.args.push(("-march=rv".to_owned() + arch).into());
-                        // ABI is always soft-float right now, update this when this is no longer the
-                        // case:
-                        if arch.starts_with("64") {
+                        if target.contains("linux") && arch.starts_with("64") {
+                            cmd.args.push("-mabi=lp64d".into());
+                        } else if target.contains("linux") && arch.starts_with("32") {
+                            cmd.args.push("-mabi=ilp32d".into());
+                        } else if arch.starts_with("64") {
                             cmd.args.push("-mabi=lp64".into());
                         } else {
                             cmd.args.push("-mabi=ilp32".into());
@@ -2025,6 +2033,7 @@ impl Build {
                         "riscv32imc-unknown-none-elf" => Some("riscv32-unknown-elf"),
                         "riscv64gc-unknown-none-elf" => Some("riscv64-unknown-elf"),
                         "riscv64imac-unknown-none-elf" => Some("riscv64-unknown-elf"),
+                        "riscv64gc-unknown-linux-gnu" => Some("riscv64-linux-gnu"),
                         "s390x-unknown-linux-gnu" => Some("s390x-linux-gnu"),
                         "sparc-unknown-linux-gnu" => Some("sparc-linux-gnu"),
                         "sparc64-unknown-linux-gnu" => Some("sparc64-linux-gnu"),

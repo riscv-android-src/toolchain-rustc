@@ -155,9 +155,11 @@ impl Build {
             "i686-unknown-linux-gnu" => "linux-elf",
             "i686-unknown-linux-musl" => "linux-elf",
             "mips-unknown-linux-gnu" => "linux-mips32",
+            "mips-unknown-linux-musl" => "linux-mips32",
             "mips64-unknown-linux-gnuabi64" => "linux64-mips64",
             "mips64el-unknown-linux-gnuabi64" => "linux64-mips64",
             "mipsel-unknown-linux-gnu" => "linux-mips32",
+            "mipsel-unknown-linux-musl" => "linux-mips32",
             "powerpc-unknown-linux-gnu" => "linux-ppc",
             "powerpc64-unknown-linux-gnu" => "linux-ppc64",
             "powerpc64le-unknown-linux-gnu" => "linux-ppc64le",
@@ -308,12 +310,12 @@ impl Build {
         if target.contains("msvc") {
             let mut build =
                 cc::windows_registry::find(target, "nmake.exe").expect("failed to find nmake");
-            build.current_dir(&inner_dir);
+            build.arg("build_libs").current_dir(&inner_dir);
             self.run_command(build, "building OpenSSL");
 
             let mut install =
                 cc::windows_registry::find(target, "nmake.exe").expect("failed to find nmake");
-            install.arg("install_sw").current_dir(&inner_dir);
+            install.arg("install_dev").current_dir(&inner_dir);
             self.run_command(install, "installing OpenSSL");
         } else {
             let mut depend = self.cmd_make();
@@ -321,7 +323,7 @@ impl Build {
             self.run_command(depend, "building OpenSSL dependencies");
 
             let mut build = self.cmd_make();
-            build.current_dir(&inner_dir);
+            build.arg("build_libs").current_dir(&inner_dir);
             if !cfg!(windows) {
                 if let Some(s) = env::var_os("CARGO_MAKEFLAGS") {
                     build.env("MAKEFLAGS", s);
@@ -337,7 +339,7 @@ impl Build {
             self.run_command(build, "building OpenSSL");
 
             let mut install = self.cmd_make();
-            install.arg("install_sw").current_dir(&inner_dir);
+            install.arg("install_dev").current_dir(&inner_dir);
             self.run_command(install, "installing OpenSSL");
         }
 

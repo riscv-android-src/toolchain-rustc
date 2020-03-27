@@ -1,3 +1,24 @@
+# 0.1.11 (November 27, 2019)
+
+### Added
+- `set_default`, which functions like `with_default` but returns a drop
+  guard (#1725)
+
+# 0.1.10 (September 25, 2019)
+
+### Changed
+- Upgrade to parking_lot 0.9.0 (#1298 backport)
+- The minimum supported rust version (MSRV) is now 1.31.0. (#1358)
+
+# 0.1.9 (March 1, 2019)
+
+### Added
+- impl `AsRawFd` for `Reactor` on unix platforms (#890).
+
+### Changed
+- perf: reduce unnecessary task clones (#899).
+- perf: release lock before issuing syscall (#894).
+
 # 0.1.8 (January 6, 2019)
 
 * Update to `parking_lot` 0.7 (#778).

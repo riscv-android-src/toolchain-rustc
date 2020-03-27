@@ -1,10 +1,10 @@
 //! List of the active feature gates.
 
-use super::{State, Feature};
+use super::{Feature, State};
 
-use syntax_pos::edition::Edition;
-use syntax_pos::Span;
-use syntax_pos::symbol::{Symbol, sym};
+use rustc_span::edition::Edition;
+use rustc_span::symbol::{sym, Symbol};
+use rustc_span::Span;
 
 macro_rules! set {
     ($field: ident) => {{
@@ -12,7 +12,7 @@ macro_rules! set {
             features.$field = true;
         }
         f as fn(&mut Features, Span)
-    }}
+    }};
 }
 
 macro_rules! declare_features {
@@ -72,7 +72,7 @@ impl Feature {
     pub fn set(&self, features: &mut Features, span: Span) {
         match self.state {
             State::Active { set } => set(features, span),
-            _ => panic!("called `set` on feature `{}` which is not `active`", self.name)
+            _ => panic!("called `set` on feature `{}` which is not `active`", self.name),
         }
     }
 }
@@ -91,6 +91,7 @@ impl Feature {
 // N.B., `tools/tidy/src/features.rs` parses this information directly out of the
 // source, so take care when modifying it.
 
+#[rustfmt::skip]
 declare_features! (
     // -------------------------------------------------------------------------
     // feature-group-start: internal feature gates
@@ -191,9 +192,6 @@ declare_features! (
     /// Allows using the `unadjusted` ABI; perma-unstable.
     (active, abi_unadjusted, "1.16.0", None, None),
 
-    /// Allows identifying crates that contain sanitizer runtimes.
-    (active, sanitizer_runtime, "1.17.0", None, None),
-
     /// Used to identify crates that contain the profiler runtime.
     (active, profiler_runtime, "1.18.0", None, None),
 
@@ -264,9 +262,6 @@ declare_features! (
     /// Allows using non lexical lifetimes (RFC 2094).
     (active, nll, "1.0.0", Some(43234), None),
 
-    /// Allows using slice patterns.
-    (active, slice_patterns, "1.0.0", Some(62254), None),
-
     /// Allows the definition of `const` functions with some advanced features.
     (active, const_fn, "1.2.0", Some(57563), None),
 
@@ -335,7 +330,7 @@ declare_features! (
     (active, abi_ptx, "1.15.0", Some(38788), None),
 
     /// Allows the `#[repr(i128)]` attribute for enums.
-    (active, repr128, "1.16.0", Some(35118), None),
+    (active, repr128, "1.16.0", Some(56071), None),
 
     /// Allows `#[link(kind="static-nobundle"...)]`.
     (active, static_nobundle, "1.16.0", Some(37403), None),
@@ -473,9 +468,6 @@ declare_features! (
     /// Allows `if/while p && let q = r && ...` chains.
     (active, let_chains, "1.37.0", Some(53667), None),
 
-    /// Allows #[repr(transparent)] on enums (RFC 2645).
-    (active, transparent_enums, "1.37.0", Some(60405), None),
-
     /// Allows #[repr(transparent)] on unions (RFC 2645).
     (active, transparent_unions, "1.37.0", Some(60405), None),
 
@@ -483,7 +475,7 @@ declare_features! (
     (active, arbitrary_enum_discriminant, "1.37.0", Some(60553), None),
 
     /// Allows `impl Trait` with multiple unrelated lifetimes.
-    (active, member_constraints, "1.37.0", Some(61977), None),
+    (active, member_constraints, "1.37.0", Some(61997), None),
 
     /// Allows `async || body` closures.
     (active, async_closure, "1.37.0", Some(62290), None),
@@ -533,11 +525,24 @@ declare_features! (
     /// Allows the use of `#[cfg(sanitize = "option")]`; set when -Zsanitizer is used.
     (active, cfg_sanitize, "1.41.0", Some(39699), None),
 
+    /// Allows using `..X`, `..=X`, `...X`, and `X..` as a pattern.
+    (active, half_open_range_patterns, "1.41.0", Some(67264), None),
+
     /// Allows using `&mut` in constant functions.
     (active, const_mut_refs, "1.41.0", Some(57349), None),
 
     /// Allows the use of `loop` and `while` in constants.
     (active, const_loop, "1.41.0", Some(52000), None),
+
+    /// Allows bindings in the subpattern of a binding pattern.
+    /// For example, you can write `x @ Some(y)`.
+    (active, bindings_after_at, "1.41.0", Some(65490), None),
+
+    /// Allows `impl const Trait for T` syntax.
+    (active, const_trait_impl, "1.42.0", Some(67792), None),
+
+    /// Allows `T: ?const Trait` syntax in bounds.
+    (active, const_trait_bound_opt_out, "1.42.0", Some(67794), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates
@@ -554,4 +559,6 @@ pub const INCOMPLETE_FEATURES: &[Symbol] = &[
     sym::or_patterns,
     sym::let_chains,
     sym::raw_dylib,
+    sym::const_trait_impl,
+    sym::const_trait_bound_opt_out,
 ];

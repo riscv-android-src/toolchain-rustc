@@ -41,13 +41,11 @@ struct RArray {
 #define mrb_ary_value(p)  mrb_obj_value((void*)(p))
 #define RARRAY(v)  ((struct RArray*)(mrb_ptr(v)))
 
-#define MRB_ARY_EMBED       4
-#define MRB_ARY_EMBED_MASK  3
-#define ARY_EMBED_P(a) ((a)->flags & MRB_ARY_EMBED)
-#define ARY_SET_EMBED_FLAG(a) ((a)->flags |= MRB_ARY_EMBED)
-#define ARY_UNSET_EMBED_FLAG(a) ((a)->flags &= ~(MRB_ARY_EMBED|MRB_ARY_EMBED_MASK))
-#define ARY_EMBED_LEN(a) ((a)->flags & MRB_ARY_EMBED_MASK)
-#define ARY_SET_EMBED_LEN(a,len) (a)->flags = ((a)->flags&~MRB_ARY_EMBED_MASK) | ((len)&MRB_ARY_EMBED_MASK);
+#define MRB_ARY_EMBED_MASK  7
+#define ARY_EMBED_P(a) ((a)->flags & MRB_ARY_EMBED_MASK)
+#define ARY_UNSET_EMBED_FLAG(a) ((a)->flags &= ~(MRB_ARY_EMBED_MASK))
+#define ARY_EMBED_LEN(a) ((mrb_int)(((a)->flags & MRB_ARY_EMBED_MASK) - 1))
+#define ARY_SET_EMBED_LEN(a,len) ((a)->flags = ((a)->flags&~MRB_ARY_EMBED_MASK) | ((uint32_t)(len) + 1))
 #define ARY_EMBED_PTR(a) (&((a)->as.embed[0]))
 
 #define ARY_LEN(a) (ARY_EMBED_P(a)?ARY_EMBED_LEN(a):(a)->as.heap.len)
@@ -201,10 +199,11 @@ MRB_API void mrb_ary_set(mrb_state *mrb, mrb_value ary, mrb_int n, mrb_value val
  * @param other The array to replace it with.
  */
 MRB_API void mrb_ary_replace(mrb_state *mrb, mrb_value self, mrb_value other);
+MRB_API mrb_value mrb_ensure_array_type(mrb_state *mrb, mrb_value self);
 MRB_API mrb_value mrb_check_array_type(mrb_state *mrb, mrb_value self);
 
 /*
- * Unshift an element into an array
+ * Unshift an element into the array
  *
  * Equivalent to:
  *
@@ -215,7 +214,34 @@ MRB_API mrb_value mrb_check_array_type(mrb_state *mrb, mrb_value self);
  * @param item The item to unshift.
  */
 MRB_API mrb_value mrb_ary_unshift(mrb_state *mrb, mrb_value self, mrb_value item);
+
+/*
+ * Get nth element in the array
+ *
+ * Equivalent to:
+ *
+ *     ary[offset]
+ *
+ * @param ary The target array.
+ * @param offset The element position (negative counts from the tail).
+ */
 MRB_API mrb_value mrb_ary_entry(mrb_value ary, mrb_int offset);
+
+/*
+ * Replace subsequence of an array.
+ *
+ * Equivalent to:
+ *
+ *      ary.shift
+ *
+ * @param mrb The mruby state reference.
+ * @param self The array from which the value will be shifted.
+ * @param head Beginning position of a replacement subsequence.
+ * @param len Length of a replacement subsequence.
+ * @param rpl The array of replacement elements.
+ * @return The receiver array.
+ */
+MRB_API mrb_value mrb_ary_splice(mrb_state *mrb, mrb_value self, mrb_int head, mrb_int len, mrb_value rpl);
 
 /*
  * Shifts the first element from the array.
@@ -231,7 +257,7 @@ MRB_API mrb_value mrb_ary_entry(mrb_value ary, mrb_int offset);
 MRB_API mrb_value mrb_ary_shift(mrb_state *mrb, mrb_value self);
 
 /*
- * Removes all elements from this array
+ * Removes all elements from the array
  *
  * Equivalent to:
  *
@@ -264,23 +290,6 @@ MRB_API mrb_value mrb_ary_join(mrb_state *mrb, mrb_value ary, mrb_value sep);
  * @param new_len The new capacity of the array
  */
 MRB_API mrb_value mrb_ary_resize(mrb_state *mrb, mrb_value ary, mrb_int new_len);
-
-static inline mrb_int
-mrb_ary_len(mrb_state *mrb, mrb_value ary)
-{
-  (void)mrb;
-  mrb_assert(mrb_array_p(ary));
-  return RARRAY_LEN(ary);
-}
-
-static inline mrb_value
-ary_elt(mrb_value ary, mrb_int offset)
-{
-  if (offset < 0 || RARRAY_LEN(ary) <= offset) {
-    return mrb_nil_value();
-  }
-  return RARRAY_PTR(ary)[offset];
-}
 
 MRB_END_DECL
 

@@ -1,15 +1,14 @@
-use crate::utils::{match_type, paths, return_ty, span_lint};
+use crate::utils::{is_entrypoint_fn, match_type, paths, return_ty, span_lint};
 use itertools::Itertools;
-use pulldown_cmark;
-use rustc::hir;
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
+use rustc::lint::in_external_macro;
 use rustc_data_structures::fx::FxHashSet;
-use rustc_session::declare_tool_lint;
+use rustc_hir as hir;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::source_map::{BytePos, MultiSpan, Span};
+use rustc_span::Pos;
 use std::ops::Range;
 use syntax::ast::{AttrKind, Attribute};
-use syntax::source_map::{BytePos, MultiSpan, Span};
-use syntax_pos::Pos;
 use url::Url;
 
 declare_clippy_lint! {
@@ -146,39 +145,48 @@ impl DocMarkdown {
 impl_lint_pass!(DocMarkdown => [DOC_MARKDOWN, MISSING_SAFETY_DOC, MISSING_ERRORS_DOC, NEEDLESS_DOCTEST_MAIN]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
-    fn check_crate(&mut self, cx: &LateContext<'a, 'tcx>, krate: &'tcx hir::Crate) {
+    fn check_crate(&mut self, cx: &LateContext<'a, 'tcx>, krate: &'tcx hir::Crate<'_>) {
         check_attrs(cx, &self.valid_idents, &krate.attrs);
     }
 
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item<'_>) {
         let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
         match item.kind {
             hir::ItemKind::Fn(ref sig, ..) => {
-                lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
+                if !(is_entrypoint_fn(cx, cx.tcx.hir().local_def_id(item.hir_id))
+                    || in_external_macro(cx.tcx.sess, item.span))
+                {
+                    lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
+                }
             },
-            hir::ItemKind::Impl(_, _, _, _, ref trait_ref, ..) => {
+            hir::ItemKind::Impl {
+                of_trait: ref trait_ref,
+                ..
+            } => {
                 self.in_trait_impl = trait_ref.is_some();
             },
             _ => {},
         }
     }
 
-    fn check_item_post(&mut self, _cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
-        if let hir::ItemKind::Impl(..) = item.kind {
+    fn check_item_post(&mut self, _cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item<'_>) {
+        if let hir::ItemKind::Impl { .. } = item.kind {
             self.in_trait_impl = false;
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem<'_>) {
         let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
         if let hir::TraitItemKind::Method(ref sig, ..) = item.kind {
-            lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
+            if !in_external_macro(cx.tcx.sess, item.span) {
+                lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
+            }
         }
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ImplItem<'_>) {
         let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
-        if self.in_trait_impl {
+        if self.in_trait_impl || in_external_macro(cx.tcx.sess, item.span) {
             return;
         }
         if let hir::ImplItemKind::Method(ref sig, ..) = item.kind {
@@ -191,7 +199,7 @@ fn lint_for_missing_headers<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     hir_id: hir::HirId,
     span: impl Into<MultiSpan> + Copy,
-    sig: &hir::FnSig,
+    sig: &hir::FnSig<'_>,
     headers: DocHeaders,
 ) {
     if !cx.access_levels.is_exported(hir_id) {
@@ -390,8 +398,10 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     headers
 }
 
+static LEAVE_MAIN_PATTERNS: &[&str] = &["static", "fn main() {}", "extern crate"];
+
 fn check_code(cx: &LateContext<'_, '_>, text: &str, span: Span) {
-    if text.contains("fn main() {") && !(text.contains("static") || text.contains("fn main() {}")) {
+    if text.contains("fn main() {") && !LEAVE_MAIN_PATTERNS.iter().any(|p| text.contains(p)) {
         span_lint(cx, NEEDLESS_DOCTEST_MAIN, span, "needless `fn main` in doctest");
     }
 }

@@ -6,16 +6,15 @@ use crate::utils::{
     walk_ptrs_hir_ty,
 };
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::QPath;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::QPath;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
+use rustc_span::{MultiSpan, Symbol};
 use std::borrow::Cow;
-use syntax::source_map::Span;
-use syntax_pos::{MultiSpan, Symbol};
 
 declare_clippy_lint! {
     /// **What it does:** This lint checks for function arguments of type `&String`
@@ -101,17 +100,17 @@ declare_clippy_lint! {
 declare_lint_pass!(Ptr => [PTR_ARG, CMP_NULL, MUT_FROM_REF]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Ptr {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
         if let ItemKind::Fn(ref sig, _, body_id) = item.kind {
             check_fn(cx, &sig.decl, item.hir_id, Some(body_id));
         }
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem<'_>) {
         if let ImplItemKind::Method(ref sig, body_id) = item.kind {
             let parent_item = cx.tcx.hir().get_parent_item(item.hir_id);
             if let Some(Node::Item(it)) = cx.tcx.hir().find(parent_item) {
-                if let ItemKind::Impl(_, _, _, _, Some(_), _, _) = it.kind {
+                if let ItemKind::Impl { of_trait: Some(_), .. } = it.kind {
                     return; // ignore trait impls
                 }
             }
@@ -119,7 +118,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Ptr {
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
         if let TraitItemKind::Method(ref sig, ref trait_method) = item.kind {
             let body_id = if let TraitMethod::Provided(b) = *trait_method {
                 Some(b)
@@ -130,14 +129,14 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Ptr {
         }
     }
 
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if let ExprKind::Binary(ref op, ref l, ref r) = expr.kind {
             if (op.node == BinOpKind::Eq || op.node == BinOpKind::Ne) && (is_null_path(l) || is_null_path(r)) {
                 span_lint(
                     cx,
                     CMP_NULL,
                     expr.span,
-                    "Comparing with null is better expressed by the .is_null() method",
+                    "Comparing with null is better expressed by the `.is_null()` method",
                 );
             }
         }
@@ -145,13 +144,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Ptr {
 }
 
 #[allow(clippy::too_many_lines)]
-fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl, fn_id: HirId, opt_body_id: Option<BodyId>) {
+fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_id: Option<BodyId>) {
     let fn_def_id = cx.tcx.hir().local_def_id(fn_id);
     let sig = cx.tcx.fn_sig(fn_def_id);
     let fn_ty = sig.skip_binder();
 
     for (idx, (arg, ty)) in decl.inputs.iter().zip(fn_ty.inputs()).enumerate() {
-        if let ty::Ref(_, ty, Mutability::Immutable) = ty.kind {
+        if let ty::Ref(_, ty, Mutability::Not) = ty.kind {
             if is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) {
                 let mut ty_snippet = None;
                 if_chain! {
@@ -255,7 +254,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl, fn_id: HirId, opt_body_id: 
     }
 
     if let FunctionRetTy::Return(ref ty) = decl.output {
-        if let Some((out, Mutability::Mutable, _)) = get_rptr_lm(ty) {
+        if let Some((out, Mutability::Mut, _)) = get_rptr_lm(ty) {
             let mut immutables = vec![];
             for (_, ref mutbl, ref argspan) in decl
                 .inputs
@@ -263,7 +262,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl, fn_id: HirId, opt_body_id: 
                 .filter_map(|ty| get_rptr_lm(ty))
                 .filter(|&(lt, _, _)| lt.name == out.name)
             {
-                if *mutbl == Mutability::Mutable {
+                if *mutbl == Mutability::Mut {
                     return;
                 }
                 immutables.push(*argspan);
@@ -285,7 +284,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl, fn_id: HirId, opt_body_id: 
     }
 }
 
-fn get_rptr_lm(ty: &Ty) -> Option<(&Lifetime, Mutability, Span)> {
+fn get_rptr_lm<'tcx>(ty: &'tcx Ty<'tcx>) -> Option<(&'tcx Lifetime, Mutability, Span)> {
     if let TyKind::Rptr(ref lt, ref m) = ty.kind {
         Some((lt, m.mutbl, ty.span))
     } else {
@@ -293,7 +292,7 @@ fn get_rptr_lm(ty: &Ty) -> Option<(&Lifetime, Mutability, Span)> {
     }
 }
 
-fn is_null_path(expr: &Expr) -> bool {
+fn is_null_path(expr: &Expr<'_>) -> bool {
     if let ExprKind::Call(ref pathexp, ref args) = expr.kind {
         if args.is_empty() {
             if let ExprKind::Path(ref path) = pathexp.kind {

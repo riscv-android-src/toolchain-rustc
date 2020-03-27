@@ -1,11 +1,10 @@
 use crate::utils::span_lint;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::symbol;
 use std::f64::consts as f64;
 use syntax::ast::{FloatTy, LitFloatType, LitKind};
-use syntax::symbol;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for floating point literals that approximate
@@ -60,14 +59,14 @@ const KNOWN_CONSTS: [(f64, &str, usize); 16] = [
 declare_lint_pass!(ApproxConstant => [APPROX_CONSTANT]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ApproxConstant {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         if let ExprKind::Lit(lit) = &e.kind {
             check_lit(cx, &lit.node, e);
         }
     }
 }
 
-fn check_lit(cx: &LateContext<'_, '_>, lit: &LitKind, e: &Expr) {
+fn check_lit(cx: &LateContext<'_, '_>, lit: &LitKind, e: &Expr<'_>) {
     match *lit {
         LitKind::Float(s, LitFloatType::Suffixed(fty)) => match fty {
             FloatTy::F32 => check_known_consts(cx, e, s, "f32"),
@@ -78,7 +77,7 @@ fn check_lit(cx: &LateContext<'_, '_>, lit: &LitKind, e: &Expr) {
     }
 }
 
-fn check_known_consts(cx: &LateContext<'_, '_>, e: &Expr, s: symbol::Symbol, module: &str) {
+fn check_known_consts(cx: &LateContext<'_, '_>, e: &Expr<'_>, s: symbol::Symbol, module: &str) {
     let s = s.as_str();
     if s.parse::<f64>().is_ok() {
         for &(constant, name, min_digits) in &KNOWN_CONSTS {

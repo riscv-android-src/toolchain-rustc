@@ -18,11 +18,11 @@ use registry::Registry;
 use rustc_data_structures::fx::{FxHashSet, FxIndexMap};
 use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_data_structures::sync::{self, Lock, Lrc};
-use syntax_pos::source_map::SourceMap;
-use syntax_pos::{Loc, MultiSpan, Span};
+use rustc_data_structures::AtomicRef;
+use rustc_span::source_map::SourceMap;
+use rustc_span::{Loc, MultiSpan, Span};
 
 use std::borrow::Cow;
-use std::cell::Cell;
 use std::panic;
 use std::path::Path;
 use std::{error, fmt};
@@ -147,7 +147,7 @@ impl CodeSuggestion {
     /// Returns the assembled code suggestions, whether they should be shown with an underline
     /// and whether the substitution only differs in capitalization.
     pub fn splice_lines(&self, cm: &SourceMap) -> Vec<(String, Vec<SubstitutionPart>, bool)> {
-        use syntax_pos::{CharPos, Pos};
+        use rustc_span::{CharPos, Pos};
 
         fn push_trailing(
             buf: &mut String,
@@ -185,16 +185,17 @@ impl CodeSuggestion {
                 !invalid
             })
             .cloned()
-            .map(|mut substitution| {
+            .filter_map(|mut substitution| {
                 // Assumption: all spans are in the same file, and all spans
                 // are disjoint. Sort in ascending order.
                 substitution.parts.sort_by_key(|part| part.span.lo());
 
                 // Find the bounding span.
-                let lo = substitution.parts.iter().map(|part| part.span.lo()).min().unwrap();
-                let hi = substitution.parts.iter().map(|part| part.span.hi()).max().unwrap();
+                let lo = substitution.parts.iter().map(|part| part.span.lo()).min()?;
+                let hi = substitution.parts.iter().map(|part| part.span.hi()).max()?;
                 let bounding_span = Span::with_root_ctxt(lo, hi);
-                let lines = cm.span_to_lines(bounding_span).unwrap();
+                // The different spans might belong to different contexts, if so ignore suggestion.
+                let lines = cm.span_to_lines(bounding_span).ok()?;
                 assert!(!lines.lines.is_empty());
 
                 // To build up the result, we do this for each span:
@@ -244,13 +245,13 @@ impl CodeSuggestion {
                 while buf.ends_with('\n') {
                     buf.pop();
                 }
-                (buf, substitution.parts, only_capitalization)
+                Some((buf, substitution.parts, only_capitalization))
             })
             .collect()
     }
 }
 
-pub use syntax_pos::fatal_error::{FatalError, FatalErrorMarker};
+pub use rustc_span::fatal_error::{FatalError, FatalErrorMarker};
 
 /// Signifies that the compiler died with an explicit call to `.bug`
 /// or `.span_bug` rather than a failed assertion, etc.
@@ -263,11 +264,7 @@ impl fmt::Display for ExplicitBug {
     }
 }
 
-impl error::Error for ExplicitBug {
-    fn description(&self) -> &str {
-        "The parser has encountered an internal bug"
-    }
-}
+impl error::Error for ExplicitBug {}
 
 pub use diagnostic::{Diagnostic, DiagnosticId, DiagnosticStyledString, SubDiagnostic};
 pub use diagnostic_builder::DiagnosticBuilder;
@@ -292,7 +289,6 @@ struct HandlerInner {
     err_count: usize,
     deduplicated_err_count: usize,
     emitter: Box<dyn Emitter + sync::Send>,
-    continue_after_error: bool,
     delayed_span_bugs: Vec<Diagnostic>,
 
     /// This set contains the `DiagnosticId` of all emitted diagnostics to avoid
@@ -323,8 +319,8 @@ pub enum StashKey {
 
 fn default_track_diagnostic(_: &Diagnostic) {}
 
-thread_local!(pub static TRACK_DIAGNOSTICS: Cell<fn(&Diagnostic)> =
-                Cell::new(default_track_diagnostic));
+pub static TRACK_DIAGNOSTICS: AtomicRef<fn(&Diagnostic)> =
+    AtomicRef::new(&(default_track_diagnostic as fn(&_)));
 
 #[derive(Copy, Clone, Default)]
 pub struct HandlerFlags {
@@ -343,6 +339,8 @@ pub struct HandlerFlags {
     /// show macro backtraces even for non-local macros.
     /// (rustc: see `-Z external-macro-backtrace`)
     pub external_macro_backtrace: bool,
+    /// If true, identical diagnostics are reported only once.
+    pub deduplicate_diagnostics: bool,
 }
 
 impl Drop for HandlerInner {
@@ -414,7 +412,6 @@ impl Handler {
                 err_count: 0,
                 deduplicated_err_count: 0,
                 emitter,
-                continue_after_error: true,
                 delayed_span_bugs: Vec::new(),
                 taught_diagnostics: Default::default(),
                 emitted_diagnostic_codes: Default::default(),
@@ -422,10 +419,6 @@ impl Handler {
                 stashed_diagnostics: Default::default(),
             }),
         }
-    }
-
-    pub fn set_continue_after_error(&self, continue_after_error: bool) {
-        self.inner.borrow_mut().continue_after_error = continue_after_error;
     }
 
     // This is here to not allow mutation of flags;
@@ -453,22 +446,12 @@ impl Handler {
     }
 
     /// Stash a given diagnostic with the given `Span` and `StashKey` as the key for later stealing.
-    /// If the diagnostic with this `(span, key)` already exists, this will result in an ICE.
     pub fn stash_diagnostic(&self, span: Span, key: StashKey, diag: Diagnostic) {
         let mut inner = self.inner.borrow_mut();
-        if let Some(mut old_diag) = inner.stashed_diagnostics.insert((span, key), diag) {
-            // We are removing a previously stashed diagnostic which should not happen.
-            old_diag.level = Bug;
-            old_diag.note(&format!(
-                "{}:{}: already existing stashed diagnostic with (span = {:?}, key = {:?})",
-                file!(),
-                line!(),
-                span,
-                key
-            ));
-            inner.emit_diag_at_span(old_diag, span);
-            panic!(ExplicitBug);
-        }
+        // FIXME(Centril, #69537): Consider reintroducing panic on overwriting a stashed diagnostic
+        // if/when we have a more robust macro-friendly replacement for `(span, key)` as a key.
+        // See the PR for a discussion.
+        inner.stashed_diagnostics.insert((span, key), diag);
     }
 
     /// Steal a previously stashed diagnostic with the given `Span` and `StashKey` as the key.
@@ -684,10 +667,6 @@ impl Handler {
         self.inner.borrow_mut().abort_if_errors()
     }
 
-    pub fn abort_if_errors_and_should_abort(&self) {
-        self.inner.borrow_mut().abort_if_errors_and_should_abort()
-    }
-
     /// `true` if we haven't taught a diagnostic with this code already.
     /// The caller must then teach the user about such a diagnostic.
     ///
@@ -708,7 +687,6 @@ impl Handler {
     fn emit_diag_at_span(&self, mut diag: Diagnostic, sp: impl Into<MultiSpan>) {
         let mut inner = self.inner.borrow_mut();
         inner.emit_diagnostic(diag.set_span(sp));
-        inner.abort_if_errors_and_should_abort();
     }
 
     pub fn emit_artifact_notification(&self, path: &Path, artifact_type: &str) {
@@ -744,24 +722,23 @@ impl HandlerInner {
             return;
         }
 
-        TRACK_DIAGNOSTICS.with(|track_diagnostics| {
-            track_diagnostics.get()(diagnostic);
-        });
+        (*TRACK_DIAGNOSTICS)(diagnostic);
 
         if let Some(ref code) = diagnostic.code {
             self.emitted_diagnostic_codes.insert(code.clone());
         }
 
-        let diagnostic_hash = {
+        let already_emitted = |this: &mut Self| {
             use std::hash::Hash;
             let mut hasher = StableHasher::new();
             diagnostic.hash(&mut hasher);
-            hasher.finish()
+            let diagnostic_hash = hasher.finish();
+            !this.emitted_diagnostics.insert(diagnostic_hash)
         };
 
-        // Only emit the diagnostic if we haven't already emitted an equivalent
-        // one:
-        if self.emitted_diagnostics.insert(diagnostic_hash) {
+        // Only emit the diagnostic if we've been asked to deduplicate and
+        // haven't already emitted an equivalent diagnostic.
+        if !(self.flags.deduplicate_diagnostics && already_emitted(self)) {
             self.emitter.emit_diagnostic(diagnostic);
             if diagnostic.is_error() {
                 self.deduplicated_err_count += 1;
@@ -843,14 +820,6 @@ impl HandlerInner {
         self.has_errors() || !self.delayed_span_bugs.is_empty()
     }
 
-    fn abort_if_errors_and_should_abort(&mut self) {
-        self.emit_stashed_diagnostics();
-
-        if self.has_errors() && !self.continue_after_error {
-            FatalError.raise();
-        }
-    }
-
     fn abort_if_errors(&mut self) {
         self.emit_stashed_diagnostics();
 
@@ -866,7 +835,6 @@ impl HandlerInner {
 
     fn emit_diag_at_span(&mut self, mut diag: Diagnostic, sp: impl Into<MultiSpan>) {
         self.emit_diagnostic(diag.set_span(sp));
-        self.abort_if_errors_and_should_abort();
     }
 
     fn delay_span_bug(&mut self, sp: impl Into<MultiSpan>, msg: &str) {

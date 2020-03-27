@@ -5,21 +5,20 @@ use crate::utils::{
 };
 use if_chain::if_chain;
 use matches::matches;
-use rustc::declare_lint_pass;
-use rustc::hir::intravisit::FnKind;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::traits;
+use rustc::traits::misc::can_type_implement_copy;
 use rustc::ty::{self, RegionKind, TypeFoldable};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_errors::{Applicability, DiagnosticBuilder};
+use rustc_hir::intravisit::FnKind;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::{Span, Symbol};
 use rustc_target::spec::abi::Abi;
 use rustc_typeck::expr_use_visitor as euv;
 use std::borrow::Cow;
 use syntax::ast::Attribute;
-use syntax::errors::DiagnosticBuilder;
-use syntax_pos::{Span, Symbol};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for functions taking arguments by value, but not
@@ -71,8 +70,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
         &mut self,
         cx: &LateContext<'a, 'tcx>,
         kind: FnKind<'tcx>,
-        decl: &'tcx FnDecl,
-        body: &'tcx Body,
+        decl: &'tcx FnDecl<'_>,
+        body: &'tcx Body<'_>,
         span: Span,
         hir_id: HirId,
     ) {
@@ -92,7 +91,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
         // Exclude non-inherent impls
         if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
-            if matches!(item.kind, ItemKind::Impl(_, _, _, _, Some(_), _, _) |
+            if matches!(item.kind, ItemKind::Impl{ of_trait: Some(_), .. } |
                 ItemKind::Trait(..))
             {
                 return;
@@ -115,7 +114,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
         let preds = traits::elaborate_predicates(cx.tcx, cx.param_env.caller_bounds.to_vec())
             .filter(|p| !p.is_global())
             .filter_map(|pred| {
-                if let ty::Predicate::Trait(poly_trait_ref) = pred {
+                if let ty::Predicate::Trait(poly_trait_ref, _) = pred {
                     if poly_trait_ref.def_id() == sized_trait || poly_trait_ref.skip_binder().has_escaping_bound_vars()
                     {
                         return None;
@@ -144,7 +143,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
         let fn_sig = cx.tcx.fn_sig(fn_def_id);
         let fn_sig = cx.tcx.erase_late_bound_regions(&fn_sig);
 
-        for (idx, ((input, &ty), arg)) in decl.inputs.iter().zip(fn_sig.inputs()).zip(&body.params).enumerate() {
+        for (idx, ((input, &ty), arg)) in decl.inputs.iter().zip(fn_sig.inputs()).zip(body.params).enumerate() {
             // All spans generated from a proc-macro invocation are the same...
             if span == input.span {
                 return;
@@ -205,8 +204,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                     let sugg = |db: &mut DiagnosticBuilder<'_>| {
                         if let ty::Adt(def, ..) = ty.kind {
                             if let Some(span) = cx.tcx.hir().span_if_local(def.did) {
-                                if cx.param_env.can_type_implement_copy(cx.tcx, ty).is_ok() {
-                                    db.span_help(span, "consider marking this type as Copy");
+                                if can_type_implement_copy(cx.tcx, cx.param_env, ty).is_ok() {
+                                    db.span_help(span, "consider marking this type as `Copy`");
                                 }
                             }
                         }

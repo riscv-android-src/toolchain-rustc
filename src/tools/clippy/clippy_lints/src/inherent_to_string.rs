@@ -1,8 +1,7 @@
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::{ImplItem, ImplItemKind};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_hir::{ImplItem, ImplItemKind};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 use crate::utils::{
     get_trait_def_id, implements_trait, match_type, paths, return_ty, span_help_and_lint, trait_ref_of_method,
@@ -88,13 +87,13 @@ declare_clippy_lint! {
     /// ```
     pub INHERENT_TO_STRING_SHADOW_DISPLAY,
     correctness,
-    "type implements inherent method `to_string()`, which gets shadowed by the implementation of the `Display` trait "
+    "type implements inherent method `to_string()`, which gets shadowed by the implementation of the `Display` trait"
 }
 
 declare_lint_pass!(InherentToString => [INHERENT_TO_STRING, INHERENT_TO_STRING_SHADOW_DISPLAY]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InherentToString {
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, impl_item: &'tcx ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, impl_item: &'tcx ImplItem<'_>) {
         if impl_item.span.from_expansion() {
             return;
         }
@@ -120,7 +119,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InherentToString {
     }
 }
 
-fn show_lint(cx: &LateContext<'_, '_>, item: &ImplItem) {
+fn show_lint(cx: &LateContext<'_, '_>, item: &ImplItem<'_>) {
     let display_trait_id =
         get_trait_def_id(cx, &["core", "fmt", "Display"]).expect("Failed to get trait ID of `Display`!");
 

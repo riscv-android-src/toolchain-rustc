@@ -100,6 +100,7 @@ impl Patch {
         new_path: Option<&Path>,
         opts: Option<&mut DiffOptions>,
     ) -> Result<Patch, Error> {
+        crate::init();
         let mut ret = ptr::null_mut();
         let old_path = into_opt_c_string(old_path)?;
         let new_path = into_opt_c_string(new_path)?;
@@ -212,5 +213,17 @@ impl Patch {
             try_call!(raw::git_patch_to_buf(buf.raw(), self.raw));
         }
         Ok(buf)
+    }
+}
+
+impl std::fmt::Debug for Patch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> Result<(), std::fmt::Error> {
+        let mut ds = f.debug_struct("Patch");
+        ds.field("delta", &self.delta())
+            .field("num_hunks", &self.num_hunks());
+        if let Ok(line_stats) = &self.line_stats() {
+            ds.field("line_stats", line_stats);
+        }
+        ds.finish()
     }
 }

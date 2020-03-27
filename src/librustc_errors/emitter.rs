@@ -9,8 +9,8 @@
 
 use Destination::*;
 
-use syntax_pos::source_map::SourceMap;
-use syntax_pos::{MultiSpan, SourceFile, Span};
+use rustc_span::source_map::SourceMap;
+use rustc_span::{MultiSpan, SourceFile, Span};
 
 use crate::snippet::{Annotation, AnnotationType, Line, MultilineAnnotation, Style, StyledString};
 use crate::styled_buffer::StyledBuffer;
@@ -19,8 +19,10 @@ use crate::{
     pluralize, CodeSuggestion, Diagnostic, DiagnosticId, Level, SubDiagnostic, SuggestionStyle,
 };
 
+use log::*;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
+use rustc_span::hygiene::{ExpnKind, MacroKind};
 use std::borrow::Cow;
 use std::cmp::{max, min, Reverse};
 use std::io;
@@ -125,9 +127,8 @@ impl Margin {
     fn was_cut_right(&self, line_len: usize) -> bool {
         let right =
             if self.computed_right == self.span_right || self.computed_right == self.label_right {
-                // Account for the "..." padding given above. Otherwise we end
-                // up with code lines that do fit but end in "..." as if they
-                // were trimmed.
+                // Account for the "..." padding given above. Otherwise we end up with code lines that
+                // do fit but end in "..." as if they were trimmed.
                 self.computed_right - 6
             } else {
                 self.computed_right
@@ -343,19 +344,20 @@ pub trait Emitter {
             if call_sp != *sp && !always_backtrace {
                 before_after.push((*sp, call_sp));
             }
-            let backtrace_len = sp.macro_backtrace().len();
-            for (i, trace) in sp.macro_backtrace().iter().rev().enumerate() {
+            let macro_backtrace: Vec<_> = sp.macro_backtrace().collect();
+            let backtrace_len = macro_backtrace.len();
+            for (i, trace) in macro_backtrace.iter().rev().enumerate() {
                 // Only show macro locations that are local
                 // and display them like a span_note
-                if trace.def_site_span.is_dummy() {
+                if trace.def_site.is_dummy() {
                     continue;
                 }
                 if always_backtrace {
                     new_labels.push((
-                        trace.def_site_span,
+                        trace.def_site,
                         format!(
                             "in this expansion of `{}`{}",
-                            trace.macro_decl_name,
+                            trace.kind.descr(),
                             if backtrace_len > 2 {
                                 // if backtrace_len == 1 it'll be pointed
                                 // at by "in this macro invocation"
@@ -367,9 +369,8 @@ pub trait Emitter {
                     ));
                 }
                 // Check to make sure we're not in any <*macros>
-                if !sm.span_to_filename(trace.def_site_span).is_macros()
-                    && !trace.macro_decl_name.starts_with("desugaring of ")
-                    && !trace.macro_decl_name.starts_with("#[")
+                if !sm.span_to_filename(trace.def_site).is_macros()
+                    && matches!(trace.kind, ExpnKind::Macro(MacroKind::Bang, _))
                     || always_backtrace
                 {
                     new_labels.push((
@@ -399,9 +400,8 @@ pub trait Emitter {
                 continue;
             }
             if sm.span_to_filename(sp_label.span.clone()).is_macros() && !always_backtrace {
-                let v = sp_label.span.macro_backtrace();
-                if let Some(use_site) = v.last() {
-                    before_after.push((sp_label.span.clone(), use_site.call_site.clone()));
+                if let Some(use_site) = sp_label.span.macro_backtrace().last() {
+                    before_after.push((sp_label.span, use_site.call_site));
                 }
             }
         }
@@ -457,9 +457,14 @@ impl Emitter for SilentEmitter {
     fn emit_diagnostic(&mut self, _: &Diagnostic) {}
 }
 
-/// maximum number of lines we will print for each error; arbitrary.
+/// Maximum number of lines we will print for each error; arbitrary.
 pub const MAX_HIGHLIGHT_LINES: usize = 6;
-/// maximum number of suggestions to be shown
+/// Maximum number of lines we will print for a multiline suggestion; arbitrary.
+///
+/// This should be replaced with a more involved mechanism to output multiline suggestions that
+/// more closely mimmics the regular diagnostic output, where irrelevant code lines are elided.
+pub const MAX_SUGGESTION_HIGHLIGHT_LINES: usize = 6;
+/// Maximum number of suggestions to be shown
 ///
 /// Arbitrary, but taken from trait import suggestion limit
 pub const MAX_SUGGESTIONS: usize = 4;
@@ -583,10 +588,9 @@ impl EmitterWriter {
             .chars()
             .skip(left)
             .take_while(|ch| {
-                // Make sure that the trimming on the right will fall within the
-                // terminal width.  FIXME: `unicode_width` sometimes disagrees
-                // with terminals on how wide a `char` is.  For now, just accept
-                // that sometimes the code line will be longer than desired.
+                // Make sure that the trimming on the right will fall within the terminal width.
+                // FIXME: `unicode_width` sometimes disagrees with terminals on how wide a `char` is.
+                // For now, just accept that sometimes the code line will be longer than desired.
                 let next = unicode_width::UnicodeWidthChar::width(*ch).unwrap_or(1);
                 if taken + next > right - left {
                     return false;
@@ -1181,13 +1185,13 @@ impl EmitterWriter {
             let level_str = level.to_string();
             // The failure note level itself does not provide any useful diagnostic information
             if *level != Level::FailureNote && !level_str.is_empty() {
-                buffer.append(0, &level_str, Style::Level(level.clone()));
+                buffer.append(0, &level_str, Style::Level(*level));
             }
             // only render error codes, not lint codes
             if let Some(DiagnosticId::Error(ref code)) = *code {
-                buffer.append(0, "[", Style::Level(level.clone()));
-                buffer.append(0, &code, Style::Level(level.clone()));
-                buffer.append(0, "]", Style::Level(level.clone()));
+                buffer.append(0, "[", Style::Level(*level));
+                buffer.append(0, &code, Style::Level(*level));
+                buffer.append(0, "]", Style::Level(*level));
             }
             if *level != Level::FailureNote && !level_str.is_empty() {
                 buffer.append(0, ": ", header_style);
@@ -1492,7 +1496,7 @@ impl EmitterWriter {
         // Render the suggestion message
         let level_str = level.to_string();
         if !level_str.is_empty() {
-            buffer.append(0, &level_str, Style::Level(level.clone()));
+            buffer.append(0, &level_str, Style::Level(*level));
             buffer.append(0, ": ", Style::HeaderMsg);
         }
         self.msg_to_buffer(
@@ -1523,7 +1527,7 @@ impl EmitterWriter {
             draw_col_separator_no_space(&mut buffer, 1, max_line_num_len + 1);
             let mut line_pos = 0;
             let mut lines = complete.lines();
-            for line in lines.by_ref().take(MAX_HIGHLIGHT_LINES) {
+            for line in lines.by_ref().take(MAX_SUGGESTION_HIGHLIGHT_LINES) {
                 // Print the span column to avoid confusion
                 buffer.puts(
                     row_num,
@@ -1540,7 +1544,7 @@ impl EmitterWriter {
 
             // This offset and the ones below need to be signed to account for replacement code
             // that is shorter than the original code.
-            let mut offset: isize = 0;
+            let mut offsets: Vec<(usize, isize)> = Vec::new();
             // Only show an underline in the suggestions if the suggestion is not the
             // entirety of the code being shown and the displayed code is not multiline.
             if show_underline {
@@ -1560,12 +1564,19 @@ impl EmitterWriter {
                         .map(|ch| unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1))
                         .sum();
 
+                    let offset: isize = offsets
+                        .iter()
+                        .filter_map(
+                            |(start, v)| if span_start_pos <= *start { None } else { Some(v) },
+                        )
+                        .sum();
                     let underline_start = (span_start_pos + start) as isize + offset;
                     let underline_end = (span_start_pos + start + sub_len) as isize + offset;
+                    assert!(underline_start >= 0 && underline_end >= 0);
                     for p in underline_start..underline_end {
                         buffer.putc(
                             row_num,
-                            max_line_num_len + 3 + p as usize,
+                            ((max_line_num_len + 3) as isize + p) as usize,
                             '^',
                             Style::UnderlinePrimary,
                         );
@@ -1575,7 +1586,7 @@ impl EmitterWriter {
                         for p in underline_start - 1..underline_start + 1 {
                             buffer.putc(
                                 row_num,
-                                max_line_num_len + 3 + p as usize,
+                                ((max_line_num_len + 3) as isize + p) as usize,
                                 '-',
                                 Style::UnderlineSecondary,
                             );
@@ -1592,8 +1603,9 @@ impl EmitterWriter {
                     // length of the code to be substituted
                     let snippet_len = span_end_pos as isize - span_start_pos as isize;
                     // For multiple substitutions, use the position *after* the previous
-                    // substitutions have happened.
-                    offset += full_sub_len - snippet_len;
+                    // substitutions have happened, only when further substitutions are
+                    // located strictly after.
+                    offsets.push((span_end_pos, full_sub_len - snippet_len));
                 }
                 row_num += 1;
             }
@@ -2097,7 +2109,13 @@ impl<'a> Drop for WritableDst<'a> {
 /// Whether the original and suggested code are visually similar enough to warrant extra wording.
 pub fn is_case_difference(sm: &SourceMap, suggested: &str, sp: Span) -> bool {
     // FIXME: this should probably be extended to also account for `FO0` → `FOO` and unicode.
-    let found = sm.span_to_snippet(sp).unwrap();
+    let found = match sm.span_to_snippet(sp) {
+        Ok(snippet) => snippet,
+        Err(e) => {
+            warn!("Invalid span {:?}. Err={:?}", sp, e);
+            return false;
+        }
+    };
     let ascii_confusables = &['c', 'f', 'i', 'k', 'o', 's', 'u', 'v', 'w', 'x', 'y', 'z'];
     // All the chars that differ in capitalization are confusable (above):
     let confusable = found

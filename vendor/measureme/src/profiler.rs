@@ -1,3 +1,4 @@
+use crate::event_id::EventId;
 use crate::file_header::{write_file_header, FILE_MAGIC_EVENT_STREAM};
 use crate::raw_event::RawEvent;
 use crate::serialization::SerializationSink;
@@ -68,12 +69,21 @@ impl<S: SerializationSink> Profiler<S> {
     }
 
     #[inline(always)]
-    pub fn alloc_string_with_reserved_id<STR: SerializableString + ?Sized>(
+    pub fn map_virtual_to_concrete_string(&self, virtual_id: StringId, concrete_id: StringId) {
+        self.string_table
+            .map_virtual_to_concrete_string(virtual_id, concrete_id);
+    }
+
+    #[inline(always)]
+    pub fn bulk_map_virtual_to_single_concrete_string<I>(
         &self,
-        id: StringId,
-        s: &STR,
-    ) -> StringId {
-        self.string_table.alloc_with_reserved_id(id, s)
+        virtual_ids: I,
+        concrete_id: StringId,
+    ) where
+        I: Iterator<Item = StringId> + ExactSizeIterator,
+    {
+        self.string_table
+            .bulk_map_virtual_to_single_concrete_string(virtual_ids, concrete_id);
     }
 
     #[inline(always)]
@@ -83,7 +93,7 @@ impl<S: SerializationSink> Profiler<S> {
 
     /// Records an event with the given parameters. The event time is computed
     /// automatically.
-    pub fn record_instant_event(&self, event_kind: StringId, event_id: StringId, thread_id: u32) {
+    pub fn record_instant_event(&self, event_kind: StringId, event_id: EventId, thread_id: u32) {
         let raw_event =
             RawEvent::new_instant(event_kind, event_id, thread_id, self.nanos_since_start());
 
@@ -92,10 +102,11 @@ impl<S: SerializationSink> Profiler<S> {
 
     /// Creates a "start" event and returns a `TimingGuard` that will create
     /// the corresponding "end" event when it is dropped.
+    #[inline]
     pub fn start_recording_interval_event<'a>(
         &'a self,
         event_kind: StringId,
-        event_id: StringId,
+        event_id: EventId,
         thread_id: u32,
     ) -> TimingGuard<'a, S> {
         TimingGuard {
@@ -125,7 +136,7 @@ impl<S: SerializationSink> Profiler<S> {
 #[must_use]
 pub struct TimingGuard<'a, S: SerializationSink> {
     profiler: &'a Profiler<S>,
-    event_id: StringId,
+    event_id: EventId,
     event_kind: StringId,
     thread_id: u32,
     start_ns: u64,
@@ -143,5 +154,16 @@ impl<'a, S: SerializationSink> Drop for TimingGuard<'a, S> {
         );
 
         self.profiler.record_raw_event(&raw_event);
+    }
+}
+
+impl<'a, S: SerializationSink> TimingGuard<'a, S> {
+    /// This method set a new `event_id` right before actually recording the
+    /// event.
+    #[inline]
+    pub fn finish_with_override_event_id(mut self, event_id: EventId) {
+        self.event_id = event_id;
+        // Let's be explicit about it: Dropping the guard will record the event.
+        drop(self)
     }
 }

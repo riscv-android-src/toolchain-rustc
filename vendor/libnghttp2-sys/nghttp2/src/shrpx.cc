@@ -305,7 +305,7 @@ int save_pid() {
   auto &pid_file = config->pid_file;
 
   auto len = config->pid_file.size() + SUFFIX.size();
-  auto buf = make_unique<char[]>(len + 1);
+  auto buf = std::make_unique<char[]>(len + 1);
   auto p = buf.get();
 
   p = std::copy(std::begin(pid_file), std::end(pid_file), p);
@@ -438,7 +438,7 @@ void exec_binary() {
     nghttp2_Exit(EXIT_FAILURE);
   }
 
-  auto argv = make_unique<char *[]>(suconfig.argc + 1);
+  auto argv = std::make_unique<char *[]>(suconfig.argc + 1);
 
   argv[0] = exec_path;
   for (int i = 1; i < suconfig.argc; ++i) {
@@ -454,7 +454,8 @@ void exec_binary() {
   auto &listenerconf = config->conn.listener;
 
   // 2 for ENV_ORIG_PID and terminal nullptr.
-  auto envp = make_unique<char *[]>(envlen + listenerconf.addrs.size() + 2);
+  auto envp =
+      std::make_unique<char *[]>(envlen + listenerconf.addrs.size() + 2);
   size_t envidx = 0;
 
   std::vector<ImmutableString> fd_envs;
@@ -1147,7 +1148,7 @@ int call_daemon() {
     return 0;
   }
 #  endif // HAVE_LIBSYSTEMD
-  return daemon(0, 0);
+  return util::daemonize(0, 0);
 #endif   // !__sgi
 }
 } // namespace
@@ -1354,7 +1355,7 @@ int event_loop() {
     return -1;
   }
 
-  worker_process_add(make_unique<WorkerProcess>(loop, pid, ipc_fd));
+  worker_process_add(std::make_unique<WorkerProcess>(loop, pid, ipc_fd));
 
   // Write PID file when we are ready to accept connection from peer.
   // This makes easier to write restart script for nghttpx.  Because
@@ -1403,10 +1404,10 @@ constexpr auto DEFAULT_TLS_MAX_PROTO_VERSION = StringRef::from_lit("TLSv1.2");
 } // namespace
 
 namespace {
-constexpr auto DEFAULT_ACCESSLOG_FORMAT = StringRef::from_lit(
-    R"($remote_addr - - [$time_local] )"
-    R"("$request" $status $body_bytes_sent )"
-    R"("$http_referer" "$http_user_agent")");
+constexpr auto DEFAULT_ACCESSLOG_FORMAT =
+    StringRef::from_lit(R"($remote_addr - - [$time_local] )"
+                        R"("$request" $status $body_bytes_sent )"
+                        R"("$http_referer" "$http_user_agent")");
 } // namespace
 
 namespace {
@@ -1558,6 +1559,7 @@ void fill_default_config(Config *config) {
   }
 
   loggingconf.syslog_facility = LOG_DAEMON;
+  loggingconf.severity = NOTICE;
 
   auto &connconf = config->conn;
   {
@@ -1736,12 +1738,14 @@ Connections:
               parameters       are:      "proto=<PROTO>",       "tls",
               "sni=<SNI_HOST>",         "fall=<N>",        "rise=<N>",
               "affinity=<METHOD>",    "dns",    "redirect-if-not-tls",
-              "upgrade-scheme",  and  "mruby=<PATH>".   The  parameter
-              consists of keyword, and  optionally followed by "=" and
-              value.  For  example, the parameter  "proto=h2" consists
-              of the  keyword "proto"  and value "h2".   The parameter
-              "tls" consists of the keyword "tls" without value.  Each
-              parameter is described as follows.
+              "upgrade-scheme",                        "mruby=<PATH>",
+              "read-timeout=<DURATION>",   "write-timeout=<DURATION>",
+              "group=<GROUP>",  "group-weight=<N>", and  "weight=<N>".
+              The  parameter  consists   of  keyword,  and  optionally
+              followed by  "=" and value.  For  example, the parameter
+              "proto=h2"  consists of  the keyword  "proto" and  value
+              "h2".  The parameter "tls" consists of the keyword "tls"
+              without value.  Each parameter is described as follows.
 
               The backend application protocol  can be specified using
               optional  "proto"   parameter,  and   in  the   form  of
@@ -1838,6 +1842,39 @@ Connections:
               script  file  which  is  invoked when  this  pattern  is
               matched.  All backends which share the same pattern must
               have the same mruby path.
+
+              "read-timeout=<DURATION>" and "write-timeout=<DURATION>"
+              parameters  specify the  read and  write timeout  of the
+              backend connection  when this  pattern is  matched.  All
+              backends which share the same pattern must have the same
+              timeouts.  If these timeouts  are entirely omitted for a
+              pattern,            --backend-read-timeout           and
+              --backend-write-timeout are used.
+
+              "group=<GROUP>"  parameter specifies  the name  of group
+              this backend address belongs to.  By default, it belongs
+              to  the unnamed  default group.   The name  of group  is
+              unique   per   pattern.   "group-weight=<N>"   parameter
+              specifies the  weight of  the group.  The  higher weight
+              gets  more frequently  selected  by  the load  balancing
+              algorithm.  <N> must be  [1, 256] inclusive.  The weight
+              8 has 4 times more weight  than 2.  <N> must be the same
+              for  all addresses  which  share the  same <GROUP>.   If
+              "group-weight" is  omitted in an address,  but the other
+              address  which  belongs  to  the  same  group  specifies
+              "group-weight",   its    weight   is   used.     If   no
+              "group-weight"  is  specified  for  all  addresses,  the
+              weight of a group becomes 1.  "group" and "group-weight"
+              are ignored if session affinity is enabled.
+
+              "weight=<N>"  parameter  specifies  the  weight  of  the
+              backend  address  inside  a  group  which  this  address
+              belongs  to.  The  higher  weight  gets more  frequently
+              selected by  the load balancing algorithm.   <N> must be
+              [1,  256] inclusive.   The  weight 8  has  4 times  more
+              weight  than weight  2.  If  this parameter  is omitted,
+              weight  becomes  1.   "weight"  is  ignored  if  session
+              affinity is enabled.
 
               Since ";" and ":" are  used as delimiter, <PATTERN> must
               not  contain these  characters.  Since  ";" has  special
@@ -2861,6 +2898,8 @@ int process_options(Config *config,
     assert(include_set.empty());
   }
 
+  Log::set_severity_level(config->logging.severity);
+
   auto &loggingconf = config->logging;
 
   if (loggingconf.access.syslog || loggingconf.error.syslog) {
@@ -3074,7 +3113,7 @@ int process_options(Config *config,
 
   auto &fwdconf = config->http.forwarded;
 
-  if (fwdconf.by_node_type == FORWARDED_NODE_OBFUSCATED &&
+  if (fwdconf.by_node_type == ForwardedNode::OBFUSCATED &&
       fwdconf.by_obfuscated.empty()) {
     // 2 for '_' and terminal NULL
     auto iov = make_byte_ref(config->balloc, SHRPX_OBFUSCATED_NODE_LENGTH + 2);
@@ -3130,7 +3169,7 @@ void reload_config(WorkerProcess *wp) {
   LOG(NOTICE) << "Reloading configuration";
 
   auto cur_config = mod_config();
-  auto new_config = make_unique<Config>();
+  auto new_config = std::make_unique<Config>();
 
   fill_default_config(new_config.get());
 
@@ -3185,7 +3224,7 @@ void reload_config(WorkerProcess *wp) {
   // We no longer use signals for this worker.
   last_wp->shutdown_signal_watchers();
 
-  worker_process_add(make_unique<WorkerProcess>(loop, pid, ipc_fd));
+  worker_process_add(std::make_unique<WorkerProcess>(loop, pid, ipc_fd));
 
   if (!get_config()->pid_file.empty()) {
     save_pid();

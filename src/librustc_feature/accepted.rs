@@ -1,7 +1,7 @@
 //! List of the accepted feature gates.
 
-use super::{State, Feature};
-use syntax_pos::symbol::sym;
+use super::{Feature, State};
+use rustc_span::symbol::sym;
 
 macro_rules! declare_features {
     ($(
@@ -23,6 +23,7 @@ macro_rules! declare_features {
     }
 }
 
+#[rustfmt::skip]
 declare_features! (
     // -------------------------------------------------------------------------
     // feature-group-start: for testing purposes
@@ -256,6 +257,10 @@ declare_features! (
     /// Allows relaxing the coherence rules such that
     /// `impl<T> ForeignTrait<LocalType> for ForeignType<T>` is permitted.
     (accepted, re_rebalance_coherence, "1.41.0", Some(55437), None),
+    /// Allows #[repr(transparent)] on univariant enums (RFC 2645).
+    (accepted, transparent_enums, "1.42.0", Some(60405), None),
+    /// Allows using subslice patterns, `[a, .., b]` and `[a, xs @ .., b]`.
+    (accepted, slice_patterns, "1.42.0", Some(62254), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: accepted features

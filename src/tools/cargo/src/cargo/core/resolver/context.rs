@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
-use failure::format_err;
+use anyhow::format_err;
 use log::debug;
 
 use crate::core::interning::InternedString;
@@ -398,7 +398,7 @@ impl PublicDependency {
             // for each (transitive) parent that can newly see `t`
             let mut stack = vec![(parent, is_public)];
             while let Some((p, public)) = stack.pop() {
-                // TODO: dont look at the same thing more then once
+                // TODO: don't look at the same thing more then once
                 if let Some(o) = self.inner.get(&p).and_then(|x| x.get(&t.name())) {
                     if o.0 != t {
                         // the (transitive) parent can already see a different version by `t`s name.

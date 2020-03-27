@@ -1,12 +1,11 @@
 use crate::utils::paths;
 use crate::utils::{is_automatically_derived, is_copy, match_path, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::{self, Ty};
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for deriving `Hash` but implementing `PartialEq`
@@ -66,8 +65,12 @@ declare_clippy_lint! {
 declare_lint_pass!(Derive => [EXPL_IMPL_CLONE_ON_COPY, DERIVE_HASH_XOR_EQ]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Derive {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if let ItemKind::Impl(_, _, _, _, Some(ref trait_ref), _, _) = item.kind {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
+        if let ItemKind::Impl {
+            of_trait: Some(ref trait_ref),
+            ..
+        } = item.kind
+        {
             let ty = cx.tcx.type_of(cx.tcx.hir().local_def_id(item.hir_id));
             let is_automatically_derived = is_automatically_derived(&*item.attrs);
 
@@ -84,7 +87,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Derive {
 fn check_hash_peq<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     span: Span,
-    trait_ref: &TraitRef,
+    trait_ref: &TraitRef<'_>,
     ty: Ty<'tcx>,
     hash_is_automatically_derived: bool,
 ) {
@@ -130,7 +133,7 @@ fn check_hash_peq<'a, 'tcx>(
 }
 
 /// Implementation of the `EXPL_IMPL_CLONE_ON_COPY` lint.
-fn check_copy_clone<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, item: &Item, trait_ref: &TraitRef, ty: Ty<'tcx>) {
+fn check_copy_clone<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, item: &Item<'_>, trait_ref: &TraitRef<'_>, ty: Ty<'tcx>) {
     if match_path(&trait_ref.path, &paths::CLONE_TRAIT) {
         if !is_copy(cx, ty) {
             return;

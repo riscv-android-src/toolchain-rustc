@@ -1,11 +1,10 @@
 use crate::utils::{is_direct_expn_of, is_expn_of, match_function_call, paths, span_lint};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::Span;
 use syntax::ast::LitKind;
-use syntax_pos::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for missing parameters in `panic!`.
@@ -93,12 +92,12 @@ declare_clippy_lint! {
 declare_lint_pass!(PanicUnimplemented => [PANIC_PARAMS, UNIMPLEMENTED, UNREACHABLE, TODO, PANIC]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PanicUnimplemented {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Block(ref block, _) = expr.kind;
             if let Some(ref ex) = block.expr;
             if let Some(params) = match_function_call(cx, ex, &paths::BEGIN_PANIC);
-            if params.len() == 2;
+            if params.len() == 1;
             then {
                 if is_expn_of(expr.span, "unimplemented").is_some() {
                     let span = get_outer_span(expr);
@@ -123,7 +122,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PanicUnimplemented {
     }
 }
 
-fn get_outer_span(expr: &Expr) -> Span {
+fn get_outer_span(expr: &Expr<'_>) -> Span {
     if_chain! {
         if expr.span.from_expansion();
         let first = expr.span.ctxt().outer_expn_data();
@@ -137,7 +136,7 @@ fn get_outer_span(expr: &Expr) -> Span {
     }
 }
 
-fn match_panic(params: &[Expr], expr: &Expr, cx: &LateContext<'_, '_>) {
+fn match_panic(params: &[Expr<'_>], expr: &Expr<'_>, cx: &LateContext<'_, '_>) {
     if_chain! {
         if let ExprKind::Lit(ref lit) = params[0].kind;
         if is_direct_expn_of(expr.span, "panic").is_some();

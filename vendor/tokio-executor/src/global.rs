@@ -1,4 +1,4 @@
-use super::{Executor, Enter, SpawnError};
+use super::{Enter, Executor, SpawnError};
 
 use futures::{future, Future};
 
@@ -19,6 +19,13 @@ pub struct DefaultExecutor {
     _dummy: (),
 }
 
+/// Ensures that the executor is removed from the thread-local context
+/// when leaving the scope. This handles cases that involve panicking.
+#[derive(Debug)]
+pub struct DefaultGuard {
+    _p: (),
+}
+
 impl DefaultExecutor {
     /// Returns a handle to the default executor for the current context.
     ///
@@ -33,24 +40,22 @@ impl DefaultExecutor {
     /// `DefaultExecutor::current()` on thread A and then sending the result to
     /// thread B will _not_ reference the default executor that was set on thread A.
     pub fn current() -> DefaultExecutor {
-        DefaultExecutor {
-            _dummy: (),
-        }
+        DefaultExecutor { _dummy: () }
     }
 
     #[inline]
-    fn with_current<F: FnOnce(&mut Executor) -> R, R>(f: F) -> Option<R> {
-        EXECUTOR.with(|current_executor| {
-            match current_executor.replace(State::Active) {
+    fn with_current<F: FnOnce(&mut dyn Executor) -> R, R>(f: F) -> Option<R> {
+        EXECUTOR.with(
+            |current_executor| match current_executor.replace(State::Active) {
                 State::Ready(executor_ptr) => {
                     let executor = unsafe { &mut *executor_ptr };
                     let result = f(executor);
                     current_executor.set(State::Ready(executor_ptr));
                     Some(result)
-                },
+                }
                 State::Empty | State::Active => None,
-            }
-        })
+            },
+        )
     }
 }
 
@@ -59,20 +64,23 @@ enum State {
     // default executor not defined
     Empty,
     // default executor is defined and ready to be used
-    Ready(*mut Executor),
+    Ready(*mut dyn Executor),
     // default executor is currently active (used to detect recursive calls)
-    Active
+    Active,
 }
 
-/// Thread-local tracking the current executor
-thread_local!(static EXECUTOR: Cell<State> = Cell::new(State::Empty));
+thread_local! {
+    /// Thread-local tracking the current executor
+    static EXECUTOR: Cell<State> = Cell::new(State::Empty)
+}
 
 // ===== impl DefaultExecutor =====
 
 impl super::Executor for DefaultExecutor {
-    fn spawn(&mut self, future: Box<Future<Item = (), Error = ()> + Send>)
-        -> Result<(), SpawnError>
-    {
+    fn spawn(
+        &mut self,
+        future: Box<dyn Future<Item = (), Error = ()> + Send>,
+    ) -> Result<(), SpawnError> {
         DefaultExecutor::with_current(|executor| executor.spawn(future))
             .unwrap_or_else(|| Err(SpawnError::shutdown()))
     }
@@ -83,8 +91,22 @@ impl super::Executor for DefaultExecutor {
     }
 }
 
+impl<T> super::TypedExecutor<T> for DefaultExecutor
+where
+    T: Future<Item = (), Error = ()> + Send + 'static,
+{
+    fn spawn(&mut self, future: T) -> Result<(), SpawnError> {
+        super::Executor::spawn(self, Box::new(future))
+    }
+
+    fn status(&self) -> Result<(), SpawnError> {
+        super::Executor::status(self)
+    }
+}
+
 impl<T> future::Executor<T> for DefaultExecutor
-where T: Future<Item = (), Error = ()> + Send + 'static,
+where
+    T: Future<Item = (), Error = ()> + Send + 'static,
 {
     fn execute(&self, future: T) -> Result<(), future::ExecuteError<T>> {
         if let Err(e) = super::Executor::status(self) {
@@ -144,10 +166,10 @@ where T: Future<Item = (), Error = ()> + Send + 'static,
 /// # pub fn main() {}
 /// ```
 pub fn spawn<T>(future: T)
-    where T: Future<Item = (), Error = ()> + Send + 'static,
+where
+    T: Future<Item = (), Error = ()> + Send + 'static,
 {
-    DefaultExecutor::current().spawn(Box::new(future))
-        .unwrap()
+    DefaultExecutor::current().spawn(Box::new(future)).unwrap()
 }
 
 /// Set the default executor for the duration of the closure
@@ -156,13 +178,20 @@ pub fn spawn<T>(future: T)
 ///
 /// This function panics if there already is a default executor set.
 pub fn with_default<T, F, R>(executor: &mut T, enter: &mut Enter, f: F) -> R
-where T: Executor,
-      F: FnOnce(&mut Enter) -> R
+where
+    T: Executor,
+    F: FnOnce(&mut Enter) -> R,
 {
+    unsafe fn hide_lt<'a>(p: *mut (dyn Executor + 'a)) -> *mut (dyn Executor + 'static) {
+        use std::mem;
+        mem::transmute(p)
+    }
+
     EXECUTOR.with(|cell| {
         match cell.get() {
-            State::Ready(_) | State::Active =>
-                panic!("default executor already set for execution context"),
+            State::Ready(_) | State::Active => {
+                panic!("default executor already set for execution context")
+            }
             _ => {}
         }
 
@@ -193,14 +222,52 @@ where T: Executor,
     })
 }
 
-unsafe fn hide_lt<'a>(p: *mut (Executor + 'a)) -> *mut (Executor + 'static) {
-    use std::mem;
-    mem::transmute(p)
+/// Sets `executor` as the default executor, returning a guard that unsets it when
+/// dropped.
+///
+/// # Panics
+///
+/// This function panics if there already is a default executor set.
+pub fn set_default<T>(executor: T) -> DefaultGuard
+where
+    T: Executor + 'static,
+{
+    EXECUTOR.with(|cell| {
+        match cell.get() {
+            State::Ready(_) | State::Active => {
+                panic!("default executor already set for execution context")
+            }
+            _ => {}
+        }
+
+        // Ensure that the executor will outlive the call to set_default, even
+        // if the drop guard is never dropped due to calls to `mem::forget` or
+        // similar.
+        let executor = Box::new(executor);
+
+        cell.set(State::Ready(Box::into_raw(executor)));
+    });
+
+    DefaultGuard { _p: () }
+}
+
+impl Drop for DefaultGuard {
+    fn drop(&mut self) {
+        let _ = EXECUTOR.try_with(|cell| {
+            if let State::Ready(prev) = cell.replace(State::Empty) {
+                // drop the previous executor.
+                unsafe {
+                    let prev = Box::from_raw(prev);
+                    drop(prev);
+                };
+            }
+        });
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Executor, DefaultExecutor, with_default};
+    use super::{with_default, DefaultExecutor, Executor};
 
     #[test]
     fn default_executor_is_send_and_sync() {

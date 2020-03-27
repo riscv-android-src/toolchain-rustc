@@ -1,10 +1,11 @@
 use crate::utils::{get_pat_name, match_var, snippet};
-use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc::hir::*;
-use rustc::lint::LateContext;
+use rustc::hir::map::Map;
+use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
+use rustc_hir::*;
+use rustc_lint::LateContext;
+use rustc_span::source_map::Span;
 use std::borrow::Cow;
 use syntax::ast::Name;
-use syntax::source_map::Span;
 
 pub fn get_spans(
     cx: &LateContext<'_, '_>,
@@ -26,7 +27,7 @@ fn extract_clone_suggestions<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     name: Name,
     replace: &[(&'static str, &'static str)],
-    body: &'tcx Body,
+    body: &'tcx Body<'_>,
 ) -> Option<Vec<(Span, Cow<'static, str>)>> {
     let mut visitor = PtrCloneVisitor {
         cx,
@@ -52,7 +53,9 @@ struct PtrCloneVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for PtrCloneVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, expr: &'tcx Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         if self.abort {
             return;
         }
@@ -75,11 +78,11 @@ impl<'a, 'tcx> Visitor<'tcx> for PtrCloneVisitor<'a, 'tcx> {
         walk_expr(self, expr);
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
 
-fn get_binding_name(arg: &Param) -> Option<Name> {
+fn get_binding_name(arg: &Param<'_>) -> Option<Name> {
     get_pat_name(&arg.pat)
 }

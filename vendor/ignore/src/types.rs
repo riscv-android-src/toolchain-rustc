@@ -135,6 +135,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("d", &["*.d"]),
     ("dhall", &["*.dhall"]),
     ("docker", &["*Dockerfile*"]),
+    ("edn", &["*.edn"]),
     ("elisp", &["*.el"]),
     ("elixir", &["*.ex", "*.eex", "*.exs"]),
     ("elm", &["*.elm"]),
@@ -146,6 +147,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
         "*.f90", "*.F90", "*.f95", "*.F95",
     ]),
     ("fsharp", &["*.fs", "*.fsx", "*.fsi"]),
+    ("gap", &["*.g", "*.gap", "*.gi", "*.gd", "*.tst"]),
     ("gn", &["*.gn", "*.gni"]),
     ("go", &["*.go"]),
     ("gzip", &["*.gz", "*.tgz"]),
@@ -218,7 +220,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("msbuild", &[
         "*.csproj", "*.fsproj", "*.vcxproj", "*.proj", "*.props", "*.targets"
     ]),
-    ("nim", &["*.nim"]),
+    ("nim", &["*.nim", "*.nimf", "*.nimble", "*.nims"]),
     ("nix", &["*.nix"]),
     ("objc", &["*.h", "*.m"]),
     ("objcpp", &["*.h", "*.mm"]),
@@ -240,6 +242,7 @@ const DEFAULT_TYPES: &'static [(&'static str, &'static [&'static str])] = &[
     ("readme", &["README*", "*README"]),
     ("r", &["*.R", "*.r", "*.Rmd", "*.Rnw"]),
     ("rdoc", &["*.rdoc"]),
+    ("robot", &["*.robot"]),
     ("rst", &["*.rst"]),
     ("ruby", &["Gemfile", "*.gemspec", ".irbrc", "Rakefile", "*.rb"]),
     ("rust", &["*.rs"]),

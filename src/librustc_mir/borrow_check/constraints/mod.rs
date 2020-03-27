@@ -1,7 +1,7 @@
 use rustc::mir::ConstraintCategory;
 use rustc::ty::RegionVid;
 use rustc_data_structures::graph::scc::Sccs;
-use rustc_index::vec::{Idx, IndexVec};
+use rustc_index::vec::IndexVec;
 use std::fmt;
 use std::ops::Index;
 
@@ -93,11 +93,7 @@ pub struct OutlivesConstraint {
 
 impl fmt::Debug for OutlivesConstraint {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "({:?}: {:?}) due to {:?}",
-            self.sup, self.sub, self.locations
-        )
+        write!(formatter, "({:?}: {:?}) due to {:?}", self.sup, self.sub, self.locations)
     }
 }
 

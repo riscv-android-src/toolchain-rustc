@@ -3,12 +3,11 @@
 
 use crate::utils::{in_macro, snippet_opt, span_lint_and_sugg};
 use if_chain::if_chain;
-use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintContext, LintPass};
-use rustc::{declare_lint_pass, impl_lint_pass};
+use rustc::lint::in_external_macro;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use syntax::ast::*;
-use syntax_pos;
 
 declare_clippy_lint! {
     /// **What it does:** Warns if a long integral or floating-point constant does
@@ -331,7 +330,7 @@ enum WarningType {
 }
 
 impl WarningType {
-    fn display(&self, suggested_format: String, cx: &EarlyContext<'_>, span: syntax_pos::Span) {
+    fn display(&self, suggested_format: String, cx: &EarlyContext<'_>, span: rustc_span::Span) {
         match self {
             Self::MistypedLiteralSuffix => span_lint_and_sugg(
                 cx,
@@ -451,7 +450,7 @@ impl LiteralDigitGrouping {
     // Returns `false` if the check fails
     fn check_for_mistyped_suffix(
         cx: &EarlyContext<'_>,
-        span: syntax_pos::Span,
+        span: rustc_span::Span,
         num_lit: &mut NumericLiteral<'_>,
     ) -> bool {
         if num_lit.suffix.is_some() {
@@ -561,7 +560,7 @@ impl DecimalLiteralRepresentation {
             if val >= u128::from(self.threshold);
             then {
                 let hex = format!("{:#X}", val);
-                let num_lit = NumericLiteral::new(&hex, None, false);
+                let num_lit = NumericLiteral::new(&hex, num_lit.suffix, false);
                 let _ = Self::do_lint(num_lit.integer).map_err(|warning_type| {
                     warning_type.display(num_lit.format(), cx, lit.span)
                 });

@@ -13,9 +13,8 @@
 //! This lint is **warn** by default
 
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast;
 
 use crate::utils::sugg::Sugg;
@@ -138,7 +137,7 @@ fn check_collapsible_no_if_let(cx: &EarlyContext<'_>, expr: &ast::Expr, check: &
             if expr.span.ctxt() != inner.span.ctxt() {
                 return;
             }
-            span_lint_and_then(cx, COLLAPSIBLE_IF, expr.span, "this if statement can be collapsed", |db| {
+            span_lint_and_then(cx, COLLAPSIBLE_IF, expr.span, "this `if` statement can be collapsed", |db| {
                 let lhs = Sugg::ast(cx, check, "..");
                 let rhs = Sugg::ast(cx, check_inner, "..");
                 db.span_suggestion(

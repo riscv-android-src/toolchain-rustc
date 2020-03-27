@@ -1,7 +1,7 @@
 use crate::command_prelude::*;
+use anyhow::Error;
 use cargo::ops::{self, CompileFilter, FilterRule, LibRule};
 use cargo::util::errors;
-use failure::Fail;
 
 pub fn cli() -> App {
     subcommand("test")
@@ -108,11 +108,8 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         ProfileChecking::Checked,
     )?;
 
-    compile_opts.build_config.profile_kind = args.get_profile_kind(
-        config,
-        ProfileKind::Custom("test".to_owned()),
-        ProfileChecking::Checked,
-    )?;
+    compile_opts.build_config.requested_profile =
+        args.get_profile_name(config, "test", ProfileChecking::Checked)?;
 
     // `TESTNAME` is actually an argument of the test binary, but it's
     // important, so we explicitly mention it and reconfigure.
@@ -126,13 +123,13 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     if doc {
         if let CompileFilter::Only { .. } = compile_opts.filter {
             return Err(CliError::new(
-                failure::format_err!("Can't mix --doc with other target selecting options"),
+                anyhow::format_err!("Can't mix --doc with other target selecting options"),
                 101,
             ));
         }
         if no_run {
             return Err(CliError::new(
-                failure::format_err!("Can't skip running doc tests with --no-run"),
+                anyhow::format_err!("Can't skip running doc tests with --no-run"),
                 101,
             ));
         }
@@ -166,12 +163,12 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     match err {
         None => Ok(()),
         Some(err) => {
-            let context = failure::format_err!("{}", err.hint(&ws, &ops.compile_opts));
+            let context = anyhow::format_err!("{}", err.hint(&ws, &ops.compile_opts));
             let e = match err.exit.as_ref().and_then(|e| e.code()) {
                 // Don't show "process didn't exit successfully" for simple errors.
                 Some(i) if errors::is_simple_exit_code(i) => CliError::new(context, i),
-                Some(i) => CliError::new(err.context(context).into(), i),
-                None => CliError::new(err.context(context).into(), 101),
+                Some(i) => CliError::new(Error::from(err).context(context), i),
+                None => CliError::new(Error::from(err).context(context), 101),
             };
             Err(e)
         }

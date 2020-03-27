@@ -25,8 +25,7 @@ fn two() -> i32 {
     abc
 }
 
-// FIXME: This is a false positive in the `is_min_const_fn` function.
-// At least until the `const_string_new` feature is stabilzed.
+// Could be const (since Rust 1.39)
 fn string() -> String {
     String::new()
 }
@@ -41,8 +40,6 @@ fn generic<T>(t: T) -> T {
     t
 }
 
-// FIXME: Depends on the `const_transmute` and `const_fn` feature gates.
-// In the future Clippy should be able to suggest this as const, too.
 fn sub(x: u32) -> usize {
     unsafe { transmute(&x) }
 }

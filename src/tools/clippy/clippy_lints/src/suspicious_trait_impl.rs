@@ -1,10 +1,10 @@
 use crate::utils::{get_trait_def_id, span_lint, trait_ref_of_method};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc::hir::map::Map;
+use rustc_hir as hir;
+use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Lints for suspicious operations in impls of arithmetic operators, e.g.
@@ -53,7 +53,7 @@ declare_clippy_lint! {
 declare_lint_pass!(SuspiciousImpl => [SUSPICIOUS_ARITHMETIC_IMPL, SUSPICIOUS_OP_ASSIGN_IMPL]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SuspiciousImpl {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
         if let hir::ExprKind::Binary(binop, _, _) = expr.kind {
             match binop.node {
                 hir::BinOpKind::Eq
@@ -148,7 +148,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for SuspiciousImpl {
 
 fn check_binop(
     cx: &LateContext<'_, '_>,
-    expr: &hir::Expr,
+    expr: &hir::Expr<'_>,
     binop: hir::BinOpKind,
     traits: &[&'static str],
     expected_ops: &[hir::BinOpKind],
@@ -185,7 +185,9 @@ struct BinaryExprVisitor {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for BinaryExprVisitor {
-    fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr<'_>) {
         match expr.kind {
             hir::ExprKind::Binary(..)
             | hir::ExprKind::Unary(hir::UnOp::UnNot, _)
@@ -195,7 +197,7 @@ impl<'a, 'tcx> Visitor<'tcx> for BinaryExprVisitor {
 
         walk_expr(self, expr);
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }

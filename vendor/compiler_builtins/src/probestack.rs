@@ -56,7 +56,7 @@ extern "C" {
 // emitted for the function.
 //
 // This is the ELF version.
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(target_vendor = "apple", target_os = "uefi")))]
 macro_rules! define_rust_probestack {
     ($body: expr) => {
         concat!(
@@ -64,6 +64,7 @@ macro_rules! define_rust_probestack {
             .pushsection .text.__rust_probestack
             .globl __rust_probestack
             .type  __rust_probestack, @function
+            .hidden __rust_probestack
         __rust_probestack:
             ",
             $body,
@@ -75,7 +76,21 @@ macro_rules! define_rust_probestack {
     };
 }
 
-// Same as above, but for Mach-O.
+#[cfg(target_os = "uefi")]
+macro_rules! define_rust_probestack {
+    ($body: expr) => {
+        concat!(
+            "
+            .globl __rust_probestack
+        __rust_probestack:
+            ",
+            $body
+        )
+    };
+}
+
+// Same as above, but for Mach-O. Note that the triple underscore
+// is deliberate
 #[cfg(target_vendor = "apple")]
 macro_rules! define_rust_probestack {
     ($body: expr) => {

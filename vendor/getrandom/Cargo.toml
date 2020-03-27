@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "getrandom"
-version = "0.1.12"
+version = "0.1.14"
 authors = ["The Rand Project Developers"]
 exclude = ["utils/*", ".*", "appveyor.yml"]
 description = "A small cross-platform library for retrieving random data from system source"
@@ -22,7 +22,7 @@ categories = ["os", "no-std"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rust-random/getrandom"
 [dependencies.cfg-if]
-version = "0.1"
+version = "0.1.2"
 
 [dependencies.compiler_builtins]
 version = "0.1"
@@ -41,11 +41,12 @@ optional = true
 dummy = []
 rustc-dep-of-std = ["compiler_builtins", "core"]
 std = []
-[target."cfg(any(unix, target_os = \"redox\"))".dependencies.libc]
-version = "0.2.62"
-default-features = false
+test-in-browser = ["wasm-bindgen"]
 [target."cfg(target_os = \"wasi\")".dependencies.wasi]
-version = "0.7"
+version = "0.9"
+[target."cfg(unix)".dependencies.libc]
+version = "0.2.64"
+default-features = false
 [target.wasm32-unknown-unknown.dependencies.stdweb]
 version = "0.4.18"
 optional = true
@@ -53,6 +54,8 @@ optional = true
 [target.wasm32-unknown-unknown.dependencies.wasm-bindgen]
 version = "0.2.29"
 optional = true
+[target.wasm32-unknown-unknown.dev-dependencies.wasm-bindgen-test]
+version = "0.2"
 [badges.appveyor]
 repository = "rust-random/getrandom"
 

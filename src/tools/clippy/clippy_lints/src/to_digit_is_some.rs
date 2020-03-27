@@ -1,11 +1,10 @@
 use crate::utils::{match_def_path, snippet_with_applicability, span_lint_and_sugg};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir as hir;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for `.to_digit(..).is_some()` on `char`s.
@@ -33,7 +32,7 @@ declare_clippy_lint! {
 declare_lint_pass!(ToDigitIsSome => [TO_DIGIT_IS_SOME]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ToDigitIsSome {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
         if_chain! {
             if let hir::ExprKind::MethodCall(is_some_path, _, is_some_args) = &expr.kind;
             if is_some_path.ident.name.as_str() == "is_some";

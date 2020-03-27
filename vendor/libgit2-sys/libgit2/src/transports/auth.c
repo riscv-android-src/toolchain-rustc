@@ -9,6 +9,7 @@
 
 #include "git2.h"
 #include "buffer.h"
+#include "git2/sys/cred.h"
 
 static int basic_next_token(
 	git_buf *out,
@@ -70,6 +71,6 @@ int git_http_auth_dummy(
 	GIT_UNUSED(url);
 
 	*out = NULL;
-	return 0;
+	return GIT_PASSTHROUGH;
 }
 

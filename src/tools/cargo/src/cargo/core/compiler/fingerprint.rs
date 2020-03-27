@@ -123,7 +123,7 @@
 //!   if we tracked the actual values of modification times would cause
 //!   unnecessary recompiles. To fix this we instead only track paths which are
 //!   relevant. These paths are checked dynamically to see if they're up to
-//!   date, and the modifiation time doesn't make its way into the fingerprint
+//!   date, and the modification time doesn't make its way into the fingerprint
 //!   hash.
 //!
 //! * Absolute path names. We strive to maintain a property where if you rename
@@ -194,7 +194,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use failure::{bail, format_err};
+use anyhow::{bail, format_err};
 use filetime::FileTime;
 use log::{debug, info};
 use serde::de;
@@ -643,7 +643,7 @@ impl Fingerprint {
             bail!("target configuration has changed")
         }
         if self.path != old.path {
-            bail!("path to the compiler has changed")
+            bail!("path to the source has changed")
         }
         if self.profile != old.profile {
             bail!("profile configuration has changed")
@@ -1414,11 +1414,7 @@ fn log_compare(unit: &Unit<'_>, compare: &CargoResult<()>) {
         "fingerprint error for {}/{:?}/{:?}",
         unit.pkg, unit.mode, unit.target,
     );
-    info!("    err: {}", ce);
-
-    for cause in ce.iter_causes() {
-        info!("  cause: {}", cause);
-    }
+    info!("    err: {:?}", ce);
 }
 
 // Parse the dep-info into a list of paths

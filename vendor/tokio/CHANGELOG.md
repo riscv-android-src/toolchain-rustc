@@ -1,6 +1,52 @@
 This changelog only applies to the `tokio` crate proper. Each sub crate
 maintains its own changelog tracking changes made in each respective sub crate.
 
+# 0.1.22 (June 2, 2019)
+
+### Changed
+- Moved from `tokio-trace-core` to `tracing-core` (#1223).
+
+# 0.1.21 (May 30, 2019)
+
+### Changed
+- Bump `tokio-trace-core` version to 0.2 (#1111).
+
+# 0.1.20 (May 14, 2019)
+
+### Added
+- `tokio::runtime::Builder::panic_handler` allows configuring handling
+  panics on the runtime (#1055).
+
+# 0.1.19 (April 22, 2019)
+
+### Added
+- Re-export `tokio::sync::Mutex` primitive (#964).
+
+# 0.1.18 (March 22, 2019)
+
+### Added
+- `TypedExecutor` re-export and implementations (#993).
+
+# 0.1.17 (March 13, 2019)
+
+### Added
+- Propagate trace subscriber in the runtime (#966).
+
+# 0.1.16 (March 1, 2019)
+
+### Fixed
+- async-await: track latest nightly changes (#940).
+
+### Added
+- `sync::Watch`, a single value broadcast channel (#922).
+- Async equivalent of read / write file helpers being added to `std` (#896).
+
+# 0.1.15 (January 24, 2019)
+
+### Added
+- Re-export tokio-sync APIs (#839).
+- Stream enumerate combinator (#832).
+
 # 0.1.14 (January 6, 2019)
 
 * Use feature flags to break up the crate, allowing users to pick & choose

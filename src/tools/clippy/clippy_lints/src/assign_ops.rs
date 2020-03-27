@@ -1,15 +1,14 @@
-use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-
 use crate::utils::{
     get_trait_def_id, implements_trait, snippet_opt, span_lint_and_then, trait_ref_of_method, SpanlessEq,
 };
 use crate::utils::{higher, sugg};
+use if_chain::if_chain;
+use rustc::hir::map::Map;
+use rustc_errors::Applicability;
+use rustc_hir as hir;
+use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for `a = a op b` or `a = b commutative_op a`
@@ -59,7 +58,7 @@ declare_lint_pass!(AssignOps => [ASSIGN_OP_PATTERN, MISREFACTORED_ASSIGN_OP]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AssignOps {
     #[allow(clippy::too_many_lines)]
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
         match &expr.kind {
             hir::ExprKind::AssignOp(op, lhs, rhs) => {
                 if let hir::ExprKind::Binary(binop, l, r) = &rhs.kind {
@@ -76,10 +75,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AssignOps {
                     }
                 }
             },
-            hir::ExprKind::Assign(assignee, e) => {
+            hir::ExprKind::Assign(assignee, e, _) => {
                 if let hir::ExprKind::Binary(op, l, r) = &e.kind {
                     #[allow(clippy::cognitive_complexity)]
-                    let lint = |assignee: &hir::Expr, rhs: &hir::Expr| {
+                    let lint = |assignee: &hir::Expr<'_>, rhs: &hir::Expr<'_>| {
                         let ty = cx.tables.expr_ty(assignee);
                         let rty = cx.tables.expr_ty(rhs);
                         macro_rules! ops {
@@ -190,11 +189,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AssignOps {
 
 fn lint_misrefactored_assign_op(
     cx: &LateContext<'_, '_>,
-    expr: &hir::Expr,
+    expr: &hir::Expr<'_>,
     op: hir::BinOp,
-    rhs: &hir::Expr,
-    assignee: &hir::Expr,
-    rhs_other: &hir::Expr,
+    rhs: &hir::Expr<'_>,
+    assignee: &hir::Expr<'_>,
+    rhs_other: &hir::Expr<'_>,
 ) {
     span_lint_and_then(
         cx,
@@ -209,7 +208,7 @@ fn lint_misrefactored_assign_op(
                 db.span_suggestion(
                     expr.span,
                     &format!(
-                        "Did you mean {} = {} {} {} or {}? Consider replacing it with",
+                        "Did you mean `{} = {} {} {}` or `{}`? Consider replacing it with",
                         snip_a,
                         snip_a,
                         op.node.as_str(),
@@ -232,7 +231,7 @@ fn lint_misrefactored_assign_op(
 
 #[must_use]
 fn is_commutative(op: hir::BinOpKind) -> bool {
-    use rustc::hir::BinOpKind::*;
+    use rustc_hir::BinOpKind::*;
     match op {
         Add | Mul | And | Or | BitXor | BitAnd | BitOr | Eq | Ne => true,
         Sub | Div | Rem | Shl | Shr | Lt | Le | Ge | Gt => false,
@@ -240,20 +239,22 @@ fn is_commutative(op: hir::BinOpKind) -> bool {
 }
 
 struct ExprVisitor<'a, 'tcx> {
-    assignee: &'a hir::Expr,
+    assignee: &'a hir::Expr<'a>,
     counter: u8,
     cx: &'a LateContext<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for ExprVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr<'_>) {
         if SpanlessEq::new(self.cx).ignore_fn().eq_expr(self.assignee, expr) {
             self.counter += 1;
         }
 
         walk_expr(self, expr);
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }

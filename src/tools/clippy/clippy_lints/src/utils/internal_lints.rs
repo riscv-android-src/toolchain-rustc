@@ -3,20 +3,21 @@ use crate::utils::{
     walk_ptrs_ty,
 };
 use if_chain::if_chain;
-use rustc::hir;
-use rustc::hir::def::{DefKind, Res};
-use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc::hir::*;
-use rustc::lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintArray, LintPass};
-use rustc::{declare_lint_pass, impl_lint_pass};
+use rustc::hir::map::Map;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
+use rustc_hir as hir;
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
+use rustc_hir::*;
+use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass};
 use rustc_session::declare_tool_lint;
+use rustc_session::{declare_lint_pass, impl_lint_pass};
+use rustc_span::source_map::{Span, Spanned};
+use rustc_span::symbol::SymbolStr;
 use syntax::ast;
-use syntax::ast::{Crate as AstCrate, ItemKind, Name};
-use syntax::source_map::Span;
+use syntax::ast::{Crate as AstCrate, ItemKind, LitKind, Name};
 use syntax::visit::FnKind;
-use syntax_pos::symbol::SymbolStr;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for various things we like to keep tidy in clippy.
@@ -120,6 +121,29 @@ declare_clippy_lint! {
     "this message should not appear anywhere as we ICE before and don't emit the lint"
 }
 
+declare_clippy_lint! {
+    /// **What it does:** Checks for cases of an auto-generated lint without an updated description,
+    /// i.e. `default lint description`.
+    ///
+    /// **Why is this bad?** Indicates that the lint is not finished.
+    ///
+    /// **Known problems:** None
+    ///
+    /// **Example:**
+    /// Bad:
+    /// ```rust,ignore
+    /// declare_lint! { pub COOL_LINT, nursery, "default lint description" }
+    /// ```
+    ///
+    /// Good:
+    /// ```rust,ignore
+    /// declare_lint! { pub COOL_LINT, nursery, "a great new lint" }
+    /// ```
+    pub DEFAULT_LINT,
+    internal,
+    "found 'default lint description' in a lint declaration"
+}
+
 declare_lint_pass!(ClippyLintsInternal => [CLIPPY_LINTS_INTERNAL]);
 
 impl EarlyLintPass for ClippyLintsInternal {
@@ -162,18 +186,45 @@ pub struct LintWithoutLintPass {
     registered_lints: FxHashSet<Name>,
 }
 
-impl_lint_pass!(LintWithoutLintPass => [LINT_WITHOUT_LINT_PASS]);
+impl_lint_pass!(LintWithoutLintPass => [DEFAULT_LINT, LINT_WITHOUT_LINT_PASS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        if let hir::ItemKind::Static(ref ty, Mutability::Immutable, _) = item.kind {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
+        if let hir::ItemKind::Static(ref ty, Mutability::Not, body_id) = item.kind {
             if is_lint_ref_type(cx, ty) {
+                let expr = &cx.tcx.hir().body(body_id).value;
+                if_chain! {
+                    if let ExprKind::AddrOf(_, _, ref inner_exp) = expr.kind;
+                    if let ExprKind::Struct(_, ref fields, _) = inner_exp.kind;
+                    let field = fields.iter()
+                                      .find(|f| f.ident.as_str() == "desc")
+                                      .expect("lints must have a description field");
+                    if let ExprKind::Lit(Spanned {
+                        node: LitKind::Str(ref sym, _),
+                        ..
+                    }) = field.expr.kind;
+                    if sym.as_str() == "default lint description";
+
+                    then {
+                        span_lint(
+                            cx,
+                            DEFAULT_LINT,
+                            item.span,
+                            &format!("the lint `{}` has the default lint description", item.ident.name),
+                        );
+                    }
+                }
                 self.declared_lints.insert(item.ident.name, item.span);
             }
         } else if is_expn_of(item.span, "impl_lint_pass").is_some()
             || is_expn_of(item.span, "declare_lint_pass").is_some()
         {
-            if let hir::ItemKind::Impl(.., None, _, ref impl_item_refs) = item.kind {
+            if let hir::ItemKind::Impl {
+                of_trait: None,
+                items: ref impl_item_refs,
+                ..
+            } = item.kind
+            {
                 let mut collector = LintCollector {
                     output: &mut self.registered_lints,
                     cx,
@@ -191,7 +242,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
         }
     }
 
-    fn check_crate_post(&mut self, cx: &LateContext<'a, 'tcx>, _: &'tcx Crate) {
+    fn check_crate_post(&mut self, cx: &LateContext<'a, 'tcx>, _: &'tcx Crate<'_>) {
         for (lint_name, &lint_span) in &self.declared_lints {
             // When using the `declare_tool_lint!` macro, the original `lint_span`'s
             // file points to "<rustc macros>".
@@ -214,12 +265,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
     }
 }
 
-fn is_lint_ref_type<'tcx>(cx: &LateContext<'_, 'tcx>, ty: &Ty) -> bool {
+fn is_lint_ref_type<'tcx>(cx: &LateContext<'_, 'tcx>, ty: &Ty<'_>) -> bool {
     if let TyKind::Rptr(
         _,
         MutTy {
             ty: ref inner,
-            mutbl: Mutability::Immutable,
+            mutbl: Mutability::Not,
         },
     ) = ty.kind
     {
@@ -239,16 +290,18 @@ struct LintCollector<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for LintCollector<'a, 'tcx> {
-    fn visit_expr(&mut self, expr: &'tcx Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         walk_expr(self, expr);
     }
 
-    fn visit_path(&mut self, path: &'tcx Path, _: HirId) {
+    fn visit_path(&mut self, path: &'tcx Path<'_>, _: HirId) {
         if path.segments.len() == 1 {
             self.output.insert(path.segments[0].ident.name);
         }
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::All(&self.cx.tcx.hir())
     }
 }
@@ -274,7 +327,7 @@ impl CompilerLintFunctions {
 impl_lint_pass!(CompilerLintFunctions => [COMPILER_LINT_FUNCTIONS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::MethodCall(ref path, _, ref args) = expr.kind;
             let fn_name = path.ident;
@@ -298,7 +351,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
 declare_lint_pass!(OuterExpnDataPass => [OUTER_EXPN_EXPN_DATA]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OuterExpnDataPass {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
         let (method_names, arg_lists, spans) = method_calls(expr, 2);
         let method_names: Vec<SymbolStr> = method_names.iter().map(|s| s.as_str()).collect();
         let method_names: Vec<&str> = method_names.iter().map(|s| &**s).collect();

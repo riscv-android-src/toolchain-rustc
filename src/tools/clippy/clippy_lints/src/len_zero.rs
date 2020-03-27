@@ -1,24 +1,22 @@
 use crate::utils::{get_item_name, snippet_with_applicability, span_lint, span_lint_and_sugg, walk_ptrs_ty};
-use rustc::declare_lint_pass;
-use rustc::hir::def_id::DefId;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::def_id::DefId;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::{Span, Spanned};
 use syntax::ast::{LitKind, Name};
-use syntax::source_map::{Span, Spanned};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for getting the length of something via `.len()`
     /// just to compare to zero, and suggests using `.is_empty()` where applicable.
     ///
     /// **Why is this bad?** Some structures can answer `.is_empty()` much faster
-    /// than calculating their length. Notably, for slices, getting the length
-    /// requires a subtraction whereas `.is_empty()` is just a comparison. So it is
-    /// good to get into the habit of using `.is_empty()`, and having it is cheap.
-    /// Besides, it makes the intent clearer than a manual comparison.
+    /// than calculating their length. So it is good to get into the habit of using
+    /// `.is_empty()`, and having it is cheap.
+    /// Besides, it makes the intent clearer than a manual comparison in some contexts.
     ///
     /// **Known problems:** None.
     ///
@@ -73,19 +71,23 @@ declare_clippy_lint! {
 declare_lint_pass!(LenZero => [LEN_ZERO, LEN_WITHOUT_IS_EMPTY]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LenZero {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
         if item.span.from_expansion() {
             return;
         }
 
         match item.kind {
             ItemKind::Trait(_, _, _, _, ref trait_items) => check_trait_items(cx, item, trait_items),
-            ItemKind::Impl(_, _, _, _, None, _, ref impl_items) => check_impl_items(cx, item, impl_items),
+            ItemKind::Impl {
+                of_trait: None,
+                items: ref impl_items,
+                ..
+            } => check_impl_items(cx, item, impl_items),
             _ => (),
         }
     }
 
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if expr.span.from_expansion() {
             return;
         }
@@ -116,7 +118,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LenZero {
     }
 }
 
-fn check_trait_items(cx: &LateContext<'_, '_>, visited_trait: &Item, trait_items: &[TraitItemRef]) {
+fn check_trait_items(cx: &LateContext<'_, '_>, visited_trait: &Item<'_>, trait_items: &[TraitItemRef]) {
     fn is_named_self(cx: &LateContext<'_, '_>, item: &TraitItemRef, name: &str) -> bool {
         item.ident.name.as_str() == name
             && if let AssocItemKind::Method { has_self } = item.kind {
@@ -167,8 +169,8 @@ fn check_trait_items(cx: &LateContext<'_, '_>, visited_trait: &Item, trait_items
     }
 }
 
-fn check_impl_items(cx: &LateContext<'_, '_>, item: &Item, impl_items: &[ImplItemRef]) {
-    fn is_named_self(cx: &LateContext<'_, '_>, item: &ImplItemRef, name: &str) -> bool {
+fn check_impl_items(cx: &LateContext<'_, '_>, item: &Item<'_>, impl_items: &[ImplItemRef<'_>]) {
+    fn is_named_self(cx: &LateContext<'_, '_>, item: &ImplItemRef<'_>, name: &str) -> bool {
         item.ident.name.as_str() == name
             && if let AssocItemKind::Method { has_self } = item.kind {
                 has_self && {
@@ -208,7 +210,7 @@ fn check_impl_items(cx: &LateContext<'_, '_>, item: &Item, impl_items: &[ImplIte
     }
 }
 
-fn check_cmp(cx: &LateContext<'_, '_>, span: Span, method: &Expr, lit: &Expr, op: &str, compare_to: u32) {
+fn check_cmp(cx: &LateContext<'_, '_>, span: Span, method: &Expr<'_>, lit: &Expr<'_>, op: &str, compare_to: u32) {
     if let (&ExprKind::MethodCall(ref method_path, _, ref args), &ExprKind::Lit(ref lit)) = (&method.kind, &lit.kind) {
         // check if we are in an is_empty() method
         if let Some(name) = get_item_name(cx, method) {
@@ -225,7 +227,7 @@ fn check_len(
     cx: &LateContext<'_, '_>,
     span: Span,
     method_name: Name,
-    args: &[Expr],
+    args: &[Expr<'_>],
     lit: &LitKind,
     op: &str,
     compare_to: u32,
@@ -256,7 +258,7 @@ fn check_len(
 }
 
 /// Checks if this type has an `is_empty` method.
-fn has_is_empty(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
+fn has_is_empty(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
     /// Gets an `AssocItem` and return true if it matches `is_empty(self)`.
     fn is_is_empty(cx: &LateContext<'_, '_>, item: &ty::AssocItem) -> bool {
         if let ty::AssocKind::Method = item.kind {

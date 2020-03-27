@@ -1,10 +1,9 @@
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 use crate::utils::{any_parent_is_automatically_derived, match_def_path, paths, span_lint_and_sugg};
 
@@ -26,13 +25,13 @@ declare_clippy_lint! {
     /// ```
     pub DEFAULT_TRAIT_ACCESS,
     pedantic,
-    "checks for literal calls to Default::default()"
+    "checks for literal calls to `Default::default()`"
 }
 
 declare_lint_pass!(DefaultTraitAccess => [DEFAULT_TRAIT_ACCESS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DefaultTraitAccess {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Call(ref path, ..) = expr.kind;
             if !any_parent_is_automatically_derived(cx.tcx, expr.hir_id);
@@ -62,7 +61,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DefaultTraitAccess {
                                 cx,
                                 DEFAULT_TRAIT_ACCESS,
                                 expr.span,
-                                &format!("Calling {} is more clear than this expression", replacement),
+                                &format!("Calling `{}` is more clear than this expression", replacement),
                                 "try",
                                 replacement,
                                 Applicability::Unspecified, // First resolve the TODO above

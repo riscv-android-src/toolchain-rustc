@@ -7,8 +7,6 @@
 
 #include "apply.h"
 
-#include <assert.h>
-
 #include "git2/apply.h"
 #include "git2/patch.h"
 #include "git2/filter.h"
@@ -219,7 +217,7 @@ static int apply_hunk(
 			case GIT_DIFF_LINE_CONTEXT_EOFNL:
 			case GIT_DIFF_LINE_DEL_EOFNL:
 			case GIT_DIFF_LINE_ADD_EOFNL:
-				prev = i ? git_array_get(patch->lines, i - 1) : NULL;
+				prev = i ? git_array_get(patch->lines, linenum - 1) : NULL;
 				if (prev && prev->content[prev->content_len - 1] == '\n')
 					prev->content_len -= 1;
 				break;
@@ -649,9 +647,12 @@ int git_apply_to_tree(
 	for (i = 0; i < git_diff_num_deltas(diff); i++) {
 		delta = git_diff_get_delta(diff, i);
 
-		if ((error = git_index_remove(postimage,
-				delta->old_file.path, 0)) < 0)
-			goto done;
+		if (delta->status == GIT_DELTA_DELETED ||
+			delta->status == GIT_DELTA_RENAMED) {
+			if ((error = git_index_remove(postimage,
+					delta->old_file.path, 0)) < 0)
+				goto done;
+		}
 	}
 
 	if ((error = apply_deltas(repo, pre_reader, NULL, post_reader, postimage, diff, &opts)) < 0)
@@ -842,11 +843,15 @@ int git_apply(
 	    (error = git_reader_for_index(&post_reader, repo, postimage)) < 0)
 		goto done;
 
-	if ((error = git_repository_index(&index, repo)) < 0 ||
-	    (error = git_indexwriter_init(&indexwriter, index)) < 0)
-		goto done;
+	if (!(opts.flags & GIT_APPLY_CHECK))
+		if ((error = git_repository_index(&index, repo)) < 0 ||
+		    (error = git_indexwriter_init(&indexwriter, index)) < 0)
+			goto done;
 
 	if ((error = apply_deltas(repo, pre_reader, preimage, post_reader, postimage, diff, &opts)) < 0)
+		goto done;
+
+	if ((opts.flags & GIT_APPLY_CHECK))
 		goto done;
 
 	switch (location) {

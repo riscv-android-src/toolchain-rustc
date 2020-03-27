@@ -2239,6 +2239,32 @@ fn recompile_space_in_name() {
 
 #[cfg(unix)]
 #[cargo_test]
+fn credentials_is_unreadable() {
+    use cargo_test_support::paths::home;
+    use std::os::unix::prelude::*;
+    let p = project()
+        .file("Cargo.toml", &basic_manifest("foo", "0.1.0"))
+        .file("src/lib.rs", "")
+        .build();
+
+    let credentials = home().join(".cargo/credentials");
+    t!(fs::create_dir_all(credentials.parent().unwrap()));
+    t!(t!(File::create(&credentials)).write_all(
+        br#"
+        [registry]
+        token = "api-token"
+    "#
+    ));
+    let stat = fs::metadata(credentials.as_path()).unwrap();
+    let mut perms = stat.permissions();
+    perms.set_mode(0o000);
+    fs::set_permissions(credentials, perms).unwrap();
+
+    p.cargo("build").run();
+}
+
+#[cfg(unix)]
+#[cargo_test]
 fn ignore_bad_directories() {
     use std::os::unix::prelude::*;
     let foo = project()
@@ -2805,6 +2831,11 @@ fn custom_target_dir_env() {
     p.cargo("build").run();
     assert!(p.root().join("foo/target/debug").join(&exe_name).is_file());
     assert!(p.root().join("target/debug").join(&exe_name).is_file());
+
+    p.cargo("build")
+        .env("CARGO_BUILD_TARGET_DIR", "foo2/target")
+        .run();
+    assert!(p.root().join("foo2/target/debug").join(&exe_name).is_file());
 
     fs::create_dir(p.root().join(".cargo")).unwrap();
     File::create(p.root().join(".cargo/config"))
@@ -4298,11 +4329,48 @@ required by package `bar v0.1.0 ([..]/foo)`
 }
 
 #[cargo_test]
+fn default_cargo_config_jobs() {
+    let p = project()
+        .file("src/lib.rs", "")
+        .file(
+            ".cargo/config",
+            r#"
+            [build]
+            jobs = 1
+        "#,
+        )
+        .build();
+    p.cargo("build -v").run();
+}
+
+#[cargo_test]
+fn good_cargo_config_jobs() {
+    let p = project()
+        .file("src/lib.rs", "")
+        .file(
+            ".cargo/config",
+            r#"
+            [build]
+            jobs = 4
+        "#,
+        )
+        .build();
+    p.cargo("build -v").run();
+}
+
+#[cargo_test]
 fn invalid_jobs() {
     let p = project()
         .file("Cargo.toml", &basic_bin_manifest("foo"))
         .file("src/foo.rs", &main_file(r#""i am foo""#, &[]))
         .build();
+
+    p.cargo("build --jobs -1")
+        .with_status(1)
+        .with_stderr_contains(
+            "error: Found argument '-1' which wasn't expected, or isn't valid in this context",
+        )
+        .run();
 
     p.cargo("build --jobs over9000")
         .with_status(1)

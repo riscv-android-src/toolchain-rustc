@@ -171,6 +171,7 @@ fn main() {
         .file("curl/lib/share.c")
         .file("curl/lib/slist.c")
         .file("curl/lib/socks.c")
+        .file("curl/lib/socketpair.c")
         .file("curl/lib/speedcheck.c")
         .file("curl/lib/splay.c")
         .file("curl/lib/strcase.c")
@@ -258,7 +259,8 @@ fn main() {
     }
 
     if windows {
-        cfg.define("USE_THREADS_WIN32", None)
+        cfg.define("WIN32", None)
+            .define("USE_THREADS_WIN32", None)
             .define("HAVE_IOCTLSOCKET_FIONBIO", None)
             .define("USE_WINSOCK", None)
             .file("curl/lib/system_win32.c");
@@ -267,6 +269,15 @@ fn main() {
             cfg.file("curl/lib/vauth/spnego_sspi.c");
         }
     } else {
+        if target.contains("-apple-") {
+            cfg.define("__APPLE__", None)
+                .define("macintosh", None)
+                .define("HAVE_MACH_ABSOLUTE_TIME", None);
+        } else {
+            cfg.define("HAVE_CLOCK_GETTIME_MONOTONIC", None)
+                .define("HAVE_GETTIMEOFDAY", None);
+        }
+
         cfg.define("RECV_TYPE_ARG1", "int")
             .define("HAVE_PTHREAD_H", None)
             .define("HAVE_ARPA_INET_H", None)
@@ -285,6 +296,7 @@ fn main() {
             .define("HAVE_SEND", None)
             .define("HAVE_SOCKET", None)
             .define("HAVE_STERRROR_R", None)
+            .define("HAVE_SOCKETPAIR", None)
             .define("HAVE_STRUCT_TIMEVAL", None)
             .define("USE_THREADS_POSIX", None)
             .define("RECV_TYPE_ARG2", "void*")

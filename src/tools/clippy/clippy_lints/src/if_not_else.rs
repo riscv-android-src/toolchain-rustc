@@ -1,9 +1,9 @@
 //! lint on if branches that could be swapped so no `!` operation is necessary
 //! on the condition
 
-use rustc::declare_lint_pass;
-use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintContext, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc::lint::in_external_macro;
+use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast::*;
 
 use crate::utils::span_help_and_lint;
@@ -61,7 +61,7 @@ impl EarlyLintPass for IfNotElse {
                             IF_NOT_ELSE,
                             item.span,
                             "Unnecessary boolean `not` operation",
-                            "remove the `!` and swap the blocks of the if/else",
+                            "remove the `!` and swap the blocks of the `if`/`else`",
                         );
                     },
                     ExprKind::Binary(ref kind, _, _) if kind.node == BinOpKind::Ne => {
@@ -70,7 +70,7 @@ impl EarlyLintPass for IfNotElse {
                             IF_NOT_ELSE,
                             item.span,
                             "Unnecessary `!=` operation",
-                            "change to `==` and swap the blocks of the if/else",
+                            "change to `==` and swap the blocks of the `if`/`else`",
                         );
                     },
                     _ => (),

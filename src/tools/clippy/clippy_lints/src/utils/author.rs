@@ -2,15 +2,16 @@
 //! to generate a clippy lint detecting said code automatically.
 
 use crate::utils::{get_attr, higher};
-use rustc::declare_lint_pass;
-use rustc::hir;
-use rustc::hir::intravisit::{NestedVisitorMap, Visitor};
-use rustc::hir::{BindingAnnotation, Block, Expr, ExprKind, Pat, PatKind, QPath, Stmt, StmtKind, TyKind};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintContext, LintPass};
+use rustc::hir::map::Map;
 use rustc::session::Session;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_session::declare_tool_lint;
+use rustc_hir as hir;
+use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
+use rustc_hir::{BindingAnnotation, Block, Expr, ExprKind, Pat, PatKind, QPath, Stmt, StmtKind, TyKind};
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast::{Attribute, LitFloatType, LitKind};
+use syntax::walk_list;
 
 declare_clippy_lint! {
     /// **What it does:** Generates clippy code that detects the offending pattern
@@ -64,7 +65,7 @@ fn done() {
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item<'_>) {
         if !has_attr(cx.sess(), &item.attrs) {
             return;
         }
@@ -73,7 +74,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ImplItem<'_>) {
         if !has_attr(cx.sess(), &item.attrs) {
             return;
         }
@@ -82,7 +83,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem<'_>) {
         if !has_attr(cx.sess(), &item.attrs) {
             return;
         }
@@ -91,7 +92,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_variant(&mut self, cx: &LateContext<'a, 'tcx>, var: &'tcx hir::Variant) {
+    fn check_variant(&mut self, cx: &LateContext<'a, 'tcx>, var: &'tcx hir::Variant<'_>) {
         if !has_attr(cx.sess(), &var.attrs) {
             return;
         }
@@ -100,7 +101,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_struct_field(&mut self, cx: &LateContext<'a, 'tcx>, field: &'tcx hir::StructField) {
+    fn check_struct_field(&mut self, cx: &LateContext<'a, 'tcx>, field: &'tcx hir::StructField<'_>) {
         if !has_attr(cx.sess(), &field.attrs) {
             return;
         }
@@ -109,7 +110,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
         if !has_attr(cx.sess(), &expr.attrs) {
             return;
         }
@@ -118,7 +119,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_arm(&mut self, cx: &LateContext<'a, 'tcx>, arm: &'tcx hir::Arm) {
+    fn check_arm(&mut self, cx: &LateContext<'a, 'tcx>, arm: &'tcx hir::Arm<'_>) {
         if !has_attr(cx.sess(), &arm.attrs) {
             return;
         }
@@ -127,7 +128,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx hir::Stmt) {
+    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx hir::Stmt<'_>) {
         if !has_attr(cx.sess(), stmt.kind.attrs()) {
             return;
         }
@@ -136,7 +137,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
         done();
     }
 
-    fn check_foreign_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ForeignItem) {
+    fn check_foreign_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ForeignItem<'_>) {
         if !has_attr(cx.sess(), &item.attrs) {
             return;
         }
@@ -172,7 +173,7 @@ impl PrintVisitor {
         }
     }
 
-    fn print_qpath(&mut self, path: &QPath) {
+    fn print_qpath(&mut self, path: &QPath<'_>) {
         print!("    if match_qpath({}, &[", self.current);
         print_path(path, &mut true);
         println!("]);");
@@ -188,8 +189,10 @@ struct PrintVisitor {
 }
 
 impl<'tcx> Visitor<'tcx> for PrintVisitor {
+    type Map = Map<'tcx>;
+
     #[allow(clippy::too_many_lines)]
-    fn visit_expr(&mut self, expr: &Expr) {
+    fn visit_expr(&mut self, expr: &Expr<'_>) {
         // handle if desugarings
         // TODO add more desugarings here
         if let Some((cond, then, opt_else)) = higher::if_block(&expr) {
@@ -380,10 +383,13 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
                 self.current = block_pat;
                 self.visit_block(block);
             },
-            ExprKind::Assign(ref target, ref value) => {
+            ExprKind::Assign(ref target, ref value, _) => {
                 let target_pat = self.next("target");
                 let value_pat = self.next("value");
-                println!("Assign(ref {}, ref {}) = {};", target_pat, value_pat, current);
+                println!(
+                    "Assign(ref {}, ref {}, ref _span) = {};",
+                    target_pat, value_pat, current
+                );
                 self.current = target_pat;
                 self.visit_expr(target);
                 self.current = value_pat;
@@ -505,7 +511,7 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
         }
     }
 
-    fn visit_block(&mut self, block: &Block) {
+    fn visit_block(&mut self, block: &Block<'_>) {
         let trailing_pat = self.next("trailing_expr");
         println!("    if let Some({}) = &{}.expr;", trailing_pat, self.current);
         println!("    if {}.stmts.len() == {};", self.current, block.stmts.len());
@@ -517,7 +523,7 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
     }
 
     #[allow(clippy::too_many_lines)]
-    fn visit_pat(&mut self, pat: &Pat) {
+    fn visit_pat(&mut self, pat: &Pat<'_>) {
         print!("    if let PatKind::");
         let current = format!("{}.kind", self.current);
         match pat.kind {
@@ -611,9 +617,9 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
                     start_pat, end_pat, end_kind, current
                 );
                 self.current = start_pat;
-                self.visit_expr(start);
+                walk_list!(self, visit_expr, start);
                 self.current = end_pat;
-                self.visit_expr(end);
+                walk_list!(self, visit_expr, end);
             },
             PatKind::Slice(ref start, ref middle, ref end) => {
                 let start_pat = self.next("start");
@@ -643,7 +649,7 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
         }
     }
 
-    fn visit_stmt(&mut self, s: &Stmt) {
+    fn visit_stmt(&mut self, s: &Stmt<'_>) {
         print!("    if let StmtKind::");
         let current = format!("{}.kind", self.current);
         match s.kind {
@@ -683,7 +689,7 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
         }
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -722,10 +728,10 @@ fn loop_desugaring_name(des: hir::LoopSource) -> &'static str {
     }
 }
 
-fn print_path(path: &QPath, first: &mut bool) {
+fn print_path(path: &QPath<'_>, first: &mut bool) {
     match *path {
         QPath::Resolved(_, ref path) => {
-            for segment in &path.segments {
+            for segment in path.segments {
                 if *first {
                     *first = false;
                 } else {

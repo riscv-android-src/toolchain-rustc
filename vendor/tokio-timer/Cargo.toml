@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,11 +12,11 @@
 
 [package]
 name = "tokio-timer"
-version = "0.2.8"
+version = "0.2.12"
 authors = ["Carl Lerche <me@carllerche.com>"]
 description = "Timer facilities for Tokio\n"
 homepage = "https://github.com/tokio-rs/tokio"
-documentation = "https://docs.rs/tokio-timer/0.2.8/tokio_timer"
+documentation = "https://docs.rs/tokio-timer/0.2.12/tokio_timer"
 readme = "README.md"
 license = "MIT"
 repository = "https://github.com/tokio-rs/tokio"
@@ -32,7 +32,7 @@ version = "0.4.1"
 [dependencies.tokio-executor]
 version = "0.1.1"
 [dev-dependencies.rand]
-version = "0.6"
+version = "0.7"
 
 [dev-dependencies.tokio]
 version = "0.1.7"

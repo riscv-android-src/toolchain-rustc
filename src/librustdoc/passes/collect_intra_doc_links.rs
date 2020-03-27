@@ -1,20 +1,20 @@
-use errors::Applicability;
-use rustc::hir;
-use rustc::hir::def::{
+use rustc::lint;
+use rustc::ty;
+use rustc_errors::Applicability;
+use rustc_expand::base::SyntaxExtensionKind;
+use rustc_feature::UnstableFeatures;
+use rustc_hir as hir;
+use rustc_hir::def::{
     DefKind,
     Namespace::{self, *},
     PerNS, Res,
 };
-use rustc::hir::def_id::DefId;
-use rustc::lint;
-use rustc::ty;
-use rustc_feature::UnstableFeatures;
+use rustc_hir::def_id::DefId;
 use rustc_resolve::ParentScope;
+use rustc_span::symbol::Symbol;
+use rustc_span::DUMMY_SP;
 use syntax;
 use syntax::ast::{self, Ident};
-use syntax::symbol::Symbol;
-use syntax_expand::base::SyntaxExtensionKind;
-use syntax_pos::DUMMY_SP;
 
 use std::ops::Range;
 

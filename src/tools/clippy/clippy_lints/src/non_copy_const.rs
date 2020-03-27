@@ -4,15 +4,14 @@
 
 use std::ptr;
 
-use rustc::declare_lint_pass;
-use rustc::hir::def::{DefKind, Res};
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, Lint, LintArray, LintPass};
 use rustc::ty::adjustment::Adjust;
 use rustc::ty::{Ty, TypeFlags};
-use rustc_session::declare_tool_lint;
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, Lint};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::{InnerSpan, Span, DUMMY_SP};
 use rustc_typeck::hir_ty_to_ty;
-use syntax_pos::{InnerSpan, Span, DUMMY_SP};
 
 use crate::utils::{in_constant, is_copy, qpath_res, span_lint_and_then};
 
@@ -49,7 +48,7 @@ declare_clippy_lint! {
     /// ```
     pub DECLARE_INTERIOR_MUTABLE_CONST,
     correctness,
-    "declaring const with interior mutability"
+    "declaring `const` with interior mutability"
 }
 
 declare_clippy_lint! {
@@ -81,7 +80,7 @@ declare_clippy_lint! {
     /// ```
     pub BORROW_INTERIOR_MUTABLE_CONST,
     correctness,
-    "referencing const with interior mutability"
+    "referencing `const` with interior mutability"
 }
 
 #[allow(dead_code)]
@@ -98,12 +97,12 @@ impl Source {
         match self {
             Self::Item { item } | Self::Assoc { item, .. } => (
                 DECLARE_INTERIOR_MUTABLE_CONST,
-                "a const item should never be interior mutable",
+                "a `const` item should never be interior mutable",
                 *item,
             ),
             Self::Expr { expr } => (
                 BORROW_INTERIOR_MUTABLE_CONST,
-                "a const item with interior mutability should not be borrowed",
+                "a `const` item with interior mutability should not be borrowed",
                 *expr,
             ),
         }
@@ -143,14 +142,14 @@ fn verify_ty_bound<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>, source: S
 declare_lint_pass!(NonCopyConst => [DECLARE_INTERIOR_MUTABLE_CONST, BORROW_INTERIOR_MUTABLE_CONST]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonCopyConst {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, it: &'tcx Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, it: &'tcx Item<'_>) {
         if let ItemKind::Const(hir_ty, ..) = &it.kind {
             let ty = hir_ty_to_ty(cx.tcx, hir_ty);
             verify_ty_bound(cx, ty, Source::Item { item: it.span });
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, trait_item: &'tcx TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, trait_item: &'tcx TraitItem<'_>) {
         if let TraitItemKind::Const(hir_ty, ..) = &trait_item.kind {
             let ty = hir_ty_to_ty(cx.tcx, hir_ty);
             verify_ty_bound(
@@ -164,12 +163,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonCopyConst {
         }
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, impl_item: &'tcx ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, impl_item: &'tcx ImplItem<'_>) {
         if let ImplItemKind::Const(hir_ty, ..) = &impl_item.kind {
             let item_hir_id = cx.tcx.hir().get_parent_node(impl_item.hir_id);
             let item = cx.tcx.hir().expect_item(item_hir_id);
             // Ensure the impl is an inherent impl.
-            if let ItemKind::Impl(_, _, _, _, None, _, _) = item.kind {
+            if let ItemKind::Impl { of_trait: None, .. } = item.kind {
                 let ty = hir_ty_to_ty(cx.tcx, hir_ty);
                 verify_ty_bound(
                     cx,
@@ -183,7 +182,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonCopyConst {
         }
     }
 
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if let ExprKind::Path(qpath) = &expr.kind {
             // Only lint if we use the const item inside a function.
             if in_constant(cx, expr.hir_id) {
@@ -222,7 +221,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonCopyConst {
                             needs_check_adjustment = false;
                             break;
                         },
-                        ExprKind::Unary(UnDeref, _) => {
+                        ExprKind::Unary(UnOp::UnDeref, _) => {
                             // `*e` => desugared to `*Deref::deref(&e)`,
                             // meaning `e` must be referenced.
                             // no need to go further up since a method call is involved now.

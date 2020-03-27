@@ -47,10 +47,11 @@
 #include <cerrno>
 #include <limits>
 #include <fstream>
+#include <unordered_map>
 
 #include <nghttp2/nghttp2.h>
 
-#include "http-parser/http_parser.h"
+#include "url-parser/url_parser.h"
 
 #include "shrpx_log.h"
 #include "shrpx_tls.h"
@@ -160,7 +161,7 @@ bool is_secure(const StringRef &filename) {
 std::unique_ptr<TicketKeys>
 read_tls_ticket_key_file(const std::vector<StringRef> &files,
                          const EVP_CIPHER *cipher, const EVP_MD *hmac) {
-  auto ticket_keys = make_unique<TicketKeys>();
+  auto ticket_keys = std::make_unique<TicketKeys>();
   auto &keys = ticket_keys->keys;
   keys.resize(files.size());
   auto enc_keylen = EVP_CIPHER_key_length(cipher);
@@ -379,7 +380,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[2]) {
     case 'd':
       if (util::strieq_l("pi", name, 2)) {
-        return SHRPX_LOGF_PID;
+        return LogFragmentType::PID;
       }
       break;
     }
@@ -388,7 +389,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[3]) {
     case 'n':
       if (util::strieq_l("alp", name, 3)) {
-        return SHRPX_LOGF_ALPN;
+        return LogFragmentType::ALPN;
       }
       break;
     }
@@ -397,7 +398,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[5]) {
     case 's':
       if (util::strieq_l("statu", name, 5)) {
-        return SHRPX_LOGF_STATUS;
+        return LogFragmentType::STATUS;
       }
       break;
     }
@@ -406,12 +407,12 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[6]) {
     case 'i':
       if (util::strieq_l("tls_sn", name, 6)) {
-        return SHRPX_LOGF_TLS_SNI;
+        return LogFragmentType::TLS_SNI;
       }
       break;
     case 't':
       if (util::strieq_l("reques", name, 6)) {
-        return SHRPX_LOGF_REQUEST;
+        return LogFragmentType::REQUEST;
       }
       break;
     }
@@ -420,15 +421,15 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[9]) {
     case 'l':
       if (util::strieq_l("time_loca", name, 9)) {
-        return SHRPX_LOGF_TIME_LOCAL;
+        return LogFragmentType::TIME_LOCAL;
       }
       break;
     case 'r':
       if (util::strieq_l("ssl_ciphe", name, 9)) {
-        return SHRPX_LOGF_SSL_CIPHER;
+        return LogFragmentType::SSL_CIPHER;
       }
       if (util::strieq_l("tls_ciphe", name, 9)) {
-        return SHRPX_LOGF_TLS_CIPHER;
+        return LogFragmentType::TLS_CIPHER;
       }
       break;
     }
@@ -437,15 +438,15 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[10]) {
     case 'r':
       if (util::strieq_l("remote_add", name, 10)) {
-        return SHRPX_LOGF_REMOTE_ADDR;
+        return LogFragmentType::REMOTE_ADDR;
       }
       break;
     case 't':
       if (util::strieq_l("remote_por", name, 10)) {
-        return SHRPX_LOGF_REMOTE_PORT;
+        return LogFragmentType::REMOTE_PORT;
       }
       if (util::strieq_l("server_por", name, 10)) {
-        return SHRPX_LOGF_SERVER_PORT;
+        return LogFragmentType::SERVER_PORT;
       }
       break;
     }
@@ -454,28 +455,28 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[11]) {
     case '1':
       if (util::strieq_l("time_iso860", name, 11)) {
-        return SHRPX_LOGF_TIME_ISO8601;
+        return LogFragmentType::TIME_ISO8601;
       }
       break;
     case 'e':
       if (util::strieq_l("request_tim", name, 11)) {
-        return SHRPX_LOGF_REQUEST_TIME;
+        return LogFragmentType::REQUEST_TIME;
       }
       break;
     case 'l':
       if (util::strieq_l("ssl_protoco", name, 11)) {
-        return SHRPX_LOGF_SSL_PROTOCOL;
+        return LogFragmentType::SSL_PROTOCOL;
       }
       if (util::strieq_l("tls_protoco", name, 11)) {
-        return SHRPX_LOGF_TLS_PROTOCOL;
+        return LogFragmentType::TLS_PROTOCOL;
       }
       break;
     case 't':
       if (util::strieq_l("backend_hos", name, 11)) {
-        return SHRPX_LOGF_BACKEND_HOST;
+        return LogFragmentType::BACKEND_HOST;
       }
       if (util::strieq_l("backend_por", name, 11)) {
-        return SHRPX_LOGF_BACKEND_PORT;
+        return LogFragmentType::BACKEND_PORT;
       }
       break;
     }
@@ -484,10 +485,10 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[13]) {
     case 'd':
       if (util::strieq_l("ssl_session_i", name, 13)) {
-        return SHRPX_LOGF_SSL_SESSION_ID;
+        return LogFragmentType::SSL_SESSION_ID;
       }
       if (util::strieq_l("tls_session_i", name, 13)) {
-        return SHRPX_LOGF_TLS_SESSION_ID;
+        return LogFragmentType::TLS_SESSION_ID;
       }
       break;
     }
@@ -496,7 +497,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[14]) {
     case 't':
       if (util::strieq_l("body_bytes_sen", name, 14)) {
-        return SHRPX_LOGF_BODY_BYTES_SENT;
+        return LogFragmentType::BODY_BYTES_SENT;
       }
       break;
     }
@@ -505,7 +506,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[16]) {
     case 'l':
       if (util::strieq_l("tls_client_seria", name, 16)) {
-        return SHRPX_LOGF_TLS_CLIENT_SERIAL;
+        return LogFragmentType::TLS_CLIENT_SERIAL;
       }
       break;
     }
@@ -514,10 +515,10 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[17]) {
     case 'd':
       if (util::strieq_l("ssl_session_reuse", name, 17)) {
-        return SHRPX_LOGF_SSL_SESSION_REUSED;
+        return LogFragmentType::SSL_SESSION_REUSED;
       }
       if (util::strieq_l("tls_session_reuse", name, 17)) {
-        return SHRPX_LOGF_TLS_SESSION_REUSED;
+        return LogFragmentType::TLS_SESSION_REUSED;
       }
       break;
     }
@@ -526,7 +527,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[21]) {
     case 'e':
       if (util::strieq_l("tls_client_issuer_nam", name, 21)) {
-        return SHRPX_LOGF_TLS_CLIENT_ISSUER_NAME;
+        return LogFragmentType::TLS_CLIENT_ISSUER_NAME;
       }
       break;
     }
@@ -535,7 +536,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[22]) {
     case 'e':
       if (util::strieq_l("tls_client_subject_nam", name, 22)) {
-        return SHRPX_LOGF_TLS_CLIENT_SUBJECT_NAME;
+        return LogFragmentType::TLS_CLIENT_SUBJECT_NAME;
       }
       break;
     }
@@ -544,7 +545,7 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[26]) {
     case '1':
       if (util::strieq_l("tls_client_fingerprint_sha", name, 26)) {
-        return SHRPX_LOGF_TLS_CLIENT_FINGERPRINT_SHA1;
+        return LogFragmentType::TLS_CLIENT_FINGERPRINT_SHA1;
       }
       break;
     }
@@ -553,13 +554,13 @@ LogFragmentType log_var_lookup_token(const char *name, size_t namelen) {
     switch (name[28]) {
     case '6':
       if (util::strieq_l("tls_client_fingerprint_sha25", name, 28)) {
-        return SHRPX_LOGF_TLS_CLIENT_FINGERPRINT_SHA256;
+        return LogFragmentType::TLS_CLIENT_FINGERPRINT_SHA256;
       }
       break;
     }
     break;
   }
-  return SHRPX_LOGF_NONE;
+  return LogFragmentType::NONE;
 }
 } // namespace
 
@@ -613,16 +614,16 @@ std::vector<LogFragment> parse_log_format(BlockAllocator &balloc,
 
     auto type = log_var_lookup_token(var_name, var_namelen);
 
-    if (type == SHRPX_LOGF_NONE) {
+    if (type == LogFragmentType::NONE) {
       if (util::istarts_with_l(StringRef{var_name, var_namelen}, "http_")) {
         if (util::streq_l("host", StringRef{var_name + str_size("http_"),
                                             var_namelen - str_size("http_")})) {
           // Special handling of host header field.  We will use
           // :authority header field if host header is missing.  This
           // is a typical case in HTTP/2.
-          type = SHRPX_LOGF_AUTHORITY;
+          type = LogFragmentType::AUTHORITY;
         } else {
-          type = SHRPX_LOGF_HTTP;
+          type = LogFragmentType::HTTP;
           value = var_name + str_size("http_");
         }
       } else {
@@ -634,7 +635,7 @@ std::vector<LogFragment> parse_log_format(BlockAllocator &balloc,
 
     if (literal_start < var_start) {
       res.emplace_back(
-          SHRPX_LOGF_LITERAL,
+          LogFragmentType::LITERAL,
           make_string_ref(balloc, StringRef{literal_start, var_start}));
     }
 
@@ -661,7 +662,7 @@ std::vector<LogFragment> parse_log_format(BlockAllocator &balloc,
   }
 
   if (literal_start != eop) {
-    res.emplace_back(SHRPX_LOGF_LITERAL,
+    res.emplace_back(LogFragmentType::LITERAL,
                      make_string_ref(balloc, StringRef{literal_start, eop}));
   }
 
@@ -756,7 +757,7 @@ int parse_memcached_connection_params(MemcachedConnectionParams &out,
 } // namespace
 
 struct UpstreamParams {
-  int alt_mode;
+  UpstreamAltMode alt_mode;
   bool tls;
   bool sni_fwd;
   bool proxyproto;
@@ -779,17 +780,19 @@ int parse_upstream_params(UpstreamParams &out, const StringRef &src_params) {
     } else if (util::strieq_l("no-tls", param)) {
       out.tls = false;
     } else if (util::strieq_l("api", param)) {
-      if (out.alt_mode && out.alt_mode != ALTMODE_API) {
+      if (out.alt_mode != UpstreamAltMode::NONE &&
+          out.alt_mode != UpstreamAltMode::API) {
         LOG(ERROR) << "frontend: api and healthmon are mutually exclusive";
         return -1;
       }
-      out.alt_mode = ALTMODE_API;
+      out.alt_mode = UpstreamAltMode::API;
     } else if (util::strieq_l("healthmon", param)) {
-      if (out.alt_mode && out.alt_mode != ALTMODE_HEALTHMON) {
+      if (out.alt_mode != UpstreamAltMode::NONE &&
+          out.alt_mode != UpstreamAltMode::HEALTHMON) {
         LOG(ERROR) << "frontend: api and healthmon are mutually exclusive";
         return -1;
       }
-      out.alt_mode = ALTMODE_HEALTHMON;
+      out.alt_mode = UpstreamAltMode::HEALTHMON;
     } else if (util::strieq_l("proxyproto", param)) {
       out.proxyproto = true;
     } else if (!param.empty()) {
@@ -811,15 +814,36 @@ int parse_upstream_params(UpstreamParams &out, const StringRef &src_params) {
 struct DownstreamParams {
   StringRef sni;
   StringRef mruby;
+  StringRef group;
   AffinityConfig affinity;
+  ev_tstamp read_timeout;
+  ev_tstamp write_timeout;
   size_t fall;
   size_t rise;
-  shrpx_proto proto;
+  uint32_t weight;
+  uint32_t group_weight;
+  Proto proto;
   bool tls;
   bool dns;
   bool redirect_if_not_tls;
   bool upgrade_scheme;
 };
+
+namespace {
+// Parses |value| of parameter named |name| as duration.  This
+// function returns 0 if it succeeds and the parsed value is assigned
+// to |dest|, or -1.
+int parse_downstream_param_duration(ev_tstamp &dest, const StringRef &name,
+                                    const StringRef &value) {
+  auto t = util::parse_duration_with_unit(value);
+  if (t == std::numeric_limits<double>::infinity()) {
+    LOG(ERROR) << "backend: " << name << ": bad value: '" << value << "'";
+    return -1;
+  }
+  dest = t;
+  return 0;
+}
+} // namespace
 
 namespace {
 // Parses downstream configuration parameter |src_params|, and stores
@@ -840,10 +864,10 @@ int parse_downstream_params(DownstreamParams &out,
       }
 
       if (util::streq_l("h2", std::begin(protostr), protostr.size())) {
-        out.proto = PROTO_HTTP2;
+        out.proto = Proto::HTTP2;
       } else if (util::streq_l("http/1.1", std::begin(protostr),
                                protostr.size())) {
-        out.proto = PROTO_HTTP1;
+        out.proto = Proto::HTTP1;
       } else {
         LOG(ERROR) << "backend: proto: unknown protocol " << protostr;
         return -1;
@@ -885,11 +909,11 @@ int parse_downstream_params(DownstreamParams &out,
     } else if (util::istarts_with_l(param, "affinity=")) {
       auto valstr = StringRef{first + str_size("affinity="), end};
       if (util::strieq_l("none", valstr)) {
-        out.affinity.type = AFFINITY_NONE;
+        out.affinity.type = SessionAffinity::NONE;
       } else if (util::strieq_l("ip", valstr)) {
-        out.affinity.type = AFFINITY_IP;
+        out.affinity.type = SessionAffinity::IP;
       } else if (util::strieq_l("cookie", valstr)) {
-        out.affinity.type = AFFINITY_COOKIE;
+        out.affinity.type = SessionAffinity::COOKIE;
       } else {
         LOG(ERROR)
             << "backend: affinity: value must be one of none, ip, and cookie";
@@ -909,11 +933,11 @@ int parse_downstream_params(DownstreamParams &out,
     } else if (util::istarts_with_l(param, "affinity-cookie-secure=")) {
       auto valstr = StringRef{first + str_size("affinity-cookie-secure="), end};
       if (util::strieq_l("auto", valstr)) {
-        out.affinity.cookie.secure = COOKIE_SECURE_AUTO;
+        out.affinity.cookie.secure = SessionAffinityCookieSecure::AUTO;
       } else if (util::strieq_l("yes", valstr)) {
-        out.affinity.cookie.secure = COOKIE_SECURE_YES;
+        out.affinity.cookie.secure = SessionAffinityCookieSecure::YES;
       } else if (util::strieq_l("no", valstr)) {
-        out.affinity.cookie.secure = COOKIE_SECURE_NO;
+        out.affinity.cookie.secure = SessionAffinityCookieSecure::NO;
       } else {
         LOG(ERROR) << "backend: affinity-cookie-secure: value must be one of "
                       "auto, yes, and no";
@@ -928,6 +952,55 @@ int parse_downstream_params(DownstreamParams &out,
     } else if (util::istarts_with_l(param, "mruby=")) {
       auto valstr = StringRef{first + str_size("mruby="), end};
       out.mruby = valstr;
+    } else if (util::istarts_with_l(param, "read-timeout=")) {
+      if (parse_downstream_param_duration(
+              out.read_timeout, StringRef::from_lit("read-timeout"),
+              StringRef{first + str_size("read-timeout="), end}) == -1) {
+        return -1;
+      }
+    } else if (util::istarts_with_l(param, "write-timeout=")) {
+      if (parse_downstream_param_duration(
+              out.write_timeout, StringRef::from_lit("write-timeout"),
+              StringRef{first + str_size("write-timeout="), end}) == -1) {
+        return -1;
+      }
+    } else if (util::istarts_with_l(param, "weight=")) {
+      auto valstr = StringRef{first + str_size("weight="), end};
+      if (valstr.empty()) {
+        LOG(ERROR)
+            << "backend: weight: non-negative integer [1, 256] is expected";
+        return -1;
+      }
+
+      auto n = util::parse_uint(valstr);
+      if (n < 1 || n > 256) {
+        LOG(ERROR)
+            << "backend: weight: non-negative integer [1, 256] is expected";
+        return -1;
+      }
+      out.weight = n;
+    } else if (util::istarts_with_l(param, "group=")) {
+      auto valstr = StringRef{first + str_size("group="), end};
+      if (valstr.empty()) {
+        LOG(ERROR) << "backend: group: empty string is not allowed";
+        return -1;
+      }
+      out.group = valstr;
+    } else if (util::istarts_with_l(param, "group-weight=")) {
+      auto valstr = StringRef{first + str_size("group-weight="), end};
+      if (valstr.empty()) {
+        LOG(ERROR) << "backend: group-weight: non-negative integer [1, 256] is "
+                      "expected";
+        return -1;
+      }
+
+      auto n = util::parse_uint(valstr);
+      if (n < 1 || n > 256) {
+        LOG(ERROR) << "backend: group-weight: non-negative integer [1, 256] is "
+                      "expected";
+        return -1;
+      }
+      out.group_weight = n;
     } else if (!param.empty()) {
       LOG(ERROR) << "backend: " << param << ": unknown keyword";
       return -1;
@@ -963,7 +1036,8 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
   auto &addr_groups = downstreamconf.addr_groups;
 
   DownstreamParams params{};
-  params.proto = PROTO_HTTP1;
+  params.proto = Proto::HTTP1;
+  params.weight = 1;
 
   if (parse_downstream_params(params, src_params) != 0) {
     return -1;
@@ -974,7 +1048,7 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
     return -1;
   }
 
-  if (params.affinity.type == AFFINITY_COOKIE &&
+  if (params.affinity.type == SessionAffinity::COOKIE &&
       params.affinity.cookie.name.empty()) {
     LOG(ERROR) << "backend: affinity-cookie-name is mandatory if "
                   "affinity=cookie is specified";
@@ -983,6 +1057,9 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
 
   addr.fall = params.fall;
   addr.rise = params.rise;
+  addr.weight = params.weight;
+  addr.group = make_string_ref(downstreamconf.balloc, params.group);
+  addr.group_weight = params.group_weight;
   addr.proto = params.proto;
   addr.tls = params.tls;
   addr.sni = make_string_ref(downstreamconf.balloc, params.sni);
@@ -1026,10 +1103,10 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
       auto &g = addr_groups[(*it).second];
       // Last value wins if we have multiple different affinity
       // value under one group.
-      if (params.affinity.type != AFFINITY_NONE) {
-        if (g.affinity.type == AFFINITY_NONE) {
+      if (params.affinity.type != SessionAffinity::NONE) {
+        if (g.affinity.type == SessionAffinity::NONE) {
           g.affinity.type = params.affinity.type;
-          if (params.affinity.type == AFFINITY_COOKIE) {
+          if (params.affinity.type == SessionAffinity::COOKIE) {
             g.affinity.cookie.name = make_string_ref(
                 downstreamconf.balloc, params.affinity.cookie.name);
             if (!params.affinity.cookie.path.empty()) {
@@ -1053,15 +1130,40 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
         g.redirect_if_not_tls = true;
       }
       // All backends in the same group must have the same mruby path.
-      // If some backend does not specify mruby file, and there is at
-      // least one backend with mruby file, it is used for all backend
-      // in the group.
-      if (g.mruby_file.empty()) {
-        g.mruby_file = make_string_ref(downstreamconf.balloc, params.mruby);
-      } else if (g.mruby_file != params.mruby) {
-        LOG(ERROR) << "backend: mruby: multiple different mruby file found in "
-                      "a single group";
-        return -1;
+      // If some backends do not specify mruby file, and there is at
+      // least one backend with mruby file, it is used for all
+      // backends in the group.
+      if (!params.mruby.empty()) {
+        if (g.mruby_file.empty()) {
+          g.mruby_file = make_string_ref(downstreamconf.balloc, params.mruby);
+        } else if (g.mruby_file != params.mruby) {
+          LOG(ERROR) << "backend: mruby: multiple different mruby file found "
+                        "in a single group";
+          return -1;
+        }
+      }
+      // All backends in the same group must have the same read/write
+      // timeout.  If some backends do not specify read/write timeout,
+      // and there is at least one backend with read/write timeout, it
+      // is used for all backends in the group.
+      if (params.read_timeout > 1e-9) {
+        if (g.timeout.read < 1e-9) {
+          g.timeout.read = params.read_timeout;
+        } else if (fabs(g.timeout.read - params.read_timeout) > 1e-9) {
+          LOG(ERROR)
+              << "backend: read-timeout: multiple different read-timeout "
+                 "found in a single group";
+          return -1;
+        }
+      }
+      if (params.write_timeout > 1e-9) {
+        if (g.timeout.write < 1e-9) {
+          g.timeout.write = params.write_timeout;
+        } else if (fabs(g.timeout.write - params.write_timeout) > 1e-9) {
+          LOG(ERROR) << "backend: write-timeout: multiple different "
+                        "write-timeout found in a single group";
+          return -1;
+        }
       }
 
       g.addrs.push_back(addr);
@@ -1074,7 +1176,7 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
     auto &g = addr_groups.back();
     g.addrs.push_back(addr);
     g.affinity.type = params.affinity.type;
-    if (params.affinity.type == AFFINITY_COOKIE) {
+    if (params.affinity.type == SessionAffinity::COOKIE) {
       g.affinity.cookie.name =
           make_string_ref(downstreamconf.balloc, params.affinity.cookie.name);
       if (!params.affinity.cookie.path.empty()) {
@@ -1085,6 +1187,8 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
     }
     g.redirect_if_not_tls = params.redirect_if_not_tls;
     g.mruby_file = make_string_ref(downstreamconf.balloc, params.mruby);
+    g.timeout.read = params.read_timeout;
+    g.timeout.write = params.write_timeout;
 
     if (pattern[0] == '*') {
       // wildcard pattern
@@ -1138,27 +1242,27 @@ int parse_mapping(Config *config, DownstreamAddrConfig &addr,
 } // namespace
 
 namespace {
-int parse_forwarded_node_type(const StringRef &optarg) {
+ForwardedNode parse_forwarded_node_type(const StringRef &optarg) {
   if (util::strieq_l("obfuscated", optarg)) {
-    return FORWARDED_NODE_OBFUSCATED;
+    return ForwardedNode::OBFUSCATED;
   }
 
   if (util::strieq_l("ip", optarg)) {
-    return FORWARDED_NODE_IP;
+    return ForwardedNode::IP;
   }
 
   if (optarg.size() < 2 || optarg[0] != '_') {
-    return -1;
+    return static_cast<ForwardedNode>(-1);
   }
 
   if (std::find_if_not(std::begin(optarg), std::end(optarg), [](char c) {
         return util::is_alpha(c) || util::is_digit(c) || c == '.' || c == '_' ||
                c == '-';
       }) != std::end(optarg)) {
-    return -1;
+    return static_cast<ForwardedNode>(-1);
   }
 
-  return FORWARDED_NODE_OBFUSCATED;
+  return ForwardedNode::OBFUSCATED;
 }
 } // namespace
 
@@ -2515,7 +2619,7 @@ int parse_config(Config *config, int optid, const StringRef &opt,
     addr.alt_mode = params.alt_mode;
     addr.accept_proxy_protocol = params.proxyproto;
 
-    if (addr.alt_mode == ALTMODE_API) {
+    if (addr.alt_mode == UpstreamAltMode::API) {
       apiconf.enabled = true;
     }
 
@@ -2578,13 +2682,16 @@ int parse_config(Config *config, int optid, const StringRef &opt,
 
     return 0;
   }
-  case SHRPX_OPTID_LOG_LEVEL:
-    if (Log::set_severity_level_by_name(optarg) == -1) {
+  case SHRPX_OPTID_LOG_LEVEL: {
+    auto level = Log::get_severity_level_by_name(optarg);
+    if (level == -1) {
       LOG(ERROR) << opt << ": Invalid severity level: " << optarg;
       return -1;
     }
+    config->logging.severity = level;
 
     return 0;
+  }
   case SHRPX_OPTID_DAEMON:
     config->daemon = util::strieq_l("yes", optarg);
 
@@ -3330,7 +3437,7 @@ int parse_config(Config *config, int optid, const StringRef &opt,
   case SHRPX_OPTID_FORWARDED_FOR: {
     auto type = parse_forwarded_node_type(optarg);
 
-    if (type == -1 ||
+    if (type == static_cast<ForwardedNode>(-1) ||
         (optid == SHRPX_OPTID_FORWARDED_FOR && optarg[0] == '_')) {
       LOG(ERROR) << opt << ": unknown node type or illegal obfuscated string "
                  << optarg;
@@ -3341,7 +3448,7 @@ int parse_config(Config *config, int optid, const StringRef &opt,
 
     switch (optid) {
     case SHRPX_OPTID_FORWARDED_BY:
-      fwdconf.by_node_type = static_cast<shrpx_forwarded_node_type>(type);
+      fwdconf.by_node_type = type;
       if (optarg[0] == '_') {
         fwdconf.by_obfuscated = make_string_ref(config->balloc, optarg);
       } else {
@@ -3349,7 +3456,7 @@ int parse_config(Config *config, int optid, const StringRef &opt,
       }
       break;
     case SHRPX_OPTID_FORWARDED_FOR:
-      fwdconf.for_node_type = static_cast<shrpx_forwarded_node_type>(type);
+      fwdconf.for_node_type = type;
       break;
     }
 
@@ -3815,15 +3922,15 @@ int int_syslog_facility(const StringRef &strfacility) {
   return -1;
 }
 
-StringRef strproto(shrpx_proto proto) {
+StringRef strproto(Proto proto) {
   switch (proto) {
-  case PROTO_NONE:
+  case Proto::NONE:
     return StringRef::from_lit("none");
-  case PROTO_HTTP1:
+  case Proto::HTTP1:
     return StringRef::from_lit("http/1.1");
-  case PROTO_HTTP2:
+  case Proto::HTTP2:
     return StringRef::from_lit("h2");
-  case PROTO_MEMCACHED:
+  case Proto::MEMCACHED:
     return StringRef::from_lit("memcached");
   }
 
@@ -3886,7 +3993,9 @@ int configure_downstream_group(Config *config, bool http2_proxy,
     DownstreamAddrConfig addr{};
     addr.host = StringRef::from_lit(DEFAULT_DOWNSTREAM_HOST);
     addr.port = DEFAULT_DOWNSTREAM_PORT;
-    addr.proto = PROTO_HTTP1;
+    addr.proto = Proto::HTTP1;
+    addr.weight = 1;
+    addr.group_weight = 1;
 
     DownstreamAddrGroupConfig g(StringRef::from_lit("/"));
     g.addrs.push_back(std::move(addr));
@@ -3966,7 +4075,17 @@ int configure_downstream_group(Config *config, bool http2_proxy,
   auto resolve_flags = numeric_addr_only ? AI_NUMERICHOST | AI_NUMERICSERV : 0;
 
   for (auto &g : addr_groups) {
+    std::unordered_map<StringRef, uint32_t> wgchk;
     for (auto &addr : g.addrs) {
+      if (addr.group_weight) {
+        auto it = wgchk.find(addr.group);
+        if (it == std::end(wgchk)) {
+          wgchk.emplace(addr.group, addr.group_weight);
+        } else if ((*it).second != addr.group_weight) {
+          LOG(FATAL) << "backend: inconsistent group-weight for a single group";
+          return -1;
+        }
+      }
 
       if (addr.host_unix) {
         // for AF_UNIX socket, we use "localhost" as host for backend
@@ -4019,7 +4138,18 @@ int configure_downstream_group(Config *config, bool http2_proxy,
       }
     }
 
-    if (g.affinity.type != AFFINITY_NONE) {
+    for (auto &addr : g.addrs) {
+      if (addr.group_weight == 0) {
+        auto it = wgchk.find(addr.group);
+        if (it == std::end(wgchk)) {
+          addr.group_weight = 1;
+        } else {
+          addr.group_weight = (*it).second;
+        }
+      }
+    }
+
+    if (g.affinity.type != SessionAffinity::NONE) {
       size_t idx = 0;
       for (auto &addr : g.addrs) {
         StringRef key;
@@ -4045,6 +4175,14 @@ int configure_downstream_group(Config *config, bool http2_proxy,
                 [](const AffinityHash &lhs, const AffinityHash &rhs) {
                   return lhs.hash < rhs.hash;
                 });
+    }
+
+    auto &timeout = g.timeout;
+    if (timeout.read < 1e-9) {
+      timeout.read = downstreamconf.timeout.read;
+    }
+    if (timeout.write < 1e-9) {
+      timeout.write = downstreamconf.timeout.write;
     }
   }
 

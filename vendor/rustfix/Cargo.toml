@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "rustfix"
-version = "0.4.6"
+version = "0.5.0"
 authors = ["Pascal Hertleif <killercup@gmail.com>", "Oliver Schneider <oli-obk@users.noreply.github.com>"]
 exclude = ["etc/*", "examples/*", "tests/*"]
 description = "Automatically apply the suggestions made by rustc"
@@ -21,8 +21,8 @@ documentation = "https://docs.rs/rustfix"
 readme = "Readme.md"
 license = "Apache-2.0/MIT"
 repository = "https://github.com/rust-lang-nursery/rustfix"
-[dependencies.failure]
-version = "0.1.2"
+[dependencies.anyhow]
+version = "1.0.0"
 
 [dependencies.log]
 version = "0.4.1"

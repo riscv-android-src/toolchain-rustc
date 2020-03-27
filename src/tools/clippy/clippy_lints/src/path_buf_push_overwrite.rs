@@ -1,10 +1,9 @@
 use crate::utils::{match_type, paths, span_lint_and_sugg, walk_ptrs_ty};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use std::path::{Component, Path};
 use syntax::ast::LitKind;
 
@@ -42,7 +41,7 @@ declare_clippy_lint! {
 declare_lint_pass!(PathBufPushOverwrite => [PATH_BUF_PUSH_OVERWRITE]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PathBufPushOverwrite {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::MethodCall(ref path, _, ref args) = expr.kind;
             if path.ident.name == sym!(push);

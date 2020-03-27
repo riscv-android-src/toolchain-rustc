@@ -1,12 +1,11 @@
-use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
-
 use crate::utils::{higher::if_block, match_type, paths, span_lint_and_then, usage::is_potentially_mutated};
-use rustc::hir::intravisit::*;
-use rustc::hir::*;
-use syntax::source_map::Span;
+use if_chain::if_chain;
+use rustc::hir::map::Map;
+use rustc_hir::intravisit::*;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for calls of `unwrap[_err]()` that cannot fail.
@@ -35,7 +34,7 @@ declare_clippy_lint! {
     /// ```
     pub UNNECESSARY_UNWRAP,
     complexity,
-    "checks for calls of unwrap[_err]() that cannot fail"
+    "checks for calls of `unwrap[_err]()` that cannot fail"
 }
 
 declare_clippy_lint! {
@@ -58,7 +57,7 @@ declare_clippy_lint! {
     /// This code will always panic. The if condition should probably be inverted.
     pub PANICKING_UNWRAP,
     correctness,
-    "checks for calls of unwrap[_err]() that will always fail"
+    "checks for calls of `unwrap[_err]()` that will always fail"
 }
 
 /// Visitor that keeps track of which variables are unwrappable.
@@ -70,9 +69,9 @@ struct UnwrappableVariablesVisitor<'a, 'tcx> {
 #[derive(Copy, Clone, Debug)]
 struct UnwrapInfo<'tcx> {
     /// The variable that is checked
-    ident: &'tcx Path,
+    ident: &'tcx Path<'tcx>,
     /// The check, like `x.is_ok()`
-    check: &'tcx Expr,
+    check: &'tcx Expr<'tcx>,
     /// Whether `is_some()` or `is_ok()` was called (as opposed to `is_err()` or `is_none()`).
     safe_to_unwrap: bool,
 }
@@ -81,7 +80,7 @@ struct UnwrapInfo<'tcx> {
 /// The `invert` argument tells us whether the condition is negated.
 fn collect_unwrap_info<'a, 'tcx>(
     cx: &'a LateContext<'a, 'tcx>,
-    expr: &'tcx Expr,
+    expr: &'tcx Expr<'_>,
     invert: bool,
 ) -> Vec<UnwrapInfo<'tcx>> {
     if let ExprKind::Binary(op, left, right) = &expr.kind {
@@ -93,7 +92,7 @@ fn collect_unwrap_info<'a, 'tcx>(
             },
             _ => (),
         }
-    } else if let ExprKind::Unary(UnNot, expr) = &expr.kind {
+    } else if let ExprKind::Unary(UnOp::UnNot, expr) = &expr.kind {
         return collect_unwrap_info(cx, expr, !invert);
     } else {
         if_chain! {
@@ -119,7 +118,7 @@ fn collect_unwrap_info<'a, 'tcx>(
 }
 
 impl<'a, 'tcx> UnwrappableVariablesVisitor<'a, 'tcx> {
-    fn visit_branch(&mut self, cond: &'tcx Expr, branch: &'tcx Expr, else_branch: bool) {
+    fn visit_branch(&mut self, cond: &'tcx Expr<'_>, branch: &'tcx Expr<'_>, else_branch: bool) {
         let prev_len = self.unwrappables.len();
         for unwrap_info in collect_unwrap_info(self.cx, cond, else_branch) {
             if is_potentially_mutated(unwrap_info.ident, cond, self.cx)
@@ -136,7 +135,9 @@ impl<'a, 'tcx> UnwrappableVariablesVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for UnwrappableVariablesVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, expr: &'tcx Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         if let Some((cond, then, els)) = if_block(&expr) {
             walk_expr(self, cond);
             self.visit_branch(cond, then, false);
@@ -179,7 +180,7 @@ impl<'a, 'tcx> Visitor<'tcx> for UnwrappableVariablesVisitor<'a, 'tcx> {
         }
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::OnlyBodies(&self.cx.tcx.hir())
     }
 }
@@ -191,8 +192,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Unwrap {
         &mut self,
         cx: &LateContext<'a, 'tcx>,
         kind: FnKind<'tcx>,
-        decl: &'tcx FnDecl,
-        body: &'tcx Body,
+        decl: &'tcx FnDecl<'_>,
+        body: &'tcx Body<'_>,
         span: Span,
         fn_id: HirId,
     ) {

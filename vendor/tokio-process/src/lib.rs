@@ -70,39 +70,77 @@
 //! We can also read input line by line.
 //!
 //! ```no_run
+//! extern crate failure;
 //! extern crate futures;
 //! extern crate tokio;
 //! extern crate tokio_process;
 //! extern crate tokio_io;
 //!
-//! use std::io;
-//! use std::process::{Command, Stdio};
-//!
+//! use failure::Error;
 //! use futures::{Future, Stream};
-//! use tokio_process::{CommandExt, Child};
+//! use std::io::BufReader;
+//! use std::process::{Command, Stdio};
+//! use tokio_process::{Child, ChildStdout, CommandExt};
 //!
-//! fn print_lines(mut cat: Child) -> Box<Future<Item = (), Error = ()> + Send + 'static> {
-//!     let stdout = cat.stdout().take().unwrap();
-//!     let reader = io::BufReader::new(stdout);
-//!     let lines = tokio_io::io::lines(reader);
-//!     let cycle = lines.for_each(|l| {
-//!         println!("Line: {}", l);
-//!         Ok(())
-//!     });
+//! fn lines_stream(child: &mut Child) -> impl Stream<Item = String, Error = Error> + Send + 'static {
+//!     let stdout = child.stdout().take()
+//!         .expect("child did not have a handle to stdout");
 //!
-//!     let future = cycle.join(cat)
-//!         .map(|_| ())
-//!         .map_err(|e| panic!("{}", e));
-//!
-//!     Box::new(future)
+//!     tokio_io::io::lines(BufReader::new(stdout))
+//!         // Convert any io::Error into a failure::Error for better flexibility
+//!         .map_err(|e| Error::from(e))
+//!         // We print each line we've received here as an example of a way we can
+//!         // do something with the data. This can be changed to map the data to
+//!         // something else, or to consume it differently.
+//!         .inspect(|line| println!("Line: {}", line))
 //! }
 //!
 //! fn main() {
-//!     let mut cmd = Command::new("cat");
-//!     cmd.stdout(Stdio::piped());
+//!     // Lazily invoke any code so it can run directly within the tokio runtime
+//!     tokio::run(futures::lazy(|| {
+//!         let mut cmd = Command::new("cat");
 //!
-//!     let future = print_lines(cmd.spawn_async().expect("failed to spawn command"));
-//!     tokio::run(future);
+//!         // Specify that we want the command's standard output piped back to us.
+//!         // By default, standard input/output/error will be inherited from the
+//!         // current process (for example, this means that standard input will
+//!         // come from the keyboard and standard output/error will go directly to
+//!         // the terminal if this process is invoked from the command line).
+//!         cmd.stdout(Stdio::piped());
+//!
+//!         let mut child = cmd.spawn_async()
+//!             .expect("failed to spawn command");
+//!
+//!         let lines = lines_stream(&mut child);
+//!
+//!         // Spawning into the tokio runtime requires that the future's Item and
+//!         // Error are both `()`. This is because tokio doesn't know what to do
+//!         // with any results or errors, so it requires that we've handled them!
+//!         //
+//!         // We can replace these sample usages of the child's exit status (or
+//!         // an encountered error) perform some different actions if needed!
+//!         // For example, log the error, or send a message on a channel, etc.
+//!         let child_future = child
+//!                 .map(|status| println!("child status was: {}", status))
+//!                 .map_err(|e| panic!("error while running child: {}", e));
+//!
+//!         // Ensure the child process can live on within the runtime, otherwise
+//!         // the process will get killed if this handle is dropped
+//!         tokio::spawn(child_future);
+//!
+//!         // Return a future to tokio. This is the same as calling using
+//!         // `tokio::spawn` above, but without having to return a dummy future
+//!         // here.
+//!         lines
+//!             // Convert the stream of values into a future which will resolve
+//!             // once the entire stream has been consumed. In this example we
+//!             // don't need to do anything with the data within the `for_each`
+//!             // call, but you can extend this to do something else (keep in mind
+//!             // that the stream will not produce items until the future returned
+//!             // from the closure resolves).
+//!             .for_each(|_| Ok(()))
+//!             // Similarly we "handle" any errors that arise, as required by tokio.
+//!             .map_err(|e| panic!("error while processing lines: {}", e))
+//!     }));
 //! }
 //! ```
 //!
@@ -123,25 +161,34 @@
 extern crate futures;
 extern crate tokio_io;
 extern crate tokio_reactor;
-extern crate mio;
+
+#[cfg(unix)]
+#[macro_use]
+extern crate lazy_static;
+#[cfg(unix)]
+#[macro_use]
+extern crate log;
 
 use std::io::{self, Read, Write};
-use std::process::{self, ExitStatus, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 
-use futures::{Future, Poll, IntoFuture};
+use futures::{Async, Future, Poll, IntoFuture};
 use futures::future::{Either, ok};
+use kill::Kill;
 use std::fmt;
 use tokio_io::io::{read_to_end};
 use tokio_io::{AsyncWrite, AsyncRead, IoFuture};
 use tokio_reactor::Handle;
 
-#[path = "unix.rs"]
+#[path = "unix/mod.rs"]
 #[cfg(unix)]
 mod imp;
 
 #[path = "windows.rs"]
 #[cfg(windows)]
 mod imp;
+
+mod kill;
 
 /// Extensions provided by this crate to the `Command` type in the standard
 /// library.
@@ -281,26 +328,22 @@ pub trait CommandExt {
     fn output_async_with_handle(&mut self, handle: &Handle) -> OutputAsync;
 }
 
+struct SpawnedChild {
+    child: imp::Child,
+    stdin: Option<imp::ChildStdin>,
+    stdout: Option<imp::ChildStdout>,
+    stderr: Option<imp::ChildStderr>,
+}
 
-impl CommandExt for process::Command {
+impl CommandExt for Command {
     fn spawn_async_with_handle(&mut self, handle: &Handle) -> io::Result<Child> {
-        let mut child = Child {
-            child: imp::Child::new(try!(self.spawn()), handle),
-            stdin: None,
-            stdout: None,
-            stderr: None,
-            kill_on_drop: true,
-        };
-        child.stdin = try!(child.child.register_stdin(handle)).map(|io| {
-            ChildStdin { inner: io }
-        });
-        child.stdout = try!(child.child.register_stdout(handle)).map(|io| {
-            ChildStdout { inner: io }
-        });
-        child.stderr = try!(child.child.register_stderr(handle)).map(|io| {
-            ChildStderr { inner: io }
-        });
-        Ok(child)
+        imp::spawn_child(self, handle)
+            .map(|spawned_child| Child {
+                child: ChildDropGuard::new(spawned_child.child),
+                stdin: spawned_child.stdin.map(|inner| ChildStdin { inner }),
+                stdout: spawned_child.stdout.map(|inner| ChildStdout { inner }),
+                stderr: spawned_child.stderr.map(|inner| ChildStderr { inner }),
+            })
     }
 
     fn status_async_with_handle(&mut self, handle: &Handle) -> io::Result<StatusAsync> {
@@ -324,11 +367,69 @@ impl CommandExt for process::Command {
 
         let inner = self.spawn_async_with_handle(handle)
             .into_future()
-            .and_then(|c| c.wait_with_output());
+            .and_then(Child::wait_with_output);
 
         OutputAsync {
             inner: Box::new(inner),
         }
+    }
+}
+
+/// A drop guard which ensures the child process is killed on drop to maintain
+/// the contract of dropping a Future leads to "cancellation".
+#[derive(Debug)]
+struct ChildDropGuard<T: Kill> {
+    inner: T,
+    kill_on_drop: bool,
+}
+
+impl<T: Kill> ChildDropGuard<T> {
+    fn new(inner: T) -> Self {
+        Self {
+            inner,
+            kill_on_drop: true,
+        }
+    }
+
+    fn forget(&mut self) {
+        self.kill_on_drop = false;
+    }
+}
+
+impl<T: Kill> Kill for ChildDropGuard<T> {
+    fn kill(&mut self) -> io::Result<()> {
+        let ret = self.inner.kill();
+
+        if ret.is_ok() {
+            self.kill_on_drop = false;
+        }
+
+        ret
+    }
+}
+
+impl<T: Kill> Drop for ChildDropGuard<T> {
+    fn drop(&mut self) {
+        if self.kill_on_drop {
+            drop(self.kill());
+        }
+    }
+}
+
+
+impl<T: Future + Kill> Future for ChildDropGuard<T> {
+    type Item = T::Item;
+    type Error = T::Error;
+
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        let ret = self.inner.poll();
+
+        if let Ok(Async::Ready(_)) = ret {
+            // Avoid the overhead of trying to kill a reaped process
+            self.kill_on_drop = false;
+        }
+
+        ret
     }
 }
 
@@ -348,8 +449,7 @@ impl CommandExt for process::Command {
 #[must_use = "futures do nothing unless polled"]
 #[derive(Debug)]
 pub struct Child {
-    child: imp::Child,
-    kill_on_drop: bool,
+    child: ChildDropGuard<imp::Child>,
     stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
@@ -358,7 +458,7 @@ pub struct Child {
 impl Child {
     /// Returns the OS-assigned process identifier associated with this child.
     pub fn id(&self) -> u32 {
-        self.child.id()
+        self.child.inner.id()
     }
 
     /// Forces the child to exit.
@@ -416,9 +516,9 @@ impl Child {
         WaitWithOutput {
             inner: Box::new(self.join3(stdout, stderr).map(|(status, stdout, stderr)| {
                 Output {
-                    status: status,
-                    stdout: stdout,
-                    stderr: stderr,
+                    status,
+                    stdout,
+                    stderr,
                 }
             }))
         }
@@ -456,7 +556,7 @@ impl Child {
     /// # }
     /// ```
     pub fn forget(mut self) {
-        self.kill_on_drop = false;
+        self.child.forget();
     }
 }
 
@@ -465,15 +565,7 @@ impl Future for Child {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<ExitStatus, io::Error> {
-        self.child.poll_exit()
-    }
-}
-
-impl Drop for Child {
-    fn drop(&mut self) {
-        if self.kill_on_drop {
-            drop(self.kill());
-        }
+        self.child.poll()
     }
 }
 
@@ -665,5 +757,118 @@ mod sys {
         fn as_raw_handle(&self) -> RawHandle {
             self.inner.get_ref().as_raw_handle()
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use futures::{Async, Future, Poll};
+    use kill::Kill;
+    use std::io;
+    use super::ChildDropGuard;
+
+    struct Mock {
+        num_kills: usize,
+        num_polls: usize,
+        poll_result: Poll<(), ()>,
+    }
+
+    impl Mock {
+        fn new() -> Self {
+            Self::with_result(Ok(Async::NotReady))
+        }
+
+        fn with_result(result: Poll<(), ()>) -> Self {
+            Self {
+                num_kills: 0,
+                num_polls: 0,
+                poll_result: result,
+            }
+        }
+    }
+
+    impl Kill for Mock {
+        fn kill(&mut self) -> io::Result<()> {
+            self.num_kills += 1;
+            Ok(())
+        }
+    }
+
+    impl Future for Mock {
+        type Item = ();
+        type Error = ();
+
+        fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+            self.num_polls += 1;
+            self.poll_result
+        }
+    }
+
+    #[test]
+    fn kills_on_drop() {
+        let mut mock = Mock::new();
+
+        {
+            let guard = ChildDropGuard::new(&mut mock);
+            drop(guard);
+        }
+
+        assert_eq!(1, mock.num_kills);
+        assert_eq!(0, mock.num_polls);
+    }
+
+    #[test]
+    fn no_kill_if_already_killed() {
+        let mut mock = Mock::new();
+
+        {
+            let mut guard = ChildDropGuard::new(&mut mock);
+            let _ = guard.kill();
+            drop(guard);
+        }
+
+        assert_eq!(1, mock.num_kills);
+        assert_eq!(0, mock.num_polls);
+    }
+
+    #[test]
+    fn no_kill_if_reaped() {
+        let mut mock_pending = Mock::with_result(Ok(Async::NotReady));
+        let mut mock_reaped = Mock::with_result(Ok(Async::Ready(())));
+        let mut mock_err = Mock::with_result(Err(()));
+
+        {
+            let mut guard = ChildDropGuard::new(&mut mock_pending);
+            let _ = guard.poll();
+
+            let mut guard = ChildDropGuard::new(&mut mock_reaped);
+            let _ = guard.poll();
+
+            let mut guard = ChildDropGuard::new(&mut mock_err);
+            let _ = guard.poll();
+        }
+
+        assert_eq!(1, mock_pending.num_kills);
+        assert_eq!(1, mock_pending.num_polls);
+
+        assert_eq!(0, mock_reaped.num_kills);
+        assert_eq!(1, mock_reaped.num_polls);
+
+        assert_eq!(1, mock_err.num_kills);
+        assert_eq!(1, mock_err.num_polls);
+    }
+
+    #[test]
+    fn no_kill_on_forget() {
+        let mut mock = Mock::new();
+
+        {
+            let mut guard = ChildDropGuard::new(&mut mock);
+            guard.forget();
+            drop(guard);
+        }
+
+        assert_eq!(0, mock.num_kills);
+        assert_eq!(0, mock.num_polls);
     }
 }

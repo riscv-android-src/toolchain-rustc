@@ -2,19 +2,19 @@
 
 use crate::utils::{clip, higher, sext, unsext};
 use if_chain::if_chain;
-use rustc::hir::def::{DefKind, Res};
-use rustc::hir::*;
-use rustc::lint::LateContext;
 use rustc::ty::subst::{Subst, SubstsRef};
-use rustc::ty::{self, Instance, Ty, TyCtxt};
+use rustc::ty::{self, Ty, TyCtxt};
 use rustc::{bug, span_bug};
 use rustc_data_structures::sync::Lrc;
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::*;
+use rustc_lint::LateContext;
+use rustc_span::symbol::Symbol;
 use std::cmp::Ordering::{self, Equal};
 use std::cmp::PartialOrd;
 use std::convert::TryInto;
 use std::hash::{Hash, Hasher};
 use syntax::ast::{FloatTy, LitKind};
-use syntax_pos::symbol::Symbol;
 
 /// A `LitKind`-like enum to fold constant `Expr`s into.
 #[derive(Debug, Clone)]
@@ -178,7 +178,7 @@ pub fn lit_to_constant(lit: &LitKind, ty: Option<Ty<'_>>) -> Constant {
 pub fn constant<'c, 'cc>(
     lcx: &LateContext<'c, 'cc>,
     tables: &'c ty::TypeckTables<'cc>,
-    e: &Expr,
+    e: &Expr<'_>,
 ) -> Option<(Constant, bool)> {
     let mut cx = ConstEvalLateContext {
         lcx,
@@ -193,7 +193,7 @@ pub fn constant<'c, 'cc>(
 pub fn constant_simple<'c, 'cc>(
     lcx: &LateContext<'c, 'cc>,
     tables: &'c ty::TypeckTables<'cc>,
-    e: &Expr,
+    e: &Expr<'_>,
 ) -> Option<Constant> {
     constant(lcx, tables, e).and_then(|(cst, res)| if res { None } else { Some(cst) })
 }
@@ -222,7 +222,7 @@ pub struct ConstEvalLateContext<'a, 'tcx> {
 
 impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
     /// Simple constant folding: Insert an expression, get a constant or none.
-    pub fn expr(&mut self, e: &Expr) -> Option<Constant> {
+    pub fn expr(&mut self, e: &Expr<'_>) -> Option<Constant> {
         if let Some((ref cond, ref then, otherwise)) = higher::if_block(&e) {
             return self.ifthenelse(cond, then, otherwise);
         }
@@ -240,9 +240,9 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
                 self.expr(value).map(|v| Constant::Repeat(Box::new(v), n))
             },
             ExprKind::Unary(op, ref operand) => self.expr(operand).and_then(|o| match op {
-                UnNot => self.constant_not(&o, self.tables.expr_ty(e)),
-                UnNeg => self.constant_negate(&o, self.tables.expr_ty(e)),
-                UnDeref => Some(o),
+                UnOp::UnNot => self.constant_not(&o, self.tables.expr_ty(e)),
+                UnOp::UnNeg => self.constant_negate(&o, self.tables.expr_ty(e)),
+                UnOp::UnDeref => Some(o),
             }),
             ExprKind::Binary(op, ref left, ref right) => self.binop(op, left, right),
             ExprKind::Call(ref callee, ref args) => {
@@ -252,18 +252,11 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
                     if let ExprKind::Path(qpath) = &callee.kind;
                     let res = self.tables.qpath_res(qpath, callee.hir_id);
                     if let Some(def_id) = res.opt_def_id();
-                    let get_def_path = self.lcx.get_def_path(def_id, );
-                    let def_path = get_def_path
-                        .iter()
-                        .copied()
-                        .map(Symbol::as_str)
-                        .collect::<Vec<_>>();
-                    if def_path[0] == "core";
-                    if def_path[1] == "num";
-                    if def_path[3] == "max_value";
-                    if def_path.len() == 4;
+                    let def_path: Vec<_> = self.lcx.get_def_path(def_id).into_iter().map(Symbol::as_str).collect();
+                    let def_path: Vec<&str> = def_path.iter().take(4).map(|s| &**s).collect();
+                    if let ["core", "num", int_impl, "max_value"] = *def_path;
                     then {
-                       let value = match &*def_path[2] {
+                       let value = match int_impl {
                            "<impl i8>" => i8::max_value() as u128,
                            "<impl i16>" => i16::max_value() as u128,
                            "<impl i32>" => i32::max_value() as u128,
@@ -322,14 +315,12 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
 
     /// Create `Some(Vec![..])` of all constants, unless there is any
     /// non-constant part.
-    fn multi(&mut self, vec: &[Expr]) -> Option<Vec<Constant>> {
+    fn multi(&mut self, vec: &[Expr<'_>]) -> Option<Vec<Constant>> {
         vec.iter().map(|elem| self.expr(elem)).collect::<Option<_>>()
     }
 
     /// Lookup a possibly constant expression from a `ExprKind::Path`.
-    fn fetch_path(&mut self, qpath: &QPath, id: HirId) -> Option<Constant> {
-        use rustc::mir::interpret::GlobalId;
-
+    fn fetch_path(&mut self, qpath: &QPath<'_>, id: HirId) -> Option<Constant> {
         let res = self.tables.qpath_res(qpath, id);
         match res {
             Res::Def(DefKind::Const, def_id) | Res::Def(DefKind::AssocConst, def_id) => {
@@ -339,13 +330,12 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
                 } else {
                     substs.subst(self.lcx.tcx, self.substs)
                 };
-                let instance = Instance::resolve(self.lcx.tcx, self.param_env, def_id, substs)?;
-                let gid = GlobalId {
-                    instance,
-                    promoted: None,
-                };
 
-                let result = self.lcx.tcx.const_eval(self.param_env.and(gid)).ok()?;
+                let result = self
+                    .lcx
+                    .tcx
+                    .const_eval_resolve(self.param_env, def_id, substs, None, None)
+                    .ok()?;
                 let result = miri_to_const(&result);
                 if result.is_some() {
                     self.needed_resolution = true;
@@ -358,7 +348,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
     }
 
     /// A block can only yield a constant if it only has one constant expression.
-    fn block(&mut self, block: &Block) -> Option<Constant> {
+    fn block(&mut self, block: &Block<'_>) -> Option<Constant> {
         if block.stmts.is_empty() {
             block.expr.as_ref().and_then(|b| self.expr(b))
         } else {
@@ -366,7 +356,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
         }
     }
 
-    fn ifthenelse(&mut self, cond: &Expr, then: &Expr, otherwise: Option<&Expr>) -> Option<Constant> {
+    fn ifthenelse(&mut self, cond: &Expr<'_>, then: &Expr<'_>, otherwise: Option<&Expr<'_>>) -> Option<Constant> {
         if let Some(Constant::Bool(b)) = self.expr(cond) {
             if b {
                 self.expr(&*then)
@@ -378,7 +368,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
         }
     }
 
-    fn binop(&mut self, op: BinOp, left: &Expr, right: &Expr) -> Option<Constant> {
+    fn binop(&mut self, op: BinOp, left: &Expr<'_>, right: &Expr<'_>) -> Option<Constant> {
         let l = self.expr(left)?;
         let r = self.expr(right);
         match (l, r) {

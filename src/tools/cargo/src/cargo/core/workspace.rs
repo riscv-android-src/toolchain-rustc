@@ -9,7 +9,6 @@ use log::debug;
 use url::Url;
 
 use crate::core::features::Features;
-use crate::core::profiles::Profiles;
 use crate::core::registry::PackageRegistry;
 use crate::core::{Dependency, PackageId, PackageIdSpec};
 use crate::core::{EitherManifest, Package, SourceId, VirtualManifest};
@@ -17,7 +16,7 @@ use crate::ops;
 use crate::sources::PathSource;
 use crate::util::errors::{CargoResult, CargoResultExt, ManifestError};
 use crate::util::paths;
-use crate::util::toml::read_manifest;
+use crate::util::toml::{read_manifest, TomlProfiles};
 use crate::util::{Config, Filesystem};
 
 /// The core abstraction in Cargo for working with a workspace of crates.
@@ -224,7 +223,7 @@ impl<'cfg> Workspace<'cfg> {
     /// indicating that something else should be passed.
     pub fn current(&self) -> CargoResult<&Package> {
         let pkg = self.current_opt().ok_or_else(|| {
-            failure::format_err!(
+            anyhow::format_err!(
                 "manifest path `{}` is a virtual manifest, but this \
                  command requires running against an actual package in \
                  this workspace",
@@ -234,9 +233,29 @@ impl<'cfg> Workspace<'cfg> {
         Ok(pkg)
     }
 
+    pub fn current_mut(&mut self) -> CargoResult<&mut Package> {
+        let cm = self.current_manifest.clone();
+        let pkg = self.current_opt_mut().ok_or_else(|| {
+            anyhow::format_err!(
+                "manifest path `{}` is a virtual manifest, but this \
+                 command requires running against an actual package in \
+                 this workspace",
+                cm.display()
+            )
+        })?;
+        Ok(pkg)
+    }
+
     pub fn current_opt(&self) -> Option<&Package> {
         match *self.packages.get(&self.current_manifest) {
             MaybePackage::Package(ref p) => Some(p),
+            MaybePackage::Virtual(..) => None,
+        }
+    }
+
+    pub fn current_opt_mut(&mut self) -> Option<&mut Package> {
+        match *self.packages.get_mut(&self.current_manifest) {
+            MaybePackage::Package(ref mut p) => Some(p),
             MaybePackage::Virtual(..) => None,
         }
     }
@@ -253,7 +272,7 @@ impl<'cfg> Workspace<'cfg> {
         self.config
     }
 
-    pub fn profiles(&self) -> &Profiles {
+    pub fn profiles(&self) -> Option<&TomlProfiles> {
         match self.root_maybe() {
             MaybePackage::Package(p) => p.manifest().profiles(),
             MaybePackage::Virtual(vm) => vm.profiles(),
@@ -467,7 +486,7 @@ impl<'cfg> Workspace<'cfg> {
                         None
                     };
                 }
-                _ => failure::bail!(
+                _ => anyhow::bail!(
                     "root of a workspace inferred but wasn't a root: {}",
                     root_manifest_path.display()
                 ),
@@ -482,7 +501,7 @@ impl<'cfg> Workspace<'cfg> {
             for path in default {
                 let manifest_path = paths::normalize_path(&path.join("Cargo.toml"));
                 if !self.members.contains(&manifest_path) {
-                    failure::bail!(
+                    anyhow::bail!(
                         "package `{}` is listed in workspace’s default-members \
                          but is not a member.",
                         path.display()
@@ -563,14 +582,6 @@ impl<'cfg> Workspace<'cfg> {
     /// 2. All workspace members agree on this one root as the root.
     /// 3. The current crate is a member of this workspace.
     fn validate(&mut self) -> CargoResult<()> {
-        // Validate config profiles only once per workspace.
-        let features = self.features();
-        let mut warnings = Vec::new();
-        self.config.profiles()?.validate(features, &mut warnings)?;
-        for warning in warnings {
-            self.config.shell().warn(&warning)?;
-        }
-
         // The rest of the checks require a VirtualManifest or multiple members.
         if self.root_manifest.is_none() {
             return Ok(());
@@ -592,7 +603,7 @@ impl<'cfg> Workspace<'cfg> {
                     MaybePackage::Virtual(_) => continue,
                 };
                 if let Some(prev) = names.insert(name, member) {
-                    failure::bail!(
+                    anyhow::bail!(
                         "two packages named `{}` in this workspace:\n\
                          - {}\n\
                          - {}",
@@ -605,7 +616,7 @@ impl<'cfg> Workspace<'cfg> {
         }
 
         match roots.len() {
-            0 => failure::bail!(
+            0 => anyhow::bail!(
                 "`package.workspace` configuration points to a crate \
                  which is not configured with [workspace]: \n\
                  configuration at: {}\n\
@@ -615,7 +626,7 @@ impl<'cfg> Workspace<'cfg> {
             ),
             1 => {}
             _ => {
-                failure::bail!(
+                anyhow::bail!(
                     "multiple workspace roots found in the same workspace:\n{}",
                     roots
                         .iter()
@@ -634,7 +645,7 @@ impl<'cfg> Workspace<'cfg> {
 
             match root {
                 Some(root) => {
-                    failure::bail!(
+                    anyhow::bail!(
                         "package `{}` is a member of the wrong workspace\n\
                          expected: {}\n\
                          actual:   {}",
@@ -644,7 +655,7 @@ impl<'cfg> Workspace<'cfg> {
                     );
                 }
                 None => {
-                    failure::bail!(
+                    anyhow::bail!(
                         "workspace member `{}` is not hierarchically below \
                          the workspace root `{}`",
                         member.display(),
@@ -696,7 +707,7 @@ impl<'cfg> Workspace<'cfg> {
                     }
                 }
             };
-            failure::bail!(
+            anyhow::bail!(
                 "current package believes it's in a workspace when it's not:\n\
                  current:   {}\n\
                  workspace: {}\n\n{}\n\
@@ -746,7 +757,7 @@ impl<'cfg> Workspace<'cfg> {
     pub fn load(&self, manifest_path: &Path) -> CargoResult<Package> {
         match self.packages.maybe_get(manifest_path) {
             Some(&MaybePackage::Package(ref p)) => return Ok(p.clone()),
-            Some(&MaybePackage::Virtual(_)) => failure::bail!("cannot load workspace root"),
+            Some(&MaybePackage::Virtual(_)) => anyhow::bail!("cannot load workspace root"),
             None => {}
         }
 
@@ -800,9 +811,9 @@ impl<'cfg> Workspace<'cfg> {
             let path = path.join("Cargo.toml");
             for warning in warnings {
                 if warning.is_critical {
-                    let err = failure::format_err!("{}", warning.message);
+                    let err = anyhow::format_err!("{}", warning.message);
                     let cx =
-                        failure::format_err!("failed to parse manifest at `{}`", path.display());
+                        anyhow::format_err!("failed to parse manifest at `{}`", path.display());
                     return Err(err.context(cx).into());
                 } else {
                     let msg = if self.root_manifest.is_none() {
@@ -825,8 +836,16 @@ impl<'cfg> Packages<'cfg> {
         self.maybe_get(manifest_path).unwrap()
     }
 
+    fn get_mut(&mut self, manifest_path: &Path) -> &mut MaybePackage {
+        self.maybe_get_mut(manifest_path).unwrap()
+    }
+
     fn maybe_get(&self, manifest_path: &Path) -> Option<&MaybePackage> {
         self.packages.get(manifest_path.parent().unwrap())
+    }
+
+    fn maybe_get_mut(&mut self, manifest_path: &Path) -> Option<&mut MaybePackage> {
+        self.packages.get_mut(manifest_path.parent().unwrap())
     }
 
     fn load(&mut self, manifest_path: &Path) -> CargoResult<&MaybePackage> {
@@ -941,10 +960,10 @@ impl WorkspaceRootConfig {
             None => return Ok(Vec::new()),
         };
         let res =
-            glob(path).chain_err(|| failure::format_err!("could not parse pattern `{}`", &path))?;
+            glob(path).chain_err(|| anyhow::format_err!("could not parse pattern `{}`", &path))?;
         let res = res
             .map(|p| {
-                p.chain_err(|| failure::format_err!("unable to match path to pattern `{}`", &path))
+                p.chain_err(|| anyhow::format_err!("unable to match path to pattern `{}`", &path))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(res)

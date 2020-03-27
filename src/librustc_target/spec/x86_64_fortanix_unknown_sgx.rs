@@ -6,12 +6,16 @@ pub fn target() -> Result<Target, String> {
     const PRE_LINK_ARGS: &[&str] = &[
         "--as-needed",
         "--eh-frame-hdr",
-        "-z" , "noexecstack",
-        "-e","elf_entry",
+        "-z",
+        "noexecstack",
+        "-e",
+        "elf_entry",
         "-Bstatic",
         "--gc-sections",
-        "-z","text",
-        "-z","norelro",
+        "-z",
+        "text",
+        "-z",
+        "norelro",
         "--no-undefined",
         "--error-unresolved-symbols",
         "--no-undefined-version",
@@ -19,13 +23,20 @@ pub fn target() -> Result<Target, String> {
         "--export-dynamic",
         // The following symbols are needed by libunwind, which is linked after
         // libstd. Make sure they're included in the link.
-        "-u","__rust_abort",
-        "-u","__rust_c_alloc",
-        "-u","__rust_c_dealloc",
-        "-u","__rust_print_err",
-        "-u","__rust_rwlock_rdlock",
-        "-u","__rust_rwlock_unlock",
-        "-u","__rust_rwlock_wrlock"
+        "-u",
+        "__rust_abort",
+        "-u",
+        "__rust_c_alloc",
+        "-u",
+        "__rust_c_dealloc",
+        "-u",
+        "__rust_print_err",
+        "-u",
+        "__rust_rwlock_rdlock",
+        "-u",
+        "__rust_rwlock_unlock",
+        "-u",
+        "__rust_rwlock_wrlock",
     ];
 
     const EXPORT_SYMBOLS: &[&str] = &[
@@ -70,7 +81,8 @@ pub fn target() -> Result<Target, String> {
         target_os: "unknown".into(),
         target_env: "sgx".into(),
         target_vendor: "fortanix".into(),
-        data_layout: "e-m:e-i64:64-f80:128-n8:16:32:64-S128".into(),
+        data_layout: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+            .into(),
         arch: "x86_64".into(),
         linker_flavor: LinkerFlavor::Lld(LldFlavor::Ld),
         options: opts,

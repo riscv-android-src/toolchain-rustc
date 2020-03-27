@@ -1,7 +1,7 @@
-use std::prelude::v1::*;
 use std::cell::Cell;
 use std::error::Error;
 use std::fmt;
+use std::prelude::v1::*;
 
 use futures::{self, Future};
 
@@ -11,7 +11,7 @@ thread_local!(static ENTERED: Cell<bool> = Cell::new(false));
 ///
 /// For more details, see [`enter` documentation](fn.enter.html)
 pub struct Enter {
-    on_exit: Vec<Box<Callback>>,
+    on_exit: Vec<Box<dyn Callback>>,
     permanent: bool,
 }
 
@@ -67,10 +67,49 @@ pub fn enter() -> Result<Enter, EnterError> {
     })
 }
 
+// Forces the current "entered" state to be cleared while the closure
+// is executed.
+//
+// # Warning
+//
+// This is hidden for a reason. Do not use without fully understanding
+// executors. Misuing can easily cause your program to deadlock.
+#[doc(hidden)]
+pub fn exit<F: FnOnce() -> R, R>(f: F) -> R {
+    // Reset in case the closure panics
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            ENTERED.with(|c| {
+                c.set(true);
+            });
+        }
+    }
+
+    ENTERED.with(|c| {
+        debug_assert!(c.get());
+        c.set(false);
+    });
+
+    let reset = Reset;
+    let ret = f();
+    ::std::mem::forget(reset);
+
+    ENTERED.with(|c| {
+        assert!(!c.get(), "closure claimed permanent executor");
+        c.set(true);
+    });
+
+    ret
+}
+
 impl Enter {
     /// Register a callback to be invoked if and when the thread
     /// ceased to act as an executor.
-    pub fn on_exit<F>(&mut self, f: F) where F: FnOnce() + 'static {
+    pub fn on_exit<F>(&mut self, f: F)
+    where
+        F: FnOnce() + 'static,
+    {
         self.on_exit.push(Box::new(f));
     }
 
@@ -88,7 +127,6 @@ impl Enter {
     pub fn block_on<F: Future>(&mut self, f: F) -> Result<F::Item, F::Error> {
         futures::executor::spawn(f).wait_future()
     }
-
 }
 
 impl fmt::Debug for Enter {
@@ -103,7 +141,7 @@ impl Drop for Enter {
             assert!(c.get());
 
             if self.permanent {
-                return
+                return;
             }
 
             for callback in self.on_exit.drain(..) {

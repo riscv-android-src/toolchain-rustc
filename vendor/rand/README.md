@@ -67,6 +67,12 @@ A detailed [changelog](CHANGELOG.md) is available.
 When upgrading to the next minor series (especially 0.4 → 0.5), we recommend
 reading the [Upgrade Guide](https://rust-random.github.io/book/update.html).
 
+### Yanked versions
+
+Some versions of Rand crates have been yanked ("unreleased"). Where this occurs,
+the crate's CHANGELOG *should* be updated with a rationale, and a search on the
+issue tracker with the keyword `yank` *should* uncover the motivation.
+
 ### Rust version requirements
 
 Since version 0.7, Rand requires **Rustc version 1.32 or greater**.
@@ -79,18 +85,12 @@ Travis CI always has a build with a pinned version of Rustc matching the oldest
 supported Rust release. The current policy is that this can be updated in any
 Rand release if required, but the change must be noted in the changelog.
 
-To avoid bumping the required version unnecessarily, we use a `build.rs` script
-to auto-detect the compiler version and enable certain features or change code
-paths automatically. Since this makes it easy to unintentionally make use of
-features requiring a more recent Rust version, we recommend testing with a
-pinned version of Rustc if you require compatibility with a specific version.
-
 ## Crate Features
 
 Rand is built with these features enabled by default:
 
 -   `std` enables functionality dependent on the `std` lib
--   `alloc` (implied by `std`) enables functionality requiring an allocator
+-   `alloc` (implied by `std`) enables functionality requiring an allocator (when using this feature in `no_std`, Rand requires Rustc version 1.36 or greater)
 -   `getrandom` (implied by `std`) is an optional dependency providing the code
     behind `rngs::OsRng`
 
@@ -99,8 +99,10 @@ Optionally, the following dependencies can be enabled:
 -   `log` enables logging via the `log` crate
 -   `stdweb` implies `getrandom/stdweb` to enable
     `getrandom` support on `wasm32-unknown-unknown`
+    (will be removed in rand 0.8; activate via `getrandom` crate instead)
 -   `wasm-bindgen` implies `getrandom/wasm-bindgen` to enable
     `getrandom` support on `wasm32-unknown-unknown`
+    (will be removed in rand 0.8; activate via `getrandom` crate instead)
 
 Additionally, these features configure Rand:
 

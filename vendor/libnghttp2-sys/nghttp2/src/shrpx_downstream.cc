@@ -26,7 +26,7 @@
 
 #include <cassert>
 
-#include "http-parser/http_parser.h"
+#include "url-parser/url_parser.h"
 
 #include "shrpx_upstream.h"
 #include "shrpx_client_handler.h"
@@ -133,9 +133,9 @@ Downstream::Downstream(Upstream *upstream, MemchunkPool *mcpool,
       downstream_stream_id_(-1),
       response_rst_stream_error_code_(NGHTTP2_NO_ERROR),
       affinity_cookie_(0),
-      request_state_(INITIAL),
-      response_state_(INITIAL),
-      dispatch_state_(DISPATCH_NONE),
+      request_state_(DownstreamState::INITIAL),
+      response_state_(DownstreamState::INITIAL),
+      dispatch_state_(DispatchState::NONE),
       upgraded_(false),
       chunked_request_(false),
       chunked_response_(false),
@@ -144,7 +144,8 @@ Downstream::Downstream(Upstream *upstream, MemchunkPool *mcpool,
       request_header_sent_(false),
       accesslog_written_(false),
       new_affinity_cookie_(false),
-      blocked_request_data_eof_(false) {
+      blocked_request_data_eof_(false),
+      expect_100_continue_(false) {
 
   auto &timeoutconf = get_config()->http2.timeout;
 
@@ -573,6 +574,18 @@ void FieldStore::append_last_trailer_value(const char *data, size_t len) {
                                   trailers_, data, len);
 }
 
+void FieldStore::erase_content_length_and_transfer_encoding() {
+  for (auto &kv : headers_) {
+    switch (kv.token) {
+    case http2::HD_CONTENT_LENGTH:
+    case http2::HD_TRANSFER_ENCODING:
+      kv.name = StringRef{};
+      kv.token = -1;
+      break;
+    }
+  }
+}
+
 void Downstream::set_request_start_time(
     std::chrono::high_resolution_clock::time_point time) {
   request_start_time_ = std::move(time);
@@ -596,9 +609,11 @@ void Downstream::set_stream_id(int32_t stream_id) { stream_id_ = stream_id; }
 
 int32_t Downstream::get_stream_id() const { return stream_id_; }
 
-void Downstream::set_request_state(int state) { request_state_ = state; }
+void Downstream::set_request_state(DownstreamState state) {
+  request_state_ = state;
+}
 
-int Downstream::get_request_state() const { return request_state_; }
+DownstreamState Downstream::get_request_state() const { return request_state_; }
 
 bool Downstream::get_chunked_request() const { return chunked_request_; }
 
@@ -610,7 +625,7 @@ bool Downstream::request_buf_full() {
   auto worker = handler->get_worker();
 
   // We don't check buffer size here for API endpoint.
-  if (faddr->alt_mode == ALTMODE_API) {
+  if (faddr->alt_mode == UpstreamAltMode::API) {
     return false;
   }
 
@@ -638,7 +653,7 @@ int Downstream::push_request_headers() {
 int Downstream::push_upload_data_chunk(const uint8_t *data, size_t datalen) {
   req_.recv_body_length += datalen;
 
-  if (!request_header_sent_) {
+  if (!dconn_ && !request_header_sent_) {
     blocked_request_buf_.append(data, datalen);
     req_.unconsumed_body_length += datalen;
     return 0;
@@ -660,7 +675,7 @@ int Downstream::push_upload_data_chunk(const uint8_t *data, size_t datalen) {
 }
 
 int Downstream::end_upload_data() {
-  if (!request_header_sent_) {
+  if (!dconn_ && !request_header_sent_) {
     blocked_request_data_eof_ = true;
     return 0;
   }
@@ -711,9 +726,13 @@ int Downstream::on_read() {
   return dconn_->on_read();
 }
 
-void Downstream::set_response_state(int state) { response_state_ = state; }
+void Downstream::set_response_state(DownstreamState state) {
+  response_state_ = state;
+}
 
-int Downstream::get_response_state() const { return response_state_; }
+DownstreamState Downstream::get_response_state() const {
+  return response_state_;
+}
 
 DefaultMemchunks *Downstream::get_response_buf() { return &response_buf_; }
 
@@ -763,9 +782,35 @@ bool Downstream::validate_response_recv_body_length() const {
   return true;
 }
 
-void Downstream::check_upgrade_fulfilled() {
+void Downstream::check_upgrade_fulfilled_http2() {
+  // This handles nonzero req_.connect_proto and h1 frontend requests
+  // WebSocket upgrade.
+  upgraded_ = (req_.method == HTTP_CONNECT ||
+               req_.connect_proto == ConnectProto::WEBSOCKET) &&
+              resp_.http_status / 100 == 2;
+}
+
+void Downstream::check_upgrade_fulfilled_http1() {
   if (req_.method == HTTP_CONNECT) {
-    upgraded_ = 200 <= resp_.http_status && resp_.http_status < 300;
+    if (req_.connect_proto == ConnectProto::WEBSOCKET) {
+      if (resp_.http_status != 101) {
+        return;
+      }
+
+      // This is done for HTTP/2 frontend only.
+      auto accept = resp_.fs.header(http2::HD_SEC_WEBSOCKET_ACCEPT);
+      if (!accept) {
+        return;
+      }
+
+      std::array<uint8_t, base64::encode_length(20)> accept_buf;
+      auto expected =
+          http2::make_websocket_accept_token(accept_buf.data(), ws_key_);
+
+      upgraded_ = expected != "" && expected == accept->value;
+    } else {
+      upgraded_ = resp_.http_status / 100 == 2;
+    }
 
     return;
   }
@@ -787,7 +832,7 @@ void Downstream::inspect_http2_request() {
 void Downstream::inspect_http1_request() {
   if (req_.method == HTTP_CONNECT) {
     req_.upgrade_request = true;
-  } else {
+  } else if (req_.http_minor > 0) {
     auto upgrade = req_.fs.header(http2::HD_UPGRADE);
     if (upgrade) {
       const auto &val = upgrade->value;
@@ -797,6 +842,12 @@ void Downstream::inspect_http1_request() {
         req_.http2_upgrade_seen = true;
       } else {
         req_.upgrade_request = true;
+
+        // TODO Should we check Sec-WebSocket-Key, and
+        // Sec-WebSocket-Version as well?
+        if (util::strieq_l("websocket", val)) {
+          req_.connect_proto = ConnectProto::WEBSOCKET;
+        }
       }
     }
   }
@@ -807,6 +858,11 @@ void Downstream::inspect_http1_request() {
       chunked_request_ = true;
     }
   }
+
+  auto expect = req_.fs.header(http2::HD_EXPECT);
+  expect_100_continue_ =
+      expect &&
+      util::strieq(expect->value, StringRef::from_lit("100-continue"));
 }
 
 void Downstream::inspect_http1_response() {
@@ -837,7 +893,7 @@ bool Downstream::get_upgraded() const { return upgraded_; }
 
 bool Downstream::get_http2_upgrade_request() const {
   return req_.http2_upgrade_seen && req_.fs.header(http2::HD_HTTP2_SETTINGS) &&
-         response_state_ == INITIAL;
+         response_state_ == DownstreamState::INITIAL;
 }
 
 StringRef Downstream::get_http2_settings() const {
@@ -1023,15 +1079,15 @@ bool Downstream::get_request_header_sent() const {
 }
 
 bool Downstream::request_submission_ready() const {
-  return (request_state_ == Downstream::HEADER_COMPLETE ||
-          request_state_ == Downstream::MSG_COMPLETE) &&
+  return (request_state_ == DownstreamState::HEADER_COMPLETE ||
+          request_state_ == DownstreamState::MSG_COMPLETE) &&
          (request_pending_ || !request_header_sent_) &&
-         response_state_ == Downstream::INITIAL;
+         response_state_ == DownstreamState::INITIAL;
 }
 
-int Downstream::get_dispatch_state() const { return dispatch_state_; }
+DispatchState Downstream::get_dispatch_state() const { return dispatch_state_; }
 
-void Downstream::set_dispatch_state(int s) { dispatch_state_ = s; }
+void Downstream::set_dispatch_state(DispatchState s) { dispatch_state_ = s; }
 
 void Downstream::attach_blocked_link(BlockedLink *l) {
   assert(!blocked_link_);
@@ -1050,8 +1106,8 @@ bool Downstream::can_detach_downstream_connection() const {
   // We should check request and response buffer.  If request buffer
   // is not empty, then we might leave downstream connection in weird
   // state, especially for HTTP/1.1
-  return dconn_ && response_state_ == Downstream::MSG_COMPLETE &&
-         request_state_ == Downstream::MSG_COMPLETE && !upgraded_ &&
+  return dconn_ && response_state_ == DownstreamState::MSG_COMPLETE &&
+         request_state_ == DownstreamState::MSG_COMPLETE && !upgraded_ &&
          !resp_.connection_close && request_buf_.rleft() == 0;
 }
 
@@ -1101,6 +1157,16 @@ DefaultMemchunks *Downstream::get_blocked_request_buf() {
 
 bool Downstream::get_blocked_request_data_eof() const {
   return blocked_request_data_eof_;
+}
+
+void Downstream::set_blocked_request_data_eof(bool f) {
+  blocked_request_data_eof_ = f;
+}
+
+void Downstream::set_ws_key(const StringRef &key) { ws_key_ = key; }
+
+bool Downstream::get_expect_100_continue() const {
+  return expect_100_continue_;
 }
 
 } // namespace shrpx

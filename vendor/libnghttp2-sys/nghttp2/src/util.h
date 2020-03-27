@@ -47,7 +47,7 @@
 #include <map>
 #include <random>
 
-#include "http-parser/http_parser.h"
+#include "url-parser/url_parser.h"
 
 #include "template.h"
 #include "network.h"
@@ -739,6 +739,13 @@ OutputIt random_alpha_digit(OutputIt first, OutputIt last, Generator &gen) {
   return first;
 }
 
+// Fills random bytes to the range [|first|, |last|).
+template <typename OutputIt, typename Generator>
+void random_bytes(OutputIt first, OutputIt last, Generator &gen) {
+  std::uniform_int_distribution<> dis(0, 255);
+  std::generate(first, last, [&dis, &gen]() { return dis(gen); });
+}
+
 template <typename OutputIterator, typename CharT, size_t N>
 OutputIterator copy_lit(OutputIterator it, CharT (&s)[N]) {
   return std::copy_n(s, N - 1, it);
@@ -753,6 +760,10 @@ uint32_t hash32(const StringRef &s);
 // returns 0 if it succeeds, or -1.
 int sha256(uint8_t *buf, const StringRef &s);
 
+// Computes SHA-1 of |s|, and stores it in |buf|.  This function
+// returns 0 if it succeeds, or -1.
+int sha1(uint8_t *buf, const StringRef &s);
+
 // Returns host from |hostport|.  If host cannot be found in
 // |hostport|, returns empty string.  The returned string might not be
 // NULL-terminated.
@@ -760,6 +771,10 @@ StringRef extract_host(const StringRef &hostport);
 
 // Returns new std::mt19937 object.
 std::mt19937 make_mt19937();
+
+// daemonize calls daemon(3).  If __APPLE__ is defined, it implements
+// daemon() using fork().
+int daemonize(int nochdir, int noclose);
 
 } // namespace util
 

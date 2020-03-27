@@ -1,11 +1,8 @@
-use rustc::hir::{Crate, Expr, ExprKind, QPath};
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
-use syntax::ast::AttrKind;
-use syntax::symbol::sym;
+use rustc_hir::{Crate, Expr, ExprKind, QPath};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
 
-use crate::utils::{is_entrypoint_fn, snippet, span_help_and_lint};
+use crate::utils::{is_entrypoint_fn, is_no_std_crate, snippet, span_help_and_lint};
 use if_chain::if_chain;
 
 declare_clippy_lint! {
@@ -35,17 +32,11 @@ pub struct MainRecursion {
 impl_lint_pass!(MainRecursion => [MAIN_RECURSION]);
 
 impl LateLintPass<'_, '_> for MainRecursion {
-    fn check_crate(&mut self, _: &LateContext<'_, '_>, krate: &Crate) {
-        self.has_no_std_attr = krate.attrs.iter().any(|attr| {
-            if let AttrKind::Normal(ref attr) = attr.kind {
-                attr.path == sym::no_std
-            } else {
-                false
-            }
-        });
+    fn check_crate(&mut self, _: &LateContext<'_, '_>, krate: &Crate<'_>) {
+        self.has_no_std_attr = is_no_std_crate(krate);
     }
 
-    fn check_expr_post(&mut self, cx: &LateContext<'_, '_>, expr: &Expr) {
+    fn check_expr_post(&mut self, cx: &LateContext<'_, '_>, expr: &Expr<'_>) {
         if self.has_no_std_attr {
             return;
         }

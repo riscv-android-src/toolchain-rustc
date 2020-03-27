@@ -1,9 +1,8 @@
 use crate::utils::{is_entrypoint_fn, match_def_path, paths, qpath_res, span_lint};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::{Expr, ExprKind, Item, ItemKind, Node};
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_hir::{Expr, ExprKind, Item, ItemKind, Node};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** `exit()`  terminates the program and doesn't provide a
@@ -26,7 +25,7 @@ declare_clippy_lint! {
 declare_lint_pass!(Exit => [EXIT]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Exit {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Call(ref path_expr, ref _args) = e.kind;
             if let ExprKind::Path(ref path) = path_expr.kind;

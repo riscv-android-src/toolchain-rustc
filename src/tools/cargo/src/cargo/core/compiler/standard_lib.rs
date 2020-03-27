@@ -1,13 +1,11 @@
 //! Code for building the standard library.
 
-use super::layout::Layout;
-use crate::core::compiler::{BuildContext, CompileKind, CompileMode, Context, FileFlavor, Unit};
+use crate::core::compiler::{BuildContext, CompileKind, CompileMode, Unit};
 use crate::core::profiles::UnitFor;
 use crate::core::resolver::ResolveOpts;
 use crate::core::{Dependency, PackageId, PackageSet, Resolve, SourceId, Workspace};
 use crate::ops::{self, Packages};
 use crate::util::errors::CargoResult;
-use crate::util::paths;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::path::PathBuf;
@@ -68,8 +66,7 @@ pub fn resolve_std<'cfg>(
         /*replace*/ Vec::new(),
         patch,
         ws_config,
-        // Profiles are not used here, but we need something to pass in.
-        ws.profiles().clone(),
+        /*profiles*/ None,
         crate::core::Features::default(),
     );
 
@@ -141,7 +138,6 @@ pub fn generate_std_roots<'a>(
                 /*is_member*/ false,
                 unit_for,
                 mode,
-                bcx.build_config.profile_kind.clone(),
             );
             let features = std_resolve.features_sorted(pkg.package_id());
             Ok(bcx.units.intern(
@@ -163,46 +159,16 @@ fn detect_sysroot_src_path(ws: &Workspace<'_>) -> CargoResult<PathBuf> {
     let rustc = ws.config().load_global_rustc(Some(ws))?;
     let output = rustc.process().arg("--print=sysroot").exec_with_output()?;
     let s = String::from_utf8(output.stdout)
-        .map_err(|e| failure::format_err!("rustc didn't return utf8 output: {:?}", e))?;
+        .map_err(|e| anyhow::format_err!("rustc didn't return utf8 output: {:?}", e))?;
     let sysroot = PathBuf::from(s.trim());
     let src_path = sysroot.join("lib").join("rustlib").join("src").join("rust");
     let lock = src_path.join("Cargo.lock");
     if !lock.exists() {
-        failure::bail!(
+        anyhow::bail!(
             "{:?} does not exist, unable to build with the standard \
              library, try:\n        rustup component add rust-src",
             lock
         );
     }
     Ok(src_path)
-}
-
-/// Prepare the output directory for the local sysroot.
-pub fn prepare_sysroot(layout: &Layout) -> CargoResult<()> {
-    if let Some(libdir) = layout.sysroot_libdir() {
-        if libdir.exists() {
-            paths::remove_dir_all(libdir)?;
-        }
-        paths::create_dir_all(libdir)?;
-    }
-    Ok(())
-}
-
-/// Copy an artifact to the sysroot.
-pub fn add_sysroot_artifact<'a>(
-    cx: &Context<'a, '_>,
-    unit: &Unit<'a>,
-    rmeta: bool,
-) -> CargoResult<()> {
-    let outputs = cx.outputs(unit)?;
-    let outputs = outputs
-        .iter()
-        .filter(|output| output.flavor == FileFlavor::Linkable { rmeta })
-        .map(|output| &output.path);
-    for path in outputs {
-        let libdir = cx.files().layout(unit.kind).sysroot_libdir().unwrap();
-        let dst = libdir.join(path.file_name().unwrap());
-        paths::link_or_copy(path, dst)?;
-    }
-    Ok(())
 }

@@ -1,21 +1,16 @@
 extern crate futures;
-extern crate tokio;
-extern crate tokio_current_thread;
-extern crate tokio_io;
-extern crate tokio_process;
 #[macro_use]
 extern crate log;
-extern crate env_logger;
+extern crate tokio_io;
+extern crate tokio_process;
 
 use std::io;
 use std::process::{Stdio, ExitStatus, Command};
-use std::time::Duration;
 
 use futures::future::Future;
 use futures::stream::{self, Stream};
 use tokio_io::io::{read_until, write_all, read_to_end};
 use tokio_process::{CommandExt, Child};
-use tokio::timer::Timeout;
 
 mod support;
 
@@ -41,7 +36,7 @@ fn feed_cat(mut cat: Child, n: usize) -> Box<Future<Item = ExitStatus, Error = i
     // Try to read `n + 1` lines, ensuring the last one is empty
     // (i.e. EOF is reached after `n` lines.
     let reader = io::BufReader::new(stdout);
-    let expected_numbers = stream::iter_ok(0..n + 1);
+    let expected_numbers = stream::iter_ok(0..=n);
     let read = expected_numbers.fold((reader, 0), move |(reader, i), _| {
         let done = i >= n;
         debug!("starting read from child");
@@ -72,7 +67,6 @@ fn feed_cat(mut cat: Child, n: usize) -> Box<Future<Item = ExitStatus, Error = i
     Box::new(write.join(read).and_then(|_| cat))
 }
 
-#[test]
 /// Check for the following properties when feeding stdin and
 /// consuming stdout of a cat-like process:
 ///
@@ -84,12 +78,25 @@ fn feed_cat(mut cat: Child, n: usize) -> Box<Future<Item = ExitStatus, Error = i
 /// - We read the same lines from the child that we fed it.
 ///
 /// - The child does produce EOF on stdout after the last line.
+#[test]
 fn feed_a_lot() {
     let child = cat().spawn_async().unwrap();
-    let status = tokio_current_thread::block_on_all(feed_cat(child, 10000)).unwrap();
+    let status = support::run_with_timeout(feed_cat(child, 10000)).unwrap();
     assert_eq!(status.code(), Some(0));
 }
 
+// FIXME: delete this test once we have a resolution for #51
+// This test's setup is flaky, and setting up a consistent test is nearly
+// impossible: right now we invoke `cat` and immediately kill it, expecting
+// that it didn't write anything, but if there's something wrong with the
+// command itself (e.g. redirection issues, it doesn't actually print anything
+// out, etc.) this test can falsely pass. Attempting a solution which writes
+// some data, *then* kill the child, write more data, and assert that only the
+// first write is echoed back seems like a good approach, however, due to the
+// ordering of context switches or how the kernel buffers data we can get
+// inconsistent results. We can keep this test around for now, but as soon as
+// we have a solution for #51, we may have a better avenue for testing this
+// functionality.
 #[test]
 fn drop_kills() {
     let mut child = cat().spawn_async().unwrap();
@@ -101,9 +108,12 @@ fn drop_kills() {
     let writer = write_all(stdin, b"1234").then(|_| Ok(()));
     let reader = read_to_end(stdout, Vec::new());
 
-    let future = writer.join(reader).map(|(_, (_, out))| out);
+    let (_, output) = support::CurrentThreadRuntime::new()
+        .expect("failed to get rt")
+        .spawn(writer)
+        .block_on(support::with_timeout(reader))
+        .expect("failed to get output");
 
-    let output = tokio_current_thread::block_on_all(future).unwrap();
     assert_eq!(output.len(), 0);
 }
 
@@ -114,7 +124,7 @@ fn wait_with_output_captures() {
     let out = child.wait_with_output();
 
     let future = write_all(stdin, b"1234").map(|p| p.1).join(out);
-    let ret = tokio_current_thread::block_on_all(future).unwrap();
+    let ret = support::run_with_timeout(future).unwrap();
     let (written, output) = ret;
 
     assert!(output.status.success());
@@ -129,10 +139,6 @@ fn status_closes_any_pipes() {
     // we would end up blocking forever (and time out).
     let child = cat().status_async().expect("failed to spawn child");
 
-    // NB: Deadline requires a timer registration which is provided by
-    // tokio's `current_thread::Runtime`, but isn't available by just using
-    // tokio's default CurrentThread executor which powers `current_thread::block_on_all`.
-    let mut rt = tokio::runtime::current_thread::Runtime::new().unwrap();
-    rt.block_on(Timeout::new(child, Duration::from_secs(1)))
+    support::run_with_timeout(child)
         .expect("time out exceeded! did we get stuck waiting on the child?");
 }

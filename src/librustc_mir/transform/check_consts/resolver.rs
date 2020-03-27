@@ -8,8 +8,8 @@ use rustc_index::bit_set::BitSet;
 
 use std::marker::PhantomData;
 
-use crate::dataflow::{self as old_dataflow, generic as dataflow};
 use super::{Item, Qualif};
+use crate::dataflow::{self as old_dataflow, generic as dataflow};
 
 /// A `Visitor` that propagates qualifs between locals. This defines the transfer function of
 /// `FlowSensitiveAnalysis`.
@@ -28,15 +28,8 @@ impl<Q> TransferFunction<'a, 'mir, 'tcx, Q>
 where
     Q: Qualif,
 {
-    fn new(
-        item: &'a Item<'mir, 'tcx>,
-        qualifs_per_local: &'a mut BitSet<Local>,
-    ) -> Self {
-        TransferFunction {
-            item,
-            qualifs_per_local,
-            _qualif: PhantomData,
-        }
+    fn new(item: &'a Item<'mir, 'tcx>, qualifs_per_local: &'a mut BitSet<Local>) -> Self {
+        TransferFunction { item, qualifs_per_local, _qualif: PhantomData }
     }
 
     fn initialize_state(&mut self) {
@@ -54,15 +47,15 @@ where
         debug_assert!(!place.is_indirect());
 
         match (value, place.as_ref()) {
-            (true, mir::PlaceRef { base: &mir::PlaceBase::Local(local), .. }) => {
-                self.qualifs_per_local.insert(local);
+            (true, mir::PlaceRef { local, .. }) => {
+                self.qualifs_per_local.insert(*local);
             }
 
             // For now, we do not clear the qualif if a local is overwritten in full by
             // an unqualified rvalue (e.g. `y = 5`). This is to be consistent
             // with aggregates where we overwrite all fields with assignments, which would not
             // get this feature.
-            (false, mir::PlaceRef { base: &mir::PlaceBase::Local(_local), projection: &[] }) => {
+            (false, mir::PlaceRef { local: _, projection: &[] }) => {
                 // self.qualifs_per_local.remove(*local);
             }
 
@@ -78,13 +71,8 @@ where
         return_place: &mir::Place<'tcx>,
     ) {
         let return_ty = return_place.ty(*self.item.body, self.item.tcx).ty;
-        let qualif = Q::in_call(
-            self.item,
-            &|l| self.qualifs_per_local.contains(l),
-            func,
-            args,
-            return_ty,
-        );
+        let qualif =
+            Q::in_call(self.item, &|l| self.qualifs_per_local.contains(l), func, args, return_ty);
         if !return_place.is_indirect() {
             self.assign_qualif_direct(return_place, qualif);
         }
@@ -155,10 +143,7 @@ where
     Q: Qualif,
 {
     pub(super) fn new(_: Q, item: &'a Item<'mir, 'tcx>) -> Self {
-        FlowSensitiveAnalysis {
-            item,
-            _qualif: PhantomData,
-        }
+        FlowSensitiveAnalysis { item, _qualif: PhantomData }
     }
 
     fn transfer_function(
@@ -173,7 +158,7 @@ impl<Q> old_dataflow::BottomValue for FlowSensitiveAnalysis<'_, '_, '_, Q> {
     const BOTTOM_VALUE: bool = false;
 }
 
-impl<Q> dataflow::Analysis<'tcx> for FlowSensitiveAnalysis<'_, '_, 'tcx, Q>
+impl<Q> dataflow::AnalysisDomain<'tcx> for FlowSensitiveAnalysis<'_, '_, 'tcx, Q>
 where
     Q: Qualif,
 {
@@ -188,7 +173,12 @@ where
     fn initialize_start_block(&self, _body: &mir::Body<'tcx>, state: &mut BitSet<Self::Idx>) {
         self.transfer_function(state).initialize_state();
     }
+}
 
+impl<Q> dataflow::Analysis<'tcx> for FlowSensitiveAnalysis<'_, '_, 'tcx, Q>
+where
+    Q: Qualif,
+{
     fn apply_statement_effect(
         &self,
         state: &mut BitSet<Self::Idx>,

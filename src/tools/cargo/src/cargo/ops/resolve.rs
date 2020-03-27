@@ -265,7 +265,7 @@ pub fn resolve_with_previous<'cfg>(
             members.extend(ws.members());
         } else {
             if specs.len() > 1 && !opts.features.is_empty() {
-                failure::bail!("cannot specify features for more than one package");
+                anyhow::bail!("cannot specify features for more than one package");
             }
             members.extend(
                 ws.members()
@@ -276,7 +276,7 @@ pub fn resolve_with_previous<'cfg>(
             // into the resolution graph.
             if members.is_empty() {
                 if !(opts.features.is_empty() && !opts.all_features && opts.uses_default_features) {
-                    failure::bail!("cannot specify features for packages outside of workspace");
+                    anyhow::bail!("cannot specify features for packages outside of workspace");
                 }
                 members.extend(ws.members());
             }
@@ -392,16 +392,17 @@ pub fn add_overrides<'a>(
     registry: &mut PackageRegistry<'a>,
     ws: &Workspace<'a>,
 ) -> CargoResult<()> {
-    let paths = match ws.config().get_list("paths")? {
+    let config = ws.config();
+    let paths = match config.get_list("paths")? {
         Some(list) => list,
         None => return Ok(()),
     };
 
-    let paths = paths.val.iter().map(|&(ref s, ref p)| {
+    let paths = paths.val.iter().map(|(s, def)| {
         // The path listed next to the string is the config file in which the
         // key was located, so we want to pop off the `.cargo/config` component
         // to get the directory containing the `.cargo` folder.
-        (p.parent().unwrap().parent().unwrap().join(s), p)
+        (def.root(config).join(s), def)
     });
 
     for (path, definition) in paths {
@@ -412,7 +413,7 @@ pub fn add_overrides<'a>(
                 "failed to update path override `{}` \
                  (defined in `{}`)",
                 path.display(),
-                definition.display()
+                definition
             )
         })?;
         registry.add_override(Box::new(source));

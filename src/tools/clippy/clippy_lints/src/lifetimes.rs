@@ -1,13 +1,15 @@
 use matches::matches;
-use rustc::declare_lint_pass;
-use rustc::hir::def::{DefKind, Res};
-use rustc::hir::intravisit::*;
-use rustc::hir::*;
-use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
+use rustc::hir::map::Map;
+use rustc::lint::in_external_macro;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
-use syntax::symbol::kw;
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::intravisit::*;
+use rustc_hir::FunctionRetTy::Return;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
+use rustc_span::symbol::kw;
 
 use crate::reexport::*;
 use crate::utils::{last_path_segment, span_lint, trait_ref_of_method};
@@ -71,13 +73,13 @@ declare_clippy_lint! {
 declare_lint_pass!(Lifetimes => [NEEDLESS_LIFETIMES, EXTRA_UNUSED_LIFETIMES]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Lifetimes {
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
         if let ItemKind::Fn(ref sig, ref generics, id) = item.kind {
             check_fn_inner(cx, &sig.decl, Some(id), generics, item.span, true);
         }
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem<'_>) {
         if let ImplItemKind::Method(ref sig, id) = item.kind {
             let report_extra_lifetimes = trait_ref_of_method(cx, item.hir_id).is_none();
             check_fn_inner(
@@ -91,7 +93,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Lifetimes {
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
         if let TraitItemKind::Method(ref sig, ref body) = item.kind {
             let body = match *body {
                 TraitMethod::Required(_) => None,
@@ -112,9 +114,9 @@ enum RefLt {
 
 fn check_fn_inner<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
-    decl: &'tcx FnDecl,
+    decl: &'tcx FnDecl<'_>,
     body: Option<BodyId>,
-    generics: &'tcx Generics,
+    generics: &'tcx Generics<'_>,
     span: Span,
     report_extra_lifetimes: bool,
 ) {
@@ -128,7 +130,7 @@ fn check_fn_inner<'a, 'tcx>(
         _ => false,
     });
     for typ in types {
-        for bound in &typ.bounds {
+        for bound in typ.bounds {
             let mut visitor = RefVisitor::new(cx);
             walk_param_bound(&mut visitor, bound);
             if visitor.lts.iter().any(|lt| matches!(lt, RefLt::Named(_))) {
@@ -173,9 +175,9 @@ fn check_fn_inner<'a, 'tcx>(
 
 fn could_use_elision<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
-    func: &'tcx FnDecl,
+    func: &'tcx FnDecl<'_>,
     body: Option<BodyId>,
-    named_generics: &'tcx [GenericParam],
+    named_generics: &'tcx [GenericParam<'_>],
     bounds_lts: Vec<&'tcx Lifetime>,
 ) -> bool {
     // There are two scenarios where elision works:
@@ -192,7 +194,7 @@ fn could_use_elision<'a, 'tcx>(
     let mut output_visitor = RefVisitor::new(cx);
 
     // extract lifetimes in input argument types
-    for arg in &func.inputs {
+    for arg in func.inputs {
         input_visitor.visit_ty(arg);
     }
     // extract lifetimes in output type
@@ -258,7 +260,7 @@ fn could_use_elision<'a, 'tcx>(
     }
 }
 
-fn allowed_lts_from(named_generics: &[GenericParam]) -> FxHashSet<RefLt> {
+fn allowed_lts_from(named_generics: &[GenericParam<'_>]) -> FxHashSet<RefLt> {
     let mut allowed_lts = FxHashSet::default();
     for par in named_generics.iter() {
         if let GenericParamKind::Lifetime { .. } = par.kind {
@@ -328,7 +330,7 @@ impl<'v, 't> RefVisitor<'v, 't> {
         }
     }
 
-    fn collect_anonymous_lifetimes(&mut self, qpath: &QPath, ty: &Ty) {
+    fn collect_anonymous_lifetimes(&mut self, qpath: &QPath<'_>, ty: &Ty<'_>) {
         if let Some(ref last_path_segment) = last_path_segment(qpath).args {
             if !last_path_segment.parenthesized
                 && !last_path_segment.args.iter().any(|arg| match arg {
@@ -358,12 +360,14 @@ impl<'v, 't> RefVisitor<'v, 't> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
+    type Map = Map<'tcx>;
+
     // for lifetimes as parameters of generics
     fn visit_lifetime(&mut self, lifetime: &'tcx Lifetime) {
         self.record(&Some(*lifetime));
     }
 
-    fn visit_ty(&mut self, ty: &'tcx Ty) {
+    fn visit_ty(&mut self, ty: &'tcx Ty<'_>) {
         match ty.kind {
             TyKind::Rptr(ref lt, _) if lt.is_elided() => {
                 self.record(&None);
@@ -374,7 +378,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
             TyKind::Def(item, _) => {
                 let map = self.cx.tcx.hir();
                 if let ItemKind::OpaqueTy(ref exist_ty) = map.expect_item(item.id).kind {
-                    for bound in &exist_ty.bounds {
+                    for bound in exist_ty.bounds {
                         if let GenericBound::Outlives(_) = *bound {
                             self.record(&None);
                         }
@@ -384,7 +388,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
                 }
                 walk_ty(self, ty);
             },
-            TyKind::TraitObject(ref bounds, ref lt) => {
+            TyKind::TraitObject(bounds, ref lt) => {
                 if !lt.is_elided() {
                     self.abort = true;
                 }
@@ -397,15 +401,15 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
         }
         walk_ty(self, ty);
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
 
 /// Are any lifetimes mentioned in the `where` clause? If so, we don't try to
 /// reason about elision.
-fn has_where_lifetimes<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, where_clause: &'tcx WhereClause) -> bool {
-    for predicate in &where_clause.predicates {
+fn has_where_lifetimes<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, where_clause: &'tcx WhereClause<'_>) -> bool {
+    for predicate in where_clause.predicates {
         match *predicate {
             WherePredicate::RegionPredicate(..) => return true,
             WherePredicate::BoundPredicate(ref pred) => {
@@ -452,12 +456,14 @@ struct LifetimeChecker {
 }
 
 impl<'tcx> Visitor<'tcx> for LifetimeChecker {
+    type Map = Map<'tcx>;
+
     // for lifetimes as parameters of generics
     fn visit_lifetime(&mut self, lifetime: &'tcx Lifetime) {
         self.map.remove(&lifetime.name.ident().name);
     }
 
-    fn visit_generic_param(&mut self, param: &'tcx GenericParam) {
+    fn visit_generic_param(&mut self, param: &'tcx GenericParam<'_>) {
         // don't actually visit `<'a>` or `<'a: 'b>`
         // we've already visited the `'a` declarations and
         // don't want to spuriously remove them
@@ -467,12 +473,12 @@ impl<'tcx> Visitor<'tcx> for LifetimeChecker {
             walk_generic_param(self, param)
         }
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
 
-fn report_extra_lifetimes<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, func: &'tcx FnDecl, generics: &'tcx Generics) {
+fn report_extra_lifetimes<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, func: &'tcx FnDecl<'_>, generics: &'tcx Generics<'_>) {
     let hs = generics
         .params
         .iter()
@@ -501,6 +507,8 @@ struct BodyLifetimeChecker {
 }
 
 impl<'tcx> Visitor<'tcx> for BodyLifetimeChecker {
+    type Map = Map<'tcx>;
+
     // for lifetimes as parameters of generics
     fn visit_lifetime(&mut self, lifetime: &'tcx Lifetime) {
         if lifetime.name.ident().name != kw::Invalid && lifetime.name.ident().name != kw::StaticLifetime {
@@ -508,7 +516,7 @@ impl<'tcx> Visitor<'tcx> for BodyLifetimeChecker {
         }
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }

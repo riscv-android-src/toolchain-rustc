@@ -1,9 +1,8 @@
 use crate::utils::{span_lint, SpanlessEq};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Detects classic underflow/overflow checks.
@@ -28,7 +27,7 @@ declare_lint_pass!(OverflowCheckConditional => [OVERFLOW_CHECK_CONDITIONAL]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OverflowCheckConditional {
     // a + b < a, a > a + b, a < a - b, a - b > a
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         let eq = |l, r| SpanlessEq::new(cx).eq_path_segment(l, r);
         if_chain! {
             if let ExprKind::Binary(ref op, ref first, ref second) = expr.kind;

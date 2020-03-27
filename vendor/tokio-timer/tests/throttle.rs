@@ -1,5 +1,4 @@
 extern crate futures;
-extern crate tokio;
 extern crate tokio_executor;
 extern crate tokio_timer;
 
@@ -7,18 +6,14 @@ extern crate tokio_timer;
 mod support;
 use support::*;
 
-use futures::{
-    prelude::*,
-    sync::mpsc,
-};
-use tokio::util::StreamExt;
+use futures::{prelude::*, sync::mpsc};
+use tokio_timer::throttle::Throttle;
 
 #[test]
 fn throttle() {
     mocked(|timer, _| {
         let (tx, rx) = mpsc::unbounded();
-        let mut stream = rx.throttle(ms(1))
-            .map_err(|e| panic!("{:?}", e));
+        let mut stream = Throttle::new(rx, ms(1));
 
         assert_not_ready!(stream);
 
@@ -40,8 +35,7 @@ fn throttle() {
 fn throttle_dur_0() {
     mocked(|_, _| {
         let (tx, rx) = mpsc::unbounded();
-        let mut stream = rx.throttle(ms(0))
-            .map_err(|e| panic!("{:?}", e));
+        let mut stream = Throttle::new(rx, ms(0));
 
         assert_not_ready!(stream);
 

@@ -35,18 +35,19 @@ use super::FnCtxt;
 use crate::expr_use_visitor as euv;
 use crate::mem_categorization as mc;
 use crate::mem_categorization::PlaceBase;
-use rustc::hir;
-use rustc::hir::def_id::DefId;
-use rustc::hir::def_id::LocalDefId;
-use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc::hir::map::Map;
 use rustc::infer::UpvarRegion;
 use rustc::ty::{self, Ty, TyCtxt, UpvarSubsts};
 use rustc_data_structures::fx::FxIndexMap;
+use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::LocalDefId;
+use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_span::Span;
 use syntax::ast;
-use syntax_pos::Span;
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
-    pub fn closure_analyze(&self, body: &'tcx hir::Body) {
+    pub fn closure_analyze(&self, body: &'tcx hir::Body<'tcx>) {
         InferBorrowKindVisitor { fcx: self }.visit_body(body);
 
         // it's our job to process these.
@@ -59,16 +60,17 @@ struct InferBorrowKindVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for InferBorrowKindVisitor<'a, 'tcx> {
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    type Map = Map<'tcx>;
+
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 
-    fn visit_expr(&mut self, expr: &'tcx hir::Expr) {
+    fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
         if let hir::ExprKind::Closure(cc, _, body_id, _, _) = expr.kind {
             let body = self.fcx.tcx.hir().body(body_id);
             self.visit_body(body);
-            self.fcx
-                .analyze_closure(expr.hir_id, expr.span, body, cc);
+            self.fcx.analyze_closure(expr.hir_id, expr.span, body, cc);
         }
 
         intravisit::walk_expr(self, expr);
@@ -81,23 +83,15 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         &self,
         closure_hir_id: hir::HirId,
         span: Span,
-        body: &hir::Body,
+        body: &hir::Body<'_>,
         capture_clause: hir::CaptureBy,
     ) {
-
-        debug!(
-            "analyze_closure(id={:?}, body.id={:?})",
-            closure_hir_id,
-            body.id()
-        );
+        debug!("analyze_closure(id={:?}, body.id={:?})", closure_hir_id, body.id());
 
         // Extract the type of the closure.
         let ty = self.node_ty(closure_hir_id);
         let (closure_def_id, substs) = match ty.kind {
-            ty::Closure(def_id, substs) => (
-                def_id,
-                UpvarSubsts::Closure(substs)
-            ),
+            ty::Closure(def_id, substs) => (def_id, UpvarSubsts::Closure(substs)),
             ty::Generator(def_id, substs, _) => (def_id, UpvarSubsts::Generator(substs)),
             ty::Error => {
                 // #51714: skip analysis when we have already encountered type errors
@@ -124,9 +118,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 FxIndexMap::with_capacity_and_hasher(upvars.len(), Default::default());
             for (&var_hir_id, _) in upvars.iter() {
                 let upvar_id = ty::UpvarId {
-                    var_path: ty::UpvarPath {
-                        hir_id: var_hir_id,
-                    },
+                    var_path: ty::UpvarPath { hir_id: var_hir_id },
                     closure_expr_id: LocalDefId::from_def_id(closure_def_id),
                 };
                 debug!("seed upvar_id {:?}", upvar_id);
@@ -139,27 +131,19 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     hir::CaptureBy::Ref => {
                         let origin = UpvarRegion(upvar_id, span);
                         let upvar_region = self.next_region_var(origin);
-                        let upvar_borrow = ty::UpvarBorrow {
-                            kind: ty::ImmBorrow,
-                            region: upvar_region,
-                        };
+                        let upvar_borrow =
+                            ty::UpvarBorrow { kind: ty::ImmBorrow, region: upvar_region };
                         ty::UpvarCapture::ByRef(upvar_borrow)
                     }
                 };
 
-                self.tables
-                    .borrow_mut()
-                    .upvar_capture_map
-                    .insert(upvar_id, capture_kind);
+                self.tables.borrow_mut().upvar_capture_map.insert(upvar_id, capture_kind);
             }
             // Add the vector of upvars to the map keyed with the closure id.
             // This gives us an easier access to them without having to call
             // tcx.upvars again..
             if !upvar_list.is_empty() {
-                self.tables
-                    .borrow_mut()
-                    .upvar_list
-                    .insert(closure_def_id, upvar_list);
+                self.tables.borrow_mut().upvar_list.insert(closure_def_id, upvar_list);
             }
         }
 
@@ -185,23 +169,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // Unify the (as yet unbound) type variable in the closure
             // substs with the kind we inferred.
             let inferred_kind = delegate.current_closure_kind;
-            let closure_kind_ty = closure_substs
-                .as_closure().kind_ty(closure_def_id, self.tcx);
+            let closure_kind_ty = closure_substs.as_closure().kind_ty(closure_def_id, self.tcx);
             self.demand_eqtype(span, inferred_kind.to_ty(self.tcx), closure_kind_ty);
 
             // If we have an origin, store it.
             if let Some(origin) = delegate.current_origin {
-                self.tables
-                    .borrow_mut()
-                    .closure_kind_origins_mut()
-                    .insert(closure_hir_id, origin);
+                self.tables.borrow_mut().closure_kind_origins_mut().insert(closure_hir_id, origin);
             }
         }
 
-        self.tables
-            .borrow_mut()
-            .upvar_capture_map
-            .extend(delegate.adjust_upvar_captures);
+        self.tables.borrow_mut().upvar_capture_map.extend(delegate.adjust_upvar_captures);
 
         // Now that we've analyzed the closure, we know how each
         // variable is borrowed, and we know what traits the closure
@@ -221,9 +198,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             "analyze_closure: id={:?} substs={:?} final_upvar_tys={:?}",
             closure_hir_id, substs, final_upvar_tys
         );
-        for (upvar_ty, final_upvar_ty) in substs
-            .upvar_tys(closure_def_id, self.tcx)
-            .zip(final_upvar_tys)
+        for (upvar_ty, final_upvar_ty) in
+            substs.upvar_tys(closure_def_id, self.tcx).zip(final_upvar_tys)
         {
             self.demand_suptype(span, upvar_ty, final_upvar_ty);
         }
@@ -236,7 +212,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
     }
 
-    // Returns a list of `ClosureUpvar`s for each upvar.
+    // Returns a list of `Ty`s for each upvar.
     fn final_upvar_tys(&self, closure_id: hir::HirId) -> Vec<Ty<'tcx>> {
         // Presently an unboxed closure type cannot "escape" out of a
         // function, so we will only encounter ones that originated in the
@@ -246,10 +222,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let tcx = self.tcx;
         let closure_def_id = tcx.hir().local_def_id(closure_id);
 
-        tcx.upvars(closure_def_id).iter().flat_map(|upvars| {
-            upvars
-                .iter()
-                .map(|(&var_hir_id, _)| {
+        tcx.upvars(closure_def_id)
+            .iter()
+            .flat_map(|upvars| {
+                upvars.iter().map(|(&var_hir_id, _)| {
                     let upvar_ty = self.node_ty(var_hir_id);
                     let upvar_id = ty::UpvarId {
                         var_path: ty::UpvarPath { hir_id: var_hir_id },
@@ -257,23 +233,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     };
                     let capture = self.tables.borrow().upvar_capture(upvar_id);
 
-                    debug!(
-                        "var_id={:?} upvar_ty={:?} capture={:?}",
-                        var_hir_id, upvar_ty, capture
-                    );
+                    debug!("var_id={:?} upvar_ty={:?} capture={:?}", var_hir_id, upvar_ty, capture);
 
                     match capture {
                         ty::UpvarCapture::ByValue => upvar_ty,
                         ty::UpvarCapture::ByRef(borrow) => tcx.mk_ref(
                             borrow.region,
-                            ty::TypeAndMut {
-                                ty: upvar_ty,
-                                mutbl: borrow.kind.to_mutbl_lossy(),
-                            },
+                            ty::TypeAndMut { ty: upvar_ty, mutbl: borrow.kind.to_mutbl_lossy() },
                         ),
                     }
                 })
-        })
+            })
             .collect()
     }
 }
@@ -353,7 +323,7 @@ impl<'a, 'tcx> InferBorrowKind<'a, 'tcx> {
                     // borrowed pointer implies that the
                     // pointer itself must be unique, but not
                     // necessarily *mutable*
-                    ty::Ref(.., hir::Mutability::Mutable) => borrow_kind = ty::UniqueImmBorrow,
+                    ty::Ref(.., hir::Mutability::Mut) => borrow_kind = ty::UniqueImmBorrow,
                     _ => (),
                 }
             }
@@ -491,7 +461,7 @@ impl<'a, 'tcx> InferBorrowKind<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> euv::Delegate<'tcx> for InferBorrowKind<'a, 'tcx> {
-    fn consume(&mut self, place: &mc::Place<'tcx>,mode: euv::ConsumeMode) {
+    fn consume(&mut self, place: &mc::Place<'tcx>, mode: euv::ConsumeMode) {
         debug!("consume(place={:?},mode={:?})", place, mode);
         self.adjust_upvar_borrow_kind_for_consume(place, mode);
     }

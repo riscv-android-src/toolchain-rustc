@@ -1,11 +1,11 @@
 use crate::utils::{get_parent_expr, span_lint, span_note_and_lint};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
+use rustc::hir::map::Map;
 use rustc::ty;
-use rustc_session::declare_tool_lint;
+use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for a read and a write to the same variable where
@@ -59,10 +59,10 @@ declare_clippy_lint! {
 declare_lint_pass!(EvalOrderDependence => [EVAL_ORDER_DEPENDENCE, DIVERGING_SUB_EXPRESSION]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EvalOrderDependence {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         // Find a write to a local variable.
         match expr.kind {
-            ExprKind::Assign(ref lhs, _) | ExprKind::AssignOp(_, ref lhs, _) => {
+            ExprKind::Assign(ref lhs, ..) | ExprKind::AssignOp(_, ref lhs, _) => {
                 if let ExprKind::Path(ref qpath) = lhs.kind {
                     if let QPath::Resolved(_, ref path) = *qpath {
                         if path.segments.len() == 1 {
@@ -82,7 +82,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for EvalOrderDependence {
             _ => {},
         }
     }
-    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt) {
+    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt<'_>) {
         match stmt.kind {
             StmtKind::Local(ref local) => {
                 if let Local { init: Some(ref e), .. } = **local {
@@ -100,10 +100,10 @@ struct DivergenceVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> DivergenceVisitor<'a, 'tcx> {
-    fn maybe_walk_expr(&mut self, e: &'tcx Expr) {
+    fn maybe_walk_expr(&mut self, e: &'tcx Expr<'_>) {
         match e.kind {
             ExprKind::Closure(..) => {},
-            ExprKind::Match(ref e, ref arms, _) => {
+            ExprKind::Match(ref e, arms, _) => {
                 self.visit_expr(e);
                 for arm in arms {
                     if let Some(ref guard) = arm.guard {
@@ -118,13 +118,15 @@ impl<'a, 'tcx> DivergenceVisitor<'a, 'tcx> {
             _ => walk_expr(self, e),
         }
     }
-    fn report_diverging_sub_expr(&mut self, e: &Expr) {
+    fn report_diverging_sub_expr(&mut self, e: &Expr<'_>) {
         span_lint(self.cx, DIVERGING_SUB_EXPRESSION, e.span, "sub-expression diverges");
     }
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for DivergenceVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, e: &'tcx Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, e: &'tcx Expr<'_>) {
         match e.kind {
             ExprKind::Continue(_) | ExprKind::Break(_, _) | ExprKind::Ret(_) => self.report_diverging_sub_expr(e),
             ExprKind::Call(ref func, _) => {
@@ -153,10 +155,10 @@ impl<'a, 'tcx> Visitor<'tcx> for DivergenceVisitor<'a, 'tcx> {
         }
         self.maybe_walk_expr(e);
     }
-    fn visit_block(&mut self, _: &'tcx Block) {
+    fn visit_block(&mut self, _: &'tcx Block<'_>) {
         // don't continue over blocks, LateLintPass already does that
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -214,7 +216,7 @@ enum StopEarly {
     Stop,
 }
 
-fn check_expr<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, expr: &'tcx Expr) -> StopEarly {
+fn check_expr<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, expr: &'tcx Expr<'_>) -> StopEarly {
     if expr.hir_id == vis.last_expr.hir_id {
         return StopEarly::KeepGoing;
     }
@@ -224,7 +226,7 @@ fn check_expr<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, expr: &'tcx Expr) -> St
         | ExprKind::Tup(_)
         | ExprKind::MethodCall(..)
         | ExprKind::Call(_, _)
-        | ExprKind::Assign(_, _)
+        | ExprKind::Assign(..)
         | ExprKind::Index(_, _)
         | ExprKind::Repeat(_, _)
         | ExprKind::Struct(_, _, _) => {
@@ -261,7 +263,7 @@ fn check_expr<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, expr: &'tcx Expr) -> St
     StopEarly::KeepGoing
 }
 
-fn check_stmt<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, stmt: &'tcx Stmt) -> StopEarly {
+fn check_stmt<'a, 'tcx>(vis: &mut ReadVisitor<'a, 'tcx>, stmt: &'tcx Stmt<'_>) -> StopEarly {
     match stmt.kind {
         StmtKind::Expr(ref expr) | StmtKind::Semi(ref expr) => check_expr(vis, expr),
         // If the declaration is of a local variable, check its initializer
@@ -281,14 +283,16 @@ struct ReadVisitor<'a, 'tcx> {
     var: HirId,
     /// The expressions where the write to the variable occurred (for reporting
     /// in the lint).
-    write_expr: &'tcx Expr,
+    write_expr: &'tcx Expr<'tcx>,
     /// The last (highest in the AST) expression we've checked, so we know not
     /// to recheck it.
-    last_expr: &'tcx Expr,
+    last_expr: &'tcx Expr<'tcx>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for ReadVisitor<'a, 'tcx> {
-    fn visit_expr(&mut self, expr: &'tcx Expr) {
+    type Map = Map<'tcx>;
+
+    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         if expr.hir_id == self.last_expr.hir_id {
             return;
         }
@@ -337,15 +341,15 @@ impl<'a, 'tcx> Visitor<'tcx> for ReadVisitor<'a, 'tcx> {
 
         walk_expr(self, expr);
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
 
 /// Returns `true` if `expr` is the LHS of an assignment, like `expr = ...`.
-fn is_in_assignment_position(cx: &LateContext<'_, '_>, expr: &Expr) -> bool {
+fn is_in_assignment_position(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
     if let Some(parent) = get_parent_expr(cx, expr) {
-        if let ExprKind::Assign(ref lhs, _) = parent.kind {
+        if let ExprKind::Assign(ref lhs, ..) = parent.kind {
             return lhs.hir_id == expr.hir_id;
         }
     }

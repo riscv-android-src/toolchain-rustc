@@ -1,9 +1,8 @@
-use rustc::hir::*;
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::mir::interpret::ConstValue;
 use rustc::ty::{self, ConstKind};
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 use if_chain::if_chain;
 
@@ -40,7 +39,7 @@ impl LargeStackArrays {
 impl_lint_pass!(LargeStackArrays => [LARGE_STACK_ARRAYS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LargeStackArrays {
-    fn check_expr(&mut self, cx: &LateContext<'_, '_>, expr: &Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'_, '_>, expr: &Expr<'_>) {
         if_chain! {
             if let ExprKind::Repeat(_, _) = expr.kind;
             if let ty::Array(element_type, cst) = cx.tables.expr_ty(expr).kind;
@@ -59,7 +58,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LargeStackArrays {
                         self.maximum_allowed_size
                     ),
                     &format!(
-                        "consider allocating on the heap with vec!{}.into_boxed_slice()",
+                        "consider allocating on the heap with `vec!{}.into_boxed_slice()`",
                         snippet(cx, expr.span, "[...]")
                     ),
                 );

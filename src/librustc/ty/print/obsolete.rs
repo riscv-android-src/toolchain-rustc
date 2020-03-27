@@ -5,10 +5,11 @@
 //! Note: A lot of this could looks very similar to what's already in `ty::print`.
 //! FIXME(eddyb) implement a custom `PrettyPrinter` for this.
 
-use rustc::hir::def_id::DefId;
+use rustc::bug;
 use rustc::ty::subst::SubstsRef;
 use rustc::ty::{self, Const, Instance, Ty, TyCtxt};
-use rustc::{bug, hir};
+use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
 use std::fmt::Write;
 use std::iter;
 
@@ -59,8 +60,8 @@ impl DefPathBasedNames<'tcx> {
             ty::RawPtr(ty::TypeAndMut { ty: inner_type, mutbl }) => {
                 output.push('*');
                 match mutbl {
-                    hir::Mutability::Immutable => output.push_str("const "),
-                    hir::Mutability::Mutable => output.push_str("mut "),
+                    hir::Mutability::Not => output.push_str("const "),
+                    hir::Mutability::Mut => output.push_str("mut "),
                 }
 
                 self.push_type_name(inner_type, output, debug);
@@ -137,8 +138,7 @@ impl DefPathBasedNames<'tcx> {
                     self.push_type_name(sig.output(), output, debug);
                 }
             }
-            ty::Generator(def_id,  substs, _)
-            | ty::Closure(def_id, substs) => {
+            ty::Generator(def_id, substs, _) | ty::Closure(def_id, substs) => {
                 self.push_def_path(def_id, output);
                 let generics = self.tcx.generics_of(self.tcx.closure_base_def_id(def_id));
                 let substs = substs.truncate_to(self.tcx, generics);
@@ -166,22 +166,12 @@ impl DefPathBasedNames<'tcx> {
     }
 
     // Pushes the the name of the specified const to the provided string.
-    // If `debug` is true, usually-unprintable consts (such as `Infer`) will be printed,
-    // as well as the unprintable types of constants (see `push_type_name` for more details).
-    pub fn push_const_name(&self, c: &Const<'tcx>, output: &mut String, debug: bool) {
-        if let ty::ConstKind::Value(_) = c.val {
-            // FIXME(const_generics): we could probably do a better job here.
-            write!(output, "{:?}", c).unwrap()
-        } else if debug {
-            write!(output, "{:?}", c).unwrap()
-        } else {
-            bug!(
-                "DefPathBasedNames: trying to create const name for unexpected const: {:?}",
-                c,
-            );
-        }
+    // If `debug` is true, the unprintable types of constants will be printed with `fmt::Debug`
+    // (see `push_type_name` for more details).
+    pub fn push_const_name(&self, ct: &Const<'tcx>, output: &mut String, debug: bool) {
+        write!(output, "{}", ct).unwrap();
         output.push_str(": ");
-        self.push_type_name(c.ty, output, debug);
+        self.push_type_name(ct.ty, output, debug);
     }
 
     pub fn push_def_path(&self, def_id: DefId, output: &mut String) {
@@ -198,8 +188,7 @@ impl DefPathBasedNames<'tcx> {
             if self.omit_disambiguators {
                 write!(output, "{}::", part.data.as_symbol()).unwrap();
             } else {
-                write!(output, "{}[{}]::", part.data.as_symbol(), part.disambiguator)
-                    .unwrap();
+                write!(output, "{}[{}]::", part.data.as_symbol(), part.disambiguator).unwrap();
             }
         }
 

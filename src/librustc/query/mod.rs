@@ -1,21 +1,28 @@
-use crate::ty::query::QueryDescription;
-use crate::ty::query::queries;
-use crate::ty::{self, ParamEnvAnd, Ty, TyCtxt};
-use crate::ty::subst::SubstsRef;
-use crate::dep_graph::{RecoverKey,DepKind, DepNode, SerializedDepNodeIndex};
-use crate::hir::def_id::{CrateNum, DefId, DefIndex};
+use crate::dep_graph::{DepKind, DepNode, RecoverKey, SerializedDepNodeIndex};
 use crate::mir;
-use crate::mir::interpret::GlobalId;
+use crate::mir::interpret::{GlobalId, LitToConstInput};
 use crate::traits;
 use crate::traits::query::{
-    CanonicalPredicateGoal, CanonicalProjectionGoal,
-    CanonicalTyGoal, CanonicalTypeOpAscribeUserTypeGoal,
-    CanonicalTypeOpEqGoal, CanonicalTypeOpSubtypeGoal, CanonicalTypeOpProvePredicateGoal,
-    CanonicalTypeOpNormalizeGoal,
+    CanonicalPredicateGoal, CanonicalProjectionGoal, CanonicalTyGoal,
+    CanonicalTypeOpAscribeUserTypeGoal, CanonicalTypeOpEqGoal, CanonicalTypeOpNormalizeGoal,
+    CanonicalTypeOpProvePredicateGoal, CanonicalTypeOpSubtypeGoal,
 };
+use crate::ty::query::queries;
+use crate::ty::query::QueryDescription;
+use crate::ty::subst::SubstsRef;
+use crate::ty::{self, ParamEnvAnd, Ty, TyCtxt};
+use rustc_hir::def_id::{CrateNum, DefId, DefIndex};
 
+use rustc_span::symbol::Symbol;
 use std::borrow::Cow;
-use syntax_pos::symbol::Symbol;
+
+fn describe_as_module(def_id: DefId, tcx: TyCtxt<'_>) -> String {
+    if def_id.is_top_level_module() {
+        format!("top-level module")
+    } else {
+        format!("module `{}`", tcx.def_path_str(def_id))
+    }
+}
 
 // Each of these queries corresponds to a function pointer field in the
 // `Providers` struct for requesting a value of that type, and a method
@@ -75,7 +82,7 @@ rustc_queries! {
             desc { "looking up the native libraries of a linked crate" }
         }
 
-        query lint_levels(_: CrateNum) -> &'tcx lint::LintLevelMap {
+        query lint_levels(_: CrateNum) -> &'tcx LintLevelMap {
             eval_always
             desc { "computing the lint levels for items in this crate" }
         }
@@ -333,50 +340,50 @@ rustc_queries! {
 
     Other {
         query lint_mod(key: DefId) -> () {
-            desc { |tcx| "linting {}", key.describe_as_module(tcx) }
+            desc { |tcx| "linting {}", describe_as_module(key, tcx) }
         }
 
         /// Checks the attributes in the module.
         query check_mod_attrs(key: DefId) -> () {
-            desc { |tcx| "checking attributes in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking attributes in {}", describe_as_module(key, tcx) }
         }
 
         query check_mod_unstable_api_usage(key: DefId) -> () {
-            desc { |tcx| "checking for unstable API usage in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking for unstable API usage in {}", describe_as_module(key, tcx) }
         }
 
         /// Checks the const bodies in the module for illegal operations (e.g. `if` or `loop`).
         query check_mod_const_bodies(key: DefId) -> () {
-            desc { |tcx| "checking consts in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking consts in {}", describe_as_module(key, tcx) }
         }
 
         /// Checks the loops in the module.
         query check_mod_loops(key: DefId) -> () {
-            desc { |tcx| "checking loops in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking loops in {}", describe_as_module(key, tcx) }
         }
 
         query check_mod_item_types(key: DefId) -> () {
-            desc { |tcx| "checking item types in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking item types in {}", describe_as_module(key, tcx) }
         }
 
         query check_mod_privacy(key: DefId) -> () {
-            desc { |tcx| "checking privacy in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking privacy in {}", describe_as_module(key, tcx) }
         }
 
         query check_mod_intrinsics(key: DefId) -> () {
-            desc { |tcx| "checking intrinsics in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking intrinsics in {}", describe_as_module(key, tcx) }
         }
 
         query check_mod_liveness(key: DefId) -> () {
-            desc { |tcx| "checking liveness of variables in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking liveness of variables in {}", describe_as_module(key, tcx) }
         }
 
         query check_mod_impl_wf(key: DefId) -> () {
-            desc { |tcx| "checking that impls are well-formed in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "checking that impls are well-formed in {}", describe_as_module(key, tcx) }
         }
 
         query collect_mod_item_types(key: DefId) -> () {
-            desc { |tcx| "collecting item types in {}", key.describe_as_module(tcx) }
+            desc { |tcx| "collecting item types in {}", describe_as_module(key, tcx) }
         }
 
         /// Caches `CoerceUnsized` kinds for impls on custom types.
@@ -390,6 +397,16 @@ rustc_queries! {
         }
 
         query typeck_tables_of(key: DefId) -> &'tcx ty::TypeckTables<'tcx> {
+            cache_on_disk_if { key.is_local() }
+            load_cached(tcx, id) {
+                let typeck_tables: Option<ty::TypeckTables<'tcx>> = tcx
+                    .queries.on_disk_cache
+                    .try_load_query_result(tcx, id);
+
+                typeck_tables.map(|tables| &*tcx.arena.alloc(tables))
+            }
+        }
+        query diagnostic_only_typeck_tables_of(key: DefId) -> &'tcx ty::TypeckTables<'tcx> {
             cache_on_disk_if { key.is_local() }
             load_cached(tcx, id) {
                 let typeck_tables: Option<ty::TypeckTables<'tcx>> = tcx
@@ -448,7 +465,8 @@ rustc_queries! {
         ///
         /// **Do not use this** outside const eval. Const eval uses this to break query cycles
         /// during validation. Please add a comment to every use site explaining why using
-        /// `const_eval` isn't sufficient.
+        /// `const_eval_validated` isn't sufficient. The returned constant also isn't in a suitable
+        /// form to be used outside of const eval.
         query const_eval_raw(key: ty::ParamEnvAnd<'tcx, GlobalId<'tcx>>)
             -> ConstEvalRawResult<'tcx> {
             no_force
@@ -460,7 +478,13 @@ rustc_queries! {
 
         /// Results of evaluating const items or constants embedded in
         /// other items (such as enum variant explicit discriminants).
-        query const_eval(key: ty::ParamEnvAnd<'tcx, GlobalId<'tcx>>)
+        ///
+        /// In contrast to `const_eval_raw` this performs some validation on the constant, and
+        /// returns a proper constant that is usable by the rest of the compiler.
+        ///
+        /// **Do not use this** directly, use one of the following wrappers: `tcx.const_eval_poly`,
+        /// `tcx.const_eval_resolve`, `tcx.const_eval_instance`, or `tcx.const_eval_promoted`.
+        query const_eval_validated(key: ty::ParamEnvAnd<'tcx, GlobalId<'tcx>>)
             -> ConstEvalResult<'tcx> {
             no_force
             desc { |tcx|
@@ -481,9 +505,25 @@ rustc_queries! {
             desc { "extract field of const" }
         }
 
-        query const_caller_location(key: (syntax_pos::Symbol, u32, u32)) -> &'tcx ty::Const<'tcx> {
+        /// Destructure a constant ADT or array into its variant indent and its
+        /// field values.
+        query destructure_const(
+            key: ty::ParamEnvAnd<'tcx, &'tcx ty::Const<'tcx>>
+        ) -> mir::DestructuredConst<'tcx> {
+            no_force
+            desc { "destructure constant" }
+        }
+
+        query const_caller_location(key: (rustc_span::Symbol, u32, u32)) -> &'tcx ty::Const<'tcx> {
             no_force
             desc { "get a &core::panic::Location referring to a span" }
+        }
+
+        query lit_to_const(
+            key: LitToConstInput<'tcx>
+        ) -> Result<&'tcx ty::Const<'tcx>, LitToConstError> {
+            no_force
+            desc { "converting literal to const" }
         }
     }
 
@@ -504,7 +544,7 @@ rustc_queries! {
     }
 
     Other {
-        query reachable_set(_: CrateNum) -> ReachableSet {
+        query reachable_set(_: CrateNum) -> Lrc<HirIdSet> {
             desc { "reachability" }
         }
 
@@ -517,6 +557,9 @@ rustc_queries! {
             desc { |tcx| "generating MIR shim for `{}`", tcx.def_path_str(key.def_id()) }
         }
 
+        /// The `symbol_name` query provides the symbol name for calling a
+        /// given instance from the local crate. In particular, it will also
+        /// look up the correct symbol name of instances from upstream crates.
         query symbol_name(key: ty::Instance<'tcx>) -> ty::SymbolName {
             no_force
             desc { "computing the symbol for `{}`", key }
@@ -662,10 +705,6 @@ rustc_queries! {
             fatal_cycle
             desc { "checking if the crate has_panic_handler" }
         }
-        query is_sanitizer_runtime(_: CrateNum) -> bool {
-            fatal_cycle
-            desc { "query a crate is `#![sanitizer_runtime]`" }
-        }
         query is_profiler_runtime(_: CrateNum) -> bool {
             fatal_cycle
             desc { "query a crate is `#![profiler_runtime]`" }
@@ -737,13 +776,47 @@ rustc_queries! {
     }
 
     Codegen {
+        /// The entire set of monomorphizations the local crate can safely link
+        /// to because they are exported from upstream crates. Do not depend on
+        /// this directly, as its value changes anytime a monomorphization gets
+        /// added or removed in any upstream crate. Instead use the narrower
+        /// `upstream_monomorphizations_for`, `upstream_drop_glue_for`, or, even
+        /// better, `Instance::upstream_monomorphization()`.
         query upstream_monomorphizations(
             k: CrateNum
         ) -> &'tcx DefIdMap<FxHashMap<SubstsRef<'tcx>, CrateNum>> {
             desc { "collecting available upstream monomorphizations `{:?}`", k }
         }
+
+        /// Returns the set of upstream monomorphizations available for the
+        /// generic function identified by the given `def_id`. The query makes
+        /// sure to make a stable selection if the same monomorphization is
+        /// available in multiple upstream crates.
+        ///
+        /// You likely want to call `Instance::upstream_monomorphization()`
+        /// instead of invoking this query directly.
         query upstream_monomorphizations_for(_: DefId)
             -> Option<&'tcx FxHashMap<SubstsRef<'tcx>, CrateNum>> {}
+
+        /// Returns the upstream crate that exports drop-glue for the given
+        /// type (`substs` is expected to be a single-item list containing the
+        /// type one wants drop-glue for).
+        ///
+        /// This is a subset of `upstream_monomorphizations_for` in order to
+        /// increase dep-tracking granularity. Otherwise adding or removing any
+        /// type with drop-glue in any upstream crate would invalidate all
+        /// functions calling drop-glue of an upstream type.
+        ///
+        /// You likely want to call `Instance::upstream_monomorphization()`
+        /// instead of invoking this query directly.
+        ///
+        /// NOTE: This query could easily be extended to also support other
+        ///       common functions that have are large set of monomorphizations
+        ///       (like `Clone::clone` for example).
+        query upstream_drop_glue_for(substs: SubstsRef<'tcx>) -> Option<CrateNum> {
+            desc { "available upstream drop-glue for `{:?}`", substs }
+            no_force
+        }
     }
 
     Other {
@@ -935,6 +1008,11 @@ rustc_queries! {
     }
 
     Linking {
+        /// The list of symbols exported from the given crate.
+        ///
+        /// - All names contained in `exported_symbols(cnum)` are guaranteed to
+        ///   correspond to a publicly visible symbol in `cnum` machine code.
+        /// - The `exported_symbols` sets of different crates do not intersect.
         query exported_symbols(_: CrateNum)
             -> Arc<Vec<(ExportedSymbol<'tcx>, SymbolExportLevel)>> {
             desc { "exported_symbols" }

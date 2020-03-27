@@ -7,10 +7,9 @@
 //! of the Unstable Book for some examples.
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
-
 #![feature(nll)]
 
-use rustc::lint::LintStore;
+use rustc_lint::LintStore;
 
 pub mod build;
 pub mod load;

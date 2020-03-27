@@ -28,6 +28,11 @@ pub fn cli() -> App {
                 .multiple(true),
         )
         .arg(
+            Arg::with_name("versioned-dirs")
+                .long("versioned-dirs")
+                .help("Always include version in subdir name"),
+        )
+        .arg(
             Arg::with_name("no-merge-sources")
                 .long("no-merge-sources")
                 .hidden(true),
@@ -40,12 +45,6 @@ pub fn cli() -> App {
         .arg(
             Arg::with_name("only-git-deps")
                 .long("only-git-deps")
-                .hidden(true),
-        )
-        .arg(
-            Arg::with_name("explicit-version")
-                .short("-x")
-                .long("explicit-version")
                 .hidden(true),
         )
         .arg(
@@ -68,7 +67,7 @@ to use the vendored sources, which you will need to add to `.cargo/config`.
 }
 
 pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
-    // We're doing the vendoring operation outselves, so we don't actually want
+    // We're doing the vendoring operation ourselves, so we don't actually want
     // to respect any of the `source` configuration in Cargo itself. That's
     // intended for other consumers of Cargo, but we want to go straight to the
     // source, e.g. crates.io, to fetch crates.
@@ -77,7 +76,7 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
     }
 
     // When we moved `cargo vendor` into Cargo itself we didn't stabilize a few
-    // flags, so try to provide a helpful error message in that case to enusre
+    // flags, so try to provide a helpful error message in that case to ensure
     // that users currently using the flag aren't tripped up.
     let crates_io_cargo_vendor_flag = if args.is_present("no-merge-sources") {
         Some("--no-merge-sources")
@@ -85,15 +84,13 @@ pub fn exec(config: &mut Config, args: &ArgMatches<'_>) -> CliResult {
         Some("--relative-path")
     } else if args.is_present("only-git-deps") {
         Some("--only-git-deps")
-    } else if args.is_present("explicit-version") {
-        Some("--explicit-version")
     } else if args.is_present("disallow-duplicates") {
         Some("--disallow-duplicates")
     } else {
         None
     };
     if let Some(flag) = crates_io_cargo_vendor_flag {
-        return Err(failure::format_err!(
+        return Err(anyhow::format_err!(
             "\
 the crates.io `cargo vendor` command has now been merged into Cargo itself
 and does not support the flag `{}` currently; to continue using the flag you
@@ -116,6 +113,7 @@ https://github.com/rust-lang/cargo/issues/new
         &ops::VendorOptions {
             no_delete: args.is_present("no-delete"),
             destination: &path,
+            versioned_dirs: args.is_present("versioned-dirs"),
             extra: args
                 .values_of_os("tomls")
                 .unwrap_or_default()

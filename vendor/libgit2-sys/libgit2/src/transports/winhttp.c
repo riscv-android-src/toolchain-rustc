@@ -19,6 +19,7 @@
 #include "repository.h"
 #include "global.h"
 #include "http.h"
+#include "git2/sys/cred.h"
 
 #include <wincrypt.h>
 #include <winhttp.h>
@@ -46,6 +47,10 @@
 
 #ifndef WINHTTP_FLAG_SECURE_PROTOCOL_TLS_1_2
 # define WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2 0x00000800
+#endif
+
+#ifndef HTTP_STATUS_PERMANENT_REDIRECT
+# define HTTP_STATUS_PERMANENT_REDIRECT 308
 #endif
 
 #ifndef DWORD_MAX
@@ -1011,6 +1016,7 @@ replay:
 			}
 
 			buffer = git__malloc(CACHED_POST_BODY_BUF_SIZE);
+			GIT_ERROR_CHECK_ALLOC(buffer);
 
 			while (len > 0) {
 				DWORD bytes_written;
@@ -1069,7 +1075,8 @@ replay:
 			 HTTP_STATUS_REDIRECT == status_code ||
 			 (HTTP_STATUS_REDIRECT_METHOD == status_code &&
 			  get_verb == s->verb) ||
-			 HTTP_STATUS_REDIRECT_KEEP_VERB == status_code)) {
+			 HTTP_STATUS_REDIRECT_KEEP_VERB == status_code ||
+			 HTTP_STATUS_PERMANENT_REDIRECT == status_code)) {
 
 			/* Check for Windows 7. This workaround is only necessary on
 			 * Windows Vista and earlier. Windows 7 is version 6.1. */
@@ -1392,8 +1399,10 @@ static int winhttp_stream_write_chunked(
 		/* Append as much to the buffer as we can */
 		int count = (int)min(CACHED_POST_BODY_BUF_SIZE - s->chunk_buffer_len, len);
 
-		if (!s->chunk_buffer)
+		if (!s->chunk_buffer) {
 			s->chunk_buffer = git__malloc(CACHED_POST_BODY_BUF_SIZE);
+			GIT_ERROR_CHECK_ALLOC(s->chunk_buffer);
+		}
 
 		memcpy(s->chunk_buffer + s->chunk_buffer_len, buffer, count);
 		s->chunk_buffer_len += count;

@@ -13,7 +13,7 @@
 //! implemented with the `pipe` syscall and read/write ends of a pipe and on
 //! Windows this is implemented literally with IPC semaphores.
 //!
-//! The jobserver protocol in `make` also dictates when tokens are acquire to
+//! The jobserver protocol in `make` also dictates when tokens are acquired to
 //! run child work, and clients using this crate should take care to implement
 //! such details to ensure correct interoperation with `make` itself.
 //!
@@ -78,14 +78,20 @@
 #![deny(missing_docs, missing_debug_implementations)]
 #![doc(html_root_url = "https://docs.rs/jobserver/0.1")]
 
-#[macro_use]
-extern crate log;
-
 use std::env;
 use std::io;
 use std::process::Command;
-use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
+
+#[cfg(unix)]
+#[path = "unix.rs"]
+mod imp;
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod imp;
+#[cfg(not(any(unix, windows)))]
+#[path = "wasm.rs"]
+mod imp;
 
 /// A client of a jobserver
 ///
@@ -113,6 +119,33 @@ pub struct Client {
 pub struct Acquired {
     client: Arc<imp::Client>,
     data: imp::Acquired,
+    disabled: bool,
+}
+
+impl Acquired {
+    /// This drops the `Acquired` token without releasing the associated token.
+    ///
+    /// This is not generally useful, but can be helpful if you do not have the
+    /// ability to store an Acquired token but need to not yet release it.
+    ///
+    /// You'll typically want to follow this up with a call to `release_raw` or
+    /// similar to actually release the token later on.
+    pub fn drop_without_releasing(mut self) {
+        self.disabled = true;
+    }
+}
+
+#[derive(Default, Debug)]
+struct HelperState {
+    lock: Mutex<HelperInner>,
+    cvar: Condvar,
+}
+
+#[derive(Default, Debug)]
+struct HelperInner {
+    requests: usize,
+    producer_done: bool,
+    consumer_done: bool,
 }
 
 impl Client {
@@ -232,10 +265,11 @@ impl Client {
     /// return immediately with the error. If an error is returned then a token
     /// was not acquired.
     pub fn acquire(&self) -> io::Result<Acquired> {
-        let data = try!(self.inner.acquire());
+        let data = self.inner.acquire()?;
         Ok(Acquired {
             client: self.inner.clone(),
             data: data,
+            disabled: false,
         })
     }
 
@@ -347,10 +381,10 @@ impl Client {
     where
         F: FnMut(io::Result<Acquired>) + Send + 'static,
     {
-        let (tx, rx) = mpsc::channel();
+        let state = Arc::new(HelperState::default());
         Ok(HelperThread {
-            inner: Some(imp::spawn_helper(self, rx, Box::new(f))?),
-            tx: Some(tx),
+            inner: Some(imp::spawn_helper(self, state.clone(), Box::new(f))?),
+            state,
         })
     }
 
@@ -377,7 +411,9 @@ impl Client {
 
 impl Drop for Acquired {
     fn drop(&mut self) {
-        drop(self.client.release(Some(&self.data)));
+        if !self.disabled {
+            drop(self.client.release(Some(&self.data)));
+        }
     }
 }
 
@@ -386,7 +422,7 @@ impl Drop for Acquired {
 #[derive(Debug)]
 pub struct HelperThread {
     inner: Option<imp::Helper>,
-    tx: Option<Sender<()>>,
+    state: Arc<HelperState>,
 }
 
 impl HelperThread {
@@ -395,651 +431,64 @@ impl HelperThread {
     ///
     /// For more information, see the docs on that function.
     pub fn request_token(&self) {
-        self.tx.as_ref().unwrap().send(()).unwrap();
+        // Indicate that there's one more request for a token and then wake up
+        // the helper thread if it's sleeping.
+        self.state.lock().requests += 1;
+        self.state.cvar.notify_one();
     }
 }
 
 impl Drop for HelperThread {
     fn drop(&mut self) {
-        drop(self.tx.take());
+        // Flag that the producer half is done so the helper thread should exit
+        // quickly if it's waiting. Wake it up if it's actually waiting
+        self.state.lock().producer_done = true;
+        self.state.cvar.notify_one();
+
+        // ... and afterwards perform any thread cleanup logic
         self.inner.take().unwrap().join();
     }
 }
 
-#[cfg(unix)]
-mod imp {
-    extern crate libc;
-
-    use std::fs::File;
-    use std::io::{self, Read, Write};
-    use std::mem;
-    use std::os::unix::prelude::*;
-    use std::process::Command;
-    use std::ptr;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-    use std::sync::{Arc, Once, ONCE_INIT};
-    use std::thread::{self, Builder, JoinHandle};
-    use std::time::Duration;
-
-    use self::libc::c_int;
-
-    #[derive(Debug)]
-    pub struct Client {
-        read: File,
-        write: File,
+impl HelperState {
+    fn lock(&self) -> MutexGuard<'_, HelperInner> {
+        self.lock.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    #[derive(Debug)]
-    pub struct Acquired {
-        byte: u8,
+    /// Executes `f` for each request for a token, where `f` is expected to
+    /// block and then provide the original closure with a token once it's
+    /// acquired.
+    ///
+    /// This is an infinite loop until the helper thread is dropped, at which
+    /// point everything should get interrupted.
+    fn for_each_request(&self, mut f: impl FnMut(&HelperState)) {
+        let mut lock = self.lock();
+
+        // We only execute while we could receive requests, but as soon as
+        // that's `false` we're out of here.
+        while !lock.producer_done {
+            // If no one's requested a token then we wait for someone to
+            // request a token.
+            if lock.requests == 0 {
+                lock = self.cvar.wait(lock).unwrap_or_else(|e| e.into_inner());
+                continue;
+            }
+
+            // Consume the request for a token, and then actually acquire a
+            // token after unlocking our lock (not that acquisition happens in
+            // `f`). This ensures that we don't actually hold the lock if we
+            // wait for a long time for a token.
+            lock.requests -= 1;
+            drop(lock);
+            f(self);
+            lock = self.lock();
+        }
+        lock.consumer_done = true;
+        self.cvar.notify_one();
     }
 
-    impl Client {
-        pub fn new(limit: usize) -> io::Result<Client> {
-            let client = unsafe { Client::mk()? };
-            // I don't think the character written here matters, but I could be
-            // wrong!
-            for _ in 0..limit {
-                (&client.write).write(&[b'|'])?;
-            }
-            info!("created a jobserver: {:?}", client);
-            Ok(client)
-        }
-
-        unsafe fn mk() -> io::Result<Client> {
-            let mut pipes = [0; 2];
-
-            // Attempt atomically-create-with-cloexec if we can on Linux,
-            // detected by using the `syscall` function in `libc` to try to work
-            // with as many kernels/glibc implementations as possible.
-            #[cfg(target_os = "linux")]
-            {
-                static PIPE2_AVAILABLE: AtomicBool = AtomicBool::new(true);
-                if PIPE2_AVAILABLE.load(Ordering::SeqCst) {
-                    match libc::syscall(libc::SYS_pipe2, pipes.as_mut_ptr(), libc::O_CLOEXEC) {
-                        -1 => {
-                            let err = io::Error::last_os_error();
-                            if err.raw_os_error() == Some(libc::ENOSYS) {
-                                PIPE2_AVAILABLE.store(false, Ordering::SeqCst);
-                            } else {
-                                return Err(err);
-                            }
-                        }
-                        _ => return Ok(Client::from_fds(pipes[0], pipes[1])),
-                    }
-                }
-            }
-
-            cvt(libc::pipe(pipes.as_mut_ptr()))?;
-            drop(set_cloexec(pipes[0], true));
-            drop(set_cloexec(pipes[1], true));
-            Ok(Client::from_fds(pipes[0], pipes[1]))
-        }
-
-        pub unsafe fn open(s: &str) -> Option<Client> {
-            let mut parts = s.splitn(2, ',');
-            let read = parts.next().unwrap();
-            let write = match parts.next() {
-                Some(s) => s,
-                None => return None,
-            };
-
-            let read = match read.parse() {
-                Ok(n) => n,
-                Err(_) => return None,
-            };
-            let write = match write.parse() {
-                Ok(n) => n,
-                Err(_) => return None,
-            };
-
-            // Ok so we've got two integers that look like file descriptors, but
-            // for extra sanity checking let's see if they actually look like
-            // instances of a pipe before we return the client.
-            //
-            // If we're called from `make` *without* the leading + on our rule
-            // then we'll have `MAKEFLAGS` env vars but won't actually have
-            // access to the file descriptors.
-            if is_valid_fd(read) && is_valid_fd(write) {
-                info!("using env fds {} and {}", read, write);
-                drop(set_cloexec(read, true));
-                drop(set_cloexec(write, true));
-                Some(Client::from_fds(read, write))
-            } else {
-                info!("one of {} or {} isn't a pipe", read, write);
-                None
-            }
-        }
-
-        unsafe fn from_fds(read: c_int, write: c_int) -> Client {
-            Client {
-                read: File::from_raw_fd(read),
-                write: File::from_raw_fd(write),
-            }
-        }
-
-        pub fn acquire(&self) -> io::Result<Acquired> {
-            // We don't actually know if the file descriptor here is set in
-            // blocking or nonblocking mode. AFAIK all released versions of
-            // `make` use blocking fds for the jobserver, but the unreleased
-            // version of `make` doesn't. In the unreleased version jobserver
-            // fds are set to nonblocking and combined with `pselect`
-            // internally.
-            //
-            // Here we try to be compatible with both strategies. We
-            // unconditionally expect the file descriptor to be in nonblocking
-            // mode and if it happens to be in blocking mode then most of this
-            // won't end up actually being necessary!
-            //
-            // We use `poll` here to block this thread waiting for read
-            // readiness, and then afterwards we perform the `read` itself. If
-            // the `read` returns that it would block then we start over and try
-            // again.
-            //
-            // Also note that we explicitly don't handle EINTR here. That's used
-            // to shut us down, so we otherwise punt all errors upwards.
-            unsafe {
-                let mut fd: libc::pollfd = mem::zeroed();
-                fd.fd = self.read.as_raw_fd();
-                fd.events = libc::POLLIN;
-                loop {
-                    fd.revents = 0;
-                    if libc::poll(&mut fd, 1, -1) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    if fd.revents == 0 {
-                        continue;
-                    }
-                    let mut buf = [0];
-                    match (&self.read).read(&mut buf) {
-                        Ok(1) => return Ok(Acquired { byte: buf[0] }),
-                        Ok(_) => {
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                "early EOF on jobserver pipe",
-                            ))
-                        }
-                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-        }
-
-        pub fn release(&self, data: Option<&Acquired>) -> io::Result<()> {
-            // Note that the fd may be nonblocking but we're going to go ahead
-            // and assume that the writes here are always nonblocking (we can
-            // always quickly release a token). If that turns out to not be the
-            // case we'll get an error anyway!
-            let byte = data.map(|d| d.byte).unwrap_or(b'+');
-            match (&self.write).write(&[byte])? {
-                1 => Ok(()),
-                _ => Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "failed to write token back to jobserver",
-                )),
-            }
-        }
-
-        pub fn string_arg(&self) -> String {
-            format!("{},{} -j", self.read.as_raw_fd(), self.write.as_raw_fd())
-        }
-
-        pub fn configure(&self, cmd: &mut Command) {
-            // Here we basically just want to say that in the child process
-            // we'll configure the read/write file descriptors to *not* be
-            // cloexec, so they're inherited across the exec and specified as
-            // integers through `string_arg` above.
-            let read = self.read.as_raw_fd();
-            let write = self.write.as_raw_fd();
-            cmd.before_exec(move || {
-                set_cloexec(read, false)?;
-                set_cloexec(write, false)?;
-                Ok(())
-            });
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Helper {
-        thread: JoinHandle<()>,
-        quitting: Arc<AtomicBool>,
-        rx_done: Receiver<()>,
-    }
-
-    pub fn spawn_helper(
-        client: ::Client,
-        rx: Receiver<()>,
-        mut f: Box<FnMut(io::Result<::Acquired>) + Send>,
-    ) -> io::Result<Helper> {
-        static USR1_INIT: Once = ONCE_INIT;
-        let mut err = None;
-        USR1_INIT.call_once(|| unsafe {
-            let mut new: libc::sigaction = mem::zeroed();
-            new.sa_sigaction = sigusr1_handler as usize;
-            new.sa_flags = libc::SA_SIGINFO as _;
-            if libc::sigaction(libc::SIGUSR1, &new, ptr::null_mut()) != 0 {
-                err = Some(io::Error::last_os_error());
-            }
-        });
-
-        if let Some(e) = err.take() {
-            return Err(e);
-        }
-
-        let quitting = Arc::new(AtomicBool::new(false));
-        let quitting2 = quitting.clone();
-        let (tx_done, rx_done) = mpsc::channel();
-        let thread = Builder::new().spawn(move || {
-            'outer: for () in rx {
-                loop {
-                    let res = client.acquire();
-                    if let Err(ref e) = res {
-                        if e.kind() == io::ErrorKind::Interrupted {
-                            if quitting2.load(Ordering::SeqCst) {
-                                break 'outer;
-                            } else {
-                                continue;
-                            }
-                        }
-                    }
-                    f(res);
-                    break;
-                }
-            }
-            tx_done.send(()).unwrap();
-        })?;
-
-        Ok(Helper {
-            thread: thread,
-            quitting: quitting,
-            rx_done: rx_done,
-        })
-    }
-
-    impl Helper {
-        pub fn join(self) {
-            self.quitting.store(true, Ordering::SeqCst);
-            let dur = Duration::from_millis(10);
-            let mut done = false;
-            for _ in 0..100 {
-                unsafe {
-                    // Ignore the return value here of `pthread_kill`,
-                    // apparently on OSX if you kill a dead thread it will
-                    // return an error, but on other platforms it may not. In
-                    // that sense we don't actually know if this will succeed or
-                    // not!
-                    libc::pthread_kill(self.thread.as_pthread_t() as _, libc::SIGUSR1);
-                    match self.rx_done.recv_timeout(dur) {
-                        Ok(()) | Err(RecvTimeoutError::Disconnected) => {
-                            done = true;
-                            break;
-                        }
-                        Err(RecvTimeoutError::Timeout) => {}
-                    }
-                }
-                thread::yield_now();
-            }
-            if done {
-                drop(self.thread.join());
-            }
-        }
-    }
-
-    fn is_valid_fd(fd: c_int) -> bool {
-        unsafe {
-            return libc::fcntl(fd, libc::F_GETFD) != -1;
-        }
-    }
-
-    fn set_cloexec(fd: c_int, set: bool) -> io::Result<()> {
-        unsafe {
-            let previous = cvt(libc::fcntl(fd, libc::F_GETFD))?;
-            let new = if set {
-                previous | libc::FD_CLOEXEC
-            } else {
-                previous & !libc::FD_CLOEXEC
-            };
-            if new != previous {
-                cvt(libc::fcntl(fd, libc::F_SETFD, new))?;
-            }
-            Ok(())
-        }
-    }
-
-    fn cvt(t: c_int) -> io::Result<c_int> {
-        if t == -1 {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(t)
-        }
-    }
-
-    extern "C" fn sigusr1_handler(
-        _signum: c_int,
-        _info: *mut libc::siginfo_t,
-        _ptr: *mut libc::c_void,
-    ) {
-        // nothing to do
-    }
-}
-
-#[cfg(windows)]
-mod imp {
-    extern crate rand;
-
-    use std::ffi::CString;
-    use std::io;
-    use std::process::Command;
-    use std::ptr;
-    use std::sync::mpsc::Receiver;
-    use std::sync::Arc;
-    use std::thread::{Builder, JoinHandle};
-
-    #[derive(Debug)]
-    pub struct Client {
-        sem: Handle,
-        name: String,
-    }
-
-    #[derive(Debug)]
-    pub struct Acquired;
-
-    type BOOL = i32;
-    type DWORD = u32;
-    type HANDLE = *mut u8;
-    type LONG = i32;
-
-    const ERROR_ALREADY_EXISTS: DWORD = 183;
-    const FALSE: BOOL = 0;
-    const INFINITE: DWORD = 0xffffffff;
-    const SEMAPHORE_MODIFY_STATE: DWORD = 0x2;
-    const SYNCHRONIZE: DWORD = 0x00100000;
-    const TRUE: BOOL = 1;
-    const WAIT_OBJECT_0: DWORD = 0;
-
-    extern "system" {
-        fn CloseHandle(handle: HANDLE) -> BOOL;
-        fn SetEvent(hEvent: HANDLE) -> BOOL;
-        fn WaitForMultipleObjects(
-            ncount: DWORD,
-            lpHandles: *const HANDLE,
-            bWaitAll: BOOL,
-            dwMilliseconds: DWORD,
-        ) -> DWORD;
-        fn CreateEventA(
-            lpEventAttributes: *mut u8,
-            bManualReset: BOOL,
-            bInitialState: BOOL,
-            lpName: *const i8,
-        ) -> HANDLE;
-        fn ReleaseSemaphore(
-            hSemaphore: HANDLE,
-            lReleaseCount: LONG,
-            lpPreviousCount: *mut LONG,
-        ) -> BOOL;
-        fn CreateSemaphoreA(
-            lpEventAttributes: *mut u8,
-            lInitialCount: LONG,
-            lMaximumCount: LONG,
-            lpName: *const i8,
-        ) -> HANDLE;
-        fn OpenSemaphoreA(
-            dwDesiredAccess: DWORD,
-            bInheritHandle: BOOL,
-            lpName: *const i8,
-        ) -> HANDLE;
-        fn WaitForSingleObject(hHandle: HANDLE, dwMilliseconds: DWORD) -> DWORD;
-    }
-
-    impl Client {
-        pub fn new(limit: usize) -> io::Result<Client> {
-            // Try a bunch of random semaphore names until we get a unique one,
-            // but don't try for too long.
-            //
-            // Note that `limit == 0` is a valid argument above but Windows
-            // won't let us create a semaphore with 0 slots available to it. Get
-            // `limit == 0` working by creating a semaphore instead with one
-            // slot and then immediately acquire it (without ever releaseing it
-            // back).
-            for _ in 0..100 {
-                let mut name = format!("__rust_jobserver_semaphore_{}\0", rand::random::<u32>());
-                unsafe {
-                    let create_limit = if limit == 0 { 1 } else { limit };
-                    let r = CreateSemaphoreA(
-                        ptr::null_mut(),
-                        create_limit as LONG,
-                        create_limit as LONG,
-                        name.as_ptr() as *const _,
-                    );
-                    if r.is_null() {
-                        return Err(io::Error::last_os_error());
-                    }
-                    let handle = Handle(r);
-
-                    let err = io::Error::last_os_error();
-                    if err.raw_os_error() == Some(ERROR_ALREADY_EXISTS as i32) {
-                        continue;
-                    }
-                    name.pop(); // chop off the trailing nul
-                    let client = Client {
-                        sem: handle,
-                        name: name,
-                    };
-                    if create_limit != limit {
-                        client.acquire()?;
-                    }
-                    info!("created jobserver {:?}", client);
-                    return Ok(client);
-                }
-            }
-
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "failed to find a unique name for a semaphore",
-            ))
-        }
-
-        pub unsafe fn open(s: &str) -> Option<Client> {
-            let name = match CString::new(s) {
-                Ok(s) => s,
-                Err(_) => return None,
-            };
-
-            let sem = OpenSemaphoreA(SYNCHRONIZE | SEMAPHORE_MODIFY_STATE, FALSE, name.as_ptr());
-            if sem.is_null() {
-                info!("failed to open environment semaphore {}", s);
-                None
-            } else {
-                info!("opened environment semaphore {}", s);
-                Some(Client {
-                    sem: Handle(sem),
-                    name: s.to_string(),
-                })
-            }
-        }
-
-        pub fn acquire(&self) -> io::Result<Acquired> {
-            unsafe {
-                let r = WaitForSingleObject(self.sem.0, INFINITE);
-                if r == WAIT_OBJECT_0 {
-                    Ok(Acquired)
-                } else {
-                    Err(io::Error::last_os_error())
-                }
-            }
-        }
-
-        pub fn release(&self, _data: Option<&Acquired>) -> io::Result<()> {
-            unsafe {
-                let r = ReleaseSemaphore(self.sem.0, 1, ptr::null_mut());
-                if r != 0 {
-                    Ok(())
-                } else {
-                    Err(io::Error::last_os_error())
-                }
-            }
-        }
-
-        pub fn string_arg(&self) -> String {
-            self.name.clone()
-        }
-
-        pub fn configure(&self, _cmd: &mut Command) {
-            // nothing to do here, we gave the name of our semaphore to the
-            // child above
-        }
-    }
-
-    #[derive(Debug)]
-    struct Handle(HANDLE);
-    // HANDLE is a raw ptr, but we're send/sync
-    unsafe impl Sync for Handle {}
-    unsafe impl Send for Handle {}
-
-    impl Drop for Handle {
-        fn drop(&mut self) {
-            unsafe {
-                CloseHandle(self.0);
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Helper {
-        event: Arc<Handle>,
-        thread: JoinHandle<()>,
-    }
-
-    pub fn spawn_helper(
-        client: ::Client,
-        rx: Receiver<()>,
-        mut f: Box<FnMut(io::Result<::Acquired>) + Send>,
-    ) -> io::Result<Helper> {
-        let event = unsafe {
-            let r = CreateEventA(ptr::null_mut(), TRUE, FALSE, ptr::null());
-            if r.is_null() {
-                return Err(io::Error::last_os_error());
-            } else {
-                Handle(r)
-            }
-        };
-        let event = Arc::new(event);
-        let event2 = event.clone();
-        let thread = Builder::new().spawn(move || {
-            let objects = [event2.0, client.inner.sem.0];
-            for () in rx {
-                let r = unsafe { WaitForMultipleObjects(2, objects.as_ptr(), FALSE, INFINITE) };
-                if r == WAIT_OBJECT_0 {
-                    break;
-                }
-                if r == WAIT_OBJECT_0 + 1 {
-                    f(Ok(::Acquired {
-                        client: client.inner.clone(),
-                        data: Acquired,
-                    }))
-                } else {
-                    f(Err(io::Error::last_os_error()))
-                }
-            }
-        })?;
-        Ok(Helper {
-            thread: thread,
-            event: event,
-        })
-    }
-
-    impl Helper {
-        pub fn join(self) {
-            let r = unsafe { SetEvent(self.event.0) };
-            if r == 0 {
-                panic!("failed to set event: {}", io::Error::last_os_error());
-            }
-            drop(self.thread.join());
-        }
-    }
-}
-
-#[cfg(not(any(unix, windows)))]
-mod imp {
-    use std::io;
-    use std::process::Command;
-    use std::sync::mpsc::{self, Receiver, SyncSender};
-    use std::sync::Mutex;
-    use std::thread::{Builder, JoinHandle};
-
-    #[derive(Debug)]
-    pub struct Client {
-        tx: SyncSender<()>,
-        rx: Mutex<Receiver<()>>,
-    }
-
-    #[derive(Debug)]
-    pub struct Acquired(());
-
-    impl Client {
-        pub fn new(limit: usize) -> io::Result<Client> {
-            let (tx, rx) = mpsc::sync_channel(limit);
-            for _ in 0..limit {
-                tx.send(()).unwrap();
-            }
-            Ok(Client {
-                tx,
-                rx: Mutex::new(rx),
-            })
-        }
-
-        pub unsafe fn open(_s: &str) -> Option<Client> {
-            None
-        }
-
-        pub fn acquire(&self) -> io::Result<Acquired> {
-            self.rx.lock().unwrap().recv().unwrap();
-            Ok(Acquired(()))
-        }
-
-        pub fn release(&self, _data: Option<&Acquired>) -> io::Result<()> {
-            self.tx.send(()).unwrap();
-            Ok(())
-        }
-
-        pub fn string_arg(&self) -> String {
-            panic!(
-                "On this platform there is no cross process jobserver support,
-                 so Client::configure is not supported."
-            );
-        }
-
-        pub fn configure(&self, _cmd: &mut Command) {
-            unreachable!();
-        }
-    }
-
-    #[derive(Debug)]
-    pub struct Helper {
-        thread: JoinHandle<()>,
-    }
-
-    pub fn spawn_helper(
-        client: ::Client,
-        rx: Receiver<()>,
-        mut f: Box<FnMut(io::Result<::Acquired>) + Send>,
-    ) -> io::Result<Helper> {
-        let thread = Builder::new().spawn(move || {
-            for () in rx {
-                let res = client.acquire();
-                f(res);
-            }
-        })?;
-
-        Ok(Helper { thread: thread })
-    }
-
-    impl Helper {
-        pub fn join(self) {
-            drop(self.thread.join());
-        }
+    fn producer_done(&self) -> bool {
+        self.lock().producer_done
     }
 }
 

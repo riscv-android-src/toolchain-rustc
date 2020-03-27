@@ -5,13 +5,12 @@ use crate::utils::{
 };
 use if_chain::if_chain;
 use matches::matches;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax_pos::Symbol;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::Symbol;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for manual swapping.
@@ -69,14 +68,14 @@ declare_clippy_lint! {
 declare_lint_pass!(Swap => [MANUAL_SWAP, ALMOST_SWAPPED]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Swap {
-    fn check_block(&mut self, cx: &LateContext<'a, 'tcx>, block: &'tcx Block) {
+    fn check_block(&mut self, cx: &LateContext<'a, 'tcx>, block: &'tcx Block<'_>) {
         check_manual_swap(cx, block);
         check_suspicious_swap(cx, block);
     }
 }
 
 /// Implementation of the `MANUAL_SWAP` lint.
-fn check_manual_swap(cx: &LateContext<'_, '_>, block: &Block) {
+fn check_manual_swap(cx: &LateContext<'_, '_>, block: &Block<'_>) {
     for w in block.stmts.windows(3) {
         if_chain! {
             // let t = foo();
@@ -86,11 +85,11 @@ fn check_manual_swap(cx: &LateContext<'_, '_>, block: &Block) {
 
             // foo() = bar();
             if let StmtKind::Semi(ref first) = w[1].kind;
-            if let ExprKind::Assign(ref lhs1, ref rhs1) = first.kind;
+            if let ExprKind::Assign(ref lhs1, ref rhs1, _) = first.kind;
 
             // bar() = t;
             if let StmtKind::Semi(ref second) = w[2].kind;
-            if let ExprKind::Assign(ref lhs2, ref rhs2) = second.kind;
+            if let ExprKind::Assign(ref lhs2, ref rhs2, _) = second.kind;
             if let ExprKind::Path(QPath::Resolved(None, ref rhs2)) = rhs2.kind;
             if rhs2.segments.len() == 1;
 
@@ -176,7 +175,7 @@ enum Slice<'a> {
     /// // can be written as
     /// a.swap(0, 1);
     /// ```
-    Swappable(&'a Expr, &'a Expr, &'a Expr),
+    Swappable(&'a Expr<'a>, &'a Expr<'a>, &'a Expr<'a>),
     /// The `swap` function cannot be used.
     ///
     /// ## Example
@@ -193,7 +192,7 @@ enum Slice<'a> {
 }
 
 /// Checks if both expressions are index operations into "slice-like" types.
-fn check_for_slice<'a>(cx: &LateContext<'_, '_>, lhs1: &'a Expr, lhs2: &'a Expr) -> Slice<'a> {
+fn check_for_slice<'a>(cx: &LateContext<'_, '_>, lhs1: &'a Expr<'_>, lhs2: &'a Expr<'_>) -> Slice<'a> {
     if let ExprKind::Index(ref lhs1, ref idx1) = lhs1.kind {
         if let ExprKind::Index(ref lhs2, ref idx2) = lhs2.kind {
             if SpanlessEq::new(cx).ignore_fn().eq_expr(lhs1, lhs2) {
@@ -216,14 +215,14 @@ fn check_for_slice<'a>(cx: &LateContext<'_, '_>, lhs1: &'a Expr, lhs2: &'a Expr)
 }
 
 /// Implementation of the `ALMOST_SWAPPED` lint.
-fn check_suspicious_swap(cx: &LateContext<'_, '_>, block: &Block) {
+fn check_suspicious_swap(cx: &LateContext<'_, '_>, block: &Block<'_>) {
     for w in block.stmts.windows(2) {
         if_chain! {
             if let StmtKind::Semi(ref first) = w[0].kind;
             if let StmtKind::Semi(ref second) = w[1].kind;
             if !differing_macro_contexts(first.span, second.span);
-            if let ExprKind::Assign(ref lhs0, ref rhs0) = first.kind;
-            if let ExprKind::Assign(ref lhs1, ref rhs1) = second.kind;
+            if let ExprKind::Assign(ref lhs0, ref rhs0, _) = first.kind;
+            if let ExprKind::Assign(ref lhs1, ref rhs1, _) = second.kind;
             if SpanlessEq::new(cx).ignore_fn().eq_expr(lhs0, rhs1);
             if SpanlessEq::new(cx).ignore_fn().eq_expr(lhs1, rhs0);
             then {

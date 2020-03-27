@@ -1,11 +1,10 @@
 use crate::utils::span_lint_and_sugg;
-use rustc::declare_lint_pass;
-use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::{BytePos, Span};
 use std::convert::TryFrom;
 use syntax::ast;
-use syntax::source_map::{BytePos, Span};
 
 declare_clippy_lint! {
     /// **What it does:** Checks doc comments for usage of tab characters.
@@ -36,7 +35,7 @@ declare_clippy_lint! {
     /// ```
     ///
     /// Will be converted to:
-     /// ```rust
+    /// ```rust
     /// ///
     /// /// Struct to hold two strings:
     /// ///     - first        one

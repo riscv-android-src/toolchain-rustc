@@ -1,5 +1,5 @@
-use {Error, Delay, Deadline, Interval};
 use timer::Inner;
+use {Deadline, Delay, Error, Interval, Timeout};
 
 use tokio_executor::Enter;
 
@@ -44,8 +44,16 @@ pub(crate) struct HandlePriv {
     inner: Weak<Inner>,
 }
 
-/// Tracks the timer for the current execution context.
-thread_local!(static CURRENT_TIMER: RefCell<Option<HandlePriv>> = RefCell::new(None));
+/// A guard that resets the current timer to `None` when dropped.
+#[derive(Debug)]
+pub struct DefaultGuard {
+    _p: (),
+}
+
+thread_local! {
+    /// Tracks the timer for the current execution context.
+    static CURRENT_TIMER: RefCell<Option<HandlePriv>> = RefCell::new(None)
+}
 
 /// Set the default timer for the duration of the closure.
 ///
@@ -59,40 +67,35 @@ thread_local!(static CURRENT_TIMER: RefCell<Option<HandlePriv>> = RefCell::new(N
 /// [`Delay`]: ../struct.Delay.html
 /// [`Delay::new`]: ../struct.Delay.html#method.new
 pub fn with_default<F, R>(handle: &Handle, enter: &mut Enter, f: F) -> R
-where F: FnOnce(&mut Enter) -> R
+where
+    F: FnOnce(&mut Enter) -> R,
 {
-    // Ensure that the timer is removed from the thread-local context
-    // when leaving the scope. This handles cases that involve panicking.
-    struct Reset;
+    let _guard = set_default(handle);
+    f(enter)
+}
 
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            CURRENT_TIMER.with(|current| {
-                let mut current = current.borrow_mut();
-                *current = None;
-            });
-        }
-    }
-
-    // This ensures the value for the current timer gets reset even if there is
-    // a panic.
-    let _r = Reset;
-
+/// Sets `handle` as the default timer, returning a guard that unsets it on drop.
+///
+/// # Panics
+///
+/// This function panics if there already is a default timer set.
+pub fn set_default(handle: &Handle) -> DefaultGuard {
     CURRENT_TIMER.with(|current| {
-        {
-            let mut current = current.borrow_mut();
+        let mut current = current.borrow_mut();
 
-            assert!(current.is_none(), "default Tokio timer already set \
-                    for execution context");
+        assert!(
+            current.is_none(),
+            "default Tokio timer already set \
+             for execution context"
+        );
 
-            let handle = handle.as_priv()
-                .unwrap_or_else(|| panic!("`handle` does not reference a timer"));
+        let handle = handle
+            .as_priv()
+            .unwrap_or_else(|| panic!("`handle` does not reference a timer"));
 
-            *current = Some(handle.clone());
-        }
-
-        f(enter)
-    })
+        *current = Some(handle.clone());
+    });
+    DefaultGuard { _p: () }
 }
 
 impl Handle {
@@ -116,29 +119,31 @@ impl Handle {
     /// [`with_default`]: ../fn.with_default.html
     /// [type]: #
     pub fn current() -> Handle {
-        let private = HandlePriv::try_current()
-            .unwrap_or_else(|_| {
-                HandlePriv { inner: Weak::new() }
-            });
+        let private =
+            HandlePriv::try_current().unwrap_or_else(|_| HandlePriv { inner: Weak::new() });
 
-        Handle { inner: Some(private) }
+        Handle {
+            inner: Some(private),
+        }
     }
 
     /// Create a `Delay` driven by this handle's associated `Timer`.
     pub fn delay(&self, deadline: Instant) -> Delay {
         match self.inner {
-            Some(ref handle_priv) => {
-                Delay::new_with_handle(deadline, handle_priv.clone())
-            }
-            None => {
-                Delay::new(deadline)
-            }
+            Some(ref handle_priv) => Delay::new_with_handle(deadline, handle_priv.clone()),
+            None => Delay::new(deadline),
         }
     }
 
-    /// Create a `Deadline` driven by this handle's associated `Timer`.
+    #[doc(hidden)]
+    #[deprecated(since = "0.2.11", note = "use timeout instead")]
     pub fn deadline<T>(&self, future: T, deadline: Instant) -> Deadline<T> {
         Deadline::new_with_delay(future, self.delay(deadline))
+    }
+
+    /// Create a `Timeout` driven by this handle's associated `Timer`.
+    pub fn timeout<T>(&self, value: T, deadline: Instant) -> Timeout<T> {
+        Timeout::new_with_delay(value, self.delay(deadline))
     }
 
     /// Create a new `Interval` that starts at `at` and yields every `duration`
@@ -163,11 +168,9 @@ impl HandlePriv {
     ///
     /// Returns `Err` if no handle is found.
     pub(crate) fn try_current() -> Result<HandlePriv, Error> {
-        CURRENT_TIMER.with(|current| {
-            match *current.borrow() {
-                Some(ref handle) => Ok(handle.clone()),
-                None => Err(Error::shutdown()),
-            }
+        CURRENT_TIMER.with(|current| match *current.borrow() {
+            Some(ref handle) => Ok(handle.clone()),
+            None => Err(Error::shutdown()),
         })
     }
 
@@ -185,5 +188,14 @@ impl HandlePriv {
 impl fmt::Debug for HandlePriv {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "HandlePriv")
+    }
+}
+
+impl Drop for DefaultGuard {
+    fn drop(&mut self) {
+        let _ = CURRENT_TIMER.try_with(|current| {
+            let mut current = current.borrow_mut();
+            *current = None;
+        });
     }
 }

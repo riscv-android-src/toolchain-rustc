@@ -12,11 +12,11 @@
 
 [package]
 name = "tokio-fs"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["Carl Lerche <me@carllerche.com>"]
 description = "Filesystem API for Tokio.\n"
 homepage = "https://tokio.rs"
-documentation = "https://docs.rs/tokio-fs/0.1.5/tokio_fs"
+documentation = "https://docs.rs/tokio-fs/0.1.6/tokio_fs"
 readme = "README.md"
 keywords = ["tokio", "futures", "fs", "file", "async"]
 categories = ["asynchronous", "network-programming", "filesystem"]

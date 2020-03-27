@@ -5,22 +5,22 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use if_chain::if_chain;
-use rustc::hir;
-use rustc::hir::intravisit::{walk_body, walk_expr, walk_ty, FnKind, NestedVisitorMap, Visitor};
-use rustc::hir::*;
-use rustc::lint::{in_external_macro, LateContext, LateLintPass, LintArray, LintContext, LintPass};
+use rustc::hir::map::Map;
+use rustc::lint::in_external_macro;
 use rustc::ty::layout::LayoutOf;
 use rustc::ty::{self, InferTy, Ty, TyCtxt, TypeckTables};
-use rustc::{declare_lint_pass, impl_lint_pass};
-use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_errors::{Applicability, DiagnosticBuilder};
+use rustc_hir as hir;
+use rustc_hir::intravisit::{walk_body, walk_expr, walk_ty, FnKind, NestedVisitorMap, Visitor};
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
+use rustc_span::hygiene::{ExpnKind, MacroKind};
+use rustc_span::source_map::Span;
+use rustc_span::symbol::{sym, Symbol};
 use rustc_target::spec::abi::Abi;
 use rustc_typeck::hir_ty_to_ty;
 use syntax::ast::{FloatTy, IntTy, LitFloatType, LitIntType, LitKind, UintTy};
-use syntax::errors::DiagnosticBuilder;
-use syntax::source_map::Span;
-use syntax::symbol::{sym, Symbol};
-use syntax_pos::hygiene::{ExpnKind, MacroKind};
 
 use crate::consts::{constant, Constant};
 use crate::utils::paths;
@@ -141,7 +141,7 @@ declare_clippy_lint! {
     /// ```
     pub LINKEDLIST,
     pedantic,
-    "usage of LinkedList, usually a vector is faster, or a more specialized data structure like a VecDeque"
+    "usage of LinkedList, usually a vector is faster, or a more specialized data structure like a `VecDeque`"
 }
 
 declare_clippy_lint! {
@@ -167,51 +167,53 @@ declare_clippy_lint! {
     "a borrow of a boxed type"
 }
 
-declare_lint_pass!(Types => [BOX_VEC, VEC_BOX, OPTION_OPTION, LINKEDLIST, BORROWED_BOX]);
+pub struct Types {
+    vec_box_size_threshold: u64,
+}
+
+impl_lint_pass!(Types => [BOX_VEC, VEC_BOX, OPTION_OPTION, LINKEDLIST, BORROWED_BOX]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Types {
-    fn check_fn(&mut self, cx: &LateContext<'_, '_>, _: FnKind<'_>, decl: &FnDecl, _: &Body, _: Span, id: HirId) {
+    fn check_fn(
+        &mut self,
+        cx: &LateContext<'_, '_>,
+        _: FnKind<'_>,
+        decl: &FnDecl<'_>,
+        _: &Body<'_>,
+        _: Span,
+        id: HirId,
+    ) {
         // Skip trait implementations; see issue #605.
         if let Some(hir::Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_item(id)) {
-            if let ItemKind::Impl(_, _, _, _, Some(..), _, _) = item.kind {
+            if let ItemKind::Impl { of_trait: Some(_), .. } = item.kind {
                 return;
             }
         }
 
-        check_fn_decl(cx, decl);
+        self.check_fn_decl(cx, decl);
     }
 
-    fn check_struct_field(&mut self, cx: &LateContext<'_, '_>, field: &hir::StructField) {
-        check_ty(cx, &field.ty, false);
+    fn check_struct_field(&mut self, cx: &LateContext<'_, '_>, field: &hir::StructField<'_>) {
+        self.check_ty(cx, &field.ty, false);
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'_, '_>, item: &TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'_, '_>, item: &TraitItem<'_>) {
         match item.kind {
-            TraitItemKind::Const(ref ty, _) | TraitItemKind::Type(_, Some(ref ty)) => check_ty(cx, ty, false),
-            TraitItemKind::Method(ref sig, _) => check_fn_decl(cx, &sig.decl),
+            TraitItemKind::Const(ref ty, _) | TraitItemKind::Type(_, Some(ref ty)) => self.check_ty(cx, ty, false),
+            TraitItemKind::Method(ref sig, _) => self.check_fn_decl(cx, &sig.decl),
             _ => (),
         }
     }
 
-    fn check_local(&mut self, cx: &LateContext<'_, '_>, local: &Local) {
+    fn check_local(&mut self, cx: &LateContext<'_, '_>, local: &Local<'_>) {
         if let Some(ref ty) = local.ty {
-            check_ty(cx, ty, true);
+            self.check_ty(cx, ty, true);
         }
     }
 }
 
-fn check_fn_decl(cx: &LateContext<'_, '_>, decl: &FnDecl) {
-    for input in &decl.inputs {
-        check_ty(cx, input, false);
-    }
-
-    if let FunctionRetTy::Return(ref ty) = decl.output {
-        check_ty(cx, ty, false);
-    }
-}
-
 /// Checks if `qpath` has last segment with type parameter matching `path`
-fn match_type_parameter(cx: &LateContext<'_, '_>, qpath: &QPath, path: &[&str]) -> bool {
+fn match_type_parameter(cx: &LateContext<'_, '_>, qpath: &QPath<'_>, path: &[&str]) -> bool {
     let last = last_path_segment(qpath);
     if_chain! {
         if let Some(ref params) = last.args;
@@ -230,54 +232,71 @@ fn match_type_parameter(cx: &LateContext<'_, '_>, qpath: &QPath, path: &[&str]) 
     false
 }
 
-/// Recursively check for `TypePass` lints in the given type. Stop at the first
-/// lint found.
-///
-/// The parameter `is_local` distinguishes the context of the type; types from
-/// local bindings should only be checked for the `BORROWED_BOX` lint.
-#[allow(clippy::too_many_lines)]
-fn check_ty(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool) {
-    if hir_ty.span.from_expansion() {
-        return;
+impl Types {
+    pub fn new(vec_box_size_threshold: u64) -> Self {
+        Self { vec_box_size_threshold }
     }
-    match hir_ty.kind {
-        TyKind::Path(ref qpath) if !is_local => {
-            let hir_id = hir_ty.hir_id;
-            let res = qpath_res(cx, qpath, hir_id);
-            if let Some(def_id) = res.opt_def_id() {
-                if Some(def_id) == cx.tcx.lang_items().owned_box() {
-                    if match_type_parameter(cx, qpath, &paths::VEC) {
-                        span_help_and_lint(
-                            cx,
-                            BOX_VEC,
-                            hir_ty.span,
-                            "you seem to be trying to use `Box<Vec<T>>`. Consider using just `Vec<T>`",
-                            "`Vec<T>` is already on the heap, `Box<Vec<T>>` makes an extra allocation.",
-                        );
-                        return; // don't recurse into the type
-                    }
-                } else if cx.tcx.is_diagnostic_item(Symbol::intern("vec_type"), def_id) {
-                    if_chain! {
-                        // Get the _ part of Vec<_>
-                        if let Some(ref last) = last_path_segment(qpath).args;
-                        if let Some(ty) = last.args.iter().find_map(|arg| match arg {
-                            GenericArg::Type(ty) => Some(ty),
-                            _ => None,
-                        });
-                        // ty is now _ at this point
-                        if let TyKind::Path(ref ty_qpath) = ty.kind;
-                        let res = qpath_res(cx, ty_qpath, ty.hir_id);
-                        if let Some(def_id) = res.opt_def_id();
-                        if Some(def_id) == cx.tcx.lang_items().owned_box();
-                        // At this point, we know ty is Box<T>, now get T
-                        if let Some(ref last) = last_path_segment(ty_qpath).args;
-                        if let Some(boxed_ty) = last.args.iter().find_map(|arg| match arg {
-                            GenericArg::Type(ty) => Some(ty),
-                            _ => None,
-                        });
-                        then {
+
+    fn check_fn_decl(&mut self, cx: &LateContext<'_, '_>, decl: &FnDecl<'_>) {
+        for input in decl.inputs {
+            self.check_ty(cx, input, false);
+        }
+
+        if let FunctionRetTy::Return(ref ty) = decl.output {
+            self.check_ty(cx, ty, false);
+        }
+    }
+
+    /// Recursively check for `TypePass` lints in the given type. Stop at the first
+    /// lint found.
+    ///
+    /// The parameter `is_local` distinguishes the context of the type; types from
+    /// local bindings should only be checked for the `BORROWED_BOX` lint.
+    #[allow(clippy::too_many_lines)]
+    fn check_ty(&mut self, cx: &LateContext<'_, '_>, hir_ty: &hir::Ty<'_>, is_local: bool) {
+        if hir_ty.span.from_expansion() {
+            return;
+        }
+        match hir_ty.kind {
+            TyKind::Path(ref qpath) if !is_local => {
+                let hir_id = hir_ty.hir_id;
+                let res = qpath_res(cx, qpath, hir_id);
+                if let Some(def_id) = res.opt_def_id() {
+                    if Some(def_id) == cx.tcx.lang_items().owned_box() {
+                        if match_type_parameter(cx, qpath, &paths::VEC) {
+                            span_help_and_lint(
+                                cx,
+                                BOX_VEC,
+                                hir_ty.span,
+                                "you seem to be trying to use `Box<Vec<T>>`. Consider using just `Vec<T>`",
+                                "`Vec<T>` is already on the heap, `Box<Vec<T>>` makes an extra allocation.",
+                            );
+                            return; // don't recurse into the type
+                        }
+                    } else if cx.tcx.is_diagnostic_item(Symbol::intern("vec_type"), def_id) {
+                        if_chain! {
+                            // Get the _ part of Vec<_>
+                            if let Some(ref last) = last_path_segment(qpath).args;
+                            if let Some(ty) = last.args.iter().find_map(|arg| match arg {
+                                GenericArg::Type(ty) => Some(ty),
+                                _ => None,
+                            });
+                            // ty is now _ at this point
+                            if let TyKind::Path(ref ty_qpath) = ty.kind;
+                            let res = qpath_res(cx, ty_qpath, ty.hir_id);
+                            if let Some(def_id) = res.opt_def_id();
+                            if Some(def_id) == cx.tcx.lang_items().owned_box();
+                            // At this point, we know ty is Box<T>, now get T
+                            if let Some(ref last) = last_path_segment(ty_qpath).args;
+                            if let Some(boxed_ty) = last.args.iter().find_map(|arg| match arg {
+                                GenericArg::Type(ty) => Some(ty),
+                                _ => None,
+                            });
                             let ty_ty = hir_ty_to_ty(cx.tcx, boxed_ty);
-                            if ty_ty.is_sized(cx.tcx.at(ty.span), cx.param_env) {
+                            if ty_ty.is_sized(cx.tcx.at(ty.span), cx.param_env);
+                            if let Ok(ty_ty_size) = cx.layout_of(ty_ty).map(|l| l.size.bytes());
+                            if ty_ty_size <= self.vec_box_size_threshold;
+                            then {
                                 span_lint_and_sugg(
                                     cx,
                                     VEC_BOX,
@@ -290,145 +309,152 @@ fn check_ty(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool) {
                                 return; // don't recurse into the type
                             }
                         }
-                    }
-                } else if match_def_path(cx, def_id, &paths::OPTION) {
-                    if match_type_parameter(cx, qpath, &paths::OPTION) {
-                        span_lint(
+                    } else if match_def_path(cx, def_id, &paths::OPTION) {
+                        if match_type_parameter(cx, qpath, &paths::OPTION) {
+                            span_lint(
+                                cx,
+                                OPTION_OPTION,
+                                hir_ty.span,
+                                "consider using `Option<T>` instead of `Option<Option<T>>` or a custom \
+                                enum if you need to distinguish all 3 cases",
+                            );
+                            return; // don't recurse into the type
+                        }
+                    } else if match_def_path(cx, def_id, &paths::LINKED_LIST) {
+                        span_help_and_lint(
                             cx,
-                            OPTION_OPTION,
+                            LINKEDLIST,
                             hir_ty.span,
-                            "consider using `Option<T>` instead of `Option<Option<T>>` or a custom \
-                             enum if you need to distinguish all 3 cases",
+                            "I see you're using a LinkedList! Perhaps you meant some other data structure?",
+                            "a `VecDeque` might work",
                         );
                         return; // don't recurse into the type
                     }
-                } else if match_def_path(cx, def_id, &paths::LINKED_LIST) {
-                    span_help_and_lint(
-                        cx,
-                        LINKEDLIST,
-                        hir_ty.span,
-                        "I see you're using a LinkedList! Perhaps you meant some other data structure?",
-                        "a VecDeque might work",
-                    );
-                    return; // don't recurse into the type
                 }
-            }
-            match *qpath {
-                QPath::Resolved(Some(ref ty), ref p) => {
-                    check_ty(cx, ty, is_local);
-                    for ty in p.segments.iter().flat_map(|seg| {
-                        seg.args
-                            .as_ref()
-                            .map_or_else(|| [].iter(), |params| params.args.iter())
-                            .filter_map(|arg| match arg {
-                                GenericArg::Type(ty) => Some(ty),
-                                _ => None,
-                            })
-                    }) {
-                        check_ty(cx, ty, is_local);
-                    }
-                },
-                QPath::Resolved(None, ref p) => {
-                    for ty in p.segments.iter().flat_map(|seg| {
-                        seg.args
-                            .as_ref()
-                            .map_or_else(|| [].iter(), |params| params.args.iter())
-                            .filter_map(|arg| match arg {
-                                GenericArg::Type(ty) => Some(ty),
-                                _ => None,
-                            })
-                    }) {
-                        check_ty(cx, ty, is_local);
-                    }
-                },
-                QPath::TypeRelative(ref ty, ref seg) => {
-                    check_ty(cx, ty, is_local);
-                    if let Some(ref params) = seg.args {
-                        for ty in params.args.iter().filter_map(|arg| match arg {
-                            GenericArg::Type(ty) => Some(ty),
-                            _ => None,
+                match *qpath {
+                    QPath::Resolved(Some(ref ty), ref p) => {
+                        self.check_ty(cx, ty, is_local);
+                        for ty in p.segments.iter().flat_map(|seg| {
+                            seg.args
+                                .as_ref()
+                                .map_or_else(|| [].iter(), |params| params.args.iter())
+                                .filter_map(|arg| match arg {
+                                    GenericArg::Type(ty) => Some(ty),
+                                    _ => None,
+                                })
                         }) {
-                            check_ty(cx, ty, is_local);
+                            self.check_ty(cx, ty, is_local);
                         }
-                    }
-                },
-            }
-        },
-        TyKind::Rptr(ref lt, ref mut_ty) => check_ty_rptr(cx, hir_ty, is_local, lt, mut_ty),
-        // recurse
-        TyKind::Slice(ref ty) | TyKind::Array(ref ty, _) | TyKind::Ptr(MutTy { ref ty, .. }) => {
-            check_ty(cx, ty, is_local)
-        },
-        TyKind::Tup(ref tys) => {
-            for ty in tys {
-                check_ty(cx, ty, is_local);
-            }
-        },
-        _ => {},
-    }
-}
-
-fn check_ty_rptr(cx: &LateContext<'_, '_>, hir_ty: &hir::Ty, is_local: bool, lt: &Lifetime, mut_ty: &MutTy) {
-    match mut_ty.ty.kind {
-        TyKind::Path(ref qpath) => {
-            let hir_id = mut_ty.ty.hir_id;
-            let def = qpath_res(cx, qpath, hir_id);
-            if_chain! {
-                if let Some(def_id) = def.opt_def_id();
-                if Some(def_id) == cx.tcx.lang_items().owned_box();
-                if let QPath::Resolved(None, ref path) = *qpath;
-                if let [ref bx] = *path.segments;
-                if let Some(ref params) = bx.args;
-                if !params.parenthesized;
-                if let Some(inner) = params.args.iter().find_map(|arg| match arg {
-                    GenericArg::Type(ty) => Some(ty),
-                    _ => None,
-                });
-                then {
-                    if is_any_trait(inner) {
-                        // Ignore `Box<Any>` types; see issue #1884 for details.
-                        return;
-                    }
-
-                    let ltopt = if lt.is_elided() {
-                        String::new()
-                    } else {
-                        format!("{} ", lt.name.ident().as_str())
-                    };
-                    let mutopt = if mut_ty.mutbl == Mutability::Mutable {
-                        "mut "
-                    } else {
-                        ""
-                    };
-                    let mut applicability = Applicability::MachineApplicable;
-                    span_lint_and_sugg(
-                        cx,
-                        BORROWED_BOX,
-                        hir_ty.span,
-                        "you seem to be trying to use `&Box<T>`. Consider using just `&T`",
-                        "try",
-                        format!(
-                            "&{}{}{}",
-                            ltopt,
-                            mutopt,
-                            &snippet_with_applicability(cx, inner.span, "..", &mut applicability)
-                        ),
-                        Applicability::Unspecified,
-                    );
-                    return; // don't recurse into the type
+                    },
+                    QPath::Resolved(None, ref p) => {
+                        for ty in p.segments.iter().flat_map(|seg| {
+                            seg.args
+                                .as_ref()
+                                .map_or_else(|| [].iter(), |params| params.args.iter())
+                                .filter_map(|arg| match arg {
+                                    GenericArg::Type(ty) => Some(ty),
+                                    _ => None,
+                                })
+                        }) {
+                            self.check_ty(cx, ty, is_local);
+                        }
+                    },
+                    QPath::TypeRelative(ref ty, ref seg) => {
+                        self.check_ty(cx, ty, is_local);
+                        if let Some(ref params) = seg.args {
+                            for ty in params.args.iter().filter_map(|arg| match arg {
+                                GenericArg::Type(ty) => Some(ty),
+                                _ => None,
+                            }) {
+                                self.check_ty(cx, ty, is_local);
+                            }
+                        }
+                    },
                 }
-            };
-            check_ty(cx, &mut_ty.ty, is_local);
-        },
-        _ => check_ty(cx, &mut_ty.ty, is_local),
+            },
+            TyKind::Rptr(ref lt, ref mut_ty) => self.check_ty_rptr(cx, hir_ty, is_local, lt, mut_ty),
+            // recurse
+            TyKind::Slice(ref ty) | TyKind::Array(ref ty, _) | TyKind::Ptr(MutTy { ref ty, .. }) => {
+                self.check_ty(cx, ty, is_local)
+            },
+            TyKind::Tup(tys) => {
+                for ty in tys {
+                    self.check_ty(cx, ty, is_local);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    fn check_ty_rptr(
+        &mut self,
+        cx: &LateContext<'_, '_>,
+        hir_ty: &hir::Ty<'_>,
+        is_local: bool,
+        lt: &Lifetime,
+        mut_ty: &MutTy<'_>,
+    ) {
+        match mut_ty.ty.kind {
+            TyKind::Path(ref qpath) => {
+                let hir_id = mut_ty.ty.hir_id;
+                let def = qpath_res(cx, qpath, hir_id);
+                if_chain! {
+                    if let Some(def_id) = def.opt_def_id();
+                    if Some(def_id) == cx.tcx.lang_items().owned_box();
+                    if let QPath::Resolved(None, ref path) = *qpath;
+                    if let [ref bx] = *path.segments;
+                    if let Some(ref params) = bx.args;
+                    if !params.parenthesized;
+                    if let Some(inner) = params.args.iter().find_map(|arg| match arg {
+                        GenericArg::Type(ty) => Some(ty),
+                        _ => None,
+                    });
+                    then {
+                        if is_any_trait(inner) {
+                            // Ignore `Box<Any>` types; see issue #1884 for details.
+                            return;
+                        }
+
+                        let ltopt = if lt.is_elided() {
+                            String::new()
+                        } else {
+                            format!("{} ", lt.name.ident().as_str())
+                        };
+                        let mutopt = if mut_ty.mutbl == Mutability::Mut {
+                            "mut "
+                        } else {
+                            ""
+                        };
+                        let mut applicability = Applicability::MachineApplicable;
+                        span_lint_and_sugg(
+                            cx,
+                            BORROWED_BOX,
+                            hir_ty.span,
+                            "you seem to be trying to use `&Box<T>`. Consider using just `&T`",
+                            "try",
+                            format!(
+                                "&{}{}{}",
+                                ltopt,
+                                mutopt,
+                                &snippet_with_applicability(cx, inner.span, "..", &mut applicability)
+                            ),
+                            Applicability::Unspecified,
+                        );
+                        return; // don't recurse into the type
+                    }
+                };
+                self.check_ty(cx, &mut_ty.ty, is_local);
+            },
+            _ => self.check_ty(cx, &mut_ty.ty, is_local),
+        }
     }
 }
 
 // Returns true if given type is `Any` trait.
-fn is_any_trait(t: &hir::Ty) -> bool {
+fn is_any_trait(t: &hir::Ty<'_>) -> bool {
     if_chain! {
         if let TyKind::TraitObject(ref traits, _) = t.kind;
-        if traits.len() >= 1;
+        if !traits.is_empty();
         // Only Send/Sync can be used as additional traits, so it is enough to
         // check only the first trait.
         if match_path(&traits[0].trait_ref.path, &paths::ANY_TRAIT);
@@ -456,13 +482,13 @@ declare_clippy_lint! {
     /// ```
     pub LET_UNIT_VALUE,
     style,
-    "creating a let binding to a value of unit type, which usually can't be used afterwards"
+    "creating a `let` binding to a value of unit type, which usually can't be used afterwards"
 }
 
 declare_lint_pass!(LetUnitValue => [LET_UNIT_VALUE]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LetUnitValue {
-    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt) {
+    fn check_stmt(&mut self, cx: &LateContext<'a, 'tcx>, stmt: &'tcx Stmt<'_>) {
         if let StmtKind::Local(ref local) = stmt.kind {
             if is_unit(cx.tables.pat_ty(&local.pat)) {
                 if in_external_macro(cx.sess(), stmt.span) || local.pat.span.from_expansion() {
@@ -537,7 +563,7 @@ declare_clippy_lint! {
 declare_lint_pass!(UnitCmp => [UNIT_CMP]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnitCmp {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'tcx>) {
         if expr.span.from_expansion() {
             if let Some(callee) = expr.span.source_callee() {
                 if let ExpnKind::Macro(MacroKind::Bang, symbol) = callee.kind {
@@ -610,7 +636,7 @@ declare_clippy_lint! {
 declare_lint_pass!(UnitArg => [UNIT_ARG]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnitArg {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if expr.span.from_expansion() {
             return;
         }
@@ -633,7 +659,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnitArg {
         }
 
         match expr.kind {
-            ExprKind::Call(_, ref args) | ExprKind::MethodCall(_, _, ref args) => {
+            ExprKind::Call(_, args) | ExprKind::MethodCall(_, _, args) => {
                 for arg in args {
                     if is_unit(cx.tables.expr_ty(arg)) && !is_unit_literal(arg) {
                         if let ExprKind::Match(.., match_source) = &arg.kind {
@@ -659,8 +685,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnitArg {
     }
 }
 
-fn is_questionmark_desugar_marked_call(expr: &Expr) -> bool {
-    use syntax_pos::hygiene::DesugaringKind;
+fn is_questionmark_desugar_marked_call(expr: &Expr<'_>) -> bool {
+    use rustc_span::hygiene::DesugaringKind;
     if let ExprKind::Call(ref callee, _) = expr.kind {
         callee.span.is_desugaring(DesugaringKind::QuestionMark)
     } else {
@@ -675,7 +701,7 @@ fn is_unit(ty: Ty<'_>) -> bool {
     }
 }
 
-fn is_unit_literal(expr: &Expr) -> bool {
+fn is_unit_literal(expr: &Expr<'_>) -> bool {
     match expr.kind {
         ExprKind::Tup(ref slice) if slice.is_empty() => true,
         _ => false,
@@ -929,7 +955,7 @@ fn is_isize_or_usize(typ: Ty<'_>) -> bool {
     }
 }
 
-fn span_precision_loss_lint(cx: &LateContext<'_, '_>, expr: &Expr, cast_from: Ty<'_>, cast_to_f64: bool) {
+fn span_precision_loss_lint(cx: &LateContext<'_, '_>, expr: &Expr<'_>, cast_from: Ty<'_>, cast_to_f64: bool) {
     let mantissa_nbits = if cast_to_f64 { 52 } else { 23 };
     let arch_dependent = is_isize_or_usize(cast_from) && cast_to_f64;
     let arch_dependent_str = "on targets with 64-bit wide pointers ";
@@ -945,8 +971,8 @@ fn span_precision_loss_lint(cx: &LateContext<'_, '_>, expr: &Expr, cast_from: Ty
         CAST_PRECISION_LOSS,
         expr.span,
         &format!(
-            "casting {0} to {1} causes a loss of precision {2}({0} is {3} bits wide, but {1}'s mantissa \
-             is only {4} bits wide)",
+            "casting `{0}` to `{1}` causes a loss of precision {2}(`{0}` is {3} bits wide, \
+             but `{1}`'s mantissa is only {4} bits wide)",
             cast_from,
             if cast_to_f64 { "f64" } else { "f32" },
             if arch_dependent { arch_dependent_str } else { "" },
@@ -956,7 +982,7 @@ fn span_precision_loss_lint(cx: &LateContext<'_, '_>, expr: &Expr, cast_from: Ty
     );
 }
 
-fn should_strip_parens(op: &Expr, snip: &str) -> bool {
+fn should_strip_parens(op: &Expr<'_>, snip: &str) -> bool {
     if let ExprKind::Binary(_, _, _) = op.kind {
         if snip.starts_with('(') && snip.ends_with(')') {
             return true;
@@ -965,7 +991,7 @@ fn should_strip_parens(op: &Expr, snip: &str) -> bool {
     false
 }
 
-fn span_lossless_lint(cx: &LateContext<'_, '_>, expr: &Expr, op: &Expr, cast_from: Ty<'_>, cast_to: Ty<'_>) {
+fn span_lossless_lint(cx: &LateContext<'_, '_>, expr: &Expr<'_>, op: &Expr<'_>, cast_from: Ty<'_>, cast_to: Ty<'_>) {
     // Do not suggest using From in consts/statics until it is valid to do so (see #2267).
     if in_constant(cx, expr.hir_id) {
         return;
@@ -990,7 +1016,7 @@ fn span_lossless_lint(cx: &LateContext<'_, '_>, expr: &Expr, op: &Expr, cast_fro
         CAST_LOSSLESS,
         expr.span,
         &format!(
-            "casting {} to {} may become silently lossy if you later change the type",
+            "casting `{}` to `{}` may become silently lossy if you later change the type",
             cast_from, cast_to
         ),
         "try",
@@ -1005,7 +1031,7 @@ enum ArchSuffix {
     None,
 }
 
-fn check_loss_of_sign(cx: &LateContext<'_, '_>, expr: &Expr, op: &Expr, cast_from: Ty<'_>, cast_to: Ty<'_>) {
+fn check_loss_of_sign(cx: &LateContext<'_, '_>, expr: &Expr<'_>, op: &Expr<'_>, cast_from: Ty<'_>, cast_to: Ty<'_>) {
     if !cast_from.is_signed() || cast_to.is_signed() {
         return;
     }
@@ -1045,11 +1071,14 @@ fn check_loss_of_sign(cx: &LateContext<'_, '_>, expr: &Expr, op: &Expr, cast_fro
         cx,
         CAST_SIGN_LOSS,
         expr.span,
-        &format!("casting {} to {} may lose the sign of the value", cast_from, cast_to),
+        &format!(
+            "casting `{}` to `{}` may lose the sign of the value",
+            cast_from, cast_to
+        ),
     );
 }
 
-fn check_truncation_and_wrapping(cx: &LateContext<'_, '_>, expr: &Expr, cast_from: Ty<'_>, cast_to: Ty<'_>) {
+fn check_truncation_and_wrapping(cx: &LateContext<'_, '_>, expr: &Expr<'_>, cast_from: Ty<'_>, cast_to: Ty<'_>) {
     let arch_64_suffix = " on targets with 64-bit wide pointers";
     let arch_32_suffix = " on targets with 32-bit wide pointers";
     let cast_unsigned_to_signed = !cast_from.is_signed() && cast_to.is_signed();
@@ -1090,7 +1119,7 @@ fn check_truncation_and_wrapping(cx: &LateContext<'_, '_>, expr: &Expr, cast_fro
             CAST_POSSIBLE_TRUNCATION,
             expr.span,
             &format!(
-                "casting {} to {} may truncate the value{}",
+                "casting `{}` to `{}` may truncate the value{}",
                 cast_from,
                 cast_to,
                 match suffix_truncation {
@@ -1107,7 +1136,7 @@ fn check_truncation_and_wrapping(cx: &LateContext<'_, '_>, expr: &Expr, cast_fro
             CAST_POSSIBLE_WRAP,
             expr.span,
             &format!(
-                "casting {} to {} may wrap around the value{}",
+                "casting `{}` to `{}` may wrap around the value{}",
                 cast_from,
                 cast_to,
                 match suffix_wrap {
@@ -1120,7 +1149,7 @@ fn check_truncation_and_wrapping(cx: &LateContext<'_, '_>, expr: &Expr, cast_fro
     }
 }
 
-fn check_lossless(cx: &LateContext<'_, '_>, expr: &Expr, op: &Expr, cast_from: Ty<'_>, cast_to: Ty<'_>) {
+fn check_lossless(cx: &LateContext<'_, '_>, expr: &Expr<'_>, op: &Expr<'_>, cast_from: Ty<'_>, cast_to: Ty<'_>) {
     let cast_signed_to_unsigned = cast_from.is_signed() && !cast_to.is_signed();
     let from_nbits = int_ty_to_nbits(cast_from, cx.tcx);
     let to_nbits = int_ty_to_nbits(cast_to, cx.tcx);
@@ -1169,7 +1198,7 @@ fn fp_ty_mantissa_nbits(typ: Ty<'_>) -> u32 {
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if expr.span.from_expansion() {
             return;
         }
@@ -1186,7 +1215,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
                                 cx,
                                 UNNECESSARY_CAST,
                                 expr.span,
-                                &format!("casting integer literal to {} is unnecessary", cast_to),
+                                &format!("casting integer literal to `{}` is unnecessary", cast_to),
                                 "try",
                                 format!("{}_{}", n, cast_to),
                                 Applicability::MachineApplicable,
@@ -1223,8 +1252,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
 
 fn lint_numeric_casts<'tcx>(
     cx: &LateContext<'_, 'tcx>,
-    expr: &Expr,
-    cast_expr: &Expr,
+    expr: &Expr<'tcx>,
+    cast_expr: &Expr<'_>,
     cast_from: Ty<'tcx>,
     cast_to: Ty<'tcx>,
 ) {
@@ -1248,14 +1277,17 @@ fn lint_numeric_casts<'tcx>(
                 cx,
                 CAST_POSSIBLE_TRUNCATION,
                 expr.span,
-                &format!("casting {} to {} may truncate the value", cast_from, cast_to),
+                &format!("casting `{}` to `{}` may truncate the value", cast_from, cast_to),
             );
             if !cast_to.is_signed() {
                 span_lint(
                     cx,
                     CAST_SIGN_LOSS,
                     expr.span,
-                    &format!("casting {} to {} may lose the sign of the value", cast_from, cast_to),
+                    &format!(
+                        "casting `{}` to `{}` may lose the sign of the value",
+                        cast_from, cast_to
+                    ),
                 );
             }
         },
@@ -1270,7 +1302,7 @@ fn lint_numeric_casts<'tcx>(
                     cx,
                     CAST_POSSIBLE_TRUNCATION,
                     expr.span,
-                    "casting f64 to f32 may truncate the value",
+                    "casting `f64` to `f32` may truncate the value",
                 );
             }
             if let (&ty::Float(FloatTy::F32), &ty::Float(FloatTy::F64)) = (&cast_from.kind, &cast_to.kind) {
@@ -1280,7 +1312,7 @@ fn lint_numeric_casts<'tcx>(
     }
 }
 
-fn lint_cast_ptr_alignment<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr, cast_from: Ty<'tcx>, cast_to: Ty<'tcx>) {
+fn lint_cast_ptr_alignment<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr<'_>, cast_from: Ty<'tcx>, cast_to: Ty<'tcx>) {
     if_chain! {
         if let ty::RawPtr(from_ptr_ty) = &cast_from.kind;
         if let ty::RawPtr(to_ptr_ty) = &cast_to.kind;
@@ -1310,8 +1342,8 @@ fn lint_cast_ptr_alignment<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr, cast_f
 
 fn lint_fn_to_numeric_cast(
     cx: &LateContext<'_, '_>,
-    expr: &Expr,
-    cast_expr: &Expr,
+    expr: &Expr<'_>,
+    cast_expr: &Expr<'_>,
     cast_from: Ty<'_>,
     cast_to: Ty<'_>,
 ) {
@@ -1394,20 +1426,20 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeComplexity {
         &mut self,
         cx: &LateContext<'a, 'tcx>,
         _: FnKind<'tcx>,
-        decl: &'tcx FnDecl,
-        _: &'tcx Body,
+        decl: &'tcx FnDecl<'_>,
+        _: &'tcx Body<'_>,
         _: Span,
         _: HirId,
     ) {
         self.check_fndecl(cx, decl);
     }
 
-    fn check_struct_field(&mut self, cx: &LateContext<'a, 'tcx>, field: &'tcx hir::StructField) {
+    fn check_struct_field(&mut self, cx: &LateContext<'a, 'tcx>, field: &'tcx hir::StructField<'_>) {
         // enum variants are also struct fields now
         self.check_type(cx, &field.ty);
     }
 
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
         match item.kind {
             ItemKind::Static(ref ty, _, _) | ItemKind::Const(ref ty, _) => self.check_type(cx, ty),
             // functions, enums, structs, impls and traits are covered
@@ -1415,7 +1447,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeComplexity {
         }
     }
 
-    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem) {
+    fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
         match item.kind {
             TraitItemKind::Const(ref ty, _) | TraitItemKind::Type(_, Some(ref ty)) => self.check_type(cx, ty),
             TraitItemKind::Method(FnSig { ref decl, .. }, TraitMethod::Required(_)) => self.check_fndecl(cx, decl),
@@ -1424,7 +1456,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeComplexity {
         }
     }
 
-    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem) {
+    fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem<'_>) {
         match item.kind {
             ImplItemKind::Const(ref ty, _) | ImplItemKind::TyAlias(ref ty) => self.check_type(cx, ty),
             // methods are covered by check_fn
@@ -1432,7 +1464,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeComplexity {
         }
     }
 
-    fn check_local(&mut self, cx: &LateContext<'a, 'tcx>, local: &'tcx Local) {
+    fn check_local(&mut self, cx: &LateContext<'a, 'tcx>, local: &'tcx Local<'_>) {
         if let Some(ref ty) = local.ty {
             self.check_type(cx, ty);
         }
@@ -1440,16 +1472,16 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for TypeComplexity {
 }
 
 impl<'a, 'tcx> TypeComplexity {
-    fn check_fndecl(&self, cx: &LateContext<'a, 'tcx>, decl: &'tcx FnDecl) {
-        for arg in &decl.inputs {
+    fn check_fndecl(&self, cx: &LateContext<'a, 'tcx>, decl: &'tcx FnDecl<'_>) {
+        for arg in decl.inputs {
             self.check_type(cx, arg);
         }
-        if let Return(ref ty) = decl.output {
+        if let FunctionRetTy::Return(ref ty) = decl.output {
             self.check_type(cx, ty);
         }
     }
 
-    fn check_type(&self, cx: &LateContext<'_, '_>, ty: &hir::Ty) {
+    fn check_type(&self, cx: &LateContext<'_, '_>, ty: &hir::Ty<'_>) {
         if ty.span.from_expansion() {
             return;
         }
@@ -1479,7 +1511,9 @@ struct TypeComplexityVisitor {
 }
 
 impl<'tcx> Visitor<'tcx> for TypeComplexityVisitor {
-    fn visit_ty(&mut self, ty: &'tcx hir::Ty) {
+    type Map = Map<'tcx>;
+
+    fn visit_ty(&mut self, ty: &'tcx hir::Ty<'_>) {
         let (add_score, sub_nest) = match ty.kind {
             // _, &x and *x have only small overhead; don't mess with nesting level
             TyKind::Infer | TyKind::Ptr(..) | TyKind::Rptr(..) => (1, 0),
@@ -1513,7 +1547,7 @@ impl<'tcx> Visitor<'tcx> for TypeComplexityVisitor {
         walk_ty(self, ty);
         self.nest -= sub_nest;
     }
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -1542,13 +1576,13 @@ declare_clippy_lint! {
     /// ```
     pub CHAR_LIT_AS_U8,
     complexity,
-    "casting a character literal to u8 truncates"
+    "casting a character literal to `u8` truncates"
 }
 
 declare_lint_pass!(CharLitAsU8 => [CHAR_LIT_AS_U8]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CharLitAsU8 {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if !expr.span.from_expansion();
             if let ExprKind::Cast(e, _) = &expr.kind;
@@ -1619,7 +1653,7 @@ enum ExtremeType {
 
 struct ExtremeExpr<'a> {
     which: ExtremeType,
-    expr: &'a Expr,
+    expr: &'a Expr<'a>,
 }
 
 enum AbsurdComparisonResult {
@@ -1628,7 +1662,7 @@ enum AbsurdComparisonResult {
     InequalityImpossible,
 }
 
-fn is_cast_between_fixed_and_target<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> bool {
+fn is_cast_between_fixed_and_target<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'tcx>) -> bool {
     if let ExprKind::Cast(ref cast_exp, _) = expr.kind {
         let precast_ty = cx.tables.expr_ty(cast_exp);
         let cast_ty = cx.tables.expr_ty(expr);
@@ -1642,8 +1676,8 @@ fn is_cast_between_fixed_and_target<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: 
 fn detect_absurd_comparison<'a, 'tcx>(
     cx: &LateContext<'a, 'tcx>,
     op: BinOpKind,
-    lhs: &'tcx Expr,
-    rhs: &'tcx Expr,
+    lhs: &'tcx Expr<'_>,
+    rhs: &'tcx Expr<'_>,
 ) -> Option<(ExtremeExpr<'tcx>, AbsurdComparisonResult)> {
     use crate::types::AbsurdComparisonResult::*;
     use crate::types::ExtremeType::*;
@@ -1691,7 +1725,7 @@ fn detect_absurd_comparison<'a, 'tcx>(
     })
 }
 
-fn detect_extreme_expr<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> Option<ExtremeExpr<'tcx>> {
+fn detect_extreme_expr<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> Option<ExtremeExpr<'tcx>> {
     use crate::types::ExtremeType::*;
 
     let ty = cx.tables.expr_ty(expr);
@@ -1720,7 +1754,7 @@ fn detect_extreme_expr<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AbsurdExtremeComparisons {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         use crate::types::AbsurdComparisonResult::*;
         use crate::types::ExtremeType::*;
 
@@ -1734,7 +1768,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AbsurdExtremeComparisons {
                         AlwaysFalse => "this comparison is always false".to_owned(),
                         AlwaysTrue => "this comparison is always true".to_owned(),
                         InequalityImpossible => format!(
-                            "the case where the two sides are not equal never occurs, consider using {} == {} \
+                            "the case where the two sides are not equal never occurs, consider using `{} == {}` \
                              instead",
                             snippet(cx, lhs.span, "lhs"),
                             snippet(cx, rhs.span, "rhs")
@@ -1742,7 +1776,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AbsurdExtremeComparisons {
                     };
 
                     let help = format!(
-                        "because {} is the {} value for this type, {}",
+                        "because `{}` is the {} value for this type, {}",
                         snippet(cx, culprit.expr.span, "x"),
                         match culprit.which {
                             Minimum => "minimum",
@@ -1805,7 +1839,7 @@ impl FullInt {
 impl PartialEq for FullInt {
     #[must_use]
     fn eq(&self, other: &Self) -> bool {
-        self.partial_cmp(other).expect("partial_cmp only returns Some(_)") == Ordering::Equal
+        self.partial_cmp(other).expect("`partial_cmp` only returns `Some(_)`") == Ordering::Equal
     }
 }
 
@@ -1824,11 +1858,11 @@ impl Ord for FullInt {
     #[must_use]
     fn cmp(&self, other: &Self) -> Ordering {
         self.partial_cmp(other)
-            .expect("partial_cmp for FullInt can never return None")
+            .expect("`partial_cmp` for FullInt can never return `None`")
     }
 }
 
-fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_, '_>, expr: &'a Expr) -> Option<(FullInt, FullInt)> {
+fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_, '_>, expr: &'a Expr<'_>) -> Option<(FullInt, FullInt)> {
     use std::*;
 
     if let ExprKind::Cast(ref cast_exp, _) = expr.kind {
@@ -1892,7 +1926,7 @@ fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_, '_>, expr: &'a Expr) -> 
     }
 }
 
-fn node_as_const_fullint<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> Option<FullInt> {
+fn node_as_const_fullint<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> Option<FullInt> {
     let val = constant(cx, cx.tables, expr)?.0;
     if let Constant::Int(const_int) = val {
         match cx.tables.expr_ty(expr).kind {
@@ -1905,7 +1939,7 @@ fn node_as_const_fullint<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr)
     }
 }
 
-fn err_upcast_comparison(cx: &LateContext<'_, '_>, span: Span, expr: &Expr, always: bool) {
+fn err_upcast_comparison(cx: &LateContext<'_, '_>, span: Span, expr: &Expr<'_>, always: bool) {
     if let ExprKind::Cast(ref cast_val, _) = expr.kind {
         span_lint(
             cx,
@@ -1925,8 +1959,8 @@ fn upcast_comparison_bounds_err<'a, 'tcx>(
     span: Span,
     rel: comparisons::Rel,
     lhs_bounds: Option<(FullInt, FullInt)>,
-    lhs: &'tcx Expr,
-    rhs: &'tcx Expr,
+    lhs: &'tcx Expr<'_>,
+    rhs: &'tcx Expr<'_>,
     invert: bool,
 ) {
     use crate::utils::comparisons::*;
@@ -1979,7 +2013,7 @@ fn upcast_comparison_bounds_err<'a, 'tcx>(
 }
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InvalidUpcastComparisons {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if let ExprKind::Binary(ref cmp, ref lhs, ref rhs) = expr.kind {
             let normalized = comparisons::normalize_comparison(cmp.node, lhs, rhs);
             let (rel, normalized_lhs, normalized_rhs) = if let Some(val) = normalized {
@@ -2036,8 +2070,8 @@ declare_lint_pass!(ImplicitHasher => [IMPLICIT_HASHER]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitHasher {
     #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
-    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item) {
-        use syntax_pos::BytePos;
+    fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
+        use rustc_span::BytePos;
 
         fn suggestion<'a, 'tcx>(
             cx: &LateContext<'a, 'tcx>,
@@ -2090,7 +2124,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitHasher {
         }
 
         match item.kind {
-            ItemKind::Impl(_, _, _, ref generics, _, ref ty, ref items) => {
+            ItemKind::Impl {
+                ref generics,
+                self_ty: ref ty,
+                ref items,
+                ..
+            } => {
                 let mut vis = ImplicitHasherTypeVisitor::new(cx);
                 vis.visit_ty(ty);
 
@@ -2131,7 +2170,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitHasher {
             ItemKind::Fn(ref sig, ref generics, body_id) => {
                 let body = cx.tcx.hir().body(body_id);
 
-                for ty in &sig.decl.inputs {
+                for ty in sig.decl.inputs {
                     let mut vis = ImplicitHasherTypeVisitor::new(cx);
                     vis.visit_ty(ty);
 
@@ -2179,7 +2218,7 @@ enum ImplicitHasherType<'tcx> {
 
 impl<'tcx> ImplicitHasherType<'tcx> {
     /// Checks that `ty` is a target type without a `BuildHasher`.
-    fn new<'a>(cx: &LateContext<'a, 'tcx>, hir_ty: &hir::Ty) -> Option<Self> {
+    fn new<'a>(cx: &LateContext<'a, 'tcx>, hir_ty: &hir::Ty<'_>) -> Option<Self> {
         if let TyKind::Path(QPath::Resolved(None, ref path)) = hir_ty.kind {
             let params: Vec<_> = path
                 .segments
@@ -2258,7 +2297,9 @@ impl<'a, 'tcx> ImplicitHasherTypeVisitor<'a, 'tcx> {
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for ImplicitHasherTypeVisitor<'a, 'tcx> {
-    fn visit_ty(&mut self, t: &'tcx hir::Ty) {
+    type Map = Map<'tcx>;
+
+    fn visit_ty(&mut self, t: &'tcx hir::Ty<'_>) {
         if let Some(target) = ImplicitHasherType::new(self.cx, t) {
             self.found.push(target);
         }
@@ -2266,7 +2307,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ImplicitHasherTypeVisitor<'a, 'tcx> {
         walk_ty(self, t);
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -2291,14 +2332,16 @@ impl<'a, 'b, 'tcx> ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
 }
 
 impl<'a, 'b, 'tcx> Visitor<'tcx> for ImplicitHasherConstructorVisitor<'a, 'b, 'tcx> {
-    fn visit_body(&mut self, body: &'tcx Body) {
+    type Map = Map<'tcx>;
+
+    fn visit_body(&mut self, body: &'tcx Body<'_>) {
         let prev_body = self.body;
         self.body = self.cx.tcx.body_tables(body.id());
         walk_body(self, body);
         self.body = prev_body;
     }
 
-    fn visit_expr(&mut self, e: &'tcx Expr) {
+    fn visit_expr(&mut self, e: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Call(ref fun, ref args) = e.kind;
             if let ExprKind::Path(QPath::TypeRelative(ref ty, ref method)) = fun.kind;
@@ -2341,7 +2384,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for ImplicitHasherConstructorVisitor<'a, 'b, 't
         walk_expr(self, e);
     }
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
         NestedVisitorMap::OnlyBodies(&self.cx.tcx.hir())
     }
 }
@@ -2383,20 +2426,20 @@ declare_clippy_lint! {
 declare_lint_pass!(RefToMut => [CAST_REF_TO_MUT]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RefToMut {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         if_chain! {
             if let ExprKind::Unary(UnOp::UnDeref, e) = &expr.kind;
             if let ExprKind::Cast(e, t) = &e.kind;
-            if let TyKind::Ptr(MutTy { mutbl: Mutability::Mutable, .. }) = t.kind;
+            if let TyKind::Ptr(MutTy { mutbl: Mutability::Mut, .. }) = t.kind;
             if let ExprKind::Cast(e, t) = &e.kind;
-            if let TyKind::Ptr(MutTy { mutbl: Mutability::Immutable, .. }) = t.kind;
+            if let TyKind::Ptr(MutTy { mutbl: Mutability::Not, .. }) = t.kind;
             if let ty::Ref(..) = cx.tables.node_type(e.hir_id).kind;
             then {
                 span_lint(
                     cx,
                     CAST_REF_TO_MUT,
                     expr.span,
-                    "casting &T to &mut T may cause undefined behaviour, consider instead using an UnsafeCell",
+                    "casting `&T` to `&mut T` may cause undefined behavior, consider instead using an `UnsafeCell`",
                 );
             }
         }

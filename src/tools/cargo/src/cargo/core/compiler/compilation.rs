@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::env;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use cargo_platform::CfgExpr;
@@ -8,17 +8,18 @@ use semver::Version;
 
 use super::BuildContext;
 use crate::core::compiler::CompileKind;
-use crate::core::{Edition, InternedString, Package, PackageId, Target};
-use crate::util::{self, join_paths, process, CargoResult, Config, ProcessBuilder};
+use crate::core::{Edition, Package, PackageId, Target};
+use crate::util::{self, config, join_paths, process, CargoResult, Config, ProcessBuilder};
 
 pub struct Doctest {
     /// The package being doc-tested.
     pub package: Package,
     /// The target being tested (currently always the package's lib).
     pub target: Target,
-    /// Extern dependencies needed by `rustdoc`. The path is the location of
-    /// the compiled lib.
-    pub deps: Vec<(InternedString, PathBuf)>,
+    /// Arguments needed to pass to rustdoc to run this test.
+    pub args: Vec<OsString>,
+    /// Whether or not -Zunstable-options is needed.
+    pub unstable_opts: bool,
 }
 
 /// A structure returning the result of a compilation.
@@ -100,7 +101,7 @@ impl<'cfg> Compilation<'cfg> {
             root_output: PathBuf::from("/"),
             deps_output: PathBuf::from("/"),
             host_deps_output: PathBuf::from("/"),
-            host_dylib_path: bcx.info(default_kind).sysroot_host_libdir.clone(),
+            host_dylib_path: bcx.info(CompileKind::Host).sysroot_host_libdir.clone(),
             target_dylib_path: bcx.info(default_kind).sysroot_target_libdir.clone(),
             tests: Vec::new(),
             binaries: Vec::new(),
@@ -118,12 +119,7 @@ impl<'cfg> Compilation<'cfg> {
     }
 
     /// See `process`.
-    pub fn rustc_process(
-        &self,
-        pkg: &Package,
-        target: &Target,
-        is_primary: bool,
-    ) -> CargoResult<ProcessBuilder> {
+    pub fn rustc_process(&self, pkg: &Package, is_primary: bool) -> CargoResult<ProcessBuilder> {
         let rustc = if is_primary {
             self.primary_unit_rustc_process
                 .clone()
@@ -132,11 +128,7 @@ impl<'cfg> Compilation<'cfg> {
             self.rustc_process.clone()
         };
 
-        let mut p = self.fill_env(rustc, pkg, true)?;
-        if target.edition() != Edition::Edition2015 {
-            p.arg(format!("--edition={}", target.edition()));
-        }
-        Ok(p)
+        self.fill_env(rustc, pkg, true)
     }
 
     /// See `process`.
@@ -297,33 +289,35 @@ fn target_runner(
 
     // try target.{}.runner
     let key = format!("target.{}.runner", target);
-    if let Some(v) = bcx.config.get_path_and_args(&key)? {
-        return Ok(Some(v.val));
+    if let Some(v) = bcx.config.get::<Option<config::PathAndArgs>>(&key)? {
+        let path = v.path.resolve_program(bcx.config);
+        return Ok(Some((path, v.args)));
     }
 
     // try target.'cfg(...)'.runner
-    if let Some(table) = bcx.config.get_table("target")? {
-        let mut matching_runner = None;
-
-        for key in table.val.keys() {
-            if CfgExpr::matches_key(key, bcx.info(kind).cfg()) {
-                let key = format!("target.{}.runner", key);
-                if let Some(runner) = bcx.config.get_path_and_args(&key)? {
-                    // more than one match, error out
-                    if matching_runner.is_some() {
-                        failure::bail!(
-                            "several matching instances of `target.'cfg(..)'.runner` \
-                             in `.cargo/config`"
-                        )
-                    }
-
-                    matching_runner = Some(runner.val);
-                }
-            }
-        }
-
-        return Ok(matching_runner);
+    let target_cfg = bcx.info(kind).cfg();
+    let mut cfgs = bcx
+        .config
+        .target_cfgs()?
+        .iter()
+        .filter_map(|(key, cfg)| cfg.runner.as_ref().map(|runner| (key, runner)))
+        .filter(|(key, _runner)| CfgExpr::matches_key(key, target_cfg));
+    let matching_runner = cfgs.next();
+    if let Some((key, runner)) = cfgs.next() {
+        anyhow::bail!(
+            "several matching instances of `target.'cfg(..)'.runner` in `.cargo/config`\n\
+             first match `{}` located in {}\n\
+             second match `{}` located in {}",
+            matching_runner.unwrap().0,
+            matching_runner.unwrap().1.definition,
+            key,
+            runner.definition
+        );
     }
-
-    Ok(None)
+    Ok(matching_runner.map(|(_k, runner)| {
+        (
+            runner.val.path.clone().resolve_program(bcx.config),
+            runner.val.args.clone(),
+        )
+    }))
 }

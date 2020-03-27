@@ -4,29 +4,23 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
-       test(attr(deny(warnings))))]
-
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
 #![feature(bool_to_option)]
 #![feature(box_syntax)]
-#![feature(const_fn)]
+#![feature(const_fn)] // For the `transmute` in `P::new`
 #![feature(const_transmute)]
 #![feature(crate_visibility_modifier)]
 #![feature(label_break_value)]
-#![feature(matches_macro)]
 #![feature(nll)]
 #![feature(try_trait)]
-#![feature(slice_patterns)]
+#![cfg_attr(bootstrap, feature(slice_patterns))]
 #![feature(unicode_internals)]
+#![recursion_limit = "256"]
 
-#![recursion_limit="256"]
-
-pub use errors;
+use ast::AttrId;
 use rustc_data_structures::sync::Lock;
 use rustc_index::bit_set::GrowableBitSet;
-pub use rustc_data_structures::thin_vec::ThinVec;
-use ast::AttrId;
-use syntax_pos::edition::Edition;
+use rustc_span::edition::{Edition, DEFAULT_EDITION};
 
 #[macro_export]
 macro_rules! unwrap_or {
@@ -35,13 +29,13 @@ macro_rules! unwrap_or {
             Some(x) => x,
             None => $default,
         }
-    }
+    };
 }
 
 pub struct Globals {
     used_attrs: Lock<GrowableBitSet<AttrId>>,
     known_attrs: Lock<GrowableBitSet<AttrId>>,
-    syntax_pos_globals: syntax_pos::Globals,
+    rustc_span_globals: rustc_span::Globals,
 }
 
 impl Globals {
@@ -51,72 +45,60 @@ impl Globals {
             // initiate the vectors with 0 bits. We'll grow them as necessary.
             used_attrs: Lock::new(GrowableBitSet::new_empty()),
             known_attrs: Lock::new(GrowableBitSet::new_empty()),
-            syntax_pos_globals: syntax_pos::Globals::new(edition),
+            rustc_span_globals: rustc_span::Globals::new(edition),
         }
     }
 }
 
-pub fn with_globals<F, R>(edition: Edition, f: F) -> R
-    where F: FnOnce() -> R
-{
+pub fn with_globals<R>(edition: Edition, f: impl FnOnce() -> R) -> R {
     let globals = Globals::new(edition);
-    GLOBALS.set(&globals, || {
-        syntax_pos::GLOBALS.set(&globals.syntax_pos_globals, f)
-    })
+    GLOBALS.set(&globals, || rustc_span::GLOBALS.set(&globals.rustc_span_globals, f))
 }
 
-pub fn with_default_globals<F, R>(f: F) -> R
-    where F: FnOnce() -> R
-{
-    with_globals(edition::DEFAULT_EDITION, f)
+pub fn with_default_globals<R>(f: impl FnOnce() -> R) -> R {
+    with_globals(DEFAULT_EDITION, f)
 }
 
 scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
-
-#[macro_use]
-pub mod diagnostics {
-    #[macro_use]
-    pub mod macros;
-}
 
 pub mod util {
     pub mod classify;
     pub mod comments;
     pub mod lev_distance;
     pub mod literal;
+    pub mod map_in_place;
     pub mod node_count;
     pub mod parser;
-    pub mod map_in_place;
 }
 
 pub mod ast;
 pub mod attr;
-pub mod expand;
-pub use syntax_pos::source_map;
 pub mod entry;
-pub mod feature_gate {
-    mod check;
-    pub use check::{check_crate, check_attribute, get_features, feature_err, feature_err_issue};
-}
+pub mod expand;
 pub mod mut_visit;
 pub mod ptr;
-pub mod show_span;
-pub use syntax_pos::edition;
-pub use syntax_pos::symbol;
 pub use rustc_session::parse as sess;
 pub mod token;
 pub mod tokenstream;
 pub mod visit;
 
 pub mod print {
+    mod helpers;
     pub mod pp;
     pub mod pprust;
-    mod helpers;
 }
 
-pub mod early_buffered_lints;
+use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 
 /// Requirements for a `StableHashingContext` to be used in this crate.
 /// This is a hack to allow using the `HashStable_Generic` derive macro
 /// instead of implementing everything in librustc.
-pub trait HashStableContext: syntax_pos::HashStableContext {}
+pub trait HashStableContext: rustc_span::HashStableContext {
+    fn hash_attr(&mut self, _: &ast::Attribute, hasher: &mut StableHasher);
+}
+
+impl<AstCtx: crate::HashStableContext> HashStable<AstCtx> for ast::Attribute {
+    fn hash_stable(&self, hcx: &mut AstCtx, hasher: &mut StableHasher) {
+        hcx.hash_attr(self, hasher)
+    }
+}

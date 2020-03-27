@@ -1,13 +1,12 @@
-use rustc::hir::intravisit as visit;
-use rustc::hir::{self, *};
-use rustc::impl_lint_pass;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::layout::LayoutOf;
 use rustc::ty::{self, Ty};
-use rustc::util::nodemap::HirIdSet;
-use rustc_session::declare_tool_lint;
+use rustc_hir::intravisit as visit;
+use rustc_hir::HirIdSet;
+use rustc_hir::{self, *};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_span::source_map::Span;
 use rustc_typeck::expr_use_visitor::*;
-use syntax::source_map::Span;
 
 use crate::utils::span_lint;
 
@@ -55,8 +54,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoxedLocal {
         &mut self,
         cx: &LateContext<'a, 'tcx>,
         _: visit::FnKind<'tcx>,
-        _: &'tcx FnDecl,
-        body: &'tcx Body,
+        _: &'tcx FnDecl<'_>,
+        body: &'tcx Body<'_>,
         _: Span,
         hir_id: HirId,
     ) {
@@ -65,7 +64,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoxedLocal {
         let parent_node = cx.tcx.hir().find(parent_id);
 
         if let Some(Node::Item(item)) = parent_node {
-            if let ItemKind::Impl(_, _, _, _, Some(..), _, _) = item.kind {
+            if let ItemKind::Impl { of_trait: Some(_), .. } = item.kind {
                 return;
             }
         }
@@ -93,7 +92,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BoxedLocal {
 }
 
 // TODO: Replace with Map::is_argument(..) when it's fixed
-fn is_argument(map: &hir::map::Map<'_>, id: HirId) -> bool {
+fn is_argument(map: &rustc::hir::map::Map<'_>, id: HirId) -> bool {
     match map.find(id) {
         Some(Node::Binding(_)) => (),
         _ => return false,

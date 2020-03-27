@@ -1,8 +1,9 @@
 use crate::utils::{differing_macro_contexts, snippet_opt, span_help_and_lint, span_note_and_lint};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::lint::{in_external_macro, EarlyContext, EarlyLintPass, LintArray, LintPass};
-use rustc_session::declare_tool_lint;
+use rustc::lint::in_external_macro;
+use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 use syntax::ast::*;
 
 declare_clippy_lint! {
@@ -131,7 +132,7 @@ impl EarlyLintPass for Formatting {
 
 /// Implementation of the `SUSPICIOUS_ASSIGNMENT_FORMATTING` lint.
 fn check_assign(cx: &EarlyContext<'_>, expr: &Expr) {
-    if let ExprKind::Assign(ref lhs, ref rhs) = expr.kind {
+    if let ExprKind::Assign(ref lhs, ref rhs, _) = expr.kind {
         if !differing_macro_contexts(lhs.span, rhs.span) && !lhs.span.from_expansion() {
             let eq_span = lhs.span.between(rhs.span);
             if let ExprKind::Unary(op, ref sub_rhs) = rhs.kind {
@@ -242,26 +243,31 @@ fn has_unary_equivalent(bin_op: BinOpKind) -> bool {
     bin_op == BinOpKind::And || bin_op == BinOpKind::Mul || bin_op == BinOpKind::Sub
 }
 
+fn indentation(cx: &EarlyContext<'_>, span: Span) -> usize {
+    cx.sess.source_map().lookup_char_pos(span.lo()).col.0
+}
+
 /// Implementation of the `POSSIBLE_MISSING_COMMA` lint for array
 fn check_array(cx: &EarlyContext<'_>, expr: &Expr) {
     if let ExprKind::Array(ref array) = expr.kind {
         for element in array {
-            if let ExprKind::Binary(ref op, ref lhs, _) = element.kind {
-                if has_unary_equivalent(op.node) && !differing_macro_contexts(lhs.span, op.span) {
-                    let space_span = lhs.span.between(op.span);
-                    if let Some(space_snippet) = snippet_opt(cx, space_span) {
-                        let lint_span = lhs.span.with_lo(lhs.span.hi());
-                        if space_snippet.contains('\n') {
-                            span_note_and_lint(
-                                cx,
-                                POSSIBLE_MISSING_COMMA,
-                                lint_span,
-                                "possibly missing a comma here",
-                                lint_span,
-                                "to remove this lint, add a comma or write the expr in a single line",
-                            );
-                        }
-                    }
+            if_chain! {
+                if let ExprKind::Binary(ref op, ref lhs, _) = element.kind;
+                if has_unary_equivalent(op.node) && !differing_macro_contexts(lhs.span, op.span);
+                let space_span = lhs.span.between(op.span);
+                if let Some(space_snippet) = snippet_opt(cx, space_span);
+                let lint_span = lhs.span.with_lo(lhs.span.hi());
+                if space_snippet.contains('\n');
+                if indentation(cx, op.span) <= indentation(cx, lhs.span);
+                then {
+                    span_note_and_lint(
+                        cx,
+                        POSSIBLE_MISSING_COMMA,
+                        lint_span,
+                        "possibly missing a comma here",
+                        lint_span,
+                        "to remove this lint, add a comma or write the expr in a single line",
+                    );
                 }
             }
         }

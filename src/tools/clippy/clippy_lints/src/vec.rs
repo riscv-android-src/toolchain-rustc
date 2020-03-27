@@ -1,13 +1,12 @@
 use crate::consts::constant;
 use crate::utils::{higher, is_copy, snippet_with_applicability, span_lint_and_sugg};
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintPass};
 use rustc::ty::{self, Ty};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
-use syntax::source_map::Span;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for usage of `&vec![..]` when using `&[..]` would
@@ -29,7 +28,7 @@ declare_clippy_lint! {
 declare_lint_pass!(UselessVec => [USELESS_VEC]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UselessVec {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         // search for `&vec![_]` expressions where the adjusted type is `&[_]`
         if_chain! {
             if let ty::Ref(_, ty, _) = cx.tables.expr_ty_adjusted(expr).kind;

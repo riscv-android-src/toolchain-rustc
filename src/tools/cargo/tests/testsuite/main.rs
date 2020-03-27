@@ -11,6 +11,7 @@
 #[macro_use]
 extern crate cargo_test_macro;
 
+mod advanced_env;
 mod alt_registry;
 mod bad_config;
 mod bad_manifest_path;
@@ -30,6 +31,8 @@ mod clippy;
 mod collisions;
 mod concurrent;
 mod config;
+mod config_cli;
+mod config_include;
 mod corrupt_git;
 mod cross_compile;
 mod cross_publish;
@@ -53,6 +56,7 @@ mod install_upgrade;
 mod jobserver;
 mod list_targets;
 mod local_registry;
+mod locate_project;
 mod lockfile_compat;
 mod login;
 mod member_errors;
@@ -64,10 +68,12 @@ mod net_config;
 mod new;
 mod offline;
 mod out_dir;
+mod owner;
 mod package;
 mod patch;
 mod path;
 mod paths;
+mod pkgid;
 mod plugins;
 mod proc_macro;
 mod profile_config;
@@ -101,6 +107,7 @@ mod verify_project;
 mod version;
 mod warn_on_failure;
 mod workspaces;
+mod yank;
 
 #[cargo_test]
 fn aaa_trigger_cross_compile_disabled_check() {

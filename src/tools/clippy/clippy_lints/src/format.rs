@@ -4,13 +4,12 @@ use crate::utils::{
     walk_ptrs_ty,
 };
 use if_chain::if_chain;
-use rustc::declare_lint_pass;
-use rustc::hir::*;
-use rustc::lint::{LateContext, LateLintPass, LintArray, LintContext, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_hir::*;
+use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_span::source_map::Span;
 use syntax::ast::LitKind;
-use syntax::source_map::Span;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for the use of `format!("string literal with no
@@ -38,7 +37,7 @@ declare_clippy_lint! {
 declare_lint_pass!(UselessFormat => [USELESS_FORMAT]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UselessFormat {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
         let span = match is_expn_of(expr.span, "format") {
             Some(s) if !s.from_expansion() => s,
             _ => return,
@@ -46,9 +45,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UselessFormat {
 
         // Operate on the only argument of `alloc::fmt::format`.
         if let Some(sugg) = on_new_v1(cx, expr) {
-            span_useless_format(cx, span, "consider using .to_string()", sugg);
+            span_useless_format(cx, span, "consider using `.to_string()`", sugg);
         } else if let Some(sugg) = on_new_v1_fmt(cx, expr) {
-            span_useless_format(cx, span, "consider using .to_string()", sugg);
+            span_useless_format(cx, span, "consider using `.to_string()`", sugg);
         }
     }
 }
@@ -72,7 +71,11 @@ fn span_useless_format<T: LintContext>(cx: &T, span: Span, help: &str, mut sugg:
     });
 }
 
-fn on_argumentv1_new<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr, arms: &'tcx [Arm]) -> Option<String> {
+fn on_argumentv1_new<'a, 'tcx>(
+    cx: &LateContext<'a, 'tcx>,
+    expr: &'tcx Expr<'_>,
+    arms: &'tcx [Arm<'_>],
+) -> Option<String> {
     if_chain! {
         if let ExprKind::AddrOf(BorrowKind::Ref, _, ref format_args) = expr.kind;
         if let ExprKind::Array(ref elems) = arms[0].body.kind;
@@ -111,7 +114,7 @@ fn on_argumentv1_new<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr, arm
     None
 }
 
-fn on_new_v1<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> Option<String> {
+fn on_new_v1<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> Option<String> {
     if_chain! {
         if let Some(args) = match_function_call(cx, expr, &paths::FMT_ARGUMENTS_NEW_V1);
         if args.len() == 2;
@@ -138,7 +141,7 @@ fn on_new_v1<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> Option<S
     None
 }
 
-fn on_new_v1_fmt<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> Option<String> {
+fn on_new_v1_fmt<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> Option<String> {
     if_chain! {
         if let Some(args) = match_function_call(cx, expr, &paths::FMT_ARGUMENTS_NEW_V1_FORMATTED);
         if args.len() == 3;
@@ -172,7 +175,7 @@ fn on_new_v1_fmt<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr) -> Opti
 ///    ...,
 /// }]
 /// ```
-fn check_unformatted(expr: &Expr) -> bool {
+fn check_unformatted(expr: &Expr<'_>) -> bool {
     if_chain! {
         if let ExprKind::AddrOf(BorrowKind::Ref, _, ref expr) = expr.kind;
         if let ExprKind::Array(ref exprs) = expr.kind;

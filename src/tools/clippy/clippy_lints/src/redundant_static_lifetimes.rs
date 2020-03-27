@@ -1,8 +1,7 @@
 use crate::utils::{snippet, span_lint_and_then};
-use rustc::declare_lint_pass;
-use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintPass};
 use rustc_errors::Applicability;
-use rustc_session::declare_tool_lint;
+use rustc_lint::{EarlyContext, EarlyLintPass};
+use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast::*;
 
 declare_clippy_lint! {
@@ -51,7 +50,7 @@ impl RedundantStaticLifetimes {
                 if let Some(lifetime) = *optional_lifetime {
                     match borrow_type.ty.kind {
                         TyKind::Path(..) | TyKind::Slice(..) | TyKind::Array(..) | TyKind::Tup(..) => {
-                            if lifetime.ident.name == syntax::symbol::kw::StaticLifetime {
+                            if lifetime.ident.name == rustc_span::symbol::kw::StaticLifetime {
                                 let snip = snippet(cx, borrow_type.ty.span, "<type>");
                                 let sugg = format!("&{}", snip);
                                 span_lint_and_then(cx, REDUNDANT_STATIC_LIFETIMES, lifetime.ident.span, reason, |db| {

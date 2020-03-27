@@ -20,19 +20,29 @@ before_cache:
   - cargo cache --autoclean
 
 env:
- global:
-   - RUST_BACKTRACE=1
-   - secure: "OKulfkA5OGd/d1IhvBKzRkHQwMcWjzrzbimo7+5NhkUkWxndAzl+719TB3wWvIh1i2wXXrEXsyZkXM5FtRrHm55v1VKQ5ibjEvFg1w3NIg81iDyoLq186fLqywvxGkOAFPrsePPsBj5USd5xvhwwbrjO6L7/RK6Z8shBwOSc41s="
+  global:
+    - RUST_BACKTRACE=1
+    - secure: "OKulfkA5OGd/d1IhvBKzRkHQwMcWjzrzbimo7+5NhkUkWxndAzl+719TB3wWvIh1i2wXXrEXsyZkXM5FtRrHm55v1VKQ5ibjEvFg1w3NIg81iDyoLq186fLqywvxGkOAFPrsePPsBj5USd5xvhwwbrjO6L7/RK6Z8shBwOSc41s="
 
 before_install:
   - export CARGO_TARGET_DIR="$TRAVIS_BUILD_DIR/target"
-  - curl -sSL https://sh.rustup.rs | sh -s -- -y --default-toolchain=nightly --profile=minimal
+  - |
+    case "$TRAVIS_OS_NAME" in
+      linux ) HOST=x86_64-unknown-linux-gnu;;
+      osx ) HOST=x86_64-apple-darwin;;
+      windows ) HOST=x86_64-pc-windows-msvc;;
+    esac
+  - curl -sSL https://sh.rustup.rs | sh -s -- -y --default-host="$HOST" --default-toolchain=nightly --profile=minimal
   - export PATH="$HOME/.cargo/bin:$PATH"
 install:
   - |
     if [[ -z ${INTEGRATION} ]]; then
       if ! rustup component add rustfmt; then
-        cargo install --git https://github.com/rust-lang/rustfmt --bin rustfmt
+        TARGET=$(rustc -Vv | awk '/host/{print $2}')
+        NIGHTLY=$(curl -s "https://rust-lang.github.io/rustup-components-history/${TARGET}/rustfmt")
+        curl -sSL "https://static.rust-lang.org/dist/${NIGHTLY}/rustfmt-nightly-${TARGET}.tar.xz" | \
+        tar -xJf - --strip-components=3 -C ~/.cargo/bin
+        rm -rf ~/.cargo/bin/doc
       fi
       if [[ "$TRAVIS_OS_NAME" == "linux" ]]; then
         . $HOME/.nvm/nvm.sh
@@ -82,22 +92,22 @@ matrix:
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=hyperium/hyper
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    - env: INTEGRATION=bluss/rust-itertools
+    - env: INTEGRATION=rust-itertools/itertools
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     # FIXME: rustc ICE on `serde_test_suite`
     # - env: INTEGRATION=serde-rs/serde
     #   if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    - env: INTEGRATION=rust-lang-nursery/stdsimd
+    - env: INTEGRATION=rust-lang/stdarch
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=rust-random/rand
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    - env: INTEGRATION=rust-lang-nursery/futures-rs
+    - env: INTEGRATION=rust-lang/futures-rs
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=Marwes/combine
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=rust-lang-nursery/failure
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
-    - env: INTEGRATION=rust-lang-nursery/log
+    - env: INTEGRATION=rust-lang/log
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)
     - env: INTEGRATION=chronotope/chrono
       if: repo =~ /^rust-lang\/rust-clippy$/ AND branch IN (auto, try)

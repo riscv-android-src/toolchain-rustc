@@ -29,7 +29,7 @@ A high level description of each example is:
 
 * [`connect`](connect.rs) - this is a `nc`-like clone which can be used to
   interact with most other examples. The program creates a TCP connection or UDP
-  socket to sends all information read on stdin to the remote peer, displaying
+  socket and sends all information read on stdin to the remote peer, displaying
   any data received on stdout. Often quite useful when interacting with the
   various other servers here!
 
@@ -54,6 +54,8 @@ A high level description of each example is:
 * [`udp-client`](udp-client.rs) - a simple `send_dgram`/`recv_dgram` example.
 
 * [`manual-runtime`](manual-runtime.rs) - manually composing a runtime.
+
+* [`blocking`](blocking.rs) - perform heavy computation in blocking environment.
 
 If you've got an example you'd like to see here, please feel free to open an
 issue. Otherwise if you've got an example you'd like to add, please feel free
