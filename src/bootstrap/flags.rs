@@ -33,7 +33,7 @@ pub struct Flags {
     pub rustc_error_format: Option<String>,
     pub dry_run: bool,
 
-    // This overrides the deny-warnings configuation option,
+    // This overrides the deny-warnings configuration option,
     // which passes -Dwarnings to the compiler invocations.
     //
     // true => deny, false => warn
@@ -571,7 +571,7 @@ fn split(s: &[String]) -> Vec<String> {
 }
 
 fn parse_deny_warnings(matches: &getopts::Matches) -> Option<bool> {
-    match matches.opt_str("warnings").as_ref().map(|v| v.as_str()) {
+    match matches.opt_str("warnings").as_deref() {
         Some("deny") => Some(true),
         Some("warn") => Some(false),
         Some(value) => {

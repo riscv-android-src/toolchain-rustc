@@ -1,13 +1,13 @@
 use crate::utils::{get_item_name, snippet_with_applicability, span_lint, span_lint_and_sugg, walk_ptrs_ty};
 use rustc::ty;
+use rustc_ast::ast::{LitKind, Name};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
 use rustc_hir::def_id::DefId;
-use rustc_hir::*;
+use rustc_hir::{AssocItemKind, BinOpKind, Expr, ExprKind, ImplItemRef, Item, ItemKind, TraitItemRef};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::{Span, Spanned};
-use syntax::ast::{LitKind, Name};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for getting the length of something via `.len()`
@@ -134,7 +134,7 @@ fn check_trait_items(cx: &LateContext<'_, '_>, visited_trait: &Item<'_>, trait_i
     // fill the set with current and super traits
     fn fill_trait_set(traitt: DefId, set: &mut FxHashSet<DefId>, cx: &LateContext<'_, '_>) {
         if set.insert(traitt) {
-            for supertrait in rustc::traits::supertrait_def_ids(cx.tcx, traitt) {
+            for supertrait in rustc_infer::traits::supertrait_def_ids(cx.tcx, traitt) {
                 fill_trait_set(supertrait, set, cx);
             }
         }
@@ -147,7 +147,7 @@ fn check_trait_items(cx: &LateContext<'_, '_>, visited_trait: &Item<'_>, trait_i
 
         let is_empty_method_found = current_and_super_traits
             .iter()
-            .flat_map(|&i| cx.tcx.associated_items(i))
+            .flat_map(|&i| cx.tcx.associated_items(i).in_definition_order())
             .any(|i| {
                 i.kind == ty::AssocKind::Method
                     && i.method_has_self_argument
@@ -276,10 +276,12 @@ fn has_is_empty(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
 
     /// Checks the inherent impl's items for an `is_empty(self)` method.
     fn has_is_empty_impl(cx: &LateContext<'_, '_>, id: DefId) -> bool {
-        cx.tcx
-            .inherent_impls(id)
-            .iter()
-            .any(|imp| cx.tcx.associated_items(*imp).any(|item| is_is_empty(cx, &item)))
+        cx.tcx.inherent_impls(id).iter().any(|imp| {
+            cx.tcx
+                .associated_items(*imp)
+                .in_definition_order()
+                .any(|item| is_is_empty(cx, &item))
+        })
     }
 
     let ty = &walk_ptrs_ty(cx.tables.expr_ty(expr));
@@ -288,6 +290,7 @@ fn has_is_empty(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
             if let Some(principal) = tt.principal() {
                 cx.tcx
                     .associated_items(principal.def_id())
+                    .in_definition_order()
                     .any(|item| is_is_empty(cx, &item))
             } else {
                 false

@@ -111,37 +111,40 @@ fn generate_client_methods(methods: &[MethodRegistration]) -> Result<Vec<syn::Im
 			}
 			MethodRegistration::PubSub {
 				name: subscription,
-				subscribe,
+				subscribes,
 				unsubscribe,
 			} => {
-				let attrs = get_doc_comments(&subscribe.trait_item.attrs);
-				let name = &subscribe.trait_item.sig.ident;
-				let mut args = compute_args(&subscribe.trait_item).into_iter();
-				let returns = compute_subscription_type(&args.next().unwrap());
-				let returns_str = quote!(#returns).to_string();
-				let args = args.collect();
-				let arg_names = compute_arg_identifiers(&args)?;
-				let subscribe = subscribe.name();
-				let unsubscribe = unsubscribe.name();
-				let client_method = syn::parse_quote!(
-					#(#attrs)*
-					pub fn #name(&self, #args) -> impl Future<Item=TypedSubscriptionStream<#returns>, Error=RpcError> {
-						let args_tuple = (#(#arg_names,)*);
-						self.inner.subscribe(#subscribe, args_tuple, #subscription, #unsubscribe, #returns_str)
-					}
-				);
-				client_methods.push(client_method);
+				for subscribe in subscribes {
+					let attrs = get_doc_comments(&subscribe.trait_item.attrs);
+					let name = &subscribe.trait_item.sig.ident;
+					let mut args = compute_args(&subscribe.trait_item).into_iter();
+					let returns = compute_subscription_type(&args.next().unwrap());
+					let returns_str = quote!(#returns).to_string();
+					let args = args.collect();
+					let arg_names = compute_arg_identifiers(&args)?;
+					let subscribe = subscribe.name();
+					let unsubscribe = unsubscribe.name();
+					let client_method = syn::parse_quote!(
+						#(#attrs)*
+						pub fn #name(&self, #args) -> impl Future<Item=TypedSubscriptionStream<#returns>, Error=RpcError> {
+							let args_tuple = (#(#arg_names,)*);
+							self.inner.subscribe(#subscribe, args_tuple, #subscription, #unsubscribe, #returns_str)
+						}
+					);
+					client_methods.push(client_method);
+				}
 			}
 			MethodRegistration::Notification { method, .. } => {
 				let attrs = get_doc_comments(&method.trait_item.attrs);
+				let rpc_name = method.name();
 				let name = &method.trait_item.sig.ident;
 				let args = compute_args(&method.trait_item);
 				let arg_names = compute_arg_identifiers(&args)?;
 				let client_method = syn::parse_quote! {
 					#(#attrs)*
-					pub fn #name(&self, #args) {
-						let _args_tuple = (#(#arg_names,)*);
-						unimplemented!()
+					pub fn #name(&self, #args) -> impl Future<Item = (), Error = RpcError> {
+						let args_tuple = (#(#arg_names,)*);
+						self.inner.notify(#rpc_name, args_tuple)
 					}
 				};
 				client_methods.push(client_method);
@@ -172,14 +175,14 @@ fn get_doc_comments(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
 
 fn compute_args(method: &syn::TraitItemMethod) -> Punctuated<syn::FnArg, syn::token::Comma> {
 	let mut args = Punctuated::new();
-	for arg in &method.sig.decl.inputs {
+	for arg in &method.sig.inputs {
 		let ty = match arg {
-			syn::FnArg::Captured(syn::ArgCaptured { ty, .. }) => ty,
+			syn::FnArg::Typed(syn::PatType { ty, .. }) => ty,
 			_ => continue,
 		};
-		let segments = match ty {
+		let segments = match &**ty {
 			syn::Type::Path(syn::TypePath {
-				path: syn::Path { segments, .. },
+				path: syn::Path { ref segments, .. },
 				..
 			}) => segments,
 			_ => continue,
@@ -199,12 +202,12 @@ fn compute_arg_identifiers(args: &Punctuated<syn::FnArg, syn::token::Comma>) -> 
 	let mut arg_names = vec![];
 	for arg in args {
 		let pat = match arg {
-			syn::FnArg::Captured(syn::ArgCaptured { pat, .. }) => pat,
+			syn::FnArg::Typed(syn::PatType { pat, .. }) => pat,
 			_ => continue,
 		};
-		let ident = match pat {
-			syn::Pat::Ident(syn::PatIdent { ident, .. }) => ident,
-			syn::Pat::Wild(wild) => {
+		let ident = match **pat {
+			syn::Pat::Ident(syn::PatIdent { ref ident, .. }) => ident,
+			syn::Pat::Wild(ref wild) => {
 				let span = wild.underscore_token.spans[0];
 				let msg = "No wildcard patterns allowed in rpc trait.";
 				return Err(syn::Error::new(span, msg));
@@ -222,7 +225,7 @@ fn compute_returns(method: &syn::TraitItemMethod, returns: &Option<String>) -> R
 		None => None,
 	};
 	let returns = match returns {
-		None => try_infer_returns(&method.sig.decl.output),
+		None => try_infer_returns(&method.sig.output),
 		_ => returns,
 	};
 	let returns = match returns {
@@ -275,8 +278,8 @@ fn get_first_type_argument(args: &syn::PathArguments) -> Option<syn::Type> {
 
 fn compute_subscription_type(arg: &syn::FnArg) -> syn::Type {
 	let ty = match arg {
-		syn::FnArg::Captured(cap) => match &cap.ty {
-			syn::Type::Path(path) => {
+		syn::FnArg::Typed(cap) => match *cap.ty {
+			syn::Type::Path(ref path) => {
 				let last = &path.path.segments[&path.path.segments.len() - 1];
 				get_first_type_argument(&last.arguments)
 			}

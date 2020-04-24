@@ -13,10 +13,6 @@
 //!   defined in the `ty` module. This includes the **type context**
 //!   (or `tcx`), which is the central context during most of
 //!   compilation, containing the interners and other things.
-//! - **Traits.** Trait resolution is implemented in the `traits` module.
-//! - **Type inference.** The type inference code can be found in the `infer` module;
-//!   this code handles low-level equality and subtyping operations. The
-//!   type check pass in the compiler is found in the `librustc_typeck` crate.
 //!
 //! For more information about how rustc works, see the [rustc guide].
 //!
@@ -27,7 +23,6 @@
 //! This API is completely unstable and subject to change.
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
-#![feature(arbitrary_self_types)]
 #![feature(bool_to_option)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
@@ -36,28 +31,22 @@
 #![feature(drain_filter)]
 #![feature(never_type)]
 #![feature(exhaustive_patterns)]
-#![feature(overlapping_marker_traits)]
+#![feature(marker_trait_attr)]
 #![feature(extern_types)]
 #![feature(nll)]
-#![feature(optin_builtin_traits)]
 #![feature(option_expect_none)]
 #![feature(range_is_empty)]
-#![cfg_attr(bootstrap, feature(slice_patterns))]
 #![feature(specialization)]
-#![feature(unboxed_closures)]
-#![feature(thread_local)]
-#![feature(trace_macros)]
 #![feature(trusted_len)]
 #![feature(vec_remove_item)]
 #![feature(stmt_expr_attributes)]
-#![feature(integer_atomics)]
 #![feature(test)]
 #![feature(in_band_lifetimes)]
 #![feature(crate_visibility_modifier)]
-#![feature(log_syntax)]
 #![feature(associated_type_bounds)]
 #![feature(rustc_attrs)]
 #![feature(hash_raw_entry)]
+#![feature(int_error_matching)]
 #![recursion_limit = "512"]
 
 #[macro_use]

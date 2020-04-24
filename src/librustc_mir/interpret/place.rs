@@ -655,7 +655,7 @@ where
             }
             local => PlaceTy {
                 // This works even for dead/uninitialized locals; we check further when writing
-                place: Place::Local { frame: self.cur_frame(), local: local },
+                place: Place::Local { frame: self.cur_frame(), local },
                 layout: self.layout_of_local(self.frame(), local, None)?,
             },
         };
@@ -689,7 +689,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(self.place_to_op(dest)?, vec![], None)?;
+            self.validate_operand(self.place_to_op(dest)?)?;
         }
 
         Ok(())
@@ -706,7 +706,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(dest.into(), vec![], None)?;
+            self.validate_operand(dest.into())?;
         }
 
         Ok(())
@@ -843,7 +843,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(self.place_to_op(dest)?, vec![], None)?;
+            self.validate_operand(self.place_to_op(dest)?)?;
         }
 
         Ok(())
@@ -951,7 +951,7 @@ where
 
         if M::enforce_validity(self) {
             // Data got changed, better make sure it matches the type!
-            self.validate_operand(dest.into(), vec![], None)?;
+            self.validate_operand(dest.into())?;
         }
 
         Ok(())

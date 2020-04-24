@@ -2,14 +2,14 @@
 //! for further information.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
-use rustc_hir::Mutability;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc::mir::RetagKind;
 use rustc::ty::{self, layout::Size};
+use rustc_hir::Mutability;
 
 use crate::*;
 
@@ -96,11 +96,11 @@ pub struct GlobalState {
     /// Table storing the "base" tag for each allocation.
     /// The base tag is the one used for the initial pointer.
     /// We need this in a separate table to handle cyclic statics.
-    base_ptr_ids: HashMap<AllocId, Tag>,
+    base_ptr_ids: FxHashMap<AllocId, Tag>,
     /// Next unused call ID (for protectors).
     next_call_id: CallId,
     /// Those call IDs corresponding to functions that are still running.
-    active_calls: HashSet<CallId>,
+    active_calls: FxHashSet<CallId>,
     /// The id to trace in this execution run
     tracked_pointer_tag: Option<PtrId>,
 }
@@ -153,9 +153,9 @@ impl GlobalState {
     pub fn new(tracked_pointer_tag: Option<PtrId>) -> Self {
         GlobalState {
             next_ptr_id: NonZeroU64::new(1).unwrap(),
-            base_ptr_ids: HashMap::default(),
+            base_ptr_ids: FxHashMap::default(),
             next_call_id: NonZeroU64::new(1).unwrap(),
-            active_calls: HashSet::default(),
+            active_calls: FxHashSet::default(),
             tracked_pointer_tag,
         }
     }
@@ -293,9 +293,12 @@ impl<'tcx> Stack {
         // Two main steps: Find granting item, remove incompatible items above.
 
         // Step 1: Find granting item.
-        let granting_idx = self.find_granting(access, tag).ok_or_else(|| err_ub!(UbExperimental(
-            format!("no item granting {} to tag {:?} found in borrow stack.", access, tag),
-        )))?;
+        let granting_idx = self.find_granting(access, tag).ok_or_else(|| {
+            err_ub!(UbExperimental(format!(
+                "no item granting {} to tag {:?} found in borrow stack.",
+                access, tag
+            ),))
+        })?;
 
         // Step 2: Remove incompatible items above them.  Make sure we do not remove protected
         // items.  Behavior differs for reads and writes.
@@ -334,10 +337,12 @@ impl<'tcx> Stack {
     /// active protectors at all because we will remove all items.
     fn dealloc(&mut self, tag: Tag, global: &GlobalState) -> InterpResult<'tcx> {
         // Step 1: Find granting item.
-        self.find_granting(AccessKind::Write, tag).ok_or_else(|| err_ub!(UbExperimental(format!(
-            "no item granting write access for deallocation to tag {:?} found in borrow stack",
-            tag,
-        ))))?;
+        self.find_granting(AccessKind::Write, tag).ok_or_else(|| {
+            err_ub!(UbExperimental(format!(
+                "no item granting write access for deallocation to tag {:?} found in borrow stack",
+                tag,
+            )))
+        })?;
 
         // Step 2: Remove all items.  Also checks for protectors.
         for item in self.borrows.drain(..).rev() {
@@ -448,7 +453,7 @@ impl Stacks {
             // Thus we call `static_base_ptr` such that the global pointers get the same tag
             // as what we use here.
             // The base pointer is not unique, so the base permission is `SharedReadWrite`.
-            MemoryKind::Machine(MiriMemoryKind::Static) =>
+            MemoryKind::Machine(MiriMemoryKind::Static) | MemoryKind::Machine(MiriMemoryKind::Machine) =>
                 (extra.borrow_mut().static_base_ptr(id), Permission::SharedReadWrite),
             // Everything else we handle entirely untagged for now.
             // FIXME: experiment with more precise tracking.
@@ -575,7 +580,9 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // breaking `Rc::from_raw`.
             RefKind::Raw { .. } => Tag::Untagged,
             // All other pointesr are properly tracked.
-            _ => Tag::Tagged(this.memory.extra.stacked_borrows.borrow_mut().new_ptr()),
+            _ => Tag::Tagged(
+                this.memory.extra.stacked_borrows.as_ref().unwrap().borrow_mut().new_ptr(),
+            ),
         };
 
         // Reborrow.

@@ -8,12 +8,12 @@
 use crate::utils::span_lint;
 use if_chain::if_chain;
 use rustc::ty;
+use rustc_ast::ast::{self, MetaItem, MetaItemKind};
+use rustc_ast::attr;
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
-use syntax::ast::{self, MetaItem, MetaItemKind};
-use syntax::attr;
 
 declare_clippy_lint! {
     /// **What it does:** Warns if there is missing doc for any documentable item
@@ -36,7 +36,7 @@ pub struct MissingDoc {
     doc_hidden_stack: Vec<bool>,
 }
 
-impl ::std::default::Default for MissingDoc {
+impl Default for MissingDoc {
     #[must_use]
     fn default() -> Self {
         Self::new()

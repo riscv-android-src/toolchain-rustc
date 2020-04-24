@@ -1,6 +1,9 @@
-use crate::utils::{is_entrypoint_fn, match_type, paths, return_ty, span_lint};
+use crate::utils::{implements_trait, is_entrypoint_fn, match_type, paths, return_ty, span_lint};
+use if_chain::if_chain;
 use itertools::Itertools;
 use rustc::lint::in_external_macro;
+use rustc::ty;
+use rustc_ast::ast::{AttrKind, Attribute};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass};
@@ -8,7 +11,6 @@ use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::{BytePos, MultiSpan, Span};
 use rustc_span::Pos;
 use std::ops::Range;
-use syntax::ast::{AttrKind, Attribute};
 use url::Url;
 
 declare_clippy_lint! {
@@ -152,11 +154,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item<'_>) {
         let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
         match item.kind {
-            hir::ItemKind::Fn(ref sig, ..) => {
+            hir::ItemKind::Fn(ref sig, _, body_id) => {
                 if !(is_entrypoint_fn(cx, cx.tcx.hir().local_def_id(item.hir_id))
                     || in_external_macro(cx.tcx.sess, item.span))
                 {
-                    lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
+                    lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers, Some(body_id));
                 }
             },
             hir::ItemKind::Impl {
@@ -179,7 +181,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
         let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
         if let hir::TraitItemKind::Method(ref sig, ..) = item.kind {
             if !in_external_macro(cx.tcx.sess, item.span) {
-                lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
+                lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers, None);
             }
         }
     }
@@ -189,8 +191,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
         if self.in_trait_impl || in_external_macro(cx.tcx.sess, item.span) {
             return;
         }
-        if let hir::ImplItemKind::Method(ref sig, ..) = item.kind {
-            lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers);
+        if let hir::ImplItemKind::Method(ref sig, body_id) = item.kind {
+            lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers, Some(body_id));
         }
     }
 }
@@ -201,6 +203,7 @@ fn lint_for_missing_headers<'a, 'tcx>(
     span: impl Into<MultiSpan> + Copy,
     sig: &hir::FnSig<'_>,
     headers: DocHeaders,
+    body_id: Option<hir::BodyId>,
 ) {
     if !cx.access_levels.is_exported(hir_id) {
         return; // Private functions do not require doc comments
@@ -213,20 +216,43 @@ fn lint_for_missing_headers<'a, 'tcx>(
             "unsafe function's docs miss `# Safety` section",
         );
     }
-    if !headers.errors && match_type(cx, return_ty(cx, hir_id), &paths::RESULT) {
-        span_lint(
-            cx,
-            MISSING_ERRORS_DOC,
-            span,
-            "docs for function returning `Result` missing `# Errors` section",
-        );
+    if !headers.errors {
+        if match_type(cx, return_ty(cx, hir_id), &paths::RESULT) {
+            span_lint(
+                cx,
+                MISSING_ERRORS_DOC,
+                span,
+                "docs for function returning `Result` missing `# Errors` section",
+            );
+        } else {
+            if_chain! {
+                if let Some(body_id) = body_id;
+                if let Some(future) = cx.tcx.lang_items().future_trait();
+                let def_id = cx.tcx.hir().body_owner_def_id(body_id);
+                let mir = cx.tcx.optimized_mir(def_id);
+                let ret_ty = mir.return_ty();
+                if implements_trait(cx, ret_ty, future, &[]);
+                if let ty::Opaque(_, subs) = ret_ty.kind;
+                if let Some(gen) = subs.types().next();
+                if let ty::Generator(def_id, subs, _) = gen.kind;
+                if match_type(cx, subs.as_generator().return_ty(def_id, cx.tcx), &paths::RESULT);
+                then {
+                    span_lint(
+                        cx,
+                        MISSING_ERRORS_DOC,
+                        span,
+                        "docs for function returning `Result` missing `# Errors` section",
+                    );
+                }
+            }
+        }
     }
 }
 
 /// Cleanup documentation decoration (`///` and such).
 ///
-/// We can't use `syntax::attr::AttributeMethods::with_desugared_doc` or
-/// `syntax::parse::lexer::comments::strip_doc_comment_decoration` because we
+/// We can't use `rustc_ast::attr::AttributeMethods::with_desugared_doc` or
+/// `rustc_ast::parse::lexer::comments::strip_doc_comment_decoration` because we
 /// need to keep track of
 /// the spans but this function is inspired from the later.
 #[allow(clippy::cast_possible_truncation)]
@@ -324,7 +350,7 @@ fn check_attrs<'a>(cx: &LateContext<'_, '_>, valid_idents: &FxHashSet<String>, a
     let parser = pulldown_cmark::Parser::new(&doc).into_offset_iter();
     // Iterate over all `Events` and combine consecutive events into one
     let events = parser.coalesce(|previous, current| {
-        use pulldown_cmark::Event::*;
+        use pulldown_cmark::Event::Text;
 
         let previous_range = previous.1;
         let current_range = current.1;
@@ -348,8 +374,10 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     spans: &[(usize, Span)],
 ) -> DocHeaders {
     // true if a safety header was found
-    use pulldown_cmark::Event::*;
-    use pulldown_cmark::Tag::*;
+    use pulldown_cmark::Event::{
+        Code, End, FootnoteReference, HardBreak, Html, Rule, SoftBreak, Start, TaskListMarker, Text,
+    };
+    use pulldown_cmark::Tag::{CodeBlock, Heading, Link};
 
     let mut headers = DocHeaders {
         safety: false,
@@ -398,7 +426,7 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     headers
 }
 
-static LEAVE_MAIN_PATTERNS: &[&str] = &["static", "fn main() {}", "extern crate"];
+static LEAVE_MAIN_PATTERNS: &[&str] = &["static", "fn main() {}", "extern crate", "async fn main() {"];
 
 fn check_code(cx: &LateContext<'_, '_>, text: &str, span: Span) {
     if text.contains("fn main() {") && !LEAVE_MAIN_PATTERNS.iter().any(|p| text.contains(p)) {

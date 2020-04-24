@@ -12,6 +12,7 @@ pub mod higher;
 mod hir_utils;
 pub mod inspector;
 pub mod internal_lints;
+pub mod numeric_literal;
 pub mod paths;
 pub mod ptr;
 pub mod sugg;
@@ -27,30 +28,35 @@ use if_chain::if_chain;
 use matches::matches;
 use rustc::hir::map::Map;
 use rustc::traits;
-use rustc::traits::predicate_for_trait_def;
 use rustc::ty::{
     self,
     layout::{self, IntegerExt},
     subst::GenericArg,
     Binder, Ty, TyCtxt,
 };
+use rustc_ast::ast::{self, Attribute, LitKind};
+use rustc_attr as attr;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
 use rustc_hir::Node;
-use rustc_hir::*;
+use rustc_hir::{
+    def, Arm, Block, Body, Constness, Crate, Expr, ExprKind, FnDecl, HirId, ImplItem, ImplItemKind, Item, ItemKind,
+    MatchSource, Param, Pat, PatKind, Path, PathSegment, QPath, TraitItem, TraitItemKind, TraitRef, TyKind, Unsafety,
+};
+use rustc_infer::infer::TyCtxtInferExt;
+use rustc_infer::traits::predicate_for_trait_def;
 use rustc_lint::{LateContext, Level, Lint, LintContext};
 use rustc_span::hygiene::{ExpnKind, MacroKind};
+use rustc_span::source_map::original_sp;
 use rustc_span::symbol::{self, kw, Symbol};
 use rustc_span::{BytePos, Pos, Span, DUMMY_SP};
 use smallvec::SmallVec;
-use syntax::ast::{self, Attribute, LitKind};
-use syntax::attr;
 
 use crate::consts::{constant, Constant};
-use crate::reexport::*;
+use crate::reexport::Name;
 
 /// Returns `true` if the two spans come from differing expansions (i.e., one is
 /// from a macro and one isn't).
@@ -533,19 +539,49 @@ pub fn snippet_opt<T: LintContext>(cx: &T, span: Span) -> Option<String> {
     cx.sess().source_map().span_to_snippet(span).ok()
 }
 
-/// Converts a span (from a block) to a code snippet if available, otherwise use
-/// default.
-/// This trims the code of indentation, except for the first line. Use it for
-/// blocks or block-like
+/// Converts a span (from a block) to a code snippet if available, otherwise use default.
+///
+/// This trims the code of indentation, except for the first line. Use it for blocks or block-like
 /// things which need to be printed as such.
 ///
+/// The `indent_relative_to` arg can be used, to provide a span, where the indentation of the
+/// resulting snippet of the given span.
+///
 /// # Example
+///
 /// ```rust,ignore
-/// snippet_block(cx, expr.span, "..")
+/// snippet_block(cx, block.span, "..", None)
+/// // where, `block` is the block of the if expr
+///     if x {
+///         y;
+///     }
+/// // will return the snippet
+/// {
+///     y;
+/// }
 /// ```
-pub fn snippet_block<'a, T: LintContext>(cx: &T, span: Span, default: &'a str) -> Cow<'a, str> {
+///
+/// ```rust,ignore
+/// snippet_block(cx, block.span, "..", Some(if_expr.span))
+/// // where, `block` is the block of the if expr
+///     if x {
+///         y;
+///     }
+/// // will return the snippet
+/// {
+///         y;
+///     } // aligned with `if`
+/// ```
+/// Note that the first line of the snippet always has 0 indentation.
+pub fn snippet_block<'a, T: LintContext>(
+    cx: &T,
+    span: Span,
+    default: &'a str,
+    indent_relative_to: Option<Span>,
+) -> Cow<'a, str> {
     let snip = snippet(cx, span, default);
-    trim_multiline(snip, true)
+    let indent = indent_relative_to.and_then(|s| indent_of(cx, s));
+    trim_multiline(snip, true, indent)
 }
 
 /// Same as `snippet_block`, but adapts the applicability level by the rules of
@@ -554,27 +590,73 @@ pub fn snippet_block_with_applicability<'a, T: LintContext>(
     cx: &T,
     span: Span,
     default: &'a str,
+    indent_relative_to: Option<Span>,
     applicability: &mut Applicability,
 ) -> Cow<'a, str> {
     let snip = snippet_with_applicability(cx, span, default, applicability);
-    trim_multiline(snip, true)
+    let indent = indent_relative_to.and_then(|s| indent_of(cx, s));
+    trim_multiline(snip, true, indent)
 }
 
-/// Returns a new Span that covers the full last line of the given Span
-pub fn last_line_of_span<T: LintContext>(cx: &T, span: Span) -> Span {
+/// Returns a new Span that extends the original Span to the first non-whitespace char of the first
+/// line.
+///
+/// ```rust,ignore
+///     let x = ();
+/// //          ^^
+/// // will be converted to
+///     let x = ();
+/// //  ^^^^^^^^^^
+/// ```
+pub fn first_line_of_span<T: LintContext>(cx: &T, span: Span) -> Span {
+    if let Some(first_char_pos) = first_char_in_first_line(cx, span) {
+        span.with_lo(first_char_pos)
+    } else {
+        span
+    }
+}
+
+fn first_char_in_first_line<T: LintContext>(cx: &T, span: Span) -> Option<BytePos> {
+    let line_span = line_span(cx, span);
+    if let Some(snip) = snippet_opt(cx, line_span) {
+        snip.find(|c: char| !c.is_whitespace())
+            .map(|pos| line_span.lo() + BytePos::from_usize(pos))
+    } else {
+        None
+    }
+}
+
+/// Returns the indentation of the line of a span
+///
+/// ```rust,ignore
+/// let x = ();
+/// //      ^^ -- will return 0
+///     let x = ();
+/// //          ^^ -- will return 4
+/// ```
+pub fn indent_of<T: LintContext>(cx: &T, span: Span) -> Option<usize> {
+    if let Some(snip) = snippet_opt(cx, line_span(cx, span)) {
+        snip.find(|c: char| !c.is_whitespace())
+    } else {
+        None
+    }
+}
+
+/// Extends the span to the beginning of the spans line, incl. whitespaces.
+///
+/// ```rust,ignore
+///        let x = ();
+/// //             ^^
+/// // will be converted to
+///        let x = ();
+/// // ^^^^^^^^^^^^^^
+/// ```
+fn line_span<T: LintContext>(cx: &T, span: Span) -> Span {
+    let span = original_sp(span, DUMMY_SP);
     let source_map_and_line = cx.sess().source_map().lookup_line(span.lo()).unwrap();
     let line_no = source_map_and_line.line;
-    let line_start = &source_map_and_line.sf.lines[line_no];
-    let span = Span::new(*line_start, span.hi(), span.ctxt());
-    if_chain! {
-        if let Some(snip) = snippet_opt(cx, span);
-        if let Some(first_ch_pos) = snip.find(|c: char| !c.is_whitespace());
-        then {
-            span.with_lo(span.lo() + BytePos::from_usize(first_ch_pos))
-        } else {
-            span
-        }
-    }
+    let line_start = source_map_and_line.sf.lines[line_no];
+    Span::new(line_start, span.hi(), span.ctxt())
 }
 
 /// Like `snippet_block`, but add braces if the expr is not an `ExprKind::Block`.
@@ -584,8 +666,9 @@ pub fn expr_block<'a, T: LintContext>(
     expr: &Expr<'_>,
     option: Option<String>,
     default: &'a str,
+    indent_relative_to: Option<Span>,
 ) -> Cow<'a, str> {
-    let code = snippet_block(cx, expr.span, default);
+    let code = snippet_block(cx, expr.span, default, indent_relative_to);
     let string = option.unwrap_or_default();
     if expr.span.from_expansion() {
         Cow::Owned(format!("{{ {} }}", snippet_with_macro_callsite(cx, expr.span, default)))
@@ -600,14 +683,14 @@ pub fn expr_block<'a, T: LintContext>(
 
 /// Trim indentation from a multiline string with possibility of ignoring the
 /// first line.
-pub fn trim_multiline(s: Cow<'_, str>, ignore_first: bool) -> Cow<'_, str> {
-    let s_space = trim_multiline_inner(s, ignore_first, ' ');
-    let s_tab = trim_multiline_inner(s_space, ignore_first, '\t');
-    trim_multiline_inner(s_tab, ignore_first, ' ')
+fn trim_multiline(s: Cow<'_, str>, ignore_first: bool, indent: Option<usize>) -> Cow<'_, str> {
+    let s_space = trim_multiline_inner(s, ignore_first, indent, ' ');
+    let s_tab = trim_multiline_inner(s_space, ignore_first, indent, '\t');
+    trim_multiline_inner(s_tab, ignore_first, indent, ' ')
 }
 
-fn trim_multiline_inner(s: Cow<'_, str>, ignore_first: bool, ch: char) -> Cow<'_, str> {
-    let x = s
+fn trim_multiline_inner(s: Cow<'_, str>, ignore_first: bool, indent: Option<usize>, ch: char) -> Cow<'_, str> {
+    let mut x = s
         .lines()
         .skip(ignore_first as usize)
         .filter_map(|l| {
@@ -620,6 +703,9 @@ fn trim_multiline_inner(s: Cow<'_, str>, ignore_first: bool, ch: char) -> Cow<'_
         })
         .min()
         .unwrap_or(0);
+    if let Some(indent) = indent {
+        x = x.saturating_sub(indent);
+    }
     if x > 0 {
         Cow::Owned(
             s.lines()
@@ -1141,87 +1227,6 @@ pub fn is_normalizable<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, param_env: ty::Para
     })
 }
 
-#[cfg(test)]
-mod test {
-    use super::{trim_multiline, without_block_comments};
-
-    #[test]
-    fn test_trim_multiline_single_line() {
-        assert_eq!("", trim_multiline("".into(), false));
-        assert_eq!("...", trim_multiline("...".into(), false));
-        assert_eq!("...", trim_multiline("    ...".into(), false));
-        assert_eq!("...", trim_multiline("\t...".into(), false));
-        assert_eq!("...", trim_multiline("\t\t...".into(), false));
-    }
-
-    #[test]
-    #[rustfmt::skip]
-    fn test_trim_multiline_block() {
-        assert_eq!("\
-    if x {
-        y
-    } else {
-        z
-    }", trim_multiline("    if x {
-            y
-        } else {
-            z
-        }".into(), false));
-        assert_eq!("\
-    if x {
-    \ty
-    } else {
-    \tz
-    }", trim_multiline("    if x {
-        \ty
-        } else {
-        \tz
-        }".into(), false));
-    }
-
-    #[test]
-    #[rustfmt::skip]
-    fn test_trim_multiline_empty_line() {
-        assert_eq!("\
-    if x {
-        y
-
-    } else {
-        z
-    }", trim_multiline("    if x {
-            y
-
-        } else {
-            z
-        }".into(), false));
-    }
-
-    #[test]
-    fn test_without_block_comments_lines_without_block_comments() {
-        let result = without_block_comments(vec!["/*", "", "*/"]);
-        println!("result: {:?}", result);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["", "/*", "", "*/", "#[crate_type = \"lib\"]", "/*", "", "*/", ""]);
-        assert_eq!(result, vec!["", "#[crate_type = \"lib\"]", ""]);
-
-        let result = without_block_comments(vec!["/* rust", "", "*/"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["/* one-line comment */"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["/* nested", "/* multi-line", "comment", "*/", "test", "*/"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["/* nested /* inline /* comment */ test */ */"]);
-        assert!(result.is_empty());
-
-        let result = without_block_comments(vec!["foo", "bar", "baz"]);
-        assert_eq!(result, vec!["foo", "bar", "baz"]);
-    }
-}
-
 pub fn match_def_path<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, did: DefId, syms: &[&str]) -> bool {
     let path = cx.get_def_path(did);
     path.len() == syms.len() && path.into_iter().zip(syms.iter()).all(|(a, &b)| a.as_str() == b)
@@ -1288,17 +1293,19 @@ pub fn must_use_attr(attrs: &[Attribute]) -> Option<&Attribute> {
 
 // Returns whether the type has #[must_use] attribute
 pub fn is_must_use_ty<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>) -> bool {
-    use ty::TyKind::*;
     match ty.kind {
-        Adt(ref adt, _) => must_use_attr(&cx.tcx.get_attrs(adt.did)).is_some(),
-        Foreign(ref did) => must_use_attr(&cx.tcx.get_attrs(*did)).is_some(),
-        Slice(ref ty) | Array(ref ty, _) | RawPtr(ty::TypeAndMut { ref ty, .. }) | Ref(_, ref ty, _) => {
+        ty::Adt(ref adt, _) => must_use_attr(&cx.tcx.get_attrs(adt.did)).is_some(),
+        ty::Foreign(ref did) => must_use_attr(&cx.tcx.get_attrs(*did)).is_some(),
+        ty::Slice(ref ty)
+        | ty::Array(ref ty, _)
+        | ty::RawPtr(ty::TypeAndMut { ref ty, .. })
+        | ty::Ref(_, ref ty, _) => {
             // for the Array case we don't need to care for the len == 0 case
             // because we don't want to lint functions returning empty arrays
             is_must_use_ty(cx, *ty)
         },
-        Tuple(ref substs) => substs.types().any(|ty| is_must_use_ty(cx, ty)),
-        Opaque(ref def_id, _) => {
+        ty::Tuple(ref substs) => substs.types().any(|ty| is_must_use_ty(cx, ty)),
+        ty::Opaque(ref def_id, _) => {
             for (predicate, _) in cx.tcx.predicates_of(*def_id).predicates {
                 if let ty::Predicate::Trait(ref poly_trait_predicate, _) = predicate {
                     if must_use_attr(&cx.tcx.get_attrs(poly_trait_predicate.skip_binder().trait_ref.def_id)).is_some() {
@@ -1308,7 +1315,7 @@ pub fn is_must_use_ty<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>) -> boo
             }
             false
         },
-        Dynamic(binder, _) => {
+        ty::Dynamic(binder, _) => {
             for predicate in binder.skip_binder().iter() {
                 if let ty::ExistentialPredicate::Trait(ref trait_ref) = predicate {
                     if must_use_attr(&cx.tcx.get_attrs(trait_ref.def_id)).is_some() {
@@ -1353,4 +1360,100 @@ pub fn is_no_std_crate(krate: &Crate<'_>) -> bool {
             false
         }
     })
+}
+
+/// Check if parent of a hir node is a trait implementation block.
+/// For example, `f` in
+/// ```rust,ignore
+/// impl Trait for S {
+///     fn f() {}
+/// }
+/// ```
+pub fn is_trait_impl_item(cx: &LateContext<'_, '_>, hir_id: HirId) -> bool {
+    if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
+        matches!(item.kind, ItemKind::Impl{ of_trait: Some(_), .. })
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::{trim_multiline, without_block_comments};
+
+    #[test]
+    fn test_trim_multiline_single_line() {
+        assert_eq!("", trim_multiline("".into(), false, None));
+        assert_eq!("...", trim_multiline("...".into(), false, None));
+        assert_eq!("...", trim_multiline("    ...".into(), false, None));
+        assert_eq!("...", trim_multiline("\t...".into(), false, None));
+        assert_eq!("...", trim_multiline("\t\t...".into(), false, None));
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_trim_multiline_block() {
+        assert_eq!("\
+    if x {
+        y
+    } else {
+        z
+    }", trim_multiline("    if x {
+            y
+        } else {
+            z
+        }".into(), false, None));
+        assert_eq!("\
+    if x {
+    \ty
+    } else {
+    \tz
+    }", trim_multiline("    if x {
+        \ty
+        } else {
+        \tz
+        }".into(), false, None));
+    }
+
+    #[test]
+    #[rustfmt::skip]
+    fn test_trim_multiline_empty_line() {
+        assert_eq!("\
+    if x {
+        y
+
+    } else {
+        z
+    }", trim_multiline("    if x {
+            y
+
+        } else {
+            z
+        }".into(), false, None));
+    }
+
+    #[test]
+    fn test_without_block_comments_lines_without_block_comments() {
+        let result = without_block_comments(vec!["/*", "", "*/"]);
+        println!("result: {:?}", result);
+        assert!(result.is_empty());
+
+        let result = without_block_comments(vec!["", "/*", "", "*/", "#[crate_type = \"lib\"]", "/*", "", "*/", ""]);
+        assert_eq!(result, vec!["", "#[crate_type = \"lib\"]", ""]);
+
+        let result = without_block_comments(vec!["/* rust", "", "*/"]);
+        assert!(result.is_empty());
+
+        let result = without_block_comments(vec!["/* one-line comment */"]);
+        assert!(result.is_empty());
+
+        let result = without_block_comments(vec!["/* nested", "/* multi-line", "comment", "*/", "test", "*/"]);
+        assert!(result.is_empty());
+
+        let result = without_block_comments(vec!["/* nested /* inline /* comment */ test */ */"]);
+        assert!(result.is_empty());
+
+        let result = without_block_comments(vec!["foo", "bar", "baz"]);
+        assert_eq!(result, vec!["foo", "bar", "baz"]);
+    }
 }

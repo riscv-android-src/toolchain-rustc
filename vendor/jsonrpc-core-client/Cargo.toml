@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "jsonrpc-core-client"
-version = "13.1.0"
+version = "14.0.5"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "Transport agnostic JSON-RPC 2.0 client implementation."
 homepage = "https://github.com/paritytech/jsonrpc"
@@ -23,10 +23,11 @@ categories = ["asynchronous", "network-programming", "web-programming::http-clie
 license = "MIT"
 repository = "https://github.com/paritytech/jsonrpc"
 [dependencies.jsonrpc-client-transports]
-version = "13.1"
+version = "14.0"
 default-features = false
 
 [features]
+arbitrary_precision = ["jsonrpc-client-transports/arbitrary_precision"]
 http = ["jsonrpc-client-transports/http"]
 ipc = ["jsonrpc-client-transports/ipc"]
 tls = ["jsonrpc-client-transports/tls"]

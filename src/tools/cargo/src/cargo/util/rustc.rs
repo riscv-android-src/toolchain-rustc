@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::InternedString;
 use crate::util::paths;
-use crate::util::{self, internal, profile, CargoResult, ProcessBuilder};
+use crate::util::{self, profile, CargoResult, CargoResultExt, ProcessBuilder};
 
 /// Information on the `rustc` executable
 #[derive(Debug)]
@@ -186,9 +186,11 @@ impl Cache {
                 debug!("running {}", cmd);
                 let output = cmd.exec_with_output()?;
                 let stdout = String::from_utf8(output.stdout)
-                    .map_err(|_| internal("rustc didn't return utf8 output"))?;
+                    .map_err(|e| anyhow::anyhow!("{}: {:?}", e, e.as_bytes()))
+                    .chain_err(|| anyhow::anyhow!("`{}` didn't return utf8 output", cmd))?;
                 let stderr = String::from_utf8(output.stderr)
-                    .map_err(|_| internal("rustc didn't return utf8 output"))?;
+                    .map_err(|e| anyhow::anyhow!("{}: {:?}", e, e.as_bytes()))
+                    .chain_err(|| anyhow::anyhow!("`{}` didn't return utf8 output", cmd))?;
                 let output = (stdout, stderr);
                 entry.insert(output.clone());
                 self.dirty = true;
@@ -214,7 +216,7 @@ impl Drop for Cache {
 }
 
 fn rustc_fingerprint(path: &Path, rustup_rustc: &Path) -> CargoResult<u64> {
-    let mut hasher = SipHasher::new_with_keys(0, 0);
+    let mut hasher = SipHasher::new();
 
     let path = paths::resolve_executable(path)?;
     path.hash(&mut hasher);
@@ -258,7 +260,7 @@ fn rustc_fingerprint(path: &Path, rustup_rustc: &Path) -> CargoResult<u64> {
 }
 
 fn process_fingerprint(cmd: &ProcessBuilder) -> u64 {
-    let mut hasher = SipHasher::new_with_keys(0, 0);
+    let mut hasher = SipHasher::new();
     cmd.get_args().hash(&mut hasher);
     let mut env = cmd.get_envs().iter().collect::<Vec<_>>();
     env.sort_unstable();

@@ -73,7 +73,7 @@ use self::ConfigValue as CV;
 use crate::core::shell::Verbosity;
 use crate::core::{nightly_features_allowed, CliUnstable, Shell, SourceId, Workspace};
 use crate::ops;
-use crate::util::errors::{internal, CargoResult, CargoResultExt};
+use crate::util::errors::{CargoResult, CargoResultExt};
 use crate::util::toml as cargo_toml;
 use crate::util::{paths, validate_package_name};
 use crate::util::{FileLock, Filesystem, IntoUrl, IntoUrlWithBase, Rustc};
@@ -573,6 +573,70 @@ impl Config {
         }
     }
 
+    /// Helper for StringList type to get something that is a string or list.
+    fn get_list_or_string(&self, key: &ConfigKey) -> CargoResult<Vec<(String, Definition)>> {
+        let mut res = Vec::new();
+        match self.get_cv(key)? {
+            Some(CV::List(val, _def)) => res.extend(val),
+            Some(CV::String(val, def)) => {
+                let split_vs = val.split_whitespace().map(|s| (s.to_string(), def.clone()));
+                res.extend(split_vs);
+            }
+            Some(val) => {
+                return self.expected("string or array of strings", key, &val);
+            }
+            None => {}
+        }
+
+        self.get_env_list(key, &mut res)?;
+        Ok(res)
+    }
+
+    /// Internal method for getting an environment variable as a list.
+    fn get_env_list(
+        &self,
+        key: &ConfigKey,
+        output: &mut Vec<(String, Definition)>,
+    ) -> CargoResult<()> {
+        let env_val = match self.env.get(key.as_env_key()) {
+            Some(v) => v,
+            None => return Ok(()),
+        };
+
+        let def = Definition::Environment(key.as_env_key().to_string());
+        if self.cli_unstable().advanced_env && env_val.starts_with('[') && env_val.ends_with(']') {
+            // Parse an environment string as a TOML array.
+            let toml_s = format!("value={}", env_val);
+            let toml_v: toml::Value = toml::de::from_str(&toml_s).map_err(|e| {
+                ConfigError::new(format!("could not parse TOML list: {}", e), def.clone())
+            })?;
+            let values = toml_v
+                .as_table()
+                .unwrap()
+                .get("value")
+                .unwrap()
+                .as_array()
+                .expect("env var was not array");
+            for value in values {
+                // TODO: support other types.
+                let s = value.as_str().ok_or_else(|| {
+                    ConfigError::new(
+                        format!("expected string, found {}", value.type_str()),
+                        def.clone(),
+                    )
+                })?;
+                output.push((s.to_string(), def.clone()));
+            }
+        } else {
+            output.extend(
+                env_val
+                    .split_whitespace()
+                    .map(|s| (s.to_string(), def.clone())),
+            );
+        }
+        Ok(())
+    }
+
     /// Low-level method for getting a config value as a `OptValue<HashMap<String, CV>>`.
     ///
     /// NOTE: This does not read from env. The caller is responsible for that.
@@ -602,14 +666,14 @@ impl Config {
     pub fn configure(
         &mut self,
         verbose: u32,
-        quiet: Option<bool>,
+        quiet: bool,
         color: Option<&str>,
         frozen: bool,
         locked: bool,
         offline: bool,
         target_dir: &Option<PathBuf>,
         unstable_flags: &[String],
-        cli_config: &[&str],
+        cli_config: &[String],
     ) -> CargoResult<()> {
         self.unstable_flags.parse(unstable_flags)?;
         if !cli_config.is_empty() {
@@ -618,7 +682,7 @@ impl Config {
             self.merge_cli_args()?;
         }
         let extra_verbose = verbose >= 2;
-        let verbose = if verbose == 0 { None } else { Some(true) };
+        let verbose = verbose != 0;
 
         #[derive(Deserialize, Default)]
         struct TermConfig {
@@ -632,25 +696,19 @@ impl Config {
         let color = color.or_else(|| term.color.as_ref().map(|s| s.as_ref()));
 
         let verbosity = match (verbose, term.verbose, quiet) {
-            (Some(true), _, None) | (None, Some(true), None) => Verbosity::Verbose,
+            (true, _, false) | (_, Some(true), false) => Verbosity::Verbose,
 
             // Command line takes precedence over configuration, so ignore the
             // configuration..
-            (None, _, Some(true)) => Verbosity::Quiet,
+            (false, _, true) => Verbosity::Quiet,
 
             // Can't pass both at the same time on the command line regardless
             // of configuration.
-            (Some(true), _, Some(true)) => {
+            (true, _, true) => {
                 bail!("cannot set both --verbose and --quiet");
             }
 
-            // Can't actually get `Some(false)` as a value from the command
-            // line, so just ignore them here to appease exhaustiveness checking
-            // in match statements.
-            (Some(false), _, _)
-            | (_, _, Some(false))
-            | (None, Some(false), None)
-            | (None, None, None) => Verbosity::Normal,
+            (false, _, false) => Verbosity::Normal,
         };
 
         let cli_target_dir = match target_dir.as_ref() {
@@ -659,7 +717,7 @@ impl Config {
         };
 
         self.shell().set_verbosity(verbosity);
-        self.shell().set_color_choice(color.map(|s| &s[..]))?;
+        self.shell().set_color_choice(color)?;
         self.extra_verbose = extra_verbose;
         self.frozen = frozen;
         self.locked = locked;
@@ -806,20 +864,35 @@ impl Config {
         };
         let mut loaded_args = CV::Table(HashMap::new(), Definition::Cli);
         for arg in cli_args {
-            // TODO: This should probably use a more narrow parser, reject
-            // comments, blank lines, [headers], etc.
-            let toml_v: toml::Value = toml::de::from_str(arg)
-                .chain_err(|| format!("failed to parse --config argument `{}`", arg))?;
-            let toml_table = toml_v.as_table().unwrap();
-            if toml_table.len() != 1 {
-                bail!(
-                    "--config argument `{}` expected exactly one key=value pair, got {} keys",
-                    arg,
-                    toml_table.len()
-                );
-            }
-            let tmp_table = CV::from_toml(Definition::Cli, toml_v)
-                .chain_err(|| format!("failed to convert --config argument `{}`", arg))?;
+            let arg_as_path = self.cwd.join(arg);
+            let tmp_table = if !arg.is_empty() && arg_as_path.exists() {
+                // --config path_to_file
+                let str_path = arg_as_path
+                    .to_str()
+                    .ok_or_else(|| {
+                        anyhow::format_err!("config path {:?} is not utf-8", arg_as_path)
+                    })?
+                    .to_string();
+                let mut map = HashMap::new();
+                let value = CV::String(str_path, Definition::Cli);
+                map.insert("include".to_string(), value);
+                CV::Table(map, Definition::Cli)
+            } else {
+                // TODO: This should probably use a more narrow parser, reject
+                // comments, blank lines, [headers], etc.
+                let toml_v: toml::Value = toml::de::from_str(arg)
+                    .chain_err(|| format!("failed to parse --config argument `{}`", arg))?;
+                let toml_table = toml_v.as_table().unwrap();
+                if toml_table.len() != 1 {
+                    bail!(
+                        "--config argument `{}` expected exactly one key=value pair, got {} keys",
+                        arg,
+                        toml_table.len()
+                    );
+                }
+                CV::from_toml(Definition::Cli, toml_v)
+                    .chain_err(|| format!("failed to convert --config argument `{}`", arg))?
+            };
             let mut seen = HashSet::new();
             let tmp_table = self
                 .load_includes(tmp_table, &mut seen)
@@ -1381,13 +1454,13 @@ impl ConfigValue {
             | (expected @ &mut CV::Table(_, _), found)
             | (expected, found @ CV::List(_, _))
             | (expected, found @ CV::Table(_, _)) => {
-                return Err(internal(format!(
+                return Err(anyhow!(
                     "failed to merge config value from `{}` into `{}`: expected {}, but found {}",
                     found.definition(),
                     expected.definition(),
                     expected.desc(),
                     found.desc()
-                )));
+                ));
             }
             (old, mut new) => {
                 if force || new.definition().is_higher_priority(old.definition()) {
@@ -1643,6 +1716,7 @@ pub struct CargoBuildConfig {
     pub rustc_wrapper: Option<PathBuf>,
     pub rustc: Option<PathBuf>,
     pub rustdoc: Option<PathBuf>,
+    pub out_dir: Option<ConfigRelativePath>,
 }
 
 /// A type to deserialize a list of strings from a toml file.
@@ -1655,43 +1729,11 @@ pub struct CargoBuildConfig {
 /// a = 'a b c'
 /// b = ['a', 'b', 'c']
 /// ```
-#[derive(Debug)]
-pub struct StringList {
-    list: Vec<String>,
-}
+#[derive(Debug, Deserialize)]
+pub struct StringList(Vec<String>);
 
 impl StringList {
     pub fn as_slice(&self) -> &[String] {
-        &self.list
-    }
-}
-
-impl<'de> serde::de::Deserialize<'de> for StringList {
-    fn deserialize<D: serde::de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum Target {
-            String(String),
-            List(Vec<String>),
-        }
-
-        // Add some context to the error. Serde gives a vague message for
-        // untagged enums. See https://github.com/serde-rs/serde/issues/773
-        let result = match Target::deserialize(d) {
-            Ok(r) => r,
-            Err(e) => {
-                return Err(serde::de::Error::custom(format!(
-                    "failed to deserialize, expected a string or array of strings: {}",
-                    e
-                )))
-            }
-        };
-
-        Ok(match result {
-            Target::String(s) => StringList {
-                list: s.split_whitespace().map(str::to_string).collect(),
-            },
-            Target::List(list) => StringList { list },
-        })
+        &self.0
     }
 }

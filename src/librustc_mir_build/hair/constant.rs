@@ -2,8 +2,8 @@ use rustc::mir::interpret::{
     truncate, Allocation, ConstValue, LitToConstError, LitToConstInput, Scalar,
 };
 use rustc::ty::{self, layout::Size, ParamEnv, TyCtxt, TyS};
+use rustc_ast::ast;
 use rustc_span::symbol::Symbol;
-use syntax::ast;
 
 crate fn lit_to_const<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -50,7 +50,7 @@ crate fn lit_to_const<'tcx>(
         (ast::LitKind::Err(_), _) => return Err(LitToConstError::Reported),
         _ => return Err(LitToConstError::TypeError),
     };
-    Ok(tcx.mk_const(ty::Const { val: ty::ConstKind::Value(lit), ty }))
+    Ok(ty::Const::from_value(tcx, lit, ty))
 }
 
 fn parse_float<'tcx>(num: Symbol, fty: ast::FloatTy, neg: bool) -> Result<ConstValue<'tcx>, ()> {

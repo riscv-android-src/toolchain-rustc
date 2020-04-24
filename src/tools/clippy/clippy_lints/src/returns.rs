@@ -1,12 +1,12 @@
 use if_chain::if_chain;
 use rustc::lint::in_external_macro;
+use rustc_ast::ast;
+use rustc_ast::visit::FnKind;
 use rustc_errors::Applicability;
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 use rustc_span::BytePos;
-use syntax::ast;
-use syntax::visit::FnKind;
 
 use crate::utils::{in_macro, match_path_ast, snippet_opt, span_lint_and_then};
 
@@ -235,13 +235,14 @@ impl Return {
 }
 
 impl EarlyLintPass for Return {
-    fn check_fn(&mut self, cx: &EarlyContext<'_>, kind: FnKind<'_>, decl: &ast::FnDecl, span: Span, _: ast::NodeId) {
+    fn check_fn(&mut self, cx: &EarlyContext<'_>, kind: FnKind<'_>, span: Span, _: ast::NodeId) {
         match kind {
-            FnKind::ItemFn(.., block) | FnKind::Method(.., block) => self.check_block_return(cx, block),
-            FnKind::Closure(body) => self.check_final_expr(cx, body, Some(body.span), RetReplacement::Empty),
+            FnKind::Fn(.., Some(block)) => self.check_block_return(cx, block),
+            FnKind::Closure(_, body) => self.check_final_expr(cx, body, Some(body.span), RetReplacement::Empty),
+            FnKind::Fn(.., None) => {},
         }
         if_chain! {
-            if let ast::FunctionRetTy::Ty(ref ty) = decl.output;
+            if let ast::FnRetTy::Ty(ref ty) = kind.decl().output;
             if let ast::TyKind::Tup(ref vals) = ty.kind;
             if vals.is_empty() && !ty.span.from_expansion() && get_def(span) == get_def(ty.span);
             then {

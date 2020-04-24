@@ -12,7 +12,7 @@ use rustc_codegen_ssa::traits::*;
 use crate::callee::get_fn;
 use rustc::bug;
 use rustc::mir::mono::CodegenUnit;
-use rustc::session::config::{self, DebugInfo};
+use rustc::session::config::{self, CFGuard, DebugInfo};
 use rustc::session::Session;
 use rustc::ty::layout::{
     FnAbiExt, HasParamEnv, LayoutError, LayoutOf, PointeeInfo, Size, TyLayout, VariantIdx,
@@ -174,7 +174,6 @@ pub unsafe fn create_module(
 
         let llvm_data_layout = llvm::LLVMGetDataLayout(llmod);
         let llvm_data_layout = str::from_utf8(CStr::from_ptr(llvm_data_layout).to_bytes())
-            .ok()
             .expect("got a non-UTF8 data-layout from LLVM");
 
         // Unfortunately LLVM target specs change over time, and right now we
@@ -225,6 +224,16 @@ pub unsafe fn create_module(
     if !sess.needs_plt() {
         let avoid_plt = "RtLibUseGOT\0".as_ptr().cast();
         llvm::LLVMRustAddModuleFlag(llmod, avoid_plt, 1);
+    }
+
+    // Set module flags to enable Windows Control Flow Guard (/guard:cf) metadata
+    // only (`cfguard=1`) or metadata and checks (`cfguard=2`).
+    match sess.opts.debugging_opts.control_flow_guard {
+        CFGuard::Disabled => {}
+        CFGuard::NoChecks => {
+            llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 1)
+        }
+        CFGuard::Checks => llvm::LLVMRustAddModuleFlag(llmod, "cfguard\0".as_ptr() as *const _, 2),
     }
 
     llmod
@@ -552,10 +561,6 @@ impl CodegenCx<'b, 'tcx> {
             t_v8f64: t_f64, 8;
         }
 
-        ifn!("llvm.memset.p0i8.i16", fn(i8p, t_i8, t_i16, t_i32, i1) -> void);
-        ifn!("llvm.memset.p0i8.i32", fn(i8p, t_i8, t_i32, t_i32, i1) -> void);
-        ifn!("llvm.memset.p0i8.i64", fn(i8p, t_i8, t_i64, t_i32, i1) -> void);
-
         ifn!("llvm.trap", fn() -> void);
         ifn!("llvm.debugtrap", fn() -> void);
         ifn!("llvm.frameaddress", fn(t_i32) -> i8p);
@@ -820,8 +825,8 @@ impl CodegenCx<'b, 'tcx> {
         ifn!("llvm.usub.sat.i64", fn(t_i64, t_i64) -> t_i64);
         ifn!("llvm.usub.sat.i128", fn(t_i128, t_i128) -> t_i128);
 
-        ifn!("llvm.lifetime.start", fn(t_i64, i8p) -> void);
-        ifn!("llvm.lifetime.end", fn(t_i64, i8p) -> void);
+        ifn!("llvm.lifetime.start.p0i8", fn(t_i64, i8p) -> void);
+        ifn!("llvm.lifetime.end.p0i8", fn(t_i64, i8p) -> void);
 
         ifn!("llvm.expect.i1", fn(i1, i1) -> i1);
         ifn!("llvm.eh.typeid.for", fn(i8p) -> t_i32);

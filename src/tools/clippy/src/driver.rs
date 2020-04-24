@@ -15,7 +15,7 @@ extern crate rustc_interface;
 
 use rustc::ty::TyCtxt;
 use rustc_interface::interface;
-use rustc_tools_util::*;
+use rustc_tools_util::VersionInfo;
 
 use lazy_static::lazy_static;
 use std::borrow::Cow;
@@ -63,10 +63,10 @@ fn test_arg_value() {
     assert_eq!(arg_value(args, "--foo", |_| true), None);
 }
 
-#[allow(clippy::too_many_lines)]
+struct DefaultCallbacks;
+impl rustc_driver::Callbacks for DefaultCallbacks {}
 
 struct ClippyCallbacks;
-
 impl rustc_driver::Callbacks for ClippyCallbacks {
     fn config(&mut self, config: &mut interface::Config) {
         let previous = config.register_lints.take();
@@ -93,7 +93,7 @@ impl rustc_driver::Callbacks for ClippyCallbacks {
 
 #[allow(clippy::find_map, clippy::filter_map)]
 fn describe_lints() {
-    use lintlist::*;
+    use lintlist::{Level, Lint, ALL_LINTS, LINT_LEVELS};
     use std::collections::HashSet;
 
     println!(
@@ -281,6 +281,17 @@ fn report_clippy_ice(info: &panic::PanicInfo<'_>, bug_report_url: &str) {
     }
 }
 
+fn toolchain_path(home: Option<String>, toolchain: Option<String>) -> Option<PathBuf> {
+    home.and_then(|home| {
+        toolchain.map(|toolchain| {
+            let mut path = PathBuf::from(home);
+            path.push("toolchains");
+            path.push(toolchain);
+            path
+        })
+    })
+}
+
 pub fn main() {
     rustc_driver::init_rustc_env_logger();
     lazy_static::initialize(&ICE_HOOK);
@@ -301,22 +312,21 @@ pub fn main() {
             //    - RUSTUP_HOME, MULTIRUST_HOME, RUSTUP_TOOLCHAIN, MULTIRUST_TOOLCHAIN
             // - sysroot from rustc in the path
             // - compile-time environment
+            //    - SYSROOT
+            //    - RUSTUP_HOME, MULTIRUST_HOME, RUSTUP_TOOLCHAIN, MULTIRUST_TOOLCHAIN
             let sys_root_arg = arg_value(&orig_args, "--sysroot", |_| true);
             let have_sys_root_arg = sys_root_arg.is_some();
             let sys_root = sys_root_arg
                 .map(PathBuf::from)
                 .or_else(|| std::env::var("SYSROOT").ok().map(PathBuf::from))
                 .or_else(|| {
-                    let home = option_env!("RUSTUP_HOME").or(option_env!("MULTIRUST_HOME"));
-                    let toolchain = option_env!("RUSTUP_TOOLCHAIN").or(option_env!("MULTIRUST_TOOLCHAIN"));
-                    home.and_then(|home| {
-                        toolchain.map(|toolchain| {
-                            let mut path = PathBuf::from(home);
-                            path.push("toolchains");
-                            path.push(toolchain);
-                            path
-                        })
-                    })
+                    let home = std::env::var("RUSTUP_HOME")
+                        .or_else(|_| std::env::var("MULTIRUST_HOME"))
+                        .ok();
+                    let toolchain = std::env::var("RUSTUP_TOOLCHAIN")
+                        .or_else(|_| std::env::var("MULTIRUST_TOOLCHAIN"))
+                        .ok();
+                    toolchain_path(home, toolchain)
                 })
                 .or_else(|| {
                     Command::new("rustc")
@@ -328,6 +338,15 @@ pub fn main() {
                         .map(|s| PathBuf::from(s.trim()))
                 })
                 .or_else(|| option_env!("SYSROOT").map(PathBuf::from))
+                .or_else(|| {
+                    let home = option_env!("RUSTUP_HOME")
+                        .or(option_env!("MULTIRUST_HOME"))
+                        .map(ToString::to_string);
+                    let toolchain = option_env!("RUSTUP_TOOLCHAIN")
+                        .or(option_env!("MULTIRUST_TOOLCHAIN"))
+                        .map(ToString::to_string);
+                    toolchain_path(home, toolchain)
+                })
                 .map(|pb| pb.to_string_lossy().to_string())
                 .expect("need to specify SYSROOT env var during clippy compilation, or use rustup or multirust");
 
@@ -387,7 +406,7 @@ pub fn main() {
                 }
             }
             let mut clippy = ClippyCallbacks;
-            let mut default = rustc_driver::DefaultCallbacks;
+            let mut default = DefaultCallbacks;
             let callbacks: &mut (dyn rustc_driver::Callbacks + Send) =
                 if clippy_enabled { &mut clippy } else { &mut default };
             rustc_driver::run_compiler(&args, callbacks, None, None)

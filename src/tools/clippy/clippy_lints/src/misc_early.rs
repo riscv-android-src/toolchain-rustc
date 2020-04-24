@@ -1,16 +1,19 @@
 use crate::utils::{
-    constants, snippet_opt, snippet_with_applicability, span_help_and_lint, span_lint, span_lint_and_sugg,
+    constants, snippet_opt, snippet_with_applicability, span_lint, span_lint_and_help, span_lint_and_sugg,
     span_lint_and_then,
 };
 use if_chain::if_chain;
 use rustc::lint::in_external_macro;
+use rustc_ast::ast::{
+    Block, Expr, ExprKind, GenericParamKind, Generics, Lit, LitFloatType, LitIntType, LitKind, NodeId, Pat, PatKind,
+    StmtKind, UnOp,
+};
+use rustc_ast::visit::{walk_expr, FnKind, Visitor};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::Applicability;
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
-use syntax::ast::*;
-use syntax::visit::{walk_expr, FnKind, Visitor};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for structure field patterns bound to wildcards.
@@ -25,7 +28,7 @@ declare_clippy_lint! {
     /// let { a: _, b: ref b, c: _ } = ..
     /// ```
     pub UNNEEDED_FIELD_PATTERN,
-    style,
+    restriction,
     "struct fields bound to a wildcard instead of using `..`"
 }
 
@@ -305,7 +308,7 @@ impl EarlyLintPass for MiscEarlyLints {
                 }
             }
             if !pfields.is_empty() && wilds == pfields.len() {
-                span_help_and_lint(
+                span_lint_and_help(
                     cx,
                     UNNEEDED_FIELD_PATTERN,
                     pat.span,
@@ -338,7 +341,7 @@ impl EarlyLintPass for MiscEarlyLints {
                                 "You matched a field with a wildcard pattern. Consider using `..` instead",
                             );
                         } else {
-                            span_help_and_lint(
+                            span_lint_and_help(
                                 cx,
                                 UNNEEDED_FIELD_PATTERN,
                                 field.span,
@@ -372,10 +375,10 @@ impl EarlyLintPass for MiscEarlyLints {
         check_unneeded_wildcard_pattern(cx, pat);
     }
 
-    fn check_fn(&mut self, cx: &EarlyContext<'_>, _: FnKind<'_>, decl: &FnDecl, _: Span, _: NodeId) {
+    fn check_fn(&mut self, cx: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: Span, _: NodeId) {
         let mut registered_names: FxHashMap<String, Span> = FxHashMap::default();
 
-        for arg in &decl.inputs {
+        for arg in &fn_kind.decl().inputs {
             if let PatKind::Ident(_, ident, None) = arg.pat.kind {
                 let arg_name = ident.to_string();
 
@@ -488,7 +491,11 @@ impl MiscEarlyLints {
                 LitIntType::Unsuffixed => "",
             };
 
-            let maybe_last_sep_idx = lit_snip.len() - suffix.len() - 1;
+            let maybe_last_sep_idx = if let Some(val) = lit_snip.len().checked_sub(suffix.len() + 1) {
+                val
+            } else {
+                return; // It's useless so shouldn't lint.
+            };
             // Do not lint when literal is unsuffixed.
             if !suffix.is_empty() && lit_snip.as_bytes()[maybe_last_sep_idx] != b'_' {
                 span_lint_and_sugg(
@@ -503,6 +510,10 @@ impl MiscEarlyLints {
             }
 
             if lit_snip.starts_with("0x") {
+                if maybe_last_sep_idx <= 2 {
+                    // It's meaningless or causes range error.
+                    return;
+                }
                 let mut seen = (false, false);
                 for ch in lit_snip.as_bytes()[2..=maybe_last_sep_idx].iter() {
                     match ch {
@@ -546,7 +557,11 @@ impl MiscEarlyLints {
             }
         } else if let LitKind::Float(_, LitFloatType::Suffixed(float_ty)) = lit.kind {
             let suffix = float_ty.name_str();
-            let maybe_last_sep_idx = lit_snip.len() - suffix.len() - 1;
+            let maybe_last_sep_idx = if let Some(val) = lit_snip.len().checked_sub(suffix.len() + 1) {
+                val
+            } else {
+                return; // It's useless so shouldn't lint.
+            };
             if lit_snip.as_bytes()[maybe_last_sep_idx] != b'_' {
                 span_lint_and_sugg(
                     cx,

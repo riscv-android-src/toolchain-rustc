@@ -1,6 +1,11 @@
 use log::info;
 use rustc::lint;
 use rustc::ty;
+use rustc_ast::ast::{AttrVec, BlockCheckMode};
+use rustc_ast::mut_visit::{visit_clobber, MutVisitor, *};
+use rustc_ast::ptr::P;
+use rustc_ast::util::lev_distance::find_best_match_for_name;
+use rustc_ast::{self, ast};
 use rustc_codegen_utils::codegen_backend::CodegenBackend;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -14,6 +19,7 @@ use rustc_resolve::{self, Resolver};
 use rustc_session as session;
 use rustc_session::config::{ErrorOutputType, Input, OutputFilenames};
 use rustc_session::lint::{BuiltinLintDiagnostics, LintBuffer};
+use rustc_session::parse::CrateConfig;
 use rustc_session::CrateDisambiguator;
 use rustc_session::{config, early_error, filesearch, DiagnosticOutput, Session};
 use rustc_span::edition::Edition;
@@ -28,11 +34,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once};
 #[cfg(not(parallel_compiler))]
 use std::{panic, thread};
-use syntax::ast::{AttrVec, BlockCheckMode};
-use syntax::mut_visit::{visit_clobber, MutVisitor, *};
-use syntax::ptr::P;
-use syntax::util::lev_distance::find_best_match_for_name;
-use syntax::{self, ast, attr};
 
 /// Adds `target_feature = "..."` cfgs for a variety of platform
 /// specific features (SSE, NEON etc.).
@@ -40,7 +41,7 @@ use syntax::{self, ast, attr};
 /// This is performed by checking whether a whitelisted set of
 /// features is available on the target machine, by querying LLVM.
 pub fn add_configuration(
-    cfg: &mut ast::CrateConfig,
+    cfg: &mut CrateConfig,
     sess: &Session,
     codegen_backend: &dyn CodegenBackend,
 ) {
@@ -146,7 +147,7 @@ pub fn spawn_thread_pool<F: FnOnce() -> R + Send, R: Send>(
     crate::callbacks::setup_callbacks();
 
     scoped_thread(cfg, || {
-        syntax::with_globals(edition, || {
+        rustc_ast::with_globals(edition, || {
             ty::tls::GCX_PTR.set(&Lock::new(0), || {
                 if let Some(stderr) = stderr {
                     io::set_panic(Some(box Sink(stderr.clone())));
@@ -182,15 +183,15 @@ pub fn spawn_thread_pool<F: FnOnce() -> R + Send, R: Send>(
 
     let with_pool = move |pool: &ThreadPool| pool.install(move || f());
 
-    syntax::with_globals(edition, || {
-        syntax::GLOBALS.with(|syntax_globals| {
+    rustc_ast::with_globals(edition, || {
+        rustc_ast::GLOBALS.with(|syntax_globals| {
             rustc_span::GLOBALS.with(|rustc_span_globals| {
                 // The main handler runs for each Rayon worker thread and sets up
                 // the thread local rustc uses. syntax_globals and rustc_span_globals are
                 // captured and set on the new threads. ty::tls::with_thread_locals sets up
-                // thread local callbacks from libsyntax
+                // thread local callbacks from librustc_ast
                 let main_handler = move |thread: ThreadBuilder| {
-                    syntax::GLOBALS.set(syntax_globals, || {
+                    rustc_ast::GLOBALS.set(syntax_globals, || {
                         rustc_span::GLOBALS.set(rustc_span_globals, || {
                             if let Some(stderr) = stderr {
                                 io::set_panic(Some(box Sink(stderr.clone())));
@@ -243,7 +244,7 @@ pub fn get_codegen_backend(sess: &Session) -> Box<dyn CodegenBackend> {
             .as_ref()
             .unwrap_or(&sess.target.target.options.codegen_backend);
         let backend = match &codegen_name[..] {
-            filename if filename.contains(".") => load_backend_from_dylib(filename.as_ref()),
+            filename if filename.contains('.') => load_backend_from_dylib(filename.as_ref()),
             codegen_name => get_builtin_codegen_backend(codegen_name),
         };
 
@@ -425,7 +426,7 @@ pub(crate) fn check_attr_crate_type(attrs: &[ast::Attribute], lint_buffer: &mut 
     for a in attrs.iter() {
         if a.check_name(sym::crate_type) {
             if let Some(n) = a.value_str() {
-                if let Some(_) = categorize_crate_type(n) {
+                if categorize_crate_type(n).is_some() {
                     return;
                 }
 
@@ -547,7 +548,7 @@ pub fn build_output_filenames(
                 .opts
                 .crate_name
                 .clone()
-                .or_else(|| attr::find_crate_name(attrs).map(|n| n.to_string()))
+                .or_else(|| rustc_attr::find_crate_name(attrs).map(|n| n.to_string()))
                 .unwrap_or_else(|| input.filestem().to_owned());
 
             OutputFilenames::new(
@@ -619,8 +620,8 @@ impl<'a, 'b> ReplaceBodyWithLoop<'a, 'b> {
         ret
     }
 
-    fn should_ignore_fn(ret_ty: &ast::FunctionRetTy) -> bool {
-        if let ast::FunctionRetTy::Ty(ref ty) = ret_ty {
+    fn should_ignore_fn(ret_ty: &ast::FnRetTy) -> bool {
+        if let ast::FnRetTy::Ty(ref ty) = ret_ty {
             fn involves_impl_trait(ty: &ast::Ty) -> bool {
                 match ty.kind {
                     ast::TyKind::ImplTrait(..) => true,
@@ -638,7 +639,7 @@ impl<'a, 'b> ReplaceBodyWithLoop<'a, 'b> {
                                     ast::GenericArg::Type(ty) => Some(ty),
                                     _ => None,
                                 });
-                                any_involves_impl_trait(types.into_iter())
+                                any_involves_impl_trait(types)
                                     || data.constraints.iter().any(|c| match c.kind {
                                         ast::AssocTyConstraintKind::Bound { .. } => true,
                                         ast::AssocTyConstraintKind::Equality { ref ty } => {
@@ -667,7 +668,7 @@ impl<'a, 'b> ReplaceBodyWithLoop<'a, 'b> {
     }
 
     fn is_sig_const(sig: &ast::FnSig) -> bool {
-        sig.header.constness.node == ast::Constness::Const
+        matches!(sig.header.constness, ast::Const::Yes(_))
             || ReplaceBodyWithLoop::should_ignore_fn(&sig.decl.output)
     }
 }
@@ -676,22 +677,22 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a, '_> {
     fn visit_item_kind(&mut self, i: &mut ast::ItemKind) {
         let is_const = match i {
             ast::ItemKind::Static(..) | ast::ItemKind::Const(..) => true,
-            ast::ItemKind::Fn(ref sig, _, _) => Self::is_sig_const(sig),
+            ast::ItemKind::Fn(_, ref sig, _, _) => Self::is_sig_const(sig),
             _ => false,
         };
         self.run(is_const, |s| noop_visit_item_kind(i, s))
     }
 
-    fn flat_map_trait_item(&mut self, i: ast::AssocItem) -> SmallVec<[ast::AssocItem; 1]> {
+    fn flat_map_trait_item(&mut self, i: P<ast::AssocItem>) -> SmallVec<[P<ast::AssocItem>; 1]> {
         let is_const = match i.kind {
             ast::AssocItemKind::Const(..) => true,
-            ast::AssocItemKind::Fn(ref sig, _) => Self::is_sig_const(sig),
+            ast::AssocItemKind::Fn(_, ref sig, _, _) => Self::is_sig_const(sig),
             _ => false,
         };
         self.run(is_const, |s| noop_flat_map_assoc_item(i, s))
     }
 
-    fn flat_map_impl_item(&mut self, i: ast::AssocItem) -> SmallVec<[ast::AssocItem; 1]> {
+    fn flat_map_impl_item(&mut self, i: P<ast::AssocItem>) -> SmallVec<[P<ast::AssocItem>; 1]> {
         self.flat_map_trait_item(i)
     }
 

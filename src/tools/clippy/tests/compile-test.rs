@@ -1,114 +1,108 @@
-#![feature(test)]
+#![feature(test)] // compiletest_rs requires this attribute
 
 use compiletest_rs as compiletest;
-extern crate tester as test;
+use compiletest_rs::common::Mode as TestMode;
 
-use std::env::{set_var, var};
+use std::env::{self, set_var};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-#[must_use]
+mod cargo;
+
+fn host_lib() -> PathBuf {
+    if let Some(path) = option_env!("HOST_LIBS") {
+        PathBuf::from(path)
+    } else {
+        cargo::CARGO_TARGET_DIR.join(env!("PROFILE"))
+    }
+}
+
 fn clippy_driver_path() -> PathBuf {
     if let Some(path) = option_env!("CLIPPY_DRIVER_PATH") {
         PathBuf::from(path)
     } else {
-        PathBuf::from(concat!("target/", env!("PROFILE"), "/clippy-driver"))
+        cargo::TARGET_LIB.join("clippy-driver")
     }
 }
 
-#[must_use]
-fn host_libs() -> PathBuf {
-    if let Some(path) = option_env!("HOST_LIBS") {
-        PathBuf::from(path)
-    } else {
-        Path::new("target").join(env!("PROFILE"))
+// When we'll want to use `extern crate ..` for a dependency that is used
+// both by the crate and the compiler itself, we can't simply pass -L flags
+// as we'll get a duplicate matching versions. Instead, disambiguate with
+// `--extern dep=path`.
+// See https://github.com/rust-lang/rust-clippy/issues/4015.
+//
+// FIXME: We cannot use `cargo build --message-format=json` to resolve to dependency files.
+//        Because it would force-rebuild if the options passed to `build` command is not the same
+//        as what we manually pass to `cargo` invocation
+fn third_party_crates() -> String {
+    use std::collections::HashMap;
+    static CRATES: &[&str] = &["serde", "serde_derive", "regex", "clippy_lints"];
+    let dep_dir = cargo::TARGET_LIB.join("deps");
+    let mut crates: HashMap<&str, PathBuf> = HashMap::with_capacity(CRATES.len());
+    for entry in fs::read_dir(dep_dir).unwrap() {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            _ => continue,
+        };
+        if let Some(name) = path.file_name().and_then(OsStr::to_str) {
+            for dep in CRATES {
+                if name.starts_with(&format!("lib{}-", dep)) && name.ends_with(".rlib") {
+                    crates.entry(dep).or_insert(path);
+                    break;
+                }
+            }
+        }
     }
+
+    let v: Vec<_> = crates
+        .into_iter()
+        .map(|(dep, path)| format!("--extern {}={}", dep, path.display()))
+        .collect();
+    v.join(" ")
 }
 
-#[must_use]
-fn target_libs() -> Option<PathBuf> {
-    option_env!("TARGET_LIBS").map(PathBuf::from)
-}
-
-#[must_use]
-fn rustc_test_suite() -> Option<PathBuf> {
-    option_env!("RUSTC_TEST_SUITE").map(PathBuf::from)
-}
-
-#[must_use]
-fn rustc_lib_path() -> PathBuf {
-    option_env!("RUSTC_LIB_PATH").unwrap().into()
-}
-
-fn config(mode: &str, dir: PathBuf) -> compiletest::Config {
+fn default_config() -> compiletest::Config {
     let mut config = compiletest::Config::default();
 
-    let cfg_mode = mode.parse().expect("Invalid mode");
-    if let Ok(name) = var::<&str>("TESTNAME") {
-        config.filter = Some(name)
+    if let Ok(name) = env::var("TESTNAME") {
+        config.filter = Some(name);
     }
 
-    if rustc_test_suite().is_some() {
-        config.run_lib_path = rustc_lib_path();
-        config.compile_lib_path = rustc_lib_path();
+    if let Some(path) = option_env!("RUSTC_LIB_PATH") {
+        let path = PathBuf::from(path);
+        config.run_lib_path = path.clone();
+        config.compile_lib_path = path;
     }
-
-    // When we'll want to use `extern crate ..` for a dependency that is used
-    // both by the crate and the compiler itself, we can't simply pass -L flags
-    // as we'll get a duplicate matching versions. Instead, disambiguate with
-    // `--extern dep=path`.
-    // See https://github.com/rust-lang/rust-clippy/issues/4015.
-    let needs_disambiguation = ["serde", "regex", "clippy_lints"];
-    // This assumes that deps are compiled (they are for Cargo integration tests).
-    let deps = fs::read_dir(target_libs().unwrap_or_else(host_libs).join("deps")).unwrap();
-    let disambiguated = deps
-        .filter_map(|dep| {
-            let path = dep.ok()?.path();
-            let name = path.file_name()?.to_string_lossy();
-            // NOTE: This only handles a single dep
-            // https://github.com/laumann/compiletest-rs/issues/101
-            needs_disambiguation.iter().find_map(|dep| {
-                if name.starts_with(&format!("lib{}-", dep)) && name.ends_with(".rlib") {
-                    Some(format!("--extern {}={}", dep, path.display()))
-                } else {
-                    None
-                }
-            })
-        })
-        .collect::<Vec<_>>();
 
     config.target_rustcflags = Some(format!(
-        "-L {0} -L {0}/deps {1} -Dwarnings -Zui-testing {2}",
-        host_libs().display(),
-        target_libs().map_or_else(String::new, |path| format!("-L {0} -L {0}/deps", path.display())),
-        disambiguated.join(" ")
+        "-L {0} -L {1} -Dwarnings -Zui-testing {2}",
+        host_lib().join("deps").display(),
+        cargo::TARGET_LIB.join("deps").display(),
+        third_party_crates(),
     ));
 
-    config.mode = cfg_mode;
-    config.build_base = if rustc_test_suite().is_some() {
-        // we don't need access to the stderr files on travis
+    config.build_base = if cargo::is_rustc_test_suite() {
+        // This make the stderr files go to clippy OUT_DIR on rustc repo build dir
         let mut path = PathBuf::from(env!("OUT_DIR"));
         path.push("test_build_base");
         path
     } else {
-        let mut path = std::env::current_dir().unwrap();
-        path.push("target/debug/test_build_base");
-        path
+        host_lib().join("test_build_base")
     };
-    config.src_base = dir;
     config.rustc_path = clippy_driver_path();
     config
 }
 
-fn run_mode(mode: &str, dir: PathBuf) {
-    let cfg = config(mode, dir);
+fn run_mode(cfg: &mut compiletest::Config) {
+    cfg.mode = TestMode::Ui;
+    cfg.src_base = Path::new("tests").join("ui");
     compiletest::run_tests(&cfg);
 }
 
 #[allow(clippy::identity_conversion)]
-fn run_ui_toml_tests(config: &compiletest::Config, mut tests: Vec<test::TestDescAndFn>) -> Result<bool, io::Error> {
+fn run_ui_toml_tests(config: &compiletest::Config, mut tests: Vec<tester::TestDescAndFn>) -> Result<bool, io::Error> {
     let mut result = true;
     let opts = compiletest::test_opts(config);
     for dir in fs::read_dir(&config.src_base)? {
@@ -137,15 +131,16 @@ fn run_ui_toml_tests(config: &compiletest::Config, mut tests: Vec<test::TestDesc
                 .iter()
                 .position(|test| test.desc.name == test_name)
                 .expect("The test should be in there");
-            result &= test::run_tests_console(&opts, vec![tests.swap_remove(index)])?;
+            result &= tester::run_tests_console(&opts, vec![tests.swap_remove(index)])?;
         }
     }
     Ok(result)
 }
 
-fn run_ui_toml() {
-    let path = PathBuf::from("tests/ui-toml").canonicalize().unwrap();
-    let config = config("ui", path);
+fn run_ui_toml(config: &mut compiletest::Config) {
+    config.mode = TestMode::Ui;
+    config.src_base = Path::new("tests").join("ui-toml").canonicalize().unwrap();
+
     let tests = compiletest::make_tests(&config);
 
     let res = run_ui_toml_tests(&config, tests);
@@ -167,6 +162,7 @@ fn prepare_env() {
 #[test]
 fn compile_test() {
     prepare_env();
-    run_mode("ui", "tests/ui".into());
-    run_ui_toml();
+    let mut config = default_config();
+    run_mode(&mut config);
+    run_ui_toml(&mut config);
 }

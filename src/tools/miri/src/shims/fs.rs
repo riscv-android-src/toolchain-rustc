@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
-use std::fs::{remove_file, File, OpenOptions};
-use std::io::{Read, Write};
+use std::fs::{read_dir, remove_dir, remove_file, rename, DirBuilder, File, FileType, OpenOptions, ReadDir};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use rustc_data_structures::fx::FxHashMap;
 use rustc::ty::layout::{Align, LayoutOf, Size};
 
 use crate::stacked_borrows::Tag;
@@ -18,17 +19,222 @@ pub struct FileHandle {
     writable: bool,
 }
 
+#[derive(Debug, Default)]
 pub struct FileHandler {
-    handles: HashMap<i32, FileHandle>,
-    low: i32,
+    handles: BTreeMap<i32, FileHandle>,
 }
 
-impl Default for FileHandler {
-    fn default() -> Self {
-        FileHandler {
-            handles: Default::default(),
-            // 0, 1 and 2 are reserved for stdin, stdout and stderr.
-            low: 3,
+// fd numbers 0, 1, and 2 are reserved for stdin, stdout, and stderr
+const MIN_NORMAL_FILE_FD: i32 = 3;
+
+impl FileHandler {
+    fn insert_fd(&mut self, file_handle: FileHandle) -> i32 {
+        self.insert_fd_with_min_fd(file_handle, 0)
+    }
+
+    fn insert_fd_with_min_fd(&mut self, file_handle: FileHandle, min_fd: i32) -> i32 {
+        let min_fd = std::cmp::max(min_fd, MIN_NORMAL_FILE_FD);
+
+        // Find the lowest unused FD, starting from min_fd. If the first such unused FD is in
+        // between used FDs, the find_map combinator will return it. If the first such unused FD
+        // is after all other used FDs, the find_map combinator will return None, and we will use
+        // the FD following the greatest FD thus far.
+        let candidate_new_fd = self
+            .handles
+            .range(min_fd..)
+            .zip(min_fd..)
+            .find_map(|((fd, _fh), counter)| {
+                if *fd != counter {
+                    // There was a gap in the fds stored, return the first unused one
+                    // (note that this relies on BTreeMap iterating in key order)
+                    Some(counter)
+                } else {
+                    // This fd is used, keep going
+                    None
+                }
+            });
+        let new_fd = candidate_new_fd.unwrap_or_else(|| {
+            // find_map ran out of BTreeMap entries before finding a free fd, use one plus the
+            // maximum fd in the map
+            self.handles.last_entry().map(|entry| entry.key() + 1).unwrap_or(min_fd)
+        });
+
+        self.handles.insert(new_fd, file_handle).unwrap_none();
+        new_fd
+    }
+}
+
+impl<'mir, 'tcx> EvalContextExtPrivate<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
+    /// Emulate `stat` or `lstat` on the `macos` platform. This function is not intended to be
+    /// called directly from `emulate_foreign_item_by_name`, so it does not check if isolation is
+    /// disabled or if the target platform is the correct one. Please use `macos_stat` or
+    /// `macos_lstat` instead.
+    fn macos_stat_or_lstat(
+        &mut self,
+        follow_symlink: bool,
+        path_op: OpTy<'tcx, Tag>,
+        buf_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        let path_scalar = this.read_scalar(path_op)?.not_undef()?;
+        let path: PathBuf = this.read_os_str_from_c_str(path_scalar)?.into();
+
+        let metadata = match FileMetadata::from_path(this, path, follow_symlink)? {
+            Some(metadata) => metadata,
+            None => return Ok(-1),
+        };
+        this.macos_stat_write_buf(metadata, buf_op)
+    }
+
+    fn macos_stat_write_buf(
+        &mut self,
+        metadata: FileMetadata,
+        buf_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        let mode: u16 = metadata.mode.to_u16()?;
+
+        let (access_sec, access_nsec) = metadata.accessed.unwrap_or((0, 0));
+        let (created_sec, created_nsec) = metadata.created.unwrap_or((0, 0));
+        let (modified_sec, modified_nsec) = metadata.modified.unwrap_or((0, 0));
+
+        let dev_t_layout = this.libc_ty_layout("dev_t")?;
+        let mode_t_layout = this.libc_ty_layout("mode_t")?;
+        let nlink_t_layout = this.libc_ty_layout("nlink_t")?;
+        let ino_t_layout = this.libc_ty_layout("ino_t")?;
+        let uid_t_layout = this.libc_ty_layout("uid_t")?;
+        let gid_t_layout = this.libc_ty_layout("gid_t")?;
+        let time_t_layout = this.libc_ty_layout("time_t")?;
+        let long_layout = this.libc_ty_layout("c_long")?;
+        let off_t_layout = this.libc_ty_layout("off_t")?;
+        let blkcnt_t_layout = this.libc_ty_layout("blkcnt_t")?;
+        let blksize_t_layout = this.libc_ty_layout("blksize_t")?;
+        let uint32_t_layout = this.libc_ty_layout("uint32_t")?;
+
+        // We need to add 32 bits of padding after `st_rdev` if we are on a 64-bit platform.
+        let pad_layout = if this.tcx.sess.target.ptr_width == 64 {
+            uint32_t_layout
+        } else {
+            this.layout_of(this.tcx.mk_unit())?
+        };
+
+        let imms = [
+            immty_from_uint_checked(0u128, dev_t_layout)?, // st_dev
+            immty_from_uint_checked(mode, mode_t_layout)?, // st_mode
+            immty_from_uint_checked(0u128, nlink_t_layout)?, // st_nlink
+            immty_from_uint_checked(0u128, ino_t_layout)?, // st_ino
+            immty_from_uint_checked(0u128, uid_t_layout)?, // st_uid
+            immty_from_uint_checked(0u128, gid_t_layout)?, // st_gid
+            immty_from_uint_checked(0u128, dev_t_layout)?, // st_rdev
+            immty_from_uint_checked(0u128, pad_layout)?, // padding for 64-bit targets
+            immty_from_uint_checked(access_sec, time_t_layout)?, // st_atime
+            immty_from_uint_checked(access_nsec, long_layout)?, // st_atime_nsec
+            immty_from_uint_checked(modified_sec, time_t_layout)?, // st_mtime
+            immty_from_uint_checked(modified_nsec, long_layout)?, // st_mtime_nsec
+            immty_from_uint_checked(0u128, time_t_layout)?, // st_ctime
+            immty_from_uint_checked(0u128, long_layout)?, // st_ctime_nsec
+            immty_from_uint_checked(created_sec, time_t_layout)?, // st_birthtime
+            immty_from_uint_checked(created_nsec, long_layout)?, // st_birthtime_nsec
+            immty_from_uint_checked(metadata.size, off_t_layout)?, // st_size
+            immty_from_uint_checked(0u128, blkcnt_t_layout)?, // st_blocks
+            immty_from_uint_checked(0u128, blksize_t_layout)?, // st_blksize
+            immty_from_uint_checked(0u128, uint32_t_layout)?, // st_flags
+            immty_from_uint_checked(0u128, uint32_t_layout)?, // st_gen
+        ];
+
+        let buf = this.deref_operand(buf_op)?;
+        this.write_packed_immediates(buf, &imms)?;
+
+        Ok(0)
+    }
+
+    /// Function used when a handle is not found inside `FileHandler`. It returns `Ok(-1)`and sets
+    /// the last OS error to `libc::EBADF` (invalid file descriptor). This function uses
+    /// `T: From<i32>` instead of `i32` directly because some fs functions return different integer
+    /// types (like `read`, that returns an `i64`).
+    fn handle_not_found<T: From<i32>>(&mut self) -> InterpResult<'tcx, T> {
+        let this = self.eval_context_mut();
+        let ebadf = this.eval_libc("EBADF")?;
+        this.set_last_error(ebadf)?;
+        Ok((-1).into())
+    }
+
+    fn file_type_to_d_type(&mut self, file_type: std::io::Result<FileType>) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+        match file_type {
+            Ok(file_type) => {
+                if file_type.is_dir() {
+                    Ok(this.eval_libc("DT_DIR")?.to_u8()? as i32)
+                } else if file_type.is_file() {
+                    Ok(this.eval_libc("DT_REG")?.to_u8()? as i32)
+                } else if file_type.is_symlink() {
+                    Ok(this.eval_libc("DT_LNK")?.to_u8()? as i32)
+                } else {
+                    // Certain file types are only supported when the host is a Unix system.
+                    // (i.e. devices and sockets) If it is, check those cases, if not, fall back to
+                    // DT_UNKNOWN sooner.
+
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::FileTypeExt;
+                        if file_type.is_block_device() {
+                            Ok(this.eval_libc("DT_BLK")?.to_u8()? as i32)
+                        } else if file_type.is_char_device() {
+                            Ok(this.eval_libc("DT_CHR")?.to_u8()? as i32)
+                        } else if file_type.is_fifo() {
+                            Ok(this.eval_libc("DT_FIFO")?.to_u8()? as i32)
+                        } else if file_type.is_socket() {
+                            Ok(this.eval_libc("DT_SOCK")?.to_u8()? as i32)
+                        } else {
+                            Ok(this.eval_libc("DT_UNKNOWN")?.to_u8()? as i32)
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    Ok(this.eval_libc("DT_UNKNOWN")?.to_u8()? as i32)
+                }
+            }
+            Err(e) => return match e.raw_os_error() {
+                Some(error) => Ok(error),
+                None => throw_unsup_format!("The error {} couldn't be converted to a return value", e),
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DirHandler {
+    /// Directory iterators used to emulate libc "directory streams", as used in opendir, readdir,
+    /// and closedir.
+    ///
+    /// When opendir is called, a directory iterator is created on the host for the target
+    /// directory, and an entry is stored in this hash map, indexed by an ID which represents
+    /// the directory stream. When readdir is called, the directory stream ID is used to look up
+    /// the corresponding ReadDir iterator from this map, and information from the next
+    /// directory entry is returned. When closedir is called, the ReadDir iterator is removed from
+    /// the map.
+    streams: FxHashMap<u64, ReadDir>,
+    /// ID number to be used by the next call to opendir
+    next_id: u64,
+}
+
+impl DirHandler {
+    fn insert_new(&mut self, read_dir: ReadDir) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.streams.insert(id, read_dir).unwrap_none();
+        id
+    }
+}
+
+impl Default for DirHandler {
+    fn default() -> DirHandler {
+        DirHandler {
+            streams: FxHashMap::default(),
+            // Skip 0 as an ID, because it looks like a null pointer to libc
+            next_id: 1,
         }
     }
 }
@@ -107,10 +313,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
 
         let fd = options.open(&path).map(|file| {
-            let mut fh = &mut this.machine.file_handler;
-            fh.low += 1;
-            fh.handles.insert(fh.low, FileHandle { file, writable }).unwrap_none();
-            fh.low
+            let fh = &mut this.machine.file_handler;
+            fh.insert_fd(FileHandle { file, writable })
         });
 
         this.try_unwrap_io_result(fd)
@@ -120,7 +324,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         &mut self,
         fd_op: OpTy<'tcx, Tag>,
         cmd_op: OpTy<'tcx, Tag>,
-        _arg1_op: Option<OpTy<'tcx, Tag>>,
+        start_op: Option<OpTy<'tcx, Tag>>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
@@ -139,6 +343,31 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             } else {
                 this.handle_not_found()
             }
+        } else if cmd == this.eval_libc_i32("F_DUPFD")?
+            || cmd == this.eval_libc_i32("F_DUPFD_CLOEXEC")?
+        {
+            // Note that we always assume the FD_CLOEXEC flag is set for every open file, in part
+            // because exec() isn't supported. The F_DUPFD and F_DUPFD_CLOEXEC commands only
+            // differ in whether the FD_CLOEXEC flag is pre-set on the new file descriptor,
+            // thus they can share the same implementation here.
+            if fd < MIN_NORMAL_FILE_FD {
+                throw_unsup_format!("Duplicating file descriptors for stdin, stdout, or stderr is not supported")
+            }
+            let start_op = start_op.ok_or_else(|| {
+                err_unsup_format!(
+                    "fcntl with command F_DUPFD or F_DUPFD_CLOEXEC requires a third argument"
+                )
+            })?;
+            let start = this.read_scalar(start_op)?.to_i32()?;
+            let fh = &mut this.machine.file_handler;
+            let (file_result, writable) = match fh.handles.get(&fd) {
+                Some(FileHandle { file, writable }) => (file.try_clone(), *writable),
+                None => return this.handle_not_found(),
+            };
+            let fd_result = file_result.map(|duplicated| {
+                fh.insert_fd_with_min_fd(FileHandle { file: duplicated, writable }, start)
+            });
+            this.try_unwrap_io_result(fd_result)
         } else {
             throw_unsup_format!("The {:#x} command is not supported for `fcntl`)", cmd);
         }
@@ -151,23 +380,23 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
 
-        if let Some(handle) = this.machine.file_handler.handles.remove(&fd) {
+        if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.remove(&fd) {
             // We sync the file if it was opened in a mode different than read-only.
-            if handle.writable {
+            if writable {
                 // `File::sync_all` does the checks that are done when closing a file. We do this to
                 // to handle possible errors correctly.
-                let result = this.try_unwrap_io_result(handle.file.sync_all().map(|_| 0i32));
+                let result = this.try_unwrap_io_result(file.sync_all().map(|_| 0i32));
                 // Now we actually close the file.
-                drop(handle);
+                drop(file);
                 // And return the result.
                 result
             } else {
                 // We drop the file, this closes it but ignores any errors produced when closing
-                // it. This is done because `File::sync_call` cannot be done over files like
+                // it. This is done because `File::sync_all` cannot be done over files like
                 // `/dev/urandom` which are read-only. Check
                 // https://github.com/rust-lang/miri/issues/999#issuecomment-568920439 for a deeper
                 // discussion.
-                drop(handle);
+                drop(file);
                 Ok(0)
             }
         } else {
@@ -200,7 +429,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // host's and target's `isize`. This saves us from having to handle overflows later.
         let count = count.min(this.isize_max() as u64).min(isize::max_value() as u64);
 
-        if let Some(handle) = this.machine.file_handler.handles.get_mut(&fd) {
+        if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
             // This can never fail because `count` was capped to be smaller than
             // `isize::max_value()`.
             let count = isize::try_from(count).unwrap();
@@ -208,8 +437,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // because it was a target's `usize`. Also we are sure that its smaller than
             // `usize::max_value()` because it is a host's `isize`.
             let mut bytes = vec![0; count as usize];
-            let result = handle
-                .file
+            let result = file
                 .read(&mut bytes)
                 // `File::read` never returns a value larger than `count`, so this cannot fail.
                 .map(|c| i64::try_from(c).unwrap());
@@ -255,9 +483,43 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // host's and target's `isize`. This saves us from having to handle overflows later.
         let count = count.min(this.isize_max() as u64).min(isize::max_value() as u64);
 
-        if let Some(handle) = this.machine.file_handler.handles.get_mut(&fd) {
+        if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
             let bytes = this.memory.read_bytes(buf, Size::from_bytes(count))?;
-            let result = handle.file.write(&bytes).map(|c| i64::try_from(c).unwrap());
+            let result = file.write(&bytes).map(|c| i64::try_from(c).unwrap());
+            this.try_unwrap_io_result(result)
+        } else {
+            this.handle_not_found()
+        }
+    }
+
+    fn lseek64(
+        &mut self,
+        fd_op: OpTy<'tcx, Tag>,
+        offset_op: OpTy<'tcx, Tag>,
+        whence_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i64> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("lseek64")?;
+
+        let fd = this.read_scalar(fd_op)?.to_i32()?;
+        let offset = this.read_scalar(offset_op)?.to_i64()?;
+        let whence = this.read_scalar(whence_op)?.to_i32()?;
+
+        let seek_from = if whence == this.eval_libc_i32("SEEK_SET")? {
+            SeekFrom::Start(offset as u64)
+        } else if whence == this.eval_libc_i32("SEEK_CUR")? {
+            SeekFrom::Current(offset)
+        } else if whence == this.eval_libc_i32("SEEK_END")? {
+            SeekFrom::End(offset)
+        } else {
+            let einval = this.eval_libc("EINVAL")?;
+            this.set_last_error(einval)?;
+            return Ok(-1);
+        };
+
+        if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
+            let result = file.seek(seek_from).map(|offset| offset as i64);
             this.try_unwrap_io_result(result)
         } else {
             this.handle_not_found()
@@ -306,106 +568,50 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.try_unwrap_io_result(create_link(target, linkpath).map(|_| 0))
     }
 
-    fn stat(
+    fn macos_stat(
         &mut self,
         path_op: OpTy<'tcx, Tag>,
         buf_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
         this.check_no_isolation("stat")?;
+        this.assert_platform("macos", "stat");
         // `stat` always follows symlinks.
-        this.stat_or_lstat(true, path_op, buf_op)
+        this.macos_stat_or_lstat(true, path_op, buf_op)
     }
 
     // `lstat` is used to get symlink metadata.
-    fn lstat(
+    fn macos_lstat(
         &mut self,
         path_op: OpTy<'tcx, Tag>,
         buf_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
         this.check_no_isolation("lstat")?;
-        this.stat_or_lstat(false, path_op, buf_op)
+        this.assert_platform("macos", "lstat");
+        this.macos_stat_or_lstat(false, path_op, buf_op)
     }
 
-    fn stat_or_lstat(
+    fn macos_fstat(
         &mut self,
-        follow_symlink: bool,
-        path_op: OpTy<'tcx, Tag>,
+        fd_op: OpTy<'tcx, Tag>,
         buf_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        if this.tcx.sess.target.target.target_os.to_lowercase() != "macos" {
-            throw_unsup_format!("The `stat` and `lstat` shims are only available for `macos` targets.")
-        }
+        this.check_no_isolation("fstat")?;
+        this.assert_platform("macos", "fstat");
 
-        let path_scalar = this.read_scalar(path_op)?.not_undef()?;
-        let path: PathBuf = this.read_os_str_from_c_str(path_scalar)?.into();
+        let fd = this.read_scalar(fd_op)?.to_i32()?;
 
-        let buf = this.deref_operand(buf_op)?;
-
-        let metadata = match FileMetadata::new(this, path, follow_symlink)? {
+        let metadata = match FileMetadata::from_fd(this, fd)? {
             Some(metadata) => metadata,
             None => return Ok(-1),
         };
-
-        let mode: u16 = metadata.mode.to_u16()?;
-
-        let (access_sec, access_nsec) = metadata.accessed.unwrap_or((0, 0));
-        let (created_sec, created_nsec) = metadata.created.unwrap_or((0, 0));
-        let (modified_sec, modified_nsec) = metadata.modified.unwrap_or((0, 0));
-
-        let dev_t_layout = this.libc_ty_layout("dev_t")?;
-        let mode_t_layout = this.libc_ty_layout("mode_t")?;
-        let nlink_t_layout = this.libc_ty_layout("nlink_t")?;
-        let ino_t_layout = this.libc_ty_layout("ino_t")?;
-        let uid_t_layout = this.libc_ty_layout("uid_t")?;
-        let gid_t_layout = this.libc_ty_layout("gid_t")?;
-        let time_t_layout = this.libc_ty_layout("time_t")?;
-        let long_layout = this.libc_ty_layout("c_long")?;
-        let off_t_layout = this.libc_ty_layout("off_t")?;
-        let blkcnt_t_layout = this.libc_ty_layout("blkcnt_t")?;
-        let blksize_t_layout = this.libc_ty_layout("blksize_t")?;
-        let uint32_t_layout = this.libc_ty_layout("uint32_t")?;
-
-        // We need to add 32 bits of padding after `st_rdev` if we are on a 64-bit platform.
-        let pad_layout = if this.tcx.sess.target.ptr_width == 64 {
-            uint32_t_layout
-        } else {
-            this.layout_of(this.tcx.mk_unit())?
-        };
-
-        let imms = [
-            immty_from_uint_checked(0u128, dev_t_layout)?, // st_dev
-            immty_from_uint_checked(mode, mode_t_layout)?, // st_mode
-            immty_from_uint_checked(0u128, nlink_t_layout)?, // st_nlink
-            immty_from_uint_checked(0u128, ino_t_layout)?, // st_ino
-            immty_from_uint_checked(0u128, uid_t_layout)?, // st_uid
-            immty_from_uint_checked(0u128, gid_t_layout)?, // st_gid
-            immty_from_uint_checked(0u128, dev_t_layout)?, // st_rdev
-            immty_from_uint_checked(0u128, pad_layout)?, // padding for 64-bit targets
-            immty_from_uint_checked(access_sec, time_t_layout)?, // st_atime
-            immty_from_uint_checked(access_nsec, long_layout)?, // st_atime_nsec
-            immty_from_uint_checked(modified_sec, time_t_layout)?, // st_mtime
-            immty_from_uint_checked(modified_nsec, long_layout)?, // st_mtime_nsec
-            immty_from_uint_checked(0u128, time_t_layout)?, // st_ctime
-            immty_from_uint_checked(0u128, long_layout)?, // st_ctime_nsec
-            immty_from_uint_checked(created_sec, time_t_layout)?, // st_birthtime
-            immty_from_uint_checked(created_nsec, long_layout)?, // st_birthtime_nsec
-            immty_from_uint_checked(metadata.size, off_t_layout)?, // st_size
-            immty_from_uint_checked(0u128, blkcnt_t_layout)?, // st_blocks
-            immty_from_uint_checked(0u128, blksize_t_layout)?, // st_blksize
-            immty_from_uint_checked(0u128, uint32_t_layout)?, // st_flags
-            immty_from_uint_checked(0u128, uint32_t_layout)?, // st_gen
-        ];
-
-        this.write_packed_immediates(&buf, &imms)?;
-
-        Ok(0)
+        this.macos_stat_write_buf(metadata, buf_op)
     }
 
-    fn statx(
+    fn linux_statx(
         &mut self,
         dirfd_op: OpTy<'tcx, Tag>,    // Should be an `int`
         pathname_op: OpTy<'tcx, Tag>, // Should be a `const char *`
@@ -416,10 +622,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.check_no_isolation("statx")?;
-
-        if this.tcx.sess.target.target.target_os.to_lowercase() != "linux" {
-            throw_unsup_format!("The `statx` shim is only available for `linux` targets.")
-        }
+        this.assert_platform("linux", "statx");
 
         let statxbuf_scalar = this.read_scalar(statxbuf_op)?.not_undef()?;
         let pathname_scalar = this.read_scalar(pathname_op)?.not_undef()?;
@@ -454,18 +657,28 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             this.read_scalar(flags_op)?.to_machine_isize(&*this.tcx)?.try_into().map_err(|e| {
                 err_unsup_format!("Failed to convert pointer sized operand to integer: {}", e)
             })?;
+        let empty_path_flag = flags & this.eval_libc("AT_EMPTY_PATH")?.to_i32()? != 0;
         // `dirfd` should be a `c_int` but the `syscall` function provides an `isize`.
         let dirfd: i32 =
             this.read_scalar(dirfd_op)?.to_machine_isize(&*this.tcx)?.try_into().map_err(|e| {
                 err_unsup_format!("Failed to convert pointer sized operand to integer: {}", e)
             })?;
-        // we only support interpreting `path` as an absolute directory or as a directory relative
-        // to `dirfd` when the latter is `AT_FDCWD`. The behavior of `statx` with a relative path
-        // and a directory file descriptor other than `AT_FDCWD` is specified but it cannot be
-        // tested from `libstd`. If you found this error, please open an issue reporting it.
-        if !(path.is_absolute() || dirfd == this.eval_libc_i32("AT_FDCWD")?) {
+        // We only support:
+        // * interpreting `path` as an absolute directory,
+        // * interpreting `path` as a path relative to `dirfd` when the latter is `AT_FDCWD`, or
+        // * interpreting `dirfd` as any file descriptor when `path` is empty and AT_EMPTY_PATH is
+        // set.
+        // Other behaviors cannot be tested from `libstd` and thus are not implemented. If you
+        // found this error, please open an issue reporting it.
+        if !(
+            path.is_absolute() ||
+            dirfd == this.eval_libc_i32("AT_FDCWD")? ||
+            (path.as_os_str().is_empty() && empty_path_flag)
+        ) {
             throw_unsup_format!(
-                "Using statx with a relative path and a file descriptor different from `AT_FDCWD` is not supported"
+                "Using statx is only supported with absolute paths, relative paths with the file \
+                descriptor `AT_FDCWD`, and empty paths with the `AT_EMPTY_PATH` flag set and any \
+                file descriptor"
             )
         }
 
@@ -480,7 +693,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // symbolic links.
         let follow_symlink = flags & this.eval_libc("AT_SYMLINK_NOFOLLOW")?.to_i32()? == 0;
 
-        let metadata = match FileMetadata::new(this, path, follow_symlink)? {
+        // If the path is empty, and the AT_EMPTY_PATH flag is set, we query the open file
+        // represented by dirfd, whether it's a directory or otherwise.
+        let metadata = if path.as_os_str().is_empty() && empty_path_flag {
+            FileMetadata::from_fd(this, dirfd)?
+        } else {
+            FileMetadata::from_path(this, path, follow_symlink)?
+        };
+        let metadata = match metadata {
             Some(metadata) => metadata,
             None => return Ok(-1),
         };
@@ -549,20 +769,298 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             immty_from_uint_checked(0u128, __u64_layout)?, // stx_dev_minor
         ];
 
-        this.write_packed_immediates(&statxbuf_place, &imms)?;
+        this.write_packed_immediates(statxbuf_place, &imms)?;
 
         Ok(0)
     }
 
-    /// Function used when a handle is not found inside `FileHandler`. It returns `Ok(-1)`and sets
-    /// the last OS error to `libc::EBADF` (invalid file descriptor). This function uses
-    /// `T: From<i32>` instead of `i32` directly because some fs functions return different integer
-    /// types (like `read`, that returns an `i64`).
-    fn handle_not_found<T: From<i32>>(&mut self) -> InterpResult<'tcx, T> {
+    fn rename(
+        &mut self,
+        oldpath_op: OpTy<'tcx, Tag>,
+        newpath_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
-        let ebadf = this.eval_libc("EBADF")?;
-        this.set_last_error(ebadf)?;
-        Ok((-1).into())
+
+        this.check_no_isolation("rename")?;
+
+        let oldpath_scalar = this.read_scalar(oldpath_op)?.not_undef()?;
+        let newpath_scalar = this.read_scalar(newpath_op)?.not_undef()?;
+
+        if this.is_null(oldpath_scalar)? || this.is_null(newpath_scalar)? {
+            let efault = this.eval_libc("EFAULT")?;
+            this.set_last_error(efault)?;
+            return Ok(-1);
+        }
+
+        let oldpath = this.read_os_str_from_c_str(oldpath_scalar)?;
+        let newpath = this.read_os_str_from_c_str(newpath_scalar)?;
+
+        let result = rename(oldpath, newpath).map(|_| 0);
+
+        this.try_unwrap_io_result(result)
+    }
+
+    fn mkdir(
+        &mut self,
+        path_op: OpTy<'tcx, Tag>,
+        mode_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("mkdir")?;
+
+        let _mode = if this.tcx.sess.target.target.target_os.as_str() == "macos" {
+            this.read_scalar(mode_op)?.not_undef()?.to_u16()? as u32
+        } else {
+            this.read_scalar(mode_op)?.to_u32()?
+        };
+
+        let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+
+        let mut builder = DirBuilder::new();
+
+        // If the host supports it, forward on the mode of the directory
+        // (i.e. permission bits and the sticky bit)
+        #[cfg(target_family = "unix")]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(_mode.into());
+        }
+
+        let result = builder.create(path).map(|_| 0i32);
+
+        this.try_unwrap_io_result(result)
+    }
+
+    fn rmdir(
+        &mut self,
+        path_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("rmdir")?;
+
+        let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+
+        let result = remove_dir(path).map(|_| 0i32);
+
+        this.try_unwrap_io_result(result)
+    }
+
+    fn opendir(&mut self, name_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, Scalar<Tag>> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("opendir")?;
+
+        let name = this.read_os_str_from_c_str(this.read_scalar(name_op)?.not_undef()?)?;
+
+        let result = read_dir(name);
+
+        match result {
+            Ok(dir_iter) => {
+                let id = this.machine.dir_handler.insert_new(dir_iter);
+
+                // The libc API for opendir says that this method returns a pointer to an opaque
+                // structure, but we are returning an ID number. Thus, pass it as a scalar of
+                // pointer width.
+                Ok(Scalar::from_machine_usize(id, this))
+            }
+            Err(e) => {
+                this.set_last_error_from_io_error(e)?;
+                Ok(Scalar::from_machine_usize(0, this))
+            }
+        }
+    }
+
+    fn linux_readdir64_r(
+        &mut self,
+        dirp_op: OpTy<'tcx, Tag>,
+        entry_op: OpTy<'tcx, Tag>,
+        result_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("readdir64_r")?;
+        this.assert_platform("linux", "readdir64_r");
+
+        let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
+
+        let dir_iter = this.machine.dir_handler.streams.get_mut(&dirp).ok_or_else(|| {
+            err_unsup_format!("The DIR pointer passed to readdir64_r did not come from opendir")
+        })?;
+        match dir_iter.next() {
+            Some(Ok(dir_entry)) => {
+                // Write into entry, write pointer to result, return 0 on success.
+                // The name is written with write_os_str_to_c_str, while the rest of the
+                // dirent64 struct is written using write_packed_immediates.
+
+                // For reference:
+                // pub struct dirent64 {
+                //     pub d_ino: ino64_t,
+                //     pub d_off: off64_t,
+                //     pub d_reclen: c_ushort,
+                //     pub d_type: c_uchar,
+                //     pub d_name: [c_char; 256],
+                // }
+
+                let entry_place = this.deref_operand(entry_op)?;
+                let name_place = this.mplace_field(entry_place, 4)?;
+
+                let file_name = dir_entry.file_name();
+                let (name_fits, _) = this.write_os_str_to_c_str(
+                    &file_name,
+                    name_place.ptr,
+                    name_place.layout.size.bytes(),
+                )?;
+                if !name_fits {
+                    throw_unsup_format!("A directory entry had a name too large to fit in libc::dirent64");
+                }
+
+                let entry_place = this.deref_operand(entry_op)?;
+                let ino64_t_layout = this.libc_ty_layout("ino64_t")?;
+                let off64_t_layout = this.libc_ty_layout("off64_t")?;
+                let c_ushort_layout = this.libc_ty_layout("c_ushort")?;
+                let c_uchar_layout = this.libc_ty_layout("c_uchar")?;
+
+                // If the host is a Unix system, fill in the inode number with its real value.
+                // If not, use 0 as a fallback value.
+                #[cfg(unix)]
+                let ino = std::os::unix::fs::DirEntryExt::ino(&dir_entry);
+                #[cfg(not(unix))]
+                let ino = 0u64;
+
+                let file_type = this.file_type_to_d_type(dir_entry.file_type())? as u128;
+
+                let imms = [
+                    immty_from_uint_checked(ino, ino64_t_layout)?, // d_ino
+                    immty_from_uint_checked(0u128, off64_t_layout)?, // d_off
+                    immty_from_uint_checked(0u128, c_ushort_layout)?, // d_reclen
+                    immty_from_uint_checked(file_type, c_uchar_layout)?, // d_type
+                ];
+                this.write_packed_immediates(entry_place, &imms)?;
+
+                let result_place = this.deref_operand(result_op)?;
+                this.write_scalar(this.read_scalar(entry_op)?, result_place.into())?;
+
+                Ok(0)
+            }
+            None => {
+                // end of stream: return 0, assign *result=NULL
+                this.write_null(this.deref_operand(result_op)?.into())?;
+                Ok(0)
+            }
+            Some(Err(e)) => match e.raw_os_error() {
+                // return positive error number on error
+                Some(error) => Ok(error),
+                None => {
+                    throw_unsup_format!("The error {} couldn't be converted to a return value", e)
+                }
+            },
+        }
+    }
+
+    fn macos_readdir_r(
+        &mut self,
+        dirp_op: OpTy<'tcx, Tag>,
+        entry_op: OpTy<'tcx, Tag>,
+        result_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("readdir_r")?;
+        this.assert_platform("macos", "readdir_r");
+
+        let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
+
+        let dir_iter = this.machine.dir_handler.streams.get_mut(&dirp).ok_or_else(|| {
+            err_unsup_format!("The DIR pointer passed to readdir_r did not come from opendir")
+        })?;
+        match dir_iter.next() {
+            Some(Ok(dir_entry)) => {
+                // Write into entry, write pointer to result, return 0 on success.
+                // The name is written with write_os_str_to_c_str, while the rest of the
+                // dirent struct is written using write_packed_Immediates.
+
+                // For reference:
+                // pub struct dirent {
+                //     pub d_ino: u64,
+                //     pub d_seekoff: u64,
+                //     pub d_reclen: u16,
+                //     pub d_namlen: u16,
+                //     pub d_type: u8,
+                //     pub d_name: [c_char; 1024],
+                // }
+
+                let entry_place = this.deref_operand(entry_op)?;
+                let name_place = this.mplace_field(entry_place, 5)?;
+
+                let file_name = dir_entry.file_name();
+                let (name_fits, file_name_len) = this.write_os_str_to_c_str(
+                    &file_name,
+                    name_place.ptr,
+                    name_place.layout.size.bytes(),
+                )?;
+                if !name_fits {
+                    throw_unsup_format!("A directory entry had a name too large to fit in libc::dirent");
+                }
+
+                let entry_place = this.deref_operand(entry_op)?;
+                let ino_t_layout = this.libc_ty_layout("ino_t")?;
+                let off_t_layout = this.libc_ty_layout("off_t")?;
+                let c_ushort_layout = this.libc_ty_layout("c_ushort")?;
+                let c_uchar_layout = this.libc_ty_layout("c_uchar")?;
+
+                // If the host is a Unix system, fill in the inode number with its real value.
+                // If not, use 0 as a fallback value.
+                #[cfg(unix)]
+                let ino = std::os::unix::fs::DirEntryExt::ino(&dir_entry);
+                #[cfg(not(unix))]
+                let ino = 0u64;
+
+                let file_type = this.file_type_to_d_type(dir_entry.file_type())? as u128;
+
+                let imms = [
+                    immty_from_uint_checked(ino, ino_t_layout)?, // d_ino
+                    immty_from_uint_checked(0u128, off_t_layout)?, // d_seekoff
+                    immty_from_uint_checked(0u128, c_ushort_layout)?, // d_reclen
+                    immty_from_uint_checked(file_name_len, c_ushort_layout)?, // d_namlen
+                    immty_from_uint_checked(file_type, c_uchar_layout)?, // d_type
+                ];
+                this.write_packed_immediates(entry_place, &imms)?;
+
+                let result_place = this.deref_operand(result_op)?;
+                this.write_scalar(this.read_scalar(entry_op)?, result_place.into())?;
+
+                Ok(0)
+            }
+            None => {
+                // end of stream: return 0, assign *result=NULL
+                this.write_null(this.deref_operand(result_op)?.into())?;
+                Ok(0)
+            }
+            Some(Err(e)) => match e.raw_os_error() {
+                // return positive error number on error
+                Some(error) => Ok(error),
+                None => {
+                    throw_unsup_format!("The error {} couldn't be converted to a return value", e)
+                }
+            },
+        }
+    }
+
+    fn closedir(&mut self, dirp_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("closedir")?;
+
+        let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
+
+        if let Some(dir_iter) = this.machine.dir_handler.streams.remove(&dirp) {
+            drop(dir_iter);
+            Ok(0)
+        } else {
+            this.handle_not_found()
+        }
     }
 }
 
@@ -589,7 +1087,7 @@ struct FileMetadata {
 }
 
 impl FileMetadata {
-    fn new<'tcx, 'mir>(
+    fn from_path<'tcx, 'mir>(
         ecx: &mut MiriEvalContext<'mir, 'tcx>,
         path: PathBuf,
         follow_symlink: bool
@@ -600,6 +1098,27 @@ impl FileMetadata {
             std::fs::symlink_metadata(path)
         };
 
+        FileMetadata::from_meta(ecx, metadata)
+    }
+
+    fn from_fd<'tcx, 'mir>(
+        ecx: &mut MiriEvalContext<'mir, 'tcx>,
+        fd: i32,
+    ) -> InterpResult<'tcx, Option<FileMetadata>> {
+        let option = ecx.machine.file_handler.handles.get(&fd);
+        let file = match option {
+            Some(FileHandle { file, writable: _ }) => file,
+            None => return ecx.handle_not_found().map(|_: i32| None),
+        };
+        let metadata = file.metadata();
+
+        FileMetadata::from_meta(ecx, metadata)
+    }
+
+    fn from_meta<'tcx, 'mir>(
+        ecx: &mut MiriEvalContext<'mir, 'tcx>,
+        metadata: Result<std::fs::Metadata, std::io::Error>,
+    ) -> InterpResult<'tcx, Option<FileMetadata>> {
         let metadata = match metadata {
             Ok(metadata) => metadata,
             Err(e) => {

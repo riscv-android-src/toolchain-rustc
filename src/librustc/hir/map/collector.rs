@@ -3,6 +3,7 @@ use crate::hir::map::definitions::{self, DefPathHash};
 use crate::hir::map::{Entry, HirEntryMap, Map};
 use crate::ich::StableHashingContext;
 use crate::middle::cstore::CrateStore;
+use rustc_ast::ast::NodeId;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
@@ -16,7 +17,6 @@ use rustc_index::vec::IndexVec;
 use rustc_session::{CrateDisambiguator, Session};
 use rustc_span::source_map::SourceMap;
 use rustc_span::{Span, Symbol, DUMMY_SP};
-use syntax::ast::NodeId;
 
 use std::iter::repeat;
 
@@ -140,6 +140,7 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
                 trait_impls: _,
                 body_ids: _,
                 modules: _,
+                proc_macros: _,
             } = *krate;
 
             alloc_hir_dep_nodes(
@@ -223,12 +224,9 @@ impl<'a, 'hir> NodeCollector<'a, 'hir> {
             (commandline_args_hash, crate_disambiguator.to_fingerprint()),
         );
 
-        let (_, crate_hash) = input_dep_node_and_hash(
-            self.dep_graph,
-            &mut self.hcx,
-            DepNode::new_no_params(DepKind::Krate),
-            crate_hash_input,
-        );
+        let mut stable_hasher = StableHasher::new();
+        crate_hash_input.hash_stable(&mut self.hcx, &mut stable_hasher);
+        let crate_hash: Fingerprint = stable_hasher.finish();
 
         let svh = Svh::new(crate_hash.to_smaller_hash());
         (self.map, svh)

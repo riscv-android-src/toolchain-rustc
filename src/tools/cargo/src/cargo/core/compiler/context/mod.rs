@@ -9,7 +9,7 @@ use jobserver::Client;
 use crate::core::compiler::{self, compilation, Unit};
 use crate::core::PackageId;
 use crate::util::errors::{CargoResult, CargoResultExt};
-use crate::util::{internal, profile, Config};
+use crate::util::{profile, Config};
 
 use super::build_plan::BuildPlan;
 use super::custom_build::{self, BuildDeps, BuildScriptOutputs, BuildScripts};
@@ -69,6 +69,11 @@ pub struct Context<'a, 'cfg> {
     /// metadata files in addition to the rlib itself. This is only filled in
     /// when `pipelining` above is enabled.
     rmeta_required: HashSet<Unit<'a>>,
+
+    /// When we're in jobserver-per-rustc process mode, this keeps those
+    /// jobserver clients for each Unit (which eventually becomes a rustc
+    /// process).
+    pub rustc_clients: HashMap<Unit<'a>, Client>,
 }
 
 impl<'a, 'cfg> Context<'a, 'cfg> {
@@ -112,12 +117,13 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             unit_dependencies,
             files: None,
             rmeta_required: HashSet::new(),
+            rustc_clients: HashMap::new(),
             pipelining,
         })
     }
 
-    // Returns a mapping of the root package plus its immediate dependencies to
-    // where the compiled libraries are all located.
+    /// Starts compilation, waits for it to finish, and returns information
+    /// about the result of compilation.
     pub fn compile(
         mut self,
         units: &[Unit<'a>],
@@ -239,16 +245,16 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
             super::output_depinfo(&mut self, unit)?;
         }
 
-        for (&(ref pkg, _), output) in self.build_script_outputs.lock().unwrap().iter() {
+        for (pkg_id, output) in self.build_script_outputs.lock().unwrap().iter() {
             self.compilation
                 .cfgs
-                .entry(pkg.clone())
+                .entry(pkg_id)
                 .or_insert_with(HashSet::new)
                 .extend(output.cfgs.iter().cloned());
 
             self.compilation
                 .extra_env
-                .entry(pkg.clone())
+                .entry(pkg_id)
                 .or_insert_with(Vec::new)
                 .extend(output.env.iter().cloned());
 
@@ -307,11 +313,11 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
         self.files_mut()
             .host
             .prepare()
-            .chain_err(|| internal("couldn't prepare build directories"))?;
+            .chain_err(|| "couldn't prepare build directories")?;
         for target in self.files.as_mut().unwrap().target.values_mut() {
             target
                 .prepare()
-                .chain_err(|| internal("couldn't prepare build directories"))?;
+                .chain_err(|| "couldn't prepare build directories")?;
         }
 
         self.compilation.host_deps_output = self.files_mut().host.deps().to_path_buf();
@@ -339,6 +345,39 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
     /// Direct dependencies for the given unit.
     pub fn unit_deps(&self, unit: &Unit<'a>) -> &[UnitDep<'a>] {
         &self.unit_dependencies[unit]
+    }
+
+    /// Returns the RunCustomBuild Unit associated with the given Unit.
+    ///
+    /// If the package does not have a build script, this returns None.
+    pub fn find_build_script_unit(&self, unit: Unit<'a>) -> Option<Unit<'a>> {
+        if unit.mode.is_run_custom_build() {
+            return Some(unit);
+        }
+        self.unit_dependencies[&unit]
+            .iter()
+            .find(|unit_dep| {
+                unit_dep.unit.mode.is_run_custom_build()
+                    && unit_dep.unit.pkg.package_id() == unit.pkg.package_id()
+            })
+            .map(|unit_dep| unit_dep.unit)
+    }
+
+    /// Returns the metadata hash for the RunCustomBuild Unit associated with
+    /// the given unit.
+    ///
+    /// If the package does not have a build script, this returns None.
+    pub fn find_build_script_metadata(&self, unit: Unit<'a>) -> Option<Metadata> {
+        let script_unit = self.find_build_script_unit(unit)?;
+        Some(self.get_run_build_script_metadata(&script_unit))
+    }
+
+    /// Returns the metadata hash for a RunCustomBuild unit.
+    pub fn get_run_build_script_metadata(&self, unit: &Unit<'a>) -> Metadata {
+        assert!(unit.mode.is_run_custom_build());
+        self.files()
+            .metadata(unit)
+            .expect("build script should always have hash")
     }
 
     pub fn is_primary_package(&self, unit: &Unit<'a>) -> bool {
@@ -411,7 +450,7 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
                     suggestion,
                     crate::version(),
                     self.bcx.host_triple(),
-                    unit.kind.short_name(self.bcx),
+                    self.bcx.target_data.short_name(&unit.kind),
                     unit,
                     other_unit))
             }
@@ -490,5 +529,22 @@ impl<'a, 'cfg> Context<'a, 'cfg> {
     /// well because some compilations rely on that.
     pub fn rmeta_required(&self, unit: &Unit<'a>) -> bool {
         self.rmeta_required.contains(unit) || self.bcx.config.cli_unstable().timings.is_some()
+    }
+
+    pub fn new_jobserver(&mut self) -> CargoResult<Client> {
+        let tokens = self.bcx.build_config.jobs as usize;
+        let client = Client::new(tokens).chain_err(|| "failed to create jobserver")?;
+
+        // Drain the client fully
+        for i in 0..tokens {
+            client.acquire_raw().chain_err(|| {
+                format!(
+                    "failed to fully drain {}/{} token from jobserver at startup",
+                    i, tokens,
+                )
+            })?;
+        }
+
+        Ok(client)
     }
 }

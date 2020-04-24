@@ -3,19 +3,20 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::num::NonZeroU64;
 use std::rc::Rc;
 
 use rand::rngs::StdRng;
 
-use rustc_hir::def_id::DefId;
+use rustc_data_structures::fx::FxHashMap;
 use rustc::mir;
 use rustc::ty::{
     self,
     layout::{LayoutOf, Size},
-    Ty, TyCtxt,
+    Ty,
 };
-use rustc_span::{source_map::Span, symbol::sym};
-use syntax::attr;
+use rustc_ast::attr;
+use rustc_span::{source_map::Span, symbol::{sym, Symbol}};
 
 use crate::*;
 
@@ -47,8 +48,8 @@ pub enum MiriMemoryKind {
     C,
     /// Windows `HeapAlloc` memory.
     WinHeap,
-    /// Memory for env vars and args, errno and other parts of the machine-managed environment.
-    Env,
+    /// Memory for env vars and args, errno, extern statics and other parts of the machine-managed environment.
+    Machine,
     /// Rust statics.
     Static,
 }
@@ -63,31 +64,59 @@ impl Into<MemoryKind<MiriMemoryKind>> for MiriMemoryKind {
 /// Extra per-allocation data
 #[derive(Debug, Clone)]
 pub struct AllocExtra {
-    /// Stacked Borrows state is only added if validation is enabled.
+    /// Stacked Borrows state is only added if it is enabled.
     pub stacked_borrows: Option<stacked_borrows::AllocExtra>,
 }
 
 /// Extra global memory data
 #[derive(Clone, Debug)]
 pub struct MemoryExtra {
-    pub stacked_borrows: stacked_borrows::MemoryExtra,
+    pub stacked_borrows: Option<stacked_borrows::MemoryExtra>,
     pub intptrcast: intptrcast::MemoryExtra,
 
-    /// The random number generator used for resolving non-determinism.
-    pub(crate) rng: RefCell<StdRng>,
+    /// Mapping extern static names to their canonical allocation.
+    pub(crate) extern_statics: FxHashMap<Symbol, AllocId>,
 
-    /// Whether to enforce the validity invariant.
-    pub(crate) validate: bool,
+    /// The random number generator used for resolving non-determinism.
+    /// Needs to be queried by ptr_to_int, hence needs interior mutability.
+    pub(crate) rng: RefCell<StdRng>,
 }
 
 impl MemoryExtra {
-    pub fn new(rng: StdRng, validate: bool, tracked_pointer_tag: Option<PtrId>) -> Self {
+    pub fn new(rng: StdRng, stacked_borrows: bool, tracked_pointer_tag: Option<PtrId>) -> Self {
+        let stacked_borrows = if stacked_borrows {
+            Some(Rc::new(RefCell::new(stacked_borrows::GlobalState::new(tracked_pointer_tag))))
+        } else {
+            None
+        };
         MemoryExtra {
-            stacked_borrows: Rc::new(RefCell::new(GlobalState::new(tracked_pointer_tag))),
+            stacked_borrows,
             intptrcast: Default::default(),
+            extern_statics: FxHashMap::default(),
             rng: RefCell::new(rng),
-            validate,
         }
+    }
+
+    /// Sets up the "extern statics" for this machine.
+    pub fn init_extern_statics<'mir, 'tcx>(
+        this: &mut MiriEvalContext<'mir, 'tcx>,
+    ) -> InterpResult<'tcx> {
+        match this.tcx.sess.target.target.target_os.as_str() {
+            "linux" => {
+                // "__cxa_thread_atexit_impl"
+                // This should be all-zero, pointer-sized.
+                let layout = this.layout_of(this.tcx.types.usize)?;
+                let place = this.allocate(layout, MiriMemoryKind::Machine.into());
+                this.write_scalar(Scalar::from_machine_usize(0, &*this.tcx), place.into())?;
+                this.memory
+                    .extra
+                    .extern_statics
+                    .insert(Symbol::intern("__cxa_thread_atexit_impl"), place.ptr.assert_ptr().alloc_id)
+                    .unwrap_none();
+            }
+            _ => {} // No "extern statics" supported on this platform
+        }
+        Ok(())
     }
 }
 
@@ -114,7 +143,11 @@ pub struct Evaluator<'tcx> {
     /// and random number generation is delegated to the host.
     pub(crate) communicate: bool,
 
+    /// Whether to enforce the validity invariant.
+    pub(crate) validate: bool,
+
     pub(crate) file_handler: FileHandler,
+    pub(crate) dir_handler: DirHandler,
 
     /// The temporary used for storing the argument of
     /// the call to `miri_start_panic` (the panic payload) when unwinding.
@@ -122,7 +155,7 @@ pub struct Evaluator<'tcx> {
 }
 
 impl<'tcx> Evaluator<'tcx> {
-    pub(crate) fn new(communicate: bool) -> Self {
+    pub(crate) fn new(communicate: bool, validate: bool) -> Self {
         Evaluator {
             // `env_vars` could be initialized properly here if `Memory` were available before
             // calling this method.
@@ -133,7 +166,9 @@ impl<'tcx> Evaluator<'tcx> {
             last_error: None,
             tls: TlsData::default(),
             communicate,
+            validate,
             file_handler: Default::default(),
+            dir_handler: Default::default(),
             panic_payload: None,
         }
     }
@@ -177,7 +212,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
 
     #[inline(always)]
     fn enforce_validity(ecx: &InterpCx<'mir, 'tcx, Self>) -> bool {
-        ecx.memory.extra.validate
+        ecx.machine.validate
     }
 
     #[inline(always)]
@@ -219,7 +254,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     fn assert_panic(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         span: Span,
-        msg: &AssertMessage<'tcx>,
+        msg: &mir::AssertMessage<'tcx>,
         unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         ecx.assert_panic(span, msg, unwind)
@@ -263,32 +298,29 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         Ok(())
     }
 
-    fn find_foreign_static(
-        tcx: TyCtxt<'tcx>,
-        def_id: DefId,
-    ) -> InterpResult<'tcx, Cow<'tcx, Allocation>> {
+    fn canonical_alloc_id(mem: &Memory<'mir, 'tcx, Self>, id: AllocId) -> AllocId {
+        let tcx = mem.tcx;
+        // Figure out if this is an extern static, and if yes, which one.
+        let def_id = match tcx.alloc_map.lock().get(id) {
+            Some(GlobalAlloc::Static(def_id)) if tcx.is_foreign_item(def_id) => def_id,
+            _ => {
+                // No need to canonicalize anything.
+                return id;
+            }
+        };
         let attrs = tcx.get_attrs(def_id);
         let link_name = match attr::first_attr_value_str_by_name(&attrs, sym::link_name) {
-            Some(name) => name.as_str(),
-            None => tcx.item_name(def_id).as_str(),
+            Some(name) => name,
+            None => tcx.item_name(def_id),
         };
-
-        let alloc = match &*link_name {
-            "__cxa_thread_atexit_impl" => {
-                // This should be all-zero, pointer-sized.
-                let size = tcx.data_layout.pointer_size;
-                let data = vec![0; size.bytes() as usize];
-                Allocation::from_bytes(&data, tcx.data_layout.pointer_align.abi)
-            }
-            _ => throw_unsup_format!("can't access foreign static: {}", link_name),
-        };
-        Ok(Cow::Owned(alloc))
-    }
-
-    #[inline(always)]
-    fn before_terminator(_ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx> {
-        // We are not interested in detecting loops.
-        Ok(())
+        // Check if we know this one.
+        if let Some(canonical_id) = mem.extra.extern_statics.get(&link_name) {
+            trace!("canonical_alloc_id: {:?} ({}) -> {:?}", id, link_name, canonical_id);
+            *canonical_id
+        } else {
+            // Return original id; `Memory::get_static_alloc` will throw an error.
+            id
+        }
     }
 
     fn init_allocation_extra<'b>(
@@ -299,27 +331,24 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
     ) -> (Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>, Self::PointerTag) {
         let kind = kind.expect("we set our STATIC_KIND so this cannot be None");
         let alloc = alloc.into_owned();
-        let (stacks, base_tag) = if memory_extra.validate {
-            let (stacks, base_tag) = Stacks::new_allocation(
-                id,
-                alloc.size,
-                Rc::clone(&memory_extra.stacked_borrows),
-                kind,
-            );
-            (Some(stacks), base_tag)
-        } else {
-            // No stacks, no tag.
-            (None, Tag::Untagged)
-        };
-        let mut stacked_borrows = memory_extra.stacked_borrows.borrow_mut();
+        let (stacks, base_tag) =
+            if let Some(stacked_borrows) = memory_extra.stacked_borrows.as_ref() {
+                let (stacks, base_tag) =
+                    Stacks::new_allocation(id, alloc.size, Rc::clone(stacked_borrows), kind);
+                (Some(stacks), base_tag)
+            } else {
+                // No stacks, no tag.
+                (None, Tag::Untagged)
+            };
+        let mut stacked_borrows = memory_extra.stacked_borrows.as_ref().map(|sb| sb.borrow_mut());
         let alloc: Allocation<Tag, Self::AllocExtra> = alloc.with_tags_and_extra(
             |alloc| {
-                if !memory_extra.validate {
-                    Tag::Untagged
-                } else {
+                if let Some(stacked_borrows) = stacked_borrows.as_mut() {
                     // Only statics may already contain pointers at this point
                     assert_eq!(kind, MiriMemoryKind::Static.into());
                     stacked_borrows.static_base_ptr(alloc)
+                } else {
+                    Tag::Untagged
                 }
             },
             AllocExtra { stacked_borrows: stacks },
@@ -329,10 +358,10 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
 
     #[inline(always)]
     fn tag_static_base_pointer(memory_extra: &MemoryExtra, id: AllocId) -> Self::PointerTag {
-        if !memory_extra.validate {
-            Tag::Untagged
+        if let Some(stacked_borrows) = memory_extra.stacked_borrows.as_ref() {
+            stacked_borrows.borrow_mut().static_base_ptr(id)
         } else {
-            memory_extra.stacked_borrows.borrow_mut().static_base_ptr(id)
+            Tag::Untagged
         }
     }
 
@@ -342,7 +371,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         kind: mir::RetagKind,
         place: PlaceTy<'tcx, Tag>,
     ) -> InterpResult<'tcx> {
-        if !Self::enforce_validity(ecx) {
+        if ecx.memory.extra.stacked_borrows.is_none() {
             // No tracking.
             Ok(())
         } else {
@@ -352,10 +381,11 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
 
     #[inline(always)]
     fn stack_push(ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx, FrameData<'tcx>> {
-        Ok(FrameData {
-            call_id: ecx.memory.extra.stacked_borrows.borrow_mut().new_call(),
-            catch_panic: None,
-        })
+        let stacked_borrows = ecx.memory.extra.stacked_borrows.as_ref();
+        let call_id = stacked_borrows.map_or(NonZeroU64::new(1).unwrap(), |stacked_borrows| {
+            stacked_borrows.borrow_mut().new_call()
+        });
+        Ok(FrameData { call_id, catch_panic: None })
     }
 
     #[inline(always)]
@@ -431,7 +461,7 @@ impl MayLeak for MiriMemoryKind {
         use self::MiriMemoryKind::*;
         match self {
             Rust | C | WinHeap => false,
-            Env | Static => true,
+            Machine | Static => true,
         }
     }
 }

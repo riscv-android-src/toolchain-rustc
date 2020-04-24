@@ -15,11 +15,11 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use rustc::ty::TyCtxt;
+use rustc_driver::Compilation;
 use rustc_hir as hir;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_hir::itemlikevisit;
-use rustc::ty::TyCtxt;
-use rustc_driver::Compilation;
 use rustc_interface::{interface, Queries};
 
 use miri::MiriConfig;
@@ -42,10 +42,13 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
                 impl<'tcx, 'hir> itemlikevisit::ItemLikeVisitor<'hir> for Visitor<'tcx> {
                     fn visit_item(&mut self, i: &'hir hir::Item) {
                         if let hir::ItemKind::Fn(.., body_id) = i.kind {
-                            if i.attrs.iter().any(|attr| attr.check_name(rustc_span::symbol::sym::test))
+                            if i.attrs
+                                .iter()
+                                .any(|attr| attr.check_name(rustc_span::symbol::sym::test))
                             {
                                 let config = MiriConfig {
                                     validate: true,
+                                    stacked_borrows: true,
                                     communicate: false,
                                     ignore_leaks: false,
                                     excluded_env_vars: vec![],
@@ -67,6 +70,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
             } else if let Some((entry_def_id, _)) = tcx.entry_fn(LOCAL_CRATE) {
                 let config = MiriConfig {
                     validate: true,
+                    stacked_borrows: true,
                     communicate: false,
                     ignore_leaks: false,
                     excluded_env_vars: vec![],

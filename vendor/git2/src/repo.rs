@@ -490,6 +490,26 @@ impl Repository {
         }
     }
 
+    /// Add a remote with the provided fetch refspec to the repository's
+    /// configuration.
+    pub fn remote_with_fetch(
+        &self,
+        name: &str,
+        url: &str,
+        fetch: &str,
+    ) -> Result<Remote<'_>, Error> {
+        let mut ret = ptr::null_mut();
+        let name = CString::new(name)?;
+        let url = CString::new(url)?;
+        let fetch = CString::new(fetch)?;
+        unsafe {
+            try_call!(raw::git_remote_create_with_fetchspec(
+                &mut ret, self.raw, name, url, fetch
+            ));
+            Ok(Binding::from_raw(ret))
+        }
+    }
+
     /// Create an anonymous remote
     ///
     /// Create a remote with the given url and refspec in memory. You can use
@@ -758,9 +778,10 @@ impl Repository {
                 repo: self,
                 ret: &mut ret,
             };
+            let cb: raw::git_submodule_cb = Some(append);
             try_call!(raw::git_submodule_foreach(
                 self.raw,
-                append,
+                cb,
                 &mut data as *mut _ as *mut c_void
             ));
         }
@@ -871,10 +892,11 @@ impl Repository {
     }
 
     /// Set the Index file for this repository.
-    pub fn set_index(&self, index: &mut Index) {
+    pub fn set_index(&self, index: &mut Index) -> Result<(), Error> {
         unsafe {
-            raw::git_repository_set_index(self.raw(), index.raw());
+            try_call!(raw::git_repository_set_index(self.raw(), index.raw()));
         }
+        Ok(())
     }
 
     /// Get the configuration file for this repository.
@@ -1416,6 +1438,29 @@ impl Repository {
                 &mut ret,
                 self.raw(),
                 reference.raw()
+            ));
+            Ok(AnnotatedCommit::from_raw(ret))
+        }
+    }
+
+    /// Creates a git_annotated_commit from FETCH_HEAD.
+    pub fn annotated_commit_from_fetchhead(
+        &self,
+        branch_name: &str,
+        remote_url: &str,
+        id: &Oid,
+    ) -> Result<AnnotatedCommit<'_>, Error> {
+        let branch_name = CString::new(branch_name)?;
+        let remote_url = CString::new(remote_url)?;
+
+        let mut ret = ptr::null_mut();
+        unsafe {
+            try_call!(raw::git_annotated_commit_from_fetchhead(
+                &mut ret,
+                self.raw(),
+                branch_name,
+                remote_url,
+                id.raw()
             ));
             Ok(AnnotatedCommit::from_raw(ret))
         }
@@ -2382,9 +2427,10 @@ impl Repository {
             let mut data = StashCbData {
                 callback: &mut callback,
             };
+            let cb: raw::git_stash_cb = Some(stash_cb);
             try_call!(raw::git_stash_foreach(
                 self.raw(),
-                stash_cb,
+                cb,
                 &mut data as *mut _ as *mut _
             ));
             Ok(())

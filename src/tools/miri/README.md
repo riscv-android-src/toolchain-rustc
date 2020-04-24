@@ -14,13 +14,14 @@ for example:
 * Not sufficiently aligned memory accesses and references
 * Violation of *some* basic type invariants (a `bool` that is not 0 or 1, for example,
   or an invalid enum discriminant)
-* WIP: Violations of the rules governing aliasing for reference types
+* **Experimental**: Violations of the [Stacked Borrows] rules governing aliasing
+  for reference types
 
 Miri has already discovered some [real-world bugs](#bugs-found-by-miri).  If you
 found a bug with Miri, we'd appreciate if you tell us and we'll add it to the
 list!
 
-Be aware that Miri will not catch all cases of undefined behavior in your
+Be aware that Miri will **not catch all cases of undefined behavior** in your
 program, and cannot run all programs:
 
 * There are still plenty of open questions around the basic invariants for some
@@ -47,14 +48,15 @@ program, and cannot run all programs:
 [mir]: https://github.com/rust-lang/rfcs/blob/master/text/1211-mir.md
 [`unreachable_unchecked`]: https://doc.rust-lang.org/stable/std/hint/fn.unreachable_unchecked.html
 [`copy_nonoverlapping`]: https://doc.rust-lang.org/stable/std/ptr/fn.copy_nonoverlapping.html
+[Stacked Borrows]: https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md
 
 
 ## Using Miri
 
-Install Miri via `rustup`:
+Install Miri on Rust nightly via `rustup`:
 
 ```sh
-rustup component add miri
+rustup +nightly component add miri
 ```
 
 If `rustup` says the `miri` component is unavailable, that's because not all
@@ -147,18 +149,21 @@ Several `-Z` flags are relevant for Miri:
 
 * `-Zmiri-seed=<hex>` is a custom `-Z` flag added by Miri.  It configures the
   seed of the RNG that Miri uses to resolve non-determinism.  This RNG is used
-  to pick base addresses for allocations, and when the interpreted program
-  requests system entropy.  The default seed is 0.
+  to pick base addresses for allocations.  When isolation is enabled (the default),
+  this is also used to emulate system entropy.  The default seed is 0.
   **NOTE**: This entropy is not good enough for cryptographic use!  Do not
   generate secret keys in Miri or perform other kinds of cryptographic
   operations that rely on proper random numbers.
-* `-Zmiri-disable-validation` disables enforcing validity invariants and
-  reference aliasing rules, which are enforced by default.  This is mostly
-  useful for debugging.  It means Miri will miss bugs in your program.  However,
-  this can also help to make Miri run faster.
+* `-Zmiri-disable-validation` disables enforcing validity invariants, which are
+  enforced by default.  This is mostly useful for debugging.  It means Miri will
+  miss bugs in your program.  However, this can also help to make Miri run
+  faster.
+* `-Zmiri-disable-stacked-borrows` disables checking the experimental
+  [Stacked Borrows] aliasing rules.  This can make Miri run faster, but it also
+  means no aliasing violations will be detected.
 * `-Zmiri-disable-isolation` disables host host isolation.  As a consequence,
-  the program has access to host resources such as environment variables and
-  randomness (and, eventually, file systems and more).
+  the program has access to host resources such as environment variables, file
+  systems, and randomness.
 * `-Zmiri-ignore-leaks` disables the memory leak checker.
 * `-Zmiri-env-exclude=<var>` keeps the `var` environment variable isolated from
   the host. Can be used multiple times to exclude several variables. The `TERM`
@@ -171,11 +176,10 @@ Several `-Z` flags are relevant for Miri:
   sets this flag per default.
 * `-Zmir-emit-retag` controls whether `Retag` statements are emitted. Miri
   enables this per default because it is needed for validation.
-* `-Zmiri-track-pointer-tag=<tag>` aborts interpretation with a backtrace when the
-  given pointer tag is popped from a borrow stack (which is where the tag
-  becomes invalid and any future use of it will error anyway).  This helps you
-  in finding out why UB is happening and where in your code would be a good
-  place to look for it.
+* `-Zmiri-track-pointer-tag=<tag>` shows a backtrace when the given pointer tag
+  is popped from a borrow stack (which is where the tag becomes invalid and any
+  future use of it will error).  This helps you in finding out why UB is
+  happening and where in your code would be a good place to look for it.
 
 Moreover, Miri recognizes some environment variables:
 
@@ -235,7 +239,7 @@ Definite bugs found:
 * [The Unix allocator calling `posix_memalign` in an invalid way](https://github.com/rust-lang/rust/issues/62251)
 * [`getrandom` calling the `getrandom` syscall in an invalid way](https://github.com/rust-random/getrandom/pull/73)
 
-Violations of Stacked Borrows found that are likely bugs (but Stacked Borrows is currently just an experiment):
+Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows is currently just an experiment):
 
 * [`VecDeque` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/56161)
 * [`BTreeMap` creating mutable references that overlap with shared references](https://github.com/rust-lang/rust/pull/58431)

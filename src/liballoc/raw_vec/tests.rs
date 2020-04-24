@@ -19,8 +19,8 @@ fn allocator_param() {
     struct BoundedAlloc {
         fuel: usize,
     }
-    unsafe impl Alloc for BoundedAlloc {
-        unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<u8>, AllocErr> {
+    unsafe impl AllocRef for BoundedAlloc {
+        fn alloc(&mut self, layout: Layout) -> Result<(NonNull<u8>, usize), AllocErr> {
             let size = layout.size();
             if size > self.fuel {
                 return Err(AllocErr);

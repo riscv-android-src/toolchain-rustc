@@ -6,6 +6,7 @@ pub use self::definitions::{
 use crate::dep_graph::{DepGraph, DepKind, DepNode, DepNodeIndex};
 use crate::middle::cstore::CrateStoreDyn;
 use crate::ty::query::Providers;
+use rustc_ast::ast::{self, Name, NodeId};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::svh::Svh;
 use rustc_hir::def::{DefKind, Res};
@@ -20,7 +21,6 @@ use rustc_span::source_map::Spanned;
 use rustc_span::symbol::kw;
 use rustc_span::Span;
 use rustc_target::spec::abi::Abi;
-use syntax::ast::{self, Name, NodeId};
 
 pub mod blocks;
 mod collector;
@@ -129,30 +129,6 @@ impl<'hir> Entry<'hir> {
     }
 }
 
-/// Stores a crate and any number of inlined items from other crates.
-pub struct Forest<'hir> {
-    krate: Crate<'hir>,
-    pub dep_graph: DepGraph,
-}
-
-impl Forest<'hir> {
-    pub fn new(krate: Crate<'hir>, dep_graph: &DepGraph) -> Forest<'hir> {
-        Forest { krate, dep_graph: dep_graph.clone() }
-    }
-
-    pub fn krate(&self) -> &Crate<'hir> {
-        self.dep_graph.read(DepNode::new_no_params(DepKind::Krate));
-        &self.krate
-    }
-
-    /// This is used internally in the dependency tracking system.
-    /// Use the `krate` method to ensure your dependency on the
-    /// crate is tracked.
-    pub fn untracked_krate(&self) -> &Crate<'hir> {
-        &self.krate
-    }
-}
-
 /// This type is effectively a `HashMap<HirId, Entry<'hir>>`,
 /// but it is implemented as 2 layers of arrays.
 /// - first we have `A = IndexVec<DefIndex, B>` mapping `DefIndex`s to an inner value
@@ -162,11 +138,8 @@ pub(super) type HirEntryMap<'hir> = IndexVec<DefIndex, IndexVec<ItemLocalId, Opt
 /// Represents a mapping from `NodeId`s to AST elements and their parent `NodeId`s.
 #[derive(Clone)]
 pub struct Map<'hir> {
-    /// The backing storage for all the AST nodes.
-    pub forest: &'hir Forest<'hir>,
+    krate: &'hir Crate<'hir>,
 
-    /// Same as the dep_graph in forest, just available with one fewer
-    /// deref. This is a gratuitous micro-optimization.
     pub dep_graph: DepGraph,
 
     /// The SVH of the local crate.
@@ -180,15 +153,11 @@ pub struct Map<'hir> {
     hir_to_node_id: FxHashMap<HirId, NodeId>,
 }
 
-struct ParentHirIterator<'map, 'hir> {
+/// An iterator that walks up the ancestor tree of a given `HirId`.
+/// Constructed using `tcx.hir().parent_iter(hir_id)`.
+pub struct ParentHirIterator<'map, 'hir> {
     current_id: HirId,
     map: &'map Map<'hir>,
-}
-
-impl<'map, 'hir> ParentHirIterator<'map, 'hir> {
-    fn new(current_id: HirId, map: &'map Map<'hir>) -> Self {
-        Self { current_id, map }
-    }
 }
 
 impl<'hir> Iterator for ParentHirIterator<'_, 'hir> {
@@ -217,6 +186,13 @@ impl<'hir> Iterator for ParentHirIterator<'_, 'hir> {
 }
 
 impl<'hir> Map<'hir> {
+    /// This is used internally in the dependency tracking system.
+    /// Use the `krate` method to ensure your dependency on the
+    /// crate is tracked.
+    pub fn untracked_krate(&self) -> &Crate<'hir> {
+        &self.krate
+    }
+
     #[inline]
     fn lookup(&self, id: HirId) -> Option<&Entry<'hir>> {
         let local_map = self.map.get(id.owner)?;
@@ -362,9 +338,8 @@ impl<'hir> Map<'hir> {
             Node::Variant(_) => DefKind::Variant,
             Node::Ctor(variant_data) => {
                 // FIXME(eddyb) is this even possible, if we have a `Node::Ctor`?
-                if variant_data.ctor_hir_id().is_none() {
-                    return None;
-                }
+                variant_data.ctor_hir_id()?;
+
                 let ctor_of = match self.find(self.get_parent_node(hir_id)) {
                     Some(Node::Item(..)) => def::CtorOf::Struct,
                     Some(Node::Variant(..)) => def::CtorOf::Variant,
@@ -401,40 +376,36 @@ impl<'hir> Map<'hir> {
         self.lookup(id).cloned()
     }
 
-    pub fn krate(&self) -> &'hir Crate<'hir> {
-        self.forest.krate()
-    }
-
     pub fn item(&self, id: HirId) -> &'hir Item<'hir> {
         self.read(id);
 
-        // N.B., intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.krate()` so that we
         // do not trigger a read of the whole krate here
-        self.forest.krate.item(id)
+        self.krate.item(id)
     }
 
     pub fn trait_item(&self, id: TraitItemId) -> &'hir TraitItem<'hir> {
         self.read(id.hir_id);
 
-        // N.B., intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.krate()` so that we
         // do not trigger a read of the whole krate here
-        self.forest.krate.trait_item(id)
+        self.krate.trait_item(id)
     }
 
     pub fn impl_item(&self, id: ImplItemId) -> &'hir ImplItem<'hir> {
         self.read(id.hir_id);
 
-        // N.B., intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.krate()` so that we
         // do not trigger a read of the whole krate here
-        self.forest.krate.impl_item(id)
+        self.krate.impl_item(id)
     }
 
     pub fn body(&self, id: BodyId) -> &'hir Body<'hir> {
         self.read(id.hir_id);
 
-        // N.B., intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.krate()` so that we
         // do not trigger a read of the whole krate here
-        self.forest.krate.body(id)
+        self.krate.body(id)
     }
 
     pub fn fn_decl_by_hir_id(&self, hir_id: HirId) -> Option<&'hir FnDecl<'hir>> {
@@ -530,9 +501,9 @@ impl<'hir> Map<'hir> {
     pub fn trait_impls(&self, trait_did: DefId) -> &'hir [HirId] {
         self.dep_graph.read(DepNode::new_no_params(DepKind::AllLocalTraitImpls));
 
-        // N.B., intentionally bypass `self.forest.krate()` so that we
+        // N.B., intentionally bypass `self.krate()` so that we
         // do not trigger a read of the whole krate here
-        self.forest.krate.trait_impls.get(&trait_did).map_or(&[], |xs| &xs[..])
+        self.krate.trait_impls.get(&trait_did).map_or(&[], |xs| &xs[..])
     }
 
     /// Gets the attributes on the crate. This is preferable to
@@ -542,7 +513,7 @@ impl<'hir> Map<'hir> {
         let def_path_hash = self.definitions.def_path_hash(CRATE_DEF_INDEX);
 
         self.dep_graph.read(def_path_hash.to_dep_node(DepKind::Hir));
-        &self.forest.krate.attrs
+        &self.krate.attrs
     }
 
     pub fn get_module(&self, module: DefId) -> (&'hir Mod<'hir>, Span, HirId) {
@@ -550,7 +521,7 @@ impl<'hir> Map<'hir> {
         self.read(hir_id);
         match self.find_entry(hir_id).unwrap().node {
             Node::Item(&Item { span, kind: ItemKind::Mod(ref m), .. }) => (m, span, hir_id),
-            Node::Crate => (&self.forest.krate.module, self.forest.krate.span, hir_id),
+            Node::Crate => (&self.krate.module, self.krate.span, hir_id),
             node => panic!("not a module: {:?}", node),
         }
     }
@@ -567,7 +538,7 @@ impl<'hir> Map<'hir> {
         // in the expect_* calls the loops below
         self.read(hir_id);
 
-        let module = &self.forest.krate.modules[&hir_id];
+        let module = &self.krate.modules[&hir_id];
 
         for id in &module.items {
             visitor.visit_item(self.expect_item(*id));
@@ -642,6 +613,12 @@ impl<'hir> Map<'hir> {
         self.find_entry(hir_id).and_then(|x| x.parent_node()).unwrap_or(hir_id)
     }
 
+    /// Returns an iterator for the nodes in the ancestor tree of the `current_id`
+    /// until the crate root is reached. Prefer this over your own loop using `get_parent_node`.
+    pub fn parent_iter(&self, current_id: HirId) -> ParentHirIterator<'_, 'hir> {
+        ParentHirIterator { current_id, map: self }
+    }
+
     /// Checks if the node is an argument. An argument is a local variable whose
     /// immediate parent is an item or a closure.
     pub fn is_argument(&self, id: HirId) -> bool {
@@ -676,7 +653,7 @@ impl<'hir> Map<'hir> {
         }
     }
 
-    /// Wether `hir_id` corresponds to a `mod` or a crate.
+    /// Whether `hir_id` corresponds to a `mod` or a crate.
     pub fn is_hir_id_module(&self, hir_id: HirId) -> bool {
         match self.lookup(hir_id) {
             Some(Entry { node: Node::Item(Item { kind: ItemKind::Mod(_), .. }), .. })
@@ -708,7 +685,7 @@ impl<'hir> Map<'hir> {
     /// }
     /// ```
     pub fn get_return_block(&self, id: HirId) -> Option<HirId> {
-        let mut iter = ParentHirIterator::new(id, &self).peekable();
+        let mut iter = self.parent_iter(id).peekable();
         let mut ignore_tail = false;
         if let Some(entry) = self.find_entry(id) {
             if let Node::Expr(Expr { kind: ExprKind::Ret(_), .. }) = entry.node {
@@ -755,7 +732,7 @@ impl<'hir> Map<'hir> {
     /// in the HIR which is recorded by the map and is an item, either an item
     /// in a module, trait, or impl.
     pub fn get_parent_item(&self, hir_id: HirId) -> HirId {
-        for (hir_id, node) in ParentHirIterator::new(hir_id, &self) {
+        for (hir_id, node) in self.parent_iter(hir_id) {
             match node {
                 Node::Crate
                 | Node::Item(_)
@@ -768,16 +745,10 @@ impl<'hir> Map<'hir> {
         hir_id
     }
 
-    /// Returns the `DefId` of `id`'s nearest module parent, or `id` itself if no
-    /// module parent is in this map.
-    pub fn get_module_parent(&self, id: HirId) -> DefId {
-        self.local_def_id(self.get_module_parent_node(id))
-    }
-
     /// Returns the `HirId` of `id`'s nearest module parent, or `id` itself if no
     /// module parent is in this map.
-    pub fn get_module_parent_node(&self, hir_id: HirId) -> HirId {
-        for (hir_id, node) in ParentHirIterator::new(hir_id, &self) {
+    pub(super) fn get_module_parent_node(&self, hir_id: HirId) -> HirId {
+        for (hir_id, node) in self.parent_iter(hir_id) {
             if let Node::Item(&Item { kind: ItemKind::Mod(_), .. }) = node {
                 return hir_id;
             }
@@ -791,7 +762,7 @@ impl<'hir> Map<'hir> {
     /// Used by error reporting when there's a type error in a match arm caused by the `match`
     /// expression needing to be unit.
     pub fn get_match_if_cause(&self, hir_id: HirId) -> Option<&'hir Expr<'hir>> {
-        for (_, node) in ParentHirIterator::new(hir_id, &self) {
+        for (_, node) in self.parent_iter(hir_id) {
             match node {
                 Node::Item(_) | Node::ForeignItem(_) | Node::TraitItem(_) | Node::ImplItem(_) => {
                     break;
@@ -812,7 +783,7 @@ impl<'hir> Map<'hir> {
 
     /// Returns the nearest enclosing scope. A scope is roughly an item or block.
     pub fn get_enclosing_scope(&self, hir_id: HirId) -> Option<HirId> {
-        for (hir_id, node) in ParentHirIterator::new(hir_id, &self) {
+        for (hir_id, node) in self.parent_iter(hir_id) {
             if match node {
                 Node::Item(i) => match i.kind {
                     ItemKind::Fn(..)
@@ -984,7 +955,7 @@ impl<'hir> Map<'hir> {
             // Unit/tuple structs/variants take the attributes straight from
             // the struct/variant definition.
             Some(Node::Ctor(..)) => return self.attrs(self.get_parent_item(id)),
-            Some(Node::Crate) => Some(&self.forest.krate.attrs[..]),
+            Some(Node::Crate) => Some(&self.krate.attrs[..]),
             _ => None,
         };
         attrs.unwrap_or(&[])
@@ -1063,7 +1034,7 @@ impl<'hir> Map<'hir> {
             Some(Node::Visibility(v)) => bug!("unexpected Visibility {:?}", v),
             Some(Node::Local(local)) => local.span,
             Some(Node::MacroDef(macro_def)) => macro_def.span,
-            Some(Node::Crate) => self.forest.krate.span,
+            Some(Node::Crate) => self.krate.span,
             None => bug!("hir::map::Map::span: id not in map: {:?}", hir_id),
         }
     }
@@ -1231,7 +1202,8 @@ impl Named for ImplItem<'_> {
 pub fn map_crate<'hir>(
     sess: &rustc_session::Session,
     cstore: &CrateStoreDyn,
-    forest: &'hir Forest<'hir>,
+    krate: &'hir Crate<'hir>,
+    dep_graph: DepGraph,
     definitions: Definitions,
 ) -> Map<'hir> {
     let _prof_timer = sess.prof.generic_activity("build_hir_map");
@@ -1244,31 +1216,18 @@ pub fn map_crate<'hir>(
         .collect();
 
     let (map, crate_hash) = {
-        let hcx = crate::ich::StableHashingContext::new(sess, &forest.krate, &definitions, cstore);
+        let hcx = crate::ich::StableHashingContext::new(sess, krate, &definitions, cstore);
 
-        let mut collector = NodeCollector::root(
-            sess,
-            &forest.krate,
-            &forest.dep_graph,
-            &definitions,
-            &hir_to_node_id,
-            hcx,
-        );
-        intravisit::walk_crate(&mut collector, &forest.krate);
+        let mut collector =
+            NodeCollector::root(sess, krate, &dep_graph, &definitions, &hir_to_node_id, hcx);
+        intravisit::walk_crate(&mut collector, krate);
 
         let crate_disambiguator = sess.local_crate_disambiguator();
         let cmdline_args = sess.opts.dep_tracking_hash();
         collector.finalize_and_compute_crate_hash(crate_disambiguator, cstore, cmdline_args)
     };
 
-    let map = Map {
-        forest,
-        dep_graph: forest.dep_graph.clone(),
-        crate_hash,
-        map,
-        hir_to_node_id,
-        definitions,
-    };
+    let map = Map { krate, dep_graph, crate_hash, map, hir_to_node_id, definitions };
 
     sess.time("validate_HIR_map", || {
         hir_id_validator::check_crate(&map, sess);

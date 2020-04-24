@@ -3,6 +3,9 @@
 
 use crate::utils::{higher, snippet, snippet_opt, snippet_with_macro_callsite};
 use matches::matches;
+use rustc_ast::util::parser::AssocOp;
+use rustc_ast::{ast, token};
+use rustc_ast_pretty::pprust::token_kind_to_string;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_lint::{EarlyContext, LateContext, LintContext};
@@ -11,12 +14,6 @@ use rustc_span::{BytePos, Pos};
 use std::borrow::Cow;
 use std::convert::TryInto;
 use std::fmt::Display;
-use syntax::ast;
-use syntax::print::pprust::token_kind_to_string;
-use syntax::token;
-use syntax::util::parser::AssocOp;
-
-pub use crate::literal_representation::format_numeric_literal;
 
 /// A helper type to build suggestion correctly handling parenthesis.
 pub enum Sugg<'a> {
@@ -133,7 +130,7 @@ impl<'a> Sugg<'a> {
 
     /// Prepare a suggestion from an expression.
     pub fn ast(cx: &EarlyContext<'_>, expr: &ast::Expr, default: &'a str) -> Self {
-        use syntax::ast::RangeLimits;
+        use rustc_ast::ast::RangeLimits;
 
         let snippet = snippet(cx, expr.span, default);
 
@@ -427,7 +424,10 @@ enum Associativity {
 /// associative.
 #[must_use]
 fn associativity(op: &AssocOp) -> Associativity {
-    use syntax::util::parser::AssocOp::*;
+    use rustc_ast::util::parser::AssocOp::{
+        Add, As, Assign, AssignOp, BitAnd, BitOr, BitXor, Colon, Divide, DotDot, DotDotEq, Equal, Greater,
+        GreaterEqual, LAnd, LOr, Less, LessEqual, Modulus, Multiply, NotEqual, ShiftLeft, ShiftRight, Subtract,
+    };
 
     match *op {
         Assign | AssignOp(_) => Associativity::Right,
@@ -440,7 +440,7 @@ fn associativity(op: &AssocOp) -> Associativity {
 
 /// Converts a `hir::BinOp` to the corresponding assigning binary operator.
 fn hirbinop2assignop(op: hir::BinOp) -> AssocOp {
-    use syntax::token::BinOpToken::*;
+    use rustc_ast::token::BinOpToken::{And, Caret, Minus, Or, Percent, Plus, Shl, Shr, Slash, Star};
 
     AssocOp::AssignOp(match op.node {
         hir::BinOpKind::Add => Plus,
@@ -467,8 +467,10 @@ fn hirbinop2assignop(op: hir::BinOp) -> AssocOp {
 
 /// Converts an `ast::BinOp` to the corresponding assigning binary operator.
 fn astbinop2assignop(op: ast::BinOp) -> AssocOp {
-    use syntax::ast::BinOpKind::*;
-    use syntax::token::BinOpToken;
+    use rustc_ast::ast::BinOpKind::{
+        Add, And, BitAnd, BitOr, BitXor, Div, Eq, Ge, Gt, Le, Lt, Mul, Ne, Or, Rem, Shl, Shr, Sub,
+    };
+    use rustc_ast::token::BinOpToken;
 
     AssocOp::AssignOp(match op.node {
         Add => BinOpToken::Plus,

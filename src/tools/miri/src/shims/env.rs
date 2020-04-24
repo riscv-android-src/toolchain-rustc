@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::ffi::{OsString, OsStr};
 use std::env;
 
 use crate::stacked_borrows::Tag;
 use crate::*;
 
+use rustc_data_structures::fx::FxHashMap;
 use rustc::ty::layout::Size;
 use rustc_mir::interpret::Pointer;
 
@@ -12,7 +12,7 @@ use rustc_mir::interpret::Pointer;
 pub struct EnvVars {
     /// Stores pointers to the environment variables. These variables must be stored as
     /// null-terminated C strings with the `"{name}={value}"` format.
-    map: HashMap<OsString, Pointer<Tag>>,
+    map: FxHashMap<OsString, Pointer<Tag>>,
 }
 
 impl EnvVars {
@@ -40,7 +40,7 @@ fn alloc_env_var_as_c_str<'mir, 'tcx>(
     let mut name_osstring = name.to_os_string();
     name_osstring.push("=");
     name_osstring.push(value);
-    ecx.alloc_os_str_as_c_str(name_osstring.as_os_str(), MiriMemoryKind::Env.into())
+    ecx.alloc_os_str_as_c_str(name_osstring.as_os_str(), MiriMemoryKind::Machine.into())
 }
 
 impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
@@ -80,7 +80,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             let var_ptr = alloc_env_var_as_c_str(&name, &value, &mut this);
             if let Some(var) = this.machine.env_vars.map.insert(name.to_owned(), var_ptr) {
                 this.memory
-                    .deallocate(var, None, MiriMemoryKind::Env.into())?;
+                    .deallocate(var, None, MiriMemoryKind::Machine.into())?;
             }
             Ok(0)
         } else {
@@ -102,7 +102,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         if let Some(old) = success {
             if let Some(var) = old {
                 this.memory
-                    .deallocate(var, None, MiriMemoryKind::Env.into())?;
+                    .deallocate(var, None, MiriMemoryKind::Machine.into())?;
             }
             Ok(0)
         } else {
@@ -124,7 +124,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // If we cannot get the current directory, we return null
         match env::current_dir() {
             Ok(cwd) => {
-                if this.write_os_str_to_c_str(&OsString::from(cwd), buf, size)? {
+                if this.write_os_str_to_c_str(&OsString::from(cwd), buf, size)?.0 {
                     return Ok(buf);
                 }
                 let erange = this.eval_libc("ERANGE")?;

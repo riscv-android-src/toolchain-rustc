@@ -3,7 +3,6 @@
 //!
 //! [rustc guide]: https://rust-lang.github.io/rustc-guide/variance.html
 
-use arena;
 use hir::Node;
 use rustc::ty::query::Providers;
 use rustc::ty::{self, CrateVariancesMap, TyCtxt};
@@ -80,5 +79,5 @@ fn variances_of(tcx: TyCtxt<'_>, item_def_id: DefId) -> &[ty::Variance] {
     // Everything else must be inferred.
 
     let crate_map = tcx.crate_variances(LOCAL_CRATE);
-    crate_map.variances.get(&item_def_id).map(|p| *p).unwrap_or(&[])
+    crate_map.variances.get(&item_def_id).copied().unwrap_or(&[])
 }

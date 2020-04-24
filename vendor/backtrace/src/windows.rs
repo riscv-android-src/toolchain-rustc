@@ -1,4 +1,4 @@
-//! A module to define the FFI definitions we use on Windows for `dbghelp.dll`
+﻿//! A module to define the FFI definitions we use on Windows for `dbghelp.dll`
 //!
 //! This module uses a custom macro, `ffi!`, to wrap all definitions to
 //! automatically generate tests to assert that our definitions here are the
@@ -15,6 +15,10 @@ cfg_if::cfg_if! {
         pub use self::winapi::HINSTANCE;
         pub use self::winapi::FARPROC;
         pub use self::winapi::LPSECURITY_ATTRIBUTES;
+        #[cfg(target_pointer_width = "64")]
+        pub use self::winapi::PUNWIND_HISTORY_TABLE;
+        #[cfg(target_pointer_width = "64")]
+        pub use self::winapi::PRUNTIME_FUNCTION;
 
         mod winapi {
             pub use winapi::ctypes::*;
@@ -35,6 +39,10 @@ cfg_if::cfg_if! {
         pub type HINSTANCE = *mut c_void;
         pub type FARPROC = *mut c_void;
         pub type LPSECURITY_ATTRIBUTES = *mut c_void;
+        #[cfg(target_pointer_width = "64")]
+        pub type PRUNTIME_FUNCTION = *mut c_void;
+        #[cfg(target_pointer_width = "64")]
+        pub type PUNWIND_HISTORY_TABLE = *mut c_void;
     }
 }
 
@@ -343,6 +351,7 @@ ffi! {
         pub fn RtlCaptureContext(ContextRecord: PCONTEXT) -> ();
         pub fn LoadLibraryA(a: *const i8) -> HMODULE;
         pub fn GetProcAddress(h: HMODULE, name: *const i8) -> FARPROC;
+        pub fn GetModuleHandleA(name: *const i8) -> HMODULE;
         pub fn OpenProcess(
             dwDesiredAccess: DWORD,
             bInheitHandle: BOOL,
@@ -350,12 +359,6 @@ ffi! {
         ) -> HANDLE;
         pub fn GetCurrentProcessId() -> DWORD;
         pub fn CloseHandle(h: HANDLE) -> BOOL;
-        pub fn QueryFullProcessImageNameA(
-            hProcess: HANDLE,
-            dwFlags: DWORD,
-            lpExeName: LPSTR,
-            lpdwSize: PDWORD,
-        ) -> BOOL;
         pub fn CreateFileA(
             lpFileName: LPCSTR,
             dwDesiredAccess: DWORD,
@@ -376,6 +379,17 @@ ffi! {
             dwMilliseconds: DWORD,
             bAlertable: BOOL,
         ) -> DWORD;
+    }
+}
+
+#[cfg(target_pointer_width = "64")]
+ffi! {
+    extern "system" {
+        pub fn RtlLookupFunctionEntry(
+            ControlPc: DWORD64,
+            ImageBase: PDWORD64,
+            HistoryTable: PUNWIND_HISTORY_TABLE,
+        ) -> PRUNTIME_FUNCTION;
     }
 }
 

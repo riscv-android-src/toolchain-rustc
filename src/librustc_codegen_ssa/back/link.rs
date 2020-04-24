@@ -1,7 +1,7 @@
 use rustc::middle::cstore::{EncodedMetadata, LibSource, NativeLibrary, NativeLibraryKind};
 use rustc::middle::dependency_format::Linkage;
 use rustc::session::config::{
-    self, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer,
+    self, CFGuard, DebugInfo, OutputFilenames, OutputType, PrintRequest, Sanitizer,
 };
 use rustc::session::search_paths::PathKind;
 /// For all the linkers we support, and information they might
@@ -186,7 +186,7 @@ pub fn get_linker(sess: &Session, linker: &Path, flavor: LinkerFlavor) -> (PathB
     if flavor == LinkerFlavor::Msvc && t.target_vendor == "uwp" {
         if let Some(ref tool) = msvc_tool {
             let original_path = tool.path();
-            if let Some(ref root_lib_path) = original_path.ancestors().skip(4).next() {
+            if let Some(ref root_lib_path) = original_path.ancestors().nth(4) {
                 let arch = match t.arch.as_str() {
                     "x86_64" => Some("x64".to_string()),
                     "x86" => Some("x86".to_string()),
@@ -765,6 +765,9 @@ fn link_sanitizer_runtime(sess: &Session, crate_type: config::CrateType, linker:
     let default_sysroot = filesearch::get_or_default_sysroot();
     let default_tlib =
         filesearch::make_target_lib_path(&default_sysroot, sess.opts.target_triple.triple());
+    let channel = option_env!("CFG_RELEASE_CHANNEL")
+        .map(|channel| format!("-{}", channel))
+        .unwrap_or_default();
 
     match sess.opts.target_triple.triple() {
         "x86_64-apple-darwin" => {
@@ -772,13 +775,13 @@ fn link_sanitizer_runtime(sess: &Session, crate_type: config::CrateType, linker:
             // LLVM will link to `@rpath/*.dylib`, so we need to specify an
             // rpath to the library as well (the rpath should be absolute, see
             // PR #41352 for details).
-            let libname = format!("rustc_rt.{}", name);
+            let libname = format!("rustc{}_rt.{}", channel, name);
             let rpath = default_tlib.to_str().expect("non-utf8 component in path");
             linker.args(&["-Wl,-rpath".into(), "-Xlinker".into(), rpath.into()]);
             linker.link_dylib(Symbol::intern(&libname));
         }
         "x86_64-unknown-linux-gnu" | "x86_64-fuchsia" | "aarch64-fuchsia" => {
-            let filename = format!("librustc_rt.{}.a", name);
+            let filename = format!("librustc{}_rt.{}.a", channel, name);
             let path = default_tlib.join(&filename);
             linker.link_whole_rlib(&path);
         }
@@ -968,7 +971,84 @@ pub fn print_native_static_libs(sess: &Session, all_native_libs: &[NativeLibrary
     }
 }
 
+// Because windows-gnu target is meant to be self-contained for pure Rust code it bundles
+// own mingw-w64 libraries. These libraries are usually not compatible with mingw-w64
+// installed in the system. This breaks many cases where Rust is mixed with other languages
+// (e.g. *-sys crates).
+// We prefer system mingw-w64 libraries if they are available to avoid this issue.
+fn get_crt_libs_path(sess: &Session) -> Option<PathBuf> {
+    fn find_exe_in_path<P>(exe_name: P) -> Option<PathBuf>
+    where
+        P: AsRef<Path>,
+    {
+        for dir in env::split_paths(&env::var_os("PATH")?) {
+            let full_path = dir.join(&exe_name);
+            if full_path.is_file() {
+                return Some(fix_windows_verbatim_for_gcc(&full_path));
+            }
+        }
+        None
+    }
+
+    fn probe(sess: &Session) -> Option<PathBuf> {
+        if let (linker, LinkerFlavor::Gcc) = linker_and_flavor(&sess) {
+            let linker_path = if cfg!(windows) && linker.extension().is_none() {
+                linker.with_extension("exe")
+            } else {
+                linker
+            };
+            if let Some(linker_path) = find_exe_in_path(linker_path) {
+                let mingw_arch = match &sess.target.target.arch {
+                    x if x == "x86" => "i686",
+                    x => x,
+                };
+                let mingw_bits = &sess.target.target.target_pointer_width;
+                let mingw_dir = format!("{}-w64-mingw32", mingw_arch);
+                // Here we have path/bin/gcc but we need path/
+                let mut path = linker_path;
+                path.pop();
+                path.pop();
+                // Loosely based on Clang MinGW driver
+                let probe_paths = vec![
+                    path.join(&mingw_dir).join("lib"),                // Typical path
+                    path.join(&mingw_dir).join("sys-root/mingw/lib"), // Rare path
+                    path.join(format!(
+                        "lib/mingw/tools/install/mingw{}/{}/lib",
+                        &mingw_bits, &mingw_dir
+                    )), // Chocolatey is creative
+                ];
+                for probe_path in probe_paths {
+                    if probe_path.join("crt2.o").exists() {
+                        return Some(probe_path);
+                    };
+                }
+            };
+        };
+        None
+    }
+
+    let mut system_library_path = sess.system_library_path.borrow_mut();
+    match &*system_library_path {
+        Some(Some(compiler_libs_path)) => Some(compiler_libs_path.clone()),
+        Some(None) => None,
+        None => {
+            let path = probe(sess);
+            *system_library_path = Some(path.clone());
+            path
+        }
+    }
+}
+
 pub fn get_file_path(sess: &Session, name: &str) -> PathBuf {
+    // prefer system {,dll}crt2.o libs, see get_crt_libs_path comment for more details
+    if sess.target.target.llvm_target.contains("windows-gnu") {
+        if let Some(compiler_libs_path) = get_crt_libs_path(sess) {
+            let file_path = compiler_libs_path.join(name);
+            if file_path.exists() {
+                return file_path;
+            }
+        }
+    }
     let fs = sess.target_filesearch(PathKind::Native);
     let file_path = fs.get_lib_path().join(name);
     if file_path.exists() {
@@ -1150,6 +1230,13 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
     // target descriptor
     let t = &sess.target.target;
 
+    // prefer system mingw-w64 libs, see get_crt_libs_path comment for more details
+    if cfg!(windows) && sess.target.target.llvm_target.contains("windows-gnu") {
+        if let Some(compiler_libs_path) = get_crt_libs_path(sess) {
+            cmd.include_path(&compiler_libs_path);
+        }
+    }
+
     cmd.include_path(&fix_windows_verbatim_for_gcc(&lib_path));
 
     for obj in codegen_results.modules.iter().filter_map(|m| m.object.as_ref()) {
@@ -1294,6 +1381,10 @@ fn link_args<'a, B: ArchiveBuilder<'a>>(
         cmd.pgo_gen();
     }
 
+    if sess.opts.debugging_opts.control_flow_guard != CFGuard::Disabled {
+        cmd.control_flow_guard();
+    }
+
     // FIXME (#2397): At some point we want to rpath our guesses as to
     // where extern libraries might live, based on the
     // addl_lib_search_paths
@@ -1428,17 +1519,25 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
     // for the current implementation of the standard library.
     let mut group_end = None;
     let mut group_start = None;
-    let mut end_with = FxHashSet::default();
+    // Crates available for linking thus far.
+    let mut available = FxHashSet::default();
+    // Crates required to satisfy dependencies discovered so far.
+    let mut required = FxHashSet::default();
+
     let info = &codegen_results.crate_info;
     for &(cnum, _) in deps.iter().rev() {
         if let Some(missing) = info.missing_lang_items.get(&cnum) {
-            end_with.extend(missing.iter().cloned());
-            if end_with.len() > 0 && group_end.is_none() {
-                group_end = Some(cnum);
-            }
+            let missing_crates = missing.iter().map(|i| info.lang_item_to_crate.get(i).copied());
+            required.extend(missing_crates);
         }
-        end_with.retain(|item| info.lang_item_to_crate.get(item) != Some(&cnum));
-        if end_with.len() == 0 && group_end.is_some() {
+
+        required.insert(Some(cnum));
+        available.insert(Some(cnum));
+
+        if required.len() > available.len() && group_end.is_none() {
+            group_end = Some(cnum);
+        }
+        if required.len() == available.len() && group_end.is_some() {
             group_start = Some(cnum);
             break;
         }
@@ -1566,7 +1665,7 @@ fn add_upstream_rust_crates<'a, B: ArchiveBuilder<'a>>(
         let name = cratepath.file_name().unwrap().to_str().unwrap();
         let name = &name[3..name.len() - 5]; // chop off lib/.rlib
 
-        sess.prof.extra_verbose_generic_activity(&format!("altering {}.rlib", name)).run(|| {
+        sess.prof.generic_activity_with_arg("link_altering_rlib", name).run(|| {
             let mut archive = <B as ArchiveBuilder>::new(sess, &dst, Some(cratepath));
             archive.update_symbols();
 
@@ -1719,7 +1818,7 @@ pub fn add_upstream_native_libraries(
 
 pub fn relevant_lib(sess: &Session, lib: &NativeLibrary) -> bool {
     match lib.cfg {
-        Some(ref cfg) => syntax::attr::cfg_matches(cfg, &sess.parse_sess, None),
+        Some(ref cfg) => rustc_attr::cfg_matches(cfg, &sess.parse_sess, None),
         None => true,
     }
 }

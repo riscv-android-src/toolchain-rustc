@@ -18,10 +18,10 @@ use rustc::mir::*;
 use rustc::ty::cast::CastTy;
 use rustc::ty::subst::InternalSubsts;
 use rustc::ty::{self, List, TyCtxt, TypeFoldable};
+use rustc_ast::ast::LitKind;
 use rustc_hir::def_id::DefId;
 use rustc_span::symbol::sym;
 use rustc_span::{Span, DUMMY_SP};
-use syntax::ast::LitKind;
 
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_target::spec::abi::Abi;
@@ -329,7 +329,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                                 // FIXME(eddyb) this is probably excessive, with
                                 // the exception of `union` member accesses.
                                 let ty =
-                                    Place::ty_from(&place.local, proj_base, *self.body, self.tcx)
+                                    Place::ty_from(place.local, proj_base, *self.body, self.tcx)
                                         .projection_ty(self.tcx, elem)
                                         .ty;
                                 if ty.is_freeze(self.tcx, self.param_env, DUMMY_SP) {
@@ -407,7 +407,7 @@ impl<'tcx> Validator<'_, 'tcx> {
 
     // FIXME(eddyb) maybe cache this?
     fn qualif_local<Q: qualifs::Qualif>(&self, local: Local) -> bool {
-        let per_local = &|l| self.qualif_local::<Q>(l);
+        let per_local = &mut |l| self.qualif_local::<Q>(l);
 
         if let TempState::Defined { location: loc, .. } = self.temps[local] {
             let num_stmts = self.body[loc.block].statements.len();
@@ -463,6 +463,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                 let terminator = self.body[loc.block].terminator();
                 match &terminator.kind {
                     TerminatorKind::Call { func, args, .. } => self.validate_call(func, args),
+                    TerminatorKind::Yield { .. } => Err(Unpromotable),
                     kind => {
                         span_bug!(terminator.source_info.span, "{:?} not promotable", kind);
                     }
@@ -473,9 +474,9 @@ impl<'tcx> Validator<'_, 'tcx> {
         }
     }
 
-    fn validate_place(&self, place: PlaceRef<'_, 'tcx>) -> Result<(), Unpromotable> {
+    fn validate_place(&self, place: PlaceRef<'tcx>) -> Result<(), Unpromotable> {
         match place {
-            PlaceRef { local, projection: [] } => self.validate_local(*local),
+            PlaceRef { local, projection: [] } => self.validate_local(local),
             PlaceRef { local: _, projection: [proj_base @ .., elem] } => {
                 match *elem {
                     ProjectionElem::Deref | ProjectionElem::Downcast(..) => {
@@ -589,10 +590,10 @@ impl<'tcx> Validator<'_, 'tcx> {
                 // Raw reborrows can come from reference to pointer coercions,
                 // so are allowed.
                 if let [proj_base @ .., ProjectionElem::Deref] = place.projection.as_ref() {
-                    let base_ty = Place::ty_from(&place.local, proj_base, *self.body, self.tcx).ty;
+                    let base_ty = Place::ty_from(place.local, proj_base, *self.body, self.tcx).ty;
                     if let ty::Ref(..) = base_ty.kind {
                         return self.validate_place(PlaceRef {
-                            local: &place.local,
+                            local: place.local,
                             projection: proj_base,
                         });
                     }
@@ -628,9 +629,9 @@ impl<'tcx> Validator<'_, 'tcx> {
                 // Special-case reborrows to be more like a copy of the reference.
                 let mut place = place.as_ref();
                 if let [proj_base @ .., ProjectionElem::Deref] = &place.projection {
-                    let base_ty = Place::ty_from(&place.local, proj_base, *self.body, self.tcx).ty;
+                    let base_ty = Place::ty_from(place.local, proj_base, *self.body, self.tcx).ty;
                     if let ty::Ref(..) = base_ty.kind {
-                        place = PlaceRef { local: &place.local, projection: proj_base };
+                        place = PlaceRef { local: place.local, projection: proj_base };
                     }
                 }
 
@@ -640,7 +641,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                 // `<HasMutInterior as Qualif>::in_projection` from
                 // `check_consts::qualifs` but without recursion.
                 let mut has_mut_interior =
-                    self.qualif_local::<qualifs::HasMutInterior>(*place.local);
+                    self.qualif_local::<qualifs::HasMutInterior>(place.local);
                 if has_mut_interior {
                     let mut place_projection = place.projection;
                     // FIXME(eddyb) use a forward loop instead of a reverse one.
@@ -919,7 +920,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
             let (blocks, local_decls) = self.source.basic_blocks_and_local_decls_mut();
             match candidate {
                 Candidate::Ref(loc) => {
-                    let ref mut statement = blocks[loc.block].statements[loc.statement_index];
+                    let statement = &mut blocks[loc.block].statements[loc.statement_index];
                     match statement.kind {
                         StatementKind::Assign(box (
                             _,
@@ -970,7 +971,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                     }
                 }
                 Candidate::Repeat(loc) => {
-                    let ref mut statement = blocks[loc.block].statements[loc.statement_index];
+                    let statement = &mut blocks[loc.block].statements[loc.statement_index];
                     match statement.kind {
                         StatementKind::Assign(box (_, Rvalue::Repeat(ref mut operand, _))) => {
                             let ty = operand.ty(local_decls, self.tcx);

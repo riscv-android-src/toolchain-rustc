@@ -1,11 +1,11 @@
 use crate::consts::{constant, Constant};
-use crate::reexport::*;
+use crate::reexport::Name;
 use crate::utils::paths;
 use crate::utils::usage::{is_unused, mutated_variables};
 use crate::utils::{
     get_enclosing_block, get_parent_expr, get_trait_def_id, has_iter_method, higher, implements_trait,
     is_integer_const, is_no_std_crate, is_refutable, last_path_segment, match_trait_method, match_type, match_var,
-    multispan_sugg, snippet, snippet_opt, snippet_with_applicability, span_help_and_lint, span_lint,
+    multispan_sugg, snippet, snippet_opt, snippet_with_applicability, span_lint, span_lint_and_help,
     span_lint_and_sugg, span_lint_and_then, SpanlessEq,
 };
 use crate::utils::{is_type_diagnostic_item, qpath_res, same_tys, sext, sugg};
@@ -15,20 +15,23 @@ use rustc::hir::map::Map;
 use rustc::lint::in_external_macro;
 use rustc::middle::region;
 use rustc::ty::{self, Ty};
+use rustc_ast::ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::def_id;
 use rustc_hir::intravisit::{walk_block, walk_expr, walk_pat, walk_stmt, NestedVisitorMap, Visitor};
-use rustc_hir::*;
+use rustc_hir::{
+    def_id, BinOpKind, BindingAnnotation, Block, BorrowKind, Expr, ExprKind, GenericArg, HirId, LoopSource,
+    MatchSource, Mutability, Node, Pat, PatKind, QPath, Stmt, StmtKind,
+};
+use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 use rustc_span::{BytePos, Symbol};
-use rustc_typeck::expr_use_visitor::*;
+use rustc_typeck::expr_use_visitor::{ConsumeMode, Delegate, ExprUseVisitor, Place, PlaceBase};
 use std::iter::{once, Iterator};
 use std::mem;
-use syntax::ast;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for for-loops that manually copy items between
@@ -1390,7 +1393,7 @@ fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>, e
 fn check_arg_type(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>) {
     let ty = cx.tables.expr_ty(arg);
     if match_type(cx, ty, &paths::OPTION) {
-        span_help_and_lint(
+        span_lint_and_help(
             cx,
             FOR_LOOP_OVER_OPTION,
             arg.span,
@@ -1406,7 +1409,7 @@ fn check_arg_type(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>) {
             ),
         );
     } else if match_type(cx, ty, &paths::RESULT) {
-        span_help_and_lint(
+        span_lint_and_help(
             cx,
             FOR_LOOP_OVER_RESULT,
             arg.span,

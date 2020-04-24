@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "jsonrpc-ipc-server"
-version = "13.1.0"
+version = "14.0.3"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "IPC server for JSON-RPC"
 homepage = "https://github.com/paritytech/jsonrpc"
@@ -21,10 +21,10 @@ documentation = "https://docs.rs/jsonrpc-ipc-server/"
 license = "MIT"
 repository = "https://github.com/paritytech/jsonrpc"
 [dependencies.jsonrpc-core]
-version = "13.1"
+version = "14.0"
 
 [dependencies.jsonrpc-server-utils]
-version = "13.1"
+version = "14.0"
 
 [dependencies.log]
 version = "0.4"

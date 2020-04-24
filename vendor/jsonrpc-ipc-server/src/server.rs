@@ -7,7 +7,7 @@ use tokio_service::{self, Service as TokioService};
 
 use crate::server_utils::{
 	codecs, reactor, session,
-	tokio::{self, reactor::Handle, runtime::TaskExecutor},
+	tokio::{reactor::Handle, runtime::TaskExecutor},
 	tokio_codec::Framed,
 };
 use parking_lot::Mutex;
@@ -161,7 +161,13 @@ impl<M: Metadata, S: Middleware<M>> ServerBuilder<M, S> {
 			}
 
 			// Make sure to construct Handle::default() inside Tokio runtime
-			let reactor = reactor.unwrap_or_else(Handle::default);
+			let reactor = if cfg!(windows) {
+				#[allow(deprecated)]
+				reactor.unwrap_or_else(Handle::current)
+			} else {
+				reactor.unwrap_or_else(Handle::default)
+			};
+
 			let connections = match endpoint.incoming(&reactor) {
 				Ok(connections) => connections,
 				Err(e) => {
@@ -174,7 +180,7 @@ impl<M: Metadata, S: Middleware<M>> ServerBuilder<M, S> {
 
 			let mut id = 0u64;
 
-			let server = connections.for_each(move |(io_stream, remote_id)| {
+			let server = connections.map(move |(io_stream, remote_id)| {
 				id = id.wrapping_add(1);
 				let session_id = id;
 				let session_stats = session_stats.clone();
@@ -222,9 +228,7 @@ impl<M: Metadata, S: Middleware<M>> ServerBuilder<M, S> {
 					Ok(())
 				});
 
-				tokio::spawn(writer);
-
-				Ok(())
+				writer
 			});
 			start_signal
 				.send(Ok(()))
@@ -233,8 +237,13 @@ impl<M: Metadata, S: Middleware<M>> ServerBuilder<M, S> {
 			let stop = stop_receiver.map_err(|_| std::io::ErrorKind::Interrupted.into());
 			future::Either::B(
 				server
+					.buffer_unordered(1024)
+					.for_each(|_| Ok(()))
 					.select(stop)
-					.map(|_| {
+					.map(|(_, server)| {
+						// We drop the server first to prevent a situation where main thread terminates
+						// before the server is properly dropped (see #504 for more details)
+						drop(server);
 						let _ = wait_signal.send(());
 					})
 					.map_err(|_| ()),

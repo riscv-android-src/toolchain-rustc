@@ -194,6 +194,7 @@ pub unsafe fn _mm_min_ss(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(test, assert_instr(minps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_min_ps(a: __m128, b: __m128) -> __m128 {
+    // See the `test_mm_min_ps` test why this can't be implemented using `simd_fmin`.
     minps(a, b)
 }
 
@@ -219,6 +220,7 @@ pub unsafe fn _mm_max_ss(a: __m128, b: __m128) -> __m128 {
 #[cfg_attr(test, assert_instr(maxps))]
 #[stable(feature = "simd_x86", since = "1.27.0")]
 pub unsafe fn _mm_max_ps(a: __m128, b: __m128) -> __m128 {
+    // See the `test_mm_min_ps` test why this can't be implemented using `simd_fmax`.
     maxps(a, b)
 }
 
@@ -2618,6 +2620,21 @@ mod tests {
         let b = _mm_setr_ps(-100.0, 20.0, 0.0, -5.0);
         let r = _mm_min_ps(a, b);
         assert_eq_m128(r, _mm_setr_ps(-100.0, 5.0, 0.0, -10.0));
+
+        // `_mm_min_ps` can **not** be implemented using the `simd_min` rust intrinsic. `simd_min`
+        // is lowered by the llvm codegen backend to `llvm.minnum.v*` llvm intrinsic. This intrinsic
+        // doesn't specify how -0.0 is handled. Unfortunately it happens to behave different from
+        // the `minps` x86 instruction on x86. The `llvm.minnum.v*` llvm intrinsic equals
+        // `r1` to `a` and `r2` to `b`.
+        let a = _mm_setr_ps(-0.0, 0.0, 0.0, 0.0);
+        let b = _mm_setr_ps(0.0, 0.0, 0.0, 0.0);
+        let r1: [u8; 16] = transmute(_mm_min_ps(a, b));
+        let r2: [u8; 16] = transmute(_mm_min_ps(b, a));
+        let a: [u8; 16] = transmute(a);
+        let b: [u8; 16] = transmute(b);
+        assert_eq!(r1, b);
+        assert_eq!(r2, a);
+        assert_ne!(a, b); // sanity check that -0.0 is actually present
     }
 
     #[simd_test(enable = "sse")]

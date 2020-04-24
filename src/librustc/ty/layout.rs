@@ -1,13 +1,12 @@
 use crate::session::{self, DataTypeKind};
 use crate::ty::{self, subst::SubstsRef, ReprOptions, Ty, TyCtxt, TypeFoldable};
 
+use rustc_ast::ast::{self, Ident, IntTy, UintTy};
+use rustc_attr as attr;
 use rustc_span::DUMMY_SP;
-use syntax::ast::{self, Ident, IntTy, UintTy};
-use syntax::attr;
 
 use std::cmp;
 use std::fmt;
-use std::i128;
 use std::iter;
 use std::mem;
 use std::ops::Bound;
@@ -356,12 +355,14 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
             debug!("univariant offset: {:?} field: {:#?}", offset, field);
             offsets[i as usize] = offset;
 
-            if let Some(mut niche) = field.largest_niche.clone() {
-                let available = niche.available(dl);
-                if available > largest_niche_available {
-                    largest_niche_available = available;
-                    niche.offset += offset;
-                    largest_niche = Some(niche);
+            if !repr.hide_niche() {
+                if let Some(mut niche) = field.largest_niche.clone() {
+                    let available = niche.available(dl);
+                    if available > largest_niche_available {
+                        largest_niche_available = available;
+                        niche.offset += offset;
+                        largest_niche = Some(niche);
+                    }
                 }
             }
 
@@ -500,7 +501,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
         let univariant = |fields: &[TyLayout<'_>], repr: &ReprOptions, kind| {
             Ok(tcx.intern_layout(self.univariant_uninterned(ty, fields, repr, kind)?))
         };
-        debug_assert!(!ty.has_infer_types());
+        debug_assert!(!ty.has_infer_types_or_consts());
 
         Ok(match ty.kind {
             // Basic scalars.
@@ -796,7 +797,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     // (Typechecking will reject discriminant-sizing attrs.)
 
                     let v = present_first.unwrap();
-                    let kind = if def.is_enum() || variants[v].len() == 0 {
+                    let kind = if def.is_enum() || variants[v].is_empty() {
                         StructKind::AlwaysSized
                     } else {
                         let param_env = tcx.param_env(def.did);
@@ -838,7 +839,11 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                             }
 
                             // Update `largest_niche` if we have introduced a larger niche.
-                            let niche = Niche::from_scalar(dl, Size::ZERO, scalar.clone());
+                            let niche = if def.repr.hide_niche() {
+                                None
+                            } else {
+                                Niche::from_scalar(dl, Size::ZERO, scalar.clone())
+                            };
                             if let Some(niche) = niche {
                                 match &st.largest_niche {
                                     Some(largest_niche) => {
@@ -862,6 +867,11 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
 
                     return Ok(tcx.intern_layout(st));
                 }
+
+                // At this point, we have handled all unions and
+                // structs. (We have also handled univariant enums
+                // that allow representation optimization.)
+                assert!(def.is_enum());
 
                 // The current code for niche-filling relies on variant indices
                 // instead of actual discriminants, so dataful enums with
@@ -990,7 +1000,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     }
                 }
 
-                let (mut min, mut max) = (i128::max_value(), i128::min_value());
+                let (mut min, mut max) = (i128::MAX, i128::MIN);
                 let discr_type = def.repr.discr_type();
                 let bits = Integer::from_attr(self, discr_type).size().bits();
                 for (i, discr) in def.discriminants(tcx) {
@@ -1010,7 +1020,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     }
                 }
                 // We might have no inhabited variants, so pretend there's at least one.
-                if (min, max) == (i128::max_value(), i128::min_value()) {
+                if (min, max) == (i128::MAX, i128::MIN) {
                     min = 0;
                     max = 0;
                 }
@@ -1371,10 +1381,8 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
 
         // Write down the order of our locals that will be promoted to the prefix.
         {
-            let mut idx = 0u32;
-            for local in ineligible_locals.iter() {
-                assignments[local] = Ineligible(Some(idx));
-                idx += 1;
+            for (idx, local) in ineligible_locals.iter().enumerate() {
+                assignments[local] = Ineligible(Some(idx as u32));
             }
         }
         debug!("generator saved local assignments: {:?}", assignments);
@@ -1741,7 +1749,7 @@ impl<'tcx> SizeSkeleton<'tcx> {
         tcx: TyCtxt<'tcx>,
         param_env: ty::ParamEnv<'tcx>,
     ) -> Result<SizeSkeleton<'tcx>, LayoutError<'tcx>> {
-        debug_assert!(!ty.has_infer_types());
+        debug_assert!(!ty.has_infer_types_or_consts());
 
         // First try computing a static layout.
         let err = match tcx.layout_of(param_env.and(ty)) {
@@ -2350,8 +2358,9 @@ impl<'tcx> ty::Instance<'tcx> {
                     ]);
                     let ret_ty = tcx.mk_adt(state_adt_ref, state_substs);
 
-                    tcx.mk_fn_sig(iter::once(env_ty),
-                        ret_ty,
+                    tcx.mk_fn_sig(
+                        [env_ty, sig.resume_ty].iter(),
+                        &ret_ty,
                         false,
                         hir::Unsafety::Normal,
                         rustc_target::spec::abi::Abi::Rust
@@ -2529,12 +2538,15 @@ where
         };
 
         let target = &cx.tcx().sess.target.target;
+        let target_env_gnu_like = matches!(&target.target_env[..], "gnu" | "musl");
         let win_x64_gnu =
             target.target_os == "windows" && target.arch == "x86_64" && target.target_env == "gnu";
-        let linux_s390x =
-            target.target_os == "linux" && target.arch == "s390x" && target.target_env == "gnu";
-        let linux_sparc64 =
-            target.target_os == "linux" && target.arch == "sparc64" && target.target_env == "gnu";
+        let linux_s390x_gnu_like =
+            target.target_os == "linux" && target.arch == "s390x" && target_env_gnu_like;
+        let linux_sparc64_gnu_like =
+            target.target_os == "linux" && target.arch == "sparc64" && target_env_gnu_like;
+        let linux_powerpc_gnu_like =
+            target.target_os == "linux" && target.arch == "powerpc" && target_env_gnu_like;
         let rust_abi = match sig.abi {
             RustIntrinsic | PlatformIntrinsic | Rust | RustCall => true,
             _ => false,
@@ -2567,7 +2579,7 @@ where
                 if let Some(kind) = pointee.safe {
                     attrs.pointee_align = Some(pointee.align);
 
-                    // `Box` (`UniqueBorrowed`) are not necessarily dereferencable
+                    // `Box` (`UniqueBorrowed`) are not necessarily dereferenceable
                     // for the entire duration of the function as they can be deallocated
                     // any time. Set their valid size to 0.
                     attrs.pointee_size = match kind {
@@ -2605,9 +2617,14 @@ where
             if arg.layout.is_zst() {
                 // For some forsaken reason, x86_64-pc-windows-gnu
                 // doesn't ignore zero-sized struct arguments.
-                // The same is true for s390x-unknown-linux-gnu
-                // and sparc64-unknown-linux-gnu.
-                if is_return || rust_abi || (!win_x64_gnu && !linux_s390x && !linux_sparc64) {
+                // The same is true for {s390x,sparc64,powerpc}-unknown-linux-{gnu,musl}.
+                if is_return
+                    || rust_abi
+                    || (!win_x64_gnu
+                        && !linux_s390x_gnu_like
+                        && !linux_sparc64_gnu_like
+                        && !linux_powerpc_gnu_like)
+                {
                     arg.mode = PassMode::Ignore;
                 }
             }
@@ -2650,6 +2667,7 @@ where
                 .map(|(i, ty)| arg_of(ty, Some(i)))
                 .collect(),
             c_variadic: sig.c_variadic,
+            fixed_count: inputs.len(),
             conv,
         };
         fn_abi.adjust_for_abi(cx, sig.abi);

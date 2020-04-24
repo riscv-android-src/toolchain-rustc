@@ -1,6 +1,6 @@
 # tar-rs
 
-[![Build Status](https://travis-ci.org/alexcrichton/tar-rs.svg?branch=master)](https://travis-ci.org/alexcrichton/tar-rs)
+[![Build Status](https://travis-ci.com/alexcrichton/tar-rs.svg?branch=master)](https://travis-ci.com/alexcrichton/tar-rs)
 [![Build status](https://ci.appveyor.com/api/projects/status/0udgokm2fc6ljorj?svg=true)](https://ci.appveyor.com/project/alexcrichton/tar-rs)
 [![Coverage Status](https://coveralls.io/repos/alexcrichton/tar-rs/badge.svg?branch=master&service=github)](https://coveralls.io/github/alexcrichton/tar-rs?branch=master)
 
@@ -76,5 +76,5 @@ at your option.
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in Serde by you, as defined in the Apache-2.0 license, shall be
-dual licensed as above, without any additional terms or conditions.
+for inclusion in this project by you, as defined in the Apache-2.0 license,
+shall be dual licensed as above, without any additional terms or conditions.

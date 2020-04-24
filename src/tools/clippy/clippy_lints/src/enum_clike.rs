@@ -5,11 +5,11 @@ use crate::consts::{miri_to_const, Constant};
 use crate::utils::span_lint;
 use rustc::ty;
 use rustc::ty::util::IntTypeExt;
-use rustc_hir::*;
+use rustc_ast::ast::{IntTy, UintTy};
+use rustc_hir::{Item, ItemKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use std::convert::TryFrom;
-use syntax::ast::{IntTy, UintTy};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for C-like enumerations that are
@@ -46,9 +46,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnportableVariant {
             for var in def.variants {
                 if let Some(anon_const) = &var.disr_expr {
                     let def_id = cx.tcx.hir().body_owner_def_id(anon_const.body);
-                    let constant = cx.tcx.const_eval_poly(def_id).ok();
+                    let mut ty = cx.tcx.type_of(def_id);
+                    let constant = cx
+                        .tcx
+                        .const_eval_poly(def_id)
+                        .ok()
+                        .map(|val| rustc::ty::Const::from_value(cx.tcx, val, ty));
                     if let Some(Constant::Int(val)) = constant.and_then(miri_to_const) {
-                        let mut ty = cx.tcx.type_of(def_id);
                         if let ty::Adt(adt, _) = ty.kind {
                             if adt.is_enum() {
                                 ty = adt.repr.discr_type().to_ty(cx.tcx);

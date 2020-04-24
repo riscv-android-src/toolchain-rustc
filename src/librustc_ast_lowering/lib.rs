@@ -32,12 +32,22 @@
 
 #![feature(array_value_iter)]
 #![feature(crate_visibility_modifier)]
+#![recursion_limit = "256"]
 
 use rustc::arena::Arena;
 use rustc::dep_graph::DepGraph;
 use rustc::hir::map::definitions::{DefKey, DefPathData, Definitions};
 use rustc::hir::map::Map;
 use rustc::{bug, span_bug};
+use rustc_ast::ast;
+use rustc_ast::ast::*;
+use rustc_ast::attr;
+use rustc_ast::node_id::NodeMap;
+use rustc_ast::token::{self, Nonterminal, Token};
+use rustc_ast::tokenstream::{TokenStream, TokenTree};
+use rustc_ast::visit::{self, AssocCtxt, Visitor};
+use rustc_ast::walk_list;
+use rustc_ast_pretty::pprust;
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
@@ -49,22 +59,13 @@ use rustc_hir::intravisit;
 use rustc_hir::{ConstArg, GenericArg, ParamName};
 use rustc_index::vec::IndexVec;
 use rustc_session::config::nightly_options;
-use rustc_session::lint::{builtin, BuiltinLintDiagnostics, LintBuffer};
-use rustc_session::node_id::NodeMap;
+use rustc_session::lint::{builtin::BARE_TRAIT_OBJECTS, BuiltinLintDiagnostics, LintBuffer};
+use rustc_session::parse::ParseSess;
 use rustc_session::Session;
 use rustc_span::hygiene::ExpnId;
 use rustc_span::source_map::{respan, DesugaringKind, ExpnData, ExpnKind};
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_span::Span;
-use syntax::ast;
-use syntax::ast::*;
-use syntax::attr;
-use syntax::print::pprust;
-use syntax::sess::ParseSess;
-use syntax::token::{self, Nonterminal, Token};
-use syntax::tokenstream::{TokenStream, TokenTree};
-use syntax::visit::{self, Visitor};
-use syntax::walk_list;
 
 use log::{debug, trace};
 use smallvec::{smallvec, SmallVec};
@@ -221,7 +222,7 @@ enum ImplTraitContext<'b, 'a> {
     /// We optionally store a `DefId` for the parent item here so we can look up necessary
     /// information later. It is `None` when no information about the context should be stored
     /// (e.g., for consts and statics).
-    OpaqueTy(Option<DefId> /* fn def-ID */),
+    OpaqueTy(Option<DefId> /* fn def-ID */, hir::OpaqueTyOrigin),
 
     /// `impl Trait` is not accepted in this position.
     Disallowed(ImplTraitPosition),
@@ -247,7 +248,7 @@ impl<'a> ImplTraitContext<'_, 'a> {
         use self::ImplTraitContext::*;
         match self {
             Universal(params) => Universal(params),
-            OpaqueTy(fn_def_id) => OpaqueTy(*fn_def_id),
+            OpaqueTy(fn_def_id, origin) => OpaqueTy(*fn_def_id, *origin),
             Disallowed(pos) => Disallowed(*pos),
         }
     }
@@ -461,7 +462,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     ItemKind::Struct(_, ref generics)
                     | ItemKind::Union(_, ref generics)
                     | ItemKind::Enum(_, ref generics)
-                    | ItemKind::TyAlias(_, ref generics)
+                    | ItemKind::TyAlias(_, ref generics, ..)
                     | ItemKind::Trait(_, _, ref generics, ..) => {
                         let def_id = self.lctx.resolver.definitions().local_def_id(item.id);
                         let count = generics
@@ -485,25 +486,14 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 });
             }
 
-            fn visit_trait_item(&mut self, item: &'tcx AssocItem) {
+            fn visit_assoc_item(&mut self, item: &'tcx AssocItem, ctxt: AssocCtxt) {
                 self.lctx.allocate_hir_id_counter(item.id);
-
-                match item.kind {
-                    AssocItemKind::Fn(_, None) => {
-                        // Ignore patterns in trait methods without bodies
-                        self.with_hir_id_owner(None, |this| visit::walk_trait_item(this, item));
-                    }
-                    _ => self.with_hir_id_owner(Some(item.id), |this| {
-                        visit::walk_trait_item(this, item);
-                    }),
-                }
-            }
-
-            fn visit_impl_item(&mut self, item: &'tcx AssocItem) {
-                self.lctx.allocate_hir_id_counter(item.id);
-                self.with_hir_id_owner(Some(item.id), |this| {
-                    visit::walk_impl_item(this, item);
-                });
+                let owner = match (&item.kind, ctxt) {
+                    // Ignore patterns in trait methods without bodies.
+                    (AssocItemKind::Fn(_, _, _, None), AssocCtxt::Trait) => None,
+                    _ => Some(item.id),
+                };
+                self.with_hir_id_owner(owner, |this| visit::walk_assoc_item(this, item, ctxt));
             }
 
             fn visit_foreign_item(&mut self, i: &'tcx ForeignItem) {
@@ -540,6 +530,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         let module = self.lower_mod(&c.module);
         let attrs = self.lower_attrs(&c.attrs);
         let body_ids = body_ids(&self.bodies);
+        let proc_macros = c.proc_macros.iter().map(|id| self.node_id_to_hir_id[*id]).collect();
 
         self.resolver.definitions().init_node_id_to_hir_id_mapping(self.node_id_to_hir_id);
 
@@ -556,6 +547,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             body_ids,
             trait_impls: self.trait_impls,
             modules: self.modules,
+            proc_macros,
         }
     }
 
@@ -1020,7 +1012,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     // so desugar to
                     //
                     //     fn foo() -> impl Iterator<Item = impl Debug>
-                    ImplTraitContext::OpaqueTy(_) => (true, itctx),
+                    ImplTraitContext::OpaqueTy(..) => (true, itctx),
 
                     // We are in the argument position, but within a dyn type:
                     //
@@ -1029,7 +1021,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     // so desugar to
                     //
                     //     fn foo(x: dyn Iterator<Item = impl Debug>)
-                    ImplTraitContext::Universal(_) if self.is_in_dyn_type => (true, itctx),
+                    ImplTraitContext::Universal(..) if self.is_in_dyn_type => (true, itctx),
 
                     // In `type Foo = dyn Iterator<Item: Debug>` we desugar to
                     // `type Foo = dyn Iterator<Item = impl Debug>` but we have to override the
@@ -1038,7 +1030,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                     //
                     // FIXME: this is only needed until `impl Trait` is allowed in type aliases.
                     ImplTraitContext::Disallowed(_) if self.is_in_dyn_type => {
-                        (true, ImplTraitContext::OpaqueTy(None))
+                        (true, ImplTraitContext::OpaqueTy(None, hir::OpaqueTyOrigin::Misc))
                     }
 
                     // We are in the parameter position, but not within a dyn type:
@@ -1104,7 +1096,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         match arg {
             ast::GenericArg::Lifetime(lt) => GenericArg::Lifetime(self.lower_lifetime(&lt)),
             ast::GenericArg::Type(ty) => {
-                // We parse const arguments as path types as we cannot distiguish them durring
+                // We parse const arguments as path types as we cannot distinguish them during
                 // parsing. We try to resolve that ambiguity by attempting resolution in both the
                 // type and value namespaces. If we resolved the path in the value namespace, we
                 // transform it into a generic const argument.
@@ -1206,7 +1198,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                             &NodeMap::default(),
                             ImplTraitContext::disallowed(),
                         ),
-                        unsafety: f.unsafety,
+                        unsafety: this.lower_unsafety(f.unsafety),
                         abi: this.lower_extern(f.ext),
                         decl: this.lower_fn_decl(&f.decl, None, false, None),
                         param_names: this.lower_fn_params_to_names(&f.decl),
@@ -1279,8 +1271,8 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             TyKind::ImplTrait(def_node_id, ref bounds) => {
                 let span = t.span;
                 match itctx {
-                    ImplTraitContext::OpaqueTy(fn_def_id) => {
-                        self.lower_opaque_impl_trait(span, fn_def_id, def_node_id, |this| {
+                    ImplTraitContext::OpaqueTy(fn_def_id, origin) => {
+                        self.lower_opaque_impl_trait(span, fn_def_id, origin, def_node_id, |this| {
                             this.lower_param_bounds(bounds, itctx)
                         })
                     }
@@ -1359,6 +1351,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         &mut self,
         span: Span,
         fn_def_id: Option<DefId>,
+        origin: hir::OpaqueTyOrigin,
         opaque_ty_node_id: NodeId,
         lower_bounds: impl FnOnce(&mut Self) -> hir::GenericBounds<'hir>,
     ) -> hir::TyKind<'hir> {
@@ -1400,7 +1393,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 },
                 bounds: hir_bounds,
                 impl_trait_fn: fn_def_id,
-                origin: hir::OpaqueTyOrigin::FnReturn,
+                origin,
             };
 
             trace!("lower_opaque_impl_trait: {:#?}", opaque_ty_def_index);
@@ -1632,7 +1625,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             self.lower_ty(
                 t,
                 if self.sess.features_untracked().impl_trait_in_bindings {
-                    ImplTraitContext::OpaqueTy(Some(parent_def_id))
+                    ImplTraitContext::OpaqueTy(Some(parent_def_id), hir::OpaqueTyOrigin::Misc)
                 } else {
                     ImplTraitContext::Disallowed(ImplTraitPosition::Binding)
                 },
@@ -1732,15 +1725,16 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             )
         } else {
             match decl.output {
-                FunctionRetTy::Ty(ref ty) => match in_band_ty_params {
-                    Some((def_id, _)) if impl_trait_return_allow => hir::FunctionRetTy::Return(
-                        self.lower_ty(ty, ImplTraitContext::OpaqueTy(Some(def_id))),
-                    ),
-                    _ => hir::FunctionRetTy::Return(
-                        self.lower_ty(ty, ImplTraitContext::disallowed()),
-                    ),
-                },
-                FunctionRetTy::Default(span) => hir::FunctionRetTy::DefaultReturn(span),
+                FnRetTy::Ty(ref ty) => {
+                    let context = match in_band_ty_params {
+                        Some((def_id, _)) if impl_trait_return_allow => {
+                            ImplTraitContext::OpaqueTy(Some(def_id), hir::OpaqueTyOrigin::FnReturn)
+                        }
+                        _ => ImplTraitContext::disallowed(),
+                    };
+                    hir::FnRetTy::Return(self.lower_ty(ty, context))
+                }
+                FnRetTy::Default(span) => hir::FnRetTy::DefaultReturn(span),
             }
         };
 
@@ -1787,10 +1781,10 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     // `elided_lt_replacement`: replacement for elided lifetimes in the return type
     fn lower_async_fn_ret_ty(
         &mut self,
-        output: &FunctionRetTy,
+        output: &FnRetTy,
         fn_def_id: DefId,
         opaque_ty_node_id: NodeId,
-    ) -> hir::FunctionRetTy<'hir> {
+    ) -> hir::FnRetTy<'hir> {
         debug!(
             "lower_async_fn_ret_ty(\
              output={:?}, \
@@ -1955,20 +1949,27 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
         // only the lifetime parameters that we must supply.
         let opaque_ty_ref = hir::TyKind::Def(hir::ItemId { id: opaque_ty_id }, generic_args);
         let opaque_ty = self.ty(opaque_ty_span, opaque_ty_ref);
-        hir::FunctionRetTy::Return(self.arena.alloc(opaque_ty))
+        hir::FnRetTy::Return(self.arena.alloc(opaque_ty))
     }
 
     /// Transforms `-> T` into `Future<Output = T>`
     fn lower_async_fn_output_type_to_future_bound(
         &mut self,
-        output: &FunctionRetTy,
+        output: &FnRetTy,
         fn_def_id: DefId,
         span: Span,
     ) -> hir::GenericBound<'hir> {
         // Compute the `T` in `Future<Output = T>` from the return type.
         let output_ty = match output {
-            FunctionRetTy::Ty(ty) => self.lower_ty(ty, ImplTraitContext::OpaqueTy(Some(fn_def_id))),
-            FunctionRetTy::Default(ret_ty_span) => self.arena.alloc(self.ty_tup(*ret_ty_span, &[])),
+            FnRetTy::Ty(ty) => {
+                // Not `OpaqueTyOrigin::AsyncFn`: that's only used for the
+                // `impl Future` opaque type that `async fn` implicitly
+                // generates.
+                let context =
+                    ImplTraitContext::OpaqueTy(Some(fn_def_id), hir::OpaqueTyOrigin::FnReturn);
+                self.lower_ty(ty, context)
+            }
+            FnRetTy::Default(ret_ty_span) => self.arena.alloc(self.ty_tup(*ret_ty_span, &[])),
         };
 
         // "<Output = T>"
@@ -2112,9 +2113,12 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 }
 
                 let kind = hir::GenericParamKind::Type {
-                    default: default
-                        .as_ref()
-                        .map(|x| self.lower_ty(x, ImplTraitContext::OpaqueTy(None))),
+                    default: default.as_ref().map(|x| {
+                        self.lower_ty(
+                            x,
+                            ImplTraitContext::OpaqueTy(None, hir::OpaqueTyOrigin::Misc),
+                        )
+                    }),
                     synthetic: param
                         .attrs
                         .iter()
@@ -2277,6 +2281,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             }
             StmtKind::Expr(ref e) => hir::StmtKind::Expr(self.lower_expr(e)),
             StmtKind::Semi(ref e) => hir::StmtKind::Semi(self.lower_expr(e)),
+            StmtKind::Empty => return smallvec![],
             StmtKind::Mac(..) => panic!("shouldn't exist here"),
         };
         smallvec![hir::Stmt { hir_id: self.lower_node_id(s.id), kind, span: s.span }]
@@ -2621,7 +2626,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
             .unwrap_or(true);
         if !is_macro_callsite {
             self.resolver.lint_buffer().buffer_lint_with_diagnostic(
-                builtin::BARE_TRAIT_OBJECTS,
+                BARE_TRAIT_OBJECTS,
                 id,
                 span,
                 "trait objects without an explicit `dyn` are deprecated",

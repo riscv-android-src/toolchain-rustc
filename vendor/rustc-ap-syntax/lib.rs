@@ -4,72 +4,17 @@
 //!
 //! This API is completely unstable and subject to change.
 
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
-       test(attr(deny(warnings))))]
-
-#![feature(rustc_private, box_syntax)]
-#![feature(const_fn)]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
+#![feature(rustc_private, bool_to_option)]
+#![feature(box_syntax)]
+#![feature(const_fn)] // For the `transmute` in `P::new`
 #![feature(const_transmute)]
 #![feature(crate_visibility_modifier)]
 #![feature(label_break_value)]
 #![feature(nll)]
-#![feature(proc_macro_diagnostic)]
-#![feature(proc_macro_internals)]
-#![feature(proc_macro_span)]
 #![feature(try_trait)]
 #![feature(unicode_internals)]
-
-#![recursion_limit="256"]
-
-extern crate proc_macro;
-
-pub use errors;
-use rustc_data_structures::sync::Lock;
-use rustc_index::bit_set::GrowableBitSet;
-pub use rustc_data_structures::thin_vec::ThinVec;
-use ast::AttrId;
-use syntax_pos::edition::Edition;
-
-#[cfg(test)]
-mod tests;
-
-const MACRO_ARGUMENTS: Option<&'static str> = Some("macro arguments");
-
-// A variant of 'try!' that panics on an Err. This is used as a crutch on the
-// way towards a non-panic!-prone parser. It should be used for fatal parsing
-// errors; eventually we plan to convert all code using panictry to just use
-// normal try.
-#[macro_export]
-macro_rules! panictry {
-    ($e:expr) => ({
-        use std::result::Result::{Ok, Err};
-        use errors::FatalError;
-        match $e {
-            Ok(e) => e,
-            Err(mut e) => {
-                e.emit();
-                FatalError.raise()
-            }
-        }
-    })
-}
-
-// A variant of 'panictry!' that works on a Vec<Diagnostic> instead of a single DiagnosticBuilder.
-macro_rules! panictry_buffer {
-    ($handler:expr, $e:expr) => ({
-        use std::result::Result::{Ok, Err};
-        use errors::FatalError;
-        match $e {
-            Ok(e) => e,
-            Err(errs) => {
-                for e in errs {
-                    $handler.emit_diagnostic(&e);
-                }
-                FatalError.raise()
-            }
-        }
-    })
-}
+#![recursion_limit = "256"]
 
 #[macro_export]
 macro_rules! unwrap_or {
@@ -78,96 +23,41 @@ macro_rules! unwrap_or {
             Some(x) => x,
             None => $default,
         }
-    }
+    };
 }
-
-pub struct Globals {
-    used_attrs: Lock<GrowableBitSet<AttrId>>,
-    known_attrs: Lock<GrowableBitSet<AttrId>>,
-    syntax_pos_globals: syntax_pos::Globals,
-}
-
-impl Globals {
-    fn new(edition: Edition) -> Globals {
-        Globals {
-            // We have no idea how many attributes their will be, so just
-            // initiate the vectors with 0 bits. We'll grow them as necessary.
-            used_attrs: Lock::new(GrowableBitSet::new_empty()),
-            known_attrs: Lock::new(GrowableBitSet::new_empty()),
-            syntax_pos_globals: syntax_pos::Globals::new(edition),
-        }
-    }
-}
-
-pub fn with_globals<F, R>(edition: Edition, f: F) -> R
-    where F: FnOnce() -> R
-{
-    let globals = Globals::new(edition);
-    GLOBALS.set(&globals, || {
-        syntax_pos::GLOBALS.set(&globals.syntax_pos_globals, f)
-    })
-}
-
-pub fn with_default_globals<F, R>(f: F) -> R
-    where F: FnOnce() -> R
-{
-    with_globals(edition::DEFAULT_EDITION, f)
-}
-
-scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
-
-#[macro_use]
-pub mod diagnostics {
-    #[macro_use]
-    pub mod macros;
-}
-
-pub mod error_codes;
 
 pub mod util {
+    pub mod classify;
+    pub mod comments;
     pub mod lev_distance;
-    pub mod node_count;
-    pub mod parser;
+    pub mod literal;
     pub mod map_in_place;
+    pub mod parser;
 }
-
-pub mod json;
 
 pub mod ast;
 pub mod attr;
-pub mod source_map;
-#[macro_use]
-pub mod config;
+pub use attr::{with_default_globals, with_globals, GLOBALS};
 pub mod entry;
-pub mod feature_gate;
+pub mod expand;
 pub mod mut_visit;
-pub mod parse;
+pub mod node_id;
 pub mod ptr;
-pub mod show_span;
-pub use syntax_pos::edition;
-pub use syntax_pos::symbol;
+pub mod token;
 pub mod tokenstream;
 pub mod visit;
 
-pub mod print {
-    pub mod pp;
-    pub mod pprust;
-    mod helpers;
+use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
+
+/// Requirements for a `StableHashingContext` to be used in this crate.
+/// This is a hack to allow using the `HashStable_Generic` derive macro
+/// instead of implementing everything in librustc.
+pub trait HashStableContext: rustc_span::HashStableContext {
+    fn hash_attr(&mut self, _: &ast::Attribute, hasher: &mut StableHasher);
 }
 
-pub mod ext {
-    mod placeholders;
-    mod proc_macro_server;
-
-    pub use syntax_pos::hygiene;
-    pub use mbe::macro_rules::compile_declarative_macro;
-    pub mod allocator;
-    pub mod base;
-    pub mod build;
-    pub mod expand;
-    pub mod proc_macro;
-
-    crate mod mbe;
+impl<AstCtx: crate::HashStableContext> HashStable<AstCtx> for ast::Attribute {
+    fn hash_stable(&self, hcx: &mut AstCtx, hasher: &mut StableHasher) {
+        hcx.hash_attr(self, hasher)
+    }
 }
-
-pub mod early_buffered_lints;

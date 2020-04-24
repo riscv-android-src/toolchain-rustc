@@ -38,6 +38,30 @@ use crate::tree::{Tree, TreeIndex, TreePointer};
 // https://spec.commonmark.org/0.29/#link-destination
 const LINK_MAX_NESTED_PARENS: usize = 5;
 
+/// Codeblock kind.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CodeBlockKind<'a> {
+    Indented,
+    /// The value contained in the tag describes the language of the code, which may be empty.
+    Fenced(CowStr<'a>),
+}
+
+impl<'a> CodeBlockKind<'a> {
+    pub fn is_indented(&self) -> bool {
+        match *self {
+            CodeBlockKind::Indented => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_fenced(&self) -> bool {
+        match *self {
+            CodeBlockKind::Fenced(_) => true,
+            _ => false,
+        }
+    }
+}
+
 /// Tags for elements that can contain other elements.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Tag<'a> {
@@ -48,9 +72,8 @@ pub enum Tag<'a> {
     Heading(u32),
 
     BlockQuote,
-    /// A code block. The value contained in the tag describes the language of the code,
-    /// which may be empty.
-    CodeBlock(CowStr<'a>),
+    /// A code block.
+    CodeBlock(CodeBlockKind<'a>),
 
     /// A list. If the list is ordered the field indicates the number of the first item.
     /// Contains only list items.
@@ -757,8 +780,8 @@ impl<'a> FirstPass<'a> {
                 c @ b'*' | c @ b'_' | c @ b'~' => {
                     let string_suffix = &self.text[ix..];
                     let count = 1 + scan_ch_repeat(&string_suffix.as_bytes()[1..], c);
-                    let can_open = delim_run_can_open(&self.text, string_suffix, count, ix);
-                    let can_close = delim_run_can_close(&self.text, string_suffix, count, ix);
+                    let can_open = delim_run_can_open(self.text, string_suffix, count, ix);
+                    let can_close = delim_run_can_close(self.text, string_suffix, count, ix);
                     let is_valid_seq = c != b'~'
                         || count == 2 && self.options.contains(Options::ENABLE_STRIKETHROUGH);
 
@@ -1226,6 +1249,7 @@ impl<'a> FirstPass<'a> {
             return None;
         }
         i += 1;
+        self.finish_list(start);
         self.tree.append(Item {
             start,
             end: 0, // will get set later
@@ -1299,10 +1323,10 @@ impl<'a> FirstPass<'a> {
         let bytes = self.text.as_bytes();
 
         // whitespace between label and url (including up to one newline)
-        let (mut i, _newlines) = self.scan_refdef_space(&bytes, start)?;
+        let (mut i, _newlines) = self.scan_refdef_space(bytes, start)?;
 
         // scan link dest
-        let (dest_length, dest) = scan_link_dest(&self.text, i, 1)?;
+        let (dest_length, dest) = scan_link_dest(self.text, i, 1)?;
         if dest_length == 0 {
             return None;
         }
@@ -1314,7 +1338,7 @@ impl<'a> FirstPass<'a> {
 
         // scan whitespace between dest and label
         let (mut i, newlines) =
-            if let Some((new_i, mut newlines)) = self.scan_refdef_space(&bytes, i) {
+            if let Some((new_i, mut newlines)) = self.scan_refdef_space(bytes, i) {
                 if i == self.text.len() {
                     newlines += 1;
                 }
@@ -1495,7 +1519,7 @@ fn get_html_end_tag(text_bytes: &[u8]) -> Option<&'static str> {
 
     for (beg_tag, end_tag) in BEGIN_TAGS
         .iter()
-        .zip(["</pre>", "</style>", "</script>"].into_iter())
+        .zip(["</pre>", "</style>", "</script>"].iter())
     {
         let tag_len = beg_tag.len();
 
@@ -1520,7 +1544,7 @@ fn get_html_end_tag(text_bytes: &[u8]) -> Option<&'static str> {
         }
     }
 
-    for (beg_tag, end_tag) in ST_BEGIN_TAGS.iter().zip(["-->", "?>", "]]>"].into_iter()) {
+    for (beg_tag, end_tag) in ST_BEGIN_TAGS.iter().zip(["-->", "?>", "]]>"].iter()) {
         if text_bytes.starts_with(beg_tag) {
             return Some(end_tag);
         }
@@ -1915,7 +1939,7 @@ impl<'a> Parser<'a> {
         Parser::new_ext(text, Options::empty())
     }
 
-    /// Creates a new event iteratorfor a markdown string with given options.
+    /// Creates a new event iterator for a markdown string with given options.
     pub fn new_ext(text: &'a str, options: Options) -> Parser<'a> {
         Parser::new_with_broken_link_callback(text, options, None)
     }
@@ -2121,7 +2145,6 @@ impl<'a> Parser<'a> {
                             // ok, so its not an inline link. maybe it is a reference
                             // to a defined link?
                             let scan_result = scan_reference(&self.tree, block_text, next);
-                            let label_node = self.tree[tos.node].next;
                             let node_after_link = match scan_result {
                                 RefScan::LinkLabel(_, next_node) => next_node,
                                 RefScan::Collapsed(next_node) => next_node,
@@ -2132,6 +2155,7 @@ impl<'a> Parser<'a> {
                                 RefScan::Collapsed(..) => LinkType::Collapsed,
                                 RefScan::Failed => LinkType::Shortcut,
                             };
+
                             let label: Option<ReferenceLabel<'a>> = match scan_result {
                                 RefScan::LinkLabel(l, ..) => Some(ReferenceLabel::Link(l)),
                                 RefScan::Collapsed(..) | RefScan::Failed => {
@@ -2191,17 +2215,20 @@ impl<'a> Parser<'a> {
                                     } else {
                                         ItemBody::Link(link_ix)
                                     };
+                                    let label_node = self.tree[tos.node].next;
 
                                     // lets do some tree surgery to add the link to the tree
                                     // 1st: skip the label node and close node
                                     self.tree[tos.node].next = node_after_link;
 
-                                    // then, add the label node as a child to the link node
-                                    self.tree[tos.node].child = label_node;
+                                    // then, if it exists, add the label node as a child to the link node
+                                    if label_node != cur {
+                                        self.tree[tos.node].child = label_node;
 
-                                    // finally: disconnect list of children
-                                    if let TreePointer::Valid(prev_ix) = prev {
-                                        self.tree[prev_ix].next = TreePointer::Nil;
+                                        // finally: disconnect list of children
+                                        if let TreePointer::Valid(prev_ix) = prev {
+                                            self.tree[prev_ix].next = TreePointer::Nil;
+                                        }
                                     }
 
                                     // set up cur so next node will be node_after_link
@@ -2323,10 +2350,9 @@ impl<'a> Parser<'a> {
     fn scan_inline_link(
         &self,
         underlying: &'a str,
-        start_ix: usize,
+        mut ix: usize,
         node: TreePointer,
     ) -> Option<(usize, CowStr<'a>, CowStr<'a>)> {
-        let mut ix = start_ix;
         if scan_ch(&underlying.as_bytes()[ix..], b'(') == 0 {
             return None;
         }
@@ -2675,8 +2701,10 @@ fn item_to_tag<'a>(item: &Item, allocs: &Allocations<'a>) -> Tag<'a> {
             Tag::Image(*link_type, url.clone(), title.clone())
         }
         ItemBody::Heading(level) => Tag::Heading(level),
-        ItemBody::FencedCodeBlock(cow_ix) => Tag::CodeBlock(allocs[cow_ix].clone()),
-        ItemBody::IndentCodeBlock => Tag::CodeBlock("".into()),
+        ItemBody::FencedCodeBlock(cow_ix) => {
+            Tag::CodeBlock(CodeBlockKind::Fenced(allocs[cow_ix].clone()))
+        }
+        ItemBody::IndentCodeBlock => Tag::CodeBlock(CodeBlockKind::Indented),
         ItemBody::BlockQuote => Tag::BlockQuote,
         ItemBody::List(_, c, listitem_start) => {
             if c == b'.' || c == b')' {
@@ -2722,8 +2750,10 @@ fn item_to_event<'a>(item: Item, text: &'a str, allocs: &Allocations<'a>) -> Eve
             Tag::Image(*link_type, url.clone(), title.clone())
         }
         ItemBody::Heading(level) => Tag::Heading(level),
-        ItemBody::FencedCodeBlock(cow_ix) => Tag::CodeBlock(allocs[cow_ix].clone()),
-        ItemBody::IndentCodeBlock => Tag::CodeBlock("".into()),
+        ItemBody::FencedCodeBlock(cow_ix) => {
+            Tag::CodeBlock(CodeBlockKind::Fenced(allocs[cow_ix].clone()))
+        }
+        ItemBody::IndentCodeBlock => Tag::CodeBlock(CodeBlockKind::Indented),
         ItemBody::BlockQuote => Tag::BlockQuote,
         ItemBody::List(_, c, listitem_start) => {
             if c == b'.' || c == b')' {
@@ -3029,5 +3059,36 @@ mod test {
             assert_eq!(title.as_ref(), "SWAG");
         }
         assert!(link_tag_count > 0);
+    }
+
+    #[test]
+    fn code_block_kind_check_fenced() {
+        let parser = Parser::new("hello\n```test\ntadam\n```");
+        let mut found = 0;
+        for (ev, _range) in parser.into_offset_iter() {
+            match ev {
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(syntax))) => {
+                    assert_eq!(syntax.as_ref(), "test");
+                    found += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(found, 1);
+    }
+
+    #[test]
+    fn code_block_kind_check_indented() {
+        let parser = Parser::new("hello\n\n    ```test\n    tadam\nhello");
+        let mut found = 0;
+        for (ev, _range) in parser.into_offset_iter() {
+            match ev {
+                Event::Start(Tag::CodeBlock(CodeBlockKind::Indented)) => {
+                    found += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(found, 1);
     }
 }

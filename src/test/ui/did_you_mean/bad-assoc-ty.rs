@@ -17,7 +17,6 @@ type D = (u8, u8)::AssocTy;
 type E = _::AssocTy;
 //~^ ERROR missing angle brackets in associated item path
 //~| ERROR the type placeholder `_` is not allowed within types on item signatures
-//~| ERROR the type placeholder `_` is not allowed within types on item signatures
 
 type F = &'static (u8)::AssocTy;
 //~^ ERROR missing angle brackets in associated item path
@@ -45,5 +44,41 @@ type J = ty!(u8);
 type I = ty!()::AssocTy;
 //~^ ERROR missing angle brackets in associated item path
 //~| ERROR ambiguous associated type
+
+trait K<A, B> {}
+fn foo<X: K<_, _>>(x: X) {}
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+
+fn bar<F>(_: F) where F: Fn() -> _ {}
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+
+fn baz<F: Fn() -> _>(_: F) {}
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+
+struct L<F>(F) where F: Fn() -> _;
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+struct M<F> where F: Fn() -> _ {
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+    a: F,
+}
+enum N<F> where F: Fn() -> _ {
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+    Foo(F),
+}
+
+union O<F> where F: Fn() -> _ {
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+//~| ERROR unions with non-`Copy` fields are unstable
+    foo: F,
+}
+
+trait P<F> where F: Fn() -> _ {
+//~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+}
+
+trait Q {
+    fn foo<F>(_: F) where F: Fn() -> _ {}
+    //~^ ERROR the type placeholder `_` is not allowed within types on item signatures
+}
 
 fn main() {}

@@ -25,7 +25,7 @@ use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use core::{isize, usize};
 
-use crate::alloc::{box_free, handle_alloc_error, Alloc, Global, Layout};
+use crate::alloc::{box_free, handle_alloc_error, AllocRef, Global, Layout};
 use crate::boxed::Box;
 use crate::rc::is_dangling;
 use crate::string::String;
@@ -784,7 +784,7 @@ impl<T: ?Sized> Arc<T> {
         // reference (see #54908).
         let layout = Layout::new::<ArcInner<()>>().extend(value_layout).unwrap().0.pad_to_align();
 
-        let mem = Global.alloc(layout).unwrap_or_else(|_| handle_alloc_error(layout));
+        let (mem, _) = Global.alloc(layout).unwrap_or_else(|_| handle_alloc_error(layout));
 
         // Initialize the ArcInner
         let inner = mem_to_arcinner(mem.as_ptr());
@@ -2002,7 +2002,7 @@ impl<T> From<Vec<T>> for Arc<[T]> {
     }
 }
 
-#[unstable(feature = "boxed_slice_try_from", issue = "none")]
+#[stable(feature = "boxed_slice_try_from", since = "1.43.0")]
 impl<T, const N: usize> TryFrom<Arc<[T]>> for Arc<[T; N]>
 where
     [T; N]: LengthAtMost32,

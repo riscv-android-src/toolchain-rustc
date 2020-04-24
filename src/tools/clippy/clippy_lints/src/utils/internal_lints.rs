@@ -1,23 +1,21 @@
 use crate::utils::{
-    is_expn_of, match_def_path, match_type, method_calls, paths, span_help_and_lint, span_lint, span_lint_and_sugg,
+    is_expn_of, match_def_path, match_type, method_calls, paths, span_lint, span_lint_and_help, span_lint_and_sugg,
     walk_ptrs_ty,
 };
 use if_chain::if_chain;
 use rustc::hir::map::Map;
+use rustc_ast::ast::{Crate as AstCrate, ItemKind, LitKind, Name, NodeId};
+use rustc_ast::visit::FnKind;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc_hir::*;
+use rustc_hir::{Crate, Expr, ExprKind, HirId, Item, MutTy, Mutability, Path, Ty, TyKind};
 use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass};
-use rustc_session::declare_tool_lint;
-use rustc_session::{declare_lint_pass, impl_lint_pass};
+use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::{Span, Spanned};
 use rustc_span::symbol::SymbolStr;
-use syntax::ast;
-use syntax::ast::{Crate as AstCrate, ItemKind, LitKind, Name};
-use syntax::visit::FnKind;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for various things we like to keep tidy in clippy.
@@ -318,8 +316,8 @@ impl CompilerLintFunctions {
         map.insert("span_lint", "utils::span_lint");
         map.insert("struct_span_lint", "utils::span_lint");
         map.insert("lint", "utils::span_lint");
-        map.insert("span_lint_note", "utils::span_note_and_lint");
-        map.insert("span_lint_help", "utils::span_help_and_lint");
+        map.insert("span_lint_note", "utils::span_lint_and_note");
+        map.insert("span_lint_help", "utils::span_lint_and_help");
         Self { map }
     }
 }
@@ -336,7 +334,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
             if match_type(cx, ty, &paths::EARLY_CONTEXT)
                 || match_type(cx, ty, &paths::LATE_CONTEXT);
             then {
-                span_help_and_lint(
+                span_lint_and_help(
                     cx,
                     COMPILER_LINT_FUNCTIONS,
                     path.ident.span,
@@ -380,18 +378,16 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OuterExpnDataPass {
 declare_lint_pass!(ProduceIce => [PRODUCE_ICE]);
 
 impl EarlyLintPass for ProduceIce {
-    fn check_fn(&mut self, _: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: &ast::FnDecl, _: Span, _: ast::NodeId) {
+    fn check_fn(&mut self, _: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: Span, _: NodeId) {
         if is_trigger_fn(fn_kind) {
-            panic!("Testing the ICE message");
+            panic!("Would you like some help with that?");
         }
     }
 }
 
 fn is_trigger_fn(fn_kind: FnKind<'_>) -> bool {
     match fn_kind {
-        FnKind::ItemFn(ident, ..) | FnKind::Method(ident, ..) => {
-            ident.name.as_str() == "it_looks_like_you_are_trying_to_kill_clippy"
-        },
+        FnKind::Fn(_, ident, ..) => ident.name.as_str() == "it_looks_like_you_are_trying_to_kill_clippy",
         FnKind::Closure(..) => false,
     }
 }

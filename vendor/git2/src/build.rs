@@ -12,6 +12,41 @@ use crate::{CheckoutNotificationType, DiffFile, Remote};
 
 /// A builder struct which is used to build configuration for cloning a new git
 /// repository.
+///
+/// # Example
+///
+/// Cloning using SSH:
+///
+/// ```no_run
+/// use git2::{Cred, Error, RemoteCallbacks};
+/// use std::env;
+/// use std::path::Path;
+///
+///   // Prepare callbacks.
+///   let mut callbacks = RemoteCallbacks::new();
+///   callbacks.credentials(|_url, username_from_url, _allowed_types| {
+///     Cred::ssh_key(
+///       username_from_url.unwrap(),
+///       None,
+///       std::path::Path::new(&format!("{}/.ssh/id_rsa", env::var("HOME").unwrap())),
+///       None,
+///     )
+///   });
+///
+///   // Prepare fetch options.
+///   let mut fo = git2::FetchOptions::new();
+///   fo.remote_callbacks(callbacks);
+///
+///   // Prepare builder.
+///   let mut builder = git2::build::RepoBuilder::new();
+///   builder.fetch_options(fo);
+///
+///   // Clone the project.
+///   builder.clone(
+///     "git@github.com:rust-lang/git2-rs.git",
+///     Path::new("/tmp/git2-rs"),
+///   );
+/// ```
 pub struct RepoBuilder<'cb> {
     bare: bool,
     branch: Option<CString>,
@@ -554,13 +589,11 @@ impl<'cb> CheckoutBuilder<'cb> {
             opts.their_label = c.as_ptr();
         }
         if self.progress.is_some() {
-            let f: raw::git_checkout_progress_cb = progress_cb;
-            opts.progress_cb = Some(f);
+            opts.progress_cb = Some(progress_cb);
             opts.progress_payload = self as *mut _ as *mut _;
         }
         if self.notify.is_some() {
-            let f: raw::git_checkout_notify_cb = notify_cb;
-            opts.notify_cb = Some(f);
+            opts.notify_cb = Some(notify_cb);
             opts.notify_payload = self as *mut _ as *mut _;
             opts.notify_flags = self.notify_flags.bits() as c_uint;
         }

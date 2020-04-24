@@ -3,13 +3,13 @@
 extern crate alloc;
 
 use alloc::alloc::Global;
-use std::alloc::*;
+use std::alloc::{AllocRef, Layout};
 
 // error-pattern: incorrect alloc info: expected size 2 and align 1, got size 1 and align 1
 
 fn main() {
     unsafe {
-        let x = Global.alloc(Layout::from_size_align_unchecked(1, 1)).unwrap();
+        let x = Global.alloc(Layout::from_size_align_unchecked(1, 1)).unwrap().0;
         Global.dealloc(x, Layout::from_size_align_unchecked(2, 1));
     }
 }

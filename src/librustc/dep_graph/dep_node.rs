@@ -35,7 +35,7 @@
 //! "infer" some properties for each kind of `DepNode`:
 //!
 //! * Whether a `DepNode` of a given kind has any parameters at all. Some
-//!   `DepNode`s, like `Krate`, represent global concepts with only one value.
+//!   `DepNode`s, like `AllLocalTraitImpls`, represent global concepts with only one value.
 //! * Whether it is possible, in principle, to reconstruct a query key from a
 //!   given `DepNode`. Many `DepKind`s only require a single `DefId` parameter,
 //!   in which case it is possible to map the node's fingerprint back to the
@@ -76,10 +76,6 @@ macro_rules! erase {
     ($x:tt) => {{}};
 }
 
-macro_rules! replace {
-    ($x:tt with $($y:tt)*) => ($($y)*)
-}
-
 macro_rules! is_anon_attr {
     (anon) => {
         true
@@ -99,19 +95,18 @@ macro_rules! is_eval_always_attr {
 }
 
 macro_rules! contains_anon_attr {
-    ($($attr:ident),*) => ({$(is_anon_attr!($attr) | )* false});
+    ($($attr:ident $(($($attr_args:tt)*))* ),*) => ({$(is_anon_attr!($attr) | )* false});
 }
 
 macro_rules! contains_eval_always_attr {
-    ($($attr:ident),*) => ({$(is_eval_always_attr!($attr) | )* false});
+    ($($attr:ident $(($($attr_args:tt)*))* ),*) => ({$(is_eval_always_attr!($attr) | )* false});
 }
 
 macro_rules! define_dep_nodes {
     (<$tcx:tt>
     $(
-        [$($attr:ident),* ]
+        [$($attrs:tt)*]
         $variant:ident $(( $tuple_arg_ty:ty $(,)? ))*
-                       $({ $($struct_arg_name:ident : $struct_arg_ty:ty),* })*
       ,)*
     ) => (
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
@@ -126,20 +121,13 @@ macro_rules! define_dep_nodes {
                 match *self {
                     $(
                         DepKind :: $variant => {
-                            if contains_anon_attr!($($attr),*) {
+                            if contains_anon_attr!($($attrs)*) {
                                 return false;
                             }
 
                             // tuple args
                             $({
                                 return <$tuple_arg_ty as DepNodeParams>
-                                    ::CAN_RECONSTRUCT_QUERY_KEY;
-                            })*
-
-                            // struct args
-                            $({
-
-                                return <( $($struct_arg_ty,)* ) as DepNodeParams>
                                     ::CAN_RECONSTRUCT_QUERY_KEY;
                             })*
 
@@ -152,7 +140,7 @@ macro_rules! define_dep_nodes {
             pub fn is_anon(&self) -> bool {
                 match *self {
                     $(
-                        DepKind :: $variant => { contains_anon_attr!($($attr),*) }
+                        DepKind :: $variant => { contains_anon_attr!($($attrs)*) }
                     )*
                 }
             }
@@ -160,7 +148,7 @@ macro_rules! define_dep_nodes {
             pub fn is_eval_always(&self) -> bool {
                 match *self {
                     $(
-                        DepKind :: $variant => { contains_eval_always_attr!($($attr), *) }
+                        DepKind :: $variant => { contains_eval_always_attr!($($attrs)*) }
                     )*
                 }
             }
@@ -176,12 +164,6 @@ macro_rules! define_dep_nodes {
                                 return true;
                             })*
 
-                            // struct args
-                            $({
-                                $(erase!($struct_arg_name);)*
-                                return true;
-                            })*
-
                             false
                         }
                     )*
@@ -189,11 +171,43 @@ macro_rules! define_dep_nodes {
             }
         }
 
-        pub enum DepConstructor<$tcx> {
+        pub struct DepConstructor;
+
+        impl DepConstructor {
             $(
-                $variant $(( $tuple_arg_ty ))*
-                         $({ $($struct_arg_name : $struct_arg_ty),* })*
-            ),*
+                #[inline(always)]
+                #[allow(unreachable_code, non_snake_case)]
+                pub fn $variant<'tcx>(_tcx: TyCtxt<'tcx>, $(arg: $tuple_arg_ty)*) -> DepNode {
+                    // tuple args
+                    $({
+                        erase!($tuple_arg_ty);
+                        let hash = DepNodeParams::to_fingerprint(&arg, _tcx);
+                        let dep_node = DepNode {
+                            kind: DepKind::$variant,
+                            hash
+                        };
+
+                        #[cfg(debug_assertions)]
+                        {
+                            if !dep_node.kind.can_reconstruct_query_key() &&
+                            (_tcx.sess.opts.debugging_opts.incremental_info ||
+                                _tcx.sess.opts.debugging_opts.query_dep_graph)
+                            {
+                                _tcx.dep_graph.register_dep_node_debug_str(dep_node, || {
+                                    arg.to_debug_str(_tcx)
+                                });
+                            }
+                        }
+
+                        return dep_node;
+                    })*
+
+                    DepNode {
+                        kind: DepKind::$variant,
+                        hash: Fingerprint::ZERO,
+                    }
+                }
+            )*
         }
 
         #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
@@ -204,75 +218,6 @@ macro_rules! define_dep_nodes {
         }
 
         impl DepNode {
-            #[allow(unreachable_code, non_snake_case)]
-            pub fn new<'tcx>(tcx: TyCtxt<'tcx>,
-                                       dep: DepConstructor<'tcx>)
-                                       -> DepNode
-            {
-                match dep {
-                    $(
-                        DepConstructor :: $variant $(( replace!(($tuple_arg_ty) with arg) ))*
-                                                   $({ $($struct_arg_name),* })*
-                            =>
-                        {
-                            // tuple args
-                            $({
-                                erase!($tuple_arg_ty);
-                                let hash = DepNodeParams::to_fingerprint(&arg, tcx);
-                                let dep_node = DepNode {
-                                    kind: DepKind::$variant,
-                                    hash
-                                };
-
-                                #[cfg(debug_assertions)]
-                                {
-                                    if !dep_node.kind.can_reconstruct_query_key() &&
-                                    (tcx.sess.opts.debugging_opts.incremental_info ||
-                                        tcx.sess.opts.debugging_opts.query_dep_graph)
-                                    {
-                                        tcx.dep_graph.register_dep_node_debug_str(dep_node, || {
-                                            arg.to_debug_str(tcx)
-                                        });
-                                    }
-                                }
-
-                                return dep_node;
-                            })*
-
-                            // struct args
-                            $({
-                                let tupled_args = ( $($struct_arg_name,)* );
-                                let hash = DepNodeParams::to_fingerprint(&tupled_args,
-                                                                         tcx);
-                                let dep_node = DepNode {
-                                    kind: DepKind::$variant,
-                                    hash
-                                };
-
-                                #[cfg(debug_assertions)]
-                                {
-                                    if !dep_node.kind.can_reconstruct_query_key() &&
-                                    (tcx.sess.opts.debugging_opts.incremental_info ||
-                                        tcx.sess.opts.debugging_opts.query_dep_graph)
-                                    {
-                                        tcx.dep_graph.register_dep_node_debug_str(dep_node, || {
-                                            tupled_args.to_debug_str(tcx)
-                                        });
-                                    }
-                                }
-
-                                return dep_node;
-                            })*
-
-                            DepNode {
-                                kind: DepKind::$variant,
-                                hash: Fingerprint::ZERO,
-                            }
-                        }
-                    )*
-                }
-            }
-
             /// Construct a DepNode from the given DepKind and DefPathHash. This
             /// method will assert that the given DepKind actually requires a
             /// single DefId/DefPathHash parameter.
@@ -400,19 +345,6 @@ rustc_dep_node_append!([define_dep_nodes!][ <'tcx>
     // We use this for most things when incr. comp. is turned off.
     [] Null,
 
-    // Represents the `Krate` as a whole (the `hir::Krate` value) (as
-    // distinct from the krate module). This is basically a hash of
-    // the entire krate, so if you read from `Krate` (e.g., by calling
-    // `tcx.hir().krate()`), we will have to assume that any change
-    // means that you need to be recompiled. This is because the
-    // `Krate` value gives you access to all other items. To avoid
-    // this fate, do not call `tcx.hir().krate()`; instead, prefer
-    // wrappers like `tcx.visit_all_items_in_krate()`.  If there is no
-    // suitable wrapper, you can use `tcx.dep_graph.ignore()` to gain
-    // access to the krate, but you must remember to add suitable
-    // edges yourself for the individual items that you read.
-    [eval_always] Krate,
-
     // Represents the body of a function or method. The def-id is that of the
     // function/method.
     [eval_always] HirBody(DefId),
@@ -428,33 +360,9 @@ rustc_dep_node_append!([define_dep_nodes!][ <'tcx>
     [anon] TraitSelect,
 
     [] CompileCodegenUnit(Symbol),
-
-    [eval_always] Analysis(CrateNum),
 ]);
 
-pub trait RecoverKey<'tcx>: Sized {
-    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self>;
-}
-
-impl RecoverKey<'tcx> for CrateNum {
-    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
-        dep_node.extract_def_id(tcx).map(|id| id.krate)
-    }
-}
-
-impl RecoverKey<'tcx> for DefId {
-    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
-        dep_node.extract_def_id(tcx)
-    }
-}
-
-impl RecoverKey<'tcx> for DefIndex {
-    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
-        dep_node.extract_def_id(tcx).map(|id| id.index)
-    }
-}
-
-trait DepNodeParams<'tcx>: fmt::Debug {
+pub(crate) trait DepNodeParams<'tcx>: fmt::Debug + Sized {
     const CAN_RECONSTRUCT_QUERY_KEY: bool;
 
     /// This method turns the parameters of a DepNodeConstructor into an opaque
@@ -468,6 +376,14 @@ trait DepNodeParams<'tcx>: fmt::Debug {
     fn to_debug_str(&self, _: TyCtxt<'tcx>) -> String {
         format!("{:?}", self)
     }
+
+    /// This method tries to recover the query key from the given `DepNode`,
+    /// something which is needed when forcing `DepNode`s during red-green
+    /// evaluation. The query system will only call this method if
+    /// `CAN_RECONSTRUCT_QUERY_KEY` is `true`.
+    /// It is always valid to return `None` here, in which case incremental
+    /// compilation will treat the query as having changed instead of forcing it.
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self>;
 }
 
 impl<'tcx, T> DepNodeParams<'tcx> for T
@@ -488,6 +404,10 @@ where
     default fn to_debug_str(&self, _: TyCtxt<'tcx>) -> String {
         format!("{:?}", *self)
     }
+
+    default fn recover(_: TyCtxt<'tcx>, _: &DepNode) -> Option<Self> {
+        None
+    }
 }
 
 impl<'tcx> DepNodeParams<'tcx> for DefId {
@@ -499,6 +419,10 @@ impl<'tcx> DepNodeParams<'tcx> for DefId {
 
     fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
         tcx.def_path_str(*self)
+    }
+
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx)
     }
 }
 
@@ -512,6 +436,10 @@ impl<'tcx> DepNodeParams<'tcx> for DefIndex {
     fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
         tcx.def_path_str(DefId::local(*self))
     }
+
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx).map(|id| id.index)
+    }
 }
 
 impl<'tcx> DepNodeParams<'tcx> for CrateNum {
@@ -524,6 +452,10 @@ impl<'tcx> DepNodeParams<'tcx> for CrateNum {
 
     fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
         tcx.crate_name(*self).to_string()
+    }
+
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx).map(|id| id.krate)
     }
 }
 

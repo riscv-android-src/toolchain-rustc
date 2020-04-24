@@ -1,11 +1,11 @@
 use super::{Parser, PathStyle, TokenType};
+use rustc_ast::ast;
+use rustc_ast::attr;
+use rustc_ast::token::{self, Nonterminal};
+use rustc_ast::util::comments;
+use rustc_ast_pretty::pprust;
 use rustc_errors::PResult;
 use rustc_span::{Span, Symbol};
-use syntax::ast;
-use syntax::attr;
-use syntax::print::pprust;
-use syntax::token::{self, Nonterminal};
-use syntax::util::comments;
 
 use log::debug;
 
@@ -37,7 +37,7 @@ impl<'a> Parser<'a> {
                     let inner_parse_policy = InnerAttributeParsePolicy::NotPermitted {
                         reason: inner_error_reason,
                         saw_doc_comment: just_parsed_doc_comment,
-                        prev_attr_sp: attrs.last().and_then(|a| Some(a.span)),
+                        prev_attr_sp: attrs.last().map(|a| a.span),
                     };
                     let attr = self.parse_attribute_with_inner_parse_policy(inner_parse_policy)?;
                     attrs.push(attr);
@@ -116,7 +116,7 @@ impl<'a> Parser<'a> {
                 self.expect(&token::OpenDelim(token::Bracket))?;
                 let item = self.parse_attr_item()?;
                 self.expect(&token::CloseDelim(token::Bracket))?;
-                let hi = self.prev_span;
+                let hi = self.prev_token.span;
 
                 let attr_sp = lo.to(hi);
 
@@ -138,7 +138,7 @@ impl<'a> Parser<'a> {
 
                         if let Some(prev_attr_sp) = prev_attr_sp {
                             diagnostic
-                                .span_label(attr_sp, "not permitted following an outer attibute")
+                                .span_label(attr_sp, "not permitted following an outer attribute")
                                 .span_label(prev_attr_sp, prev_attr_note);
                         }
 
@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
                                    source files. Outer attributes, like `#[test]`, annotate the \
                                    item following them.",
                             )
-                            .emit()
+                            .emit();
                     }
                 }
 
@@ -177,7 +177,7 @@ impl<'a> Parser<'a> {
     pub fn parse_attr_item(&mut self) -> PResult<'a, ast::AttrItem> {
         let item = match self.token.kind {
             token::Interpolated(ref nt) => match **nt {
-                Nonterminal::NtMeta(ref item) => Some(item.clone()),
+                Nonterminal::NtMeta(ref item) => Some(item.clone().into_inner()),
                 _ => None,
             },
             _ => None,
@@ -239,7 +239,7 @@ impl<'a> Parser<'a> {
                                     (`1u8`, `1.0f32`, etc.), use an unsuffixed version \
                                     (`1`, `1.0`, etc.)",
                 )
-                .emit()
+                .emit();
         }
 
         Ok(lit)
@@ -255,7 +255,7 @@ impl<'a> Parser<'a> {
         while self.token.kind != token::Eof {
             let lo = self.token.span;
             let item = self.parse_attr_item()?;
-            expanded_attrs.push((item, lo.to(self.prev_span)));
+            expanded_attrs.push((item, lo.to(self.prev_token.span)));
             if !self.eat(&token::Comma) {
                 break;
             }
@@ -303,7 +303,7 @@ impl<'a> Parser<'a> {
         let lo = self.token.span;
         let path = self.parse_path(PathStyle::Mod)?;
         let kind = self.parse_meta_item_kind()?;
-        let span = lo.to(self.prev_span);
+        let span = lo.to(self.prev_token.span);
         Ok(ast::MetaItem { path, kind, span })
     }
 

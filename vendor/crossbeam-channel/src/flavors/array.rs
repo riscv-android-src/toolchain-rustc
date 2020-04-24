@@ -37,6 +37,7 @@ struct Slot<T> {
 }
 
 /// The token type for the array flavor.
+#[derive(Debug)]
 pub struct ArrayToken {
     /// Slot to read from or write to.
     slot: *const u8,
@@ -99,23 +100,8 @@ pub struct Channel<T> {
 
 impl<T> Channel<T> {
     /// Creates a bounded channel of capacity `cap`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the capacity is not in the range `1 ..= usize::max_value() / 4`.
     pub fn with_capacity(cap: usize) -> Self {
         assert!(cap > 0, "capacity must be positive");
-
-        // Make sure there are at least two most significant bits: one to encode laps and one more
-        // to indicate that the channel is disconnected. If we can't reserve two bits, then panic.
-        // In that case, the buffer is likely too large to allocate anyway.
-        let cap_limit = usize::max_value() / 4;
-        assert!(
-            cap <= cap_limit,
-            "channel capacity is too large: {} > {}",
-            cap,
-            cap_limit
-        );
 
         // Compute constants `mark_bit` and `one_lap`.
         let mark_bit = (cap + 1).next_power_of_two();
@@ -200,10 +186,12 @@ impl<T> Channel<T> {
                 };
 
                 // Try moving the tail.
-                match self
-                    .tail
-                    .compare_exchange_weak(tail, new_tail, Ordering::SeqCst, Ordering::Relaxed)
-                {
+                match self.tail.compare_exchange_weak(
+                    tail,
+                    new_tail,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                ) {
                     Ok(_) => {
                         // Prepare the token for the follow-up call to `write`.
                         token.array.slot = slot as *const Slot<T> as *const u8;
@@ -280,10 +268,12 @@ impl<T> Channel<T> {
                 };
 
                 // Try moving the head.
-                match self
-                    .head
-                    .compare_exchange_weak(head, new, Ordering::SeqCst, Ordering::Relaxed)
-                {
+                match self.head.compare_exchange_weak(
+                    head,
+                    new,
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                ) {
                     Ok(_) => {
                         // Prepare the token for the follow-up call to `read`.
                         token.array.slot = slot as *const Slot<T> as *const u8;
@@ -370,6 +360,12 @@ impl<T> Channel<T> {
                 }
             }
 
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    return Err(SendTimeoutError::Timeout(msg));
+                }
+            }
+
             Context::with(|cx| {
                 // Prepare for blocking until a receiver wakes us up.
                 let oper = Operation::hook(token);
@@ -391,12 +387,6 @@ impl<T> Channel<T> {
                     Selected::Operation(_) => {}
                 }
             });
-
-            if let Some(d) = deadline {
-                if Instant::now() >= d {
-                    return Err(SendTimeoutError::Timeout(msg));
-                }
-            }
         }
     }
 
@@ -430,6 +420,12 @@ impl<T> Channel<T> {
                 }
             }
 
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    return Err(RecvTimeoutError::Timeout);
+                }
+            }
+
             Context::with(|cx| {
                 // Prepare for blocking until a sender wakes us up.
                 let oper = Operation::hook(token);
@@ -453,12 +449,6 @@ impl<T> Channel<T> {
                     Selected::Operation(_) => {}
                 }
             });
-
-            if let Some(d) = deadline {
-                if Instant::now() >= d {
-                    return Err(RecvTimeoutError::Timeout);
-                }
-            }
         }
     }
 
@@ -492,13 +482,18 @@ impl<T> Channel<T> {
         Some(self.cap)
     }
 
-    /// Disconnects the channel and wakes up all blocked receivers.
-    pub fn disconnect(&self) {
+    /// Disconnects the channel and wakes up all blocked senders and receivers.
+    ///
+    /// Returns `true` if this call disconnected the channel.
+    pub fn disconnect(&self) -> bool {
         let tail = self.tail.fetch_or(self.mark_bit, Ordering::SeqCst);
 
         if tail & self.mark_bit == 0 {
             self.senders.disconnect();
             self.receivers.disconnect();
+            true
+        } else {
+            false
         }
     }
 

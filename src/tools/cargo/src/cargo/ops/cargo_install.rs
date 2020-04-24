@@ -7,8 +7,8 @@ use anyhow::{bail, format_err};
 use tempfile::Builder as TempFileBuilder;
 
 use crate::core::compiler::Freshness;
-use crate::core::compiler::{CompileKind, DefaultExecutor, Executor};
-use crate::core::resolver::ResolveOpts;
+use crate::core::compiler::{CompileKind, DefaultExecutor, Executor, RustcTargetData};
+use crate::core::resolver::{HasDevUnits, ResolveOpts};
 use crate::core::{Edition, Package, PackageId, PackageIdSpec, Source, SourceId, Workspace};
 use crate::ops;
 use crate::ops::common_for_install_and_uninstall::*;
@@ -82,7 +82,7 @@ pub fn install(
             ) {
                 Ok(()) => succeeded.push(krate),
                 Err(e) => {
-                    crate::handle_error(&e, &mut opts.config.shell());
+                    crate::display_error(&e, &mut opts.config.shell());
                     failed.push(krate)
                 }
             }
@@ -200,31 +200,35 @@ fn install_one(
         )?
     };
 
-    let mut td_opt = None;
-    let mut needs_cleanup = false;
-    let overidden_target_dir = if source_id.is_path() {
-        None
-    } else if let Some(dir) = config.target_dir()? {
-        Some(dir)
-    } else if let Ok(td) = TempFileBuilder::new().prefix("cargo-install").tempdir() {
-        let p = td.path().to_owned();
-        td_opt = Some(td);
-        Some(Filesystem::new(p))
+    let (mut ws, git_package) = if source_id.is_git() {
+        // Don't use ws.current() in order to keep the package source as a git source so that
+        // install tracking uses the correct source.
+        (Workspace::new(pkg.manifest_path(), config)?, Some(&pkg))
+    } else if source_id.is_path() {
+        (Workspace::new(pkg.manifest_path(), config)?, None)
     } else {
-        needs_cleanup = true;
-        Some(Filesystem::new(config.cwd().join("target-install")))
-    };
-
-    let mut ws = match overidden_target_dir {
-        Some(dir) => Workspace::ephemeral(pkg, config, Some(dir), false)?,
-        None => {
-            let mut ws = Workspace::new(pkg.manifest_path(), config)?;
-            ws.set_require_optional_deps(false);
-            ws
-        }
+        (Workspace::ephemeral(pkg, config, None, false)?, None)
     };
     ws.set_ignore_lock(config.lock_update_allowed());
-    let pkg = ws.current()?;
+    ws.set_require_optional_deps(false);
+
+    let mut td_opt = None;
+    let mut needs_cleanup = false;
+    if !source_id.is_path() {
+        let target_dir = if let Some(dir) = config.target_dir()? {
+            dir
+        } else if let Ok(td) = TempFileBuilder::new().prefix("cargo-install").tempdir() {
+            let p = td.path().to_owned();
+            td_opt = Some(td);
+            Filesystem::new(p)
+        } else {
+            needs_cleanup = true;
+            Filesystem::new(config.cwd().join("target-install"))
+        };
+        ws.set_target_dir(target_dir);
+    }
+
+    let pkg = git_package.map_or_else(|| ws.current(), |pkg| Ok(pkg))?;
 
     if from_cwd {
         if pkg.manifest().edition() == Edition::Edition2015 {
@@ -488,10 +492,22 @@ fn check_yanked_install(ws: &Workspace<'_>) -> CargoResult<()> {
         return Ok(());
     }
     let specs = vec![PackageIdSpec::from_package_id(ws.current()?.package_id())];
+    // CompileKind here doesn't really matter, it's only needed for features.
+    let target_data = RustcTargetData::new(ws, CompileKind::Host)?;
     // It would be best if `source` could be passed in here to avoid a
     // duplicate "Updating", but since `source` is taken by value, then it
     // wouldn't be available for `compile_ws`.
-    let ws_resolve = ops::resolve_ws_with_opts(ws, ResolveOpts::everything(), &specs)?;
+    // TODO: It would be easier to use resolve_ws, but it does not honor
+    // require_optional_deps to avoid writing the lock file. It might be good
+    // to try to fix that.
+    let ws_resolve = ops::resolve_ws_with_opts(
+        ws,
+        &target_data,
+        CompileKind::Host,
+        &ResolveOpts::everything(),
+        &specs,
+        HasDevUnits::No,
+    )?;
     let mut sources = ws_resolve.pkg_set.sources_mut();
 
     // Checking the yanked status involves taking a look at the registry and

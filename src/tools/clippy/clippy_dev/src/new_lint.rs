@@ -1,8 +1,9 @@
+use clippy_dev::clippy_project_root;
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::io::prelude::*;
 use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn create(pass: Option<&str>, lint_name: Option<&str>, category: Option<&str>) -> Result<(), io::Error> {
     let pass = pass.expect("`pass` argument is validated by clap");
@@ -12,7 +13,7 @@ pub fn create(pass: Option<&str>, lint_name: Option<&str>, category: Option<&str
     match open_files(lint_name) {
         Ok((mut test_file, mut lint_file)) => {
             let (pass_type, pass_lifetimes, pass_import, context_import) = match pass {
-                "early" => ("EarlyLintPass", "", "use syntax::ast::*;", "EarlyContext"),
+                "early" => ("EarlyLintPass", "", "use rustc_ast::ast::*;", "EarlyContext"),
                 "late" => ("LateLintPass", "<'_, '_>", "use rustc_hir::*;", "LateContext"),
                 _ => {
                     unreachable!("`pass_type` should only ever be `early` or `late`!");
@@ -55,7 +56,7 @@ pub fn create(pass: Option<&str>, lint_name: Option<&str>, category: Option<&str
 }
 
 fn open_files(lint_name: &str) -> Result<(File, File), io::Error> {
-    let project_root = project_root()?;
+    let project_root = clippy_project_root();
 
     let test_file_path = project_root.join("tests").join("ui").join(format!("{}.rs", lint_name));
     let lint_file_path = project_root
@@ -80,24 +81,6 @@ fn open_files(lint_name: &str) -> Result<(File, File), io::Error> {
     let lint_file = OpenOptions::new().write(true).create_new(true).open(lint_file_path)?;
 
     Ok((test_file, lint_file))
-}
-
-fn project_root() -> Result<PathBuf, io::Error> {
-    let current_dir = std::env::current_dir()?;
-    for path in current_dir.ancestors() {
-        let result = std::fs::read_to_string(path.join("Cargo.toml"));
-        if let Err(err) = &result {
-            if err.kind() == io::ErrorKind::NotFound {
-                continue;
-            }
-        }
-
-        let content = result?;
-        if content.contains("[package]\nname = \"clippy\"") {
-            return Ok(path.to_path_buf());
-        }
-    }
-    Err(io::Error::new(ErrorKind::Other, "Unable to find project root"))
 }
 
 fn to_camel_case(name: &str) -> String {
@@ -134,7 +117,7 @@ fn get_lint_file_contents(
     context_import: &str,
 ) -> String {
     format!(
-        "use rustc_lint::{{LintArray, LintPass, {type}, {context_import}}};
+        "use rustc_lint::{{{type}, {context_import}}};
 use rustc_session::{{declare_lint_pass, declare_tool_lint}};
 {pass_import}
 

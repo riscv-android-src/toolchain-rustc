@@ -146,17 +146,19 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         } else {
             StackPopInfo::Normal
         };
-        this.memory.extra.stacked_borrows.borrow_mut().end_call(extra.call_id);
+        if let Some(stacked_borrows) = this.memory.extra.stacked_borrows.as_ref() {
+            stacked_borrows.borrow_mut().end_call(extra.call_id);
+        }
         Ok(res)
     }
 
     fn assert_panic(
         &mut self,
         span: Span,
-        msg: &AssertMessage<'tcx>,
+        msg: &mir::AssertMessage<'tcx>,
         unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
-        use rustc::mir::interpret::PanicInfo::*;
+        use rustc::mir::AssertKind::*;
         let this = self.eval_context_mut();
 
         match msg {
@@ -185,7 +187,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
                 // First arg: Message.
                 let msg = msg.description();
-                let msg = this.allocate_str(msg, MiriMemoryKind::Env.into());
+                let msg = this.allocate_str(msg, MiriMemoryKind::Machine.into());
 
                 // Call the lang item.
                 let panic = this.tcx.lang_items().panic_fn().unwrap();

@@ -63,20 +63,8 @@ impl Buffer {
         Buffer { for_html: false, buffer: String::new() }
     }
 
-    crate fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
-    }
-
     crate fn into_inner(self) -> String {
         self.buffer
-    }
-
-    crate fn insert_str(&mut self, idx: usize, s: &str) {
-        self.buffer.insert_str(idx, s);
-    }
-
-    crate fn push_str(&mut self, s: &str) {
-        self.buffer.push_str(s);
     }
 
     // Intended for consumption by write! and writeln! (std::fmt) but without
@@ -933,7 +921,7 @@ impl clean::Arguments {
     }
 }
 
-impl clean::FunctionRetTy {
+impl clean::FnRetTy {
     crate fn print(&self) -> impl fmt::Display + '_ {
         display_fn(move |f| match self {
             clean::Return(clean::Tuple(tys)) if tys.is_empty() => Ok(()),
@@ -1171,11 +1159,14 @@ impl clean::ImportSource {
         display_fn(move |f| match self.did {
             Some(did) => resolved_path(f, did, &self.path, true, false),
             _ => {
-                for (i, seg) in self.path.segments.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, "::")?
-                    }
-                    write!(f, "{}", seg.name)?;
+                for seg in &self.path.segments[..self.path.segments.len() - 1] {
+                    write!(f, "{}::", seg.name)?;
+                }
+                let name = self.path.last_name();
+                if let hir::def::Res::PrimTy(p) = self.path.res {
+                    primitive_link(f, PrimitiveType::from(p), name)?;
+                } else {
+                    write!(f, "{}", name)?;
                 }
                 Ok(())
             }

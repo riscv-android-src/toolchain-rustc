@@ -286,11 +286,9 @@ pub unsafe fn r#try<R, F: FnOnce() -> R>(f: F) -> Result<R, Box<dyn Any + Send>>
     );
 
     return if r == 0 {
-        debug_assert!(update_panic_count(0) == 0);
         Ok(ManuallyDrop::into_inner(data.r))
     } else {
         update_panic_count(-1);
-        debug_assert!(update_panic_count(0) == 0);
         Err(mem::transmute(raw::TraitObject {
             data: any_data as *mut _,
             vtable: any_vtable as *mut _,
@@ -391,7 +389,7 @@ pub fn begin_panic_handler(info: &PanicInfo<'_>) -> ! {
 #[cfg_attr(not(feature = "panic_immediate_abort"), inline(never))]
 #[cold]
 #[track_caller]
-pub fn begin_panic<M: Any + Send>(msg: M, #[cfg(bootstrap)] _: &(&str, u32, u32)) -> ! {
+pub fn begin_panic<M: Any + Send>(msg: M) -> ! {
     if cfg!(feature = "panic_immediate_abort") {
         unsafe { intrinsics::abort() }
     }

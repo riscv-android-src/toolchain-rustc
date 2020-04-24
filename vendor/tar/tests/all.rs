@@ -63,7 +63,10 @@ fn simple_concat() {
     let actual = decode_names(&mut ar);
     assert_eq!(expected, actual);
 
-    fn decode_names<R>(ar: &mut Archive<R>) -> Vec<String> where R: Read {
+    fn decode_names<R>(ar: &mut Archive<R>) -> Vec<String>
+    where
+        R: Read,
+    {
         let mut names = Vec::new();
 
         for entry in t!(ar.entries()) {
@@ -310,19 +313,15 @@ fn writing_directories_recursively() {
     let base_dir = td.path().join("foobar");
     assert!(fs::metadata(&base_dir).map(|m| m.is_dir()).unwrap_or(false));
     let file1_path = base_dir.join("file1");
-    assert!(
-        fs::metadata(&file1_path)
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
+    assert!(fs::metadata(&file1_path)
+        .map(|m| m.is_file())
+        .unwrap_or(false));
     let sub_dir = base_dir.join("sub");
     assert!(fs::metadata(&sub_dir).map(|m| m.is_dir()).unwrap_or(false));
     let file2_path = sub_dir.join("file2");
-    assert!(
-        fs::metadata(&file2_path)
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
+    assert!(fs::metadata(&file2_path)
+        .map(|m| m.is_file())
+        .unwrap_or(false));
 }
 
 #[test]
@@ -345,19 +344,15 @@ fn append_dir_all_blank_dest() {
     let base_dir = td.path();
     assert!(fs::metadata(&base_dir).map(|m| m.is_dir()).unwrap_or(false));
     let file1_path = base_dir.join("file1");
-    assert!(
-        fs::metadata(&file1_path)
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
+    assert!(fs::metadata(&file1_path)
+        .map(|m| m.is_file())
+        .unwrap_or(false));
     let sub_dir = base_dir.join("sub");
     assert!(fs::metadata(&sub_dir).map(|m| m.is_dir()).unwrap_or(false));
     let file2_path = sub_dir.join("file2");
-    assert!(
-        fs::metadata(&file2_path)
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
+    assert!(fs::metadata(&file2_path)
+        .map(|m| m.is_file())
+        .unwrap_or(false));
 }
 
 #[test]
@@ -496,41 +491,27 @@ fn extracting_malicious_tarball() {
     // The `tmp` subdirectory should be created and within this
     // subdirectory, there should be files named `abs_evil.txt` through
     // `abs_evil6.txt`.
-    assert!(
-        fs::metadata(td.path().join("tmp"))
-            .map(|m| m.is_dir())
-            .unwrap_or(false)
-    );
-    assert!(
-        fs::metadata(td.path().join("tmp/abs_evil.txt"))
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
-    assert!(
-        fs::metadata(td.path().join("tmp/abs_evil2.txt"))
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
-    assert!(
-        fs::metadata(td.path().join("tmp/abs_evil3.txt"))
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
-    assert!(
-        fs::metadata(td.path().join("tmp/abs_evil4.txt"))
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
-    assert!(
-        fs::metadata(td.path().join("tmp/abs_evil5.txt"))
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
-    assert!(
-        fs::metadata(td.path().join("tmp/abs_evil6.txt"))
-            .map(|m| m.is_file())
-            .unwrap_or(false)
-    );
+    assert!(fs::metadata(td.path().join("tmp"))
+        .map(|m| m.is_dir())
+        .unwrap_or(false));
+    assert!(fs::metadata(td.path().join("tmp/abs_evil.txt"))
+        .map(|m| m.is_file())
+        .unwrap_or(false));
+    assert!(fs::metadata(td.path().join("tmp/abs_evil2.txt"))
+        .map(|m| m.is_file())
+        .unwrap_or(false));
+    assert!(fs::metadata(td.path().join("tmp/abs_evil3.txt"))
+        .map(|m| m.is_file())
+        .unwrap_or(false));
+    assert!(fs::metadata(td.path().join("tmp/abs_evil4.txt"))
+        .map(|m| m.is_file())
+        .unwrap_or(false));
+    assert!(fs::metadata(td.path().join("tmp/abs_evil5.txt"))
+        .map(|m| m.is_file())
+        .unwrap_or(false));
+    assert!(fs::metadata(td.path().join("tmp/abs_evil6.txt"))
+        .map(|m| m.is_file())
+        .unwrap_or(false));
 }
 
 #[test]
@@ -916,9 +897,18 @@ fn append_path_symlink() {
     ar.follow_symlinks(false);
     let td = t!(TempDir::new("tar-rs"));
 
+    let long_linkname = repeat("abcd").take(30).collect::<String>();
+    let long_pathname = repeat("dcba").take(30).collect::<String>();
     t!(env::set_current_dir(td.path()));
+    // "short" path name / short link name
     t!(symlink("testdest", "test"));
     t!(ar.append_path("test"));
+    // short path name / long link name
+    t!(symlink(&long_linkname, "test2"));
+    t!(ar.append_path("test2"));
+    // long path name / long link name
+    t!(symlink(&long_linkname, &long_pathname));
+    t!(ar.append_path(&long_pathname));
 
     let rd = Cursor::new(t!(ar.into_inner()));
     let mut ar = Archive::new(rd);
@@ -929,6 +919,22 @@ fn append_path_symlink() {
     assert_eq!(
         t!(entry.link_name()),
         Some(Cow::from(Path::new("testdest")))
+    );
+    assert_eq!(t!(entry.header().size()), 0);
+
+    let entry = t!(entries.next().unwrap());
+    assert_eq!(t!(entry.path()), Path::new("test2"));
+    assert_eq!(
+        t!(entry.link_name()),
+        Some(Cow::from(Path::new(&long_linkname)))
+    );
+    assert_eq!(t!(entry.header().size()), 0);
+
+    let entry = t!(entries.next().unwrap());
+    assert_eq!(t!(entry.path()), Path::new(&long_pathname));
+    assert_eq!(
+        t!(entry.link_name()),
+        Some(Cow::from(Path::new(&long_linkname)))
     );
     assert_eq!(t!(entry.header().size()), 0);
 
@@ -966,4 +972,42 @@ fn name_with_slash_doesnt_fool_long_link_and_bsd_compat() {
     assert!(t!(ar.entries()).all(|fr| fr.is_ok()));
 
     assert!(td.path().join("foo").is_file());
+}
+
+#[test]
+fn insert_local_file_different_name() {
+    let mut ar = Builder::new(Vec::new());
+    let td = t!(TempDir::new("tar-rs"));
+    let path = td.path().join("directory");
+    t!(fs::create_dir(&path));
+    ar.append_path_with_name(&path, "archive/dir").unwrap();
+    let path = td.path().join("file");
+    t!(t!(File::create(&path)).write_all(b"test"));
+    ar.append_path_with_name(&path, "archive/dir/f").unwrap();
+
+    let rd = Cursor::new(t!(ar.into_inner()));
+    let mut ar = Archive::new(rd);
+    let mut entries = t!(ar.entries());
+    let entry = t!(entries.next().unwrap());
+    assert_eq!(t!(entry.path()), Path::new("archive/dir"));
+    let entry = t!(entries.next().unwrap());
+    assert_eq!(t!(entry.path()), Path::new("archive/dir/f"));
+    assert!(entries.next().is_none());
+}
+
+#[test]
+#[cfg(unix)]
+fn tar_directory_containing_symlink_to_directory() {
+    use std::os::unix::fs::symlink;
+
+    let td = t!(TempDir::new("tar-rs"));
+    let dummy_src = t!(TempDir::new("dummy_src"));
+    let dummy_dst = td.path().join("dummy_dst");
+    let mut ar = Builder::new(Vec::new());
+    t!(symlink(dummy_src.path().display().to_string(), &dummy_dst));
+
+    assert!(dummy_dst.read_link().is_ok());
+    assert!(dummy_dst.read_link().unwrap().is_dir());
+    ar.append_dir_all("symlinks", td.path()).unwrap();
+    ar.finish().unwrap();
 }

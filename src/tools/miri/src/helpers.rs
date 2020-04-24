@@ -1,13 +1,13 @@
 use std::ffi::OsStr;
 use std::{iter, mem};
 
-use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc::mir;
 use rustc::ty::{
     self,
     layout::{self, LayoutOf, Size, TyLayout},
     List, TyCtxt,
 };
+use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_span::source_map::DUMMY_SP;
 
 use rand::RngCore;
@@ -300,17 +300,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             // We have to do *something* for unions.
-            fn visit_union(&mut self, v: MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
+            fn visit_union(&mut self, v: MPlaceTy<'tcx, Tag>, fields: usize) -> InterpResult<'tcx> {
+                assert!(fields > 0); // we should never reach "pseudo-unions" with 0 fields, like primitives
+
                 // With unions, we fall back to whatever the type says, to hopefully be consistent
                 // with LLVM IR.
                 // FIXME: are we consistent, and is this really the behavior we want?
                 let frozen = self.ecx.type_is_freeze(v.layout.ty);
                 if frozen { Ok(()) } else { (self.unsafe_cell_action)(v) }
-            }
-
-            // We should never get to a primitive, but always short-circuit somewhere above.
-            fn visit_primitive(&mut self, _v: MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
-                bug!("we should always short-circuit before coming to a primitive")
             }
         }
     }
@@ -339,7 +336,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     // different values into a struct.
     fn write_packed_immediates(
         &mut self,
-        place: &MPlaceTy<'tcx, Tag>,
+        place: MPlaceTy<'tcx, Tag>,
         imms: &[ImmTy<'tcx, Tag>],
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
@@ -359,14 +356,26 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// Helper function used inside the shims of foreign functions to check that isolation is
     /// disabled. It returns an error using the `name` of the foreign function if this is not the
     /// case.
-    fn check_no_isolation(&mut self, name: &str) -> InterpResult<'tcx> {
-        if !self.eval_context_mut().machine.communicate {
+    fn check_no_isolation(&self, name: &str) -> InterpResult<'tcx> {
+        if !self.eval_context_ref().machine.communicate {
             throw_unsup_format!(
                 "`{}` not available when isolation is enabled. Pass the flag `-Zmiri-disable-isolation` to disable it.",
-                name
+                name,
             )
         }
         Ok(())
+    }
+    /// Helper function used inside the shims of foreign functions to assert that the target
+    /// platform is `platform`. It panics showing a message with the `name` of the foreign function
+    /// if this is not the case.
+    fn assert_platform(&self, platform: &str, name: &str) {
+        assert_eq!(
+            self.eval_context_ref().tcx.sess.target.target.target_os,
+            platform,
+            "`{}` is only available on the `{}` platform",
+            name,
+            platform,
+        )
     }
 
     /// Sets the last error variable.
@@ -377,8 +386,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     }
 
     /// Gets the last error variable.
-    fn get_last_error(&mut self) -> InterpResult<'tcx, Scalar<Tag>> {
-        let this = self.eval_context_mut();
+    fn get_last_error(&self) -> InterpResult<'tcx, Scalar<Tag>> {
+        let this = self.eval_context_ref();
         let errno_place = this.machine.last_error.unwrap();
         this.read_scalar(errno_place.into())?.not_undef()
     }
@@ -462,15 +471,16 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     }
 
     /// Helper function to write an OsStr as a null-terminated sequence of bytes, which is what
-    /// the Unix APIs usually handle. This function returns `Ok(false)` without trying to write if
-    /// `size` is not large enough to fit the contents of `os_string` plus a null terminator. It
-    /// returns `Ok(true)` if the writing process was successful.
+    /// the Unix APIs usually handle. This function returns `Ok((false, length))` without trying
+    /// to write if `size` is not large enough to fit the contents of `os_string` plus a null
+    /// terminator. It returns `Ok((true, length))` if the writing process was successful. The
+    /// string length returned does not include the null terminator.
     fn write_os_str_to_c_str(
         &mut self,
         os_str: &OsStr,
         scalar: Scalar<Tag>,
         size: u64,
-    ) -> InterpResult<'tcx, bool> {
+    ) -> InterpResult<'tcx, (bool, u64)> {
         #[cfg(target_os = "unix")]
         fn os_str_to_bytes<'tcx, 'a>(os_str: &'a OsStr) -> InterpResult<'tcx, &'a [u8]> {
             std::os::unix::ffi::OsStringExt::into_bytes(os_str)
@@ -489,19 +499,20 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let bytes = os_str_to_bytes(os_str)?;
         // If `size` is smaller or equal than `bytes.len()`, writing `bytes` plus the required null
         // terminator to memory using the `ptr` pointer would cause an out-of-bounds access.
-        if size <= bytes.len() as u64 {
-            return Ok(false);
+        let string_length = bytes.len() as u64;
+        if size <= string_length {
+            return Ok((false, string_length));
         }
         self.eval_context_mut()
             .memory
             .write_bytes(scalar, bytes.iter().copied().chain(iter::once(0u8)))?;
-        Ok(true)
+        Ok((true, string_length))
     }
 
     fn alloc_os_str_as_c_str(
         &mut self,
         os_str: &OsStr,
-        memkind: MemoryKind<MiriMemoryKind>
+        memkind: MemoryKind<MiriMemoryKind>,
     ) -> Pointer<Tag> {
         let size = os_str.len() as u64 + 1; // Make space for `0` terminator.
         let this = self.eval_context_mut();
@@ -518,9 +529,9 @@ pub fn immty_from_int_checked<'tcx>(
     layout: TyLayout<'tcx>,
 ) -> InterpResult<'tcx, ImmTy<'tcx, Tag>> {
     let int = int.into();
-    Ok(ImmTy::try_from_int(int, layout).ok_or_else(||
+    Ok(ImmTy::try_from_int(int, layout).ok_or_else(|| {
         err_unsup_format!("Signed value {:#x} does not fit in {} bits", int, layout.size.bits())
-    )?)
+    })?)
 }
 
 pub fn immty_from_uint_checked<'tcx>(
@@ -528,7 +539,7 @@ pub fn immty_from_uint_checked<'tcx>(
     layout: TyLayout<'tcx>,
 ) -> InterpResult<'tcx, ImmTy<'tcx, Tag>> {
     let int = int.into();
-    Ok(ImmTy::try_from_uint(int, layout).ok_or_else(||
+    Ok(ImmTy::try_from_uint(int, layout).ok_or_else(|| {
         err_unsup_format!("Signed value {:#x} does not fit in {} bits", int, layout.size.bits())
-    )?)
+    })?)
 }

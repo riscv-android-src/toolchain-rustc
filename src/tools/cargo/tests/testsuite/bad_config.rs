@@ -368,7 +368,10 @@ fn bad_git_dependency() {
         .with_stderr(
             "\
 [UPDATING] git repository `file:///`
-[ERROR] failed to load source for a dependency on `foo`
+[ERROR] failed to get `foo` as a dependency of package `foo v0.0.0 [..]`
+
+Caused by:
+  failed to load source for dependency `foo`
 
 Caused by:
   Unable to update file:///
@@ -901,7 +904,10 @@ fn bad_source_config2() {
         .with_status(101)
         .with_stderr(
             "\
-error: failed to load source for a dependency on `bar`
+[ERROR] failed to get `bar` as a dependency of package `foo v0.0.0 [..]`
+
+Caused by:
+  failed to load source for dependency `bar`
 
 Caused by:
   Unable to update registry `https://[..]`
@@ -944,7 +950,10 @@ fn bad_source_config3() {
         .with_status(101)
         .with_stderr(
             "\
-error: failed to load source for a dependency on `bar`
+[ERROR] failed to get `bar` as a dependency of package `foo v0.0.0 [..]`
+
+Caused by:
+  failed to load source for dependency `bar`
 
 Caused by:
   Unable to update registry `https://[..]`
@@ -989,7 +998,10 @@ fn bad_source_config4() {
         .with_status(101)
         .with_stderr(
             "\
-error: failed to load source for a dependency on `bar`
+[ERROR] failed to get `bar` as a dependency of package `foo v0.0.0 ([..])`
+
+Caused by:
+  failed to load source for dependency `bar`
 
 Caused by:
   Unable to update registry `https://[..]`
@@ -1355,8 +1367,9 @@ Caused by:
   could not load config key `target.cfg(not(target_os = \"none\")).runner`
 
 Caused by:
-  failed to deserialize, expected a string or array of strings: \
-  data did not match any variant of untagged enum Target
+  invalid configuration for key `target.cfg(not(target_os = \"none\")).runner`
+expected a string or array of strings, but found a boolean for \
+`target.cfg(not(target_os = \"none\")).runner` in [..]/foo/.cargo/config
 ",
         )
         .run();

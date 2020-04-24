@@ -12,9 +12,8 @@ use std::fmt;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-
-use toml;
+use std::process::Command;
+use std::str::{from_utf8, FromStr};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum VersionControl {
@@ -165,7 +164,7 @@ fn check_name(name: &str, opts: &NewOptions) -> CargoResult<()> {
     };
 
     // Ban keywords + test list found at
-    // https://doc.rust-lang.org/grammar.html#keywords
+    // https://doc.rust-lang.org/reference/keywords.html
     let blacklist = [
         "abstract", "alignof", "as", "become", "box", "break", "const", "continue", "crate", "do",
         "else", "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in", "let", "loop",
@@ -361,6 +360,11 @@ pub fn new(opts: &NewOptions, config: &Config) -> CargoResult<()> {
 }
 
 pub fn init(opts: &NewOptions, config: &Config) -> CargoResult<()> {
+    // This is here just as a random location to exercise the internal error handling.
+    if std::env::var_os("__CARGO_TEST_INTERNAL_ERROR").is_some() {
+        return Err(crate::util::internal("internal error test"));
+    }
+
     let path = &opts.path;
 
     if fs::metadata(&path.join("Cargo.toml")).is_ok() {
@@ -707,6 +711,16 @@ mod tests {
             .unwrap_or(false)
         {
             paths::write(&path_of_source_file, default_file_content)?;
+
+            // Format the newly created source file
+            match Command::new("rustfmt").arg(&path_of_source_file).output() {
+                Err(e) => log::warn!("failed to call rustfmt: {}", e),
+                Ok(output) => {
+                    if !output.status.success() {
+                        log::warn!("rustfmt failed: {:?}", from_utf8(&output.stdout));
+                    }
+                }
+            };
         }
     }
 
@@ -727,15 +741,9 @@ fn get_environment_variable(variables: &[&str]) -> Option<String> {
 }
 
 fn discover_author() -> CargoResult<(String, Option<String>)> {
-    let cwd = env::current_dir()?;
-    let git_config = if let Ok(repo) = GitRepository::discover(&cwd) {
-        repo.config()
-            .ok()
-            .or_else(|| GitConfig::open_default().ok())
-    } else {
-        GitConfig::open_default().ok()
-    };
+    let git_config = find_git_config();
     let git_config = git_config.as_ref();
+
     let name_variables = [
         "CARGO_NAME",
         "GIT_AUTHOR_NAME",
@@ -782,4 +790,32 @@ fn discover_author() -> CargoResult<(String, Option<String>)> {
     });
 
     Ok((name, email))
+}
+
+fn find_git_config() -> Option<GitConfig> {
+    match env::var("__CARGO_TEST_ROOT") {
+        Ok(test_root) => find_tests_git_config(test_root),
+        Err(_) => find_real_git_config(),
+    }
+}
+
+fn find_tests_git_config(cargo_test_root: String) -> Option<GitConfig> {
+    // Path where 'git config --local' puts variables when run from inside a test
+    let test_git_config = PathBuf::from(cargo_test_root).join(".git").join("config");
+
+    if test_git_config.exists() {
+        GitConfig::open(&test_git_config).ok()
+    } else {
+        GitConfig::open_default().ok()
+    }
+}
+
+fn find_real_git_config() -> Option<GitConfig> {
+    match env::current_dir() {
+        Ok(cwd) => GitRepository::discover(cwd)
+            .and_then(|repo| repo.config())
+            .or_else(|_| GitConfig::open_default())
+            .ok(),
+        Err(_) => GitConfig::open_default().ok(),
+    }
 }

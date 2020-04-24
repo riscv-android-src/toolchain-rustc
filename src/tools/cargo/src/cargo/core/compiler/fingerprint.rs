@@ -60,6 +60,7 @@
 //! -C incremental=… flag                      | ✓           |
 //! mtime of sources                           | ✓[^3]       |
 //! RUSTFLAGS/RUSTDOCFLAGS                     | ✓           |
+//! is_std                                     |             | ✓
 //!
 //! [^1]: Build script and bin dependencies are not included.
 //!
@@ -287,13 +288,16 @@ pub fn prepare_target<'a, 'cfg>(
         // using the `build_script_local_fingerprints` function which returns a
         // thunk we can invoke on a foreign thread to calculate this.
         let build_script_outputs = Arc::clone(&cx.build_script_outputs);
-        let key = (unit.pkg.package_id(), unit.kind);
+        let pkg_id = unit.pkg.package_id();
+        let metadata = cx.get_run_build_script_metadata(unit);
         let (gen_local, _overridden) = build_script_local_fingerprints(cx, unit);
         let output_path = cx.build_explicit_deps[unit].build_script_output.clone();
         Work::new(move |_| {
             let outputs = build_script_outputs.lock().unwrap();
-            let outputs = &outputs[&key];
-            let deps = BuildDeps::new(&output_path, Some(outputs));
+            let output = outputs
+                .get(pkg_id, metadata)
+                .expect("output must exist after running");
+            let deps = BuildDeps::new(&output_path, Some(output));
 
             // FIXME: it's basically buggy that we pass `None` to `call_box`
             // here. See documentation on `build_script_local_fingerprints`
@@ -350,7 +354,7 @@ struct DepFingerprint {
 ///
 /// Note that dependencies are taken into account for fingerprints because rustc
 /// requires that whenever an upstream crate is recompiled that all downstream
-/// dependants are also recompiled. This is typically tracked through
+/// dependents are also recompiled. This is typically tracked through
 /// `DependencyQueue`, but it also needs to be retained here because Cargo can
 /// be interrupted while executing, losing the state of the `DependencyQueue`
 /// graph.
@@ -500,7 +504,7 @@ enum LocalFingerprint {
     CheckDepInfo { dep_info: PathBuf },
 
     /// This represents a nonempty set of `rerun-if-changed` annotations printed
-    /// out by a build script. The `output` file is a arelative file anchored at
+    /// out by a build script. The `output` file is a relative file anchored at
     /// `target_root(...)` which is the actual output of the build script. That
     /// output has already been parsed and the paths printed out via
     /// `rerun-if-changed` are listed in `paths`. The `paths` field is relative
@@ -649,7 +653,11 @@ impl Fingerprint {
             bail!("profile configuration has changed")
         }
         if self.rustflags != old.rustflags {
-            bail!("RUSTFLAGS has changed")
+            bail!(
+                "RUSTFLAGS has changed: {:?} != {:?}",
+                self.rustflags,
+                old.rustflags
+            )
         }
         if self.metadata != old.metadata {
             bail!("metadata changed")
@@ -788,14 +796,15 @@ impl Fingerprint {
                 // This path failed to report its `mtime`. It probably doesn't
                 // exists, so leave ourselves as stale and bail out.
                 Err(e) => {
-                    log::debug!("failed to get mtime of {:?}: {}", output, e);
+                    debug!("failed to get mtime of {:?}: {}", output, e);
                     return Ok(());
                 }
             };
             assert!(mtimes.insert(output.clone(), mtime).is_none());
         }
 
-        let max_mtime = match mtimes.values().max() {
+        let opt_max = mtimes.iter().max_by_key(|kv| kv.1);
+        let (max_path, max_mtime) = match opt_max {
             Some(mtime) => mtime,
 
             // We had no output files. This means we're an overridden build
@@ -806,6 +815,10 @@ impl Fingerprint {
                 return Ok(());
             }
         };
+        debug!(
+            "max output mtime for {:?} is {:?} {}",
+            pkg_root, max_path, max_mtime
+        );
 
         for dep in self.deps.iter() {
             let dep_mtimes = match &dep.fingerprint.fs_status {
@@ -817,26 +830,26 @@ impl Fingerprint {
             // If our dependency edge only requires the rmeta file to be present
             // then we only need to look at that one output file, otherwise we
             // need to consider all output files to see if we're out of date.
-            let dep_mtime = if dep.only_requires_rmeta {
+            let (dep_path, dep_mtime) = if dep.only_requires_rmeta {
                 dep_mtimes
                     .iter()
-                    .filter_map(|(path, mtime)| {
-                        if path.extension().and_then(|s| s.to_str()) == Some("rmeta") {
-                            Some(mtime)
-                        } else {
-                            None
-                        }
+                    .filter(|(path, _mtime)| {
+                        path.extension().and_then(|s| s.to_str()) == Some("rmeta")
                     })
                     .next()
                     .expect("failed to find rmeta")
             } else {
-                match dep_mtimes.values().max() {
-                    Some(mtime) => mtime,
+                match dep_mtimes.iter().max_by_key(|kv| kv.1) {
+                    Some(dep_mtime) => dep_mtime,
                     // If our dependencies is up to date and has no filesystem
                     // interactions, then we can move on to the next dependency.
                     None => continue,
                 }
             };
+            debug!(
+                "max dep mtime for {:?} is {:?} {}",
+                pkg_root, dep_path, dep_mtime
+            );
 
             // If the dependency is newer than our own output then it was
             // recompiled previously. We transitively become stale ourselves in
@@ -846,7 +859,10 @@ impl Fingerprint {
             // for a discussion of why it's `>` see the discussion about #5918
             // below in `find_stale`.
             if dep_mtime > max_mtime {
-                log::info!("dependency on `{}` is newer than we are", dep.name);
+                info!(
+                    "dependency on `{}` is newer than we are {} > {} {:?}",
+                    dep.name, dep_mtime, max_mtime, pkg_root
+                );
                 return Ok(());
             }
         }
@@ -864,6 +880,7 @@ impl Fingerprint {
 
         // Everything was up to date! Record such.
         self.fs_status = FsStatus::UpToDate { mtimes };
+        debug!("filesystem up-to-date {:?}", pkg_root);
 
         Ok(())
     }
@@ -980,7 +997,7 @@ impl StaleFile {
     fn log(&self) {
         match self {
             StaleFile::Missing(path) => {
-                log::info!("stale: missing {:?}", path);
+                info!("stale: missing {:?}", path);
             }
             StaleFile::Changed {
                 reference,
@@ -988,9 +1005,9 @@ impl StaleFile {
                 stale,
                 stale_mtime,
             } => {
-                log::info!("stale: changed {:?}", stale);
-                log::info!("          (vs) {:?}", reference);
-                log::info!("               {:?} != {:?}", reference_mtime, stale_mtime);
+                info!("stale: changed {:?}", stale);
+                info!("          (vs) {:?}", reference);
+                info!("               {:?} != {:?}", reference_mtime, stale_mtime);
             }
         }
     }
@@ -1105,7 +1122,7 @@ fn calculate_normal<'a, 'cfg>(
     let m = unit.pkg.manifest().metadata();
     let metadata = util::hash_u64((&m.authors, &m.description, &m.homepage, &m.repository));
     Ok(Fingerprint {
-        rustc: util::hash_u64(&cx.bcx.rustc.verbose_version),
+        rustc: util::hash_u64(&cx.bcx.rustc().verbose_version),
         target: util::hash_u64(&unit.target),
         profile: profile_hash,
         // Note that .0 is hashed here, not .1 which is the cwd. That doesn't
@@ -1134,6 +1151,7 @@ fn calculate_run_custom_build<'a, 'cfg>(
     cx: &mut Context<'a, 'cfg>,
     unit: &Unit<'a>,
 ) -> CargoResult<Fingerprint> {
+    assert!(unit.mode.is_run_custom_build());
     // Using the `BuildDeps` information we'll have previously parsed and
     // inserted into `build_explicit_deps` built an initial snapshot of the
     // `LocalFingerprint` list for this build script. If we previously executed
@@ -1162,7 +1180,7 @@ fn calculate_run_custom_build<'a, 'cfg>(
 
     Ok(Fingerprint {
         local: Mutex::new(local),
-        rustc: util::hash_u64(&cx.bcx.rustc.verbose_version),
+        rustc: util::hash_u64(&cx.bcx.rustc().verbose_version),
         deps,
         outputs: if overridden { Vec::new() } else { vec![output] },
 
@@ -1220,10 +1238,11 @@ fn build_script_local_fingerprints<'a, 'cfg>(
     >,
     bool,
 ) {
+    assert!(unit.mode.is_run_custom_build());
     // First up, if this build script is entirely overridden, then we just
     // return the hash of what we overrode it with. This is the easy case!
     if let Some(fingerprint) = build_script_override_fingerprint(cx, unit) {
-        debug!("override local fingerprints deps");
+        debug!("override local fingerprints deps {}", unit.pkg);
         return (
             Box::new(
                 move |_: &BuildDeps, _: Option<&dyn Fn() -> CargoResult<String>>| {
@@ -1258,8 +1277,11 @@ fn build_script_local_fingerprints<'a, 'cfg>(
                     // (like for a path dependency). Those list of files would
                     // be stored here rather than the the mtime of them.
                     Some(f) => {
-                        debug!("old local fingerprints deps");
                         let s = f()?;
+                        debug!(
+                            "old local fingerprints deps {:?} precalculated={:?}",
+                            pkg_root, s
+                        );
                         return Ok(Some(vec![LocalFingerprint::Precalculated(s)]));
                     }
                     None => return Ok(None),
@@ -1285,8 +1307,9 @@ fn build_script_override_fingerprint<'a, 'cfg>(
     // Build script output is only populated at this stage when it is
     // overridden.
     let build_script_outputs = cx.build_script_outputs.lock().unwrap();
+    let metadata = cx.get_run_build_script_metadata(unit);
     // Returns None if it is not overridden.
-    let output = build_script_outputs.get(&(unit.pkg.package_id(), unit.kind))?;
+    let output = build_script_outputs.get(unit.pkg.package_id(), metadata)?;
     let s = format!(
         "overridden build state with hash: {}",
         util::hash_u64(output)
@@ -1302,7 +1325,7 @@ fn local_fingerprints_deps(
     target_root: &Path,
     pkg_root: &Path,
 ) -> Vec<LocalFingerprint> {
-    debug!("new local fingerprints deps");
+    debug!("new local fingerprints deps {:?}", pkg_root);
     let mut local = Vec::new();
 
     if !deps.rerun_if_changed.is_empty() {
@@ -1387,6 +1410,7 @@ fn compare_old_fingerprint(
     if mtime_on_use {
         // update the mtime so other cleaners know we used it
         let t = FileTime::from_system_time(SystemTime::now());
+        debug!("mtime-on-use forcing {:?} to {}", loc, t);
         filetime::set_file_times(loc, t, t)?;
     }
 
@@ -1513,6 +1537,10 @@ where
         });
     }
 
+    debug!(
+        "all paths up-to-date relative to {:?} mtime={}",
+        reference, reference_mtime
+    );
     None
 }
 

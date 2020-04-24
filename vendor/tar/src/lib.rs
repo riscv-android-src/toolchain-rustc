@@ -21,23 +21,15 @@
 #![deny(missing_docs)]
 #![cfg_attr(test, deny(warnings))]
 
-extern crate filetime;
-#[cfg(unix)]
-extern crate libc;
-#[cfg(target_os = "redox")]
-extern crate syscall;
-#[cfg(all(unix, feature = "xattr"))]
-extern crate xattr;
-
 use std::io::{Error, ErrorKind};
 
-pub use archive::{Archive, Entries};
-pub use builder::Builder;
-pub use entry::Entry;
-pub use entry_type::EntryType;
-pub use header::GnuExtSparseHeader;
-pub use header::{GnuHeader, GnuSparseHeader, Header, HeaderMode, OldHeader, UstarHeader};
-pub use pax::{PaxExtension, PaxExtensions};
+pub use crate::archive::{Archive, Entries};
+pub use crate::builder::Builder;
+pub use crate::entry::{Entry, Unpacked};
+pub use crate::entry_type::EntryType;
+pub use crate::header::GnuExtSparseHeader;
+pub use crate::header::{GnuHeader, GnuSparseHeader, Header, HeaderMode, OldHeader, UstarHeader};
+pub use crate::pax::{PaxExtension, PaxExtensions};
 
 mod archive;
 mod builder;

@@ -9,10 +9,15 @@ use rustc::hir::map::Map;
 use rustc::lint::in_external_macro;
 use rustc::ty::layout::LayoutOf;
 use rustc::ty::{self, InferTy, Ty, TyCtxt, TypeckTables};
+use rustc_ast::ast::{FloatTy, IntTy, LitFloatType, LitIntType, LitKind, UintTy};
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::intravisit::{walk_body, walk_expr, walk_ty, FnKind, NestedVisitorMap, Visitor};
-use rustc_hir::*;
+use rustc_hir::{
+    BinOpKind, Body, Expr, ExprKind, FnDecl, FnRetTy, FnSig, GenericArg, GenericParamKind, HirId, ImplItem,
+    ImplItemKind, Item, ItemKind, Lifetime, Local, MatchSource, MutTy, Mutability, QPath, Stmt, StmtKind, TraitItem,
+    TraitItemKind, TraitMethod, TyKind, UnOp,
+};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_span::hygiene::{ExpnKind, MacroKind};
@@ -20,15 +25,14 @@ use rustc_span::source_map::Span;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_target::spec::abi::Abi;
 use rustc_typeck::hir_ty_to_ty;
-use syntax::ast::{FloatTy, IntTy, LitFloatType, LitIntType, LitKind, UintTy};
 
 use crate::consts::{constant, Constant};
 use crate::utils::paths;
 use crate::utils::{
     clip, comparisons, differing_macro_contexts, higher, in_constant, int_bits, last_path_segment, match_def_path,
-    match_path, method_chain_args, multispan_sugg, qpath_res, same_tys, sext, snippet, snippet_opt,
-    snippet_with_applicability, snippet_with_macro_callsite, span_help_and_lint, span_lint, span_lint_and_sugg,
-    span_lint_and_then, unsext,
+    match_path, method_chain_args, multispan_sugg, numeric_literal::NumericLiteral, qpath_res, same_tys, sext, snippet,
+    snippet_opt, snippet_with_applicability, snippet_with_macro_callsite, span_lint, span_lint_and_help,
+    span_lint_and_sugg, span_lint_and_then, unsext,
 };
 
 declare_clippy_lint! {
@@ -242,7 +246,7 @@ impl Types {
             self.check_ty(cx, input, false);
         }
 
-        if let FunctionRetTy::Return(ref ty) = decl.output {
+        if let FnRetTy::Return(ref ty) = decl.output {
             self.check_ty(cx, ty, false);
         }
     }
@@ -264,7 +268,7 @@ impl Types {
                 if let Some(def_id) = res.opt_def_id() {
                     if Some(def_id) == cx.tcx.lang_items().owned_box() {
                         if match_type_parameter(cx, qpath, &paths::VEC) {
-                            span_help_and_lint(
+                            span_lint_and_help(
                                 cx,
                                 BOX_VEC,
                                 hir_ty.span,
@@ -316,12 +320,12 @@ impl Types {
                                 OPTION_OPTION,
                                 hir_ty.span,
                                 "consider using `Option<T>` instead of `Option<Option<T>>` or a custom \
-                                enum if you need to distinguish all 3 cases",
+                                 enum if you need to distinguish all 3 cases",
                             );
                             return; // don't recurse into the type
                         }
                     } else if match_def_path(cx, def_id, &paths::LINKED_LIST) {
-                        span_help_and_lint(
+                        span_lint_and_help(
                             cx,
                             LINKEDLIST,
                             hir_ty.span,
@@ -1206,22 +1210,25 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Casts {
             let (cast_from, cast_to) = (cx.tables.expr_ty(ex), cx.tables.expr_ty(expr));
             lint_fn_to_numeric_cast(cx, expr, ex, cast_from, cast_to);
             if let ExprKind::Lit(ref lit) = ex.kind {
-                if let LitKind::Int(n, _) = lit.node {
-                    if cast_to.is_floating_point() {
-                        let from_nbits = 128 - n.leading_zeros();
-                        let to_nbits = fp_ty_mantissa_nbits(cast_to);
-                        if from_nbits != 0 && to_nbits != 0 && from_nbits <= to_nbits {
-                            span_lint_and_sugg(
-                                cx,
-                                UNNECESSARY_CAST,
-                                expr.span,
-                                &format!("casting integer literal to `{}` is unnecessary", cast_to),
-                                "try",
-                                format!("{}_{}", n, cast_to),
-                                Applicability::MachineApplicable,
-                            );
-                            return;
-                        }
+                if_chain! {
+                    if let LitKind::Int(n, _) = lit.node;
+                    if let Some(src) = snippet_opt(cx, lit.span);
+                    if cast_to.is_floating_point();
+                    if let Some(num_lit) = NumericLiteral::from_lit_kind(&src, &lit.node);
+                    let from_nbits = 128 - n.leading_zeros();
+                    let to_nbits = fp_ty_mantissa_nbits(cast_to);
+                    if from_nbits != 0 && to_nbits != 0 && from_nbits <= to_nbits && num_lit.is_decimal();
+                    then {
+                        span_lint_and_sugg(
+                            cx,
+                            UNNECESSARY_CAST,
+                            expr.span,
+                            &format!("casting integer literal to `{}` is unnecessary", cast_to),
+                            "try",
+                            format!("{}_{}", n, cast_to),
+                            Applicability::MachineApplicable,
+                        );
+                        return;
                     }
                 }
                 match lit.node {
@@ -1476,7 +1483,7 @@ impl<'a, 'tcx> TypeComplexity {
         for arg in decl.inputs {
             self.check_type(cx, arg);
         }
-        if let FunctionRetTy::Return(ref ty) = decl.output {
+        if let FnRetTy::Return(ref ty) = decl.output {
             self.check_type(cx, ty);
         }
     }
@@ -1679,9 +1686,9 @@ fn detect_absurd_comparison<'a, 'tcx>(
     lhs: &'tcx Expr<'_>,
     rhs: &'tcx Expr<'_>,
 ) -> Option<(ExtremeExpr<'tcx>, AbsurdComparisonResult)> {
-    use crate::types::AbsurdComparisonResult::*;
-    use crate::types::ExtremeType::*;
-    use crate::utils::comparisons::*;
+    use crate::types::AbsurdComparisonResult::{AlwaysFalse, AlwaysTrue, InequalityImpossible};
+    use crate::types::ExtremeType::{Maximum, Minimum};
+    use crate::utils::comparisons::{normalize_comparison, Rel};
 
     // absurd comparison only makes sense on primitive types
     // primitive types don't implement comparison operators with each other
@@ -1694,12 +1701,7 @@ fn detect_absurd_comparison<'a, 'tcx>(
         return None;
     }
 
-    let normalized = normalize_comparison(op, lhs, rhs);
-    let (rel, normalized_lhs, normalized_rhs) = if let Some(val) = normalized {
-        val
-    } else {
-        return None;
-    };
+    let (rel, normalized_lhs, normalized_rhs) = normalize_comparison(op, lhs, rhs)?;
 
     let lx = detect_extreme_expr(cx, normalized_lhs);
     let rx = detect_extreme_expr(cx, normalized_rhs);
@@ -1726,7 +1728,7 @@ fn detect_absurd_comparison<'a, 'tcx>(
 }
 
 fn detect_extreme_expr<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> Option<ExtremeExpr<'tcx>> {
-    use crate::types::ExtremeType::*;
+    use crate::types::ExtremeType::{Maximum, Minimum};
 
     let ty = cx.tables.expr_ty(expr);
 
@@ -1755,8 +1757,8 @@ fn detect_extreme_expr<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AbsurdExtremeComparisons {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
-        use crate::types::AbsurdComparisonResult::*;
-        use crate::types::ExtremeType::*;
+        use crate::types::AbsurdComparisonResult::{AlwaysFalse, AlwaysTrue, InequalityImpossible};
+        use crate::types::ExtremeType::{Maximum, Minimum};
 
         if let ExprKind::Binary(ref cmp, ref lhs, ref rhs) = expr.kind {
             if let Some((culprit, result)) = detect_absurd_comparison(cx, cmp.node, lhs, rhs) {
@@ -1785,7 +1787,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AbsurdExtremeComparisons {
                         conclusion
                     );
 
-                    span_help_and_lint(cx, ABSURD_EXTREME_COMPARISONS, expr.span, msg, &help);
+                    span_lint_and_help(cx, ABSURD_EXTREME_COMPARISONS, expr.span, msg, &help);
                 }
             }
         }
@@ -1863,7 +1865,7 @@ impl Ord for FullInt {
 }
 
 fn numeric_cast_precast_bounds<'a>(cx: &LateContext<'_, '_>, expr: &'a Expr<'_>) -> Option<(FullInt, FullInt)> {
-    use std::*;
+    use std::{i128, i16, i32, i64, i8, isize, u128, u16, u32, u64, u8, usize};
 
     if let ExprKind::Cast(ref cast_exp, _) = expr.kind {
         let pre_cast_ty = cx.tables.expr_ty(cast_exp);
@@ -1963,7 +1965,7 @@ fn upcast_comparison_bounds_err<'a, 'tcx>(
     rhs: &'tcx Expr<'_>,
     invert: bool,
 ) {
-    use crate::utils::comparisons::*;
+    use crate::utils::comparisons::Rel;
 
     if let Some((lb, ub)) = lhs_bounds {
         if let Some(norm_rhs_val) = node_as_const_fullint(cx, rhs) {

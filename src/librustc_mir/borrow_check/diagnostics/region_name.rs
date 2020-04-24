@@ -291,7 +291,7 @@ impl<'tcx> MirBorrowckCtxt<'_, 'tcx> {
             | ty::ReScope(..)
             | ty::ReVar(..)
             | ty::RePlaceholder(..)
-            | ty::ReEmpty
+            | ty::ReEmpty(_)
             | ty::ReErased
             | ty::ReClosureBound(..) => None,
         }
@@ -645,8 +645,8 @@ impl<'tcx> MirBorrowckCtxt<'_, 'tcx> {
                 ..
             }) => (
                 match return_ty.output {
-                    hir::FunctionRetTy::DefaultReturn(_) => tcx.sess.source_map().end_point(*span),
-                    hir::FunctionRetTy::Return(_) => return_ty.output.span(),
+                    hir::FnRetTy::DefaultReturn(_) => tcx.sess.source_map().end_point(*span),
+                    hir::FnRetTy::Return(_) => return_ty.output.span(),
                 },
                 if gen_move.is_some() { " of generator" } else { " of closure" },
             ),

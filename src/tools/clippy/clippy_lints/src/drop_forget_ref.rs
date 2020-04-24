@@ -1,7 +1,7 @@
-use crate::utils::{is_copy, match_def_path, paths, qpath_res, span_note_and_lint};
+use crate::utils::{is_copy, match_def_path, paths, qpath_res, span_lint_and_note};
 use if_chain::if_chain;
 use rustc::ty;
-use rustc_hir::*;
+use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
@@ -131,7 +131,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DropForgetRef {
                     } else {
                         return;
                     }
-                    span_note_and_lint(cx,
+                    span_lint_and_note(cx,
                                        lint,
                                        expr.span,
                                        &msg,
@@ -147,7 +147,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DropForgetRef {
                     } else {
                         return;
                     }
-                    span_note_and_lint(cx,
+                    span_lint_and_note(cx,
                                        lint,
                                        expr.span,
                                        &msg,

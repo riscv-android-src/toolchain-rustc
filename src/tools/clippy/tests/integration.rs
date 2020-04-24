@@ -1,7 +1,5 @@
 #![cfg(feature = "integration")]
 
-use git2::Repository;
-
 use std::env;
 use std::process::Command;
 
@@ -19,7 +17,11 @@ fn integration_test() {
         .path()
         .join(crate_name);
 
-    Repository::clone(&repo_url, &repo_dir).expect("clone of repo failed");
+    let st = Command::new("git")
+        .args(&["clone", "--depth=1", &repo_url, repo_dir.to_str().unwrap()])
+        .status()
+        .expect("unable to run git");
+    assert!(st.success());
 
     let root_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let target_dir = std::path::Path::new(&root_dir).join("target");
@@ -59,6 +61,10 @@ fn integration_test() {
         panic!("query stack during panic in the output");
     } else if stderr.contains("E0463") {
         panic!("error: E0463");
+    } else if stderr.contains("E0514") {
+        panic!("incompatible crate versions");
+    } else if stderr.contains("failed to run `rustc` to learn about target-specific information") {
+        panic!("couldn't find librustc_driver, consider setting `LD_LIBRARY_PATH`");
     }
 
     match output.status.code() {

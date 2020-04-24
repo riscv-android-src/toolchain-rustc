@@ -33,7 +33,6 @@ use rustc_data_structures::jobserver::{self, Client};
 use rustc_data_structures::profiling::{SelfProfiler, SelfProfilerRef};
 use rustc_target::spec::{PanicStrategy, RelroLevel, Target, TargetTriple};
 
-use std;
 use std::cell::{self, RefCell};
 use std::env;
 use std::fmt;
@@ -89,6 +88,9 @@ pub struct Session {
     /// The maximum length of types during monomorphization.
     pub type_length_limit: Once<usize>,
 
+    /// The maximum blocks a const expression can evaluate.
+    pub const_eval_limit: Once<usize>,
+
     /// Map from imported macro spans (which consist of
     /// the localized span for the macro body) to the
     /// macro name and definition span in the source crate.
@@ -133,6 +135,10 @@ pub struct Session {
     /// Mapping from ident span to path span for paths that don't exist as written, but that
     /// exist under `std`. For example, wrote `str::from_utf8` instead of `std::str::from_utf8`.
     pub confused_type_with_std_module: Lock<FxHashMap<Span, Span>>,
+
+    /// Path for libraries that will take preference over libraries shipped by Rust.
+    /// Used by windows-gnu targets to priortize system mingw-w64 libraries.
+    pub system_library_path: OneThread<RefCell<Option<Option<PathBuf>>>>,
 }
 
 pub struct PerfStats {
@@ -389,6 +395,7 @@ impl Session {
         );
     }
 
+    #[inline]
     pub fn source_map(&self) -> &source_map::SourceMap {
         self.parse_sess.source_map()
     }
@@ -855,7 +862,7 @@ fn default_emitter(
     source_map: &Lrc<source_map::SourceMap>,
     emitter_dest: Option<Box<dyn Write + Send>>,
 ) -> Box<dyn Emitter + sync::Send> {
-    let external_macro_backtrace = sopts.debugging_opts.external_macro_backtrace;
+    let macro_backtrace = sopts.debugging_opts.macro_backtrace;
     match (sopts.error_format, emitter_dest) {
         (config::ErrorOutputType::HumanReadable(kind), dst) => {
             let (short, color_config) = kind.unzip();
@@ -864,7 +871,7 @@ fn default_emitter(
                 let emitter = AnnotateSnippetEmitterWriter::new(
                     Some(source_map.clone()),
                     short,
-                    external_macro_backtrace,
+                    macro_backtrace,
                 );
                 Box::new(emitter.ui_testing(sopts.debugging_opts.ui_testing()))
             } else {
@@ -875,7 +882,7 @@ fn default_emitter(
                         short,
                         sopts.debugging_opts.teach,
                         sopts.debugging_opts.terminal_width,
-                        external_macro_backtrace,
+                        macro_backtrace,
                     ),
                     Some(dst) => EmitterWriter::new(
                         dst,
@@ -884,7 +891,7 @@ fn default_emitter(
                         false, // no teach messages when writing to a buffer
                         false, // no colors when writing to a buffer
                         None,  // no terminal width
-                        external_macro_backtrace,
+                        macro_backtrace,
                     ),
                 };
                 Box::new(emitter.ui_testing(sopts.debugging_opts.ui_testing()))
@@ -896,7 +903,7 @@ fn default_emitter(
                 source_map.clone(),
                 pretty,
                 json_rendered,
-                external_macro_backtrace,
+                macro_backtrace,
             )
             .ui_testing(sopts.debugging_opts.ui_testing()),
         ),
@@ -907,7 +914,7 @@ fn default_emitter(
                 source_map.clone(),
                 pretty,
                 json_rendered,
-                external_macro_backtrace,
+                macro_backtrace,
             )
             .ui_testing(sopts.debugging_opts.ui_testing()),
         ),
@@ -1049,6 +1056,7 @@ fn build_session_(
         features: Once::new(),
         recursion_limit: Once::new(),
         type_length_limit: Once::new(),
+        const_eval_limit: Once::new(),
         imported_macro_spans: OneThread::new(RefCell::new(FxHashMap::default())),
         incr_comp_session: OneThread::new(RefCell::new(IncrCompSession::NotInitialized)),
         cgu_reuse_tracker,
@@ -1069,6 +1077,7 @@ fn build_session_(
         driver_lint_caps,
         trait_methods_not_found: Lock::new(Default::default()),
         confused_type_with_std_module: Lock::new(Default::default()),
+        system_library_path: OneThread::new(RefCell::new(Default::default())),
     };
 
     validate_commandline_args_with_session_available(&sess);
@@ -1121,7 +1130,8 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         sess.err(
             "Profile-guided optimization does not yet work in conjunction \
                   with `-Cpanic=unwind` on Windows when targeting MSVC. \
-                  See https://github.com/rust-lang/rust/issues/61002 for details.",
+                  See issue #61002 <https://github.com/rust-lang/rust/issues/61002> \
+                  for more information.",
         );
     }
 

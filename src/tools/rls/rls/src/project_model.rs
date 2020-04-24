@@ -48,7 +48,7 @@ impl ProjectModel {
         // Enable nightly flag for cargo(see #1043)
         cargo::core::enable_nightly_features();
         // frozen = false, locked = false, offline = false
-        config.configure(0, Some(true), None, false, false, false, &None, &[], &[])?;
+        config.configure(0, true, None, false, false, false, &None, &[], &[])?;
         let ws = Workspace::new(&ws_manifest, &config)?;
         // get resolve from lock file
         let prev = {
@@ -215,5 +215,5 @@ fn resolve_with_prev<'cfg>(
     ws: &Workspace<'cfg>,
     prev: Option<&Resolve>,
 ) -> CargoResult<Resolve> {
-    ops::resolve_with_previous(registry, ws, ResolveOpts::everything(), prev, None, &[], true)
+    ops::resolve_with_previous(registry, ws, &ResolveOpts::everything(), prev, None, &[], true)
 }

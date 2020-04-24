@@ -9,7 +9,7 @@ use std::ptr::{Unique, NonNull, self};
 use std::mem;
 use std::ops::{Deref, DerefMut};
 use std::marker::PhantomData;
-use std::alloc::{Alloc, GlobalAlloc, Layout, Global, handle_alloc_error};
+use std::alloc::{AllocRef, GlobalAlloc, Layout, Global, handle_alloc_error};
 
 struct RawVec<T> {
     ptr: Unique<T>,
@@ -52,7 +52,7 @@ impl<T> RawVec<T> {
                     mem::align_of::<T>(),
                 ))
             }
-            let ptr = ptr.unwrap();
+            let (ptr, _) = ptr.unwrap();
 
             self.ptr = Unique::new_unchecked(ptr.as_ptr() as *mut _);
             self.cap = new_cap;

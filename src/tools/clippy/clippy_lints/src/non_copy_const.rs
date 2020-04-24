@@ -7,7 +7,7 @@ use std::ptr;
 use rustc::ty::adjustment::Adjust;
 use rustc::ty::{Ty, TypeFlags};
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::*;
+use rustc_hir::{Expr, ExprKind, ImplItem, ImplItemKind, Item, ItemKind, Node, TraitItem, TraitItemKind, UnOp};
 use rustc_lint::{LateContext, LateLintPass, Lint};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::{InnerSpan, Span, DUMMY_SP};
@@ -128,7 +128,7 @@ fn verify_ty_bound<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>, source: S
                 db.span_label(const_kw_span, "make this a static item (maybe with lazy_static)");
             },
             Source::Assoc { ty: ty_span, .. } => {
-                if ty.flags.contains(TypeFlags::HAS_FREE_LOCAL_NAMES) {
+                if ty.flags.intersects(TypeFlags::HAS_FREE_LOCAL_NAMES) {
                     db.span_label(ty_span, &format!("consider requiring `{}` to be `Copy`", ty));
                 }
             },

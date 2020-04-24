@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_errors"
-version = "610.0.0"
+version = "642.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_errors` in the rust-lang/rust repository from commit 4b42e919d640f7c714a7e87c91b4f3a9089552d0 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_errors` in the rust-lang/rust repository from commit a29424a2265411dda7d7446516ac5fd7499e2b55 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
@@ -32,22 +32,25 @@ version = "0.2"
 version = "0.4"
 
 [dependencies.rustc_data_structures]
-version = "610.0.0"
+version = "642.0.0"
 package = "rustc-ap-rustc_data_structures"
 
 [dependencies.rustc_serialize]
-version = "610.0.0"
+version = "642.0.0"
 package = "rustc-ap-serialize"
 
-[dependencies.syntax_pos]
-version = "610.0.0"
-package = "rustc-ap-syntax_pos"
-
-[dependencies.term_size]
-version = "0.3.1"
+[dependencies.rustc_span]
+version = "642.0.0"
+package = "rustc-ap-rustc_span"
 
 [dependencies.termcolor]
 version = "1.0"
 
+[dependencies.termize]
+version = "0.1.1"
+
 [dependencies.unicode-width]
 version = "0.1.4"
+[target."cfg(windows)".dependencies.winapi]
+version = "0.3"
+features = ["handleapi", "synchapi", "winbase"]

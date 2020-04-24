@@ -89,10 +89,11 @@ impl<'repo> PackBuilder<'repo> {
     {
         let mut cb = &mut cb as &mut ForEachCb<'_>;
         let ptr = &mut cb as *mut _;
+        let foreach: raw::git_packbuilder_foreach_cb = Some(foreach_c);
         unsafe {
             try_call!(raw::git_packbuilder_foreach(
                 self.raw,
-                foreach_c,
+                foreach,
                 ptr as *mut _
             ));
         }
@@ -112,7 +113,7 @@ impl<'repo> PackBuilder<'repo> {
     {
         let mut progress = Box::new(Box::new(progress) as Box<ProgressCb<'_>>);
         let ptr = &mut *progress as *mut _;
-        let progress_c = Some(progress_c as raw::git_packbuilder_progress);
+        let progress_c: raw::git_packbuilder_progress = Some(progress_c);
         unsafe {
             try_call!(raw::git_packbuilder_set_callbacks(
                 self.raw,
@@ -246,24 +247,7 @@ extern "C" fn progress_c(
 
 #[cfg(test)]
 mod tests {
-    use crate::{Buf, Oid, Repository};
-    use std::fs::File;
-    use std::path::Path;
-
-    fn commit(repo: &Repository) -> (Oid, Oid) {
-        let mut index = t!(repo.index());
-        let root = repo.path().parent().unwrap();
-        t!(File::create(&root.join("foo")));
-        t!(index.add_path(Path::new("foo")));
-
-        let tree_id = t!(index.write_tree());
-        let tree = t!(repo.find_tree(tree_id));
-        let sig = t!(repo.signature());
-        let head_id = t!(repo.refname_to_id("HEAD"));
-        let parent = t!(repo.find_commit(head_id));
-        let commit = t!(repo.commit(Some("HEAD"), &sig, &sig, "commit", &tree, &[&parent]));
-        (commit, tree_id)
-    }
+    use crate::Buf;
 
     fn pack_header(len: u8) -> Vec<u8> {
         [].iter()
@@ -320,7 +304,7 @@ mod tests {
         let (_td, repo) = crate::test::repo_init();
         let mut builder = t!(repo.packbuilder());
         let mut buf = Buf::new();
-        let (commit, _tree) = commit(&repo);
+        let (commit, _tree) = crate::test::commit(&repo);
         t!(builder.insert_object(commit, None));
         assert_eq!(builder.object_count(), 1);
         t!(builder.write_buf(&mut buf));
@@ -333,7 +317,7 @@ mod tests {
         let (_td, repo) = crate::test::repo_init();
         let mut builder = t!(repo.packbuilder());
         let mut buf = Buf::new();
-        let (_commit, tree) = commit(&repo);
+        let (_commit, tree) = crate::test::commit(&repo);
         // will insert the tree itself and the blob, 2 objects
         t!(builder.insert_tree(tree));
         assert_eq!(builder.object_count(), 2);
@@ -347,7 +331,7 @@ mod tests {
         let (_td, repo) = crate::test::repo_init();
         let mut builder = t!(repo.packbuilder());
         let mut buf = Buf::new();
-        let (commit, _tree) = commit(&repo);
+        let (commit, _tree) = crate::test::commit(&repo);
         // will insert the commit, its tree and the blob, 3 objects
         t!(builder.insert_commit(commit));
         assert_eq!(builder.object_count(), 3);
@@ -362,7 +346,7 @@ mod tests {
         {
             let (_td, repo) = crate::test::repo_init();
             let mut builder = t!(repo.packbuilder());
-            let (commit, _tree) = commit(&repo);
+            let (commit, _tree) = crate::test::commit(&repo);
             t!(builder.set_progress_callback(|_, _, _| {
                 progress_called = true;
                 true
@@ -379,7 +363,7 @@ mod tests {
         {
             let (_td, repo) = crate::test::repo_init();
             let mut builder = t!(repo.packbuilder());
-            let (commit, _tree) = commit(&repo);
+            let (commit, _tree) = crate::test::commit(&repo);
             t!(builder.set_progress_callback(|_, _, _| {
                 progress_called = true;
                 true

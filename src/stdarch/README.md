@@ -1,7 +1,8 @@
 stdarch - Rust's standard library SIMD components
 =======
 
-[![Azure Pipelines Status]][azure]
+[![Actions Status](https://github.com/rust-lang/stdarch/workflows/CI/badge.svg)](https://github.com/rust-lang/stdarch/actions)
+
 
 # Crates
 
@@ -29,8 +30,6 @@ To do a release of the `core_arch` and `std_detect` crates,
   https://github.com/rust-lang/cargo/issues/4242),
 * publish the crates.
 
-[azure]: https://dev.azure.com/rust-lang2/stdarch/_build/latest?definitionId=2&branchName=auto
-[Azure Pipelines Status]: https://dev.azure.com/rust-lang2/stdarch/_apis/build/status/rust-lang.stdarch?branchName=auto
 [core_arch_crate_badge]: https://img.shields.io/crates/v/core_arch.svg
 [core_arch_crate_link]: https://crates.io/crates/core_arch
 [core_arch_docs_badge]: https://docs.rs/core_arch/badge.svg

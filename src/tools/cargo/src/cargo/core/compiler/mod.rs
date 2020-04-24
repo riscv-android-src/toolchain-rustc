@@ -28,11 +28,11 @@ use lazycell::LazyCell;
 use log::debug;
 
 pub use self::build_config::{BuildConfig, CompileMode, MessageFormat};
-pub use self::build_context::{BuildContext, FileFlavor, TargetInfo};
+pub use self::build_context::{BuildContext, FileFlavor, RustcTargetData, TargetInfo};
 use self::build_plan::BuildPlan;
 pub use self::compilation::{Compilation, Doctest};
 pub use self::compile_kind::{CompileKind, CompileTarget};
-pub use self::context::Context;
+pub use self::context::{Context, Metadata};
 pub use self::custom_build::{BuildOutput, BuildScriptOutputs, BuildScripts};
 pub use self::job::Freshness;
 use self::job::{Job, Work};
@@ -44,7 +44,7 @@ pub use crate::core::compiler::unit::{Unit, UnitInterner};
 use crate::core::manifest::TargetSourcePath;
 use crate::core::profiles::{Lto, PanicStrategy, Profile};
 use crate::core::{Edition, Feature, InternedString, PackageId, Target};
-use crate::util::errors::{self, CargoResult, CargoResultExt, Internal, ProcessError};
+use crate::util::errors::{self, CargoResult, CargoResultExt, ProcessError, VerboseError};
 use crate::util::machine_message::Message;
 use crate::util::{self, machine_message, ProcessBuilder};
 use crate::util::{internal, join_paths, paths, profile};
@@ -181,7 +181,6 @@ fn rustc<'a, 'cfg>(
 
     let outputs = cx.outputs(unit)?;
     let root = cx.files().out_dir(unit);
-    let kind = unit.kind;
 
     // Prepare the native lib state (extra `-L` and `-l` flags).
     let build_script_outputs = Arc::clone(&cx.build_script_outputs);
@@ -225,6 +224,7 @@ fn rustc<'a, 'cfg>(
         .unwrap_or_else(|| cx.bcx.config.cwd())
         .to_path_buf();
     let fingerprint_dir = cx.files().fingerprint_dir(unit);
+    let script_metadata = cx.find_build_script_metadata(*unit);
 
     return Ok(Work::new(move |state| {
         // Only at runtime have we discovered what the extra -L and -l
@@ -247,7 +247,7 @@ fn rustc<'a, 'cfg>(
                 )?;
                 add_plugin_deps(&mut rustc, &script_outputs, &build_scripts, &root_output)?;
             }
-            add_custom_env(&mut rustc, &script_outputs, current_id, kind)?;
+            add_custom_env(&mut rustc, &script_outputs, current_id, script_metadata)?;
         }
 
         for output in outputs.iter() {
@@ -262,7 +262,7 @@ fn rustc<'a, 'cfg>(
             }
         }
 
-        fn internal_if_simple_exit_code(err: Error) -> Error {
+        fn verbose_if_simple_exit_code(err: Error) -> Error {
             // If a signal on unix (`code == None`) or an abnormal termination
             // on Windows (codes like `0xC0000409`), don't hide the error details.
             match err
@@ -270,7 +270,7 @@ fn rustc<'a, 'cfg>(
                 .as_ref()
                 .and_then(|perr| perr.exit.and_then(|e| e.code()))
             {
-                Some(n) if errors::is_simple_exit_code(n) => Internal::new(err).into(),
+                Some(n) if errors::is_simple_exit_code(n) => VerboseError::new(err).into(),
                 _ => err,
             }
         }
@@ -288,7 +288,7 @@ fn rustc<'a, 'cfg>(
                 &mut |line| on_stdout_line(state, line, package_id, &target),
                 &mut |line| on_stderr_line(state, line, package_id, &target, &mut output_options),
             )
-            .map_err(internal_if_simple_exit_code)
+            .map_err(verbose_if_simple_exit_code)
             .chain_err(|| format!("could not compile `{}`.", name))?;
         }
 
@@ -302,8 +302,7 @@ fn rustc<'a, 'cfg>(
                     .replace(&real_name, &crate_name),
             );
             if src.exists() && src.file_name() != dst.file_name() {
-                fs::rename(&src, &dst)
-                    .chain_err(|| internal(format!("could not rename crate {:?}", src)))?;
+                fs::rename(&src, &dst).chain_err(|| format!("could not rename crate {:?}", src))?;
             }
         }
 
@@ -323,6 +322,7 @@ fn rustc<'a, 'cfg>(
                     rustc_dep_info_loc.display()
                 ))
             })?;
+            debug!("rewinding mtime of {:?} to {}", dep_info_loc, timestamp);
             filetime::set_file_times(dep_info_loc, timestamp, timestamp)?;
         }
 
@@ -340,9 +340,9 @@ fn rustc<'a, 'cfg>(
         current_id: PackageId,
     ) -> CargoResult<()> {
         for key in build_scripts.to_link.iter() {
-            let output = build_script_outputs.get(key).ok_or_else(|| {
+            let output = build_script_outputs.get(key.0, key.1).ok_or_else(|| {
                 internal(format!(
-                    "couldn't find build script output for {}/{:?}",
+                    "couldn't find build script output for {}/{}",
                     key.0, key.1
                 ))
             })?;
@@ -375,10 +375,13 @@ fn rustc<'a, 'cfg>(
         rustc: &mut ProcessBuilder,
         build_script_outputs: &BuildScriptOutputs,
         current_id: PackageId,
-        kind: CompileKind,
+        metadata: Option<Metadata>,
     ) -> CargoResult<()> {
-        let key = (current_id, kind);
-        if let Some(output) = build_script_outputs.get(&key) {
+        let metadata = match metadata {
+            Some(metadata) => metadata,
+            None => return Ok(()),
+        };
+        if let Some(output) = build_script_outputs.get(current_id, metadata) {
             for &(ref name, ref value) in output.env.iter() {
                 rustc.env(name, value);
             }
@@ -477,10 +480,10 @@ fn add_plugin_deps(
     let var = util::dylib_path_envvar();
     let search_path = rustc.get_env(var).unwrap_or_default();
     let mut search_path = env::split_paths(&search_path).collect::<Vec<_>>();
-    for &id in build_scripts.plugins.iter() {
+    for (pkg_id, metadata) in &build_scripts.plugins {
         let output = build_script_outputs
-            .get(&(id, CompileKind::Host))
-            .ok_or_else(|| internal(format!("couldn't find libs for plugin dep {}", id)))?;
+            .get(*pkg_id, *metadata)
+            .ok_or_else(|| internal(format!("couldn't find libs for plugin dep {}", pkg_id)))?;
         search_path.append(&mut filter_dynamic_search_path(
             output.library_paths.iter(),
             root_output,
@@ -538,7 +541,14 @@ fn prepare_rustc<'a, 'cfg>(
     let is_primary = cx.is_primary_package(unit);
 
     let mut base = cx.compilation.rustc_process(unit.pkg, is_primary)?;
-    base.inherit_jobserver(&cx.jobserver);
+    if cx.bcx.config.cli_unstable().jobserver_per_rustc {
+        let client = cx.new_jobserver()?;
+        base.inherit_jobserver(&client);
+        base.arg("-Zjobserver-token-requests");
+        assert!(cx.rustc_clients.insert(*unit, client).is_none());
+    } else {
+        base.inherit_jobserver(&cx.jobserver);
+    }
     build_base_args(cx, &mut base, unit, crate_types)?;
     build_deps_args(&mut base, cx, unit)?;
     Ok(base)
@@ -549,6 +559,7 @@ fn rustdoc<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult
     let mut rustdoc = cx.compilation.rustdoc_process(unit.pkg, unit.target)?;
     rustdoc.inherit_jobserver(&cx.jobserver);
     rustdoc.arg("--crate-name").arg(&unit.target.crate_name());
+    add_crate_versions_if_requested(bcx, unit, &mut rustdoc);
     add_path_args(bcx, unit, &mut rustdoc);
     add_cap_lints(bcx, unit, &mut rustdoc);
 
@@ -581,18 +592,25 @@ fn rustdoc<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult
 
     let name = unit.pkg.name().to_string();
     let build_script_outputs = Arc::clone(&cx.build_script_outputs);
-    let key = (unit.pkg.package_id(), unit.kind);
     let package_id = unit.pkg.package_id();
     let target = unit.target.clone();
     let mut output_options = OutputOptions::new(cx, unit);
+    let pkg_id = unit.pkg.package_id();
+    let script_metadata = cx.find_build_script_metadata(*unit);
 
     Ok(Work::new(move |state| {
-        if let Some(output) = build_script_outputs.lock().unwrap().get(&key) {
-            for cfg in output.cfgs.iter() {
-                rustdoc.arg("--cfg").arg(cfg);
-            }
-            for &(ref name, ref value) in output.env.iter() {
-                rustdoc.env(name, value);
+        if let Some(script_metadata) = script_metadata {
+            if let Some(output) = build_script_outputs
+                .lock()
+                .unwrap()
+                .get(pkg_id, script_metadata)
+            {
+                for cfg in output.cfgs.iter() {
+                    rustdoc.arg("--cfg").arg(cfg);
+                }
+                for &(ref name, ref value) in output.env.iter() {
+                    rustdoc.env(name, value);
+                }
             }
         }
         state.running(&rustdoc);
@@ -606,6 +624,21 @@ fn rustdoc<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult
             .chain_err(|| format!("Could not document `{}`.", name))?;
         Ok(())
     }))
+}
+
+fn add_crate_versions_if_requested(
+    bcx: &BuildContext<'_, '_>,
+    unit: &Unit<'_>,
+    rustdoc: &mut ProcessBuilder,
+) {
+    if !bcx.config.cli_unstable().crate_versions {
+        return;
+    }
+    rustdoc
+        .arg("-Z")
+        .arg("unstable-options")
+        .arg("--crate-version")
+        .arg(&unit.pkg.version().to_string());
 }
 
 // The path that we pass to rustc is actually fairly important because it will
@@ -869,6 +902,23 @@ fn build_base_args<'a, 'cfg>(
         cmd.arg("-Zforce-unstable-if-unmarked")
             .env("RUSTC_BOOTSTRAP", "1");
     }
+
+    // Add `CARGO_BIN_` environment variables for building tests.
+    if unit.target.is_test() || unit.target.is_bench() {
+        for bin_target in unit
+            .pkg
+            .manifest()
+            .targets()
+            .iter()
+            .filter(|target| target.is_bin())
+        {
+            let exe_path = cx
+                .files()
+                .bin_link_for_target(bin_target, unit.kind, cx.bcx)?;
+            let key = format!("CARGO_BIN_EXE_{}", bin_target.name());
+            cmd.env(&key, exe_path);
+        }
+    }
     Ok(())
 }
 
@@ -1011,13 +1061,7 @@ pub fn extern_args<'a>(
             link_to(dep, dep.extern_crate_name, dep.noprelude)?;
         }
     }
-    if unit.target.proc_macro()
-        && cx
-            .bcx
-            .info(CompileKind::Host)
-            .supports_pathless_extern
-            .unwrap()
-    {
+    if unit.target.proc_macro() {
         // Automatically import `proc_macro`.
         result.push(OsString::from("--extern"));
         result.push(OsString::from("proc_macro"));
@@ -1208,6 +1252,31 @@ fn on_stderr_line_inner(
             }
             return Ok(false);
         }
+    }
+
+    #[derive(serde::Deserialize)]
+    struct JobserverNotification {
+        jobserver_event: Event,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    enum Event {
+        WillAcquire,
+        Release,
+    }
+
+    if let Ok(JobserverNotification { jobserver_event }) =
+        serde_json::from_str::<JobserverNotification>(compiler_message.get())
+    {
+        log::info!(
+            "found jobserver directive from rustc: `{:?}`",
+            jobserver_event
+        );
+        match jobserver_event {
+            Event::WillAcquire => state.will_acquire(),
+            Event::Release => state.release_token(),
+        }
+        return Ok(false);
     }
 
     // And failing all that above we should have a legitimate JSON diagnostic

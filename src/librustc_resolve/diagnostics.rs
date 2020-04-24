@@ -4,10 +4,12 @@ use log::debug;
 use rustc::bug;
 use rustc::session::Session;
 use rustc::ty::{self, DefIdTree};
+use rustc_ast::ast::{self, Ident, Path};
+use rustc_ast::util::lev_distance::find_best_match_for_name;
+use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashSet;
-use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticBuilder};
+use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_feature::BUILTIN_ATTRIBUTES;
-use rustc_hir as hir;
 use rustc_hir::def::Namespace::{self, *};
 use rustc_hir::def::{self, CtorKind, CtorOf, DefKind, NonMacroAttrKind};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
@@ -15,11 +17,8 @@ use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::{kw, Symbol};
 use rustc_span::{BytePos, MultiSpan, Span};
-use syntax::ast::{self, Ident, Path};
-use syntax::print::pprust;
-use syntax::util::lev_distance::find_best_match_for_name;
 
-use crate::imports::{ImportDirective, ImportDirectiveSubclass, ImportResolver};
+use crate::imports::{Import, ImportKind, ImportResolver};
 use crate::path_names_to_string;
 use crate::{AmbiguityError, AmbiguityErrorMisc, AmbiguityKind};
 use crate::{BindingError, CrateLint, HasGenericParams, LegacyScope, Module, ModuleOrUniformRoot};
@@ -55,9 +54,9 @@ crate struct ImportSuggestion {
 /// *Attention*: the method used is very fragile since it essentially duplicates the work of the
 /// parser. If you need to use this function or something similar, please consider updating the
 /// `source_map` functions and this function to something more robust.
-fn reduce_impl_span_to_impl_keyword(cm: &SourceMap, impl_span: Span) -> Span {
-    let impl_span = cm.span_until_char(impl_span, '<');
-    let impl_span = cm.span_until_whitespace(impl_span);
+fn reduce_impl_span_to_impl_keyword(sm: &SourceMap, impl_span: Span) -> Span {
+    let impl_span = sm.span_until_char(impl_span, '<');
+    let impl_span = sm.span_until_whitespace(impl_span);
     impl_span
 }
 
@@ -99,16 +98,16 @@ impl<'a> Resolver<'a> {
                     E0401,
                     "can't use generic parameters from outer function",
                 );
-                err.span_label(span, format!("use of generic parameter from outer function"));
+                err.span_label(span, "use of generic parameter from outer function".to_string());
 
-                let cm = self.session.source_map();
+                let sm = self.session.source_map();
                 match outer_res {
                     Res::SelfTy(maybe_trait_defid, maybe_impl_defid) => {
                         if let Some(impl_span) =
                             maybe_impl_defid.and_then(|def_id| self.definitions.opt_span(def_id))
                         {
                             err.span_label(
-                                reduce_impl_span_to_impl_keyword(cm, impl_span),
+                                reduce_impl_span_to_impl_keyword(sm, impl_span),
                                 "`Self` type implicitly declared here, by this `impl`",
                             );
                         }
@@ -144,8 +143,8 @@ impl<'a> Resolver<'a> {
                 if has_generic_params == HasGenericParams::Yes {
                     // Try to retrieve the span of the function signature and generate a new
                     // message with a local type or const parameter.
-                    let sugg_msg = &format!("try using a local generic parameter instead");
-                    if let Some((sugg_span, snippet)) = cm.generate_local_type_param_snippet(span) {
+                    let sugg_msg = "try using a local generic parameter instead";
+                    if let Some((sugg_span, snippet)) = sm.generate_local_type_param_snippet(span) {
                         // Suggest the modification to the user
                         err.span_suggestion(
                             sugg_span,
@@ -153,13 +152,14 @@ impl<'a> Resolver<'a> {
                             snippet,
                             Applicability::MachineApplicable,
                         );
-                    } else if let Some(sp) = cm.generate_fn_name_span(span) {
+                    } else if let Some(sp) = sm.generate_fn_name_span(span) {
                         err.span_label(
                             sp,
-                            format!("try adding a local generic parameter in this method instead"),
+                            "try adding a local generic parameter in this method instead"
+                                .to_string(),
                         );
                     } else {
-                        err.help(&format!("try using a local generic parameter instead"));
+                        err.help("try using a local generic parameter instead");
                     }
                 }
 
@@ -249,8 +249,7 @@ impl<'a> Resolver<'a> {
                     self.session,
                     span,
                     E0409,
-                    "variable `{}` is bound in inconsistent \
-                                ways within the same match arm",
+                    "variable `{}` is bound inconsistently across alternatives separated by `|`",
                     variable_name
                 );
                 err.span_label(span, "bound in different ways");
@@ -769,6 +768,11 @@ impl<'a> Resolver<'a> {
         span: Span,
     ) -> bool {
         if let Some(suggestion) = suggestion {
+            // We shouldn't suggest underscore.
+            if suggestion.candidate == kw::Underscore {
+                return false;
+            }
+
             let msg = format!(
                 "{} {} with a similar name exists",
                 suggestion.res.article(),
@@ -1085,7 +1089,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
         }
 
         // Sort extern crate names in reverse order to get
-        // 1) some consistent ordering for emitted dignostics, and
+        // 1) some consistent ordering for emitted diagnostics, and
         // 2) `std` suggestions before `core` suggestions.
         let mut extern_crate_names =
             self.r.extern_prelude.iter().map(|(ident, _)| ident.name).collect::<Vec<_>>();
@@ -1121,7 +1125,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
     /// ```
     pub(crate) fn check_for_module_export_macro(
         &mut self,
-        directive: &'b ImportDirective<'b>,
+        import: &'b Import<'b>,
         module: ModuleOrUniformRoot<'b>,
         ident: Ident,
     ) -> Option<(Option<Suggestion>, Vec<String>)> {
@@ -1146,28 +1150,26 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
         let binding = resolution.borrow().binding()?;
         if let Res::Def(DefKind::Macro(MacroKind::Bang), _) = binding.res() {
             let module_name = crate_module.kind.name().unwrap();
-            let import = match directive.subclass {
-                ImportDirectiveSubclass::SingleImport { source, target, .. }
-                    if source != target =>
-                {
+            let import_snippet = match import.kind {
+                ImportKind::Single { source, target, .. } if source != target => {
                     format!("{} as {}", source, target)
                 }
                 _ => format!("{}", ident),
             };
 
             let mut corrections: Vec<(Span, String)> = Vec::new();
-            if !directive.is_nested() {
+            if !import.is_nested() {
                 // Assume this is the easy case of `use issue_59764::foo::makro;` and just remove
                 // intermediate segments.
-                corrections.push((directive.span, format!("{}::{}", module_name, import)));
+                corrections.push((import.span, format!("{}::{}", module_name, import_snippet)));
             } else {
                 // Find the binding span (and any trailing commas and spaces).
                 //   ie. `use a::b::{c, d, e};`
                 //                      ^^^
                 let (found_closing_brace, binding_span) = find_span_of_binding_until_next_binding(
                     self.r.session,
-                    directive.span,
-                    directive.use_span,
+                    import.span,
+                    import.use_span,
                 );
                 debug!(
                     "check_for_module_export_macro: found_closing_brace={:?} binding_span={:?}",
@@ -1204,7 +1206,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
                 let (has_nested, after_crate_name) = find_span_immediately_after_crate_name(
                     self.r.session,
                     module_name,
-                    directive.use_span,
+                    import.use_span,
                 );
                 debug!(
                     "check_for_module_export_macro: has_nested={:?} after_crate_name={:?}",
@@ -1220,11 +1222,11 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
                         start_point,
                         if has_nested {
                             // In this case, `start_snippet` must equal '{'.
-                            format!("{}{}, ", start_snippet, import)
+                            format!("{}{}, ", start_snippet, import_snippet)
                         } else {
                             // In this case, add a `{`, then the moved import, then whatever
                             // was there before.
-                            format!("{{{}, {}", import, start_snippet)
+                            format!("{{{}, {}", import_snippet, start_snippet)
                         },
                     ));
                 }
@@ -1421,7 +1423,7 @@ crate fn show_candidates(
     // we want consistent results across executions, but candidates are produced
     // by iterating through a hash map, so make sure they are ordered:
     let mut path_strings: Vec<_> =
-        candidates.into_iter().map(|c| path_names_to_string(&c.path)).collect();
+        candidates.iter().map(|c| path_names_to_string(&c.path)).collect();
     path_strings.sort();
     path_strings.dedup();
 
@@ -1449,76 +1451,5 @@ crate fn show_candidates(
             msg.push_str(&candidate);
         }
         err.note(&msg);
-    }
-}
-
-crate fn report_missing_lifetime_specifiers(
-    sess: &Session,
-    span: Span,
-    count: usize,
-) -> DiagnosticBuilder<'_> {
-    struct_span_err!(sess, span, E0106, "missing lifetime specifier{}", pluralize!(count))
-}
-
-crate fn add_missing_lifetime_specifiers_label(
-    err: &mut DiagnosticBuilder<'_>,
-    span: Span,
-    count: usize,
-    lifetime_names: &FxHashSet<ast::Ident>,
-    snippet: Option<&str>,
-    missing_named_lifetime_spots: &[&hir::Generics<'_>],
-) {
-    if count > 1 {
-        err.span_label(span, format!("expected {} lifetime parameters", count));
-    } else {
-        let suggest_existing = |err: &mut DiagnosticBuilder<'_>, sugg| {
-            err.span_suggestion(
-                span,
-                "consider using the named lifetime",
-                sugg,
-                Applicability::MaybeIncorrect,
-            );
-        };
-        let suggest_new = |err: &mut DiagnosticBuilder<'_>, sugg| {
-            err.span_label(span, "expected named lifetime parameter");
-
-            if let Some(generics) = missing_named_lifetime_spots.iter().last() {
-                let mut introduce_suggestion = vec![];
-                introduce_suggestion.push(match &generics.params {
-                    [] => (generics.span, "<'lifetime>".to_string()),
-                    [param, ..] => (param.span.shrink_to_lo(), "'lifetime, ".to_string()),
-                });
-                introduce_suggestion.push((span, sugg));
-                err.multipart_suggestion(
-                    "consider introducing a named lifetime parameter",
-                    introduce_suggestion,
-                    Applicability::MaybeIncorrect,
-                );
-            }
-        };
-
-        match (lifetime_names.len(), lifetime_names.iter().next(), snippet) {
-            (1, Some(name), Some("&")) => {
-                suggest_existing(err, format!("&{} ", name));
-            }
-            (1, Some(name), Some("'_")) => {
-                suggest_existing(err, name.to_string());
-            }
-            (1, Some(name), Some(snippet)) if !snippet.ends_with(">") => {
-                suggest_existing(err, format!("{}<{}>", snippet, name));
-            }
-            (0, _, Some("&")) => {
-                suggest_new(err, "&'lifetime ".to_string());
-            }
-            (0, _, Some("'_")) => {
-                suggest_new(err, "'lifetime".to_string());
-            }
-            (0, _, Some(snippet)) if !snippet.ends_with(">") => {
-                suggest_new(err, format!("{}<'lifetime>", snippet));
-            }
-            _ => {
-                err.span_label(span, "expected lifetime parameter");
-            }
-        }
     }
 }

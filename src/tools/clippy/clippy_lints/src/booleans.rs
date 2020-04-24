@@ -4,14 +4,13 @@ use crate::utils::{
 };
 use if_chain::if_chain;
 use rustc::hir::map::Map;
+use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
-use rustc_hir::intravisit;
-use rustc_hir::intravisit::*;
-use rustc_hir::*;
+use rustc_hir::intravisit::{walk_expr, FnKind, NestedVisitorMap, Visitor};
+use rustc_hir::{BinOpKind, Body, Expr, ExprKind, FnDecl, HirId, UnOp};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
-use syntax::ast::LitKind;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for boolean expressions that can be written more
@@ -60,7 +59,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonminimalBool {
     fn check_fn(
         &mut self,
         cx: &LateContext<'a, 'tcx>,
-        _: intravisit::FnKind<'tcx>,
+        _: FnKind<'tcx>,
         _: &'tcx FnDecl<'_>,
         body: &'tcx Body<'_>,
         _: Span,
@@ -162,7 +161,7 @@ struct SuggestContext<'a, 'tcx, 'v> {
 
 impl<'a, 'tcx, 'v> SuggestContext<'a, 'tcx, 'v> {
     fn recurse(&mut self, suggestion: &Bool) -> Option<()> {
-        use quine_mc_cluskey::Bool::*;
+        use quine_mc_cluskey::Bool::{And, False, Not, Or, Term, True};
         match suggestion {
             True => {
                 self.output.push_str("true");
@@ -278,7 +277,7 @@ fn suggest(cx: &LateContext<'_, '_>, suggestion: &Bool, terminals: &[&Expr<'_>])
 }
 
 fn simple_negate(b: Bool) -> Bool {
-    use quine_mc_cluskey::Bool::*;
+    use quine_mc_cluskey::Bool::{And, False, Not, Or, Term, True};
     match b {
         True => False,
         False => True,
@@ -326,7 +325,7 @@ fn terminal_stats(b: &Bool) -> Stats {
             &Term(n) => stats.terminals[n as usize] += 1,
         }
     }
-    use quine_mc_cluskey::Bool::*;
+    use quine_mc_cluskey::Bool::{And, False, Not, Or, Term, True};
     let mut stats = Stats::default();
     recurse(b, &mut stats);
     stats
@@ -359,7 +358,7 @@ impl<'a, 'tcx> NonminimalBoolVisitor<'a, 'tcx> {
                 }
                 simplified.push(simple_negated);
             }
-            let mut improvements = Vec::new();
+            let mut improvements = Vec::with_capacity(simplified.len());
             'simplified: for suggestion in &simplified {
                 let simplified_stats = terminal_stats(suggestion);
                 let mut improvement = false;

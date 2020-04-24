@@ -1,4 +1,7 @@
-use std::collections::{hash_map::{Iter, IntoIter}, HashMap};
+use std::collections::{
+	hash_map::{IntoIter, Iter},
+	HashMap,
+};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
 
@@ -452,7 +455,7 @@ impl<M: Metadata> IoHandlerExtension<M> for IoHandler<M> {
 }
 
 fn read_request(request_str: &str) -> Result<Request, Error> {
-	serde_json::from_str(request_str).map_err(|_| Error::new(ErrorCode::ParseError))
+	crate::serde_from_str(request_str).map_err(|_| Error::new(ErrorCode::ParseError))
 }
 
 fn write_response(response: Response) -> String {

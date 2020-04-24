@@ -3,7 +3,7 @@ use std::process::Command;
 
 #[test]
 fn fmt() {
-    if option_env!("RUSTC_TEST_SUITE").is_some() {
+    if option_env!("RUSTC_TEST_SUITE").is_some() || option_env!("NO_FMT_TEST").is_some() {
         return;
     }
 
@@ -34,6 +34,6 @@ fn fmt() {
 
     assert!(
         output.status.success(),
-        "Formatting check failed. Run `./util/dev fmt` to update formatting."
+        "Formatting check failed. Run `cargo dev fmt` to update formatting."
     );
 }

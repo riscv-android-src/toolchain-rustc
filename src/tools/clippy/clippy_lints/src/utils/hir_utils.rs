@@ -2,11 +2,15 @@ use crate::consts::{constant_context, constant_simple};
 use crate::utils::differing_macro_contexts;
 use rustc::ich::StableHashingContextProvider;
 use rustc::ty::TypeckTables;
+use rustc_ast::ast::Name;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
-use rustc_hir::*;
+use rustc_hir::{
+    BinOpKind, Block, BlockCheckMode, BodyId, BorrowKind, CaptureBy, Expr, ExprKind, Field, FnRetTy, GenericArg,
+    GenericArgs, Guard, Lifetime, LifetimeName, ParamName, Pat, PatKind, Path, PathSegment, QPath, Stmt, StmtKind, Ty,
+    TyKind, TypeBinding,
+};
 use rustc_lint::LateContext;
 use std::hash::Hash;
-use syntax::ast::Name;
 
 /// Type used to check whether two ast are the same. This is different from the
 /// operator
@@ -633,10 +637,10 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                     self.hash_ty(&arg);
                 }
                 match bfn.decl.output {
-                    FunctionRetTy::DefaultReturn(_) => {
+                    FnRetTy::DefaultReturn(_) => {
                         ().hash(&mut self.s);
                     },
-                    FunctionRetTy::Return(ref ty) => {
+                    FnRetTy::Return(ref ty) => {
                         self.hash_ty(ty);
                     },
                 }

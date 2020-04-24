@@ -3,22 +3,25 @@ use crate::utils::paths;
 use crate::utils::sugg::Sugg;
 use crate::utils::usage::is_unused;
 use crate::utils::{
-    expr_block, is_allowed, is_expn_of, is_wild, match_qpath, match_type, multispan_sugg, remove_blocks, snippet,
-    snippet_with_applicability, span_help_and_lint, span_lint_and_sugg, span_lint_and_then, span_note_and_lint,
-    walk_ptrs_ty,
+    expr_block, get_arg_name, in_macro, indent_of, is_allowed, is_expn_of, is_refutable, is_wild, match_qpath,
+    match_type, match_var, multispan_sugg, remove_blocks, snippet, snippet_block, snippet_with_applicability,
+    span_lint_and_help, span_lint_and_note, span_lint_and_sugg, span_lint_and_then, walk_ptrs_ty,
 };
 use if_chain::if_chain;
 use rustc::lint::in_external_macro;
 use rustc::ty::{self, Ty};
+use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
 use rustc_hir::def::CtorKind;
-use rustc_hir::*;
+use rustc_hir::{
+    print, Arm, BindingAnnotation, Block, BorrowKind, Expr, ExprKind, Local, MatchSource, Mutability, Pat, PatKind,
+    QPath, RangeEnd,
+};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 use std::cmp::Ordering;
 use std::collections::Bound;
-use syntax::ast::LitKind;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for matches with a single arm where an `if let`
@@ -245,7 +248,105 @@ declare_clippy_lint! {
     "a wildcard pattern used with others patterns in same match arm"
 }
 
-declare_lint_pass!(Matches => [
+declare_clippy_lint! {
+    /// **What it does:** Checks for matches being used to destructure a single-variant enum
+    /// or tuple struct where a `let` will suffice.
+    ///
+    /// **Why is this bad?** Just readability – `let` doesn't nest, whereas a `match` does.
+    ///
+    /// **Known problems:** None.
+    ///
+    /// **Example:**
+    /// ```rust
+    /// enum Wrapper {
+    ///     Data(i32),
+    /// }
+    ///
+    /// let wrapper = Wrapper::Data(42);
+    ///
+    /// let data = match wrapper {
+    ///     Wrapper::Data(i) => i,
+    /// };
+    /// ```
+    ///
+    /// The correct use would be:
+    /// ```rust
+    /// enum Wrapper {
+    ///     Data(i32),
+    /// }
+    ///
+    /// let wrapper = Wrapper::Data(42);
+    /// let Wrapper::Data(data) = wrapper;
+    /// ```
+    pub INFALLIBLE_DESTRUCTURING_MATCH,
+    style,
+    "a `match` statement with a single infallible arm instead of a `let`"
+}
+
+declare_clippy_lint! {
+    /// **What it does:** Checks for useless match that binds to only one value.
+    ///
+    /// **Why is this bad?** Readability and needless complexity.
+    ///
+    /// **Known problems:**  Suggested replacements may be incorrect when `match`
+    /// is actually binding temporary value, bringing a 'dropped while borrowed' error.
+    ///
+    /// **Example:**
+    /// ```rust
+    /// # let a = 1;
+    /// # let b = 2;
+    ///
+    /// // Bad
+    /// match (a, b) {
+    ///     (c, d) => {
+    ///         // useless match
+    ///     }
+    /// }
+    ///
+    /// // Good
+    /// let (c, d) = (a, b);
+    /// ```
+    pub MATCH_SINGLE_BINDING,
+    complexity,
+    "a match with a single binding instead of using `let` statement"
+}
+
+declare_clippy_lint! {
+    /// **What it does:** Checks for unnecessary '..' pattern binding on struct when all fields are explicitly matched.
+    ///
+    /// **Why is this bad?** Correctness and readability. It's like having a wildcard pattern after
+    /// matching all enum variants explicitly.
+    ///
+    /// **Known problems:** None.
+    ///
+    /// **Example:**
+    /// ```rust
+    /// # struct A { a: i32 }
+    /// let a = A { a: 5 };
+    ///
+    /// // Bad
+    /// match a {
+    ///     A { a: 5, .. } => {},
+    ///     _ => {},
+    /// }
+    ///
+    /// // Good
+    /// match a {
+    ///     A { a: 5 } => {},
+    ///     _ => {},
+    /// }
+    /// ```
+    pub REST_PAT_IN_FULLY_BOUND_STRUCTS,
+    restriction,
+    "a match on a struct that binds all fields but still uses the wildcard pattern"
+}
+
+#[derive(Default)]
+pub struct Matches {
+    infallible_destructuring_match_linted: bool,
+}
+
+impl_lint_pass!(Matches => [
     SINGLE_MATCH,
     MATCH_REF_PATS,
     MATCH_BOOL,
@@ -254,7 +355,10 @@ declare_lint_pass!(Matches => [
     MATCH_WILD_ERR_ARM,
     MATCH_AS_REF,
     WILDCARD_ENUM_MATCH_ARM,
-    WILDCARD_IN_OR_PATTERNS
+    WILDCARD_IN_OR_PATTERNS,
+    MATCH_SINGLE_BINDING,
+    INFALLIBLE_DESTRUCTURING_MATCH,
+    REST_PAT_IN_FULLY_BOUND_STRUCTS
 ]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
@@ -270,9 +374,71 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
             check_wild_enum_match(cx, ex, arms);
             check_match_as_ref(cx, ex, arms, expr);
             check_wild_in_or_pats(cx, arms);
+
+            if self.infallible_destructuring_match_linted {
+                self.infallible_destructuring_match_linted = false;
+            } else {
+                check_match_single_binding(cx, ex, arms, expr);
+            }
         }
         if let ExprKind::Match(ref ex, ref arms, _) = expr.kind {
             check_match_ref_pats(cx, ex, arms, expr);
+        }
+    }
+
+    fn check_local(&mut self, cx: &LateContext<'a, 'tcx>, local: &'tcx Local<'_>) {
+        if_chain! {
+            if let Some(ref expr) = local.init;
+            if let ExprKind::Match(ref target, ref arms, MatchSource::Normal) = expr.kind;
+            if arms.len() == 1 && arms[0].guard.is_none();
+            if let PatKind::TupleStruct(
+                QPath::Resolved(None, ref variant_name), ref args, _) = arms[0].pat.kind;
+            if args.len() == 1;
+            if let Some(arg) = get_arg_name(&args[0]);
+            let body = remove_blocks(&arms[0].body);
+            if match_var(body, arg);
+
+            then {
+                let mut applicability = Applicability::MachineApplicable;
+                self.infallible_destructuring_match_linted = true;
+                span_lint_and_sugg(
+                    cx,
+                    INFALLIBLE_DESTRUCTURING_MATCH,
+                    local.span,
+                    "you seem to be trying to use `match` to destructure a single infallible pattern. \
+                    Consider using `let`",
+                    "try this",
+                    format!(
+                        "let {}({}) = {};",
+                        snippet_with_applicability(cx, variant_name.span, "..", &mut applicability),
+                        snippet_with_applicability(cx, local.pat.span, "..", &mut applicability),
+                        snippet_with_applicability(cx, target.span, "..", &mut applicability),
+                    ),
+                    applicability,
+                );
+            }
+        }
+    }
+
+    fn check_pat(&mut self, cx: &LateContext<'a, 'tcx>, pat: &'tcx Pat<'_>) {
+        if_chain! {
+            if let PatKind::Struct(ref qpath, fields, true) = pat.kind;
+            if let QPath::Resolved(_, ref path) = qpath;
+            if let Some(def_id) = path.res.opt_def_id();
+            let ty = cx.tcx.type_of(def_id);
+            if let ty::Adt(def, _) = ty.kind;
+            if def.is_struct() || def.is_union();
+            if fields.len() == def.non_enum_variant().fields.len();
+
+            then {
+                span_lint_and_help(
+                    cx,
+                    REST_PAT_IN_FULLY_BOUND_STRUCTS,
+                    pat.span,
+                    "unnecessary use of `..` pattern in struct binding. All fields were already bound",
+                    "consider removing `..` from this binding",
+                );
+            }
         }
     }
 }
@@ -324,7 +490,7 @@ fn report_single_match_single_pattern(
 ) {
     let lint = if els.is_some() { SINGLE_MATCH_ELSE } else { SINGLE_MATCH };
     let els_str = els.map_or(String::new(), |els| {
-        format!(" else {}", expr_block(cx, els, None, ".."))
+        format!(" else {}", expr_block(cx, els, None, "..", Some(expr.span)))
     });
     span_lint_and_sugg(
         cx,
@@ -337,7 +503,7 @@ fn report_single_match_single_pattern(
             "if let {} = {} {}{}",
             snippet(cx, arms[0].pat.span, ".."),
             snippet(cx, ex.span, ".."),
-            expr_block(cx, &arms[0].body, None, ".."),
+            expr_block(cx, &arms[0].body, None, "..", Some(expr.span)),
             els_str,
         ),
         Applicability::HasPlaceholders,
@@ -413,17 +579,21 @@ fn check_match_bool(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], e
                             (false, false) => Some(format!(
                                 "if {} {} else {}",
                                 snippet(cx, ex.span, "b"),
-                                expr_block(cx, true_expr, None, ".."),
-                                expr_block(cx, false_expr, None, "..")
+                                expr_block(cx, true_expr, None, "..", Some(expr.span)),
+                                expr_block(cx, false_expr, None, "..", Some(expr.span))
                             )),
                             (false, true) => Some(format!(
                                 "if {} {}",
                                 snippet(cx, ex.span, "b"),
-                                expr_block(cx, true_expr, None, "..")
+                                expr_block(cx, true_expr, None, "..", Some(expr.span))
                             )),
                             (true, false) => {
                                 let test = Sugg::hir(cx, ex, "..");
-                                Some(format!("if {} {}", !test, expr_block(cx, false_expr, None, "..")))
+                                Some(format!(
+                                    "if {} {}",
+                                    !test,
+                                    expr_block(cx, false_expr, None, "..", Some(expr.span))
+                                ))
                             },
                             (true, true) => None,
                         };
@@ -449,7 +619,7 @@ fn check_overlapping_arms<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ex: &'tcx Expr<'
         let type_ranges = type_ranges(&ranges);
         if !type_ranges.is_empty() {
             if let Some((start, end)) = overlapping(&type_ranges) {
-                span_note_and_lint(
+                span_lint_and_note(
                     cx,
                     MATCH_OVERLAPPING_ARM,
                     start.span,
@@ -488,7 +658,7 @@ fn check_wild_err_arm(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>])
                         if is_panic_block(block);
                         then {
                             // `Err(_)` or `Err(_e)` arm with `panic!` found
-                            span_note_and_lint(cx,
+                            span_lint_and_note(cx,
                                 MATCH_WILD_ERR_ARM,
                                 arm.pat.span,
                                 &format!("`Err({})` matches all errors", &ident_bind_name),
@@ -610,7 +780,7 @@ fn is_panic_block(block: &Block<'_>) -> bool {
 
 fn check_match_ref_pats(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     if has_only_ref_pats(arms) {
-        let mut suggs = Vec::new();
+        let mut suggs = Vec::with_capacity(arms.len() + 1);
         let (title, msg) = if let ExprKind::AddrOf(BorrowKind::Ref, Mutability::Not, ref inner) = ex.kind {
             let span = ex.span.source_callsite();
             suggs.push((span, Sugg::hir_with_macro_callsite(cx, inner, "..").to_string()));
@@ -700,7 +870,7 @@ fn check_wild_in_or_pats(cx: &LateContext<'_, '_>, arms: &[Arm<'_>]) {
         if let PatKind::Or(ref fields) = arm.pat.kind {
             // look for multiple fields in this arm that contains at least one Wild pattern
             if fields.len() > 1 && fields.iter().any(is_wild) {
-                span_help_and_lint(
+                span_lint_and_help(
                     cx,
                     WILDCARD_IN_OR_PATTERNS,
                     arm.pat.span,
@@ -709,6 +879,69 @@ fn check_wild_in_or_pats(cx: &LateContext<'_, '_>, arms: &[Arm<'_>]) {
                 );
             }
         }
+    }
+}
+
+fn check_match_single_binding(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
+    if in_macro(expr.span) || arms.len() != 1 || is_refutable(cx, arms[0].pat) {
+        return;
+    }
+    let matched_vars = ex.span;
+    let bind_names = arms[0].pat.span;
+    let match_body = remove_blocks(&arms[0].body);
+    let mut snippet_body = if match_body.span.from_expansion() {
+        Sugg::hir_with_macro_callsite(cx, match_body, "..").to_string()
+    } else {
+        snippet_block(cx, match_body.span, "..", Some(expr.span)).to_string()
+    };
+
+    // Do we need to add ';' to suggestion ?
+    match match_body.kind {
+        ExprKind::Block(block, _) => {
+            // macro + expr_ty(body) == ()
+            if block.span.from_expansion() && cx.tables.expr_ty(&match_body).is_unit() {
+                snippet_body.push(';');
+            }
+        },
+        _ => {
+            // expr_ty(body) == ()
+            if cx.tables.expr_ty(&match_body).is_unit() {
+                snippet_body.push(';');
+            }
+        },
+    }
+
+    let mut applicability = Applicability::MaybeIncorrect;
+    match arms[0].pat.kind {
+        PatKind::Binding(..) | PatKind::Tuple(_, _) | PatKind::Struct(..) => {
+            span_lint_and_sugg(
+                cx,
+                MATCH_SINGLE_BINDING,
+                expr.span,
+                "this match could be written as a `let` statement",
+                "consider using `let` statement",
+                format!(
+                    "let {} = {};\n{}{}",
+                    snippet_with_applicability(cx, bind_names, "..", &mut applicability),
+                    snippet_with_applicability(cx, matched_vars, "..", &mut applicability),
+                    " ".repeat(indent_of(cx, expr.span).unwrap_or(0)),
+                    snippet_body,
+                ),
+                applicability,
+            );
+        },
+        PatKind::Wild => {
+            span_lint_and_sugg(
+                cx,
+                MATCH_SINGLE_BINDING,
+                expr.span,
+                "this match could be replaced by its body itself",
+                "consider using the match body instead",
+                snippet_body,
+                Applicability::MachineApplicable,
+            );
+        },
+        _ => (),
     }
 }
 

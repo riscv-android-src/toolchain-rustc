@@ -1,6 +1,6 @@
 use rustc::lint::in_external_macro;
 use rustc_errors::Applicability;
-use rustc_hir::*;
+use rustc_hir::{BinOpKind, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Spanned;
@@ -153,7 +153,7 @@ declare_lint_pass!(StringLitAsBytes => [STRING_LIT_AS_BYTES]);
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for StringLitAsBytes {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, e: &'tcx Expr<'_>) {
         use crate::utils::{snippet, snippet_with_applicability};
-        use syntax::ast::LitKind;
+        use rustc_ast::ast::LitKind;
 
         if_chain! {
             if let ExprKind::MethodCall(path, _, args) = &e.kind;

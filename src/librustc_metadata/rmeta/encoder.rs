@@ -25,6 +25,8 @@ use rustc_data_structures::sync::Lrc;
 use rustc_serialize::{opaque, Encodable, Encoder, SpecializedEncoder};
 
 use log::{debug, trace};
+use rustc_ast::ast;
+use rustc_ast::attr;
 use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{self, FileName, SourceFile, Span};
@@ -32,9 +34,6 @@ use std::hash::Hash;
 use std::num::NonZeroUsize;
 use std::path::Path;
 use std::u32;
-use syntax::ast;
-use syntax::attr;
-use syntax::expand::is_proc_macro_attr;
 
 use rustc_hir as hir;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
@@ -307,7 +306,7 @@ impl<'tcx> EncodeContext<'tcx> {
                 assert!(
                     last_min_end <= lazy.position,
                     "make sure that the calls to `lazy*` \
-                    are in the same order as the metadata fields",
+                     are in the same order as the metadata fields",
                 );
                 lazy.position.get() - last_min_end.get()
             }
@@ -494,7 +493,7 @@ impl<'tcx> EncodeContext<'tcx> {
             edition: tcx.sess.edition(),
             has_global_allocator: tcx.has_global_allocator(LOCAL_CRATE),
             has_panic_handler: tcx.has_panic_handler(LOCAL_CRATE),
-            has_default_lib_allocator: has_default_lib_allocator,
+            has_default_lib_allocator,
             plugin_registrar_fn: tcx.plugin_registrar_fn(LOCAL_CRATE).map(|id| id.index),
             proc_macro_decls_static: if is_proc_macro {
                 let id = tcx.proc_macro_decls_static(LOCAL_CRATE).unwrap();
@@ -504,7 +503,7 @@ impl<'tcx> EncodeContext<'tcx> {
             },
             proc_macro_data,
             proc_macro_stability: if is_proc_macro {
-                tcx.lookup_stability(DefId::local(CRATE_DEF_INDEX)).map(|stab| *stab)
+                tcx.lookup_stability(DefId::local(CRATE_DEF_INDEX)).copied()
             } else {
                 None
             },
@@ -796,7 +795,7 @@ impl EncodeContext<'tcx> {
         record!(self.per_def.kind[def_id] <- match trait_item.kind {
             ty::AssocKind::Const => {
                 let rendered =
-                    hir::print::to_string(self.tcx.hir(), |s| s.print_trait_item(ast_item));
+                    hir::print::to_string(&self.tcx.hir(), |s| s.print_trait_item(ast_item));
                 let rendered_const = self.lazy(RenderedConst(rendered));
 
                 EntryKind::AssocConst(
@@ -1009,7 +1008,7 @@ impl EncodeContext<'tcx> {
 
     fn encode_rendered_const_for_body(&mut self, body_id: hir::BodyId) -> Lazy<RenderedConst> {
         let body = self.tcx.hir().body(body_id);
-        let rendered = hir::print::to_string(self.tcx.hir(), |s| s.print_expr(&body.value));
+        let rendered = hir::print::to_string(&self.tcx.hir(), |s| s.print_expr(&body.value));
         let rendered_const = &RenderedConst(rendered);
         self.lazy(rendered_const)
     }
@@ -1236,7 +1235,7 @@ impl EncodeContext<'tcx> {
 
     /// Serialize the text of exported macros
     fn encode_info_for_macro_def(&mut self, macro_def: &hir::MacroDef<'_>) {
-        use syntax::print::pprust;
+        use rustc_ast_pretty::pprust;
         let def_id = self.tcx.hir().local_def_id(macro_def.hir_id);
         record!(self.per_def.kind[def_id] <- EntryKind::MacroDef(self.lazy(MacroDef {
             body: pprust::tts_to_string(macro_def.body.clone()),
@@ -1249,12 +1248,7 @@ impl EncodeContext<'tcx> {
         self.encode_deprecation(def_id);
     }
 
-    fn encode_info_for_generic_param(
-        &mut self,
-        def_id: DefId,
-        kind: EntryKind<'tcx>,
-        encode_type: bool,
-    ) {
+    fn encode_info_for_generic_param(&mut self, def_id: DefId, kind: EntryKind, encode_type: bool) {
         record!(self.per_def.kind[def_id] <- kind);
         record!(self.per_def.visibility[def_id] <- ty::Visibility::Public);
         record!(self.per_def.span[def_id] <- self.tcx.def_span(def_id));
@@ -1272,12 +1266,9 @@ impl EncodeContext<'tcx> {
         let ty = self.tcx.typeck_tables_of(def_id).node_type(hir_id);
 
         record!(self.per_def.kind[def_id] <- match ty.kind {
-            ty::Generator(def_id, ..) => {
-                let layout = self.tcx.generator_layout(def_id);
-                let data = GeneratorData {
-                    layout: layout.clone(),
-                };
-                EntryKind::Generator(self.lazy(data))
+            ty::Generator(..) => {
+                let data = self.tcx.generator_kind(def_id).unwrap();
+                EntryKind::Generator(data)
             }
 
             ty::Closure(..) => EntryKind::Closure,
@@ -1328,13 +1319,7 @@ impl EncodeContext<'tcx> {
         let is_proc_macro = self.tcx.sess.crate_types.borrow().contains(&CrateType::ProcMacro);
         if is_proc_macro {
             let tcx = self.tcx;
-            Some(self.lazy(tcx.hir().krate().items.values().filter_map(|item| {
-                if item.attrs.iter().any(|attr| is_proc_macro_attr(attr)) {
-                    Some(item.hir_id.owner)
-                } else {
-                    None
-                }
-            })))
+            Some(self.lazy(tcx.hir().krate().proc_macros.iter().map(|p| p.owner)))
         } else {
             None
         }

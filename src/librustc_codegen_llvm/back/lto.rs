@@ -110,23 +110,21 @@ fn prepare_lto(
                 symbol_white_list.extend(exported_symbols[&cnum].iter().filter_map(symbol_filter));
             }
 
-            let _timer = cgcx.prof.generic_activity("LLVM_lto_load_upstream_bitcode");
             let archive = ArchiveRO::open(&path).expect("wanted an rlib");
             let bytecodes = archive
                 .iter()
                 .filter_map(|child| child.ok().and_then(|c| c.name().map(|name| (name, c))))
                 .filter(|&(name, _)| name.ends_with(RLIB_BYTECODE_EXTENSION));
             for (name, data) in bytecodes {
+                let _timer =
+                    cgcx.prof.generic_activity_with_arg("LLVM_lto_load_upstream_bitcode", name);
                 info!("adding bytecode {}", name);
                 let bc_encoded = data.data();
 
-                let (bc, id) = cgcx
-                    .prof
-                    .extra_verbose_generic_activity(&format!("decode {}", name))
-                    .run(|| match DecodedBytecode::new(bc_encoded) {
-                        Ok(b) => Ok((b.bytecode(), b.identifier().to_string())),
-                        Err(e) => Err(diag_handler.fatal(&e)),
-                    })?;
+                let (bc, id) = match DecodedBytecode::new(bc_encoded) {
+                    Ok(b) => Ok((b.bytecode(), b.identifier().to_string())),
+                    Err(e) => Err(diag_handler.fatal(&e)),
+                }?;
                 let bc = SerializedModule::FromRlib(bc);
                 upstream_modules.push((bc, CString::new(id).unwrap()));
             }
@@ -239,7 +237,7 @@ fn fat_lto(
     let module: ModuleCodegen<ModuleLlvm> = match costliest_module {
         Some((_cost, i)) => in_memory.remove(i),
         None => {
-            assert!(serialized_modules.len() > 0, "must have at least one serialized module");
+            assert!(!serialized_modules.is_empty(), "must have at least one serialized module");
             let (buffer, name) = serialized_modules.remove(0);
             info!("no in-memory regular modules to choose from, parsing {:?}", name);
             ModuleCodegen {
@@ -281,14 +279,14 @@ fn fat_lto(
         // save and persist everything with the original module.
         let mut linker = Linker::new(llmod);
         for (bc_decoded, name) in serialized_modules {
-            let _timer = cgcx.prof.generic_activity("LLVM_fat_lto_link_module");
+            let _timer = cgcx
+                .prof
+                .generic_activity_with_arg("LLVM_fat_lto_link_module", format!("{:?}", name));
             info!("linking {:?}", name);
-            cgcx.prof.extra_verbose_generic_activity(&format!("ll link {:?}", name)).run(|| {
-                let data = bc_decoded.data();
-                linker.add(&data).map_err(|()| {
-                    let msg = format!("failed to load bc of {:?}", name);
-                    write::llvm_err(&diag_handler, &msg)
-                })
+            let data = bc_decoded.data();
+            linker.add(&data).map_err(|()| {
+                let msg = format!("failed to load bc of {:?}", name);
+                write::llvm_err(&diag_handler, &msg)
             })?;
             serialized_bitcode.push(bc_decoded);
         }
@@ -465,15 +463,18 @@ fn thin_lto(
                 // If previous imports have been deleted, or we get an IO error
                 // reading the file storing them, then we'll just use `None` as the
                 // prev_import_map, which will force the code to be recompiled.
-                let prev =
-                    if path.exists() { ThinLTOImports::load_from_file(&path).ok() } else { None };
-                let curr = ThinLTOImports::from_thin_lto_data(data);
+                let prev = if path.exists() {
+                    ThinLTOImportMaps::load_from_file(&path).ok()
+                } else {
+                    None
+                };
+                let curr = ThinLTOImportMaps::from_thin_lto_data(data);
                 (Some(path), prev, curr)
             } else {
                 // If we don't compile incrementally, we don't need to load the
                 // import data from LLVM.
                 assert!(green_modules.is_empty());
-                let curr = ThinLTOImports::default();
+                let curr = ThinLTOImportMaps::default();
                 (None, None, curr)
             };
         info!("thin LTO import map loaded");
@@ -499,31 +500,58 @@ fn thin_lto(
             let module_name = module_name_to_str(module_name);
 
             // If (1.) the module hasn't changed, and (2.) none of the modules
-            // it imports from has changed, *and* (3.) the import-set itself has
-            // not changed from the previous compile when it was last
-            // ThinLTO'ed, then we can re-use the post-ThinLTO version of the
-            // module. Otherwise, freshly perform LTO optimization.
+            // it imports from have changed, *and* (3.) the import and export
+            // sets themselves have not changed from the previous compile when
+            // it was last ThinLTO'ed, then we can re-use the post-ThinLTO
+            // version of the module. Otherwise, freshly perform LTO
+            // optimization.
+            //
+            // (Note that globally, the export set is just the inverse of the
+            // import set.)
+            //
+            // For further justification of why the above is necessary and sufficient,
+            // see the LLVM blog post on ThinLTO:
+            //
+            // http://blog.llvm.org/2016/06/thinlto-scalable-and-incremental-lto.html
+            //
+            // which states the following:
+            //
+            // ```quote
+            // any particular ThinLTO backend must be redone iff:
+            //
+            // 1. The corresponding (primary) module’s bitcode changed
+            // 2. The list of imports into or exports from the module changed
+            // 3. The bitcode for any module being imported from has changed
+            // 4. Any global analysis result affecting either the primary module
+            //    or anything it imports has changed.
+            // ```
             //
             // This strategy means we can always save the computed imports as
             // canon: when we reuse the post-ThinLTO version, condition (3.)
-            // ensures that the curent import set is the same as the previous
+            // ensures that the current import set is the same as the previous
             // one. (And of course, when we don't reuse the post-ThinLTO
             // version, the current import set *is* the correct one, since we
             // are doing the ThinLTO in this current compilation cycle.)
             //
-            // See rust-lang/rust#59535.
+            // For more discussion, see rust-lang/rust#59535 (where the import
+            // issue was discovered) and rust-lang/rust#69798 (where the
+            // analogous export issue was discovered).
             if let (Some(prev_import_map), true) =
                 (prev_import_map.as_ref(), green_modules.contains_key(module_name))
             {
                 assert!(cgcx.incr_comp_session_dir.is_some());
 
-                let prev_imports = prev_import_map.modules_imported_by(module_name);
-                let curr_imports = curr_import_map.modules_imported_by(module_name);
+                let prev_imports = prev_import_map.imports_of(module_name);
+                let curr_imports = curr_import_map.imports_of(module_name);
+                let prev_exports = prev_import_map.exports_of(module_name);
+                let curr_exports = curr_import_map.exports_of(module_name);
                 let imports_all_green = curr_imports
                     .iter()
                     .all(|imported_module| green_modules.contains_key(imported_module));
-
-                if imports_all_green && equivalent_as_sets(prev_imports, curr_imports) {
+                if imports_all_green
+                    && equivalent_as_sets(prev_imports, curr_imports)
+                    && equivalent_as_sets(prev_exports, curr_exports)
+                {
                     let work_product = green_modules[module_name].clone();
                     copy_jobs.push(work_product);
                     info!(" - {}: re-used", module_name);
@@ -540,7 +568,7 @@ fn thin_lto(
             }));
         }
 
-        // Save the curent ThinLTO import information for the next compilation
+        // Save the current ThinLTO import information for the next compilation
         // session, overwriting the previous serialized imports (if any).
         if let Some(path) = import_map_path {
             if let Err(err) = curr_import_map.save_to_file(&path) {
@@ -577,6 +605,8 @@ pub(crate) fn run_pass_manager(
     config: &ModuleConfig,
     thin: bool,
 ) {
+    let _timer = cgcx.prof.extra_verbose_generic_activity("LLVM_lto_optimize", &module.name[..]);
+
     // Now we have one massive module inside of llmod. Time to run the
     // LTO-specific optimization passes that LLVM provides.
     //
@@ -584,6 +614,20 @@ pub(crate) fn run_pass_manager(
     //      tools/lto/LTOCodeGenerator.cpp
     debug!("running the pass manager");
     unsafe {
+        if write::should_use_new_llvm_pass_manager(config) {
+            let opt_stage = if thin { llvm::OptStage::ThinLTO } else { llvm::OptStage::FatLTO };
+            let opt_level = config.opt_level.unwrap_or(config::OptLevel::No);
+            // See comment below for why this is necessary.
+            let opt_level = if let config::OptLevel::No = opt_level {
+                config::OptLevel::Less
+            } else {
+                opt_level
+            };
+            write::optimize_with_new_llvm_pass_manager(cgcx, module, config, opt_level, opt_stage);
+            debug!("lto done");
+            return;
+        }
+
         let pm = llvm::LLVMCreatePassManager();
         llvm::LLVMAddAnalysisPasses(module.module_llvm.tm, pm);
 
@@ -634,9 +678,7 @@ pub(crate) fn run_pass_manager(
             llvm::LLVMRustAddPass(pm, pass.unwrap());
         }
 
-        cgcx.prof
-            .extra_verbose_generic_activity("LTO_passes")
-            .run(|| llvm::LLVMRunPassManager(pm, module.module_llvm.llmod()));
+        llvm::LLVMRunPassManager(pm, module.module_llvm.llmod());
 
         llvm::LLVMDisposePassManager(pm);
     }
@@ -760,7 +802,9 @@ pub unsafe fn optimize_thin_module(
         // Like with "fat" LTO, get some better optimizations if landing pads
         // are disabled by removing all landing pads.
         if cgcx.no_landing_pads {
-            let _timer = cgcx.prof.generic_activity("LLVM_thin_lto_remove_landing_pads");
+            let _timer = cgcx
+                .prof
+                .generic_activity_with_arg("LLVM_thin_lto_remove_landing_pads", thin_module.name());
             llvm::LLVMRustMarkAllFunctionsNounwind(llmod);
             save_temp_bitcode(&cgcx, &module, "thin-lto-after-nounwind");
         }
@@ -774,7 +818,8 @@ pub unsafe fn optimize_thin_module(
         // You can find some more comments about these functions in the LLVM
         // bindings we've got (currently `PassWrapper.cpp`)
         {
-            let _timer = cgcx.prof.generic_activity("LLVM_thin_lto_rename");
+            let _timer =
+                cgcx.prof.generic_activity_with_arg("LLVM_thin_lto_rename", thin_module.name());
             if !llvm::LLVMRustPrepareThinLTORename(thin_module.shared.data.0, llmod) {
                 let msg = "failed to prepare thin LTO module";
                 return Err(write::llvm_err(&diag_handler, msg));
@@ -783,7 +828,9 @@ pub unsafe fn optimize_thin_module(
         }
 
         {
-            let _timer = cgcx.prof.generic_activity("LLVM_thin_lto_resolve_weak");
+            let _timer = cgcx
+                .prof
+                .generic_activity_with_arg("LLVM_thin_lto_resolve_weak", thin_module.name());
             if !llvm::LLVMRustPrepareThinLTOResolveWeak(thin_module.shared.data.0, llmod) {
                 let msg = "failed to prepare thin LTO module";
                 return Err(write::llvm_err(&diag_handler, msg));
@@ -792,7 +839,9 @@ pub unsafe fn optimize_thin_module(
         }
 
         {
-            let _timer = cgcx.prof.generic_activity("LLVM_thin_lto_internalize");
+            let _timer = cgcx
+                .prof
+                .generic_activity_with_arg("LLVM_thin_lto_internalize", thin_module.name());
             if !llvm::LLVMRustPrepareThinLTOInternalize(thin_module.shared.data.0, llmod) {
                 let msg = "failed to prepare thin LTO module";
                 return Err(write::llvm_err(&diag_handler, msg));
@@ -801,7 +850,8 @@ pub unsafe fn optimize_thin_module(
         }
 
         {
-            let _timer = cgcx.prof.generic_activity("LLVM_thin_lto_import");
+            let _timer =
+                cgcx.prof.generic_activity_with_arg("LLVM_thin_lto_import", thin_module.name());
             if !llvm::LLVMRustPrepareThinLTOImport(thin_module.shared.data.0, llmod) {
                 let msg = "failed to prepare thin LTO module";
                 return Err(write::llvm_err(&diag_handler, msg));
@@ -839,7 +889,9 @@ pub unsafe fn optimize_thin_module(
         // so it appears). Hopefully we can remove this once upstream bugs are
         // fixed in LLVM.
         {
-            let _timer = cgcx.prof.generic_activity("LLVM_thin_lto_patch_debuginfo");
+            let _timer = cgcx
+                .prof
+                .generic_activity_with_arg("LLVM_thin_lto_patch_debuginfo", thin_module.name());
             llvm::LLVMRustThinLTOPatchDICompileUnit(llmod, cu1);
             save_temp_bitcode(cgcx, &module, "thin-lto-after-patch");
         }
@@ -850,7 +902,6 @@ pub unsafe fn optimize_thin_module(
         // populate a thin-specific pass manager, which presumably LLVM treats a
         // little differently.
         {
-            let _timer = cgcx.prof.generic_activity("LLVM_thin_lto_optimize");
             info!("running thin lto passes over {}", module.name);
             let config = cgcx.config(module.kind);
             run_pass_manager(cgcx, &module, config, true);
@@ -860,15 +911,30 @@ pub unsafe fn optimize_thin_module(
     Ok(module)
 }
 
+/// Summarizes module import/export relationships used by LLVM's ThinLTO pass.
+///
+/// Note that we tend to have two such instances of `ThinLTOImportMaps` in use:
+/// one loaded from a file that represents the relationships used during the
+/// compilation associated with the incremetnal build artifacts we are
+/// attempting to reuse, and another constructed via `from_thin_lto_data`, which
+/// captures the relationships of ThinLTO in the current compilation.
 #[derive(Debug, Default)]
-pub struct ThinLTOImports {
+pub struct ThinLTOImportMaps {
     // key = llvm name of importing module, value = list of modules it imports from
     imports: FxHashMap<String, Vec<String>>,
+    // key = llvm name of exporting module, value = list of modules it exports to
+    exports: FxHashMap<String, Vec<String>>,
 }
 
-impl ThinLTOImports {
-    fn modules_imported_by(&self, llvm_module_name: &str) -> &[String] {
+impl ThinLTOImportMaps {
+    /// Returns modules imported by `llvm_module_name` during some ThinLTO pass.
+    fn imports_of(&self, llvm_module_name: &str) -> &[String] {
         self.imports.get(llvm_module_name).map(|v| &v[..]).unwrap_or(&[])
+    }
+
+    /// Returns modules exported by `llvm_module_name` during some ThinLTO pass.
+    fn exports_of(&self, llvm_module_name: &str) -> &[String] {
+        self.exports.get(llvm_module_name).map(|v| &v[..]).unwrap_or(&[])
     }
 
     fn save_to_file(&self, path: &Path) -> io::Result<()> {
@@ -885,18 +951,22 @@ impl ThinLTOImports {
         Ok(())
     }
 
-    fn load_from_file(path: &Path) -> io::Result<ThinLTOImports> {
+    fn load_from_file(path: &Path) -> io::Result<ThinLTOImportMaps> {
         use std::io::BufRead;
         let mut imports = FxHashMap::default();
-        let mut current_module = None;
-        let mut current_imports = vec![];
+        let mut exports: FxHashMap<_, Vec<_>> = FxHashMap::default();
+        let mut current_module: Option<String> = None;
+        let mut current_imports: Vec<String> = vec![];
         let file = File::open(path)?;
         for line in io::BufReader::new(file).lines() {
             let line = line?;
             if line.is_empty() {
                 let importing_module = current_module.take().expect("Importing module not set");
+                for imported in &current_imports {
+                    exports.entry(imported.clone()).or_default().push(importing_module.clone());
+                }
                 imports.insert(importing_module, mem::replace(&mut current_imports, vec![]));
-            } else if line.starts_with(" ") {
+            } else if line.starts_with(' ') {
                 // Space marks an imported module
                 assert_ne!(current_module, None);
                 current_imports.push(line.trim().to_string());
@@ -906,17 +976,17 @@ impl ThinLTOImports {
                 current_module = Some(line.trim().to_string());
             }
         }
-        Ok(ThinLTOImports { imports })
+        Ok(ThinLTOImportMaps { imports, exports })
     }
 
     /// Loads the ThinLTO import map from ThinLTOData.
-    unsafe fn from_thin_lto_data(data: *const llvm::ThinLTOData) -> ThinLTOImports {
+    unsafe fn from_thin_lto_data(data: *const llvm::ThinLTOData) -> ThinLTOImportMaps {
         unsafe extern "C" fn imported_module_callback(
             payload: *mut libc::c_void,
             importing_module_name: *const libc::c_char,
             imported_module_name: *const libc::c_char,
         ) {
-            let map = &mut *(payload as *mut ThinLTOImports);
+            let map = &mut *(payload as *mut ThinLTOImportMaps);
             let importing_module_name = CStr::from_ptr(importing_module_name);
             let importing_module_name = module_name_to_str(&importing_module_name);
             let imported_module_name = CStr::from_ptr(imported_module_name);
@@ -930,8 +1000,18 @@ impl ThinLTOImports {
                 .get_mut(importing_module_name)
                 .unwrap()
                 .push(imported_module_name.to_owned());
+
+            if !map.exports.contains_key(imported_module_name) {
+                map.exports.insert(imported_module_name.to_owned(), vec![]);
+            }
+
+            map.exports
+                .get_mut(imported_module_name)
+                .unwrap()
+                .push(importing_module_name.to_owned());
         }
-        let mut map = ThinLTOImports::default();
+
+        let mut map = ThinLTOImportMaps::default();
         llvm::LLVMRustGetThinLTOModuleImports(
             data,
             imported_module_callback,

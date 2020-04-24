@@ -1,6 +1,5 @@
 //! Tests for git support.
 
-use git2;
 use std::env;
 use std::fs::{self, File};
 use std::io::prelude::*;
@@ -324,6 +323,16 @@ fn cargo_compile_with_malformed_nested_paths() {
             "#,
             )
             .file("vendor/dep2/Cargo.toml", "!INVALID!")
+            .file(
+                "vendor/dep3/Cargo.toml",
+                r#"
+                [project]
+                name = "dep3"
+                version = "0.5.0"
+                [dependencies]
+                subdep1 = { path = "../require-extra-build-step" }"#,
+            )
+            .file("vendor/dep3/src/lib.rs", "")
     });
 
     let p = project()
@@ -932,7 +941,10 @@ fn dep_with_bad_submodule() {
     let expected = format!(
         "\
 [UPDATING] git repository [..]
-[ERROR] failed to load source for a dependency on `dep1`
+[ERROR] failed to get `dep1` as a dependency of package `foo v0.5.0 [..]`
+
+Caused by:
+  failed to load source for dependency `dep1`
 
 Caused by:
   Unable to update {}
@@ -2314,6 +2326,7 @@ fn include_overrides_gitignore() {
         .with_stdout(
             "\
 Cargo.toml
+Cargo.toml.orig
 ignored.txt
 src/lib.rs
 ",
@@ -2382,20 +2395,24 @@ fn invalid_git_dependency_manifest() {
         .cargo("build")
         .with_status(101)
         .with_stderr(&format!(
-            "[UPDATING] git repository `{}`\n\
-             error: failed to load source for a dependency on `dep1`\n\
-             \n\
-             Caused by:\n  \
-             Unable to update {}\n\
-             \n\
-             Caused by:\n  \
-             failed to parse manifest at `[..]`\n\
-             \n\
-             Caused by:\n  \
-             could not parse input as TOML\n\
-             \n\
-             Caused by:\n  \
-             duplicate key: `categories` for key `project` at line 10 column 17",
+            "\
+[UPDATING] git repository `{}`
+[ERROR] failed to get `dep1` as a dependency of package `foo v0.5.0 ([..])`
+
+Caused by:
+  failed to load source for dependency `dep1`
+
+Caused by:
+  Unable to update {}
+
+Caused by:
+  failed to parse manifest at `[..]`
+
+Caused by:
+  could not parse input as TOML
+
+Caused by:
+  duplicate key: `categories` for key `project` at line 10 column 17",
             path2url(&git_root),
             path2url(&git_root),
         ))

@@ -1,11 +1,12 @@
 use std::cell::RefCell;
 use std::cmp::max;
-use std::collections::{hash_map::Entry, HashMap};
+use std::collections::hash_map::Entry;
 
 use rand::Rng;
 
+use rustc_data_structures::fx::FxHashMap;
 use rustc::ty::layout::HasDataLayout;
-use rustc_mir::interpret::{AllocCheck, AllocId, InterpResult, Memory, Pointer, PointerArithmetic};
+use rustc_mir::interpret::{AllocCheck, AllocId, InterpResult, Memory, Machine, Pointer, PointerArithmetic};
 use rustc_target::abi::Size;
 
 use crate::{Evaluator, Tag, STACK_ADDR};
@@ -21,7 +22,7 @@ pub struct GlobalState {
     /// `AllocExtra` because function pointers also have a base address, and
     /// they do not have an `AllocExtra`.
     /// This is the inverse of `int_to_ptr_map`.
-    pub base_addr: HashMap<AllocId, u64>,
+    pub base_addr: FxHashMap<AllocId, u64>,
     /// This is used as a memory address when a new pointer is casted to an integer. It
     /// is always larger than any address that was previously made part of a block.
     pub next_base_addr: u64,
@@ -31,7 +32,7 @@ impl Default for GlobalState {
     fn default() -> Self {
         GlobalState {
             int_to_ptr_map: Vec::default(),
-            base_addr: HashMap::default(),
+            base_addr: FxHashMap::default(),
             next_base_addr: STACK_ADDR,
         }
     }
@@ -80,12 +81,13 @@ impl<'mir, 'tcx> GlobalState {
     ) -> InterpResult<'tcx, u64> {
         let mut global_state = memory.extra.intptrcast.borrow_mut();
         let global_state = &mut *global_state;
+        let id = Evaluator::canonical_alloc_id(memory, ptr.alloc_id);
 
         // There is nothing wrong with a raw pointer being cast to an integer only after
         // it became dangling.  Hence `MaybeDead`.
-        let (size, align) = memory.get_size_and_align(ptr.alloc_id, AllocCheck::MaybeDead)?;
+        let (size, align) = memory.get_size_and_align(id, AllocCheck::MaybeDead)?;
 
-        let base_addr = match global_state.base_addr.entry(ptr.alloc_id) {
+        let base_addr = match global_state.base_addr.entry(id) {
             Entry::Occupied(entry) => *entry.get(),
             Entry::Vacant(entry) => {
                 // This allocation does not have a base address yet, pick one.
@@ -102,7 +104,7 @@ impl<'mir, 'tcx> GlobalState {
                 trace!(
                     "Assigning base address {:#x} to allocation {:?} (slack: {}, align: {})",
                     base_addr,
-                    ptr.alloc_id,
+                    id,
                     slack,
                     align.bytes(),
                 );
@@ -112,7 +114,7 @@ impl<'mir, 'tcx> GlobalState {
                 global_state.next_base_addr = base_addr.checked_add(max(size.bytes(), 1)).unwrap();
                 // Given that `next_base_addr` increases in each allocation, pushing the
                 // corresponding tuple keeps `int_to_ptr_map` sorted
-                global_state.int_to_ptr_map.push((base_addr, ptr.alloc_id));
+                global_state.int_to_ptr_map.push((base_addr, id));
 
                 base_addr
             }

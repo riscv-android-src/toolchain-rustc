@@ -2,12 +2,15 @@
 
 # We try to find any packages our backends might use
 
+INCLUDE(SanitizeBool)
+
 FIND_PACKAGE(GSSAPI)
 IF (CMAKE_SYSTEM_NAME MATCHES "Darwin")
 	INCLUDE(FindGSSFramework)
 ENDIF()
 
 # Auto-select GSS backend
+SanitizeBool(USE_GSSAPI)
 IF (USE_GSSAPI STREQUAL ON)
 	IF (GSSFRAMEWORK_FOUND)
 		SET(GSS_BACKEND "GSS.framework")
@@ -49,5 +52,5 @@ IF(GSS_BACKEND)
 	ENDIF()
 ELSE()
 	SET(GIT_GSSAPI 0)
-	ADD_FEATURE_INFO(SPNEGO NO "")
+	ADD_FEATURE_INFO(SPNEGO NO "SPNEGO authentication support")
 ENDIF()

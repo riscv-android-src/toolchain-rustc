@@ -381,10 +381,10 @@ pub enum AsmDialect {
 }
 
 impl AsmDialect {
-    pub fn from_generic(asm: syntax::ast::AsmDialect) -> Self {
+    pub fn from_generic(asm: rustc_ast::ast::AsmDialect) -> Self {
         match asm {
-            syntax::ast::AsmDialect::Att => AsmDialect::Att,
-            syntax::ast::AsmDialect::Intel => AsmDialect::Intel,
+            rustc_ast::ast::AsmDialect::Att => AsmDialect::Att,
+            rustc_ast::ast::AsmDialect::Intel => AsmDialect::Intel,
         }
     }
 }
@@ -400,6 +400,38 @@ pub enum CodeGenOptLevel {
     Less,
     Default,
     Aggressive,
+}
+
+/// LLVMRustPassBuilderOptLevel
+#[repr(C)]
+pub enum PassBuilderOptLevel {
+    O0,
+    O1,
+    O2,
+    O3,
+    Os,
+    Oz,
+}
+
+/// LLVMRustOptStage
+#[derive(PartialEq)]
+#[repr(C)]
+pub enum OptStage {
+    PreLinkNoLTO,
+    PreLinkThinLTO,
+    PreLinkFatLTO,
+    ThinLTO,
+    FatLTO,
+}
+
+/// LLVMRustSanitizerOptions
+#[repr(C)]
+pub struct SanitizerOptions {
+    pub sanitize_memory: bool,
+    pub sanitize_thread: bool,
+    pub sanitize_address: bool,
+    pub sanitize_recover: bool,
+    pub sanitize_memory_track_origins: c_int,
 }
 
 /// LLVMRelocMode
@@ -459,6 +491,7 @@ pub enum ArchiveKind {
     Other,
     K_GNU,
     K_BSD,
+    K_DARWIN,
     K_COFF,
 }
 
@@ -675,6 +708,10 @@ pub mod debuginfo {
 extern "C" {
     pub type ModuleBuffer;
 }
+
+pub type SelfProfileBeforePassCallback =
+    unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char);
+pub type SelfProfileAfterPassCallback = unsafe extern "C" fn(*mut c_void);
 
 extern "C" {
     pub fn LLVMRustInstallFatalErrorHandler();
@@ -909,9 +946,7 @@ extern "C" {
     pub fn LLVMDisposeBuilder(Builder: &'a mut Builder<'a>);
 
     // Metadata
-    pub fn LLVMSetCurrentDebugLocation(Builder: &Builder<'a>, L: Option<&'a Value>);
-    pub fn LLVMGetCurrentDebugLocation(Builder: &Builder<'a>) -> &'a Value;
-    pub fn LLVMSetInstDebugLocation(Builder: &Builder<'a>, Inst: &'a Value);
+    pub fn LLVMSetCurrentDebugLocation(Builder: &Builder<'a>, L: &'a Value);
 
     // Terminators
     pub fn LLVMBuildRetVoid(B: &Builder<'a>) -> &'a Value;
@@ -1317,6 +1352,14 @@ extern "C" {
         Size: &'a Value,
         IsVolatile: bool,
     ) -> &'a Value;
+    pub fn LLVMRustBuildMemSet(
+        B: &Builder<'a>,
+        Dst: &'a Value,
+        DstAlign: c_uint,
+        Val: &'a Value,
+        Size: &'a Value,
+        IsVolatile: bool,
+    ) -> &'a Value;
     pub fn LLVMBuildSelect(
         B: &Builder<'a>,
         If: &'a Value,
@@ -1454,6 +1497,10 @@ extern "C" {
 
     pub fn LLVMInitializePasses();
 
+    pub fn LLVMTimeTraceProfilerInitialize();
+
+    pub fn LLVMTimeTraceProfilerFinish(FileName: *const c_char);
+
     pub fn LLVMAddAnalysisPasses(T: &'a TargetMachine, PM: &PassManager<'a>);
 
     pub fn LLVMPassManagerBuilderCreate() -> &'static mut PassManagerBuilder;
@@ -1560,17 +1607,21 @@ extern "C" {
         Lang: c_uint,
         File: &'a DIFile,
         Producer: *const c_char,
+        ProducerLen: size_t,
         isOptimized: bool,
         Flags: *const c_char,
         RuntimeVer: c_uint,
         SplitName: *const c_char,
+        SplitNameLen: size_t,
         kind: DebugEmissionKind,
     ) -> &'a DIDescriptor;
 
     pub fn LLVMRustDIBuilderCreateFile(
         Builder: &DIBuilder<'a>,
         Filename: *const c_char,
+        FilenameLen: size_t,
         Directory: *const c_char,
+        DirectoryLen: size_t,
     ) -> &'a DIFile;
 
     pub fn LLVMRustDIBuilderCreateSubroutineType(
@@ -1583,7 +1634,9 @@ extern "C" {
         Builder: &DIBuilder<'a>,
         Scope: &'a DIDescriptor,
         Name: *const c_char,
+        NameLen: size_t,
         LinkageName: *const c_char,
+        LinkageNameLen: size_t,
         File: &'a DIFile,
         LineNo: c_uint,
         Ty: &'a DIType,
@@ -1598,6 +1651,7 @@ extern "C" {
     pub fn LLVMRustDIBuilderCreateBasicType(
         Builder: &DIBuilder<'a>,
         Name: *const c_char,
+        NameLen: size_t,
         SizeInBits: u64,
         AlignInBits: u32,
         Encoding: c_uint,
@@ -1608,13 +1662,16 @@ extern "C" {
         PointeeTy: &'a DIType,
         SizeInBits: u64,
         AlignInBits: u32,
+        AddressSpace: c_uint,
         Name: *const c_char,
+        NameLen: size_t,
     ) -> &'a DIDerivedType;
 
     pub fn LLVMRustDIBuilderCreateStructType(
         Builder: &DIBuilder<'a>,
         Scope: Option<&'a DIDescriptor>,
         Name: *const c_char,
+        NameLen: size_t,
         File: &'a DIFile,
         LineNumber: c_uint,
         SizeInBits: u64,
@@ -1625,12 +1682,14 @@ extern "C" {
         RunTimeLang: c_uint,
         VTableHolder: Option<&'a DIType>,
         UniqueId: *const c_char,
+        UniqueIdLen: size_t,
     ) -> &'a DICompositeType;
 
     pub fn LLVMRustDIBuilderCreateMemberType(
         Builder: &DIBuilder<'a>,
         Scope: &'a DIDescriptor,
         Name: *const c_char,
+        NameLen: size_t,
         File: &'a DIFile,
         LineNo: c_uint,
         SizeInBits: u64,
@@ -1644,6 +1703,7 @@ extern "C" {
         Builder: &DIBuilder<'a>,
         Scope: &'a DIScope,
         Name: *const c_char,
+        NameLen: size_t,
         File: &'a DIFile,
         LineNumber: c_uint,
         SizeInBits: u64,
@@ -1672,7 +1732,9 @@ extern "C" {
         Builder: &DIBuilder<'a>,
         Context: Option<&'a DIScope>,
         Name: *const c_char,
+        NameLen: size_t,
         LinkageName: *const c_char,
+        LinkageNameLen: size_t,
         File: &'a DIFile,
         LineNo: c_uint,
         Ty: &'a DIType,
@@ -1687,6 +1749,7 @@ extern "C" {
         Tag: c_uint,
         Scope: &'a DIDescriptor,
         Name: *const c_char,
+        NameLen: size_t,
         File: &'a DIFile,
         LineNo: c_uint,
         Ty: &'a DIType,
@@ -1729,13 +1792,16 @@ extern "C" {
     pub fn LLVMRustDIBuilderCreateEnumerator(
         Builder: &DIBuilder<'a>,
         Name: *const c_char,
-        Val: u64,
+        NameLen: size_t,
+        Value: i64,
+        IsUnsigned: bool,
     ) -> &'a DIEnumerator;
 
     pub fn LLVMRustDIBuilderCreateEnumerationType(
         Builder: &DIBuilder<'a>,
         Scope: &'a DIScope,
         Name: *const c_char,
+        NameLen: size_t,
         File: &'a DIFile,
         LineNumber: c_uint,
         SizeInBits: u64,
@@ -1749,6 +1815,7 @@ extern "C" {
         Builder: &DIBuilder<'a>,
         Scope: &'a DIScope,
         Name: *const c_char,
+        NameLen: size_t,
         File: &'a DIFile,
         LineNumber: c_uint,
         SizeInBits: u64,
@@ -1757,12 +1824,14 @@ extern "C" {
         Elements: Option<&'a DIArray>,
         RunTimeLang: c_uint,
         UniqueId: *const c_char,
+        UniqueIdLen: size_t,
     ) -> &'a DIType;
 
     pub fn LLVMRustDIBuilderCreateVariantPart(
         Builder: &DIBuilder<'a>,
         Scope: &'a DIScope,
         Name: *const c_char,
+        NameLen: size_t,
         File: &'a DIFile,
         LineNo: c_uint,
         SizeInBits: u64,
@@ -1771,6 +1840,7 @@ extern "C" {
         Discriminator: Option<&'a DIDerivedType>,
         Elements: &'a DIArray,
         UniqueId: *const c_char,
+        UniqueIdLen: size_t,
     ) -> &'a DIDerivedType;
 
     pub fn LLVMSetUnnamedAddr(GlobalVar: &Value, UnnamedAddr: Bool);
@@ -1779,6 +1849,7 @@ extern "C" {
         Builder: &DIBuilder<'a>,
         Scope: Option<&'a DIScope>,
         Name: *const c_char,
+        NameLen: size_t,
         Ty: &'a DIType,
         File: &'a DIFile,
         LineNo: c_uint,
@@ -1789,8 +1860,8 @@ extern "C" {
         Builder: &DIBuilder<'a>,
         Scope: Option<&'a DIScope>,
         Name: *const c_char,
-        File: &'a DIFile,
-        LineNo: c_uint,
+        NameLen: size_t,
+        ExportSymbols: bool,
     ) -> &'a DINameSpace;
 
     pub fn LLVMRustDICompositeTypeReplaceArrays(
@@ -1886,6 +1957,26 @@ extern "C" {
         Output: *const c_char,
         FileType: FileType,
     ) -> LLVMRustResult;
+    pub fn LLVMRustOptimizeWithNewPassManager(
+        M: &'a Module,
+        TM: &'a TargetMachine,
+        OptLevel: PassBuilderOptLevel,
+        OptStage: OptStage,
+        NoPrepopulatePasses: bool,
+        VerifyIR: bool,
+        UseThinLTOBuffers: bool,
+        MergeFunctions: bool,
+        UnrollLoops: bool,
+        SLPVectorize: bool,
+        LoopVectorize: bool,
+        DisableSimplifyLibCalls: bool,
+        SanitizerOptions: Option<&SanitizerOptions>,
+        PGOGenPath: *const c_char,
+        PGOUsePath: *const c_char,
+        llvm_selfprofiler: *mut c_void,
+        begin_callback: SelfProfileBeforePassCallback,
+        end_callback: SelfProfileAfterPassCallback,
+    );
     pub fn LLVMRustPrintModule(
         M: &'a Module,
         Output: *const c_char,

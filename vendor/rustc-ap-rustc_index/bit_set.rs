@@ -13,8 +13,9 @@ pub type Word = u64;
 pub const WORD_BYTES: usize = mem::size_of::<Word>();
 pub const WORD_BITS: usize = WORD_BYTES * 8;
 
-/// A fixed-size bitset type with a dense representation. It does not support
-/// resizing after creation; use `GrowableBitSet` for that.
+/// A fixed-size bitset type with a dense representation.
+///
+/// NOTE: Use [`GrowableBitSet`] if you need support for resizing after creation.
 ///
 /// `T` is an index type, typically a newtyped `usize` wrapper, but it can also
 /// just be `usize`.
@@ -22,6 +23,8 @@ pub const WORD_BITS: usize = WORD_BYTES * 8;
 /// All operations that involve an element will panic if the element is equal
 /// to or greater than the domain size. All operations that involve two bitsets
 /// will panic if the bitsets have differing domain sizes.
+///
+/// [`GrowableBitSet`]: struct.GrowableBitSet.html
 #[derive(Clone, Eq, PartialEq, RustcDecodable, RustcEncodable)]
 pub struct BitSet<T: Idx> {
     domain_size: usize,
@@ -34,22 +37,14 @@ impl<T: Idx> BitSet<T> {
     #[inline]
     pub fn new_empty(domain_size: usize) -> BitSet<T> {
         let num_words = num_words(domain_size);
-        BitSet {
-            domain_size,
-            words: vec![0; num_words],
-            marker: PhantomData,
-        }
+        BitSet { domain_size, words: vec![0; num_words], marker: PhantomData }
     }
 
     /// Creates a new, filled bitset with a given `domain_size`.
     #[inline]
     pub fn new_filled(domain_size: usize) -> BitSet<T> {
         let num_words = num_words(domain_size);
-        let mut result = BitSet {
-            domain_size,
-            words: vec![!0; num_words],
-            marker: PhantomData,
-        };
+        let mut result = BitSet { domain_size, words: vec![!0; num_words], marker: PhantomData };
         result.clear_excess_bits();
         result
     }
@@ -157,7 +152,7 @@ impl<T: Idx> BitSet<T> {
     /// (i.e., if any bits were removed).
     pub fn intersect(&mut self, other: &BitSet<T>) -> bool {
         assert_eq!(self.domain_size, other.domain_size);
-        bitwise(&mut self.words, &other.words, |a, b| { a & b })
+        bitwise(&mut self.words, &other.words, |a, b| a & b)
     }
 
     /// Gets a slice of the underlying words.
@@ -168,11 +163,7 @@ impl<T: Idx> BitSet<T> {
     /// Iterates over the indices of set bits in a sorted order.
     #[inline]
     pub fn iter(&self) -> BitIter<'_, T> {
-        BitIter {
-            cur: None,
-            iter: self.words.iter().enumerate(),
-            marker: PhantomData,
-        }
+        BitIter::new(&self.words)
     }
 
     /// Duplicates the set as a hybrid set.
@@ -201,7 +192,7 @@ impl<T: Idx> BitSet<T> {
                 // Were there any bits in the old word that did not occur in the sparse set?
                 not_already |= (self.words[current_index] ^ new_bit_mask) != 0;
                 // Check all words we skipped for any set bit.
-                not_already |= self.words[current_index+1..word_index].iter().any(|&x| x != 0);
+                not_already |= self.words[current_index + 1..word_index].iter().any(|&x| x != 0);
                 // Update next word.
                 current_index = word_index;
                 // Reset bit mask, no bits have been merged yet.
@@ -215,7 +206,7 @@ impl<T: Idx> BitSet<T> {
         // Any bits in the last inspected word that were not in the sparse set?
         not_already |= (self.words[current_index] ^ new_bit_mask) != 0;
         // Any bits in the tail? Note `clear_excess_bits` before.
-        not_already |= self.words[current_index+1..].iter().any(|&x| x != 0);
+        not_already |= self.words[current_index + 1..].iter().any(|&x| x != 0);
 
         not_already
     }
@@ -238,22 +229,20 @@ pub trait SubtractFromBitSet<T: Idx> {
 impl<T: Idx> UnionIntoBitSet<T> for BitSet<T> {
     fn union_into(&self, other: &mut BitSet<T>) -> bool {
         assert_eq!(self.domain_size, other.domain_size);
-        bitwise(&mut other.words, &self.words, |a, b| { a | b })
+        bitwise(&mut other.words, &self.words, |a, b| a | b)
     }
 }
 
 impl<T: Idx> SubtractFromBitSet<T> for BitSet<T> {
     fn subtract_from(&self, other: &mut BitSet<T>) -> bool {
         assert_eq!(self.domain_size, other.domain_size);
-        bitwise(&mut other.words, &self.words, |a, b| { a & !b })
+        bitwise(&mut other.words, &self.words, |a, b| a & !b)
     }
 }
 
 impl<T: Idx> fmt::Debug for BitSet<T> {
     fn fmt(&self, w: &mut fmt::Formatter<'_>) -> fmt::Result {
-        w.debug_list()
-         .entries(self.iter())
-         .finish()
+        w.debug_list().entries(self.iter()).finish()
     }
 }
 
@@ -268,7 +257,8 @@ impl<T: Idx> ToString for BitSet<T> {
         let mut i = 0;
         for word in &self.words {
             let mut word = *word;
-            for _ in 0..WORD_BYTES { // for each byte in `word`:
+            for _ in 0..WORD_BYTES {
+                // for each byte in `word`:
                 let remain = self.domain_size - i;
                 // If less than a byte remains, then mask just that many bits.
                 let mask = if remain <= 8 { (1 << remain) - 1 } else { 0xFF };
@@ -277,7 +267,9 @@ impl<T: Idx> ToString for BitSet<T> {
 
                 result.push_str(&format!("{}{:02x}", sep, byte));
 
-                if remain <= 8 { break; }
+                if remain <= 8 {
+                    break;
+                }
                 word >>= 8;
                 i += 8;
                 sep = '-';
@@ -291,33 +283,63 @@ impl<T: Idx> ToString for BitSet<T> {
 }
 
 pub struct BitIter<'a, T: Idx> {
-    cur: Option<(Word, usize)>,
-    iter: iter::Enumerate<slice::Iter<'a, Word>>,
-    marker: PhantomData<T>
+    /// A copy of the current word, but with any already-visited bits cleared.
+    /// (This lets us use `trailing_zeros()` to find the next set bit.) When it
+    /// is reduced to 0, we move onto the next word.
+    word: Word,
+
+    /// The offset (measured in bits) of the current word.
+    offset: usize,
+
+    /// Underlying iterator over the words.
+    iter: slice::Iter<'a, Word>,
+
+    marker: PhantomData<T>,
+}
+
+impl<'a, T: Idx> BitIter<'a, T> {
+    #[inline]
+    fn new(words: &'a [Word]) -> BitIter<'a, T> {
+        // We initialize `word` and `offset` to degenerate values. On the first
+        // call to `next()` we will fall through to getting the first word from
+        // `iter`, which sets `word` to the first word (if there is one) and
+        // `offset` to 0. Doing it this way saves us from having to maintain
+        // additional state about whether we have started.
+        BitIter {
+            word: 0,
+            offset: std::usize::MAX - (WORD_BITS - 1),
+            iter: words.iter(),
+            marker: PhantomData,
+        }
+    }
 }
 
 impl<'a, T: Idx> Iterator for BitIter<'a, T> {
     type Item = T;
     fn next(&mut self) -> Option<T> {
         loop {
-            if let Some((ref mut word, offset)) = self.cur {
-                let bit_pos = word.trailing_zeros() as usize;
-                if bit_pos != WORD_BITS {
-                    let bit = 1 << bit_pos;
-                    *word ^= bit;
-                    return Some(T::new(bit_pos + offset))
-                }
+            if self.word != 0 {
+                // Get the position of the next set bit in the current word,
+                // then clear the bit.
+                let bit_pos = self.word.trailing_zeros() as usize;
+                let bit = 1 << bit_pos;
+                self.word ^= bit;
+                return Some(T::new(bit_pos + self.offset));
             }
 
-            let (i, word) = self.iter.next()?;
-            self.cur = Some((*word, WORD_BITS * i));
+            // Move onto the next word. `wrapping_add()` is needed to handle
+            // the degenerate initial value given to `offset` in `new()`.
+            let word = self.iter.next()?;
+            self.word = *word;
+            self.offset = self.offset.wrapping_add(WORD_BITS);
         }
     }
 }
 
 #[inline]
 fn bitwise<Op>(out_vec: &mut [Word], in_vec: &[Word], op: Op) -> bool
-    where Op: Fn(Word, Word) -> Word
+where
+    Op: Fn(Word, Word) -> Word,
 {
     assert_eq!(out_vec.len(), in_vec.len());
     let mut changed = false;
@@ -346,10 +368,7 @@ pub struct SparseBitSet<T: Idx> {
 
 impl<T: Idx> SparseBitSet<T> {
     fn new_empty(domain_size: usize) -> Self {
-        SparseBitSet {
-            domain_size,
-            elems: SmallVec::new()
-        }
+        SparseBitSet { domain_size, elems: SmallVec::new() }
     }
 
     fn len(&self) -> usize {
@@ -670,11 +689,7 @@ impl<T: Idx> GrowableBitSet<T> {
     #[inline]
     pub fn contains(&self, elem: T) -> bool {
         let (word_index, mask) = word_index_and_mask(elem);
-        if let Some(word) = self.bit_set.words.get(word_index) {
-            (word & mask) != 0
-        } else {
-            false
-        }
+        if let Some(word) = self.bit_set.words.get(word_index) { (word & mask) != 0 } else { false }
     }
 }
 
@@ -851,11 +866,7 @@ impl<R: Idx, C: Idx> BitMatrix<R, C> {
     pub fn iter(&self, row: R) -> BitIter<'_, C> {
         assert!(row.index() < self.num_rows);
         let (start, end) = self.range(row);
-        BitIter {
-            cur: None,
-            iter: self.words[start..end].iter().enumerate(),
-            marker: PhantomData,
-        }
+        BitIter::new(&self.words[start..end])
     }
 
     /// Returns the number of elements in `row`.
@@ -889,10 +900,7 @@ where
 impl<R: Idx, C: Idx> SparseBitMatrix<R, C> {
     /// Creates a new empty sparse bit matrix with no rows or columns.
     pub fn new(num_columns: usize) -> Self {
-        Self {
-            num_columns,
-            rows: IndexVec::new(),
-        }
+        Self { num_columns, rows: IndexVec::new() }
     }
 
     fn ensure_row(&mut self, row: R) -> &mut HybridBitSet<C> {
@@ -962,11 +970,7 @@ impl<R: Idx, C: Idx> SparseBitMatrix<R, C> {
     }
 
     pub fn row(&self, row: R) -> Option<&HybridBitSet<C>> {
-        if let Some(Some(row)) = self.rows.get(row) {
-            Some(row)
-        } else {
-            None
-        }
+        if let Some(Some(row)) = self.rows.get(row) { Some(row) } else { None }
     }
 }
 

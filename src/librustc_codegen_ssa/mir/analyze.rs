@@ -8,7 +8,6 @@ use rustc::mir::visit::{
     MutatingUseContext, NonMutatingUseContext, NonUseContext, PlaceContext, Visitor,
 };
 use rustc::mir::{self, Location, TerminatorKind};
-use rustc::session::config::DebugInfo;
 use rustc::ty;
 use rustc::ty::layout::{HasTyCtxt, LayoutOf};
 use rustc_data_structures::graph::dominators::Dominators;
@@ -24,15 +23,6 @@ pub fn non_ssa_locals<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     analyzer.visit_body(mir);
 
     for (local, decl) in mir.local_decls.iter_enumerated() {
-        // FIXME(eddyb): We should figure out how to use llvm.dbg.value instead
-        // of putting everything in allocas just so we can use llvm.dbg.declare.
-        if fx.cx.sess().opts.debuginfo == DebugInfo::Full {
-            if fx.mir.local_kind(local) == mir::LocalKind::Arg {
-                analyzer.not_ssa(local);
-                continue;
-            }
-        }
-
         let ty = fx.monomorphize(&decl.ty);
         debug!("local {:?} has type `{}`", local, ty);
         let layout = fx.cx.spanned_layout_of(ty, decl.source_info.span);
@@ -107,7 +97,7 @@ impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
 
     fn process_place(
         &mut self,
-        place_ref: &mir::PlaceRef<'_, 'tcx>,
+        place_ref: &mir::PlaceRef<'tcx>,
         context: PlaceContext,
         location: Location,
     ) {
@@ -134,7 +124,7 @@ impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
                 // ZSTs don't require any actual memory access.
                 let elem_ty = base_ty.projection_ty(cx.tcx(), elem).ty;
                 let elem_ty = self.fx.monomorphize(&elem_ty);
-                let span = self.fx.mir.local_decls[*place_ref.local].source_info.span;
+                let span = self.fx.mir.local_decls[place_ref.local].source_info.span;
                 if cx.spanned_layout_of(elem_ty, span).is_zst() {
                     return;
                 }
@@ -174,7 +164,7 @@ impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
                     // We use `NonUseContext::VarDebugInfo` for the base,
                     // which might not force the base local to memory,
                     // so we have to do it manually.
-                    self.visit_local(place_ref.local, context, location);
+                    self.visit_local(&place_ref.local, context, location);
                 }
             }
 
@@ -212,7 +202,7 @@ impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
                 };
             }
 
-            self.visit_place_base(place_ref.local, context, location);
+            self.visit_place_base(&place_ref.local, context, location);
             self.visit_projection(place_ref.local, place_ref.projection, context, location);
         }
     }
@@ -279,15 +269,6 @@ impl<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
         match context {
             PlaceContext::MutatingUse(MutatingUseContext::Call) => {
                 self.assign(local, location);
-            }
-
-            PlaceContext::NonUse(NonUseContext::VarDebugInfo) => {
-                // We need to keep locals in `alloca`s for debuginfo.
-                // FIXME(eddyb): We should figure out how to use `llvm.dbg.value` instead
-                // of putting everything in allocas just so we can use `llvm.dbg.declare`.
-                if self.fx.cx.sess().opts.debuginfo == DebugInfo::Full {
-                    self.not_ssa(local);
-                }
             }
 
             PlaceContext::NonUse(_) | PlaceContext::MutatingUse(MutatingUseContext::Retag) => {}

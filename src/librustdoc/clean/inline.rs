@@ -3,6 +3,7 @@
 use std::iter::once;
 
 use rustc::ty;
+use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, DefKind, Res};
@@ -13,7 +14,6 @@ use rustc_mir::const_eval::is_min_const_fn;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::symbol::sym;
 use rustc_span::Span;
-use syntax::ast;
 
 use crate::clean::{self, GetDefId, ToSource, TypeKind};
 use crate::core::DocContext;
@@ -190,13 +190,14 @@ pub fn record_extern_fqn(cx: &DocContext<'_>, did: DefId, kind: clean::TypeKind)
 }
 
 pub fn build_external_trait(cx: &DocContext<'_>, did: DefId) -> clean::Trait {
+    let trait_items =
+        cx.tcx.associated_items(did).in_definition_order().map(|item| item.clean(cx)).collect();
+
     let auto_trait = cx.tcx.trait_def(did).has_auto_impl;
-    let trait_items = cx.tcx.associated_items(did).map(|item| item.clean(cx)).collect();
     let predicates = cx.tcx.predicates_of(did);
     let generics = (cx.tcx.generics_of(did), predicates).clean(cx);
     let generics = filter_non_trait_generics(did, generics);
     let (generics, supertrait_bounds) = separate_supertrait_bounds(generics);
-    let is_spotlight = load_attrs(cx, did).clean(cx).has_doc_flag(sym::spotlight);
     let is_auto = cx.tcx.trait_is_auto(did);
     clean::Trait {
         auto: auto_trait,
@@ -204,7 +205,6 @@ pub fn build_external_trait(cx: &DocContext<'_>, did: DefId) -> clean::Trait {
         generics,
         items: trait_items,
         bounds: supertrait_bounds,
-        is_spotlight,
         is_auto,
     }
 }
@@ -376,6 +376,7 @@ pub fn build_impl(
     } else {
         (
             tcx.associated_items(did)
+                .in_definition_order()
                 .filter_map(|item| {
                     if associated_trait.is_some() || item.vis == ty::Visibility::Public {
                         Some(item.clean(cx))
@@ -401,9 +402,7 @@ pub fn build_impl(
 
     let provided = trait_
         .def_id()
-        .map(|did| {
-            tcx.provided_trait_methods(did).into_iter().map(|meth| meth.ident.to_string()).collect()
-        })
+        .map(|did| tcx.provided_trait_methods(did).map(|meth| meth.ident.to_string()).collect())
         .unwrap_or_default();
 
     debug!("build_impl: impl {:?} for {:?}", trait_.def_id(), for_.def_id());
@@ -445,12 +444,41 @@ fn build_module(cx: &DocContext<'_>, did: DefId, visited: &mut FxHashSet<DefId>)
         // two namespaces, so the target may be listed twice. Make sure we only
         // visit each node at most once.
         for &item in cx.tcx.item_children(did).iter() {
-            let def_id = item.res.def_id();
             if item.vis == ty::Visibility::Public {
-                if did == def_id || !visited.insert(def_id) {
-                    continue;
+                if let Some(def_id) = item.res.mod_def_id() {
+                    if did == def_id || !visited.insert(def_id) {
+                        continue;
+                    }
                 }
-                if let Some(i) = try_inline(cx, item.res, item.ident.name, None, visited) {
+                if let Res::PrimTy(p) = item.res {
+                    // Primitive types can't be inlined so generate an import instead.
+                    items.push(clean::Item {
+                        name: None,
+                        attrs: clean::Attributes::default(),
+                        source: clean::Span::empty(),
+                        def_id: cx.tcx.hir().local_def_id_from_node_id(ast::CRATE_NODE_ID),
+                        visibility: clean::Public,
+                        stability: None,
+                        deprecation: None,
+                        inner: clean::ImportItem(clean::Import::Simple(
+                            item.ident.to_string(),
+                            clean::ImportSource {
+                                path: clean::Path {
+                                    global: false,
+                                    res: item.res,
+                                    segments: vec![clean::PathSegment {
+                                        name: clean::PrimitiveType::from(p).as_str().to_string(),
+                                        args: clean::GenericArgs::AngleBracketed {
+                                            args: Vec::new(),
+                                            bindings: Vec::new(),
+                                        },
+                                    }],
+                                },
+                                did: None,
+                            },
+                        )),
+                    });
+                } else if let Some(i) = try_inline(cx, item.res, item.ident.name, None, visited) {
                     items.extend(i)
                 }
             }

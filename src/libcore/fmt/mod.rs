@@ -238,16 +238,8 @@ pub struct Formatter<'a> {
 // NB. Argument is essentially an optimized partially applied formatting function,
 // equivalent to `exists T.(&T, fn(&T, &mut Formatter<'_>) -> Result`.
 
-struct Void {
-    _priv: (),
-    /// Erases all oibits, because `Void` erases the type of the object that
-    /// will be used to produce formatted output. Since we do not know what
-    /// oibits the real types have (and they can have any or none), we need to
-    /// take the most conservative approach and forbid all oibits.
-    ///
-    /// It was added after #45197 showed that one could share a `!Sync`
-    /// object across threads by passing it into `format_args!`.
-    _oibit_remover: PhantomData<*mut dyn Fn()>,
+extern "C" {
+    type Opaque;
 }
 
 /// This struct represents the generic "argument" which is taken by the Xprintf
@@ -259,16 +251,33 @@ struct Void {
 #[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
 #[doc(hidden)]
 pub struct ArgumentV1<'a> {
-    value: &'a Void,
-    formatter: fn(&Void, &mut Formatter<'_>) -> Result,
+    value: &'a Opaque,
+    formatter: fn(&Opaque, &mut Formatter<'_>) -> Result,
 }
 
-impl<'a> ArgumentV1<'a> {
-    #[inline(never)]
-    fn show_usize(x: &usize, f: &mut Formatter<'_>) -> Result {
-        Display::fmt(x, f)
-    }
+// This guarantees a single stable value for the function pointer associated with
+// indices/counts in the formatting infrastructure.
+//
+// Note that a function defined as such would not be correct as functions are
+// always tagged unnamed_addr with the current lowering to LLVM IR, so their
+// address is not considered important to LLVM and as such the as_usize cast
+// could have been miscompiled. In practice, we never call as_usize on non-usize
+// containing data (as a matter of static generation of the formatting
+// arguments), so this is merely an additional check.
+//
+// We primarily want to ensure that the function pointer at `USIZE_MARKER` has
+// an address corresponding *only* to functions that also take `&usize` as their
+// first argument. The read_volatile here ensures that we can safely ready out a
+// usize from the passed reference and that this address does not point at a
+// non-usize taking function.
+#[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
+static USIZE_MARKER: fn(&usize, &mut Formatter<'_>) -> Result = |ptr, _| {
+    // SAFETY: ptr is a reference
+    let _v: usize = unsafe { crate::ptr::read_volatile(ptr) };
+    loop {}
+};
 
+impl<'a> ArgumentV1<'a> {
     #[doc(hidden)]
     #[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
     pub fn new<'b, T>(x: &'b T, f: fn(&T, &mut Formatter<'_>) -> Result) -> ArgumentV1<'b> {
@@ -278,11 +287,13 @@ impl<'a> ArgumentV1<'a> {
     #[doc(hidden)]
     #[unstable(feature = "fmt_internals", reason = "internal to format_args!", issue = "none")]
     pub fn from_usize(x: &usize) -> ArgumentV1<'_> {
-        ArgumentV1::new(x, ArgumentV1::show_usize)
+        ArgumentV1::new(x, USIZE_MARKER)
     }
 
     fn as_usize(&self) -> Option<usize> {
-        if self.formatter as usize == ArgumentV1::show_usize as usize {
+        if self.formatter as usize == USIZE_MARKER as usize {
+            // SAFETY: The `formatter` field is only set to USIZE_MARKER if
+            // the value is a usize, so this is safe
             Some(unsafe { *(self.value as *const _ as *const usize) })
         } else {
             None
@@ -1080,18 +1091,7 @@ fn run(fmt: &mut Formatter<'_>, arg: &rt::v1::Argument, args: &[ArgumentV1<'_>])
     fmt.precision = getcount(args, &arg.format.precision);
 
     // Extract the correct argument
-    let value = {
-        #[cfg(bootstrap)]
-        {
-            match arg.position {
-                rt::v1::Position::At(i) => args[i],
-            }
-        }
-        #[cfg(not(bootstrap))]
-        {
-            args[arg.position]
-        }
-    };
+    let value = args[arg.position];
 
     // Then actually do some printing
     (value.formatter)(value.value, fmt)
@@ -1367,11 +1367,11 @@ impl<'a> Formatter<'a> {
             let mut align = old_align;
             if self.sign_aware_zero_pad() {
                 // a sign always goes first
-                let sign = unsafe { str::from_utf8_unchecked(formatted.sign) };
+                let sign = formatted.sign;
                 self.buf.write_str(sign)?;
 
                 // remove the sign from the formatted parts
-                formatted.sign = b"";
+                formatted.sign = "";
                 width = width.saturating_sub(sign.len());
                 align = rt::v1::Alignment::Right;
                 self.fill = '0';
@@ -1403,7 +1403,7 @@ impl<'a> Formatter<'a> {
         }
 
         if !formatted.sign.is_empty() {
-            write_bytes(self.buf, formatted.sign)?;
+            self.buf.write_str(formatted.sign)?;
         }
         for part in formatted.parts {
             match *part {

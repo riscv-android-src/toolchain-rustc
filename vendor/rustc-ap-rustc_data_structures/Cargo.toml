@@ -13,15 +13,18 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_data_structures"
-version = "610.0.0"
+version = "642.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit 4b42e919d640f7c714a7e87c91b4f3a9089552d0 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit a29424a2265411dda7d7446516ac5fd7499e2b55 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
 [lib]
 path = "lib.rs"
 doctest = false
+[dependencies.bitflags]
+version = "1.2.1"
+
 [dependencies.cfg-if]
 version = "0.1.2"
 
@@ -33,7 +36,7 @@ features = ["nightly"]
 version = "0.13.1"
 
 [dependencies.graphviz]
-version = "610.0.0"
+version = "642.0.0"
 package = "rustc-ap-graphviz"
 
 [dependencies.indexmap]
@@ -48,6 +51,9 @@ version = "1"
 
 [dependencies.log]
 version = "0.4"
+
+[dependencies.measureme]
+version = "0.7.1"
 
 [dependencies.parking_lot]
 version = "0.9"
@@ -65,16 +71,19 @@ package = "rustc-rayon-core"
 version = "1.0.1"
 
 [dependencies.rustc_index]
-version = "610.0.0"
+version = "642.0.0"
 package = "rustc-ap-rustc_index"
 
 [dependencies.rustc_serialize]
-version = "610.0.0"
+version = "642.0.0"
 package = "rustc-ap-serialize"
 
 [dependencies.smallvec]
-version = "0.6.7"
+version = "1.0"
 features = ["union", "may_dangle"]
 
 [dependencies.stable_deref_trait]
 version = "1.0.0"
+[target."cfg(windows)".dependencies.winapi]
+version = "0.3"
+features = ["fileapi", "psapi"]

@@ -39,10 +39,10 @@ lint. Fortunately, you can use the clippy dev tools to handle this for you. We
 are naming our new lint `foo_functions` (lints are generally written in snake
 case), and we don't need type information so it will have an early pass type
 (more on this later on). To get started on this lint you can run
-`./util/dev new_lint --name=foo_functions --pass=early --category=pedantic`
+`cargo dev new_lint --name=foo_functions --pass=early --category=pedantic`
 (category will default to nursery if not provided). This command will create
 two files: `tests/ui/foo_functions.rs` and `clippy_lints/src/foo_functions.rs`,
-as well as run `./util/dev update_lints` to register the new lint. Next, we'll
+as well as run `cargo dev update_lints` to register the new lint. Next, we'll
 open up these files and add our lint!
 
 ### Testing
@@ -138,7 +138,7 @@ at `clippy_lints/src/foo_functions.rs`. That's the crate where all the
 lint code is. This file has already imported some initial things we will need:
 
 ```rust
-use rustc::lint::{LintArray, LintPass, EarlyLintPass, EarlyContext};
+use rustc_lint::{EarlyLintPass, EarlyContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use syntax::ast::*;
 ```
@@ -167,12 +167,12 @@ declare_clippy_lint! {
 ```
 
 * The section of lines prefixed with `///` constitutes the lint documentation
-section. This is the default documentation style and will be displayed at
-https://rust-lang.github.io/rust-clippy/master/index.html.
+  section. This is the default documentation style and will be displayed at
+  https://rust-lang.github.io/rust-clippy/master/index.html.
 * `FOO_FUNCTIONS` is the name of our lint. Be sure to follow the [lint naming
-guidelines][lint_naming] here when naming your lint. In short, the name should
-state the thing that is being checked for and read well when used with
-`allow`/`warn`/`deny`.
+  guidelines][lint_naming] here when naming your lint. In short, the name should
+  state the thing that is being checked for and read well when used with
+  `allow`/`warn`/`deny`.
 * `pedantic` sets the lint level to `Allow`.
   The exact mapping can be found [here][category_level_mapping]
 * The last part should be a text that explains what exactly is wrong with the
@@ -191,15 +191,15 @@ declare_lint_pass!(FooFunctions => [FOO_FUNCTIONS]);
 impl EarlyLintPass for FooFunctions {}
 ```
 
-Don't worry about the `name` method here. As long as it includes the name of the
-lint pass it should be fine.
-
-The new lint automation runs `update_lints`, which automates some things, but it
-doesn't automate everything. We will have to register our lint pass manually in
-the `register_plugins` function in `clippy_lints/src/lib.rs`:
+Normally after declaring the lint, we have to run `cargo dev update_lints`,
+which updates some files, so Clippy knows about the new lint. Since we used
+`cargo dev new_lint ...` to generate the lint declaration, this was done
+automatically. While `update_lints` automates most of the things, it doesn't
+automate everything. We will have to register our lint pass manually in the
+`register_plugins` function in `clippy_lints/src/lib.rs`:
 
 ```rust
-reg.register_early_lint_pass(box foo_functions::FooFunctions);
+store.register_early_pass(box foo_functions::FooFunctions);
 ```
 
 This should fix the `unknown clippy lint: clippy::foo_functions` error that we
@@ -249,14 +249,14 @@ Depending on how complex we want our lint message to be, we can choose from a
 variety of lint emission functions. They can all be found in
 [`clippy_lints/src/utils/diagnostics.rs`][diagnostics].
 
-`span_help_and_lint` seems most appropriate in this case. It allows us to
+`span_lint_and_help` seems most appropriate in this case. It allows us to
 provide an extra help message and we can't really suggest a better name
 automatically. This is how it looks:
 
 ```rust
 impl EarlyLintPass for FooFunctions {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, _: FnKind<'_>, _: &FnDecl, span: Span, _: NodeId) {
-        span_help_and_lint(
+        span_lint_and_help(
             cx,
             FOO_FUNCTIONS,
             span,
@@ -284,7 +284,7 @@ With that we can expand our `check_fn` method to:
 impl EarlyLintPass for FooFunctions {
     fn check_fn(&mut self, cx: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: &FnDecl, span: Span, _: NodeId) {
         if is_foo_fn(fn_kind) {
-            span_help_and_lint(
+            span_lint_and_help(
                 cx,
                 FOO_FUNCTIONS,
                 span,
@@ -386,7 +386,7 @@ It can be installed via `rustup`:
 rustup component add rustfmt --toolchain=nightly
 ```
 
-Use `./util/dev fmt` to format the whole codebase. Make sure that `rustfmt` is
+Use `cargo dev fmt` to format the whole codebase. Make sure that `rustfmt` is
 installed for the nightly toolchain.
 
 ### Debugging
@@ -404,9 +404,9 @@ Before submitting your PR make sure you followed all of the basic requirements:
 - [ ] Followed [lint naming conventions][lint_naming]
 - [ ] Added passing UI tests (including committed `.stderr` file)
 - [ ] `cargo test` passes locally
-- [ ] Executed `./util/dev update_lints`
+- [ ] Executed `cargo dev update_lints`
 - [ ] Added lint documentation
-- [ ] Run `./util/dev fmt`
+- [ ] Run `cargo dev fmt`
 
 ### Cheatsheet
 
@@ -443,7 +443,6 @@ don't hesitate to ask on Discord, IRC or in the issue/PR.
 [lint_naming]: https://rust-lang.github.io/rfcs/0344-conventions-galore.html#lints
 [category_level_mapping]: https://github.com/rust-lang/rust-clippy/blob/bd23cb89ec0ea63403a17d3fc5e50c88e38dd54f/clippy_lints/src/lib.rs#L43
 [declare_clippy_lint]: https://github.com/rust-lang/rust-clippy/blob/a71acac1da7eaf667ab90a1d65d10e5cc4b80191/clippy_lints/src/lib.rs#L39
-[compilation_stages]: https://rust-lang.github.io/rustc-guide/high-level-overview.html#the-main-stages-of-compilation
 [check_fn]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/lint/trait.EarlyLintPass.html#method.check_fn
 [early_lint_pass]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/lint/trait.EarlyLintPass.html
 [late_lint_pass]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/lint/trait.LateLintPass.html

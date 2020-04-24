@@ -10,7 +10,7 @@ use log::info;
 
 use super::{BuildContext, CompileKind, Context, FileFlavor, Layout};
 use crate::core::compiler::{CompileMode, CompileTarget, Unit};
-use crate::core::{TargetKind, Workspace};
+use crate::core::{Target, TargetKind, Workspace};
 use crate::util::{self, CargoResult};
 
 /// The `Metadata` is a hash used to make unique file names for each unit in a build.
@@ -41,12 +41,18 @@ use crate::util::{self, CargoResult};
 ///
 /// Note that the `Fingerprint` is in charge of tracking everything needed to determine if a
 /// rebuild is needed.
-#[derive(Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Metadata(u64);
 
 impl fmt::Display for Metadata {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:016x}", self.0)
+    }
+}
+
+impl fmt::Debug for Metadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Metadata({:016x})", self.0)
     }
 }
 
@@ -141,7 +147,7 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
     /// Returns `None` if the unit should not use a metadata data hash (like
     /// rustdoc, or some dylibs).
     pub fn metadata(&self, unit: &Unit<'a>) -> Option<Metadata> {
-        self.metas[unit].clone()
+        self.metas[unit]
     }
 
     /// Gets the short hash based only on the `PackageId`.
@@ -213,6 +219,7 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
     pub fn build_script_dir(&self, unit: &Unit<'a>) -> PathBuf {
         assert!(unit.target.is_custom_build());
         assert!(!unit.mode.is_run_custom_build());
+        assert!(self.metas.contains_key(unit));
         let dir = self.pkg_dir(unit);
         self.layout(CompileKind::Host).build().join(dir)
     }
@@ -239,6 +246,35 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
             Some(ref metadata) => format!("{}-{}", unit.target.crate_name(), metadata),
             None => self.bin_stem(unit),
         }
+    }
+
+    /// Returns the path to the executable binary for the given bin target.
+    ///
+    /// This should only to be used when a `Unit` is not available.
+    pub fn bin_link_for_target(
+        &self,
+        target: &Target,
+        kind: CompileKind,
+        bcx: &BuildContext<'_, '_>,
+    ) -> CargoResult<PathBuf> {
+        assert!(target.is_bin());
+        let dest = self.layout(kind).dest();
+        let info = bcx.target_data.info(kind);
+        let file_types = info
+            .file_types(
+                "bin",
+                FileFlavor::Normal,
+                &TargetKind::Bin,
+                bcx.target_data.short_name(&kind),
+            )?
+            .expect("target must support `bin`");
+
+        let file_type = file_types
+            .iter()
+            .find(|file_type| file_type.flavor == FileFlavor::Normal)
+            .expect("target must support `bin`");
+
+        Ok(dest.join(file_type.filename(target.name())))
     }
 
     /// Returns the filenames that the given unit will generate.
@@ -365,7 +401,7 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
 
         let out_dir = self.out_dir(unit);
         let link_stem = self.link_stem(unit);
-        let info = bcx.info(unit.kind);
+        let info = bcx.target_data.info(unit.kind);
         let file_stem = self.file_stem(unit);
 
         let mut add = |crate_type: &str, flavor: FileFlavor| -> CargoResult<()> {
@@ -378,7 +414,7 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
                 crate_type,
                 flavor,
                 unit.target.kind(),
-                unit.kind.short_name(bcx),
+                bcx.target_data.short_name(&unit.kind),
             )?;
 
             match file_types {
@@ -452,14 +488,14 @@ impl<'a, 'cfg: 'a> CompilationFiles<'a, 'cfg> {
                      does not support these crate types",
                     unsupported.join(", "),
                     unit.pkg,
-                    unit.kind.short_name(bcx),
+                    bcx.target_data.short_name(&unit.kind),
                 )
             }
             anyhow::bail!(
                 "cannot compile `{}` as the target `{}` does not \
                  support any of the output crate types",
                 unit.pkg,
-                unit.kind.short_name(bcx),
+                bcx.target_data.short_name(&unit.kind),
             );
         }
         Ok(ret)
@@ -478,7 +514,7 @@ fn metadata_of<'a, 'cfg>(
             metadata_of(&dep.unit, cx, metas);
         }
     }
-    metas[unit].clone()
+    metas[unit]
 }
 
 fn compute_metadata<'a, 'cfg>(
@@ -514,18 +550,19 @@ fn compute_metadata<'a, 'cfg>(
     // doing this eventually.
     let bcx = &cx.bcx;
     let __cargo_default_lib_metadata = env::var("__CARGO_DEFAULT_LIB_METADATA");
+    let short_name = bcx.target_data.short_name(&unit.kind);
     if !(unit.mode.is_any_test() || unit.mode.is_check())
         && (unit.target.is_dylib()
             || unit.target.is_cdylib()
-            || (unit.target.is_executable() && unit.kind.short_name(bcx).starts_with("wasm32-"))
-            || (unit.target.is_executable() && unit.kind.short_name(bcx).contains("msvc")))
+            || (unit.target.is_executable() && short_name.starts_with("wasm32-"))
+            || (unit.target.is_executable() && short_name.contains("msvc")))
         && unit.pkg.package_id().source_id().is_path()
         && __cargo_default_lib_metadata.is_err()
     {
         return None;
     }
 
-    let mut hasher = SipHasher::new_with_keys(0, 0);
+    let mut hasher = SipHasher::new();
 
     // This is a generic version number that can be changed to make
     // backwards-incompatible changes to any file structures in the output
@@ -572,7 +609,7 @@ fn compute_metadata<'a, 'cfg>(
     unit.target.name().hash(&mut hasher);
     unit.target.kind().hash(&mut hasher);
 
-    bcx.rustc.verbose_version.hash(&mut hasher);
+    bcx.rustc().verbose_version.hash(&mut hasher);
 
     if cx.is_primary_package(unit) {
         // This is primarily here for clippy. This ensures that the clippy
@@ -587,5 +624,15 @@ fn compute_metadata<'a, 'cfg>(
     if let Ok(ref channel) = __cargo_default_lib_metadata {
         channel.hash(&mut hasher);
     }
+
+    // std units need to be kept separate from user dependencies. std crates
+    // are differentiated in the Unit with `is_std` (for things like
+    // `-Zforce-unstable-if-unmarked`), so they are always built separately.
+    // This isn't strictly necessary for build dependencies which probably
+    // don't need unstable support. A future experiment might be to set
+    // `is_std` to false for build dependencies so that they can be shared
+    // with user dependencies.
+    unit.is_std.hash(&mut hasher);
+
     Some(Metadata(hasher.finish()))
 }

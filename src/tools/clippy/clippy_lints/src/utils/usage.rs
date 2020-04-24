@@ -1,14 +1,15 @@
 use crate::utils::match_var;
 use rustc::hir::map::Map;
 use rustc::ty;
+use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir::def::Res;
 use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc_hir::*;
+use rustc_hir::{def_id, Expr, HirId, Path};
+use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::LateContext;
 use rustc_span::symbol::Ident;
-use rustc_typeck::expr_use_visitor::*;
-use syntax::ast;
+use rustc_typeck::expr_use_visitor::{ConsumeMode, Delegate, ExprUseVisitor, Place, PlaceBase};
 
 /// Returns a set of mutated local variable IDs, or `None` if mutations could not be determined.
 pub fn mutated_variables<'a, 'tcx>(expr: &'tcx Expr<'_>, cx: &'a LateContext<'a, 'tcx>) -> Option<FxHashSet<HirId>> {

@@ -1,16 +1,25 @@
+// Dogfood cannot run on Windows
+#![cfg(not(windows))]
+
+use lazy_static::lazy_static;
+use std::path::PathBuf;
+use std::process::Command;
+
+mod cargo;
+
+lazy_static! {
+    static ref CLIPPY_PATH: PathBuf = cargo::TARGET_LIB.join("cargo-clippy");
+}
+
 #[test]
 fn dogfood_clippy() {
     // run clippy on itself and fail the test if lint warnings are reported
-    if option_env!("RUSTC_TEST_SUITE").is_some() || cfg!(windows) {
+    if cargo::is_rustc_test_suite() {
         return;
     }
-    let root_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let clippy_binary = std::path::Path::new(&root_dir)
-        .join("target")
-        .join(env!("PROFILE"))
-        .join("cargo-clippy");
+    let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
-    let output = std::process::Command::new(clippy_binary)
+    let output = Command::new(&*CLIPPY_PATH)
         .current_dir(root_dir)
         .env("CLIPPY_DOGFOOD", "1")
         .env("CARGO_INCREMENTAL", "0")
@@ -34,14 +43,10 @@ fn dogfood_clippy() {
 #[test]
 fn dogfood_subprojects() {
     // run clippy on remaining subprojects and fail the test if lint warnings are reported
-    if option_env!("RUSTC_TEST_SUITE").is_some() || cfg!(windows) {
+    if cargo::is_rustc_test_suite() {
         return;
     }
-    let root_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let clippy_binary = std::path::Path::new(&root_dir)
-        .join("target")
-        .join(env!("PROFILE"))
-        .join("cargo-clippy");
+    let root_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
     for d in &[
         "clippy_workspace_tests",
@@ -51,7 +56,7 @@ fn dogfood_subprojects() {
         "clippy_dev",
         "rustc_tools_util",
     ] {
-        let output = std::process::Command::new(&clippy_binary)
+        let output = Command::new(&*CLIPPY_PATH)
             .current_dir(root_dir.join(d))
             .env("CLIPPY_DOGFOOD", "1")
             .env("CARGO_INCREMENTAL", "0")

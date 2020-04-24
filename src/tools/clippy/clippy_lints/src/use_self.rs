@@ -7,7 +7,10 @@ use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::intravisit::{walk_item, walk_path, walk_ty, NestedVisitorMap, Visitor};
-use rustc_hir::*;
+use rustc_hir::{
+    def, FnDecl, FnRetTy, FnSig, GenericArg, HirId, ImplItem, ImplItemKind, Item, ItemKind, Path, PathSegment, QPath,
+    TyKind,
+};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::symbol::kw;
@@ -125,12 +128,7 @@ fn check_trait_method_impl_decl<'a, 'tcx>(
     let trait_method = cx
         .tcx
         .associated_items(impl_trait_ref.def_id)
-        .find(|assoc_item| {
-            assoc_item.kind == ty::AssocKind::Method
-                && cx
-                    .tcx
-                    .hygienic_eq(impl_item.ident, assoc_item.ident, impl_trait_ref.def_id)
-        })
+        .find_by_name_and_kind(cx.tcx, impl_item.ident, ty::AssocKind::Method, impl_trait_ref.def_id)
         .expect("impl method matches a trait method");
 
     let trait_method_sig = cx.tcx.fn_sig(trait_method.def_id);
@@ -140,7 +138,7 @@ fn check_trait_method_impl_decl<'a, 'tcx>(
     let impl_method_sig = cx.tcx.fn_sig(impl_method_def_id);
     let impl_method_sig = cx.tcx.erase_late_bound_regions(&impl_method_sig);
 
-    let output_ty = if let FunctionRetTy::Return(ty) = &impl_decl.output {
+    let output_ty = if let FnRetTy::Return(ty) = &impl_decl.output {
         Some(&**ty)
     } else {
         None

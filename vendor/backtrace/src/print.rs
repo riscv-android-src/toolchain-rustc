@@ -57,7 +57,6 @@ impl<'a, 'b> BacktraceFmt<'a, 'b> {
     /// sumbolicated later, and otherwise this should just be the first method
     /// you call after creating a `BacktraceFmt`.
     pub fn add_context(&mut self) -> fmt::Result {
-        self.fmt.write_str("stack backtrace:\n")?;
         #[cfg(target_os = "fuchsia")]
         fuchsia::print_dso_context(self.fmt)?;
         Ok(())
@@ -196,7 +195,7 @@ impl BacktraceFrameFmt<'_, '_, '_> {
         // To reduce TCB size in Sgx enclave, we do not want to implement symbol
         // resolution functionality.  Rather, we can print the offset of the
         // address here, which could be later mapped to correct function.
-        #[cfg(all(feature = "std", target_env = "sgx"))]
+        #[cfg(all(feature = "std", target_env = "sgx", target_vendor = "fortanix"))]
         {
             let image_base = std::os::fortanix_sgx::mem::image_base();
             frame_ip = usize::wrapping_sub(frame_ip as usize, image_base as _) as _;

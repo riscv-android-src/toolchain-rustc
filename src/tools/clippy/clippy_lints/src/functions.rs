@@ -1,12 +1,12 @@
 use crate::utils::{
-    attr_by_name, attrs::is_proc_macro, is_must_use_ty, iter_input_pats, match_def_path, must_use_attr, qpath_res,
-    return_ty, snippet, snippet_opt, span_help_and_lint, span_lint, span_lint_and_then, trait_ref_of_method,
-    type_is_unsafe_function,
+    attr_by_name, attrs::is_proc_macro, is_must_use_ty, is_trait_impl_item, iter_input_pats, match_def_path,
+    must_use_attr, qpath_res, return_ty, snippet, snippet_opt, span_lint, span_lint_and_help, span_lint_and_then,
+    trait_ref_of_method, type_is_unsafe_function,
 };
-use matches::matches;
 use rustc::hir::map::Map;
 use rustc::lint::in_external_macro;
 use rustc::ty::{self, Ty};
+use rustc_ast::ast::Attribute;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
@@ -16,7 +16,6 @@ use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 use rustc_target::spec::abi::Abi;
-use syntax::ast::Attribute;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for functions with too many parameters.
@@ -195,12 +194,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
         span: Span,
         hir_id: hir::HirId,
     ) {
-        let is_impl = if let Some(hir::Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
-            matches!(item.kind, hir::ItemKind::Impl{ of_trait: Some(_), .. })
-        } else {
-            false
-        };
-
         let unsafety = match kind {
             intravisit::FnKind::ItemFn(_, _, hir::FnHeader { unsafety, .. }, _, _) => unsafety,
             intravisit::FnKind::Method(_, sig, _, _) => sig.header.unsafety,
@@ -208,7 +201,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
         };
 
         // don't warn for implementations, it's not their fault
-        if !is_impl {
+        if !is_trait_impl_item(cx, hir_id) {
             // don't lint extern functions decls, it's not their fault either
             match kind {
                 intravisit::FnKind::Method(
@@ -433,7 +426,7 @@ fn check_needless_must_use(
             },
         );
     } else if !attr.is_value_str() && is_must_use_ty(cx, return_ty(cx, item_id)) {
-        span_help_and_lint(
+        span_lint_and_help(
             cx,
             DOUBLE_MUST_USE,
             fn_header_span,
@@ -475,8 +468,8 @@ fn check_must_use_candidate<'a, 'tcx>(
 
 fn returns_unit(decl: &hir::FnDecl<'_>) -> bool {
     match decl.output {
-        hir::FunctionRetTy::DefaultReturn(_) => true,
-        hir::FunctionRetTy::Return(ref ty) => match ty.kind {
+        hir::FnRetTy::DefaultReturn(_) => true,
+        hir::FnRetTy::Return(ref ty) => match ty.kind {
             hir::TyKind::Tup(ref tys) => tys.is_empty(),
             hir::TyKind::Never => true,
             _ => false,
@@ -504,18 +497,17 @@ fn is_mutable_pat(cx: &LateContext<'_, '_>, pat: &hir::Pat<'_>, tys: &mut FxHash
 static KNOWN_WRAPPER_TYS: &[&[&str]] = &[&["alloc", "rc", "Rc"], &["std", "sync", "Arc"]];
 
 fn is_mutable_ty<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>, span: Span, tys: &mut FxHashSet<DefId>) -> bool {
-    use ty::TyKind::*;
     match ty.kind {
         // primitive types are never mutable
-        Bool | Char | Int(_) | Uint(_) | Float(_) | Str => false,
-        Adt(ref adt, ref substs) => {
+        ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Float(_) | ty::Str => false,
+        ty::Adt(ref adt, ref substs) => {
             tys.insert(adt.did) && !ty.is_freeze(cx.tcx, cx.param_env, span)
                 || KNOWN_WRAPPER_TYS.iter().any(|path| match_def_path(cx, adt.did, path))
                     && substs.types().any(|ty| is_mutable_ty(cx, ty, span, tys))
         },
-        Tuple(ref substs) => substs.types().any(|ty| is_mutable_ty(cx, ty, span, tys)),
-        Array(ty, _) | Slice(ty) => is_mutable_ty(cx, ty, span, tys),
-        RawPtr(ty::TypeAndMut { ty, mutbl }) | Ref(_, ty, mutbl) => {
+        ty::Tuple(ref substs) => substs.types().any(|ty| is_mutable_ty(cx, ty, span, tys)),
+        ty::Array(ty, _) | ty::Slice(ty) => is_mutable_ty(cx, ty, span, tys),
+        ty::RawPtr(ty::TypeAndMut { ty, mutbl }) | ty::Ref(_, ty, mutbl) => {
             mutbl == hir::Mutability::Mut || is_mutable_ty(cx, ty, span, tys)
         },
         // calling something constitutes a side effect, so return true on all callables
@@ -600,7 +592,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for StaticMutVisitor<'a, 'tcx> {
     type Map = Map<'tcx>;
 
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'_>) {
-        use hir::ExprKind::*;
+        use hir::ExprKind::{AddrOf, Assign, AssignOp, Call, MethodCall};
 
         if self.mutates_static {
             return;
@@ -638,7 +630,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for StaticMutVisitor<'a, 'tcx> {
 }
 
 fn is_mutated_static(cx: &LateContext<'_, '_>, e: &hir::Expr<'_>) -> bool {
-    use hir::ExprKind::*;
+    use hir::ExprKind::{Field, Index, Path};
 
     match e.kind {
         Path(ref qpath) => {

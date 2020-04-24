@@ -1,7 +1,7 @@
 use crate::clean::auto_trait::AutoTraitFinder;
 use crate::clean::blanket_impl::BlanketImplFinder;
 use crate::clean::{
-    inline, Clean, Crate, Deprecation, ExternalCrate, FnDecl, FunctionRetTy, Generic, GenericArg,
+    inline, Clean, Crate, Deprecation, ExternalCrate, FnDecl, FnRetTy, Generic, GenericArg,
     GenericArgs, GenericBound, Generics, GetDefId, ImportSource, Item, ItemEnum, MacroKind, Path,
     PathSegment, Primitive, PrimitiveType, ResolvedPath, Span, Stability, Type, TypeBinding,
     TypeKind, Visibility, WherePredicate,
@@ -16,7 +16,6 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
-use rustc_span;
 use rustc_span::symbol::{kw, sym, Symbol};
 use std::mem;
 
@@ -39,7 +38,7 @@ pub fn krate(mut cx: &mut DocContext<'_>) -> Crate {
     }
     externs.sort_by(|&(a, _), &(b, _)| a.cmp(&b));
 
-    // Clean the crate, translating the entire libsyntax AST to one that is
+    // Clean the crate, translating the entire librustc_ast AST to one that is
     // understood by rustdoc.
     let mut module = module.clean(cx);
     let mut masked_crates = FxHashSet::default();
@@ -122,9 +121,7 @@ pub fn external_generic_args(
     let args: Vec<_> = substs
         .iter()
         .filter_map(|kind| match kind.unpack() {
-            GenericArgKind::Lifetime(lt) => {
-                lt.clean(cx).and_then(|lt| Some(GenericArg::Lifetime(lt)))
-            }
+            GenericArgKind::Lifetime(lt) => lt.clean(cx).map(|lt| GenericArg::Lifetime(lt)),
             GenericArgKind::Type(_) if skip_self => {
                 skip_self = false;
                 None
@@ -139,7 +136,7 @@ pub fn external_generic_args(
 
     match trait_did {
         // Attempt to sugar an external path like Fn<(A, B,), C> to Fn(A, B) -> C
-        Some(did) if cx.tcx.lang_items().fn_trait_kind(did).is_some() => {
+        Some(did) if cx.tcx.fn_trait_kind_from_lang_item(did).is_some() => {
             assert!(ty_kind.is_some());
             let inputs = match ty_kind {
                 Some(ty::Tuple(ref tys)) => tys.iter().map(|t| t.expect_ty().clean(cx)).collect(),
@@ -274,7 +271,7 @@ pub fn get_all_types(
     }
 
     let ret_types = match decl.output {
-        FunctionRetTy::Return(ref return_type) => {
+        FnRetTy::Return(ref return_type) => {
             let mut ret = get_real_types(generics, &return_type, cx, 0);
             if ret.is_empty() {
                 ret.insert(return_type.clone());
@@ -458,7 +455,7 @@ pub fn name_from_pat(p: &hir::Pat) -> String {
     }
 }
 
-pub fn print_const(cx: &DocContext<'_>, n: &ty::Const<'_>) -> String {
+pub fn print_const(cx: &DocContext<'_>, n: &'tcx ty::Const<'_>) -> String {
     match n.val {
         ty::ConstKind::Unevaluated(def_id, _, promoted) => {
             let mut s = if let Some(hir_id) = cx.tcx.hir().as_local_hir_id(def_id) {
@@ -488,15 +485,18 @@ pub fn print_const(cx: &DocContext<'_>, n: &ty::Const<'_>) -> String {
 }
 
 pub fn print_evaluated_const(cx: &DocContext<'_>, def_id: DefId) -> Option<String> {
-    let value =
-        cx.tcx.const_eval_poly(def_id).ok().and_then(|value| match (value.val, &value.ty.kind) {
-            (_, ty::Ref(..)) => None,
-            (ty::ConstKind::Value(ConstValue::Scalar(_)), ty::Adt(_, _)) => None,
-            (ty::ConstKind::Value(ConstValue::Scalar(_)), _) => {
-                Some(print_const_with_custom_print_scalar(cx, value))
+    let value = cx.tcx.const_eval_poly(def_id).ok().and_then(|val| {
+        let ty = cx.tcx.type_of(def_id);
+        match (val, &ty.kind) {
+            (_, &ty::Ref(..)) => None,
+            (ConstValue::Scalar(_), &ty::Adt(_, _)) => None,
+            (ConstValue::Scalar(_), _) => {
+                let const_ = ty::Const::from_value(cx.tcx, val, ty);
+                Some(print_const_with_custom_print_scalar(cx, const_))
             }
             _ => None,
-        });
+        }
+    });
 
     value
 }
@@ -570,14 +570,7 @@ pub fn resolve_type(cx: &DocContext<'_>, path: Path, id: hir::HirId) -> Type {
     }
 
     let is_generic = match path.res {
-        Res::PrimTy(p) => match p {
-            hir::PrimTy::Str => return Primitive(PrimitiveType::Str),
-            hir::PrimTy::Bool => return Primitive(PrimitiveType::Bool),
-            hir::PrimTy::Char => return Primitive(PrimitiveType::Char),
-            hir::PrimTy::Int(int_ty) => return Primitive(int_ty.into()),
-            hir::PrimTy::Uint(uint_ty) => return Primitive(uint_ty.into()),
-            hir::PrimTy::Float(float_ty) => return Primitive(float_ty.into()),
-        },
+        Res::PrimTy(p) => return Primitive(PrimitiveType::from(p)),
         Res::SelfTy(..) if path.segments.len() == 1 => {
             return Generic(kw::SelfUpper.to_string());
         }

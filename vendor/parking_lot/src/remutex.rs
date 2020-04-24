@@ -17,8 +17,9 @@ unsafe impl GetThreadId for RawThreadId {
 
     fn nonzero_thread_id(&self) -> NonZeroUsize {
         // The address of a thread-local variable is guaranteed to be unique to the
-        // current thread, and is also guaranteed to be non-zero.
-        thread_local!(static KEY: u8 = unsafe { ::std::mem::uninitialized() });
+        // current thread, and is also guaranteed to be non-zero. The variable has to have a
+        // non-zero size to guarantee it has a unique address for each thread.
+        thread_local!(static KEY: u8 = 0);
         KEY.with(|x| {
             NonZeroUsize::new(x as *const _ as usize)
                 .expect("thread-local variable address is null")
@@ -68,18 +69,18 @@ mod tests {
 
     #[test]
     fn smoke() {
-        let m = ReentrantMutex::new(());
+        let m = ReentrantMutex::new(2);
         {
             let a = m.lock();
             {
                 let b = m.lock();
                 {
                     let c = m.lock();
-                    assert_eq!(*c, ());
+                    assert_eq!(*c, 2);
                 }
-                assert_eq!(*b, ());
+                assert_eq!(*b, 2);
             }
-            assert_eq!(*a, ());
+            assert_eq!(*a, 2);
         }
     }
 

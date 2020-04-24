@@ -1,6 +1,8 @@
 use rustc::hir::map::Map;
 use rustc::session::{self, config, DiagnosticOutput};
 use rustc::util::common::ErrorReported;
+use rustc_ast::ast;
+use rustc_ast::with_globals;
 use rustc_data_structures::sync::Lrc;
 use rustc_feature::UnstableFeatures;
 use rustc_hir as hir;
@@ -17,10 +19,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::process::{self, Command, Stdio};
 use std::str;
-use syntax::ast;
-use syntax::with_globals;
 use tempfile::Builder as TempFileBuilder;
-use testing;
 
 use crate::clean::Attributes;
 use crate::config::Options;
@@ -88,7 +87,7 @@ pub fn run(options: Options) -> i32 {
         compiler.enter(|queries| {
             let lower_to_hir = queries.lower_to_hir()?;
 
-            let mut opts = scrape_test_config(lower_to_hir.peek().0.krate());
+            let mut opts = scrape_test_config(lower_to_hir.peek().0);
             opts.display_warnings |= options.display_warnings;
             let enable_per_target_ignores = options.enable_per_target_ignores;
             let mut collector = Collector::new(
@@ -108,7 +107,7 @@ pub fn run(options: Options) -> i32 {
                 let mut hir_collector = HirCollector {
                     sess: compiler.session(),
                     collector: &mut collector,
-                    map: tcx.hir(),
+                    map: *tcx.hir(),
                     codes: ErrorCodes::from(
                         compiler.session().opts.unstable_features.is_nightly_build(),
                     ),
@@ -141,7 +140,7 @@ pub fn run(options: Options) -> i32 {
 
 // Look for `#![doc(test(no_crate_inject))]`, used by crates in the std facade.
 fn scrape_test_config(krate: &::rustc_hir::Crate) -> TestOptions {
-    use syntax::print::pprust;
+    use rustc_ast_pretty::pprust;
 
     let mut opts =
         TestOptions { no_crate_inject: false, display_warnings: false, attrs: Vec::new() };
@@ -282,7 +281,7 @@ fn run_test(
     for debugging_option_str in &options.debugging_options_strs {
         compiler.arg("-Z").arg(&debugging_option_str);
     }
-    if no_run {
+    if no_run && !compile_fail {
         compiler.arg("--emit=metadata");
     }
     compiler.arg("--target").arg(target.to_string());
@@ -388,27 +387,27 @@ pub fn make_test(
     prog.push_str(&crate_attrs);
     prog.push_str(&crates);
 
-    // Uses libsyntax to parse the doctest and find if there's a main fn and the extern
+    // Uses librustc_ast to parse the doctest and find if there's a main fn and the extern
     // crate already is included.
     let result = rustc_driver::catch_fatal_errors(|| {
         with_globals(edition, || {
             use rustc_errors::emitter::EmitterWriter;
             use rustc_errors::Handler;
             use rustc_parse::maybe_new_parser_from_source_str;
+            use rustc_session::parse::ParseSess;
             use rustc_span::source_map::FilePathMapping;
-            use syntax::sess::ParseSess;
 
             let filename = FileName::anon_source_code(s);
-            let source = crates + &everything_else;
+            let source = crates + everything_else;
 
             // Any errors in parsing should also appear when the doctest is compiled for real, so just
-            // send all the errors that libsyntax emits directly into a `Sink` instead of stderr.
-            let cm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
+            // send all the errors that librustc_ast emits directly into a `Sink` instead of stderr.
+            let sm = Lrc::new(SourceMap::new(FilePathMapping::empty()));
             let emitter =
                 EmitterWriter::new(box io::sink(), None, false, false, false, None, false);
             // FIXME(misdreavus): pass `-Z treat-err-as-bug` to the doctest parser
             let handler = Handler::with_emitter(false, None, box emitter);
-            let sess = ParseSess::with_span_handler(handler, cm);
+            let sess = ParseSess::with_span_handler(handler, sm);
 
             let mut found_main = false;
             let mut found_extern_crate = cratename.is_none();

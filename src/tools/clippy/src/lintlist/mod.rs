@@ -1,4 +1,4 @@
-//! This file is managed by `util/dev update_lints`. Do not edit.
+//! This file is managed by `cargo dev update_lints`. Do not edit.
 
 pub mod lint;
 pub use lint::Level;
@@ -6,7 +6,7 @@ pub use lint::Lint;
 pub use lint::LINT_LEVELS;
 
 // begin lint list, do not remove this comment, it’s used in `update_lints`
-pub const ALL_LINTS: [Lint; 349] = [
+pub const ALL_LINTS: [Lint; 359] = [
     Lint {
         name: "absurd_extreme_comparisons",
         group: "correctness",
@@ -191,7 +191,7 @@ pub const ALL_LINTS: [Lint; 349] = [
     },
     Lint {
         name: "chars_next_cmp",
-        group: "complexity",
+        group: "style",
         desc: "using `.chars().next()` to check if a string starts with a char",
         deprecation: None,
         module: "methods",
@@ -460,7 +460,7 @@ pub const ALL_LINTS: [Lint; 349] = [
         group: "pedantic",
         desc: "use items that import all variants of an enum",
         deprecation: None,
-        module: "enum_glob_use",
+        module: "wildcard_imports",
     },
     Lint {
         name: "enum_variant_names",
@@ -495,7 +495,7 @@ pub const ALL_LINTS: [Lint; 349] = [
         group: "style",
         desc: "excessive precision for float literal",
         deprecation: None,
-        module: "excessive_precision",
+        module: "float_literal",
     },
     Lint {
         name: "exit",
@@ -624,6 +624,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         module: "misc",
     },
     Lint {
+        name: "fn_params_excessive_bools",
+        group: "pedantic",
+        desc: "using too many bools in function parameters",
+        deprecation: None,
+        module: "excessive_bools",
+    },
+    Lint {
         name: "fn_to_numeric_cast",
         group: "style",
         desc: "casting a function pointer to a numeric type other than usize",
@@ -743,6 +750,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         module: "implicit_return",
     },
     Lint {
+        name: "imprecise_flops",
+        group: "nursery",
+        desc: "usage of imprecise floating point operations",
+        deprecation: None,
+        module: "floating_point_arithmetic",
+    },
+    Lint {
         name: "inconsistent_digit_grouping",
         group: "style",
         desc: "integer literals with digits grouped inconsistently",
@@ -775,7 +789,7 @@ pub const ALL_LINTS: [Lint; 349] = [
         group: "style",
         desc: "a `match` statement with a single infallible arm instead of a `let`",
         deprecation: None,
-        module: "infallible_destructuring_match",
+        module: "matches",
     },
     Lint {
         name: "infinite_iter",
@@ -960,6 +974,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         module: "returns",
     },
     Lint {
+        name: "let_underscore_lock",
+        group: "correctness",
+        desc: "non-binding let on a synchronization lock",
+        deprecation: None,
+        module: "let_underscore",
+    },
+    Lint {
         name: "let_underscore_must_use",
         group: "restriction",
         desc: "non-binding let on a `#[must_use]` expression",
@@ -988,6 +1009,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         module: "booleans",
     },
     Lint {
+        name: "lossy_float_literal",
+        group: "restriction",
+        desc: "lossy whole number float literals",
+        deprecation: None,
+        module: "float_literal",
+    },
+    Lint {
         name: "main_recursion",
         group: "style",
         desc: "recursion using the entrypoint",
@@ -1000,13 +1028,6 @@ pub const ALL_LINTS: [Lint; 349] = [
         desc: "manually copying items between slices",
         deprecation: None,
         module: "loops",
-    },
-    Lint {
-        name: "manual_mul_add",
-        group: "nursery",
-        desc: "Using `a.mul_add(b, c)` for floating points has higher numerical precision than `a * b + c`",
-        deprecation: None,
-        module: "mul_add",
     },
     Lint {
         name: "manual_saturating_arithmetic",
@@ -1084,6 +1105,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         desc: "`match` with identical arm bodies",
         deprecation: None,
         module: "copies",
+    },
+    Lint {
+        name: "match_single_binding",
+        group: "complexity",
+        desc: "a match with a single binding instead of using `let` statement",
+        deprecation: None,
+        module: "matches",
     },
     Lint {
         name: "match_wild_err_arm",
@@ -1478,6 +1506,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         module: "methods",
     },
     Lint {
+        name: "option_env_unwrap",
+        group: "correctness",
+        desc: "using `option_env!(...).unwrap()` to get environment variable",
+        deprecation: None,
+        module: "option_env_unwrap",
+    },
+    Lint {
         name: "option_expect_used",
         group: "restriction",
         desc: "using `Option.expect()`, which might be better handled",
@@ -1751,6 +1786,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         module: "replace_consts",
     },
     Lint {
+        name: "rest_pat_in_fully_bound_structs",
+        group: "restriction",
+        desc: "a match on a struct that binds all fields but still uses the wildcard pattern",
+        deprecation: None,
+        module: "matches",
+    },
+    Lint {
         name: "result_expect_used",
         group: "restriction",
         desc: "using `Result.expect()`, which might be better handled",
@@ -1856,6 +1898,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         module: "methods",
     },
     Lint {
+        name: "single_component_path_imports",
+        group: "style",
+        desc: "imports with single component path are redundant",
+        deprecation: None,
+        module: "single_component_path_imports",
+    },
+    Lint {
         name: "single_match",
         group: "style",
         desc: "a `match` statement with a single nontrivial arm (i.e., where the other arm is `_ => {}`) instead of `if let`",
@@ -1910,6 +1959,20 @@ pub const ALL_LINTS: [Lint; 349] = [
         desc: "calling `as_bytes` on a string literal instead of using a byte string literal",
         deprecation: None,
         module: "strings",
+    },
+    Lint {
+        name: "struct_excessive_bools",
+        group: "pedantic",
+        desc: "using too many bools in a struct",
+        deprecation: None,
+        module: "excessive_bools",
+    },
+    Lint {
+        name: "suboptimal_flops",
+        group: "nursery",
+        desc: "usage of sub-optimal floating point operations",
+        deprecation: None,
+        module: "floating_point_arithmetic",
     },
     Lint {
         name: "suspicious_arithmetic_impl",
@@ -2186,7 +2249,7 @@ pub const ALL_LINTS: [Lint; 349] = [
     },
     Lint {
         name: "unneeded_field_pattern",
-        group: "style",
+        group: "restriction",
         desc: "struct fields bound to a wildcard instead of using `..`",
         deprecation: None,
         module: "misc_early",
@@ -2365,6 +2428,13 @@ pub const ALL_LINTS: [Lint; 349] = [
         desc: "a wildcard enum match arm using `_`",
         deprecation: None,
         module: "matches",
+    },
+    Lint {
+        name: "wildcard_imports",
+        group: "pedantic",
+        desc: "lint `use _::*` statements",
+        deprecation: None,
+        module: "wildcard_imports",
     },
     Lint {
         name: "wildcard_in_or_patterns",

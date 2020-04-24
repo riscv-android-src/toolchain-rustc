@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::cmp;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::prelude::*;
 use std::io::{self, Error, ErrorKind, SeekFrom};
 use std::marker;
@@ -8,12 +9,12 @@ use std::path::{Component, Path, PathBuf};
 
 use filetime::{self, FileTime};
 
-use archive::ArchiveInner;
-use error::TarError;
-use header::bytes2path;
-use other;
-use pax::pax_extensions;
-use {Archive, Header, PaxExtensions};
+use crate::archive::ArchiveInner;
+use crate::error::TarError;
+use crate::header::bytes2path;
+use crate::other;
+use crate::pax::pax_extensions;
+use crate::{Archive, Header, PaxExtensions};
 
 /// A read-only view into an entry of an archive.
 ///
@@ -44,6 +45,18 @@ pub struct EntryFields<'a> {
 pub enum EntryIo<'a> {
     Pad(io::Take<io::Repeat>),
     Data(io::Take<&'a ArchiveInner<Read + 'a>>),
+}
+
+/// When unpacking items the unpacked thing is returned to allow custom
+/// additional handling by users. Today the File is returned, in future
+/// the enum may be extended with kinds for links, directories etc.
+#[derive(Debug)]
+pub enum Unpacked {
+    /// A file was unpacked.
+    File(std::fs::File),
+    /// A directory, hardlink, symlink, or other node was unpacked.
+    #[doc(hidden)]
+    __Nonexhaustive,
 }
 
 impl<'a, R: Read> Entry<'a, R> {
@@ -177,7 +190,7 @@ impl<'a, R: Read> Entry<'a, R> {
     ///     file.unpack(format!("file-{}", i)).unwrap();
     /// }
     /// ```
-    pub fn unpack<P: AsRef<Path>>(&mut self, dst: P) -> io::Result<()> {
+    pub fn unpack<P: AsRef<Path>>(&mut self, dst: P) -> io::Result<Unpacked> {
         self.fields.unpack(None, dst.as_ref())
     }
 
@@ -397,24 +410,30 @@ impl<'a> EntryFields<'a> {
     /// Unpack as destination directory `dst`.
     fn unpack_dir(&mut self, dst: &Path) -> io::Result<()> {
         // If the directory already exists just let it slide
-        let prev = fs::metadata(dst);
-        if prev.map(|m| m.is_dir()).unwrap_or(false) {
-            return Ok(());
-        }
-        return fs::create_dir(dst).map_err(|err| {
-            Error::new(
+        fs::create_dir(dst).or_else(|err| {
+            if err.kind() == ErrorKind::AlreadyExists {
+                let prev = fs::metadata(dst);
+                if prev.map(|m| m.is_dir()).unwrap_or(false) {
+                    return Ok(());
+                }
+            }
+            Err(Error::new(
                 err.kind(),
                 format!("{} when creating dir {}", err, dst.display()),
-            )
-        });
+            ))
+        })
     }
 
     /// Returns access to the header of this entry in the archive.
-    fn unpack(&mut self, target_base: Option<&Path>, dst: &Path) -> io::Result<()> {
+    fn unpack(&mut self, target_base: Option<&Path>, dst: &Path) -> io::Result<Unpacked> {
         let kind = self.header.entry_type();
 
         if kind.is_dir() {
-            return self.unpack_dir(dst);
+            self.unpack_dir(dst)?;
+            if let Ok(mode) = self.header.mode() {
+                set_perms(dst, None, mode, self.preserve_permissions)?;
+            }
+            return Ok(Unpacked::__Nonexhaustive);
         } else if kind.is_hard_link() || kind.is_symlink() {
             let src = match self.link_name()? {
                 Some(name) => name,
@@ -422,7 +441,7 @@ impl<'a> EntryFields<'a> {
                     return Err(other(&format!(
                         "hard link listed for {} but no link name found",
                         String::from_utf8_lossy(self.header.as_bytes())
-                    )))
+                    )));
                 }
             };
 
@@ -433,7 +452,7 @@ impl<'a> EntryFields<'a> {
                 )));
             }
 
-            return if kind.is_hard_link() {
+            if kind.is_hard_link() {
                 let link_src = match target_base {
                     // If we're unpacking within a directory then ensure that
                     // the destination of this hard link is both present and
@@ -463,7 +482,7 @@ impl<'a> EntryFields<'a> {
                             dst.display()
                         ),
                     )
-                })
+                })?;
             } else {
                 symlink(&src, dst).map_err(|err| {
                     Error::new(
@@ -475,8 +494,15 @@ impl<'a> EntryFields<'a> {
                             dst.display()
                         ),
                     )
-                })
+                })?;
             };
+            return Ok(Unpacked::__Nonexhaustive);
+
+            #[cfg(target_arch = "wasm32")]
+            #[allow(unused_variables)]
+            fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
+                Err(io::Error::new(io::ErrorKind::Other, "Not implemented"))
+            }
 
             #[cfg(windows)]
             fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
@@ -492,16 +518,18 @@ impl<'a> EntryFields<'a> {
             || kind.is_gnu_longname()
             || kind.is_gnu_longlink()
         {
-            return Ok(());
+            return Ok(Unpacked::__Nonexhaustive);
         };
 
         // Old BSD-tar compatibility.
         // Names that have a trailing slash should be treated as a directory.
         // Only applies to old headers.
-        if self.header.as_ustar().is_none()
-            && self.path_bytes().ends_with(b"/")
-        {
-            return self.unpack_dir(dst);
+        if self.header.as_ustar().is_none() && self.path_bytes().ends_with(b"/") {
+            self.unpack_dir(dst)?;
+            if let Ok(mode) = self.header.mode() {
+                set_perms(dst, None, mode, self.preserve_permissions)?;
+            }
+            return Ok(Unpacked::__Nonexhaustive);
         }
 
         // Note the lack of `else` clause above. According to the FreeBSD
@@ -513,16 +541,23 @@ impl<'a> EntryFields<'a> {
         // As a result if we don't recognize the kind we just write out the file
         // as we would normally.
 
-        // Remove an existing file, if any, to avoid writing through
-        // symlinks/hardlinks to weird locations. The tar archive says this is a
-        // regular file, so let's make it a regular file.
-        (|| -> io::Result<()> {
-            match fs::remove_file(dst) {
-                Ok(()) => {}
-                Err(ref e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e),
-            }
-            let mut f = fs::File::create(dst)?;
+        // Ensure we write a new file rather than overwriting in-place which
+        // is attackable; if an existing file is found unlink it.
+        fn open(dst: &Path) -> io::Result<std::fs::File> {
+            OpenOptions::new().write(true).create_new(true).open(dst)
+        };
+        let mut f = (|| -> io::Result<std::fs::File> {
+            let mut f = open(dst).or_else(|err| {
+                if err.kind() != ErrorKind::AlreadyExists {
+                    Err(err)
+                } else {
+                    match fs::remove_file(dst) {
+                        Ok(()) => open(dst),
+                        Err(ref e) if e.kind() == io::ErrorKind::NotFound => open(dst),
+                        Err(e) => Err(e),
+                    }
+                }
+            })?;
             for io in self.data.drain(..) {
                 match io {
                     EntryIo::Data(mut d) => {
@@ -539,8 +574,9 @@ impl<'a> EntryFields<'a> {
                     }
                 }
             }
-            Ok(())
-        })().map_err(|e| {
+            Ok(f)
+        })()
+        .map_err(|e| {
             let header = self.header.path_bytes();
             TarError::new(
                 &format!(
@@ -555,13 +591,26 @@ impl<'a> EntryFields<'a> {
         if self.preserve_mtime {
             if let Ok(mtime) = self.header.mtime() {
                 let mtime = FileTime::from_unix_time(mtime as i64, 0);
-                filetime::set_file_times(dst, mtime, mtime).map_err(|e| {
+                filetime::set_file_handle_times(&f, Some(mtime), Some(mtime)).map_err(|e| {
                     TarError::new(&format!("failed to set mtime for `{}`", dst.display()), e)
                 })?;
             }
         }
         if let Ok(mode) = self.header.mode() {
-            set_perms(dst, mode, self.preserve_permissions).map_err(|e| {
+            set_perms(dst, Some(&mut f), mode, self.preserve_permissions)?;
+        }
+        if self.unpack_xattrs {
+            set_xattrs(self, dst)?;
+        }
+        return Ok(Unpacked::File(f));
+
+        fn set_perms(
+            dst: &Path,
+            f: Option<&mut std::fs::File>,
+            mode: u32,
+            preserve: bool,
+        ) -> Result<(), TarError> {
+            _set_perms(dst, f, mode, preserve).map_err(|e| {
                 TarError::new(
                     &format!(
                         "failed to set permissions to {:o} \
@@ -571,34 +620,65 @@ impl<'a> EntryFields<'a> {
                     ),
                     e,
                 )
-            })?;
+            })
         }
-        if self.unpack_xattrs {
-            set_xattrs(self, dst)?;
-        }
-        return Ok(());
 
         #[cfg(any(unix, target_os = "redox"))]
-        fn set_perms(dst: &Path, mode: u32, preserve: bool) -> io::Result<()> {
+        fn _set_perms(
+            dst: &Path,
+            f: Option<&mut std::fs::File>,
+            mode: u32,
+            preserve: bool,
+        ) -> io::Result<()> {
             use std::os::unix::prelude::*;
 
             let mode = if preserve { mode } else { mode & 0o777 };
-
             let perm = fs::Permissions::from_mode(mode as _);
-            fs::set_permissions(dst, perm)
+            match f {
+                Some(f) => f.set_permissions(perm),
+                None => fs::set_permissions(dst, perm),
+            }
         }
+
         #[cfg(windows)]
-        fn set_perms(dst: &Path, mode: u32, _preserve: bool) -> io::Result<()> {
-            let mut perm = try!(fs::metadata(dst)).permissions();
-            perm.set_readonly(mode & 0o200 != 0o200);
-            fs::set_permissions(dst, perm)
+        fn _set_perms(
+            dst: &Path,
+            f: Option<&mut std::fs::File>,
+            mode: u32,
+            _preserve: bool,
+        ) -> io::Result<()> {
+            if mode & 0o200 == 0o200 {
+                return Ok(());
+            }
+            match f {
+                Some(f) => {
+                    let mut perm = f.metadata()?.permissions();
+                    perm.set_readonly(true);
+                    f.set_permissions(perm)
+                }
+                None => {
+                    let mut perm = fs::metadata(dst)?.permissions();
+                    perm.set_readonly(true);
+                    fs::set_permissions(dst, perm)
+                }
+            }
+        }
+
+        #[cfg(target_arch = "wasm32")]
+        #[allow(unused_variables)]
+        fn _set_perms(
+            dst: &Path,
+            f: Option<&mut std::fs::File>,
+            mode: u32,
+            _preserve: bool,
+        ) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::Other, "Not implemented"))
         }
 
         #[cfg(all(unix, feature = "xattr"))]
         fn set_xattrs(me: &mut EntryFields, dst: &Path) -> io::Result<()> {
             use std::ffi::OsStr;
             use std::os::unix::prelude::*;
-            use xattr;
 
             let exts = match me.pax_extensions() {
                 Ok(Some(e)) => e,
@@ -637,7 +717,12 @@ impl<'a> EntryFields<'a> {
         }
         // Windows does not completely support posix xattrs
         // https://en.wikipedia.org/wiki/Extended_file_attributes#Windows_NT
-        #[cfg(any(windows, target_os = "redox", not(feature = "xattr")))]
+        #[cfg(any(
+            windows,
+            target_os = "redox",
+            not(feature = "xattr"),
+            target_arch = "wasm32"
+        ))]
         fn set_xattrs(_: &mut EntryFields, _: &Path) -> io::Result<()> {
             Ok(())
         }

@@ -331,7 +331,6 @@ pub struct CliUnstable {
     pub minimal_versions: bool,
     pub package_features: bool,
     pub advanced_env: bool,
-    pub config_profile: bool,
     pub config_include: bool,
     pub dual_proc_macros: bool,
     pub mtime_on_use: bool,
@@ -341,6 +340,9 @@ pub struct CliUnstable {
     pub timings: Option<Vec<String>>,
     pub doctest_xcompile: bool,
     pub panic_abort_tests: bool,
+    pub jobserver_per_rustc: bool,
+    pub features: Option<Vec<String>>,
+    pub crate_versions: bool,
 }
 
 impl CliUnstable {
@@ -380,6 +382,13 @@ impl CliUnstable {
             }
         }
 
+        fn parse_features(value: Option<&str>) -> Vec<String> {
+            match value {
+                None => Vec::new(),
+                Some(v) => v.split(',').map(|s| s.to_string()).collect(),
+            }
+        }
+
         // Asserts that there is no argument to the flag.
         fn parse_empty(key: &str, value: Option<&str>) -> CargoResult<bool> {
             if let Some(v) = value {
@@ -396,7 +405,6 @@ impl CliUnstable {
             "minimal-versions" => self.minimal_versions = parse_empty(k, v)?,
             "package-features" => self.package_features = parse_empty(k, v)?,
             "advanced-env" => self.advanced_env = parse_empty(k, v)?,
-            "config-profile" => self.config_profile = parse_empty(k, v)?,
             "config-include" => self.config_include = parse_empty(k, v)?,
             "dual-proc-macros" => self.dual_proc_macros = parse_empty(k, v)?,
             // can also be set in .cargo/config or with and ENV
@@ -409,6 +417,9 @@ impl CliUnstable {
             "timings" => self.timings = Some(parse_timings(v)),
             "doctest-xcompile" => self.doctest_xcompile = parse_empty(k, v)?,
             "panic-abort-tests" => self.panic_abort_tests = parse_empty(k, v)?,
+            "jobserver-per-rustc" => self.jobserver_per_rustc = parse_empty(k, v)?,
+            "features" => self.features = Some(parse_features(v)),
+            "crate-versions" => self.crate_versions = parse_empty(k, v)?,
             _ => bail!("unknown `-Z` flag specified: {}", k),
         }
 

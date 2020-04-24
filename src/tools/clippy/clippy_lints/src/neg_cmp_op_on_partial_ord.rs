@@ -1,6 +1,6 @@
 use if_chain::if_chain;
 use rustc::lint::in_external_macro;
-use rustc_hir::*;
+use rustc_hir::{BinOpKind, Expr, ExprKind, UnOp};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
@@ -67,7 +67,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NoNegCompOpForPartialOrd {
                 };
 
                 let implements_partial_ord = {
-                    if let Some(id) = utils::get_trait_def_id(cx, &paths::PARTIAL_ORD) {
+                    if let Some(id) = cx.tcx.lang_items().partial_ord_trait() {
                         utils::implements_trait(cx, ty, id, &[])
                     } else {
                         return;

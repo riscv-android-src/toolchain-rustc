@@ -34,8 +34,8 @@ pub trait Qualif {
 
     fn in_projection_structurally(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
-        place: PlaceRef<'_, 'tcx>,
+        per_local: &mut impl FnMut(Local) -> bool,
+        place: PlaceRef<'tcx>,
     ) -> bool {
         if let [proj_base @ .., elem] = place.projection {
             let base_qualif = Self::in_place(
@@ -66,26 +66,26 @@ pub trait Qualif {
 
     fn in_projection(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
-        place: PlaceRef<'_, 'tcx>,
+        per_local: &mut impl FnMut(Local) -> bool,
+        place: PlaceRef<'tcx>,
     ) -> bool {
         Self::in_projection_structurally(cx, per_local, place)
     }
 
     fn in_place(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
-        place: PlaceRef<'_, 'tcx>,
+        per_local: &mut impl FnMut(Local) -> bool,
+        place: PlaceRef<'tcx>,
     ) -> bool {
         match place {
-            PlaceRef { local, projection: [] } => per_local(*local),
+            PlaceRef { local, projection: [] } => per_local(local),
             PlaceRef { local: _, projection: [.., _] } => Self::in_projection(cx, per_local, place),
         }
     }
 
     fn in_operand(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
+        per_local: &mut impl FnMut(Local) -> bool,
         operand: &Operand<'tcx>,
     ) -> bool {
         match *operand {
@@ -94,39 +94,30 @@ pub trait Qualif {
             }
 
             Operand::Constant(ref constant) => {
-                if constant.check_static_ptr(cx.tcx).is_some() {
-                    // `mir_const_qualif` does return the qualifs in the final value of a `static`,
-                    // so we could use value-based qualification here, but we shouldn't do this
-                    // without a good reason.
-                    //
-                    // Note: this uses `constant.literal.ty` which is a reference or pointer to the
-                    // type of the actual `static` item.
-                    Self::in_any_value_of_ty(cx, constant.literal.ty)
-                } else if let ty::ConstKind::Unevaluated(def_id, _, promoted) = constant.literal.val
-                {
+                // Check the qualifs of the value of `const` items.
+                if let ty::ConstKind::Unevaluated(def_id, _, promoted) = constant.literal.val {
                     assert!(promoted.is_none());
                     // Don't peek inside trait associated constants.
-                    if cx.tcx.trait_of_item(def_id).is_some() {
-                        Self::in_any_value_of_ty(cx, constant.literal.ty)
-                    } else {
+                    if cx.tcx.trait_of_item(def_id).is_none() {
                         let qualifs = cx.tcx.at(constant.span).mir_const_qualif(def_id);
-                        let qualif = Self::in_qualifs(&qualifs);
+                        if !Self::in_qualifs(&qualifs) {
+                            return false;
+                        }
 
                         // Just in case the type is more specific than
                         // the definition, e.g., impl associated const
                         // with type parameters, take it into account.
-                        qualif && Self::in_any_value_of_ty(cx, constant.literal.ty)
                     }
-                } else {
-                    false
                 }
+                // Otherwise use the qualifs of the type.
+                Self::in_any_value_of_ty(cx, constant.literal.ty)
             }
         }
     }
 
     fn in_rvalue_structurally(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
+        per_local: &mut impl FnMut(Local) -> bool,
         rvalue: &Rvalue<'tcx>,
     ) -> bool {
         match *rvalue {
@@ -149,12 +140,12 @@ pub trait Qualif {
             Rvalue::Ref(_, _, ref place) | Rvalue::AddressOf(_, ref place) => {
                 // Special-case reborrows to be more like a copy of the reference.
                 if let [proj_base @ .., ProjectionElem::Deref] = place.projection.as_ref() {
-                    let base_ty = Place::ty_from(&place.local, proj_base, *cx.body, cx.tcx).ty;
+                    let base_ty = Place::ty_from(place.local, proj_base, *cx.body, cx.tcx).ty;
                     if let ty::Ref(..) = base_ty.kind {
                         return Self::in_place(
                             cx,
                             per_local,
-                            PlaceRef { local: &place.local, projection: proj_base },
+                            PlaceRef { local: place.local, projection: proj_base },
                         );
                     }
                 }
@@ -170,7 +161,7 @@ pub trait Qualif {
 
     fn in_rvalue(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
+        per_local: &mut impl FnMut(Local) -> bool,
         rvalue: &Rvalue<'tcx>,
     ) -> bool {
         Self::in_rvalue_structurally(cx, per_local, rvalue)
@@ -178,7 +169,7 @@ pub trait Qualif {
 
     fn in_call(
         cx: &ConstCx<'_, 'tcx>,
-        _per_local: &impl Fn(Local) -> bool,
+        _per_local: &mut impl FnMut(Local) -> bool,
         _callee: &Operand<'tcx>,
         _args: &[Operand<'tcx>],
         return_ty: Ty<'tcx>,
@@ -208,7 +199,7 @@ impl Qualif for HasMutInterior {
 
     fn in_rvalue(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
+        per_local: &mut impl FnMut(Local) -> bool,
         rvalue: &Rvalue<'tcx>,
     ) -> bool {
         match *rvalue {
@@ -249,7 +240,7 @@ impl Qualif for NeedsDrop {
 
     fn in_rvalue(
         cx: &ConstCx<'_, 'tcx>,
-        per_local: &impl Fn(Local) -> bool,
+        per_local: &mut impl FnMut(Local) -> bool,
         rvalue: &Rvalue<'tcx>,
     ) -> bool {
         if let Rvalue::Aggregate(ref kind, _) = *rvalue {

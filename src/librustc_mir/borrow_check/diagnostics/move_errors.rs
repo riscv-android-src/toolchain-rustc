@@ -274,8 +274,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         let description = if place.projection.len() == 1 {
             format!("static item `{}`", self.describe_place(place.as_ref()).unwrap())
         } else {
-            let base_static =
-                PlaceRef { local: &place.local, projection: &[ProjectionElem::Deref] };
+            let base_static = PlaceRef { local: place.local, projection: &[ProjectionElem::Deref] };
 
             format!(
                 "`{:?}` as `{:?}` is a static item",
@@ -304,17 +303,17 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
 
         let deref_base = match deref_target_place.projection.as_ref() {
             &[ref proj_base @ .., ProjectionElem::Deref] => {
-                PlaceRef { local: &deref_target_place.local, projection: &proj_base }
+                PlaceRef { local: deref_target_place.local, projection: &proj_base }
             }
             _ => bug!("deref_target_place is not a deref projection"),
         };
 
         if let PlaceRef { local, projection: [] } = deref_base {
-            let decl = &self.body.local_decls[*local];
+            let decl = &self.body.local_decls[local];
             if decl.is_ref_for_guard() {
                 let mut err = self.cannot_move_out_of(
                     span,
-                    &format!("`{}` in pattern guard", self.local_names[*local].unwrap()),
+                    &format!("`{}` in pattern guard", self.local_names[local].unwrap()),
                 );
                 err.note(
                     "variables bound in patterns cannot be moved from \
@@ -444,7 +443,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                     let place_ty = move_from.ty(*self.body, self.infcx.tcx).ty;
                     let place_desc = match self.describe_place(move_from.as_ref()) {
                         Some(desc) => format!("`{}`", desc),
-                        None => format!("value"),
+                        None => "value".to_string(),
                     };
 
                     self.note_type_does_not_implement_copy(err, &place_desc, place_ty, Some(span));
@@ -467,7 +466,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 let place_ty = original_path.ty(*self.body, self.infcx.tcx).ty;
                 let place_desc = match self.describe_place(original_path.as_ref()) {
                     Some(desc) => format!("`{}`", desc),
-                    None => format!("value"),
+                    None => "value".to_string(),
                 };
                 self.note_type_does_not_implement_copy(err, &place_desc, place_ty, Some(span));
 
@@ -520,7 +519,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
     }
 
     fn add_move_error_details(&self, err: &mut DiagnosticBuilder<'a>, binds_to: &[Local]) {
-        for (j, local) in binds_to.into_iter().enumerate() {
+        for (j, local) in binds_to.iter().enumerate() {
             let bind_to = &self.body.local_decls[*local];
             let binding_span = bind_to.source_info.span;
 

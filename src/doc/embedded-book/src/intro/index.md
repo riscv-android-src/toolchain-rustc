@@ -56,6 +56,7 @@ If you are unfamiliar with anything mentioned above or if you want more informat
 | Topic        | Resource | Description |
 |--------------|----------|-------------|
 | Rust         | [Rust Book](https://doc.rust-lang.org/book/) | If you are not yet comfortable with Rust, we highly suggest reading this book. |
+| Rust, Embedded | [Discovery Book](https://docs.rust-embedded.org/discovery/) | If you have never done any embedded programming, this book might be a better start |
 | Rust, Embedded | [Embedded Rust Bookshelf](https://docs.rust-embedded.org) | Here you can find several other resources provided by Rust's Embedded Working Group. |
 | Rust, Embedded | [Embedonomicon](https://docs.rust-embedded.org/embedonomicon/) | The nitty gritty details when doing embedded programming in Rust. |
 | Rust, Embedded | [embedded FAQ](https://docs.rust-embedded.org/faq.html) | Frequently asked questions about Rust in an embedded context. |
@@ -97,3 +98,22 @@ it should be reported in [the issue tracker] of this book.
 [the issue tracker]: https://github.com/rust-embedded/book/issues/
 
 Pull requests fixing typos and adding new content are very welcome!
+
+## Re-using this material
+
+This book is distributed under the following licenses:
+
+* The code samples and free-standing Cargo projects contained within this book are licensed under the terms of both the [MIT License] and the [Apache License v2.0].
+* The written prose, pictures and diagrams contained within this book are licensed under the terms of the Creative Commons [CC-BY-SA v4.0] license.
+
+[MIT License]: https://opensource.org/licenses/MIT
+[Apache License v2.0]: http://www.apache.org/licenses/LICENSE-2.0
+[CC-BY-SA v4.0]: https://creativecommons.org/licenses/by-sa/4.0/legalcode
+
+TL;DR: If you want to use our text or images in your work, you need to:
+
+* Give the appropriate credit (i.e. mention this book on your slide, and provide a link to the relevant page)
+* Provide a link to the [CC-BY-SA v4.0] licence
+* Indicate if you have changed the material in any way, and make any changes to our material available under the same licence
+
+Also, please do let us know if you find this book useful!

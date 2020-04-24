@@ -10,6 +10,8 @@ use rustc::mir;
 use rustc::session::config::SymbolManglingVersion;
 use rustc::session::CrateDisambiguator;
 use rustc::ty::{self, ReprOptions, Ty};
+use rustc_ast::ast;
+use rustc_attr as attr;
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::sync::MetadataRef;
 use rustc_hir as hir;
@@ -21,7 +23,6 @@ use rustc_span::edition::Edition;
 use rustc_span::symbol::Symbol;
 use rustc_span::{self, Span};
 use rustc_target::spec::{PanicStrategy, TargetTriple};
-use syntax::{ast, attr};
 
 use std::marker::PhantomData;
 use std::num::NonZeroUsize;
@@ -200,7 +201,7 @@ crate struct CrateRoot<'tcx> {
 
     per_def: LazyPerDefTables<'tcx>,
 
-    /// The DefIndex's of any proc macros delcared by this crate.
+    /// The DefIndex's of any proc macros declared by this crate.
     proc_macro_data: Option<Lazy<[DefIndex]>>,
 
     compiler_builtins: bool,
@@ -251,7 +252,7 @@ macro_rules! define_per_def_tables {
 }
 
 define_per_def_tables! {
-    kind: Table<DefIndex, Lazy!(EntryKind<'tcx>)>,
+    kind: Table<DefIndex, Lazy<EntryKind>>,
     visibility: Table<DefIndex, Lazy<ty::Visibility>>,
     span: Table<DefIndex, Lazy<Span>>,
     attributes: Table<DefIndex, Lazy<[ast::Attribute]>>,
@@ -278,7 +279,7 @@ define_per_def_tables! {
 }
 
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable)]
-enum EntryKind<'tcx> {
+enum EntryKind {
     Const(mir::ConstQualifs, Lazy<RenderedConst>),
     ImmStatic,
     MutStatic,
@@ -301,7 +302,7 @@ enum EntryKind<'tcx> {
     Mod(Lazy<ModData>),
     MacroDef(Lazy<MacroDef>),
     Closure,
-    Generator(Lazy!(GeneratorData<'tcx>)),
+    Generator(hir::GeneratorKind),
     Trait(Lazy<TraitData>),
     Impl(Lazy<ImplData>),
     Method(Lazy<MethodData>),

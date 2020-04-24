@@ -1,10 +1,10 @@
 use crate::utils::span_lint;
-use rustc_hir::*;
+use rustc_ast::ast::{FloatTy, LitFloatType, LitKind};
+use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::symbol;
 use std::f64::consts as f64;
-use syntax::ast::{FloatTy, LitFloatType, LitKind};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for floating point literals that approximate
@@ -37,7 +37,7 @@ declare_clippy_lint! {
 }
 
 // Tuples are of the form (constant, name, min_digits)
-const KNOWN_CONSTS: [(f64, &str, usize); 16] = [
+const KNOWN_CONSTS: [(f64, &str, usize); 18] = [
     (f64::E, "E", 4),
     (f64::FRAC_1_PI, "FRAC_1_PI", 4),
     (f64::FRAC_1_SQRT_2, "FRAC_1_SQRT_2", 5),
@@ -52,6 +52,8 @@ const KNOWN_CONSTS: [(f64, &str, usize); 16] = [
     (f64::LN_2, "LN_2", 5),
     (f64::LOG10_E, "LOG10_E", 5),
     (f64::LOG2_E, "LOG2_E", 5),
+    (f64::LOG2_10, "LOG2_10", 5),
+    (f64::LOG10_2, "LOG10_2", 5),
     (f64::PI, "PI", 3),
     (f64::SQRT_2, "SQRT_2", 5),
 ];

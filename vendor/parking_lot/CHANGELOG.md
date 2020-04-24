@@ -1,8 +1,20 @@
+## parking_lot 0.10.0, parking_lot_core 0.7.0, lock_api 0.3.2 (2019-11-25)
+
+- Upgrade smallvec dependency to 1.0 in parking_lot_core.
+- Replace all usage of `mem::unitialized` with `mem::MaybeUninit`.
+- The minimum required Rust version is bumped to 1.36. Because of the above two changes.
+- Make methods on `WaitTimeoutResult` and `OnceState` take `self` by value instead of reference.
+
+## parking_lot_core 0.6.2 (2019-07-22)
+
+- Fixed compile error on Windows with old cfg_if version. (#164)
+
+## parking_lot_core 0.6.1 (2019-07-17)
+
+- Fixed Android build. (#163)
+
 ## parking_lot 0.9.0, parking_lot_core 0.6.0, lock_api 0.3.1 (2019-07-14)
 
-- The minimum supported rust version (MSRV) is now 1.32. This was primarily
-  increased for testing with the latest _rand_ crate. Rust 1.31 may continue to
-  work for normal use of these releases.
 - Re-export lock_api (0.3.1) from parking_lot (#150)
 - Removed (non-dev) dependency on rand crate for fairness mechanism, by
   including a simple xorshift PRNG in core (#144)

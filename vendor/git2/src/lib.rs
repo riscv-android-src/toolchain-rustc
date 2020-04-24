@@ -57,6 +57,8 @@
 //! };
 //! ```
 //!
+//! To clone using SSH, refer to [RepoBuilder](./build/struct.RepoBuilder.html).
+//!
 //! ## Working with a `Repository`
 //!
 //! All deriviative objects, references, etc are attached to the lifetime of the
@@ -93,6 +95,7 @@ pub use crate::error::Error;
 pub use crate::index::{
     Index, IndexConflict, IndexConflicts, IndexEntries, IndexEntry, IndexMatchedPath,
 };
+pub use crate::indexer::{IndexerProgress, Progress};
 pub use crate::merge::{AnnotatedCommit, MergeOptions};
 pub use crate::message::{message_prettify, DEFAULT_COMMENT_CHAR};
 pub use crate::note::{Note, Notes};
@@ -111,8 +114,8 @@ pub use crate::refspec::Refspec;
 pub use crate::remote::{
     FetchOptions, PushOptions, Refspecs, Remote, RemoteConnection, RemoteHead,
 };
-pub use crate::remote_callbacks::{Credentials, RemoteCallbacks, TransferProgress};
-pub use crate::remote_callbacks::{Progress, TransportMessage, UpdateTips};
+pub use crate::remote_callbacks::{Credentials, RemoteCallbacks};
+pub use crate::remote_callbacks::{TransportMessage, UpdateTips};
 pub use crate::repo::{Repository, RepositoryInitOptions};
 pub use crate::revspec::Revspec;
 pub use crate::revwalk::Revwalk;
@@ -252,6 +255,12 @@ pub enum ErrorClass {
     Rebase,
     /// Filesystem-related error
     Filesystem,
+    /// Invalid patch data
+    Patch,
+    /// Error involving worktrees
+    Worktree,
+    /// Hash library error or SHA-1 collision
+    Sha1,
 }
 
 /// A listing of the possible states that a repository can be in.
@@ -625,6 +634,7 @@ mod describe;
 mod diff;
 mod error;
 mod index;
+mod indexer;
 mod merge;
 mod message;
 mod note;
@@ -819,7 +829,7 @@ impl ObjectType {
 
     /// Determine if the given git_object_t is a valid loose object type.
     pub fn is_loose(&self) -> bool {
-        unsafe { (call!(raw::git_object_typeisloose(*self)) == 1) }
+        unsafe { call!(raw::git_object_typeisloose(*self)) == 1 }
     }
 
     /// Convert a raw git_object_t to an ObjectType
@@ -994,6 +1004,23 @@ pub enum Delta {
     Unreadable,
     /// Entry in the index is conflicted
     Conflicted,
+}
+
+/// Valid modes for index and tree entries.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FileMode {
+    /// Unreadable
+    Unreadable,
+    /// Tree
+    Tree,
+    /// Blob
+    Blob,
+    /// Blob executable
+    BlobExecutable,
+    /// Link
+    Link,
+    /// Commit
+    Commit,
 }
 
 bitflags! {

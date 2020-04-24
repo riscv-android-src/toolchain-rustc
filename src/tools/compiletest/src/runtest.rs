@@ -1478,11 +1478,7 @@ impl<'test> TestCx<'test> {
             WillExecute::No => TargetLocation::ThisDirectory(self.output_base_dir()),
         };
 
-        let mut rustc = self.make_compile_args(&self.testpaths.file, output_file, emit_metadata);
-
-        rustc.arg("-L").arg(&self.aux_output_dir_name());
-
-        match self.config.mode {
+        let allow_unused = match self.config.mode {
             CompileFail | Ui => {
                 // compile-fail and ui tests tend to have tons of unused code as
                 // it's just testing various pieces of the compile, but we don't
@@ -1491,15 +1487,22 @@ impl<'test> TestCx<'test> {
                 // can turn it back on if needed.
                 if !self.is_rustdoc()
                     // Note that we use the local pass mode here as we don't want
-                    // to set unused to allow if we've overriden the pass mode
+                    // to set unused to allow if we've overridden the pass mode
                     // via command line flags.
                     && local_pm != Some(PassMode::Run)
                 {
-                    rustc.args(&["-A", "unused"]);
+                    AllowUnused::Yes
+                } else {
+                    AllowUnused::No
                 }
             }
-            _ => {}
-        }
+            _ => AllowUnused::No,
+        };
+
+        let mut rustc =
+            self.make_compile_args(&self.testpaths.file, output_file, emit_metadata, allow_unused);
+
+        rustc.arg("-L").arg(&self.aux_output_dir_name());
 
         self.compose_and_run_compiler(rustc, None)
     }
@@ -1710,7 +1713,8 @@ impl<'test> TestCx<'test> {
         // Create the directory for the stdout/stderr files.
         create_dir_all(aux_cx.output_base_dir()).unwrap();
         let input_file = &aux_testpaths.file;
-        let mut aux_rustc = aux_cx.make_compile_args(input_file, aux_output, EmitMetadata::No);
+        let mut aux_rustc =
+            aux_cx.make_compile_args(input_file, aux_output, EmitMetadata::No, AllowUnused::No);
 
         let (dylib, crate_type) = if aux_props.no_prefer_dynamic {
             (true, None)
@@ -1819,6 +1823,7 @@ impl<'test> TestCx<'test> {
         input_file: &Path,
         output_file: TargetLocation,
         emit_metadata: EmitMetadata,
+        allow_unused: AllowUnused,
     ) -> Command {
         let is_rustdoc = self.is_rustdoc();
         let mut rustc = if !is_rustdoc {
@@ -1951,6 +1956,10 @@ impl<'test> TestCx<'test> {
         // Use dynamic musl for tests because static doesn't allow creating dylibs
         if self.config.host.contains("musl") || self.is_vxworks_pure_dynamic() {
             rustc.arg("-Ctarget-feature=-crt-static");
+        }
+
+        if let AllowUnused::Yes = allow_unused {
+            rustc.args(&["-A", "unused"]);
         }
 
         rustc.args(&self.props.compile_flags);
@@ -2136,7 +2145,8 @@ impl<'test> TestCx<'test> {
 
         let output_file = TargetLocation::ThisDirectory(self.output_base_dir());
         let input_file = &self.testpaths.file;
-        let mut rustc = self.make_compile_args(input_file, output_file, EmitMetadata::No);
+        let mut rustc =
+            self.make_compile_args(input_file, output_file, EmitMetadata::No, AllowUnused::No);
         rustc.arg("-L").arg(aux_dir).arg("--emit=llvm-ir");
 
         self.compose_and_run_compiler(rustc, None)
@@ -2149,7 +2159,8 @@ impl<'test> TestCx<'test> {
 
         let output_file = TargetLocation::ThisFile(output_path.clone());
         let input_file = &self.testpaths.file;
-        let mut rustc = self.make_compile_args(input_file, output_file, EmitMetadata::No);
+        let mut rustc =
+            self.make_compile_args(input_file, output_file, EmitMetadata::No, AllowUnused::No);
 
         rustc.arg("-L").arg(self.aux_output_dir_name());
 
@@ -2651,7 +2662,6 @@ impl<'test> TestCx<'test> {
             .env("HOST_RPATH_DIR", cwd.join(&self.config.compile_lib_path))
             .env("TARGET_RPATH_DIR", cwd.join(&self.config.run_lib_path))
             .env("LLVM_COMPONENTS", &self.config.llvm_components)
-            .env("LLVM_CXXFLAGS", &self.config.llvm_cxxflags)
             // We for sure don't want these tests to run in parallel, so make
             // sure they don't have access to these vars if we run via `make`
             // at the top level
@@ -3001,6 +3011,7 @@ impl<'test> TestCx<'test> {
                 &self.testpaths.file.with_extension(UI_FIXED),
                 TargetLocation::ThisFile(self.make_exe_name()),
                 emit_metadata,
+                AllowUnused::No,
             );
             rustc.arg("-L").arg(&self.aux_output_dir_name());
             let res = self.compose_and_run_compiler(rustc, None);
@@ -3486,6 +3497,11 @@ enum TargetLocation {
 enum ExpectedLine<T: AsRef<str>> {
     Elision,
     Text(T),
+}
+
+enum AllowUnused {
+    Yes,
+    No,
 }
 
 impl<T> fmt::Debug for ExpectedLine<T>

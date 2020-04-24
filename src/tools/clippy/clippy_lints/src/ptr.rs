@@ -8,8 +8,10 @@ use crate::utils::{
 use if_chain::if_chain;
 use rustc::ty;
 use rustc_errors::Applicability;
-use rustc_hir::QPath;
-use rustc_hir::*;
+use rustc_hir::{
+    BinOpKind, BodyId, Expr, ExprKind, FnDecl, FnRetTy, GenericArg, HirId, ImplItem, ImplItemKind, Item, ItemKind,
+    Lifetime, MutTy, Mutability, Node, PathSegment, QPath, TraitItem, TraitItemKind, TraitMethod, Ty, TyKind,
+};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
@@ -253,7 +255,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
         }
     }
 
-    if let FunctionRetTy::Return(ref ty) = decl.output {
+    if let FnRetTy::Return(ref ty) = decl.output {
         if let Some((out, Mutability::Mut, _)) = get_rptr_lm(ty) {
             let mut immutables = vec![];
             for (_, ref mutbl, ref argspan) in decl

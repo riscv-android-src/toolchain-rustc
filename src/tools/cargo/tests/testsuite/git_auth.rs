@@ -10,7 +10,6 @@ use std::thread;
 
 use cargo_test_support::paths;
 use cargo_test_support::{basic_manifest, project};
-use git2;
 
 // Tests that HTTP auth is offered from `credential.helper`.
 #[cargo_test]
@@ -134,7 +133,10 @@ fn http_auth_offered() {
         .with_stderr_contains(&format!(
             "\
 [UPDATING] git repository `http://{addr}/foo/bar`
-[ERROR] failed to load source for a dependency on `bar`
+[ERROR] failed to get `bar` as a dependency of package `foo v0.0.1 [..]`
+
+Caused by:
+  failed to load source for dependency `bar`
 
 Caused by:
   Unable to update http://{addr}/foo/bar

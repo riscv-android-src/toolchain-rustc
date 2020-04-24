@@ -163,11 +163,11 @@
 //! [`Iterator`]: iter/trait.Iterator.html
 //! [`Mutex`]: sync/struct.Mutex.html
 //! [`Option<T>`]: option/enum.Option.html
-//! [`Rc`]: rc/index.html
+//! [`Rc`]: rc/struct.Rc.html
 //! [`RefCell`]: cell/struct.RefCell.html
 //! [`Result<T, E>`]: result/enum.Result.html
 //! [`String`]: string/struct.String.html
-//! [`Vec<T>`]: vec/index.html
+//! [`Vec<T>`]: vec/struct.Vec.html
 //! [array]: primitive.array.html
 //! [slice]: primitive.slice.html
 //! [`atomic`]: sync/atomic/index.html
@@ -233,11 +233,11 @@
 #![feature(allocator_internals)]
 #![feature(allow_internal_unsafe)]
 #![feature(allow_internal_unstable)]
-#![feature(atomic_mut_ptr)]
 #![feature(arbitrary_self_types)]
 #![feature(array_error_internals)]
 #![feature(asm)]
 #![feature(associated_type_bounds)]
+#![feature(atomic_mut_ptr)]
 #![feature(box_syntax)]
 #![feature(c_variadic)]
 #![feature(cfg_target_has_atomic)]
@@ -255,7 +255,6 @@
 #![feature(doc_cfg)]
 #![feature(doc_keyword)]
 #![feature(doc_masked)]
-#![feature(doc_spotlight)]
 #![feature(dropck_eyepatch)]
 #![feature(duration_constants)]
 #![feature(exact_size_is_empty)]
@@ -293,7 +292,6 @@
 #![feature(shrink_to)]
 #![feature(slice_concat_ext)]
 #![feature(slice_internals)]
-#![cfg_attr(bootstrap, feature(slice_patterns))]
 #![feature(specialization)]
 #![feature(staged_api)]
 #![feature(std_internals)]
@@ -309,6 +307,7 @@
 #![feature(unboxed_closures)]
 #![feature(untagged_unions)]
 #![feature(unwind_attributes)]
+#![feature(vec_into_raw_parts)]
 // NB: the above list is sorted to minimize merge conflicts.
 #![default_lib_allocator]
 
@@ -333,12 +332,6 @@ extern crate libc;
 #[doc(masked)]
 #[allow(unused_extern_crates)]
 extern crate unwind;
-
-// Only needed for now for the `std_detect` module until that crate changes to
-// use `cfg_if::cfg_if!`
-#[macro_use]
-#[cfg(not(test))]
-extern crate cfg_if;
 
 // During testing, this crate is not actually the "real" std library, but rather
 // it links to the real std library, which was compiled from this same source
@@ -555,6 +548,9 @@ pub use core::{
     stringify,
     trace_macros,
 };
+
+#[stable(feature = "core_primitive", since = "1.43.0")]
+pub use core::primitive;
 
 // Include a number of private modules that exist solely to provide
 // the rustdoc documentation for primitive types. Using `include!`

@@ -1,5 +1,6 @@
-#![deny(warnings)]
+#![cfg_attr(test, deny(warnings))]
 #![deny(missing_docs)]
+#![doc(html_root_url = "https://docs.rs/pretty_env_logger/0.4.0")]
 
 //! A logger configured via an environment variable which writes to standard
 //! error with nice colored output for log levels.
@@ -20,28 +21,32 @@
 //!     error!("boom");
 //! }
 //! ```
+//!
+//! Run the program with the environment variable `RUST_LOG=trace`.
+//!
+//! ## Defaults
+//!
+//! The defaults can be setup by calling `init()` or `try_init()` at the start
+//! of the program.
+//!
+//! ## Enable logging
+//!
+//! This crate uses [env_logger][] internally, so the same ways of enabling
+//! logs through an environment variable are supported.
+//!
+//! [env_logger]: https://docs.rs/env_logger
 
-extern crate env_logger;
+#[doc(hidden)]
+pub extern crate env_logger;
+
 extern crate log;
-extern crate chrono;
 
-use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
+use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use chrono::Local;
 use env_logger::{fmt::{Color, Style, StyledValue}, Builder};
 use log::Level;
 
-fn colored_level<'a>(style: &'a mut Style, level: Level) -> StyledValue<'a, &'static str> {
-    match level {
-        Level::Trace => style.set_color(Color::Magenta).value("TRACE"),
-        Level::Debug => style.set_color(Color::Blue).value("DEBUG"),
-        Level::Info => style.set_color(Color::Green).value("INFO "),
-        Level::Warn => style.set_color(Color::Yellow).value("WARN "),
-        Level::Error => style.set_color(Color::Red).value("ERROR"),
-    }
-}
-
-static MAX_MODULE_WIDTH: AtomicUsize = ATOMIC_USIZE_INIT;
 
 /// Initializes the global logger with a pretty env logger.
 ///
@@ -52,7 +57,6 @@ static MAX_MODULE_WIDTH: AtomicUsize = ATOMIC_USIZE_INIT;
 /// # Panics
 ///
 /// This function fails to set the global logger if one has already been set.
-#[inline]
 pub fn init() {
     try_init().unwrap();
 }
@@ -66,7 +70,6 @@ pub fn init() {
 /// # Panics
 ///
 /// This function fails to set the global logger if one has already been set.
-#[inline]
 pub fn init_timed() {
     try_init_timed().unwrap();
 }
@@ -123,7 +126,7 @@ pub fn try_init_custom_env(environment_variable_name: &str) -> Result<(), log::S
     let mut builder = formatted_builder();
 
     if let Ok(s) = ::std::env::var(environment_variable_name) {
-        builder.parse(&s);
+        builder.parse_filters(&s);
     }
 
     builder.try_init()
@@ -142,7 +145,7 @@ pub fn try_init_timed_custom_env(environment_variable_name: &str) -> Result<(), 
     let mut builder = formatted_timed_builder();
 
     if let Ok(s) = ::std::env::var(environment_variable_name) {
-        builder.parse(&s);
+        builder.parse_filters(&s);
     }
 
     builder.try_init()
@@ -158,18 +161,19 @@ pub fn formatted_builder() -> Builder {
 
     builder.format(|f, record| {
         use std::io::Write;
-        let target = record.target();
-        let mut max_width = MAX_MODULE_WIDTH.load(Ordering::Relaxed);
-        if max_width < target.len() {
-            MAX_MODULE_WIDTH.store(target.len(), Ordering::Relaxed);
-            max_width = target.len();
-        }
 
+        let target = record.target();
+        let max_width = max_target_width(target);
 
         let mut style = f.style();
         let level = colored_level(&mut style, record.level());
+
         let mut style = f.style();
-        let target = style.set_bold(true).value(format!("{: <width$}", target, width=max_width));
+        let target = style.set_bold(true).value(Padded {
+            value: target,
+            width: max_width,
+        });
+
         writeln!(
             f,
             " {} {} > {}",
@@ -193,20 +197,23 @@ pub fn formatted_timed_builder() -> Builder {
     builder.format(|f, record| {
         use std::io::Write;
         let target = record.target();
-        let mut max_width = MAX_MODULE_WIDTH.load(Ordering::Relaxed);
-        if max_width < target.len() {
-            MAX_MODULE_WIDTH.store(target.len(), Ordering::Relaxed);
-            max_width = target.len();
-        }
+        let max_width = max_target_width(target);
 
         let mut style = f.style();
         let level = colored_level(&mut style, record.level());
+
         let mut style = f.style();
-        let target = style.set_bold(true).value(format!("{: <width$}", target, width=max_width));
+        let target = style.set_bold(true).value(Padded {
+            value: target,
+            width: max_width,
+        });
+
+        let time = f.timestamp_millis();
+
         writeln!(
             f,
             " {} {} {} > {}",
-            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            time,
             level,
             target,
             record.args(),
@@ -214,4 +221,37 @@ pub fn formatted_timed_builder() -> Builder {
     });
 
     builder
+}
+
+struct Padded<T> {
+    value: T,
+    width: usize,
+}
+
+impl<T: fmt::Display> fmt::Display for Padded<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{: <width$}", self.value, width=self.width)
+    }
+}
+
+static MAX_MODULE_WIDTH: AtomicUsize = AtomicUsize::new(0);
+
+fn max_target_width(target: &str) -> usize {
+    let max_width = MAX_MODULE_WIDTH.load(Ordering::Relaxed);
+    if max_width < target.len() {
+        MAX_MODULE_WIDTH.store(target.len(), Ordering::Relaxed);
+        target.len()
+    } else {
+        max_width
+    }
+}
+
+fn colored_level<'a>(style: &'a mut Style, level: Level) -> StyledValue<'a, &'static str> {
+    match level {
+        Level::Trace => style.set_color(Color::Magenta).value("TRACE"),
+        Level::Debug => style.set_color(Color::Blue).value("DEBUG"),
+        Level::Info => style.set_color(Color::Green).value("INFO "),
+        Level::Warn => style.set_color(Color::Yellow).value("WARN "),
+        Level::Error => style.set_color(Color::Red).value("ERROR"),
+    }
 }

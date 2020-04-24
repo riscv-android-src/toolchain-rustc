@@ -76,17 +76,16 @@ impl ConfigBuilder {
         let homedir = paths::home();
         let mut config = Config::new(shell, cwd, homedir);
         config.set_env(self.env.clone());
-        let config_args: Vec<&str> = self.config_args.iter().map(AsRef::as_ref).collect();
         config.configure(
             0,
-            None,
+            false,
             None,
             false,
             false,
             false,
             &None,
             &self.unstable,
-            &config_args,
+            &self.config_args,
         )?;
         Ok(config)
     }
@@ -1205,4 +1204,57 @@ fn overlapping_env_config() {
     let s: Ambig = config.get("ambig").unwrap();
     assert_eq!(s.debug_assertions, Some(true));
     assert_eq!(s.debug, Some(1));
+}
+
+#[cargo_test]
+fn string_list_tricky_env() {
+    // Make sure StringList handles typed env values.
+    let config = ConfigBuilder::new()
+        .env("CARGO_KEY1", "123")
+        .env("CARGO_KEY2", "true")
+        .env("CARGO_KEY3", "1 2")
+        .build();
+    let x = config.get::<StringList>("key1").unwrap();
+    assert_eq!(x.as_slice(), &["123".to_string()]);
+    let x = config.get::<StringList>("key2").unwrap();
+    assert_eq!(x.as_slice(), &["true".to_string()]);
+    let x = config.get::<StringList>("key3").unwrap();
+    assert_eq!(x.as_slice(), &["1".to_string(), "2".to_string()]);
+}
+
+#[cargo_test]
+fn string_list_wrong_type() {
+    // What happens if StringList is given then wrong type.
+    write_config("some_list = 123");
+    let config = ConfigBuilder::new().build();
+    assert_error(
+        config.get::<StringList>("some_list").unwrap_err(),
+        "\
+invalid configuration for key `some_list`
+expected a string or array of strings, but found a integer for `some_list` in [..]/.cargo/config",
+    );
+
+    write_config("some_list = \"1 2\"");
+    let config = ConfigBuilder::new().build();
+    let x = config.get::<StringList>("some_list").unwrap();
+    assert_eq!(x.as_slice(), &["1".to_string(), "2".to_string()]);
+}
+
+#[cargo_test]
+fn string_list_advanced_env() {
+    // StringList with advanced env.
+    let config = ConfigBuilder::new()
+        .unstable_flag("advanced-env")
+        .env("CARGO_KEY1", "[]")
+        .env("CARGO_KEY2", "['1 2', '3']")
+        .env("CARGO_KEY3", "[123]")
+        .build();
+    let x = config.get::<StringList>("key1").unwrap();
+    assert_eq!(x.as_slice(), &[] as &[String]);
+    let x = config.get::<StringList>("key2").unwrap();
+    assert_eq!(x.as_slice(), &["1 2".to_string(), "3".to_string()]);
+    assert_error(
+        config.get::<StringList>("key3").unwrap_err(),
+        "error in environment variable `CARGO_KEY3`: expected string, found integer",
+    );
 }

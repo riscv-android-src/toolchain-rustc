@@ -4,7 +4,7 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 use crate::utils::{
-    get_trait_def_id, implements_trait, match_type, paths, return_ty, span_help_and_lint, trait_ref_of_method,
+    get_trait_def_id, implements_trait, match_type, paths, return_ty, span_lint_and_help, trait_ref_of_method,
     walk_ptrs_ty,
 };
 
@@ -120,8 +120,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for InherentToString {
 }
 
 fn show_lint(cx: &LateContext<'_, '_>, item: &ImplItem<'_>) {
-    let display_trait_id =
-        get_trait_def_id(cx, &["core", "fmt", "Display"]).expect("Failed to get trait ID of `Display`!");
+    let display_trait_id = get_trait_def_id(cx, &paths::DISPLAY_TRAIT).expect("Failed to get trait ID of `Display`!");
 
     // Get the real type of 'self'
     let fn_def_id = cx.tcx.hir().local_def_id(item.hir_id);
@@ -130,7 +129,7 @@ fn show_lint(cx: &LateContext<'_, '_>, item: &ImplItem<'_>) {
 
     // Emit either a warning or an error
     if implements_trait(cx, self_type, display_trait_id, &[]) {
-        span_help_and_lint(
+        span_lint_and_help(
             cx,
             INHERENT_TO_STRING_SHADOW_DISPLAY,
             item.span,
@@ -141,7 +140,7 @@ fn show_lint(cx: &LateContext<'_, '_>, item: &ImplItem<'_>) {
             &format!("remove the inherent method from type `{}`", self_type.to_string())
         );
     } else {
-        span_help_and_lint(
+        span_lint_and_help(
             cx,
             INHERENT_TO_STRING,
             item.span,

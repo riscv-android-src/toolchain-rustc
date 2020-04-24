@@ -8,6 +8,7 @@ use rustc_index::vec::{Idx, IndexVec};
 use rustc::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use rustc::mir::visit::*;
 use rustc::mir::*;
+use rustc::session::config::Sanitizer;
 use rustc::ty::subst::{InternalSubsts, Subst, SubstsRef};
 use rustc::ty::{self, Instance, InstanceDef, ParamEnv, Ty, TyCtxt, TypeFoldable};
 
@@ -16,8 +17,8 @@ use crate::transform::{MirPass, MirSource};
 use std::collections::VecDeque;
 use std::iter;
 
+use rustc_attr as attr;
 use rustc_target::spec::abi::Abi;
-use syntax::attr;
 
 const DEFAULT_THRESHOLD: usize = 50;
 const HINT_THRESHOLD: usize = 100;
@@ -226,6 +227,28 @@ impl Inliner<'tcx> {
         if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::TRACK_CALLER) {
             debug!("`#[track_caller]` present - not inlining");
             return false;
+        }
+
+        // Avoid inlining functions marked as no_sanitize if sanitizer is enabled,
+        // since instrumentation might be enabled and performed on the caller.
+        match self.tcx.sess.opts.debugging_opts.sanitizer {
+            Some(Sanitizer::Address) => {
+                if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NO_SANITIZE_ADDRESS) {
+                    return false;
+                }
+            }
+            Some(Sanitizer::Memory) => {
+                if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NO_SANITIZE_MEMORY) {
+                    return false;
+                }
+            }
+            Some(Sanitizer::Thread) => {
+                if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NO_SANITIZE_THREAD) {
+                    return false;
+                }
+            }
+            Some(Sanitizer::Leak) => {}
+            None => {}
         }
 
         let hinted = match codegen_fn_attrs.inline {
@@ -640,8 +663,8 @@ impl<'a, 'tcx> Integrator<'a, 'tcx> {
         new
     }
 
-    fn make_integrate_local(&self, local: &Local) -> Local {
-        if *local == RETURN_PLACE {
+    fn make_integrate_local(&self, local: Local) -> Local {
+        if local == RETURN_PLACE {
             return self.destination.local;
         }
 
@@ -660,7 +683,7 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
     }
 
     fn visit_local(&mut self, local: &mut Local, _ctxt: PlaceContext, _location: Location) {
-        *local = self.make_integrate_local(local);
+        *local = self.make_integrate_local(*local);
     }
 
     fn visit_place(&mut self, place: &mut Place<'tcx>, context: PlaceContext, location: Location) {
@@ -680,7 +703,7 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Integrator<'a, 'tcx> {
 
     fn process_projection_elem(&mut self, elem: &PlaceElem<'tcx>) -> Option<PlaceElem<'tcx>> {
         if let PlaceElem::Index(local) = elem {
-            let new_local = self.make_integrate_local(local);
+            let new_local = self.make_integrate_local(*local);
 
             if new_local != *local {
                 return Some(PlaceElem::Index(new_local));

@@ -1,10 +1,10 @@
 use crate::utils::{match_qpath, snippet_with_applicability, span_lint_and_sugg};
 use if_chain::if_chain;
+use rustc_ast::ast;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_lint::LateContext;
 use rustc_target::abi::LayoutOf;
-use syntax::ast;
 
 pub fn lint(cx: &LateContext<'_, '_>, expr: &hir::Expr<'_>, args: &[&[hir::Expr<'_>]], arith: &str) {
     let unwrap_arg = &args[0][1];
@@ -23,7 +23,10 @@ pub fn lint(cx: &LateContext<'_, '_>, expr: &hir::Expr<'_>, args: &[&[hir::Expr<
     };
 
     if ty.is_signed() {
-        use self::{MinMax::*, Sign::*};
+        use self::{
+            MinMax::{Max, Min},
+            Sign::{Neg, Pos},
+        };
 
         let sign = if let Some(sign) = lit_sign(arith_rhs) {
             sign

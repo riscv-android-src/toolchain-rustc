@@ -13,8 +13,8 @@ use std::mem;
 use std::path::{Component, Path, PathBuf};
 use std::str;
 
-use other;
-use EntryType;
+use crate::other;
+use crate::EntryType;
 
 /// Representation of the header of an entry in an archive
 #[repr(C)]
@@ -410,11 +410,11 @@ impl Header {
         }
     }
 
-    /// Sets the path name for this header.
+    /// Sets the link name for this header.
     ///
-    /// This function will set the pathname listed in this header, encoding it
-    /// in the appropriate format. May fail if the path is too long or if the
-    /// path specified is not unicode and this is a Windows platform.
+    /// This function will set the linkname listed in this header, encoding it
+    /// in the appropriate format. May fail if the link name is too long or if
+    /// the path specified is not unicode and this is a Windows platform.
     pub fn set_link_name<P: AsRef<Path>>(&mut self, p: P) -> io::Result<()> {
         self._set_link_name(p.as_ref())
     }
@@ -711,6 +711,12 @@ impl Header {
         }
     }
 
+    #[cfg(target_arch = "wasm32")]
+    #[allow(unused_variables)]
+    fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
+        unimplemented!();
+    }
+
     #[cfg(any(unix, target_os = "redox"))]
     fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
         match mode {
@@ -750,7 +756,6 @@ impl Header {
 
         #[cfg(not(target_os = "redox"))]
         fn entry_type(mode: u32) -> EntryType {
-            use libc;
             match mode as libc::mode_t & libc::S_IFMT {
                 libc::S_IFREG => EntryType::file(),
                 libc::S_IFLNK => EntryType::symlink(),
@@ -978,7 +983,7 @@ impl UstarHeader {
                         return Err(other(&format!(
                             "path cannot be split to be inserted into archive: {}",
                             path.display()
-                        )))
+                        )));
                     }
                 }
                 prefixlen = path2bytes(prefix)?.len();
@@ -1377,7 +1382,7 @@ fn octal_from(slice: &[u8]) -> io::Result<u64> {
             return Err(other(&format!(
                 "numeric field did not have utf-8 text: {}",
                 String::from_utf8_lossy(trun)
-            )))
+            )));
         }
     };
     match u64::from_str_radix(num.trim(), 8) {
@@ -1421,7 +1426,8 @@ fn num_field_wrapper_from(src: &[u8]) -> io::Result<u64> {
 fn numeric_extended_into(dst: &mut [u8], src: u64) {
     let len: usize = dst.len();
     for (slot, val) in dst.iter_mut().zip(
-        repeat(0).take(len - 8) // to zero init extra bytes
+        repeat(0)
+            .take(len - 8) // to zero init extra bytes
             .chain((0..8).rev().map(|x| ((src >> (8 * x)) & 0xff) as u8)),
     ) {
         *slot = val;
@@ -1483,10 +1489,10 @@ fn copy_path_into(mut slot: &mut [u8], path: &Path, is_link_name: bool) -> io::R
         let bytes = path2bytes(Path::new(component.as_os_str()))?;
         match (component, is_link_name) {
             (Component::Prefix(..), false) | (Component::RootDir, false) => {
-                return Err(other("paths in archives must be relative"))
+                return Err(other("paths in archives must be relative"));
             }
             (Component::ParentDir, false) => {
-                return Err(other("paths in archives must not have `..`"))
+                return Err(other("paths in archives must not have `..`"));
             }
             // Allow "./" as the path
             (Component::CurDir, false) if path.components().count() == 1 => {}
@@ -1523,6 +1529,11 @@ fn copy_path_into(mut slot: &mut [u8], path: &Path, is_link_name: bool) -> io::R
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn ends_with_slash(p: &Path) -> bool {
+    p.to_string_lossy().ends_with('/')
+}
+
 #[cfg(windows)]
 fn ends_with_slash(p: &Path) -> bool {
     let last = p.as_os_str().encode_wide().last();
@@ -1534,7 +1545,7 @@ fn ends_with_slash(p: &Path) -> bool {
     p.as_os_str().as_bytes().ends_with(&[b'/'])
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_arch = "wasm32"))]
 pub fn path2bytes(p: &Path) -> io::Result<Cow<[u8]>> {
     p.as_os_str()
         .to_str()
@@ -1568,11 +1579,12 @@ pub fn path2bytes(p: &Path) -> io::Result<Cow<[u8]>> {
 pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
     return match bytes {
         Cow::Borrowed(bytes) => {
-            let s = try!(str::from_utf8(bytes).map_err(|_| not_unicode(bytes)));
+            let s = r#try!(str::from_utf8(bytes).map_err(|_| not_unicode(bytes)));
             Ok(Cow::Borrowed(Path::new(s)))
         }
         Cow::Owned(bytes) => {
-            let s = try!(String::from_utf8(bytes).map_err(|uerr| not_unicode(&uerr.into_bytes())));
+            let s =
+                r#try!(String::from_utf8(bytes).map_err(|uerr| not_unicode(&uerr.into_bytes())));
             Ok(Cow::Owned(PathBuf::from(s)))
         }
     };
@@ -1594,4 +1606,21 @@ pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
         Cow::Borrowed(bytes) => Cow::Borrowed({ Path::new(OsStr::from_bytes(bytes)) }),
         Cow::Owned(bytes) => Cow::Owned({ PathBuf::from(OsString::from_vec(bytes)) }),
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
+    Ok(match bytes {
+        Cow::Borrowed(bytes) => {
+            Cow::Borrowed({ Path::new(str::from_utf8(bytes).map_err(invalid_utf8)?) })
+        }
+        Cow::Owned(bytes) => {
+            Cow::Owned({ PathBuf::from(String::from_utf8(bytes).map_err(invalid_utf8)?) })
+        }
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+fn invalid_utf8<T>(_: T) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, "Invalid utf8")
 }

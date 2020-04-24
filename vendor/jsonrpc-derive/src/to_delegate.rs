@@ -16,7 +16,7 @@ pub enum MethodRegistration {
 	},
 	PubSub {
 		name: String,
-		subscribe: RpcMethod,
+		subscribes: Vec<RpcMethod>,
 		unsubscribe: RpcMethod,
 	},
 	Notification {
@@ -45,13 +45,9 @@ impl MethodRegistration {
 			}
 			MethodRegistration::PubSub {
 				name,
-				subscribe,
+				subscribes,
 				unsubscribe,
 			} => {
-				let sub_name = subscribe.name();
-				let sub_closure = subscribe.generate_delegate_closure(true)?;
-				let sub_aliases = subscribe.generate_add_aliases();
-
 				let unsub_name = unsubscribe.name();
 				let unsub_method_ident = unsubscribe.ident();
 				let unsub_closure = quote! {
@@ -63,15 +59,29 @@ impl MethodRegistration {
 							.map_err(Into::into)
 					}
 				};
+
+				let mut add_subscriptions = proc_macro2::TokenStream::new();
+
+				for subscribe in subscribes.iter() {
+					let sub_name = subscribe.name();
+					let sub_closure = subscribe.generate_delegate_closure(true)?;
+					let sub_aliases = subscribe.generate_add_aliases();
+
+					add_subscriptions = quote! {
+						#add_subscriptions
+						del.add_subscription(
+							#name,
+							(#sub_name, #sub_closure),
+							(#unsub_name, #unsub_closure),
+						);
+						#sub_aliases
+					};
+				}
+
 				let unsub_aliases = unsubscribe.generate_add_aliases();
 
 				Ok(quote! {
-					del.add_subscription(
-						#name,
-						(#sub_name, #sub_closure),
-						(#unsub_name, #unsub_closure),
-					);
-					#sub_aliases
+					#add_subscriptions
 					#unsub_aliases
 				})
 			}
@@ -142,13 +152,7 @@ pub fn generate_trait_item_method(
 
 	let predicates = generate_where_clause_serialization_predicates(&trait_item, false);
 	let mut method = method.clone();
-	method
-		.sig
-		.decl
-		.generics
-		.make_where_clause()
-		.predicates
-		.extend(predicates);
+	method.sig.generics.make_where_clause().predicates.extend(predicates);
 	Ok(method)
 }
 
@@ -179,17 +183,34 @@ impl RpcMethod {
 		self.attr.is_pubsub()
 	}
 
+	pub fn subscriber_arg(&self) -> Option<syn::Type> {
+		self.trait_item
+			.sig
+			.inputs
+			.iter()
+			.filter_map(|arg| match arg {
+				syn::FnArg::Typed(ty) => Some(*ty.ty.clone()),
+				_ => None,
+			})
+			.find(|ty| {
+				if let syn::Type::Path(path) = ty {
+					if path.path.segments.iter().any(|s| s.ident == SUBSCRIBER_TYPE_IDENT) {
+						return true;
+					}
+				}
+				false
+			})
+	}
+
 	fn generate_delegate_closure(&self, is_subscribe: bool) -> Result<proc_macro2::TokenStream> {
 		let mut param_types: Vec<_> = self
 			.trait_item
 			.sig
-			.decl
 			.inputs
 			.iter()
 			.cloned()
 			.filter_map(|arg| match arg {
-				syn::FnArg::Captured(arg_captured) => Some(arg_captured.ty),
-				syn::FnArg::Ignored(ty) => Some(ty),
+				syn::FnArg::Typed(ty) => Some(*ty.ty),
 				_ => None,
 			})
 			.collect();
@@ -225,7 +246,7 @@ impl RpcMethod {
 		};
 
 		let method_ident = self.ident();
-		let result = &self.trait_item.sig.decl.output;
+		let result = &self.trait_item.sig.output;
 		let extra_closure_args: &Vec<_> = &special_args.iter().cloned().map(|arg| arg.0).collect();
 		let extra_method_types: &Vec<_> = &special_args.iter().cloned().map(|arg| arg.1).collect();
 
@@ -297,10 +318,10 @@ impl RpcMethod {
 		});
 
 		let mut special_args = Vec::new();
-		if let Some(ref meta) = meta_arg {
+		if let Some(meta) = meta_arg {
 			special_args.push((ident(METADATA_CLOSURE_ARG), meta.clone()));
 		}
-		if let Some(ref subscriber) = subscriber_arg {
+		if let Some(subscriber) = subscriber_arg {
 			special_args.push((ident(SUBSCRIBER_CLOSURE_ARG), subscriber.clone()));
 		}
 		special_args
@@ -380,11 +401,7 @@ fn ident(s: &str) -> syn::Ident {
 
 fn is_option_type(ty: &syn::Type) -> bool {
 	if let syn::Type::Path(path) = ty {
-		path.path
-			.segments
-			.first()
-			.map(|t| t.value().ident == "Option")
-			.unwrap_or(false)
+		path.path.segments.first().map_or(false, |t| t.ident == "Option")
 	} else {
 		false
 	}
@@ -449,17 +466,17 @@ pub fn generate_where_clause_serialization_predicates(
 			// add json serialization trait bounds
 			if client {
 				if visitor.server_to_client_type_params.contains(&ty.ident) {
-					bounds.push(parse_quote!(_serde::de::DeserializeOwned))
+					bounds.push(parse_quote!(_jsonrpc_core::serde::de::DeserializeOwned))
 				}
 				if visitor.client_to_server_type_params.contains(&ty.ident) {
-					bounds.push(parse_quote!(_serde::Serialize))
+					bounds.push(parse_quote!(_jsonrpc_core::serde::Serialize))
 				}
 			} else {
 				if visitor.server_to_client_type_params.contains(&ty.ident) {
-					bounds.push(parse_quote!(_serde::Serialize))
+					bounds.push(parse_quote!(_jsonrpc_core::serde::Serialize))
 				}
 				if visitor.client_to_server_type_params.contains(&ty.ident) {
-					bounds.push(parse_quote!(_serde::de::DeserializeOwned))
+					bounds.push(parse_quote!(_jsonrpc_core::serde::de::DeserializeOwned))
 				}
 			}
 			syn::WherePredicate::Type(syn::PredicateType {

@@ -153,6 +153,9 @@ impl Error {
             raw::GIT_ERROR_DESCRIBE => super::ErrorClass::Describe,
             raw::GIT_ERROR_REBASE => super::ErrorClass::Rebase,
             raw::GIT_ERROR_FILESYSTEM => super::ErrorClass::Filesystem,
+            raw::GIT_ERROR_PATCH => super::ErrorClass::Patch,
+            raw::GIT_ERROR_WORKTREE => super::ErrorClass::Worktree,
+            raw::GIT_ERROR_SHA1 => super::ErrorClass::Sha1,
             _ => super::ErrorClass::None,
         }
     }
@@ -190,6 +193,10 @@ impl Error {
             GIT_EUNCOMMITTED,
             GIT_PASSTHROUGH,
             GIT_ITEROVER,
+            GIT_RETRY,
+            GIT_EMISMATCH,
+            GIT_EINDEXDIRTY,
+            GIT_EAPPLYFAIL,
         )
     }
 
@@ -233,6 +240,9 @@ impl Error {
             GIT_ERROR_DESCRIBE,
             GIT_ERROR_REBASE,
             GIT_ERROR_FILESYSTEM,
+            GIT_ERROR_PATCH,
+            GIT_ERROR_WORKTREE,
+            GIT_ERROR_SHA1,
         )
     }
 
@@ -242,11 +252,7 @@ impl Error {
     }
 }
 
-impl error::Error for Error {
-    fn description(&self) -> &str {
-        &self.message
-    }
-}
+impl error::Error for Error {}
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -274,7 +280,7 @@ impl From<NulError> for Error {
 
 impl From<JoinPathsError> for Error {
     fn from(e: JoinPathsError) -> Error {
-        Error::from_str(error::Error::description(&e))
+        Error::from_str(&e.to_string())
     }
 }
 

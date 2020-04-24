@@ -5,16 +5,15 @@ use if_chain::if_chain;
 use rustc::ty::subst::{Subst, SubstsRef};
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::{bug, span_bug};
+use rustc_ast::ast::{FloatTy, LitFloatType, LitKind};
 use rustc_data_structures::sync::Lrc;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::*;
+use rustc_hir::{BinOp, BinOpKind, Block, Expr, ExprKind, HirId, QPath, UnOp};
 use rustc_lint::LateContext;
 use rustc_span::symbol::Symbol;
 use std::cmp::Ordering::{self, Equal};
-use std::cmp::PartialOrd;
 use std::convert::TryInto;
 use std::hash::{Hash, Hasher};
-use syntax::ast::{FloatTy, LitKind};
 
 /// A `LitKind`-like enum to fold constant `Expr`s into.
 #[derive(Debug, Clone)]
@@ -153,8 +152,6 @@ impl Constant {
 
 /// Parses a `LitKind` to a `Constant`.
 pub fn lit_to_constant(lit: &LitKind, ty: Option<Ty<'_>>) -> Constant {
-    use syntax::ast::*;
-
     match *lit {
         LitKind::Str(ref is, _) => Constant::Str(is.to_string()),
         LitKind::Byte(b) => Constant::Int(u128::from(b)),
@@ -227,14 +224,14 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
             return self.ifthenelse(cond, then, otherwise);
         }
         match e.kind {
-            ExprKind::Path(ref qpath) => self.fetch_path(qpath, e.hir_id),
+            ExprKind::Path(ref qpath) => self.fetch_path(qpath, e.hir_id, self.tables.expr_ty(e)),
             ExprKind::Block(ref block, _) => self.block(block),
             ExprKind::Lit(ref lit) => Some(lit_to_constant(&lit.node, self.tables.expr_ty_opt(e))),
             ExprKind::Array(ref vec) => self.multi(vec).map(Constant::Vec),
             ExprKind::Tup(ref tup) => self.multi(tup).map(Constant::Tuple),
             ExprKind::Repeat(ref value, _) => {
                 let n = match self.tables.expr_ty(e).kind {
-                    ty::Array(_, n) => n.eval_usize(self.lcx.tcx, self.lcx.param_env),
+                    ty::Array(_, n) => n.try_eval_usize(self.lcx.tcx, self.lcx.param_env)?,
                     _ => span_bug!(e.span, "typeck error"),
                 };
                 self.expr(value).map(|v| Constant::Repeat(Box::new(v), n))
@@ -278,7 +275,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
 
     #[allow(clippy::cast_possible_wrap)]
     fn constant_not(&self, o: &Constant, ty: Ty<'_>) -> Option<Constant> {
-        use self::Constant::*;
+        use self::Constant::{Bool, Int};
         match *o {
             Bool(b) => Some(Bool(!b)),
             Int(value) => {
@@ -294,7 +291,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
     }
 
     fn constant_negate(&self, o: &Constant, ty: Ty<'_>) -> Option<Constant> {
-        use self::Constant::*;
+        use self::Constant::{Int, F32, F64};
         match *o {
             Int(value) => {
                 let ity = match ty.kind {
@@ -320,7 +317,7 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
     }
 
     /// Lookup a possibly constant expression from a `ExprKind::Path`.
-    fn fetch_path(&mut self, qpath: &QPath<'_>, id: HirId) -> Option<Constant> {
+    fn fetch_path(&mut self, qpath: &QPath<'_>, id: HirId, ty: Ty<'cc>) -> Option<Constant> {
         let res = self.tables.qpath_res(qpath, id);
         match res {
             Res::Def(DefKind::Const, def_id) | Res::Def(DefKind::AssocConst, def_id) => {
@@ -335,7 +332,8 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
                     .lcx
                     .tcx
                     .const_eval_resolve(self.param_env, def_id, substs, None, None)
-                    .ok()?;
+                    .ok()
+                    .map(|val| rustc::ty::Const::from_value(self.lcx.tcx, val, ty))?;
                 let result = miri_to_const(&result);
                 if result.is_some() {
                     self.needed_resolution = true;

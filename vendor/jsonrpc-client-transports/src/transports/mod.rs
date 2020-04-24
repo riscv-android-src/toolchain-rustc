@@ -1,11 +1,11 @@
 //! Client transport implementations
 
-use jsonrpc_core::{Call, Error, Id, MethodCall, Params, Version};
+use jsonrpc_core::{Call, Error, Id, MethodCall, Notification, Params, Version};
 use jsonrpc_pubsub::SubscriptionId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{CallMessage, RpcError};
+use crate::{CallMessage, NotifyMessage, RpcError};
 
 pub mod duplex;
 #[cfg(feature = "http")]
@@ -61,6 +61,15 @@ impl RequestBuilder {
 	fn unsubscribe_request(&mut self, unsubscribe: String, sid: SubscriptionId) -> (Id, String) {
 		self.single_request(unsubscribe, Params::Array(vec![Value::from(sid)]))
 	}
+
+	fn notification(&mut self, msg: &NotifyMessage) -> String {
+		let request = jsonrpc_core::Request::Single(Call::Notification(Notification {
+			jsonrpc: Some(Version::V2),
+			method: msg.method.clone(),
+			params: msg.params.clone(),
+		}));
+		serde_json::to_string(&request).expect("Request serialization is infallible; qed")
+	}
 }
 
 /// Parse raw string into a single JSON value, together with the request Id.
@@ -72,7 +81,7 @@ impl RequestBuilder {
 pub fn parse_response(
 	response: &str,
 ) -> Result<(Id, Result<Value, RpcError>, Option<String>, Option<SubscriptionId>), RpcError> {
-	serde_json::from_str::<ClientResponse>(&response)
+	jsonrpc_core::serde_from_str::<ClientResponse>(response)
 		.map_err(|e| RpcError::ParseError(e.to_string(), e.into()))
 		.map(|response| {
 			let id = response.id().unwrap_or(Id::Null);
@@ -157,13 +166,13 @@ impl From<ClientResponse> for Result<Value, Error> {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use jsonrpc_core::{Value, Version, Params, Failure, Success, Output, Notification};
-	use serde_json;
+	use jsonrpc_core::{Failure, Notification, Output, Params, Success, Value, Version};
 
 	#[test]
 	fn notification_deserialize() {
 		let dsr = r#"{"jsonrpc":"2.0","method":"hello","params":[10]}"#;
-		let deserialized: ClientResponse = serde_json::from_str(dsr).unwrap();
+
+		let deserialized: ClientResponse = jsonrpc_core::serde_from_str(dsr).unwrap();
 		assert_eq!(
 			deserialized,
 			ClientResponse::Notification(Notification {
@@ -177,7 +186,8 @@ mod tests {
 	#[test]
 	fn success_deserialize() {
 		let dsr = r#"{"jsonrpc":"2.0","result":1,"id":1}"#;
-		let deserialized: ClientResponse = serde_json::from_str(dsr).unwrap();
+
+		let deserialized: ClientResponse = jsonrpc_core::serde_from_str(dsr).unwrap();
 		assert_eq!(
 			deserialized,
 			ClientResponse::Output(Output::Success(Success {
@@ -192,7 +202,7 @@ mod tests {
 	fn failure_output_deserialize() {
 		let dfo = r#"{"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"},"id":1}"#;
 
-		let deserialized: ClientResponse = serde_json::from_str(dfo).unwrap();
+		let deserialized: ClientResponse = jsonrpc_core::serde_from_str(dfo).unwrap();
 		assert_eq!(
 			deserialized,
 			ClientResponse::Output(Output::Failure(Failure {
