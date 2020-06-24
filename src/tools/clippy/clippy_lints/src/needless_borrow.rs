@@ -4,11 +4,11 @@
 
 use crate::utils::{snippet_opt, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::ty;
-use rustc::ty::adjustment::{Adjust, Adjustment};
 use rustc_errors::Applicability;
 use rustc_hir::{BindingAnnotation, BorrowKind, Expr, ExprKind, HirId, Item, Mutability, Pat, PatKind};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty;
+use rustc_middle::ty::adjustment::{Adjust, Adjustment};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 
 declare_clippy_lint! {
@@ -59,9 +59,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBorrow {
                             e.span,
                             "this expression borrows a reference that is immediately dereferenced \
                              by the compiler",
-                            |db| {
+                            |diag| {
                                 if let Some(snippet) = snippet_opt(cx, inner.span) {
-                                    db.span_suggestion(
+                                    diag.span_suggestion(
                                         e.span,
                                         "change this to",
                                         snippet,
@@ -92,9 +92,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessBorrow {
                     NEEDLESS_BORROW,
                     pat.span,
                     "this pattern creates a reference to a reference",
-                    |db| {
+                    |diag| {
                         if let Some(snippet) = snippet_opt(cx, name.span) {
-                            db.span_suggestion(
+                            diag.span_suggestion(
                                 pat.span,
                                 "change this to",
                                 snippet,

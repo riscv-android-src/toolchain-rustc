@@ -1,6 +1,6 @@
+use rustc_ast::ast::{self, BindingMode, FieldPat, Pat, PatKind, RangeEnd, RangeSyntax};
+use rustc_ast::ptr;
 use rustc_span::{BytePos, Span};
-use syntax::ast::{self, BindingMode, FieldPat, Pat, PatKind, RangeEnd, RangeSyntax};
-use syntax::ptr;
 
 use crate::comment::{combine_strs_with_missing_comments, FindUncommented};
 use crate::config::lists::*;
@@ -40,7 +40,7 @@ fn is_short_pattern_inner(pat: &ast::Pat) -> bool {
         ast::PatKind::Rest | ast::PatKind::Wild | ast::PatKind::Lit(_) => true,
         ast::PatKind::Ident(_, _, ref pat) => pat.is_none(),
         ast::PatKind::Struct(..)
-        | ast::PatKind::Mac(..)
+        | ast::PatKind::MacCall(..)
         | ast::PatKind::Slice(..)
         | ast::PatKind::Path(..)
         | ast::PatKind::Range(..) => false,
@@ -52,6 +52,17 @@ fn is_short_pattern_inner(pat: &ast::Pat) -> bool {
             is_short_pattern_inner(&*p)
         }
         PatKind::Or(ref pats) => pats.iter().all(|p| is_short_pattern_inner(p)),
+    }
+}
+
+struct RangeOperand<'a>(&'a Option<ptr::P<ast::Expr>>);
+
+impl<'a> Rewrite for RangeOperand<'a> {
+    fn rewrite(&self, context: &RewriteContext<'_>, shape: Shape) -> Option<String> {
+        match &self.0 {
+            None => Some("".to_owned()),
+            Some(ref exp) => exp.rewrite(context, shape),
+        }
     }
 }
 
@@ -179,29 +190,34 @@ impl Rewrite for Pat {
                     None
                 }
             }
-            PatKind::Range(ref lhs, ref rhs, ref end_kind) => match (lhs, rhs) {
-                (Some(lhs), Some(rhs)) => {
-                    let infix = match end_kind.node {
-                        RangeEnd::Included(RangeSyntax::DotDotDot) => "...",
-                        RangeEnd::Included(RangeSyntax::DotDotEq) => "..=",
-                        RangeEnd::Excluded => "..",
+            PatKind::Range(ref lhs, ref rhs, ref end_kind) => {
+                let infix = match end_kind.node {
+                    RangeEnd::Included(RangeSyntax::DotDotDot) => "...",
+                    RangeEnd::Included(RangeSyntax::DotDotEq) => "..=",
+                    RangeEnd::Excluded => "..",
+                };
+                let infix = if context.config.spaces_around_ranges() {
+                    let lhs_spacing = match lhs {
+                        None => "",
+                        Some(_) => " ",
                     };
-                    let infix = if context.config.spaces_around_ranges() {
-                        format!(" {} ", infix)
-                    } else {
-                        infix.to_owned()
+                    let rhs_spacing = match rhs {
+                        None => "",
+                        Some(_) => " ",
                     };
-                    rewrite_pair(
-                        &**lhs,
-                        &**rhs,
-                        PairParts::infix(&infix),
-                        context,
-                        shape,
-                        SeparatorPlace::Front,
-                    )
-                }
-                (_, _) => unimplemented!(),
-            },
+                    format!("{}{}{}", lhs_spacing, infix, rhs_spacing)
+                } else {
+                    infix.to_owned()
+                };
+                rewrite_pair(
+                    &RangeOperand(lhs),
+                    &RangeOperand(rhs),
+                    PairParts::infix(&infix),
+                    context,
+                    shape,
+                    SeparatorPlace::Front,
+                )
+            }
             PatKind::Ref(ref pat, mutability) => {
                 let prefix = format!("&{}", format_mutability(mutability));
                 rewrite_unary_prefix(context, &prefix, &**pat, shape)
@@ -231,7 +247,9 @@ impl Rewrite for Pat {
             PatKind::Struct(ref path, ref fields, ellipsis) => {
                 rewrite_struct_pat(path, fields, ellipsis, self.span, context, shape)
             }
-            PatKind::Mac(ref mac) => rewrite_macro(mac, None, context, shape, MacroPosition::Pat),
+            PatKind::MacCall(ref mac) => {
+                rewrite_macro(mac, None, context, shape, MacroPosition::Pat)
+            }
             PatKind::Paren(ref pat) => pat
                 .rewrite(context, shape.offset_left(1)?.sub_width(1)?)
                 .map(|inner_pat| format!("({})", inner_pat)),

@@ -5,25 +5,8 @@ pub use self::LateBoundRegionConversionTime::*;
 pub use self::RegionVariableOrigin::*;
 pub use self::SubregionOrigin::*;
 pub use self::ValuePairs::*;
-pub use rustc::ty::IntVarValue;
 
 use crate::traits::{self, ObligationCause, PredicateObligations, TraitEngine};
-
-use rustc::infer::canonical::{Canonical, CanonicalVarValues};
-use rustc::infer::unify_key::{ConstVarValue, ConstVariableValue};
-use rustc::infer::unify_key::{ConstVariableOrigin, ConstVariableOriginKind, ToType};
-use rustc::middle::free_region::RegionRelations;
-use rustc::middle::lang_items;
-use rustc::middle::region;
-use rustc::mir;
-use rustc::mir::interpret::ConstEvalResult;
-use rustc::session::config::BorrowckMode;
-use rustc::ty::error::{ExpectedFound, TypeError, UnconstrainedNumeric};
-use rustc::ty::fold::{TypeFoldable, TypeFolder};
-use rustc::ty::relate::RelateResult;
-use rustc::ty::subst::{GenericArg, InternalSubsts, SubstsRef};
-use rustc::ty::{self, GenericParamDefKind, InferConst, Ty, TyCtxt};
-use rustc::ty::{ConstVid, FloatVid, IntVid, TyVid};
 
 use rustc_ast::ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -31,9 +14,26 @@ use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::unify as ut;
 use rustc_errors::DiagnosticBuilder;
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LocalDefId};
+use rustc_middle::infer::canonical::{Canonical, CanonicalVarValues};
+use rustc_middle::infer::unify_key::{ConstVarValue, ConstVariableValue};
+use rustc_middle::infer::unify_key::{ConstVariableOrigin, ConstVariableOriginKind, ToType};
+use rustc_middle::middle::free_region::RegionRelations;
+use rustc_middle::middle::region;
+use rustc_middle::mir;
+use rustc_middle::mir::interpret::ConstEvalResult;
+use rustc_middle::traits::select;
+use rustc_middle::ty::error::{ExpectedFound, TypeError, UnconstrainedNumeric};
+use rustc_middle::ty::fold::{TypeFoldable, TypeFolder};
+use rustc_middle::ty::relate::RelateResult;
+use rustc_middle::ty::subst::{GenericArg, GenericArgKind, InternalSubsts, SubstsRef};
+pub use rustc_middle::ty::IntVarValue;
+use rustc_middle::ty::{self, GenericParamDefKind, InferConst, Ty, TyCtxt};
+use rustc_middle::ty::{ConstVid, FloatVid, IntVid, TyVid};
+use rustc_session::config::BorrowckMode;
 use rustc_span::symbol::Symbol;
 use rustc_span::Span;
+
 use std::cell::{Cell, Ref, RefCell};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -58,7 +58,6 @@ pub mod lattice;
 mod lexical_region_resolve;
 mod lub;
 pub mod nll_relate;
-pub mod opaque_types;
 pub mod outlives;
 pub mod region_constraints;
 pub mod resolve;
@@ -66,7 +65,7 @@ mod sub;
 pub mod type_variable;
 
 use crate::infer::canonical::OriginalQueryValues;
-pub use rustc::infer::unify_key;
+pub use rustc_middle::infer::unify_key;
 
 #[must_use]
 #[derive(Debug)]
@@ -80,31 +79,50 @@ pub type Bound<T> = Option<T>;
 pub type UnitResult<'tcx> = RelateResult<'tcx, ()>; // "unify result"
 pub type FixupResult<'tcx, T> = Result<T, FixupError<'tcx>>; // "fixup result"
 
-/// A flag that is used to suppress region errors. This is normally
-/// false, but sometimes -- when we are doing region checks that the
-/// NLL borrow checker will also do -- it might be set to true.
-#[derive(Copy, Clone, Default, Debug)]
-pub struct SuppressRegionErrors {
-    suppressed: bool,
+/// How we should handle region solving.
+///
+/// This is used so that the region values inferred by HIR region solving are
+/// not exposed, and so that we can avoid doing work in HIR typeck that MIR
+/// typeck will also do.
+#[derive(Copy, Clone, Debug)]
+pub enum RegionckMode {
+    /// The default mode: report region errors, don't erase regions.
+    Solve,
+    /// Erase the results of region after solving.
+    Erase {
+        /// A flag that is used to suppress region errors, when we are doing
+        /// region checks that the NLL borrow checker will also do -- it might
+        /// be set to true.
+        suppress_errors: bool,
+    },
 }
 
-impl SuppressRegionErrors {
+impl Default for RegionckMode {
+    fn default() -> Self {
+        RegionckMode::Solve
+    }
+}
+
+impl RegionckMode {
     pub fn suppressed(self) -> bool {
-        self.suppressed
+        match self {
+            Self::Solve => false,
+            Self::Erase { suppress_errors } => suppress_errors,
+        }
     }
 
     /// Indicates that the MIR borrowck will repeat these region
     /// checks, so we should ignore errors if NLL is (unconditionally)
     /// enabled.
-    pub fn when_nll_is_enabled(tcx: TyCtxt<'_>) -> Self {
+    pub fn for_item_body(tcx: TyCtxt<'_>) -> Self {
         // FIXME(Centril): Once we actually remove `::Migrate` also make
         // this always `true` and then proceed to eliminate the dead code.
         match tcx.borrowck_mode() {
             // If we're on Migrate mode, report AST region errors
-            BorrowckMode::Migrate => SuppressRegionErrors { suppressed: false },
+            BorrowckMode::Migrate => RegionckMode::Erase { suppress_errors: false },
 
             // If we're on MIR, don't report AST region errors as they should be reported by NLL
-            BorrowckMode::Mir => SuppressRegionErrors { suppressed: true },
+            BorrowckMode::Mir => RegionckMode::Erase { suppress_errors: true },
         }
     }
 }
@@ -215,10 +233,10 @@ pub struct InferCtxt<'a, 'tcx> {
 
     /// Caches the results of trait selection. This cache is used
     /// for things that have to do with the parameters in scope.
-    pub selection_cache: traits::SelectionCache<'tcx>,
+    pub selection_cache: select::SelectionCache<'tcx>,
 
     /// Caches the results of trait evaluation.
-    pub evaluation_cache: traits::EvaluationCache<'tcx>,
+    pub evaluation_cache: select::EvaluationCache<'tcx>,
 
     /// the set of predicates on which errors have been reported, to
     /// avoid reporting the same error twice.
@@ -483,6 +501,7 @@ impl NLLRegionVariableOrigin {
     }
 }
 
+// FIXME(eddyb) investigate overlap between this and `TyOrConstInferVar`.
 #[derive(Copy, Clone, Debug)]
 pub enum FixupError<'tcx> {
     UnresolvedIntTy(IntVid),
@@ -541,7 +560,7 @@ impl TyCtxtInferExt<'tcx> for TyCtxt<'tcx> {
 impl<'tcx> InferCtxtBuilder<'tcx> {
     /// Used only by `rustc_typeck` during body type-checking/inference,
     /// will initialize `in_progress_tables` with fresh `TypeckTables`.
-    pub fn with_fresh_in_progress_tables(mut self, table_owner: DefId) -> Self {
+    pub fn with_fresh_in_progress_tables(mut self, table_owner: LocalDefId) -> Self {
         self.fresh_tables = Some(RefCell::new(ty::TypeckTables::empty(Some(table_owner))));
         self
     }
@@ -653,8 +672,8 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     }
 
     pub fn type_is_unconstrained_numeric(&'a self, ty: Ty<'_>) -> UnconstrainedNumeric {
-        use rustc::ty::error::UnconstrainedNumeric::Neither;
-        use rustc::ty::error::UnconstrainedNumeric::{UnconstrainedFloat, UnconstrainedInt};
+        use rustc_middle::ty::error::UnconstrainedNumeric::Neither;
+        use rustc_middle::ty::error::UnconstrainedNumeric::{UnconstrainedFloat, UnconstrainedInt};
         match ty.kind {
             ty::Infer(ty::IntVar(vid)) => {
                 if self.inner.borrow_mut().int_unification_table.probe_value(vid).is_some() {
@@ -1208,19 +1227,12 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         region_context: DefId,
         region_map: &region::ScopeTree,
         outlives_env: &OutlivesEnvironment<'tcx>,
-        suppress: SuppressRegionErrors,
+        mode: RegionckMode,
     ) {
         assert!(
             self.is_tainted_by_errors() || self.inner.borrow().region_obligations.is_empty(),
             "region_obligations not empty: {:#?}",
             self.inner.borrow().region_obligations
-        );
-
-        let region_rels = &RegionRelations::new(
-            self.tcx,
-            region_context,
-            region_map,
-            outlives_env.free_region_map(),
         );
         let (var_infos, data) = self
             .inner
@@ -1229,8 +1241,16 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             .take()
             .expect("regions already resolved")
             .into_infos_and_data();
+
+        let region_rels = &RegionRelations::new(
+            self.tcx,
+            region_context,
+            region_map,
+            outlives_env.free_region_map(),
+        );
+
         let (lexical_region_resolutions, errors) =
-            lexical_region_resolve::resolve(region_rels, var_infos, data);
+            lexical_region_resolve::resolve(region_rels, var_infos, data, mode);
 
         let old_value = self.lexical_region_resolutions.replace(Some(lexical_region_resolutions));
         assert!(old_value.is_none());
@@ -1241,7 +1261,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             // this infcx was in use.  This is totally hokey but
             // otherwise we have a hard time separating legit region
             // errors from silly ones.
-            self.report_region_errors(region_map, &errors, suppress);
+            self.report_region_errors(region_map, &errors);
         }
     }
 
@@ -1328,8 +1348,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     where
         T: TypeFoldable<'tcx>,
     {
-        let mut r = ShallowResolver::new(self);
-        value.fold_with(&mut r)
+        value.fold_with(&mut ShallowResolver { infcx: self })
     }
 
     pub fn root_var(&self, var: ty::TyVid) -> ty::TyVid {
@@ -1474,72 +1493,13 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
             .verify_generic_bound(origin, kind, a, bound);
     }
 
-    pub fn type_is_copy_modulo_regions(
-        &self,
-        param_env: ty::ParamEnv<'tcx>,
-        ty: Ty<'tcx>,
-        span: Span,
-    ) -> bool {
-        let ty = self.resolve_vars_if_possible(&ty);
-
-        if !(param_env, ty).has_local_value() {
-            return ty.is_copy_modulo_regions(self.tcx, param_env, span);
-        }
-
-        let copy_def_id = self.tcx.require_lang_item(lang_items::CopyTraitLangItem, None);
-
-        // This can get called from typeck (by euv), and `moves_by_default`
-        // rightly refuses to work with inference variables, but
-        // moves_by_default has a cache, which we want to use in other
-        // cases.
-        traits::type_known_to_meet_bound_modulo_regions(self, param_env, ty, copy_def_id, span)
-    }
-
     /// Obtains the latest type of the given closure; this may be a
     /// closure in the current function, in which case its
     /// `ClosureKind` may not yet be known.
-    pub fn closure_kind(
-        &self,
-        closure_def_id: DefId,
-        closure_substs: SubstsRef<'tcx>,
-    ) -> Option<ty::ClosureKind> {
-        let closure_kind_ty = closure_substs.as_closure().kind_ty(closure_def_id, self.tcx);
+    pub fn closure_kind(&self, closure_substs: SubstsRef<'tcx>) -> Option<ty::ClosureKind> {
+        let closure_kind_ty = closure_substs.as_closure().kind_ty();
         let closure_kind_ty = self.shallow_resolve(closure_kind_ty);
         closure_kind_ty.to_opt_closure_kind()
-    }
-
-    /// Obtains the signature of a closure. For closures, unlike
-    /// `tcx.fn_sig(def_id)`, this method will work during the
-    /// type-checking of the enclosing function and return the closure
-    /// signature in its partially inferred state.
-    pub fn closure_sig(&self, def_id: DefId, substs: SubstsRef<'tcx>) -> ty::PolyFnSig<'tcx> {
-        let closure_sig_ty = substs.as_closure().sig_ty(def_id, self.tcx);
-        let closure_sig_ty = self.shallow_resolve(closure_sig_ty);
-        closure_sig_ty.fn_sig(self.tcx)
-    }
-
-    /// Normalizes associated types in `value`, potentially returning
-    /// new obligations that must further be processed.
-    pub fn partially_normalize_associated_types_in<T>(
-        &self,
-        span: Span,
-        body_id: hir::HirId,
-        param_env: ty::ParamEnv<'tcx>,
-        value: &T,
-    ) -> InferOk<'tcx, T>
-    where
-        T: TypeFoldable<'tcx>,
-    {
-        debug!("partially_normalize_associated_types_in(value={:?})", value);
-        let mut selcx = traits::SelectionContext::new(self);
-        let cause = ObligationCause::misc(span, body_id);
-        let traits::Normalized { value, obligations } =
-            traits::normalize(&mut selcx, param_env, cause, value);
-        debug!(
-            "partially_normalize_associated_types_in: result={:?} predicates={:?}",
-            value, obligations
-        );
-        InferOk { value, obligations }
     }
 
     /// Clears the selection, evaluation, and projection caches. This is useful when
@@ -1591,22 +1551,12 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         // variables, thus we don't need to substitute back the original values.
         self.tcx.const_eval_resolve(param_env, def_id, substs, promoted, span)
     }
-}
-
-pub struct ShallowResolver<'a, 'tcx> {
-    infcx: &'a InferCtxt<'a, 'tcx>,
-}
-
-impl<'a, 'tcx> ShallowResolver<'a, 'tcx> {
-    #[inline(always)]
-    pub fn new(infcx: &'a InferCtxt<'a, 'tcx>) -> Self {
-        ShallowResolver { infcx }
-    }
 
     /// If `typ` is a type variable of some kind, resolve it one level
     /// (but do not resolve types found in the result). If `typ` is
     /// not a type variable, just return it unmodified.
-    pub fn shallow_resolve(&mut self, typ: Ty<'tcx>) -> Ty<'tcx> {
+    // FIXME(eddyb) inline into `ShallowResolver::visit_ty`.
+    fn shallow_resolve_ty(&self, typ: Ty<'tcx>) -> Ty<'tcx> {
         match typ.kind {
             ty::Infer(ty::TyVar(v)) => {
                 // Not entirely obvious: if `typ` is a type variable,
@@ -1620,69 +1570,133 @@ impl<'a, 'tcx> ShallowResolver<'a, 'tcx> {
                 // depth.
                 //
                 // Note: if these two lines are combined into one we get
-                // dynamic borrow errors on `self.infcx.inner`.
-                let known = self.infcx.inner.borrow_mut().type_variables.probe(v).known();
-                known.map(|t| self.fold_ty(t)).unwrap_or(typ)
+                // dynamic borrow errors on `self.inner`.
+                let known = self.inner.borrow_mut().type_variables.probe(v).known();
+                known.map(|t| self.shallow_resolve_ty(t)).unwrap_or(typ)
             }
 
             ty::Infer(ty::IntVar(v)) => self
-                .infcx
                 .inner
                 .borrow_mut()
                 .int_unification_table
                 .probe_value(v)
-                .map(|v| v.to_type(self.infcx.tcx))
+                .map(|v| v.to_type(self.tcx))
                 .unwrap_or(typ),
 
             ty::Infer(ty::FloatVar(v)) => self
-                .infcx
                 .inner
                 .borrow_mut()
                 .float_unification_table
                 .probe_value(v)
-                .map(|v| v.to_type(self.infcx.tcx))
+                .map(|v| v.to_type(self.tcx))
                 .unwrap_or(typ),
 
             _ => typ,
         }
     }
 
-    // `resolver.shallow_resolve_changed(ty)` is equivalent to
-    // `resolver.shallow_resolve(ty) != ty`, but more efficient. It's always
-    // inlined, despite being large, because it has only two call sites that
-    // are extremely hot.
+    /// `ty_or_const_infer_var_changed` is equivalent to one of these two:
+    ///   * `shallow_resolve(ty) != ty` (where `ty.kind = ty::Infer(_)`)
+    ///   * `shallow_resolve(ct) != ct` (where `ct.kind = ty::ConstKind::Infer(_)`)
+    ///
+    /// However, `ty_or_const_infer_var_changed` is more efficient. It's always
+    /// inlined, despite being large, because it has only two call sites that
+    /// are extremely hot (both in `traits::fulfill`'s checking of `stalled_on`
+    /// inference variables), and it handles both `Ty` and `ty::Const` without
+    /// having to resort to storing full `GenericArg`s in `stalled_on`.
     #[inline(always)]
-    pub fn shallow_resolve_changed(&self, infer: ty::InferTy) -> bool {
-        match infer {
-            ty::TyVar(v) => {
+    pub fn ty_or_const_infer_var_changed(&self, infer_var: TyOrConstInferVar<'tcx>) -> bool {
+        match infer_var {
+            TyOrConstInferVar::Ty(v) => {
                 use self::type_variable::TypeVariableValue;
 
-                // If `inlined_probe` returns a `Known` value its `kind` never
-                // matches `infer`.
-                match self.infcx.inner.borrow_mut().type_variables.inlined_probe(v) {
+                // If `inlined_probe` returns a `Known` value, it never equals
+                // `ty::Infer(ty::TyVar(v))`.
+                match self.inner.borrow_mut().type_variables.inlined_probe(v) {
                     TypeVariableValue::Unknown { .. } => false,
                     TypeVariableValue::Known { .. } => true,
                 }
             }
 
-            ty::IntVar(v) => {
-                // If inlined_probe_value returns a value it's always a
+            TyOrConstInferVar::TyInt(v) => {
+                // If `inlined_probe_value` returns a value it's always a
                 // `ty::Int(_)` or `ty::UInt(_)`, which never matches a
                 // `ty::Infer(_)`.
-                self.infcx.inner.borrow_mut().int_unification_table.inlined_probe_value(v).is_some()
+                self.inner.borrow_mut().int_unification_table.inlined_probe_value(v).is_some()
             }
 
-            ty::FloatVar(v) => {
-                // If inlined_probe_value returns a value it's always a
+            TyOrConstInferVar::TyFloat(v) => {
+                // If `probe_value` returns a value it's always a
                 // `ty::Float(_)`, which never matches a `ty::Infer(_)`.
                 //
                 // Not `inlined_probe_value(v)` because this call site is colder.
-                self.infcx.inner.borrow_mut().float_unification_table.probe_value(v).is_some()
+                self.inner.borrow_mut().float_unification_table.probe_value(v).is_some()
             }
 
-            _ => unreachable!(),
+            TyOrConstInferVar::Const(v) => {
+                // If `probe_value` returns a `Known` value, it never equals
+                // `ty::ConstKind::Infer(ty::InferConst::Var(v))`.
+                //
+                // Not `inlined_probe_value(v)` because this call site is colder.
+                match self.inner.borrow_mut().const_unification_table.probe_value(v).val {
+                    ConstVariableValue::Unknown { .. } => false,
+                    ConstVariableValue::Known { .. } => true,
+                }
+            }
         }
     }
+}
+
+/// Helper for `ty_or_const_infer_var_changed` (see comment on that), currently
+/// used only for `traits::fulfill`'s list of `stalled_on` inference variables.
+#[derive(Copy, Clone, Debug)]
+pub enum TyOrConstInferVar<'tcx> {
+    /// Equivalent to `ty::Infer(ty::TyVar(_))`.
+    Ty(TyVid),
+    /// Equivalent to `ty::Infer(ty::IntVar(_))`.
+    TyInt(IntVid),
+    /// Equivalent to `ty::Infer(ty::FloatVar(_))`.
+    TyFloat(FloatVid),
+
+    /// Equivalent to `ty::ConstKind::Infer(ty::InferConst::Var(_))`.
+    Const(ConstVid<'tcx>),
+}
+
+impl TyOrConstInferVar<'tcx> {
+    /// Tries to extract an inference variable from a type or a constant, returns `None`
+    /// for types other than `ty::Infer(_)` (or `InferTy::Fresh*`) and
+    /// for constants other than `ty::ConstKind::Infer(_)` (or `InferConst::Fresh`).
+    pub fn maybe_from_generic_arg(arg: GenericArg<'tcx>) -> Option<Self> {
+        match arg.unpack() {
+            GenericArgKind::Type(ty) => Self::maybe_from_ty(ty),
+            GenericArgKind::Const(ct) => Self::maybe_from_const(ct),
+            GenericArgKind::Lifetime(_) => None,
+        }
+    }
+
+    /// Tries to extract an inference variable from a type, returns `None`
+    /// for types other than `ty::Infer(_)` (or `InferTy::Fresh*`).
+    pub fn maybe_from_ty(ty: Ty<'tcx>) -> Option<Self> {
+        match ty.kind {
+            ty::Infer(ty::TyVar(v)) => Some(TyOrConstInferVar::Ty(v)),
+            ty::Infer(ty::IntVar(v)) => Some(TyOrConstInferVar::TyInt(v)),
+            ty::Infer(ty::FloatVar(v)) => Some(TyOrConstInferVar::TyFloat(v)),
+            _ => None,
+        }
+    }
+
+    /// Tries to extract an inference variable from a constant, returns `None`
+    /// for constants other than `ty::ConstKind::Infer(_)` (or `InferConst::Fresh`).
+    pub fn maybe_from_const(ct: &'tcx ty::Const<'tcx>) -> Option<Self> {
+        match ct.val {
+            ty::ConstKind::Infer(InferConst::Var(v)) => Some(TyOrConstInferVar::Const(v)),
+            _ => None,
+        }
+    }
+}
+
+struct ShallowResolver<'a, 'tcx> {
+    infcx: &'a InferCtxt<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> TypeFolder<'tcx> for ShallowResolver<'a, 'tcx> {
@@ -1691,7 +1705,7 @@ impl<'a, 'tcx> TypeFolder<'tcx> for ShallowResolver<'a, 'tcx> {
     }
 
     fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
-        self.shallow_resolve(ty)
+        self.infcx.shallow_resolve_ty(ty)
     }
 
     fn fold_const(&mut self, ct: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {

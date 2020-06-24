@@ -336,7 +336,7 @@ impl<'cfg> RegistryIndex<'cfg> {
         // along the way produce helpful "did you mean?" suggestions.
         for path in UncanonicalizedIter::new(&raw_path).take(1024) {
             let summaries = Summaries::parse(
-                index_version.as_ref().map(|s| &**s),
+                index_version.as_deref(),
                 root,
                 &cache_root,
                 path.as_ref(),
@@ -722,7 +722,8 @@ impl IndexSummary {
             .into_iter()
             .map(|dep| dep.into_dep(source_id))
             .collect::<CargoResult<Vec<_>>>()?;
-        let mut summary = Summary::new(pkgid, deps, &features, links, false)?;
+        let namespaced_features = false;
+        let mut summary = Summary::new(pkgid, deps, &features, links, namespaced_features)?;
         summary.set_checksum(cksum);
         Ok(IndexSummary {
             summary,

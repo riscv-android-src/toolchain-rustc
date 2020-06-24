@@ -1,12 +1,8 @@
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use rustc::mir::{
-    Body, ClosureOutlivesRequirement, ClosureOutlivesSubject, ClosureRegionRequirements,
-    ConstraintCategory, Local, Location,
-};
-use rustc::ty::{self, subst::SubstsRef, RegionVid, Ty, TyCtxt, TypeFoldable};
 use rustc_data_structures::binary_search_util;
+use rustc_data_structures::frozen::Frozen;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::graph::scc::Sccs;
 use rustc_hir::def_id::DefId;
@@ -15,6 +11,11 @@ use rustc_index::vec::IndexVec;
 use rustc_infer::infer::canonical::QueryOutlivesConstraint;
 use rustc_infer::infer::region_constraints::{GenericKind, VarInfos, VerifyBound};
 use rustc_infer::infer::{InferCtxt, NLLRegionVariableOrigin, RegionVariableOrigin};
+use rustc_middle::mir::{
+    Body, ClosureOutlivesRequirement, ClosureOutlivesSubject, ClosureRegionRequirements,
+    ConstraintCategory, Local, Location,
+};
+use rustc_middle::ty::{self, subst::SubstsRef, RegionVid, Ty, TyCtxt, TypeFoldable};
 use rustc_span::Span;
 
 use crate::borrow_check::{
@@ -54,12 +55,12 @@ pub struct RegionInferenceContext<'tcx> {
     liveness_constraints: LivenessValues<RegionVid>,
 
     /// The outlives constraints computed by the type-check.
-    constraints: Rc<OutlivesConstraintSet>,
+    constraints: Frozen<OutlivesConstraintSet>,
 
     /// The constraint-set, but in graph form, making it easy to traverse
     /// the constraints adjacent to a particular region. Used to construct
     /// the SCC (see `constraint_sccs`) and for error reporting.
-    constraint_graph: Rc<NormalConstraintGraph>,
+    constraint_graph: Frozen<NormalConstraintGraph>,
 
     /// The SCC computed from `constraints` and the constraint
     /// graph. We have an edge from SCC A to SCC B if `A: B`. Used to
@@ -112,7 +113,7 @@ pub struct RegionInferenceContext<'tcx> {
 
     /// Information about how the universally quantified regions in
     /// scope on this function relate to one another.
-    universal_region_relations: Rc<UniversalRegionRelations<'tcx>>,
+    universal_region_relations: Frozen<UniversalRegionRelations<'tcx>>,
 }
 
 /// Each time that `apply_member_constraint` is successful, it appends
@@ -201,7 +202,7 @@ pub(crate) enum Cause {
 ///
 /// For more information about this translation, see
 /// `InferCtxt::process_registered_region_obligations` and
-/// `InferCtxt::type_must_outlive` in `rustc::infer::outlives`.
+/// `InferCtxt::type_must_outlive` in `rustc_infer::infer::InferCtxt`.
 #[derive(Clone, Debug)]
 pub struct TypeTest<'tcx> {
     /// The type `T` that must outlive the region.
@@ -242,11 +243,11 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     ///
     /// The `outlives_constraints` and `type_tests` are an initial set
     /// of constraints produced by the MIR type check.
-    pub(crate) fn new(
+    pub(in crate::borrow_check) fn new(
         var_infos: VarInfos,
         universal_regions: Rc<UniversalRegions<'tcx>>,
         placeholder_indices: Rc<PlaceholderIndices>,
-        universal_region_relations: Rc<UniversalRegionRelations<'tcx>>,
+        universal_region_relations: Frozen<UniversalRegionRelations<'tcx>>,
         outlives_constraints: OutlivesConstraintSet,
         member_constraints_in: MemberConstraintSet<'tcx, RegionVid>,
         closure_bounds_mapping: FxHashMap<
@@ -263,8 +264,8 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             .map(|info| RegionDefinition::new(info.universe, info.origin))
             .collect();
 
-        let constraints = Rc::new(outlives_constraints); // freeze constraints
-        let constraint_graph = Rc::new(constraints.graph(definitions.len()));
+        let constraints = Frozen::freeze(outlives_constraints);
+        let constraint_graph = Frozen::freeze(constraints.graph(definitions.len()));
         let fr_static = universal_regions.fr_static;
         let constraint_sccs = Rc::new(constraints.compute_sccs(&constraint_graph, fr_static));
 
@@ -494,7 +495,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         // to store those. Otherwise, we'll pass in `None` to the
         // functions below, which will trigger them to report errors
         // eagerly.
-        let mut outlives_requirements = infcx.tcx.is_closure(mir_def_id).then(|| vec![]);
+        let mut outlives_requirements = infcx.tcx.is_closure(mir_def_id).then(Vec::new);
 
         self.check_type_tests(infcx, body, outlives_requirements.as_mut(), &mut errors_buffer);
 
@@ -939,8 +940,9 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// inference variables with some region from the closure
     /// signature -- this is not always possible, so this is a
     /// fallible process. Presuming we do find a suitable region, we
-    /// will represent it with a `ReClosureBound`, which is a
-    /// `RegionKind` variant that can be allocated in the gcx.
+    /// will use it's *external name*, which will be a `RegionKind`
+    /// variant that can be used in query responses such as
+    /// `ReEarlyBound`.
     fn try_promote_type_test_subject(
         &self,
         infcx: &InferCtxt<'_, 'tcx>,
@@ -990,18 +992,18 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             // find an equivalent.
             let upper_bound = self.non_local_universal_upper_bound(region_vid);
             if self.region_contains(region_vid, upper_bound) {
-                tcx.mk_region(ty::ReClosureBound(upper_bound))
+                self.definitions[upper_bound].external_name.unwrap_or(r)
             } else {
-                // In the case of a failure, use a `ReVar`
-                // result. This will cause the `lift` later on to
-                // fail.
+                // In the case of a failure, use a `ReVar` result. This will
+                // cause the `needs_infer` later on to return `None`.
                 r
             }
         });
+
         debug!("try_promote_type_test_subject: folded ty = {:?}", ty);
 
-        // `has_local_value` will only be true if we failed to promote some region.
-        if ty.has_local_value() {
+        // `needs_infer` will only be true if we failed to promote some region.
+        if ty.needs_infer() {
             return None;
         }
 
@@ -2028,15 +2030,6 @@ pub trait ClosureRegionRequirementsExt<'tcx> {
         closure_def_id: DefId,
         closure_substs: SubstsRef<'tcx>,
     ) -> Vec<QueryOutlivesConstraint<'tcx>>;
-
-    fn subst_closure_mapping<T>(
-        &self,
-        tcx: TyCtxt<'tcx>,
-        closure_mapping: &IndexVec<RegionVid, ty::Region<'tcx>>,
-        value: &T,
-    ) -> T
-    where
-        T: TypeFoldable<'tcx>;
 }
 
 impl<'tcx> ClosureRegionRequirementsExt<'tcx> for ClosureRegionRequirements<'tcx> {
@@ -2093,7 +2086,6 @@ impl<'tcx> ClosureRegionRequirementsExt<'tcx> for ClosureRegionRequirements<'tcx
                     }
 
                     ClosureOutlivesSubject::Ty(ty) => {
-                        let ty = self.subst_closure_mapping(tcx, closure_mapping, &ty);
                         debug!(
                             "apply_requirements: ty={:?} \
                              outlived_region={:?} \
@@ -2105,23 +2097,5 @@ impl<'tcx> ClosureRegionRequirementsExt<'tcx> for ClosureRegionRequirements<'tcx
                 }
             })
             .collect()
-    }
-
-    fn subst_closure_mapping<T>(
-        &self,
-        tcx: TyCtxt<'tcx>,
-        closure_mapping: &IndexVec<RegionVid, ty::Region<'tcx>>,
-        value: &T,
-    ) -> T
-    where
-        T: TypeFoldable<'tcx>,
-    {
-        tcx.fold_regions(value, &mut false, |r, _depth| {
-            if let ty::ReClosureBound(vid) = r {
-                closure_mapping[*vid]
-            } else {
-                bug!("subst_closure_mapping: encountered non-closure bound free region {:?}", r)
-            }
-        })
     }
 }

@@ -1,6 +1,7 @@
-use rustc::session::Session;
 use rustc_ast::ast;
+use rustc_ast::expand::is_proc_macro_attr;
 use rustc_errors::Applicability;
+use rustc_session::Session;
 use std::str::FromStr;
 
 /// Deprecation status of attributes known by Clippy.
@@ -75,24 +76,24 @@ pub fn get_attr<'a>(
                         }
                     })
             {
-                let mut db = sess.struct_span_err(attr_segments[1].ident.span, "Usage of deprecated attribute");
+                let mut diag = sess.struct_span_err(attr_segments[1].ident.span, "Usage of deprecated attribute");
                 match *deprecation_status {
                     DeprecationStatus::Deprecated => {
-                        db.emit();
+                        diag.emit();
                         false
                     },
                     DeprecationStatus::Replaced(new_name) => {
-                        db.span_suggestion(
+                        diag.span_suggestion(
                             attr_segments[1].ident.span,
                             "consider using",
                             new_name.to_string(),
                             Applicability::MachineApplicable,
                         );
-                        db.emit();
+                        diag.emit();
                         false
                     },
                     DeprecationStatus::None => {
-                        db.cancel();
+                        diag.cancel();
                         attr_segments[1].ident.to_string() == name
                     },
                 }
@@ -123,12 +124,5 @@ fn parse_attrs<F: FnMut(u64)>(sess: &Session, attrs: &[ast::Attribute], name: &'
 /// Return true if the attributes contain any of `proc_macro`,
 /// `proc_macro_derive` or `proc_macro_attribute`, false otherwise
 pub fn is_proc_macro(attrs: &[ast::Attribute]) -> bool {
-    use rustc_span::Symbol;
-
-    let syms = [
-        Symbol::intern("proc_macro"),
-        Symbol::intern("proc_macro_derive"),
-        Symbol::intern("proc_macro_attribute"),
-    ];
-    attrs.iter().any(|attr| syms.iter().any(move |&s| attr.check_name(s)))
+    attrs.iter().any(is_proc_macro_attr)
 }

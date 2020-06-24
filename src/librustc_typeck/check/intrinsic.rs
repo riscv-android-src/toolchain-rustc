@@ -3,11 +3,11 @@
 
 use crate::require_same_types;
 
-use rustc::traits::{ObligationCause, ObligationCauseCode};
-use rustc::ty::subst::Subst;
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
+use rustc_middle::traits::{ObligationCause, ObligationCauseCode};
+use rustc_middle::ty::subst::Subst;
+use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_span::symbol::Symbol;
 use rustc_target::spec::abi::Abi;
 
@@ -137,19 +137,14 @@ pub fn check_intrinsic_type(tcx: TyCtxt<'_>, it: &hir::ForeignItem<'_>) {
         let (n_tps, inputs, output) = match &name[..] {
             "breakpoint" => (0, Vec::new(), tcx.mk_unit()),
             "size_of" | "pref_align_of" | "min_align_of" => (1, Vec::new(), tcx.types.usize),
-            "size_of_val" | "min_align_of_val" => (
-                1,
-                vec![tcx.mk_imm_ref(
-                    tcx.mk_region(ty::ReLateBound(ty::INNERMOST, ty::BrAnon(0))),
-                    param(0),
-                )],
-                tcx.types.usize,
-            ),
+            "size_of_val" | "min_align_of_val" => {
+                (1, vec![tcx.mk_imm_ptr(param(0))], tcx.types.usize)
+            }
             "rustc_peek" => (1, vec![param(0)], param(0)),
             "caller_location" => (0, vec![], tcx.caller_location_ty()),
-            "panic_if_uninhabited" => (1, Vec::new(), tcx.mk_unit()),
-            "init" => (1, Vec::new(), param(0)),
-            "uninit" => (1, Vec::new(), param(0)),
+            "assert_inhabited" | "assert_zero_valid" | "assert_uninit_valid" => {
+                (1, Vec::new(), tcx.mk_unit())
+            }
             "forget" => (1, vec![param(0)], tcx.mk_unit()),
             "transmute" => (2, vec![param(0)], param(1)),
             "move_val_init" => (1, vec![tcx.mk_mut_ptr(param(0)), param(0)], tcx.mk_unit()),
@@ -280,7 +275,7 @@ pub fn check_intrinsic_type(tcx: TyCtxt<'_>, it: &hir::ForeignItem<'_>) {
             "fadd_fast" | "fsub_fast" | "fmul_fast" | "fdiv_fast" | "frem_fast" => {
                 (1, vec![param(0), param(0)], param(0))
             }
-            "float_to_int_approx_unchecked" => (2, vec![param(0)], param(1)),
+            "float_to_int_unchecked" => (2, vec![param(0)], param(1)),
 
             "assume" => (0, vec![tcx.types.bool], tcx.mk_unit()),
             "likely" => (0, vec![tcx.types.bool], tcx.types.bool),
@@ -297,14 +292,25 @@ pub fn check_intrinsic_type(tcx: TyCtxt<'_>, it: &hir::ForeignItem<'_>) {
 
             "try" => {
                 let mut_u8 = tcx.mk_mut_ptr(tcx.types.u8);
-                let fn_ty = ty::Binder::bind(tcx.mk_fn_sig(
+                let try_fn_ty = ty::Binder::bind(tcx.mk_fn_sig(
                     iter::once(mut_u8),
                     tcx.mk_unit(),
                     false,
                     hir::Unsafety::Normal,
                     Abi::Rust,
                 ));
-                (0, vec![tcx.mk_fn_ptr(fn_ty), mut_u8, mut_u8], tcx.types.i32)
+                let catch_fn_ty = ty::Binder::bind(tcx.mk_fn_sig(
+                    [mut_u8, mut_u8].iter().cloned(),
+                    tcx.mk_unit(),
+                    false,
+                    hir::Unsafety::Normal,
+                    Abi::Rust,
+                ));
+                (
+                    0,
+                    vec![tcx.mk_fn_ptr(try_fn_ty), mut_u8, tcx.mk_fn_ptr(catch_fn_ty)],
+                    tcx.types.i32,
+                )
             }
 
             "va_start" | "va_end" => match mk_va_list_ty(hir::Mutability::Mut) {

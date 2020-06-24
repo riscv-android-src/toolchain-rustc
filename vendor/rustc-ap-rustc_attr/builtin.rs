@@ -2,6 +2,7 @@
 
 use super::{find_by_name, mark_used};
 
+use rustc_ast::ast::{self, Attribute, MetaItem, MetaItemKind, NestedMetaItem};
 use rustc_ast_pretty::pprust;
 use rustc_errors::{struct_span_err, Applicability, Handler};
 use rustc_feature::{find_gated_cfg, is_builtin_attr_name, Features, GatedCfg};
@@ -10,7 +11,6 @@ use rustc_session::parse::{feature_err, ParseSess};
 use rustc_span::hygiene::Transparency;
 use rustc_span::{symbol::sym, symbol::Symbol, Span};
 use std::num::NonZeroU32;
-use syntax::ast::{self, Attribute, MetaItem, MetaItemKind, NestedMetaItem};
 
 pub fn is_builtin_attr(attr: &Attribute) -> bool {
     attr.is_doc_comment() || attr.ident().filter(|ident| is_builtin_attr_name(ident.name)).is_some()
@@ -37,7 +37,9 @@ fn handle_errors(sess: &ParseSess, span: Span, error: AttrError) {
                 .span_label(span, format!("expected one of {}", expected.join(", ")))
                 .emit();
         }
-        AttrError::MissingSince => struct_span_err!(diag, span, E0542, "missing 'since'").emit(),
+        AttrError::MissingSince => {
+            struct_span_err!(diag, span, E0542, "missing 'since'").emit();
+        }
         AttrError::MissingFeature => {
             struct_span_err!(diag, span, E0546, "missing 'feature'").emit();
         }
@@ -51,7 +53,7 @@ fn handle_errors(sess: &ParseSess, span: Span, error: AttrError) {
                     err.span_suggestion(
                         span,
                         "consider removing the prefix",
-                        format!("{}", &lint_str[1..]),
+                        lint_str[1..].to_string(),
                         Applicability::MaybeIncorrect,
                     );
                 }
@@ -118,17 +120,8 @@ pub fn find_unwind_attr(diagnostic: Option<&Handler>, attrs: &[Attribute]) -> Op
 }
 
 /// Represents the #[stable], #[unstable], #[rustc_deprecated] attributes.
-#[derive(
-    RustcEncodable,
-    RustcDecodable,
-    Copy,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    HashStable_Generic
-)]
+#[derive(RustcEncodable, RustcDecodable, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(HashStable_Generic)]
 pub struct Stability {
     pub level: StabilityLevel,
     pub feature: Symbol,
@@ -136,17 +129,8 @@ pub struct Stability {
 }
 
 /// Represents the #[rustc_const_unstable] and #[rustc_const_stable] attributes.
-#[derive(
-    RustcEncodable,
-    RustcDecodable,
-    Copy,
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    HashStable_Generic
-)]
+#[derive(RustcEncodable, RustcDecodable, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(HashStable_Generic)]
 pub struct ConstStability {
     pub level: StabilityLevel,
     pub feature: Symbol,
@@ -157,18 +141,8 @@ pub struct ConstStability {
 }
 
 /// The available stability levels.
-#[derive(
-    RustcEncodable,
-    RustcDecodable,
-    PartialEq,
-    PartialOrd,
-    Copy,
-    Clone,
-    Debug,
-    Eq,
-    Hash,
-    HashStable_Generic
-)]
+#[derive(RustcEncodable, RustcDecodable, PartialEq, PartialOrd, Copy, Clone, Debug, Eq, Hash)]
+#[derive(HashStable_Generic)]
 pub enum StabilityLevel {
     // Reason for the current stability level and the relevant rust-lang issue
     Unstable { reason: Option<Symbol>, issue: Option<NonZeroU32>, is_soft: bool },
@@ -184,18 +158,8 @@ impl StabilityLevel {
     }
 }
 
-#[derive(
-    RustcEncodable,
-    RustcDecodable,
-    PartialEq,
-    PartialOrd,
-    Copy,
-    Clone,
-    Debug,
-    Eq,
-    Hash,
-    HashStable_Generic
-)]
+#[derive(RustcEncodable, RustcDecodable, PartialEq, PartialOrd, Copy, Clone, Debug, Eq, Hash)]
+#[derive(HashStable_Generic)]
 pub struct RustcDeprecation {
     pub since: Symbol,
     pub reason: Symbol,
@@ -639,7 +603,7 @@ fn gate_cfg(gated_cfg: &GatedCfg, cfg_span: Span, sess: &ParseSess, features: &F
     let (cfg, feature, has_feature) = gated_cfg;
     if !has_feature(features) && !cfg_span.allows_unstable(*feature) {
         let explain = format!("`cfg({})` is experimental and subject to change", cfg);
-        feature_err(sess, *feature, cfg_span, &explain).emit()
+        feature_err(sess, *feature, cfg_span, &explain).emit();
     }
 }
 
@@ -838,6 +802,7 @@ pub enum ReprAttr {
     ReprSimd,
     ReprTransparent,
     ReprAlign(u32),
+    ReprNoNiche,
 }
 
 #[derive(Eq, PartialEq, Debug, RustcEncodable, RustcDecodable, Copy, Clone, HashStable_Generic)]
@@ -893,6 +858,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
                         sym::packed => Some(ReprPacked(1)),
                         sym::simd => Some(ReprSimd),
                         sym::transparent => Some(ReprTransparent),
+                        sym::no_niche => Some(ReprNoNiche),
                         name => int_type_of_word(name).map(ReprInt),
                     };
 
@@ -904,7 +870,7 @@ pub fn find_repr_attrs(sess: &ParseSess, attr: &Attribute) -> Vec<ReprAttr> {
                     let parse_alignment = |node: &ast::LitKind| -> Result<u32, &'static str> {
                         if let ast::LitKind::Int(literal, ast::LitIntType::Unsuffixed) = node {
                             if literal.is_power_of_two() {
-                                // rustc::ty::layout::Align restricts align to <= 2^29
+                                // rustc_middle::ty::layout::Align restricts align to <= 2^29
                                 if *literal <= 1 << 29 {
                                     Ok(*literal as u32)
                                 } else {
@@ -1020,7 +986,7 @@ pub enum TransparencyError {
 
 pub fn find_transparency(
     attrs: &[Attribute],
-    is_legacy: bool,
+    macro_rules: bool,
 ) -> (Transparency, Option<TransparencyError>) {
     let mut transparency = None;
     let mut error = None;
@@ -1045,7 +1011,7 @@ pub fn find_transparency(
             }
         }
     }
-    let fallback = if is_legacy { Transparency::SemiTransparent } else { Transparency::Opaque };
+    let fallback = if macro_rules { Transparency::SemiTransparent } else { Transparency::Opaque };
     (transparency.map_or(fallback, |t| t.0), error)
 }
 

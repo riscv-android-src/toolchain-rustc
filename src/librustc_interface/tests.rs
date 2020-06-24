@@ -1,17 +1,16 @@
-extern crate getopts;
-
 use crate::interface::parse_cfgspecs;
 
-use rustc::lint::Level;
-use rustc::middle::cstore;
-use rustc::session::config::{build_configuration, build_session_options, to_crate_config};
-use rustc::session::config::{rustc_optgroups, ErrorOutputType, ExternLocation, Options, Passes};
-use rustc::session::config::{ExternEntry, LinkerPluginLto, LtoCli, SwitchWithOptPath};
-use rustc::session::config::{Externs, OutputType, OutputTypes, SymbolManglingVersion};
-use rustc::session::search_paths::SearchPath;
-use rustc::session::{build_session, Session};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{emitter::HumanReadableErrorType, registry, ColorConfig};
+use rustc_middle::middle::cstore;
+use rustc_session::config::{build_configuration, build_session_options, to_crate_config};
+use rustc_session::config::{rustc_optgroups, ErrorOutputType, ExternLocation, Options, Passes};
+use rustc_session::config::{ExternEntry, LinkerPluginLto, LtoCli, SwitchWithOptPath};
+use rustc_session::config::{Externs, OutputType, OutputTypes, SymbolManglingVersion};
+use rustc_session::getopts;
+use rustc_session::lint::Level;
+use rustc_session::search_paths::SearchPath;
+use rustc_session::{build_session, Session};
 use rustc_span::edition::{Edition, DEFAULT_EDITION};
 use rustc_span::symbol::sym;
 use rustc_target::spec::{MergeFunctions, PanicStrategy, RelroLevel};
@@ -376,13 +375,13 @@ fn test_codegen_options_tracking_hash() {
     let mut opts = Options::default();
 
     // Make sure the changing an [UNTRACKED] option leaves the hash unchanged
-    opts.cg.ar = Some(String::from("abc"));
+    opts.cg.ar = String::from("abc");
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
 
     opts.cg.linker = Some(PathBuf::from("linker"));
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
 
-    opts.cg.link_args = Some(vec![String::from("abc"), String::from("def")]);
+    opts.cg.link_args = vec![String::from("abc"), String::from("def")];
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
 
     opts.cg.link_dead_code = true;
@@ -452,10 +451,6 @@ fn test_codegen_options_tracking_hash() {
     assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
 
     opts = reference.clone();
-    opts.cg.no_integrated_as = true;
-    assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
-
-    opts = reference.clone();
     opts.cg.no_redzone = Some(true);
     assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
 
@@ -484,11 +479,11 @@ fn test_codegen_options_tracking_hash() {
     assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
 
     opts = reference.clone();
-    opts.cg.debuginfo = Some(0xdeadbeef);
+    opts.cg.debuginfo = 0xdeadbeef;
     assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
 
     opts = reference.clone();
-    opts.cg.debuginfo = Some(0xba5eba11);
+    opts.cg.debuginfo = 0xba5eba11;
     assert!(reference.dep_tracking_hash() != opts.dep_tracking_hash());
 
     opts = reference.clone();
@@ -546,8 +541,6 @@ fn test_debugging_options_tracking_hash() {
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
     opts.debugging_opts.parse_only = true;
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-    opts.debugging_opts.incremental = Some(String::from("abc"));
-    assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
     opts.debugging_opts.dump_dep_graph = true;
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
     opts.debugging_opts.query_dep_graph = true;
@@ -560,8 +553,6 @@ fn test_debugging_options_tracking_hash() {
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
     opts.debugging_opts.keep_hygiene_data = true;
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
-    opts.debugging_opts.keep_ast = true;
-    assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
     opts.debugging_opts.print_mono_items = Some(String::from("abc"));
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
     opts.debugging_opts.dump_mir = Some(String::from("abc"));
@@ -569,6 +560,8 @@ fn test_debugging_options_tracking_hash() {
     opts.debugging_opts.dump_mir_dir = String::from("abc");
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
     opts.debugging_opts.dump_mir_graphviz = true;
+    assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
+    opts.debugging_opts.dump_mir_dataflow = true;
     assert_eq!(reference.dep_tracking_hash(), opts.dep_tracking_hash());
 
     // Make sure changing a [TRACKED] option changes the hash

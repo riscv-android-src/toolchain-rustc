@@ -390,7 +390,7 @@ impl<T> LinkedList<T> {
     /// This reuses all the nodes from `other` and moves them into `self`. After
     /// this operation, `other` becomes empty.
     ///
-    /// This operation should compute in O(1) time and O(1) memory.
+    /// This operation should compute in `O(1)` time and `O(1)` memory.
     ///
     /// # Examples
     ///
@@ -547,7 +547,7 @@ impl<T> LinkedList<T> {
 
     /// Returns `true` if the `LinkedList` is empty.
     ///
-    /// This operation should compute in O(1) time.
+    /// This operation should compute in `O(1)` time.
     ///
     /// # Examples
     ///
@@ -568,7 +568,7 @@ impl<T> LinkedList<T> {
 
     /// Returns the length of the `LinkedList`.
     ///
-    /// This operation should compute in O(1) time.
+    /// This operation should compute in `O(1)` time.
     ///
     /// # Examples
     ///
@@ -594,7 +594,7 @@ impl<T> LinkedList<T> {
 
     /// Removes all elements from the `LinkedList`.
     ///
-    /// This operation should compute in O(n) time.
+    /// This operation should compute in `O(n)` time.
     ///
     /// # Examples
     ///
@@ -737,7 +737,7 @@ impl<T> LinkedList<T> {
 
     /// Adds an element first in the list.
     ///
-    /// This operation should compute in O(1) time.
+    /// This operation should compute in `O(1)` time.
     ///
     /// # Examples
     ///
@@ -760,7 +760,7 @@ impl<T> LinkedList<T> {
     /// Removes the first element and returns it, or `None` if the list is
     /// empty.
     ///
-    /// This operation should compute in O(1) time.
+    /// This operation should compute in `O(1)` time.
     ///
     /// # Examples
     ///
@@ -783,7 +783,7 @@ impl<T> LinkedList<T> {
 
     /// Appends an element to the back of a list.
     ///
-    /// This operation should compute in O(1) time.
+    /// This operation should compute in `O(1)` time.
     ///
     /// # Examples
     ///
@@ -803,7 +803,7 @@ impl<T> LinkedList<T> {
     /// Removes the last element from a list and returns it, or `None` if
     /// it is empty.
     ///
-    /// This operation should compute in O(1) time.
+    /// This operation should compute in `O(1)` time.
     ///
     /// # Examples
     ///
@@ -824,7 +824,7 @@ impl<T> LinkedList<T> {
     /// Splits the list into two at the given index. Returns everything after the given index,
     /// including the index.
     ///
-    /// This operation should compute in O(n) time.
+    /// This operation should compute in `O(n)` time.
     ///
     /// # Panics
     ///
@@ -880,7 +880,7 @@ impl<T> LinkedList<T> {
 
     /// Removes the element at the given index and returns it.
     ///
-    /// This operation should compute in O(n) time.
+    /// This operation should compute in `O(n)` time.
     ///
     /// # Panics
     /// Panics if at >= len
@@ -1198,6 +1198,14 @@ pub struct Cursor<'a, T: 'a> {
 }
 
 #[unstable(feature = "linked_list_cursors", issue = "58533")]
+impl<T> Clone for Cursor<'_, T> {
+    fn clone(&self) -> Self {
+        let Cursor { index, current, list } = *self;
+        Cursor { index, current, list }
+    }
+}
+
+#[unstable(feature = "linked_list_cursors", issue = "58533")]
 impl<T: fmt::Debug> fmt::Debug for Cursor<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("Cursor").field(&self.list).field(&self.index()).finish()
@@ -1427,7 +1435,7 @@ impl<'a, T> CursorMut<'a, T> {
     /// `CursorMut`, which means it cannot outlive the `CursorMut` and that the
     /// `CursorMut` is frozen for the lifetime of the `Cursor`.
     #[unstable(feature = "linked_list_cursors", issue = "58533")]
-    pub fn as_cursor<'cm>(&'cm self) -> Cursor<'cm, T> {
+    pub fn as_cursor(&self) -> Cursor<'_, T> {
         Cursor { list: self.list, current: self.current, index: self.index }
     }
 }

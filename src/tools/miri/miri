@@ -11,6 +11,9 @@ working directory.
 ./miri build <flags>:
 Just build miri.  <flags> are passed to `cargo build`.
 
+./miri check <flags>:
+Just check miri.  <flags> are passed to `cargo check`.
+
 ./miri test <flags>:
 Build miri, set up a sysroot and then run the test suite. <flags> are passed
 to the final `cargo test` invocation.
@@ -46,6 +49,10 @@ fi
 # We enable debug-assertions to get tracing.
 # We enable line-only debuginfo for backtraces.
 export RUSTFLAGS="-C link-args=-Wl,-rpath,$LIBDIR -C debug-assertions -C debuginfo=1 $RUSTC_EXTRA_FLAGS"
+if [ -z "$CARGO_INCREMENTAL" ]; then
+    # Default CARGO_INCREMENTAL to 1.
+    export CARGO_INCREMENTAL=1
+fi
 
 ## Helper functions
 
@@ -99,6 +106,10 @@ install|install-debug)
     # "--offline" to avoid querying the registry (for yanked packages).
     exec cargo install $CARGO_INSTALL_FLAGS --path "$(dirname "$0")" --force --locked --offline "$@"
     ;;
+check|check-debug)
+    # Check, and let caller control flags.
+    exec cargo check $CARGO_BUILD_FLAGS "$@"
+    ;;
 build|build-debug)
     # Build, and let caller control flags.
     exec cargo build $CARGO_BUILD_FLAGS "$@"
@@ -130,8 +141,10 @@ run|run-debug)
     exec cargo run $CARGO_BUILD_FLAGS -- --sysroot "$MIRI_SYSROOT" "$@"
     ;;
 *)
-    echo "Unknown command: $COMMAND"
-    echo
+    if [ -n "$COMMAND" ]; then
+      echo "Unknown command: $COMMAND"
+      echo
+    fi
     echo "$USAGE"
     exit 1
 esac

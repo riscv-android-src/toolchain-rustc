@@ -11,7 +11,6 @@ use serde::Serialize;
 use std::env;
 use std::fmt;
 use std::fs::File;
-use std::mem;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use url::Url;
@@ -392,6 +391,9 @@ impl<'a> GitCheckout<'a> {
             };
             // Fetch data from origin and reset to the head commit
             let refspec = "refs/heads/*:refs/heads/*";
+            cargo_config
+                .shell()
+                .status("Updating", format!("git submodule `{}`", url))?;
             fetch(&mut repo, url, refspec, cargo_config).chain_err(|| {
                 format!(
                     "failed to fetch submodule `{}` from {}",
@@ -835,7 +837,7 @@ fn maybe_gc_repo(repo: &mut git2::Repository) -> CargoResult<()> {
             );
             if out.status.success() {
                 let new = git2::Repository::open(repo.path())?;
-                mem::replace(repo, new);
+                *repo = new;
                 return Ok(());
             }
         }

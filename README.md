@@ -15,19 +15,19 @@ Read ["Installation"] from [The Book].
 ## Installing from Source
 
 _Note: If you wish to contribute to the compiler, you should read [this
-chapter][rustcguidebuild] of the rustc-guide instead of this section._
+chapter][rustcguidebuild] of the rustc-dev-guide instead of this section._
 
 The Rust build system has a Python script called `x.py` to bootstrap building
 the compiler. More information about it may be found by running `./x.py --help`
-or reading the [rustc guide][rustcguidebuild].
+or reading the [rustc dev guide][rustcguidebuild].
 
-[rustcguidebuild]: https://rust-lang.github.io/rustc-guide/building/how-to-build-and-run.html
+[rustcguidebuild]: https://rustc-dev-guide.rust-lang.org/building/how-to-build-and-run.html
 
 ### Building on *nix
 1. Make sure you have installed the dependencies:
 
    * `g++` 5.1 or later or `clang++` 3.5 or later
-   * `python` 2.7 (but not 3.x)
+   * `python` 3 or 2.7
    * GNU `make` 3.81 or later
    * `cmake` 3.4.3 or later
    * `curl`
@@ -113,7 +113,7 @@ build.
                make \
                diffutils \
                tar \
-               mingw-w64-x86_64-python2 \
+               mingw-w64-x86_64-python \
                mingw-w64-x86_64-cmake \
                mingw-w64-x86_64-gcc
    ```
@@ -249,14 +249,14 @@ Most real-time collaboration happens in a variety of channels on the
 community, documentation, and all major contribution areas in the Rust ecosystem.
 A good place to ask for help would be the #help channel.
 
-The [rustc guide] might be a good place to start if you want to find out how
+The [rustc dev guide] might be a good place to start if you want to find out how
 various parts of the compiler work.
 
 Also, you may find the [rustdocs for the compiler itself][rustdocs] useful.
 
 [rust-discord]: https://discord.gg/rust-lang
-[rustc guide]: https://rust-lang.github.io/rustc-guide/about-this-guide.html
-[rustdocs]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/
+[rustc dev guide]: https://rustc-dev-guide.rust-lang.org/about-this-guide.html
+[rustdocs]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/
 
 ## License
 

@@ -79,6 +79,7 @@ use std::fmt;
 use std::str;
 use std::sync::Once;
 
+pub use crate::apply::{ApplyLocation, ApplyOptions};
 pub use crate::blame::{Blame, BlameHunk, BlameIter, BlameOptions};
 pub use crate::blob::{Blob, BlobWriter};
 pub use crate::branch::{Branch, Branches};
@@ -100,7 +101,7 @@ pub use crate::merge::{AnnotatedCommit, MergeOptions};
 pub use crate::message::{message_prettify, DEFAULT_COMMENT_CHAR};
 pub use crate::note::{Note, Notes};
 pub use crate::object::Object;
-pub use crate::odb::{Odb, OdbObject, OdbReader, OdbWriter};
+pub use crate::odb::{Odb, OdbObject, OdbPackwriter, OdbReader, OdbWriter};
 pub use crate::oid::Oid;
 pub use crate::packbuilder::{PackBuilder, PackBuilderStage};
 pub use crate::patch::Patch;
@@ -261,6 +262,8 @@ pub enum ErrorClass {
     Worktree,
     /// Hash library error or SHA-1 collision
     Sha1,
+    /// HTTP error
+    Http,
 }
 
 /// A listing of the possible states that a repository can be in.
@@ -622,6 +625,7 @@ pub mod oid_array;
 pub mod string_array;
 pub mod transport;
 
+mod apply;
 mod blame;
 mod blob;
 mod branch;

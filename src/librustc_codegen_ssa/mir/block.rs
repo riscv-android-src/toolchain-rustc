@@ -9,14 +9,15 @@ use crate::meth;
 use crate::traits::*;
 use crate::MemFlags;
 
-use rustc::middle::lang_items;
-use rustc::mir;
-use rustc::mir::AssertKind;
-use rustc::ty::layout::{self, FnAbiExt, HasTyCtxt, LayoutOf};
-use rustc::ty::{self, Instance, Ty, TypeFoldable};
+use rustc_hir::lang_items;
 use rustc_index::vec::Idx;
+use rustc_middle::mir;
+use rustc_middle::mir::AssertKind;
+use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt};
+use rustc_middle::ty::{self, Instance, Ty, TypeFoldable};
 use rustc_span::{source_map::Span, symbol::Symbol};
 use rustc_target::abi::call::{ArgAbi, FnAbi, PassMode};
+use rustc_target::abi::{self, LayoutOf};
 use rustc_target::spec::abi::Abi;
 
 use std::borrow::Cow;
@@ -110,7 +111,9 @@ impl<'a, 'tcx> TerminatorCodegenHelper<'tcx> {
         destination: Option<(ReturnDest<'tcx, Bx::Value>, mir::BasicBlock)>,
         cleanup: Option<mir::BasicBlock>,
     ) {
-        if let Some(cleanup) = cleanup {
+        // If there is a cleanup block and the function we're calling can unwind, then
+        // do an invoke, otherwise do a call.
+        if let Some(cleanup) = cleanup.filter(|_| fn_abi.can_unwind) {
             let ret_bx = if let Some((_, target)) = destination {
                 fx.blocks[target]
             } else {
@@ -178,15 +181,10 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             let lp1 = bx.load_operand(lp1).immediate();
             slot.storage_dead(&mut bx);
 
-            if !bx.sess().target.target.options.custom_unwind_resume {
-                let mut lp = bx.const_undef(self.landing_pad_type());
-                lp = bx.insert_value(lp, lp0, 0);
-                lp = bx.insert_value(lp, lp1, 1);
-                bx.resume(lp);
-            } else {
-                bx.call(bx.eh_unwind_resume(), &[lp0], helper.funclet(self));
-                bx.unreachable();
-            }
+            let mut lp = bx.const_undef(self.landing_pad_type());
+            lp = bx.insert_value(lp, lp0, 0);
+            lp = bx.insert_value(lp, lp1, 1);
+            bx.resume(lp);
         }
     }
 
@@ -304,7 +302,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         &mut self,
         helper: TerminatorCodegenHelper<'tcx>,
         mut bx: Bx,
-        location: &mir::Place<'tcx>,
+        location: mir::Place<'tcx>,
         target: mir::BasicBlock,
         unwind: Option<mir::BasicBlock>,
     ) {
@@ -415,11 +413,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             AssertKind::BoundsCheck { ref len, ref index } => {
                 let len = self.codegen_operand(&mut bx, len).immediate();
                 let index = self.codegen_operand(&mut bx, index).immediate();
-                (lang_items::PanicBoundsCheckFnLangItem, vec![location, index, len])
+                // It's `fn panic_bounds_check(index: usize, len: usize)`,
+                // and `#[track_caller]` adds an implicit third argument.
+                (lang_items::PanicBoundsCheckFnLangItem, vec![index, len, location])
             }
             _ => {
                 let msg_str = Symbol::intern(msg.description());
                 let msg = bx.const_str(msg_str);
+                // It's `pub fn panic(expr: &str)`, with the wide reference being passed
+                // as two arguments, and `#[track_caller]` adds an implicit third argument.
                 (lang_items::PanicFnLangItem, vec![msg.0, msg.1, location])
             }
         };
@@ -432,6 +434,89 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         // Codegen the actual panic invoke/call.
         helper.do_call(self, &mut bx, fn_abi, llfn, &args, None, cleanup);
+    }
+
+    /// Returns `true` if this is indeed a panic intrinsic and codegen is done.
+    fn codegen_panic_intrinsic(
+        &mut self,
+        helper: &TerminatorCodegenHelper<'tcx>,
+        bx: &mut Bx,
+        intrinsic: Option<&str>,
+        instance: Option<Instance<'tcx>>,
+        span: Span,
+        destination: &Option<(mir::Place<'tcx>, mir::BasicBlock)>,
+        cleanup: Option<mir::BasicBlock>,
+    ) -> bool {
+        // Emit a panic or a no-op for `assert_*` intrinsics.
+        // These are intrinsics that compile to panics so that we can get a message
+        // which mentions the offending type, even from a const context.
+        #[derive(Debug, PartialEq)]
+        enum AssertIntrinsic {
+            Inhabited,
+            ZeroValid,
+            UninitValid,
+        };
+        let panic_intrinsic = intrinsic.and_then(|i| match i {
+            // FIXME: Move to symbols instead of strings.
+            "assert_inhabited" => Some(AssertIntrinsic::Inhabited),
+            "assert_zero_valid" => Some(AssertIntrinsic::ZeroValid),
+            "assert_uninit_valid" => Some(AssertIntrinsic::UninitValid),
+            _ => None,
+        });
+        if let Some(intrinsic) = panic_intrinsic {
+            use AssertIntrinsic::*;
+            let ty = instance.unwrap().substs.type_at(0);
+            let layout = bx.layout_of(ty);
+            let do_panic = match intrinsic {
+                Inhabited => layout.abi.is_uninhabited(),
+                // We unwrap as the error type is `!`.
+                ZeroValid => !layout.might_permit_raw_init(bx, /*zero:*/ true).unwrap(),
+                // We unwrap as the error type is `!`.
+                UninitValid => !layout.might_permit_raw_init(bx, /*zero:*/ false).unwrap(),
+            };
+            if do_panic {
+                let msg_str = if layout.abi.is_uninhabited() {
+                    // Use this error even for the other intrinsics as it is more precise.
+                    format!("attempted to instantiate uninhabited type `{}`", ty)
+                } else if intrinsic == ZeroValid {
+                    format!("attempted to zero-initialize type `{}`, which is invalid", ty)
+                } else {
+                    format!("attempted to leave type `{}` uninitialized, which is invalid", ty)
+                };
+                let msg = bx.const_str(Symbol::intern(&msg_str));
+                let location = self.get_caller_location(bx, span).immediate();
+
+                // Obtain the panic entry point.
+                // FIXME: dedup this with `codegen_assert_terminator` above.
+                let def_id =
+                    common::langcall(bx.tcx(), Some(span), "", lang_items::PanicFnLangItem);
+                let instance = ty::Instance::mono(bx.tcx(), def_id);
+                let fn_abi = FnAbi::of_instance(bx, instance, &[]);
+                let llfn = bx.get_fn_addr(instance);
+
+                if let Some((_, target)) = destination.as_ref() {
+                    helper.maybe_sideeffect(self.mir, bx, &[*target]);
+                }
+                // Codegen the actual panic invoke/call.
+                helper.do_call(
+                    self,
+                    bx,
+                    fn_abi,
+                    llfn,
+                    &[msg.0, msg.1, location],
+                    destination.as_ref().map(|(_, bb)| (ReturnDest::Nothing, *bb)),
+                    cleanup,
+                );
+            } else {
+                // a NOP
+                let target = destination.as_ref().unwrap().1;
+                helper.maybe_sideeffect(self.mir, bx, &[target]);
+                helper.funclet_br(self, bx, target)
+            }
+            true
+        } else {
+            false
+        }
     }
 
     fn codegen_call_terminator(
@@ -498,7 +583,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         if intrinsic == Some("transmute") {
             if let Some(destination_ref) = destination.as_ref() {
-                let &(ref dest, target) = destination_ref;
+                let &(dest, target) = destination_ref;
                 self.codegen_transmute(&mut bx, &args[0], dest);
                 helper.maybe_sideeffect(self.mir, &mut bx, &[target]);
                 helper.funclet_br(self, &mut bx, target);
@@ -509,7 +594,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 // we can do what we like. Here, we declare that transmuting
                 // into an uninhabited type is impossible, so anything following
                 // it must be unreachable.
-                assert_eq!(fn_abi.ret.layout.abi, layout::Abi::Uninhabited);
+                assert_eq!(fn_abi.ret.layout.abi, abi::Abi::Uninhabited);
                 bx.unreachable();
             }
             return;
@@ -520,41 +605,15 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             bug!("`miri_start_panic` should never end up in compiled code");
         }
 
-        // Emit a panic or a no-op for `panic_if_uninhabited`.
-        if intrinsic == Some("panic_if_uninhabited") {
-            let ty = instance.unwrap().substs.type_at(0);
-            let layout = bx.layout_of(ty);
-            if layout.abi.is_uninhabited() {
-                let msg_str = format!("Attempted to instantiate uninhabited type {}", ty);
-                let msg = bx.const_str(Symbol::intern(&msg_str));
-                let location = self.get_caller_location(&mut bx, span).immediate();
-
-                // Obtain the panic entry point.
-                let def_id =
-                    common::langcall(bx.tcx(), Some(span), "", lang_items::PanicFnLangItem);
-                let instance = ty::Instance::mono(bx.tcx(), def_id);
-                let fn_abi = FnAbi::of_instance(&bx, instance, &[]);
-                let llfn = bx.get_fn_addr(instance);
-
-                if let Some((_, target)) = destination.as_ref() {
-                    helper.maybe_sideeffect(self.mir, &mut bx, &[*target]);
-                }
-                // Codegen the actual panic invoke/call.
-                helper.do_call(
-                    self,
-                    &mut bx,
-                    fn_abi,
-                    llfn,
-                    &[msg.0, msg.1, location],
-                    destination.as_ref().map(|(_, bb)| (ReturnDest::Nothing, *bb)),
-                    cleanup,
-                );
-            } else {
-                // a NOP
-                let target = destination.as_ref().unwrap().1;
-                helper.maybe_sideeffect(self.mir, &mut bx, &[target]);
-                helper.funclet_br(self, &mut bx, target)
-            }
+        if self.codegen_panic_intrinsic(
+            &helper,
+            &mut bx,
+            intrinsic,
+            instance,
+            span,
+            destination,
+            cleanup,
+        ) {
             return;
         }
 
@@ -563,7 +622,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         let mut llargs = Vec::with_capacity(arg_count);
 
         // Prepare the return value destination
-        let ret_dest = if let Some((ref dest, _)) = *destination {
+        let ret_dest = if let Some((dest, _)) = *destination {
             let is_intrinsic = intrinsic.is_some();
             self.make_return_dest(&mut bx, dest, &fn_abi.ret, &mut llargs, is_intrinsic)
         } else {
@@ -817,7 +876,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 bx.unreachable();
             }
 
-            mir::TerminatorKind::Drop { ref location, target, unwind } => {
+            mir::TerminatorKind::Drop { location, target, unwind } => {
                 self.codegen_drop_terminator(helper, bx, location, target, unwind);
             }
 
@@ -938,7 +997,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 // the load would just produce `OperandValue::Ref` instead
                 // of the `OperandValue::Immediate` we need for the call.
                 llval = bx.load(llval, align);
-                if let layout::Abi::Scalar(ref scalar) = arg.layout.abi {
+                if let abi::Abi::Scalar(ref scalar) = arg.layout.abi {
                     if scalar.is_bool() {
                         bx.range_metadata(llval, 0..2);
                     }
@@ -1067,7 +1126,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     fn make_return_dest(
         &mut self,
         bx: &mut Bx,
-        dest: &mir::Place<'tcx>,
+        dest: mir::Place<'tcx>,
         fn_ret: &ArgAbi<'tcx, Ty<'tcx>>,
         llargs: &mut Vec<Bx::Value>,
         is_intrinsic: bool,
@@ -1128,7 +1187,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         }
     }
 
-    fn codegen_transmute(&mut self, bx: &mut Bx, src: &mir::Operand<'tcx>, dst: &mir::Place<'tcx>) {
+    fn codegen_transmute(&mut self, bx: &mut Bx, src: &mir::Operand<'tcx>, dst: mir::Place<'tcx>) {
         if let Some(index) = dst.as_local() {
             match self.locals[index] {
                 LocalRef::Place(place) => self.codegen_transmute_into(bx, src, place),

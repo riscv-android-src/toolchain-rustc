@@ -7,11 +7,11 @@
 //! `tcx.inherent_impls(def_id)`). That value, however,
 //! is computed by selecting an idea from this table.
 
-use rustc::ty::{self, CrateInherentImpls, TyCtxt};
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
+use rustc_middle::ty::{self, CrateInherentImpls, TyCtxt};
 
 use rustc_ast::ast;
 use rustc_span::Span;
@@ -109,6 +109,30 @@ impl ItemLikeVisitor<'v> for InherentCollect<'tcx> {
                     lang_items.slice_alloc_impl(),
                     "slice",
                     "[T]",
+                    item.span,
+                );
+            }
+            ty::RawPtr(ty::TypeAndMut { ty: inner, mutbl: hir::Mutability::Not })
+                if matches!(inner.kind, ty::Slice(_)) =>
+            {
+                self.check_primitive_impl(
+                    def_id,
+                    lang_items.const_slice_ptr_impl(),
+                    None,
+                    "const_slice_ptr",
+                    "*const [T]",
+                    item.span,
+                );
+            }
+            ty::RawPtr(ty::TypeAndMut { ty: inner, mutbl: hir::Mutability::Mut })
+                if matches!(inner.kind, ty::Slice(_)) =>
+            {
+                self.check_primitive_impl(
+                    def_id,
+                    lang_items.mut_slice_ptr_impl(),
+                    None,
+                    "mut_slice_ptr",
+                    "*mut [T]",
                     item.span,
                 );
             }
@@ -272,9 +296,7 @@ impl ItemLikeVisitor<'v> for InherentCollect<'tcx> {
                     item.span,
                 );
             }
-            ty::Error => {
-                return;
-            }
+            ty::Error => {}
             _ => {
                 struct_span_err!(
                     self.tcx.sess,
@@ -288,7 +310,6 @@ impl ItemLikeVisitor<'v> for InherentCollect<'tcx> {
                        to wrap it instead",
                 )
                 .emit();
-                return;
             }
         }
     }

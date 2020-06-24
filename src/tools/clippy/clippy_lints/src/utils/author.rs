@@ -2,8 +2,6 @@
 //! to generate a clippy lint detecting said code automatically.
 
 use crate::utils::{get_attr, higher};
-use rustc::hir::map::Map;
-use rustc::session::Session;
 use rustc_ast::ast::{Attribute, LitFloatType, LitKind};
 use rustc_ast::walk_list;
 use rustc_data_structures::fx::FxHashMap;
@@ -11,6 +9,8 @@ use rustc_hir as hir;
 use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
 use rustc_hir::{BindingAnnotation, Block, Expr, ExprKind, Pat, PatKind, QPath, Stmt, StmtKind, TyKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::hir::map::Map;
+use rustc_session::Session;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
@@ -97,7 +97,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Author {
             return;
         }
         prelude();
-        PrintVisitor::new("var").visit_variant(var, &hir::Generics::empty(), hir::DUMMY_HIR_ID);
+        let parent_hir_id = cx.tcx.hir().get_parent_node(var.id);
+        PrintVisitor::new("var").visit_variant(var, &hir::Generics::empty(), parent_hir_id);
         done();
     }
 
@@ -468,9 +469,9 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
                     println!("Ret(None) = {};", current);
                 }
             },
-            ExprKind::InlineAsm(_) => {
-                println!("InlineAsm(_) = {};", current);
-                println!("    // unimplemented: `ExprKind::InlineAsm` is not further destructured at the moment");
+            ExprKind::LlvmInlineAsm(_) => {
+                println!("LlvmInlineAsm(_) = {};", current);
+                println!("    // unimplemented: `ExprKind::LlvmInlineAsm` is not further destructured at the moment");
             },
             ExprKind::Struct(ref path, ref fields, ref opt_base) => {
                 let path_pat = self.next("path");
@@ -689,7 +690,7 @@ impl<'tcx> Visitor<'tcx> for PrintVisitor {
         }
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }

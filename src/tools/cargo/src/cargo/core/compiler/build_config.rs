@@ -1,4 +1,4 @@
-use crate::core::compiler::{CompileKind, CompileTarget};
+use crate::core::compiler::CompileKind;
 use crate::core::interning::InternedString;
 use crate::util::ProcessBuilder;
 use crate::util::{CargoResult, Config, RustfixDiagnosticServer};
@@ -22,7 +22,9 @@ pub struct BuildConfig {
     pub force_rebuild: bool,
     /// Output a build plan to stdout instead of actually compiling.
     pub build_plan: bool,
-    /// An optional override of the rustc path for primary units only
+    /// Output the unit graph to stdout instead of actually compiling.
+    pub unit_graph: bool,
+    /// An optional override of the rustc process for primary units
     pub primary_unit_rustc: Option<ProcessBuilder>,
     pub rustfix_diagnostic_server: RefCell<Option<RustfixDiagnosticServer>>,
 }
@@ -43,22 +45,8 @@ impl BuildConfig {
         mode: CompileMode,
     ) -> CargoResult<BuildConfig> {
         let cfg = config.build_config()?;
-        let requested_kind = match requested_target {
-            Some(s) => CompileKind::Target(CompileTarget::new(s)?),
-            None => match &cfg.target {
-                Some(val) => {
-                    let value = if val.raw_value().ends_with(".json") {
-                        let path = val.clone().resolve_path(config);
-                        path.to_str().expect("must be utf-8 in toml").to_string()
-                    } else {
-                        val.raw_value().to_string()
-                    };
-                    CompileKind::Target(CompileTarget::new(&value)?)
-                }
-                None => CompileKind::Host,
-            },
-        };
-
+        let requested_kind =
+            CompileKind::from_requested_target(config, requested_target.as_deref())?;
         if jobs == Some(0) {
             anyhow::bail!("jobs must be at least 1")
         }
@@ -79,6 +67,7 @@ impl BuildConfig {
             message_format: MessageFormat::Human,
             force_rebuild: false,
             build_plan: false,
+            unit_graph: false,
             primary_unit_rustc: None,
             rustfix_diagnostic_server: RefCell::new(None),
         })

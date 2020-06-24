@@ -1,6 +1,4 @@
 use if_chain::if_chain;
-use matches::matches;
-use rustc::ty;
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
 use rustc_hir::intravisit::FnKind;
@@ -9,6 +7,7 @@ use rustc_hir::{
     TyKind, UnOp,
 };
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::{ExpnKind, Span};
 
@@ -58,10 +57,9 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust
-    /// # use core::f32::NAN;
     /// # let x = 1.0;
     ///
-    /// if x == NAN { }
+    /// if x == f32::NAN { }
     /// ```
     pub CMP_NAN,
     correctness,
@@ -292,8 +290,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
                         init.hir_id,
                         local.pat.span,
                         "`ref` on an entire `let` pattern is discouraged, take a reference with `&` instead",
-                        |db| {
-                            db.span_suggestion(
+                        |diag| {
+                            diag.span_suggestion(
                                 stmt.span,
                                 "try",
                                 format!(
@@ -319,9 +317,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
                     SHORT_CIRCUIT_STATEMENT,
                     stmt.span,
                     "boolean short circuit operator in statement may be clearer using an explicit test",
-                    |db| {
+                    |diag| {
                         let sugg = if binop.node == BinOpKind::Or { !sugg } else { sugg };
-                        db.span_suggestion(
+                        diag.span_suggestion(
                             stmt.span,
                             "replace it with",
                             format!(
@@ -371,26 +369,28 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
                             return;
                         }
                     }
-                    let (lint, msg) = if is_named_constant(cx, left) || is_named_constant(cx, right) {
-                        (FLOAT_CMP_CONST, "strict comparison of `f32` or `f64` constant")
-                    } else {
-                        (FLOAT_CMP, "strict comparison of `f32` or `f64`")
-                    };
-                    span_lint_and_then(cx, lint, expr.span, msg, |db| {
+                    let is_comparing_arrays = is_array(cx, left) || is_array(cx, right);
+                    let (lint, msg) = get_lint_and_message(
+                        is_named_constant(cx, left) || is_named_constant(cx, right),
+                        is_comparing_arrays,
+                    );
+                    span_lint_and_then(cx, lint, expr.span, msg, |diag| {
                         let lhs = Sugg::hir(cx, left, "..");
                         let rhs = Sugg::hir(cx, right, "..");
 
-                        db.span_suggestion(
-                            expr.span,
-                            "consider comparing them within some error",
-                            format!(
-                                "({}).abs() {} error",
-                                lhs - rhs,
-                                if op == BinOpKind::Eq { '<' } else { '>' }
-                            ),
-                            Applicability::HasPlaceholders, // snippet
-                        );
-                        db.span_note(expr.span, "`std::f32::EPSILON` and `std::f64::EPSILON` are available.");
+                        if !is_comparing_arrays {
+                            diag.span_suggestion(
+                                expr.span,
+                                "consider comparing them within some error",
+                                format!(
+                                    "({}).abs() {} error",
+                                    lhs - rhs,
+                                    if op == BinOpKind::Eq { '<' } else { '>' }
+                                ),
+                                Applicability::HasPlaceholders, // snippet
+                            );
+                        }
+                        diag.note("`f32::EPSILON` and `f64::EPSILON` are available for the `error`");
                     });
                 } else if op == BinOpKind::Rem && is_integer_const(cx, right, 1) {
                     span_lint(cx, MODULO_ONE, expr.span, "any number modulo 1 will be 0");
@@ -442,6 +442,31 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MiscLints {
     }
 }
 
+fn get_lint_and_message(
+    is_comparing_constants: bool,
+    is_comparing_arrays: bool,
+) -> (&'static rustc_lint::Lint, &'static str) {
+    if is_comparing_constants {
+        (
+            FLOAT_CMP_CONST,
+            if is_comparing_arrays {
+                "strict comparison of `f32` or `f64` constant arrays"
+            } else {
+                "strict comparison of `f32` or `f64` constant"
+            },
+        )
+    } else {
+        (
+            FLOAT_CMP,
+            if is_comparing_arrays {
+                "strict comparison of `f32` or `f64` arrays"
+            } else {
+                "strict comparison of `f32` or `f64`"
+            },
+        )
+    }
+}
+
 fn check_nan(cx: &LateContext<'_, '_>, expr: &Expr<'_>, cmp_expr: &Expr<'_>) {
     if_chain! {
         if !in_constant(cx, cmp_expr.hir_id);
@@ -458,7 +483,7 @@ fn check_nan(cx: &LateContext<'_, '_>, expr: &Expr<'_>, cmp_expr: &Expr<'_>) {
                     cx,
                     CMP_NAN,
                     cmp_expr.span,
-                    "doomed comparison with `NAN`, use `std::{f32,f64}::is_nan()` instead",
+                    "doomed comparison with `NAN`, use `{f32,f64}::is_nan()` instead",
                 );
             }
         }
@@ -477,6 +502,11 @@ fn is_allowed<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) -> boo
     match constant(cx, cx.tables, expr) {
         Some((Constant::F32(f), _)) => f == 0.0 || f.is_infinite(),
         Some((Constant::F64(f), _)) => f == 0.0 || f.is_infinite(),
+        Some((Constant::Vec(vec), _)) => vec.iter().all(|f| match f {
+            Constant::F32(f) => *f == 0.0 || (*f).is_infinite(),
+            Constant::F64(f) => *f == 0.0 || (*f).is_infinite(),
+            _ => false,
+        }),
         _ => false,
     }
 }
@@ -501,7 +531,17 @@ fn is_signum(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
 }
 
 fn is_float(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
-    matches!(walk_ptrs_ty(cx.tables.expr_ty(expr)).kind, ty::Float(_))
+    let value = &walk_ptrs_ty(cx.tables.expr_ty(expr)).kind;
+
+    if let ty::Array(arr_ty, _) = value {
+        return matches!(arr_ty.kind, ty::Float(_));
+    };
+
+    matches!(value, ty::Float(_))
+}
+
+fn is_array(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool {
+    matches!(&walk_ptrs_ty(cx.tables.expr_ty(expr)).kind, ty::Array(_, _))
 }
 
 fn check_to_owned(cx: &LateContext<'_, '_>, expr: &Expr<'_>, other: &Expr<'_>) {
@@ -561,10 +601,10 @@ fn check_to_owned(cx: &LateContext<'_, '_>, expr: &Expr<'_>, other: &Expr<'_>) {
         CMP_OWNED,
         lint_span,
         "this creates an owned instance just for comparison",
-        |db| {
+        |diag| {
             // This also catches `PartialEq` implementations that call `to_owned`.
             if other_gets_derefed {
-                db.span_label(lint_span, "try implementing the comparison without allocating");
+                diag.span_label(lint_span, "try implementing the comparison without allocating");
                 return;
             }
 
@@ -576,7 +616,7 @@ fn check_to_owned(cx: &LateContext<'_, '_>, expr: &Expr<'_>, other: &Expr<'_>) {
                 snip.to_string()
             };
 
-            db.span_suggestion(
+            diag.span_suggestion(
                 lint_span,
                 "try",
                 try_hint,

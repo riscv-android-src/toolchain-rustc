@@ -10,6 +10,7 @@ use rustc_target::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, RelroLevel
 
 use rustc_feature::UnstableFeatures;
 use rustc_span::edition::Edition;
+use rustc_span::SourceFileHashAlgorithm;
 
 use std::collections::BTreeMap;
 
@@ -283,22 +284,35 @@ macro_rules! options {
             Some("one of: `disabled`, `trampolines`, or `aliases`");
         pub const parse_symbol_mangling_version: Option<&str> =
             Some("either `legacy` or `v0` (RFC 2603)");
+        pub const parse_src_file_hash: Option<&str> =
+            Some("either `md5`, or `sha1`");
     }
 
     #[allow(dead_code)]
     mod $mod_set {
         use super::{$struct_name, Passes, Sanitizer, LtoCli, LinkerPluginLto, SwitchWithOptPath,
-            SymbolManglingVersion, CFGuard};
+            SymbolManglingVersion, CFGuard, SourceFileHashAlgorithm};
         use rustc_target::spec::{LinkerFlavor, MergeFunctions, PanicStrategy, RelroLevel};
         use std::path::PathBuf;
         use std::str::FromStr;
 
+        // Sometimes different options need to build a common structure.
+        // That structure can kept in one of the options' fields, the others become dummy.
+        macro_rules! redirect_field {
+            ($cg:ident.link_arg) => { $cg.link_args };
+            ($cg:ident.pre_link_arg) => { $cg.pre_link_args };
+            ($cg:ident.$field:ident) => { $cg.$field };
+        }
+
         $(
             pub fn $opt(cg: &mut $struct_name, v: Option<&str>) -> bool {
-                $parse(&mut cg.$opt, v)
+                $parse(&mut redirect_field!(cg.$opt), v)
             }
         )*
 
+        /// Set a flag to true. Note that it cannot set the flag to false, so
+        /// using this parser in combination with a flag that defaults to true
+        /// is useless; the flag will always be true.
         fn parse_bool(slot: &mut bool, v: Option<&str>) -> bool {
             match v {
                 Some(..) => false,
@@ -619,6 +633,14 @@ macro_rules! options {
             };
             true
         }
+
+        fn parse_src_file_hash(slot: &mut Option<SourceFileHashAlgorithm>, v: Option<&str>) -> bool {
+            match v.and_then(|s| SourceFileHashAlgorithm::from_str(s).ok()) {
+                Some(hash_kind) => *slot = Some(hash_kind),
+                _ => return false,
+            }
+            true
+        }
     }
 ) }
 
@@ -629,9 +651,9 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "this option is deprecated and does nothing"),
     linker: Option<PathBuf> = (None, parse_opt_pathbuf, [UNTRACKED],
         "system linker to link outputs with"),
-    link_arg: Vec<String> = (vec![], parse_string_push, [UNTRACKED],
+    link_arg: (/* redirected to link_args */) = ((), parse_string_push, [UNTRACKED],
         "a single extra argument to append to the linker invocation (can be used several times)"),
-    link_args: Option<Vec<String>> = (None, parse_opt_list, [UNTRACKED],
+    link_args: Vec<String> = (Vec::new(), parse_list, [UNTRACKED],
         "extra arguments to append to the linker invocation (space separated)"),
     link_dead_code: bool = (false, parse_bool, [UNTRACKED],
         "don't let linker strip dead code (turning it on can be used for code coverage)"),
@@ -662,8 +684,6 @@ options! {CodegenOptions, CodegenSetter, basic_codegen_options,
         "use soft float ABI (*eabihf targets only)"),
     prefer_dynamic: bool = (false, parse_bool, [TRACKED],
         "prefer dynamic linking to static linking"),
-    no_integrated_as: bool = (false, parse_bool, [TRACKED],
-        "use an external assembler rather than LLVM's integrated one"),
     no_redzone: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "disable the use of the redzone"),
     relocation_model: Option<String> = (None, parse_opt_string, [TRACKED],
@@ -786,14 +806,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "support compiling tests with panic=abort"),
     dep_tasks: bool = (false, parse_bool, [UNTRACKED],
         "print tasks that execute and the color their dep node gets (requires debug build)"),
-    incremental: Option<String> = (None, parse_opt_string, [UNTRACKED],
-        "enable incremental compilation (experimental)"),
-    incremental_queries: bool = (true, parse_bool, [UNTRACKED],
-        "enable incremental compilation support for queries (experimental)"),
     incremental_info: bool = (false, parse_bool, [UNTRACKED],
         "print high-level information about incremental reuse (or the lack thereof)"),
-    incremental_dump_hash: bool = (false, parse_bool, [UNTRACKED],
-        "dump hash information in textual format to stdout"),
     incremental_verify_ich: bool = (false, parse_bool, [UNTRACKED],
         "verify incr. comp. hashes of green query instances"),
     incremental_ignore_spans: bool = (false, parse_bool, [UNTRACKED],
@@ -814,12 +828,10 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "for every macro invocation, print its name and arguments"),
     debug_macros: bool = (false, parse_bool, [TRACKED],
         "emit line numbers debug info inside macros"),
-    generate_arange_section: bool = (true, parse_bool, [TRACKED],
-        "generate DWARF address ranges for faster lookups"),
+    no_generate_arange_section: bool = (false, parse_bool, [TRACKED],
+        "don't generate DWARF address ranges that give faster lookups"),
     keep_hygiene_data: bool = (false, parse_bool, [UNTRACKED],
         "don't clear the hygiene data after analysis"),
-    keep_ast: bool = (false, parse_bool, [UNTRACKED],
-        "keep the AST after lowering it to HIR"),
     show_span: Option<String> = (None, parse_opt_string, [TRACKED],
         "show spans for compiler debugging (expr|pat|ty)"),
     print_type_sizes: bool = (false, parse_bool, [UNTRACKED],
@@ -842,6 +854,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "the directory the MIR is dumped into"),
     dump_mir_graphviz: bool = (false, parse_bool, [UNTRACKED],
         "in addition to `.mir` files, create graphviz `.dot` files"),
+    dump_mir_dataflow: bool = (false, parse_bool, [UNTRACKED],
+        "in addition to `.mir` files, create graphviz `.dot` files with dataflow results"),
     dump_mir_exclude_pass_number: bool = (false, parse_bool, [UNTRACKED],
         "if set, exclude the pass number when dumping MIR (used in tests)"),
     mir_emit_retag: bool = (false, parse_bool, [TRACKED],
@@ -854,8 +868,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "print some statistics about AST and HIR"),
     always_encode_mir: bool = (false, parse_bool, [TRACKED],
         "encode MIR of all functions into the crate metadata"),
-    json_rendered: Option<String> = (None, parse_opt_string, [UNTRACKED],
-        "describes how to render the `rendered` field of json diagnostics"),
     unleash_the_miri_inside_of_you: bool = (false, parse_bool, [TRACKED],
         "take the breaks off const evaluation. NOTE: this is unsound"),
     osx_rpath_install_name: bool = (false, parse_bool, [TRACKED],
@@ -872,9 +884,9 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "make rustc print the total optimization fuel used by a crate"),
     force_unstable_if_unmarked: bool = (false, parse_bool, [TRACKED],
         "force all crates to be `rustc_private` unstable"),
-    pre_link_arg: Vec<String> = (vec![], parse_string_push, [UNTRACKED],
+    pre_link_arg: (/* redirected to pre_link_args */) = ((), parse_string_push, [UNTRACKED],
         "a single extra argument to prepend the linker invocation (can be used several times)"),
-    pre_link_args: Option<Vec<String>> = (None, parse_opt_list, [UNTRACKED],
+    pre_link_args: Vec<String> = (Vec::new(), parse_list, [UNTRACKED],
         "extra arguments to prepend to the linker invocation (space separated)"),
     profile: bool = (false, parse_bool, [TRACKED],
                      "insert profiling code"),
@@ -886,8 +898,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "emit diagnostics rather than buffering (breaks NLL error downgrading, sorting)."),
     polonius: bool = (false, parse_bool, [UNTRACKED],
         "enable polonius-based borrow-checker"),
-    codegen_time_graph: bool = (false, parse_bool, [UNTRACKED],
-        "generate a graphical HTML report of time spent in codegen and LLVM"),
     thinlto: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "enable ThinLTO when possible"),
     inline_in_all_cgus: Option<bool> = (None, parse_opt_bool, [TRACKED],
@@ -922,8 +932,6 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "tell the linker to strip debuginfo when building without debuginfo enabled."),
     share_generics: Option<bool> = (None, parse_opt_bool, [TRACKED],
         "make the current crate share its generic instantiations"),
-    chalk: bool = (false, parse_bool, [TRACKED],
-        "enable the experimental Chalk-based trait solving engine"),
     no_parallel_llvm: bool = (false, parse_bool, [UNTRACKED],
         "don't run LLVM in parallel (while keeping codegen-units and ThinLTO)"),
     no_leak_check: bool = (false, parse_bool, [UNTRACKED],
@@ -940,7 +948,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "specifies which kinds of events get recorded by the self profiler;
         for example: `-Z self-profile-events=default,query-keys`
         all options: none, all, default, generic-activity, query-provider, query-cache-hit
-                     query-blocked, incr-cache-load, query-keys"),
+                     query-blocked, incr-cache-load, query-keys, function-args, args, llvm"),
     emit_stack_sizes: bool = (false, parse_bool, [UNTRACKED],
         "emits a section containing stack size metadata"),
     plt: Option<bool> = (None, parse_opt_bool, [TRACKED],
@@ -966,4 +974,12 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
         "use Windows Control Flow Guard (`disabled`, `nochecks` or `checks`)"),
     no_link: bool = (false, parse_bool, [TRACKED],
         "compile without linking"),
+    link_only: bool = (false, parse_bool, [TRACKED],
+        "link the `.rlink` file generated by `-Z no-link`"),
+    new_llvm_pass_manager: Option<bool> = (None, parse_opt_bool, [TRACKED],
+        "use new LLVM pass manager"),
+    link_native_libraries: Option<bool> = (None, parse_opt_bool, [UNTRACKED],
+        "Link native libraries in the linker invocation."),
+    src_hash_algorithm: Option<SourceFileHashAlgorithm> = (None, parse_src_file_hash, [TRACKED],
+        "hash algorithm of source files in debug info (`md5`, or `sha1`)"),
 }

@@ -4,16 +4,16 @@
 //! has interior mutability or needs to be dropped, as well as the visitor that emits errors when
 //! it finds operations that are invalid in a certain context.
 
-use rustc::mir;
-use rustc::ty::{self, TyCtxt};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
+use rustc_middle::mir;
+use rustc_middle::ty::{self, TyCtxt};
 
 use std::fmt;
 
 pub use self::qualifs::Qualif;
 
-pub mod ops;
+mod ops;
 pub mod qualifs;
 mod resolver;
 pub mod validation;

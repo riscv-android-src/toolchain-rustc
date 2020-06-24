@@ -1,11 +1,11 @@
 //! Unsafety checker: every impl either implements a trait defined in this
 //! crate or pertains to a type defined in this crate.
 
-use rustc::ty::TyCtxt;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_hir::Unsafety;
+use rustc_middle::ty::TyCtxt;
 
 pub fn check(tcx: TyCtxt<'_>) {
     let mut unsafety = UnsafetyChecker { tcx };
@@ -69,11 +69,11 @@ impl UnsafetyChecker<'tcx> {
                     .emit();
                 }
 
-                (_, _, Unsafety::Unsafe, hir::ImplPolarity::Negative) => {
+                (_, _, Unsafety::Unsafe, hir::ImplPolarity::Negative(_)) => {
                     // Reported in AST validation
                     self.tcx.sess.delay_span_bug(item.span, "unsafe negative impl");
                 }
-                (_, _, Unsafety::Normal, hir::ImplPolarity::Negative)
+                (_, _, Unsafety::Normal, hir::ImplPolarity::Negative(_))
                 | (Unsafety::Unsafe, _, Unsafety::Unsafe, hir::ImplPolarity::Positive)
                 | (Unsafety::Normal, Some(_), Unsafety::Unsafe, hir::ImplPolarity::Positive)
                 | (Unsafety::Normal, None, Unsafety::Normal, _) => {

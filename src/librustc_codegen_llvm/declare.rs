@@ -19,9 +19,8 @@ use crate::llvm::AttributePlace::Function;
 use crate::type_::Type;
 use crate::value::Value;
 use log::debug;
-use rustc::ty::Ty;
 use rustc_codegen_ssa::traits::*;
-use rustc_data_structures::small_c_str::SmallCStr;
+use rustc_middle::ty::Ty;
 
 /// Declare a function.
 ///
@@ -34,13 +33,14 @@ fn declare_raw_fn(
     ty: &'ll Type,
 ) -> &'ll Value {
     debug!("declare_raw_fn(name={:?}, ty={:?})", name, ty);
-    let namebuf = SmallCStr::new(name);
-    let llfn = unsafe { llvm::LLVMRustGetOrInsertFunction(cx.llmod, namebuf.as_ptr(), ty) };
+    let llfn = unsafe {
+        llvm::LLVMRustGetOrInsertFunction(cx.llmod, name.as_ptr().cast(), name.len(), ty)
+    };
 
     llvm::SetFunctionCallConv(llfn, callconv);
     // Function addresses in Rust are never significant, allowing functions to
     // be merged.
-    llvm::SetUnnamedAddr(llfn, true);
+    llvm::SetUnnamedAddress(llfn, llvm::UnnamedAddr::Global);
 
     if cx.tcx.sess.opts.cg.no_redzone.unwrap_or(cx.tcx.sess.target.target.options.disable_redzone) {
         llvm::Attribute::NoRedZone.apply_llfn(Function, llfn);
@@ -83,8 +83,7 @@ impl DeclareMethods<'tcx> for CodegenCx<'ll, 'tcx> {
 
     fn get_declared_value(&self, name: &str) -> Option<&'ll Value> {
         debug!("get_declared_value(name={:?})", name);
-        let namebuf = SmallCStr::new(name);
-        unsafe { llvm::LLVMRustGetNamedValue(self.llmod, namebuf.as_ptr()) }
+        unsafe { llvm::LLVMRustGetNamedValue(self.llmod, name.as_ptr().cast(), name.len()) }
     }
 
     fn get_defined_value(&self, name: &str) -> Option<&'ll Value> {

@@ -3,7 +3,7 @@ extern crate semver;
 #[macro_use]
 extern crate serde_json;
 
-use cargo_metadata::{Metadata, MetadataCommand};
+use cargo_metadata::{DependencyKind, Metadata, MetadataCommand};
 use std::path::PathBuf;
 
 #[test]
@@ -78,7 +78,7 @@ fn old_minimal() {
     assert_eq!(dep.name, "somedep");
     assert_eq!(dep.source, None);
     assert_eq!(dep.req, semver::VersionReq::parse("^1.0").unwrap());
-    assert_eq!(dep.kind, cargo_metadata::DependencyKind::Normal);
+    assert_eq!(dep.kind, DependencyKind::Normal);
     assert_eq!(dep.optional, false);
     assert_eq!(dep.uses_default_features, true);
     assert_eq!(dep.features.len(), 0);
@@ -141,13 +141,17 @@ fn cargo_version() -> semver::Version {
 
 #[test]
 fn all_the_fields() {
-    // All the fields currently generated as of 1.39. This tries to exercise as
+    // All the fields currently generated as of 1.41. This tries to exercise as
     // much as possible.
     let ver = cargo_version();
-    let minimum = semver::Version::parse("1.39.0").unwrap();
+    let minimum = semver::Version::parse("1.41.0").unwrap();
     if ver < minimum {
         // edition added in 1.30
         // rename added in 1.31
+        // links added in 1.33
+        // doctest added in 1.37
+        // publish added in 1.39
+        // dep_kinds added in 1.41
         eprintln!("Skipping all_the_fields test, cargo {} is too old.", ver);
         return;
     }
@@ -175,6 +179,7 @@ fn all_the_fields() {
     assert_eq!(all.license, Some("MIT/Apache-2.0".to_string()));
     assert_eq!(all.license_file, Some(PathBuf::from("LICENSE")));
     assert_eq!(all.publish, Some(vec![]));
+    assert_eq!(all.links, Some("foo".to_string()));
 
     assert_eq!(all.dependencies.len(), 8);
     let bitflags = all
@@ -195,7 +200,7 @@ fn all_the_fields() {
         .find(|d| d.name == "path-dep")
         .unwrap();
     assert_eq!(path_dep.source, None);
-    assert_eq!(path_dep.kind, cargo_metadata::DependencyKind::Normal);
+    assert_eq!(path_dep.kind, DependencyKind::Normal);
     assert_eq!(path_dep.req, semver::VersionReq::parse("*").unwrap());
 
     all.dependencies
@@ -223,10 +228,10 @@ fn all_the_fields() {
         .iter()
         .find(|d| d.name == "devdep")
         .unwrap();
-    assert_eq!(devdep.kind, cargo_metadata::DependencyKind::Development);
+    assert_eq!(devdep.kind, DependencyKind::Development);
 
     let bdep = all.dependencies.iter().find(|d| d.name == "bdep").unwrap();
-    assert_eq!(bdep.kind, cargo_metadata::DependencyKind::Build);
+    assert_eq!(bdep.kind, DependencyKind::Build);
 
     let windep = all
         .dependencies
@@ -355,6 +360,11 @@ fn all_the_fields() {
     // Note the underscore here.
     let path_dep = all.deps.iter().find(|d| d.name == "path_dep").unwrap();
     assert!(path_dep.pkg.to_string().starts_with("path-dep"));
+    assert_eq!(path_dep.dep_kinds.len(), 1);
+    let kind = &path_dep.dep_kinds[0];
+    assert_eq!(kind.kind, DependencyKind::Normal);
+    assert!(kind.target.is_none());
+
     let namedep = all
         .deps
         .iter()
@@ -362,6 +372,27 @@ fn all_the_fields() {
         .unwrap();
     assert!(namedep.pkg.to_string().starts_with("namedep"));
     assert_eq!(sorted!(all.features), vec!["bitflags", "default", "feat1"]);
+
+    let bdep = all.deps.iter().find(|d| d.name == "bdep").unwrap();
+    assert_eq!(bdep.dep_kinds.len(), 1);
+    let kind = &bdep.dep_kinds[0];
+    assert_eq!(kind.kind, DependencyKind::Build);
+    assert!(kind.target.is_none());
+
+    let devdep = all.deps.iter().find(|d| d.name == "devdep").unwrap();
+    assert_eq!(devdep.dep_kinds.len(), 1);
+    let kind = &devdep.dep_kinds[0];
+    assert_eq!(kind.kind, DependencyKind::Development);
+    assert!(kind.target.is_none());
+
+    let windep = all.deps.iter().find(|d| d.name == "windep").unwrap();
+    assert_eq!(windep.dep_kinds.len(), 1);
+    let kind = &windep.dep_kinds[0];
+    assert_eq!(kind.kind, DependencyKind::Normal);
+    assert_eq!(
+        kind.target.as_ref().map(|x| x.to_string()),
+        Some("cfg(windows)".to_string())
+    );
 }
 
 #[test]
@@ -431,59 +462,6 @@ fn alt_registry() {
     assert_eq!(deps.len(), 1);
     let dep = &deps[0];
     assert_eq!(dep.registry, Some("https://example.com".to_string()));
-}
-
-#[test]
-fn links() {
-    // This should be moved to all_the_fields once it is available on stable (1.33).
-    let json = r#"
-{
-  "packages": [
-    {
-      "name": "foo",
-      "version": "0.1.0",
-      "id": "foo 0.1.0 (path+file:///foo)",
-      "license": null,
-      "license_file": null,
-      "description": null,
-      "source": null,
-      "dependencies": [],
-      "targets": [
-        {
-          "kind": [
-            "lib"
-          ],
-          "crate_types": [
-            "lib"
-          ],
-          "name": "foo",
-          "src_path": "/foo/src/lib.rs",
-          "edition": "2018"
-        }
-      ],
-      "features": {},
-      "manifest_path": "/foo/Cargo.toml",
-      "metadata": null,
-      "authors": [],
-      "categories": [],
-      "keywords": [],
-      "readme": null,
-      "repository": null,
-      "edition": "2018",
-      "links": "somelib"
-    }
-  ],
-  "workspace_members": [
-    "foo 0.1.0 (path+file:///foo)"
-  ],
-  "resolve": null,
-  "target_directory": "/foo/target",
-  "version": 1,
-  "workspace_root": "/foo"
-}
-"#;
-    let meta: Metadata = serde_json::from_str(json).unwrap();
-    assert_eq!(meta.packages[0].links, Some("somelib".to_string()));
 }
 
 #[test]

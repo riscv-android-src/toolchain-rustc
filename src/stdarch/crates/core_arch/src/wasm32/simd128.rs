@@ -1059,7 +1059,7 @@ pub fn i8x16_add(a: v128, b: v128) -> v128 {
 }
 
 /// Adds two 128-bit vectors as if they were two packed sixteen 8-bit signed
-/// integers, saturating on overflow to `i8::max_value()`.
+/// integers, saturating on overflow to `i8::MAX`.
 #[inline]
 #[cfg_attr(test, assert_instr(i8x16.add_saturate_s))]
 pub fn i8x16_add_saturate_s(a: v128, b: v128) -> v128 {
@@ -1067,7 +1067,7 @@ pub fn i8x16_add_saturate_s(a: v128, b: v128) -> v128 {
 }
 
 /// Adds two 128-bit vectors as if they were two packed sixteen 8-bit unsigned
-/// integers, saturating on overflow to `u8::max_value()`.
+/// integers, saturating on overflow to `u8::MAX`.
 #[inline]
 #[cfg_attr(test, assert_instr(i8x16.add_saturate_u))]
 pub fn i8x16_add_saturate_u(a: v128, b: v128) -> v128 {
@@ -1082,7 +1082,7 @@ pub fn i8x16_sub(a: v128, b: v128) -> v128 {
 }
 
 /// Subtracts two 128-bit vectors as if they were two packed sixteen 8-bit
-/// signed integers, saturating on overflow to `i8::min_value()`.
+/// signed integers, saturating on overflow to `i8::MIN`.
 #[inline]
 #[cfg_attr(test, assert_instr(i8x16.sub_saturate_s))]
 pub fn i8x16_sub_saturate_s(a: v128, b: v128) -> v128 {
@@ -1169,7 +1169,7 @@ pub fn i16x8_add(a: v128, b: v128) -> v128 {
 }
 
 /// Adds two 128-bit vectors as if they were two packed eight 16-bit signed
-/// integers, saturating on overflow to `i16::max_value()`.
+/// integers, saturating on overflow to `i16::MAX`.
 #[inline]
 #[cfg_attr(test, assert_instr(i16x8.add_saturate_s))]
 pub fn i16x8_add_saturate_s(a: v128, b: v128) -> v128 {
@@ -1177,7 +1177,7 @@ pub fn i16x8_add_saturate_s(a: v128, b: v128) -> v128 {
 }
 
 /// Adds two 128-bit vectors as if they were two packed eight 16-bit unsigned
-/// integers, saturating on overflow to `u16::max_value()`.
+/// integers, saturating on overflow to `u16::MAX`.
 #[inline]
 #[cfg_attr(test, assert_instr(i16x8.add_saturate_u))]
 pub fn i16x8_add_saturate_u(a: v128, b: v128) -> v128 {
@@ -1192,7 +1192,7 @@ pub fn i16x8_sub(a: v128, b: v128) -> v128 {
 }
 
 /// Subtracts two 128-bit vectors as if they were two packed eight 16-bit
-/// signed integers, saturating on overflow to `i16::min_value()`.
+/// signed integers, saturating on overflow to `i16::MIN`.
 #[inline]
 #[cfg_attr(test, assert_instr(i16x8.sub_saturate_s))]
 pub fn i16x8_sub_saturate_s(a: v128, b: v128) -> v128 {
@@ -1862,23 +1862,23 @@ pub mod tests {
 
         test_i32x4_add => {
             [0i32, 0, 0, 0] (+ | i32x4_add) [1, 2, 3, 4],
-            [1i32, 1283, i32::max_value(), i32::min_value()]
+            [1i32, 1283, i32::MAX, i32::MIN]
                 (+ | i32x4_add)
-            [i32::max_value(); 4],
+            [i32::MAX; 4],
         }
 
         test_i32x4_sub => {
             [0i32, 0, 0, 0] (- | i32x4_sub) [1, 2, 3, 4],
-            [1i32, 1283, i32::max_value(), i32::min_value()]
+            [1i32, 1283, i32::MAX, i32::MIN]
                 (- | i32x4_sub)
-            [i32::max_value(); 4],
+            [i32::MAX; 4],
         }
 
         test_i32x4_mul => {
             [0i32, 0, 0, 0] (* | i32x4_mul) [1, 2, 3, 4],
-            [1i32, 1283, i32::max_value(), i32::min_value()]
+            [1i32, 1283, i32::MAX, i32::MIN]
                 (* | i32x4_mul)
-            [i32::max_value(); 4],
+            [i32::MAX; 4],
         }
 
         // TODO: test_i64x2_add
@@ -1904,7 +1904,7 @@ pub mod tests {
 
         test_i32x4_neg => {
             (- | i32x4_neg) [1i32, 2, 3, 4],
-            (- | i32x4_neg) [i32::min_value(), i32::max_value(), 0, 4],
+            (- | i32x4_neg) [i32::MIN, i32::MAX, 0, 4],
         }
 
         // TODO: test_i64x2_neg
@@ -2042,10 +2042,10 @@ pub mod tests {
     //
     //
     // test_bops!(i8x16[i8; 16] | shl[i8x16_shl_test]:
-    //            ([0, -1, 2, 3, 4, 5, 6, i8::max_value(), 1, 1, 1, 1, 1, 1, 1, 1], 1) =>
+    //            ([0, -1, 2, 3, 4, 5, 6, i8::MAX, 1, 1, 1, 1, 1, 1, 1, 1], 1) =>
     //            [0, -2, 4, 6, 8, 10, 12, -2, 2, 2, 2, 2, 2, 2, 2, 2]);
     // test_bops!(i16x8[i16; 8] | shl[i16x8_shl_test]:
-    //            ([0, -1, 2, 3, 4, 5, 6, i16::max_value()], 1) =>
+    //            ([0, -1, 2, 3, 4, 5, 6, i16::MAX], 1) =>
     //            [0, -2, 4, 6, 8, 10, 12, -2]);
     // test_bops!(i32x4[i32; 4] | shl[i32x4_shl_test]:
     //            ([0, -1, 2, 3], 1) => [0, -2, 4, 6]);
@@ -2053,32 +2053,32 @@ pub mod tests {
     //            ([0, -1], 1) => [0, -2]);
     //
     // test_bops!(i8x16[i8; 16] | shr_s[i8x16_shr_s_test]:
-    //            ([0, -1, 2, 3, 4, 5, 6, i8::max_value(), 1, 1, 1, 1, 1, 1, 1, 1], 1) =>
+    //            ([0, -1, 2, 3, 4, 5, 6, i8::MAX, 1, 1, 1, 1, 1, 1, 1, 1], 1) =>
     //            [0, -1, 1, 1, 2, 2, 3, 63, 0, 0, 0, 0, 0, 0, 0, 0]);
     // test_bops!(i16x8[i16; 8] | shr_s[i16x8_shr_s_test]:
-    //            ([0, -1, 2, 3, 4, 5, 6, i16::max_value()], 1) =>
-    //            [0, -1, 1, 1, 2, 2, 3, i16::max_value() / 2]);
+    //            ([0, -1, 2, 3, 4, 5, 6, i16::MAX], 1) =>
+    //            [0, -1, 1, 1, 2, 2, 3, i16::MAX / 2]);
     // test_bops!(i32x4[i32; 4] | shr_s[i32x4_shr_s_test]:
     //            ([0, -1, 2, 3], 1) => [0, -1, 1, 1]);
     // test_bops!(i64x2[i64; 2] | shr_s[i64x2_shr_s_test]:
     //            ([0, -1], 1) => [0, -1]);
     //
     // test_bops!(i8x16[i8; 16] | shr_u[i8x16_uhr_u_test]:
-    //            ([0, -1, 2, 3, 4, 5, 6, i8::max_value(), 1, 1, 1, 1, 1, 1, 1, 1], 1) =>
-    //            [0, i8::max_value(), 1, 1, 2, 2, 3, 63, 0, 0, 0, 0, 0, 0, 0, 0]);
+    //            ([0, -1, 2, 3, 4, 5, 6, i8::MAX, 1, 1, 1, 1, 1, 1, 1, 1], 1) =>
+    //            [0, i8::MAX, 1, 1, 2, 2, 3, 63, 0, 0, 0, 0, 0, 0, 0, 0]);
     // test_bops!(i16x8[i16; 8] | shr_u[i16x8_uhr_u_test]:
-    //            ([0, -1, 2, 3, 4, 5, 6, i16::max_value()], 1) =>
-    //            [0, i16::max_value(), 1, 1, 2, 2, 3, i16::max_value() / 2]);
+    //            ([0, -1, 2, 3, 4, 5, 6, i16::MAX], 1) =>
+    //            [0, i16::MAX, 1, 1, 2, 2, 3, i16::MAX / 2]);
     // test_bops!(i32x4[i32; 4] | shr_u[i32x4_uhr_u_test]:
-    //            ([0, -1, 2, 3], 1) => [0, i32::max_value(), 1, 1]);
+    //            ([0, -1, 2, 3], 1) => [0, i32::MAX, 1, 1]);
     // test_bops!(i64x2[i64; 2] | shr_u[i64x2_uhr_u_test]:
-    //            ([0, -1], 1) => [0, i64::max_value()]);
+    //            ([0, -1], 1) => [0, i64::MAX]);
     //
     // #[wasm_bindgen_test]
     // fn v128_bitwise_logical_ops() {
     //     unsafe {
-    //         let a: [u32; 4] = [u32::max_value(), 0, u32::max_value(), 0];
-    //         let b: [u32; 4] = [u32::max_value(); 4];
+    //         let a: [u32; 4] = [u32::MAX, 0, u32::MAX, 0];
+    //         let b: [u32; 4] = [u32::MAX; 4];
     //         let c: [u32; 4] = [0; 4];
     //
     //         let vec_a: v128 = transmute(a);
@@ -2312,8 +2312,8 @@ pub mod tests {
     //     f32x4_convert_u_i32x4
     //         | convert_u_i32x4
     //         | f32x4
-    //         | [u32::max_value(), 2, 3, 4],
-    //     [u32::max_value() as f32, 2., 3., 4.]
+    //         | [u32::MAX, 2, 3, 4],
+    //     [u32::MAX as f32, 2., 3., 4.]
     // );
     // test_conv!(
     //     f64x2_convert_s_i64x2 | convert_s_i64x2 | f64x2 | [1_i64, 2],
@@ -2323,12 +2323,12 @@ pub mod tests {
     //     f64x2_convert_u_i64x2
     //         | convert_u_i64x2
     //         | f64x2
-    //         | [u64::max_value(), 2],
+    //         | [u64::MAX, 2],
     //     [18446744073709552000.0, 2.]
     // );
     //
     // // FIXME: this fails, and produces -2147483648 instead of saturating at
-    // // i32::max_value() test_conv!(i32x4_trunc_s_f32x4_sat | trunc_s_f32x4_sat
-    // // | i32x4 | [1_f32, 2., (i32::max_value() as f32 + 1.), 4.],
-    // // [1_i32, 2, i32::max_value(), 4]); FIXME: add other saturating tests
+    // // i32::MAX test_conv!(i32x4_trunc_s_f32x4_sat | trunc_s_f32x4_sat
+    // // | i32x4 | [1_f32, 2., (i32::MAX as f32 + 1.), 4.],
+    // // [1_i32, 2, i32::MAX, 4]); FIXME: add other saturating tests
 }

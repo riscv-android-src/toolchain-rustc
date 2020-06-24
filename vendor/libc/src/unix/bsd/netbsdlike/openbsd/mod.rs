@@ -1315,8 +1315,8 @@ pub const IFF_LINK1: ::c_int = 0x2000; // per link layer defined bit
 pub const IFF_LINK2: ::c_int = 0x4000; // per link layer defined bit
 pub const IFF_MULTICAST: ::c_int = 0x8000; // supports multicast
 
-pub const PTHREAD_STACK_MIN: ::size_t = (1_usize << _MAX_PAGE_SHIFT);
-pub const MINSIGSTKSZ: ::size_t = (3_usize << _MAX_PAGE_SHIFT);
+pub const PTHREAD_STACK_MIN: ::size_t = 1_usize << _MAX_PAGE_SHIFT;
+pub const MINSIGSTKSZ: ::size_t = 3_usize << _MAX_PAGE_SHIFT;
 pub const SIGSTKSZ: ::size_t = MINSIGSTKSZ + (1_usize << _MAX_PAGE_SHIFT) * 4;
 
 pub const PT_FIRSTMACH: ::c_int = 32;
@@ -1392,12 +1392,6 @@ extern "C" {
     pub fn settimeofday(
         tp: *const ::timeval,
         tz: *const ::timezone,
-    ) -> ::c_int;
-    pub fn accept4(
-        s: ::c_int,
-        addr: *mut ::sockaddr,
-        addrlen: *mut ::socklen_t,
-        flags: ::c_int,
     ) -> ::c_int;
     pub fn execvpe(
         file: *const ::c_char,
@@ -1478,6 +1472,12 @@ extern "C" {
         addr: caddr_t,
         data: ::c_int,
     ) -> ::c_int;
+    pub fn memmem(
+        haystack: *const ::c_void,
+        haystacklen: ::size_t,
+        needle: *const ::c_void,
+        needlelen: ::size_t,
+    ) -> *mut ::c_void;
 }
 
 cfg_if! {

@@ -1,15 +1,13 @@
-use super::metadata::file_metadata;
-use super::utils::{span_start, DIB};
+use super::metadata::{file_metadata, UNKNOWN_COLUMN_NUMBER, UNKNOWN_LINE_NUMBER};
+use super::utils::DIB;
 use rustc_codegen_ssa::mir::debuginfo::{DebugScope, FunctionDebugContext};
+use rustc_codegen_ssa::traits::*;
 
 use crate::common::CodegenCx;
 use crate::llvm;
 use crate::llvm::debuginfo::{DIScope, DISubprogram};
-use rustc::mir::{Body, SourceScope};
-
-use libc::c_uint;
-
-use rustc_span::Pos;
+use rustc_middle::mir::{Body, SourceScope};
+use rustc_session::config::DebugInfo;
 
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::Idx;
@@ -23,10 +21,17 @@ pub fn compute_mir_scopes(
 ) {
     // Find all the scopes with variables defined in them.
     let mut has_variables = BitSet::new_empty(mir.source_scopes.len());
-    // FIXME(eddyb) take into account that arguments always have debuginfo,
-    // irrespective of their name (assuming full debuginfo is enabled).
-    for var_debug_info in &mir.var_debug_info {
-        has_variables.insert(var_debug_info.source_info.scope);
+
+    // Only consider variables when they're going to be emitted.
+    // FIXME(eddyb) don't even allocate `has_variables` otherwise.
+    if cx.sess().opts.debuginfo == DebugInfo::Full {
+        // FIXME(eddyb) take into account that arguments always have debuginfo,
+        // irrespective of their name (assuming full debuginfo is enabled).
+        // NOTE(eddyb) actually, on second thought, those are always in the
+        // function scope, which always exists.
+        for var_debug_info in &mir.var_debug_info {
+            has_variables.insert(var_debug_info.source_info.scope);
+        }
     }
 
     // Instantiate all scopes.
@@ -54,7 +59,7 @@ fn make_mir_scope(
         debug_context.scopes[parent]
     } else {
         // The root is the function itself.
-        let loc = span_start(cx, mir.span);
+        let loc = cx.lookup_debug_loc(mir.span.lo());
         debug_context.scopes[scope] = DebugScope {
             scope_metadata: Some(fn_metadata),
             file_start_pos: loc.file.start_pos,
@@ -70,16 +75,16 @@ fn make_mir_scope(
         return;
     }
 
-    let loc = span_start(cx, scope_data.span);
-    let file_metadata = file_metadata(cx, &loc.file.name, debug_context.defining_crate);
+    let loc = cx.lookup_debug_loc(scope_data.span.lo());
+    let file_metadata = file_metadata(cx, &loc.file, debug_context.defining_crate);
 
     let scope_metadata = unsafe {
         Some(llvm::LLVMRustDIBuilderCreateLexicalBlock(
             DIB(cx),
             parent_scope.scope_metadata.unwrap(),
             file_metadata,
-            loc.line as c_uint,
-            loc.col.to_usize() as c_uint,
+            loc.line.unwrap_or(UNKNOWN_LINE_NUMBER),
+            loc.col.unwrap_or(UNKNOWN_COLUMN_NUMBER),
         ))
     };
     debug_context.scopes[scope] = DebugScope {

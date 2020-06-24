@@ -347,7 +347,10 @@ pub fn run_tests(config: Config) {
         Ok(true) => {}
         Ok(false) => panic!("Some tests failed"),
         Err(e) => {
-            println!("I/O failure during tests: {:?}", e);
+            // We don't know if tests passed or not, but if there was an error
+            // during testing we don't want to just suceeed (we may not have
+            // tested something), so fail.
+            panic!("I/O failure during tests: {:?}", e);
         }
     }
 }
@@ -449,15 +452,8 @@ pub fn test_opts(config: &Config) -> test::TestOpts {
 pub fn make_tests(config: &Config, tests: &mut Vec<test::TestDescAndFn>) {
     debug!("making tests from {:?}", config.src_base.display());
     let inputs = common_inputs_stamp(config);
-    collect_tests_from_dir(
-        config,
-        &config.src_base,
-        &config.src_base,
-        &PathBuf::new(),
-        &inputs,
-        tests,
-    )
-    .expect(&format!("Could not read tests from {}", config.src_base.display()));
+    collect_tests_from_dir(config, &config.src_base, &PathBuf::new(), &inputs, tests)
+        .expect(&format!("Could not read tests from {}", config.src_base.display()));
 }
 
 /// Returns a stamp constructed from input files common to all test cases.
@@ -494,7 +490,6 @@ fn common_inputs_stamp(config: &Config) -> Stamp {
 
 fn collect_tests_from_dir(
     config: &Config,
-    base: &Path,
     dir: &Path,
     relative_dir_path: &Path,
     inputs: &Stamp,
@@ -538,14 +533,7 @@ fn collect_tests_from_dir(
             let relative_file_path = relative_dir_path.join(file.file_name());
             if &file_name != "auxiliary" {
                 debug!("found directory: {:?}", file_path.display());
-                collect_tests_from_dir(
-                    config,
-                    base,
-                    &file_path,
-                    &relative_file_path,
-                    inputs,
-                    tests,
-                )?;
+                collect_tests_from_dir(config, &file_path, &relative_file_path, inputs, tests)?;
             }
         } else {
             debug!("found other file/directory: {:?}", file_path.display());

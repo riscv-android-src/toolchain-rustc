@@ -20,9 +20,13 @@ pub struct Rustc {
     pub path: PathBuf,
     /// An optional program that will be passed the path of the rust exe as its first argument, and
     /// rustc args following this.
-    pub wrapper: Option<ProcessBuilder>,
+    pub wrapper: Option<PathBuf>,
+    /// An optional wrapper to be used in addition to `rustc.wrapper` for workspace crates
+    pub workspace_wrapper: Option<PathBuf>,
     /// Verbose version information (the output of `rustc -vV`)
     pub verbose_version: String,
+    /// The rustc version (`1.23.4-beta.2`), this comes from verbose_version.
+    pub version: semver::Version,
     /// The host triple (arch-platform-OS), this comes from verbose_version.
     pub host: InternedString,
     cache: Mutex<Cache>,
@@ -37,6 +41,7 @@ impl Rustc {
     pub fn new(
         path: PathBuf,
         wrapper: Option<PathBuf>,
+        workspace_wrapper: Option<PathBuf>,
         rustup_rustc: &Path,
         cache_location: Option<PathBuf>,
     ) -> CargoResult<Rustc> {
@@ -48,44 +53,49 @@ impl Rustc {
         cmd.arg("-vV");
         let verbose_version = cache.cached_output(&cmd)?.0;
 
-        let host = {
-            let triple = verbose_version
+        let extract = |field: &str| -> CargoResult<&str> {
+            verbose_version
                 .lines()
-                .find(|l| l.starts_with("host: "))
-                .map(|l| &l[6..])
+                .find(|l| l.starts_with(field))
+                .map(|l| &l[field.len()..])
                 .ok_or_else(|| {
                     anyhow::format_err!(
-                        "`rustc -vV` didn't have a line for `host:`, got:\n{}",
+                        "`rustc -vV` didn't have a line for `{}`, got:\n{}",
+                        field.trim(),
                         verbose_version
                     )
-                })?;
-            InternedString::new(triple)
+                })
         };
+
+        let host = InternedString::new(extract("host: ")?);
+        let version = semver::Version::parse(extract("release: ")?).chain_err(|| {
+            format!(
+                "rustc version does not appear to be a valid semver version, from:\n{}",
+                verbose_version
+            )
+        })?;
 
         Ok(Rustc {
             path,
-            wrapper: wrapper.map(util::process),
+            wrapper,
+            workspace_wrapper,
             verbose_version,
+            version,
             host,
             cache: Mutex::new(cache),
         })
     }
 
     /// Gets a process builder set up to use the found rustc version, with a wrapper if `Some`.
-    pub fn process_with(&self, path: impl AsRef<Path>) -> ProcessBuilder {
-        match self.wrapper {
-            Some(ref wrapper) if !wrapper.get_program().is_empty() => {
-                let mut cmd = wrapper.clone();
-                cmd.arg(path.as_ref());
-                cmd
-            }
-            _ => util::process(path.as_ref()),
-        }
+    pub fn process(&self) -> ProcessBuilder {
+        util::process(self.path.as_path()).wrapped(self.wrapper.as_ref())
     }
 
     /// Gets a process builder set up to use the found rustc version, with a wrapper if `Some`.
-    pub fn process(&self) -> ProcessBuilder {
-        self.process_with(&self.path)
+    pub fn workspace_process(&self) -> ProcessBuilder {
+        util::process(self.path.as_path())
+            .wrapped(self.workspace_wrapper.as_ref())
+            .wrapped(self.wrapper.as_ref())
     }
 
     pub fn process_no_wrapper(&self) -> ProcessBuilder {
@@ -94,10 +104,6 @@ impl Rustc {
 
     pub fn cached_output(&self, cmd: &ProcessBuilder) -> CargoResult<(String, String)> {
         self.cache.lock().unwrap().cached_output(cmd)
-    }
-
-    pub fn set_wrapper(&mut self, wrapper: ProcessBuilder) {
-        self.wrapper = Some(wrapper);
     }
 }
 

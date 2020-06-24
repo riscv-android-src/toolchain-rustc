@@ -1,10 +1,10 @@
 use crate::infer::error_reporting::nice_region_error::NiceRegionError;
-use rustc::hir::map::Map;
-use rustc::middle::resolve_lifetime as rl;
-use rustc::ty::{self, Region, TyCtxt};
 use rustc_hir as hir;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::Node;
+use rustc_middle::hir::map::Map;
+use rustc_middle::middle::resolve_lifetime as rl;
+use rustc_middle::ty::{self, Region, TyCtxt};
 
 impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     /// This function calls the `visit_ty` method for the parameters
@@ -33,11 +33,11 @@ impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
                 let fndecl = match self.tcx().hir().get(hir_id) {
                     Node::Item(&hir::Item { kind: hir::ItemKind::Fn(ref m, ..), .. })
                     | Node::TraitItem(&hir::TraitItem {
-                        kind: hir::TraitItemKind::Method(ref m, ..),
+                        kind: hir::TraitItemKind::Fn(ref m, ..),
                         ..
                     })
                     | Node::ImplItem(&hir::ImplItem {
-                        kind: hir::ImplItemKind::Method(ref m, ..),
+                        kind: hir::ImplItemKind::Fn(ref m, ..),
                         ..
                     }) => &m.decl,
                     _ => return None,
@@ -93,8 +93,8 @@ struct FindNestedTypeVisitor<'tcx> {
 impl Visitor<'tcx> for FindNestedTypeVisitor<'tcx> {
     type Map = Map<'tcx>;
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, Self::Map> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::OnlyBodies(self.tcx.hir())
     }
 
     fn visit_ty(&mut self, arg: &'tcx hir::Ty<'tcx>) {
@@ -164,12 +164,17 @@ impl Visitor<'tcx> for FindNestedTypeVisitor<'tcx> {
                         }
                     }
 
-                    (Some(rl::Region::Static), _)
-                    | (Some(rl::Region::Free(_, _)), _)
-                    | (Some(rl::Region::EarlyBound(_, _, _)), _)
-                    | (Some(rl::Region::LateBound(_, _, _)), _)
-                    | (Some(rl::Region::LateBoundAnon(_, _)), _)
-                    | (None, _) => {
+                    (
+                        Some(
+                            rl::Region::Static
+                            | rl::Region::Free(_, _)
+                            | rl::Region::EarlyBound(_, _, _)
+                            | rl::Region::LateBound(_, _, _)
+                            | rl::Region::LateBoundAnon(_, _),
+                        )
+                        | None,
+                        _,
+                    ) => {
                         debug!("no arg found");
                     }
                 }
@@ -212,8 +217,8 @@ struct TyPathVisitor<'tcx> {
 impl Visitor<'tcx> for TyPathVisitor<'tcx> {
     type Map = Map<'tcx>;
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, Map<'tcx>> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Map<'tcx>> {
+        NestedVisitorMap::OnlyBodies(self.tcx.hir())
     }
 
     fn visit_lifetime(&mut self, lifetime: &hir::Lifetime) {
@@ -244,12 +249,17 @@ impl Visitor<'tcx> for TyPathVisitor<'tcx> {
                 }
             }
 
-            (Some(rl::Region::Static), _)
-            | (Some(rl::Region::EarlyBound(_, _, _)), _)
-            | (Some(rl::Region::LateBound(_, _, _)), _)
-            | (Some(rl::Region::LateBoundAnon(_, _)), _)
-            | (Some(rl::Region::Free(_, _)), _)
-            | (None, _) => {
+            (
+                Some(
+                    rl::Region::Static
+                    | rl::Region::EarlyBound(_, _, _)
+                    | rl::Region::LateBound(_, _, _)
+                    | rl::Region::LateBoundAnon(_, _)
+                    | rl::Region::Free(_, _),
+                )
+                | None,
+                _,
+            ) => {
                 debug!("no arg found");
             }
         }

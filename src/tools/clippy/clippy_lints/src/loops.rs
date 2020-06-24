@@ -11,10 +11,6 @@ use crate::utils::{
 use crate::utils::{is_type_diagnostic_item, qpath_res, same_tys, sext, sugg};
 use if_chain::if_chain;
 use itertools::Itertools;
-use rustc::hir::map::Map;
-use rustc::lint::in_external_macro;
-use rustc::middle::region;
-use rustc::ty::{self, Ty};
 use rustc_ast::ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
@@ -26,9 +22,13 @@ use rustc_hir::{
 };
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::hir::map::Map;
+use rustc_middle::lint::in_external_macro;
+use rustc_middle::middle::region;
+use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
-use rustc_span::{BytePos, Symbol};
+use rustc_span::BytePos;
 use rustc_typeck::expr_use_visitor::{ConsumeMode, Delegate, ExprUseVisitor, Place, PlaceBase};
 use std::iter::{once, Iterator};
 use std::mem;
@@ -654,7 +654,7 @@ fn combine_branches(b1: NeverLoopResult, b2: NeverLoopResult) -> NeverLoopResult
 
 fn never_loop_block(block: &Block<'_>, main_loop_id: HirId) -> NeverLoopResult {
     let stmts = block.stmts.iter().map(stmt_to_expr);
-    let expr = once(block.expr.as_ref().map(|p| &**p));
+    let expr = once(block.expr.as_deref());
     let mut iter = stmts.chain(expr).filter_map(|e| e);
     never_loop_expr_seq(&mut iter, main_loop_id)
 }
@@ -662,7 +662,7 @@ fn never_loop_block(block: &Block<'_>, main_loop_id: HirId) -> NeverLoopResult {
 fn stmt_to_expr<'tcx>(stmt: &Stmt<'tcx>) -> Option<&'tcx Expr<'tcx>> {
     match stmt.kind {
         StmtKind::Semi(ref e, ..) | StmtKind::Expr(ref e, ..) => Some(e),
-        StmtKind::Local(ref local) => local.init.as_ref().map(|p| &**p),
+        StmtKind::Local(ref local) => local.init.as_deref(),
         _ => None,
     }
 }
@@ -720,7 +720,7 @@ fn never_loop_expr(expr: &Expr<'_>, main_loop_id: HirId) -> NeverLoopResult {
         ExprKind::Struct(_, _, None)
         | ExprKind::Yield(_, _)
         | ExprKind::Closure(_, _, _, _, _)
-        | ExprKind::InlineAsm(_)
+        | ExprKind::LlvmInlineAsm(_)
         | ExprKind::Path(_)
         | ExprKind::Lit(_)
         | ExprKind::Err => NeverLoopResult::Otherwise,
@@ -804,7 +804,7 @@ fn is_slice_like<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'_>) -> bool {
         _ => false,
     };
 
-    is_slice || is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) || match_type(cx, ty, &paths::VEC_DEQUE)
+    is_slice || is_type_diagnostic_item(cx, ty, sym!(vec_type)) || match_type(cx, ty, &paths::VEC_DEQUE)
 }
 
 fn get_fixed_offset_var<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, expr: &Expr<'_>, var: HirId) -> Option<FixedOffsetVar> {
@@ -922,7 +922,7 @@ fn get_indexed_assignments<'a, 'tcx>(
             .chain(expr.as_ref().into_iter().map(|e| Some(get_assignment(cx, &*e, var))))
             .filter_map(|op| op)
             .collect::<Option<Vec<_>>>()
-            .unwrap_or_else(|| vec![])
+            .unwrap_or_default()
     } else {
         get_assignment(cx, body, var).into_iter().collect()
     }
@@ -1164,9 +1164,9 @@ fn check_for_loop_range<'a, 'tcx>(
                         NEEDLESS_RANGE_LOOP,
                         expr.span,
                         &format!("the loop variable `{}` is used to index `{}`", ident.name, indexed),
-                        |db| {
+                        |diag| {
                             multispan_sugg(
-                                db,
+                                diag,
                                 "consider using an iterator".to_string(),
                                 vec![
                                     (pat.span, format!("({}, <item>)", ident.name)),
@@ -1193,9 +1193,9 @@ fn check_for_loop_range<'a, 'tcx>(
                             "the loop variable `{}` is only used to index `{}`.",
                             ident.name, indexed
                         ),
-                        |db| {
+                        |diag| {
                             multispan_sugg(
-                                db,
+                                diag,
                                 "consider using an iterator".to_string(),
                                 vec![(pat.span, "<item>".to_string()), (arg.span, repl)],
                             );
@@ -1287,8 +1287,8 @@ fn check_for_loop_reverse_range<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, arg: &'tcx
                         REVERSE_RANGE_LOOP,
                         expr.span,
                         "this range is empty so this for loop will never run",
-                        |db| {
-                            db.span_suggestion(
+                        |diag| {
+                            diag.span_suggestion(
                                 arg.span,
                                 "consider using the following if you are attempting to iterate over this \
                                  range in reverse",
@@ -1392,7 +1392,7 @@ fn check_for_loop_arg(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>, e
 /// Checks for `for` loops over `Option`s and `Result`s.
 fn check_arg_type(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>) {
     let ty = cx.tables.expr_ty(arg);
-    if match_type(cx, ty, &paths::OPTION) {
+    if is_type_diagnostic_item(cx, ty, sym!(option_type)) {
         span_lint_and_help(
             cx,
             FOR_LOOP_OVER_OPTION,
@@ -1408,7 +1408,7 @@ fn check_arg_type(cx: &LateContext<'_, '_>, pat: &Pat<'_>, arg: &Expr<'_>) {
                 snippet(cx, arg.span, "_")
             ),
         );
-    } else if match_type(cx, ty, &paths::RESULT) {
+    } else if is_type_diagnostic_item(cx, ty, sym!(result_type)) {
         span_lint_and_help(
             cx,
             FOR_LOOP_OVER_RESULT,
@@ -1561,10 +1561,10 @@ fn check_for_loop_over_map_kv<'a, 'tcx>(
                     FOR_KV_MAP,
                     expr.span,
                     &format!("you seem to want to iterate on a map's {}s", kind),
-                    |db| {
+                    |diag| {
                         let map = sugg::Sugg::hir(cx, arg, "map");
                         multispan_sugg(
-                            db,
+                            diag,
                             "use the corresponding method".into(),
                             vec![
                                 (pat_span, snippet(cx, new_pat_span, kind).into_owned()),
@@ -1679,7 +1679,7 @@ fn check_for_mutation(
         span_low: None,
         span_high: None,
     };
-    let def_id = def_id::DefId::local(body.hir_id.owner);
+    let def_id = body.hir_id.owner.to_def_id();
     cx.tcx.infer_ctxt().enter(|infcx| {
         ExprUseVisitor::new(&mut delegate, &infcx, def_id, cx.param_env, cx.tables).walk_expr(body);
     });
@@ -1712,7 +1712,7 @@ impl<'a, 'tcx> Visitor<'tcx> for LocalUsedVisitor<'a, 'tcx> {
         }
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -1780,7 +1780,7 @@ impl<'a, 'tcx> VarVisitor<'a, 'tcx> {
                             }
                             return false;  // no need to walk further *on the variable*
                         }
-                        Res::Def(DefKind::Static, ..) | Res::Def(DefKind::Const, ..) => {
+                        Res::Def(DefKind::Static | DefKind::Const, ..) => {
                             if indexed_indirectly {
                                 self.indexed_indirectly.insert(seqvar.segments[0].ident.name, None);
                             }
@@ -1885,7 +1885,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarVisitor<'a, 'tcx> {
         }
         self.prefer_mutable = old;
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -1942,7 +1942,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarUsedAfterLoopVisitor<'a, 'tcx> {
         }
         walk_expr(self, expr);
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -1955,7 +1955,7 @@ fn is_ref_iterable_type(cx: &LateContext<'_, '_>, e: &Expr<'_>) -> bool {
     // will allow further borrows afterwards
     let ty = cx.tables.expr_ty(e);
     is_iterable_array(ty, cx) ||
-    is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) ||
+    is_type_diagnostic_item(cx, ty, sym!(vec_type)) ||
     match_type(cx, ty, &paths::LINKED_LIST) ||
     match_type(cx, ty, &paths::HASHMAP) ||
     match_type(cx, ty, &paths::HASHSET) ||
@@ -2084,7 +2084,7 @@ impl<'a, 'tcx> Visitor<'tcx> for IncrementVisitor<'a, 'tcx> {
         }
         walk_expr(self, expr);
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -2176,8 +2176,8 @@ impl<'a, 'tcx> Visitor<'tcx> for InitializeVisitor<'a, 'tcx> {
         walk_expr(self, expr);
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
-        NestedVisitorMap::OnlyBodies(&self.cx.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::OnlyBodies(self.cx.tcx.hir())
     }
 }
 
@@ -2312,7 +2312,7 @@ impl<'tcx> Visitor<'tcx> for LoopNestVisitor {
         walk_pat(self, pat)
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -2363,12 +2363,12 @@ fn check_infinite_loop<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, cond: &'tcx Expr<'_
             WHILE_IMMUTABLE_CONDITION,
             cond.span,
             "variables in the condition are not mutated in the loop body",
-            |db| {
-                db.note("this may lead to an infinite or to a never running loop");
+            |diag| {
+                diag.note("this may lead to an infinite or to a never running loop");
 
                 if has_break_or_return {
-                    db.note("this loop contains `return`s or `break`s");
-                    db.help("rewrite it as `if cond { loop { } }`");
+                    diag.note("this loop contains `return`s or `break`s");
+                    diag.help("rewrite it as `if cond { loop { } }`");
                 }
             },
         );
@@ -2398,7 +2398,7 @@ impl<'a, 'tcx> Visitor<'tcx> for HasBreakOrReturnVisitor {
         walk_expr(self, expr);
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -2449,7 +2449,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VarCollectorVisitor<'a, 'tcx> {
         }
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -2465,14 +2465,14 @@ fn check_needless_collect<'a, 'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'a, '
         if let Some(GenericArg::Type(ref ty)) = generic_args.args.get(0);
         then {
             let ty = cx.tables.node_type(ty.hir_id);
-            if is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) ||
+            if is_type_diagnostic_item(cx, ty, sym!(vec_type)) ||
                 match_type(cx, ty, &paths::VEC_DEQUE) ||
                 match_type(cx, ty, &paths::BTREEMAP) ||
                 match_type(cx, ty, &paths::HASHMAP) {
                 if method.ident.name == sym!(len) {
                     let span = shorten_needless_collect_span(expr);
-                    span_lint_and_then(cx, NEEDLESS_COLLECT, span, NEEDLESS_COLLECT_MSG, |db| {
-                        db.span_suggestion(
+                    span_lint_and_then(cx, NEEDLESS_COLLECT, span, NEEDLESS_COLLECT_MSG, |diag| {
+                        diag.span_suggestion(
                             span,
                             "replace with",
                             ".count()".to_string(),
@@ -2482,8 +2482,8 @@ fn check_needless_collect<'a, 'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'a, '
                 }
                 if method.ident.name == sym!(is_empty) {
                     let span = shorten_needless_collect_span(expr);
-                    span_lint_and_then(cx, NEEDLESS_COLLECT, span, NEEDLESS_COLLECT_MSG, |db| {
-                        db.span_suggestion(
+                    span_lint_and_then(cx, NEEDLESS_COLLECT, span, NEEDLESS_COLLECT_MSG, |diag| {
+                        diag.span_suggestion(
                             span,
                             "replace with",
                             ".next().is_none()".to_string(),
@@ -2494,13 +2494,13 @@ fn check_needless_collect<'a, 'tcx>(expr: &'tcx Expr<'_>, cx: &LateContext<'a, '
                 if method.ident.name == sym!(contains) {
                     let contains_arg = snippet(cx, args[1].span, "??");
                     let span = shorten_needless_collect_span(expr);
-                    span_lint_and_then(cx, NEEDLESS_COLLECT, span, NEEDLESS_COLLECT_MSG, |db| {
+                    span_lint_and_then(cx, NEEDLESS_COLLECT, span, NEEDLESS_COLLECT_MSG, |diag| {
                         let (arg, pred) = if contains_arg.starts_with('&') {
                             ("x", &contains_arg[1..])
                         } else {
                             ("&x", &*contains_arg)
                         };
-                        db.span_suggestion(
+                        diag.span_suggestion(
                             span,
                             "replace with",
                             format!(

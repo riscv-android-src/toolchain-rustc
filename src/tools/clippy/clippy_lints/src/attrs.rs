@@ -6,15 +6,15 @@ use crate::utils::{
     span_lint_and_then, without_block_comments,
 };
 use if_chain::if_chain;
-use rustc::lint::in_external_macro;
-use rustc::ty;
 use rustc_ast::ast::{AttrKind, AttrStyle, Attribute, Lit, LitKind, MetaItemKind, NestedMetaItem};
 use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_errors::Applicability;
 use rustc_hir::{
-    Block, Expr, ExprKind, ImplItem, ImplItemKind, Item, ItemKind, StmtKind, TraitItem, TraitItemKind, TraitMethod,
+    Block, Expr, ExprKind, ImplItem, ImplItemKind, Item, ItemKind, StmtKind, TraitFn, TraitItem, TraitItemKind,
 };
 use rustc_lint::{CheckLintNameResult, EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintContext};
+use rustc_middle::lint::in_external_macro;
+use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 use rustc_span::symbol::Symbol;
@@ -273,9 +273,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Attributes {
                                                 USELESS_ATTRIBUTE,
                                                 line_span,
                                                 "useless lint attribute",
-                                                |db| {
+                                                |diag| {
                                                     sugg = sugg.replacen("#[", "#![", 1);
-                                                    db.span_suggestion(
+                                                    diag.span_suggestion(
                                                         line_span,
                                                         "if you just forgot a `!`, use",
                                                         sugg,
@@ -329,7 +329,7 @@ fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
                     UNKNOWN_CLIPPY_LINTS,
                     lint.span(),
                     &format!("unknown clippy lint: clippy::{}", name),
-                    |db| {
+                    |diag| {
                         let name_lower = name.as_str().to_lowercase();
                         let symbols = lint_store.get_lints().iter().map(
                             |l| Symbol::intern(&l.name_lower())
@@ -341,14 +341,14 @@ fn check_clippy_lint_names(cx: &LateContext<'_, '_>, items: &[NestedMetaItem]) {
                         );
                         if name.as_str().chars().any(char::is_uppercase)
                             && lint_store.find_lints(&format!("clippy::{}", name_lower)).is_ok() {
-                            db.span_suggestion(
+                            diag.span_suggestion(
                                 lint.span(),
                                 "lowercase the lint name",
                                 format!("clippy::{}", name_lower),
                                 Applicability::MachineApplicable,
                             );
                         } else if let Some(sugg) = sugg {
-                            db.span_suggestion(
+                            diag.span_suggestion(
                                 lint.span(),
                                 "did you mean",
                                 sugg.to_string(),
@@ -372,15 +372,15 @@ fn is_relevant_item(cx: &LateContext<'_, '_>, item: &Item<'_>) -> bool {
 
 fn is_relevant_impl(cx: &LateContext<'_, '_>, item: &ImplItem<'_>) -> bool {
     match item.kind {
-        ImplItemKind::Method(_, eid) => is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value),
+        ImplItemKind::Fn(_, eid) => is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value),
         _ => false,
     }
 }
 
 fn is_relevant_trait(cx: &LateContext<'_, '_>, item: &TraitItem<'_>) -> bool {
     match item.kind {
-        TraitItemKind::Method(_, TraitMethod::Required(_)) => true,
-        TraitItemKind::Method(_, TraitMethod::Provided(eid)) => {
+        TraitItemKind::Fn(_, TraitFn::Required(_)) => true,
+        TraitItemKind::Fn(_, TraitFn::Provided(eid)) => {
             is_relevant_expr(cx, cx.tcx.body_tables(eid), &cx.tcx.hir().body(eid).value)
         },
         _ => false,

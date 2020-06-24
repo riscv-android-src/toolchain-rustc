@@ -1,41 +1,31 @@
+use crate::cgu_reuse_tracker::CguReuseTracker;
 use crate::code_stats::CodeStats;
 pub use crate::code_stats::{DataTypeKind, FieldInfo, SizeKind, VariantInfo};
-
-use crate::cgu_reuse_tracker::CguReuseTracker;
-use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-
 use crate::config::{self, OutputType, PrintRequest, Sanitizer, SwitchWithOptPath};
 use crate::filesearch;
 use crate::lint;
+use crate::parse::ParseSess;
 use crate::search_paths::{PathKind, SearchPath};
-use rustc_data_structures::profiling::duration_to_secs_str;
-use rustc_errors::ErrorReported;
 
-use rustc_data_structures::base_n;
-use rustc_data_structures::impl_stable_hash_via_hash;
+pub use rustc_ast::crate_disambiguator::CrateDisambiguator;
+use rustc_data_structures::flock;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_data_structures::jobserver::{self, Client};
+use rustc_data_structures::profiling::{duration_to_secs_str, SelfProfiler, SelfProfilerRef};
 use rustc_data_structures::sync::{
     self, AtomicU64, AtomicUsize, Lock, Lrc, Once, OneThread, Ordering, Ordering::SeqCst,
 };
-
-use crate::parse::ParseSess;
 use rustc_errors::annotate_snippet_emitter_writer::AnnotateSnippetEmitterWriter;
-use rustc_errors::emitter::HumanReadableErrorType;
-use rustc_errors::emitter::{Emitter, EmitterWriter};
+use rustc_errors::emitter::{Emitter, EmitterWriter, HumanReadableErrorType};
 use rustc_errors::json::JsonEmitter;
-use rustc_errors::{Applicability, DiagnosticBuilder, DiagnosticId};
+use rustc_errors::{Applicability, DiagnosticBuilder, DiagnosticId, ErrorReported};
 use rustc_span::edition::Edition;
-use rustc_span::source_map;
-use rustc_span::{MultiSpan, Span};
-
-use rustc_data_structures::flock;
-use rustc_data_structures::jobserver::{self, Client};
-use rustc_data_structures::profiling::{SelfProfiler, SelfProfilerRef};
+use rustc_span::source_map::{self, FileLoader, MultiSpan, RealFileLoader, SourceMap, Span};
+use rustc_span::SourceFileHashAlgorithm;
 use rustc_target::spec::{PanicStrategy, RelroLevel, Target, TargetTriple};
 
 use std::cell::{self, RefCell};
 use std::env;
-use std::fmt;
 use std::io::Write;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -47,6 +37,18 @@ pub struct OptimizationFuel {
     remaining: u64,
     /// We're rejecting all further optimizations.
     out_of_fuel: bool,
+}
+
+/// The behavior of the CTFE engine when an error occurs with regards to backtraces.
+#[derive(Clone, Copy)]
+pub enum CtfeBacktrace {
+    /// Do nothing special, return the error as usual without a backtrace.
+    Disabled,
+    /// Capture a backtrace at the point the error is created and return it in the error
+    /// (to be printed later if/when the error ever actually gets shown to the user).
+    Capture,
+    /// Capture a backtrace at the point the error is created and immediately print it out.
+    Immediate,
 }
 
 /// Represents the data associated with a compilation
@@ -88,10 +90,8 @@ pub struct Session {
     /// The maximum length of types during monomorphization.
     pub type_length_limit: Once<usize>,
 
-    /// Map from imported macro spans (which consist of
-    /// the localized span for the macro body) to the
-    /// macro name and definition span in the source crate.
-    pub imported_macro_spans: OneThread<RefCell<FxHashMap<Span, (String, Span)>>>,
+    /// The maximum blocks a const expression can evaluate.
+    pub const_eval_limit: Once<usize>,
 
     incr_comp_session: OneThread<RefCell<IncrCompSession>>,
     /// Used for incremental compilation tests. Will only be populated if
@@ -136,6 +136,20 @@ pub struct Session {
     /// Path for libraries that will take preference over libraries shipped by Rust.
     /// Used by windows-gnu targets to priortize system mingw-w64 libraries.
     pub system_library_path: OneThread<RefCell<Option<Option<PathBuf>>>>,
+
+    /// Tracks the current behavior of the CTFE engine when an error occurs.
+    /// Options range from returning the error without a backtrace to returning an error
+    /// and immediately printing the backtrace to stderr.
+    pub ctfe_backtrace: Lock<CtfeBacktrace>,
+
+    /// Base directory containing the `src/` for the Rust standard library, and
+    /// potentially `rustc` as well, if we can can find it. Right now it's always
+    /// `$sysroot/lib/rustlib/src/rust` (i.e. the `rustup` `rust-src` component).
+    ///
+    /// This directory is what the virtual `/rustc/$hash` is translated back to,
+    /// if Rust was built with path remapping to `/rustc/$hash` enabled
+    /// (the `rust.remap-debuginfo` option in `config.toml`).
+    pub real_rust_source_base_dir: Option<PathBuf>,
 }
 
 pub struct PerfStats {
@@ -146,7 +160,7 @@ pub struct PerfStats {
     /// Total number of values canonicalized queries constructed.
     pub queries_canonicalized: AtomicUsize,
     /// Number of times this query is invoked.
-    pub normalize_ty_after_erasing_regions: AtomicUsize,
+    pub normalize_generic_arg_after_erasing_regions: AtomicUsize,
     /// Number of times this query is invoked.
     pub normalize_projection_ty: AtomicUsize,
 }
@@ -392,6 +406,7 @@ impl Session {
         );
     }
 
+    #[inline]
     pub fn source_map(&self) -> &source_map::SourceMap {
         self.parse_sess.source_map()
     }
@@ -539,25 +554,34 @@ impl Session {
             .unwrap_or(self.opts.debug_assertions)
     }
 
-    pub fn crt_static(&self) -> bool {
+    /// Check whether this compile session and crate type use static crt.
+    pub fn crt_static(&self, crate_type: Option<config::CrateType>) -> bool {
         // If the target does not opt in to crt-static support, use its default.
         if self.target.target.options.crt_static_respected {
-            self.crt_static_feature()
+            self.crt_static_feature(crate_type)
         } else {
             self.target.target.options.crt_static_default
         }
     }
 
-    pub fn crt_static_feature(&self) -> bool {
+    /// Check whether this compile session and crate type use `crt-static` feature.
+    pub fn crt_static_feature(&self, crate_type: Option<config::CrateType>) -> bool {
         let requested_features = self.opts.cg.target_feature.split(',');
         let found_negative = requested_features.clone().any(|r| r == "-crt-static");
         let found_positive = requested_features.clone().any(|r| r == "+crt-static");
 
-        // If the target we're compiling for requests a static crt by default,
-        // then see if the `-crt-static` feature was passed to disable that.
-        // Otherwise if we don't have a static crt by default then see if the
-        // `+crt-static` feature was passed.
-        if self.target.target.options.crt_static_default { !found_negative } else { found_positive }
+        if found_positive || found_negative {
+            found_positive
+        } else if crate_type == Some(config::CrateType::ProcMacro)
+            || crate_type == None && self.opts.crate_types.contains(&config::CrateType::ProcMacro)
+        {
+            // FIXME: When crate_type is not available,
+            // we use compiler options to determine the crate_type.
+            // We can't check `#![crate_type = "proc-macro"]` here.
+            false
+        } else {
+            self.target.target.options.crt_static_default
+        }
     }
 
     pub fn must_not_eliminate_frame_pointers(&self) -> bool {
@@ -693,8 +717,8 @@ impl Session {
             self.perf_stats.queries_canonicalized.load(Ordering::Relaxed)
         );
         println!(
-            "normalize_ty_after_erasing_regions:            {}",
-            self.perf_stats.normalize_ty_after_erasing_regions.load(Ordering::Relaxed)
+            "normalize_generic_arg_after_erasing_regions:   {}",
+            self.perf_stats.normalize_generic_arg_after_erasing_regions.load(Ordering::Relaxed)
         );
         println!(
             "normalize_projection_ty:                       {}",
@@ -742,6 +766,13 @@ impl Session {
         }
         if let Some(n) = self.target.target.options.default_codegen_units {
             return n as usize;
+        }
+
+        // If incremental compilation is turned on, we default to a high number
+        // codegen units in order to reduce the "collateral damage" small
+        // changes cause.
+        if self.opts.incremental.is_some() {
+            return 256;
         }
 
         // Why is 16 codegen units the default all the time?
@@ -840,16 +871,15 @@ pub fn build_session(
     local_crate_source_file: Option<PathBuf>,
     registry: rustc_errors::registry::Registry,
 ) -> Session {
-    let file_path_mapping = sopts.file_path_mapping();
-
     build_session_with_source_map(
         sopts,
         local_crate_source_file,
         registry,
-        Lrc::new(source_map::SourceMap::new(file_path_mapping)),
         DiagnosticOutput::Default,
         Default::default(),
+        None,
     )
+    .0
 }
 
 fn default_emitter(
@@ -926,10 +956,10 @@ pub fn build_session_with_source_map(
     sopts: config::Options,
     local_crate_source_file: Option<PathBuf>,
     registry: rustc_errors::registry::Registry,
-    source_map: Lrc<source_map::SourceMap>,
     diagnostics_output: DiagnosticOutput,
-    lint_caps: FxHashMap<lint::LintId, lint::Level>,
-) -> Session {
+    driver_lint_caps: FxHashMap<lint::LintId, lint::Level>,
+    file_loader: Option<Box<dyn FileLoader + Send + Sync + 'static>>,
+) -> (Session, Lrc<SourceMap>) {
     // FIXME: This is not general enough to make the warning lint completely override
     // normal diagnostic warnings, since the warning lint can also be denied and changed
     // later via the source code.
@@ -947,23 +977,33 @@ pub fn build_session_with_source_map(
         DiagnosticOutput::Default => None,
         DiagnosticOutput::Raw(write) => Some(write),
     };
+
+    let target_cfg = config::build_target_config(&sopts, sopts.error_format);
+    let host_triple = TargetTriple::from_triple(config::host_triple());
+    let host = Target::search(&host_triple).unwrap_or_else(|e| {
+        early_error(sopts.error_format, &format!("Error loading host specification: {}", e))
+    });
+
+    let loader = file_loader.unwrap_or(Box::new(RealFileLoader));
+    let hash_kind = sopts.debugging_opts.src_hash_algorithm.unwrap_or_else(|| {
+        if target_cfg.target.options.is_like_msvc {
+            SourceFileHashAlgorithm::Sha1
+        } else {
+            SourceFileHashAlgorithm::Md5
+        }
+    });
+    let source_map = Lrc::new(SourceMap::with_file_loader_and_hash_kind(
+        loader,
+        sopts.file_path_mapping(),
+        hash_kind,
+    ));
     let emitter = default_emitter(&sopts, registry, &source_map, write_dest);
 
-    let diagnostic_handler = rustc_errors::Handler::with_emitter_and_flags(
+    let span_diagnostic = rustc_errors::Handler::with_emitter_and_flags(
         emitter,
         sopts.debugging_opts.diagnostic_handler_flags(can_emit_warnings),
     );
 
-    build_session_(sopts, local_crate_source_file, diagnostic_handler, source_map, lint_caps)
-}
-
-fn build_session_(
-    sopts: config::Options,
-    local_crate_source_file: Option<PathBuf>,
-    span_diagnostic: rustc_errors::Handler,
-    source_map: Lrc<source_map::SourceMap>,
-    driver_lint_caps: FxHashMap<lint::LintId, lint::Level>,
-) -> Session {
     let self_profiler = if let SwitchWithOptPath::Enabled(ref d) = sopts.debugging_opts.self_profile
     {
         let directory =
@@ -985,13 +1025,7 @@ fn build_session_(
         None
     };
 
-    let host_triple = TargetTriple::from_triple(config::host_triple());
-    let host = Target::search(&host_triple).unwrap_or_else(|e| {
-        span_diagnostic.fatal(&format!("Error loading host specification: {}", e)).raise()
-    });
-    let target_cfg = config::build_target_config(&sopts, &span_diagnostic);
-
-    let parse_sess = ParseSess::with_span_handler(span_diagnostic, source_map);
+    let parse_sess = ParseSess::with_span_handler(span_diagnostic, source_map.clone());
     let sysroot = match &sopts.maybe_sysroot {
         Some(sysroot) => sysroot.clone(),
         None => filesearch::get_or_default_sysroot(),
@@ -1036,6 +1070,32 @@ fn build_session_(
         sopts.debugging_opts.time_passes,
     );
 
+    let ctfe_backtrace = Lock::new(match env::var("RUSTC_CTFE_BACKTRACE") {
+        Ok(ref val) if val == "immediate" => CtfeBacktrace::Immediate,
+        Ok(ref val) if val != "0" => CtfeBacktrace::Capture,
+        _ => CtfeBacktrace::Disabled,
+    });
+
+    // Try to find a directory containing the Rust `src`, for more details see
+    // the doc comment on the `real_rust_source_base_dir` field.
+    let real_rust_source_base_dir = {
+        // This is the location used by the `rust-src` `rustup` component.
+        let mut candidate = sysroot.join("lib/rustlib/src/rust");
+        if let Ok(metadata) = candidate.symlink_metadata() {
+            // Replace the symlink rustbuild creates, with its destination.
+            // We could try to use `fs::canonicalize` instead, but that might
+            // produce unnecessarily verbose path.
+            if metadata.file_type().is_symlink() {
+                if let Ok(symlink_dest) = std::fs::read_link(&candidate) {
+                    candidate = symlink_dest;
+                }
+            }
+        }
+
+        // Only use this directory if it has a file we can expect to always find.
+        if candidate.join("src/libstd/lib.rs").is_file() { Some(candidate) } else { None }
+    };
+
     let sess = Session {
         target: target_cfg,
         host,
@@ -1052,7 +1112,7 @@ fn build_session_(
         features: Once::new(),
         recursion_limit: Once::new(),
         type_length_limit: Once::new(),
-        imported_macro_spans: OneThread::new(RefCell::new(FxHashMap::default())),
+        const_eval_limit: Once::new(),
         incr_comp_session: OneThread::new(RefCell::new(IncrCompSession::NotInitialized)),
         cgu_reuse_tracker,
         prof,
@@ -1060,7 +1120,7 @@ fn build_session_(
             symbol_hash_time: Lock::new(Duration::from_secs(0)),
             decode_def_path_tables_time: Lock::new(Duration::from_secs(0)),
             queries_canonicalized: AtomicUsize::new(0),
-            normalize_ty_after_erasing_regions: AtomicUsize::new(0),
+            normalize_generic_arg_after_erasing_regions: AtomicUsize::new(0),
             normalize_projection_ty: AtomicUsize::new(0),
         },
         code_stats: Default::default(),
@@ -1073,11 +1133,13 @@ fn build_session_(
         trait_methods_not_found: Lock::new(Default::default()),
         confused_type_with_std_module: Lock::new(Default::default()),
         system_library_path: OneThread::new(RefCell::new(Default::default())),
+        ctfe_backtrace,
+        real_rust_source_base_dir,
     };
 
     validate_commandline_args_with_session_available(&sess);
 
-    sess
+    (sess, source_map)
 }
 
 // If it is useful to have a Session available already for validating a
@@ -1125,7 +1187,8 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         sess.err(
             "Profile-guided optimization does not yet work in conjunction \
                   with `-Cpanic=unwind` on Windows when targeting MSVC. \
-                  See https://github.com/rust-lang/rust/issues/61002 for details.",
+                  See issue #61002 <https://github.com/rust-lang/rust/issues/61002> \
+                  for more information.",
         );
     }
 
@@ -1159,34 +1222,6 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         }
     }
 }
-
-/// Hash value constructed out of all the `-C metadata` arguments passed to the
-/// compiler. Together with the crate-name forms a unique global identifier for
-/// the crate.
-#[derive(Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Clone, Copy, RustcEncodable, RustcDecodable)]
-pub struct CrateDisambiguator(Fingerprint);
-
-impl CrateDisambiguator {
-    pub fn to_fingerprint(self) -> Fingerprint {
-        self.0
-    }
-}
-
-impl fmt::Display for CrateDisambiguator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
-        let (a, b) = self.0.as_value();
-        let as_u128 = a as u128 | ((b as u128) << 64);
-        f.write_str(&base_n::encode(as_u128, base_n::CASE_INSENSITIVE))
-    }
-}
-
-impl From<Fingerprint> for CrateDisambiguator {
-    fn from(fingerprint: Fingerprint) -> CrateDisambiguator {
-        CrateDisambiguator(fingerprint)
-    }
-}
-
-impl_stable_hash_via_hash!(CrateDisambiguator);
 
 /// Holds data on the current incremental compilation session, if there is one.
 #[derive(Debug)]

@@ -75,7 +75,8 @@ When the query context is created, it is still empty: No queries have been
 executed, no results are cached. But the context already provides access to
 "input" data, i.e. pieces of immutable data that were computed before the
 context was created and that queries can access to do their computations.
-Currently this input data consists mainly of the HIR map and the command-line
+Currently this input data consists mainly of the HIR map, upstream crate
+metadata, and the command-line
 options the compiler was invoked with. In the future, inputs will just consist
 of command-line options and a list of source files -- the HIR map will itself
 be provided by a query which processes these source files.
@@ -158,7 +159,8 @@ would still exist and already executed queries would not have to be re-done.
 ## Cycles
 
 Earlier we stated that query invocations form a DAG. However, it would be easy
-form a cyclic graph by, for example, having a query provider like the following:
+to form a cyclic graph by, for example, having a query provider like the
+following:
 
 ```rust,ignore
 fn cyclic_query_provider(tcx, key) -> u32 {
@@ -224,7 +226,7 @@ The nightly compiler already implements parallel query evaluation as follows:
 
 When a query `foo` is evaluated, the cache table for `foo` is locked.
 
-- If there already is a result, we can clone it,release the lock and
+- If there already is a result, we can clone it, release the lock and
   we are done.
 - If there is no cache entry and no other active query invocation computing the
   same result, we mark the key as being "in progress", release the lock and
@@ -234,4 +236,3 @@ When a query `foo` is evaluated, the cache table for `foo` is locked.
   computed the result we are waiting for. This cannot deadlock because, as
   mentioned before, query invocations form a DAG. Some thread will always make
   progress.
-

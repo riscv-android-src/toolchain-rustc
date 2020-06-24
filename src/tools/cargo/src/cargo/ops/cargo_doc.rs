@@ -9,15 +9,15 @@ use std::process::Command;
 
 /// Strongly typed options for the `cargo doc` command.
 #[derive(Debug)]
-pub struct DocOptions<'a> {
+pub struct DocOptions {
     /// Whether to attempt to open the browser after compiling the docs
     pub open_result: bool,
     /// Options to pass through to the compiler
-    pub compile_opts: ops::CompileOptions<'a>,
+    pub compile_opts: ops::CompileOptions,
 }
 
 /// Main method for `cargo doc`.
-pub fn doc(ws: &Workspace<'_>, options: &DocOptions<'_>) -> CargoResult<()> {
+pub fn doc(ws: &Workspace<'_>, options: &DocOptions) -> CargoResult<()> {
     let specs = options.compile_opts.spec.to_package_id_specs(ws)?;
     let opts = ResolveOpts::new(
         /*dev_deps*/ true,
@@ -36,10 +36,7 @@ pub fn doc(ws: &Workspace<'_>, options: &DocOptions<'_>) -> CargoResult<()> {
         HasDevUnits::No,
     )?;
 
-    let ids = specs
-        .iter()
-        .map(|s| s.query(ws_resolve.targeted_resolve.iter()))
-        .collect::<CargoResult<Vec<_>>>()?;
+    let ids = ws_resolve.targeted_resolve.specs_to_ids(&specs)?;
     let pkgs = ws_resolve.pkg_set.get_many(ids)?;
 
     let mut lib_names = HashMap::new();
@@ -85,7 +82,7 @@ pub fn doc(ws: &Workspace<'_>, options: &DocOptions<'_>) -> CargoResult<()> {
             .join(&name)
             .join("index.html");
         if path.exists() {
-            let mut shell = options.compile_opts.config.shell();
+            let mut shell = ws.config().shell();
             shell.status("Opening", path.display())?;
             open_docs(&path, &mut shell)?;
         }
@@ -107,10 +104,8 @@ fn open_docs(path: &Path, shell: &mut Shell) -> CargoResult<()> {
         }
         None => {
             if let Err(e) = opener::open(&path) {
-                shell.warn(format!("Couldn't open docs: {}", e))?;
-                for cause in anyhow::Error::new(e).chain().skip(1) {
-                    shell.warn(format!("Caused by:\n {}", cause))?;
-                }
+                let e = e.into();
+                crate::display_warning_with_error("couldn't open docs", &e, shell);
             }
         }
     };

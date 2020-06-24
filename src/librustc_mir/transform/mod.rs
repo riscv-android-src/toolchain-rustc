@@ -1,14 +1,13 @@
 use crate::{shim, util};
-use rustc::hir::map::Map;
-use rustc::mir::{BodyAndCache, ConstQualifs, MirPhase, Promoted};
-use rustc::ty::query::Providers;
-use rustc::ty::steal::Steal;
-use rustc::ty::{InstanceDef, TyCtxt, TypeFoldable};
 use rustc_ast::ast;
 use rustc_hir as hir;
-use rustc_hir::def_id::{CrateNum, DefId, DefIdSet, LOCAL_CRATE};
+use rustc_hir::def_id::{CrateNum, DefId, DefIdSet, LocalDefId, LOCAL_CRATE};
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_index::vec::IndexVec;
+use rustc_middle::mir::{BodyAndCache, ConstQualifs, MirPhase, Promoted};
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::steal::Steal;
+use rustc_middle::ty::{InstanceDef, TyCtxt, TypeFoldable};
 use rustc_span::Span;
 use std::borrow::Cow;
 
@@ -23,7 +22,6 @@ pub mod copy_prop;
 pub mod deaggregator;
 pub mod dump_mir;
 pub mod elaborate_drops;
-pub mod erase_regions;
 pub mod generator;
 pub mod inline;
 pub mod instcombine;
@@ -64,7 +62,7 @@ fn mir_keys(tcx: TyCtxt<'_>, krate: CrateNum) -> &DefIdSet {
     let mut set = DefIdSet::default();
 
     // All body-owners have MIR associated with them.
-    set.extend(tcx.body_owners());
+    set.extend(tcx.body_owners().map(LocalDefId::to_def_id));
 
     // Additionally, tuple struct/variant constructors have MIR, but
     // they don't have a BodyId, so we need to build them separately.
@@ -86,8 +84,8 @@ fn mir_keys(tcx: TyCtxt<'_>, krate: CrateNum) -> &DefIdSet {
             }
             intravisit::walk_struct_def(self, v)
         }
-        type Map = Map<'tcx>;
-        fn nested_visit_map<'b>(&'b mut self) -> NestedVisitorMap<'b, Self::Map> {
+        type Map = intravisit::ErasedMap<'tcx>;
+        fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
             NestedVisitorMap::None
         }
     }
@@ -289,16 +287,12 @@ fn run_optimization_passes<'tcx>(
             // AddMovesForPackedDrops needs to run after drop
             // elaboration.
             &add_moves_for_packed_drops::AddMovesForPackedDrops,
-            // AddRetag needs to run after ElaborateDrops, and it needs
-            // an AllCallEdges pass right before it.  Otherwise it should
-            // run fairly late, but before optimizations begin.
-            &add_call_guards::AllCallEdges,
+            // `AddRetag` needs to run after `ElaborateDrops`. Otherwise it should run fairly late,
+            // but before optimizations begin.
             &add_retag::AddRetag,
             &simplify::SimplifyCfg::new("elaborate-drops"),
             // No lifetime analysis based on borrowing can be done from here on out.
 
-            // From here on out, regions are gone.
-            &erase_regions::EraseRegions,
             // Optimizations begin.
             &unreachable_prop::UnreachablePropagation,
             &uninhabited_enum_branching::UninhabitedEnumBranching,
@@ -342,6 +336,9 @@ fn optimized_mir(tcx: TyCtxt<'_>, def_id: DefId) -> &BodyAndCache<'_> {
     let mut body = body.steal();
     run_optimization_passes(tcx, &mut body, def_id, None);
     body.ensure_predecessors();
+
+    debug_assert!(!body.has_free_regions(), "Free regions in optimized MIR");
+
     tcx.arena.alloc(body)
 }
 
@@ -358,6 +355,8 @@ fn promoted_mir(tcx: TyCtxt<'_>, def_id: DefId) -> &IndexVec<Promoted, BodyAndCa
         run_optimization_passes(tcx, &mut body, def_id, Some(p));
         body.ensure_predecessors();
     }
+
+    debug_assert!(!promoted.has_free_regions(), "Free regions in promoted MIR");
 
     tcx.intern_promoted(promoted)
 }

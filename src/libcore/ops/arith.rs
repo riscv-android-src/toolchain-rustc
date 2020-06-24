@@ -13,7 +13,7 @@
 /// ```
 /// use std::ops::Add;
 ///
-/// #[derive(Debug, PartialEq)]
+/// #[derive(Debug, Copy, Clone, PartialEq)]
 /// struct Point {
 ///     x: i32,
 ///     y: i32,
@@ -42,7 +42,7 @@
 /// ```
 /// use std::ops::Add;
 ///
-/// #[derive(Debug, PartialEq)]
+/// #[derive(Debug, Copy, Clone, PartialEq)]
 /// struct Point<T> {
 ///     x: T,
 ///     y: T,
@@ -115,7 +115,7 @@ add_impl! { usize u8 u16 u32 u64 u128 isize i8 i16 i32 i64 i128 f32 f64 }
 /// ```
 /// use std::ops::Sub;
 ///
-/// #[derive(Debug, PartialEq)]
+/// #[derive(Debug, Copy, Clone, PartialEq)]
 /// struct Point {
 ///     x: i32,
 ///     y: i32,
@@ -617,35 +617,22 @@ pub trait Neg {
     fn neg(self) -> Self::Output;
 }
 
-macro_rules! neg_impl_core {
-    ($id:ident => $body:expr, $($t:ty)*) => ($(
+macro_rules! neg_impl {
+    ($($t:ty)*) => ($(
         #[stable(feature = "rust1", since = "1.0.0")]
         impl Neg for $t {
             type Output = $t;
 
             #[inline]
             #[rustc_inherit_overflow_checks]
-            fn neg(self) -> $t { let $id = self; $body }
+            fn neg(self) -> $t { -self }
         }
 
         forward_ref_unop! { impl Neg, neg for $t }
     )*)
 }
 
-macro_rules! neg_impl_numeric {
-    ($($t:ty)*) => { neg_impl_core!{ x => -x, $($t)*} }
-}
-
-#[allow(unused_macros)]
-macro_rules! neg_impl_unsigned {
-    ($($t:ty)*) => {
-        neg_impl_core!{ x => {
-            !x.wrapping_add(1)
-        }, $($t)*} }
-}
-
-// neg_impl_unsigned! { usize u8 u16 u32 u64 }
-neg_impl_numeric! { isize i8 i16 i32 i64 i128 f32 f64 }
+neg_impl! { isize i8 i16 i32 i64 i128 f32 f64 }
 
 /// The addition assignment operator `+=`.
 ///
@@ -657,7 +644,7 @@ neg_impl_numeric! { isize i8 i16 i32 i64 i128 f32 f64 }
 /// ```
 /// use std::ops::AddAssign;
 ///
-/// #[derive(Debug, PartialEq)]
+/// #[derive(Debug, Copy, Clone, PartialEq)]
 /// struct Point {
 ///     x: i32,
 ///     y: i32,
@@ -715,7 +702,7 @@ add_assign_impl! { usize u8 u16 u32 u64 u128 isize i8 i16 i32 i64 i128 f32 f64 }
 /// ```
 /// use std::ops::SubAssign;
 ///
-/// #[derive(Debug, PartialEq)]
+/// #[derive(Debug, Copy, Clone, PartialEq)]
 /// struct Point {
 ///     x: i32,
 ///     y: i32,

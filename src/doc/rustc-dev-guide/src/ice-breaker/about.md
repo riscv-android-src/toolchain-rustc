@@ -62,9 +62,22 @@ team. For example:
 @rustbot ping icebreakers-cleanup-crew
 ```
 
+To make these commands shorter and easier to remember, there are aliases,
+defined in the [`triagebot.toml`] file. For example:
+
+```text
+@rustbot ping llvm
+@rustbot ping cleanup
+```
+
+Keep in mind that these aliases are meant to make humans' life easier.
+They might be subject to change. If you need to ensure that a command
+will always be valid, prefer the full invocations over the aliases.
+
 **Note though that this should only be done by compiler team members
 or contributors, and is typically done as part of compiler team
 triage.**
 
 [rustbot]: https://github.com/rust-lang/triagebot/
 [`ping`]: https://github.com/rust-lang/triagebot/wiki/Pinging
+[`triagebot.toml`]: https://github.com/rust-lang/rust/blob/master/triagebot.toml

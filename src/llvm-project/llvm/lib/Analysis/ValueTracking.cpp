@@ -1346,6 +1346,8 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
       for (unsigned i = 0; i != 2; ++i) {
         Value *L = P->getIncomingValue(i);
         Value *R = P->getIncomingValue(!i);
+        Instruction *RInst = P->getIncomingBlock(!i)->getTerminator();
+        Instruction *LInst = P->getIncomingBlock(i)->getTerminator();
         Operator *LU = dyn_cast<Operator>(L);
         if (!LU)
           continue;
@@ -1367,13 +1369,22 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
             L = LL;
           else
             break;
+
+          // Change the context instruction to the "edge" that flows into the
+          // phi. This is important because that is where the value is actually
+          // "evaluated" even though it is used later somewhere else. (see also
+          // D69571).
+          Query RecQ = Q;
+
           // Ok, we have a PHI of the form L op= R. Check for low
           // zero bits.
-          computeKnownBits(R, Known2, Depth + 1, Q);
+          RecQ.CxtI = RInst;
+          computeKnownBits(R, Known2, Depth + 1, RecQ);
 
           // We need to take the minimum number of known bits
           KnownBits Known3(Known);
-          computeKnownBits(L, Known3, Depth + 1, Q);
+          RecQ.CxtI = LInst;
+          computeKnownBits(L, Known3, Depth + 1, RecQ);
 
           Known.Zero.setLowBits(std::min(Known2.countMinTrailingZeros(),
                                          Known3.countMinTrailingZeros()));
@@ -1429,14 +1440,22 @@ static void computeKnownBitsFromOperator(const Operator *I, KnownBits &Known,
 
       Known.Zero.setAllBits();
       Known.One.setAllBits();
-      for (Value *IncValue : P->incoming_values()) {
+      for (unsigned u = 0, e = P->getNumIncomingValues(); u < e; ++u) {
+        Value *IncValue = P->getIncomingValue(u);
         // Skip direct self references.
         if (IncValue == P) continue;
+
+        // Change the context instruction to the "edge" that flows into the
+        // phi. This is important because that is where the value is actually
+        // "evaluated" even though it is used later somewhere else. (see also
+        // D69571).
+        Query RecQ = Q;
+        RecQ.CxtI = P->getIncomingBlock(u)->getTerminator();
 
         Known2 = KnownBits(BitWidth);
         // Recurse, but cap the recursion to one level, because we don't
         // want to waste time spinning around in loops.
-        computeKnownBits(IncValue, Known2, MaxDepth - 1, Q);
+        computeKnownBits(IncValue, Known2, MaxDepth - 1, RecQ);
         Known.Zero &= Known2.Zero;
         Known.One &= Known2.One;
         // If all bits have been ruled out, there's no need to check

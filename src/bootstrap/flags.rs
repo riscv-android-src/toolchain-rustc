@@ -31,6 +31,7 @@ pub struct Flags {
     pub incremental: bool,
     pub exclude: Vec<PathBuf>,
     pub rustc_error_format: Option<String>,
+    pub json_output: bool,
     pub dry_run: bool,
 
     // This overrides the deny-warnings configuration option,
@@ -86,6 +87,9 @@ pub enum Subcommand {
     Install {
         paths: Vec<PathBuf>,
     },
+    Run {
+        paths: Vec<PathBuf>,
+    },
 }
 
 impl Default for Subcommand {
@@ -113,6 +117,7 @@ Subcommands:
     clean       Clean out build directories
     dist        Build distribution artifacts
     install     Install distribution artifacts
+    run         Run tools contained in this repository
 
 To learn more about a subcommand, run `./x.py <subcommand> -h`",
         );
@@ -152,6 +157,7 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`",
             "VALUE",
         );
         opts.optopt("", "error-format", "rustc error format", "FORMAT");
+        opts.optflag("", "json-output", "use message-format=json");
         opts.optopt(
             "",
             "llvm-skip-rebuild",
@@ -188,6 +194,7 @@ To learn more about a subcommand, run `./x.py <subcommand> -h`",
                 || (s == "clean")
                 || (s == "dist")
                 || (s == "install")
+                || (s == "run")
         });
         let subcommand = match subcommand {
             Some(s) => s,
@@ -359,7 +366,7 @@ Arguments:
                 subcommand_help.push_str(
                     "\n
 Arguments:
-    This subcommand accepts a number of paths to directories to tests that
+    This subcommand accepts a number of paths to test directories that
     should be compiled and run. For example:
 
         ./x.py test src/test/ui
@@ -371,6 +378,10 @@ Arguments:
     Note that `test src/test/* --stage N` does NOT depend on `build src/rustc --stage N`;
     just like `build src/libstd --stage N` it tests the compiler produced by the previous
     stage.
+
+    Execute tool tests with a tool name argument:
+
+        ./x.py test tidy
 
     If no arguments are passed then the complete artifacts for that stage are
     compiled and tested.
@@ -394,6 +405,18 @@ Arguments:
 
         ./x.py doc
         ./x.py doc --stage 1",
+                );
+            }
+            "run" => {
+                subcommand_help.push_str(
+                    "\n
+Arguments:
+    This subcommand accepts a number of paths to tools to build and run. For
+    example:
+
+        ./x.py run src/tool/expand-yaml-anchors
+
+    At least a tool needs to be called.",
                 );
             }
             _ => {}
@@ -464,6 +487,13 @@ Arguments:
             "fmt" => Subcommand::Format { check: matches.opt_present("check") },
             "dist" => Subcommand::Dist { paths },
             "install" => Subcommand::Install { paths },
+            "run" => {
+                if paths.is_empty() {
+                    println!("\nrun requires at least a path!\n");
+                    usage(1, &opts, &subcommand_help, &extra_help);
+                }
+                Subcommand::Run { paths }
+            }
             _ => {
                 usage(1, &opts, &subcommand_help, &extra_help);
             }
@@ -475,6 +505,7 @@ Arguments:
             dry_run: matches.opt_present("dry-run"),
             on_fail: matches.opt_str("on-fail"),
             rustc_error_format: matches.opt_str("error-format"),
+            json_output: matches.opt_present("json-output"),
             keep_stage: matches
                 .opt_strs("keep-stage")
                 .into_iter()

@@ -1,9 +1,9 @@
 use crate::utils::paths;
 use crate::utils::{is_automatically_derived, is_copy, match_path, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::ty::{self, Ty};
 use rustc_hir::{Item, ItemKind, TraitRef};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
@@ -94,7 +94,8 @@ fn check_hash_peq<'a, 'tcx>(
     if_chain! {
         if match_path(&trait_ref.path, &paths::HASH);
         if let Some(peq_trait_def_id) = cx.tcx.lang_items().eq_trait();
-        if !&trait_ref.trait_def_id().is_local();
+        if let Some(def_id) = &trait_ref.trait_def_id();
+        if !def_id.is_local();
         then {
             // Look for the PartialEq implementations for `ty`
             cx.tcx.for_each_relevant_impl(peq_trait_def_id, ty, |impl_id| {
@@ -118,9 +119,9 @@ fn check_hash_peq<'a, 'tcx>(
                     span_lint_and_then(
                         cx, DERIVE_HASH_XOR_EQ, span,
                         mess,
-                        |db| {
+                        |diag| {
                         if let Some(node_id) = cx.tcx.hir().as_local_hir_id(impl_id) {
-                            db.span_note(
+                            diag.span_note(
                                 cx.tcx.hir().span(node_id),
                                 "`PartialEq` implemented here"
                             );
@@ -167,8 +168,8 @@ fn check_copy_clone<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, item: &Item<'_>, trait
             EXPL_IMPL_CLONE_ON_COPY,
             item.span,
             "you are implementing `Clone` explicitly on a `Copy` type",
-            |db| {
-                db.span_note(item.span, "consider deriving `Clone` or removing `Copy`");
+            |diag| {
+                diag.span_note(item.span, "consider deriving `Clone` or removing `Copy`");
             },
         );
     }

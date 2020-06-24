@@ -1,12 +1,15 @@
 //! This file is managed by `cargo dev update_lints`. Do not edit.
 
+use lazy_static::lazy_static;
+
 pub mod lint;
 pub use lint::Level;
 pub use lint::Lint;
 pub use lint::LINT_LEVELS;
 
+lazy_static! {
 // begin lint list, do not remove this comment, it’s used in `update_lints`
-pub const ALL_LINTS: [Lint; 359] = [
+pub static ref ALL_LINTS: Vec<Lint> = vec![
     Lint {
         name: "absurd_extreme_comparisons",
         group: "correctness",
@@ -247,7 +250,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "cognitive_complexity",
-        group: "complexity",
+        group: "nursery",
         desc: "functions that should be split up into multiple functions",
         deprecation: None,
         module: "cognitive_complexity",
@@ -526,6 +529,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         module: "loops",
     },
     Lint {
+        name: "explicit_deref_methods",
+        group: "pedantic",
+        desc: "Explicit use of deref or deref_mut method while not in a method chain.",
+        deprecation: None,
+        module: "dereference",
+    },
+    Lint {
         name: "explicit_into_iter_loop",
         group: "pedantic",
         desc: "for-looping over `_.into_iter()` when `_` would do",
@@ -624,6 +634,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         module: "misc",
     },
     Lint {
+        name: "fn_address_comparisons",
+        group: "correctness",
+        desc: "comparison with an address of a function item",
+        deprecation: None,
+        module: "unnamed_address",
+    },
+    Lint {
         name: "fn_params_excessive_bools",
         group: "pedantic",
         desc: "using too many bools in function parameters",
@@ -678,6 +695,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         desc: "calls to `std::mem::forget` with a reference instead of an owned value",
         deprecation: None,
         module: "drop_forget_ref",
+    },
+    Lint {
+        name: "future_not_send",
+        group: "nursery",
+        desc: "public Futures must be Send",
+        deprecation: None,
+        module: "future_not_send",
     },
     Lint {
         name: "get_last_with_len",
@@ -737,7 +761,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "implicit_hasher",
-        group: "style",
+        group: "pedantic",
         desc: "missing generalization over different hashers",
         deprecation: None,
         module: "types",
@@ -748,6 +772,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         desc: "use a return statement like `return expr` instead of an expression",
         deprecation: None,
         module: "implicit_return",
+    },
+    Lint {
+        name: "implicit_saturating_sub",
+        group: "pedantic",
+        desc: "Perform saturating subtraction instead of implicitly checking lower bound of data type",
+        deprecation: None,
+        module: "implicit_saturating_sub",
     },
     Lint {
         name: "imprecise_flops",
@@ -779,7 +810,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "inefficient_to_string",
-        group: "perf",
+        group: "pedantic",
         desc: "using `to_string` on `&&T` where `T: ToString`",
         deprecation: None,
         module: "methods",
@@ -836,7 +867,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     Lint {
         name: "integer_arithmetic",
         group: "restriction",
-        desc: "any integer arithmetic statement",
+        desc: "any integer arithmetic expression which could overflow or panic",
         deprecation: None,
         module: "arithmetic",
     },
@@ -932,6 +963,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         module: "non_expressive_names",
     },
     Lint {
+        name: "large_const_arrays",
+        group: "perf",
+        desc: "large non-scalar const array may cause performance overhead",
+        deprecation: None,
+        module: "large_const_arrays",
+    },
+    Lint {
         name: "large_digit_groups",
         group: "pedantic",
         desc: "grouping digits into groups that are too large",
@@ -989,7 +1027,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "let_unit_value",
-        group: "style",
+        group: "pedantic",
         desc: "creating a `let` binding to a value of unit type, which usually can\'t be used afterwards",
         deprecation: None,
         module: "types",
@@ -1014,6 +1052,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         desc: "lossy whole number float literals",
         deprecation: None,
         module: "float_literal",
+    },
+    Lint {
+        name: "macro_use_imports",
+        group: "pedantic",
+        desc: "#[macro_use] is no longer needed",
+        deprecation: None,
+        module: "macro_use",
     },
     Lint {
         name: "main_recursion",
@@ -1431,7 +1476,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     Lint {
         name: "new_ret_no_self",
         group: "style",
-        desc: "not returning `Self` in a `new` method",
+        desc: "not returning type containing `Self` in a `new` method",
         deprecation: None,
         module: "methods",
     },
@@ -1549,7 +1594,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "option_option",
-        group: "complexity",
+        group: "pedantic",
         desc: "usage of `Option<Option<T>>`",
         deprecation: None,
         module: "types",
@@ -1709,6 +1754,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         module: "ranges",
     },
     Lint {
+        name: "redundant_allocation",
+        group: "perf",
+        desc: "redundant allocation",
+        deprecation: None,
+        module: "types",
+    },
+    Lint {
         name: "redundant_clone",
         group: "perf",
         desc: "`clone()` of an owned value that is going to be dropped immediately",
@@ -1758,6 +1810,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         module: "redundant_pattern_matching",
     },
     Lint {
+        name: "redundant_pub_crate",
+        group: "nursery",
+        desc: "Using `pub(crate)` visibility on items that are not crate visible due to the visibility of the module that contains them.",
+        deprecation: None,
+        module: "redundant_pub_crate",
+    },
+    Lint {
         name: "redundant_static_lifetimes",
         group: "style",
         desc: "Using explicit `\'static` lifetime for constants or statics when elision rules would allow omitting them.",
@@ -1779,13 +1838,6 @@ pub const ALL_LINTS: [Lint; 359] = [
         module: "regex",
     },
     Lint {
-        name: "replace_consts",
-        group: "pedantic",
-        desc: "Lint usages of standard library `const`s that could be replaced by `const fn`s",
-        deprecation: None,
-        module: "replace_consts",
-    },
-    Lint {
         name: "rest_pat_in_fully_bound_structs",
         group: "restriction",
         desc: "a match on a struct that binds all fields but still uses the wildcard pattern",
@@ -1796,6 +1848,13 @@ pub const ALL_LINTS: [Lint; 359] = [
         name: "result_expect_used",
         group: "restriction",
         desc: "using `Result.expect()`, which might be better handled",
+        deprecation: None,
+        module: "methods",
+    },
+    Lint {
+        name: "result_map_or_into_option",
+        group: "style",
+        desc: "using `Result.map_or(None, Some)`, which is more succinctly expressed as `ok()`",
         deprecation: None,
         module: "methods",
     },
@@ -2137,7 +2196,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "trivially_copy_pass_by_ref",
-        group: "perf",
+        group: "pedantic",
         desc: "functions taking small copyable arguments by reference",
         deprecation: None,
         module: "trivially_copy_pass_by_ref",
@@ -2270,7 +2329,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "unreadable_literal",
-        group: "style",
+        group: "pedantic",
         desc: "long integer literal without underscores",
         deprecation: None,
         module: "literal_representation",
@@ -2368,7 +2427,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
     Lint {
         name: "useless_transmute",
-        group: "complexity",
+        group: "nursery",
         desc: "transmutes that have the same to and from types or could be a cast/coercion",
         deprecation: None,
         module: "transmute",
@@ -2393,6 +2452,20 @@ pub const ALL_LINTS: [Lint; 359] = [
         desc: "expressions where a bit mask is less readable than the corresponding method call",
         deprecation: None,
         module: "bit_mask",
+    },
+    Lint {
+        name: "verbose_file_reads",
+        group: "restriction",
+        desc: "use of `File::read_to_end` or `File::read_to_string`",
+        deprecation: None,
+        module: "verbose_file_reads",
+    },
+    Lint {
+        name: "vtable_address_comparisons",
+        group: "correctness",
+        desc: "comparison with an address of a trait vtable",
+        deprecation: None,
+        module: "unnamed_address",
     },
     Lint {
         name: "while_immutable_condition",
@@ -2488,7 +2561,7 @@ pub const ALL_LINTS: [Lint; 359] = [
     Lint {
         name: "zero_divided_by_zero",
         group: "complexity",
-        desc: "usage of `0.0 / 0.0` to obtain NaN instead of `std::f32::NAN` or `std::f64::NAN`",
+        desc: "usage of `0.0 / 0.0` to obtain NaN instead of `f32::NAN` or `f64::NAN`",
         deprecation: None,
         module: "zero_div_zero",
     },
@@ -2522,3 +2595,4 @@ pub const ALL_LINTS: [Lint; 359] = [
     },
 ];
 // end lint list, do not remove this comment, it’s used in `update_lints`
+}

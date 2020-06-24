@@ -7,11 +7,11 @@
 
 use crate::utils::span_lint;
 use if_chain::if_chain;
-use rustc::ty;
 use rustc_ast::ast::{self, MetaItem, MetaItemKind};
 use rustc_ast::attr;
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::ty;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 
@@ -125,7 +125,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
     }
 
     fn check_crate(&mut self, cx: &LateContext<'a, 'tcx>, krate: &'tcx hir::Crate<'_>) {
-        self.check_missing_docs_attrs(cx, &krate.attrs, krate.span, "crate");
+        self.check_missing_docs_attrs(cx, &krate.item.attrs, krate.item.span, "crate");
     }
 
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, it: &'tcx hir::Item<'_>) {
@@ -135,7 +135,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
             hir::ItemKind::Fn(..) => {
                 // ignore main()
                 if it.ident.name == sym!(main) {
-                    let def_id = cx.tcx.hir().local_def_id(it.hir_id);
+                    let def_id = it.hir_id.owner;
                     let def_key = cx.tcx.hir().def_key(def_id);
                     if def_key.parent == Some(hir::def_id::CRATE_DEF_INDEX) {
                         return;
@@ -164,7 +164,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, trait_item: &'tcx hir::TraitItem<'_>) {
         let desc = match trait_item.kind {
             hir::TraitItemKind::Const(..) => "an associated constant",
-            hir::TraitItemKind::Method(..) => "a trait method",
+            hir::TraitItemKind::Fn(..) => "a trait method",
             hir::TraitItemKind::Type(..) => "an associated type",
         };
 
@@ -185,7 +185,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingDoc {
 
         let desc = match impl_item.kind {
             hir::ImplItemKind::Const(..) => "an associated constant",
-            hir::ImplItemKind::Method(..) => "a method",
+            hir::ImplItemKind::Fn(..) => "a method",
             hir::ImplItemKind::TyAlias(_) => "an associated type",
             hir::ImplItemKind::OpaqueTy(_) => "an existential type",
         };

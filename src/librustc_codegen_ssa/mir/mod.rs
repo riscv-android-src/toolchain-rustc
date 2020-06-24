@@ -1,8 +1,8 @@
 use crate::base;
 use crate::traits::*;
-use rustc::mir;
-use rustc::ty::layout::{FnAbiExt, HasTyCtxt, TyLayout};
-use rustc::ty::{self, Instance, Ty, TypeFoldable};
+use rustc_middle::mir;
+use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt, TyAndLayout};
+use rustc_middle::ty::{self, Instance, Ty, TypeFoldable};
 use rustc_target::abi::call::{FnAbi, PassMode};
 
 use std::iter;
@@ -13,7 +13,7 @@ use rustc_index::vec::IndexVec;
 use self::analyze::CleanupKind;
 use self::debuginfo::{FunctionDebugContext, PerLocalVarDebugInfo};
 use self::place::PlaceRef;
-use rustc::mir::traversal;
+use rustc_middle::mir::traversal;
 
 use self::operand::{OperandRef, OperandValue};
 
@@ -86,13 +86,18 @@ pub struct FunctionCx<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
 impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     pub fn monomorphize<T>(&self, value: &T) -> T
     where
-        T: TypeFoldable<'tcx>,
+        T: Copy + TypeFoldable<'tcx>,
     {
-        self.cx.tcx().subst_and_normalize_erasing_regions(
-            self.instance.substs,
-            ty::ParamEnv::reveal_all(),
-            value,
-        )
+        debug!("monomorphize: self.instance={:?}", self.instance);
+        if let Some(substs) = self.instance.substs_for_mir_body() {
+            self.cx.tcx().subst_and_normalize_erasing_regions(
+                substs,
+                ty::ParamEnv::reveal_all(),
+                &value,
+            )
+        } else {
+            self.cx.tcx().normalize_erasing_regions(ty::ParamEnv::reveal_all(), *value)
+        }
     }
 }
 
@@ -109,7 +114,7 @@ enum LocalRef<'tcx, V> {
 impl<'a, 'tcx, V: CodegenObject> LocalRef<'tcx, V> {
     fn new_operand<Bx: BuilderMethods<'a, 'tcx, Value = V>>(
         bx: &mut Bx,
-        layout: TyLayout<'tcx>,
+        layout: TyAndLayout<'tcx>,
     ) -> LocalRef<'tcx, V> {
         if layout.is_zst() {
             // Zero-size temporaries aren't always initialized, which

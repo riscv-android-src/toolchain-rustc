@@ -12,14 +12,14 @@
 //! initialization and can otherwise silence errors, if
 //! move analysis runs after promotion on broken MIR.
 
-use rustc::mir::traversal::ReversePostorder;
-use rustc::mir::visit::{MutVisitor, MutatingUseContext, PlaceContext, Visitor};
-use rustc::mir::*;
-use rustc::ty::cast::CastTy;
-use rustc::ty::subst::InternalSubsts;
-use rustc::ty::{self, List, TyCtxt, TypeFoldable};
 use rustc_ast::ast::LitKind;
 use rustc_hir::def_id::DefId;
+use rustc_middle::mir::traversal::ReversePostorder;
+use rustc_middle::mir::visit::{MutVisitor, MutatingUseContext, PlaceContext, Visitor};
+use rustc_middle::mir::*;
+use rustc_middle::ty::cast::CastTy;
+use rustc_middle::ty::subst::InternalSubsts;
+use rustc_middle::ty::{self, List, TyCtxt, TypeFoldable};
 use rustc_span::symbol::sym;
 use rustc_span::{Span, DUMMY_SP};
 
@@ -27,7 +27,7 @@ use rustc_index::vec::{Idx, IndexVec};
 use rustc_target::spec::abi::Abi;
 
 use std::cell::Cell;
-use std::{cmp, iter, mem, usize};
+use std::{cmp, iter, mem};
 
 use crate::const_eval::{is_const_fn, is_unstable_const_fn};
 use crate::transform::check_consts::{is_lang_panic_fn, qualifs, ConstKind, Item};
@@ -407,15 +407,17 @@ impl<'tcx> Validator<'_, 'tcx> {
 
     // FIXME(eddyb) maybe cache this?
     fn qualif_local<Q: qualifs::Qualif>(&self, local: Local) -> bool {
-        let per_local = &mut |l| self.qualif_local::<Q>(l);
-
         if let TempState::Defined { location: loc, .. } = self.temps[local] {
             let num_stmts = self.body[loc.block].statements.len();
 
             if loc.statement_index < num_stmts {
                 let statement = &self.body[loc.block].statements[loc.statement_index];
                 match &statement.kind {
-                    StatementKind::Assign(box (_, rhs)) => Q::in_rvalue(&self.item, per_local, rhs),
+                    StatementKind::Assign(box (_, rhs)) => qualifs::in_rvalue::<Q, _>(
+                        &self.item,
+                        &mut |l| self.qualif_local::<Q>(l),
+                        rhs,
+                    ),
                     _ => {
                         span_bug!(
                             statement.source_info.span,
@@ -427,9 +429,9 @@ impl<'tcx> Validator<'_, 'tcx> {
             } else {
                 let terminator = self.body[loc.block].terminator();
                 match &terminator.kind {
-                    TerminatorKind::Call { func, args, .. } => {
+                    TerminatorKind::Call { .. } => {
                         let return_ty = self.body.local_decls[local].ty;
-                        Q::in_call(&self.item, per_local, func, args, return_ty)
+                        Q::in_any_value_of_ty(&self.item, return_ty)
                     }
                     kind => {
                         span_bug!(terminator.source_info.span, "{:?} not promotable", kind);
@@ -541,7 +543,7 @@ impl<'tcx> Validator<'_, 'tcx> {
                 let cast_in = CastTy::from_ty(operand_ty).expect("bad input type for cast");
                 let cast_out = CastTy::from_ty(cast_ty).expect("bad output type for cast");
                 match (cast_in, cast_out) {
-                    (CastTy::Ptr(_), CastTy::Int(_)) | (CastTy::FnPtr, CastTy::Int(_)) => {
+                    (CastTy::Ptr(_) | CastTy::FnPtr, CastTy::Int(_)) => {
                         // in normal functions, mark such casts as not promotable
                         return Err(Unpromotable);
                     }
@@ -833,7 +835,11 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                     if self.keep_original {
                         rhs.clone()
                     } else {
-                        let unit = Rvalue::Aggregate(box AggregateKind::Tuple, vec![]);
+                        let unit = Rvalue::Use(Operand::Constant(box Constant {
+                            span: statement.source_info.span,
+                            user_ty: None,
+                            literal: ty::Const::zero_sized(self.tcx, self.tcx.types.unit),
+                        }));
                         mem::replace(rhs, unit)
                     },
                     statement.source_info,
@@ -911,7 +917,13 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                         ty,
                         val: ty::ConstKind::Unevaluated(
                             def_id,
-                            InternalSubsts::identity_for_item(tcx, def_id),
+                            InternalSubsts::for_item(tcx, def_id, |param, _| {
+                                if let ty::GenericParamDefKind::Lifetime = param.kind {
+                                    tcx.lifetimes.re_erased.into()
+                                } else {
+                                    tcx.mk_param_from_def(param)
+                                }
+                            }),
                             Some(promoted_id),
                         ),
                     }),
@@ -1028,15 +1040,6 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Promoter<'a, 'tcx> {
             *local = self.promote_temp(*local);
         }
     }
-
-    fn process_projection_elem(&mut self, elem: &PlaceElem<'tcx>) -> Option<PlaceElem<'tcx>> {
-        match elem {
-            PlaceElem::Index(local) if self.is_temp_kind(*local) => {
-                Some(PlaceElem::Index(self.promote_temp(*local)))
-            }
-            _ => None,
-        }
-    }
 }
 
 pub fn promote_candidates<'tcx>(
@@ -1056,16 +1059,15 @@ pub fn promote_candidates<'tcx>(
         match candidate {
             Candidate::Repeat(Location { block, statement_index })
             | Candidate::Ref(Location { block, statement_index }) => {
-                match &body[block].statements[statement_index].kind {
-                    StatementKind::Assign(box (place, _)) => {
-                        if let Some(local) = place.as_local() {
-                            if temps[local] == TempState::PromotedOut {
-                                // Already promoted.
-                                continue;
-                            }
+                if let StatementKind::Assign(box (place, _)) =
+                    &body[block].statements[statement_index].kind
+                {
+                    if let Some(local) = place.as_local() {
+                        if temps[local] == TempState::PromotedOut {
+                            // Already promoted.
+                            continue;
                         }
                     }
-                    _ => {}
                 }
             }
             Candidate::Argument { .. } => {}
@@ -1129,15 +1131,12 @@ pub fn promote_candidates<'tcx>(
             _ => true,
         });
         let terminator = block.terminator_mut();
-        match &terminator.kind {
-            TerminatorKind::Drop { location: place, target, .. } => {
-                if let Some(index) = place.as_local() {
-                    if promoted(index) {
-                        terminator.kind = TerminatorKind::Goto { target: *target };
-                    }
+        if let TerminatorKind::Drop { location: place, target, .. } = &terminator.kind {
+            if let Some(index) = place.as_local() {
+                if promoted(index) {
+                    terminator.kind = TerminatorKind::Goto { target: *target };
                 }
             }
-            _ => {}
         }
     }
 

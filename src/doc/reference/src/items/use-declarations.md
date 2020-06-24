@@ -66,14 +66,17 @@ cannot be resolved unambiguously, they represent a compile-time error.
 An example of re-exporting:
 
 ```rust
-# fn main() { }
 mod quux {
-    pub use quux::foo::{bar, baz};
-
+    pub use self::foo::{bar, baz};
     pub mod foo {
-        pub fn bar() { }
-        pub fn baz() { }
+        pub fn bar() {}
+        pub fn baz() {}
     }
+}
+
+fn main() {
+    quux::bar();
+    quux::baz();
 }
 ```
 
@@ -82,13 +85,9 @@ In this example, the module `quux` re-exports two public names defined in
 
 ## `use` Paths
 
-Paths in `use` items must start with a crate name or one of the [path
-qualifiers] `crate`, `self`, `super`, or `::`. `crate` refers to the current
-crate. `self` refers to the current module. `super` refers to the parent
-module. `::` can be used to explicitly refer to a crate, requiring an extern
-crate name to follow.
+> **Note**: This section is incomplete.
 
-An example of what will and will not work for `use` items:
+Some examples of what will and will not work for `use` items:
 <!-- Note: This example works as-is in either 2015 or 2018. -->
 
 ```rust

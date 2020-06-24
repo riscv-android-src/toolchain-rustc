@@ -138,7 +138,7 @@ impl<'a> MutVisitor for TestHarnessGenerator<'a> {
         smallvec![P(item)]
     }
 
-    fn visit_mac(&mut self, _mac: &mut ast::Mac) {
+    fn visit_mac(&mut self, _mac: &mut ast::MacCall) {
         // Do nothing.
     }
 }
@@ -184,7 +184,7 @@ impl MutVisitor for EntryPointCleaner {
         smallvec![item]
     }
 
-    fn visit_mac(&mut self, _mac: &mut ast::Mac) {
+    fn visit_mac(&mut self, _mac: &mut ast::MacCall) {
         // Do nothing.
     }
 }
@@ -202,7 +202,7 @@ fn generate_test_harness(
     let mut econfig = ExpansionConfig::default("test".to_string());
     econfig.features = Some(features);
 
-    let ext_cx = ExtCtxt::new(sess, econfig, resolver);
+    let ext_cx = ExtCtxt::new(sess, econfig, resolver, None);
 
     let expn_id = ext_cx.resolver.expansion_for_ast_pass(
         DUMMY_SP,
@@ -345,14 +345,14 @@ fn is_test_case(i: &ast::Item) -> bool {
 
 fn get_test_runner(sd: &rustc_errors::Handler, krate: &ast::Crate) -> Option<ast::Path> {
     let test_attr = attr::find_by_name(&krate.attrs, sym::test_runner)?;
-    test_attr.meta_item_list().map(|meta_list| {
-        if meta_list.len() != 1 {
-            sd.span_fatal(test_attr.span, "`#![test_runner(..)]` accepts exactly 1 argument")
-                .raise()
-        }
-        match meta_list[0].meta_item() {
-            Some(meta_item) if meta_item.is_word() => meta_item.path.clone(),
-            _ => sd.span_fatal(test_attr.span, "`test_runner` argument must be a path").raise(),
-        }
-    })
+    let meta_list = test_attr.meta_item_list()?;
+    let span = test_attr.span;
+    match &*meta_list {
+        [single] => match single.meta_item() {
+            Some(meta_item) if meta_item.is_word() => return Some(meta_item.path.clone()),
+            _ => sd.struct_span_err(span, "`test_runner` argument must be a path").emit(),
+        },
+        _ => sd.struct_span_err(span, "`#![test_runner(..)]` accepts exactly 1 argument").emit(),
+    }
+    None
 }

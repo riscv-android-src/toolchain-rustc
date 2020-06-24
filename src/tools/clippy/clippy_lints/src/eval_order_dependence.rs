@@ -1,10 +1,10 @@
 use crate::utils::{get_parent_expr, span_lint, span_lint_and_note};
 use if_chain::if_chain;
-use rustc::hir::map::Map;
-use rustc::ty;
 use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc_hir::{def, BinOpKind, Block, Expr, ExprKind, Guard, HirId, Local, Node, QPath, Stmt, StmtKind};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::hir::map::Map;
+use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
@@ -106,10 +106,8 @@ impl<'a, 'tcx> DivergenceVisitor<'a, 'tcx> {
             ExprKind::Match(ref e, arms, _) => {
                 self.visit_expr(e);
                 for arm in arms {
-                    if let Some(ref guard) = arm.guard {
-                        match guard {
-                            Guard::If(if_expr) => self.visit_expr(if_expr),
-                        }
+                    if let Some(Guard::If(if_expr)) = arm.guard {
+                        self.visit_expr(if_expr)
                     }
                     // make sure top level arm expressions aren't linted
                     self.maybe_walk_expr(&*arm.body);
@@ -158,7 +156,7 @@ impl<'a, 'tcx> Visitor<'tcx> for DivergenceVisitor<'a, 'tcx> {
     fn visit_block(&mut self, _: &'tcx Block<'_>) {
         // don't continue over blocks, LateLintPass already does that
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -341,7 +339,7 @@ impl<'a, 'tcx> Visitor<'tcx> for ReadVisitor<'a, 'tcx> {
 
         walk_expr(self, expr);
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }

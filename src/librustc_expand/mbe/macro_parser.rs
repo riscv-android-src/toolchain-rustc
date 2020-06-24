@@ -76,15 +76,15 @@ use TokenTreeOrTokenTreeSlice::*;
 
 use crate::mbe::{self, TokenTree};
 
-use rustc_ast::ast::{Ident, Name};
+use rustc_ast::ast::Name;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, DocComment, Nonterminal, Token};
 use rustc_ast_pretty::pprust;
 use rustc_parse::parser::{FollowedByType, Parser, PathStyle};
 use rustc_session::parse::ParseSess;
-use rustc_span::symbol::{kw, sym, Symbol};
+use rustc_span::symbol::{kw, sym, Ident, MacroRulesNormalizedIdent, Symbol};
 
-use rustc_errors::{FatalError, PResult};
+use rustc_errors::PResult;
 use rustc_span::Span;
 use smallvec::{smallvec, SmallVec};
 
@@ -271,11 +271,13 @@ crate enum ParseResult<T> {
     Failure(Token, &'static str),
     /// Fatal error (malformed macro?). Abort compilation.
     Error(rustc_span::Span, String),
+    ErrorReported,
 }
 
-/// A `ParseResult` where the `Success` variant contains a mapping of `Ident`s to `NamedMatch`es.
-/// This represents the mapping of metavars to the token trees they bind to.
-crate type NamedParseResult = ParseResult<FxHashMap<Ident, NamedMatch>>;
+/// A `ParseResult` where the `Success` variant contains a mapping of
+/// `MacroRulesNormalizedIdent`s to `NamedMatch`es. This represents the mapping
+/// of metavars to the token trees they bind to.
+crate type NamedParseResult = ParseResult<FxHashMap<MacroRulesNormalizedIdent, NamedMatch>>;
 
 /// Count how many metavars are named in the given matcher `ms`.
 pub(super) fn count_names(ms: &[TokenTree]) -> usize {
@@ -368,7 +370,7 @@ fn nameize<I: Iterator<Item = NamedMatch>>(
         sess: &ParseSess,
         m: &TokenTree,
         res: &mut I,
-        ret_val: &mut FxHashMap<Ident, NamedMatch>,
+        ret_val: &mut FxHashMap<MacroRulesNormalizedIdent, NamedMatch>,
     ) -> Result<(), (rustc_span::Span, String)> {
         match *m {
             TokenTree::Sequence(_, ref seq) => {
@@ -386,7 +388,9 @@ fn nameize<I: Iterator<Item = NamedMatch>>(
                     return Err((span, "missing fragment specifier".to_string()));
                 }
             }
-            TokenTree::MetaVarDecl(sp, bind_name, _) => match ret_val.entry(bind_name) {
+            TokenTree::MetaVarDecl(sp, bind_name, _) => match ret_val
+                .entry(MacroRulesNormalizedIdent::new(bind_name))
+            {
                 Vacant(spot) => {
                     spot.insert(res.next().unwrap());
                 }
@@ -584,8 +588,10 @@ fn inner_parse_loop<'root, 'tt>(
                 //
                 // At the beginning of the loop, if we reach the end of the delimited submatcher,
                 // we pop the stack to backtrack out of the descent.
-                seq @ TokenTree::Delimited(..)
-                | seq @ TokenTree::Token(Token { kind: DocComment(..), .. }) => {
+                seq
+                @
+                (TokenTree::Delimited(..)
+                | TokenTree::Token(Token { kind: DocComment(..), .. })) => {
                     let lower_elts = mem::replace(&mut item.top_elts, Tt(seq));
                     let idx = item.idx;
                     item.stack.push(MatcherTtFrame { elts: lower_elts, idx });
@@ -649,6 +655,7 @@ pub(super) fn parse_tt(parser: &mut Cow<'_, Parser<'_>>, ms: &[TokenTree]) -> Na
             Success(_) => {}
             Failure(token, msg) => return Failure(token, msg),
             Error(sp, msg) => return Error(sp, msg),
+            ErrorReported => return ErrorReported,
         }
 
         // inner parse loop handled all cur_items, so it's empty
@@ -732,10 +739,11 @@ pub(super) fn parse_tt(parser: &mut Cow<'_, Parser<'_>>, ms: &[TokenTree]) -> Na
             let mut item = bb_items.pop().unwrap();
             if let TokenTree::MetaVarDecl(span, _, ident) = item.top_elts.get_tt(item.idx) {
                 let match_cur = item.match_cur;
-                item.push_match(
-                    match_cur,
-                    MatchedNonterminal(Lrc::new(parse_nt(parser.to_mut(), span, ident.name))),
-                );
+                let nt = match parse_nt(parser.to_mut(), span, ident.name) {
+                    Err(()) => return ErrorReported,
+                    Ok(nt) => nt,
+                };
+                item.push_match(match_cur, MatchedNonterminal(Lrc::new(nt)));
                 item.idx += 1;
                 item.match_cur += 1;
             } else {
@@ -846,20 +854,16 @@ fn may_begin_with(token: &Token, name: Name) -> bool {
 /// # Returns
 ///
 /// The parsed non-terminal.
-fn parse_nt(p: &mut Parser<'_>, sp: Span, name: Symbol) -> Nonterminal {
+fn parse_nt(p: &mut Parser<'_>, sp: Span, name: Symbol) -> Result<Nonterminal, ()> {
     // FIXME(Centril): Consider moving this to `parser.rs` to make
     // the visibilities of the methods used below `pub(super)` at most.
-
     if name == sym::tt {
-        return token::NtTT(p.parse_token_tree());
+        return Ok(token::NtTT(p.parse_token_tree()));
     }
-    match parse_nt_inner(p, sp, name) {
-        Ok(nt) => nt,
-        Err(mut err) => {
-            err.emit();
-            FatalError.raise();
-        }
-    }
+    parse_nt_inner(p, sp, name).map_err(|mut err| {
+        err.span_label(sp, format!("while parsing argument for this `{}` macro fragment", name))
+            .emit()
+    })
 }
 
 fn parse_nt_inner<'a>(p: &mut Parser<'a>, sp: Span, name: Symbol) -> PResult<'a, Nonterminal> {

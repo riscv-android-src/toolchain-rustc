@@ -43,6 +43,10 @@ declare_clippy_lint! {
     ///
     /// This can lead to confusing error messages at best and to unexpected behavior at worst.
     ///
+    /// Note that this will not warn about wildcard imports from modules named `prelude`; many
+    /// crates (including the standard library) provide modules named "prelude" specifically
+    /// designed for wildcard import.
+    ///
     /// **Known problems:** If macros are imported through the wildcard, this macro is not included
     /// by the suggestion and has to be added by hand.
     ///
@@ -81,7 +85,7 @@ impl LateLintPass<'_, '_> for WildcardImports {
             if let ItemKind::Use(use_path, UseKind::Glob) = &item.kind;
             // don't lint prelude glob imports
             if !use_path.segments.iter().last().map_or(false, |ps| ps.ident.as_str() == "prelude");
-            let used_imports = cx.tcx.names_imported_by_glob_use(item.hir_id.owner_def_id());
+            let used_imports = cx.tcx.names_imported_by_glob_use(item.hir_id.owner.to_def_id());
             if !used_imports.is_empty(); // Already handled by `unused_imports`
             then {
                 let mut applicability = Applicability::MachineApplicable;

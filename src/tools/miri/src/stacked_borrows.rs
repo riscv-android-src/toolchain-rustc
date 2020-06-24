@@ -6,9 +6,12 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::rc::Rc;
 
+use log::trace;
+
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc::mir::RetagKind;
-use rustc::ty::{self, layout::Size};
+use rustc_middle::mir::RetagKind;
+use rustc_middle::ty;
+use rustc_target::abi::{LayoutOf, Size};
 use rustc_hir::Mutability;
 
 use crate::*;
@@ -182,7 +185,7 @@ impl GlobalState {
         self.active_calls.contains(&id)
     }
 
-    pub fn static_base_ptr(&mut self, id: AllocId) -> Tag {
+    pub fn global_base_ptr(&mut self, id: AllocId) -> Tag {
         self.base_ptr_ids.get(&id).copied().unwrap_or_else(|| {
             let tag = Tag::Tagged(self.new_ptr());
             trace!("New allocation {:?} has base tag {:?}", id, tag);
@@ -190,6 +193,14 @@ impl GlobalState {
             tag
         })
     }
+}
+
+/// Error reporting
+fn err_sb_ub(msg: String) -> InterpError<'static> {
+    err_machine_stop!(TerminationInfo::ExperimentalUb {
+        msg,
+        url: format!("https://github.com/rust-lang/unsafe-code-guidelines/blob/master/wip/stacked-borrows.md"),
+    })
 }
 
 // # Stacked Borrows Core Begin
@@ -272,15 +283,15 @@ impl<'tcx> Stack {
         if let Some(call) = item.protector {
             if global.is_active(call) {
                 if let Some(tag) = tag {
-                    throw_ub!(UbExperimental(format!(
+                    Err(err_sb_ub(format!(
                         "not granting access to tag {:?} because incompatible item is protected: {:?}",
                         tag, item
-                    )));
+                    )))?
                 } else {
-                    throw_ub!(UbExperimental(format!(
+                    Err(err_sb_ub(format!(
                         "deallocating while item is protected: {:?}",
                         item
-                    )));
+                    )))?
                 }
             }
         }
@@ -294,10 +305,10 @@ impl<'tcx> Stack {
 
         // Step 1: Find granting item.
         let granting_idx = self.find_granting(access, tag).ok_or_else(|| {
-            err_ub!(UbExperimental(format!(
+            err_sb_ub(format!(
                 "no item granting {} to tag {:?} found in borrow stack.",
                 access, tag
-            ),))
+            ))
         })?;
 
         // Step 2: Remove incompatible items above them.  Make sure we do not remove protected
@@ -338,10 +349,10 @@ impl<'tcx> Stack {
     fn dealloc(&mut self, tag: Tag, global: &GlobalState) -> InterpResult<'tcx> {
         // Step 1: Find granting item.
         self.find_granting(AccessKind::Write, tag).ok_or_else(|| {
-            err_ub!(UbExperimental(format!(
+            err_sb_ub(format!(
                 "no item granting write access for deallocation to tag {:?} found in borrow stack",
                 tag,
-            )))
+            ))
         })?;
 
         // Step 2: Remove all items.  Also checks for protectors.
@@ -363,10 +374,10 @@ impl<'tcx> Stack {
         // Now we figure out which item grants our parent (`derived_from`) this kind of access.
         // We use that to determine where to put the new item.
         let granting_idx = self.find_granting(access, derived_from)
-            .ok_or_else(|| err_ub!(UbExperimental(format!(
+            .ok_or_else(|| err_sb_ub(format!(
                 "trying to reborrow for {:?}, but parent tag {:?} does not have an appropriate item in the borrow stack",
                 new.perm, derived_from,
-            ))))?;
+            )))?;
 
         // Compute where to put the new item.
         // Either way, we ensure that we insert the new item in a way such that between
@@ -449,12 +460,14 @@ impl Stacks {
             // everything else off the stack, invalidating all previous pointers,
             // and in particular, *all* raw pointers.
             MemoryKind::Stack => (Tag::Tagged(extra.borrow_mut().new_ptr()), Permission::Unique),
-            // Static memory can be referenced by "global" pointers from `tcx`.
-            // Thus we call `static_base_ptr` such that the global pointers get the same tag
+            // Global memory can be referenced by global pointers from `tcx`.
+            // Thus we call `global_base_ptr` such that the global pointers get the same tag
             // as what we use here.
+            // `Machine` is used for extern statics, and thus must also be listed here.
+            // `Env` we list because we can get away with precise tracking there.
             // The base pointer is not unique, so the base permission is `SharedReadWrite`.
-            MemoryKind::Machine(MiriMemoryKind::Static) | MemoryKind::Machine(MiriMemoryKind::Machine) =>
-                (extra.borrow_mut().static_base_ptr(id), Permission::SharedReadWrite),
+            MemoryKind::Machine(MiriMemoryKind::Global | MiriMemoryKind::Machine | MiriMemoryKind::Env) =>
+                (extra.borrow_mut().global_base_ptr(id), Permission::SharedReadWrite),
             // Everything else we handle entirely untagged for now.
             // FIXME: experiment with more precise tracking.
             _ => (Tag::Untagged, Permission::SharedReadWrite),
@@ -556,7 +569,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         val: ImmTy<'tcx, Tag>,
         kind: RefKind,
         protect: bool,
-    ) -> InterpResult<'tcx, Immediate<Tag>> {
+    ) -> InterpResult<'tcx, ImmTy<'tcx, Tag>> {
         let this = self.eval_context_mut();
         // We want a place for where the ptr *points to*, so we get one.
         let place = this.ref_to_mplace(val)?;
@@ -569,7 +582,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let place = this.mplace_access_checked(place)?;
         if size == Size::ZERO {
             // Nothing to do for ZSTs.
-            return Ok(*val);
+            return Ok(val);
         }
 
         // Compute new borrow.
@@ -590,7 +603,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let new_place = place.replace_tag(new_tag);
 
         // Return new pointer.
-        Ok(new_place.to_ref())
+        Ok(ImmTy::from_immediate(new_place.to_ref(), val.layout))
     }
 }
 
@@ -627,8 +640,41 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // Fast path.
             let val = this.read_immediate(this.place_to_op(place)?)?;
             let val = this.retag_reference(val, mutbl, protector)?;
-            this.write_immediate(val, place)?;
+            this.write_immediate(*val, place)?;
         }
+
+        Ok(())
+    }
+
+    /// After a stack frame got pushed, retag the return place so that we are sure
+    /// it does not alias with anything.
+    /// 
+    /// This is a HACK because there is nothing in MIR that would make the retag
+    /// explicit. Also see https://github.com/rust-lang/rust/issues/71117.
+    fn retag_return_place(&mut self) -> InterpResult<'tcx> {
+        let this = self.eval_context_mut();
+        let return_place = if let Some(return_place) = this.frame_mut().return_place {
+            return_place
+        } else {
+            // No return place, nothing to do.
+            return Ok(());
+        };
+        if return_place.layout.is_zst() {
+            // There may not be any memory here, nothing to do.
+            return Ok(());
+        }
+        // We need this to be in-memory to use tagged pointers.
+        let return_place = this.force_allocation(return_place)?;
+
+        // We have to turn the place into a pointer to use the existing code.
+        // (The pointer type does not matter, so we use a raw pointer.)
+        let ptr_layout = this.layout_of(this.tcx.mk_mut_ptr(return_place.layout.ty))?;
+        let val = ImmTy::from_immediate(return_place.to_ref(), ptr_layout);
+        // Reborrow it.
+        let val = this.retag_reference(val, RefKind::Unique { two_phase: false }, /*protector*/ true)?;
+        // And use reborrowed pointer for return place.
+        let return_place = this.ref_to_mplace(val)?;
+        this.frame_mut().return_place = Some(return_place.into());
 
         Ok(())
     }

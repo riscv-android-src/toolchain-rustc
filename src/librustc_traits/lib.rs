@@ -4,12 +4,13 @@
 #![feature(crate_visibility_modifier)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
+#![feature(or_patterns)]
 #![recursion_limit = "256"]
 
 #[macro_use]
 extern crate log;
 #[macro_use]
-extern crate rustc;
+extern crate rustc_middle;
 
 mod dropck_outlives;
 mod evaluate_obligation;
@@ -19,7 +20,7 @@ mod normalize_erasing_regions;
 mod normalize_projection_ty;
 mod type_op;
 
-use rustc::ty::query::Providers;
+use rustc_middle::ty::query::Providers;
 
 pub fn provide(p: &mut Providers<'_>) {
     dropck_outlives::provide(p);

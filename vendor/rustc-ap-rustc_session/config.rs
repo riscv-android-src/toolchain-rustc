@@ -18,9 +18,10 @@ use rustc_feature::UnstableFeatures;
 use rustc_span::edition::{Edition, DEFAULT_EDITION, EDITION_NAME_LIST};
 use rustc_span::source_map::{FileName, FilePathMapping};
 use rustc_span::symbol::{sym, Symbol};
+use rustc_span::SourceFileHashAlgorithm;
 
 use rustc_errors::emitter::HumanReadableErrorType;
-use rustc_errors::{ColorConfig, FatalError, Handler, HandlerFlags};
+use rustc_errors::{ColorConfig, HandlerFlags};
 
 use std::collections::btree_map::{
     Iter as BTreeMapIter, Keys as BTreeMapKeysIter, Values as BTreeMapValuesIter,
@@ -391,6 +392,7 @@ impl ExternEntry {
 pub enum PrintRequest {
     FileNames,
     Sysroot,
+    TargetLibdir,
     CrateName,
     Cfg,
     TargetList,
@@ -465,6 +467,7 @@ pub struct OutputFilenames {
 
 impl_stable_hash_via_hash!(OutputFilenames);
 
+pub const RLINK_EXT: &str = "rlink";
 pub const RUST_CGU_EXT: &str = "rcgu";
 
 impl OutputFilenames {
@@ -746,25 +749,30 @@ pub fn build_configuration(sess: &Session, mut user_cfg: CrateConfig) -> CrateCo
     user_cfg
 }
 
-pub fn build_target_config(opts: &Options, sp: &Handler) -> Config {
+pub fn build_target_config(opts: &Options, error_format: ErrorOutputType) -> Config {
     let target = Target::search(&opts.target_triple).unwrap_or_else(|e| {
-        sp.struct_fatal(&format!("Error loading target specification: {}", e))
-            .help("Use `--print target-list` for a list of built-in targets")
-            .emit();
-        FatalError.raise();
+        early_error(
+            error_format,
+            &format!(
+                "Error loading target specification: {}. \
+            Use `--print target-list` for a list of built-in targets",
+                e
+            ),
+        )
     });
 
     let ptr_width = match &target.target_pointer_width[..] {
         "16" => 16,
         "32" => 32,
         "64" => 64,
-        w => sp
-            .fatal(&format!(
+        w => early_error(
+            error_format,
+            &format!(
                 "target specification was invalid: \
              unrecognized target-pointer-width {}",
                 w
-            ))
-            .raise(),
+            ),
+        ),
     };
 
     Config { target, ptr_width }
@@ -911,7 +919,7 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
             "",
             "print",
             "Compiler information to print on stdout",
-            "[crate-name|file-names|sysroot|cfg|target-list|\
+            "[crate-name|file-names|sysroot|target-libdir|cfg|target-list|\
              target-cpus|target-features|relocation-models|\
              code-models|tls-models|target-spec-json|native-static-libs]",
         ),
@@ -1005,18 +1013,33 @@ pub fn get_cmd_lint_options(
     matches: &getopts::Matches,
     error_format: ErrorOutputType,
 ) -> (Vec<(String, lint::Level)>, bool, Option<lint::Level>) {
-    let mut lint_opts = vec![];
+    let mut lint_opts_with_position = vec![];
     let mut describe_lints = false;
 
     for &level in &[lint::Allow, lint::Warn, lint::Deny, lint::Forbid] {
-        for lint_name in matches.opt_strs(level.as_str()) {
+        for (passed_arg_pos, lint_name) in matches.opt_strs_pos(level.as_str()) {
+            let arg_pos = if let lint::Forbid = level {
+                // HACK: forbid is always specified last, so it can't be overridden.
+                // FIXME: remove this once <https://github.com/rust-lang/rust/issues/70819> is
+                // fixed and `forbid` works as expected.
+                usize::max_value()
+            } else {
+                passed_arg_pos
+            };
             if lint_name == "help" {
                 describe_lints = true;
             } else {
-                lint_opts.push((lint_name.replace("-", "_"), level));
+                lint_opts_with_position.push((arg_pos, lint_name.replace("-", "_"), level));
             }
         }
     }
+
+    lint_opts_with_position.sort_by_key(|x| x.0);
+    let lint_opts = lint_opts_with_position
+        .iter()
+        .cloned()
+        .map(|(_, lint_name, level)| (lint_name, level))
+        .collect();
 
     let lint_cap = matches.opt_str("cap-lints").map(|cap| {
         lint::Level::from_str(&cap)
@@ -1121,7 +1144,7 @@ pub fn parse_error_format(
         // Conservatively require that the `--json` argument is coupled with
         // `--error-format=json`. This means that `--json` is specified we
         // should actually be emitting JSON blobs.
-        _ if matches.opt_strs("json").len() > 0 => {
+        _ if !matches.opt_strs("json").is_empty() => {
             early_error(
                 ErrorOutputType::default(),
                 "using `--json` requires also using `--error-format=json`",
@@ -1131,7 +1154,7 @@ pub fn parse_error_format(
         _ => {}
     }
 
-    return error_format;
+    error_format
 }
 
 fn parse_crate_edition(matches: &getopts::Matches) -> Edition {
@@ -1277,33 +1300,6 @@ fn check_thread_count(debugging_opts: &DebuggingOptions, error_format: ErrorOutp
     }
 }
 
-fn select_incremental_path(
-    debugging_opts: &DebuggingOptions,
-    cg: &CodegenOptions,
-    error_format: ErrorOutputType,
-) -> Option<PathBuf> {
-    match (&debugging_opts.incremental, &cg.incremental) {
-        (Some(path1), Some(path2)) => {
-            if path1 != path2 {
-                early_error(
-                    error_format,
-                    &format!(
-                        "conflicting paths for `-Z incremental` and \
-                         `-C incremental` specified: {} versus {}",
-                        path1, path2
-                    ),
-                );
-            } else {
-                Some(path1)
-            }
-        }
-        (Some(path), None) => Some(path),
-        (None, Some(path)) => Some(path),
-        (None, None) => None,
-    }
-    .map(|m| PathBuf::from(m))
-}
-
 fn collect_print_requests(
     cg: &mut CodegenOptions,
     dopts: &mut DebuggingOptions,
@@ -1336,6 +1332,7 @@ fn collect_print_requests(
         "crate-name" => PrintRequest::CrateName,
         "file-names" => PrintRequest::FileNames,
         "sysroot" => PrintRequest::Sysroot,
+        "target-libdir" => PrintRequest::TargetLibdir,
         "cfg" => PrintRequest::Cfg,
         "target-list" => PrintRequest::TargetList,
         "target-cpus" => PrintRequest::TargetCPUs,
@@ -1492,10 +1489,8 @@ fn parse_libs(
             {
                 early_error(
                     error_format,
-                    &format!(
-                        "the library kind 'static-nobundle' is only \
-                         accepted on the nightly compiler"
-                    ),
+                    "the library kind 'static-nobundle' is only \
+                     accepted on the nightly compiler",
                 );
             }
             let mut name_parts = name.splitn(2, ':');
@@ -1669,7 +1664,7 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
 
     check_thread_count(&debugging_opts, error_format);
 
-    let incremental = select_incremental_path(&debugging_opts, &cg, error_format);
+    let incremental = cg.incremental.as_ref().map(PathBuf::from);
 
     if debugging_opts.profile && incremental.is_some() {
         early_error(
@@ -1990,7 +1985,8 @@ impl PpMode {
 crate mod dep_tracking {
     use super::{
         CFGuard, CrateType, DebugInfo, ErrorOutputType, LinkerPluginLto, LtoCli, OptLevel,
-        OutputTypes, Passes, Sanitizer, SwitchWithOptPath, SymbolManglingVersion,
+        OutputTypes, Passes, Sanitizer, SourceFileHashAlgorithm, SwitchWithOptPath,
+        SymbolManglingVersion,
     };
     use crate::lint;
     use crate::utils::NativeLibraryKind;
@@ -2068,6 +2064,7 @@ crate mod dep_tracking {
     impl_dep_tracking_hash_via_hash!(LinkerPluginLto);
     impl_dep_tracking_hash_via_hash!(SwitchWithOptPath);
     impl_dep_tracking_hash_via_hash!(SymbolManglingVersion);
+    impl_dep_tracking_hash_via_hash!(Option<SourceFileHashAlgorithm>);
 
     impl_dep_tracking_hash_for_sortable_vec_of!(String);
     impl_dep_tracking_hash_for_sortable_vec_of!(PathBuf);

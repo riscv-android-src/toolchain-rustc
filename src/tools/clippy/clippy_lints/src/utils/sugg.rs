@@ -2,7 +2,6 @@
 #![deny(clippy::missing_docs_in_private_items)]
 
 use crate::utils::{higher, snippet, snippet_opt, snippet_with_macro_callsite};
-use matches::matches;
 use rustc_ast::util::parser::AssocOp;
 use rustc_ast::{ast, token};
 use rustc_ast_pretty::pprust::token_kind_to_string;
@@ -109,7 +108,7 @@ impl<'a> Sugg<'a> {
             | hir::ExprKind::Call(..)
             | hir::ExprKind::Field(..)
             | hir::ExprKind::Index(..)
-            | hir::ExprKind::InlineAsm(..)
+            | hir::ExprKind::LlvmInlineAsm(..)
             | hir::ExprKind::Lit(..)
             | hir::ExprKind::Loop(..)
             | hir::ExprKind::MethodCall(..)
@@ -151,10 +150,10 @@ impl<'a> Sugg<'a> {
             | ast::ExprKind::Field(..)
             | ast::ExprKind::ForLoop(..)
             | ast::ExprKind::Index(..)
-            | ast::ExprKind::InlineAsm(..)
+            | ast::ExprKind::LlvmInlineAsm(..)
             | ast::ExprKind::Lit(..)
             | ast::ExprKind::Loop(..)
-            | ast::ExprKind::Mac(..)
+            | ast::ExprKind::MacCall(..)
             | ast::ExprKind::MethodCall(..)
             | ast::ExprKind::Paren(..)
             | ast::ExprKind::Path(..)
@@ -516,7 +515,7 @@ pub trait DiagnosticBuilderExt<'a, T: LintContext> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// db.suggest_item_with_attr(cx, item, "#[derive(Default)]");
+    /// diag.suggest_item_with_attr(cx, item, "#[derive(Default)]");
     /// ```
     fn suggest_item_with_attr<D: Display + ?Sized>(
         &mut self,
@@ -534,7 +533,7 @@ pub trait DiagnosticBuilderExt<'a, T: LintContext> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// db.suggest_prepend_item(cx, item,
+    /// diag.suggest_prepend_item(cx, item,
     /// "fn foo() {
     ///     bar();
     /// }");
@@ -550,7 +549,7 @@ pub trait DiagnosticBuilderExt<'a, T: LintContext> {
     /// # Example
     ///
     /// ```rust,ignore
-    /// db.suggest_remove_item(cx, item, "remove this")
+    /// diag.suggest_remove_item(cx, item, "remove this")
     /// ```
     fn suggest_remove_item(&mut self, cx: &T, item: Span, msg: &str, applicability: Applicability);
 }

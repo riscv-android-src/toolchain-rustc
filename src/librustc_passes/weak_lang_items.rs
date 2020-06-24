@@ -1,16 +1,14 @@
 //! Validity checking for weak lang items
 
-use rustc::middle::lang_items;
-use rustc::middle::lang_items::whitelisted;
-use rustc::session::config;
-
-use rustc::hir::map::Map;
-use rustc::ty::TyCtxt;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
+use rustc_hir::lang_items;
 use rustc_hir::weak_lang_items::WEAK_ITEMS_REFS;
+use rustc_middle::middle::lang_items::whitelisted;
+use rustc_middle::ty::TyCtxt;
+use rustc_session::config;
 use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 
@@ -27,9 +25,6 @@ pub fn check_crate<'tcx>(tcx: TyCtxt<'tcx>, items: &mut lang_items::LanguageItem
     // so here.
     if items.eh_personality().is_none() {
         items.missing.push(lang_items::EhPersonalityLangItem);
-    }
-    if tcx.sess.target.target.options.custom_unwind_resume & items.eh_unwind_resume().is_none() {
-        items.missing.push(lang_items::EhUnwindResumeLangItem);
     }
 
     {
@@ -88,9 +83,9 @@ impl<'a, 'tcx> Context<'a, 'tcx> {
 }
 
 impl<'a, 'tcx, 'v> Visitor<'v> for Context<'a, 'tcx> {
-    type Map = Map<'v>;
+    type Map = intravisit::ErasedMap<'v>;
 
-    fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, Map<'v>> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 

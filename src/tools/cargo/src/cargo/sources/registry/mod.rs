@@ -217,6 +217,7 @@ pub struct RegistryConfig {
     pub api: Option<String>,
 }
 
+/// A single line in the index representing a single version of a package.
 #[derive(Deserialize)]
 pub struct RegistryPackage<'a> {
     name: InternedString,
@@ -225,7 +226,15 @@ pub struct RegistryPackage<'a> {
     deps: Vec<RegistryDependency<'a>>,
     features: BTreeMap<InternedString, Vec<InternedString>>,
     cksum: String,
+    /// If `true`, Cargo will skip this version when resolving.
+    ///
+    /// This was added in 2014. Everything in the crates.io index has this set
+    /// now, so this probably doesn't need to be an option anymore.
     yanked: Option<bool>,
+    /// Native library name this package links to.
+    ///
+    /// Added early 2018 (see https://github.com/rust-lang/cargo/pull/4978),
+    /// can be `None` if published before then.
     links: Option<InternedString>,
 }
 
@@ -315,7 +324,7 @@ impl<'a> RegistryDependency<'a> {
         if package.is_some() {
             dep.set_explicit_name_in_toml(name);
         }
-        let kind = match kind.as_ref().map(|s| &s[..]).unwrap_or("") {
+        let kind = match kind.as_deref().unwrap_or("") {
             "dev" => DepKind::Development,
             "build" => DepKind::Build,
             _ => DepKind::Normal,
@@ -463,7 +472,6 @@ impl<'cfg> RegistrySource<'cfg> {
 
         let gz = GzDecoder::new(tarball);
         let mut tar = Archive::new(gz);
-        tar.set_preserve_mtime(false);
         let prefix = unpack_dir.file_name().unwrap();
         let parent = unpack_dir.parent().unwrap();
         for entry in tar.entries()? {

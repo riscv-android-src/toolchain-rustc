@@ -14,7 +14,7 @@
 //! - [`Generics`], [`GenericParam`], [`WhereClause`]: Metadata associated with generic parameters.
 //! - [`EnumDef`] and [`Variant`]: Enum declaration.
 //! - [`Lit`] and [`LitKind`]: Literal expressions.
-//! - [`MacroDef`], [`MacStmtStyle`], [`Mac`], [`MacDelimeter`]: Macro definition and invocation.
+//! - [`MacroDef`], [`MacStmtStyle`], [`MacCall`], [`MacDelimeter`]: Macro definition and invocation.
 //! - [`Attribute`]: Metadata associated with item.
 //! - [`UnOp`], [`UnOpKind`], [`BinOp`], [`BinOpKind`]: Unary and binary operators.
 
@@ -31,7 +31,6 @@ use crate::tokenstream::{DelimSpan, TokenStream, TokenTree};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::sync::Lrc;
 use rustc_data_structures::thin_vec::ThinVec;
-use rustc_index::vec::Idx;
 use rustc_macros::HashStable_Generic;
 use rustc_serialize::{self, Decoder, Encoder};
 use rustc_span::source_map::{respan, Spanned};
@@ -215,11 +214,18 @@ impl GenericArg {
 pub struct AngleBracketedArgs {
     /// The overall span.
     pub span: Span,
-    /// The arguments for this path segment.
-    pub args: Vec<GenericArg>,
-    /// Constraints on associated types, if any.
-    /// E.g., `Foo<A = Bar, B: Baz>`.
-    pub constraints: Vec<AssocTyConstraint>,
+    /// The comma separated parts in the `<...>`.
+    pub args: Vec<AngleBracketedArg>,
+}
+
+/// Either an argument for a parameter e.g., `'a`, `Vec<u8>`, `0`,
+/// or a constraint on an associated item, e.g., `Item = String` or `Item: Bound`.
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
+pub enum AngleBracketedArg {
+    /// Argument for a generic parameter.
+    Arg(GenericArg),
+    /// Constraint for an associated item.
+    Constraint(AssocTyConstraint),
 }
 
 impl Into<Option<P<GenericArgs>>> for AngleBracketedArgs {
@@ -249,11 +255,13 @@ pub struct ParenthesizedArgs {
 
 impl ParenthesizedArgs {
     pub fn as_angle_bracketed_args(&self) -> AngleBracketedArgs {
-        AngleBracketedArgs {
-            span: self.span,
-            args: self.inputs.iter().cloned().map(|input| GenericArg::Type(input)).collect(),
-            constraints: vec![],
-        }
+        let args = self
+            .inputs
+            .iter()
+            .cloned()
+            .map(|input| AngleBracketedArg::Arg(GenericArg::Type(input)))
+            .collect();
+        AngleBracketedArgs { span: self.span, args }
     }
 }
 
@@ -292,8 +300,8 @@ pub enum GenericBound {
 impl GenericBound {
     pub fn span(&self) -> Span {
         match self {
-            &GenericBound::Trait(ref t, ..) => t.span,
-            &GenericBound::Outlives(ref l) => l.ident.span,
+            GenericBound::Trait(ref t, ..) => t.span,
+            GenericBound::Outlives(ref l) => l.ident.span,
         }
     }
 }
@@ -513,7 +521,7 @@ impl Pat {
                 TyKind::Path(None, Path::from_ident(*ident))
             }
             PatKind::Path(qself, path) => TyKind::Path(qself.clone(), path.clone()),
-            PatKind::Mac(mac) => TyKind::Mac(mac.clone()),
+            PatKind::MacCall(mac) => TyKind::MacCall(mac.clone()),
             // `&mut? P` can be reinterpreted as `&mut? T` where `T` is `P` reparsed as a type.
             PatKind::Ref(pat, mutbl) => {
                 pat.to_ty().map(|ty| TyKind::Rptr(None, MutTy { ty, mutbl: *mutbl }))?
@@ -567,7 +575,7 @@ impl Pat {
             | PatKind::Range(..)
             | PatKind::Ident(..)
             | PatKind::Path(..)
-            | PatKind::Mac(_) => {}
+            | PatKind::MacCall(_) => {}
         }
     }
 
@@ -682,22 +690,11 @@ pub enum PatKind {
     Paren(P<Pat>),
 
     /// A macro pattern; pre-expansion.
-    Mac(Mac),
+    MacCall(MacCall),
 }
 
-#[derive(
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    RustcEncodable,
-    RustcDecodable,
-    Debug,
-    Copy,
-    HashStable_Generic
-)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Debug, Copy)]
+#[derive(HashStable_Generic)]
 pub enum Mutability {
     Mut,
     Not,
@@ -881,9 +878,9 @@ impl Stmt {
     pub fn add_trailing_semicolon(mut self) -> Self {
         self.kind = match self.kind {
             StmtKind::Expr(expr) => StmtKind::Semi(expr),
-            StmtKind::Mac(mac) => {
-                StmtKind::Mac(mac.map(|(mac, _style, attrs)| (mac, MacStmtStyle::Semicolon, attrs)))
-            }
+            StmtKind::MacCall(mac) => StmtKind::MacCall(
+                mac.map(|(mac, _style, attrs)| (mac, MacStmtStyle::Semicolon, attrs)),
+            ),
             kind => kind,
         };
         self
@@ -917,7 +914,7 @@ pub enum StmtKind {
     /// Just a trailing semi-colon.
     Empty,
     /// Macro.
-    Mac(P<(Mac, MacStmtStyle, AttrVec)>),
+    MacCall(P<(MacCall, MacStmtStyle, AttrVec)>),
 }
 
 #[derive(Clone, Copy, PartialEq, RustcEncodable, RustcDecodable, Debug)]
@@ -1057,7 +1054,7 @@ impl Expr {
         let kind = match &self.kind {
             // Trivial conversions.
             ExprKind::Path(qself, path) => TyKind::Path(qself.clone(), path.clone()),
-            ExprKind::Mac(mac) => TyKind::Mac(mac.clone()),
+            ExprKind::MacCall(mac) => TyKind::MacCall(mac.clone()),
 
             ExprKind::Paren(expr) => expr.to_ty().map(TyKind::Paren)?,
 
@@ -1126,8 +1123,8 @@ impl Expr {
             ExprKind::Break(..) => ExprPrecedence::Break,
             ExprKind::Continue(..) => ExprPrecedence::Continue,
             ExprKind::Ret(..) => ExprPrecedence::Ret,
-            ExprKind::InlineAsm(..) => ExprPrecedence::InlineAsm,
-            ExprKind::Mac(..) => ExprPrecedence::Mac,
+            ExprKind::LlvmInlineAsm(..) => ExprPrecedence::InlineAsm,
+            ExprKind::MacCall(..) => ExprPrecedence::Mac,
             ExprKind::Struct(..) => ExprPrecedence::Struct,
             ExprKind::Repeat(..) => ExprPrecedence::Repeat,
             ExprKind::Paren(..) => ExprPrecedence::Paren,
@@ -1255,11 +1252,11 @@ pub enum ExprKind {
     /// A `return`, with an optional value to be returned.
     Ret(Option<P<Expr>>),
 
-    /// Output of the `asm!()` macro.
-    InlineAsm(P<InlineAsm>),
+    /// Output of the `llvm_asm!()` macro.
+    LlvmInlineAsm(P<LlvmInlineAsm>),
 
     /// A macro invocation; pre-expansion.
-    Mac(Mac),
+    MacCall(MacCall),
 
     /// A struct literal expression.
     ///
@@ -1322,19 +1319,8 @@ pub enum CaptureBy {
 
 /// The movability of a generator / closure literal:
 /// whether a generator contains self-references, causing it to be `!Unpin`.
-#[derive(
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    RustcEncodable,
-    RustcDecodable,
-    Debug,
-    Copy,
-    HashStable_Generic
-)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Debug, Copy)]
+#[derive(HashStable_Generic)]
 pub enum Movability {
     /// May contain self-references, `!Unpin`.
     Static,
@@ -1345,13 +1331,13 @@ pub enum Movability {
 /// Represents a macro invocation. The `path` indicates which macro
 /// is being invoked, and the `args` are arguments passed to it.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
-pub struct Mac {
+pub struct MacCall {
     pub path: Path,
     pub args: P<MacArgs>,
     pub prior_type_ascription: Option<(Span, bool)>,
 }
 
-impl Mac {
+impl MacCall {
     pub fn span(&self) -> Span {
         self.path.span.to(self.args.span().unwrap_or(self.path.span))
     }
@@ -1446,11 +1432,11 @@ impl MacDelimiter {
 }
 
 /// Represents a macro definition.
-#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable_Generic)]
 pub struct MacroDef {
     pub body: P<MacArgs>,
     /// `true` if macro was defined with `macro_rules`.
-    pub legacy: bool,
+    pub macro_rules: bool,
 }
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, Copy, Hash, Eq, PartialEq)]
@@ -1583,8 +1569,7 @@ impl LitKind {
     pub fn is_suffixed(&self) -> bool {
         match *self {
             // suffixed variants
-            LitKind::Int(_, LitIntType::Signed(..))
-            | LitKind::Int(_, LitIntType::Unsigned(..))
+            LitKind::Int(_, LitIntType::Signed(..) | LitIntType::Unsigned(..))
             | LitKind::Float(_, LitFloatType::Suffixed(..)) => true,
             // unsuffixed variants
             LitKind::Str(..)
@@ -1615,19 +1600,8 @@ pub struct FnSig {
     pub decl: P<FnDecl>,
 }
 
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    HashStable_Generic,
-    RustcEncodable,
-    RustcDecodable,
-    Debug
-)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Debug)]
+#[derive(HashStable_Generic)]
 pub enum FloatTy {
     F32,
     F64,
@@ -1648,7 +1622,7 @@ impl FloatTy {
         }
     }
 
-    pub fn bit_width(self) -> usize {
+    pub fn bit_width(self) -> u64 {
         match self {
             FloatTy::F32 => 32,
             FloatTy::F64 => 64,
@@ -1656,19 +1630,8 @@ impl FloatTy {
     }
 }
 
-#[derive(
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    HashStable_Generic,
-    RustcEncodable,
-    RustcDecodable,
-    Debug
-)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Debug)]
+#[derive(HashStable_Generic)]
 pub enum IntTy {
     Isize,
     I8,
@@ -1708,7 +1671,7 @@ impl IntTy {
         format!("{}{}", val as u128, self.name_str())
     }
 
-    pub fn bit_width(&self) -> Option<usize> {
+    pub fn bit_width(&self) -> Option<u64> {
         Some(match *self {
             IntTy::Isize => return None,
             IntTy::I8 => 8,
@@ -1732,19 +1695,8 @@ impl IntTy {
     }
 }
 
-#[derive(
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    HashStable_Generic,
-    RustcEncodable,
-    RustcDecodable,
-    Copy,
-    Debug
-)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Copy, Debug)]
+#[derive(HashStable_Generic)]
 pub enum UintTy {
     Usize,
     U8,
@@ -1781,7 +1733,7 @@ impl UintTy {
         format!("{}{}", val, self.name_str())
     }
 
-    pub fn bit_width(&self) -> Option<usize> {
+    pub fn bit_width(&self) -> Option<u64> {
         Some(match *self {
             UintTy::Usize => return None,
             UintTy::U8 => 8,
@@ -1881,7 +1833,7 @@ pub enum TyKind {
     /// Inferred type of a `self` or `&self` argument in a method.
     ImplicitSelf,
     /// A macro in the type position.
-    Mac(Mac),
+    MacCall(MacCall),
     /// Placeholder for a kind that has failed to be defined.
     Err,
     /// Placeholder for a `va_list`.
@@ -1916,37 +1868,37 @@ pub enum TraitObjectSyntax {
 
 /// Inline assembly dialect.
 ///
-/// E.g., `"intel"` as in `asm!("mov eax, 2" : "={eax}"(result) : : : "intel")`.
+/// E.g., `"intel"` as in `llvm_asm!("mov eax, 2" : "={eax}"(result) : : : "intel")`.
 #[derive(Clone, PartialEq, RustcEncodable, RustcDecodable, Debug, Copy, HashStable_Generic)]
-pub enum AsmDialect {
+pub enum LlvmAsmDialect {
     Att,
     Intel,
 }
 
-/// Inline assembly.
+/// LLVM-style inline assembly.
 ///
-/// E.g., `"={eax}"(result)` as in `asm!("mov eax, 2" : "={eax}"(result) : : : "intel")`.
+/// E.g., `"={eax}"(result)` as in `llvm_asm!("mov eax, 2" : "={eax}"(result) : : : "intel")`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
-pub struct InlineAsmOutput {
+pub struct LlvmInlineAsmOutput {
     pub constraint: Symbol,
     pub expr: P<Expr>,
     pub is_rw: bool,
     pub is_indirect: bool,
 }
 
-/// Inline assembly.
+/// LLVM-style inline assembly.
 ///
-/// E.g., `asm!("NOP");`.
+/// E.g., `llvm_asm!("NOP");`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
-pub struct InlineAsm {
+pub struct LlvmInlineAsm {
     pub asm: Symbol,
     pub asm_str_style: StrStyle,
-    pub outputs: Vec<InlineAsmOutput>,
+    pub outputs: Vec<LlvmInlineAsmOutput>,
     pub inputs: Vec<(Symbol, P<Expr>)>,
     pub clobbers: Vec<Symbol>,
     pub volatile: bool,
     pub alignstack: bool,
-    pub dialect: AsmDialect,
+    pub dialect: LlvmAsmDialect,
 }
 
 /// A parameter in a function header.
@@ -2118,14 +2070,14 @@ pub enum ImplPolarity {
     /// `impl Trait for Type`
     Positive,
     /// `impl !Trait for Type`
-    Negative,
+    Negative(Span),
 }
 
 impl fmt::Debug for ImplPolarity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             ImplPolarity::Positive => "positive".fmt(f),
-            ImplPolarity::Negative => "negative".fmt(f),
+            ImplPolarity::Negative(_) => "negative".fmt(f),
         }
     }
 }
@@ -2153,7 +2105,7 @@ impl FnRetTy {
 /// Module declaration.
 ///
 /// E.g., `mod foo;` or `mod foo { .. }`.
-#[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Clone, RustcEncodable, RustcDecodable, Debug, Default)]
 pub struct Mod {
     /// A span from the first token past `{` to the last token until `}`.
     /// For `mod foo;`, the inner span ranges from the first token
@@ -2251,15 +2203,10 @@ pub enum AttrStyle {
     Inner,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Copy)]
-pub struct AttrId(pub usize);
-
-impl Idx for AttrId {
-    fn new(idx: usize) -> Self {
-        AttrId(idx)
-    }
-    fn index(self) -> usize {
-        self.0
+rustc_index::newtype_index! {
+    pub struct AttrId {
+        ENCODABLE = custom
+        DEBUG_FORMAT = "AttrId({})"
     }
 }
 
@@ -2574,7 +2521,7 @@ pub enum ItemKind {
     /// A macro invocation.
     ///
     /// E.g., `foo!(..)`.
-    Mac(Mac),
+    MacCall(MacCall),
 
     /// A macro definition.
     MacroDef(MacroDef),
@@ -2586,7 +2533,7 @@ impl ItemKind {
         match self {
             Use(..) | Static(..) | Const(..) | Fn(..) | Mod(..) | GlobalAsm(..) | TyAlias(..)
             | Struct(..) | Union(..) | Trait(..) | TraitAlias(..) | MacroDef(..) => "a",
-            ExternCrate(..) | ForeignMod(..) | Mac(..) | Enum(..) | Impl { .. } => "an",
+            ExternCrate(..) | ForeignMod(..) | MacCall(..) | Enum(..) | Impl { .. } => "an",
         }
     }
 
@@ -2606,7 +2553,7 @@ impl ItemKind {
             ItemKind::Union(..) => "union",
             ItemKind::Trait(..) => "trait",
             ItemKind::TraitAlias(..) => "trait alias",
-            ItemKind::Mac(..) => "item macro invocation",
+            ItemKind::MacCall(..) => "item macro invocation",
             ItemKind::MacroDef(..) => "macro definition",
             ItemKind::Impl { .. } => "implementation",
         }
@@ -2648,14 +2595,14 @@ pub enum AssocItemKind {
     /// An associated type.
     TyAlias(Defaultness, Generics, GenericBounds, Option<P<Ty>>),
     /// A macro expanding to associated items.
-    Macro(Mac),
+    MacCall(MacCall),
 }
 
 impl AssocItemKind {
     pub fn defaultness(&self) -> Defaultness {
         match *self {
             Self::Const(def, ..) | Self::Fn(def, ..) | Self::TyAlias(def, ..) => def,
-            Self::Macro(..) => Defaultness::Final,
+            Self::MacCall(..) => Defaultness::Final,
         }
     }
 }
@@ -2666,7 +2613,7 @@ impl From<AssocItemKind> for ItemKind {
             AssocItemKind::Const(a, b, c) => ItemKind::Const(a, b, c),
             AssocItemKind::Fn(a, b, c, d) => ItemKind::Fn(a, b, c, d),
             AssocItemKind::TyAlias(a, b, c, d) => ItemKind::TyAlias(a, b, c, d),
-            AssocItemKind::Macro(a) => ItemKind::Mac(a),
+            AssocItemKind::MacCall(a) => ItemKind::MacCall(a),
         }
     }
 }
@@ -2679,7 +2626,7 @@ impl TryFrom<ItemKind> for AssocItemKind {
             ItemKind::Const(a, b, c) => AssocItemKind::Const(a, b, c),
             ItemKind::Fn(a, b, c, d) => AssocItemKind::Fn(a, b, c, d),
             ItemKind::TyAlias(a, b, c, d) => AssocItemKind::TyAlias(a, b, c, d),
-            ItemKind::Mac(a) => AssocItemKind::Macro(a),
+            ItemKind::MacCall(a) => AssocItemKind::MacCall(a),
             _ => return Err(item_kind),
         })
     }
@@ -2695,7 +2642,7 @@ pub enum ForeignItemKind {
     /// A foreign type.
     TyAlias(Defaultness, Generics, GenericBounds, Option<P<Ty>>),
     /// A macro expanding to foreign items.
-    Macro(Mac),
+    MacCall(MacCall),
 }
 
 impl From<ForeignItemKind> for ItemKind {
@@ -2704,7 +2651,7 @@ impl From<ForeignItemKind> for ItemKind {
             ForeignItemKind::Static(a, b, c) => ItemKind::Static(a, b, c),
             ForeignItemKind::Fn(a, b, c, d) => ItemKind::Fn(a, b, c, d),
             ForeignItemKind::TyAlias(a, b, c, d) => ItemKind::TyAlias(a, b, c, d),
-            ForeignItemKind::Macro(a) => ItemKind::Mac(a),
+            ForeignItemKind::MacCall(a) => ItemKind::MacCall(a),
         }
     }
 }
@@ -2717,7 +2664,7 @@ impl TryFrom<ItemKind> for ForeignItemKind {
             ItemKind::Static(a, b, c) => ForeignItemKind::Static(a, b, c),
             ItemKind::Fn(a, b, c, d) => ForeignItemKind::Fn(a, b, c, d),
             ItemKind::TyAlias(a, b, c, d) => ForeignItemKind::TyAlias(a, b, c, d),
-            ItemKind::Mac(a) => ForeignItemKind::Macro(a),
+            ItemKind::MacCall(a) => ForeignItemKind::MacCall(a),
             _ => return Err(item_kind),
         })
     }

@@ -20,7 +20,7 @@ The tests themselves are typically (but not always) organized into
 a folder holding tests that should compile successfully,
 but return a failure (non-zero status), `compile-fail`, a folder holding tests
 that should fail to compile, and many more.  The various suites are defined in
-[src/tools/compiletest/src/common.rs][common] in the `pub struct Config`
+[src/tools/compiletest/src/common.rs][common] in the `pub enum Mode`
 declaration.  And a very good introduction to the different suites of compiler
 tests along with details about them can be found in [Adding new
 tests](./tests/adding.html).
@@ -58,9 +58,8 @@ Here is an example, specifying the `must-compile-successfully` header command,
 which takes no arguments, followed by the `failure-status` header command,
 which takes a single argument (which, in this case is a value of 1).
 `failure-status` is instructing `compiletest` to expect a failure status of 1
-(rather than the current Rust default of 101 at the time of this writing).  The
-header command and the argument list (if present) are typically separated by a
-colon:
+(rather than the current Rust default of 101). The header command and
+the argument list (if present) are typically separated by a colon:
 
 ```rust,ignore
 // must-compile-successfully

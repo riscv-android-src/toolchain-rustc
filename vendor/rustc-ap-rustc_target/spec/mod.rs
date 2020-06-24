@@ -47,7 +47,7 @@ use rustc_macros::HashStable_Generic;
 pub mod abi;
 mod android_base;
 mod apple_base;
-mod apple_ios_base;
+mod apple_sdk_base;
 mod arm_base;
 mod cloudabi_base;
 mod dragonfly_base;
@@ -434,6 +434,8 @@ supported_targets! {
     ("armv7-apple-ios", armv7_apple_ios),
     ("armv7s-apple-ios", armv7s_apple_ios),
     ("x86_64-apple-ios-macabi", x86_64_apple_ios_macabi),
+    ("aarch64-apple-tvos", aarch64_apple_tvos),
+    ("x86_64-apple-tvos", x86_64_apple_tvos),
 
     ("armebv7r-none-eabi", armebv7r_none_eabi),
     ("armebv7r-none-eabihf", armebv7r_none_eabihf),
@@ -579,6 +581,12 @@ pub struct TargetOptions {
     /// user-defined but before post_link_objects. Standard platform
     /// libraries that should be always be linked to, usually go here.
     pub late_link_args: LinkArgs,
+    /// Linker arguments used in addition to `late_link_args` if at least one
+    /// Rust dependency is dynamically linked.
+    pub late_link_args_dynamic: LinkArgs,
+    /// Linker arguments used in addition to `late_link_args` if aall Rust
+    /// dependencies are statically linked.
+    pub late_link_args_static: LinkArgs,
     /// Objects to link after all others, always found within the
     /// sysroot folder.
     pub post_link_objects: Vec<String>, // ... unconditionally
@@ -692,11 +700,6 @@ pub struct TargetOptions {
     pub archive_format: String,
     /// Is asm!() allowed? Defaults to true.
     pub allow_asm: bool,
-    /// Whether the target uses a custom unwind resumption routine.
-    /// By default LLVM lowers `resume` instructions into calls to `_Unwind_Resume`
-    /// defined in libgcc. If this option is enabled, the target must provide
-    /// `eh_unwind_resume` lang item.
-    pub custom_unwind_resume: bool,
     /// Whether the runtime startup code requires the `main` function be passed
     /// `argc` and `argv` values.
     pub main_needs_argc_argv: bool,
@@ -708,11 +711,6 @@ pub struct TargetOptions {
     // If we give emcc .o files that are actually .bc files it
     // will 'just work'.
     pub obj_is_bitcode: bool,
-
-    // LLVM can't produce object files for this target. Instead, we'll make LLVM
-    // emit assembly and then use `gcc` to turn that assembly into an object
-    // file
-    pub no_integrated_as: bool,
 
     /// Don't use this field; instead use the `.min_atomic_width()` method.
     pub min_atomic_width: Option<u64>,
@@ -767,9 +765,6 @@ pub struct TargetOptions {
     /// The default visibility for symbols in this target should be "hidden"
     /// rather than "default"
     pub default_hidden_visibility: bool,
-
-    /// Whether or not bitcode is embedded in object files
-    pub embed_bitcode: bool,
 
     /// Whether a .debug_gdb_scripts section will be added to the output object file
     pub emit_debug_gdb_scripts: bool,
@@ -863,15 +858,15 @@ impl Default for TargetOptions {
             post_link_objects: Vec::new(),
             post_link_objects_crt: Vec::new(),
             late_link_args: LinkArgs::new(),
+            late_link_args_dynamic: LinkArgs::new(),
+            late_link_args_static: LinkArgs::new(),
             link_env: Vec::new(),
             link_env_remove: Vec::new(),
             archive_format: "gnu".to_string(),
-            custom_unwind_resume: false,
             main_needs_argc_argv: true,
             allow_asm: true,
             has_elf_tls: false,
             obj_is_bitcode: false,
-            no_integrated_as: false,
             min_atomic_width: None,
             max_atomic_width: None,
             atomic_cas: true,
@@ -889,7 +884,6 @@ impl Default for TargetOptions {
             no_builtins: false,
             codegen_backend: "llvm".to_string(),
             default_hidden_visibility: false,
-            embed_bitcode: false,
             emit_debug_gdb_scripts: true,
             requires_uwtable: false,
             simd_types_indirect: true,
@@ -1142,6 +1136,8 @@ impl Target {
         key!(pre_link_objects_exe_crt, list);
         key!(pre_link_objects_dll, list);
         key!(late_link_args, link_args);
+        key!(late_link_args_dynamic, link_args);
+        key!(late_link_args_static, link_args);
         key!(post_link_objects, list);
         key!(post_link_objects_crt, list);
         key!(post_link_args, link_args);
@@ -1182,11 +1178,9 @@ impl Target {
         key!(relro_level, RelroLevel)?;
         key!(archive_format);
         key!(allow_asm, bool);
-        key!(custom_unwind_resume, bool);
         key!(main_needs_argc_argv, bool);
         key!(has_elf_tls, bool);
         key!(obj_is_bitcode, bool);
-        key!(no_integrated_as, bool);
         key!(max_atomic_width, Option<u64>);
         key!(min_atomic_width, Option<u64>);
         key!(atomic_cas, bool);
@@ -1203,7 +1197,6 @@ impl Target {
         key!(no_builtins, bool);
         key!(codegen_backend);
         key!(default_hidden_visibility, bool);
-        key!(embed_bitcode, bool);
         key!(emit_debug_gdb_scripts, bool);
         key!(requires_uwtable, bool);
         key!(simd_types_indirect, bool);
@@ -1370,6 +1363,8 @@ impl ToJson for Target {
         target_option_val!(pre_link_objects_exe_crt);
         target_option_val!(pre_link_objects_dll);
         target_option_val!(link_args - late_link_args);
+        target_option_val!(link_args - late_link_args_dynamic);
+        target_option_val!(link_args - late_link_args_static);
         target_option_val!(post_link_objects);
         target_option_val!(post_link_objects_crt);
         target_option_val!(link_args - post_link_args);
@@ -1410,11 +1405,9 @@ impl ToJson for Target {
         target_option_val!(relro_level);
         target_option_val!(archive_format);
         target_option_val!(allow_asm);
-        target_option_val!(custom_unwind_resume);
         target_option_val!(main_needs_argc_argv);
         target_option_val!(has_elf_tls);
         target_option_val!(obj_is_bitcode);
-        target_option_val!(no_integrated_as);
         target_option_val!(min_atomic_width);
         target_option_val!(max_atomic_width);
         target_option_val!(atomic_cas);
@@ -1431,7 +1424,6 @@ impl ToJson for Target {
         target_option_val!(no_builtins);
         target_option_val!(codegen_backend);
         target_option_val!(default_hidden_visibility);
-        target_option_val!(embed_bitcode);
         target_option_val!(emit_debug_gdb_scripts);
         target_option_val!(requires_uwtable);
         target_option_val!(simd_types_indirect);

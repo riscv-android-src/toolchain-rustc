@@ -1082,6 +1082,7 @@ impl TomlManifest {
                 };
                 for (n, v) in dependencies.iter() {
                     let dep = v.to_dependency(n, cx, kind)?;
+                    validate_package_name(dep.name_in_toml().as_str(), "dependency name", "")?;
                     cx.deps.push(dep);
                 }
 
@@ -1146,17 +1147,19 @@ impl TomlManifest {
             features.require(Feature::namespaced_features())?;
         }
 
+        let summary_features = me
+            .features
+            .as_ref()
+            .map(|x| {
+                x.iter()
+                    .map(|(k, v)| (k.as_str(), v.iter().collect()))
+                    .collect()
+            })
+            .unwrap_or_else(BTreeMap::new);
         let summary = Summary::new(
             pkgid,
             deps,
-            &me.features
-                .as_ref()
-                .map(|x| {
-                    x.iter()
-                        .map(|(k, v)| (k.as_str(), v.iter().collect()))
-                        .collect()
-                })
-                .unwrap_or_else(BTreeMap::new),
+            &summary_features,
             project.links.as_deref(),
             project.namespaced_features.unwrap_or(false),
         )?;
@@ -1624,7 +1627,7 @@ impl DetailedTomlDependency {
             None => (name_in_toml, None),
         };
 
-        let version = self.version.as_ref().map(|v| &v[..]);
+        let version = self.version.as_deref();
         let mut dep = match cx.pkgid {
             Some(id) => Dependency::parse(pkg_name, version, new_source_id, id, cx.config)?,
             None => Dependency::parse_no_deprecated(pkg_name, version, new_source_id)?,

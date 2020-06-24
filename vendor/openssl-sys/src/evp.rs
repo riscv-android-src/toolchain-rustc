@@ -122,12 +122,24 @@ extern "C" {
         npubk: c_int,
     ) -> c_int;
     pub fn EVP_SealFinal(ctx: *mut EVP_CIPHER_CTX, out: *mut c_uchar, outl: *mut c_int) -> c_int;
+    pub fn EVP_EncryptInit_ex(
+        ctx: *mut EVP_CIPHER_CTX,
+        cipher: *const EVP_CIPHER,
+        impl_: *mut ENGINE,
+        key: *const c_uchar,
+        iv: *const c_uchar,
+    ) -> c_int;
     pub fn EVP_EncryptUpdate(
         ctx: *mut EVP_CIPHER_CTX,
         out: *mut c_uchar,
         outl: *mut c_int,
         in_: *const u8,
         inl: c_int,
+    ) -> c_int;
+    pub fn EVP_EncryptFinal_ex(
+        ctx: *mut EVP_CIPHER_CTX,
+        out: *mut c_uchar,
+        outl: *mut c_int,
     ) -> c_int;
     pub fn EVP_OpenInit(
         ctx: *mut EVP_CIPHER_CTX,
@@ -138,12 +150,24 @@ extern "C" {
         priv_: *mut EVP_PKEY,
     ) -> c_int;
     pub fn EVP_OpenFinal(ctx: *mut EVP_CIPHER_CTX, out: *mut c_uchar, outl: *mut c_int) -> c_int;
+    pub fn EVP_DecryptInit_ex(
+        ctx: *mut EVP_CIPHER_CTX,
+        cipher: *const EVP_CIPHER,
+        impl_: *mut ENGINE,
+        key: *const c_uchar,
+        iv: *const c_uchar,
+    ) -> c_int;
     pub fn EVP_DecryptUpdate(
         ctx: *mut EVP_CIPHER_CTX,
         out: *mut c_uchar,
         outl: *mut c_int,
         in_: *const u8,
         inl: c_int,
+    ) -> c_int;
+    pub fn EVP_DecryptFinal_ex(
+        ctx: *mut EVP_CIPHER_CTX,
+        outm: *mut c_uchar,
+        outl: *mut c_int
     ) -> c_int;
 }
 cfg_if! {
@@ -211,6 +235,7 @@ extern "C" {
         ptr: *mut c_void,
     ) -> c_int;
 
+    pub fn EVP_md_null() -> *const EVP_MD;
     pub fn EVP_md5() -> *const EVP_MD;
     pub fn EVP_sha1() -> *const EVP_MD;
     pub fn EVP_sha224() -> *const EVP_MD;
@@ -402,6 +427,18 @@ extern "C" {
 
     pub fn EVP_PKEY_keygen_init(ctx: *mut EVP_PKEY_CTX) -> c_int;
     pub fn EVP_PKEY_keygen(ctx: *mut EVP_PKEY_CTX, key: *mut *mut EVP_PKEY) -> c_int;
+}
+
+cfg_if! {
+    if #[cfg(any(ossl110, libressl280))] {
+        extern "C" {
+            pub fn EVP_PKCS82PKEY(p8: *const PKCS8_PRIV_KEY_INFO) -> *mut EVP_PKEY;
+        }
+    } else {
+        extern "C" {
+            pub fn EVP_PKCS82PKEY(p8: *mut PKCS8_PRIV_KEY_INFO) -> *mut EVP_PKEY;
+        }
+    }
 }
 
 extern "C" {

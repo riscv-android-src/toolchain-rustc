@@ -10,12 +10,12 @@ error[E0308]: mismatched types
   --> $DIR/fn-const-param-infer.rs:16:31
    |
 LL |     let _: Checked<not_one> = Checked::<not_two>;
-   |            ----------------   ^^^^^^^^^^^^^^^^^^ expected `not_one`, found `not_two`
+   |            ----------------   ^^^^^^^^^^^^^^^^^^ expected `{not_one as fn(usize) -> bool}`, found `{not_two as fn(usize) -> bool}`
    |            |
    |            expected due to this
    |
-   = note: expected struct `Checked<not_one>`
-              found struct `Checked<not_two>`
+   = note: expected struct `Checked<{not_one as fn(usize) -> bool}>`
+              found struct `Checked<{not_two as fn(usize) -> bool}>`
 
 error[E0308]: mismatched types
   --> $DIR/fn-const-param-infer.rs:20:24
@@ -36,14 +36,14 @@ error[E0308]: mismatched types
   --> $DIR/fn-const-param-infer.rs:25:40
    |
 LL |     let _: Checked<{generic::<u32>}> = Checked::<{generic::<u16>}>;
-   |            -------------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `generic::<u32>`, found `generic::<u16>`
+   |            -------------------------   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `{generic::<u32> as fn(usize) -> bool}`, found `{generic::<u16> as fn(usize) -> bool}`
    |            |
    |            expected due to this
    |
-   = note: expected struct `Checked<generic::<u32>>`
-              found struct `Checked<generic::<u16>>`
+   = note: expected struct `Checked<{generic::<u32> as fn(usize) -> bool}>`
+              found struct `Checked<{generic::<u16> as fn(usize) -> bool}>`
 
-error: aborting due to 4 previous errors
+error: aborting due to 4 previous errors; 1 warning emitted
 
 Some errors have detailed explanations: E0282, E0308.
 For more information about an error, try `rustc --explain E0282`.

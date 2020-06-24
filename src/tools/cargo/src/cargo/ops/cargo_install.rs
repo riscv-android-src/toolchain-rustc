@@ -7,9 +7,8 @@ use anyhow::{bail, format_err};
 use tempfile::Builder as TempFileBuilder;
 
 use crate::core::compiler::Freshness;
-use crate::core::compiler::{CompileKind, DefaultExecutor, Executor, RustcTargetData};
-use crate::core::resolver::{HasDevUnits, ResolveOpts};
-use crate::core::{Edition, Package, PackageId, PackageIdSpec, Source, SourceId, Workspace};
+use crate::core::compiler::{CompileKind, DefaultExecutor, Executor};
+use crate::core::{Edition, Package, PackageId, Source, SourceId, Workspace};
 use crate::ops;
 use crate::ops::common_for_install_and_uninstall::*;
 use crate::sources::{GitSource, SourceConfigMap};
@@ -35,20 +34,22 @@ impl Drop for Transaction {
 }
 
 pub fn install(
+    config: &Config,
     root: Option<&str>,
     krates: Vec<&str>,
     source_id: SourceId,
     from_cwd: bool,
     vers: Option<&str>,
-    opts: &ops::CompileOptions<'_>,
+    opts: &ops::CompileOptions,
     force: bool,
     no_track: bool,
 ) -> CargoResult<()> {
-    let root = resolve_root(root, opts.config)?;
-    let map = SourceConfigMap::new(opts.config)?;
+    let root = resolve_root(root, config)?;
+    let map = SourceConfigMap::new(config)?;
 
     let (installed_anything, scheduled_error) = if krates.len() <= 1 {
         install_one(
+            config,
             &root,
             &map,
             krates.into_iter().next(),
@@ -69,6 +70,7 @@ pub fn install(
             let root = root.clone();
             let map = map.clone();
             match install_one(
+                config,
                 &root,
                 &map,
                 Some(krate),
@@ -82,7 +84,7 @@ pub fn install(
             ) {
                 Ok(()) => succeeded.push(krate),
                 Err(e) => {
-                    crate::display_error(&e, &mut opts.config.shell());
+                    crate::display_error(&e, &mut config.shell());
                     failed.push(krate)
                 }
             }
@@ -100,7 +102,7 @@ pub fn install(
             ));
         }
         if !succeeded.is_empty() || !failed.is_empty() {
-            opts.config.shell().status("Summary", summary.join(" "))?;
+            config.shell().status("Summary", summary.join(" "))?;
         }
 
         (!succeeded.is_empty(), !failed.is_empty())
@@ -117,7 +119,7 @@ pub fn install(
             }
         }
 
-        opts.config.shell().warn(&format!(
+        config.shell().warn(&format!(
             "be sure to add `{}` to your PATH to be \
              able to run the installed binaries",
             dst.display()
@@ -132,19 +134,18 @@ pub fn install(
 }
 
 fn install_one(
+    config: &Config,
     root: &Filesystem,
     map: &SourceConfigMap<'_>,
     krate: Option<&str>,
     source_id: SourceId,
     from_cwd: bool,
     vers: Option<&str>,
-    opts: &ops::CompileOptions<'_>,
+    opts: &ops::CompileOptions,
     force: bool,
     no_track: bool,
     is_first_install: bool,
 ) -> CargoResult<()> {
-    let config = opts.config;
-
     let pkg = if source_id.is_git() {
         select_pkg(
             GitSource::new(source_id, config)?,
@@ -491,30 +492,17 @@ fn check_yanked_install(ws: &Workspace<'_>) -> CargoResult<()> {
     if ws.ignore_lock() || !ws.root().join("Cargo.lock").exists() {
         return Ok(());
     }
-    let specs = vec![PackageIdSpec::from_package_id(ws.current()?.package_id())];
-    // CompileKind here doesn't really matter, it's only needed for features.
-    let target_data = RustcTargetData::new(ws, CompileKind::Host)?;
     // It would be best if `source` could be passed in here to avoid a
     // duplicate "Updating", but since `source` is taken by value, then it
     // wouldn't be available for `compile_ws`.
-    // TODO: It would be easier to use resolve_ws, but it does not honor
-    // require_optional_deps to avoid writing the lock file. It might be good
-    // to try to fix that.
-    let ws_resolve = ops::resolve_ws_with_opts(
-        ws,
-        &target_data,
-        CompileKind::Host,
-        &ResolveOpts::everything(),
-        &specs,
-        HasDevUnits::No,
-    )?;
-    let mut sources = ws_resolve.pkg_set.sources_mut();
+    let (pkg_set, resolve) = ops::resolve_ws(ws)?;
+    let mut sources = pkg_set.sources_mut();
 
     // Checking the yanked status involves taking a look at the registry and
     // maybe updating files, so be sure to lock it here.
     let _lock = ws.config().acquire_package_cache_lock()?;
 
-    for pkg_id in ws_resolve.targeted_resolve.iter() {
+    for pkg_id in resolve.iter() {
         if let Some(source) = sources.get_mut(pkg_id.source_id()) {
             if source.is_yanked(pkg_id)? {
                 ws.config().shell().warn(format!(

@@ -7,18 +7,19 @@ use crate::infer::region_constraints::RegionConstraintData;
 use crate::infer::region_constraints::VarInfos;
 use crate::infer::region_constraints::VerifyBound;
 use crate::infer::RegionVariableOrigin;
+use crate::infer::RegionckMode;
 use crate::infer::SubregionOrigin;
-use rustc::middle::free_region::RegionRelations;
-use rustc::ty::fold::TypeFoldable;
-use rustc::ty::{self, Ty, TyCtxt};
-use rustc::ty::{ReEarlyBound, ReEmpty, ReErased, ReFree, ReStatic};
-use rustc::ty::{ReLateBound, RePlaceholder, ReScope, ReVar};
-use rustc::ty::{Region, RegionVid};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::graph::implementation::{
     Direction, Graph, NodeIndex, INCOMING, OUTGOING,
 };
 use rustc_index::vec::{Idx, IndexVec};
+use rustc_middle::middle::free_region::RegionRelations;
+use rustc_middle::ty::fold::TypeFoldable;
+use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::{ReEarlyBound, ReEmpty, ReErased, ReFree, ReStatic};
+use rustc_middle::ty::{ReLateBound, RePlaceholder, ReScope, ReVar};
+use rustc_middle::ty::{Region, RegionVid};
 use rustc_span::Span;
 use std::fmt;
 
@@ -33,12 +34,29 @@ pub fn resolve<'tcx>(
     region_rels: &RegionRelations<'_, 'tcx>,
     var_infos: VarInfos,
     data: RegionConstraintData<'tcx>,
+    mode: RegionckMode,
 ) -> (LexicalRegionResolutions<'tcx>, Vec<RegionResolutionError<'tcx>>) {
     debug!("RegionConstraintData: resolve_regions()");
     let mut errors = vec![];
     let mut resolver = LexicalResolver { region_rels, var_infos, data };
-    let values = resolver.infer_variable_values(&mut errors);
-    (values, errors)
+    match mode {
+        RegionckMode::Solve => {
+            let values = resolver.infer_variable_values(&mut errors);
+            (values, errors)
+        }
+        RegionckMode::Erase { suppress_errors: false } => {
+            // Do real inference to get errors, then erase the results.
+            let mut values = resolver.infer_variable_values(&mut errors);
+            let re_erased = region_rels.tcx.lifetimes.re_erased;
+
+            values.values.iter_mut().for_each(|v| *v = VarValue::Value(re_erased));
+            (values, errors)
+        }
+        RegionckMode::Erase { suppress_errors: true } => {
+            // Skip region inference entirely.
+            (resolver.erased_data(region_rels.tcx), Vec::new())
+        }
+    }
 }
 
 /// Contains the result of lexical region resolution. Offers methods
@@ -158,6 +176,19 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                     let re_empty = tcx.mk_region(ty::ReEmpty(vid_universe));
                     VarValue::Value(re_empty)
                 },
+                self.num_vars(),
+            ),
+        }
+    }
+
+    /// An erased version of the lexical region resolutions. Used when we're
+    /// erasing regions and suppressing errors: in item bodies with
+    /// `-Zborrowck=mir`.
+    fn erased_data(&self, tcx: TyCtxt<'tcx>) -> LexicalRegionResolutions<'tcx> {
+        LexicalRegionResolutions {
+            error_region: tcx.lifetimes.re_static,
+            values: IndexVec::from_elem_n(
+                VarValue::Value(tcx.lifetimes.re_erased),
                 self.num_vars(),
             ),
         }
@@ -294,8 +325,21 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
             }
         }
 
-        debug!("enforce_member_constraint: final least choice = {:?}", least_choice);
-        if least_choice != member_lower_bound {
+        // (#72087) Different `ty::Regions` can be known to be equal, for
+        // example, we know that `'a` and `'static` are equal in a function
+        // with a parameter of type `&'static &'a ()`.
+        //
+        // When we have two equal regions like this `expansion` will use
+        // `lub_concrete_regions` to pick a canonical representative. The same
+        // choice is needed here so that we don't end up in a cycle of
+        // `expansion` changing the region one way and the code here changing
+        // it back.
+        let lub = self.lub_concrete_regions(least_choice, member_lower_bound);
+        debug!(
+            "enforce_member_constraint: final least choice = {:?}\nlub = {:?}",
+            least_choice, lub
+        );
+        if lub != member_lower_bound {
             *var_values.value_mut(member_vid) = VarValue::Value(least_choice);
             true
         } else {
@@ -421,12 +465,10 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 debug!("Expanding value of {:?} from {:?} to {:?}", b_vid, cur_region, lub);
 
                 *b_data = VarValue::Value(lub);
-                return true;
+                true
             }
 
-            VarValue::ErrorValue => {
-                return false;
-            }
+            VarValue::ErrorValue => false,
         }
     }
 
@@ -464,12 +506,7 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
     /// term "concrete regions").
     fn lub_concrete_regions(&self, a: Region<'tcx>, b: Region<'tcx>) -> Region<'tcx> {
         let r = match (a, b) {
-            (&ty::ReClosureBound(..), _)
-            | (_, &ty::ReClosureBound(..))
-            | (&ReLateBound(..), _)
-            | (_, &ReLateBound(..))
-            | (&ReErased, _)
-            | (_, &ReErased) => {
+            (&ReLateBound(..), _) | (_, &ReLateBound(..)) | (&ReErased, _) | (_, &ReErased) => {
                 bug!("cannot relate region: LUB({:?}, {:?})", a, b);
             }
 
@@ -488,12 +525,8 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 self.tcx().lifetimes.re_static
             }
 
-            (&ReEmpty(_), r @ ReEarlyBound(_))
-            | (r @ ReEarlyBound(_), &ReEmpty(_))
-            | (&ReEmpty(_), r @ ReFree(_))
-            | (r @ ReFree(_), &ReEmpty(_))
-            | (&ReEmpty(_), r @ ReScope(_))
-            | (r @ ReScope(_), &ReEmpty(_)) => {
+            (&ReEmpty(_), r @ (ReEarlyBound(_) | ReFree(_) | ReScope(_)))
+            | (r @ (ReEarlyBound(_) | ReFree(_) | ReScope(_)), &ReEmpty(_)) => {
                 // All empty regions are less than early-bound, free,
                 // and scope regions.
                 r
@@ -518,10 +551,8 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 }
             }
 
-            (&ReEarlyBound(_), &ReScope(s_id))
-            | (&ReScope(s_id), &ReEarlyBound(_))
-            | (&ReFree(_), &ReScope(s_id))
-            | (&ReScope(s_id), &ReFree(_)) => {
+            (&ReEarlyBound(_) | &ReFree(_), &ReScope(s_id))
+            | (&ReScope(s_id), &ReEarlyBound(_) | &ReFree(_)) => {
                 // A "free" region can be interpreted as "some region
                 // at least as big as fr.scope".  So, we can
                 // reasonably compare free regions and scopes:
@@ -560,10 +591,9 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
                 self.tcx().mk_region(ReScope(lub))
             }
 
-            (&ReEarlyBound(_), &ReEarlyBound(_))
-            | (&ReFree(_), &ReEarlyBound(_))
-            | (&ReEarlyBound(_), &ReFree(_))
-            | (&ReFree(_), &ReFree(_)) => self.region_rels.lub_free_regions(a, b),
+            (&ReEarlyBound(_) | &ReFree(_), &ReEarlyBound(_) | &ReFree(_)) => {
+                self.region_rels.lub_free_regions(a, b)
+            }
 
             // For these types, we cannot define any additional
             // relationship:
@@ -773,7 +803,7 @@ impl<'cx, 'tcx> LexicalResolver<'cx, 'tcx> {
             }
         }
 
-        return graph;
+        graph
     }
 
     fn collect_error_for_expanding_node(

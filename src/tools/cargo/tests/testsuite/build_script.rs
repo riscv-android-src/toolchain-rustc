@@ -1139,19 +1139,19 @@ fn build_cmd_with_a_build_cmd() {
 [RUNNING] `rustc [..] a/build.rs [..] --extern b=[..]`
 [RUNNING] `[..]/a-[..]/build-script-build`
 [RUNNING] `rustc --crate-name a [..]lib.rs [..]--crate-type lib \
-    --emit=[..]link -C debuginfo=2 \
+    --emit=[..]link[..]-C debuginfo=2 \
     -C metadata=[..] \
     --out-dir [..]target/debug/deps \
     -L [..]target/debug/deps`
 [COMPILING] foo v0.5.0 ([CWD])
 [RUNNING] `rustc --crate-name build_script_build build.rs [..]--crate-type bin \
-    --emit=[..]link \
+    --emit=[..]link[..]\
     -C debuginfo=2 -C metadata=[..] --out-dir [..] \
     -L [..]target/debug/deps \
     --extern a=[..]liba[..].rlib`
 [RUNNING] `[..]/foo-[..]/build-script-build`
 [RUNNING] `rustc --crate-name foo [..]lib.rs [..]--crate-type lib \
-    --emit=[..]link -C debuginfo=2 \
+    --emit=[..]link[..]-C debuginfo=2 \
     -C metadata=[..] \
     --out-dir [..] \
     -L [..]target/debug/deps`
@@ -2977,6 +2977,39 @@ warning: bar
 [FINISHED] dev [unoptimized + debuginfo] target(s) in [..]
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn warnings_emitted_when_build_script_panics() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [project]
+            name = "foo"
+            version = "0.5.0"
+            authors = []
+            build = "build.rs"
+        "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "build.rs",
+            r#"
+            fn main() {
+                println!("cargo:warning=foo");
+                println!("cargo:warning=bar");
+                panic!();
+            }
+        "#,
+        )
+        .build();
+
+    p.cargo("build")
+        .with_status(101)
+        .with_stdout("")
+        .with_stderr_contains("warning: foo\nwarning: bar")
         .run();
 }
 

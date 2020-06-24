@@ -18,7 +18,9 @@ pub use self::paths::{bytes2path, dylib_path, join_paths, path2bytes};
 pub use self::paths::{dylib_path_envvar, normalize_path};
 pub use self::process_builder::{process, ProcessBuilder};
 pub use self::progress::{Progress, ProgressStyle};
+pub use self::queue::Queue;
 pub use self::read2::read2;
+pub use self::restricted_names::validate_package_name;
 pub use self::rustc::Rustc;
 pub use self::sha256::Sha256;
 pub use self::to_semver::ToSemver;
@@ -50,7 +52,9 @@ pub mod paths;
 pub mod process_builder;
 pub mod profile;
 mod progress;
+mod queue;
 mod read2;
+pub mod restricted_names;
 pub mod rustc;
 mod sha256;
 pub mod to_semver;
@@ -66,22 +70,6 @@ pub fn elapsed(duration: Duration) -> String {
     } else {
         format!("{}.{:02}s", secs, duration.subsec_nanos() / 10_000_000)
     }
-}
-
-/// Check the base requirements for a package name.
-///
-/// This can be used for other things than package names, to enforce some
-/// level of sanity. Note that package names have other restrictions
-/// elsewhere. `cargo new` has a few restrictions, such as checking for
-/// reserved names. crates.io has even more restrictions.
-pub fn validate_package_name(name: &str, what: &str, help: &str) -> CargoResult<()> {
-    if let Some(ch) = name
-        .chars()
-        .find(|ch| !ch.is_alphanumeric() && *ch != '_' && *ch != '-')
-    {
-        anyhow::bail!("Invalid character `{}` in {}: `{}`{}", ch, what, name, help);
-    }
-    Ok(())
 }
 
 /// Whether or not this running in a Continuous Integration environment.

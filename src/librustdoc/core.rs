@@ -1,23 +1,22 @@
-use rustc::middle::cstore::CrateStore;
-use rustc::middle::privacy::AccessLevels;
-use rustc::session::config::ErrorOutputType;
-use rustc::session::DiagnosticOutput;
-use rustc::session::{self, config};
-use rustc::ty::{Ty, TyCtxt};
+use rustc_ast::ast::CRATE_NODE_ID;
+use rustc_attr as attr;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_driver::abort_on_err;
+use rustc_errors::emitter::{Emitter, EmitterWriter};
+use rustc_errors::json::JsonEmitter;
 use rustc_feature::UnstableFeatures;
 use rustc_hir::def::Namespace::TypeNS;
 use rustc_hir::def_id::{CrateNum, DefId, DefIndex, LOCAL_CRATE};
 use rustc_hir::HirId;
 use rustc_interface::interface;
+use rustc_middle::middle::cstore::CrateStore;
+use rustc_middle::middle::privacy::AccessLevels;
+use rustc_middle::ty::{Ty, TyCtxt};
 use rustc_resolve as resolve;
+use rustc_session::config::ErrorOutputType;
 use rustc_session::lint;
-
-use rustc_ast::ast::CRATE_NODE_ID;
-use rustc_attr as attr;
-use rustc_errors::emitter::{Emitter, EmitterWriter};
-use rustc_errors::json::JsonEmitter;
+use rustc_session::DiagnosticOutput;
+use rustc_session::{config, Session};
 use rustc_span::source_map;
 use rustc_span::symbol::sym;
 use rustc_span::DUMMY_SP;
@@ -34,8 +33,8 @@ use crate::html::render::RenderInfo;
 
 use crate::passes::{self, Condition::*, ConditionalPass};
 
-pub use rustc::session::config::{CodegenOptions, DebuggingOptions, Input, Options};
-pub use rustc::session::search_paths::SearchPath;
+pub use rustc_session::config::{CodegenOptions, DebuggingOptions, Input, Options};
+pub use rustc_session::search_paths::SearchPath;
 
 pub type ExternalPaths = FxHashMap<DefId, (Vec<String>, clean::TypeKind)>;
 
@@ -68,7 +67,7 @@ pub struct DocContext<'tcx> {
 }
 
 impl<'tcx> DocContext<'tcx> {
-    pub fn sess(&self) -> &session::Session {
+    pub fn sess(&self) -> &Session {
         &self.tcx.sess
     }
 
@@ -104,7 +103,7 @@ impl<'tcx> DocContext<'tcx> {
     }
 
     // This is an ugly hack, but it's the simplest way to handle synthetic impls without greatly
-    // refactoring either librustdoc or librustc. In particular, allowing new DefIds to be
+    // refactoring either librustdoc or librustc_middle. In particular, allowing new DefIds to be
     // registered after the AST is constructed would require storing the defid mapping in a
     // RefCell, decreasing the performance for normal compilation for very little gain.
     //
@@ -153,12 +152,15 @@ impl<'tcx> DocContext<'tcx> {
         self.tcx
             .hir()
             .opt_local_def_id(id)
-            .and_then(|def_id| self.tcx.lookup_stability(def_id))
+            .and_then(|def_id| self.tcx.lookup_stability(def_id.to_def_id()))
             .cloned()
     }
 
     pub fn deprecation(&self, id: HirId) -> Option<attr::Deprecation> {
-        self.tcx.hir().opt_local_def_id(id).and_then(|def_id| self.tcx.lookup_deprecation(def_id))
+        self.tcx
+            .hir()
+            .opt_local_def_id(id)
+            .and_then(|def_id| self.tcx.lookup_deprecation(def_id.to_def_id()))
     }
 }
 
@@ -183,7 +185,7 @@ pub fn new_handler(
                     debugging_opts.terminal_width,
                     false,
                 )
-                .ui_testing(debugging_opts.ui_testing()),
+                .ui_testing(debugging_opts.ui_testing),
             )
         }
         ErrorOutputType::Json { pretty, json_rendered } => {
@@ -192,7 +194,7 @@ pub fn new_handler(
             });
             Box::new(
                 JsonEmitter::stderr(None, source_map, pretty, json_rendered, false)
-                    .ui_testing(debugging_opts.ui_testing()),
+                    .ui_testing(debugging_opts.ui_testing),
             )
         }
     };
@@ -228,6 +230,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
         mut manual_passes,
         display_warnings,
         render_options,
+        output_format,
         ..
     } = options;
 
@@ -249,6 +252,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
     let missing_docs = rustc_lint::builtin::MISSING_DOCS.name;
     let missing_doc_example = rustc_lint::builtin::MISSING_DOC_CODE_EXAMPLES.name;
     let private_doc_tests = rustc_lint::builtin::PRIVATE_DOC_TESTS.name;
+    let no_crate_level_docs = rustc_lint::builtin::MISSING_CRATE_LEVEL_DOCS.name;
 
     // In addition to those specific lints, we also need to whitelist those given through
     // command line, otherwise they'll get ignored and we don't want that.
@@ -258,6 +262,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
         missing_docs.to_owned(),
         missing_doc_example.to_owned(),
         private_doc_tests.to_owned(),
+        no_crate_level_docs.to_owned(),
     ];
 
     whitelisted_lints.extend(lint_opts.iter().map(|(lint, _)| lint).cloned());
@@ -385,6 +390,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
 
                 let mut renderinfo = RenderInfo::default();
                 renderinfo.access_levels = access_levels;
+                renderinfo.output_format = output_format;
 
                 let mut ctxt = DocContext {
                     tcx,
@@ -410,10 +416,28 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
 
                 let mut krate = clean::krate(&mut ctxt);
 
+                if let Some(ref m) = krate.module {
+                    if let None | Some("") = m.doc_value() {
+                        let help = "The following guide may be of use:\n\
+                             https://doc.rust-lang.org/nightly/rustdoc/how-to-write-documentation\
+                             .html";
+                        tcx.struct_lint_node(
+                            rustc_lint::builtin::MISSING_CRATE_LEVEL_DOCS,
+                            ctxt.as_local_hir_id(m.def_id).unwrap(),
+                            |lint| {
+                                let mut diag = lint.build(
+                                    "no documentation found for this crate's top-level module",
+                                );
+                                diag.help(help);
+                                diag.emit();
+                            },
+                        );
+                    }
+                }
+
                 fn report_deprecated_attr(name: &str, diag: &rustc_errors::Handler) {
                     let mut msg = diag.struct_warn(&format!(
-                        "the `#![doc({})]` attribute is \
-                                                         considered deprecated",
+                        "the `#![doc({})]` attribute is considered deprecated",
                         name
                     ));
                     msg.warn(

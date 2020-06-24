@@ -4,14 +4,17 @@
 //! That's useful because it means other passes (e.g. promotion) can rely on `const`s
 //! to be const-safe.
 
+use std::convert::TryFrom;
 use std::fmt::Write;
+use std::num::NonZeroUsize;
 use std::ops::RangeInclusive;
 
-use rustc::ty;
-use rustc::ty::layout::{self, LayoutOf, TyLayout, VariantIdx};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
+use rustc_middle::ty;
+use rustc_middle::ty::layout::TyAndLayout;
 use rustc_span::symbol::{sym, Symbol};
+use rustc_target::abi::{Abi, LayoutOf, Scalar, VariantIdx, Variants};
 
 use std::hash::Hash;
 
@@ -29,7 +32,7 @@ macro_rules! throw_validation_failure {
             write_path(&mut msg, where_);
         }
         write!(&mut msg, ", but expected {}", $details).unwrap();
-        throw_unsup!(ValidationFailure(msg))
+        throw_ub!(ValidationFailure(msg))
     }};
     ($what:expr, $where:expr) => {{
         let mut msg = format!("encountered {}", $what);
@@ -38,7 +41,7 @@ macro_rules! throw_validation_failure {
             msg.push_str(" at ");
             write_path(&mut msg, where_);
         }
-        throw_unsup!(ValidationFailure(msg))
+        throw_ub!(ValidationFailure(msg))
     }};
 }
 
@@ -175,11 +178,11 @@ struct ValidityVisitor<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> {
     ecx: &'rt InterpCx<'mir, 'tcx, M>,
 }
 
-impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M> {
-    fn aggregate_field_path_elem(&mut self, layout: TyLayout<'tcx>, field: usize) -> PathElem {
+impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M> {
+    fn aggregate_field_path_elem(&mut self, layout: TyAndLayout<'tcx>, field: usize) -> PathElem {
         // First, check if we are projecting to a variant.
         match layout.variants {
-            layout::Variants::Multiple { discr_index, .. } => {
+            Variants::Multiple { discr_index, .. } => {
                 if discr_index == field {
                     return match layout.ty.kind {
                         ty::Adt(def, ..) if def.is_enum() => PathElem::EnumTag,
@@ -188,7 +191,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
                     };
                 }
             }
-            layout::Variants::Single { .. } => {}
+            Variants::Single { .. } => {}
         }
 
         // Now we know we are projecting to a field, so figure out which one.
@@ -225,11 +228,11 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
             ty::Adt(def, ..) if def.is_enum() => {
                 // we might be projecting *to* a variant, or to a field *in* a variant.
                 match layout.variants {
-                    layout::Variants::Single { index } => {
+                    Variants::Single { index } => {
                         // Inside a variant
                         PathElem::Field(def.variants[index].fields[field].ident.name)
                     }
-                    layout::Variants::Multiple { .. } => bug!("we handled variants above"),
+                    Variants::Multiple { .. } => bug!("we handled variants above"),
                 }
             }
 
@@ -265,7 +268,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
     fn check_wide_ptr_meta(
         &mut self,
         meta: MemPlaceMeta<M::PointerTag>,
-        pointee: TyLayout<'tcx>,
+        pointee: TyAndLayout<'tcx>,
     ) -> InterpResult<'tcx> {
         let tail = self.ecx.tcx.struct_tail_erasing_lifetimes(pointee.ty, self.ecx.param_env);
         match tail.kind {
@@ -320,7 +323,11 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
         let value = self.ecx.read_immediate(value)?;
         // Handle wide pointers.
         // Check metadata early, for better diagnostics
-        let place = try_validation!(self.ecx.ref_to_mplace(value), "undefined pointer", self.path);
+        let place = try_validation!(
+            self.ecx.ref_to_mplace(value),
+            format_args!("uninitialized {}", kind),
+            self.path
+        );
         if place.layout.is_unsized() {
             self.check_wide_ptr_meta(place.meta, place.layout)?;
         }
@@ -332,7 +339,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
                     format_args!("invalid {} metadata: {}", kind, msg),
                     self.path
                 ),
-                _ => bug!("Unexpected error during ptr size_and_align_of: {}", err),
+                _ => bug!("unexpected error during ptr size_and_align_of: {}", err),
             },
         };
         let (size, align) = size_and_align
@@ -353,31 +360,39 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
                     place.ptr, size, align
                 );
                 match err.kind {
-                    err_unsup!(InvalidNullPointerUsage) => {
+                    err_ub!(InvalidIntPointerUsage(0)) => {
                         throw_validation_failure!(format_args!("a NULL {}", kind), self.path)
                     }
-                    err_unsup!(AlignmentCheckFailed { required, has }) => {
-                        throw_validation_failure!(
-                            format_args!(
-                                "an unaligned {} \
-                                    (required {} byte alignment but found {})",
-                                kind,
-                                required.bytes(),
-                                has.bytes()
-                            ),
-                            self.path
-                        )
-                    }
+                    err_ub!(InvalidIntPointerUsage(i)) => throw_validation_failure!(
+                        format_args!("a {} to unallocated address {}", kind, i),
+                        self.path
+                    ),
+                    err_ub!(AlignmentCheckFailed { required, has }) => throw_validation_failure!(
+                        format_args!(
+                            "an unaligned {} (required {} byte alignment but found {})",
+                            kind,
+                            required.bytes(),
+                            has.bytes()
+                        ),
+                        self.path
+                    ),
                     err_unsup!(ReadBytesAsPointer) => throw_validation_failure!(
                         format_args!("a dangling {} (created from integer)", kind),
                         self.path
                     ),
-                    err_unsup!(PointerOutOfBounds { .. }) | err_unsup!(DanglingPointerDeref) => {
-                        throw_validation_failure!(
-                            format_args!("a dangling {} (not entirely in bounds)", kind),
-                            self.path
-                        )
-                    }
+                    err_ub!(PointerOutOfBounds { .. }) => throw_validation_failure!(
+                        format_args!(
+                            "a dangling {} (going beyond the bounds of its allocation)",
+                            kind
+                        ),
+                        self.path
+                    ),
+                    // This cannot happen during const-eval (because interning already detects
+                    // dangling pointers), but it can happen in Miri.
+                    err_ub!(PointerUseAfterFree(_)) => throw_validation_failure!(
+                        format_args!("a dangling {} (use-after-free)", kind),
+                        self.path
+                    ),
                     _ => bug!("Unexpected error during ptr inbounds test: {}", err),
                 }
             }
@@ -467,10 +482,11 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
             }
             ty::RawPtr(..) => {
                 // We are conservative with undef for integers, but try to
-                // actually enforce our current rules for raw pointers.
+                // actually enforce the strict rules for raw pointers (mostly because
+                // that lets us re-use `ref_to_mplace`).
                 let place = try_validation!(
                     self.ecx.ref_to_mplace(self.ecx.read_immediate(value)?),
-                    "undefined pointer",
+                    "uninitialized raw pointer",
                     self.path
                 );
                 if place.layout.is_unsized() {
@@ -530,7 +546,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
     fn visit_scalar(
         &mut self,
         op: OpTy<'tcx, M::PointerTag>,
-        scalar_layout: &layout::Scalar,
+        scalar_layout: &Scalar,
     ) -> InterpResult<'tcx> {
         let value = self.ecx.read_scalar(op)?;
         let valid_range = &scalar_layout.valid_range;
@@ -594,7 +610,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValidityVisitor<'rt, 'mir, 'tcx, M
     }
 }
 
-impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
+impl<'rt, 'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     for ValidityVisitor<'rt, 'mir, 'tcx, M>
 {
     type V = OpTy<'tcx, M::PointerTag>;
@@ -632,10 +648,11 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     }
 
     #[inline(always)]
-    fn visit_union(&mut self, op: OpTy<'tcx, M::PointerTag>, fields: usize) -> InterpResult<'tcx> {
-        // Empty unions are not accepted by rustc. But uninhabited enums
-        // claim to be unions, so allow them, too.
-        assert!(op.layout.abi.is_uninhabited() || fields > 0);
+    fn visit_union(
+        &mut self,
+        _op: OpTy<'tcx, M::PointerTag>,
+        _fields: NonZeroUsize,
+    ) -> InterpResult<'tcx> {
         Ok(())
     }
 
@@ -676,22 +693,22 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
         // scalars, we do the same check on every "level" (e.g., first we check
         // MyNewtype and then the scalar in there).
         match op.layout.abi {
-            layout::Abi::Uninhabited => {
+            Abi::Uninhabited => {
                 throw_validation_failure!(
                     format_args!("a value of uninhabited type {:?}", op.layout.ty),
                     self.path
                 );
             }
-            layout::Abi::Scalar(ref scalar_layout) => {
+            Abi::Scalar(ref scalar_layout) => {
                 self.visit_scalar(op, scalar_layout)?;
             }
-            layout::Abi::ScalarPair { .. } | layout::Abi::Vector { .. } => {
+            Abi::ScalarPair { .. } | Abi::Vector { .. } => {
                 // These have fields that we already visited above, so we already checked
                 // all their scalar-level restrictions.
                 // There is also no equivalent to `rustc_layout_scalar_valid_range_start`
                 // that would make skipping them here an issue.
             }
-            layout::Abi::Aggregate { .. } => {
+            Abi::Aggregate { .. } => {
                 // Nothing to do.
             }
         }
@@ -738,7 +755,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                 }
                 // This is the element type size.
                 let layout = self.ecx.layout_of(tys)?;
-                // This is the size in bytes of the whole array.
+                // This is the size in bytes of the whole array. (This checks for overflow.)
                 let size = layout.size * len;
                 // Size is not 0, get a pointer.
                 let ptr = self.ecx.force_ptr(mplace.ptr)?;
@@ -765,14 +782,15 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
                     Err(err) => {
                         // For some errors we might be able to provide extra information
                         match err.kind {
-                            err_unsup!(ReadUndefBytes(offset)) => {
-                                // Some byte was undefined, determine which
+                            err_ub!(InvalidUndefBytes(Some(ptr))) => {
+                                // Some byte was uninitialized, determine which
                                 // element that byte belongs to so we can
                                 // provide an index.
-                                let i = (offset.bytes() / layout.size.bytes()) as usize;
+                                let i = usize::try_from(ptr.offset.bytes() / layout.size.bytes())
+                                    .unwrap();
                                 self.path.push(PathElem::ArrayElem(i));
 
-                                throw_validation_failure!("undefined bytes", self.path)
+                                throw_validation_failure!("uninitialized bytes", self.path)
                             }
                             // Other errors shouldn't be possible
                             _ => return Err(err),
@@ -795,7 +813,7 @@ impl<'rt, 'mir, 'tcx, M: Machine<'mir, 'tcx>> ValueVisitor<'mir, 'tcx, M>
     }
 }
 
-impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
+impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
     fn validate_operand_internal(
         &self,
         op: OpTy<'tcx, M::PointerTag>,
@@ -817,11 +835,10 @@ impl<'mir, 'tcx, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         // Run it.
         match visitor.visit_value(op) {
             Ok(()) => Ok(()),
-            Err(err) if matches!(err.kind, err_unsup!(ValidationFailure { .. })) => Err(err),
-            Err(err) if cfg!(debug_assertions) => {
-                bug!("Unexpected error during validation: {}", err)
-            }
-            Err(err) => Err(err),
+            // We should only get validation errors here. Avoid other errors as
+            // those do not show *where* in the value the issue lies.
+            Err(err) if matches!(err.kind, err_ub!(ValidationFailure { .. })) => Err(err),
+            Err(err) => bug!("Unexpected error during validation: {}", err),
         }
     }
 

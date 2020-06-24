@@ -2,11 +2,11 @@ use crate::utils::SpanlessEq;
 use crate::utils::{get_item_name, higher, match_type, paths, snippet, snippet_opt};
 use crate::utils::{snippet_with_applicability, span_lint_and_then, walk_ptrs_ty};
 use if_chain::if_chain;
-use rustc::hir::map::Map;
 use rustc_errors::Applicability;
 use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
 use rustc_hir::{BorrowKind, Expr, ExprKind, UnOp};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
@@ -148,7 +148,7 @@ impl<'a, 'tcx, 'b> Visitor<'tcx> for InsertVisitor<'a, 'tcx, 'b> {
             if snippet_opt(self.cx, self.map.span) == snippet_opt(self.cx, params[0].span);
             then {
                 span_lint_and_then(self.cx, MAP_ENTRY, self.span,
-                                   &format!("usage of `contains_key` followed by `insert` on a `{}`", self.ty), |db| {
+                                   &format!("usage of `contains_key` followed by `insert` on a `{}`", self.ty), |diag| {
                     if self.sole_expr {
                         let mut app = Applicability::MachineApplicable;
                         let help = format!("{}.entry({}).or_insert({});",
@@ -156,7 +156,7 @@ impl<'a, 'tcx, 'b> Visitor<'tcx> for InsertVisitor<'a, 'tcx, 'b> {
                                            snippet_with_applicability(self.cx, params[1].span, "..", &mut app),
                                            snippet_with_applicability(self.cx, params[2].span, "..", &mut app));
 
-                        db.span_suggestion(
+                        diag.span_suggestion(
                             self.span,
                             "consider using",
                             help,
@@ -168,7 +168,7 @@ impl<'a, 'tcx, 'b> Visitor<'tcx> for InsertVisitor<'a, 'tcx, 'b> {
                                            snippet(self.cx, self.map.span, "map"),
                                            snippet(self.cx, params[1].span, ".."));
 
-                        db.span_label(
+                        diag.span_label(
                             self.span,
                             &help,
                         );
@@ -181,7 +181,7 @@ impl<'a, 'tcx, 'b> Visitor<'tcx> for InsertVisitor<'a, 'tcx, 'b> {
             walk_expr(self, expr);
         }
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }

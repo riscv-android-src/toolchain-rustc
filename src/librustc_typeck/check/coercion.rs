@@ -52,24 +52,25 @@
 
 use crate::astconv::AstConv;
 use crate::check::{FnCtxt, Needs};
-use rustc::session::parse::feature_err;
-use rustc::ty::adjustment::{
-    Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability, PointerCast,
-};
-use rustc::ty::error::TypeError;
-use rustc::ty::fold::TypeFoldable;
-use rustc::ty::relate::RelateResult;
-use rustc::ty::subst::SubstsRef;
-use rustc::ty::{self, Ty, TypeAndMut};
 use rustc_errors::{struct_span_err, DiagnosticBuilder};
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc_infer::infer::{Coercion, InferOk, InferResult};
-use rustc_infer::traits::{self, ObligationCause, ObligationCauseCode};
+use rustc_middle::ty::adjustment::{
+    Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability, PointerCast,
+};
+use rustc_middle::ty::error::TypeError;
+use rustc_middle::ty::fold::TypeFoldable;
+use rustc_middle::ty::relate::RelateResult;
+use rustc_middle::ty::subst::SubstsRef;
+use rustc_middle::ty::{self, Ty, TypeAndMut};
+use rustc_session::parse::feature_err;
 use rustc_span::symbol::sym;
 use rustc_span::{self, Span};
 use rustc_target::spec::abi::Abi;
+use rustc_trait_selection::traits::error_reporting::InferCtxtExt;
+use rustc_trait_selection::traits::{self, ObligationCause, ObligationCauseCode};
+
 use smallvec::{smallvec, SmallVec};
 use std::ops::Deref;
 
@@ -100,9 +101,8 @@ fn coerce_mutbls<'tcx>(
     to_mutbl: hir::Mutability,
 ) -> RelateResult<'tcx, ()> {
     match (from_mutbl, to_mutbl) {
-        (hir::Mutability::Mut, hir::Mutability::Mut)
-        | (hir::Mutability::Not, hir::Mutability::Not)
-        | (hir::Mutability::Mut, hir::Mutability::Not) => Ok(()),
+        (hir::Mutability::Mut, hir::Mutability::Mut | hir::Mutability::Not)
+        | (hir::Mutability::Not, hir::Mutability::Not) => Ok(()),
         (hir::Mutability::Not, hir::Mutability::Mut) => Err(TypeError::Mutability),
     }
 }
@@ -111,7 +111,7 @@ fn identity(_: Ty<'_>) -> Vec<Adjustment<'_>> {
     vec![]
 }
 
-fn simple<'tcx>(kind: Adjust<'tcx>) -> impl FnOnce(Ty<'tcx>) -> Vec<Adjustment<'tcx>> {
+fn simple(kind: Adjust<'tcx>) -> impl FnOnce(Ty<'tcx>) -> Vec<Adjustment<'tcx>> {
     move |target| vec![Adjustment { kind, target }]
 }
 
@@ -234,11 +234,11 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
                 // unsafe qualifier.
                 self.coerce_from_fn_pointer(a, a_f, b)
             }
-            ty::Closure(def_id_a, substs_a) => {
+            ty::Closure(_, substs_a) => {
                 // Non-capturing closures are coercible to
                 // function pointers or unsafe function pointers.
                 // It cannot convert closures that require unsafe.
-                self.coerce_closure_to_fn(a, def_id_a, substs_a, b)
+                self.coerce_closure_to_fn(a, substs_a, b)
             }
             _ => {
                 // Otherwise, just use unification rules.
@@ -562,30 +562,30 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         while !queue.is_empty() {
             let obligation = queue.remove(0);
             debug!("coerce_unsized resolve step: {:?}", obligation);
-            let trait_ref = match obligation.predicate {
-                ty::Predicate::Trait(ref tr, _) if traits.contains(&tr.def_id()) => {
-                    if unsize_did == tr.def_id() {
-                        let sty = &tr.skip_binder().input_types().nth(1).unwrap().kind;
-                        if let ty::Tuple(..) = sty {
+            let trait_pred = match obligation.predicate {
+                ty::Predicate::Trait(trait_pred, _) if traits.contains(&trait_pred.def_id()) => {
+                    if unsize_did == trait_pred.def_id() {
+                        let unsize_ty = trait_pred.skip_binder().trait_ref.substs[1].expect_ty();
+                        if let ty::Tuple(..) = unsize_ty.kind {
                             debug!("coerce_unsized: found unsized tuple coercion");
                             has_unsized_tuple_coercion = true;
                         }
                     }
-                    *tr
+                    trait_pred
                 }
                 _ => {
                     coercion.obligations.push(obligation);
                     continue;
                 }
             };
-            match selcx.select(&obligation.with(trait_ref)) {
+            match selcx.select(&obligation.with(trait_pred)) {
                 // Uncertain or unimplemented.
                 Ok(None) => {
-                    if trait_ref.def_id() == unsize_did {
-                        let trait_ref = self.resolve_vars_if_possible(&trait_ref);
-                        let self_ty = trait_ref.skip_binder().self_ty();
-                        let unsize_ty = trait_ref.skip_binder().input_types().nth(1).unwrap();
-                        debug!("coerce_unsized: ambiguous unsize case for {:?}", trait_ref);
+                    if trait_pred.def_id() == unsize_did {
+                        let trait_pred = self.resolve_vars_if_possible(&trait_pred);
+                        let self_ty = trait_pred.skip_binder().self_ty();
+                        let unsize_ty = trait_pred.skip_binder().trait_ref.substs[1].expect_ty();
+                        debug!("coerce_unsized: ambiguous unsize case for {:?}", trait_pred);
                         match (&self_ty.kind, &unsize_ty.kind) {
                             (ty::Infer(ty::TyVar(v)), ty::Dynamic(..))
                                 if self.type_var_is_sized(*v) =>
@@ -730,7 +730,6 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
     fn coerce_closure_to_fn(
         &self,
         a: Ty<'tcx>,
-        def_id_a: DefId,
         substs_a: SubstsRef<'tcx>,
         b: Ty<'tcx>,
     ) -> CoerceResult<'tcx> {
@@ -741,16 +740,16 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         let b = self.shallow_resolve(b);
 
         match b.kind {
-            ty::FnPtr(fn_ty) if self.tcx.upvars(def_id_a).map_or(true, |v| v.is_empty()) => {
+            ty::FnPtr(fn_ty) if substs_a.as_closure().upvar_tys().next().is_none() => {
                 // We coerce the closure, which has fn type
                 //     `extern "rust-call" fn((arg0,arg1,...)) -> _`
                 // to
                 //     `fn(arg0,arg1,...) -> _`
                 // or
                 //     `unsafe fn(arg0,arg1,...) -> _`
-                let sig = self.closure_sig(def_id_a, substs_a);
+                let closure_sig = substs_a.as_closure().sig();
                 let unsafety = fn_ty.unsafety();
-                let pointer_ty = self.tcx.coerce_closure_fn_ty(sig, unsafety);
+                let pointer_ty = self.tcx.coerce_closure_fn_ty(closure_sig, unsafety);
                 debug!("coerce_closure_to_fn(a={:?}, b={:?}, pty={:?})", a, b, pointer_ty);
                 self.unify_and(
                     pointer_ty,
@@ -1402,9 +1401,12 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
                     {
                         // Are of this `impl Trait`'s traits object safe?
                         is_object_safe = bounds.iter().all(|bound| {
-                            bound.trait_def_id().map_or(false, |def_id| {
-                                fcx.tcx.object_safety_violations(def_id).is_empty()
-                            })
+                            bound
+                                .trait_ref()
+                                .and_then(|t| t.trait_def_id())
+                                .map_or(false, |def_id| {
+                                    fcx.tcx.object_safety_violations(def_id).is_empty()
+                                })
                         })
                     }
                 }

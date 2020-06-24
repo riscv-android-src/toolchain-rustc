@@ -73,6 +73,14 @@ pub enum Visibility {
     Protected = 2,
 }
 
+/// LLVMUnnamedAddr
+#[repr(C)]
+pub enum UnnamedAddr {
+    No,
+    Local,
+    Global,
+}
+
 /// LLVMDLLStorageClass
 #[derive(Copy, Clone)]
 #[repr(C)]
@@ -381,10 +389,10 @@ pub enum AsmDialect {
 }
 
 impl AsmDialect {
-    pub fn from_generic(asm: rustc_ast::ast::AsmDialect) -> Self {
+    pub fn from_generic(asm: rustc_ast::ast::LlvmAsmDialect) -> Self {
         match asm {
-            rustc_ast::ast::AsmDialect::Att => AsmDialect::Att,
-            rustc_ast::ast::AsmDialect::Intel => AsmDialect::Intel,
+            rustc_ast::ast::LlvmAsmDialect::Att => AsmDialect::Att,
+            rustc_ast::ast::LlvmAsmDialect::Intel => AsmDialect::Intel,
         }
     }
 }
@@ -536,6 +544,15 @@ pub enum ThreadLocalMode {
     LocalDynamic,
     InitialExec,
     LocalExec,
+}
+
+/// LLVMRustChecksumKind
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub enum ChecksumKind {
+    None,
+    MD5,
+    SHA1,
 }
 
 extern "C" {
@@ -694,8 +711,8 @@ pub mod debuginfo {
     }
 
     impl DebugEmissionKind {
-        pub fn from_generic(kind: rustc::session::config::DebugInfo) -> Self {
-            use rustc::session::config::DebugInfo;
+        pub fn from_generic(kind: rustc_session::config::DebugInfo) -> Self {
+            use rustc_session::config::DebugInfo;
             match kind {
                 DebugInfo::None => DebugEmissionKind::NoDebug,
                 DebugInfo::Limited => DebugEmissionKind::LineTablesOnly,
@@ -727,12 +744,12 @@ extern "C" {
     pub fn LLVMCloneModule(M: &Module) -> &Module;
 
     /// Data layout. See Module::getDataLayout.
-    pub fn LLVMGetDataLayout(M: &Module) -> *const c_char;
+    pub fn LLVMGetDataLayoutStr(M: &Module) -> *const c_char;
     pub fn LLVMSetDataLayout(M: &Module, Triple: *const c_char);
 
     /// See Module::setModuleInlineAsm.
-    pub fn LLVMSetModuleInlineAsm(M: &Module, Asm: *const c_char);
-    pub fn LLVMRustAppendModuleInlineAsm(M: &Module, Asm: *const c_char);
+    pub fn LLVMSetModuleInlineAsm2(M: &Module, Asm: *const c_char, AsmLen: size_t);
+    pub fn LLVMRustAppendModuleInlineAsm(M: &Module, Asm: *const c_char, AsmLen: size_t);
 
     /// See llvm::LLVMTypeKind::getTypeID.
     pub fn LLVMRustGetTypeKind(Ty: &Type) -> TypeKind;
@@ -879,13 +896,18 @@ extern "C" {
     pub fn LLVMSetThreadLocalMode(GlobalVar: &Value, Mode: ThreadLocalMode);
     pub fn LLVMIsGlobalConstant(GlobalVar: &Value) -> Bool;
     pub fn LLVMSetGlobalConstant(GlobalVar: &Value, IsConstant: Bool);
-    pub fn LLVMRustGetNamedValue(M: &Module, Name: *const c_char) -> Option<&Value>;
+    pub fn LLVMRustGetNamedValue(
+        M: &Module,
+        Name: *const c_char,
+        NameLen: size_t,
+    ) -> Option<&Value>;
     pub fn LLVMSetTailCall(CallInst: &Value, IsTailCall: Bool);
 
     // Operations on functions
     pub fn LLVMRustGetOrInsertFunction(
         M: &'a Module,
         Name: *const c_char,
+        NameLen: size_t,
         FunctionTy: &'a Type,
     ) -> &'a Value;
     pub fn LLVMSetFunctionCallConv(Fn: &Value, CC: c_uint);
@@ -1332,7 +1354,6 @@ extern "C" {
         Args: *const &'a Value,
         NumArgs: c_uint,
         Bundle: Option<&OperandBundleDef<'a>>,
-        Name: *const c_char,
     ) -> &'a Value;
     pub fn LLVMRustBuildMemCpy(
         B: &Builder<'a>,
@@ -1581,12 +1602,18 @@ extern "C" {
     pub fn LLVMRustInlineAsm(
         Ty: &Type,
         AsmString: *const c_char,
+        AsmStringLen: size_t,
         Constraints: *const c_char,
+        ConstraintsLen: size_t,
         SideEffects: Bool,
         AlignStack: Bool,
         Dialect: AsmDialect,
     ) -> &Value;
-    pub fn LLVMRustInlineAsmVerify(Ty: &Type, Constraints: *const c_char) -> bool;
+    pub fn LLVMRustInlineAsmVerify(
+        Ty: &Type,
+        Constraints: *const c_char,
+        ConstraintsLen: size_t,
+    ) -> bool;
 
     pub fn LLVMRustDebugMetadataVersion() -> u32;
     pub fn LLVMRustVersionMajor() -> u32;
@@ -1622,6 +1649,9 @@ extern "C" {
         FilenameLen: size_t,
         Directory: *const c_char,
         DirectoryLen: size_t,
+        CSKind: ChecksumKind,
+        Checksum: *const c_char,
+        ChecksumLen: size_t,
     ) -> &'a DIFile;
 
     pub fn LLVMRustDIBuilderCreateSubroutineType(
@@ -1843,7 +1873,7 @@ extern "C" {
         UniqueIdLen: size_t,
     ) -> &'a DIDerivedType;
 
-    pub fn LLVMSetUnnamedAddr(GlobalVar: &Value, UnnamedAddr: Bool);
+    pub fn LLVMSetUnnamedAddress(Global: &Value, UnnamedAddr: UnnamedAddr);
 
     pub fn LLVMRustDIBuilderCreateTemplateTypeParameter(
         Builder: &DIBuilder<'a>,

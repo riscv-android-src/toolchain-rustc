@@ -394,9 +394,7 @@ impl f32 {
     /// Converts radians to degrees.
     ///
     /// ```
-    /// use std::f32::consts;
-    ///
-    /// let angle = consts::PI;
+    /// let angle = std::f32::consts::PI;
     ///
     /// let abs_difference = (angle.to_degrees() - 180.0).abs();
     ///
@@ -413,11 +411,9 @@ impl f32 {
     /// Converts degrees to radians.
     ///
     /// ```
-    /// use std::f32::consts;
-    ///
     /// let angle = 180.0f32;
     ///
-    /// let abs_difference = (angle.to_radians() - consts::PI).abs();
+    /// let abs_difference = (angle.to_radians() - std::f32::consts::PI).abs();
     ///
     /// assert!(abs_difference <= f32::EPSILON);
     /// ```
@@ -464,15 +460,13 @@ impl f32 {
     /// assuming that the value is finite and fits in that type.
     ///
     /// ```
-    /// #![feature(float_approx_unchecked_to)]
-    ///
     /// let value = 4.6_f32;
-    /// let rounded = unsafe { value.approx_unchecked_to::<u16>() };
+    /// let rounded = unsafe { value.to_int_unchecked::<u16>() };
     /// assert_eq!(rounded, 4);
     ///
     /// let value = -128.9_f32;
-    /// let rounded = unsafe { value.approx_unchecked_to::<i8>() };
-    /// assert_eq!(rounded, std::i8::MIN);
+    /// let rounded = unsafe { value.to_int_unchecked::<i8>() };
+    /// assert_eq!(rounded, i8::MIN);
     /// ```
     ///
     /// # Safety
@@ -482,13 +476,13 @@ impl f32 {
     /// * Not be `NaN`
     /// * Not be infinite
     /// * Be representable in the return type `Int`, after truncating off its fractional part
-    #[unstable(feature = "float_approx_unchecked_to", issue = "67058")]
+    #[stable(feature = "float_approx_unchecked_to", since = "1.44.0")]
     #[inline]
-    pub unsafe fn approx_unchecked_to<Int>(self) -> Int
+    pub unsafe fn to_int_unchecked<Int>(self) -> Int
     where
         Self: FloatToInt<Int>,
     {
-        FloatToInt::<Int>::approx_unchecked(self)
+        FloatToInt::<Int>::to_int_unchecked(self)
     }
 
     /// Raw transmutation to `u32`.

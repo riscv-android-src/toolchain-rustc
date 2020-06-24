@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use failure::Fail;
 use futures::Future;
 
 use rls_ipc::client::{Client as JointClient, RpcChannel, RpcError};
@@ -23,12 +24,12 @@ impl From<RpcChannel> for Client {
 pub struct IpcFileLoader(FileLoaderClient);
 
 impl IpcFileLoader {
-    pub fn into_boxed(self) -> Option<Box<dyn syntax::source_map::FileLoader + Send + Sync>> {
+    pub fn into_boxed(self) -> Option<Box<dyn rustc_span::source_map::FileLoader + Send + Sync>> {
         Some(Box::new(self))
     }
 }
 
-impl syntax::source_map::FileLoader for IpcFileLoader {
+impl rustc_span::source_map::FileLoader for IpcFileLoader {
     fn file_exists(&self, path: &Path) -> bool {
         self.0.file_exists(path.to_owned()).wait().unwrap()
     }

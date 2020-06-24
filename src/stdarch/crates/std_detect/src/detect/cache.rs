@@ -80,7 +80,7 @@ impl Initializer {
 // Note: on x64, we only use the first slot
 static CACHE: [Cache; 2] = [Cache::uninitialized(), Cache::uninitialized()];
 
-/// Feature cache with capacity for `usize::max_value() - 1` features.
+/// Feature cache with capacity for `usize::MAX - 1` features.
 ///
 /// Note: the last feature bit is used to represent an
 /// uninitialized cache.
@@ -98,12 +98,12 @@ impl Cache {
     /// Creates an uninitialized cache.
     #[allow(clippy::declare_interior_mutable_const)]
     const fn uninitialized() -> Self {
-        Cache(AtomicUsize::new(usize::max_value()))
+        Cache(AtomicUsize::new(usize::MAX))
     }
     /// Is the cache uninitialized?
     #[inline]
     pub(crate) fn is_uninitialized(&self) -> bool {
-        self.0.load(Ordering::SeqCst) == usize::max_value()
+        self.0.load(Ordering::SeqCst) == usize::MAX
     }
 
     /// Is the `bit` in the cache set?

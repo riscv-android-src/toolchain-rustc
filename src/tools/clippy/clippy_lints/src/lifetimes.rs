@@ -1,6 +1,3 @@
-use matches::matches;
-use rustc::hir::map::Map;
-use rustc::lint::in_external_macro;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::intravisit::{
@@ -9,16 +6,17 @@ use rustc_hir::intravisit::{
 use rustc_hir::FnRetTy::Return;
 use rustc_hir::{
     BodyId, FnDecl, GenericArg, GenericBound, GenericParam, GenericParamKind, Generics, ImplItem, ImplItemKind, Item,
-    ItemKind, Lifetime, LifetimeName, ParamName, QPath, TraitBoundModifier, TraitItem, TraitItemKind, TraitMethod, Ty,
+    ItemKind, Lifetime, LifetimeName, ParamName, QPath, TraitBoundModifier, TraitFn, TraitItem, TraitItemKind, Ty,
     TyKind, WhereClause, WherePredicate,
 };
-use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 use rustc_span::symbol::kw;
 
 use crate::reexport::Name;
-use crate::utils::{last_path_segment, span_lint, trait_ref_of_method};
+use crate::utils::{in_macro, last_path_segment, span_lint, trait_ref_of_method};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for lifetime annotations which can be removed by
@@ -86,7 +84,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Lifetimes {
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem<'_>) {
-        if let ImplItemKind::Method(ref sig, id) = item.kind {
+        if let ImplItemKind::Fn(ref sig, id) = item.kind {
             let report_extra_lifetimes = trait_ref_of_method(cx, item.hir_id).is_none();
             check_fn_inner(
                 cx,
@@ -100,10 +98,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Lifetimes {
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
-        if let TraitItemKind::Method(ref sig, ref body) = item.kind {
+        if let TraitItemKind::Fn(ref sig, ref body) = item.kind {
             let body = match *body {
-                TraitMethod::Required(_) => None,
-                TraitMethod::Provided(id) => Some(id),
+                TraitFn::Required(_) => None,
+                TraitFn::Provided(id) => Some(id),
             };
             check_fn_inner(cx, &sig.decl, body, &item.generics, item.span, true);
         }
@@ -126,7 +124,7 @@ fn check_fn_inner<'a, 'tcx>(
     span: Span,
     report_extra_lifetimes: bool,
 ) {
-    if in_external_macro(cx.sess(), span) || has_where_lifetimes(cx, &generics.where_clause) {
+    if in_macro(span) || has_where_lifetimes(cx, &generics.where_clause) {
         return;
     }
 
@@ -169,7 +167,7 @@ fn check_fn_inner<'a, 'tcx>(
         span_lint(
             cx,
             NEEDLESS_LIFETIMES,
-            span,
+            span.with_hi(decl.output.span().hi()),
             "explicit lifetimes given in parameter types where they could be elided \
              (or replaced with `'_` if needed by type declaration)",
         );
@@ -346,7 +344,7 @@ impl<'v, 't> RefVisitor<'v, 't> {
             {
                 let hir_id = ty.hir_id;
                 match self.cx.tables.qpath_res(qpath, hir_id) {
-                    Res::Def(DefKind::TyAlias, def_id) | Res::Def(DefKind::Struct, def_id) => {
+                    Res::Def(DefKind::TyAlias | DefKind::Struct, def_id) => {
                         let generics = self.cx.tcx.generics_of(def_id);
                         for _ in generics.params.as_slice() {
                             self.record(&None);
@@ -407,7 +405,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RefVisitor<'a, 'tcx> {
         }
         walk_ty(self, ty);
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -479,7 +477,7 @@ impl<'tcx> Visitor<'tcx> for LifetimeChecker {
             walk_generic_param(self, param)
         }
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -522,7 +520,7 @@ impl<'tcx> Visitor<'tcx> for BodyLifetimeChecker {
         }
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }

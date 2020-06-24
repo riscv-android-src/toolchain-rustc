@@ -659,8 +659,8 @@ impl<T: ?Sized> *const T {
     /// `align`.
     ///
     /// If it is not possible to align the pointer, the implementation returns
-    /// `usize::max_value()`. It is permissible for the implementation to *always*
-    /// return `usize::max_value()`. Only your algorithm's performance can depend
+    /// `usize::MAX`. It is permissible for the implementation to *always*
+    /// return `usize::MAX`. Only your algorithm's performance can depend
     /// on getting a usable offset here, not its correctness.
     ///
     /// The offset is expressed in number of `T` elements, and not bytes. The value returned can be
@@ -703,6 +703,34 @@ impl<T: ?Sized> *const T {
             panic!("align_offset: align is not a power-of-two");
         }
         unsafe { align_offset(self, align) }
+    }
+}
+
+#[cfg(not(bootstrap))]
+#[lang = "const_slice_ptr"]
+impl<T> *const [T] {
+    /// Returns the length of a raw slice.
+    ///
+    /// The returned value is the number of **elements**, not the number of bytes.
+    ///
+    /// This function is safe, even when the raw slice cannot be cast to a slice
+    /// reference because the pointer is null or unaligned.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// #![feature(slice_ptr_len)]
+    ///
+    /// use std::ptr;
+    ///
+    /// let slice: *const [i8] = ptr::slice_from_raw_parts(ptr::null(), 3);
+    /// assert_eq!(slice.len(), 3);
+    /// ```
+    #[inline]
+    #[unstable(feature = "slice_ptr_len", issue = "71146")]
+    #[rustc_const_unstable(feature = "const_slice_ptr_len", issue = "71146")]
+    pub const fn len(self) -> usize {
+        unsafe { Repr { rust: self }.raw }.len
     }
 }
 

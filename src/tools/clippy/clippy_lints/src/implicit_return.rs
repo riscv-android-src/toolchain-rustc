@@ -1,5 +1,5 @@
 use crate::utils::{
-    match_def_path,
+    fn_has_unsatisfiable_preds, match_def_path,
     paths::{BEGIN_PANIC, BEGIN_PANIC_FMT},
     snippet_opt, span_lint_and_then,
 };
@@ -48,9 +48,9 @@ fn lint(cx: &LateContext<'_, '_>, outer_span: Span, inner_span: Span, msg: &str)
     let outer_span = outer_span.source_callsite();
     let inner_span = inner_span.source_callsite();
 
-    span_lint_and_then(cx, IMPLICIT_RETURN, outer_span, "missing `return` statement", |db| {
+    span_lint_and_then(cx, IMPLICIT_RETURN, outer_span, "missing `return` statement", |diag| {
         if let Some(snippet) = snippet_opt(cx, inner_span) {
-            db.span_suggestion(
+            diag.span_suggestion(
                 outer_span,
                 msg,
                 format!("return {}", snippet),
@@ -133,7 +133,13 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitReturn {
         _: HirId,
     ) {
         let def_id = cx.tcx.hir().body_owner_def_id(body.id());
-        let mir = cx.tcx.optimized_mir(def_id);
+
+        // Building MIR for `fn`s with unsatisfiable preds results in ICE.
+        if fn_has_unsatisfiable_preds(cx, def_id.to_def_id()) {
+            return;
+        }
+
+        let mir = cx.tcx.optimized_mir(def_id.to_def_id());
 
         // checking return type through MIR, HIR is not able to determine inferred closure return types
         // make sure it's not a macro

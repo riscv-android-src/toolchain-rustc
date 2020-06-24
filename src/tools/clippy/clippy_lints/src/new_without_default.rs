@@ -2,13 +2,13 @@ use crate::utils::paths;
 use crate::utils::sugg::DiagnosticBuilderExt;
 use crate::utils::{get_trait_def_id, implements_trait, return_ty, same_tys, span_lint_hir_and_then};
 use if_chain::if_chain;
-use rustc::lint::in_external_macro;
-use rustc::ty::{self, Ty};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::HirIdSet;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::lint::in_external_macro;
+use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 
@@ -100,12 +100,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NewWithoutDefault {
         } = item.kind
         {
             for assoc_item in items {
-                if let hir::AssocItemKind::Method { has_self: false } = assoc_item.kind {
+                if let hir::AssocItemKind::Fn { has_self: false } = assoc_item.kind {
                     let impl_item = cx.tcx.hir().impl_item(assoc_item.id);
                     if in_external_macro(cx.sess(), impl_item.span) {
                         return;
                     }
-                    if let hir::ImplItemKind::Method(ref sig, _) = impl_item.kind {
+                    if let hir::ImplItemKind::Fn(ref sig, _) = impl_item.kind {
                         let name = impl_item.ident.name;
                         let id = impl_item.hir_id;
                         if sig.header.constness == hir::Constness::Const {
@@ -149,9 +149,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NewWithoutDefault {
                                     if_chain! {
                                         if let Some(ref impling_types) = self.impling_types;
                                         if let Some(self_def) = cx.tcx.type_of(self_did).ty_adt_def();
-                                        if self_def.did.is_local();
+                                        if let Some(self_def_id) = self_def.did.as_local();
                                         then {
-                                            let self_id = cx.tcx.hir().local_def_id_to_hir_id(self_def.did.to_local());
+                                            let self_id = cx.tcx.hir().local_def_id_to_hir_id(self_def_id);
                                             if impling_types.contains(&self_id) {
                                                 return;
                                             }
@@ -168,8 +168,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NewWithoutDefault {
                                                 "you should consider deriving a `Default` implementation for `{}`",
                                                 self_ty
                                             ),
-                                            |db| {
-                                                db.suggest_item_with_attr(
+                                            |diag| {
+                                                diag.suggest_item_with_attr(
                                                     cx,
                                                     sp,
                                                     "try this",
@@ -187,8 +187,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NewWithoutDefault {
                                                 "you should consider adding a `Default` implementation for `{}`",
                                                 self_ty
                                             ),
-                                            |db| {
-                                                db.suggest_prepend_item(
+                                            |diag| {
+                                                diag.suggest_prepend_item(
                                                     cx,
                                                     item.span,
                                                     "try this",

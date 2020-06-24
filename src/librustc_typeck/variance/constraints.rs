@@ -4,10 +4,10 @@
 //! We walk the set of items and, for each member, generate new constraints.
 
 use hir::def_id::DefId;
-use rustc::ty::subst::{GenericArgKind, SubstsRef};
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_hir as hir;
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
+use rustc_middle::ty::subst::{GenericArgKind, SubstsRef};
+use rustc_middle::ty::{self, Ty, TyCtxt};
 
 use super::terms::VarianceTerm::*;
 use super::terms::*;
@@ -105,13 +105,13 @@ impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for ConstraintContext<'a, 'tcx> {
     }
 
     fn visit_trait_item(&mut self, trait_item: &hir::TraitItem<'_>) {
-        if let hir::TraitItemKind::Method(..) = trait_item.kind {
+        if let hir::TraitItemKind::Fn(..) = trait_item.kind {
             self.visit_node_helper(trait_item.hir_id);
         }
     }
 
     fn visit_impl_item(&mut self, impl_item: &hir::ImplItem<'_>) {
-        if let hir::ImplItemKind::Method(..) = impl_item.kind {
+        if let hir::ImplItemKind::Fn(..) = impl_item.kind {
             self.visit_node_helper(impl_item.hir_id);
         }
     }
@@ -315,11 +315,9 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
                 self.add_constraints_from_region(current, r, contra);
 
                 if let Some(poly_trait_ref) = data.principal() {
-                    let poly_trait_ref =
-                        poly_trait_ref.with_self_ty(self.tcx(), self.tcx().types.err);
-                    self.add_constraints_from_trait_ref(
+                    self.add_constraints_from_invariant_substs(
                         current,
-                        *poly_trait_ref.skip_binder(),
+                        poly_trait_ref.skip_binder().substs,
                         variance,
                     );
                 }
@@ -449,7 +447,6 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
             }
 
             ty::ReFree(..)
-            | ty::ReClosureBound(..)
             | ty::ReScope(..)
             | ty::ReVar(..)
             | ty::RePlaceholder(..)

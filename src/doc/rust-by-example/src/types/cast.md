@@ -22,10 +22,14 @@ fn main() {
     let integer = decimal as u8;
     let character = integer as char;
 
+    // Error! There are limitations in conversion rules. A float cannot be directly converted to a char.
+    let character = decimal as char;
+    // FIXME ^ Comment out this line
+
     println!("Casting: {} -> {} -> {}", decimal, integer, character);
 
     // when casting any value to an unsigned type, T,
-    // std::T::MAX + 1 is added or subtracted until the value
+    // T::MAX + 1 is added or subtracted until the value
     // fits into the new type
 
     // 1000 already fits in a u16

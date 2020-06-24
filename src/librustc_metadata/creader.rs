@@ -3,22 +3,24 @@
 use crate::locator::{CrateLocator, CratePaths};
 use crate::rmeta::{CrateDep, CrateMetadata, CrateNumMap, CrateRoot, MetadataBlob};
 
-use rustc::hir::map::Definitions;
-use rustc::middle::cstore::DepKind;
-use rustc::middle::cstore::{CrateSource, ExternCrate, ExternCrateSource, MetadataLoaderDyn};
-use rustc::session::config;
-use rustc::session::search_paths::PathKind;
-use rustc::session::{CrateDisambiguator, Session};
-use rustc::ty::TyCtxt;
-use rustc_ast::ast;
-use rustc_ast::attr;
 use rustc_ast::expand::allocator::{global_allocator_spans, AllocatorKind};
+use rustc_ast::{ast, attr};
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::struct_span_err;
 use rustc_expand::base::SyntaxExtension;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
+use rustc_hir::definitions::Definitions;
 use rustc_index::vec::IndexVec;
+use rustc_middle::middle::cstore::DepKind;
+use rustc_middle::middle::cstore::{
+    CrateSource, ExternCrate, ExternCrateSource, MetadataLoaderDyn,
+};
+use rustc_middle::ty::TyCtxt;
+use rustc_session::config;
+use rustc_session::output::validate_crate_name;
+use rustc_session::search_paths::PathKind;
+use rustc_session::{CrateDisambiguator, Session};
 use rustc_span::edition::Edition;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::{Span, DUMMY_SP};
@@ -265,7 +267,7 @@ impl<'a> CrateLoader<'a> {
                 ret = Some(cnum);
             }
         });
-        return ret;
+        ret
     }
 
     fn verify_no_symbol_conflicts(&self, span: Span, root: &CrateRoot<'_>) {
@@ -684,7 +686,9 @@ impl<'a> CrateLoader<'a> {
     }
 
     fn inject_profiler_runtime(&mut self) {
-        if self.sess.opts.debugging_opts.profile || self.sess.opts.cg.profile_generate.enabled() {
+        if (self.sess.opts.debugging_opts.profile || self.sess.opts.cg.profile_generate.enabled())
+            && !self.sess.opts.debugging_opts.no_profiler_runtime
+        {
             info!("loading profiler");
 
             let name = Symbol::intern("profiler_builtins");
@@ -853,11 +857,7 @@ impl<'a> CrateLoader<'a> {
                 );
                 let name = match orig_name {
                     Some(orig_name) => {
-                        crate::validate_crate_name(
-                            Some(self.sess),
-                            &orig_name.as_str(),
-                            Some(item.span),
-                        );
+                        validate_crate_name(Some(self.sess), &orig_name.as_str(), Some(item.span));
                         orig_name
                     }
                     None => item.ident.name,
@@ -871,11 +871,11 @@ impl<'a> CrateLoader<'a> {
                 let cnum = self.resolve_crate(name, item.span, dep_kind, None);
 
                 let def_id = definitions.opt_local_def_id(item.id).unwrap();
-                let path_len = definitions.def_path(def_id.index).data.len();
+                let path_len = definitions.def_path(def_id).data.len();
                 self.update_extern_crate(
                     cnum,
                     ExternCrate {
-                        src: ExternCrateSource::Extern(def_id),
+                        src: ExternCrateSource::Extern(def_id.to_def_id()),
                         span: item.span,
                         path_len,
                         dependency_of: LOCAL_CRATE,

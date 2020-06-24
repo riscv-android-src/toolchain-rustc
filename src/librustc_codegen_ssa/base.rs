@@ -25,28 +25,29 @@ use crate::mir::place::PlaceRef;
 use crate::traits::*;
 use crate::{CachedModuleCodegen, CrateInfo, MemFlags, ModuleCodegen, ModuleKind};
 
-use rustc::middle::codegen_fn_attrs::CodegenFnAttrs;
-use rustc::middle::cstore::EncodedMetadata;
-use rustc::middle::cstore::{self, LinkagePreference};
-use rustc::middle::lang_items;
-use rustc::middle::lang_items::StartFnLangItem;
-use rustc::mir::mono::{CodegenUnit, CodegenUnitNameBuilder, MonoItem};
-use rustc::session::config::{self, EntryFnType, Lto};
-use rustc::session::Session;
-use rustc::ty::layout::{self, Align, HasTyCtxt, LayoutOf, TyLayout, VariantIdx};
-use rustc::ty::layout::{FAT_PTR_ADDR, FAT_PTR_EXTRA};
-use rustc::ty::query::Providers;
-use rustc::ty::{self, Instance, Ty, TyCtxt};
 use rustc_attr as attr;
-use rustc_codegen_utils::{check_for_rustc_errors_attr, symbol_names_test};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::profiling::print_time_passes_entry;
 use rustc_data_structures::sync::{par_iter, Lock, ParallelIterator};
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
+use rustc_hir::lang_items::StartFnLangItem;
 use rustc_index::vec::Idx;
+use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs;
+use rustc_middle::middle::cstore::EncodedMetadata;
+use rustc_middle::middle::cstore::{self, LinkagePreference};
+use rustc_middle::middle::lang_items;
+use rustc_middle::mir::mono::{CodegenUnit, CodegenUnitNameBuilder, MonoItem};
+use rustc_middle::ty::layout::{self, HasTyCtxt, TyAndLayout};
+use rustc_middle::ty::layout::{FAT_PTR_ADDR, FAT_PTR_EXTRA};
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::{self, Instance, Ty, TyCtxt};
 use rustc_session::cgu_reuse_tracker::CguReuse;
+use rustc_session::config::{self, EntryFnType, Lto};
+use rustc_session::Session;
 use rustc_span::Span;
+use rustc_symbol_mangling::test as symbol_names_test;
+use rustc_target::abi::{Abi, Align, LayoutOf, Scalar, VariantIdx};
 
 use std::cmp;
 use std::ops::{Deref, DerefMut};
@@ -181,8 +182,7 @@ pub fn unsize_thin_ptr<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 ) -> (Bx::Value, Bx::Value) {
     debug!("unsize_thin_ptr: {:?} => {:?}", src_ty, dst_ty);
     match (&src_ty.kind, &dst_ty.kind) {
-        (&ty::Ref(_, a, _), &ty::Ref(_, b, _))
-        | (&ty::Ref(_, a, _), &ty::RawPtr(ty::TypeAndMut { ty: b, .. }))
+        (&ty::Ref(_, a, _), &ty::Ref(_, b, _) | &ty::RawPtr(ty::TypeAndMut { ty: b, .. }))
         | (&ty::RawPtr(ty::TypeAndMut { ty: a, .. }), &ty::RawPtr(ty::TypeAndMut { ty: b, .. })) => {
             assert!(bx.cx().type_is_sized(a));
             let ptr_ty = bx.cx().type_ptr_to(bx.cx().backend_type(bx.cx().layout_of(b)));
@@ -231,9 +231,7 @@ pub fn coerce_unsized_into<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     let src_ty = src.layout.ty;
     let dst_ty = dst.layout.ty;
     match (&src_ty.kind, &dst_ty.kind) {
-        (&ty::Ref(..), &ty::Ref(..))
-        | (&ty::Ref(..), &ty::RawPtr(..))
-        | (&ty::RawPtr(..), &ty::RawPtr(..)) => {
+        (&ty::Ref(..), &ty::Ref(..) | &ty::RawPtr(..)) | (&ty::RawPtr(..), &ty::RawPtr(..)) => {
             let (base, info) = match bx.load_operand(src).val {
                 OperandValue::Pair(base, info) => {
                     // fat-ptr to fat-ptr unsize preserves the vtable
@@ -341,9 +339,9 @@ pub fn from_immediate<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 pub fn to_immediate<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     val: Bx::Value,
-    layout: layout::TyLayout<'_>,
+    layout: layout::TyAndLayout<'_>,
 ) -> Bx::Value {
-    if let layout::Abi::Scalar(ref scalar) = layout.abi {
+    if let Abi::Scalar(ref scalar) = layout.abi {
         return to_immediate_scalar(bx, val, scalar);
     }
     val
@@ -352,7 +350,7 @@ pub fn to_immediate<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
 pub fn to_immediate_scalar<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     val: Bx::Value,
-    scalar: &layout::Scalar,
+    scalar: &Scalar,
 ) -> Bx::Value {
     if scalar.is_bool() {
         return bx.trunc(val, bx.cx().type_i1());
@@ -366,7 +364,7 @@ pub fn memcpy_ty<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     dst_align: Align,
     src: Bx::Value,
     src_align: Align,
-    layout: TyLayout<'tcx>,
+    layout: TyAndLayout<'tcx>,
     flags: MemFlags,
 ) {
     let size = layout.size.bytes();
@@ -506,7 +504,7 @@ fn get_argc_argv<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     }
 }
 
-pub const CODEGEN_WORKER_ID: usize = ::std::usize::MAX;
+pub const CODEGEN_WORKER_ID: usize = usize::MAX;
 
 pub fn codegen_crate<B: ExtraBackendMethods>(
     backend: B,
@@ -514,8 +512,6 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     metadata: EncodedMetadata,
     need_metadata_module: bool,
 ) -> OngoingCodegen<B> {
-    check_for_rustc_errors_attr(tcx);
-
     // Skip crate items and just output metadata in -Z no-codegen mode.
     if tcx.sess.opts.debugging_opts.no_codegen || !tcx.sess.opts.output_types.should_codegen() {
         let ongoing_codegen = start_async_codegen(backend, tcx, metadata, 1);
@@ -534,7 +530,6 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     // Run the monomorphization collector and partition the collected items into
     // codegen units.
     let codegen_units = tcx.collect_and_partition_mono_items(LOCAL_CRATE).1;
-    let codegen_units = (*codegen_units).clone();
 
     // Force all codegen_unit queries so they are already either red or green
     // when compile_codegen_unit accesses them. We are not able to re-execute
@@ -542,7 +537,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     // lead to having to re-execute compile_codegen_unit, possibly
     // unnecessarily.
     if tcx.dep_graph.is_fully_enabled() {
-        for cgu in &codegen_units {
+        for cgu in codegen_units {
             tcx.codegen_unit(cgu.name());
         }
     }
@@ -559,7 +554,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     // one instead. If nothing exists then it's our job to generate the
     // allocator!
     let any_dynamic_crate = tcx.dependency_formats(LOCAL_CRATE).iter().any(|(_, list)| {
-        use rustc::middle::dependency_format::Linkage;
+        use rustc_middle::middle::dependency_format::Linkage;
         list.iter().any(|&linkage| linkage == Linkage::Dynamic)
     });
     let allocator_module = if any_dynamic_crate {
@@ -604,7 +599,7 @@ pub fn codegen_crate<B: ExtraBackendMethods>(
     // We sort the codegen units by size. This way we can schedule work for LLVM
     // a bit more efficiently.
     let codegen_units = {
-        let mut codegen_units = codegen_units;
+        let mut codegen_units = codegen_units.iter().collect::<Vec<_>>();
         codegen_units.sort_by_cached_key(|cgu| cmp::Reverse(cgu.size_estimate()));
         codegen_units
     };
@@ -852,7 +847,7 @@ impl CrateInfo {
             info.missing_lang_items.insert(cnum, missing);
         }
 
-        return info;
+        info
     }
 }
 
@@ -887,7 +882,7 @@ pub fn provide_both(providers: &mut Providers<'_>) {
                 }
             }
         }
-        return tcx.sess.opts.optimize;
+        tcx.sess.opts.optimize
     };
 
     providers.dllimport_foreign_items = |tcx, krate| {

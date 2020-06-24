@@ -1,29 +1,23 @@
 #![feature(rustc_private)]
 
-extern crate env_logger;
-extern crate getopts;
-#[macro_use]
-extern crate log;
-extern crate log_settings;
-extern crate miri;
-extern crate rustc;
-extern crate rustc_codegen_utils;
+extern crate rustc_middle;
 extern crate rustc_driver;
-extern crate rustc_errors;
 extern crate rustc_hir;
 extern crate rustc_interface;
-extern crate rustc_metadata;
-extern crate rustc_span;
+extern crate rustc_session;
 
 use std::convert::TryFrom;
 use std::env;
 use std::str::FromStr;
 
 use hex::FromHexError;
+use log::debug;
 
+use rustc_session::CtfeBacktrace;
 use rustc_driver::Compilation;
 use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_interface::{interface, Queries};
+use rustc_middle::ty::TyCtxt;
 
 struct MiriCompilerCalls {
     miri_config: miri::MiriConfig,
@@ -35,10 +29,10 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
         compiler: &interface::Compiler,
         queries: &'tcx Queries<'tcx>,
     ) -> Compilation {
-        init_late_loggers();
         compiler.session().abort_if_errors();
 
         queries.global_ctxt().unwrap().peek_mut().enter(|tcx| {
+            init_late_loggers(tcx);
             let (entry_def_id, _) = tcx.entry_fn(LOCAL_CRATE).expect("no main function found!");
             let mut config = self.miri_config.clone();
 
@@ -72,7 +66,7 @@ fn init_early_loggers() {
     }
 }
 
-fn init_late_loggers() {
+fn init_late_loggers(tcx: TyCtxt<'_>) {
     // We initialize loggers right before we start evaluation. We overwrite the `RUSTC_LOG`
     // env var if it is not set, control it based on `MIRI_LOG`.
     if let Ok(var) = env::var("MIRI_LOG") {
@@ -85,7 +79,7 @@ fn init_late_loggers() {
             if log::Level::from_str(&var).is_ok() {
                 env::set_var(
                     "RUSTC_LOG",
-                    &format!("rustc::mir::interpret={0},rustc_mir::interpret={0}", var),
+                    &format!("rustc_middle::mir::interpret={0},rustc_mir::interpret={0}", var),
                 );
             } else {
                 env::set_var("RUSTC_LOG", &var);
@@ -96,10 +90,13 @@ fn init_late_loggers() {
 
     // If `MIRI_BACKTRACE` is set and `RUSTC_CTFE_BACKTRACE` is not, set `RUSTC_CTFE_BACKTRACE`.
     // Do this late, so we ideally only apply this to Miri's errors.
-    if let Ok(var) = env::var("MIRI_BACKTRACE") {
-        if env::var("RUSTC_CTFE_BACKTRACE") == Err(env::VarError::NotPresent) {
-            env::set_var("RUSTC_CTFE_BACKTRACE", &var);
-        }
+    if let Ok(val) = env::var("MIRI_BACKTRACE") {
+        let ctfe_backtrace = match &*val {
+            "immediate" => CtfeBacktrace::Immediate,
+            "0" => CtfeBacktrace::Disabled,
+            _ => CtfeBacktrace::Capture,
+        };
+        *tcx.sess.ctfe_backtrace.borrow_mut() = ctfe_backtrace;
     }
 }
 
@@ -131,10 +128,12 @@ fn main() {
     // Parse our arguments and split them across `rustc` and `miri`.
     let mut validate = true;
     let mut stacked_borrows = true;
+    let mut check_alignment = true;
     let mut communicate = false;
     let mut ignore_leaks = false;
     let mut seed: Option<u64> = None;
     let mut tracked_pointer_tag: Option<miri::PtrId> = None;
+    let mut tracked_alloc_id: Option<miri::AllocId> = None;
     let mut rustc_args = vec![];
     let mut miri_args = vec![];
     let mut after_dashdash = false;
@@ -153,6 +152,9 @@ fn main() {
                 }
                 "-Zmiri-disable-stacked-borrows" => {
                     stacked_borrows = false;
+                }
+                "-Zmiri-disable-alignment-check" => {
+                    check_alignment = false;
                 }
                 "-Zmiri-disable-isolation" => {
                     communicate = true;
@@ -206,6 +208,17 @@ fn main() {
                         panic!("-Zmiri-track-pointer-tag must be a nonzero id");
                     }
                 }
+                arg if arg.starts_with("-Zmiri-track-alloc-id=") => {
+                    let id: u64 = match arg.trim_start_matches("-Zmiri-track-alloc-id=").parse()
+                    {
+                        Ok(id) => id,
+                        Err(err) => panic!(
+                            "-Zmiri-track-alloc-id requires a valid `u64` as the argument: {}",
+                            err
+                        ),
+                    };
+                    tracked_alloc_id = Some(miri::AllocId(id));
+                }
                 _ => {
                     rustc_args.push(arg);
                 }
@@ -234,17 +247,18 @@ fn main() {
     let miri_config = miri::MiriConfig {
         validate,
         stacked_borrows,
+        check_alignment,
         communicate,
         ignore_leaks,
         excluded_env_vars,
         seed,
         args: miri_args,
         tracked_pointer_tag,
+        tracked_alloc_id,
     };
     rustc_driver::install_ice_hook();
     let result = rustc_driver::catch_fatal_errors(move || {
         rustc_driver::run_compiler(&rustc_args, &mut MiriCompilerCalls { miri_config }, None, None)
-    })
-    .and_then(|result| result);
+    });
     std::process::exit(result.is_err() as i32);
 }

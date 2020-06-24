@@ -2,14 +2,17 @@
 
 use super::method::MethodCallee;
 use super::{FnCtxt, Needs};
-use rustc::ty::adjustment::{Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability};
-use rustc::ty::TyKind::{Adt, Array, Char, FnDef, Never, Ref, Str, Tuple, Uint};
-use rustc::ty::{self, Ty, TypeFoldable};
 use rustc_ast::ast::Ident;
 use rustc_errors::{self, struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
+use rustc_middle::ty::adjustment::{
+    Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability,
+};
+use rustc_middle::ty::TyKind::{Adt, Array, Char, FnDef, Never, Ref, Str, Tuple, Uint};
+use rustc_middle::ty::{self, Ty, TypeFoldable};
 use rustc_span::Span;
+use rustc_trait_selection::infer::InferCtxtExt;
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Checks a `a <op>= b`
@@ -248,7 +251,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
             Err(()) => {
                 // error types are considered "builtin"
-                if !lhs_ty.references_error() {
+                if !lhs_ty.references_error() && !rhs_ty.references_error() {
                     let source_map = self.tcx.sess.source_map();
                     match is_assign {
                         IsAssign::Yes => {
@@ -478,7 +481,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     }
 
     /// If one of the types is an uncalled function and calling it would yield the other type,
-    /// suggest calling the function. Returns whether a suggestion was given.
+    /// suggest calling the function. Returns `true` if suggestion would apply (even if not given).
     fn add_type_neq_err_label(
         &self,
         err: &mut rustc_errors::DiagnosticBuilder<'_>,
@@ -491,36 +494,18 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         err.span_label(span, ty.to_string());
         if let FnDef(def_id, _) = ty.kind {
             let source_map = self.tcx.sess.source_map();
-            let hir_id = match self.tcx.hir().as_local_hir_id(def_id) {
-                Some(hir_id) => hir_id,
-                None => return false,
-            };
             if !self.tcx.has_typeck_tables(def_id) {
                 return false;
             }
-            let fn_sig = {
-                match self.tcx.typeck_tables_of(def_id).liberated_fn_sigs().get(hir_id) {
-                    Some(f) => *f,
-                    None => {
-                        bug!("No fn-sig entry for def_id={:?}", def_id);
-                    }
-                }
-            };
+            // We're emitting a suggestion, so we can just ignore regions
+            let fn_sig = *self.tcx.fn_sig(def_id).skip_binder();
 
             let other_ty = if let FnDef(def_id, _) = other_ty.kind {
-                let hir_id = match self.tcx.hir().as_local_hir_id(def_id) {
-                    Some(hir_id) => hir_id,
-                    None => return false,
-                };
                 if !self.tcx.has_typeck_tables(def_id) {
                     return false;
                 }
-                match self.tcx.typeck_tables_of(def_id).liberated_fn_sigs().get(hir_id) {
-                    Some(f) => f.clone().output(),
-                    None => {
-                        bug!("No fn-sig entry for def_id={:?}", def_id);
-                    }
-                }
+                // We're emitting a suggestion, so we can just ignore regions
+                self.tcx.fn_sig(def_id).skip_binder().output()
             } else {
                 other_ty
             };
@@ -529,24 +514,20 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 .lookup_op_method(fn_sig.output(), &[other_ty], Op::Binary(op, is_assign))
                 .is_ok()
             {
-                let (variable_snippet, applicability) = if !fn_sig.inputs().is_empty() {
-                    (
-                        format!("{}( /* arguments */ )", source_map.span_to_snippet(span).unwrap()),
-                        Applicability::HasPlaceholders,
-                    )
-                } else {
-                    (
-                        format!("{}()", source_map.span_to_snippet(span).unwrap()),
-                        Applicability::MaybeIncorrect,
-                    )
-                };
+                if let Ok(snippet) = source_map.span_to_snippet(span) {
+                    let (variable_snippet, applicability) = if !fn_sig.inputs().is_empty() {
+                        (format!("{}( /* arguments */ )", snippet), Applicability::HasPlaceholders)
+                    } else {
+                        (format!("{}()", snippet), Applicability::MaybeIncorrect)
+                    };
 
-                err.span_suggestion(
-                    span,
-                    "you might have forgotten to call this function",
-                    variable_snippet,
-                    applicability,
-                );
+                    err.span_suggestion(
+                        span,
+                        "you might have forgotten to call this function",
+                        variable_snippet,
+                        applicability,
+                    );
+                }
                 return true;
             }
         }
@@ -860,7 +841,7 @@ enum Op {
 }
 
 /// Dereferences a single level of immutable referencing.
-fn deref_ty_if_possible<'tcx>(ty: Ty<'tcx>) -> Ty<'tcx> {
+fn deref_ty_if_possible(ty: Ty<'tcx>) -> Ty<'tcx> {
     match ty.kind {
         ty::Ref(_, ty, hir::Mutability::Not) => ty,
         _ => ty,

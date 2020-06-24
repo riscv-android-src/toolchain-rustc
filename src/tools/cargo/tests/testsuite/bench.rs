@@ -1612,9 +1612,9 @@ fn json_artifact_includes_executable_for_benchmark() {
         .with_json(
             r#"
             {
-                "executable": "[..]/foo/target/release/benchmark-[..][EXE]",
+                "executable": "[..]/foo/target/release/deps/benchmark-[..][EXE]",
                 "features": [],
-                "filenames": [ "[..]/foo/target/release/benchmark-[..][EXE]" ],
+                "filenames": [ "[..]/foo/target/release/deps/benchmark-[..][EXE]" ],
                 "fresh": false,
                 "package_id": "foo 0.0.1 ([..])",
                 "profile": "{...}",
@@ -1628,6 +1628,8 @@ fn json_artifact_includes_executable_for_benchmark() {
                     "src_path": "[..]/foo/benches/benchmark.rs"
                 }
             }
+
+            {"reason": "build-finished", "success": true}
         "#,
         )
         .run();

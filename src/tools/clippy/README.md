@@ -5,7 +5,7 @@
 
 A collection of lints to catch common mistakes and improve your [Rust](https://github.com/rust-lang/rust) code.
 
-[There are 359 lints included in this crate!](https://rust-lang.github.io/rust-clippy/master/index.html)
+[There are over 350 lints included in this crate!](https://rust-lang.github.io/rust-clippy/master/index.html)
 
 We have a bunch of lint categories to allow you to choose how much Clippy is supposed to ~~annoy~~ help you:
 
@@ -83,11 +83,11 @@ cargo clippy
 
 #### Automatically applying Clippy suggestions
 
-Some Clippy lint suggestions can be automatically applied by `cargo fix`.
+Clippy can automatically apply some lint suggestions.
 Note that this is still experimental and only supported on the nightly channel:
 
 ```terminal
-cargo fix -Z unstable-options --clippy
+cargo clippy --fix -Z unstable-options
 ```
 
 ### Running Clippy from the command line without installing it
@@ -175,6 +175,8 @@ If you do not want to include your lint levels in your code, you can globally en
 flags to Clippy during the run: `cargo clippy -- -A clippy::lint_name` will run Clippy with `lint_name` disabled and
 `cargo clippy -- -W clippy::lint_name` will run it with that enabled. This also works with lint groups. For example you
 can run Clippy with warnings for all lints enabled: `cargo clippy -- -W clippy::pedantic`
+If you care only about a single lint, you can allow all others and then explicitly reenable
+the lint(s) you are interested in: `cargo clippy -- -Aclippy::all -Wclippy::useless_format -Wclippy::...`
 
 ## Contributing
 

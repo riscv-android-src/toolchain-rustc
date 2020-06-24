@@ -236,8 +236,12 @@ the sake of clarity. To perform memory layout computations in actual code, use
 
 </div>
 
-> Note: This algorithm can produce zero-sized structs. This differs from
-> C where structs without data still have a size of one byte.
+> Note: This algorithm can produce zero-sized structs. In C, an empty struct
+> declaration like `struct Foo { }` is illegal. However, both gcc and clang
+> support options to enable such structs, and assign them size zero. C++, in
+> contrast, gives empty structs a size of 1, unless they are inherited from or
+> they are fields that have the `[[no_unique_address]]` attribute, in which
+> case they do not increase the overall size of the struct.
 
 #### \#[repr(C)] Unions
 
@@ -353,13 +357,14 @@ Like all ways to create undefined behavior in safe Rust, this is a bug.
 
 ### The `transparent` Representation
 
-The `transparent` representation can only be used on `struct`s that have:
+The `transparent` representation can only be used on a [`struct`][structs]
+or an [`enum`][enumerations] with a single variant that has:
 
 - a single field with non-zero size, and
 - any number of fields with size 0 and alignment 1 (e.g. [`PhantomData<T>`]).
 
-Structs with this representation have the same layout and ABI as the single
-non-zero sized field.
+Structs and enums with this representation have the same layout and ABI
+as the single non-zero sized field.
 
 This is different than the `C` representation because
 a struct with the `C` representation will always have the ABI of a `C` `struct`
@@ -376,6 +381,7 @@ used with any other representation.
 [`Sized`]: ../std/marker/trait.Sized.html
 [dynamically sized types]: dynamically-sized-types.md
 [C-like enumerations]:  items/enumerations.md#custom-discriminant-values-for-fieldless-enumerations
+[enumerations]: items/enumerations.md
 [zero-variant enumerations]: items/enumerations.md#zero-variant-enums
 [undefined behavior]: behavior-considered-undefined.md
 [27060]: https://github.com/rust-lang/rust/issues/27060
@@ -383,5 +389,6 @@ used with any other representation.
 [Default]: #the-default-representation
 [`C`]: #the-c-representation
 [primitive representations]: #primitive-representations
+[structs]: items/structs.md
 [`transparent`]: #the-transparent-representation
 [`Layout`]: ../std/alloc/struct.Layout.html

@@ -448,7 +448,7 @@ impl<'a, I: Iterator<Item = Event<'a>>> Iterator for SummaryLine<'a, I> {
         if !self.started {
             self.started = true;
         }
-        while let Some(event) = self.inner.next() {
+        if let Some(event) = self.inner.next() {
             let mut is_start = true;
             let is_allowed_tag = match event {
                 Event::Start(Tag::CodeBlock(_)) | Event::End(Tag::CodeBlock(_)) => {
@@ -844,17 +844,13 @@ pub fn plain_summary_line(md: &str) -> String {
         type Item = String;
 
         fn next(&mut self) -> Option<String> {
-            let next_event = self.inner.next();
-            if next_event.is_none() {
-                return None;
-            }
-            let next_event = next_event.unwrap();
+            let next_event = self.inner.next()?;
             let (ret, is_in) = match next_event {
                 Event::Start(Tag::Paragraph) => (None, 1),
                 Event::Start(Tag::Heading(_)) => (None, 1),
                 Event::Code(code) => (Some(format!("`{}`", code)), 0),
                 Event::Text(ref s) if self.is_in > 0 => (Some(s.as_ref().to_owned()), 0),
-                Event::End(Tag::Paragraph) | Event::End(Tag::Heading(_)) => (None, -1),
+                Event::End(Tag::Paragraph | Tag::Heading(_)) => (None, -1),
                 _ => (None, 0),
             };
             if is_in > 0 || (is_in < 0 && self.is_in > 0) {
@@ -870,7 +866,7 @@ pub fn plain_summary_line(md: &str) -> String {
     }
     let mut s = String::with_capacity(md.len() * 3 / 2);
     let p = ParserWrapper { inner: Parser::new(md), is_in: 0, is_first: true };
-    p.into_iter().filter(|t| !t.is_empty()).for_each(|i| s.push_str(&i));
+    p.filter(|t| !t.is_empty()).for_each(|i| s.push_str(&i));
     s
 }
 
@@ -913,7 +909,7 @@ pub fn markdown_links(md: &str) -> Vec<(String, Option<Range<usize>>)> {
                 debug!("found link: {}", dest);
                 links.push(match dest {
                     CowStr::Borrowed(s) => (s.to_owned(), locate(s)),
-                    s @ CowStr::Boxed(..) | s @ CowStr::Inlined(..) => (s.into_string(), None),
+                    s @ (CowStr::Boxed(..) | CowStr::Inlined(..)) => (s.into_string(), None),
                 });
             }
         }
@@ -948,75 +944,70 @@ crate fn rust_code_blocks(md: &str) -> Vec<RustCodeBlock> {
     let mut p = Parser::new_ext(md, opts()).into_offset_iter();
 
     while let Some((event, offset)) = p.next() {
-        match event {
-            Event::Start(Tag::CodeBlock(syntax)) => {
-                let (syntax, code_start, code_end, range, is_fenced) = match syntax {
-                    CodeBlockKind::Fenced(syntax) => {
-                        let syntax = syntax.as_ref();
-                        let lang_string = if syntax.is_empty() {
-                            LangString::all_false()
-                        } else {
-                            LangString::parse(&*syntax, ErrorCodes::Yes, false)
-                        };
-                        if !lang_string.rust {
+        if let Event::Start(Tag::CodeBlock(syntax)) = event {
+            let (syntax, code_start, code_end, range, is_fenced) = match syntax {
+                CodeBlockKind::Fenced(syntax) => {
+                    let syntax = syntax.as_ref();
+                    let lang_string = if syntax.is_empty() {
+                        LangString::all_false()
+                    } else {
+                        LangString::parse(&*syntax, ErrorCodes::Yes, false)
+                    };
+                    if !lang_string.rust {
+                        continue;
+                    }
+                    let syntax = if syntax.is_empty() { None } else { Some(syntax.to_owned()) };
+                    let (code_start, mut code_end) = match p.next() {
+                        Some((Event::Text(_), offset)) => (offset.start, offset.end),
+                        Some((_, sub_offset)) => {
+                            let code = Range { start: sub_offset.start, end: sub_offset.start };
+                            code_blocks.push(RustCodeBlock {
+                                is_fenced: true,
+                                range: offset,
+                                code,
+                                syntax,
+                            });
                             continue;
                         }
-                        let syntax = if syntax.is_empty() { None } else { Some(syntax.to_owned()) };
-                        let (code_start, mut code_end) = match p.next() {
-                            Some((Event::Text(_), offset)) => (offset.start, offset.end),
-                            Some((_, sub_offset)) => {
-                                let code = Range { start: sub_offset.start, end: sub_offset.start };
-                                code_blocks.push(RustCodeBlock {
-                                    is_fenced: true,
-                                    range: offset,
-                                    code,
-                                    syntax,
-                                });
-                                continue;
-                            }
-                            None => {
-                                let code = Range { start: offset.end, end: offset.end };
-                                code_blocks.push(RustCodeBlock {
-                                    is_fenced: true,
-                                    range: offset,
-                                    code,
-                                    syntax,
-                                });
-                                continue;
-                            }
-                        };
-                        while let Some((Event::Text(_), offset)) = p.next() {
-                            code_end = offset.end;
+                        None => {
+                            let code = Range { start: offset.end, end: offset.end };
+                            code_blocks.push(RustCodeBlock {
+                                is_fenced: true,
+                                range: offset,
+                                code,
+                                syntax,
+                            });
+                            continue;
                         }
-                        (syntax, code_start, code_end, offset, true)
+                    };
+                    while let Some((Event::Text(_), offset)) = p.next() {
+                        code_end = offset.end;
                     }
-                    CodeBlockKind::Indented => {
-                        // The ending of the offset goes too far sometime so we reduce it by one in
-                        // these cases.
-                        if offset.end > offset.start
-                            && md.get(offset.end..=offset.end) == Some(&"\n")
-                        {
-                            (
-                                None,
-                                offset.start,
-                                offset.end,
-                                Range { start: offset.start, end: offset.end - 1 },
-                                false,
-                            )
-                        } else {
-                            (None, offset.start, offset.end, offset, false)
-                        }
+                    (syntax, code_start, code_end, offset, true)
+                }
+                CodeBlockKind::Indented => {
+                    // The ending of the offset goes too far sometime so we reduce it by one in
+                    // these cases.
+                    if offset.end > offset.start && md.get(offset.end..=offset.end) == Some(&"\n") {
+                        (
+                            None,
+                            offset.start,
+                            offset.end,
+                            Range { start: offset.start, end: offset.end - 1 },
+                            false,
+                        )
+                    } else {
+                        (None, offset.start, offset.end, offset, false)
                     }
-                };
+                }
+            };
 
-                code_blocks.push(RustCodeBlock {
-                    is_fenced,
-                    range,
-                    code: Range { start: code_start, end: code_end },
-                    syntax,
-                });
-            }
-            _ => (),
+            code_blocks.push(RustCodeBlock {
+                is_fenced,
+                range,
+                code: Range { start: code_start, end: code_end },
+                syntax,
+            });
         }
     }
 

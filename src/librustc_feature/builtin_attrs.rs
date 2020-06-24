@@ -85,17 +85,11 @@ impl AttributeGate {
 
 /// A template that the attribute input must match.
 /// Only top-level shape (`#[attr]` vs `#[attr(...)]` vs `#[attr = ...]`) is considered now.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct AttributeTemplate {
     pub word: bool,
     pub list: Option<&'static str>,
     pub name_value_str: Option<&'static str>,
-}
-
-impl AttributeTemplate {
-    pub fn only_word() -> Self {
-        Self { word: true, list: None, name_value_str: None }
-    }
 }
 
 /// A convenience macro for constructing attribute templates.
@@ -226,7 +220,7 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     // ABI, linking, symbols, and FFI
     ungated!(
         link, Whitelisted,
-        template!(List: r#"name = "...", /*opt*/ kind = "dylib|static|...", /*opt*/ cfg = "...""#),
+        template!(List: r#"name = "...", /*opt*/ kind = "dylib|static|...", /*opt*/ wasm_import_module = "...""#),
     ),
     ungated!(link_name, Whitelisted, template!(NameValueStr: "name")),
     ungated!(no_link, Normal, template!(Word)),
@@ -383,11 +377,6 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
 
     gated!(fundamental, Whitelisted, template!(Word), experimental!(fundamental)),
     gated!(
-        // RFC #1445.
-        structural_match, Whitelisted, template!(Word),
-        "the semantics of constant patterns is not yet settled",
-    ),
-    gated!(
         may_dangle, Normal, template!(Word), dropck_eyepatch,
         "`may_dangle` has unstable semantics and may be removed in the future",
     ),
@@ -529,6 +518,14 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     rustc_attr!(
         rustc_test_marker, Normal, template!(Word),
         "the `#[rustc_test_marker]` attribute is used internally to track tests",
+    ),
+    rustc_attr!(
+        rustc_unsafe_specialization_marker, Normal, template!(Word),
+        "the `#[rustc_unsafe_specialization_marker]` attribute is used to check specializations"
+    ),
+    rustc_attr!(
+        rustc_specialization_trait, Normal, template!(Word),
+        "the `#[rustc_specialization_trait]` attribute is used to check specializations"
     ),
 
     // ==========================================================================

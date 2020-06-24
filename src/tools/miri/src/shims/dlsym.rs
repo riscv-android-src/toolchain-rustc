@@ -1,4 +1,4 @@
-use rustc::mir;
+use rustc_middle::mir;
 
 use crate::*;
 
@@ -15,7 +15,7 @@ impl Dlsym {
         Ok(match name {
             "getentropy" => Some(GetEntropy),
             "__pthread_get_minstack" => None,
-            _ => throw_unsup_format!("Unsupported dlsym: {}", name),
+            _ => throw_unsup_format!("unsupported dlsym: {}", name),
         })
     }
 }
@@ -37,7 +37,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             GetEntropy => {
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let len = this.read_scalar(args[1])?.to_machine_usize(this)?;
-                this.gen_random(ptr, len as usize)?;
+                this.gen_random(ptr, len)?;
                 this.write_null(dest)?;
             }
         }

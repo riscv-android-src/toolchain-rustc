@@ -4,36 +4,28 @@ use crate::link_args;
 use crate::native_libs;
 use crate::rmeta::{self, encoder};
 
-use rustc::hir::exports::Export;
-use rustc::hir::map::definitions::DefPathTable;
-use rustc::hir::map::{DefKey, DefPath, DefPathHash};
-use rustc::middle::cstore::{CrateSource, CrateStore, EncodedMetadata, NativeLibraryKind};
-use rustc::middle::exported_symbols::ExportedSymbol;
-use rustc::middle::stability::DeprecationEntry;
-use rustc::session::{CrateDisambiguator, Session};
-use rustc::ty::query::Providers;
-use rustc::ty::query::QueryConfig;
-use rustc::ty::{self, TyCtxt};
+use rustc_ast::ast;
+use rustc_ast::attr;
+use rustc_ast::expand::allocator::AllocatorKind;
 use rustc_data_structures::svh::Svh;
 use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, CRATE_DEF_INDEX, LOCAL_CRATE};
-use rustc_parse::parser::emit_unclosed_delims;
-use rustc_parse::source_file_to_stream;
+use rustc_hir::definitions::DefPathTable;
+use rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
+use rustc_middle::hir::exports::Export;
+use rustc_middle::middle::cstore::{CrateSource, CrateStore, EncodedMetadata, NativeLibraryKind};
+use rustc_middle::middle::exported_symbols::ExportedSymbol;
+use rustc_middle::middle::stability::DeprecationEntry;
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::query::QueryConfig;
+use rustc_middle::ty::{self, TyCtxt};
+use rustc_session::{CrateDisambiguator, Session};
+use rustc_span::source_map::{self, Span, Spanned};
+use rustc_span::symbol::Symbol;
 
 use rustc_data_structures::sync::Lrc;
 use smallvec::SmallVec;
 use std::any::Any;
-use std::sync::Arc;
-
-use rustc_ast::ast;
-use rustc_ast::attr;
-use rustc_ast::expand::allocator::AllocatorKind;
-use rustc_ast::ptr::P;
-use rustc_ast::tokenstream::DelimSpan;
-use rustc_span::source_map;
-use rustc_span::source_map::Spanned;
-use rustc_span::symbol::Symbol;
-use rustc_span::{FileName, Span};
 
 macro_rules! provide {
     (<$lt:tt> $tcx:ident, $def_id:ident, $other:ident, $cdata:ident,
@@ -44,7 +36,7 @@ macro_rules! provide {
             $(fn $name<$lt: $lt, T: IntoArgs>(
                 $tcx: TyCtxt<$lt>,
                 def_id_arg: T,
-            ) -> <ty::queries::$name<$lt> as QueryConfig<$lt>>::Value {
+            ) -> <ty::queries::$name<$lt> as QueryConfig<TyCtxt<$lt>>>::Value {
                 let _prof_timer =
                     $tcx.prof.generic_activity("metadata_decode_entry");
 
@@ -117,7 +109,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
           |child| result.push(child.res.def_id()), tcx.sess);
         tcx.arena.alloc_slice(&result)
     }
-    associated_item => { cdata.get_associated_item(def_id.index) }
+    associated_item => { cdata.get_associated_item(def_id.index, tcx.sess) }
     impl_trait_ref => { cdata.get_impl_trait(def_id.index, tcx) }
     impl_polarity => { cdata.get_impl_polarity(def_id.index) }
     coerce_unsized_info => {
@@ -146,12 +138,14 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     lookup_deprecation_entry => {
         cdata.get_deprecation(def_id.index).map(DeprecationEntry::external)
     }
-    item_attrs => { cdata.get_item_attrs(def_id.index, tcx.sess) }
-    // FIXME(#38501) We've skipped a `read` on the `HirBody` of
+    item_attrs => { tcx.arena.alloc_from_iter(
+        cdata.get_item_attrs(def_id.index, tcx.sess).into_iter()
+    ) }
+    // FIXME(#38501) We've skipped a `read` on the `hir_owner_nodes` of
     // a `fn` when encoding, so the dep-tracking wouldn't work.
     // This is only used by rustdoc anyway, which shouldn't have
     // incremental recompilation ever enabled.
-    fn_arg_names => { cdata.get_fn_param_names(def_id.index) }
+    fn_arg_names => { cdata.get_fn_param_names(tcx, def_id.index) }
     rendered_const => { cdata.get_rendered_const(def_id.index) }
     impl_parent => { cdata.get_parent_impl(def_id.index) }
     trait_of_item => { cdata.get_trait_of_item(def_id.index) }
@@ -177,7 +171,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
             .iter()
             .filter_map(|&(exported_symbol, export_level)| {
                 if let ExportedSymbol::NonGeneric(def_id) = exported_symbol {
-                    return Some((def_id, export_level))
+                    Some((def_id, export_level))
                 } else {
                     None
                 }
@@ -246,7 +240,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         // to block export of generics from dylibs, but we must fix
         // rust-lang/rust#65890 before we can do that robustly.
 
-        Arc::new(syms)
+        syms
     }
 }
 
@@ -256,14 +250,11 @@ pub fn provide(providers: &mut Providers<'_>) {
     // resolve! Does this work? Unsure! That's what the issue is about
     *providers = Providers {
         is_dllimport_foreign_item: |tcx, id| match tcx.native_library_kind(id) {
-            Some(NativeLibraryKind::NativeUnknown) | Some(NativeLibraryKind::NativeRawDylib) => {
-                true
-            }
+            Some(NativeLibraryKind::NativeUnknown | NativeLibraryKind::NativeRawDylib) => true,
             _ => false,
         },
         is_statically_included_foreign_item: |tcx, id| match tcx.native_library_kind(id) {
-            Some(NativeLibraryKind::NativeStatic)
-            | Some(NativeLibraryKind::NativeStaticNobundle) => true,
+            Some(NativeLibraryKind::NativeStatic | NativeLibraryKind::NativeStaticNobundle) => true,
             _ => false,
         },
         native_library_kind: |tcx, id| {
@@ -419,15 +410,7 @@ impl CStore {
             return LoadedMacro::ProcMacro(data.load_proc_macro(id.index, sess));
         }
 
-        let def = data.get_macro(id.index);
-        let macro_full_name = data.def_path(id.index).to_string_friendly(|_| data.root.name);
-        let source_name = FileName::Macros(macro_full_name);
-
-        let source_file = sess.parse_sess.source_map().new_source_file(source_name, def.body);
-        let local_span = Span::with_root_ctxt(source_file.start_pos, source_file.end_pos);
-        let dspan = DelimSpan::from_single(local_span);
-        let (body, mut errors) = source_file_to_stream(&sess.parse_sess, source_file, None);
-        emit_unclosed_delims(&mut errors, &sess.parse_sess);
+        let span = data.get_span(id.index, sess);
 
         // Mark the attrs as used
         let attrs = data.get_item_attrs(id.index, sess);
@@ -435,36 +418,30 @@ impl CStore {
             attr::mark_used(attr);
         }
 
-        let name = data
+        let ident = data
             .def_key(id.index)
             .disambiguated_data
             .data
             .get_opt_name()
+            .map(ast::Ident::with_dummy_span) // FIXME: cross-crate hygiene
             .expect("no name in load_macro");
-        sess.imported_macro_spans
-            .borrow_mut()
-            .insert(local_span, (name.to_string(), data.get_span(id.index, sess)));
 
         LoadedMacro::MacroDef(
             ast::Item {
-                // FIXME: cross-crate hygiene
-                ident: ast::Ident::with_dummy_span(name),
+                ident,
                 id: ast::DUMMY_NODE_ID,
-                span: local_span,
+                span,
                 attrs: attrs.iter().cloned().collect(),
-                kind: ast::ItemKind::MacroDef(ast::MacroDef {
-                    body: P(ast::MacArgs::Delimited(dspan, ast::MacDelimiter::Brace, body)),
-                    legacy: def.legacy,
-                }),
-                vis: source_map::respan(local_span.shrink_to_lo(), ast::VisibilityKind::Inherited),
+                kind: ast::ItemKind::MacroDef(data.get_macro(id.index, sess)),
+                vis: source_map::respan(span.shrink_to_lo(), ast::VisibilityKind::Inherited),
                 tokens: None,
             },
             data.root.edition,
         )
     }
 
-    pub fn associated_item_cloned_untracked(&self, def: DefId) -> ty::AssocItem {
-        self.get_crate_data(def.krate).get_associated_item(def.index)
+    pub fn associated_item_cloned_untracked(&self, def: DefId, sess: &Session) -> ty::AssocItem {
+        self.get_crate_data(def.krate).get_associated_item(def.index, sess)
     }
 
     pub fn crate_source_untracked(&self, cnum: CrateNum) -> CrateSource {

@@ -1,12 +1,12 @@
 # The compiler testing framework
 
-The Rust project runs a wide variety of different tests, orchestrated
-by the build system (`x.py test`).  The main test harness for testing
-the compiler itself is a tool called compiletest (sources in the
-[`src/tools/compiletest`]). This section gives a brief overview of how
-the testing framework is setup, and then gets into some of the details
-on [how to run tests](./running.html) as well as
-[how to add new tests](./adding.html).
+The Rust project runs a wide variety of different tests, orchestrated by
+the build system (`x.py test`).  The main test harness for testing the
+compiler itself is a tool called compiletest (located in the
+[`src/tools/compiletest`] directory). This section gives a brief
+overview of how the testing framework is setup, and then gets into some
+of the details on [how to run tests](./running.html) as well as [how to
+add new tests](./adding.html).
 
 [`src/tools/compiletest`]: https://github.com/rust-lang/rust/tree/master/src/tools/compiletest
 
@@ -20,9 +20,9 @@ a distinct mode.
 
 [`src/test`]: https://github.com/rust-lang/rust/tree/master/src/test
 
-Here is a brief summary of the test suites as of this writing and what
-they mean. In some cases, the test suites are linked to parts of the manual
-that give more details.
+Here is a brief summary of the test suites and what they mean. In some
+cases, the test suites are linked to parts of the manual that give more
+details.
 
 - [`ui`](./adding.html#ui) – tests that check the exact
   stdout/stderr from compilation and/or running the test
@@ -129,7 +129,7 @@ Rust's [platform tiers]).
 [Azure Pipelines]: https://dev.azure.com/rust-lang/rust/
 [bors]: https://github.com/servo/homu
 [queue]: https://buildbot2.rust-lang.org/homu/queue/rust
-[platform tiers]: https://forge.rust-lang.org/platform-support.html
+[platform tiers]: https://forge.rust-lang.org/release/platform-support.html#rust-platform-support
 
 ## Testing with Docker images
 
@@ -183,7 +183,7 @@ communicate with the server to coordinate running tests (see
 
 ## Crater
 
-[Crater](https://github.com/rust-lang-nursery/crater) is a tool for compiling
+[Crater](https://github.com/rust-lang/crater) is a tool for compiling
 and running tests for _every_ crate on [crates.io](https://crates.io) (and a
 few on GitHub). It is mainly used for checking for extent of breakage when
 implementing potentially breaking changes and ensuring lack of breakage by

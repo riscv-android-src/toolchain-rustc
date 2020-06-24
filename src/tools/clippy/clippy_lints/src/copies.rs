@@ -1,9 +1,9 @@
 use crate::utils::{get_parent_expr, higher, if_sequence, same_tys, snippet, span_lint_and_note, span_lint_and_then};
 use crate::utils::{SpanlessEq, SpanlessHash};
-use rustc::ty::Ty;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::{Arm, Block, Expr, ExprKind, MatchSource, Pat, PatKind};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty::Ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::symbol::Symbol;
 use std::collections::hash_map::Entry;
@@ -279,8 +279,8 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr<'_>) {
                 MATCH_SAME_ARMS,
                 j.body.span,
                 "this `match` has identical arm bodies",
-                |db| {
-                    db.span_note(i.body.span, "same as this");
+                |diag| {
+                    diag.span_note(i.body.span, "same as this");
 
                     // Note: this does not use `span_suggestion` on purpose:
                     // there is no clean way
@@ -296,7 +296,7 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr<'_>) {
                         // if the last arm is _, then i could be integrated into _
                         // note that i.pat cannot be _, because that would mean that we're
                         // hiding all the subsequent arms, and rust won't compile
-                        db.span_note(
+                        diag.span_note(
                             i.body.span,
                             &format!(
                                 "`{}` has the same arm body as the `_` wildcard, consider removing it",
@@ -304,7 +304,7 @@ fn lint_match_arms<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &Expr<'_>) {
                             ),
                         );
                     } else {
-                        db.span_help(i.pat.span, &format!("consider refactoring into `{} | {}`", lhs, rhs));
+                        diag.span_help(i.pat.span, &format!("consider refactoring into `{} | {}`", lhs, rhs));
                     }
                 },
             );

@@ -10,7 +10,7 @@ path = "lib.rs"
 
 [dependencies]
 log = "0.4"
-rustc = { path = "../librustc" }
+rustc_middle = { path = "../librustc_middle" }
 rustc_attr = { path = "../librustc_attr" }
 rustc_data_structures = { path = "../librustc_data_structures" }
 rustc_errors = { path = "../librustc_errors" }
@@ -22,3 +22,4 @@ rustc_session = { path = "../librustc_session" }
 rustc_target = { path = "../librustc_target" }
 rustc_ast = { path = "../librustc_ast" }
 rustc_span = { path = "../librustc_span" }
+rustc_trait_selection = { path = "../librustc_trait_selection" }

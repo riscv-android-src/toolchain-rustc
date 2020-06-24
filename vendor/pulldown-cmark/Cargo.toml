@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "pulldown-cmark"
-version = "0.7.0"
+version = "0.7.1"
 authors = ["Raph Levien <raph.levien@gmail.com>", "Marcus Klaas de Vries <mail@marcusklaas.nl>"]
 build = "build.rs"
 exclude = ["/third_party/**/*", "/tools/**/*", "/specs/**/*", "/fuzzer/**/*", "/azure-pipelines.yml"]
@@ -48,10 +48,13 @@ version = "2.6"
 version = "0.3"
 
 [dev-dependencies.html5ever]
-version = "0.24"
+version = "0.25"
 
 [dev-dependencies.lazy_static]
 version = "1.4"
+
+[dev-dependencies.markup5ever_rcdom]
+version = "0.1"
 
 [dev-dependencies.regex]
 version = "1.3"

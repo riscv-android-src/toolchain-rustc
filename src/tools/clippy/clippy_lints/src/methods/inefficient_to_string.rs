@@ -1,10 +1,10 @@
 use super::INEFFICIENT_TO_STRING;
 use crate::utils::{match_def_path, paths, snippet_with_applicability, span_lint_and_then, walk_ptrs_ty_depth};
 use if_chain::if_chain;
-use rustc::ty::{self, Ty};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_lint::LateContext;
+use rustc_middle::ty::{self, Ty};
 
 /// Checks for the `INEFFICIENT_TO_STRING` lint
 pub fn lint<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &hir::Expr<'_>, arg: &hir::Expr<'_>, arg_ty: Ty<'tcx>) {
@@ -22,14 +22,14 @@ pub fn lint<'tcx>(cx: &LateContext<'_, 'tcx>, expr: &hir::Expr<'_>, arg: &hir::E
                 INEFFICIENT_TO_STRING,
                 expr.span,
                 &format!("calling `to_string` on `{}`", arg_ty),
-                |db| {
-                    db.help(&format!(
+                |diag| {
+                    diag.help(&format!(
                         "`{}` implements `ToString` through a slower blanket impl, but `{}` has a fast specialization of `ToString`",
                         self_ty, deref_self_ty
                     ));
                     let mut applicability = Applicability::MachineApplicable;
                     let arg_snippet = snippet_with_applicability(cx, arg.span, "..", &mut applicability);
-                    db.span_suggestion(
+                    diag.span_suggestion(
                         expr.span,
                         "try dereferencing the receiver",
                         format!("({}{}).to_string()", "*".repeat(deref_count), arg_snippet),

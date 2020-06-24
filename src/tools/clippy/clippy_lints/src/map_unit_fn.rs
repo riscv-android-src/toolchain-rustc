@@ -1,10 +1,9 @@
-use crate::utils::paths;
-use crate::utils::{iter_input_pats, match_type, method_chain_args, snippet, span_lint_and_then};
+use crate::utils::{is_type_diagnostic_item, iter_input_pats, method_chain_args, snippet, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::ty::{self, Ty};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
@@ -186,19 +185,19 @@ fn unit_closure<'a, 'tcx>(
 /// `x.field` => `x_field`
 /// `y` => `_y`
 ///
-/// Anything else will return `_`.
+/// Anything else will return `a`.
 fn let_binding_name(cx: &LateContext<'_, '_>, var_arg: &hir::Expr<'_>) -> String {
     match &var_arg.kind {
         hir::ExprKind::Field(_, _) => snippet(cx, var_arg.span, "_").replace(".", "_"),
         hir::ExprKind::Path(_) => format!("_{}", snippet(cx, var_arg.span, "")),
-        _ => "_".to_string(),
+        _ => "a".to_string(),
     }
 }
 
 #[must_use]
 fn suggestion_msg(function_type: &str, map_type: &str) -> String {
     format!(
-        "called `map(f)` on an `{0}` value where `f` is a unit {1}",
+        "called `map(f)` on an `{0}` value where `f` is a {1} that returns the unit type",
         map_type, function_type
     )
 }
@@ -206,9 +205,9 @@ fn suggestion_msg(function_type: &str, map_type: &str) -> String {
 fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt<'_>, expr: &hir::Expr<'_>, map_args: &[hir::Expr<'_>]) {
     let var_arg = &map_args[0];
 
-    let (map_type, variant, lint) = if match_type(cx, cx.tables.expr_ty(var_arg), &paths::OPTION) {
+    let (map_type, variant, lint) = if is_type_diagnostic_item(cx, cx.tables.expr_ty(var_arg), sym!(option_type)) {
         ("Option", "Some", OPTION_MAP_UNIT_FN)
-    } else if match_type(cx, cx.tables.expr_ty(var_arg), &paths::RESULT) {
+    } else if is_type_diagnostic_item(cx, cx.tables.expr_ty(var_arg), sym!(result_type)) {
         ("Result", "Ok", RESULT_MAP_UNIT_FN)
     } else {
         return;
@@ -225,13 +224,13 @@ fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt<'_>, expr: &hir::
             binding = let_binding_name(cx, var_arg)
         );
 
-        span_lint_and_then(cx, lint, expr.span, &msg, |db| {
-            db.span_suggestion(stmt.span, "try this", suggestion, Applicability::MachineApplicable);
+        span_lint_and_then(cx, lint, expr.span, &msg, |diag| {
+            diag.span_suggestion(stmt.span, "try this", suggestion, Applicability::MachineApplicable);
         });
     } else if let Some((binding, closure_expr)) = unit_closure(cx, fn_arg) {
         let msg = suggestion_msg("closure", map_type);
 
-        span_lint_and_then(cx, lint, expr.span, &msg, |db| {
+        span_lint_and_then(cx, lint, expr.span, &msg, |diag| {
             if let Some(reduced_expr_span) = reduce_unit_expression(cx, closure_expr) {
                 let suggestion = format!(
                     "if let {0}({1}) = {2} {{ {3} }}",
@@ -240,7 +239,7 @@ fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt<'_>, expr: &hir::
                     snippet(cx, var_arg.span, "_"),
                     snippet(cx, reduced_expr_span, "_")
                 );
-                db.span_suggestion(
+                diag.span_suggestion(
                     stmt.span,
                     "try this",
                     suggestion,
@@ -253,7 +252,7 @@ fn lint_map_unit_fn(cx: &LateContext<'_, '_>, stmt: &hir::Stmt<'_>, expr: &hir::
                     snippet(cx, binding.pat.span, "_"),
                     snippet(cx, var_arg.span, "_"),
                 );
-                db.span_suggestion(stmt.span, "try this", suggestion, Applicability::HasPlaceholders);
+                diag.span_suggestion(stmt.span, "try this", suggestion, Applicability::HasPlaceholders);
             }
         });
     }

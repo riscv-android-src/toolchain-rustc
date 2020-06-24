@@ -170,6 +170,7 @@ macro_rules! early_lint_methods {
             fn check_stmt(a: &ast::Stmt);
             fn check_arm(a: &ast::Arm);
             fn check_pat(a: &ast::Pat);
+            fn check_anon_const(a: &ast::AnonConst);
             fn check_pat_post(a: &ast::Pat);
             fn check_expr(a: &ast::Expr);
             fn check_expr_post(a: &ast::Expr);
@@ -198,7 +199,7 @@ macro_rules! early_lint_methods {
             fn check_path(a: &ast::Path, b: ast::NodeId);
             fn check_attribute(a: &ast::Attribute);
             fn check_mac_def(a: &ast::MacroDef, b: ast::NodeId);
-            fn check_mac(a: &ast::Mac);
+            fn check_mac(a: &ast::MacCall);
 
             /// Called when entering a syntax node that can have lint attributes such
             /// as `#[allow(...)]`. Called with *all* the attributes of that node.

@@ -48,9 +48,9 @@
 //! result of `*x'`, effectively, where `x'` is a `Categorization::Upvar` reference
 //! tied to `x`. The type of `x'` will be a borrowed pointer.
 
-use rustc::ty::adjustment;
-use rustc::ty::fold::TypeFoldable;
-use rustc::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::adjustment;
+use rustc_middle::ty::fold::TypeFoldable;
+use rustc_middle::ty::{self, Ty, TyCtxt};
 
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_hir as hir;
@@ -59,6 +59,7 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::PatKind;
 use rustc_infer::infer::InferCtxt;
 use rustc_span::Span;
+use rustc_trait_selection::infer::InferCtxtExt;
 
 #[derive(Clone, Debug)]
 pub enum PlaceBase {
@@ -404,7 +405,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             | hir::ExprKind::Continue(..)
             | hir::ExprKind::Struct(..)
             | hir::ExprKind::Repeat(..)
-            | hir::ExprKind::InlineAsm(..)
+            | hir::ExprKind::LlvmInlineAsm(..)
             | hir::ExprKind::Box(..)
             | hir::ExprKind::Err => Ok(self.cat_rvalue(expr.hir_id, expr.span, expr_ty)),
         }
@@ -420,12 +421,15 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         debug!("cat_res: id={:?} expr={:?} def={:?}", hir_id, expr_ty, res);
 
         match res {
-            Res::Def(DefKind::Ctor(..), _)
-            | Res::Def(DefKind::Const, _)
-            | Res::Def(DefKind::ConstParam, _)
-            | Res::Def(DefKind::AssocConst, _)
-            | Res::Def(DefKind::Fn, _)
-            | Res::Def(DefKind::Method, _)
+            Res::Def(
+                DefKind::Ctor(..)
+                | DefKind::Const
+                | DefKind::ConstParam
+                | DefKind::AssocConst
+                | DefKind::Fn
+                | DefKind::AssocFn,
+                _,
+            )
             | Res::SelfCtor(..) => Ok(self.cat_rvalue(hir_id, span, expr_ty)),
 
             Res::Def(DefKind::Static, _) => Ok(Place {
@@ -469,7 +473,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
 
         let upvar_id = ty::UpvarId {
             var_path: ty::UpvarPath { hir_id: var_id },
-            closure_expr_id: closure_expr_def_id.to_local(),
+            closure_expr_id: closure_expr_def_id.expect_local(),
         };
         let var_ty = self.node_ty(var_id)?;
 

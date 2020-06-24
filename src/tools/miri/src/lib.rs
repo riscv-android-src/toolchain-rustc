@@ -1,16 +1,15 @@
 #![feature(rustc_private)]
 #![feature(option_expect_none, option_unwrap_none)]
 #![feature(map_first_last)]
+#![feature(never_type)]
+#![feature(or_patterns)]
+
 #![warn(rust_2018_idioms)]
 #![allow(clippy::cast_lossless)]
 
-#[macro_use]
-extern crate log;
-// From rustc.
 extern crate rustc_apfloat;
 extern crate rustc_ast;
-#[macro_use]
-extern crate rustc;
+#[macro_use] extern crate rustc_middle;
 extern crate rustc_data_structures;
 extern crate rustc_hir;
 extern crate rustc_mir;
@@ -38,16 +37,18 @@ pub use crate::shims::env::{EnvVars, EvalContextExt as EnvEvalContextExt};
 pub use crate::shims::foreign_items::EvalContextExt as ForeignItemsEvalContextExt;
 pub use crate::shims::fs::{DirHandler, EvalContextExt as FileEvalContextExt, FileHandler};
 pub use crate::shims::intrinsics::EvalContextExt as IntrinsicsEvalContextExt;
+pub use crate::shims::os_str::EvalContextExt as OsStrEvalContextExt;
 pub use crate::shims::panic::{CatchUnwindData, EvalContextExt as PanicEvalContextExt};
+pub use crate::shims::sync::{EvalContextExt as SyncEvalContextExt};
 pub use crate::shims::time::EvalContextExt as TimeEvalContextExt;
 pub use crate::shims::tls::{EvalContextExt as TlsEvalContextExt, TlsData};
 pub use crate::shims::EvalContextExt as ShimsEvalContextExt;
 
 pub use crate::diagnostics::{
-    register_diagnostic, report_diagnostic, EvalContextExt as DiagnosticsEvalContextExt,
-    NonHaltingDiagnostic,
+    register_diagnostic, report_error, EvalContextExt as DiagnosticsEvalContextExt,
+    TerminationInfo, NonHaltingDiagnostic,
 };
-pub use crate::eval::{create_ecx, eval_main, MiriConfig, TerminationInfo};
+pub use crate::eval::{create_ecx, eval_main, MiriConfig};
 pub use crate::helpers::EvalContextExt as HelpersEvalContextExt;
 pub use crate::machine::{
     AllocExtra, Evaluator, FrameData, MemoryExtra, MiriEvalContext, MiriEvalContextExt,

@@ -5,40 +5,43 @@ use std::{fmt, iter, mem};
 
 use either::Either;
 
-use rustc::mir::tcx::PlaceTy;
-use rustc::mir::visit::{NonMutatingUseContext, PlaceContext, Visitor};
-use rustc::mir::AssertKind;
-use rustc::mir::*;
-use rustc::ty::adjustment::PointerCast;
-use rustc::ty::cast::CastTy;
-use rustc::ty::fold::TypeFoldable;
-use rustc::ty::layout::VariantIdx;
-use rustc::ty::subst::{GenericArgKind, Subst, SubstsRef, UserSubsts};
-use rustc::ty::{
-    self, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, RegionVid, ToPolyTraitRef, Ty,
-    TyCtxt, UserType, UserTypeAnnotationIndex,
-};
+use rustc_data_structures::frozen::Frozen;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_infer::infer::canonical::QueryRegionConstraints;
-use rustc_infer::infer::opaque_types::GenerateMemberConstraints;
 use rustc_infer::infer::outlives::env::RegionBoundPairs;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc_infer::infer::{
     InferCtxt, InferOk, LateBoundRegionConversionTime, NLLRegionVariableOrigin,
 };
-use rustc_infer::traits::query::type_op;
-use rustc_infer::traits::query::type_op::custom::CustomTypeOp;
-use rustc_infer::traits::query::{Fallible, NoSolution};
-use rustc_infer::traits::{self, ObligationCause, PredicateObligations};
+use rustc_middle::mir::tcx::PlaceTy;
+use rustc_middle::mir::visit::{NonMutatingUseContext, PlaceContext, Visitor};
+use rustc_middle::mir::AssertKind;
+use rustc_middle::mir::*;
+use rustc_middle::ty::adjustment::PointerCast;
+use rustc_middle::ty::cast::CastTy;
+use rustc_middle::ty::fold::TypeFoldable;
+use rustc_middle::ty::subst::{GenericArgKind, Subst, SubstsRef, UserSubsts};
+use rustc_middle::ty::{
+    self, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, RegionVid, ToPolyTraitRef, Ty,
+    TyCtxt, UserType, UserTypeAnnotationIndex,
+};
 use rustc_span::{Span, DUMMY_SP};
+use rustc_target::abi::VariantIdx;
+use rustc_trait_selection::infer::InferCtxtExt as _;
+use rustc_trait_selection::opaque_types::{GenerateMemberConstraints, InferCtxtExt};
+use rustc_trait_selection::traits::error_reporting::InferCtxtExt as _;
+use rustc_trait_selection::traits::query::type_op;
+use rustc_trait_selection::traits::query::type_op::custom::CustomTypeOp;
+use rustc_trait_selection::traits::query::{Fallible, NoSolution};
+use rustc_trait_selection::traits::{self, ObligationCause, PredicateObligations};
 
-use crate::dataflow::generic::ResultsCursor;
 use crate::dataflow::move_paths::MoveData;
 use crate::dataflow::MaybeInitializedPlaces;
+use crate::dataflow::ResultsCursor;
 use crate::transform::promote_consts::should_suggest_const_in_array_repeat_expressions_attribute;
 
 use crate::borrow_check::{
@@ -207,7 +210,7 @@ fn type_check_internal<'a, 'tcx, R>(
     );
     let errors_reported = {
         let mut verifier = TypeVerifier::new(&mut checker, *body, promoted);
-        verifier.visit_body(body);
+        verifier.visit_body(&body);
         verifier.errors_reported
     };
 
@@ -432,7 +435,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for TypeVerifier<'a, 'b, 'tcx> {
         }
     }
 
-    fn visit_body(&mut self, body: ReadOnlyBodyAndCache<'_, 'tcx>) {
+    fn visit_body(&mut self, body: &Body<'tcx>) {
         self.sanitize_type(&"return type", body.return_ty());
         for local_decl in &body.local_decls {
             self.sanitize_type(local_decl, local_decl.ty);
@@ -560,7 +563,7 @@ impl<'a, 'b, 'tcx> TypeVerifier<'a, 'b, 'tcx> {
 
         swap_constraints(self);
 
-        self.visit_body(promoted_body);
+        self.visit_body(&promoted_body);
 
         if !self.errors_reported {
             // if verifier failed, don't do further checks to avoid ICEs
@@ -687,6 +690,7 @@ impl<'a, 'b, 'tcx> TypeVerifier<'a, 'b, 'tcx> {
                 let fty = self.sanitize_type(place, fty);
                 match self.field_ty(place, base, field, location) {
                     Ok(ty) => {
+                        let ty = self.cx.normalize(ty, location);
                         if let Err(terr) = self.cx.eq_types(
                             ty,
                             fty,
@@ -754,21 +758,21 @@ impl<'a, 'b, 'tcx> TypeVerifier<'a, 'b, 'tcx> {
                 ty::Adt(adt_def, substs) if !adt_def.is_enum() => {
                     (&adt_def.variants[VariantIdx::new(0)], substs)
                 }
-                ty::Closure(def_id, substs) => {
-                    return match substs.as_closure().upvar_tys(def_id, tcx).nth(field.index()) {
+                ty::Closure(_, substs) => {
+                    return match substs.as_closure().upvar_tys().nth(field.index()) {
                         Some(ty) => Ok(ty),
                         None => Err(FieldAccessError::OutOfRange {
-                            field_count: substs.as_closure().upvar_tys(def_id, tcx).count(),
+                            field_count: substs.as_closure().upvar_tys().count(),
                         }),
                     };
                 }
-                ty::Generator(def_id, substs, _) => {
+                ty::Generator(_, substs, _) => {
                     // Only prefix fields (upvars and current state) are
                     // accessible without a variant index.
-                    return match substs.as_generator().prefix_tys(def_id, tcx).nth(field.index()) {
+                    return match substs.as_generator().prefix_tys().nth(field.index()) {
                         Some(ty) => Ok(ty),
                         None => Err(FieldAccessError::OutOfRange {
-                            field_count: substs.as_generator().prefix_tys(def_id, tcx).count(),
+                            field_count: substs.as_generator().prefix_tys().count(),
                         }),
                     };
                 }
@@ -828,7 +832,7 @@ struct BorrowCheckContext<'a, 'tcx> {
 
 crate struct MirTypeckResults<'tcx> {
     crate constraints: MirTypeckRegionConstraints<'tcx>,
-    crate universal_region_relations: Rc<UniversalRegionRelations<'tcx>>,
+    pub(in crate::borrow_check) universal_region_relations: Frozen<UniversalRegionRelations<'tcx>>,
     crate opaque_type_values: FxHashMap<DefId, ty::ResolvedOpaqueTy<'tcx>>,
 }
 
@@ -1050,7 +1054,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
     /// regions which are extracted and stored as having occurred at
     /// `locations`.
     ///
-    /// **Any `rustc::infer` operations that might generate region
+    /// **Any `rustc_infer::infer` operations that might generate region
     /// constraints should occur within this method so that those
     /// constraints can be properly localized!**
     fn fully_perform_op<R>(
@@ -1526,7 +1530,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
             StatementKind::FakeRead(..)
             | StatementKind::StorageLive(..)
             | StatementKind::StorageDead(..)
-            | StatementKind::InlineAsm { .. }
+            | StatementKind::LlvmInlineAsm { .. }
             | StatementKind::Retag { .. }
             | StatementKind::Nop => {}
         }
@@ -1757,6 +1761,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         }
         for (n, (fn_arg, op_arg)) in sig.inputs().iter().zip(args).enumerate() {
             let op_arg_ty = op_arg.ty(body, self.tcx());
+            let op_arg_ty = self.normalize(op_arg_ty, term_location);
             let category = if from_hir_call {
                 ConstraintCategory::CallArgument
             } else {
@@ -1943,22 +1948,22 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                     Err(FieldAccessError::OutOfRange { field_count: variant.fields.len() })
                 }
             }
-            AggregateKind::Closure(def_id, substs) => {
-                match substs.as_closure().upvar_tys(def_id, tcx).nth(field_index) {
+            AggregateKind::Closure(_, substs) => {
+                match substs.as_closure().upvar_tys().nth(field_index) {
                     Some(ty) => Ok(ty),
                     None => Err(FieldAccessError::OutOfRange {
-                        field_count: substs.as_closure().upvar_tys(def_id, tcx).count(),
+                        field_count: substs.as_closure().upvar_tys().count(),
                     }),
                 }
             }
-            AggregateKind::Generator(def_id, substs, _) => {
+            AggregateKind::Generator(_, substs, _) => {
                 // It doesn't make sense to look at a field beyond the prefix;
                 // these require a variant index, and are not initialized in
                 // aggregate rvalues.
-                match substs.as_generator().prefix_tys(def_id, tcx).nth(field_index) {
+                match substs.as_generator().prefix_tys().nth(field_index) {
                     Some(ty) => Ok(ty),
                     None => Err(FieldAccessError::OutOfRange {
-                        field_count: substs.as_generator().prefix_tys(def_id, tcx).count(),
+                        field_count: substs.as_generator().prefix_tys().count(),
                     }),
                 }
             }
@@ -1983,7 +1988,11 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
             }
 
             Rvalue::Repeat(operand, len) => {
-                if *len > 1 {
+                // If the length cannot be evaluated we must assume that the length can be larger
+                // than 1.
+                // If the length is larger than 1, the repeat expression will need to copy the
+                // element, so we require the `Copy` trait.
+                if len.try_eval_usize(tcx, self.param_env).map_or(true, |len| len > 1) {
                     if let Operand::Move(_) = operand {
                         // While this is located in `nll::typeck` this error is not an NLL error, it's
                         // a required check to make sure that repeated elements implement `Copy`.
@@ -2005,7 +2014,9 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                                 &traits::Obligation::new(
                                     ObligationCause::new(
                                         span,
-                                        self.tcx().hir().def_index_to_hir_id(self.mir_def_id.index),
+                                        self.tcx()
+                                            .hir()
+                                            .local_def_id_to_hir_id(self.mir_def_id.expect_local()),
                                         traits::ObligationCauseCode::RepeatVec(should_suggest),
                                     ),
                                     self.param_env,
@@ -2080,9 +2091,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
 
                     CastKind::Pointer(PointerCast::ClosureFnPointer(unsafety)) => {
                         let sig = match op.ty(*body, tcx).kind {
-                            ty::Closure(def_id, substs) => {
-                                substs.as_closure().sig_ty(def_id, tcx).fn_sig(tcx)
-                            }
+                            ty::Closure(_, substs) => substs.as_closure().sig(),
                             _ => bug!(),
                         };
                         let ty_fn_ptr_from = tcx.coerce_closure_fn_ty(sig, *unsafety);
@@ -2261,22 +2270,18 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                         let cast_ty_to = CastTy::from_ty(ty);
                         match (cast_ty_from, cast_ty_to) {
                             (None, _)
-                            | (_, None)
-                            | (_, Some(CastTy::FnPtr))
+                            | (_, None | Some(CastTy::FnPtr))
                             | (Some(CastTy::Float), Some(CastTy::Ptr(_)))
-                            | (Some(CastTy::Ptr(_)), Some(CastTy::Float))
-                            | (Some(CastTy::FnPtr), Some(CastTy::Float)) => {
+                            | (Some(CastTy::Ptr(_) | CastTy::FnPtr), Some(CastTy::Float)) => {
                                 span_mirbug!(self, rvalue, "Invalid cast {:?} -> {:?}", ty_from, ty,)
                             }
-                            (Some(CastTy::Int(_)), Some(CastTy::Int(_)))
-                            | (Some(CastTy::Float), Some(CastTy::Int(_)))
-                            | (Some(CastTy::Int(_)), Some(CastTy::Float))
-                            | (Some(CastTy::Float), Some(CastTy::Float))
-                            | (Some(CastTy::Ptr(_)), Some(CastTy::Int(_)))
-                            | (Some(CastTy::FnPtr), Some(CastTy::Int(_)))
-                            | (Some(CastTy::Int(_)), Some(CastTy::Ptr(_)))
-                            | (Some(CastTy::Ptr(_)), Some(CastTy::Ptr(_)))
-                            | (Some(CastTy::FnPtr), Some(CastTy::Ptr(_))) => (),
+                            (
+                                Some(CastTy::Int(_)),
+                                Some(CastTy::Int(_) | CastTy::Float | CastTy::Ptr(_)),
+                            )
+                            | (Some(CastTy::Float), Some(CastTy::Int(_) | CastTy::Float))
+                            | (Some(CastTy::Ptr(_)), Some(CastTy::Int(_) | CastTy::Ptr(_)))
+                            | (Some(CastTy::FnPtr), Some(CastTy::Int(_) | CastTy::Ptr(_))) => (),
                         }
                     }
                 }
@@ -2286,12 +2291,11 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 self.add_reborrow_constraint(&body, location, region, borrowed_place);
             }
 
-            Rvalue::BinaryOp(BinOp::Eq, left, right)
-            | Rvalue::BinaryOp(BinOp::Ne, left, right)
-            | Rvalue::BinaryOp(BinOp::Lt, left, right)
-            | Rvalue::BinaryOp(BinOp::Le, left, right)
-            | Rvalue::BinaryOp(BinOp::Gt, left, right)
-            | Rvalue::BinaryOp(BinOp::Ge, left, right) => {
+            Rvalue::BinaryOp(
+                BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+                left,
+                right,
+            ) => {
                 let ty_left = left.ty(*body, tcx);
                 if let ty::RawPtr(_) | ty::FnPtr(_) = ty_left.kind {
                     let ty_right = right.ty(*body, tcx);
@@ -2395,6 +2399,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 }
             };
             let operand_ty = operand.ty(body, tcx);
+            let operand_ty = self.normalize(operand_ty, location);
 
             if let Err(terr) = self.sub_types(
                 operand_ty,

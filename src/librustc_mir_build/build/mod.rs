@@ -2,22 +2,22 @@ use crate::build;
 use crate::build::scope::DropKind;
 use crate::hair::cx::Cx;
 use crate::hair::{BindingMode, LintLevel, PatKind};
-use rustc::middle::lang_items;
-use rustc::middle::region;
-use rustc::mir::*;
-use rustc::ty::subst::Subst;
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_attr::{self as attr, UnwindAttr};
+use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
+use rustc_hir::lang_items;
 use rustc_hir::{GeneratorKind, HirIdMap, Node};
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_infer::infer::TyCtxtInferExt;
+use rustc_middle::middle::region;
+use rustc_middle::mir::*;
+use rustc_middle::ty::subst::Subst;
+use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable};
 use rustc_span::symbol::kw;
 use rustc_span::Span;
 use rustc_target::spec::abi::Abi;
 use rustc_target::spec::PanicStrategy;
-use std::u32;
 
 use super::lints;
 
@@ -39,16 +39,17 @@ fn mir_build(tcx: TyCtxt<'_>, def_id: DefId) -> BodyAndCache<'_> {
             ..
         })
         | Node::ImplItem(hir::ImplItem {
-            kind: hir::ImplItemKind::Method(hir::FnSig { decl, .. }, body_id),
+            kind: hir::ImplItemKind::Fn(hir::FnSig { decl, .. }, body_id),
             ..
         })
         | Node::TraitItem(hir::TraitItem {
-            kind:
-                hir::TraitItemKind::Method(hir::FnSig { decl, .. }, hir::TraitMethod::Provided(body_id)),
+            kind: hir::TraitItemKind::Fn(hir::FnSig { decl, .. }, hir::TraitFn::Provided(body_id)),
             ..
         }) => (*body_id, decl.output.span()),
-        Node::Item(hir::Item { kind: hir::ItemKind::Static(ty, _, body_id), .. })
-        | Node::Item(hir::Item { kind: hir::ItemKind::Const(ty, body_id), .. })
+        Node::Item(hir::Item {
+            kind: hir::ItemKind::Static(ty, _, body_id) | hir::ItemKind::Const(ty, body_id),
+            ..
+        })
         | Node::ImplItem(hir::ImplItem { kind: hir::ImplItemKind::Const(ty, body_id), .. })
         | Node::TraitItem(hir::TraitItem {
             kind: hir::TraitItemKind::Const(ty, Some(body_id)),
@@ -61,7 +62,7 @@ fn mir_build(tcx: TyCtxt<'_>, def_id: DefId) -> BodyAndCache<'_> {
 
     tcx.infer_ctxt().enter(|infcx| {
         let cx = Cx::new(&infcx, id);
-        let body = if cx.tables().tainted_by_errors {
+        let body = if let Some(ErrorReported) = cx.tables().tainted_by_errors {
             build::construct_error(cx, body_id)
         } else if cx.body_owner_kind.is_fn_or_closure() {
             // fetch the fully liberated fn signature (that is, all bound
@@ -128,12 +129,8 @@ fn mir_build(tcx: TyCtxt<'_>, def_id: DefId) -> BodyAndCache<'_> {
                 let ty = if fn_sig.c_variadic && index == fn_sig.inputs().len() {
                     let va_list_did =
                         tcx.require_lang_item(lang_items::VaListTypeLangItem, Some(arg.span));
-                    let region = tcx.mk_region(ty::ReScope(region::Scope {
-                        id: body.value.hir_id.local_id,
-                        data: region::ScopeData::CallSite,
-                    }));
 
-                    tcx.type_of(va_list_did).subst(tcx, &[region.into()])
+                    tcx.type_of(va_list_did).subst(tcx, &[tcx.lifetimes.re_erased.into()])
                 } else {
                     fn_sig.inputs()[index]
                 };
@@ -144,10 +141,9 @@ fn mir_build(tcx: TyCtxt<'_>, def_id: DefId) -> BodyAndCache<'_> {
             let arguments = implicit_argument.into_iter().chain(explicit_arguments);
 
             let (yield_ty, return_ty) = if body.generator_kind.is_some() {
-                let gen_sig = match ty.kind {
-                    ty::Generator(gen_def_id, gen_substs, ..) => {
-                        gen_substs.as_generator().sig(gen_def_id, tcx)
-                    }
+                let gen_ty = tcx.body_tables(body_id).node_type(id);
+                let gen_sig = match gen_ty.kind {
+                    ty::Generator(_, gen_substs, ..) => gen_substs.as_generator().sig(),
                     _ => span_bug!(tcx.hir().span(id), "generator w/o generator type: {:?}", ty),
                 };
                 (Some(gen_sig.yield_ty), gen_sig.return_ty)
@@ -189,6 +185,20 @@ fn mir_build(tcx: TyCtxt<'_>, def_id: DefId) -> BodyAndCache<'_> {
 
         let mut body = BodyAndCache::new(body);
         body.ensure_predecessors();
+
+        // The borrow checker will replace all the regions here with its own
+        // inference variables. There's no point having non-erased regions here.
+        // The exception is `body.user_type_annotations`, which is used unmodified
+        // by borrow checking.
+        debug_assert!(
+            !(body.local_decls.has_free_regions()
+                || body.basic_blocks().has_free_regions()
+                || body.var_debug_info.has_free_regions()
+                || body.yield_ty.has_free_regions()),
+            "Unexpected free regions in MIR: {:?}",
+            body,
+        );
+
         body
     })
 }
@@ -209,7 +219,7 @@ fn liberated_closure_env_ty(
     };
 
     let closure_env_ty = tcx.closure_env_ty(closure_def_id, closure_substs).unwrap();
-    tcx.liberate_late_bound_regions(closure_def_id, &closure_env_ty)
+    tcx.erase_late_bound_regions(&closure_env_ty)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -368,7 +378,7 @@ impl BlockContext {
             }
         }
 
-        return None;
+        None
     }
 
     /// Looks at the topmost frame on the BlockContext and reports
@@ -386,8 +396,10 @@ impl BlockContext {
             Some(BlockFrame::SubExpr) => false,
 
             // otherwise: use accumulated is_ignored state.
-            Some(BlockFrame::TailExpr { tail_result_is_ignored: ignored })
-            | Some(BlockFrame::Statement { ignores_expr_result: ignored }) => *ignored,
+            Some(
+                BlockFrame::TailExpr { tail_result_is_ignored: ignored }
+                | BlockFrame::Statement { ignores_expr_result: ignored },
+            ) => *ignored,
         }
     }
 }
@@ -628,11 +640,12 @@ where
     );
     assert_eq!(block, builder.return_block());
 
-    let mut spread_arg = None;
-    if abi == Abi::RustCall {
+    let spread_arg = if abi == Abi::RustCall {
         // RustCall pseudo-ABI untuples the last argument.
-        spread_arg = Some(Local::new(arguments.len()));
-    }
+        Some(Local::new(arguments.len()))
+    } else {
+        None
+    };
     debug!("fn_id {:?} has attrs {:?}", fn_def_id, tcx.get_attrs(fn_def_id));
 
     let mut body = builder.finish();
@@ -654,7 +667,7 @@ fn construct_const<'a, 'tcx>(
     let mut block = START_BLOCK;
     let ast_expr = &tcx.hir().body(body_id).value;
     let expr = builder.hir.mirror(ast_expr);
-    unpack!(block = builder.into_expr(&Place::return_place(), block, expr));
+    unpack!(block = builder.into_expr(Place::return_place(), block, expr));
 
     let source_info = builder.source_info(span);
     builder.cfg.terminate(block, source_info, TerminatorKind::Return);
@@ -839,12 +852,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 closure_env_projs.push(ProjectionElem::Deref);
                 closure_ty = ty;
             }
-            let (def_id, upvar_substs) = match closure_ty.kind {
-                ty::Closure(def_id, substs) => (def_id, ty::UpvarSubsts::Closure(substs)),
-                ty::Generator(def_id, substs, _) => (def_id, ty::UpvarSubsts::Generator(substs)),
+            let upvar_substs = match closure_ty.kind {
+                ty::Closure(_, substs) => ty::UpvarSubsts::Closure(substs),
+                ty::Generator(_, substs, _) => ty::UpvarSubsts::Generator(substs),
                 _ => span_bug!(self.fn_span, "upvars with non-closure env ty {:?}", closure_ty),
             };
-            let upvar_tys = upvar_substs.upvar_tys(def_id, tcx);
+            let upvar_tys = upvar_substs.upvar_tys();
             let upvars_with_tys = upvars.iter().zip(upvar_tys);
             self.upvar_mutbls = upvars_with_tys
                 .enumerate()
@@ -960,7 +973,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         }
 
         let body = self.hir.mirror(ast_body);
-        self.into(&Place::return_place(), block, body)
+        self.into(Place::return_place(), block, body)
     }
 
     fn set_correct_source_scope_for_arg(

@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# This script publishes the new "current" toolstate in the toolstate repo (not to be
-# confused with publishing the test results, which happens in
-# `src/ci/docker/x86_64-gnu-tools/checktools.sh`).
-# It is set as callback for `src/ci/docker/x86_64-gnu-tools/repo.sh` by the CI scripts
-# when a new commit lands on `master` (i.e., after it passed all checks on `auto`).
+# This script computes the new "current" toolstate for the toolstate repo (not to be
+# confused with publishing the test results, which happens in `src/bootstrap/toolstate.rs`).
+# It gets called from `src/ci/publish_toolstate.sh` when a new commit lands on `master`
+# (i.e., after it passed all checks on `auto`).
 
 from __future__ import print_function
 
@@ -58,6 +57,13 @@ REPOS = {
     'rustc-dev-guide': 'https://github.com/rust-lang/rustc-dev-guide',
 }
 
+def load_json_from_response(resp):
+    content = resp.read()
+    if isinstance(content, bytes):
+        content = content.decode('utf-8')
+    else:
+        print("Refusing to decode " + str(type(content)) + " to str")
+    return json.loads(content)
 
 def validate_maintainers(repo, github_token):
     '''Ensure all maintainers are assignable on a GitHub repo'''
@@ -72,7 +78,7 @@ def validate_maintainers(repo, github_token):
             # Properly load nested teams.
             'Accept': 'application/vnd.github.hellcat-preview+json',
         }))
-        assignable.extend(user['login'] for user in json.load(response))
+        assignable.extend(user['login'] for user in load_json_from_response(response))
         # Load the next page if available
         url = None
         link_header = response.headers.get('Link')
@@ -154,7 +160,6 @@ def issue(
         )),
         'title': '`{}` no longer builds after {}'.format(tool, relevant_pr_number),
         'assignees': list(assignees),
-        'labels': ['T-compiler', 'I-nominated'],
     })
     print("Creating issue:\n{}".format(request))
     response = urllib2.urlopen(urllib2.Request(
@@ -178,7 +183,7 @@ def update_latest(
 ):
     '''Updates `_data/latest.json` to match build result of the given commit.
     '''
-    with open('_data/latest.json', 'rb+') as f:
+    with open('_data/latest.json', 'r+') as f:
         latest = json.load(f, object_pairs_hook=collections.OrderedDict)
 
         current_status = {

@@ -1,14 +1,14 @@
 use super::ty::{AllowPlus, RecoverQPath};
 use super::{Parser, TokenType};
 use crate::maybe_whole;
+use rustc_ast::ast::{self, AngleBracketedArg, AngleBracketedArgs, GenericArg, ParenthesizedArgs};
+use rustc_ast::ast::{AnonConst, AssocTyConstraint, AssocTyConstraintKind, BlockCheckMode};
+use rustc_ast::ast::{Ident, Path, PathSegment, QSelf};
+use rustc_ast::ptr::P;
+use rustc_ast::token::{self, Token};
 use rustc_errors::{pluralize, Applicability, PResult};
 use rustc_span::source_map::{BytePos, Span};
 use rustc_span::symbol::{kw, sym};
-use syntax::ast::{self, AngleBracketedArgs, Ident, ParenthesizedArgs, Path, PathSegment, QSelf};
-use syntax::ast::{
-    AnonConst, AssocTyConstraint, AssocTyConstraintKind, BlockCheckMode, GenericArg,
-};
-use syntax::token::{self, Token};
 
 use log::debug;
 use std::mem;
@@ -48,7 +48,7 @@ impl<'a> Parser<'a> {
     /// `<T as U>::F::a<S>` (without disambiguator)
     /// `<T as U>::F::a::<S>` (with disambiguator)
     pub(super) fn parse_qpath(&mut self, style: PathStyle) -> PResult<'a, (QSelf, Path)> {
-        let lo = self.prev_span;
+        let lo = self.prev_token.span;
         let ty = self.parse_ty()?;
 
         // `path` will contain the prefix of the path up to the `>`,
@@ -59,7 +59,7 @@ impl<'a> Parser<'a> {
         if self.eat_keyword(kw::As) {
             let path_lo = self.token.span;
             path = self.parse_path(PathStyle::Type)?;
-            path_span = path_lo.to(self.prev_span);
+            path_span = path_lo.to(self.prev_token.span);
         } else {
             path_span = self.token.span.to(self.token.span);
             path = ast::Path { segments: Vec::new(), span: path_span };
@@ -79,7 +79,7 @@ impl<'a> Parser<'a> {
         let qself = QSelf { ty, path_span, position: path.segments.len() };
         self.parse_path_segments(&mut path.segments, style)?;
 
-        Ok((qself, Path { segments: path.segments, span: lo.to(self.prev_span) }))
+        Ok((qself, Path { segments: path.segments, span: lo.to(self.prev_token.span) }))
     }
 
     /// Recover from an invalid single colon, when the user likely meant a qualified path.
@@ -101,11 +101,11 @@ impl<'a> Parser<'a> {
 
         self.diagnostic()
             .struct_span_err(
-                self.prev_span,
+                self.prev_token.span,
                 "found single colon before projection in qualified path",
             )
             .span_suggestion(
-                self.prev_span,
+                self.prev_token.span,
                 "use double colon",
                 "::".to_string(),
                 Applicability::MachineApplicable,
@@ -134,7 +134,7 @@ impl<'a> Parser<'a> {
             path
         });
 
-        let lo = self.meta_var_span.unwrap_or(self.token.span);
+        let lo = self.token.span;
         let mut segments = Vec::new();
         let mod_sep_ctxt = self.token.span.ctxt();
         if self.eat(&token::ModSep) {
@@ -142,7 +142,7 @@ impl<'a> Parser<'a> {
         }
         self.parse_path_segments(&mut segments, style)?;
 
-        Ok(Path { segments, span: lo.to(self.prev_span) })
+        Ok(Path { segments, span: lo.to(self.prev_token.span) })
     }
 
     pub(super) fn parse_path_segments(
@@ -216,15 +216,15 @@ impl<'a> Parser<'a> {
                 let lo = self.token.span;
                 let args = if self.eat_lt() {
                     // `<'a, T, A = U>`
-                    let (args, constraints) =
-                        self.parse_generic_args_with_leading_angle_bracket_recovery(style, lo)?;
+                    let args =
+                        self.parse_angle_args_with_leading_angle_bracket_recovery(style, lo)?;
                     self.expect_gt()?;
-                    let span = lo.to(self.prev_span);
-                    AngleBracketedArgs { args, constraints, span }.into()
+                    let span = lo.to(self.prev_token.span);
+                    AngleBracketedArgs { args, span }.into()
                 } else {
                     // `(T, U) -> R`
                     let (inputs, _) = self.parse_paren_comma_seq(|p| p.parse_ty())?;
-                    let span = ident.span.to(self.prev_span);
+                    let span = ident.span.to(self.prev_token.span);
                     let output = self.parse_ret_ty(AllowPlus::No, RecoverQPath::No)?;
                     ParenthesizedArgs { inputs, output, span }.into()
                 };
@@ -238,11 +238,10 @@ impl<'a> Parser<'a> {
     }
 
     pub(super) fn parse_path_segment_ident(&mut self) -> PResult<'a, Ident> {
-        match self.token.kind {
-            token::Ident(name, _) if name.is_path_segment_keyword() => {
-                let span = self.token.span;
+        match self.token.ident() {
+            Some((ident, false)) if ident.is_path_segment_keyword() => {
                 self.bump();
-                Ok(Ident::new(name, span))
+                Ok(ident)
             }
             _ => self.parse_ident(),
         }
@@ -250,18 +249,18 @@ impl<'a> Parser<'a> {
 
     /// Parses generic args (within a path segment) with recovery for extra leading angle brackets.
     /// For the purposes of understanding the parsing logic of generic arguments, this function
-    /// can be thought of being the same as just calling `self.parse_generic_args()` if the source
+    /// can be thought of being the same as just calling `self.parse_angle_args()` if the source
     /// had the correct amount of leading angle brackets.
     ///
     /// ```ignore (diagnostics)
     /// bar::<<<<T as Foo>::Output>();
     ///      ^^ help: remove extra angle brackets
     /// ```
-    fn parse_generic_args_with_leading_angle_bracket_recovery(
+    fn parse_angle_args_with_leading_angle_bracket_recovery(
         &mut self,
         style: PathStyle,
         lo: Span,
-    ) -> PResult<'a, (Vec<GenericArg>, Vec<AssocTyConstraint>)> {
+    ) -> PResult<'a, Vec<AngleBracketedArg>> {
         // We need to detect whether there are extra leading left angle brackets and produce an
         // appropriate error and suggestion. This cannot be implemented by looking ahead at
         // upcoming tokens for a matching `>` character - if there are unmatched `<` tokens
@@ -336,8 +335,8 @@ impl<'a> Parser<'a> {
         let snapshot = if is_first_invocation { Some(self.clone()) } else { None };
 
         debug!("parse_generic_args_with_leading_angle_bracket_recovery: (snapshotting)");
-        match self.parse_generic_args() {
-            Ok(value) => Ok(value),
+        match self.parse_angle_args() {
+            Ok(args) => Ok(args),
             Err(ref mut e) if is_first_invocation && self.unmatched_angle_bracket_count > 0 => {
                 // Cancel error from being unable to find `>`. We know the error
                 // must have been this due to a non-zero unmatched angle bracket
@@ -380,110 +379,136 @@ impl<'a> Parser<'a> {
                 .emit();
 
                 // Try again without unmatched angle bracket characters.
-                self.parse_generic_args()
+                self.parse_angle_args()
             }
             Err(e) => Err(e),
         }
     }
 
-    /// Parses (possibly empty) list of lifetime and type arguments and associated type bindings,
+    /// Parses (possibly empty) list of generic arguments / associated item constraints,
     /// possibly including trailing comma.
-    fn parse_generic_args(&mut self) -> PResult<'a, (Vec<GenericArg>, Vec<AssocTyConstraint>)> {
+    fn parse_angle_args(&mut self) -> PResult<'a, Vec<AngleBracketedArg>> {
         let mut args = Vec::new();
-        let mut constraints = Vec::new();
-        let mut misplaced_assoc_ty_constraints: Vec<Span> = Vec::new();
-        let mut assoc_ty_constraints: Vec<Span> = Vec::new();
-
-        let args_lo = self.token.span;
-
-        loop {
-            if self.check_lifetime() && self.look_ahead(1, |t| !t.is_like_plus()) {
-                // Parse lifetime argument.
-                args.push(GenericArg::Lifetime(self.expect_lifetime()));
-                misplaced_assoc_ty_constraints.append(&mut assoc_ty_constraints);
-            } else if self.check_ident()
-                && self.look_ahead(1, |t| t == &token::Eq || t == &token::Colon)
-            {
-                // Parse associated type constraint.
-                let lo = self.token.span;
-                let ident = self.parse_ident()?;
-                let kind = if self.eat(&token::Eq) {
-                    AssocTyConstraintKind::Equality { ty: self.parse_ty()? }
-                } else if self.eat(&token::Colon) {
-                    AssocTyConstraintKind::Bound {
-                        bounds: self.parse_generic_bounds(Some(self.prev_span))?,
-                    }
-                } else {
-                    unreachable!();
-                };
-
-                let span = lo.to(self.prev_span);
-
-                // Gate associated type bounds, e.g., `Iterator<Item: Ord>`.
-                if let AssocTyConstraintKind::Bound { .. } = kind {
-                    self.sess.gated_spans.gate(sym::associated_type_bounds, span);
-                }
-
-                constraints.push(AssocTyConstraint { id: ast::DUMMY_NODE_ID, ident, kind, span });
-                assoc_ty_constraints.push(span);
-            } else if self.check_const_arg() {
-                // Parse const argument.
-                let expr = if let token::OpenDelim(token::Brace) = self.token.kind {
-                    self.parse_block_expr(
-                        None,
-                        self.token.span,
-                        BlockCheckMode::Default,
-                        ast::AttrVec::new(),
-                    )?
-                } else if self.token.is_ident() {
-                    // FIXME(const_generics): to distinguish between idents for types and consts,
-                    // we should introduce a GenericArg::Ident in the AST and distinguish when
-                    // lowering to the HIR. For now, idents for const args are not permitted.
-                    if self.token.is_bool_lit() {
-                        self.parse_literal_maybe_minus()?
-                    } else {
-                        let span = self.token.span;
-                        let msg = "identifiers may currently not be used for const generics";
-                        self.struct_span_err(span, msg).emit();
-                        let block = self.mk_block_err(span);
-                        self.mk_expr(span, ast::ExprKind::Block(block, None), ast::AttrVec::new())
-                    }
-                } else {
-                    self.parse_literal_maybe_minus()?
-                };
-                let value = AnonConst { id: ast::DUMMY_NODE_ID, value: expr };
-                args.push(GenericArg::Const(value));
-                misplaced_assoc_ty_constraints.append(&mut assoc_ty_constraints);
-            } else if self.check_type() {
-                // Parse type argument.
-                args.push(GenericArg::Type(self.parse_ty()?));
-                misplaced_assoc_ty_constraints.append(&mut assoc_ty_constraints);
-            } else {
-                break;
-            }
-
+        while let Some(arg) = self.parse_angle_arg()? {
+            args.push(arg);
             if !self.eat(&token::Comma) {
                 break;
             }
         }
+        Ok(args)
+    }
 
-        // FIXME: we would like to report this in ast_validation instead, but we currently do not
-        // preserve ordering of generic parameters with respect to associated type binding, so we
-        // lose that information after parsing.
-        if misplaced_assoc_ty_constraints.len() > 0 {
-            let mut err = self.struct_span_err(
-                args_lo.to(self.prev_span),
-                "associated type bindings must be declared after generic parameters",
-            );
-            for span in misplaced_assoc_ty_constraints {
-                err.span_label(
-                    span,
-                    "this associated type binding should be moved after the generic parameters",
-                );
+    /// Parses a single argument in the angle arguments `<...>` of a path segment.
+    fn parse_angle_arg(&mut self) -> PResult<'a, Option<AngleBracketedArg>> {
+        if self.check_ident() && self.look_ahead(1, |t| matches!(t.kind, token::Eq | token::Colon))
+        {
+            // Parse associated type constraint.
+            let lo = self.token.span;
+            let ident = self.parse_ident()?;
+            let kind = if self.eat(&token::Eq) {
+                let ty = self.parse_assoc_equality_term(ident, self.prev_token.span)?;
+                AssocTyConstraintKind::Equality { ty }
+            } else if self.eat(&token::Colon) {
+                let bounds = self.parse_generic_bounds(Some(self.prev_token.span))?;
+                AssocTyConstraintKind::Bound { bounds }
+            } else {
+                unreachable!();
+            };
+
+            let span = lo.to(self.prev_token.span);
+
+            // Gate associated type bounds, e.g., `Iterator<Item: Ord>`.
+            if let AssocTyConstraintKind::Bound { .. } = kind {
+                self.sess.gated_spans.gate(sym::associated_type_bounds, span);
             }
-            err.emit();
-        }
 
-        Ok((args, constraints))
+            let constraint = AssocTyConstraint { id: ast::DUMMY_NODE_ID, ident, kind, span };
+            Ok(Some(AngleBracketedArg::Constraint(constraint)))
+        } else {
+            Ok(self.parse_generic_arg()?.map(AngleBracketedArg::Arg))
+        }
+    }
+
+    /// Parse the term to the right of an associated item equality constraint.
+    /// That is, parse `<term>` in `Item = <term>`.
+    /// Right now, this only admits types in `<term>`.
+    fn parse_assoc_equality_term(&mut self, ident: Ident, eq: Span) -> PResult<'a, P<ast::Ty>> {
+        let arg = self.parse_generic_arg()?;
+        let span = ident.span.to(self.prev_token.span);
+        match arg {
+            Some(GenericArg::Type(ty)) => return Ok(ty),
+            Some(GenericArg::Const(expr)) => {
+                self.struct_span_err(span, "cannot constrain an associated constant to a value")
+                    .span_label(ident.span, "this associated constant...")
+                    .span_label(expr.value.span, "...cannot be constrained to this value")
+                    .emit();
+            }
+            Some(GenericArg::Lifetime(lt)) => {
+                self.struct_span_err(span, "associated lifetimes are not supported")
+                    .span_label(lt.ident.span, "the lifetime is given here")
+                    .help("if you meant to specify a trait object, write `dyn Trait + 'lifetime`")
+                    .emit();
+            }
+            None => {
+                let after_eq = eq.shrink_to_hi();
+                let before_next = self.token.span.shrink_to_lo();
+                self.struct_span_err(after_eq.to(before_next), "missing type to the right of `=`")
+                    .span_suggestion(
+                        self.sess.source_map().next_point(eq).to(before_next),
+                        "to constrain the associated type, add a type after `=`",
+                        " TheType".to_string(),
+                        Applicability::HasPlaceholders,
+                    )
+                    .span_suggestion(
+                        eq.to(before_next),
+                        &format!("remove the `=` if `{}` is a type", ident),
+                        String::new(),
+                        Applicability::MaybeIncorrect,
+                    )
+                    .emit();
+            }
+        }
+        Ok(self.mk_ty(span, ast::TyKind::Err))
+    }
+
+    /// Parse a generic argument in a path segment.
+    /// This does not include constraints, e.g., `Item = u8`, which is handled in `parse_angle_arg`.
+    fn parse_generic_arg(&mut self) -> PResult<'a, Option<GenericArg>> {
+        let arg = if self.check_lifetime() && self.look_ahead(1, |t| !t.is_like_plus()) {
+            // Parse lifetime argument.
+            GenericArg::Lifetime(self.expect_lifetime())
+        } else if self.check_const_arg() {
+            // Parse const argument.
+            let expr = if let token::OpenDelim(token::Brace) = self.token.kind {
+                self.parse_block_expr(
+                    None,
+                    self.token.span,
+                    BlockCheckMode::Default,
+                    ast::AttrVec::new(),
+                )?
+            } else if self.token.is_ident() {
+                // FIXME(const_generics): to distinguish between idents for types and consts,
+                // we should introduce a GenericArg::Ident in the AST and distinguish when
+                // lowering to the HIR. For now, idents for const args are not permitted.
+                if self.token.is_bool_lit() {
+                    self.parse_literal_maybe_minus()?
+                } else {
+                    let span = self.token.span;
+                    let msg = "identifiers may currently not be used for const generics";
+                    self.struct_span_err(span, msg).emit();
+                    let block = self.mk_block_err(span);
+                    self.mk_expr(span, ast::ExprKind::Block(block, None), ast::AttrVec::new())
+                }
+            } else {
+                self.parse_literal_maybe_minus()?
+            };
+            GenericArg::Const(AnonConst { id: ast::DUMMY_NODE_ID, value: expr })
+        } else if self.check_type() {
+            // Parse type argument.
+            GenericArg::Type(self.parse_ty()?)
+        } else {
+            return Ok(None);
+        };
+        Ok(Some(arg))
     }
 }

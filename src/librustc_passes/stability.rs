@@ -1,14 +1,6 @@
 //! A pass that annotates every item and method with its stability level,
 //! propagating default levels lexically from parent to children ast nodes.
 
-use rustc::hir::map::Map;
-use rustc::lint;
-use rustc::middle::privacy::AccessLevels;
-use rustc::middle::stability::{DeprecationEntry, Index};
-use rustc::session::parse::feature_err;
-use rustc::session::Session;
-use rustc::ty::query::Providers;
-use rustc::ty::TyCtxt;
 use rustc_ast::ast::Attribute;
 use rustc_attr::{self as attr, ConstStability, Stability};
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
@@ -18,9 +10,17 @@ use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::{Generics, HirId, Item, StructField, Variant};
-use rustc_infer::traits::misc::can_type_implement_copy;
+use rustc_middle::hir::map::Map;
+use rustc_middle::middle::privacy::AccessLevels;
+use rustc_middle::middle::stability::{DeprecationEntry, Index};
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::TyCtxt;
+use rustc_session::lint;
+use rustc_session::parse::feature_err;
+use rustc_session::Session;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::Span;
+use rustc_trait_selection::traits::misc::can_type_implement_copy;
 
 use std::cmp::Ordering;
 use std::mem::replace;
@@ -259,8 +259,8 @@ impl<'a, 'tcx> Visitor<'tcx> for Annotator<'a, 'tcx> {
     /// deep-walking.
     type Map = Map<'tcx>;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
-        NestedVisitorMap::All(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::All(self.tcx.hir())
     }
 
     fn visit_item(&mut self, i: &'tcx Item<'tcx>) {
@@ -350,8 +350,8 @@ impl<'a, 'tcx> MissingStabilityAnnotations<'a, 'tcx> {
 impl<'a, 'tcx> Visitor<'tcx> for MissingStabilityAnnotations<'a, 'tcx> {
     type Map = Map<'tcx>;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::OnlyBodies(self.tcx.hir())
     }
 
     fn visit_item(&mut self, i: &'tcx Item<'tcx>) {
@@ -438,7 +438,7 @@ fn new_index(tcx: TyCtxt<'tcx>) -> Index<'tcx> {
         // If the `-Z force-unstable-if-unmarked` flag is passed then we provide
         // a parent stability annotation which indicates that this is private
         // with the `rustc_private` feature. This is intended for use when
-        // compiling librustc crates themselves so we can leverage crates.io
+        // compiling `librustc_*` crates themselves so we can leverage crates.io
         // while maintaining the invariant that all sysroot crates are unstable
         // by default and are unable to be used.
         if tcx.sess.opts.debugging_opts.force_unstable_if_unmarked {
@@ -459,13 +459,13 @@ fn new_index(tcx: TyCtxt<'tcx>) -> Index<'tcx> {
 
         annotator.annotate(
             hir::CRATE_HIR_ID,
-            &krate.attrs,
-            krate.span,
+            &krate.item.attrs,
+            krate.item.span,
             AnnotationKind::Required,
             |v| intravisit::walk_crate(v, krate),
         );
     }
-    return index;
+    index
 }
 
 /// Cross-references the feature names of unstable APIs with enabled
@@ -492,8 +492,8 @@ impl Visitor<'tcx> for Checker<'tcx> {
     /// Because stability levels are scoped lexically, we want to walk
     /// nested items in the context of the outer item, so enable
     /// deep-walking.
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::OnlyBodies(self.tcx.hir())
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item<'tcx>) {
@@ -585,7 +585,7 @@ pub fn check_unused_or_stable_features(tcx: TyCtxt<'_>) {
     if tcx.stability().staged_api[&LOCAL_CRATE] {
         let krate = tcx.hir().krate();
         let mut missing = MissingStabilityAnnotations { tcx, access_levels };
-        missing.check_missing_stability(hir::CRATE_HIR_ID, krate.span, "crate");
+        missing.check_missing_stability(hir::CRATE_HIR_ID, krate.item.span, "crate");
         intravisit::walk_crate(&mut missing, krate);
         krate.visit_all_item_likes(&mut missing.as_deep_visitor());
     }
@@ -610,7 +610,7 @@ pub fn check_unused_or_stable_features(tcx: TyCtxt<'_>) {
             // Warn if the user enables a lib feature multiple times.
             duplicate_feature_err(tcx.sess, *span, *feature);
         }
-        remaining_lib_features.insert(feature, span.clone());
+        remaining_lib_features.insert(feature, *span);
     }
     // `stdbuild` has special handling for `libc`, so we need to
     // recognise the feature when building std.

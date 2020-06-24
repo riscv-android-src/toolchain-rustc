@@ -38,12 +38,12 @@ paper
 gives the details.
 
 In terms of code, these types are defined in
-[`librustc/traits/mod.rs`][traits_mod] in rustc, and in
+[`librustc_middle/traits/mod.rs`][traits_mod] in rustc, and in
 [`chalk-ir/src/lib.rs`][chalk_ir] in chalk.
 
 [pphhf]: ./bibliography.html#pphhf
-[traits_mod]: https://github.com/rust-lang/rust/blob/master/src/librustc/traits/mod.rs
-[chalk_ir]: https://github.com/rust-lang-nursery/chalk/blob/master/chalk-ir/src/lib.rs
+[traits_mod]: https://github.com/rust-lang/rust/blob/master/src/librustc_middle/traits/mod.rs
+[chalk_ir]: https://github.com/rust-lang/chalk/blob/master/chalk-ir/src/lib.rs
 
 <a name="domain-goals"></a>
 

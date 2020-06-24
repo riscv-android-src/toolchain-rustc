@@ -2,17 +2,19 @@
 
 #![feature(rustc_private, bool_to_option)]
 #![feature(crate_visibility_modifier)]
+#![feature(bindings_after_at)]
+#![feature(try_blocks)]
+#![feature(or_patterns)]
 
+use rustc_ast::ast;
+use rustc_ast::token::{self, Nonterminal};
+use rustc_ast::tokenstream::{self, TokenStream, TokenTree};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::{Diagnostic, FatalError, Level, PResult};
 use rustc_session::parse::ParseSess;
 use rustc_span::{FileName, SourceFile, Span};
-use syntax::ast;
-use syntax::token::{self, Nonterminal};
-use syntax::tokenstream::{self, TokenStream, TokenTree};
 
-use std::borrow::Cow;
 use std::path::Path;
 use std::str;
 
@@ -25,24 +27,6 @@ pub mod parser;
 use parser::{emit_unclosed_delims, make_unclosed_delims_error, Parser};
 pub mod lexer;
 pub mod validate_attr;
-#[macro_use]
-pub mod config;
-
-#[derive(Clone)]
-pub struct Directory<'a> {
-    pub path: Cow<'a, Path>,
-    pub ownership: DirectoryOwnership,
-}
-
-#[derive(Copy, Clone)]
-pub enum DirectoryOwnership {
-    Owned {
-        // None if `mod.rs`, `Some("foo")` if we're in `foo.rs`.
-        relative: Option<ast::Ident>,
-    },
-    UnownedViaBlock,
-    UnownedViaMod,
-}
 
 // A bunch of utility functions of the form `parse_<thing>_from_<source>`
 // where <thing> includes crate, expr, item, stmt, tts, and one that
@@ -67,7 +51,7 @@ macro_rules! panictry_buffer {
 }
 
 pub fn parse_crate_from_file<'a>(input: &Path, sess: &'a ParseSess) -> PResult<'a, ast::Crate> {
-    let mut parser = new_parser_from_file(sess, input);
+    let mut parser = new_parser_from_file(sess, input, None);
     parser.parse_crate_mod()
 }
 
@@ -75,7 +59,7 @@ pub fn parse_crate_attrs_from_file<'a>(
     input: &Path,
     sess: &'a ParseSess,
 ) -> PResult<'a, Vec<ast::Attribute>> {
-    let mut parser = new_parser_from_file(sess, input);
+    let mut parser = new_parser_from_file(sess, input, None);
     parser.parse_inner_attributes()
 }
 
@@ -119,15 +103,13 @@ pub fn maybe_new_parser_from_source_str(
     name: FileName,
     source: String,
 ) -> Result<Parser<'_>, Vec<Diagnostic>> {
-    let mut parser =
-        maybe_source_file_to_parser(sess, sess.source_map().new_source_file(name, source))?;
-    parser.recurse_into_file_modules = false;
-    Ok(parser)
+    maybe_source_file_to_parser(sess, sess.source_map().new_source_file(name, source))
 }
 
 /// Creates a new parser, handling errors as appropriate if the file doesn't exist.
-pub fn new_parser_from_file<'a>(sess: &'a ParseSess, path: &Path) -> Parser<'a> {
-    source_file_to_parser(sess, file_to_source_file(sess, path, None))
+/// If a span is given, that is used on an error as the as the source of the problem.
+pub fn new_parser_from_file<'a>(sess: &'a ParseSess, path: &Path, sp: Option<Span>) -> Parser<'a> {
+    source_file_to_parser(sess, file_to_source_file(sess, path, sp))
 }
 
 /// Creates a new parser, returning buffered diagnostics if the file doesn't exist,
@@ -138,22 +120,6 @@ pub fn maybe_new_parser_from_file<'a>(
 ) -> Result<Parser<'a>, Vec<Diagnostic>> {
     let file = try_file_to_source_file(sess, path, None).map_err(|db| vec![db])?;
     maybe_source_file_to_parser(sess, file)
-}
-
-/// Given a session, a crate config, a path, and a span, add
-/// the file at the given path to the `source_map`, and returns a parser.
-/// On an error, uses the given span as the source of the problem.
-pub fn new_sub_parser_from_file<'a>(
-    sess: &'a ParseSess,
-    path: &Path,
-    directory_ownership: DirectoryOwnership,
-    module_name: Option<String>,
-    sp: Span,
-) -> Parser<'a> {
-    let mut p = source_file_to_parser(sess, file_to_source_file(sess, path, Some(sp)));
-    p.directory.ownership = directory_ownership;
-    p.root_module_name = module_name;
-    p
 }
 
 /// Given a `source_file` and config, returns a parser.
@@ -171,7 +137,7 @@ fn maybe_source_file_to_parser(
     let (stream, unclosed_delims) = maybe_file_to_stream(sess, source_file, None)?;
     let mut parser = stream_to_parser(sess, stream, None);
     parser.unclosed_delims = unclosed_delims;
-    if parser.token == token::Eof && parser.token.span.is_dummy() {
+    if parser.token == token::Eof {
         parser.token.span = Span::new(end_pos, end_pos, parser.token.span.ctxt());
     }
 
@@ -257,26 +223,7 @@ pub fn stream_to_parser<'a>(
     stream: TokenStream,
     subparser_name: Option<&'static str>,
 ) -> Parser<'a> {
-    Parser::new(sess, stream, None, true, false, subparser_name)
-}
-
-/// Given a stream, the `ParseSess` and the base directory, produces a parser.
-///
-/// Use this function when you are creating a parser from the token stream
-/// and also care about the current working directory of the parser (e.g.,
-/// you are trying to resolve modules defined inside a macro invocation).
-///
-/// # Note
-///
-/// The main usage of this function is outside of rustc, for those who uses
-/// libsyntax as a library. Please do not remove this function while refactoring
-/// just because it is not used in rustc codebase!
-pub fn stream_to_parser_with_base_dir<'a>(
-    sess: &'a ParseSess,
-    stream: TokenStream,
-    base_dir: Directory<'a>,
-) -> Parser<'a> {
-    Parser::new(sess, stream, Some(base_dir), true, false, None)
+    Parser::new(sess, stream, false, subparser_name)
 }
 
 /// Runs the given subparser `f` on the tokens of the given `attr`'s item.
@@ -286,7 +233,7 @@ pub fn parse_in<'a, T>(
     name: &'static str,
     mut f: impl FnMut(&mut Parser<'a>) -> PResult<'a, T>,
 ) -> PResult<'a, T> {
-    let mut parser = Parser::new(sess, tts, None, false, false, Some(name));
+    let mut parser = Parser::new(sess, tts, false, Some(name));
     let result = f(&mut parser)?;
     if parser.token != token::Eof {
         parser.unexpected()?;
@@ -312,9 +259,6 @@ pub fn nt_to_tokenstream(nt: &Nonterminal, sess: &ParseSess, span: Span) -> Toke
     // before we fall back to the stringification.
     let tokens = match *nt {
         Nonterminal::NtItem(ref item) => {
-            prepend_attrs(sess, &item.attrs, item.tokens.as_ref(), span)
-        }
-        Nonterminal::NtTraitItem(ref item) | Nonterminal::NtImplItem(ref item) => {
             prepend_attrs(sess, &item.attrs, item.tokens.as_ref(), span)
         }
         Nonterminal::NtIdent(ident, is_raw) => {
@@ -364,7 +308,7 @@ pub fn nt_to_tokenstream(nt: &Nonterminal, sess: &ParseSess, span: Span) -> Toke
                 going with stringified version"
         );
     }
-    return tokens_for_real;
+    tokens_for_real
 }
 
 fn prepend_attrs(
@@ -374,7 +318,7 @@ fn prepend_attrs(
     span: rustc_span::Span,
 ) -> Option<tokenstream::TokenStream> {
     let tokens = tokens?;
-    if attrs.len() == 0 {
+    if attrs.is_empty() {
         return Some(tokens.clone());
     }
     let mut builder = tokenstream::TokenStreamBuilder::new();
@@ -423,7 +367,7 @@ fn prepend_attrs(
         builder.push(tokenstream::TokenTree::Delimited(
             delim_span,
             token::DelimToken::Bracket,
-            brackets.build().into(),
+            brackets.build(),
         ));
     }
     builder.push(tokens.clone());

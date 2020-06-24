@@ -11,7 +11,6 @@ use crate::{path_names_to_string, BindingError, CrateLint, LexicalScopeBinding};
 use crate::{Module, ModuleOrUniformRoot, NameBindingKind, ParentScope, PathResult};
 use crate::{ResolutionError, Resolver, Segment, UseError};
 
-use rustc::{bug, lint, span_bug};
 use rustc_ast::ast::*;
 use rustc_ast::ptr::P;
 use rustc_ast::util::lev_distance::find_best_match_for_name;
@@ -23,6 +22,8 @@ use rustc_hir::def::Namespace::{self, *};
 use rustc_hir::def::{self, CtorKind, DefKind, PartialRes, PerNS};
 use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::TraitCandidate;
+use rustc_middle::{bug, span_bug};
+use rustc_session::lint;
 use rustc_span::symbol::{kw, sym};
 use rustc_span::Span;
 use smallvec::{smallvec, SmallVec};
@@ -236,18 +237,21 @@ impl<'a> PathSource<'a> {
     crate fn is_expected(self, res: Res) -> bool {
         match self {
             PathSource::Type => match res {
-                Res::Def(DefKind::Struct, _)
-                | Res::Def(DefKind::Union, _)
-                | Res::Def(DefKind::Enum, _)
-                | Res::Def(DefKind::Trait, _)
-                | Res::Def(DefKind::TraitAlias, _)
-                | Res::Def(DefKind::TyAlias, _)
-                | Res::Def(DefKind::AssocTy, _)
+                Res::Def(
+                    DefKind::Struct
+                    | DefKind::Union
+                    | DefKind::Enum
+                    | DefKind::Trait
+                    | DefKind::TraitAlias
+                    | DefKind::TyAlias
+                    | DefKind::AssocTy
+                    | DefKind::TyParam
+                    | DefKind::OpaqueTy
+                    | DefKind::ForeignTy,
+                    _,
+                )
                 | Res::PrimTy(..)
-                | Res::Def(DefKind::TyParam, _)
-                | Res::SelfTy(..)
-                | Res::Def(DefKind::OpaqueTy, _)
-                | Res::Def(DefKind::ForeignTy, _) => true,
+                | Res::SelfTy(..) => true,
                 _ => false,
             },
             PathSource::Trait(AliasPossibility::No) => match res {
@@ -255,27 +259,29 @@ impl<'a> PathSource<'a> {
                 _ => false,
             },
             PathSource::Trait(AliasPossibility::Maybe) => match res {
-                Res::Def(DefKind::Trait, _) => true,
-                Res::Def(DefKind::TraitAlias, _) => true,
+                Res::Def(DefKind::Trait | DefKind::TraitAlias, _) => true,
                 _ => false,
             },
             PathSource::Expr(..) => match res {
-                Res::Def(DefKind::Ctor(_, CtorKind::Const), _)
-                | Res::Def(DefKind::Ctor(_, CtorKind::Fn), _)
-                | Res::Def(DefKind::Const, _)
-                | Res::Def(DefKind::Static, _)
+                Res::Def(
+                    DefKind::Ctor(_, CtorKind::Const | CtorKind::Fn)
+                    | DefKind::Const
+                    | DefKind::Static
+                    | DefKind::Fn
+                    | DefKind::AssocFn
+                    | DefKind::AssocConst
+                    | DefKind::ConstParam,
+                    _,
+                )
                 | Res::Local(..)
-                | Res::Def(DefKind::Fn, _)
-                | Res::Def(DefKind::Method, _)
-                | Res::Def(DefKind::AssocConst, _)
-                | Res::SelfCtor(..)
-                | Res::Def(DefKind::ConstParam, _) => true,
+                | Res::SelfCtor(..) => true,
                 _ => false,
             },
             PathSource::Pat => match res {
-                Res::Def(DefKind::Ctor(_, CtorKind::Const), _)
-                | Res::Def(DefKind::Const, _)
-                | Res::Def(DefKind::AssocConst, _)
+                Res::Def(
+                    DefKind::Ctor(_, CtorKind::Const) | DefKind::Const | DefKind::AssocConst,
+                    _,
+                )
                 | Res::SelfCtor(..) => true,
                 _ => false,
             },
@@ -284,20 +290,19 @@ impl<'a> PathSource<'a> {
                 _ => false,
             },
             PathSource::Struct => match res {
-                Res::Def(DefKind::Struct, _)
-                | Res::Def(DefKind::Union, _)
-                | Res::Def(DefKind::Variant, _)
-                | Res::Def(DefKind::TyAlias, _)
-                | Res::Def(DefKind::AssocTy, _)
+                Res::Def(
+                    DefKind::Struct
+                    | DefKind::Union
+                    | DefKind::Variant
+                    | DefKind::TyAlias
+                    | DefKind::AssocTy,
+                    _,
+                )
                 | Res::SelfTy(..) => true,
                 _ => false,
             },
             PathSource::TraitItem(ns) => match res {
-                Res::Def(DefKind::AssocConst, _) | Res::Def(DefKind::Method, _)
-                    if ns == ValueNS =>
-                {
-                    true
-                }
+                Res::Def(DefKind::AssocConst | DefKind::AssocFn, _) if ns == ValueNS => true,
                 Res::Def(DefKind::AssocTy, _) if ns == TypeNS => true,
                 _ => false,
             },
@@ -315,8 +320,8 @@ impl<'a> PathSource<'a> {
             (PathSource::Struct, false) => error_code!(E0422),
             (PathSource::Expr(..), true) => error_code!(E0423),
             (PathSource::Expr(..), false) => error_code!(E0425),
-            (PathSource::Pat, true) | (PathSource::TupleStruct, true) => error_code!(E0532),
-            (PathSource::Pat, false) | (PathSource::TupleStruct, false) => error_code!(E0531),
+            (PathSource::Pat | PathSource::TupleStruct, true) => error_code!(E0532),
+            (PathSource::Pat | PathSource::TupleStruct, false) => error_code!(E0531),
             (PathSource::TraitItem(..), true) => error_code!(E0575),
             (PathSource::TraitItem(..), false) => error_code!(E0576),
         }
@@ -449,7 +454,7 @@ impl<'a, 'ast> Visitor<'ast> for LateResolutionVisitor<'a, '_, 'ast> {
                     visit::walk_foreign_item(this, foreign_item);
                 });
             }
-            ForeignItemKind::Macro(..) => {
+            ForeignItemKind::MacCall(..) => {
                 visit::walk_foreign_item(self, foreign_item);
             }
         }
@@ -458,7 +463,7 @@ impl<'a, 'ast> Visitor<'ast> for LateResolutionVisitor<'a, '_, 'ast> {
         let rib_kind = match fn_kind {
             // Bail if there's no body.
             FnKind::Fn(.., None) => return visit::walk_fn(self, fn_kind, sp),
-            FnKind::Fn(FnCtxt::Free, ..) | FnKind::Fn(FnCtxt::Foreign, ..) => FnItemRibKind,
+            FnKind::Fn(FnCtxt::Free | FnCtxt::Foreign, ..) => FnItemRibKind,
             FnKind::Fn(FnCtxt::Assoc(_), ..) | FnKind::Closure(..) => NormalRibKind,
         };
         let previous_value = replace(&mut self.diagnostic_metadata.current_function, Some(sp));
@@ -744,7 +749,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         debug!("resolve_adt");
         self.with_current_self_item(item, |this| {
             this.with_generic_param_rib(generics, ItemRibKind(HasGenericParams::Yes), |this| {
-                let item_def_id = this.r.definitions.local_def_id(item.id);
+                let item_def_id = this.r.definitions.local_def_id(item.id).to_def_id();
                 this.with_self_rib(Res::SelfTy(None, Some(item_def_id)), |this| {
                     visit::walk_item(this, item);
                 });
@@ -824,7 +829,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             ItemKind::Trait(.., ref generics, ref bounds, ref trait_items) => {
                 // Create a new rib for the trait-wide type parameters.
                 self.with_generic_param_rib(generics, ItemRibKind(HasGenericParams::Yes), |this| {
-                    let local_def_id = this.r.definitions.local_def_id(item.id);
+                    let local_def_id = this.r.definitions.local_def_id(item.id).to_def_id();
                     this.with_self_rib(Res::SelfTy(Some(local_def_id), None), |this| {
                         this.visit_generics(generics);
                         walk_list!(this, visit_param_bound, bounds);
@@ -852,7 +857,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                                     AssocItemKind::TyAlias(_, generics, _, _) => {
                                         walk_assoc_item(this, generics, item);
                                     }
-                                    AssocItemKind::Macro(_) => {
+                                    AssocItemKind::MacCall(_) => {
                                         panic!("unexpanded macro in resolve!")
                                     }
                                 };
@@ -865,7 +870,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             ItemKind::TraitAlias(ref generics, ref bounds) => {
                 // Create a new rib for the trait-wide type parameters.
                 self.with_generic_param_rib(generics, ItemRibKind(HasGenericParams::Yes), |this| {
-                    let local_def_id = this.r.definitions.local_def_id(item.id);
+                    let local_def_id = this.r.definitions.local_def_id(item.id).to_def_id();
                     this.with_self_rib(Res::SelfTy(Some(local_def_id), None), |this| {
                         this.visit_generics(generics);
                         walk_list!(this, visit_param_bound, bounds);
@@ -897,7 +902,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 // do nothing, these are just around to be encoded
             }
 
-            ItemKind::Mac(_) => panic!("unexpanded macro in resolve!"),
+            ItemKind::MacCall(_) => panic!("unexpanded macro in resolve!"),
         }
     }
 
@@ -935,7 +940,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 _ => unreachable!(),
             };
 
-            let ident = param.ident.modern();
+            let ident = param.ident.normalize_to_macros_2_0();
             debug!("with_generic_param_rib: {}", param.id);
 
             if seen_bindings.contains_key(&ident) {
@@ -946,7 +951,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             seen_bindings.entry(ident).or_insert(param.ident.span);
 
             // Plain insert (no renaming).
-            let res = Res::Def(def_kind, self.r.definitions.local_def_id(param.id));
+            let res = Res::Def(def_kind, self.r.definitions.local_def_id(param.id).to_def_id());
 
             match param.kind {
                 GenericParamKind::Type { .. } => {
@@ -1096,7 +1101,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             this.with_self_rib(Res::SelfTy(None, None), |this| {
                 // Resolve the trait reference, if necessary.
                 this.with_optional_trait_ref(opt_trait_reference.as_ref(), |this, trait_id| {
-                    let item_def_id = this.r.definitions.local_def_id(item_id);
+                    let item_def_id = this.r.definitions.local_def_id(item_id).to_def_id();
                     this.with_self_rib(Res::SelfTy(trait_id, Some(item_def_id)), |this| {
                         if let Some(trait_ref) = opt_trait_reference.as_ref() {
                             // Resolve type arguments in the trait path.
@@ -1174,7 +1179,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                                                 },
                                             );
                                         }
-                                        AssocItemKind::Macro(_) => {
+                                        AssocItemKind::MacCall(_) => {
                                             panic!("unexpanded macro in resolve!")
                                         }
                                     }
@@ -1464,7 +1469,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         // Add the binding to the local ribs, if it doesn't already exist in the bindings map.
         // (We must not add it if it's in the bindings map because that breaks the assumptions
         // later passes make about or-patterns.)
-        let ident = ident.modern_and_legacy();
+        let ident = ident.normalize_to_macro_rules();
 
         let mut bound_iter = bindings.iter().filter(|(_, set)| set.contains(&ident));
         // Already bound in a product pattern? e.g. `(a, a)` which is not allowed.
@@ -1517,26 +1522,40 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         ident: Ident,
         has_sub: bool,
     ) -> Option<Res> {
-        let binding =
-            self.resolve_ident_in_lexical_scope(ident, ValueNS, None, pat.span)?.item()?;
-        let res = binding.res();
-
         // An immutable (no `mut`) by-value (no `ref`) binding pattern without
         // a sub pattern (no `@ $pat`) is syntactically ambiguous as it could
         // also be interpreted as a path to e.g. a constant, variant, etc.
         let is_syntactic_ambiguity = !has_sub && bm == BindingMode::ByValue(Mutability::Not);
 
-        match res {
-            Res::Def(DefKind::Ctor(_, CtorKind::Const), _) | Res::Def(DefKind::Const, _)
-                if is_syntactic_ambiguity =>
+        let ls_binding = self.resolve_ident_in_lexical_scope(ident, ValueNS, None, pat.span)?;
+        let (res, binding) = match ls_binding {
+            LexicalScopeBinding::Item(binding)
+                if is_syntactic_ambiguity && binding.is_ambiguity() =>
             {
-                // Disambiguate in favor of a unit struct/variant or constant pattern.
+                // For ambiguous bindings we don't know all their definitions and cannot check
+                // whether they can be shadowed by fresh bindings or not, so force an error.
+                // issues/33118#issuecomment-233962221 (see below) still applies here,
+                // but we have to ignore it for backward compatibility.
                 self.r.record_use(ident, ValueNS, binding, false);
+                return None;
+            }
+            LexicalScopeBinding::Item(binding) => (binding.res(), Some(binding)),
+            LexicalScopeBinding::Res(res) => (res, None),
+        };
+
+        match res {
+            Res::SelfCtor(_) // See #70549.
+            | Res::Def(
+                DefKind::Ctor(_, CtorKind::Const) | DefKind::Const | DefKind::ConstParam,
+                _,
+            ) if is_syntactic_ambiguity => {
+                // Disambiguate in favor of a unit struct/variant or constant pattern.
+                if let Some(binding) = binding {
+                    self.r.record_use(ident, ValueNS, binding, false);
+                }
                 Some(res)
             }
-            Res::Def(DefKind::Ctor(..), _)
-            | Res::Def(DefKind::Const, _)
-            | Res::Def(DefKind::Static, _) => {
+            Res::Def(DefKind::Ctor(..) | DefKind::Const | DefKind::Static, _) => {
                 // This is unambiguously a fresh binding, either syntactically
                 // (e.g., `IDENT @ PAT` or `ref IDENT`) or because `IDENT` resolves
                 // to something unusable as a pattern (e.g., constructor function),
@@ -1547,23 +1566,20 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                     ResolutionError::BindingShadowsSomethingUnacceptable(
                         pat_src.descr(),
                         ident.name,
-                        binding,
+                        binding.expect("no binding for a ctor or static"),
                     ),
                 );
                 None
             }
-            Res::Def(DefKind::Fn, _) | Res::Err => {
+            Res::Def(DefKind::Fn, _) | Res::Local(..) | Res::Err => {
                 // These entities are explicitly allowed to be shadowed by fresh bindings.
                 None
             }
-            res => {
-                span_bug!(
-                    ident.span,
-                    "unexpected resolution for an \
-                                        identifier in pattern: {:?}",
-                    res
-                );
-            }
+            _ => span_bug!(
+                ident.span,
+                "unexpected resolution for an identifier in pattern: {:?}",
+                res,
+            ),
         }
     }
 
@@ -1864,7 +1880,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                 self.diagnostic_metadata.unused_labels.insert(id, label.ident.span);
             }
             self.with_label_rib(NormalRibKind, |this| {
-                let ident = label.ident.modern_and_legacy();
+                let ident = label.ident.normalize_to_macro_rules();
                 this.label_ribs.last_mut().unwrap().bindings.insert(ident, id);
                 f(this);
             });
@@ -1898,7 +1914,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             if let StmtKind::Item(ref item) = stmt.kind {
                 if let ItemKind::MacroDef(..) = item.kind {
                     num_macro_definition_ribs += 1;
-                    let res = self.r.definitions.local_def_id(item.id);
+                    let res = self.r.definitions.local_def_id(item.id).to_def_id();
                     self.ribs[ValueNS].push(Rib::new(MacroDefinition(res)));
                     self.label_ribs.push(Rib::new(MacroDefinition(res)));
                 }
@@ -1940,7 +1956,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
 
             ExprKind::Break(Some(label), _) | ExprKind::Continue(Some(label)) => {
                 let node_id = self.search_label(label.ident, |rib, ident| {
-                    rib.bindings.get(&ident.modern_and_legacy()).cloned()
+                    rib.bindings.get(&ident.normalize_to_macro_rules()).cloned()
                 });
                 match node_id {
                     None => {
@@ -2106,7 +2122,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
             }
         }
 
-        ident.span = ident.span.modern();
+        ident.span = ident.span.normalize_to_macros_2_0();
         let mut search_module = self.parent_scope.module;
         loop {
             self.get_traits_in_module_containing_item(ident, ns, search_module, &mut found_traits);
@@ -2139,7 +2155,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                     return;
                 }
                 match binding.res() {
-                    Res::Def(DefKind::Trait, _) | Res::Def(DefKind::TraitAlias, _) => {
+                    Res::Def(DefKind::Trait | DefKind::TraitAlias, _) => {
                         collected_traits.push((name, binding))
                     }
                     _ => (),

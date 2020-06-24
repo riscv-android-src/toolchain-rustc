@@ -1,27 +1,38 @@
 //! lint when there is a large size difference between variants on an enum
 
 use crate::utils::{snippet_opt, span_lint_and_then};
-use rustc::ty::layout::LayoutOf;
 use rustc_errors::Applicability;
 use rustc_hir::{Item, ItemKind, VariantData};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
+use rustc_target::abi::LayoutOf;
 
 declare_clippy_lint! {
     /// **What it does:** Checks for large size differences between variants on
     /// `enum`s.
     ///
     /// **Why is this bad?** Enum size is bounded by the largest variant. Having a
-    /// large variant
-    /// can penalize the memory layout of that enum.
+    /// large variant can penalize the memory layout of that enum.
     ///
-    /// **Known problems:** None.
+    /// **Known problems:** This lint obviously cannot take the distribution of
+    /// variants in your running program into account. It is possible that the
+    /// smaller variants make up less than 1% of all instances, in which case
+    /// the overhead is negligible and the boxing is counter-productive. Always
+    /// measure the change this lint suggests.
     ///
     /// **Example:**
+    ///
     /// ```rust
+    /// // Bad
     /// enum Test {
     ///     A(i32),
     ///     B([i32; 8000]),
+    /// }
+    ///
+    /// // Possibly better
+    /// enum Test2 {
+    ///     A(i32),
+    ///     B(Box<[i32; 8000]>),
     /// }
     /// ```
     pub LARGE_ENUM_VARIANT,
@@ -52,8 +63,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LargeEnumVariant {
             let ty = cx.tcx.type_of(did);
             let adt = ty.ty_adt_def().expect("already checked whether this is an enum");
 
-            let mut smallest_variant: Option<(_, _)> = None;
             let mut largest_variant: Option<(_, _)> = None;
+            let mut second_variant: Option<(_, _)> = None;
 
             for (i, variant) in adt.variants.iter().enumerate() {
                 let size: u64 = variant
@@ -69,22 +80,33 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LargeEnumVariant {
 
                 let grouped = (size, (i, variant));
 
-                update_if(&mut smallest_variant, grouped, |a, b| b.0 <= a.0);
-                update_if(&mut largest_variant, grouped, |a, b| b.0 >= a.0);
+                if grouped.0 >= largest_variant.map_or(0, |x| x.0) {
+                    second_variant = largest_variant;
+                    largest_variant = Some(grouped);
+                }
             }
 
-            if let (Some(smallest), Some(largest)) = (smallest_variant, largest_variant) {
-                let difference = largest.0 - smallest.0;
+            if let (Some(largest), Some(second)) = (largest_variant, second_variant) {
+                let difference = largest.0 - second.0;
 
                 if difference > self.maximum_size_difference_allowed {
                     let (i, variant) = largest.1;
 
+                    let help_text = "consider boxing the large fields to reduce the total size of the enum";
                     span_lint_and_then(
                         cx,
                         LARGE_ENUM_VARIANT,
                         def.variants[i].span,
                         "large size difference between variants",
-                        |db| {
+                        |diag| {
+                            diag.span_label(
+                                def.variants[(largest.1).0].span,
+                                &format!("this variant is {} bytes", largest.0),
+                            );
+                            diag.span_note(
+                                def.variants[(second.1).0].span,
+                                &format!("and the second-largest variant is {} bytes:", second.0),
+                            );
                             if variant.fields.len() == 1 {
                                 let span = match def.variants[i].data {
                                     VariantData::Struct(ref fields, ..) | VariantData::Tuple(ref fields, ..) => {
@@ -93,37 +115,20 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LargeEnumVariant {
                                     VariantData::Unit(..) => unreachable!(),
                                 };
                                 if let Some(snip) = snippet_opt(cx, span) {
-                                    db.span_suggestion(
+                                    diag.span_suggestion(
                                         span,
-                                        "consider boxing the large fields to reduce the total size of the \
-                                         enum",
+                                        help_text,
                                         format!("Box<{}>", snip),
                                         Applicability::MaybeIncorrect,
                                     );
                                     return;
                                 }
                             }
-                            db.span_help(
-                                def.variants[i].span,
-                                "consider boxing the large fields to reduce the total size of the enum",
-                            );
+                            diag.span_help(def.variants[i].span, help_text);
                         },
                     );
                 }
             }
         }
-    }
-}
-
-fn update_if<T, F>(old: &mut Option<T>, new: T, f: F)
-where
-    F: Fn(&T, &T) -> bool,
-{
-    if let Some(ref mut val) = *old {
-        if f(val, &new) {
-            *val = new;
-        }
-    } else {
-        *old = Some(new);
     }
 }

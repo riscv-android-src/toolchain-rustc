@@ -1,14 +1,13 @@
-use crate::utils::{has_drop, is_entrypoint_fn, span_lint, trait_ref_of_method};
-use rustc::lint::in_external_macro;
+use crate::utils::{fn_has_unsatisfiable_preds, has_drop, is_entrypoint_fn, span_lint, trait_ref_of_method};
 use rustc_hir as hir;
 use rustc_hir::intravisit::FnKind;
 use rustc_hir::{Body, Constness, FnDecl, GenericParamKind, HirId};
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::lint::in_external_macro;
 use rustc_mir::transform::qualify_min_const_fn::is_min_const_fn;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::Span;
 use rustc_typeck::hir_ty_to_ty;
-use std::matches;
 
 declare_clippy_lint! {
     /// **What it does:**
@@ -85,6 +84,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingConstForFn {
         let def_id = cx.tcx.hir().local_def_id(hir_id);
 
         if in_external_macro(cx.tcx.sess, span) || is_entrypoint_fn(cx, def_id) {
+            return;
+        }
+
+        // Building MIR for `fn`s with unsatisfiable preds results in ICE.
+        if fn_has_unsatisfiable_preds(cx, def_id) {
             return;
         }
 

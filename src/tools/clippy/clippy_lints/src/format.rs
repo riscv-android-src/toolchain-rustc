@@ -61,8 +61,8 @@ fn span_useless_format<T: LintContext>(cx: &T, span: Span, help: &str, mut sugg:
         sugg.push(';');
     }
 
-    span_lint_and_then(cx, USELESS_FORMAT, span, "useless use of `format!`", |db| {
-        db.span_suggestion(
+    span_lint_and_then(cx, USELESS_FORMAT, span, "useless use of `format!`", |diag| {
+        diag.span_suggestion(
             to_replace,
             help,
             sugg,
@@ -91,7 +91,7 @@ fn on_argumentv1_new<'a, 'tcx>(
         if pats.len() == 1;
         then {
             let ty = walk_ptrs_ty(cx.tables.pat_ty(&pats[0]));
-            if ty.kind != rustc::ty::Str && !match_type(cx, ty, &paths::STRING) {
+            if ty.kind != rustc_middle::ty::Str && !match_type(cx, ty, &paths::STRING) {
                 return None;
             }
             if let ExprKind::Lit(ref lit) = format_args.kind {

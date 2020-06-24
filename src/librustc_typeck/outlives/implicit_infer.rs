@@ -1,10 +1,10 @@
-use rustc::ty::subst::{GenericArg, GenericArgKind, Subst};
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_hir::Node;
+use rustc_middle::ty::subst::{GenericArg, GenericArgKind, Subst};
+use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_span::Span;
 
 use super::explicit::ExplicitPredicatesMap;
@@ -119,7 +119,15 @@ fn insert_required_predicates_to_be_wf<'tcx>(
     required_predicates: &mut RequiredPredicates<'tcx>,
     explicit_map: &mut ExplicitPredicatesMap<'tcx>,
 ) {
-    for ty in field_ty.walk() {
+    for arg in field_ty.walk() {
+        let ty = match arg.unpack() {
+            GenericArgKind::Type(ty) => ty,
+
+            // No predicates from lifetimes or constants, except potentially
+            // constants' types, but `walk` will get to them as well.
+            GenericArgKind::Lifetime(_) | GenericArgKind::Const(_) => continue,
+        };
+
         match ty.kind {
             // The field is of type &'a T which means that we will have
             // a predicate requirement of T: 'a (T outlives 'a).
@@ -303,7 +311,7 @@ pub fn check_explicit_predicates<'tcx>(
         // 'b`.
         if let Some(self_ty) = ignored_self_ty {
             if let GenericArgKind::Type(ty) = outlives_predicate.0.unpack() {
-                if ty.walk().any(|ty| ty == self_ty) {
+                if ty.walk().any(|arg| arg == self_ty.into()) {
                     debug!("skipping self ty = {:?}", &ty);
                     continue;
                 }

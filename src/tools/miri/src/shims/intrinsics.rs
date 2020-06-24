@@ -1,11 +1,9 @@
 use std::iter;
+use std::convert::TryFrom;
 
-use rustc::mir;
-use rustc::mir::interpret::{InterpResult, PointerArithmetic};
-use rustc::ty;
-use rustc::ty::layout::{self, Align, LayoutOf, Size};
+use rustc_middle::{mir, ty};
 use rustc_apfloat::Float;
-use rustc_span::source_map::Span;
+use rustc_target::abi::{Align, LayoutOf};
 
 use crate::*;
 
@@ -13,67 +11,275 @@ impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tc
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn call_intrinsic(
         &mut self,
-        span: Span,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
         unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        if this.emulate_intrinsic(span, instance, args, ret)? {
+        if this.emulate_intrinsic(instance, args, ret)? {
             return Ok(());
         }
-        let tcx = &{ this.tcx.tcx };
         let substs = instance.substs;
 
         // All these intrinsics take raw pointers, so if we access memory directly
         // (as opposed to through a place), we have to remember to erase any tag
         // that might still hang around!
-        let intrinsic_name = &*tcx.item_name(instance.def_id()).as_str();
+        let intrinsic_name = &*this.tcx.item_name(instance.def_id()).as_str();
 
-        // Handle diverging intrinsics.
-        let (dest, ret) = match intrinsic_name {
-            "abort" => {
-                throw_machine_stop!(TerminationInfo::Abort);
-            }
-            "miri_start_panic" => return this.handle_miri_start_panic(args, unwind),
-            _ =>
-                if let Some(p) = ret {
-                    p
-                } else {
-                    throw_unsup_format!("unimplemented (diverging) intrinsic: {}", intrinsic_name);
-                },
+        // First handle intrinsics without return place.
+        let (dest, ret) = match ret {
+            None => match intrinsic_name {
+                "miri_start_panic" => return this.handle_miri_start_panic(args, unwind),
+                "unreachable" => throw_ub!(Unreachable),
+                _ => throw_unsup_format!("unimplemented (diverging) intrinsic: {}", intrinsic_name),
+            },
+            Some(p) => p,
         };
 
+        // Then handle terminating intrinsics.
         match intrinsic_name {
-            "arith_offset" => {
-                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
-                let ptr = this.read_scalar(args[0])?.not_undef()?;
+            // Raw memory accesses
+            #[rustfmt::skip]
+            | "copy"
+            | "copy_nonoverlapping"
+            => {
+                let elem_ty = substs.type_at(0);
+                let elem_layout = this.layout_of(elem_ty)?;
+                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
+                let elem_align = elem_layout.align.abi;
 
-                let pointee_ty = substs.type_at(0);
-                let pointee_size = this.layout_of(pointee_ty)?.size.bytes() as i64;
-                let offset = offset.overflowing_mul(pointee_size).0;
-                let result_ptr = ptr.ptr_wrapping_signed_offset(offset, this);
-                this.write_scalar(result_ptr, dest)?;
+                let size = elem_layout.size.checked_mul(count, this)
+                    .ok_or_else(|| err_ub_format!("overflow computing total size of `{}`", intrinsic_name))?;
+                let src = this.read_scalar(args[0])?.not_undef()?;
+                let src = this.memory.check_ptr_access(src, size, elem_align)?;
+                let dest = this.read_scalar(args[1])?.not_undef()?;
+                let dest = this.memory.check_ptr_access(dest, size, elem_align)?;
+
+                if let (Some(src), Some(dest)) = (src, dest) {
+                    this.memory.copy(
+                        src,
+                        dest,
+                        size,
+                        intrinsic_name.ends_with("_nonoverlapping"),
+                    )?;
+                }
             }
 
-            "assume" => {
-                let cond = this.read_scalar(args[0])?.to_bool()?;
-                if !cond {
-                    throw_ub_format!("`assume` intrinsic called with `false`");
-                }
+            "move_val_init" => {
+                let place = this.deref_operand(args[0])?;
+                this.copy_op(args[1], place.into())?;
             }
 
             "volatile_load" => {
                 let place = this.deref_operand(args[0])?;
                 this.copy_op(place.into(), dest)?;
             }
-
             "volatile_store" => {
                 let place = this.deref_operand(args[0])?;
                 this.copy_op(args[1], place.into())?;
             }
 
+            "write_bytes" => {
+                let ty = substs.type_at(0);
+                let ty_layout = this.layout_of(ty)?;
+                let val_byte = this.read_scalar(args[1])?.to_u8()?;
+                let ptr = this.read_scalar(args[0])?.not_undef()?;
+                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
+                let byte_count = ty_layout.size.checked_mul(count, this)
+                    .ok_or_else(|| err_ub_format!("overflow computing total size of `write_bytes`"))?;
+                this.memory
+                    .write_bytes(ptr, iter::repeat(val_byte).take(byte_count.bytes() as usize))?;
+            }
+
+            // Pointer arithmetic
+            "arith_offset" => {
+                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
+                let ptr = this.read_scalar(args[0])?.not_undef()?;
+
+                let pointee_ty = substs.type_at(0);
+                let pointee_size = i64::try_from(this.layout_of(pointee_ty)?.size.bytes()).unwrap();
+                let offset = offset.overflowing_mul(pointee_size).0;
+                let result_ptr = ptr.ptr_wrapping_signed_offset(offset, this);
+                this.write_scalar(result_ptr, dest)?;
+            }
+            "offset" => {
+                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
+                let ptr = this.read_scalar(args[0])?.not_undef()?;
+                let result_ptr = this.pointer_offset_inbounds(ptr, substs.type_at(0), offset)?;
+                this.write_scalar(result_ptr, dest)?;
+            }
+
+            // Floating-point operations
+            #[rustfmt::skip]
+            | "sinf32"
+            | "fabsf32"
+            | "cosf32"
+            | "sqrtf32"
+            | "expf32"
+            | "exp2f32"
+            | "logf32"
+            | "log10f32"
+            | "log2f32"
+            | "floorf32"
+            | "ceilf32"
+            | "truncf32"
+            | "roundf32"
+            => {
+                // FIXME: Using host floats.
+                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
+                let f = match intrinsic_name {
+                    "sinf32" => f.sin(),
+                    "fabsf32" => f.abs(),
+                    "cosf32" => f.cos(),
+                    "sqrtf32" => f.sqrt(),
+                    "expf32" => f.exp(),
+                    "exp2f32" => f.exp2(),
+                    "logf32" => f.ln(),
+                    "log10f32" => f.log10(),
+                    "log2f32" => f.log2(),
+                    "floorf32" => f.floor(),
+                    "ceilf32" => f.ceil(),
+                    "truncf32" => f.trunc(),
+                    "roundf32" => f.round(),
+                    _ => bug!(),
+                };
+                this.write_scalar(Scalar::from_u32(f.to_bits()), dest)?;
+            }
+
+            #[rustfmt::skip]
+            | "sinf64"
+            | "fabsf64"
+            | "cosf64"
+            | "sqrtf64"
+            | "expf64"
+            | "exp2f64"
+            | "logf64"
+            | "log10f64"
+            | "log2f64"
+            | "floorf64"
+            | "ceilf64"
+            | "truncf64"
+            | "roundf64"
+            => {
+                // FIXME: Using host floats.
+                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
+                let f = match intrinsic_name {
+                    "sinf64" => f.sin(),
+                    "fabsf64" => f.abs(),
+                    "cosf64" => f.cos(),
+                    "sqrtf64" => f.sqrt(),
+                    "expf64" => f.exp(),
+                    "exp2f64" => f.exp2(),
+                    "logf64" => f.ln(),
+                    "log10f64" => f.log10(),
+                    "log2f64" => f.log2(),
+                    "floorf64" => f.floor(),
+                    "ceilf64" => f.ceil(),
+                    "truncf64" => f.trunc(),
+                    "roundf64" => f.round(),
+                    _ => bug!(),
+                };
+                this.write_scalar(Scalar::from_u64(f.to_bits()), dest)?;
+            }
+
+            #[rustfmt::skip]
+            | "fadd_fast"
+            | "fsub_fast"
+            | "fmul_fast"
+            | "fdiv_fast"
+            | "frem_fast"
+            => {
+                let a = this.read_immediate(args[0])?;
+                let b = this.read_immediate(args[1])?;
+                let op = match intrinsic_name {
+                    "fadd_fast" => mir::BinOp::Add,
+                    "fsub_fast" => mir::BinOp::Sub,
+                    "fmul_fast" => mir::BinOp::Mul,
+                    "fdiv_fast" => mir::BinOp::Div,
+                    "frem_fast" => mir::BinOp::Rem,
+                    _ => bug!(),
+                };
+                this.binop_ignore_overflow(op, a, b, dest)?;
+            }
+
+            #[rustfmt::skip]
+            | "minnumf32"
+            | "maxnumf32"
+            | "copysignf32"
+            => {
+                let a = this.read_scalar(args[0])?.to_f32()?;
+                let b = this.read_scalar(args[1])?.to_f32()?;
+                let res = match intrinsic_name {
+                    "minnumf32" => a.min(b),
+                    "maxnumf32" => a.max(b),
+                    "copysignf32" => a.copy_sign(b),
+                    _ => bug!(),
+                };
+                this.write_scalar(Scalar::from_f32(res), dest)?;
+            }
+
+            #[rustfmt::skip]
+            | "minnumf64"
+            | "maxnumf64"
+            | "copysignf64"
+            => {
+                let a = this.read_scalar(args[0])?.to_f64()?;
+                let b = this.read_scalar(args[1])?.to_f64()?;
+                let res = match intrinsic_name {
+                    "minnumf64" => a.min(b),
+                    "maxnumf64" => a.max(b),
+                    "copysignf64" => a.copy_sign(b),
+                    _ => bug!(),
+                };
+                this.write_scalar(Scalar::from_f64(res), dest)?;
+            }
+            
+            "powf32" => {
+                // FIXME: Using host floats.
+                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
+                let f2 = f32::from_bits(this.read_scalar(args[1])?.to_u32()?);
+                this.write_scalar(Scalar::from_u32(f.powf(f2).to_bits()), dest)?;
+            }
+
+            "powf64" => {
+                // FIXME: Using host floats.
+                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
+                let f2 = f64::from_bits(this.read_scalar(args[1])?.to_u64()?);
+                this.write_scalar(Scalar::from_u64(f.powf(f2).to_bits()), dest)?;
+            }
+
+            "fmaf32" => {
+                let a = this.read_scalar(args[0])?.to_f32()?;
+                let b = this.read_scalar(args[1])?.to_f32()?;
+                let c = this.read_scalar(args[2])?.to_f32()?;
+                let res = a.mul_add(b, c).value;
+                this.write_scalar(Scalar::from_f32(res), dest)?;
+            }
+
+            "fmaf64" => {
+                let a = this.read_scalar(args[0])?.to_f64()?;
+                let b = this.read_scalar(args[1])?.to_f64()?;
+                let c = this.read_scalar(args[2])?.to_f64()?;
+                let res = a.mul_add(b, c).value;
+                this.write_scalar(Scalar::from_f64(res), dest)?;
+            }
+
+            "powif32" => {
+                // FIXME: Using host floats.
+                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
+                let i = this.read_scalar(args[1])?.to_i32()?;
+                this.write_scalar(Scalar::from_u32(f.powi(i).to_bits()), dest)?;
+            }
+
+            "powif64" => {
+                // FIXME: Using host floats.
+                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
+                let i = this.read_scalar(args[1])?.to_i32()?;
+                this.write_scalar(Scalar::from_u64(f.powi(i).to_bits()), dest)?;
+            }
+
+            // Atomic operations
             #[rustfmt::skip]
             | "atomic_load"
             | "atomic_load_relaxed"
@@ -220,168 +426,54 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_immediate(*val, place.into())?;
             }
 
-            "breakpoint" => unimplemented!(), // halt miri
-
-            #[rustfmt::skip]
-            | "copy"
-            | "copy_nonoverlapping"
-            => {
-                let elem_ty = substs.type_at(0);
-                let elem_layout = this.layout_of(elem_ty)?;
-                let elem_size = elem_layout.size.bytes();
-                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
-                let elem_align = elem_layout.align.abi;
-
-                let size = Size::from_bytes(count * elem_size);
-                let src = this.read_scalar(args[0])?.not_undef()?;
-                let src = this.memory.check_ptr_access(src, size, elem_align)?;
-                let dest = this.read_scalar(args[1])?.not_undef()?;
-                let dest = this.memory.check_ptr_access(dest, size, elem_align)?;
-
-                if let (Some(src), Some(dest)) = (src, dest) {
-                    this.memory.copy(
-                        src,
-                        dest,
-                        size,
-                        intrinsic_name.ends_with("_nonoverlapping"),
-                    )?;
+            // Query type information
+            "assert_inhabited" |
+            "assert_zero_valid" |
+            "assert_uninit_valid" => {
+                let ty = substs.type_at(0);
+                let layout = this.layout_of(ty)?;
+                // Abort here because the caller might not be panic safe.
+                if layout.abi.is_uninhabited() {
+                    throw_machine_stop!(TerminationInfo::Abort(Some(format!("attempted to instantiate uninhabited type `{}`", ty))))
+                }
+                if intrinsic_name == "assert_zero_valid" && !layout.might_permit_raw_init(this, /*zero:*/ true).unwrap() {
+                    throw_machine_stop!(TerminationInfo::Abort(Some(format!("attempted to zero-initialize type `{}`, which is invalid", ty))))
+                }
+                if intrinsic_name == "assert_uninit_valid" && !layout.might_permit_raw_init(this, /*zero:*/ false).unwrap() {
+                    throw_machine_stop!(TerminationInfo::Abort(Some(format!("attempted to leave type `{}` uninitialized, which is invalid", ty))))
                 }
             }
 
-            "discriminant_value" => {
-                let place = this.deref_operand(args[0])?;
-                let discr_val = this.read_discriminant(place.into())?.0;
-                this.write_scalar(Scalar::from_uint(discr_val, dest.layout.size), dest)?;
+            "min_align_of_val" => {
+                let mplace = this.deref_operand(args[0])?;
+                let (_, align) = this
+                    .size_and_align_of_mplace(mplace)?
+                    .expect("size_of_val called on extern type");
+                this.write_scalar(Scalar::from_machine_usize(align.bytes(), this), dest)?;
             }
 
-            #[rustfmt::skip]
-            | "sinf32"
-            | "fabsf32"
-            | "cosf32"
-            | "sqrtf32"
-            | "expf32"
-            | "exp2f32"
-            | "logf32"
-            | "log10f32"
-            | "log2f32"
-            | "floorf32"
-            | "ceilf32"
-            | "truncf32"
-            | "roundf32"
-            => {
-                // FIXME: Using host floats.
-                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
-                let f = match intrinsic_name {
-                    "sinf32" => f.sin(),
-                    "fabsf32" => f.abs(),
-                    "cosf32" => f.cos(),
-                    "sqrtf32" => f.sqrt(),
-                    "expf32" => f.exp(),
-                    "exp2f32" => f.exp2(),
-                    "logf32" => f.ln(),
-                    "log10f32" => f.log10(),
-                    "log2f32" => f.log2(),
-                    "floorf32" => f.floor(),
-                    "ceilf32" => f.ceil(),
-                    "truncf32" => f.trunc(),
-                    "roundf32" => f.round(),
-                    _ => bug!(),
-                };
-                this.write_scalar(Scalar::from_u32(f.to_bits()), dest)?;
+            "size_of_val" => {
+                let mplace = this.deref_operand(args[0])?;
+                let (size, _) = this
+                    .size_and_align_of_mplace(mplace)?
+                    .expect("size_of_val called on extern type");
+                this.write_scalar(Scalar::from_machine_usize(size.bytes(), this), dest)?;
             }
 
-            #[rustfmt::skip]
-            | "sinf64"
-            | "fabsf64"
-            | "cosf64"
-            | "sqrtf64"
-            | "expf64"
-            | "exp2f64"
-            | "logf64"
-            | "log10f64"
-            | "log2f64"
-            | "floorf64"
-            | "ceilf64"
-            | "truncf64"
-            | "roundf64"
-            => {
-                // FIXME: Using host floats.
-                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
-                let f = match intrinsic_name {
-                    "sinf64" => f.sin(),
-                    "fabsf64" => f.abs(),
-                    "cosf64" => f.cos(),
-                    "sqrtf64" => f.sqrt(),
-                    "expf64" => f.exp(),
-                    "exp2f64" => f.exp2(),
-                    "logf64" => f.ln(),
-                    "log10f64" => f.log10(),
-                    "log2f64" => f.log2(),
-                    "floorf64" => f.floor(),
-                    "ceilf64" => f.ceil(),
-                    "truncf64" => f.trunc(),
-                    "roundf64" => f.round(),
-                    _ => bug!(),
-                };
-                this.write_scalar(Scalar::from_u64(f.to_bits()), dest)?;
-            }
-
-            #[rustfmt::skip]
-            | "fadd_fast"
-            | "fsub_fast"
-            | "fmul_fast"
-            | "fdiv_fast"
-            | "frem_fast"
-            => {
-                let a = this.read_immediate(args[0])?;
-                let b = this.read_immediate(args[1])?;
-                let op = match intrinsic_name {
-                    "fadd_fast" => mir::BinOp::Add,
-                    "fsub_fast" => mir::BinOp::Sub,
-                    "fmul_fast" => mir::BinOp::Mul,
-                    "fdiv_fast" => mir::BinOp::Div,
-                    "frem_fast" => mir::BinOp::Rem,
-                    _ => bug!(),
-                };
-                this.binop_ignore_overflow(op, a, b, dest)?;
-            }
-
-            #[rustfmt::skip]
-            | "minnumf32"
-            | "maxnumf32"
-            | "copysignf32"
-            => {
-                let a = this.read_scalar(args[0])?.to_f32()?;
-                let b = this.read_scalar(args[1])?.to_f32()?;
-                let res = match intrinsic_name {
-                    "minnumf32" => a.min(b),
-                    "maxnumf32" => a.max(b),
-                    "copysignf32" => a.copy_sign(b),
-                    _ => bug!(),
-                };
-                this.write_scalar(Scalar::from_f32(res), dest)?;
-            }
-
-            #[rustfmt::skip]
-            | "minnumf64"
-            | "maxnumf64"
-            | "copysignf64"
-            => {
-                let a = this.read_scalar(args[0])?.to_f64()?;
-                let b = this.read_scalar(args[1])?.to_f64()?;
-                let res = match intrinsic_name {
-                    "minnumf64" => a.min(b),
-                    "maxnumf64" => a.max(b),
-                    "copysignf64" => a.copy_sign(b),
-                    _ => bug!(),
-                };
-                this.write_scalar(Scalar::from_f64(res), dest)?;
+            // Other
+            "assume" => {
+                let cond = this.read_scalar(args[0])?.to_bool()?;
+                if !cond {
+                    throw_ub_format!("`assume` intrinsic called with `false`");
+                }
             }
 
             "exact_div" =>
                 this.exact_div(this.read_immediate(args[0])?, this.read_immediate(args[1])?, dest)?,
 
-            "forget" => {}
+            "forget" => {
+                // We get an argument... and forget about it.
+            }
 
             #[rustfmt::skip]
             | "likely"
@@ -392,175 +484,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_immediate(*b, dest)?;
             }
 
-            "init" => {
-                // Check fast path: we don't want to force an allocation in case the destination is a simple value,
-                // but we also do not want to create a new allocation with 0s and then copy that over.
-                // FIXME: We do not properly validate in case of ZSTs and when doing it in memory!
-                // However, this only affects direct calls of the intrinsic; calls to the stable
-                // functions wrapping them do get their validation.
-                // FIXME: should we check that the destination pointer is aligned even for ZSTs?
-                if !dest.layout.is_zst() {
-                    match dest.layout.abi {
-                        layout::Abi::Scalar(ref s) => {
-                            let x = Scalar::from_int(0, s.value.size(this));
-                            this.write_scalar(x, dest)?;
-                        }
-                        layout::Abi::ScalarPair(ref s1, ref s2) => {
-                            let x = Scalar::from_int(0, s1.value.size(this));
-                            let y = Scalar::from_int(0, s2.value.size(this));
-                            this.write_immediate(Immediate::ScalarPair(x.into(), y.into()), dest)?;
-                        }
-                        _ => {
-                            // Do it in memory
-                            let mplace = this.force_allocation(dest)?;
-                            assert!(!mplace.layout.is_unsized());
-                            this.memory.write_bytes(
-                                mplace.ptr,
-                                iter::repeat(0u8).take(dest.layout.size.bytes() as usize),
-                            )?;
-                        }
-                    }
-                }
-            }
-
-            "pref_align_of" => {
-                let ty = substs.type_at(0);
-                let layout = this.layout_of(ty)?;
-                let align = layout.align.pref.bytes();
-                let ptr_size = this.pointer_size();
-                let align_val = Scalar::from_uint(align as u128, ptr_size);
-                this.write_scalar(align_val, dest)?;
-            }
-
-            "move_val_init" => {
-                let place = this.deref_operand(args[0])?;
-                this.copy_op(args[1], place.into())?;
-            }
-
-            "offset" => {
-                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
-                let ptr = this.read_scalar(args[0])?.not_undef()?;
-                let result_ptr = this.pointer_offset_inbounds(ptr, substs.type_at(0), offset)?;
-                this.write_scalar(result_ptr, dest)?;
-            }
-
-            "panic_if_uninhabited" => {
-                let ty = substs.type_at(0);
-                let layout = this.layout_of(ty)?;
-                if layout.abi.is_uninhabited() {
-                    // FIXME: This should throw a panic in the interpreted program instead.
-                    throw_unsup_format!("Trying to instantiate uninhabited type {}", ty)
-                }
-            }
-
-            "powf32" => {
-                // FIXME: Using host floats.
-                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
-                let f2 = f32::from_bits(this.read_scalar(args[1])?.to_u32()?);
-                this.write_scalar(Scalar::from_u32(f.powf(f2).to_bits()), dest)?;
-            }
-
-            "powf64" => {
-                // FIXME: Using host floats.
-                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
-                let f2 = f64::from_bits(this.read_scalar(args[1])?.to_u64()?);
-                this.write_scalar(Scalar::from_u64(f.powf(f2).to_bits()), dest)?;
-            }
-
-            "fmaf32" => {
-                let a = this.read_scalar(args[0])?.to_f32()?;
-                let b = this.read_scalar(args[1])?.to_f32()?;
-                let c = this.read_scalar(args[2])?.to_f32()?;
-                let res = a.mul_add(b, c).value;
-                this.write_scalar(Scalar::from_f32(res), dest)?;
-            }
-
-            "fmaf64" => {
-                let a = this.read_scalar(args[0])?.to_f64()?;
-                let b = this.read_scalar(args[1])?.to_f64()?;
-                let c = this.read_scalar(args[2])?.to_f64()?;
-                let res = a.mul_add(b, c).value;
-                this.write_scalar(Scalar::from_f64(res), dest)?;
-            }
-
-            "powif32" => {
-                // FIXME: Using host floats.
-                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
-                let i = this.read_scalar(args[1])?.to_i32()?;
-                this.write_scalar(Scalar::from_u32(f.powi(i).to_bits()), dest)?;
-            }
-
-            "powif64" => {
-                // FIXME: Using host floats.
-                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
-                let i = this.read_scalar(args[1])?.to_i32()?;
-                this.write_scalar(Scalar::from_u64(f.powi(i).to_bits()), dest)?;
-            }
-
-            "size_of_val" => {
-                let mplace = this.deref_operand(args[0])?;
-                let (size, _) = this
-                    .size_and_align_of_mplace(mplace)?
-                    .expect("size_of_val called on extern type");
-                let ptr_size = this.pointer_size();
-                this.write_scalar(Scalar::from_uint(size.bytes() as u128, ptr_size), dest)?;
-            }
-
-            #[rustfmt::skip]
-            | "min_align_of_val"
-            | "align_of_val"
-            => {
-                let mplace = this.deref_operand(args[0])?;
-                let (_, align) = this
-                    .size_and_align_of_mplace(mplace)?
-                    .expect("size_of_val called on extern type");
-                let ptr_size = this.pointer_size();
-                this.write_scalar(Scalar::from_uint(align.bytes(), ptr_size), dest)?;
-            }
-
-            "uninit" => {
-                // Check fast path: we don't want to force an allocation in case the destination is a simple value,
-                // but we also do not want to create a new allocation with 0s and then copy that over.
-                // FIXME: We do not properly validate in case of ZSTs and when doing it in memory!
-                // However, this only affects direct calls of the intrinsic; calls to the stable
-                // functions wrapping them do get their validation.
-                // FIXME: should we check alignment for ZSTs?
-                if !dest.layout.is_zst() {
-                    match dest.layout.abi {
-                        layout::Abi::Scalar(..) => {
-                            let x = ScalarMaybeUndef::Undef;
-                            this.write_immediate(Immediate::Scalar(x), dest)?;
-                        }
-                        layout::Abi::ScalarPair(..) => {
-                            let x = ScalarMaybeUndef::Undef;
-                            this.write_immediate(Immediate::ScalarPair(x, x), dest)?;
-                        }
-                        _ => {
-                            // Do it in memory
-                            let mplace = this.force_allocation(dest)?;
-                            assert!(!mplace.layout.is_unsized());
-                            let ptr = mplace.ptr.assert_ptr();
-                            // We know the return place is in-bounds
-                            this.memory.get_raw_mut(ptr.alloc_id)?.mark_definedness(
-                                ptr,
-                                dest.layout.size,
-                                false,
-                            );
-                        }
-                    }
-                }
-            }
-
-            "write_bytes" => {
-                let ty = substs.type_at(0);
-                let ty_layout = this.layout_of(ty)?;
-                let val_byte = this.read_scalar(args[1])?.to_u8()?;
-                let ptr = this.read_scalar(args[0])?.not_undef()?;
-                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
-                let byte_count = ty_layout.size * count;
-                this.memory
-                    .write_bytes(ptr, iter::repeat(val_byte).take(byte_count.bytes() as usize))?;
-            }
+            "try" => return this.handle_try(args, dest, ret),
 
             name => throw_unsup_format!("unimplemented intrinsic: {}", name),
         }

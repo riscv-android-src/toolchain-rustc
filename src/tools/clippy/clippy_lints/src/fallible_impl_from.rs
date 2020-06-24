@@ -1,10 +1,12 @@
-use crate::utils::paths::{BEGIN_PANIC, BEGIN_PANIC_FMT, FROM_TRAIT, OPTION, RESULT};
-use crate::utils::{is_expn_of, match_def_path, method_chain_args, span_lint_and_then, walk_ptrs_ty};
+use crate::utils::paths::{BEGIN_PANIC, BEGIN_PANIC_FMT, FROM_TRAIT};
+use crate::utils::{
+    is_expn_of, is_type_diagnostic_item, match_def_path, method_chain_args, span_lint_and_then, walk_ptrs_ty,
+};
 use if_chain::if_chain;
-use rustc::hir::map::Map;
-use rustc::ty::{self, Ty};
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::hir::map::Map;
+use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::Span;
 
@@ -76,7 +78,9 @@ fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_it
             // check for `unwrap`
             if let Some(arglists) = method_chain_args(expr, &["unwrap"]) {
                 let reciever_ty = walk_ptrs_ty(self.tables.expr_ty(&arglists[0][0]));
-                if match_type(self.lcx, reciever_ty, &OPTION) || match_type(self.lcx, reciever_ty, &RESULT) {
+                if is_type_diagnostic_item(self.lcx, reciever_ty, sym!(option_type))
+                    || is_type_diagnostic_item(self.lcx, reciever_ty, sym!(result_type))
+                {
                     self.result.push(expr.span);
                 }
             }
@@ -85,7 +89,7 @@ fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_it
             intravisit::walk_expr(self, expr);
         }
 
-        fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+        fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
             NestedVisitorMap::None
         }
     }
@@ -93,7 +97,7 @@ fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_it
     for impl_item in impl_items {
         if_chain! {
             if impl_item.ident.name == sym!(from);
-            if let ImplItemKind::Method(_, body_id) =
+            if let ImplItemKind::Fn(_, body_id) =
                 cx.tcx.hir().impl_item(impl_item.id).kind;
             then {
                 // check the body for `begin_panic` or `unwrap`
@@ -113,21 +117,14 @@ fn lint_impl_body<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, impl_span: Span, impl_it
                         FALLIBLE_IMPL_FROM,
                         impl_span,
                         "consider implementing `TryFrom` instead",
-                        move |db| {
-                            db.help(
+                        move |diag| {
+                            diag.help(
                                 "`From` is intended for infallible conversions only. \
                                  Use `TryFrom` if there's a possibility for the conversion to fail.");
-                            db.span_note(fpu.result, "potential failure(s)");
+                            diag.span_note(fpu.result, "potential failure(s)");
                         });
                 }
             }
         }
-    }
-}
-
-fn match_type(cx: &LateContext<'_, '_>, ty: Ty<'_>, path: &[&str]) -> bool {
-    match ty.kind {
-        ty::Adt(adt, _) => match_def_path(cx, adt.did, path),
-        _ => false,
     }
 }

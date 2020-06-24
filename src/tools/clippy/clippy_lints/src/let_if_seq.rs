@@ -1,12 +1,12 @@
 use crate::utils::{higher, qpath_res, snippet, span_lint_and_then};
 use if_chain::if_chain;
-use rustc::hir::map::Map;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::def::Res;
 use rustc_hir::intravisit;
 use rustc_hir::BindingAnnotation;
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 
 declare_clippy_lint! {
@@ -120,15 +120,15 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LetIfSeq {
                                        USELESS_LET_IF_SEQ,
                                        span,
                                        "`if _ { .. } else { .. }` is an expression",
-                                       |db| {
-                                           db.span_suggestion(
+                                       |diag| {
+                                           diag.span_suggestion(
                                                 span,
                                                 "it is more idiomatic to write",
                                                 sug,
                                                 Applicability::HasPlaceholders,
                                             );
                                            if !mutability.is_empty() {
-                                               db.note("you might not need `mut` at all");
+                                               diag.note("you might not need `mut` at all");
                                            }
                                        });
                 }
@@ -158,7 +158,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for UsedVisitor<'a, 'tcx> {
         }
         intravisit::walk_expr(self, expr);
     }
-    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<Self::Map> {
         intravisit::NestedVisitorMap::None
     }
 }

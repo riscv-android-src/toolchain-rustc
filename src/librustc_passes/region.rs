@@ -2,14 +2,10 @@
 //! the parent links in the region hierarchy.
 //!
 //! For more information about how MIR-based region-checking works,
-//! see the [rustc guide].
+//! see the [rustc dev guide].
 //!
-//! [rustc guide]: https://rust-lang.github.io/rustc-guide/borrow_check.html
+//! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/borrow_check.html
 
-use rustc::hir::map::Map;
-use rustc::middle::region::*;
-use rustc::ty::query::Providers;
-use rustc::ty::TyCtxt;
 use rustc_ast::walk_list;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
@@ -17,6 +13,9 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::{Arm, Block, Expr, Local, Node, Pat, PatKind, Stmt};
 use rustc_index::vec::Idx;
+use rustc_middle::middle::region::*;
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::TyCtxt;
 use rustc_span::source_map;
 use rustc_span::Span;
 
@@ -28,8 +27,8 @@ pub struct Context {
     /// of the innermost fn body. Each fn forms its own disjoint tree
     /// in the region hierarchy. These fn bodies are themselves
     /// arranged into a tree. See the "Modeling closures" section of
-    /// the README in `infer::region_constraints` for more
-    /// details.
+    /// the README in `rustc_trait_selection::infer::region_constraints`
+    /// for more details.
     root_id: Option<hir::ItemLocalId>,
 
     /// The scope that contains any new variables declared, plus its depth in
@@ -566,8 +565,10 @@ fn resolve_local<'tcx>(
             PatKind::Box(ref subpat) => is_binding_pat(&subpat),
 
             PatKind::Ref(_, _)
-            | PatKind::Binding(hir::BindingAnnotation::Unannotated, ..)
-            | PatKind::Binding(hir::BindingAnnotation::Mutable, ..)
+            | PatKind::Binding(
+                hir::BindingAnnotation::Unannotated | hir::BindingAnnotation::Mutable,
+                ..,
+            )
             | PatKind::Wild
             | PatKind::Path(_)
             | PatKind::Lit(_)
@@ -696,9 +697,9 @@ impl<'tcx> RegionResolutionVisitor<'tcx> {
 }
 
 impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
-    type Map = Map<'tcx>;
+    type Map = intravisit::ErasedMap<'tcx>;
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 
@@ -718,9 +719,17 @@ impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
             self.cx.parent
         );
 
+        // Save all state that is specific to the outer function
+        // body. These will be restored once down below, once we've
+        // visited the body.
         let outer_ec = mem::replace(&mut self.expr_and_pat_count, 0);
         let outer_cx = self.cx;
         let outer_ts = mem::take(&mut self.terminating_scopes);
+        // The 'pessimistic yield' flag is set to true when we are
+        // processing a `+=` statement and have to make pessimistic
+        // control flow assumptions. This doesn't apply to nested
+        // bodies within the `+=` statements. See #69307.
+        let outer_pessimistic_yield = mem::replace(&mut self.pessimistic_yield, false);
         self.terminating_scopes.insert(body.value.hir_id.local_id);
 
         if let Some(root_id) = self.cx.root_id {
@@ -772,6 +781,7 @@ impl<'tcx> Visitor<'tcx> for RegionResolutionVisitor<'tcx> {
         self.expr_and_pat_count = outer_ec;
         self.cx = outer_cx;
         self.terminating_scopes = outer_ts;
+        self.pessimistic_yield = outer_pessimistic_yield;
     }
 
     fn visit_arm(&mut self, a: &'tcx Arm<'tcx>) {

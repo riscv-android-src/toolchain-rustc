@@ -43,7 +43,7 @@ use crate::intrinsics;
 ///
 /// assert_eq!(div_1(7, 0), 7);
 /// assert_eq!(div_1(9, 1), 4);
-/// assert_eq!(div_1(11, std::u32::MAX), 0);
+/// assert_eq!(div_1(11, u32::MAX), 0);
 /// ```
 #[inline]
 #[stable(feature = "unreachable", since = "1.27.0")]
@@ -113,7 +113,7 @@ pub fn black_box<T>(dummy: T) -> T {
     // box. This isn't the greatest implementation since it probably deoptimizes
     // more than we want, but it's so far good enough.
     unsafe {
-        asm!("" : : "r"(&dummy));
-        return dummy;
+        llvm_asm!("" : : "r"(&dummy));
+        dummy
     }
 }

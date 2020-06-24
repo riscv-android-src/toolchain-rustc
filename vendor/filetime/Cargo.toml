@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "filetime"
-version = "0.2.8"
+version = "0.2.9"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 description = "Platform-agnostic accessors of timestamps in File metadata\n"
 homepage = "https://github.com/alexcrichton/filetime"

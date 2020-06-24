@@ -26,15 +26,15 @@
 
 use crate::transform::MirSource;
 use crate::util::pretty::{dump_enabled, write_basic_block, write_mir_intro};
-use rustc::mir::visit::{
-    MutatingUseContext, NonMutatingUseContext, NonUseContext, PlaceContext, Visitor,
-};
-use rustc::mir::Local;
-use rustc::mir::*;
-use rustc::ty::{self, TyCtxt};
 use rustc_data_structures::work_queue::WorkQueue;
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::{Idx, IndexVec};
+use rustc_middle::mir::visit::{
+    MutatingUseContext, NonMutatingUseContext, NonUseContext, PlaceContext, Visitor,
+};
+use rustc_middle::mir::Local;
+use rustc_middle::mir::*;
+use rustc_middle::ty::{self, TyCtxt};
 use std::fs;
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -232,7 +232,7 @@ impl<'tcx> Visitor<'tcx> for DefsUsesVisitor {
     fn visit_local(&mut self, &local: &Local, context: PlaceContext, _: Location) {
         match categorize(context) {
             Some(DefUse::Def) => self.defs_uses.add_def(local),
-            Some(DefUse::Use) | Some(DefUse::Drop) => self.defs_uses.add_use(local),
+            Some(DefUse::Use | DefUse::Drop) => self.defs_uses.add_use(local),
             _ => (),
         }
     }
@@ -265,7 +265,7 @@ pub fn dump_mir<'tcx>(
     body: &Body<'tcx>,
     result: &LivenessResult,
 ) {
-    if !dump_enabled(tcx, pass_name, source) {
+    if !dump_enabled(tcx, pass_name, source.def_id()) {
         return;
     }
     let node_path = ty::print::with_forced_impl_filename_line(|| {
@@ -293,7 +293,7 @@ fn dump_matched_mir_node<'tcx>(
         writeln!(file, "// MIR local liveness analysis for `{}`", node_path)?;
         writeln!(file, "// source = {:?}", source)?;
         writeln!(file, "// pass_name = {}", pass_name)?;
-        writeln!(file, "")?;
+        writeln!(file)?;
         write_mir_fn(tcx, source, body, &mut file, result)?;
         Ok(())
     });
@@ -316,7 +316,7 @@ pub fn write_mir_fn<'tcx>(
         write_basic_block(tcx, block, body, &mut |_, _| Ok(()), w)?;
         print(w, "   ", &result.outs)?;
         if block.index() + 1 != body.basic_blocks().len() {
-            writeln!(w, "")?;
+            writeln!(w)?;
         }
     }
 

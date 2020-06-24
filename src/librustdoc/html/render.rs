@@ -42,16 +42,15 @@ use std::rc::Rc;
 use std::str;
 use std::sync::Arc;
 
-use rustc::middle::privacy::AccessLevels;
-use rustc::middle::stability;
-use rustc_ast::ast;
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::flock;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_feature::UnstableFeatures;
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_hir::Mutability;
+use rustc_middle::middle::privacy::AccessLevels;
+use rustc_middle::middle::stability;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::FileName;
@@ -59,8 +58,8 @@ use rustc_span::symbol::{sym, Symbol};
 use serde::ser::SerializeSeq;
 use serde::{Serialize, Serializer};
 
-use crate::clean::{self, AttributesExt, Deprecation, GetDefId, SelfTy};
-use crate::config::RenderOptions;
+use crate::clean::{self, AttributesExt, Deprecation, GetDefId, SelfTy, TypeKind};
+use crate::config::{OutputFormat, RenderOptions};
 use crate::docfs::{DocFS, ErrorStorage, PathError};
 use crate::doctree;
 use crate::html::escape::Escape;
@@ -270,6 +269,7 @@ pub struct RenderInfo {
     pub deref_trait_did: Option<DefId>,
     pub deref_mut_trait_did: Option<DefId>,
     pub owned_box_did: Option<DefId>,
+    pub output_format: Option<OutputFormat>,
 }
 
 // Helper structs for rendering items/sidebars and carrying along contextual
@@ -302,19 +302,25 @@ impl Serialize for IndexItem {
 
 /// A type used for the search index.
 #[derive(Debug)]
-struct Type {
+struct RenderType {
+    ty: Option<DefId>,
+    idx: Option<usize>,
     name: Option<String>,
-    generics: Option<Vec<String>>,
+    generics: Option<Vec<Generic>>,
 }
 
-impl Serialize for Type {
+impl Serialize for RenderType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         if let Some(name) = &self.name {
             let mut seq = serializer.serialize_seq(None)?;
-            seq.serialize_element(&name)?;
+            if let Some(id) = self.idx {
+                seq.serialize_element(&id)?;
+            } else {
+                seq.serialize_element(&name)?;
+            }
             if let Some(generics) = &self.generics {
                 seq.serialize_element(&generics)?;
             }
@@ -325,11 +331,32 @@ impl Serialize for Type {
     }
 }
 
+/// A type used for the search index.
+#[derive(Debug)]
+struct Generic {
+    name: String,
+    defid: Option<DefId>,
+    idx: Option<usize>,
+}
+
+impl Serialize for Generic {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if let Some(id) = self.idx {
+            serializer.serialize_some(&id)
+        } else {
+            serializer.serialize_some(&self.name)
+        }
+    }
+}
+
 /// Full type of functions/methods in the search index.
 #[derive(Debug)]
 struct IndexItemFunctionType {
-    inputs: Vec<Type>,
-    output: Option<Vec<Type>>,
+    inputs: Vec<TypeWithKind>,
+    output: Option<Vec<TypeWithKind>>,
 }
 
 impl Serialize for IndexItemFunctionType {
@@ -340,8 +367,8 @@ impl Serialize for IndexItemFunctionType {
         // If we couldn't figure out a type, just write `null`.
         let mut iter = self.inputs.iter();
         if match self.output {
-            Some(ref output) => iter.chain(output.iter()).any(|ref i| i.name.is_none()),
-            None => iter.any(|ref i| i.name.is_none()),
+            Some(ref output) => iter.chain(output.iter()).any(|ref i| i.ty.name.is_none()),
+            None => iter.any(|ref i| i.ty.name.is_none()),
         } {
             serializer.serialize_none()
         } else {
@@ -356,6 +383,31 @@ impl Serialize for IndexItemFunctionType {
             }
             seq.end()
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct TypeWithKind {
+    ty: RenderType,
+    kind: TypeKind,
+}
+
+impl From<(RenderType, TypeKind)> for TypeWithKind {
+    fn from(x: (RenderType, TypeKind)) -> TypeWithKind {
+        TypeWithKind { ty: x.0, kind: x.1 }
+    }
+}
+
+impl Serialize for TypeWithKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut seq = serializer.serialize_seq(None)?;
+        seq.serialize_element(&self.ty.name)?;
+        let x: ItemType = self.kind.into();
+        seq.serialize_element(&x)?;
+        seq.end()
     }
 }
 
@@ -413,7 +465,7 @@ pub fn run(
     } = options;
 
     let src_root = match krate.src {
-        FileName::Real(ref p) => match p.parent() {
+        FileName::Real(ref p) => match p.local_path().parent() {
             Some(p) => p.to_path_buf(),
             None => PathBuf::new(),
         },
@@ -730,7 +782,38 @@ themePicker.onblur = handleThemeButtonsBlur;
                         .split('"')
                         .next()
                         .map(|s| s.to_owned())
-                        .unwrap_or_else(|| String::new()),
+                        .unwrap_or_else(String::new),
+                );
+            }
+        }
+        Ok((ret, krates))
+    }
+
+    fn collect_json(path: &Path, krate: &str) -> io::Result<(Vec<String>, Vec<String>)> {
+        let mut ret = Vec::new();
+        let mut krates = Vec::new();
+
+        if path.exists() {
+            for line in BufReader::new(File::open(path)?).lines() {
+                let line = line?;
+                if !line.starts_with("\"") {
+                    continue;
+                }
+                if line.starts_with(&format!("\"{}\"", krate)) {
+                    continue;
+                }
+                if line.ends_with(",\\") {
+                    ret.push(line[..line.len() - 2].to_string());
+                } else {
+                    // Ends with "\\" (it's the case for the last added crate line)
+                    ret.push(line[..line.len() - 1].to_string());
+                }
+                krates.push(
+                    line.split('"')
+                        .filter(|s| !s.is_empty())
+                        .next()
+                        .map(|s| s.to_owned())
+                        .unwrap_or_else(String::new),
                 );
             }
         }
@@ -857,18 +940,18 @@ themePicker.onblur = handleThemeButtonsBlur;
 
     // Update the search index
     let dst = cx.dst.join(&format!("search-index{}.js", cx.shared.resource_suffix));
-    let (mut all_indexes, mut krates) = try_err!(collect(&dst, &krate.name, "searchIndex"), &dst);
+    let (mut all_indexes, mut krates) = try_err!(collect_json(&dst, &krate.name), &dst);
     all_indexes.push(search_index);
 
     // Sort the indexes by crate so the file will be generated identically even
     // with rustdoc running in parallel.
     all_indexes.sort();
     {
-        let mut v = String::from("var searchIndex={};\n");
-        v.push_str(&all_indexes.join("\n"));
+        let mut v = String::from("var searchIndex = JSON.parse('{\\\n");
+        v.push_str(&all_indexes.join(",\\\n"));
         // "addSearchOptions" has to be called first so the crate filtering can be set before the
         // search might start (if it's set into the URL for example).
-        v.push_str("\naddSearchOptions(searchIndex);initSearch(searchIndex);");
+        v.push_str("\\\n}');\naddSearchOptions(searchIndex);initSearch(searchIndex);");
         cx.shared.fs.write(&dst, &v)?;
     }
     if options.enable_index_page {
@@ -1542,7 +1625,7 @@ impl Context {
         }
 
         if self.shared.sort_modules_alphabetically {
-            for (_, items) in &mut map {
+            for items in map.values_mut() {
                 items.sort();
             }
         }
@@ -1565,20 +1648,21 @@ impl Context {
 
         let mut path = String::new();
 
-        // We can safely ignore macros from other libraries
+        // We can safely ignore synthetic `SourceFile`s.
         let file = match item.source.filename {
-            FileName::Real(ref path) => path,
+            FileName::Real(ref path) => path.local_path().to_path_buf(),
             _ => return None,
         };
+        let file = &file;
 
-        let (krate, path) = if item.def_id.is_local() {
+        let (krate, path) = if item.source.cnum == LOCAL_CRATE {
             if let Some(path) = self.shared.local_sources.get(file) {
                 (&self.shared.layout.krate, path)
             } else {
                 return None;
             }
         } else {
-            let (krate, src_root) = match *self.cache.extern_locations.get(&item.def_id.krate)? {
+            let (krate, src_root) = match *self.cache.extern_locations.get(&item.source.cnum)? {
                 (ref name, ref src, Local) => (name, src),
                 (ref name, ref src, Remote(ref s)) => {
                     root = s.to_string();
@@ -2106,7 +2190,7 @@ fn item_module(w: &mut Buffer, cx: &Context, item: &clean::Item, items: &[clean:
                     docs = MarkdownSummaryLine(doc_value, &myitem.links()).to_string(),
                     class = myitem.type_(),
                     add = add,
-                    stab = stab.unwrap_or_else(|| String::new()),
+                    stab = stab.unwrap_or_else(String::new),
                     unsafety_flag = unsafety_flag,
                     href = item_path(myitem.type_(), myitem.name.as_ref().unwrap()),
                     title = [full_path(cx, myitem), myitem.type_().to_string()]
@@ -3125,25 +3209,6 @@ fn item_enum(w: &mut Buffer, cx: &Context, it: &clean::Item, e: &clean::Enum) {
     render_assoc_items(w, cx, it, it.def_id, AssocItemRender::All)
 }
 
-fn render_attribute(attr: &ast::MetaItem) -> Option<String> {
-    let path = pprust::path_to_string(&attr.path);
-
-    if attr.is_word() {
-        Some(path)
-    } else if let Some(v) = attr.value_str() {
-        Some(format!("{} = {:?}", path, v))
-    } else if let Some(values) = attr.meta_item_list() {
-        let display: Vec<_> = values
-            .iter()
-            .filter_map(|attr| attr.meta_item().and_then(|mi| render_attribute(mi)))
-            .collect();
-
-        if !display.is_empty() { Some(format!("{}({})", path, display.join(", "))) } else { None }
-    } else {
-        None
-    }
-}
-
 const ATTRIBUTE_WHITELIST: &[Symbol] = &[
     sym::export_name,
     sym::lang,
@@ -3169,9 +3234,8 @@ fn render_attributes(w: &mut Buffer, it: &clean::Item, top: bool) {
         if !ATTRIBUTE_WHITELIST.contains(&attr.name_or_empty()) {
             continue;
         }
-        if let Some(s) = render_attribute(&attr.meta().unwrap()) {
-            attrs.push_str(&format!("#[{}]\n", s));
-        }
+
+        attrs.push_str(&pprust::attribute_to_string(&attr));
     }
     if !attrs.is_empty() {
         write!(
@@ -3395,10 +3459,8 @@ fn render_assoc_items(
         let deref_impl =
             traits.iter().find(|t| t.inner_impl().trait_.def_id() == c.deref_trait_did);
         if let Some(impl_) = deref_impl {
-            let has_deref_mut = traits
-                .iter()
-                .find(|t| t.inner_impl().trait_.def_id() == c.deref_mut_trait_did)
-                .is_some();
+            let has_deref_mut =
+                traits.iter().any(|t| t.inner_impl().trait_.def_id() == c.deref_mut_trait_did);
             render_deref_methods(w, cx, impl_, containing_item, has_deref_mut);
         }
 
@@ -3739,7 +3801,7 @@ fn render_impl(
     ) {
         for trait_item in &t.items {
             let n = trait_item.name.clone();
-            if i.items.iter().find(|m| m.name == n).is_some() {
+            if i.items.iter().any(|m| m.name == n) {
                 continue;
             }
             let did = i.trait_.as_ref().unwrap().def_id().unwrap();
@@ -4563,12 +4625,9 @@ fn collect_paths_for_type(first_ty: clean::Type) -> Vec<String> {
                 let get_extern = || cache.external_paths.get(&did).map(|s| s.0.clone());
                 let fqp = cache.exact_paths.get(&did).cloned().or_else(get_extern);
 
-                match fqp {
-                    Some(path) => {
-                        out.push(path.join("::"));
-                    }
-                    _ => {}
-                };
+                if let Some(path) = fqp {
+                    out.push(path.join("::"));
+                }
             }
             clean::Type::Tuple(tys) => {
                 work.extend(tys.into_iter());

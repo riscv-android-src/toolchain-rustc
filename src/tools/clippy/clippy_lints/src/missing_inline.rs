@@ -69,7 +69,7 @@ fn check_missing_inline_attrs(cx: &LateContext<'_, '_>, attrs: &[ast::Attribute]
 }
 
 fn is_executable(cx: &LateContext<'_, '_>) -> bool {
-    use rustc::session::config::CrateType;
+    use rustc_session::config::CrateType;
 
     cx.tcx.sess.crate_types.get().iter().any(|t: &CrateType| match t {
         CrateType::Executable => true,
@@ -81,7 +81,7 @@ declare_lint_pass!(MissingInline => [MISSING_INLINE_IN_PUBLIC_ITEMS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingInline {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, it: &'tcx hir::Item<'_>) {
-        if rustc::lint::in_external_macro(cx.sess(), it.span) || is_executable(cx) {
+        if rustc_middle::lint::in_external_macro(cx.sess(), it.span) || is_executable(cx) {
             return;
         }
 
@@ -100,7 +100,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingInline {
                     let tit_ = cx.tcx.hir().trait_item(tit.id);
                     match tit_.kind {
                         hir::TraitItemKind::Const(..) | hir::TraitItemKind::Type(..) => {},
-                        hir::TraitItemKind::Method(..) => {
+                        hir::TraitItemKind::Fn(..) => {
                             if tit.defaultness.has_value() {
                                 // trait method with default body needs inline in case
                                 // an impl is not provided
@@ -130,8 +130,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingInline {
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, impl_item: &'tcx hir::ImplItem<'_>) {
-        use rustc::ty::{ImplContainer, TraitContainer};
-        if rustc::lint::in_external_macro(cx.sess(), impl_item.span) || is_executable(cx) {
+        use rustc_middle::ty::{ImplContainer, TraitContainer};
+        if rustc_middle::lint::in_external_macro(cx.sess(), impl_item.span) || is_executable(cx) {
             return;
         }
 
@@ -141,7 +141,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingInline {
         }
 
         let desc = match impl_item.kind {
-            hir::ImplItemKind::Method(..) => "a method",
+            hir::ImplItemKind::Fn(..) => "a method",
             hir::ImplItemKind::Const(..) | hir::ImplItemKind::TyAlias(_) | hir::ImplItemKind::OpaqueTy(_) => return,
         };
 

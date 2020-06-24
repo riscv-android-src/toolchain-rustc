@@ -6,7 +6,7 @@ use std::ops::Not;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const XARGO_MIN_VERSION: (u32, u32, u32) = (0, 3, 19);
+const XARGO_MIN_VERSION: (u32, u32, u32) = (0, 3, 20);
 
 const CARGO_MIRI_HELP: &str = r#"Interprets bin crates and tests in Miri
 
@@ -115,7 +115,7 @@ fn list_targets() -> impl Iterator<Item = cargo_metadata::Target> {
         get_arg_flag_value("--manifest-path").map(|m| Path::new(&m).canonicalize().unwrap());
 
     let mut cmd = cargo_metadata::MetadataCommand::new();
-    if let Some(ref manifest_path) = manifest_path {
+    if let Some(manifest_path) = &manifest_path {
         cmd.manifest_path(manifest_path);
     }
     let mut metadata = if let Ok(metadata) = cmd.exec() {
@@ -131,7 +131,7 @@ fn list_targets() -> impl Iterator<Item = cargo_metadata::Target> {
         .iter()
         .position(|package| {
             let package_manifest_path = Path::new(&package.manifest_path);
-            if let Some(ref manifest_path) = manifest_path {
+            if let Some(manifest_path) = &manifest_path {
                 package_manifest_path == manifest_path
             } else {
                 let current_dir = current_dir.as_ref().expect("could not read current directory");
@@ -301,34 +301,19 @@ fn setup(ask_user: bool) {
                 .stdout;
             let sysroot = std::str::from_utf8(&sysroot).unwrap();
             let sysroot = Path::new(sysroot.trim_end_matches('\n'));
-            // First try: `$SYSROOT/lib/rustlib/src/rust`; test if that contains `Cargo.lock`.
-            let rustup_src = sysroot.join("lib").join("rustlib").join("src").join("rust");
-            let base_dir = if rustup_src.join("Cargo.lock").exists() {
-                // Just use this.
-                rustup_src
-            } else {
-                // Maybe this is a local toolchain built with `x.py` and linked into `rustup`?
-                // Second try: `$SYSROOT/../../..`; test if that contains `x.py`.
-                let local_src = sysroot.parent().and_then(Path::parent).and_then(Path::parent);
-                match local_src {
-                    Some(local_src) if local_src.join("x.py").exists() => {
-                        // Use this.
-                        PathBuf::from(local_src)
-                    }
-                    _ => {
-                        // Fallback: Ask the user to install the `rust-src` component, and use that.
-                        let mut cmd = Command::new("rustup");
-                        cmd.args(&["component", "add", "rust-src"]);
-                        ask_to_run(
-                            cmd,
-                            ask_user,
-                            "install the rustc-src component for the selected toolchain",
-                        );
-                        rustup_src
-                    }
-                }
-            };
-            base_dir.join("src") // Xargo wants the src-subdir
+            // Check for `$SYSROOT/lib/rustlib/src/rust/src`; test if that contains `libstd/lib.rs`.
+            let rustup_src = sysroot.join("lib").join("rustlib").join("src").join("rust").join("src");
+            if !rustup_src.join("libstd").join("lib.rs").exists() {
+                // Ask the user to install the `rust-src` component, and use that.
+                let mut cmd = Command::new("rustup");
+                cmd.args(&["component", "add", "rust-src"]);
+                ask_to_run(
+                    cmd,
+                    ask_user,
+                    "install the rustc-src component for the selected toolchain",
+                );
+            }
+            rustup_src
         }
     };
     if !rust_src.exists() {
@@ -383,8 +368,8 @@ path = "lib.rs"
     command.env("XARGO_HOME", &dir);
     command.env("XARGO_RUST_SRC", &rust_src);
     // Handle target flag.
-    if let Some(ref target) = target {
-        command.arg("--target").arg(&target);
+    if let Some(target) = &target {
+        command.arg("--target").arg(target);
     }
     // Finally run it!
     if command.status().expect("failed to run xargo").success().not() {
@@ -394,9 +379,9 @@ path = "lib.rs"
     // That should be it! But we need to figure out where xargo built stuff.
     // Unfortunately, it puts things into a different directory when the
     // architecture matches the host.
-    let is_host = match target {
+    let is_host = match &target {
         None => true,
-        Some(target) => target == rustc_version::version_meta().unwrap().host,
+        Some(target) => target == &rustc_version::version_meta().unwrap().host,
     };
     let sysroot = if is_host { dir.join("HOST") } else { PathBuf::from(dir) };
     std::env::set_var("MIRI_SYSROOT", &sysroot); // pass the env var to the processes we spawn, which will turn it into "--sysroot" flags
@@ -419,12 +404,12 @@ fn main() {
         return;
     }
 
-    if let Some("miri") = std::env::args().nth(1).as_ref().map(AsRef::as_ref) {
+    if let Some("miri") = std::env::args().nth(1).as_deref() {
         // This arm is for when `cargo miri` is called. We call `cargo check` for each applicable target,
         // but with the `RUSTC` env var set to the `cargo-miri` binary so that we come back in the other branch,
         // and dispatch the invocations to `rustc` and `miri`, respectively.
         in_cargo_miri();
-    } else if let Some("rustc") = std::env::args().nth(1).as_ref().map(AsRef::as_ref) {
+    } else if let Some("rustc") = std::env::args().nth(1).as_deref() {
         // This arm is executed when `cargo-miri` runs `cargo check` with the `RUSTC_WRAPPER` env var set to itself:
         // dependencies get dispatched to `rustc`, the final test/binary to `miri`.
         inside_cargo_rustc();
@@ -598,6 +583,6 @@ fn inside_cargo_rustc() {
             if !exit.success() {
                 std::process::exit(exit.code().unwrap_or(42));
             },
-        Err(ref e) => panic!("error running {:?}:\n{:?}", command, e),
+        Err(e) => panic!("error running {:?}:\n{:?}", command, e),
     }
 }

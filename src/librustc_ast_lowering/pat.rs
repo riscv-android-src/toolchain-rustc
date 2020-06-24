@@ -75,7 +75,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                 self.ban_illegal_rest_pat(p.span)
             }
             PatKind::Paren(ref inner) => return self.lower_pat(inner),
-            PatKind::Mac(_) => panic!("Shouldn't exist here"),
+            PatKind::MacCall(_) => panic!("Shouldn't exist here"),
         };
 
         self.pat_with_node_id_of(p, node)
@@ -194,7 +194,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     ) -> hir::PatKind<'hir> {
         match self.resolver.get_partial_res(p.id).map(|d| d.base_res()) {
             // `None` can occur in body-less function signatures
-            res @ None | res @ Some(Res::Local(_)) => {
+            res @ (None | Some(Res::Local(_))) => {
                 let canonical_id = match res {
                     Some(Res::Local(id)) => id,
                     _ => p.id,

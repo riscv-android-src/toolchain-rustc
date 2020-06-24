@@ -790,7 +790,7 @@ pub unsafe fn _mm_ucomineq_ss(a: __m128, b: __m128) -> i32 {
 ///
 /// The result is rounded according to the current rounding mode. If the result
 /// cannot be represented as a 32 bit integer the result will be `0x8000_0000`
-/// (`std::i32::MIN`) or an invalid operation floating point exception if
+/// (`i32::MIN`) or an invalid operation floating point exception if
 /// unmasked (see [`_mm_setcsr`](fn._mm_setcsr.html)).
 ///
 /// This corresponds to the `CVTSS2SI` instruction (with 32 bit output).
@@ -821,7 +821,7 @@ pub unsafe fn _mm_cvt_ss2si(a: __m128) -> i32 {
 ///
 /// The result is rounded always using truncation (round towards zero). If the
 /// result cannot be represented as a 32 bit integer the result will be
-/// `0x8000_0000` (`std::i32::MIN`) or an invalid operation floating point
+/// `0x8000_0000` (`i32::MIN`) or an invalid operation floating point
 /// exception if unmasked (see [`_mm_setcsr`](fn._mm_setcsr.html)).
 ///
 /// This corresponds to the `CVTTSS2SI` instruction (with 32 bit output).
@@ -3414,7 +3414,7 @@ mod tests {
     #[simd_test(enable = "sse")]
     unsafe fn test_mm_cvtss_si32() {
         let inputs = &[42.0f32, -3.1, 4.0e10, 4.0e-20, NAN, 2147483500.1];
-        let result = &[42i32, -3, i32::min_value(), 0, i32::min_value(), 2147483520];
+        let result = &[42i32, -3, i32::MIN, 0, i32::MIN, 2147483520];
         for i in 0..inputs.len() {
             let x = _mm_setr_ps(inputs[i], 1.0, 3.0, 4.0);
             let e = result[i];
@@ -3436,9 +3436,9 @@ mod tests {
             (-34.5, -34),
             (10.999, 10),
             (-5.99, -5),
-            (4.0e10, i32::min_value()),
+            (4.0e10, i32::MIN),
             (4.0e-10, 0),
-            (NAN, i32::min_value()),
+            (NAN, i32::MIN),
             (2147483500.1, 2147483520),
         ];
         for i in 0..inputs.len() {

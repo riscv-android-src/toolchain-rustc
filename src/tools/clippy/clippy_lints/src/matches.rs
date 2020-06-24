@@ -3,21 +3,22 @@ use crate::utils::paths;
 use crate::utils::sugg::Sugg;
 use crate::utils::usage::is_unused;
 use crate::utils::{
-    expr_block, get_arg_name, in_macro, indent_of, is_allowed, is_expn_of, is_refutable, is_wild, match_qpath,
-    match_type, match_var, multispan_sugg, remove_blocks, snippet, snippet_block, snippet_with_applicability,
-    span_lint_and_help, span_lint_and_note, span_lint_and_sugg, span_lint_and_then, walk_ptrs_ty,
+    expr_block, get_arg_name, get_parent_expr, in_macro, indent_of, is_allowed, is_expn_of, is_refutable,
+    is_type_diagnostic_item, is_wild, match_qpath, match_type, match_var, multispan_sugg, remove_blocks, snippet,
+    snippet_block, snippet_with_applicability, span_lint_and_help, span_lint_and_note, span_lint_and_sugg,
+    span_lint_and_then, walk_ptrs_ty,
 };
 use if_chain::if_chain;
-use rustc::lint::in_external_macro;
-use rustc::ty::{self, Ty};
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
 use rustc_hir::def::CtorKind;
 use rustc_hir::{
-    print, Arm, BindingAnnotation, Block, BorrowKind, Expr, ExprKind, Local, MatchSource, Mutability, Pat, PatKind,
+    Arm, BindingAnnotation, Block, BorrowKind, Expr, ExprKind, Local, MatchSource, Mutability, Node, Pat, PatKind,
     QPath, RangeEnd,
 };
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::lint::in_external_macro;
+use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 use std::cmp::Ordering;
@@ -388,6 +389,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
 
     fn check_local(&mut self, cx: &LateContext<'a, 'tcx>, local: &'tcx Local<'_>) {
         if_chain! {
+            if !in_external_macro(cx.sess(), local.span);
+            if !in_macro(local.span);
             if let Some(ref expr) = local.init;
             if let ExprKind::Match(ref target, ref arms, MatchSource::Normal) = expr.kind;
             if arms.len() == 1 && arms[0].guard.is_none();
@@ -422,6 +425,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
 
     fn check_pat(&mut self, cx: &LateContext<'a, 'tcx>, pat: &'tcx Pat<'_>) {
         if_chain! {
+            if !in_external_macro(cx.sess(), pat.span);
+            if !in_macro(pat.span);
             if let PatKind::Struct(ref qpath, fields, true) = pat.kind;
             if let QPath::Resolved(_, ref path) = qpath;
             if let Some(def_id) = path.res.opt_def_id();
@@ -446,6 +451,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
 #[rustfmt::skip]
 fn check_single_match(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     if arms.len() == 2 && arms[0].guard.is_none() && arms[1].guard.is_none() {
+        if in_macro(expr.span) {
+            // Don't lint match expressions present in
+            // macro_rules! block
+            return;
+        }
         if let PatKind::Or(..) = arms[0].pat.kind {
             // don't lint for or patterns for now, this makes
             // the lint noisy in unnecessary situations
@@ -535,10 +545,12 @@ fn check_single_match_opt_like(
             if !inner.iter().all(is_wild) {
                 return;
             }
-            print::to_string(print::NO_ANN, |s| s.print_qpath(path, false))
+            rustc_hir_pretty::to_string(rustc_hir_pretty::NO_ANN, |s| s.print_qpath(path, false))
         },
         PatKind::Binding(BindingAnnotation::Unannotated, .., ident, None) => ident.to_string(),
-        PatKind::Path(ref path) => print::to_string(print::NO_ANN, |s| s.print_qpath(path, false)),
+        PatKind::Path(ref path) => {
+            rustc_hir_pretty::to_string(rustc_hir_pretty::NO_ANN, |s| s.print_qpath(path, false))
+        },
         _ => return,
     };
 
@@ -557,7 +569,7 @@ fn check_match_bool(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], e
             MATCH_BOOL,
             expr.span,
             "you seem to be trying to match on a boolean expression",
-            move |db| {
+            move |diag| {
                 if arms.len() == 2 {
                     // no guards
                     let exprs = if let PatKind::Lit(ref arm_bool) = arms[0].pat.kind {
@@ -599,7 +611,7 @@ fn check_match_bool(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], e
                         };
 
                         if let Some(sugg) = sugg {
-                            db.span_suggestion(
+                            diag.span_suggestion(
                                 expr.span,
                                 "consider using an `if`/`else` expression",
                                 sugg,
@@ -634,10 +646,10 @@ fn check_overlapping_arms<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ex: &'tcx Expr<'
 
 fn check_wild_err_arm(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>]) {
     let ex_ty = walk_ptrs_ty(cx.tables.expr_ty(ex));
-    if match_type(cx, ex_ty, &paths::RESULT) {
+    if is_type_diagnostic_item(cx, ex_ty, sym!(result_type)) {
         for arm in arms {
             if let PatKind::TupleStruct(ref path, ref inner, _) = arm.pat.kind {
-                let path_str = print::to_string(print::NO_ANN, |s| s.print_qpath(path, false));
+                let path_str = rustc_hir_pretty::to_string(rustc_hir_pretty::NO_ANN, |s| s.print_qpath(path, false));
                 if path_str == "Err" {
                     let mut matching_wild = inner.iter().any(is_wild);
                     let mut ident_bind_name = String::from("_");
@@ -805,9 +817,9 @@ fn check_match_ref_pats(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>
             }
         }));
 
-        span_lint_and_then(cx, MATCH_REF_PATS, expr.span, title, |db| {
+        span_lint_and_then(cx, MATCH_REF_PATS, expr.span, title, |diag| {
             if !expr.span.from_expansion() {
-                multispan_sugg(db, msg.to_owned(), suggs);
+                multispan_sugg(diag, msg.to_owned(), suggs);
             }
         });
     }
@@ -882,7 +894,7 @@ fn check_wild_in_or_pats(cx: &LateContext<'_, '_>, arms: &[Arm<'_>]) {
     }
 }
 
-fn check_match_single_binding(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
+fn check_match_single_binding<'a>(cx: &LateContext<'_, 'a>, ex: &Expr<'a>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     if in_macro(expr.span) || arms.len() != 1 || is_refutable(cx, arms[0].pat) {
         return;
     }
@@ -914,19 +926,51 @@ fn check_match_single_binding(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[A
     let mut applicability = Applicability::MaybeIncorrect;
     match arms[0].pat.kind {
         PatKind::Binding(..) | PatKind::Tuple(_, _) | PatKind::Struct(..) => {
+            // If this match is in a local (`let`) stmt
+            let (target_span, sugg) = if let Some(parent_let_node) = opt_parent_let(cx, ex) {
+                (
+                    parent_let_node.span,
+                    format!(
+                        "let {} = {};\n{}let {} = {};",
+                        snippet_with_applicability(cx, bind_names, "..", &mut applicability),
+                        snippet_with_applicability(cx, matched_vars, "..", &mut applicability),
+                        " ".repeat(indent_of(cx, expr.span).unwrap_or(0)),
+                        snippet_with_applicability(cx, parent_let_node.pat.span, "..", &mut applicability),
+                        snippet_body
+                    ),
+                )
+            } else {
+                // If we are in closure, we need curly braces around suggestion
+                let mut indent = " ".repeat(indent_of(cx, ex.span).unwrap_or(0));
+                let (mut cbrace_start, mut cbrace_end) = ("".to_string(), "".to_string());
+                if let Some(parent_expr) = get_parent_expr(cx, expr) {
+                    if let ExprKind::Closure(..) = parent_expr.kind {
+                        cbrace_end = format!("\n{}}}", indent);
+                        // Fix body indent due to the closure
+                        indent = " ".repeat(indent_of(cx, bind_names).unwrap_or(0));
+                        cbrace_start = format!("{{\n{}", indent);
+                    }
+                };
+                (
+                    expr.span,
+                    format!(
+                        "{}let {} = {};\n{}{}{}",
+                        cbrace_start,
+                        snippet_with_applicability(cx, bind_names, "..", &mut applicability),
+                        snippet_with_applicability(cx, matched_vars, "..", &mut applicability),
+                        indent,
+                        snippet_body,
+                        cbrace_end
+                    ),
+                )
+            };
             span_lint_and_sugg(
                 cx,
                 MATCH_SINGLE_BINDING,
-                expr.span,
+                target_span,
                 "this match could be written as a `let` statement",
                 "consider using `let` statement",
-                format!(
-                    "let {} = {};\n{}{}",
-                    snippet_with_applicability(cx, bind_names, "..", &mut applicability),
-                    snippet_with_applicability(cx, matched_vars, "..", &mut applicability),
-                    " ".repeat(indent_of(cx, expr.span).unwrap_or(0)),
-                    snippet_body,
-                ),
+                sugg,
                 applicability,
             );
         },
@@ -943,6 +987,19 @@ fn check_match_single_binding(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[A
         },
         _ => (),
     }
+}
+
+/// Returns true if the `ex` match expression is in a local (`let`) statement
+fn opt_parent_let<'a>(cx: &LateContext<'_, 'a>, ex: &Expr<'a>) -> Option<&'a Local<'a>> {
+    if_chain! {
+        let map = &cx.tcx.hir();
+        if let Some(Node::Expr(parent_arm_expr)) = map.find(map.get_parent_node(ex.hir_id));
+        if let Some(Node::Local(parent_let_expr)) = map.find(map.get_parent_node(parent_arm_expr.hir_id));
+        then {
+            return Some(parent_let_expr);
+        }
+    }
+    None
 }
 
 /// Gets all arms that are unbounded `PatRange`s.
@@ -1143,4 +1200,41 @@ where
     }
 
     None
+}
+
+#[test]
+fn test_overlapping() {
+    use rustc_span::source_map::DUMMY_SP;
+
+    let sp = |s, e| SpannedRange {
+        span: DUMMY_SP,
+        node: (s, e),
+    };
+
+    assert_eq!(None, overlapping::<u8>(&[]));
+    assert_eq!(None, overlapping(&[sp(1, Bound::Included(4))]));
+    assert_eq!(
+        None,
+        overlapping(&[sp(1, Bound::Included(4)), sp(5, Bound::Included(6))])
+    );
+    assert_eq!(
+        None,
+        overlapping(&[
+            sp(1, Bound::Included(4)),
+            sp(5, Bound::Included(6)),
+            sp(10, Bound::Included(11))
+        ],)
+    );
+    assert_eq!(
+        Some((&sp(1, Bound::Included(4)), &sp(3, Bound::Included(6)))),
+        overlapping(&[sp(1, Bound::Included(4)), sp(3, Bound::Included(6))])
+    );
+    assert_eq!(
+        Some((&sp(5, Bound::Included(6)), &sp(6, Bound::Included(11)))),
+        overlapping(&[
+            sp(1, Bound::Included(4)),
+            sp(5, Bound::Included(6)),
+            sp(6, Bound::Included(11))
+        ],)
+    );
 }

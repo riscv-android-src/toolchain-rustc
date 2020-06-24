@@ -1,11 +1,12 @@
 //! Error reporting machinery for lifetime errors.
 
-use rustc::mir::ConstraintCategory;
-use rustc::ty::{self, RegionVid, Ty};
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_infer::infer::{
-    error_reporting::nice_region_error::NiceRegionError, opaque_types, NLLRegionVariableOrigin,
+    error_reporting::nice_region_error::NiceRegionError,
+    error_reporting::unexpected_hidden_region_diagnostic, NLLRegionVariableOrigin,
 };
+use rustc_middle::mir::ConstraintCategory;
+use rustc_middle::ty::{self, RegionVid, Ty};
 use rustc_span::symbol::kw;
 use rustc_span::Span;
 
@@ -134,11 +135,10 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
     fn is_closure_fn_mut(&self, fr: RegionVid) -> bool {
         if let Some(ty::ReFree(free_region)) = self.to_error_region(fr) {
             if let ty::BoundRegion::BrEnv = free_region.bound_region {
-                if let DefiningTy::Closure(def_id, substs) =
+                if let DefiningTy::Closure(_, substs) =
                     self.regioncx.universal_regions().defining_ty
                 {
-                    return substs.as_closure().kind(def_id, self.infcx.tcx)
-                        == ty::ClosureKind::FnMut;
+                    return substs.as_closure().kind() == ty::ClosureKind::FnMut;
                 }
             }
         }
@@ -197,7 +197,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                     let region_scope_tree = &self.infcx.tcx.region_scope_tree(self.mir_def_id);
                     let named_ty = self.regioncx.name_regions(self.infcx.tcx, hidden_ty);
                     let named_region = self.regioncx.name_regions(self.infcx.tcx, member_region);
-                    opaque_types::unexpected_hidden_region_diagnostic(
+                    unexpected_hidden_region_diagnostic(
                         self.infcx.tcx,
                         Some(region_scope_tree),
                         span,
@@ -283,8 +283,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         debug!("report_region_error: category={:?} {:?}", category, span);
         // Check if we can use one of the "nice region errors".
         if let (Some(f), Some(o)) = (self.to_error_region(fr), self.to_error_region(outlived_fr)) {
-            let tables = self.infcx.tcx.typeck_tables_of(self.mir_def_id);
-            let nice = NiceRegionError::new_from_span(self.infcx, span, o, f, Some(tables));
+            let nice = NiceRegionError::new_from_span(self.infcx, span, o, f);
             if let Some(diag) = nice.try_report_from_nll() {
                 diag.buffer(&mut self.errors_buffer);
                 return;

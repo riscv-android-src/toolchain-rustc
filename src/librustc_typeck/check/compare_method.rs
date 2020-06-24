@@ -1,17 +1,16 @@
-use rustc::hir::map::Map;
-use rustc::ty::error::{ExpectedFound, TypeError};
-use rustc::ty::subst::{InternalSubsts, Subst};
-use rustc::ty::util::ExplicitSelf;
-use rustc::ty::{self, GenericParamDefKind, TyCtxt};
-use rustc::util::common::ErrorReported;
-use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticId};
+use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticId, ErrorReported};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::intravisit;
 use rustc_hir::{GenericParamKind, ImplItemKind, TraitItemKind};
 use rustc_infer::infer::{self, InferOk, TyCtxtInferExt};
-use rustc_infer::traits::{self, ObligationCause, ObligationCauseCode, Reveal};
+use rustc_middle::ty::error::{ExpectedFound, TypeError};
+use rustc_middle::ty::subst::{InternalSubsts, Subst};
+use rustc_middle::ty::util::ExplicitSelf;
+use rustc_middle::ty::{self, GenericParamDefKind, TyCtxt};
 use rustc_span::Span;
+use rustc_trait_selection::traits::error_reporting::InferCtxtExt;
+use rustc_trait_selection::traits::{self, ObligationCause, ObligationCauseCode, Reveal};
 
 use super::{potentially_plural_count, FnCtxt, Inherited};
 
@@ -35,7 +34,7 @@ crate fn compare_impl_method<'tcx>(
 ) {
     debug!("compare_impl_method(impl_trait_ref={:?})", impl_trait_ref);
 
-    let impl_m_span = tcx.sess.source_map().def_span(impl_m_span);
+    let impl_m_span = tcx.sess.source_map().guess_head_span(impl_m_span);
 
     if let Err(ErrorReported) = compare_self_type(tcx, impl_m, impl_m_span, trait_m, impl_trait_ref)
     {
@@ -213,7 +212,7 @@ fn compare_predicate_entailment<'tcx>(
     );
 
     tcx.infer_ctxt().enter(|infcx| {
-        let inh = Inherited::new(infcx, impl_m.def_id);
+        let inh = Inherited::new(infcx, impl_m.def_id.expect_local());
         let infcx = &inh.infcx;
 
         debug!("compare_impl_method: caller_bounds={:?}", param_env.caller_bounds);
@@ -363,7 +362,7 @@ fn check_region_bounds_on_impl_item<'tcx>(
     // the moment, give a kind of vague error message.
     if trait_params != impl_params {
         let item_kind = assoc_item_kind_str(impl_m);
-        let def_span = tcx.sess.source_map().def_span(span);
+        let def_span = tcx.sess.source_map().guess_head_span(span);
         let span = tcx.hir().get_generics(impl_m.def_id).map(|g| g.span).unwrap_or(def_span);
         let mut err = struct_span_err!(
             tcx.sess,
@@ -375,7 +374,7 @@ fn check_region_bounds_on_impl_item<'tcx>(
         );
         err.span_label(span, &format!("lifetimes do not match {} in trait", item_kind));
         if let Some(sp) = tcx.hir().span_if_local(trait_m.def_id) {
-            let def_sp = tcx.sess.source_map().def_span(sp);
+            let def_sp = tcx.sess.source_map().guess_head_span(sp);
             let sp = tcx.hir().get_generics(trait_m.def_id).map(|g| g.span).unwrap_or(def_sp);
             err.span_label(
                 sp,
@@ -402,7 +401,7 @@ fn extract_spans_for_error_reporting<'a, 'tcx>(
     let tcx = infcx.tcx;
     let impl_m_hir_id = tcx.hir().as_local_hir_id(impl_m.def_id).unwrap();
     let (impl_m_output, impl_m_iter) = match tcx.hir().expect_impl_item(impl_m_hir_id).kind {
-        ImplItemKind::Method(ref impl_m_sig, _) => {
+        ImplItemKind::Fn(ref impl_m_sig, _) => {
             (&impl_m_sig.decl.output, impl_m_sig.decl.inputs.iter())
         }
         _ => bug!("{:?} is not a method", impl_m),
@@ -412,8 +411,8 @@ fn extract_spans_for_error_reporting<'a, 'tcx>(
         TypeError::Mutability => {
             if let Some(trait_m_hir_id) = tcx.hir().as_local_hir_id(trait_m.def_id) {
                 let trait_m_iter = match tcx.hir().expect_trait_item(trait_m_hir_id).kind {
-                    TraitItemKind::Method(ref trait_m_sig, _) => trait_m_sig.decl.inputs.iter(),
-                    _ => bug!("{:?} is not a TraitItemKind::Method", trait_m),
+                    TraitItemKind::Fn(ref trait_m_sig, _) => trait_m_sig.decl.inputs.iter(),
+                    _ => bug!("{:?} is not a TraitItemKind::Fn", trait_m),
                 };
 
                 impl_m_iter
@@ -440,10 +439,10 @@ fn extract_spans_for_error_reporting<'a, 'tcx>(
             if let Some(trait_m_hir_id) = tcx.hir().as_local_hir_id(trait_m.def_id) {
                 let (trait_m_output, trait_m_iter) =
                     match tcx.hir().expect_trait_item(trait_m_hir_id).kind {
-                        TraitItemKind::Method(ref trait_m_sig, _) => {
+                        TraitItemKind::Fn(ref trait_m_sig, _) => {
                             (&trait_m_sig.decl.output, trait_m_sig.decl.inputs.iter())
                         }
-                        _ => bug!("{:?} is not a TraitItemKind::Method", trait_m),
+                        _ => bug!("{:?} is not a TraitItemKind::Fn", trait_m),
                     };
 
                 let impl_iter = impl_sig.inputs().iter();
@@ -517,7 +516,7 @@ fn compare_self_type<'tcx>(
         })
     };
 
-    match (trait_m.method_has_self_argument, impl_m.method_has_self_argument) {
+    match (trait_m.fn_has_self_parameter, impl_m.fn_has_self_parameter) {
         (false, false) | (true, true) => {}
 
         (false, true) => {
@@ -677,7 +676,7 @@ fn compare_number_of_generics<'tcx>(
                         impl_count,
                         kind,
                         pluralize!(impl_count),
-                        suffix.unwrap_or_else(|| String::new()),
+                        suffix.unwrap_or_else(String::new),
                     ),
                 );
             }
@@ -708,7 +707,7 @@ fn compare_number_of_method_arguments<'tcx>(
         let trait_m_hir_id = tcx.hir().as_local_hir_id(trait_m.def_id);
         let trait_span = if let Some(trait_id) = trait_m_hir_id {
             match tcx.hir().expect_trait_item(trait_id).kind {
-                TraitItemKind::Method(ref trait_m_sig, _) => {
+                TraitItemKind::Fn(ref trait_m_sig, _) => {
                     let pos = if trait_number_args > 0 { trait_number_args - 1 } else { 0 };
                     if let Some(arg) = trait_m_sig.decl.inputs.get(pos) {
                         Some(if pos == 0 {
@@ -731,7 +730,7 @@ fn compare_number_of_method_arguments<'tcx>(
         };
         let impl_m_hir_id = tcx.hir().as_local_hir_id(impl_m.def_id).unwrap();
         let impl_span = match tcx.hir().expect_impl_item(impl_m_hir_id).kind {
-            ImplItemKind::Method(ref impl_m_sig, _) => {
+            ImplItemKind::Fn(ref impl_m_sig, _) => {
                 let pos = if impl_number_args > 0 { impl_number_args - 1 } else { 0 };
                 if let Some(arg) = impl_m_sig.decl.inputs.get(pos) {
                     if pos == 0 {
@@ -872,7 +871,7 @@ fn compare_synthetic_generics<'tcx>(
                         let impl_m = tcx.hir().as_local_hir_id(impl_m.def_id)?;
                         let impl_m = tcx.hir().impl_item(hir::ImplItemId { hir_id: impl_m });
                         let input_tys = match impl_m.kind {
-                            hir::ImplItemKind::Method(ref sig, _) => sig.decl.inputs,
+                            hir::ImplItemKind::Fn(ref sig, _) => sig.decl.inputs,
                             _ => unreachable!(),
                         };
                         struct Visitor(Option<Span>, hir::def_id::DefId);
@@ -889,10 +888,10 @@ fn compare_synthetic_generics<'tcx>(
                                     }
                                 }
                             }
-                            type Map = Map<'v>;
+                            type Map = intravisit::ErasedMap<'v>;
                             fn nested_visit_map(
                                 &mut self,
-                            ) -> intravisit::NestedVisitorMap<'_, Self::Map>
+                            ) -> intravisit::NestedVisitorMap<Self::Map>
                             {
                                 intravisit::NestedVisitorMap::None
                             }
@@ -950,7 +949,7 @@ crate fn compare_const_impl<'tcx>(
 
     tcx.infer_ctxt().enter(|infcx| {
         let param_env = tcx.param_env(impl_c.def_id);
-        let inh = Inherited::new(infcx, impl_c.def_id);
+        let inh = Inherited::new(infcx, impl_c.def_id.expect_local());
         let infcx = &inh.infcx;
 
         // The below is for the most part highly similar to the procedure
@@ -1130,7 +1129,7 @@ fn compare_type_predicate_entailment(
         normalize_cause.clone(),
     );
     tcx.infer_ctxt().enter(|infcx| {
-        let inh = Inherited::new(infcx, impl_ty.def_id);
+        let inh = Inherited::new(infcx, impl_ty.def_id.expect_local());
         let infcx = &inh.infcx;
 
         debug!("compare_type_predicate_entailment: caller_bounds={:?}", param_env.caller_bounds);
@@ -1164,7 +1163,7 @@ fn compare_type_predicate_entailment(
 fn assoc_item_kind_str(impl_item: &ty::AssocItem) -> &'static str {
     match impl_item.kind {
         ty::AssocKind::Const => "const",
-        ty::AssocKind::Method => "method",
+        ty::AssocKind::Fn => "method",
         ty::AssocKind::Type | ty::AssocKind::OpaqueTy => "type",
     }
 }

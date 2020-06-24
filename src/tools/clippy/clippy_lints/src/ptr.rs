@@ -6,16 +6,16 @@ use crate::utils::{
     walk_ptrs_hir_ty,
 };
 use if_chain::if_chain;
-use rustc::ty;
 use rustc_errors::Applicability;
 use rustc_hir::{
     BinOpKind, BodyId, Expr, ExprKind, FnDecl, FnRetTy, GenericArg, HirId, ImplItem, ImplItemKind, Item, ItemKind,
-    Lifetime, MutTy, Mutability, Node, PathSegment, QPath, TraitItem, TraitItemKind, TraitMethod, Ty, TyKind,
+    Lifetime, MutTy, Mutability, Node, PathSegment, QPath, TraitFn, TraitItem, TraitItemKind, Ty, TyKind,
 };
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
-use rustc_span::{MultiSpan, Symbol};
+use rustc_span::MultiSpan;
 use std::borrow::Cow;
 
 declare_clippy_lint! {
@@ -109,7 +109,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Ptr {
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx ImplItem<'_>) {
-        if let ImplItemKind::Method(ref sig, body_id) = item.kind {
+        if let ImplItemKind::Fn(ref sig, body_id) = item.kind {
             let parent_item = cx.tcx.hir().get_parent_item(item.hir_id);
             if let Some(Node::Item(it)) = cx.tcx.hir().find(parent_item) {
                 if let ItemKind::Impl { of_trait: Some(_), .. } = it.kind {
@@ -121,8 +121,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Ptr {
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx TraitItem<'_>) {
-        if let TraitItemKind::Method(ref sig, ref trait_method) = item.kind {
-            let body_id = if let TraitMethod::Provided(b) = *trait_method {
+        if let TraitItemKind::Fn(ref sig, ref trait_method) = item.kind {
+            let body_id = if let TraitFn::Provided(b) = *trait_method {
                 Some(b)
             } else {
                 None
@@ -153,7 +153,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
 
     for (idx, (arg, ty)) in decl.inputs.iter().zip(fn_ty.inputs()).enumerate() {
         if let ty::Ref(_, ty, Mutability::Not) = ty.kind {
-            if is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type")) {
+            if is_type_diagnostic_item(cx, ty, sym!(vec_type)) {
                 let mut ty_snippet = None;
                 if_chain! {
                     if let TyKind::Path(QPath::Resolved(_, ref path)) = walk_ptrs_hir_ty(arg).kind;
@@ -175,9 +175,9 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
                         arg.span,
                         "writing `&Vec<_>` instead of `&[_]` involves one more reference and cannot be used \
                          with non-Vec-based slices.",
-                        |db| {
+                        |diag| {
                             if let Some(ref snippet) = ty_snippet {
-                                db.span_suggestion(
+                                diag.span_suggestion(
                                     arg.span,
                                     "change this to",
                                     format!("&[{}]", snippet),
@@ -185,7 +185,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
                                 );
                             }
                             for (clonespan, suggestion) in spans {
-                                db.span_suggestion(
+                                diag.span_suggestion(
                                     clonespan,
                                     &snippet_opt(cx, clonespan).map_or("change the call to".into(), |x| {
                                         Cow::Owned(format!("change `{}` to", x))
@@ -204,10 +204,10 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
                         PTR_ARG,
                         arg.span,
                         "writing `&String` instead of `&str` involves a new object where a slice will do.",
-                        |db| {
-                            db.span_suggestion(arg.span, "change this to", "&str".into(), Applicability::Unspecified);
+                        |diag| {
+                            diag.span_suggestion(arg.span, "change this to", "&str".into(), Applicability::Unspecified);
                             for (clonespan, suggestion) in spans {
-                                db.span_suggestion_short(
+                                diag.span_suggestion_short(
                                     clonespan,
                                     &snippet_opt(cx, clonespan).map_or("change the call to".into(), |x| {
                                         Cow::Owned(format!("change `{}` to", x))
@@ -239,8 +239,8 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
                                 PTR_ARG,
                                 arg.span,
                                 "using a reference to `Cow` is not recommended.",
-                                |db| {
-                                    db.span_suggestion(
+                                |diag| {
+                                    diag.span_suggestion(
                                         arg.span,
                                         "change this to",
                                         "&".to_owned() + &r,
@@ -277,9 +277,9 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
                 MUT_FROM_REF,
                 ty.span,
                 "mutable borrow from immutable input(s)",
-                |db| {
+                |diag| {
                     let ms = MultiSpan::from_spans(immutables);
-                    db.span_note(ms, "immutable borrow here");
+                    diag.span_note(ms, "immutable borrow here");
                 },
             );
         }

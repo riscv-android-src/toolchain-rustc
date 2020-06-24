@@ -4,11 +4,11 @@
 
 use std::ptr;
 
-use rustc::ty::adjustment::Adjust;
-use rustc::ty::{Ty, TypeFlags};
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::{Expr, ExprKind, ImplItem, ImplItemKind, Item, ItemKind, Node, TraitItem, TraitItemKind, UnOp};
 use rustc_lint::{LateContext, LateLintPass, Lint};
+use rustc_middle::ty::adjustment::Adjust;
+use rustc_middle::ty::{Ty, TypeFlags};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::{InnerSpan, Span, DUMMY_SP};
 use rustc_typeck::hir_ty_to_ty;
@@ -118,22 +118,22 @@ fn verify_ty_bound<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ty: Ty<'tcx>, source: S
     }
 
     let (lint, msg, span) = source.lint();
-    span_lint_and_then(cx, lint, span, msg, |db| {
+    span_lint_and_then(cx, lint, span, msg, |diag| {
         if span.from_expansion() {
             return; // Don't give suggestions into macros.
         }
         match source {
             Source::Item { .. } => {
                 let const_kw_span = span.from_inner(InnerSpan::new(0, 5));
-                db.span_label(const_kw_span, "make this a static item (maybe with lazy_static)");
+                diag.span_label(const_kw_span, "make this a static item (maybe with lazy_static)");
             },
             Source::Assoc { ty: ty_span, .. } => {
                 if ty.flags.intersects(TypeFlags::HAS_FREE_LOCAL_NAMES) {
-                    db.span_label(ty_span, &format!("consider requiring `{}` to be `Copy`", ty));
+                    diag.span_label(ty_span, &format!("consider requiring `{}` to be `Copy`", ty));
                 }
             },
             Source::Expr { .. } => {
-                db.help("assign this const to a local or static variable, and use the variable here");
+                diag.help("assign this const to a local or static variable, and use the variable here");
             },
         }
     });
@@ -191,7 +191,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NonCopyConst {
 
             // Make sure it is a const item.
             match qpath_res(cx, qpath, expr.hir_id) {
-                Res::Def(DefKind::Const, _) | Res::Def(DefKind::AssocConst, _) => {},
+                Res::Def(DefKind::Const | DefKind::AssocConst, _) => {},
                 _ => return,
             };
 

@@ -22,7 +22,7 @@ use serde::Deserialize;
 use crate::builder::Cargo;
 use crate::dist;
 use crate::native;
-use crate::util::{exe, is_dylib};
+use crate::util::{exe, is_dylib, symlink_dir};
 use crate::{Compiler, GitRepo, Mode};
 
 use crate::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
@@ -186,6 +186,8 @@ pub fn std_cargo(builder: &Builder<'_>, target: Interned<String>, cargo: &mut Ca
     // `compiler-rt` is located.
     let compiler_builtins_root = builder.src.join("src/llvm-project/compiler-rt");
     let compiler_builtins_c_feature = if compiler_builtins_root.exists() {
+        // Note that `libprofiler_builtins/build.rs` also computes this so if
+        // you're changing something here please also change that.
         cargo.env("RUST_COMPILER_RT_ROOT", &compiler_builtins_root);
         " compiler-builtins-c".to_string()
     } else {
@@ -451,44 +453,6 @@ impl Step for Rustc {
             false,
         );
 
-        // We used to build librustc_codegen_llvm as a separate step,
-        // which produced a dylib that the compiler would dlopen() at runtime.
-        // This meant that we only needed to make sure that libLLVM.so was
-        // installed by the time we went to run a tool using it - since
-        // librustc_codegen_llvm was effectively a standalone artifact,
-        // other crates were completely oblivious to its dependency
-        // on `libLLVM.so` during build time.
-        //
-        // However, librustc_codegen_llvm is now built as an ordinary
-        // crate during the same step as the rest of the compiler crates.
-        // This means that any crates depending on it will see the fact
-        // that it uses `libLLVM.so` as a native library, and will
-        // cause us to pass `-llibLLVM.so` to the linker when we link
-        // a binary.
-        //
-        // For `rustc` itself, this works out fine.
-        // During the `Assemble` step, we call `dist::maybe_install_llvm_dylib`
-        // to copy libLLVM.so into the `stage` directory. We then link
-        // the compiler binary, which will find `libLLVM.so` in the correct place.
-        //
-        // However, this is insufficient for tools that are build against stage0
-        // (e.g. stage1 rustdoc). Since `Assemble` for stage0 doesn't actually do anything,
-        // we won't have `libLLVM.so` in the stage0 sysroot. In the past, this wasn't
-        // a problem - we would copy the tool binary into its correct stage directory
-        // (e.g. stage1 for a stage1 rustdoc built against a stage0 compiler).
-        // Since libLLVM.so wasn't resolved until runtime, it was fine for it to
-        // not exist while we were building it.
-        //
-        // To ensure that we can still build stage1 tools against a stage0 compiler,
-        // we explicitly copy libLLVM.so into the stage0 sysroot when building
-        // the stage0 compiler. This ensures that tools built against stage0
-        // will see libLLVM.so at build time, making the linker happy.
-        if compiler.stage == 0 {
-            builder.info(&format!("Installing libLLVM.so to stage 0 ({})", compiler.host));
-            let sysroot = builder.sysroot(compiler);
-            dist::maybe_install_llvm_dylib(builder, compiler.host, &sysroot);
-        }
-
         builder.ensure(RustcLink {
             compiler: builder.compiler(compiler.stage, builder.config.build),
             target_compiler: compiler,
@@ -671,6 +635,30 @@ impl Step for Sysroot {
         };
         let _ = fs::remove_dir_all(&sysroot);
         t!(fs::create_dir_all(&sysroot));
+
+        // Symlink the source root into the same location inside the sysroot,
+        // where `rust-src` component would go (`$sysroot/lib/rustlib/src/rust`),
+        // so that any tools relying on `rust-src` also work for local builds,
+        // and also for translating the virtual `/rustc/$hash` back to the real
+        // directory (for running tests with `rust.remap-debuginfo = true`).
+        let sysroot_lib_rustlib_src = sysroot.join("lib/rustlib/src");
+        t!(fs::create_dir_all(&sysroot_lib_rustlib_src));
+        let sysroot_lib_rustlib_src_rust = sysroot_lib_rustlib_src.join("rust");
+        if let Err(e) = symlink_dir(&builder.config, &builder.src, &sysroot_lib_rustlib_src_rust) {
+            eprintln!(
+                "warning: creating symbolic link `{}` to `{}` failed with {}",
+                sysroot_lib_rustlib_src_rust.display(),
+                builder.src.display(),
+                e,
+            );
+            if builder.config.rust_remap_debuginfo {
+                eprintln!(
+                    "warning: some `src/test/ui` tests will fail when lacking `{}`",
+                    sysroot_lib_rustlib_src_rust.display(),
+                );
+            }
+        }
+
         INTERNER.intern_path(sysroot)
     }
 }
@@ -949,7 +937,11 @@ pub fn stream_cargo(
     }
     // Instruct Cargo to give us json messages on stdout, critically leaving
     // stderr as piped so we can get those pretty colors.
-    let mut message_format = String::from("json-render-diagnostics");
+    let mut message_format = if builder.config.json_output {
+        String::from("json")
+    } else {
+        String::from("json-render-diagnostics")
+    };
     if let Some(s) = &builder.config.rustc_error_format {
         message_format.push_str(",json-diagnostic-");
         message_format.push_str(s);

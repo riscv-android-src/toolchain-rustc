@@ -112,20 +112,22 @@ extern "C" void LLVMRustPrintPassTimings() {
   TimerGroup::printAll(OS);
 }
 
-extern "C" LLVMValueRef LLVMRustGetNamedValue(LLVMModuleRef M,
-                                              const char *Name) {
-  return wrap(unwrap(M)->getNamedValue(Name));
+extern "C" LLVMValueRef LLVMRustGetNamedValue(LLVMModuleRef M, const char *Name,
+                                              size_t NameLen) {
+  return wrap(unwrap(M)->getNamedValue(StringRef(Name, NameLen)));
 }
 
 extern "C" LLVMValueRef LLVMRustGetOrInsertFunction(LLVMModuleRef M,
                                                     const char *Name,
+                                                    size_t NameLen,
                                                     LLVMTypeRef FunctionTy) {
-  return wrap(
-      unwrap(M)->getOrInsertFunction(Name, unwrap<FunctionType>(FunctionTy))
+  return wrap(unwrap(M)
+                  ->getOrInsertFunction(StringRef(Name, NameLen),
+                                        unwrap<FunctionType>(FunctionTy))
 #if LLVM_VERSION_GE(9, 0)
-      .getCallee()
+                  .getCallee()
 #endif
-      );
+  );
 }
 
 extern "C" LLVMValueRef
@@ -395,22 +397,26 @@ static InlineAsm::AsmDialect fromRust(LLVMRustAsmDialect Dialect) {
   }
 }
 
-extern "C" LLVMValueRef LLVMRustInlineAsm(LLVMTypeRef Ty, char *AsmString,
-                                          char *Constraints,
-                                          LLVMBool HasSideEffects,
-                                          LLVMBool IsAlignStack,
-                                          LLVMRustAsmDialect Dialect) {
-  return wrap(InlineAsm::get(unwrap<FunctionType>(Ty), AsmString, Constraints,
+extern "C" LLVMValueRef
+LLVMRustInlineAsm(LLVMTypeRef Ty, char *AsmString, size_t AsmStringLen,
+                  char *Constraints, size_t ConstraintsLen,
+                  LLVMBool HasSideEffects, LLVMBool IsAlignStack,
+                  LLVMRustAsmDialect Dialect) {
+  return wrap(InlineAsm::get(unwrap<FunctionType>(Ty),
+                             StringRef(AsmString, AsmStringLen),
+                             StringRef(Constraints, ConstraintsLen),
                              HasSideEffects, IsAlignStack, fromRust(Dialect)));
 }
 
-extern "C" bool LLVMRustInlineAsmVerify(LLVMTypeRef Ty,
-                                          char *Constraints) {
-  return InlineAsm::Verify(unwrap<FunctionType>(Ty), Constraints);
+extern "C" bool LLVMRustInlineAsmVerify(LLVMTypeRef Ty, char *Constraints,
+                                        size_t ConstraintsLen) {
+  return InlineAsm::Verify(unwrap<FunctionType>(Ty),
+                           StringRef(Constraints, ConstraintsLen));
 }
 
-extern "C" void LLVMRustAppendModuleInlineAsm(LLVMModuleRef M, const char *Asm) {
-  unwrap(M)->appendModuleInlineAsm(StringRef(Asm));
+extern "C" void LLVMRustAppendModuleInlineAsm(LLVMModuleRef M, const char *Asm,
+                                              size_t AsmLen) {
+  unwrap(M)->appendModuleInlineAsm(StringRef(Asm, AsmLen));
 }
 
 typedef DIBuilder *LLVMRustDIBuilderRef;
@@ -580,7 +586,6 @@ inline LLVMRustDISPFlags virtuality(LLVMRustDISPFlags F) {
   return static_cast<LLVMRustDISPFlags>(static_cast<uint32_t>(F) & 0x3);
 }
 
-#if LLVM_VERSION_GE(8, 0)
 static DISubprogram::DISPFlags fromRust(LLVMRustDISPFlags SPFlags) {
   DISubprogram::DISPFlags Result = DISubprogram::DISPFlags::SPFlagZero;
 
@@ -613,7 +618,6 @@ static DISubprogram::DISPFlags fromRust(LLVMRustDISPFlags SPFlags) {
 
   return Result;
 }
-#endif
 
 enum class LLVMRustDebugEmissionKind {
   NoDebug,
@@ -631,6 +635,25 @@ static DICompileUnit::DebugEmissionKind fromRust(LLVMRustDebugEmissionKind Kind)
     return DICompileUnit::DebugEmissionKind::LineTablesOnly;
   default:
     report_fatal_error("bad DebugEmissionKind.");
+  }
+}
+
+enum class LLVMRustChecksumKind {
+  None,
+  MD5,
+  SHA1,
+};
+
+static Optional<DIFile::ChecksumKind> fromRust(LLVMRustChecksumKind Kind) {
+  switch (Kind) {
+  case LLVMRustChecksumKind::None:
+    return None;
+  case LLVMRustChecksumKind::MD5:
+    return DIFile::ChecksumKind::CSK_MD5;
+  case LLVMRustChecksumKind::SHA1:
+    return DIFile::ChecksumKind::CSK_SHA1;
+  default:
+    report_fatal_error("bad ChecksumKind.");
   }
 }
 
@@ -680,9 +703,15 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateCompileUnit(
 extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFile(
     LLVMRustDIBuilderRef Builder,
     const char *Filename, size_t FilenameLen,
-    const char *Directory, size_t DirectoryLen) {
+    const char *Directory, size_t DirectoryLen, LLVMRustChecksumKind CSKind,
+    const char *Checksum, size_t ChecksumLen) {
+  Optional<DIFile::ChecksumKind> llvmCSKind = fromRust(CSKind);
+  Optional<DIFile::ChecksumInfo<StringRef>> CSInfo{};
+  if (llvmCSKind)
+    CSInfo.emplace(*llvmCSKind, StringRef{Checksum, ChecksumLen});
   return wrap(Builder->createFile(StringRef(Filename, FilenameLen),
-                                  StringRef(Directory, DirectoryLen)));
+                                  StringRef(Directory, DirectoryLen),
+                                  CSInfo));
 }
 
 extern "C" LLVMMetadataRef
@@ -703,7 +732,6 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
     LLVMMetadataRef Decl) {
   DITemplateParameterArray TParams =
       DITemplateParameterArray(unwrap<MDTuple>(TParam));
-#if LLVM_VERSION_GE(8, 0)
   DISubprogram::DISPFlags llvmSPFlags = fromRust(SPFlags);
   DINode::DIFlags llvmFlags = fromRust(Flags);
 #if LLVM_VERSION_LT(9, 0)
@@ -717,22 +745,6 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateFunction(
       unwrapDI<DIFile>(File), LineNo,
       unwrapDI<DISubroutineType>(Ty), ScopeLine, llvmFlags,
       llvmSPFlags, TParams, unwrapDIPtr<DISubprogram>(Decl));
-#else
-  bool IsLocalToUnit = isSet(SPFlags & LLVMRustDISPFlags::SPFlagLocalToUnit);
-  bool IsDefinition = isSet(SPFlags & LLVMRustDISPFlags::SPFlagDefinition);
-  bool IsOptimized = isSet(SPFlags & LLVMRustDISPFlags::SPFlagOptimized);
-  DINode::DIFlags llvmFlags = fromRust(Flags);
-  if (isSet(SPFlags & LLVMRustDISPFlags::SPFlagMainSubprogram))
-    llvmFlags |= DINode::DIFlags::FlagMainSubprogram;
-  DISubprogram *Sub = Builder->createFunction(
-      unwrapDI<DIScope>(Scope),
-      StringRef(Name, NameLen),
-      StringRef(LinkageName, LinkageNameLen),
-      unwrapDI<DIFile>(File), LineNo,
-      unwrapDI<DISubroutineType>(Ty), IsLocalToUnit, IsDefinition,
-      ScopeLine, llvmFlags, IsOptimized, TParams,
-      unwrapDIPtr<DISubprogram>(Decl));
-#endif
   unwrap<Function>(Fn)->setSubprogram(Sub);
   return wrap(Sub);
 }
@@ -853,9 +865,7 @@ extern "C" LLVMMetadataRef LLVMRustDIBuilderCreateStaticVariable(
       /* isDefined */ true,
 #endif
       InitExpr, unwrapDIPtr<MDNode>(Decl),
-#if LLVM_VERSION_GE(8, 0)
       /* templateParams */ nullptr,
-#endif
       AlignInBits);
 
   InitVal->setMetadata("dbg", VarExpr);
@@ -1076,11 +1086,7 @@ extern "C" void LLVMRustUnpackOptimizationDiagnostic(
   if (loc.isValid()) {
     *Line = loc.getLine();
     *Column = loc.getColumn();
-#if LLVM_VERSION_GE(8, 0)
     FilenameOS << loc.getAbsolutePath();
-#else
-    FilenameOS << loc.getFilename();
-#endif
   }
 
   RawRustStringOstream MessageOS(MessageOut);
@@ -1282,12 +1288,11 @@ extern "C" void LLVMRustFreeOperandBundleDef(OperandBundleDef *Bundle) {
 
 extern "C" LLVMValueRef LLVMRustBuildCall(LLVMBuilderRef B, LLVMValueRef Fn,
                                           LLVMValueRef *Args, unsigned NumArgs,
-                                          OperandBundleDef *Bundle,
-                                          const char *Name) {
+                                          OperandBundleDef *Bundle) {
   unsigned Len = Bundle ? 1 : 0;
   ArrayRef<OperandBundleDef> Bundles = makeArrayRef(Bundle, Len);
   return wrap(unwrap(B)->CreateCall(
-      unwrap(Fn), makeArrayRef(unwrap(Args), NumArgs), Bundles, Name));
+      unwrap(Fn), makeArrayRef(unwrap(Args), NumArgs), Bundles));
 }
 
 extern "C" LLVMValueRef LLVMRustBuildMemCpy(LLVMBuilderRef B,
@@ -1328,8 +1333,13 @@ extern "C" LLVMValueRef LLVMRustBuildMemSet(LLVMBuilderRef B,
                                             LLVMValueRef Dst, unsigned DstAlign,
                                             LLVMValueRef Val,
                                             LLVMValueRef Size, bool IsVolatile) {
+#if LLVM_VERSION_GE(10, 0)
+  return wrap(unwrap(B)->CreateMemSet(
+      unwrap(Dst), unwrap(Val), unwrap(Size), MaybeAlign(DstAlign), IsVolatile));
+#else
   return wrap(unwrap(B)->CreateMemSet(
       unwrap(Dst), unwrap(Val), unwrap(Size), DstAlign, IsVolatile));
+#endif
 }
 
 extern "C" LLVMValueRef

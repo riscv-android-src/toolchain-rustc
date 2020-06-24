@@ -1,14 +1,14 @@
-use rustc::mir::*;
-use rustc::ty::layout::VariantIdx;
-use rustc::ty::query::Providers;
-use rustc::ty::subst::{InternalSubsts, Subst};
-use rustc::ty::{self, Ty, TyCtxt};
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
+use rustc_middle::mir::*;
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::subst::{InternalSubsts, Subst};
+use rustc_middle::ty::{self, Ty, TyCtxt, TypeFoldable};
+use rustc_target::abi::VariantIdx;
 
 use rustc_index::vec::{Idx, IndexVec};
 
-use rustc_span::{sym, Span};
+use rustc_span::Span;
 use rustc_target::spec::abi::Abi;
 
 use std::fmt;
@@ -39,10 +39,15 @@ fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: ty::InstanceDef<'tcx>) -> &'tcx 
             None,
         ),
         ty::InstanceDef::FnPtrShim(def_id, ty) => {
+            // FIXME(eddyb) support generating shims for a "shallow type",
+            // e.g. `Foo<_>` or `[_]` instead of requiring a fully monomorphic
+            // `Foo<Bar>` or `[String]` etc.
+            assert!(!ty.needs_subst());
+
             let trait_ = tcx.trait_of_item(def_id).unwrap();
             let adjustment = match tcx.fn_trait_kind_from_lang_item(trait_) {
                 Some(ty::ClosureKind::FnOnce) => Adjustment::Identity,
-                Some(ty::ClosureKind::FnMut) | Some(ty::ClosureKind::Fn) => Adjustment::Deref,
+                Some(ty::ClosureKind::FnMut | ty::ClosureKind::Fn) => Adjustment::Deref,
                 None => bug!("fn pointer {:?} is not an fn", ty),
             };
             // HACK: we need the "real" argument types for the MIR,
@@ -69,7 +74,7 @@ fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: ty::InstanceDef<'tcx>) -> &'tcx 
             let call_mut = tcx
                 .associated_items(fn_mut)
                 .in_definition_order()
-                .find(|it| it.kind == ty::AssocKind::Method)
+                .find(|it| it.kind == ty::AssocKind::Fn)
                 .unwrap()
                 .def_id;
 
@@ -81,17 +86,21 @@ fn make_shim<'tcx>(tcx: TyCtxt<'tcx>, instance: ty::InstanceDef<'tcx>) -> &'tcx 
                 None,
             )
         }
-        ty::InstanceDef::DropGlue(def_id, ty) => build_drop_shim(tcx, def_id, ty),
+        ty::InstanceDef::DropGlue(def_id, ty) => {
+            // FIXME(eddyb) support generating shims for a "shallow type",
+            // e.g. `Foo<_>` or `[_]` instead of requiring a fully monomorphic
+            // `Foo<Bar>` or `[String]` etc.
+            assert!(!ty.needs_subst());
+
+            build_drop_shim(tcx, def_id, ty)
+        }
         ty::InstanceDef::CloneShim(def_id, ty) => {
-            let name = tcx.item_name(def_id);
-            if name == sym::clone {
-                build_clone_shim(tcx, def_id, ty)
-            } else if name == sym::clone_from {
-                debug!("make_shim({:?}: using default trait implementation", instance);
-                return tcx.optimized_mir(def_id);
-            } else {
-                bug!("builtin clone shim {:?} not supported", instance)
-            }
+            // FIXME(eddyb) support generating shims for a "shallow type",
+            // e.g. `Foo<_>` or `[_]` instead of requiring a fully monomorphic
+            // `Foo<Bar>` or `[String]` etc.
+            assert!(!ty.needs_subst());
+
+            build_clone_shim(tcx, def_id, ty)
         }
         ty::InstanceDef::Virtual(..) => {
             bug!("InstanceDef::Virtual ({:?}) is for direct calls only", instance)
@@ -221,7 +230,7 @@ fn build_drop_shim<'tcx>(
             elaborate_drops::elaborate_drop(
                 &mut elaborator,
                 source_info,
-                &dropee,
+                dropee,
                 (),
                 return_block,
                 elaborate_drops::Unwind::To(resume_block),
@@ -332,8 +341,8 @@ fn build_clone_shim<'tcx>(
             let len = len.eval_usize(tcx, param_env);
             builder.array_shim(dest, src, ty, len)
         }
-        ty::Closure(def_id, substs) => {
-            builder.tuple_like_shim(dest, src, substs.as_closure().upvar_tys(def_id, tcx))
+        ty::Closure(_, substs) => {
+            builder.tuple_like_shim(dest, src, substs.as_closure().upvar_tys())
         }
         ty::Tuple(..) => builder.tuple_like_shim(dest, src, self_ty.tuple_fields()),
         _ => bug!("clone shim for `{:?}` which is not `Copy` and is not an aggregate", self_ty),
@@ -529,7 +538,7 @@ impl CloneShimBuilder<'tcx> {
         // BB #2
         // `dest[i] = Clone::clone(src[beg])`;
         // Goto #3 if ok, #5 if unwinding happens.
-        let dest_field = self.tcx.mk_place_index(dest.clone(), beg);
+        let dest_field = self.tcx.mk_place_index(dest, beg);
         let src_field = self.tcx.mk_place_index(src, beg);
         self.make_clone_call(dest_field, src_field, ty, BasicBlock::new(3), BasicBlock::new(5));
 
@@ -611,9 +620,9 @@ impl CloneShimBuilder<'tcx> {
         let mut previous_field = None;
         for (i, ity) in tys.enumerate() {
             let field = Field::new(i);
-            let src_field = self.tcx.mk_place_field(src.clone(), field, ity);
+            let src_field = self.tcx.mk_place_field(src, field, ity);
 
-            let dest_field = self.tcx.mk_place_field(dest.clone(), field, ity);
+            let dest_field = self.tcx.mk_place_field(dest, field, ity);
 
             // #(2i + 1) is the cleanup block for the previous clone operation
             let cleanup_block = self.block_index_offset(1);
@@ -624,7 +633,7 @@ impl CloneShimBuilder<'tcx> {
             // BB #(2i)
             // `dest.i = Clone::clone(&src.i);`
             // Goto #(2i + 2) if ok, #(2i + 1) if unwinding happens.
-            self.make_clone_call(dest_field.clone(), src_field, ity, next_block, cleanup_block);
+            self.make_clone_call(dest_field, src_field, ity, next_block, cleanup_block);
 
             // BB #(2i + 1) (cleanup)
             if let Some((previous_field, previous_cleanup)) = previous_field.take() {

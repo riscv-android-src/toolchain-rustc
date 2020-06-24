@@ -98,6 +98,8 @@ impl FileLoader for RealFileLoader {
 #[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, Debug)]
 pub struct StableSourceFileId(u128);
 
+// FIXME: we need a more globally consistent approach to the problem solved by
+// StableSourceFileId, perhaps built atop source_file.name_hash.
 impl StableSourceFileId {
     pub fn new(source_file: &SourceFile) -> StableSourceFileId {
         StableSourceFileId::new_from_pieces(
@@ -107,14 +109,21 @@ impl StableSourceFileId {
         )
     }
 
-    pub fn new_from_pieces(
+    fn new_from_pieces(
         name: &FileName,
         name_was_remapped: bool,
         unmapped_path: Option<&FileName>,
     ) -> StableSourceFileId {
         let mut hasher = StableHasher::new();
 
-        name.hash(&mut hasher);
+        if let FileName::Real(real_name) = name {
+            // rust-lang/rust#70924: Use the stable (virtualized) name when
+            // available. (We do not want artifacts from transient file system
+            // paths for libstd to leak into our build artifacts.)
+            real_name.stable_name().hash(&mut hasher)
+        } else {
+            name.hash(&mut hasher);
+        }
         name_was_remapped.hash(&mut hasher);
         unmapped_path.hash(&mut hasher);
 
@@ -141,27 +150,31 @@ pub struct SourceMap {
     // This is used to apply the file path remapping as specified via
     // `--remap-path-prefix` to all `SourceFile`s allocated within this `SourceMap`.
     path_mapping: FilePathMapping,
+
+    /// The algorithm used for hashing the contents of each source file.
+    hash_kind: SourceFileHashAlgorithm,
 }
 
 impl SourceMap {
     pub fn new(path_mapping: FilePathMapping) -> SourceMap {
-        SourceMap {
-            used_address_space: AtomicU32::new(0),
-            files: Default::default(),
-            file_loader: Box::new(RealFileLoader),
+        Self::with_file_loader_and_hash_kind(
+            Box::new(RealFileLoader),
             path_mapping,
-        }
+            SourceFileHashAlgorithm::Md5,
+        )
     }
 
-    pub fn with_file_loader(
+    pub fn with_file_loader_and_hash_kind(
         file_loader: Box<dyn FileLoader + Sync + Send>,
         path_mapping: FilePathMapping,
+        hash_kind: SourceFileHashAlgorithm,
     ) -> SourceMap {
         SourceMap {
             used_address_space: AtomicU32::new(0),
             files: Default::default(),
             file_loader,
             path_mapping,
+            hash_kind,
         }
     }
 
@@ -243,7 +256,7 @@ impl SourceMap {
 
     fn try_new_source_file(
         &self,
-        filename: FileName,
+        mut filename: FileName,
         src: String,
     ) -> Result<Lrc<SourceFile>, OffsetOverflowError> {
         // The path is used to determine the directory for loading submodules and
@@ -253,13 +266,22 @@ impl SourceMap {
         // be empty, so the working directory will be used.
         let unmapped_path = filename.clone();
 
-        let (filename, was_remapped) = match filename {
-            FileName::Real(filename) => {
-                let (filename, was_remapped) = self.path_mapping.map_prefix(filename);
-                (FileName::Real(filename), was_remapped)
+        let was_remapped;
+        if let FileName::Real(real_filename) = &mut filename {
+            match real_filename {
+                RealFileName::Named(path_to_be_remapped)
+                | RealFileName::Devirtualized {
+                    local_path: path_to_be_remapped,
+                    virtual_name: _,
+                } => {
+                    let mapped = self.path_mapping.map_prefix(path_to_be_remapped.clone());
+                    was_remapped = mapped.1;
+                    *path_to_be_remapped = mapped.0;
+                }
             }
-            other => (other, false),
-        };
+        } else {
+            was_remapped = false;
+        }
 
         let file_id =
             StableSourceFileId::new_from_pieces(&filename, was_remapped, Some(&unmapped_path));
@@ -275,6 +297,7 @@ impl SourceMap {
                     unmapped_path,
                     src,
                     Pos::from_usize(start_pos),
+                    self.hash_kind,
                 ));
 
                 let mut files = self.files.borrow_mut();
@@ -296,14 +319,16 @@ impl SourceMap {
         &self,
         filename: FileName,
         name_was_remapped: bool,
-        crate_of_origin: u32,
-        src_hash: u128,
+        src_hash: SourceFileHash,
         name_hash: u128,
         source_len: usize,
+        cnum: CrateNum,
         mut file_local_lines: Vec<BytePos>,
         mut file_local_multibyte_chars: Vec<MultiByteChar>,
         mut file_local_non_narrow_chars: Vec<NonNarrowChar>,
         mut file_local_normalized_pos: Vec<NormalizedPos>,
+        original_start_pos: BytePos,
+        original_end_pos: BytePos,
     ) -> Lrc<SourceFile> {
         let start_pos = self
             .allocate_address_space(source_len)
@@ -332,10 +357,13 @@ impl SourceMap {
             name: filename,
             name_was_remapped,
             unmapped_path: None,
-            crate_of_origin,
             src: None,
             src_hash,
-            external_src: Lock::new(ExternalSource::AbsentOk),
+            external_src: Lock::new(ExternalSource::Foreign {
+                kind: ExternalSourceKind::AbsentOk,
+                original_start_pos,
+                original_end_pos,
+            }),
             start_pos,
             end_pos,
             lines: file_local_lines,
@@ -343,6 +371,7 @@ impl SourceMap {
             non_narrow_chars: file_local_non_narrow_chars,
             normalized_pos: file_local_normalized_pos,
             name_hash,
+            cnum,
         });
 
         let mut files = self.files.borrow_mut();
@@ -362,16 +391,16 @@ impl SourceMap {
 
     // If there is a doctest offset, applies it to the line.
     pub fn doctest_offset_line(&self, file: &FileName, orig: usize) -> usize {
-        return match file {
+        match file {
             FileName::DocTest(_, offset) => {
-                return if *offset >= 0 {
-                    orig + *offset as usize
-                } else {
+                if *offset < 0 {
                     orig - (-(*offset)) as usize
-                };
+                } else {
+                    orig + *offset as usize
+                }
             }
             _ => orig,
-        };
+        }
     }
 
     /// Looks up source information about a `BytePos`.
@@ -517,10 +546,21 @@ impl SourceMap {
         Ok((lo, hi))
     }
 
+    pub fn is_line_before_span_empty(&self, sp: Span) -> bool {
+        match self.span_to_prev_source(sp) {
+            Ok(s) => s.split('\n').last().map(|l| l.trim_start().is_empty()).unwrap_or(false),
+            Err(_) => false,
+        }
+    }
+
     pub fn span_to_lines(&self, sp: Span) -> FileLinesResult {
         debug!("span_to_lines(sp={:?})", sp);
         let (lo, hi) = self.is_valid_span(sp)?;
         assert!(hi.line >= lo.line);
+
+        if sp.is_dummy() {
+            return Ok(FileLines { file: lo.file, lines: Vec::new() });
+        }
 
         let mut lines = Vec::with_capacity(hi.line - lo.line + 1);
 
@@ -532,6 +572,9 @@ impl SourceMap {
         // and to the end of the line. Be careful because the line
         // numbers in Loc are 1-based, so we subtract 1 to get 0-based
         // lines.
+        //
+        // FIXME: now that we handle DUMMY_SP up above, we should consider
+        // asserting that the line numbers here are all indeed 1-based.
         let hi_line = hi.line.saturating_sub(1);
         for line_index in lo.line.saturating_sub(1)..hi_line {
             let line_len = lo.file.get_line(line_index).map(|s| s.chars().count()).unwrap_or(0);
@@ -556,10 +599,10 @@ impl SourceMap {
         let local_end = self.lookup_byte_offset(sp.hi());
 
         if local_begin.sf.start_pos != local_end.sf.start_pos {
-            return Err(SpanSnippetError::DistinctSources(DistinctSources {
+            Err(SpanSnippetError::DistinctSources(DistinctSources {
                 begin: (local_begin.sf.name.clone(), local_begin.sf.start_pos),
                 end: (local_end.sf.name.clone(), local_end.sf.start_pos),
-            }));
+            }))
         } else {
             self.ensure_source_file_source_present(local_begin.sf.clone());
 
@@ -577,13 +620,11 @@ impl SourceMap {
             }
 
             if let Some(ref src) = local_begin.sf.src {
-                return extract_source(src, start_index, end_index);
+                extract_source(src, start_index, end_index)
             } else if let Some(src) = local_begin.sf.external_src.borrow().get_source() {
-                return extract_source(src, start_index, end_index);
+                extract_source(src, start_index, end_index)
             } else {
-                return Err(SpanSnippetError::SourceNotAvailable {
-                    filename: local_begin.sf.name.clone(),
-                });
+                Err(SpanSnippetError::SourceNotAvailable { filename: local_begin.sf.name.clone() })
             }
         }
     }
@@ -715,7 +756,14 @@ impl SourceMap {
         }
     }
 
-    pub fn def_span(&self, sp: Span) -> Span {
+    /// Given a `Span`, return a span ending in the closest `{`. This is useful when you have a
+    /// `Span` enclosing a whole item but we need to point at only the head (usually the first
+    /// line) of that item.
+    ///
+    /// *Only suitable for diagnostics.*
+    pub fn guess_head_span(&self, sp: Span) -> Span {
+        // FIXME: extend the AST items to have a head span, or replace callers with pointing at
+        // the item's ident when appropriate.
         self.span_until_char(sp, '{')
     }
 
@@ -971,9 +1019,15 @@ impl SourceMap {
     }
     pub fn ensure_source_file_source_present(&self, source_file: Lrc<SourceFile>) -> bool {
         source_file.add_external_src(|| match source_file.name {
-            FileName::Real(ref name) => self.file_loader.read_file(name).ok(),
+            FileName::Real(ref name) => self.file_loader.read_file(name.local_path()).ok(),
             _ => None,
         })
+    }
+
+    pub fn is_imported(&self, sp: Span) -> bool {
+        let source_file_index = self.lookup_source_file_idx(sp.lo());
+        let source_file = &self.files()[source_file_index];
+        source_file.is_imported()
     }
 }
 

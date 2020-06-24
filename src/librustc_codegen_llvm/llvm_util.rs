@@ -1,11 +1,11 @@
 use crate::back::write::create_informational_target_machine;
 use crate::llvm;
 use libc::c_int;
-use rustc::bug;
-use rustc::session::config::PrintRequest;
-use rustc::session::Session;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_feature::UnstableFeatures;
+use rustc_middle::bug;
+use rustc_session::config::PrintRequest;
+use rustc_session::Session;
 use rustc_span::symbol::sym;
 use rustc_span::symbol::Symbol;
 use rustc_target::spec::{MergeFunctions, PanicStrategy};
@@ -80,21 +80,18 @@ unsafe fn configure_llvm(sess: &Session) {
         if sess.print_llvm_passes() {
             add("-debug-pass=Structure", false);
         }
-
-        if sess.opts.debugging_opts.generate_arange_section {
+        if !sess.opts.debugging_opts.no_generate_arange_section {
             add("-generate-arange-section", false);
         }
-        if get_major_version() >= 8 {
-            match sess
-                .opts
-                .debugging_opts
-                .merge_functions
-                .unwrap_or(sess.target.target.options.merge_functions)
-            {
-                MergeFunctions::Disabled | MergeFunctions::Trampolines => {}
-                MergeFunctions::Aliases => {
-                    add("-mergefunc-use-aliases", false);
-                }
+        match sess
+            .opts
+            .debugging_opts
+            .merge_functions
+            .unwrap_or(sess.target.target.options.merge_functions)
+        {
+            MergeFunctions::Disabled | MergeFunctions::Trampolines => {}
+            MergeFunctions::Aliases => {
+                add("-mergefunc-use-aliases", false);
             }
         }
 

@@ -23,6 +23,7 @@ pub const GIT_SUBMODULE_UPDATE_OPTIONS_VERSION: c_uint = 1;
 pub const GIT_ODB_BACKEND_VERSION: c_uint = 1;
 pub const GIT_REFDB_BACKEND_VERSION: c_uint = 1;
 pub const GIT_CHERRYPICK_OPTIONS_VERSION: c_uint = 1;
+pub const GIT_APPLY_OPTIONS_VERSION: c_uint = 1;
 
 macro_rules! git_enum {
     (pub enum $name:ident { $($variants:tt)* }) => {
@@ -230,6 +231,7 @@ git_enum! {
         GIT_ERROR_PATCH,
         GIT_ERROR_WORKTREE,
         GIT_ERROR_SHA1,
+        GIT_ERROR_HTTP,
     }
 }
 
@@ -1727,6 +1729,35 @@ pub struct git_cherrypick_options {
     pub checkout_opts: git_checkout_options,
 }
 
+pub type git_apply_delta_cb =
+    Option<extern "C" fn(delta: *const git_diff_delta, payload: *mut c_void) -> c_int>;
+
+pub type git_apply_hunk_cb =
+    Option<extern "C" fn(hunk: *const git_diff_hunk, payload: *mut c_void) -> c_int>;
+
+git_enum! {
+    pub enum git_apply_flags_t {
+        GIT_APPLY_CHECK = 1<<0,
+    }
+}
+
+#[repr(C)]
+pub struct git_apply_options {
+    pub version: c_uint,
+    pub delta_cb: git_apply_delta_cb,
+    pub hunk_cb: git_apply_hunk_cb,
+    pub payload: *mut c_void,
+    pub flags: u32,
+}
+
+git_enum! {
+    pub enum git_apply_location_t {
+        GIT_APPLY_LOCATION_WORKDIR = 0,
+        GIT_APPLY_LOCATION_INDEX = 1,
+        GIT_APPLY_LOCATION_BOTH = 2,
+    }
+}
+
 extern "C" {
     // threads
     pub fn git_libgit2_init() -> c_int;
@@ -1774,6 +1805,10 @@ extern "C" {
     pub fn git_repository_set_head_detached(
         repo: *mut git_repository,
         commitish: *const git_oid,
+    ) -> c_int;
+    pub fn git_repository_set_head_detached_from_annotated(
+        repo: *mut git_repository,
+        commitish: *const git_annotated_commit,
     ) -> c_int;
     pub fn git_repository_set_bare(repo: *mut git_repository) -> c_int;
     pub fn git_repository_is_worktree(repo: *const git_repository) -> c_int;
@@ -2497,6 +2532,13 @@ extern "C" {
         target: *const git_commit,
         force: c_int,
     ) -> c_int;
+    pub fn git_branch_create_from_annotated(
+        ref_out: *mut *mut git_reference,
+        repository: *mut git_repository,
+        branch_name: *const c_char,
+        commit: *const git_annotated_commit,
+        force: c_int,
+    ) -> c_int;
     pub fn git_branch_delete(branch: *mut git_reference) -> c_int;
     pub fn git_branch_is_head(branch: *const git_reference) -> c_int;
     pub fn git_branch_iterator_free(iter: *mut git_branch_iterator);
@@ -2860,6 +2902,7 @@ extern "C" {
 
     // merge
     pub fn git_annotated_commit_id(commit: *const git_annotated_commit) -> *const git_oid;
+    pub fn git_annotated_commit_ref(commit: *const git_annotated_commit) -> *const c_char;
     pub fn git_annotated_commit_from_ref(
         out: *mut *mut git_annotated_commit,
         repo: *mut git_repository,
@@ -3585,6 +3628,22 @@ extern "C" {
         our_commit: *mut git_commit,
         mainline: c_uint,
         merge_options: *const git_merge_options,
+    ) -> c_int;
+
+    // apply
+    pub fn git_apply_options_init(opts: *mut git_apply_options, version: c_uint) -> c_int;
+    pub fn git_apply_to_tree(
+        out: *mut *mut git_index,
+        repo: *mut git_repository,
+        preimage: *mut git_tree,
+        diff: *mut git_diff,
+        options: *const git_apply_options,
+    ) -> c_int;
+    pub fn git_apply(
+        repo: *mut git_repository,
+        diff: *mut git_diff,
+        location: git_apply_location_t,
+        options: *const git_apply_options,
     ) -> c_int;
 }
 

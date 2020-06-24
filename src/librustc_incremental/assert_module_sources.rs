@@ -21,10 +21,10 @@
 //! allows for doing a more fine-grained check to see if pre- or post-lto data
 //! was re-used.
 
-use rustc::mir::mono::CodegenUnitNameBuilder;
-use rustc::ty::TyCtxt;
 use rustc_ast::ast;
 use rustc_hir::def_id::LOCAL_CRATE;
+use rustc_middle::mir::mono::CodegenUnitNameBuilder;
+use rustc_middle::ty::TyCtxt;
 use rustc_session::cgu_reuse_tracker::*;
 use rustc_span::symbol::{sym, Symbol};
 use std::collections::BTreeSet;
@@ -44,7 +44,7 @@ pub fn assert_module_sources(tcx: TyCtxt<'_>) {
 
         let ams = AssertModuleSource { tcx, available_cgus };
 
-        for attr in tcx.hir().krate().attrs {
+        for attr in tcx.hir().krate().item.attrs {
             ams.check_attr(attr);
         }
     })
@@ -175,6 +175,6 @@ impl AssertModuleSource<'tcx> {
             return true;
         }
         debug!("check_config: no match found");
-        return false;
+        false
     }
 }

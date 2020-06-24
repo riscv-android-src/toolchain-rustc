@@ -1,5 +1,5 @@
-use rustc::ty::{self, Ty, TyVid};
 use rustc_hir::def_id::DefId;
+use rustc_middle::ty::{self, Ty, TyVid};
 use rustc_span::symbol::Symbol;
 use rustc_span::Span;
 
@@ -8,7 +8,6 @@ use rustc_data_structures::unify as ut;
 use std::cmp;
 use std::marker::PhantomData;
 use std::ops::Range;
-use std::u32;
 
 pub struct TypeVariableTable<'tcx> {
     values: sv::SnapshotVec<Delegate>,
@@ -54,6 +53,7 @@ pub enum TypeVariableOriginKind {
 
     /// One of the upvars or closure kind parameters in a `ClosureSubsts`
     /// (before it has been determined).
+    // FIXME(eddyb) distinguish upvar inference variables from the rest.
     ClosureSynthetic,
     SubstitutionPlaceholder,
     AutoDeref,

@@ -25,9 +25,9 @@ use log::{debug, trace};
 use std::collections::HashSet;
 
 /// Result for `resolve_ws_with_opts`.
-pub struct WorkspaceResolve<'a> {
+pub struct WorkspaceResolve<'cfg> {
     /// Packages to be downloaded.
-    pub pkg_set: PackageSet<'a>,
+    pub pkg_set: PackageSet<'cfg>,
     /// The resolve for the entire workspace.
     ///
     /// This may be `None` for things like `cargo install` and `-Zavoid-dev-deps`.
@@ -72,14 +72,14 @@ pub fn resolve_ws<'a>(ws: &Workspace<'a>) -> CargoResult<(PackageSet<'a>, Resolv
 ///
 /// `specs` may be empty, which indicates it should resolve all workspace
 /// members. In this case, `opts.all_features` must be `true`.
-pub fn resolve_ws_with_opts<'a>(
-    ws: &Workspace<'a>,
+pub fn resolve_ws_with_opts<'cfg>(
+    ws: &Workspace<'cfg>,
     target_data: &RustcTargetData,
     requested_target: CompileKind,
     opts: &ResolveOpts,
     specs: &[PackageIdSpec],
     has_dev_units: HasDevUnits,
-) -> CargoResult<WorkspaceResolve<'a>> {
+) -> CargoResult<WorkspaceResolve<'cfg>> {
     let mut registry = PackageRegistry::new(ws.config())?;
     let mut add_patches = true;
     let resolve = if ws.ignore_lock() {
@@ -126,10 +126,24 @@ pub fn resolve_ws_with_opts<'a>(
 
     let pkg_set = get_resolved_packages(&resolved_with_overrides, registry)?;
 
+    let member_ids = ws
+        .members_with_features(&specs, &opts.features)?
+        .into_iter()
+        .map(|(p, _fts)| p.package_id())
+        .collect::<Vec<_>>();
+    pkg_set.download_accessible(
+        &resolved_with_overrides,
+        &member_ids,
+        has_dev_units,
+        requested_target,
+        &target_data,
+    )?;
+
     let resolved_features = FeatureResolver::resolve(
         ws,
         target_data,
         &resolved_with_overrides,
+        &pkg_set,
         &opts.features,
         specs,
         requested_target,
@@ -159,7 +173,7 @@ fn resolve_with_registry<'cfg>(
         true,
     )?;
 
-    if !ws.is_ephemeral() {
+    if !ws.is_ephemeral() && ws.require_optional_deps() {
         ops::write_pkg_lockfile(ws, &resolve)?;
     }
     Ok(resolve)
@@ -371,10 +385,10 @@ pub fn add_overrides<'a>(
     Ok(())
 }
 
-pub fn get_resolved_packages<'a>(
+pub fn get_resolved_packages<'cfg>(
     resolve: &Resolve,
-    registry: PackageRegistry<'a>,
-) -> CargoResult<PackageSet<'a>> {
+    registry: PackageRegistry<'cfg>,
+) -> CargoResult<PackageSet<'cfg>> {
     let ids: Vec<PackageId> = resolve.iter().collect();
     registry.get(&ids)
 }

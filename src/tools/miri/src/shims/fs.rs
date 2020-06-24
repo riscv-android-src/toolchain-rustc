@@ -2,15 +2,15 @@ use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
 use std::fs::{read_dir, remove_dir, remove_file, rename, DirBuilder, File, FileType, OpenOptions, ReadDir};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::SystemTime;
 
 use rustc_data_structures::fx::FxHashMap;
-use rustc::ty::layout::{Align, LayoutOf, Size};
+use rustc_target::abi::{Align, LayoutOf, Size};
 
 use crate::stacked_borrows::Tag;
 use crate::*;
-use helpers::immty_from_uint_checked;
+use helpers::{immty_from_int_checked, immty_from_uint_checked};
 use shims::time::system_time_to_duration;
 
 #[derive(Debug)]
@@ -56,7 +56,7 @@ impl FileHandler {
         let new_fd = candidate_new_fd.unwrap_or_else(|| {
             // find_map ran out of BTreeMap entries before finding a free fd, use one plus the
             // maximum fd in the map
-            self.handles.last_entry().map(|entry| entry.key() + 1).unwrap_or(min_fd)
+            self.handles.last_key_value().map(|(fd, _)| fd.checked_add(1).unwrap()).unwrap_or(min_fd)
         });
 
         self.handles.insert(new_fd, file_handle).unwrap_none();
@@ -66,9 +66,9 @@ impl FileHandler {
 
 impl<'mir, 'tcx> EvalContextExtPrivate<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
-    /// Emulate `stat` or `lstat` on the `macos` platform. This function is not intended to be
+    /// Emulate `stat` or `lstat` on `macos`. This function is not intended to be
     /// called directly from `emulate_foreign_item_by_name`, so it does not check if isolation is
-    /// disabled or if the target platform is the correct one. Please use `macos_stat` or
+    /// disabled or if the target OS is the correct one. Please use `macos_stat` or
     /// `macos_lstat` instead.
     fn macos_stat_or_lstat(
         &mut self,
@@ -79,9 +79,9 @@ trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, '
         let this = self.eval_context_mut();
 
         let path_scalar = this.read_scalar(path_op)?.not_undef()?;
-        let path: PathBuf = this.read_os_str_from_c_str(path_scalar)?.into();
+        let path = this.read_path_from_c_str(path_scalar)?.into_owned();
 
-        let metadata = match FileMetadata::from_path(this, path, follow_symlink)? {
+        let metadata = match FileMetadata::from_path(this, &path, follow_symlink)? {
             Some(metadata) => metadata,
             None => return Ok(-1),
         };
@@ -114,13 +114,6 @@ trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, '
         let blksize_t_layout = this.libc_ty_layout("blksize_t")?;
         let uint32_t_layout = this.libc_ty_layout("uint32_t")?;
 
-        // We need to add 32 bits of padding after `st_rdev` if we are on a 64-bit platform.
-        let pad_layout = if this.tcx.sess.target.ptr_width == 64 {
-            uint32_t_layout
-        } else {
-            this.layout_of(this.tcx.mk_unit())?
-        };
-
         let imms = [
             immty_from_uint_checked(0u128, dev_t_layout)?, // st_dev
             immty_from_uint_checked(mode, mode_t_layout)?, // st_mode
@@ -129,7 +122,7 @@ trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, '
             immty_from_uint_checked(0u128, uid_t_layout)?, // st_uid
             immty_from_uint_checked(0u128, gid_t_layout)?, // st_gid
             immty_from_uint_checked(0u128, dev_t_layout)?, // st_rdev
-            immty_from_uint_checked(0u128, pad_layout)?, // padding for 64-bit targets
+            immty_from_uint_checked(0u128, uint32_t_layout)?, // padding
             immty_from_uint_checked(access_sec, time_t_layout)?, // st_atime
             immty_from_uint_checked(access_nsec, long_layout)?, // st_atime_nsec
             immty_from_uint_checked(modified_sec, time_t_layout)?, // st_mtime
@@ -167,11 +160,11 @@ trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, '
         match file_type {
             Ok(file_type) => {
                 if file_type.is_dir() {
-                    Ok(this.eval_libc("DT_DIR")?.to_u8()? as i32)
+                    Ok(this.eval_libc("DT_DIR")?.to_u8()?.into())
                 } else if file_type.is_file() {
-                    Ok(this.eval_libc("DT_REG")?.to_u8()? as i32)
+                    Ok(this.eval_libc("DT_REG")?.to_u8()?.into())
                 } else if file_type.is_symlink() {
-                    Ok(this.eval_libc("DT_LNK")?.to_u8()? as i32)
+                    Ok(this.eval_libc("DT_LNK")?.to_u8()?.into())
                 } else {
                     // Certain file types are only supported when the host is a Unix system.
                     // (i.e. devices and sockets) If it is, check those cases, if not, fall back to
@@ -181,24 +174,24 @@ trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, '
                     {
                         use std::os::unix::fs::FileTypeExt;
                         if file_type.is_block_device() {
-                            Ok(this.eval_libc("DT_BLK")?.to_u8()? as i32)
+                            Ok(this.eval_libc("DT_BLK")?.to_u8()?.into())
                         } else if file_type.is_char_device() {
-                            Ok(this.eval_libc("DT_CHR")?.to_u8()? as i32)
+                            Ok(this.eval_libc("DT_CHR")?.to_u8()?.into())
                         } else if file_type.is_fifo() {
-                            Ok(this.eval_libc("DT_FIFO")?.to_u8()? as i32)
+                            Ok(this.eval_libc("DT_FIFO")?.to_u8()?.into())
                         } else if file_type.is_socket() {
-                            Ok(this.eval_libc("DT_SOCK")?.to_u8()? as i32)
+                            Ok(this.eval_libc("DT_SOCK")?.to_u8()?.into())
                         } else {
-                            Ok(this.eval_libc("DT_UNKNOWN")?.to_u8()? as i32)
+                            Ok(this.eval_libc("DT_UNKNOWN")?.to_u8()?.into())
                         }
                     }
                     #[cfg(not(unix))]
-                    Ok(this.eval_libc("DT_UNKNOWN")?.to_u8()? as i32)
+                    Ok(this.eval_libc("DT_UNKNOWN")?.to_u8()?.into())
                 }
             }
             Err(e) => return match e.raw_os_error() {
                 Some(error) => Ok(error),
-                None => throw_unsup_format!("The error {} couldn't be converted to a return value", e),
+                None => throw_unsup_format!("the error {} couldn't be converted to a return value", e),
             }
         }
     }
@@ -258,10 +251,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let o_wronly = this.eval_libc_i32("O_WRONLY")?;
         let o_rdwr = this.eval_libc_i32("O_RDWR")?;
         // The first two bits of the flag correspond to the access mode in linux, macOS and
-        // windows. We need to check that in fact the access mode flags for the current platform
-        // only use these two bits, otherwise we are in an unsupported platform and should error.
+        // windows. We need to check that in fact the access mode flags for the current target
+        // only use these two bits, otherwise we are in an unsupported target and should error.
         if (o_rdonly | o_wronly | o_rdwr) & !0b11 != 0 {
-            throw_unsup_format!("Access mode flags on this platform are unsupported");
+            throw_unsup_format!("access mode flags on this target are unsupported");
         }
         let mut writable = true;
 
@@ -276,7 +269,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         } else if access_mode == o_rdwr {
             options.read(true).write(true);
         } else {
-            throw_unsup_format!("Unsupported access mode {:#x}", access_mode);
+            throw_unsup_format!("unsupported access mode {:#x}", access_mode);
         }
         // We need to check that there aren't unsupported options in `flag`. For this we try to
         // reproduce the content of `flag` in the `mirror` variable using only the supported
@@ -295,8 +288,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         }
         let o_creat = this.eval_libc_i32("O_CREAT")?;
         if flag & o_creat != 0 {
-            options.create(true);
             mirror |= o_creat;
+
+            let o_excl = this.eval_libc_i32("O_EXCL")?;
+            if flag & o_excl != 0 {
+                mirror |= o_excl;
+                options.create_new(true);
+            } else {
+                options.create(true);
+            }
         }
         let o_cloexec = this.eval_libc_i32("O_CLOEXEC")?;
         if flag & o_cloexec != 0 {
@@ -310,7 +310,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             throw_unsup_format!("unsupported flags {:#x}", flag & !mirror);
         }
 
-        let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
 
         let fd = options.open(&path).map(|file| {
             let fh = &mut this.machine.file_handler;
@@ -351,7 +351,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // differ in whether the FD_CLOEXEC flag is pre-set on the new file descriptor,
             // thus they can share the same implementation here.
             if fd < MIN_NORMAL_FILE_FD {
-                throw_unsup_format!("Duplicating file descriptors for stdin, stdout, or stderr is not supported")
+                throw_unsup_format!("duplicating file descriptors for stdin, stdout, or stderr is not supported")
             }
             let start_op = start_op.ok_or_else(|| {
                 err_unsup_format!(
@@ -369,7 +369,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             });
             this.try_unwrap_io_result(fd_result)
         } else {
-            throw_unsup_format!("The {:#x} command is not supported for `fcntl`)", cmd);
+            throw_unsup_format!("the {:#x} command is not supported for `fcntl`)", cmd);
         }
     }
 
@@ -427,15 +427,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         // We cap the number of read bytes to the largest value that we are able to fit in both the
         // host's and target's `isize`. This saves us from having to handle overflows later.
-        let count = count.min(this.isize_max() as u64).min(isize::max_value() as u64);
+        let count = count.min(this.machine_isize_max() as u64).min(isize::MAX as u64);
 
         if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
             // This can never fail because `count` was capped to be smaller than
-            // `isize::max_value()`.
+            // `isize::MAX`.
             let count = isize::try_from(count).unwrap();
             // We want to read at most `count` bytes. We are sure that `count` is not negative
             // because it was a target's `usize`. Also we are sure that its smaller than
-            // `usize::max_value()` because it is a host's `isize`.
+            // `usize::MAX` because it is a host's `isize`.
             let mut bytes = vec![0; count as usize];
             let result = file
                 .read(&mut bytes)
@@ -481,7 +481,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         // We cap the number of written bytes to the largest value that we are able to fit in both the
         // host's and target's `isize`. This saves us from having to handle overflows later.
-        let count = count.min(this.isize_max() as u64).min(isize::max_value() as u64);
+        let count = count.min(this.machine_isize_max() as u64).min(isize::MAX as u64);
 
         if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
             let bytes = this.memory.read_bytes(buf, Size::from_bytes(count))?;
@@ -507,7 +507,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let whence = this.read_scalar(whence_op)?.to_i32()?;
 
         let seek_from = if whence == this.eval_libc_i32("SEEK_SET")? {
-            SeekFrom::Start(offset as u64)
+            SeekFrom::Start(u64::try_from(offset).unwrap())
         } else if whence == this.eval_libc_i32("SEEK_CUR")? {
             SeekFrom::Current(offset)
         } else if whence == this.eval_libc_i32("SEEK_END")? {
@@ -519,7 +519,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         };
 
         if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
-            let result = file.seek(seek_from).map(|offset| offset as i64);
+            let result = file.seek(seek_from).map(|offset| i64::try_from(offset).unwrap());
             this.try_unwrap_io_result(result)
         } else {
             this.handle_not_found()
@@ -531,10 +531,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("unlink")?;
 
-        let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
 
         let result = remove_file(path).map(|_| 0);
-
         this.try_unwrap_io_result(result)
     }
 
@@ -544,12 +543,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         linkpath_op: OpTy<'tcx, Tag>
     ) -> InterpResult<'tcx, i32> {
         #[cfg(target_family = "unix")]
-        fn create_link(src: PathBuf, dst: PathBuf) -> std::io::Result<()> {
+        fn create_link(src: &Path, dst: &Path) -> std::io::Result<()> {
             std::os::unix::fs::symlink(src, dst)
         }
 
         #[cfg(target_family = "windows")]
-        fn create_link(src: PathBuf, dst: PathBuf) -> std::io::Result<()> {
+        fn create_link(src: &Path, dst: &Path) -> std::io::Result<()> {
             use std::os::windows::fs;
             if src.is_dir() {
                 fs::symlink_dir(src, dst)
@@ -562,10 +561,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("symlink")?;
 
-        let target = this.read_os_str_from_c_str(this.read_scalar(target_op)?.not_undef()?)?.into();
-        let linkpath = this.read_os_str_from_c_str(this.read_scalar(linkpath_op)?.not_undef()?)?.into();
+        let target = this.read_path_from_c_str(this.read_scalar(target_op)?.not_undef()?)?;
+        let linkpath = this.read_path_from_c_str(this.read_scalar(linkpath_op)?.not_undef()?)?;
 
-        this.try_unwrap_io_result(create_link(target, linkpath).map(|_| 0))
+        let result = create_link(&target, &linkpath).map(|_| 0);
+        this.try_unwrap_io_result(result)
     }
 
     fn macos_stat(
@@ -574,8 +574,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         buf_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
+        this.assert_target_os("macos", "stat");
         this.check_no_isolation("stat")?;
-        this.assert_platform("macos", "stat");
         // `stat` always follows symlinks.
         this.macos_stat_or_lstat(true, path_op, buf_op)
     }
@@ -587,8 +587,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         buf_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
+        this.assert_target_os("macos", "lstat");
         this.check_no_isolation("lstat")?;
-        this.assert_platform("macos", "lstat");
         this.macos_stat_or_lstat(false, path_op, buf_op)
     }
 
@@ -599,8 +599,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
+        this.assert_target_os("macos", "fstat");
         this.check_no_isolation("fstat")?;
-        this.assert_platform("macos", "fstat");
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
 
@@ -621,8 +621,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
+        this.assert_target_os("linux", "statx");
         this.check_no_isolation("statx")?;
-        this.assert_platform("linux", "statx");
 
         let statxbuf_scalar = this.read_scalar(statxbuf_op)?.not_undef()?;
         let pathname_scalar = this.read_scalar(pathname_op)?.not_undef()?;
@@ -643,7 +643,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // FIXME: This long path is required because `libc::statx` is an struct and also a
             // function and `resolve_path` is returning the latter.
             let statx_ty = this
-                .resolve_path(&["libc", "unix", "linux_like", "linux", "gnu", "statx"])?
+                .resolve_path(&["libc", "unix", "linux_like", "linux", "gnu", "statx"])
                 .monomorphic_ty(*this.tcx);
             let statxbuf_ty = this.tcx.mk_mut_ptr(statx_ty);
             let statxbuf_layout = this.layout_of(statxbuf_ty)?;
@@ -651,17 +651,17 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             this.ref_to_mplace(statxbuf_imm)?
         };
 
-        let path: PathBuf = this.read_os_str_from_c_str(pathname_scalar)?.into();
+        let path = this.read_path_from_c_str(pathname_scalar)?.into_owned();
         // `flags` should be a `c_int` but the `syscall` function provides an `isize`.
         let flags: i32 =
             this.read_scalar(flags_op)?.to_machine_isize(&*this.tcx)?.try_into().map_err(|e| {
-                err_unsup_format!("Failed to convert pointer sized operand to integer: {}", e)
+                err_unsup_format!("failed to convert pointer sized operand to integer: {}", e)
             })?;
         let empty_path_flag = flags & this.eval_libc("AT_EMPTY_PATH")?.to_i32()? != 0;
         // `dirfd` should be a `c_int` but the `syscall` function provides an `isize`.
         let dirfd: i32 =
             this.read_scalar(dirfd_op)?.to_machine_isize(&*this.tcx)?.try_into().map_err(|e| {
-                err_unsup_format!("Failed to convert pointer sized operand to integer: {}", e)
+                err_unsup_format!("failed to convert pointer sized operand to integer: {}", e)
             })?;
         // We only support:
         // * interpreting `path` as an absolute directory,
@@ -676,7 +676,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             (path.as_os_str().is_empty() && empty_path_flag)
         ) {
             throw_unsup_format!(
-                "Using statx is only supported with absolute paths, relative paths with the file \
+                "using statx is only supported with absolute paths, relative paths with the file \
                 descriptor `AT_FDCWD`, and empty paths with the `AT_EMPTY_PATH` flag set and any \
                 file descriptor"
             )
@@ -685,7 +685,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // the `_mask_op` paramter specifies the file information that the caller requested.
         // However `statx` is allowed to return information that was not requested or to not
         // return information that was requested. This `mask` represents the information we can
-        // actually provide in any host platform.
+        // actually provide for any target.
         let mut mask =
             this.eval_libc("STATX_TYPE")?.to_u32()? | this.eval_libc("STATX_SIZE")?.to_u32()?;
 
@@ -698,7 +698,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let metadata = if path.as_os_str().is_empty() && empty_path_flag {
             FileMetadata::from_fd(this, dirfd)?
         } else {
-            FileMetadata::from_path(this, path, follow_symlink)?
+            FileMetadata::from_path(this, &path, follow_symlink)?
         };
         let metadata = match metadata {
             Some(metadata) => metadata,
@@ -792,8 +792,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             return Ok(-1);
         }
 
-        let oldpath = this.read_os_str_from_c_str(oldpath_scalar)?;
-        let newpath = this.read_os_str_from_c_str(newpath_scalar)?;
+        let oldpath = this.read_path_from_c_str(oldpath_scalar)?;
+        let newpath = this.read_path_from_c_str(newpath_scalar)?;
 
         let result = rename(oldpath, newpath).map(|_| 0);
 
@@ -809,13 +809,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("mkdir")?;
 
-        let _mode = if this.tcx.sess.target.target.target_os.as_str() == "macos" {
-            this.read_scalar(mode_op)?.not_undef()?.to_u16()? as u32
+        let _mode = if this.tcx.sess.target.target.target_os == "macos" {
+            u32::from(this.read_scalar(mode_op)?.not_undef()?.to_u16()?)
         } else {
             this.read_scalar(mode_op)?.to_u32()?
         };
 
-        let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
 
         let mut builder = DirBuilder::new();
 
@@ -840,7 +840,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("rmdir")?;
 
-        let path = this.read_os_str_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
 
         let result = remove_dir(path).map(|_| 0i32);
 
@@ -852,7 +852,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("opendir")?;
 
-        let name = this.read_os_str_from_c_str(this.read_scalar(name_op)?.not_undef()?)?;
+        let name = this.read_path_from_c_str(this.read_scalar(name_op)?.not_undef()?)?;
 
         let result = read_dir(name);
 
@@ -867,7 +867,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
             Err(e) => {
                 this.set_last_error_from_io_error(e)?;
-                Ok(Scalar::from_machine_usize(0, this))
+                Ok(Scalar::null_ptr(this))
             }
         }
     }
@@ -880,13 +880,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
+        this.assert_target_os("linux", "readdir64_r");
         this.check_no_isolation("readdir64_r")?;
-        this.assert_platform("linux", "readdir64_r");
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
         let dir_iter = this.machine.dir_handler.streams.get_mut(&dirp).ok_or_else(|| {
-            err_unsup_format!("The DIR pointer passed to readdir64_r did not come from opendir")
+            err_unsup_format!("the DIR pointer passed to readdir64_r did not come from opendir")
         })?;
         match dir_iter.next() {
             Some(Ok(dir_entry)) => {
@@ -906,14 +906,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let entry_place = this.deref_operand(entry_op)?;
                 let name_place = this.mplace_field(entry_place, 4)?;
 
-                let file_name = dir_entry.file_name();
+                let file_name = dir_entry.file_name(); // not a Path as there are no separators!
                 let (name_fits, _) = this.write_os_str_to_c_str(
                     &file_name,
                     name_place.ptr,
                     name_place.layout.size.bytes(),
                 )?;
                 if !name_fits {
-                    throw_unsup_format!("A directory entry had a name too large to fit in libc::dirent64");
+                    throw_unsup_format!("a directory entry had a name too large to fit in libc::dirent64");
                 }
 
                 let entry_place = this.deref_operand(entry_op)?;
@@ -929,13 +929,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 #[cfg(not(unix))]
                 let ino = 0u64;
 
-                let file_type = this.file_type_to_d_type(dir_entry.file_type())? as u128;
+                let file_type = this.file_type_to_d_type(dir_entry.file_type())?;
 
                 let imms = [
                     immty_from_uint_checked(ino, ino64_t_layout)?, // d_ino
                     immty_from_uint_checked(0u128, off64_t_layout)?, // d_off
                     immty_from_uint_checked(0u128, c_ushort_layout)?, // d_reclen
-                    immty_from_uint_checked(file_type, c_uchar_layout)?, // d_type
+                    immty_from_int_checked(file_type, c_uchar_layout)?, // d_type
                 ];
                 this.write_packed_immediates(entry_place, &imms)?;
 
@@ -953,7 +953,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // return positive error number on error
                 Some(error) => Ok(error),
                 None => {
-                    throw_unsup_format!("The error {} couldn't be converted to a return value", e)
+                    throw_unsup_format!("the error {} couldn't be converted to a return value", e)
                 }
             },
         }
@@ -967,13 +967,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
+        this.assert_target_os("macos", "readdir_r");
         this.check_no_isolation("readdir_r")?;
-        this.assert_platform("macos", "readdir_r");
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
         let dir_iter = this.machine.dir_handler.streams.get_mut(&dirp).ok_or_else(|| {
-            err_unsup_format!("The DIR pointer passed to readdir_r did not come from opendir")
+            err_unsup_format!("the DIR pointer passed to readdir_r did not come from opendir")
         })?;
         match dir_iter.next() {
             Some(Ok(dir_entry)) => {
@@ -994,14 +994,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let entry_place = this.deref_operand(entry_op)?;
                 let name_place = this.mplace_field(entry_place, 5)?;
 
-                let file_name = dir_entry.file_name();
+                let file_name = dir_entry.file_name(); // not a Path as there are no separators!
                 let (name_fits, file_name_len) = this.write_os_str_to_c_str(
                     &file_name,
                     name_place.ptr,
                     name_place.layout.size.bytes(),
                 )?;
                 if !name_fits {
-                    throw_unsup_format!("A directory entry had a name too large to fit in libc::dirent");
+                    throw_unsup_format!("a directory entry had a name too large to fit in libc::dirent");
                 }
 
                 let entry_place = this.deref_operand(entry_op)?;
@@ -1017,14 +1017,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 #[cfg(not(unix))]
                 let ino = 0u64;
 
-                let file_type = this.file_type_to_d_type(dir_entry.file_type())? as u128;
+                let file_type = this.file_type_to_d_type(dir_entry.file_type())?;
 
                 let imms = [
                     immty_from_uint_checked(ino, ino_t_layout)?, // d_ino
                     immty_from_uint_checked(0u128, off_t_layout)?, // d_seekoff
                     immty_from_uint_checked(0u128, c_ushort_layout)?, // d_reclen
                     immty_from_uint_checked(file_name_len, c_ushort_layout)?, // d_namlen
-                    immty_from_uint_checked(file_type, c_uchar_layout)?, // d_type
+                    immty_from_int_checked(file_type, c_uchar_layout)?, // d_type
                 ];
                 this.write_packed_immediates(entry_place, &imms)?;
 
@@ -1042,7 +1042,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // return positive error number on error
                 Some(error) => Ok(error),
                 None => {
-                    throw_unsup_format!("The error {} couldn't be converted to a return value", e)
+                    throw_unsup_format!("the error {} couldn't be converted to a return value", e)
                 }
             },
         }
@@ -1089,7 +1089,7 @@ struct FileMetadata {
 impl FileMetadata {
     fn from_path<'tcx, 'mir>(
         ecx: &mut MiriEvalContext<'mir, 'tcx>,
-        path: PathBuf,
+        path: &Path,
         follow_symlink: bool
     ) -> InterpResult<'tcx, Option<FileMetadata>> {
         let metadata = if follow_symlink {

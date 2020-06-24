@@ -10,14 +10,11 @@ path = "lib.rs"
 doctest = false
 
 [dependencies]
-fmt_macros = { path = "../libfmt_macros" }
 graphviz = { path = "../libgraphviz" }
 log = { version = "0.4", features = ["release_max_level_info", "std"] }
-rustc_attr = { path = "../librustc_attr" }
-rustc = { path = "../librustc" }
+rustc_middle = { path = "../librustc_middle" }
 rustc_data_structures = { path = "../librustc_data_structures" }
 rustc_errors = { path = "../librustc_errors" }
-rustc_error_codes = { path = "../librustc_error_codes" }
 rustc_hir = { path = "../librustc_hir" }
 rustc_index = { path = "../librustc_index" }
 rustc_macros = { path = "../librustc_macros" }

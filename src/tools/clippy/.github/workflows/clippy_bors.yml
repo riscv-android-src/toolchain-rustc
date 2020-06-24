@@ -77,6 +77,8 @@ jobs:
       run: |
         sudo dpkg --add-architecture i386
         sudo apt-get update
+        # perform system upgrade to work around https://github.com/rust-lang/rust-clippy/issues/5477 , revert as soon as that is fixed
+        sudo apt-get -y upgrade
         sudo apt-get install gcc-multilib libssl-dev:i386 libgit2-dev:i386
       if: matrix.host == 'i686-unknown-linux-gnu'
 
@@ -208,8 +210,9 @@ jobs:
     - name: Extract Binaries
       run: |
         DIR=$CARGO_TARGET_DIR/debug
+        rm $DIR/deps/integration-*.d
+        mv $DIR/deps/integration-* $DIR/integration
         find $DIR ! -executable -o -type d ! -path $DIR | xargs rm -rf
-        mv $DIR/integration-* $DIR/integration
         rm -rf $CARGO_TARGET_DIR/release
 
     - name: Upload Binaries

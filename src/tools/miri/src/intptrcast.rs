@@ -2,12 +2,12 @@ use std::cell::RefCell;
 use std::cmp::max;
 use std::collections::hash_map::Entry;
 
+use log::trace;
 use rand::Rng;
 
 use rustc_data_structures::fx::FxHashMap;
-use rustc::ty::layout::HasDataLayout;
 use rustc_mir::interpret::{AllocCheck, AllocId, InterpResult, Memory, Machine, Pointer, PointerArithmetic};
-use rustc_target::abi::Size;
+use rustc_target::abi::{Size, HasDataLayout};
 
 use crate::{Evaluator, Tag, STACK_ADDR};
 
@@ -43,10 +43,6 @@ impl<'mir, 'tcx> GlobalState {
         int: u64,
         memory: &Memory<'mir, 'tcx, Evaluator<'tcx>>,
     ) -> InterpResult<'tcx, Pointer<Tag>> {
-        if int == 0 {
-            throw_unsup!(InvalidNullPointerUsage);
-        }
-
         let global_state = memory.extra.intptrcast.borrow();
         let pos = global_state.int_to_ptr_map.binary_search_by_key(&int, |(addr, _)| *addr);
 
@@ -57,7 +53,7 @@ impl<'mir, 'tcx> GlobalState {
                 // zero. The pointer is untagged because it was created from a cast
                 Pointer::new_with_tag(alloc_id, Size::from_bytes(0), Tag::Untagged)
             }
-            Err(0) => throw_unsup!(DanglingPointerDeref),
+            Err(0) => throw_ub!(InvalidIntPointerUsage(int)),
             Err(pos) => {
                 // This is the largest of the adresses smaller than `int`,
                 // i.e. the greatest lower bound (glb)
@@ -69,7 +65,7 @@ impl<'mir, 'tcx> GlobalState {
                     // This pointer is untagged because it was created from a cast
                     Pointer::new_with_tag(alloc_id, Size::from_bytes(offset), Tag::Untagged)
                 } else {
-                    throw_unsup!(DanglingPointerDeref)
+                    throw_ub!(InvalidIntPointerUsage(int))
                 }
             }
         })

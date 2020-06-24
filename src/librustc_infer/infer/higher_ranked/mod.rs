@@ -5,8 +5,8 @@ use super::combine::CombineFields;
 use super::{HigherRankedType, InferCtxt, PlaceholderMap};
 
 use crate::infer::CombinedSnapshot;
-use rustc::ty::relate::{Relate, RelateResult, TypeRelation};
-use rustc::ty::{self, Binder, TypeFoldable};
+use rustc_middle::ty::relate::{Relate, RelateResult, TypeRelation};
+use rustc_middle::ty::{self, Binder, TypeFoldable};
 
 impl<'a, 'tcx> CombineFields<'a, 'tcx> {
     pub fn higher_ranked_sub<T>(
@@ -30,7 +30,7 @@ impl<'a, 'tcx> CombineFields<'a, 'tcx> {
 
         let span = self.trace.cause.span;
 
-        return self.infcx.commit_if_ok(|snapshot| {
+        self.infcx.commit_if_ok(|snapshot| {
             // First, we instantiate each bound region in the supertype with a
             // fresh placeholder region.
             let (b_prime, placeholder_map) = self.infcx.replace_bound_vars_with_placeholders(b);
@@ -53,7 +53,7 @@ impl<'a, 'tcx> CombineFields<'a, 'tcx> {
             debug!("higher_ranked_sub: OK result={:?}", result);
 
             Ok(ty::Binder::bind(result))
-        });
+        })
     }
 }
 
@@ -71,9 +71,9 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     /// needed (but is also permitted).
     ///
     /// For more information about how placeholders and HRTBs work, see
-    /// the [rustc guide].
+    /// the [rustc dev guide].
     ///
-    /// [rustc guide]: https://rust-lang.github.io/rustc-guide/traits/hrtb.html
+    /// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/traits/hrtb.html
     pub fn replace_bound_vars_with_placeholders<T>(
         &self,
         binder: &ty::Binder<T>,

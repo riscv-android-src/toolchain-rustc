@@ -1,12 +1,10 @@
 use log::info;
-use rustc::lint;
-use rustc::ty;
 use rustc_ast::ast::{AttrVec, BlockCheckMode};
 use rustc_ast::mut_visit::{visit_clobber, MutVisitor, *};
 use rustc_ast::ptr::P;
 use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_ast::{self, ast};
-use rustc_codegen_utils::codegen_backend::CodegenBackend;
+use rustc_codegen_ssa::traits::CodegenBackend;
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 #[cfg(parallel_compiler)]
@@ -15,15 +13,16 @@ use rustc_data_structures::stable_hasher::StableHasher;
 use rustc_data_structures::sync::{Lock, Lrc};
 use rustc_errors::registry::Registry;
 use rustc_metadata::dynamic_lib::DynamicLibrary;
+use rustc_middle::ty;
 use rustc_resolve::{self, Resolver};
 use rustc_session as session;
 use rustc_session::config::{ErrorOutputType, Input, OutputFilenames};
-use rustc_session::lint::{BuiltinLintDiagnostics, LintBuffer};
+use rustc_session::lint::{self, BuiltinLintDiagnostics, LintBuffer};
 use rustc_session::parse::CrateConfig;
 use rustc_session::CrateDisambiguator;
-use rustc_session::{config, early_error, filesearch, DiagnosticOutput, Session};
+use rustc_session::{config, early_error, filesearch, output, DiagnosticOutput, Session};
 use rustc_span::edition::Edition;
-use rustc_span::source_map::{FileLoader, RealFileLoader, SourceMap};
+use rustc_span::source_map::{FileLoader, SourceMap};
 use rustc_span::symbol::{sym, Symbol};
 use smallvec::SmallVec;
 use std::env;
@@ -49,7 +48,7 @@ pub fn add_configuration(
 
     cfg.extend(codegen_backend.target_features(sess).into_iter().map(|feat| (tf, Some(feat))));
 
-    if sess.crt_static_feature() {
+    if sess.crt_static_feature(None) {
         cfg.insert((tf, Some(Symbol::intern("crt-static"))));
     }
 }
@@ -63,15 +62,13 @@ pub fn create_session(
     lint_caps: FxHashMap<lint::LintId, lint::Level>,
     descriptions: Registry,
 ) -> (Lrc<Session>, Lrc<Box<dyn CodegenBackend>>, Lrc<SourceMap>) {
-    let loader = file_loader.unwrap_or(box RealFileLoader);
-    let source_map = Lrc::new(SourceMap::with_file_loader(loader, sopts.file_path_mapping()));
-    let mut sess = session::build_session_with_source_map(
+    let (mut sess, source_map) = session::build_session_with_source_map(
         sopts,
         input_path,
         descriptions,
-        source_map.clone(),
         diagnostic_output,
         lint_caps,
+        file_loader,
     );
 
     let codegen_backend = get_codegen_backend(&sess);
@@ -506,7 +503,7 @@ pub fn collect_crate_types(session: &Session, attrs: &[ast::Attribute]) -> Vec<c
     if base.is_empty() {
         base.extend(attr_types);
         if base.is_empty() {
-            base.push(::rustc_codegen_utils::link::default_output_for_target(session));
+            base.push(output::default_output_for_target(session));
         } else {
             base.sort();
             base.dedup();
@@ -514,7 +511,7 @@ pub fn collect_crate_types(session: &Session, attrs: &[ast::Attribute]) -> Vec<c
     }
 
     base.retain(|crate_type| {
-        let res = !::rustc_codegen_utils::link::invalid_output_for_target(session, *crate_type);
+        let res = !output::invalid_output_for_target(session, *crate_type);
 
         if !res {
             session.warn(&format!(
@@ -635,17 +632,19 @@ impl<'a, 'b> ReplaceBodyWithLoop<'a, 'b> {
                         match seg.args.as_ref().map(|generic_arg| &**generic_arg) {
                             None => false,
                             Some(&ast::GenericArgs::AngleBracketed(ref data)) => {
-                                let types = data.args.iter().filter_map(|arg| match arg {
-                                    ast::GenericArg::Type(ty) => Some(ty),
-                                    _ => None,
-                                });
-                                any_involves_impl_trait(types)
-                                    || data.constraints.iter().any(|c| match c.kind {
+                                data.args.iter().any(|arg| match arg {
+                                    ast::AngleBracketedArg::Arg(arg) => match arg {
+                                        ast::GenericArg::Type(ty) => involves_impl_trait(ty),
+                                        ast::GenericArg::Lifetime(_)
+                                        | ast::GenericArg::Const(_) => false,
+                                    },
+                                    ast::AngleBracketedArg::Constraint(c) => match c.kind {
                                         ast::AssocTyConstraintKind::Bound { .. } => true,
                                         ast::AssocTyConstraintKind::Equality { ref ty } => {
                                             involves_impl_trait(ty)
                                         }
-                                    })
+                                    },
+                                })
                             }
                             Some(&ast::GenericArgs::Parenthesized(ref data)) => {
                                 any_involves_impl_trait(data.inputs.iter())
@@ -780,7 +779,7 @@ impl<'a> MutVisitor for ReplaceBodyWithLoop<'a, '_> {
 
     // in general the pretty printer processes unexpanded code, so
     // we override the default `visit_mac` method which panics.
-    fn visit_mac(&mut self, mac: &mut ast::Mac) {
+    fn visit_mac(&mut self, mac: &mut ast::MacCall) {
         noop_visit_mac(mac, self)
     }
 }

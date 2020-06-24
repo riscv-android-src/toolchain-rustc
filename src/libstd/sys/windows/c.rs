@@ -295,6 +295,7 @@ pub struct WSADATA {
     pub szSystemStatus: [u8; WSASYS_STATUS_LEN + 1],
 }
 
+#[derive(Copy, Clone)]
 #[repr(C)]
 pub struct WSABUF {
     pub len: ULONG,
@@ -777,7 +778,7 @@ extern "system" {
     pub fn ioctlsocket(s: SOCKET, cmd: c_long, argp: *mut c_ulong) -> c_int;
     pub fn InitializeCriticalSection(CriticalSection: *mut CRITICAL_SECTION);
     pub fn EnterCriticalSection(CriticalSection: *mut CRITICAL_SECTION);
-    pub fn TryEnterCriticalSection(CriticalSection: *mut CRITICAL_SECTION) -> BOOLEAN;
+    pub fn TryEnterCriticalSection(CriticalSection: *mut CRITICAL_SECTION) -> BOOL;
     pub fn LeaveCriticalSection(CriticalSection: *mut CRITICAL_SECTION);
     pub fn DeleteCriticalSection(CriticalSection: *mut CRITICAL_SECTION);
 
@@ -1043,6 +1044,10 @@ compat_fn! {
                     _lpFileInformation: LPVOID,
                     _dwBufferSize: DWORD) -> BOOL {
         SetLastError(ERROR_CALL_NOT_IMPLEMENTED as DWORD); 0
+    }
+    pub fn GetSystemTimePreciseAsFileTime(lpSystemTimeAsFileTime: LPFILETIME)
+                                          -> () {
+        GetSystemTimeAsFileTime(lpSystemTimeAsFileTime)
     }
     pub fn SleepConditionVariableSRW(ConditionVariable: PCONDITION_VARIABLE,
                                      SRWLock: PSRWLOCK,

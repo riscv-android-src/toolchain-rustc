@@ -12,7 +12,6 @@
 #![feature(generators)]
 #![feature(generator_trait)]
 #![feature(fn_traits)]
-#![feature(unsize)]
 #![feature(specialization)]
 #![feature(optin_builtin_traits)]
 #![feature(nll)]
@@ -20,17 +19,13 @@
 #![feature(hash_raw_entry)]
 #![feature(stmt_expr_attributes)]
 #![feature(core_intrinsics)]
-#![feature(integer_atomics)]
 #![feature(test)]
 #![feature(associated_type_bounds)]
 #![feature(thread_id_value)]
-#![cfg_attr(unix, feature(libc))]
 #![allow(rustc::default_hash_types)]
 
 #[macro_use]
 extern crate log;
-#[cfg(unix)]
-extern crate libc;
 #[macro_use]
 extern crate cfg_if;
 
@@ -97,6 +92,7 @@ pub mod profiling;
 pub mod vec_linked_list;
 pub mod work_queue;
 pub use atomic_ref::AtomicRef;
+pub mod frozen;
 
 pub struct OnDrop<F: Fn()>(pub F);
 
@@ -116,6 +112,6 @@ impl<F: Fn()> Drop for OnDrop<F> {
     }
 }
 
-// See comments in src/librustc/lib.rs
+// See comments in src/librustc_middle/lib.rs
 #[doc(hidden)]
 pub fn __noop_fix_for_27438() {}

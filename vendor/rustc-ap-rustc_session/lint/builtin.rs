@@ -41,9 +41,15 @@ declare_lint! {
 }
 
 declare_lint! {
-    pub EXCEEDING_BITSHIFTS,
+    pub ARITHMETIC_OVERFLOW,
     Deny,
-    "shift exceeds the type's number of bits"
+    "arithmetic operation overflows"
+}
+
+declare_lint! {
+    pub UNCONDITIONAL_PANIC,
+    Deny,
+    "operation will cause a panic at runtime"
 }
 
 declare_lint! {
@@ -261,6 +267,16 @@ declare_lint! {
 }
 
 declare_lint! {
+    pub COHERENCE_LEAK_CHECK,
+    Warn,
+    "distinct impls distinguished only by the leak-check code",
+    @future_incompatible = FutureIncompatibleInfo {
+        reference: "issue #56105 <https://github.com/rust-lang/rust/issues/56105>",
+        edition: None,
+    };
+}
+
+declare_lint! {
     pub DEPRECATED,
     Warn,
     "detects use of deprecated items",
@@ -371,6 +387,12 @@ declare_lint! {
 }
 
 declare_lint! {
+    pub MISSING_CRATE_LEVEL_DOCS,
+    Allow,
+    "detects crates with no crate-level documentation"
+}
+
+declare_lint! {
     pub MISSING_DOC_CODE_EXAMPLES,
     Allow,
     "detects publicly-exported items without code samples in their documentation"
@@ -430,7 +452,7 @@ declare_lint! {
     pub INDIRECT_STRUCTURAL_MATCH,
     // defaulting to allow until rust-lang/rust#62614 is fixed.
     Allow,
-    "pattern with const indirectly referencing non-`#[structural_match]` type",
+    "pattern with const indirectly referencing non-structural-match type",
     @future_incompatible = FutureIncompatibleInfo {
         reference: "issue #62411 <https://github.com/rust-lang/rust/issues/62411>",
         edition: None,
@@ -485,7 +507,8 @@ declare_lint_pass! {
     /// that are used by other parts of the compiler.
     HardwiredLints => [
         ILLEGAL_FLOATING_POINT_LITERAL_PATTERN,
-        EXCEEDING_BITSHIFTS,
+        ARITHMETIC_OVERFLOW,
+        UNCONDITIONAL_PANIC,
         UNUSED_IMPORTS,
         UNUSED_EXTERN_CRATES,
         UNUSED_QUALIFICATIONS,
@@ -515,6 +538,7 @@ declare_lint_pass! {
         MISSING_FRAGMENT_SPECIFIER,
         LATE_BOUND_LIFETIME_ARGUMENTS,
         ORDER_DEPENDENT_TRAIT_OBJECTS,
+        COHERENCE_LEAK_CHECK,
         DEPRECATED,
         UNUSED_UNSAFE,
         UNUSED_MUT,
@@ -529,6 +553,7 @@ declare_lint_pass! {
         UNSTABLE_NAME_COLLISIONS,
         IRREFUTABLE_LET_PATTERNS,
         INTRA_DOC_LINK_RESOLUTION_FAILURE,
+        MISSING_CRATE_LEVEL_DOCS,
         MISSING_DOC_CODE_EXAMPLES,
         PRIVATE_DOC_TESTS,
         WHERE_CLAUSES_OBJECT_SAFETY,
@@ -546,3 +571,11 @@ declare_lint_pass! {
         INLINE_NO_SANITIZE,
     ]
 }
+
+declare_lint! {
+    pub UNUSED_DOC_COMMENTS,
+    Warn,
+    "detects doc comments that aren't used by rustdoc"
+}
+
+declare_lint_pass!(UnusedDocComment => [UNUSED_DOC_COMMENTS]);

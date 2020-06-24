@@ -3363,6 +3363,8 @@ fn json_artifact_includes_test_flag() {
         "filenames":["[..]/foo-[..]"],
         "fresh": false
     }
+
+    {"reason": "build-finished", "success": true}
 "#,
         )
         .run();
@@ -3379,7 +3381,7 @@ fn json_artifact_includes_executable_for_library_tests() {
         .with_json(
             r#"
             {
-                "executable": "[..]/foo/target/debug/foo-[..][EXE]",
+                "executable": "[..]/foo/target/debug/deps/foo-[..][EXE]",
                 "features": [],
                 "filenames": "{...}",
                 "fresh": false,
@@ -3395,6 +3397,8 @@ fn json_artifact_includes_executable_for_library_tests() {
                     "src_path": "[..]/foo/src/lib.rs"
                 }
             }
+
+            {"reason": "build-finished", "success": true}
         "#,
         )
         .run();
@@ -3413,7 +3417,7 @@ fn json_artifact_includes_executable_for_integration_tests() {
         .with_json(
             r#"
             {
-                "executable": "[..]/foo/target/debug/integration_test-[..][EXE]",
+                "executable": "[..]/foo/target/debug/deps/integration_test-[..][EXE]",
                 "features": [],
                 "filenames": "{...}",
                 "fresh": false,
@@ -3429,6 +3433,8 @@ fn json_artifact_includes_executable_for_integration_tests() {
                     "src_path": "[..]/foo/tests/integration_test.rs"
                 }
             }
+
+            {"reason": "build-finished", "success": true}
         "#,
         )
         .run();

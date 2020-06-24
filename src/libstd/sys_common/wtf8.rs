@@ -599,26 +599,22 @@ impl Wtf8 {
 
     #[inline]
     fn final_lead_surrogate(&self) -> Option<u16> {
-        let len = self.len();
-        if len < 3 {
-            return None;
-        }
-        match &self.bytes[(len - 3)..] {
-            &[0xED, b2 @ 0xA0..=0xAF, b3] => Some(decode_surrogate(b2, b3)),
+        match self.bytes {
+            [.., 0xED, b2 @ 0xA0..=0xAF, b3] => Some(decode_surrogate(b2, b3)),
             _ => None,
         }
     }
 
     #[inline]
     fn initial_trail_surrogate(&self) -> Option<u16> {
-        let len = self.len();
-        if len < 3 {
-            return None;
-        }
-        match &self.bytes[..3] {
-            &[0xED, b2 @ 0xB0..=0xBF, b3] => Some(decode_surrogate(b2, b3)),
+        match self.bytes {
+            [0xED, b2 @ 0xB0..=0xBF, b3, ..] => Some(decode_surrogate(b2, b3)),
             _ => None,
         }
+    }
+
+    pub fn clone_into(&self, buf: &mut Wtf8Buf) {
+        self.bytes.clone_into(&mut buf.bytes)
     }
 
     /// Boxes this `Wtf8`.
@@ -644,6 +640,36 @@ impl Wtf8 {
     pub fn into_rc(&self) -> Rc<Wtf8> {
         let rc: Rc<[u8]> = Rc::from(&self.bytes);
         unsafe { Rc::from_raw(Rc::into_raw(rc) as *const Wtf8) }
+    }
+
+    #[inline]
+    pub fn make_ascii_lowercase(&mut self) {
+        self.bytes.make_ascii_lowercase()
+    }
+
+    #[inline]
+    pub fn make_ascii_uppercase(&mut self) {
+        self.bytes.make_ascii_uppercase()
+    }
+
+    #[inline]
+    pub fn to_ascii_lowercase(&self) -> Wtf8Buf {
+        Wtf8Buf { bytes: self.bytes.to_ascii_lowercase() }
+    }
+
+    #[inline]
+    pub fn to_ascii_uppercase(&self) -> Wtf8Buf {
+        Wtf8Buf { bytes: self.bytes.to_ascii_uppercase() }
+    }
+
+    #[inline]
+    pub fn is_ascii(&self) -> bool {
+        self.bytes.is_ascii()
+    }
+
+    #[inline]
+    pub fn eq_ignore_ascii_case(&self, other: &Self) -> bool {
+        self.bytes.eq_ignore_ascii_case(&other.bytes)
     }
 }
 
@@ -842,12 +868,6 @@ impl Hash for Wtf8 {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write(&self.bytes);
         0xfeu8.hash(state)
-    }
-}
-
-impl Wtf8 {
-    pub fn make_ascii_uppercase(&mut self) {
-        self.bytes.make_ascii_uppercase()
     }
 }
 

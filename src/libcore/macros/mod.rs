@@ -1,3 +1,4 @@
+#[cfg(bootstrap)]
 #[doc(include = "panic.md")]
 #[macro_export]
 #[allow_internal_unstable(core_panic, track_caller)]
@@ -17,6 +18,26 @@ macro_rules! panic {
             $crate::format_args!($fmt, $($arg)+),
             $crate::panic::Location::caller(),
         )
+    );
+}
+
+#[cfg(not(bootstrap))]
+#[doc(include = "panic.md")]
+#[macro_export]
+#[allow_internal_unstable(core_panic, track_caller)]
+#[stable(feature = "core", since = "1.6.0")]
+macro_rules! panic {
+    () => (
+        $crate::panic!("explicit panic")
+    );
+    ($msg:expr) => (
+        $crate::panicking::panic($msg)
+    );
+    ($msg:expr,) => (
+        $crate::panic!($msg)
+    );
+    ($fmt:expr, $($arg:tt)+) => (
+        $crate::panicking::panic_fmt($crate::format_args!($fmt, $($arg)+))
     );
 }
 
@@ -1049,8 +1070,10 @@ pub(crate) mod builtin {
 
     /// Includes a utf8-encoded file as a string.
     ///
-    /// The file is located relative to the current file. (similarly to how
-    /// modules are found)
+    /// The file is located relative to the current file (similarly to how
+    /// modules are found). The provided path is interpreted in a platform-specific
+    /// way at compile time. So, for instance, an invocation with a Windows path
+    /// containing backslashes `\` would not compile correctly on Unix.
     ///
     /// This macro will yield an expression of type `&'static str` which is the
     /// contents of the file.
@@ -1087,8 +1110,10 @@ pub(crate) mod builtin {
 
     /// Includes a file as a reference to a byte array.
     ///
-    /// The file is located relative to the current file. (similarly to how
-    /// modules are found)
+    /// The file is located relative to the current file (similarly to how
+    /// modules are found). The provided path is interpreted in a platform-specific
+    /// way at compile time. So, for instance, an invocation with a Windows path
+    /// containing backslashes `\` would not compile correctly on Unix.
     ///
     /// This macro will yield an expression of type `&'static [u8; N]` which is
     /// the contents of the file.
@@ -1181,7 +1206,9 @@ pub(crate) mod builtin {
     /// Parses a file as an expression or an item according to the context.
     ///
     /// The file is located relative to the current file (similarly to how
-    /// modules are found).
+    /// modules are found). The provided path is interpreted in a platform-specific
+    /// way at compile time. So, for instance, an invocation with a Windows path
+    /// containing backslashes `\` would not compile correctly on Unix.
     ///
     /// Using this macro is often a bad idea, because if the file is
     /// parsed as an expression, it is going to be placed in the
@@ -1286,12 +1313,61 @@ pub(crate) mod builtin {
     /// [unstable book]: ../unstable-book/library-features/asm.html
     #[unstable(
         feature = "asm",
-        issue = "29722",
+        issue = "70173",
         reason = "inline assembly is not stable enough for use and is subject to change"
+    )]
+    #[cfg_attr(
+        not(bootstrap),
+        rustc_deprecated(
+            since = "1.44.0",
+            reason = "the syntax of asm! will change soon, use llvm_asm! to avoid breakage",
+            suggestion = "llvm_asm",
+        )
     )]
     #[rustc_builtin_macro]
     #[macro_export]
     macro_rules! asm {
+        ("assembly template"
+                        : $("output"(operand),)*
+                        : $("input"(operand),)*
+                        : $("clobbers",)*
+                        : $("options",)*) => {
+            /* compiler built-in */
+        };
+    }
+
+    /// Inline assembly.
+    ///
+    /// Read the [unstable book] for the usage.
+    ///
+    /// [unstable book]: ../unstable-book/library-features/asm.html
+    #[cfg(bootstrap)]
+    #[unstable(
+        feature = "llvm_asm",
+        issue = "70173",
+        reason = "inline assembly is not stable enough for use and is subject to change"
+    )]
+    #[macro_export]
+    #[allow_internal_unstable(asm)]
+    macro_rules! llvm_asm {
+        // Redirect to asm! for stage0
+        ($($arg:tt)*) => { $crate::asm!($($arg)*) }
+    }
+
+    /// Inline assembly.
+    ///
+    /// Read the [unstable book] for the usage.
+    ///
+    /// [unstable book]: ../unstable-book/library-features/asm.html
+    #[cfg(not(bootstrap))]
+    #[unstable(
+        feature = "llvm_asm",
+        issue = "70173",
+        reason = "inline assembly is not stable enough for use and is subject to change"
+    )]
+    #[rustc_builtin_macro]
+    #[macro_export]
+    macro_rules! llvm_asm {
         ("assembly template"
                         : $("output"(operand),)*
                         : $("input"(operand),)*
@@ -1380,6 +1456,18 @@ pub(crate) mod builtin {
     #[allow_internal_unstable(rustc_attrs)]
     #[rustc_builtin_macro]
     pub macro global_allocator($item:item) {
+        /* compiler built-in */
+    }
+
+    /// Keeps the item it's applied to if the passed path is accessible, and removes it otherwise.
+    #[cfg(not(bootstrap))]
+    #[unstable(
+        feature = "cfg_accessible",
+        issue = "64797",
+        reason = "`cfg_accessible` is not fully implemented"
+    )]
+    #[rustc_builtin_macro]
+    pub macro cfg_accessible($item:item) {
         /* compiler built-in */
     }
 

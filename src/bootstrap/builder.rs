@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use build_helper::t;
+use build_helper::{output, t};
 
 use crate::cache::{Cache, Interned, INTERNER};
 use crate::check;
@@ -21,9 +21,10 @@ use crate::doc;
 use crate::flags::Subcommand;
 use crate::install;
 use crate::native;
+use crate::run;
 use crate::test;
 use crate::tool;
-use crate::util::{self, add_lib_path, exe, libdir};
+use crate::util::{self, add_dylib_path, add_link_lib_path, exe, libdir};
 use crate::{Build, DocTests, GitRepo, Mode};
 
 pub use crate::Compiler;
@@ -313,6 +314,7 @@ pub enum Kind {
     Dist,
     Doc,
     Install,
+    Run,
 }
 
 impl<'a> Builder<'a> {
@@ -353,6 +355,7 @@ impl<'a> Builder<'a> {
             }
             Kind::Test => describe!(
                 crate::toolstate::ToolStateCheck,
+                test::ExpandYamlAnchors,
                 test::Tidy,
                 test::Ui,
                 test::CompileFail,
@@ -454,6 +457,7 @@ impl<'a> Builder<'a> {
                 install::Src,
                 install::Rustc
             ),
+            Kind::Run => describe!(run::ExpandYamlAnchors,),
         }
     }
 
@@ -507,6 +511,7 @@ impl<'a> Builder<'a> {
             Subcommand::Bench { ref paths, .. } => (Kind::Bench, &paths[..]),
             Subcommand::Dist { ref paths } => (Kind::Dist, &paths[..]),
             Subcommand::Install { ref paths } => (Kind::Install, &paths[..]),
+            Subcommand::Run { ref paths } => (Kind::Run, &paths[..]),
             Subcommand::Format { .. } | Subcommand::Clean { .. } => panic!(),
         };
 
@@ -660,7 +665,7 @@ impl<'a> Builder<'a> {
             return;
         }
 
-        add_lib_path(vec![self.rustc_libdir(compiler)], &mut cmd.command);
+        add_dylib_path(vec![self.rustc_libdir(compiler)], &mut cmd.command);
     }
 
     /// Gets a path to the compiler specified.
@@ -698,6 +703,20 @@ impl<'a> Builder<'a> {
         cmd
     }
 
+    /// Return the path to `llvm-config` for the target, if it exists.
+    ///
+    /// Note that this returns `None` if LLVM is disabled, or if we're in a
+    /// check build or dry-run, where there's no need to build all of LLVM.
+    fn llvm_config(&self, target: Interned<String>) -> Option<PathBuf> {
+        if self.config.llvm_enabled() && self.kind != Kind::Check && !self.config.dry_run {
+            let llvm_config = self.ensure(native::Llvm { target });
+            if llvm_config.is_file() {
+                return Some(llvm_config);
+            }
+        }
+        None
+    }
+
     /// Prepares an invocation of `cargo` to be run.
     ///
     /// This will create a `Command` that represents a pending execution of
@@ -726,10 +745,6 @@ impl<'a> Builder<'a> {
         }
 
         cargo.env("CARGO_TARGET_DIR", &out_dir).arg(cmd);
-
-        if !self.local_rebuild {
-            cargo.arg("-Zconfig-profile");
-        }
 
         let profile_var = |name: &str| {
             let profile = if self.config.rust_optimize { "RELEASE" } else { "DEV" };
@@ -851,13 +866,7 @@ impl<'a> Builder<'a> {
             rustflags.arg("-Zforce-unstable-if-unmarked");
         }
 
-        // cfg(bootstrap): the flag was renamed from `-Zexternal-macro-backtrace`
-        // to `-Zmacro-backtrace`, keep only the latter after beta promotion.
-        if stage == 0 {
-            rustflags.arg("-Zexternal-macro-backtrace");
-        } else {
-            rustflags.arg("-Zmacro-backtrace");
-        }
+        rustflags.arg("-Zmacro-backtrace");
 
         let want_rustdoc = self.doc_tests != DocTests::No;
 
@@ -960,27 +969,11 @@ impl<'a> Builder<'a> {
         // See https://github.com/rust-lang/rust/issues/68647.
         let can_use_lld = mode != Mode::Std;
 
-        // FIXME: The beta compiler doesn't pick the `lld-link` flavor for `*-pc-windows-msvc`
-        // Remove `RUSTC_HOST_LINKER_FLAVOR` when this is fixed
-        let lld_linker_flavor = |linker: &Path, target: Interned<String>| {
-            compiler.stage == 0
-                && linker.file_name() == Some(OsStr::new("rust-lld"))
-                && target.contains("pc-windows-msvc")
-        };
-
         if let Some(host_linker) = self.linker(compiler.host, can_use_lld) {
-            if lld_linker_flavor(host_linker, compiler.host) {
-                cargo.env("RUSTC_HOST_LINKER_FLAVOR", "lld-link");
-            }
-
             cargo.env("RUSTC_HOST_LINKER", host_linker);
         }
 
         if let Some(target_linker) = self.linker(target, can_use_lld) {
-            if lld_linker_flavor(target_linker, target) {
-                rustflags.arg("-Clinker-flavor=lld-link");
-            }
-
             let target = crate::envify(&target);
             cargo.env(&format!("CARGO_TARGET_{}_LINKER", target), target_linker);
         }
@@ -1013,8 +1006,13 @@ impl<'a> Builder<'a> {
             cargo.env("RUSTC_HOST_CRT_STATIC", x.to_string());
         }
 
-        if let Some(map) = self.build.debuginfo_map(GitRepo::Rustc) {
+        if let Some(map_to) = self.build.debuginfo_map_to(GitRepo::Rustc) {
+            let map = format!("{}={}", self.build.src.display(), map_to);
             cargo.env("RUSTC_DEBUGINFO_MAP", map);
+
+            // `rustc` needs to know the virtual `/rustc/$hash` we're mapping to,
+            // in order to opportunistically reverse it later.
+            cargo.env("CFG_VIRTUAL_RUST_SOURCE_BASE_DIR", map_to);
         }
 
         // Enable usage of unstable features
@@ -1042,6 +1040,17 @@ impl<'a> Builder<'a> {
             cargo
                 .env("RUSTC_SNAPSHOT", self.rustc(compiler))
                 .env("RUSTC_SNAPSHOT_LIBDIR", self.rustc_libdir(compiler));
+        }
+
+        // Tools that use compiler libraries may inherit the `-lLLVM` link
+        // requirement, but the `-L` library path is not propagated across
+        // separate Cargo projects. We can add LLVM's library path to the
+        // platform-specific environment variable as a workaround.
+        if mode == Mode::ToolRustc {
+            if let Some(llvm_config) = self.llvm_config(target) {
+                let llvm_libdir = output(Command::new(&llvm_config).arg("--libdir"));
+                add_link_lib_path(vec![llvm_libdir.trim().into()], &mut cargo);
+            }
         }
 
         if self.config.incremental {
@@ -1074,6 +1083,13 @@ impl<'a> Builder<'a> {
 
             if self.config.deny_warnings {
                 rustflags.arg("-Dwarnings");
+
+                // FIXME(#58633) hide "unused attribute" errors in incremental
+                // builds of the standard library, as the underlying checks are
+                // not yet properly integrated with incremental recompilation.
+                if mode == Mode::Std && compiler.stage == 0 && self.config.incremental {
+                    rustflags.arg("-Aunused-attributes");
+                }
             }
         }
 

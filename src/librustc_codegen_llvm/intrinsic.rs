@@ -2,31 +2,29 @@ use crate::abi::{Abi, FnAbi, LlvmType, PassMode};
 use crate::builder::Builder;
 use crate::context::CodegenCx;
 use crate::llvm;
-use crate::llvm_util;
 use crate::type_::Type;
 use crate::type_of::LayoutLlvmExt;
 use crate::va_arg::emit_va_arg;
 use crate::value::Value;
-use rustc::ty::layout::{self, FnAbiExt, HasTyCtxt, LayoutOf, Primitive};
-use rustc::ty::{self, Ty};
-use rustc::{bug, span_bug};
+
 use rustc_ast::ast;
 use rustc_codegen_ssa::base::{compare_simd_types, to_immediate, wants_msvc_seh};
-use rustc_codegen_ssa::common::{IntPredicate, TypeKind};
+use rustc_codegen_ssa::common::span_invalid_monomorphization_error;
+use rustc_codegen_ssa::common::TypeKind;
 use rustc_codegen_ssa::glue;
 use rustc_codegen_ssa::mir::operand::{OperandRef, OperandValue};
 use rustc_codegen_ssa::mir::place::PlaceRef;
+use rustc_codegen_ssa::traits::*;
 use rustc_codegen_ssa::MemFlags;
 use rustc_hir as hir;
-use rustc_target::abi::HasDataLayout;
-
-use rustc_codegen_ssa::common::span_invalid_monomorphization_error;
-use rustc_codegen_ssa::traits::*;
-
+use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt};
+use rustc_middle::ty::{self, Ty};
+use rustc_middle::{bug, span_bug};
 use rustc_span::Span;
+use rustc_target::abi::{self, HasDataLayout, LayoutOf, Primitive};
 
 use std::cmp::Ordering;
-use std::{i128, iter, u128};
+use std::iter;
 
 fn get_simple_intrinsic(cx: &CodegenCx<'ll, '_>, name: &str) -> Option<&'ll Value> {
     let llvm_name = match name {
@@ -145,7 +143,7 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
             }
             "va_arg" => {
                 match fn_abi.ret.layout.abi {
-                    layout::Abi::Scalar(ref scalar) => {
+                    abi::Abi::Scalar(ref scalar) => {
                         match scalar.value {
                             Primitive::Int(..) => {
                                 if self.cx().size_of(ret_ty).bytes() < 4 {
@@ -195,26 +193,8 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                     .unwrap();
                 OperandRef::from_const(self, ty_name, ret_ty).immediate_or_packed_pair(self)
             }
-            "init" => {
-                let ty = substs.type_at(0);
-                if !self.layout_of(ty).is_zst() {
-                    // Just zero out the stack slot.
-                    // If we store a zero constant, LLVM will drown in vreg allocation for large
-                    // data structures, and the generated code will be awful. (A telltale sign of
-                    // this is large quantities of `mov [byte ptr foo],0` in the generated code.)
-                    memset_intrinsic(
-                        self,
-                        false,
-                        ty,
-                        llresult,
-                        self.const_u8(0),
-                        self.const_usize(1),
-                    );
-                }
-                return;
-            }
-            // Effectively no-ops
-            "uninit" | "forget" => {
+            // Effectively no-op
+            "forget" => {
                 return;
             }
             "offset" => {
@@ -480,46 +460,14 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                             let is_add = name == "saturating_add";
                             let lhs = args[0].immediate();
                             let rhs = args[1].immediate();
-                            if llvm_util::get_major_version() >= 8 {
-                                let llvm_name = &format!(
-                                    "llvm.{}{}.sat.i{}",
-                                    if signed { 's' } else { 'u' },
-                                    if is_add { "add" } else { "sub" },
-                                    width
-                                );
-                                let llfn = self.get_intrinsic(llvm_name);
-                                self.call(llfn, &[lhs, rhs], None)
-                            } else {
-                                let llvm_name = &format!(
-                                    "llvm.{}{}.with.overflow.i{}",
-                                    if signed { 's' } else { 'u' },
-                                    if is_add { "add" } else { "sub" },
-                                    width
-                                );
-                                let llfn = self.get_intrinsic(llvm_name);
-                                let pair = self.call(llfn, &[lhs, rhs], None);
-                                let val = self.extract_value(pair, 0);
-                                let overflow = self.extract_value(pair, 1);
-                                let llty = self.type_ix(width);
-
-                                let limit = if signed {
-                                    let limit_lo = self
-                                        .const_uint_big(llty, (i128::MIN >> (128 - width)) as u128);
-                                    let limit_hi = self
-                                        .const_uint_big(llty, (i128::MAX >> (128 - width)) as u128);
-                                    let neg = self.icmp(
-                                        IntPredicate::IntSLT,
-                                        val,
-                                        self.const_uint(llty, 0),
-                                    );
-                                    self.select(neg, limit_hi, limit_lo)
-                                } else if is_add {
-                                    self.const_uint_big(llty, u128::MAX >> (128 - width))
-                                } else {
-                                    self.const_uint(llty, 0)
-                                };
-                                self.select(overflow, limit, val)
-                            }
+                            let llvm_name = &format!(
+                                "llvm.{}{}.sat.i{}",
+                                if signed { 's' } else { 'u' },
+                                if is_add { "add" } else { "sub" },
+                                width
+                            );
+                            let llfn = self.get_intrinsic(llvm_name);
+                            self.call(llfn, &[lhs, rhs], None)
                         }
                         _ => bug!(),
                     },
@@ -562,13 +510,13 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                 }
             }
 
-            "float_to_int_approx_unchecked" => {
+            "float_to_int_unchecked" => {
                 if float_type_width(arg_tys[0]).is_none() {
                     span_invalid_monomorphization_error(
                         tcx.sess,
                         span,
                         &format!(
-                            "invalid monomorphization of `float_to_int_approx_unchecked` \
+                            "invalid monomorphization of `float_to_int_unchecked` \
                                   intrinsic: expected basic float type, \
                                   found `{}`",
                             arg_tys[0]
@@ -589,7 +537,7 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                             tcx.sess,
                             span,
                             &format!(
-                                "invalid monomorphization of `float_to_int_approx_unchecked` \
+                                "invalid monomorphization of `float_to_int_unchecked` \
                                       intrinsic:  expected basic integer type, \
                                       found `{}`",
                                 ret_ty
@@ -851,19 +799,21 @@ fn memset_intrinsic(
 
 fn try_intrinsic(
     bx: &mut Builder<'a, 'll, 'tcx>,
-    func: &'ll Value,
+    try_func: &'ll Value,
     data: &'ll Value,
-    local_ptr: &'ll Value,
+    catch_func: &'ll Value,
     dest: &'ll Value,
 ) {
     if bx.sess().no_landing_pads() {
-        bx.call(func, &[data], None);
-        let ptr_align = bx.tcx().data_layout.pointer_align.abi;
-        bx.store(bx.const_null(bx.type_i8p()), dest, ptr_align);
+        bx.call(try_func, &[data], None);
+        // Return 0 unconditionally from the intrinsic call;
+        // we can never unwind.
+        let ret_align = bx.tcx().data_layout.i32_align.abi;
+        bx.store(bx.const_i32(0), dest, ret_align);
     } else if wants_msvc_seh(bx.sess()) {
-        codegen_msvc_try(bx, func, data, local_ptr, dest);
+        codegen_msvc_try(bx, try_func, data, catch_func, dest);
     } else {
-        codegen_gnu_try(bx, func, data, local_ptr, dest);
+        codegen_gnu_try(bx, try_func, data, catch_func, dest);
     }
 }
 
@@ -876,9 +826,9 @@ fn try_intrinsic(
 // as the old ones are still more optimized.
 fn codegen_msvc_try(
     bx: &mut Builder<'a, 'll, 'tcx>,
-    func: &'ll Value,
+    try_func: &'ll Value,
     data: &'ll Value,
-    local_ptr: &'ll Value,
+    catch_func: &'ll Value,
     dest: &'ll Value,
 ) {
     let llfn = get_rust_try_fn(bx, &mut |mut bx| {
@@ -890,15 +840,15 @@ fn codegen_msvc_try(
         let mut catchpad = bx.build_sibling_block("catchpad");
         let mut caught = bx.build_sibling_block("caught");
 
-        let func = llvm::get_param(bx.llfn(), 0);
+        let try_func = llvm::get_param(bx.llfn(), 0);
         let data = llvm::get_param(bx.llfn(), 1);
-        let local_ptr = llvm::get_param(bx.llfn(), 2);
+        let catch_func = llvm::get_param(bx.llfn(), 2);
 
         // We're generating an IR snippet that looks like:
         //
-        //   declare i32 @rust_try(%func, %data, %ptr) {
-        //      %slot = alloca [2 x i64]
-        //      invoke %func(%data) to label %normal unwind label %catchswitch
+        //   declare i32 @rust_try(%try_func, %data, %catch_func) {
+        //      %slot = alloca u8*
+        //      invoke %try_func(%data) to label %normal unwind label %catchswitch
         //
         //   normal:
         //      ret i32 0
@@ -908,8 +858,8 @@ fn codegen_msvc_try(
         //
         //   catchpad:
         //      %tok = catchpad within %cs [%type_descriptor, 0, %slot]
-        //      %ptr[0] = %slot[0]
-        //      %ptr[1] = %slot[1]
+        //      %ptr = load %slot
+        //      call %catch_func(%data, %ptr)
         //      catchret from %tok to label %caught
         //
         //   caught:
@@ -926,31 +876,56 @@ fn codegen_msvc_try(
         //          ~rust_panic();
         //
         //          uint64_t x[2];
-        //      }
+        //      };
         //
-        //      int bar(void (*foo)(void), uint64_t *ret) {
+        //      int __rust_try(
+        //          void (*try_func)(void*),
+        //          void *data,
+        //          void (*catch_func)(void*, void*) noexcept
+        //      ) {
         //          try {
-        //              foo();
+        //              try_func(data);
         //              return 0;
         //          } catch(rust_panic& a) {
-        //              ret[0] = a.x[0];
-        //              ret[1] = a.x[1];
-        //              a.x[0] = 0;
+        //              catch_func(data, &a);
         //              return 1;
         //          }
         //      }
         //
         // More information can be found in libstd's seh.rs implementation.
-        let i64_2 = bx.type_array(bx.type_i64(), 2);
-        let i64_2_ptr = bx.type_ptr_to(i64_2);
         let ptr_align = bx.tcx().data_layout.pointer_align.abi;
-        let slot = bx.alloca(i64_2_ptr, ptr_align);
-        bx.invoke(func, &[data], normal.llbb(), catchswitch.llbb(), None);
+        let slot = bx.alloca(bx.type_i8p(), ptr_align);
+        bx.invoke(try_func, &[data], normal.llbb(), catchswitch.llbb(), None);
 
         normal.ret(bx.const_i32(0));
 
         let cs = catchswitch.catch_switch(None, None, 1);
         catchswitch.add_handler(cs, catchpad.llbb());
+
+        // We can't use the TypeDescriptor defined in libpanic_unwind because it
+        // might be in another DLL and the SEH encoding only supports specifying
+        // a TypeDescriptor from the current module.
+        //
+        // However this isn't an issue since the MSVC runtime uses string
+        // comparison on the type name to match TypeDescriptors rather than
+        // pointer equality.
+        //
+        // So instead we generate a new TypeDescriptor in each module that uses
+        // `try` and let the linker merge duplicate definitions in the same
+        // module.
+        //
+        // When modifying, make sure that the type_name string exactly matches
+        // the one used in src/libpanic_unwind/seh.rs.
+        let type_info_vtable = bx.declare_global("??_7type_info@@6B@", bx.type_i8p());
+        let type_name = bx.const_bytes(b"rust_panic\0");
+        let type_info =
+            bx.const_struct(&[type_info_vtable, bx.const_null(bx.type_i8p()), type_name], false);
+        let tydesc = bx.declare_global("__rust_panic_type_info", bx.val_ty(type_info));
+        unsafe {
+            llvm::LLVMRustSetLinkage(tydesc, llvm::Linkage::LinkOnceODRLinkage);
+            llvm::SetUniqueComdat(bx.llmod, tydesc);
+            llvm::LLVMSetInitializer(tydesc, type_info);
+        }
 
         // The flag value of 8 indicates that we are catching the exception by
         // reference instead of by value. We can't use catch by value because
@@ -959,23 +934,9 @@ fn codegen_msvc_try(
         //
         // Source: MicrosoftCXXABI::getAddrOfCXXCatchHandlerType in clang
         let flags = bx.const_i32(8);
-        let tydesc = match bx.tcx().lang_items().eh_catch_typeinfo() {
-            Some(did) => bx.get_static(did),
-            None => bug!("eh_catch_typeinfo not defined, but needed for SEH unwinding"),
-        };
         let funclet = catchpad.catch_pad(cs, &[tydesc, flags, slot]);
-
-        let i64_align = bx.tcx().data_layout.i64_align.abi;
-        let payload_ptr = catchpad.load(slot, ptr_align);
-        let payload = catchpad.load(payload_ptr, i64_align);
-        let local_ptr = catchpad.bitcast(local_ptr, bx.type_ptr_to(i64_2));
-        catchpad.store(payload, local_ptr, i64_align);
-
-        // Clear the first word of the exception so avoid double-dropping it.
-        // This will be read by the destructor which is implicitly called at the
-        // end of the catch block by the runtime.
-        let payload_0_ptr = catchpad.inbounds_gep(payload_ptr, &[bx.const_i32(0), bx.const_i32(0)]);
-        catchpad.store(bx.const_u64(0), payload_0_ptr, i64_align);
+        let ptr = catchpad.load(slot, ptr_align);
+        catchpad.call(catch_func, &[data, ptr], Some(&funclet));
 
         catchpad.catch_ret(&funclet, caught.llbb());
 
@@ -984,7 +945,7 @@ fn codegen_msvc_try(
 
     // Note that no invoke is used here because by definition this function
     // can't panic (that's what it's catching).
-    let ret = bx.call(llfn, &[func, data, local_ptr], None);
+    let ret = bx.call(llfn, &[try_func, data, catch_func], None);
     let i32_align = bx.tcx().data_layout.i32_align.abi;
     bx.store(ret, dest, i32_align);
 }
@@ -1002,38 +963,34 @@ fn codegen_msvc_try(
 // the right personality function.
 fn codegen_gnu_try(
     bx: &mut Builder<'a, 'll, 'tcx>,
-    func: &'ll Value,
+    try_func: &'ll Value,
     data: &'ll Value,
-    local_ptr: &'ll Value,
+    catch_func: &'ll Value,
     dest: &'ll Value,
 ) {
     let llfn = get_rust_try_fn(bx, &mut |mut bx| {
         // Codegens the shims described above:
         //
         //   bx:
-        //      invoke %func(%args...) normal %normal unwind %catch
+        //      invoke %try_func(%data) normal %normal unwind %catch
         //
         //   normal:
         //      ret 0
         //
         //   catch:
-        //      (ptr, _) = landingpad
-        //      store ptr, %local_ptr
+        //      (%ptr, _) = landingpad
+        //      call %catch_func(%data, %ptr)
         //      ret 1
-        //
-        // Note that the `local_ptr` data passed into the `try` intrinsic is
-        // expected to be `*mut *mut u8` for this to actually work, but that's
-        // managed by the standard library.
 
         bx.sideeffect();
 
         let mut then = bx.build_sibling_block("then");
         let mut catch = bx.build_sibling_block("catch");
 
-        let func = llvm::get_param(bx.llfn(), 0);
+        let try_func = llvm::get_param(bx.llfn(), 0);
         let data = llvm::get_param(bx.llfn(), 1);
-        let local_ptr = llvm::get_param(bx.llfn(), 2);
-        bx.invoke(func, &[data], then.llbb(), catch.llbb(), None);
+        let catch_func = llvm::get_param(bx.llfn(), 2);
+        bx.invoke(try_func, &[data], then.llbb(), catch.llbb(), None);
         then.ret(bx.const_i32(0));
 
         // Type indicator for the exception being thrown.
@@ -1053,15 +1010,13 @@ fn codegen_gnu_try(
         };
         catch.add_clause(vals, tydesc);
         let ptr = catch.extract_value(vals, 0);
-        let ptr_align = bx.tcx().data_layout.pointer_align.abi;
-        let bitcast = catch.bitcast(local_ptr, bx.type_ptr_to(bx.type_i8p()));
-        catch.store(ptr, bitcast, ptr_align);
+        catch.call(catch_func, &[data, ptr], None);
         catch.ret(bx.const_i32(1));
     });
 
     // Note that no invoke is used here because by definition this function
     // can't panic (that's what it's catching).
-    let ret = bx.call(llfn, &[func, data, local_ptr], None);
+    let ret = bx.call(llfn, &[try_func, data, catch_func], None);
     let i32_align = bx.tcx().data_layout.i32_align.abi;
     bx.store(ret, dest, i32_align);
 }
@@ -1084,6 +1039,8 @@ fn gen_fn<'ll, 'tcx>(
     ));
     let fn_abi = FnAbi::of_fn_ptr(cx, rust_fn_sig, &[]);
     let llfn = cx.declare_fn(name, &fn_abi);
+    cx.set_frame_pointer_elimination(llfn);
+    cx.apply_target_cpu_attr(llfn);
     // FIXME(eddyb) find a nicer way to do this.
     unsafe { llvm::LLVMRustSetLinkage(llfn, llvm::Linkage::InternalLinkage) };
     let bx = Builder::new_block(cx, llfn, "entry-block");
@@ -1106,15 +1063,22 @@ fn get_rust_try_fn<'ll, 'tcx>(
     // Define the type up front for the signature of the rust_try function.
     let tcx = cx.tcx;
     let i8p = tcx.mk_mut_ptr(tcx.types.i8);
-    let fn_ty = tcx.mk_fn_ptr(ty::Binder::bind(tcx.mk_fn_sig(
+    let try_fn_ty = tcx.mk_fn_ptr(ty::Binder::bind(tcx.mk_fn_sig(
         iter::once(i8p),
         tcx.mk_unit(),
         false,
         hir::Unsafety::Unsafe,
         Abi::Rust,
     )));
+    let catch_fn_ty = tcx.mk_fn_ptr(ty::Binder::bind(tcx.mk_fn_sig(
+        [i8p, i8p].iter().cloned(),
+        tcx.mk_unit(),
+        false,
+        hir::Unsafety::Unsafe,
+        Abi::Rust,
+    )));
     let output = tcx.types.i32;
-    let rust_try = gen_fn(cx, "__rust_try", vec![fn_ty, i8p, i8p], output, codegen);
+    let rust_try = gen_fn(cx, "__rust_try", vec![try_fn_ty, i8p, catch_fn_ty], output, codegen);
     cx.rust_try_fn.set(Some(rust_try));
     rust_try
 }
@@ -1174,8 +1138,8 @@ fn generic_simd_intrinsic(
         let m_len = match in_ty.kind {
             // Note that this `.unwrap()` crashes for isize/usize, that's sort
             // of intentional as there's not currently a use case for that.
-            ty::Int(i) => i.bit_width().unwrap() as u64,
-            ty::Uint(i) => i.bit_width().unwrap() as u64,
+            ty::Int(i) => i.bit_width().unwrap(),
+            ty::Uint(i) => i.bit_width().unwrap(),
             _ => return_error!("`{}` is not an integral type", in_ty),
         };
         require_simd!(arg_tys[1], "argument");
@@ -1356,20 +1320,18 @@ fn generic_simd_intrinsic(
         // trailing bits.
         let expected_int_bits = in_len.max(8);
         match ret_ty.kind {
-            ty::Uint(i) if i.bit_width() == Some(expected_int_bits as usize) => (),
+            ty::Uint(i) if i.bit_width() == Some(expected_int_bits) => (),
             _ => return_error!("bitmask `{}`, expected `u{}`", ret_ty, expected_int_bits),
         }
 
         // Integer vector <i{in_bitwidth} x in_len>:
         let (i_xn, in_elem_bitwidth) = match in_elem.kind {
-            ty::Int(i) => (
-                args[0].immediate(),
-                i.bit_width().unwrap_or(bx.data_layout().pointer_size.bits() as _),
-            ),
-            ty::Uint(i) => (
-                args[0].immediate(),
-                i.bit_width().unwrap_or(bx.data_layout().pointer_size.bits() as _),
-            ),
+            ty::Int(i) => {
+                (args[0].immediate(), i.bit_width().unwrap_or(bx.data_layout().pointer_size.bits()))
+            }
+            ty::Uint(i) => {
+                (args[0].immediate(), i.bit_width().unwrap_or(bx.data_layout().pointer_size.bits()))
+            }
             _ => return_error!(
                 "vector argument `{}`'s element type `{}`, expected integer element type",
                 in_ty,
@@ -1380,22 +1342,22 @@ fn generic_simd_intrinsic(
         // Shift the MSB to the right by "in_elem_bitwidth - 1" into the first bit position.
         let shift_indices =
             vec![
-                bx.cx.const_int(bx.type_ix(in_elem_bitwidth as _), (in_elem_bitwidth - 1) as _);
+                bx.cx.const_int(bx.type_ix(in_elem_bitwidth), (in_elem_bitwidth - 1) as _);
                 in_len as _
             ];
         let i_xn_msb = bx.lshr(i_xn, bx.const_vector(shift_indices.as_slice()));
         // Truncate vector to an <i1 x N>
-        let i1xn = bx.trunc(i_xn_msb, bx.type_vector(bx.type_i1(), in_len as _));
+        let i1xn = bx.trunc(i_xn_msb, bx.type_vector(bx.type_i1(), in_len));
         // Bitcast <i1 x N> to iN:
-        let i_ = bx.bitcast(i1xn, bx.type_ix(in_len as _));
+        let i_ = bx.bitcast(i1xn, bx.type_ix(in_len));
         // Zero-extend iN to the bitmask type:
-        return Ok(bx.zext(i_, bx.type_ix(expected_int_bits as _)));
+        return Ok(bx.zext(i_, bx.type_ix(expected_int_bits)));
     }
 
     fn simd_simple_float_intrinsic(
         name: &str,
-        in_elem: &::rustc::ty::TyS<'_>,
-        in_ty: &::rustc::ty::TyS<'_>,
+        in_elem: &::rustc_middle::ty::TyS<'_>,
+        in_ty: &::rustc_middle::ty::TyS<'_>,
         in_len: u64,
         bx: &mut Builder<'a, 'll, 'tcx>,
         span: Span,
@@ -1664,7 +1626,7 @@ fn generic_simd_intrinsic(
                 llvm_elem_vec_ty,
             ),
         );
-        llvm::SetUnnamedAddr(f, false);
+        llvm::SetUnnamedAddress(f, llvm::UnnamedAddr::No);
         let v = bx.call(f, &[args[1].immediate(), alignment, mask, args[0].immediate()], None);
         return Ok(v);
     }
@@ -1786,7 +1748,7 @@ fn generic_simd_intrinsic(
             &llvm_intrinsic,
             bx.type_func(&[llvm_elem_vec_ty, llvm_pointer_vec_ty, alignment_ty, mask_ty], ret_t),
         );
-        llvm::SetUnnamedAddr(f, false);
+        llvm::SetUnnamedAddress(f, llvm::UnnamedAddr::No);
         let v = bx.call(f, &[args[0].immediate(), args[1].immediate(), alignment, mask], None);
         return Ok(v);
     }
@@ -2085,7 +2047,7 @@ unsupported {} from `{}` with element `{}` of size `{}` to `{}`"#,
         let vec_ty = bx.cx.type_vector(elem_ty, in_len as u64);
 
         let f = bx.declare_cfn(&llvm_intrinsic, bx.type_func(&[vec_ty, vec_ty], vec_ty));
-        llvm::SetUnnamedAddr(f, false);
+        llvm::SetUnnamedAddress(f, llvm::UnnamedAddr::No);
         let v = bx.call(f, &[lhs, rhs], None);
         return Ok(v);
     }
@@ -2101,7 +2063,7 @@ fn int_type_width_signed(ty: Ty<'_>, cx: &CodegenCx<'_, '_>) -> Option<(u64, boo
     match ty.kind {
         ty::Int(t) => Some((
             match t {
-                ast::IntTy::Isize => cx.tcx.sess.target.ptr_width as u64,
+                ast::IntTy::Isize => u64::from(cx.tcx.sess.target.ptr_width),
                 ast::IntTy::I8 => 8,
                 ast::IntTy::I16 => 16,
                 ast::IntTy::I32 => 32,
@@ -2112,7 +2074,7 @@ fn int_type_width_signed(ty: Ty<'_>, cx: &CodegenCx<'_, '_>) -> Option<(u64, boo
         )),
         ty::Uint(t) => Some((
             match t {
-                ast::UintTy::Usize => cx.tcx.sess.target.ptr_width as u64,
+                ast::UintTy::Usize => u64::from(cx.tcx.sess.target.ptr_width),
                 ast::UintTy::U8 => 8,
                 ast::UintTy::U16 => 16,
                 ast::UintTy::U32 => 32,
@@ -2129,7 +2091,7 @@ fn int_type_width_signed(ty: Ty<'_>, cx: &CodegenCx<'_, '_>) -> Option<(u64, boo
 // Returns None if the type is not a float
 fn float_type_width(ty: Ty<'_>) -> Option<u64> {
     match ty.kind {
-        ty::Float(t) => Some(t.bit_width() as u64),
+        ty::Float(t) => Some(t.bit_width()),
         _ => None,
     }
 }

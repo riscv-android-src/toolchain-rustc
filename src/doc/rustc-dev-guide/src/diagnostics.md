@@ -82,7 +82,7 @@ is passed) as JSON for consumption by tools, most notably the [Rust Language
 Server][rls] and [`rustfix`][rustfix].
 
 [rls]: https://github.com/rust-lang/rls
-[rustfix]: https://github.com/rust-lang-nursery/rustfix
+[rustfix]: https://github.com/rust-lang/rustfix
 
 Not all suggestions should be applied mechanically. Use the
 [`span_suggestion`][span_suggestion] method of `DiagnosticBuilder` to
@@ -162,7 +162,7 @@ The possible values of [`Applicability`][appl] are:
 The compiler linting infrastructure is defined in the [`rustc::lint`][rlint]
 module.
 
-[rlint]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc/lint/index.html
+[rlint]: https://doc.rust-lang.org/nightly/nightly-rustc/rustc_middle/lint/index.html
 
 ### Declaring a lint
 
@@ -324,7 +324,7 @@ like normal but invokes the lint with `buffer_lint`.
 
 The parser (`librustc_ast`) is interesting in that it cannot have dependencies on
 any of the other `librustc*` crates. In particular, it cannot depend on
-`librustc::lint` or `librustc_lint`, where all of the compiler linting
+`librustc_middle::lint` or `librustc_lint`, where all of the compiler linting
 infrastructure is defined. That's troublesome!
 
 To solve this, `librustc_ast` defines its own buffered lint type, which

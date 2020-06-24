@@ -1,5 +1,5 @@
 use std::fmt;
-use std::mem;
+use std::mem::{self, MaybeUninit};
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ptr;
 
@@ -18,7 +18,14 @@ use winapi::shared::ws2ipdef::SOCKADDR_IN6_LH as sockaddr_in6;
 #[cfg(windows)]
 use winapi::um::ws2tcpip::socklen_t;
 
-use crate::SockAddr;
+/// The address of a socket.
+///
+/// `SockAddr`s may be constructed directly to and from the standard library
+/// `SocketAddr`, `SocketAddrV4`, and `SocketAddrV6` types.
+pub struct SockAddr {
+    storage: sockaddr_storage,
+    len: socklen_t,
+}
 
 impl fmt::Debug for SockAddr {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
@@ -36,7 +43,7 @@ impl fmt::Debug for SockAddr {
 impl SockAddr {
     /// Constructs a `SockAddr` from its raw components.
     pub unsafe fn from_raw_parts(addr: *const sockaddr, len: socklen_t) -> SockAddr {
-        let mut storage = mem::uninitialized::<sockaddr_storage>();
+        let mut storage = MaybeUninit::<sockaddr_storage>::uninit();
         ptr::copy_nonoverlapping(
             addr as *const _ as *const u8,
             &mut storage as *mut _ as *mut u8,
@@ -44,7 +51,8 @@ impl SockAddr {
         );
 
         SockAddr {
-            storage: storage,
+            // This is safe as we written the address to `storage` above.
+            storage: storage.assume_init(),
             len: len,
         }
     }
@@ -130,6 +138,18 @@ impl SockAddr {
     /// family.
     pub fn as_inet6(&self) -> Option<SocketAddrV6> {
         unsafe { self.as_(AF_INET6 as sa_family_t) }
+    }
+
+    /// Returns this address as a `SocketAddr` if it is in the `AF_INET`
+    /// or `AF_INET6` family, otherwise returns `None`.
+    pub fn as_std(&self) -> Option<SocketAddr> {
+        if let Some(addr) = self.as_inet() {
+            Some(SocketAddr::V4(addr))
+        } else if let Some(addr) = self.as_inet6() {
+            Some(SocketAddr::V6(addr))
+        } else {
+            None
+        }
     }
 
     /// Returns this address's family.

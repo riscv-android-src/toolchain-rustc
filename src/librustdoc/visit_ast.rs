@@ -1,14 +1,14 @@
 //! The Rust AST Visitor. Extracts useful information and massages it into a form
 //! usable for `clean`.
 
-use rustc::middle::privacy::AccessLevel;
-use rustc::ty::TyCtxt;
 use rustc_ast::ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_hir::Node;
+use rustc_middle::middle::privacy::AccessLevel;
+use rustc_middle::ty::TyCtxt;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{kw, sym};
@@ -64,11 +64,11 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
 
     pub fn visit(mut self, krate: &'tcx hir::Crate) -> Module<'tcx> {
         let mut module = self.visit_mod_contents(
-            krate.span,
-            krate.attrs,
+            krate.item.span,
+            krate.item.attrs,
             &Spanned { span: rustc_span::DUMMY_SP, node: hir::VisibilityKind::Public },
             hir::CRATE_HIR_ID,
-            &krate.module,
+            &krate.item.module,
             None,
         );
         // Attach the crate's exported macros to the top-level module:
@@ -309,14 +309,15 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             let attrs = clean::inline::load_attrs(self.cx, res_did);
             let self_is_hidden = attrs.lists(sym::doc).has_word(sym::hidden);
             match res {
-                Res::Def(DefKind::Trait, did)
-                | Res::Def(DefKind::Struct, did)
-                | Res::Def(DefKind::Union, did)
-                | Res::Def(DefKind::Enum, did)
-                | Res::Def(DefKind::ForeignTy, did)
-                | Res::Def(DefKind::TyAlias, did)
-                    if !self_is_hidden =>
-                {
+                Res::Def(
+                    DefKind::Trait
+                    | DefKind::Struct
+                    | DefKind::Union
+                    | DefKind::Enum
+                    | DefKind::ForeignTy
+                    | DefKind::TyAlias,
+                    did,
+                ) if !self_is_hidden => {
                     self.cx.renderinfo.get_mut().access_levels.map.insert(did, AccessLevel::Public);
                 }
                 Res::Def(DefKind::Mod, did) => {
@@ -563,6 +564,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                 polarity,
                 defaultness,
                 constness,
+                defaultness_span: _,
                 ref generics,
                 ref of_trait,
                 self_ty,
@@ -620,8 +622,8 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         def: &'tcx hir::MacroDef,
         renamed: Option<ast::Name>,
     ) -> Macro<'tcx> {
-        debug!("visit_local_macro: {}", def.name);
-        let tts = def.body.trees().collect::<Vec<_>>();
+        debug!("visit_local_macro: {}", def.ident);
+        let tts = def.ast.body.inner_tokens().trees().collect::<Vec<_>>();
         // Extract the spans of all matchers. They represent the "interface" of the macro.
         let matchers = tts.chunks(4).map(|arm| arm[0].span()).collect();
 
@@ -629,7 +631,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
             hid: def.hir_id,
             def_id: self.cx.tcx.hir().local_def_id(def.hir_id),
             attrs: &def.attrs,
-            name: renamed.unwrap_or(def.name),
+            name: renamed.unwrap_or(def.ident.name),
             whence: def.span,
             matchers,
             imported_from: None,

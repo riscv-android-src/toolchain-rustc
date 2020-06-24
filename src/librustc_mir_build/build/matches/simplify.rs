@@ -15,12 +15,13 @@
 use crate::build::matches::{Ascription, Binding, Candidate, MatchPair};
 use crate::build::Builder;
 use crate::hair::{self, *};
-use rustc::mir::interpret::truncate;
-use rustc::mir::Place;
-use rustc::ty;
-use rustc::ty::layout::{Integer, IntegerExt, Size};
 use rustc_attr::{SignedInt, UnsignedInt};
 use rustc_hir::RangeEnd;
+use rustc_middle::mir::interpret::truncate;
+use rustc_middle::mir::Place;
+use rustc_middle::ty;
+use rustc_middle::ty::layout::IntegerExt;
+use rustc_target::abi::{Integer, Size};
 
 use std::mem;
 
@@ -209,7 +210,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     i == variant_index || {
                         self.hir.tcx().features().exhaustive_patterns
                             && !v
-                                .uninhabited_from(self.hir.tcx(), substs, adt_def.adt_kind())
+                                .uninhabited_from(
+                                    self.hir.tcx(),
+                                    substs,
+                                    adt_def.adt_kind(),
+                                    self.hir.param_env,
+                                )
                                 .is_empty()
                     }
                 }) && (adt_def.did.is_local()

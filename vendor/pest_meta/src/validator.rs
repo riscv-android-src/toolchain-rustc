@@ -109,7 +109,7 @@ pub fn validate_pairs<'i>(pairs: Pairs<'i, Rule>) -> Result<Vec<&'i str>, Vec<Er
     let definitions: Vec<_> = pairs
         .clone()
         .filter(|pair| pair.as_rule() == Rule::grammar_rule)
-        .map(|pair| pair.into_inner().next().unwrap().into_span())
+        .map(|pair| pair.into_inner().next().unwrap().as_span())
         .collect();
     let called_rules: Vec<_> = pairs
         .clone()
@@ -119,7 +119,7 @@ pub fn validate_pairs<'i>(pairs: Pairs<'i, Rule>) -> Result<Vec<&'i str>, Vec<Er
                 .flatten()
                 .skip(1)
                 .filter(|pair| pair.as_rule() == Rule::identifier)
-                .map(|pair| pair.into_span())
+                .map(|pair| pair.as_span())
         })
         .collect();
 
@@ -410,7 +410,7 @@ fn validate_whitespace_comment<'a, 'i: 'a>(rules: &'a [ParserRule<'i>]) -> Vec<E
     rules
         .iter()
         .filter_map(|rule| {
-            if rule.name == "whitespace" || rule.name == "comment" {
+            if rule.name == "WHITESPACE" || rule.name == "COMMENT" {
                 if is_non_failing(&rule.node.expr, &map, &mut vec![]) {
                     Some(Error::new_from_span(
                         ErrorVariant::CustomError {
@@ -608,12 +608,12 @@ mod tests {
 
  --> 1:16
   |
-1 | whitespace = { \"\" }
+1 | WHITESPACE = { \"\" }
   |                ^^
   |
-  = whitespace cannot fail and will repeat infinitely")]
+  = WHITESPACE cannot fail and will repeat infinitely")]
     fn non_failing_whitespace() {
-        let input = "whitespace = { \"\" }";
+        let input = "WHITESPACE = { \"\" }";
         unwrap_or_report(consume_rules(
             PestParser::parse(Rule::grammar_rules, input).unwrap(),
         ));
@@ -624,12 +624,12 @@ mod tests {
 
  --> 1:13
   |
-1 | comment = { soi }
+1 | COMMENT = { soi }
   |             ^-^
   |
-  = comment is non-progressing and will repeat infinitely")]
+  = COMMENT is non-progressing and will repeat infinitely")]
     fn non_progressing_comment() {
-        let input = "comment = { soi }";
+        let input = "COMMENT = { soi }";
         unwrap_or_report(consume_rules(
             PestParser::parse(Rule::grammar_rules, input).unwrap(),
         ));

@@ -5,9 +5,9 @@
 use std::borrow::{Borrow, Cow};
 use std::hash::Hash;
 
-use rustc::mir;
-use rustc::ty::{self, Ty};
-use rustc_span::Span;
+use rustc_middle::mir;
+use rustc_middle::ty::{self, Ty};
+use rustc_span::def_id::DefId;
 
 use super::{
     AllocId, Allocation, AllocationExtra, Frame, ImmTy, InterpCx, InterpResult, Memory, MemoryKind,
@@ -17,16 +17,16 @@ use super::{
 /// Data returned by Machine::stack_pop,
 /// to provide further control over the popping of the stack frame
 #[derive(Eq, PartialEq, Debug, Copy, Clone)]
-pub enum StackPopInfo {
+pub enum StackPopJump {
     /// Indicates that no special handling should be
     /// done - we'll either return normally or unwind
     /// based on the terminator for the function
     /// we're leaving.
     Normal,
 
-    /// Indicates that we should stop unwinding,
-    /// as we've reached a catch frame
-    StopUnwinding,
+    /// Indicates that we should *not* jump to the return/unwind address, as the callback already
+    /// took care of everything.
+    NoJump,
 }
 
 /// Whether this kind of memory is allowed to leak
@@ -51,7 +51,7 @@ pub trait AllocMap<K: Hash + Eq, V> {
     where
         K: Borrow<Q>;
 
-    /// Returns data based the keys and values in the map.
+    /// Returns data based on the keys and values in the map.
     fn filter_map_collect<T>(&self, f: impl FnMut(&K, &V) -> Option<T>) -> Vec<T>;
 
     /// Returns a reference to entry `k`. If no such entry exists, call
@@ -79,7 +79,7 @@ pub trait AllocMap<K: Hash + Eq, V> {
 /// and some use case dependent behaviour can instead be applied.
 pub trait Machine<'mir, 'tcx>: Sized {
     /// Additional memory kinds a machine wishes to distinguish from the builtin ones
-    type MemoryKinds: ::std::fmt::Debug + MayLeak + Eq + 'static;
+    type MemoryKind: ::std::fmt::Debug + ::std::fmt::Display + MayLeak + Eq + 'static;
 
     /// Tag tracked alongside every pointer. This is used to implement "Stacked Borrows"
     /// <https://www.ralfj.de/blog/2018/08/07/stacked-borrows.html>.
@@ -105,19 +105,20 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// Memory's allocation map
     type MemoryMap: AllocMap<
             AllocId,
-            (MemoryKind<Self::MemoryKinds>, Allocation<Self::PointerTag, Self::AllocExtra>),
+            (MemoryKind<Self::MemoryKind>, Allocation<Self::PointerTag, Self::AllocExtra>),
         > + Default
         + Clone;
 
-    /// The memory kind to use for copied statics -- or None if statics should not be mutated
-    /// and thus any such attempt will cause a `ModifiedStatic` error to be raised.
+    /// The memory kind to use for copied global memory (held in `tcx`) --
+    /// or None if such memory should not be mutated and thus any such attempt will cause
+    /// a `ModifiedStatic` error to be raised.
     /// Statics are copied under two circumstances: When they are mutated, and when
-    /// `tag_allocation` or `find_foreign_static` (see below) returns an owned allocation
+    /// `tag_allocation` (see below) returns an owned allocation
     /// that is added to the memory so that the work is not done twice.
-    const STATIC_KIND: Option<Self::MemoryKinds>;
+    const GLOBAL_KIND: Option<Self::MemoryKind>;
 
     /// Whether memory accesses should be alignment-checked.
-    const CHECK_ALIGN: bool;
+    fn enforce_alignment(memory_extra: &Self::MemoryExtra) -> bool;
 
     /// Whether to enforce the validity invariant
     fn enforce_validity(ecx: &InterpCx<'mir, 'tcx, Self>) -> bool;
@@ -134,7 +135,6 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// was used.
     fn find_mir_or_eval_fn(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        span: Span,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Self::PointerTag>],
         ret: Option<(PlaceTy<'tcx, Self::PointerTag>, mir::BasicBlock)>,
@@ -155,7 +155,6 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// responsibility to advance the instruction pointer as appropriate.
     fn call_intrinsic(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        span: Span,
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Self::PointerTag>],
         ret: Option<(PlaceTy<'tcx, Self::PointerTag>, mir::BasicBlock)>,
@@ -165,10 +164,14 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// Called to evaluate `Assert` MIR terminators that trigger a panic.
     fn assert_panic(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        span: Span,
         msg: &mir::AssertMessage<'tcx>,
         unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx>;
+
+    /// Called to evaluate `Abort` MIR terminator.
+    fn abort(_ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx, !> {
+        throw_unsup_format!("aborting execution is not supported")
+    }
 
     /// Called for all binary operations where the LHS has pointer type.
     ///
@@ -203,11 +206,15 @@ pub trait Machine<'mir, 'tcx>: Sized {
         Ok(())
     }
 
-    /// Called before a `Static` value is accessed.
+    /// Called before a global allocation is accessed.
+    /// `def_id` is `Some` if this is the "lazy" allocation of a static.
     #[inline]
-    fn before_access_static(
+    fn before_access_global(
         _memory_extra: &Self::MemoryExtra,
+        _alloc_id: AllocId,
         _allocation: &Allocation,
+        _static_def_id: Option<DefId>,
+        _is_write: bool,
     ) -> InterpResult<'tcx> {
         Ok(())
     }
@@ -223,14 +230,42 @@ pub trait Machine<'mir, 'tcx>: Sized {
         id
     }
 
+    /// Called when converting a `ty::Const` to an operand (in
+    /// `eval_const_to_op`).
+    ///
+    /// Miri uses this callback for creating per thread allocations for thread
+    /// locals. In Rust, one way of creating a thread local is by marking a
+    /// static with `#[thread_local]`. On supported platforms this gets
+    /// translated to a LLVM thread local for which LLVM automatically ensures
+    /// that each thread gets its own copy. Since LLVM automatically handles
+    /// thread locals, the Rust compiler just treats thread local statics as
+    /// regular statics even though accessing a thread local static should be an
+    /// effectful computation that depends on the current thread. The long term
+    /// plan is to change MIR to make accesses to thread locals explicit
+    /// (https://github.com/rust-lang/rust/issues/70685). While the issue 70685
+    /// is not fixed, our current workaround in Miri is to use this function to
+    /// make per-thread copies of thread locals. Please note that we cannot make
+    /// these copies in `canonical_alloc_id` because that is too late: for
+    /// example, if one created a pointer in thread `t1` to a thread local and
+    /// sent it to another thread `t2`, resolving the access in
+    /// `canonical_alloc_id` would result in pointer pointing to `t2`'s thread
+    /// local and not `t1` as it should.
+    #[inline]
+    fn adjust_global_const(
+        _ecx: &InterpCx<'mir, 'tcx, Self>,
+        val: mir::interpret::ConstValue<'tcx>,
+    ) -> InterpResult<'tcx, mir::interpret::ConstValue<'tcx>> {
+        Ok(val)
+    }
+
     /// Called to initialize the "extra" state of an allocation and make the pointers
     /// it contains (in relocations) tagged.  The way we construct allocations is
     /// to always first construct it without extra and then add the extra.
     /// This keeps uniform code paths for handling both allocations created by CTFE
-    /// for statics, and allocations created by Miri during evaluation.
+    /// for globals, and allocations created by Miri during evaluation.
     ///
     /// `kind` is the kind of the allocation being tagged; it can be `None` when
-    /// it's a static and `STATIC_KIND` is `None`.
+    /// it's a global and `GLOBAL_KIND` is `None`.
     ///
     /// This should avoid copying if no work has to be done! If this returns an owned
     /// allocation (because a copy had to be done to add tags or metadata), machine memory will
@@ -239,20 +274,28 @@ pub trait Machine<'mir, 'tcx>: Sized {
     ///
     /// Also return the "base" tag to use for this allocation: the one that is used for direct
     /// accesses to this allocation. If `kind == STATIC_KIND`, this tag must be consistent
-    /// with `tag_static_base_pointer`.
+    /// with `tag_global_base_pointer`.
     fn init_allocation_extra<'b>(
         memory_extra: &Self::MemoryExtra,
         id: AllocId,
         alloc: Cow<'b, Allocation>,
-        kind: Option<MemoryKind<Self::MemoryKinds>>,
+        kind: Option<MemoryKind<Self::MemoryKind>>,
     ) -> (Cow<'b, Allocation<Self::PointerTag, Self::AllocExtra>>, Self::PointerTag);
 
-    /// Return the "base" tag for the given *static* allocation: the one that is used for direct
-    /// accesses to this static/const/fn allocation. If `id` is not a static allocation,
+    /// Called to notify the machine before a deallocation occurs.
+    fn before_deallocation(
+        _memory_extra: &mut Self::MemoryExtra,
+        _id: AllocId,
+    ) -> InterpResult<'tcx> {
+        Ok(())
+    }
+
+    /// Return the "base" tag for the given *global* allocation: the one that is used for direct
+    /// accesses to this static/const/fn allocation. If `id` is not a global allocation,
     /// this will return an unusable tag (i.e., accesses will be UB)!
     ///
     /// Expects `id` to be already canonical, if needed.
-    fn tag_static_base_pointer(memory_extra: &Self::MemoryExtra, id: AllocId) -> Self::PointerTag;
+    fn tag_global_base_pointer(memory_extra: &Self::MemoryExtra, id: AllocId) -> Self::PointerTag;
 
     /// Executes a retagging operation
     #[inline]
@@ -264,17 +307,35 @@ pub trait Machine<'mir, 'tcx>: Sized {
         Ok(())
     }
 
-    /// Called immediately before a new stack frame got pushed.
-    fn stack_push(ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx, Self::FrameExtra>;
+    /// Called immediately before a new stack frame gets pushed.
+    fn init_frame_extra(
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
+        frame: Frame<'mir, 'tcx, Self::PointerTag>,
+    ) -> InterpResult<'tcx, Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>>;
 
-    /// Called immediately after a stack frame gets popped
-    fn stack_pop(
+    /// Borrow the current thread's stack.
+    fn stack(
+        ecx: &'a InterpCx<'mir, 'tcx, Self>,
+    ) -> &'a [Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>];
+
+    /// Mutably borrow the current thread's stack.
+    fn stack_mut(
+        ecx: &'a mut InterpCx<'mir, 'tcx, Self>,
+    ) -> &'a mut Vec<Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>>;
+
+    /// Called immediately after a stack frame got pushed and its locals got initialized.
+    fn after_stack_push(_ecx: &mut InterpCx<'mir, 'tcx, Self>) -> InterpResult<'tcx> {
+        Ok(())
+    }
+
+    /// Called immediately after a stack frame got popped, but before jumping back to the caller.
+    fn after_stack_pop(
         _ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        _extra: Self::FrameExtra,
+        _frame: Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>,
         _unwinding: bool,
-    ) -> InterpResult<'tcx, StackPopInfo> {
+    ) -> InterpResult<'tcx, StackPopJump> {
         // By default, we do not support unwinding from panics
-        Ok(StackPopInfo::Normal)
+        Ok(StackPopJump::Normal)
     }
 
     fn int_to_ptr(
@@ -282,8 +343,10 @@ pub trait Machine<'mir, 'tcx>: Sized {
         int: u64,
     ) -> InterpResult<'tcx, Pointer<Self::PointerTag>> {
         Err((if int == 0 {
-            err_unsup!(InvalidNullPointerUsage)
+            // This is UB, seriously.
+            err_ub!(InvalidIntPointerUsage(0))
         } else {
+            // This is just something we cannot support during const-eval.
             err_unsup!(ReadBytesAsPointer)
         })
         .into())

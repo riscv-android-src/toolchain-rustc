@@ -5,6 +5,7 @@ use crate::html::format::Buffer;
 use crate::html::highlight;
 use crate::html::layout;
 use crate::html::render::{Error, SharedContext, BASIC_KEYWORDS};
+use rustc_hir::def_id::LOCAL_CRATE;
 use rustc_span::source_map::FileName;
 use std::ffi::OsStr;
 use std::fs;
@@ -35,10 +36,10 @@ impl<'a> DocFolder for SourceCollector<'a> {
         // If we're including source files, and we haven't seen this file yet,
         // then we need to render it out to the filesystem.
         if self.scx.include_sources
-            // skip all invalid or macro spans
+            // skip all synthetic "files"
             && item.source.filename.is_real()
-            // skip non-local items
-            && item.def_id.is_local()
+            // skip non-local files
+            && item.source.cnum == LOCAL_CRATE
         {
             // If it turns out that we couldn't read this file, then we probably
             // can't read any of the files (generating html output from json or
@@ -66,10 +67,10 @@ impl<'a> SourceCollector<'a> {
     /// Renders the given filename into its corresponding HTML source file.
     fn emit_source(&mut self, filename: &FileName) -> Result<(), Error> {
         let p = match *filename {
-            FileName::Real(ref file) => file,
+            FileName::Real(ref file) => file.local_path().to_path_buf(),
             _ => return Ok(()),
         };
-        if self.scx.local_sources.contains_key(&**p) {
+        if self.scx.local_sources.contains_key(&*p) {
             // We've already emitted this source
             return Ok(());
         }

@@ -173,6 +173,8 @@ declare_features! (
     // no-tracking-issue-end
 
     /// Allows using `#[structural_match]` which indicates that a type is structurally matchable.
+    /// FIXME: Subsumed by trait `StructuralPartialEq`, cannot move to removed until a library
+    /// feature with the same name exists.
     (active, structural_match, "1.8.0", Some(31434), None),
 
     /// Allows using the `may_dangle` attribute (RFC 1327).
@@ -300,6 +302,11 @@ declare_features! (
 
     /// Allows specialization of implementations (RFC 1210).
     (active, specialization, "1.7.0", Some(31844), None),
+
+    /// A minimal, sound subset of specialization intended to be used by the
+    /// standard library until the soundness issues with specialization
+    /// are fixed.
+    (active, min_specialization, "1.7.0", Some(31844), None),
 
     /// Allows using `#[naked]` on functions.
     (active, naked_functions, "1.9.0", Some(32408), None),
@@ -548,6 +555,9 @@ declare_features! (
 
     // Allows limiting the evaluation steps of const expressions
     (active, const_eval_limit, "1.43.0", Some(67217), None),
+
+    /// Allow negative trait implementations.
+    (active, negative_impls, "1.44.0", Some(68318), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates

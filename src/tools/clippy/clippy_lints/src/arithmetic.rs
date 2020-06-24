@@ -6,11 +6,17 @@ use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for plain integer arithmetic.
+    /// **What it does:** Checks for integer arithmetic operations which could overflow or panic.
     ///
-    /// **Why is this bad?** This is only checked against overflow in debug builds.
-    /// In some applications one wants explicitly checked, wrapping or saturating
-    /// arithmetic.
+    /// Specifically, checks for any operators (`+`, `-`, `*`, `<<`, etc) which are capable
+    /// of overflowing according to the [Rust
+    /// Reference](https://doc.rust-lang.org/reference/expressions/operator-expr.html#overflow),
+    /// or which can panic (`/`, `%`). No bounds analysis or sophisticated reasoning is
+    /// attempted.
+    ///
+    /// **Why is this bad?** Integer overflow will trigger a panic in debug builds or will wrap in
+    /// release mode. Division by zero will cause a panic in either mode. In some applications one
+    /// wants explicitly checked, wrapping or saturating arithmetic.
     ///
     /// **Known problems:** None.
     ///
@@ -21,7 +27,7 @@ declare_clippy_lint! {
     /// ```
     pub INTEGER_ARITHMETIC,
     restriction,
-    "any integer arithmetic statement"
+    "any integer arithmetic expression which could overflow or panic"
 }
 
 declare_clippy_lint! {
@@ -71,8 +77,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Arithmetic {
                     | hir::BinOpKind::BitAnd
                     | hir::BinOpKind::BitOr
                     | hir::BinOpKind::BitXor
-                    | hir::BinOpKind::Shl
-                    | hir::BinOpKind::Shr
                     | hir::BinOpKind::Eq
                     | hir::BinOpKind::Lt
                     | hir::BinOpKind::Le
@@ -81,11 +85,12 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Arithmetic {
                     | hir::BinOpKind::Gt => return,
                     _ => (),
                 }
+
                 let (l_ty, r_ty) = (cx.tables.expr_ty(l), cx.tables.expr_ty(r));
-                if l_ty.is_integral() && r_ty.is_integral() {
+                if l_ty.peel_refs().is_integral() && r_ty.peel_refs().is_integral() {
                     span_lint(cx, INTEGER_ARITHMETIC, expr.span, "integer arithmetic detected");
                     self.expr_span = Some(expr.span);
-                } else if l_ty.is_floating_point() && r_ty.is_floating_point() {
+                } else if l_ty.peel_refs().is_floating_point() && r_ty.peel_refs().is_floating_point() {
                     span_lint(cx, FLOAT_ARITHMETIC, expr.span, "floating-point arithmetic detected");
                     self.expr_span = Some(expr.span);
                 }

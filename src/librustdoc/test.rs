@@ -1,18 +1,19 @@
-use rustc::hir::map::Map;
-use rustc::session::{self, config, DiagnosticOutput};
-use rustc::util::common::ErrorReported;
 use rustc_ast::ast;
 use rustc_ast::with_globals;
 use rustc_data_structures::sync::Lrc;
+use rustc_errors::ErrorReported;
 use rustc_feature::UnstableFeatures;
 use rustc_hir as hir;
 use rustc_hir::intravisit;
 use rustc_interface::interface;
+use rustc_middle::hir::map::Map;
+use rustc_session::{self, config, DiagnosticOutput, Session};
 use rustc_span::edition::Edition;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::sym;
 use rustc_span::{BytePos, FileName, Pos, Span, DUMMY_SP};
 use rustc_target::spec::TargetTriple;
+use std::collections::HashMap;
 use std::env;
 use std::io::{self, Write};
 use std::panic;
@@ -52,7 +53,7 @@ pub fn run(options: Options) -> i32 {
         cg: options.codegen_options.clone(),
         externs: options.externs.clone(),
         unstable_features: UnstableFeatures::from_environment(),
-        lint_cap: Some(::rustc::lint::Level::Allow),
+        lint_cap: Some(rustc_session::lint::Level::Allow),
         actually_rustdoc: true,
         debugging_opts: config::DebuggingOptions { ..config::basic_debugging_options() },
         edition: options.edition,
@@ -107,12 +108,12 @@ pub fn run(options: Options) -> i32 {
                 let mut hir_collector = HirCollector {
                     sess: compiler.session(),
                     collector: &mut collector,
-                    map: *tcx.hir(),
+                    map: tcx.hir(),
                     codes: ErrorCodes::from(
                         compiler.session().opts.unstable_features.is_nightly_build(),
                     ),
                 };
-                hir_collector.visit_testable("".to_string(), &krate.attrs, |this| {
+                hir_collector.visit_testable("".to_string(), &krate.item.attrs, |this| {
                     intravisit::walk_crate(this, krate);
                 });
             });
@@ -146,6 +147,7 @@ fn scrape_test_config(krate: &::rustc_hir::Crate) -> TestOptions {
         TestOptions { no_crate_inject: false, display_warnings: false, attrs: Vec::new() };
 
     let test_attrs: Vec<_> = krate
+        .item
         .attrs
         .iter()
         .filter(|a| a.check_name(sym::doc))
@@ -189,10 +191,23 @@ enum TestFailure {
     UnexpectedRunPass,
 }
 
+enum DirState {
+    Temp(tempfile::TempDir),
+    Perm(PathBuf),
+}
+
+impl DirState {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            DirState::Temp(t) => t.path(),
+            DirState::Perm(p) => p.as_path(),
+        }
+    }
+}
+
 fn run_test(
     test: &str,
     cratename: &str,
-    filename: &FileName,
     line: usize,
     options: Options,
     should_panic: bool,
@@ -205,47 +220,11 @@ fn run_test(
     mut error_codes: Vec<String>,
     opts: &TestOptions,
     edition: Edition,
+    outdir: DirState,
+    path: PathBuf,
 ) -> Result<(), TestFailure> {
     let (test, line_offset) = make_test(test, Some(cratename), as_test_harness, opts, edition);
 
-    // FIXME(#44940): if doctests ever support path remapping, then this filename
-    // needs to be the result of `SourceMap::span_to_unmapped_path`.
-    let path = match filename {
-        FileName::Real(path) => path.clone(),
-        _ => PathBuf::from(r"doctest.rs"),
-    };
-
-    enum DirState {
-        Temp(tempfile::TempDir),
-        Perm(PathBuf),
-    }
-
-    impl DirState {
-        fn path(&self) -> &std::path::Path {
-            match self {
-                DirState::Temp(t) => t.path(),
-                DirState::Perm(p) => p.as_path(),
-            }
-        }
-    }
-
-    let outdir = if let Some(mut path) = options.persist_doctests {
-        path.push(format!(
-            "{}_{}",
-            filename.to_string().rsplit('/').next().unwrap().replace(".", "_"),
-            line
-        ));
-        std::fs::create_dir_all(&path).expect("Couldn't create directory for doctest executables");
-
-        DirState::Perm(path)
-    } else {
-        DirState::Temp(
-            TempFileBuilder::new()
-                .prefix("rustdoctest")
-                .tempdir()
-                .expect("rustdoc needs a tempdir"),
-        )
-    };
     let output_file = outdir.path().join("rust_out");
 
     let rustc_binary = options
@@ -284,7 +263,12 @@ fn run_test(
     if no_run && !compile_fail {
         compiler.arg("--emit=metadata");
     }
-    compiler.arg("--target").arg(target.to_string());
+    compiler.arg("--target").arg(match target {
+        TargetTriple::TargetTriple(s) => s,
+        TargetTriple::TargetPath(path) => {
+            path.to_str().expect("target path must be valid unicode").to_string()
+        }
+    });
 
     compiler.arg("-");
     compiler.stdin(Stdio::piped());
@@ -333,8 +317,8 @@ fn run_test(
 
     if let Some(tool) = runtool {
         cmd = Command::new(tool);
-        cmd.arg(output_file);
         cmd.args(runtool_args);
+        cmd.arg(output_file);
     } else {
         cmd = Command::new(output_file);
     }
@@ -449,7 +433,7 @@ pub fn make_test(
                         }
 
                         if !found_macro {
-                            if let ast::ItemKind::Mac(..) = item.kind {
+                            if let ast::ItemKind::MacCall(..) = item.kind {
                                 found_macro = true;
                             }
                         }
@@ -638,6 +622,7 @@ pub struct Collector {
     position: Span,
     source_map: Option<Lrc<SourceMap>>,
     filename: Option<PathBuf>,
+    visited_tests: HashMap<(String, usize), usize>,
 }
 
 impl Collector {
@@ -661,6 +646,7 @@ impl Collector {
             position: DUMMY_SP,
             source_map,
             filename,
+            visited_tests: HashMap::new(),
         }
     }
 
@@ -677,7 +663,7 @@ impl Collector {
             let filename = source_map.span_to_filename(self.position);
             if let FileName::Real(ref filename) = filename {
                 if let Ok(cur_dir) = env::current_dir() {
-                    if let Ok(path) = filename.strip_prefix(&cur_dir) {
+                    if let Ok(path) = filename.local_path().strip_prefix(&cur_dir) {
                         return path.to_owned().into();
                     }
                 }
@@ -697,12 +683,54 @@ impl Tester for Collector {
         let name = self.generate_name(line, &filename);
         let cratename = self.cratename.to_string();
         let opts = self.opts.clone();
-        let edition = config.edition.unwrap_or(self.options.edition.clone());
+        let edition = config.edition.unwrap_or(self.options.edition);
         let options = self.options.clone();
         let runtool = self.options.runtool.clone();
         let runtool_args = self.options.runtool_args.clone();
         let target = self.options.target.clone();
         let target_str = target.to_string();
+
+        // FIXME(#44940): if doctests ever support path remapping, then this filename
+        // needs to be the result of `SourceMap::span_to_unmapped_path`.
+        let path = match &filename {
+            FileName::Real(path) => path.local_path().to_path_buf(),
+            _ => PathBuf::from(r"doctest.rs"),
+        };
+
+        let outdir = if let Some(mut path) = options.persist_doctests.clone() {
+            // For example `module/file.rs` would become `module_file_rs`
+            let folder_name = filename
+                .to_string()
+                .chars()
+                .map(|c| if c == '/' || c == '.' { '_' } else { c })
+                .collect::<String>();
+
+            path.push(format!(
+                "{name}_{line}_{number}",
+                name = folder_name,
+                number = {
+                    // Increases the current test number, if this file already
+                    // exists or it creates a new entry with a test number of 0.
+                    self.visited_tests
+                        .entry((folder_name.clone(), line))
+                        .and_modify(|v| *v += 1)
+                        .or_insert(0)
+                },
+                line = line,
+            ));
+
+            std::fs::create_dir_all(&path)
+                .expect("Couldn't create directory for doctest executables");
+
+            DirState::Perm(path)
+        } else {
+            DirState::Temp(
+                TempFileBuilder::new()
+                    .prefix("rustdoctest")
+                    .tempdir()
+                    .expect("rustdoc needs a tempdir"),
+            )
+        };
 
         debug!("creating test {}: {}", name, test);
         self.tests.push(testing::TestDescAndFn {
@@ -722,7 +750,6 @@ impl Tester for Collector {
                 let res = run_test(
                     &test,
                     &cratename,
-                    &filename,
                     line,
                     options,
                     config.should_panic,
@@ -735,6 +762,8 @@ impl Tester for Collector {
                     config.error_codes,
                     &opts,
                     edition,
+                    outdir,
+                    path,
                 );
 
                 if let Err(err) = res {
@@ -853,9 +882,9 @@ impl Tester for Collector {
 }
 
 struct HirCollector<'a, 'hir> {
-    sess: &'a session::Session,
+    sess: &'a Session,
     collector: &'a mut Collector,
-    map: &'a Map<'hir>,
+    map: Map<'hir>,
     codes: ErrorCodes,
 }
 
@@ -903,13 +932,13 @@ impl<'a, 'hir> HirCollector<'a, 'hir> {
 impl<'a, 'hir> intravisit::Visitor<'hir> for HirCollector<'a, 'hir> {
     type Map = Map<'hir>;
 
-    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<'_, Self::Map> {
-        intravisit::NestedVisitorMap::All(&self.map)
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<Self::Map> {
+        intravisit::NestedVisitorMap::All(self.map)
     }
 
     fn visit_item(&mut self, item: &'hir hir::Item) {
         let name = if let hir::ItemKind::Impl { ref self_ty, .. } = item.kind {
-            self.map.hir_to_pretty_string(self_ty.hir_id)
+            rustc_hir_pretty::id_to_string(&self.map, self_ty.hir_id)
         } else {
             item.ident.to_string()
         };
@@ -955,7 +984,7 @@ impl<'a, 'hir> intravisit::Visitor<'hir> for HirCollector<'a, 'hir> {
     }
 
     fn visit_macro_def(&mut self, macro_def: &'hir hir::MacroDef) {
-        self.visit_testable(macro_def.name.to_string(), &macro_def.attrs, |_| ());
+        self.visit_testable(macro_def.ident.to_string(), &macro_def.attrs, |_| ());
     }
 }
 

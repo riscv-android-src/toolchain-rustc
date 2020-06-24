@@ -1,13 +1,13 @@
-//! Module for inferring the variance of type and lifetime parameters. See the [rustc guide]
+//! Module for inferring the variance of type and lifetime parameters. See the [rustc dev guide]
 //! chapter for more info.
 //!
-//! [rustc guide]: https://rust-lang.github.io/rustc-guide/variance.html
+//! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/variance.html
 
 use hir::Node;
-use rustc::ty::query::Providers;
-use rustc::ty::{self, CrateVariancesMap, TyCtxt};
 use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
+use rustc_middle::ty::query::Providers;
+use rustc_middle::ty::{self, CrateVariancesMap, TyCtxt};
 
 /// Defines the `TermsContext` basically houses an arena where we can
 /// allocate terms.
@@ -54,13 +54,13 @@ fn variances_of(tcx: TyCtxt<'_>, item_def_id: DefId) -> &[ty::Variance] {
         },
 
         Node::TraitItem(item) => match item.kind {
-            hir::TraitItemKind::Method(..) => {}
+            hir::TraitItemKind::Fn(..) => {}
 
             _ => unsupported(),
         },
 
         Node::ImplItem(item) => match item.kind {
-            hir::ImplItemKind::Method(..) => {}
+            hir::ImplItemKind::Fn(..) => {}
 
             _ => unsupported(),
         },

@@ -26,8 +26,6 @@
 
 #[macro_use]
 extern crate log;
-#[cfg(unix)]
-extern crate libc;
 #[macro_use]
 extern crate cfg_if;
 
@@ -69,6 +67,7 @@ pub mod fx;
 pub mod graph;
 pub mod jobserver;
 pub mod macros;
+pub mod map_in_place;
 pub mod obligation_forest;
 pub mod owning_ref;
 pub mod ptr_key;
@@ -94,6 +93,7 @@ pub mod profiling;
 pub mod vec_linked_list;
 pub mod work_queue;
 pub use atomic_ref::AtomicRef;
+pub mod frozen;
 
 pub struct OnDrop<F: Fn()>(pub F);
 
@@ -113,6 +113,6 @@ impl<F: Fn()> Drop for OnDrop<F> {
     }
 }
 
-// See comments in src/librustc/lib.rs
+// See comments in src/librustc_middle/lib.rs
 #[doc(hidden)]
 pub fn __noop_fix_for_27438() {}

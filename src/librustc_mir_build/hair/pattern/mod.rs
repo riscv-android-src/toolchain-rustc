@@ -8,14 +8,6 @@ pub(crate) use self::check_match::check_match;
 
 use crate::hair::util::UserAnnotatedTyHelpers;
 
-use rustc::mir::interpret::{get_slice_bytes, sign_extend, ConstValue, ErrorHandled};
-use rustc::mir::interpret::{LitToConstError, LitToConstInput};
-use rustc::mir::UserTypeProjection;
-use rustc::mir::{BorrowKind, Field, Mutability};
-use rustc::ty::layout::VariantIdx;
-use rustc::ty::subst::{GenericArg, SubstsRef};
-use rustc::ty::{self, AdtDef, DefIdTree, Region, Ty, TyCtxt, UserType};
-use rustc::ty::{CanonicalUserType, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations};
 use rustc_ast::ast;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
@@ -23,7 +15,17 @@ use rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
 use rustc_hir::pat_util::EnumerateAndAdjustIterator;
 use rustc_hir::RangeEnd;
 use rustc_index::vec::Idx;
+use rustc_middle::mir::interpret::{get_slice_bytes, sign_extend, ConstValue, ErrorHandled};
+use rustc_middle::mir::interpret::{LitToConstError, LitToConstInput};
+use rustc_middle::mir::UserTypeProjection;
+use rustc_middle::mir::{BorrowKind, Field, Mutability};
+use rustc_middle::ty::subst::{GenericArg, SubstsRef};
+use rustc_middle::ty::{self, AdtDef, DefIdTree, Region, Ty, TyCtxt, UserType};
+use rustc_middle::ty::{
+    CanonicalUserType, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations,
+};
 use rustc_span::{Span, DUMMY_SP};
+use rustc_target::abi::VariantIdx;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -31,6 +33,7 @@ use std::fmt;
 #[derive(Clone, Debug)]
 crate enum PatternError {
     AssocConstInPattern(Span),
+    ConstParamInPattern(Span),
     StaticInPattern(Span),
     FloatBug,
     NonConstPath(Span),
@@ -718,16 +721,22 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
                 }
             }
 
-            Res::Def(DefKind::Struct, _)
-            | Res::Def(DefKind::Ctor(CtorOf::Struct, ..), _)
-            | Res::Def(DefKind::Union, _)
-            | Res::Def(DefKind::TyAlias, _)
-            | Res::Def(DefKind::AssocTy, _)
+            Res::Def(
+                DefKind::Struct
+                | DefKind::Ctor(CtorOf::Struct, ..)
+                | DefKind::Union
+                | DefKind::TyAlias
+                | DefKind::AssocTy,
+                _,
+            )
             | Res::SelfTy(..)
             | Res::SelfCtor(..) => PatKind::Leaf { subpatterns },
-
             _ => {
-                self.errors.push(PatternError::NonConstPath(span));
+                let pattern_error = match res {
+                    Res::Def(DefKind::ConstParam, _) => PatternError::ConstParamInPattern(span),
+                    _ => PatternError::NonConstPath(span),
+                };
+                self.errors.push(pattern_error);
                 PatKind::Wild
             }
         };
@@ -758,7 +767,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             _ => false,
         };
         let kind = match res {
-            Res::Def(DefKind::Const, def_id) | Res::Def(DefKind::AssocConst, def_id) => {
+            Res::Def(DefKind::Const | DefKind::AssocConst, def_id) => {
                 let substs = self.tables.node_substs(id);
                 // Use `Reveal::All` here because patterns are always monomorphic even if their function isn't.
                 match self.tcx.const_eval_resolve(
@@ -1039,9 +1048,9 @@ crate fn compare_const_vals<'tcx>(
                 l.partial_cmp(&r)
             }
             ty::Int(ity) => {
-                use rustc::ty::layout::{Integer, IntegerExt};
                 use rustc_attr::SignedInt;
-                let size = Integer::from_attr(&tcx, SignedInt(ity)).size();
+                use rustc_middle::ty::layout::IntegerExt;
+                let size = rustc_target::abi::Integer::from_attr(&tcx, SignedInt(ity)).size();
                 let a = sign_extend(a, size);
                 let b = sign_extend(b, size);
                 Some((a as i128).cmp(&(b as i128)))
@@ -1051,18 +1060,15 @@ crate fn compare_const_vals<'tcx>(
     }
 
     if let ty::Str = ty.kind {
-        match (a.val, b.val) {
-            (
-                ty::ConstKind::Value(a_val @ ConstValue::Slice { .. }),
-                ty::ConstKind::Value(b_val @ ConstValue::Slice { .. }),
-            ) => {
-                let a_bytes = get_slice_bytes(&tcx, a_val);
-                let b_bytes = get_slice_bytes(&tcx, b_val);
-                return from_bool(a_bytes == b_bytes);
-            }
-            _ => (),
+        if let (
+            ty::ConstKind::Value(a_val @ ConstValue::Slice { .. }),
+            ty::ConstKind::Value(b_val @ ConstValue::Slice { .. }),
+        ) = (a.val, b.val)
+        {
+            let a_bytes = get_slice_bytes(&tcx, a_val);
+            let b_bytes = get_slice_bytes(&tcx, b_val);
+            return from_bool(a_bytes == b_bytes);
         }
     }
-
     fallback()
 }

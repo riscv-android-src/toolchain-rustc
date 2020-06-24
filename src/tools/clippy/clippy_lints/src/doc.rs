@@ -1,12 +1,12 @@
-use crate::utils::{implements_trait, is_entrypoint_fn, match_type, paths, return_ty, span_lint};
+use crate::utils::{implements_trait, is_entrypoint_fn, is_type_diagnostic_item, return_ty, span_lint};
 use if_chain::if_chain;
 use itertools::Itertools;
-use rustc::lint::in_external_macro;
-use rustc::ty;
 use rustc_ast::ast::{AttrKind, Attribute};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::lint::in_external_macro;
+use rustc_middle::ty;
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::{BytePos, MultiSpan, Span};
 use rustc_span::Pos;
@@ -148,7 +148,7 @@ impl_lint_pass!(DocMarkdown => [DOC_MARKDOWN, MISSING_SAFETY_DOC, MISSING_ERRORS
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
     fn check_crate(&mut self, cx: &LateContext<'a, 'tcx>, krate: &'tcx hir::Crate<'_>) {
-        check_attrs(cx, &self.valid_idents, &krate.attrs);
+        check_attrs(cx, &self.valid_idents, &krate.item.attrs);
     }
 
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::Item<'_>) {
@@ -179,7 +179,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
 
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem<'_>) {
         let headers = check_attrs(cx, &self.valid_idents, &item.attrs);
-        if let hir::TraitItemKind::Method(ref sig, ..) = item.kind {
+        if let hir::TraitItemKind::Fn(ref sig, ..) = item.kind {
             if !in_external_macro(cx.tcx.sess, item.span) {
                 lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers, None);
             }
@@ -191,7 +191,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for DocMarkdown {
         if self.in_trait_impl || in_external_macro(cx.tcx.sess, item.span) {
             return;
         }
-        if let hir::ImplItemKind::Method(ref sig, body_id) = item.kind {
+        if let hir::ImplItemKind::Fn(ref sig, body_id) = item.kind {
             lint_for_missing_headers(cx, item.hir_id, item.span, sig, headers, Some(body_id));
         }
     }
@@ -217,7 +217,7 @@ fn lint_for_missing_headers<'a, 'tcx>(
         );
     }
     if !headers.errors {
-        if match_type(cx, return_ty(cx, hir_id), &paths::RESULT) {
+        if is_type_diagnostic_item(cx, return_ty(cx, hir_id), sym!(result_type)) {
             span_lint(
                 cx,
                 MISSING_ERRORS_DOC,
@@ -229,13 +229,13 @@ fn lint_for_missing_headers<'a, 'tcx>(
                 if let Some(body_id) = body_id;
                 if let Some(future) = cx.tcx.lang_items().future_trait();
                 let def_id = cx.tcx.hir().body_owner_def_id(body_id);
-                let mir = cx.tcx.optimized_mir(def_id);
+                let mir = cx.tcx.optimized_mir(def_id.to_def_id());
                 let ret_ty = mir.return_ty();
                 if implements_trait(cx, ret_ty, future, &[]);
                 if let ty::Opaque(_, subs) = ret_ty.kind;
                 if let Some(gen) = subs.types().next();
-                if let ty::Generator(def_id, subs, _) = gen.kind;
-                if match_type(cx, subs.as_generator().return_ty(def_id, cx.tcx), &paths::RESULT);
+                if let ty::Generator(_, subs, _) = gen.kind;
+                if is_type_diagnostic_item(cx, subs.as_generator().return_ty(), sym!(result_type));
                 then {
                     span_lint(
                         cx,
@@ -367,6 +367,8 @@ fn check_attrs<'a>(cx: &LateContext<'_, '_>, valid_idents: &FxHashSet<String>, a
     check_doc(cx, valid_idents, events, &spans)
 }
 
+const RUST_CODE: &[&str] = &["rust", "no_run", "should_panic", "compile_fail", "edition2018"];
+
 fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize>)>>(
     cx: &LateContext<'_, '_>,
     valid_idents: &FxHashSet<String>,
@@ -374,6 +376,7 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     spans: &[(usize, Span)],
 ) -> DocHeaders {
     // true if a safety header was found
+    use pulldown_cmark::CodeBlockKind;
     use pulldown_cmark::Event::{
         Code, End, FootnoteReference, HardBreak, Html, Rule, SoftBreak, Start, TaskListMarker, Text,
     };
@@ -386,11 +389,20 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
     let mut in_code = false;
     let mut in_link = None;
     let mut in_heading = false;
-
+    let mut is_rust = false;
     for (event, range) in events {
         match event {
-            Start(CodeBlock(_)) => in_code = true,
-            End(CodeBlock(_)) => in_code = false,
+            Start(CodeBlock(ref kind)) => {
+                in_code = true;
+                if let CodeBlockKind::Fenced(lang) = kind {
+                    is_rust =
+                        lang.is_empty() || !lang.contains("ignore") && lang.split(',').any(|i| RUST_CODE.contains(&i));
+                }
+            },
+            End(CodeBlock(_)) => {
+                in_code = false;
+                is_rust = false;
+            },
             Start(Link(_, url, _)) => in_link = Some(url),
             End(Link(..)) => in_link = None,
             Start(Heading(_)) => in_heading = true,
@@ -413,7 +425,9 @@ fn check_doc<'a, Events: Iterator<Item = (pulldown_cmark::Event<'a>, Range<usize
                 };
                 let (begin, span) = spans[index];
                 if in_code {
-                    check_code(cx, &text, span);
+                    if is_rust {
+                        check_code(cx, &text, span);
+                    }
                 } else {
                     // Adjust for the beginning of the current `Event`
                     let span = span.with_lo(span.lo() + BytePos::from_usize(range.start - begin));

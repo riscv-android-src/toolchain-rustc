@@ -1,9 +1,13 @@
 mod linux;
 mod macos;
 
+use std::convert::TryFrom;
+
+use log::trace;
+
 use crate::*;
-use rustc::mir;
-use rustc::ty::layout::{Align, LayoutOf, Size};
+use rustc_middle::mir;
+use rustc_target::abi::{Align, LayoutOf, Size};
 
 impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
@@ -15,7 +19,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         ret: mir::BasicBlock,
     ) -> InterpResult<'tcx, bool> {
         let this = self.eval_context_mut();
-        let tcx = &{ this.tcx.tcx };
 
         match link_name {
             // Environment related shims
@@ -23,47 +26,40 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let result = this.getenv(args[0])?;
                 this.write_scalar(result, dest)?;
             }
-
             "unsetenv" => {
                 let result = this.unsetenv(args[0])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "setenv" => {
                 let result = this.setenv(args[0], args[1])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "getcwd" => {
                 let result = this.getcwd(args[0], args[1])?;
                 this.write_scalar(result, dest)?;
             }
-
             "chdir" => {
                 let result = this.chdir(args[0])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
 
             // File related shims
             "open" | "open64" => {
                 let result = this.open(args[0], args[1])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "fcntl" => {
                 let result = this.fcntl(args[0], args[1], args.get(2).cloned())?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "read" => {
                 let result = this.read(args[0], args[1], args[2])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_machine_isize(result, this), dest)?;
             }
-
             "write" => {
                 let fd = this.read_scalar(args[0])?.to_i32()?;
                 let buf = this.read_scalar(args[1])?.not_undef()?;
-                let n = this.read_scalar(args[2])?.to_machine_usize(tcx)?;
+                let n = this.read_scalar(args[2])?.to_machine_usize(this)?;
                 trace!("Called write({:?}, {:?}, {:?})", fd, buf, n);
                 let result = if fd == 1 || fd == 2 {
                     // stdout/stderr
@@ -84,59 +80,53 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                         io::stderr().write(buf_cont)
                     };
                     match res {
-                        Ok(n) => n as i64,
+                        Ok(n) => i64::try_from(n).unwrap(),
                         Err(_) => -1,
                     }
                 } else {
                     this.write(args[0], args[1], args[2])?
                 };
                 // Now, `result` is the value we return back to the program.
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_machine_isize(result, this), dest)?;
             }
-
             "unlink" => {
                 let result = this.unlink(args[0])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "symlink" => {
                 let result = this.symlink(args[0], args[1])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "rename" => {
                 let result = this.rename(args[0], args[1])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "mkdir" => {
                 let result = this.mkdir(args[0], args[1])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "rmdir" => {
                 let result = this.rmdir(args[0])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "closedir" => {
                 let result = this.closedir(args[0])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "lseek" | "lseek64" => {
                 let result = this.lseek64(args[0], args[1], args[2])?;
-                this.write_scalar(Scalar::from_int(result, dest.layout.size), dest)?;
+                // "lseek" is only used on macOS which is 64bit-only, so `i64` always works.
+                this.write_scalar(Scalar::from_i64(result), dest)?;
             }
 
-            // Other shims
+            // Allocation
             "posix_memalign" => {
                 let ret = this.deref_operand(args[0])?;
                 let align = this.read_scalar(args[1])?.to_machine_usize(this)?;
                 let size = this.read_scalar(args[2])?.to_machine_usize(this)?;
                 // Align must be power of 2, and also at least ptr-sized (POSIX rules).
                 if !align.is_power_of_two() {
-                    throw_unsup!(HeapAllocNonPowerOfTwoAlignment(align));
+                    throw_ub_format!("posix_memalign: alignment must be a power of two, but is {}", align);
                 }
                 if align < this.pointer_size().bytes() {
                     throw_ub_format!(
@@ -158,6 +148,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_null(dest)?;
             }
 
+            // Dynamic symbol loading
             "dlsym" => {
                 let _handle = this.read_scalar(args[0])?;
                 let symbol = this.read_scalar(args[1])?.not_undef()?;
@@ -172,7 +163,30 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
             }
 
-            // Hook pthread calls that go to the thread-local storage memory subsystem.
+            // Querying system information
+            "sysconf" => {
+                let name = this.read_scalar(args[0])?.to_i32()?;
+
+                let sysconfs = &[
+                    ("_SC_PAGESIZE", Scalar::from_int(PAGE_SIZE, this.pointer_size())),
+                    ("_SC_NPROCESSORS_ONLN", Scalar::from_int(NUM_CPUS, this.pointer_size())),
+                ];
+                let mut result = None;
+                for &(sysconf_name, value) in sysconfs {
+                    let sysconf_name = this.eval_libc_i32(sysconf_name)?;
+                    if sysconf_name == name {
+                        result = Some(value);
+                        break;
+                    }
+                }
+                if let Some(result) = result {
+                    this.write_scalar(result, dest)?;
+                } else {
+                    throw_unsup_format!("unimplemented sysconf name: {}", name)
+                }
+            }
+
+            // Thread-local storage
             "pthread_key_create" => {
                 let key_place = this.deref_operand(args[0])?;
 
@@ -183,7 +197,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
 
                 // Figure out how large a pthread TLS key actually is.
-                // This is `libc::pthread_key_t`.
+                // To this end, deref the argument type. This is `libc::pthread_key_t`.
                 let key_type = args[0].layout.ty
                     .builtin_deref(true)
                     .ok_or_else(|| err_ub_format!(
@@ -193,12 +207,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let key_layout = this.layout_of(key_type)?;
 
                 // Create key and write it into the memory where `key_ptr` wants it.
-                let key = this.machine.tls.create_tls_key(dtor) as u128;
-                if key_layout.size.bits() < 128 && key >= (1u128 << key_layout.size.bits() as u128)
-                {
-                    throw_unsup!(OutOfTls);
-                }
-
+                let key = this.machine.tls.create_tls_key(dtor, key_layout.size)?;
                 this.write_scalar(Scalar::from_uint(key, key_layout.size), key_place.into())?;
 
                 // Return success (`0`).
@@ -212,7 +221,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
             "pthread_getspecific" => {
                 let key = this.force_bits(this.read_scalar(args[0])?.not_undef()?, args[0].layout.size)?;
-                let ptr = this.machine.tls.load_tls(key, tcx)?;
+                let ptr = this.machine.tls.load_tls(key, this)?;
                 this.write_scalar(ptr, dest)?;
             }
             "pthread_setspecific" => {
@@ -224,118 +233,110 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_null(dest)?;
             }
 
-            // Stack size/address stuff.
-            | "pthread_attr_init"
-            | "pthread_attr_destroy"
-            | "pthread_self"
-            | "pthread_attr_setstacksize" => {
-                this.write_null(dest)?;
+            // Synchronization primitives
+            "pthread_mutexattr_init" => {
+                let result = this.pthread_mutexattr_init(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-            "pthread_attr_getstack" => {
-                let addr_place = this.deref_operand(args[1])?;
-                let size_place = this.deref_operand(args[2])?;
-
-                this.write_scalar(
-                    Scalar::from_uint(STACK_ADDR, addr_place.layout.size),
-                    addr_place.into(),
-                )?;
-                this.write_scalar(
-                    Scalar::from_uint(STACK_SIZE, size_place.layout.size),
-                    size_place.into(),
-                )?;
-
-                // Return success (`0`).
-                this.write_null(dest)?;
+            "pthread_mutexattr_settype" => {
+                let result = this.pthread_mutexattr_settype(args[0], args[1])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_mutexattr_destroy" => {
+                let result = this.pthread_mutexattr_destroy(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_mutex_init" => {
+                let result = this.pthread_mutex_init(args[0], args[1])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_mutex_lock" => {
+                let result = this.pthread_mutex_lock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_mutex_trylock" => {
+                let result = this.pthread_mutex_trylock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_mutex_unlock" => {
+                let result = this.pthread_mutex_unlock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_mutex_destroy" => {
+                let result = this.pthread_mutex_destroy(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_rwlock_rdlock" => {
+                let result = this.pthread_rwlock_rdlock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_rwlock_tryrdlock" => {
+                let result = this.pthread_rwlock_tryrdlock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_rwlock_wrlock" => {
+                let result = this.pthread_rwlock_wrlock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_rwlock_trywrlock" => {
+                let result = this.pthread_rwlock_trywrlock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_rwlock_unlock" => {
+                let result = this.pthread_rwlock_unlock(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_rwlock_destroy" => {
+                let result = this.pthread_rwlock_destroy(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
 
-            // We don't support threading.
+            // Better error for attempts to create a thread
             "pthread_create" => {
                 throw_unsup_format!("Miri does not support threading");
             }
 
-            // Stub out calls for condvar, mutex and rwlock, to just return `0`.
-            | "pthread_mutexattr_init"
-            | "pthread_mutexattr_settype"
-            | "pthread_mutex_init"
-            | "pthread_mutexattr_destroy"
-            | "pthread_mutex_lock"
-            | "pthread_mutex_unlock"
-            | "pthread_mutex_destroy"
-            | "pthread_rwlock_rdlock"
-            | "pthread_rwlock_unlock"
-            | "pthread_rwlock_wrlock"
-            | "pthread_rwlock_destroy"
+            // Miscellaneous
+            "isatty" => {
+                let _fd = this.read_scalar(args[0])?.to_i32()?;
+                // "returns 1 if fd is an open file descriptor referring to a terminal; otherwise 0 is returned, and errno is set to indicate the error"
+                // FIXME: we just say nothing is a terminal.
+                let enotty = this.eval_libc("ENOTTY")?;
+                this.set_last_error(enotty)?;
+                this.write_null(dest)?;
+            }
+            "pthread_atfork" => {
+                let _prepare = this.read_scalar(args[0])?.not_undef()?;
+                let _parent = this.read_scalar(args[1])?.not_undef()?;
+                let _child = this.read_scalar(args[1])?.not_undef()?;
+                // We do not support forking, so there is nothing to do here.
+                this.write_null(dest)?;
+            }
+
+            // Incomplete shims that we "stub out" just to get pre-main initialization code to work.
+            // These shims are enabled only when the caller is in the standard library.
+            | "pthread_attr_init"
+            | "pthread_attr_destroy"
+            | "pthread_self"
+            | "pthread_attr_setstacksize"
             | "pthread_condattr_init"
             | "pthread_condattr_setclock"
             | "pthread_cond_init"
             | "pthread_condattr_destroy"
-            | "pthread_cond_destroy"
+            | "pthread_cond_destroy" if this.frame().instance.to_string().starts_with("std::sys::unix::")
             => {
                 this.write_null(dest)?;
             }
 
-            // We don't support fork so we don't have to do anything for atfork.
-            "pthread_atfork" => {
-                this.write_null(dest)?;
-            }
-
-            // Some things needed for `sys::thread` initialization to go through.
             | "signal"
             | "sigaction"
             | "sigaltstack"
+            | "mprotect" if this.frame().instance.to_string().starts_with("std::sys::unix::")
             => {
-                this.write_scalar(Scalar::from_int(0, dest.layout.size), dest)?;
-            }
-
-            "sysconf" => {
-                let name = this.read_scalar(args[0])?.to_i32()?;
-
-                trace!("sysconf() called with name {}", name);
-                // TODO: Cache the sysconf integers via Miri's global cache.
-                let paths = &[
-                    (&["libc", "_SC_PAGESIZE"], Scalar::from_int(PAGE_SIZE, dest.layout.size)),
-                    (&["libc", "_SC_GETPW_R_SIZE_MAX"], Scalar::from_int(-1, dest.layout.size)),
-                    (
-                        &["libc", "_SC_NPROCESSORS_ONLN"],
-                        Scalar::from_int(NUM_CPUS, dest.layout.size),
-                    ),
-                ];
-                let mut result = None;
-                for &(path, path_value) in paths {
-                    if let Some(val) = this.eval_path_scalar(path)? {
-                        let val = val.to_i32()?;
-                        if val == name {
-                            result = Some(path_value);
-                            break;
-                        }
-                    }
-                }
-                if let Some(result) = result {
-                    this.write_scalar(result, dest)?;
-                } else {
-                    throw_unsup_format!("Unimplemented sysconf name: {}", name)
-                }
-            }
-
-            "isatty" => {
                 this.write_null(dest)?;
             }
 
-            "posix_fadvise" => {
-                // fadvise is only informational, we can ignore it.
-                this.write_null(dest)?;
-            }
-
-            "mmap" => {
-                // This is a horrible hack, but since the guard page mechanism calls mmap and expects a particular return value, we just give it that value.
-                let addr = this.read_scalar(args[0])?.not_undef()?;
-                this.write_scalar(addr, dest)?;
-            }
-
-            "mprotect" => {
-                this.write_null(dest)?;
-            }
-
+            // Platform-specific shims
             _ => {
                 match this.tcx.sess.target.target.target_os.as_str() {
                     "linux" => return linux::EvalContextExt::emulate_foreign_item_by_name(this, link_name, args, dest, ret),

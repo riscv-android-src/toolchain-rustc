@@ -250,15 +250,18 @@ use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver};
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
 use core::slice::{self, from_raw_parts_mut};
-use core::usize;
 
-use crate::alloc::{box_free, handle_alloc_error, AllocRef, Global, Layout};
+use crate::alloc::{box_free, handle_alloc_error, AllocInit, AllocRef, Global, Layout};
 use crate::string::String;
 use crate::vec::Vec;
 
 #[cfg(test)]
 mod tests;
 
+// This is repr(C) to future-proof against possible field-reordering, which
+// would interfere with otherwise safe [into|from]_raw() of transmutable
+// inner types.
+#[repr(C)]
 struct RcBox<T: ?Sized> {
     strong: Cell<usize>,
     weak: Cell<usize>,
@@ -276,7 +279,8 @@ struct RcBox<T: ?Sized> {
 /// type `T`.
 ///
 /// [get_mut]: #method.get_mut
-#[cfg_attr(not(test), lang = "rc")]
+#[cfg_attr(all(bootstrap, not(test)), lang = "rc")]
+#[cfg_attr(not(test), rustc_diagnostic_item = "Rc")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Rc<T: ?Sized> {
     ptr: NonNull<RcBox<T>>,
@@ -565,9 +569,33 @@ impl<T: ?Sized> Rc<T> {
     /// ```
     #[stable(feature = "rc_raw", since = "1.17.0")]
     pub fn into_raw(this: Self) -> *const T {
+        let ptr = Self::as_ptr(&this);
+        mem::forget(this);
+        ptr
+    }
+
+    /// Provides a raw pointer to the data.
+    ///
+    /// The counts are not affected in any way and the `Rc` is not consumed. The pointer is valid
+    /// for as long there are strong counts in the `Rc`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(weak_into_raw)]
+    ///
+    /// use std::rc::Rc;
+    ///
+    /// let x = Rc::new("hello".to_owned());
+    /// let y = Rc::clone(&x);
+    /// let x_ptr = Rc::as_ptr(&x);
+    /// assert_eq!(x_ptr, Rc::as_ptr(&y));
+    /// assert_eq!(unsafe { &*x_ptr }, "hello");
+    /// ```
+    #[unstable(feature = "weak_into_raw", issue = "60728")]
+    pub fn as_ptr(this: &Self) -> *const T {
         let ptr: *mut RcBox<T> = NonNull::as_ptr(this.ptr);
         let fake_ptr = ptr as *mut T;
-        mem::forget(this);
 
         // SAFETY: This cannot go through Deref::deref.
         // Instead, we manually offset the pointer rather than manifesting a reference.
@@ -580,15 +608,24 @@ impl<T: ?Sized> Rc<T> {
         }
     }
 
-    /// Constructs an `Rc` from a raw pointer.
+    /// Constructs an `Rc<T>` from a raw pointer.
     ///
-    /// The raw pointer must have been previously returned by a call to a
-    /// [`Rc::into_raw`][into_raw].
+    /// The raw pointer must have been previously returned by a call to
+    /// [`Rc<U>::into_raw`][into_raw] where `U` must have the same size
+    /// and alignment as `T`. This is trivially true if `U` is `T`.
+    /// Note that if `U` is not `T` but has the same size and alignment, this is
+    /// basically like transmuting references of different types. See
+    /// [`mem::transmute`][transmute] for more information on what
+    /// restrictions apply in this case.
     ///
-    /// This function is unsafe because improper use may lead to memory problems. For example, a
-    /// double-free may occur if the function is called twice on the same raw pointer.
+    /// The user of `from_raw` has to make sure a specific value of `T` is only
+    /// dropped once.
+    ///
+    /// This function is unsafe because improper use may lead to memory unsafety,
+    /// even if the returned `Rc<T>` is never accessed.
     ///
     /// [into_raw]: struct.Rc.html#method.into_raw
+    /// [transmute]: ../../std/mem/fn.transmute.html
     ///
     /// # Examples
     ///
@@ -923,10 +960,12 @@ impl<T: ?Sized> Rc<T> {
         let layout = Layout::new::<RcBox<()>>().extend(value_layout).unwrap().0.pad_to_align();
 
         // Allocate for the layout.
-        let (mem, _) = Global.alloc(layout).unwrap_or_else(|_| handle_alloc_error(layout));
+        let mem = Global
+            .alloc(layout, AllocInit::Uninitialized)
+            .unwrap_or_else(|_| handle_alloc_error(layout));
 
         // Initialize the RcBox
-        let inner = mem_to_rcbox(mem.as_ptr());
+        let inner = mem_to_rcbox(mem.ptr.as_ptr());
         debug_assert_eq!(Layout::for_value(&*inner), layout);
 
         ptr::write(&mut (*inner).strong, Cell::new(1));
@@ -1629,8 +1668,8 @@ impl<T> Weak<T> {
 
     /// Returns a raw pointer to the object `T` pointed to by this `Weak<T>`.
     ///
-    /// The pointer is valid only if there are some strong references. The pointer may be dangling
-    /// or even [`null`] otherwise.
+    /// The pointer is valid only if there are some strong references. The pointer may be dangling,
+    /// unaligned or even [`null`] otherwise.
     ///
     /// # Examples
     ///
@@ -1643,31 +1682,22 @@ impl<T> Weak<T> {
     /// let strong = Rc::new("hello".to_owned());
     /// let weak = Rc::downgrade(&strong);
     /// // Both point to the same object
-    /// assert!(ptr::eq(&*strong, weak.as_raw()));
+    /// assert!(ptr::eq(&*strong, weak.as_ptr()));
     /// // The strong here keeps it alive, so we can still access the object.
-    /// assert_eq!("hello", unsafe { &*weak.as_raw() });
+    /// assert_eq!("hello", unsafe { &*weak.as_ptr() });
     ///
     /// drop(strong);
-    /// // But not any more. We can do weak.as_raw(), but accessing the pointer would lead to
+    /// // But not any more. We can do weak.as_ptr(), but accessing the pointer would lead to
     /// // undefined behaviour.
-    /// // assert_eq!("hello", unsafe { &*weak.as_raw() });
+    /// // assert_eq!("hello", unsafe { &*weak.as_ptr() });
     /// ```
     ///
     /// [`null`]: ../../std/ptr/fn.null.html
     #[unstable(feature = "weak_into_raw", issue = "60728")]
-    pub fn as_raw(&self) -> *const T {
-        match self.inner() {
-            None => ptr::null(),
-            Some(inner) => {
-                let offset = data_offset_sized::<T>();
-                let ptr = inner as *const RcBox<T>;
-                // Note: while the pointer we create may already point to dropped value, the
-                // allocation still lives (it must hold the weak point as long as we are alive).
-                // Therefore, the offset is OK to do, it won't get out of the allocation.
-                let ptr = unsafe { (ptr as *const u8).offset(offset) };
-                ptr as *const T
-            }
-        }
+    pub fn as_ptr(&self) -> *const T {
+        let offset = data_offset_sized::<T>();
+        let ptr = self.ptr.cast::<u8>().as_ptr().wrapping_offset(offset);
+        ptr as *const T
     }
 
     /// Consumes the `Weak<T>` and turns it into a raw pointer.
@@ -1676,7 +1706,7 @@ impl<T> Weak<T> {
     /// can be turned back into the `Weak<T>` with [`from_raw`].
     ///
     /// The same restrictions of accessing the target of the pointer as with
-    /// [`as_raw`] apply.
+    /// [`as_ptr`] apply.
     ///
     /// # Examples
     ///
@@ -1697,10 +1727,10 @@ impl<T> Weak<T> {
     /// ```
     ///
     /// [`from_raw`]: struct.Weak.html#method.from_raw
-    /// [`as_raw`]: struct.Weak.html#method.as_raw
+    /// [`as_ptr`]: struct.Weak.html#method.as_ptr
     #[unstable(feature = "weak_into_raw", issue = "60728")]
     pub fn into_raw(self) -> *const T {
-        let result = self.as_raw();
+        let result = self.as_ptr();
         mem::forget(self);
         result
     }
@@ -1715,9 +1745,8 @@ impl<T> Weak<T> {
     ///
     /// # Safety
     ///
-    /// The pointer must have originated from the [`into_raw`] (or [`as_raw`], provided there was
-    /// a corresponding [`forget`] on the `Weak<T>`) and must still own its potential weak reference
-    /// count.
+    /// The pointer must have originated from the [`into_raw`]  and must still own its potential
+    /// weak reference count.
     ///
     /// It is allowed for the strong count to be 0 at the time of calling this, but the weak count
     /// must be non-zero or the pointer must have originated from a dangling `Weak<T>` (one created
@@ -1750,7 +1779,6 @@ impl<T> Weak<T> {
     /// [`upgrade`]: struct.Weak.html#method.upgrade
     /// [`Rc`]: struct.Rc.html
     /// [`Weak`]: struct.Weak.html
-    /// [`as_raw`]: struct.Weak.html#method.as_raw
     /// [`new`]: struct.Weak.html#method.new
     /// [`forget`]: ../../std/mem/fn.forget.html
     #[unstable(feature = "weak_into_raw", issue = "60728")]

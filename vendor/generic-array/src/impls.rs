@@ -3,6 +3,8 @@ use core::borrow::{Borrow, BorrowMut};
 use core::cmp::Ordering;
 use core::fmt::{self, Debug};
 use core::hash::{Hash, Hasher};
+use functional::*;
+use sequence::*;
 
 impl<T: Default, N> Default for GenericArray<T, N>
 where
@@ -19,7 +21,7 @@ where
     N: ArrayLength<T>,
 {
     fn clone(&self) -> GenericArray<T, N> {
-        self.map_ref(|x| x.clone())
+        self.map(Clone::clone)
     }
 }
 
@@ -75,6 +77,7 @@ impl<T, N> Borrow<[T]> for GenericArray<T, N>
 where
     N: ArrayLength<T>,
 {
+    #[inline(always)]
     fn borrow(&self) -> &[T] {
         &self[..]
     }
@@ -84,6 +87,7 @@ impl<T, N> BorrowMut<[T]> for GenericArray<T, N>
 where
     N: ArrayLength<T>,
 {
+    #[inline(always)]
     fn borrow_mut(&mut self) -> &mut [T] {
         &mut self[..]
     }
@@ -93,6 +97,7 @@ impl<T, N> AsRef<[T]> for GenericArray<T, N>
 where
     N: ArrayLength<T>,
 {
+    #[inline(always)]
     fn as_ref(&self) -> &[T] {
         &self[..]
     }
@@ -102,6 +107,7 @@ impl<T, N> AsMut<[T]> for GenericArray<T, N>
 where
     N: ArrayLength<T>,
 {
+    #[inline(always)]
     fn as_mut(&mut self) -> &mut [T] {
         &mut self[..]
     }
@@ -123,11 +129,16 @@ macro_rules! impl_from {
     ($($n: expr => $ty: ty),*) => {
         $(
             impl<T> From<[T; $n]> for GenericArray<T, $ty> {
+                #[inline(always)]
                 fn from(arr: [T; $n]) -> Self {
-                    use core::mem::{forget, transmute_copy};
-                    let x = unsafe { transmute_copy(&arr) };
-                    forget(arr);
-                    x
+                    unsafe { $crate::transmute(arr) }
+                }
+            }
+
+            impl<T> Into<[T; $n]> for GenericArray<T, $ty> {
+                #[inline(always)]
+                fn into(self) -> [T; $n] {
+                    unsafe { $crate::transmute(self) }
                 }
             }
         )*

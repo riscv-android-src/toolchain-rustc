@@ -37,6 +37,20 @@ pub trait AppExt: Sized {
             ._arg(multi_opt("exclude", "SPEC", exclude))
     }
 
+    /// Variant of arg_package_spec that does not include the `--all` flag
+    /// (but does include `--workspace`). Used to avoid confusion with
+    /// historical uses of `--all`.
+    fn arg_package_spec_no_all(
+        self,
+        package: &'static str,
+        all: &'static str,
+        exclude: &'static str,
+    ) -> Self {
+        self.arg_package_spec_simple(package)
+            ._arg(opt("workspace", all))
+            ._arg(multi_opt("exclude", "SPEC", exclude))
+    }
+
     fn arg_package_spec_simple(self, package: &'static str) -> Self {
         self._arg(multi_opt("package", "SPEC", package).short("p"))
     }
@@ -148,6 +162,10 @@ pub trait AppExt: Sized {
             "build-plan",
             "Output the build plan in JSON (unstable)",
         ))
+    }
+
+    fn arg_unit_graph(self) -> Self {
+        self._arg(opt("unit-graph", "Output build graph in JSON (unstable)").hidden(true))
     }
 
     fn arg_new_opts(self) -> Self {
@@ -358,20 +376,23 @@ pub trait ArgMatchesExt {
         }
     }
 
-    fn compile_options<'a>(
-        &self,
-        config: &'a Config,
-        mode: CompileMode,
-        workspace: Option<&Workspace<'a>>,
-        profile_checking: ProfileChecking,
-    ) -> CargoResult<CompileOptions<'a>> {
-        let spec = Packages::from_flags(
+    fn packages_from_flags(&self) -> CargoResult<Packages> {
+        Packages::from_flags(
             // TODO Integrate into 'workspace'
             self._is_present("workspace") || self._is_present("all"),
             self._values_of("exclude"),
             self._values_of("package"),
-        )?;
+        )
+    }
 
+    fn compile_options(
+        &self,
+        config: &Config,
+        mode: CompileMode,
+        workspace: Option<&Workspace<'_>>,
+        profile_checking: ProfileChecking,
+    ) -> CargoResult<CompileOptions> {
+        let spec = self.packages_from_flags()?;
         let mut message_format = None;
         let default_json = MessageFormat::Json {
             short: false,
@@ -438,14 +459,19 @@ pub trait ArgMatchesExt {
         build_config.message_format = message_format.unwrap_or(MessageFormat::Human);
         build_config.requested_profile = self.get_profile_name(config, "dev", profile_checking)?;
         build_config.build_plan = self._is_present("build-plan");
+        build_config.unit_graph = self._is_present("unit-graph");
         if build_config.build_plan {
             config
                 .cli_unstable()
                 .fail_if_stable_opt("--build-plan", 5579)?;
         };
+        if build_config.unit_graph {
+            config
+                .cli_unstable()
+                .fail_if_stable_opt("--unit-graph", 8002)?;
+        }
 
         let opts = CompileOptions {
-            config,
             build_config,
             features: self._values_of("features"),
             all_features: self._is_present("all-features"),
@@ -477,13 +503,13 @@ pub trait ArgMatchesExt {
         Ok(opts)
     }
 
-    fn compile_options_for_single_package<'a>(
+    fn compile_options_for_single_package(
         &self,
-        config: &'a Config,
+        config: &Config,
         mode: CompileMode,
-        workspace: Option<&Workspace<'a>>,
+        workspace: Option<&Workspace<'_>>,
         profile_checking: ProfileChecking,
-    ) -> CargoResult<CompileOptions<'a>> {
+    ) -> CargoResult<CompileOptions> {
         let mut compile_opts = self.compile_options(config, mode, workspace, profile_checking)?;
         compile_opts.spec = Packages::Packages(self._values_of("package"));
         Ok(compile_opts)
@@ -556,7 +582,7 @@ about this warning.";
     fn check_optional_opts(
         &self,
         workspace: &Workspace<'_>,
-        compile_opts: &CompileOptions<'_>,
+        compile_opts: &CompileOptions,
     ) -> CargoResult<()> {
         if self.is_present_with_zero_values("example") {
             print_available_examples(workspace, compile_opts)?;

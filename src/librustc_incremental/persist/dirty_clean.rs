@@ -13,9 +13,6 @@
 //! Errors are reported if we are in the suitable configuration but
 //! the required condition is not met.
 
-use rustc::dep_graph::{label_strs, DepNode};
-use rustc::hir::map::Map;
-use rustc::ty::TyCtxt;
 use rustc_ast::ast::{self, Attribute, NestedMetaItem};
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::fx::FxHashSet;
@@ -25,6 +22,9 @@ use rustc_hir::intravisit;
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
 use rustc_hir::Node as HirNode;
 use rustc_hir::{ImplItemKind, ItemKind as HirItem, TraitItemKind};
+use rustc_middle::dep_graph::{label_strs, DepNode, DepNodeExt};
+use rustc_middle::hir::map::Map;
+use rustc_middle::ty::TyCtxt;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::Span;
 use std::iter::FromIterator;
@@ -53,9 +53,9 @@ const BASE_FN: &[&str] = &[
 
 /// DepNodes for Hir, which is pretty much everything
 const BASE_HIR: &[&str] = &[
-    // Hir and HirBody should be computed for all nodes
-    label_strs::Hir,
-    label_strs::HirBody,
+    // hir_owner and hir_owner_nodes should be computed for all nodes
+    label_strs::hir_owner,
+    label_strs::hir_owner_nodes,
 ];
 
 /// `impl` implementation of struct/trait
@@ -306,7 +306,7 @@ impl DirtyCleanVisitor<'tcx> {
                     // michaelwoerister and vitiral came up with a possible solution,
                     // to just do this before every query
                     // ```
-                    // ::rustc::ty::query::plumbing::force_from_dep_node(tcx, dep_node)
+                    // ::rustc_middle::ty::query::plumbing::force_from_dep_node(tcx, dep_node)
                     // ```
                     //
                     // However, this did not seem to work effectively and more bugs were hit.
@@ -328,12 +328,12 @@ impl DirtyCleanVisitor<'tcx> {
                 }
             }
             HirNode::TraitItem(item) => match item.kind {
-                TraitItemKind::Method(..) => ("Node::TraitItem", LABELS_FN_IN_TRAIT),
+                TraitItemKind::Fn(..) => ("Node::TraitItem", LABELS_FN_IN_TRAIT),
                 TraitItemKind::Const(..) => ("NodeTraitConst", LABELS_CONST_IN_TRAIT),
                 TraitItemKind::Type(..) => ("NodeTraitType", LABELS_CONST_IN_TRAIT),
             },
             HirNode::ImplItem(item) => match item.kind {
-                ImplItemKind::Method(..) => ("Node::ImplItem", LABELS_FN_IN_IMPL),
+                ImplItemKind::Fn(..) => ("Node::ImplItem", LABELS_FN_IN_IMPL),
                 ImplItemKind::Const(..) => ("NodeImplConst", LABELS_CONST_IN_IMPL),
                 ImplItemKind::TyAlias(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
                 ImplItemKind::OpaqueTy(..) => ("NodeImplType", LABELS_CONST_IN_IMPL),
@@ -548,8 +548,8 @@ impl FindAllAttrs<'tcx> {
 impl intravisit::Visitor<'tcx> for FindAllAttrs<'tcx> {
     type Map = Map<'tcx>;
 
-    fn nested_visit_map<'this>(&'this mut self) -> intravisit::NestedVisitorMap<'this, Self::Map> {
-        intravisit::NestedVisitorMap::All(&self.tcx.hir())
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<Self::Map> {
+        intravisit::NestedVisitorMap::All(self.tcx.hir())
     }
 
     fn visit_attribute(&mut self, attr: &'tcx Attribute) {

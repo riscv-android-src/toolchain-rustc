@@ -36,9 +36,20 @@ unsafe impl GetThreadId for RawThreadId {
 /// - `ReentrantMutexGuard` does not give mutable references to the locked data.
 ///   Use a `RefCell` if you need this.
 ///
-/// See [`Mutex`](struct.Mutex.html) for more details about the underlying mutex
+/// See [`Mutex`](type.Mutex.html) for more details about the underlying mutex
 /// primitive.
 pub type ReentrantMutex<T> = lock_api::ReentrantMutex<RawMutex, RawThreadId, T>;
+
+/// Creates a new reentrant mutex in an unlocked state ready for use.
+///
+/// This allows creating a reentrant mutex in a constant context on stable Rust.
+pub const fn const_reentrant_mutex<T>(val: T) -> ReentrantMutex<T> {
+    ReentrantMutex::const_new(
+        <RawMutex as lock_api::RawMutex>::INIT,
+        <RawThreadId as lock_api::GetThreadId>::INIT,
+        val,
+    )
+}
 
 /// An RAII implementation of a "scoped lock" of a reentrant mutex. When this structure
 /// is dropped (falls out of scope), the lock will be unlocked.

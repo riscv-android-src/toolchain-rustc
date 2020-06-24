@@ -1,24 +1,23 @@
 use decoder::Metadata;
 use table::{Table, TableBuilder};
 
-use rustc::hir::exports::Export;
-use rustc::hir::map;
-use rustc::middle::cstore::{DepKind, ForeignModule, LinkagePreference, NativeLibrary};
-use rustc::middle::exported_symbols::{ExportedSymbol, SymbolExportLevel};
-use rustc::middle::lang_items;
-use rustc::mir;
-use rustc::session::config::SymbolManglingVersion;
-use rustc::session::CrateDisambiguator;
-use rustc::ty::{self, ReprOptions, Ty};
-use rustc_ast::ast;
+use rustc_ast::ast::{self, MacroDef};
 use rustc_attr as attr;
 use rustc_data_structures::svh::Svh;
 use rustc_data_structures::sync::MetadataRef;
 use rustc_hir as hir;
 use rustc_hir::def::CtorKind;
 use rustc_hir::def_id::{DefId, DefIndex};
+use rustc_hir::lang_items;
 use rustc_index::vec::IndexVec;
+use rustc_middle::hir::exports::Export;
+use rustc_middle::middle::cstore::{DepKind, ForeignModule, LinkagePreference, NativeLibrary};
+use rustc_middle::middle::exported_symbols::{ExportedSymbol, SymbolExportLevel};
+use rustc_middle::mir;
+use rustc_middle::ty::{self, ReprOptions, Ty};
 use rustc_serialize::opaque::Encoder;
+use rustc_session::config::SymbolManglingVersion;
+use rustc_session::CrateDisambiguator;
 use rustc_span::edition::Edition;
 use rustc_span::symbol::Symbol;
 use rustc_span::{self, Span};
@@ -194,15 +193,16 @@ crate struct CrateRoot<'tcx> {
     native_libraries: Lazy<[NativeLibrary]>,
     foreign_modules: Lazy<[ForeignModule]>,
     source_map: Lazy<[rustc_span::SourceFile]>,
-    def_path_table: Lazy<map::definitions::DefPathTable>,
+    def_path_table: Lazy<rustc_hir::definitions::DefPathTable>,
     impls: Lazy<[TraitImpls]>,
-    exported_symbols: Lazy!([(ExportedSymbol<'tcx>, SymbolExportLevel)]),
     interpret_alloc_index: Lazy<[u32]>,
 
-    per_def: LazyPerDefTables<'tcx>,
+    tables: LazyTables<'tcx>,
 
     /// The DefIndex's of any proc macros declared by this crate.
     proc_macro_data: Option<Lazy<[DefIndex]>>,
+
+    exported_symbols: Lazy!([(ExportedSymbol<'tcx>, SymbolExportLevel)]),
 
     compiler_builtins: bool,
     needs_allocator: bool,
@@ -228,22 +228,22 @@ crate struct TraitImpls {
     impls: Lazy<[DefIndex]>,
 }
 
-/// Define `LazyPerDefTables` and `PerDefTableBuilders` at the same time.
-macro_rules! define_per_def_tables {
+/// Define `LazyTables` and `TableBuilders` at the same time.
+macro_rules! define_tables {
     ($($name:ident: Table<DefIndex, $T:ty>),+ $(,)?) => {
         #[derive(RustcEncodable, RustcDecodable)]
-        crate struct LazyPerDefTables<'tcx> {
+        crate struct LazyTables<'tcx> {
             $($name: Lazy!(Table<DefIndex, $T>)),+
         }
 
         #[derive(Default)]
-        struct PerDefTableBuilders<'tcx> {
+        struct TableBuilders<'tcx> {
             $($name: TableBuilder<DefIndex, $T>),+
         }
 
-        impl PerDefTableBuilders<'tcx> {
-            fn encode(&self, buf: &mut Encoder) -> LazyPerDefTables<'tcx> {
-                LazyPerDefTables {
+        impl TableBuilders<'tcx> {
+            fn encode(&self, buf: &mut Encoder) -> LazyTables<'tcx> {
+                LazyTables {
                     $($name: self.$name.encode(buf)),+
                 }
             }
@@ -251,10 +251,11 @@ macro_rules! define_per_def_tables {
     }
 }
 
-define_per_def_tables! {
+define_tables! {
     kind: Table<DefIndex, Lazy<EntryKind>>,
     visibility: Table<DefIndex, Lazy<ty::Visibility>>,
     span: Table<DefIndex, Lazy<Span>>,
+    ident_span: Table<DefIndex, Lazy<Span>>,
     attributes: Table<DefIndex, Lazy<[ast::Attribute]>>,
     children: Table<DefIndex, Lazy<[DefIndex]>>,
     stability: Table<DefIndex, Lazy<attr::Stability>>,
@@ -305,7 +306,7 @@ enum EntryKind {
     Generator(hir::GeneratorKind),
     Trait(Lazy<TraitData>),
     Impl(Lazy<ImplData>),
-    Method(Lazy<MethodData>),
+    AssocFn(Lazy<AssocFnData>),
     AssocType(AssocContainer),
     AssocOpaqueTy(AssocContainer),
     AssocConst(AssocContainer, mir::ConstQualifs, Lazy<RenderedConst>),
@@ -320,12 +321,6 @@ struct RenderedConst(String);
 #[derive(RustcEncodable, RustcDecodable)]
 struct ModData {
     reexports: Lazy<[Export<hir::HirId>]>,
-}
-
-#[derive(RustcEncodable, RustcDecodable)]
-struct MacroDef {
-    body: String,
-    legacy: bool,
 }
 
 #[derive(RustcEncodable, RustcDecodable)]
@@ -349,6 +344,7 @@ struct TraitData {
     paren_sugar: bool,
     has_auto_impl: bool,
     is_marker: bool,
+    specialization_kind: ty::trait_def::TraitSpecializationKind,
 }
 
 #[derive(RustcEncodable, RustcDecodable)]
@@ -398,7 +394,7 @@ impl AssocContainer {
 }
 
 #[derive(RustcEncodable, RustcDecodable)]
-struct MethodData {
+struct AssocFnData {
     fn_data: FnData,
     container: AssocContainer,
     has_self: bool,
@@ -410,5 +406,6 @@ struct GeneratorData<'tcx> {
 }
 
 // Tags used for encoding Spans:
-const TAG_VALID_SPAN: u8 = 0;
-const TAG_INVALID_SPAN: u8 = 1;
+const TAG_VALID_SPAN_LOCAL: u8 = 0;
+const TAG_VALID_SPAN_FOREIGN: u8 = 1;
+const TAG_INVALID_SPAN: u8 = 2;

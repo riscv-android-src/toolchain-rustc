@@ -1,12 +1,12 @@
-use rustc::middle::cstore::{self, NativeLibrary};
-use rustc::session::parse::feature_err;
-use rustc::session::Session;
-use rustc::ty::TyCtxt;
 use rustc_attr as attr;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::itemlikevisit::ItemLikeVisitor;
+use rustc_middle::middle::cstore::{self, NativeLibrary};
+use rustc_middle::ty::TyCtxt;
+use rustc_session::parse::feature_err;
+use rustc_session::Session;
 use rustc_span::source_map::Span;
 use rustc_span::symbol::{kw, sym, Symbol};
 use rustc_target::spec::abi::Abi;
@@ -15,7 +15,7 @@ crate fn collect(tcx: TyCtxt<'_>) -> Vec<NativeLibrary> {
     let mut collector = Collector { tcx, libs: Vec::new() };
     tcx.hir().krate().visit_all_item_likes(&mut collector);
     collector.process_command_line();
-    return collector.libs;
+    collector.libs
 }
 
 crate fn relevant_lib(sess: &Session, lib: &NativeLibrary) -> bool {
@@ -162,8 +162,13 @@ impl Collector<'tcx> {
             }
         }
         if lib.cfg.is_some() && !self.tcx.features().link_cfg {
-            feature_err(&self.tcx.sess.parse_sess, sym::link_cfg, span.unwrap(), "is unstable")
-                .emit();
+            feature_err(
+                &self.tcx.sess.parse_sess,
+                sym::link_cfg,
+                span.unwrap(),
+                "kind=\"link_cfg\" is unstable",
+            )
+            .emit();
         }
         if lib.kind == cstore::NativeStaticNobundle && !self.tcx.features().static_nobundle {
             feature_err(

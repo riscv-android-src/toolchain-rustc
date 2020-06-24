@@ -25,15 +25,6 @@ use std::borrow::Cow;
 use std::mem;
 
 use if_chain::if_chain;
-use matches::matches;
-use rustc::hir::map::Map;
-use rustc::traits;
-use rustc::ty::{
-    self,
-    layout::{self, IntegerExt},
-    subst::GenericArg,
-    Binder, Ty, TyCtxt,
-};
 use rustc_ast::ast::{self, Attribute, LitKind};
 use rustc_attr as attr;
 use rustc_errors::Applicability;
@@ -47,12 +38,18 @@ use rustc_hir::{
     MatchSource, Param, Pat, PatKind, Path, PathSegment, QPath, TraitItem, TraitItemKind, TraitRef, TyKind, Unsafety,
 };
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_infer::traits::predicate_for_trait_def;
 use rustc_lint::{LateContext, Level, Lint, LintContext};
+use rustc_middle::hir::map::Map;
+use rustc_middle::traits;
+use rustc_middle::ty::{self, layout::IntegerExt, subst::GenericArg, Binder, Ty, TyCtxt, TypeFoldable};
 use rustc_span::hygiene::{ExpnKind, MacroKind};
 use rustc_span::source_map::original_sp;
 use rustc_span::symbol::{self, kw, Symbol};
 use rustc_span::{BytePos, Pos, Span, DUMMY_SP};
+use rustc_target::abi::Integer;
+use rustc_trait_selection::traits::predicate_for_trait_def;
+use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
+use rustc_trait_selection::traits::query::normalize::AtExt;
 use smallvec::SmallVec;
 
 use crate::consts::{constant, Constant};
@@ -99,7 +96,7 @@ pub fn in_constant(cx: &LateContext<'_, '_>, id: HirId) -> bool {
             ..
         })
         | Node::ImplItem(&ImplItem {
-            kind: ImplItemKind::Method(ref sig, _),
+            kind: ImplItemKind::Fn(ref sig, _),
             ..
         }) => sig.header.constness == Constness::Const,
         _ => false,
@@ -229,7 +226,7 @@ pub fn match_qpath(path: &QPath<'_>, segments: &[&str]) -> bool {
 /// }
 ///
 /// if match_path(ty_path, &["rustc", "lint", "Lint"]) {
-///     // This is a `rustc::lint::Lint`.
+///     // This is a `rustc_middle::lint::Lint`.
 /// }
 /// ```
 pub fn match_path(path: &Path<'_>, segments: &[&str]) -> bool {
@@ -295,8 +292,8 @@ pub fn qpath_res(cx: &LateContext<'_, '_>, qpath: &hir::QPath<'_>, id: hir::HirI
     match qpath {
         hir::QPath::Resolved(_, path) => path.res,
         hir::QPath::TypeRelative(..) => {
-            if cx.tcx.has_typeck_tables(id.owner_def_id()) {
-                cx.tcx.typeck_tables_of(id.owner_def_id()).qpath_res(qpath, id)
+            if cx.tcx.has_typeck_tables(id.owner.to_def_id()) {
+                cx.tcx.typeck_tables_of(id.owner.to_def_id()).qpath_res(qpath, id)
             } else {
                 Res::Err
             }
@@ -313,7 +310,7 @@ pub fn get_trait_def_id(cx: &LateContext<'_, '_>, path: &[&str]) -> Option<DefId
     };
 
     match res {
-        Res::Def(DefKind::Trait, trait_id) | Res::Def(DefKind::TraitAlias, trait_id) => Some(trait_id),
+        Res::Def(DefKind::Trait | DefKind::TraitAlias, trait_id) => Some(trait_id),
         Res::Err => unreachable!("this trait resolution is impossible: {:?}", &path),
         _ => None,
     }
@@ -446,10 +443,11 @@ pub fn is_entrypoint_fn(cx: &LateContext<'_, '_>, def_id: DefId) -> bool {
 pub fn get_item_name(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> Option<Name> {
     let parent_id = cx.tcx.hir().get_parent_item(expr.hir_id);
     match cx.tcx.hir().find(parent_id) {
-        Some(Node::Item(&Item { ref ident, .. })) => Some(ident.name),
-        Some(Node::TraitItem(&TraitItem { ident, .. })) | Some(Node::ImplItem(&ImplItem { ident, .. })) => {
-            Some(ident.name)
-        },
+        Some(
+            Node::Item(Item { ident, .. })
+            | Node::TraitItem(TraitItem { ident, .. })
+            | Node::ImplItem(ImplItem { ident, .. }),
+        ) => Some(ident.name),
         _ => None,
     }
 }
@@ -477,7 +475,7 @@ impl<'tcx> Visitor<'tcx> for ContainsName {
             self.result = true;
         }
     }
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }
@@ -755,7 +753,7 @@ pub fn get_enclosing_block<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, hir_id: HirId) 
                 ..
             })
             | Node::ImplItem(&ImplItem {
-                kind: ImplItemKind::Method(_, eid),
+                kind: ImplItemKind::Fn(_, eid),
                 ..
             }) => match cx.tcx.hir().body(eid).value.kind {
                 ExprKind::Block(ref block, _) => Some(block),
@@ -830,7 +828,7 @@ pub fn is_integer_literal(expr: &Expr<'_>, value: u128) -> bool {
 /// Examples of coercions can be found in the Nomicon at
 /// <https://doc.rust-lang.org/nomicon/coercions.html>.
 ///
-/// See `rustc::ty::adjustment::Adjustment` and `rustc_typeck::check::coercion` for more
+/// See `rustc_middle::ty::adjustment::Adjustment` and `rustc_typeck::check::coercion` for more
 /// information on adjustments and coercions.
 pub fn is_adjusted(cx: &LateContext<'_, '_>, e: &Expr<'_>) -> bool {
     cx.tables.adjustments().get(e.hir_id).is_some()
@@ -923,7 +921,7 @@ pub fn is_ctor_or_promotable_const_function(cx: &LateContext<'_, '_>, expr: &Exp
         if let ExprKind::Path(ref qp) = fun.kind {
             let res = cx.tables.qpath_res(qp, fun.hir_id);
             return match res {
-                def::Res::Def(DefKind::Variant, ..) | Res::Def(DefKind::Ctor(..), _) => true,
+                def::Res::Def(DefKind::Variant | DefKind::Ctor(..), ..) => true,
                 def::Res::Def(_, def_id) => cx.tcx.is_promotable_const_fn(def_id),
                 _ => false,
             };
@@ -1078,9 +1076,7 @@ pub fn get_arg_name(pat: &Pat<'_>) -> Option<ast::Name> {
 }
 
 pub fn int_bits(tcx: TyCtxt<'_>, ity: ast::IntTy) -> u64 {
-    layout::Integer::from_attr(&tcx, attr::IntType::SignedInt(ity))
-        .size()
-        .bits()
+    Integer::from_attr(&tcx, attr::IntType::SignedInt(ity)).size().bits()
 }
 
 #[allow(clippy::cast_possible_wrap)]
@@ -1099,9 +1095,7 @@ pub fn unsext(tcx: TyCtxt<'_>, u: i128, ity: ast::IntTy) -> u128 {
 
 /// clip unused bytes
 pub fn clip(tcx: TyCtxt<'_>, u: u128, ity: ast::UintTy) -> u128 {
-    let bits = layout::Integer::from_attr(&tcx, attr::IntType::UnsignedInt(ity))
-        .size()
-        .bits();
+    let bits = Integer::from_attr(&tcx, attr::IntType::UnsignedInt(ity)).size().bits();
     let amt = 128 - bits;
     (u << amt) >> amt
 }
@@ -1222,14 +1216,16 @@ pub fn match_function_call<'a, 'tcx>(
 /// to avoid crashes on `layout_of`.
 pub fn is_normalizable<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, param_env: ty::ParamEnv<'tcx>, ty: Ty<'tcx>) -> bool {
     cx.tcx.infer_ctxt().enter(|infcx| {
-        let cause = rustc::traits::ObligationCause::dummy();
+        let cause = rustc_middle::traits::ObligationCause::dummy();
         infcx.at(&cause, param_env).normalize(&ty).is_ok()
     })
 }
 
 pub fn match_def_path<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, did: DefId, syms: &[&str]) -> bool {
-    let path = cx.get_def_path(did);
-    path.len() == syms.len() && path.into_iter().zip(syms.iter()).all(|(a, &b)| a.as_str() == b)
+    // We have to convert `syms` to `&[Symbol]` here because rustc's `match_def_path`
+    // accepts only that. We should probably move to Symbols in Clippy as well.
+    let syms = syms.iter().map(|p| Symbol::intern(p)).collect::<Vec<Symbol>>();
+    cx.match_def_path(did, &syms)
 }
 
 /// Returns the list of condition expressions and the list of blocks in a
@@ -1353,7 +1349,7 @@ pub fn is_must_use_func_call(cx: &LateContext<'_, '_>, expr: &Expr<'_>) -> bool 
 }
 
 pub fn is_no_std_crate(krate: &Crate<'_>) -> bool {
-    krate.attrs.iter().any(|attr| {
+    krate.item.attrs.iter().any(|attr| {
         if let ast::AttrKind::Normal(ref attr) = attr.kind {
             attr.path == symbol::sym::no_std
         } else {
@@ -1375,6 +1371,32 @@ pub fn is_trait_impl_item(cx: &LateContext<'_, '_>, hir_id: HirId) -> bool {
     } else {
         false
     }
+}
+
+/// Check if it's even possible to satisfy the `where` clause for the item.
+///
+/// `trivial_bounds` feature allows functions with unsatisfiable bounds, for example:
+///
+/// ```ignore
+/// fn foo() where i32: Iterator {
+///     for _ in 2i32 {}
+/// }
+/// ```
+pub fn fn_has_unsatisfiable_preds(cx: &LateContext<'_, '_>, did: DefId) -> bool {
+    use rustc_trait_selection::traits;
+    let predicates = cx
+        .tcx
+        .predicates_of(did)
+        .predicates
+        .iter()
+        .filter_map(|(p, _)| if p.is_global() { Some(*p) } else { None })
+        .collect::<Vec<_>>();
+    !traits::normalize_and_test_predicates(
+        cx.tcx,
+        traits::elaborate_predicates(cx.tcx, predicates)
+            .map(|o| o.predicate)
+            .collect::<Vec<_>>(),
+    )
 }
 
 #[cfg(test)]

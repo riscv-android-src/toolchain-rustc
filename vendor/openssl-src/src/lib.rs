@@ -51,10 +51,15 @@ impl Build {
     }
 
     fn cmd_make(&self) -> Command {
-        match &self.host.as_ref().expect("HOST dir not set")[..] {
-            "x86_64-unknown-dragonfly" => Command::new("gmake"),
-            "x86_64-unknown-freebsd" => Command::new("gmake"),
-            _ => Command::new("make"),
+        let host = &self.host.as_ref().expect("HOST dir not set")[..];
+        if host.contains("dragonfly")
+            || host.contains("freebsd")
+            || host.contains("solaris")
+            || host.contains("illumos")
+        {
+            Command::new("gmake")
+        } else {
+            Command::new("make")
         }
     }
 
@@ -77,7 +82,9 @@ impl Build {
         cp_r(&source_dir(), &inner_dir);
         apply_patches(target, &inner_dir);
 
-        let mut configure = Command::new("perl");
+        let perl_program =
+            env::var("OPENSSL_SRC_PERL").unwrap_or(env::var("PERL").unwrap_or("perl".to_string()));
+        let mut configure = Command::new(perl_program);
         configure.arg("./Configure");
         if host.contains("pc-windows-gnu") {
             configure.arg(&format!("--prefix={}", sanitize_sh(&install_dir)));
@@ -135,6 +142,7 @@ impl Build {
             // that bypasses basically everything `cc` does, so let's just cop
             // out and say it's linux and hope it works.
             "aarch64-linux-android" => "linux-aarch64",
+            "aarch64-unknown-freebsd" => "BSD-generic64",
             "aarch64-unknown-linux-gnu" => "linux-aarch64",
             "aarch64-unknown-linux-musl" => "linux-aarch64",
             "aarch64-pc-windows-msvc" => "VC-WIN64-ARM",
@@ -144,6 +152,8 @@ impl Build {
             "arm-unknown-linux-gnueabihf" => "linux-armv4",
             "arm-unknown-linux-musleabi" => "linux-armv4",
             "arm-unknown-linux-musleabihf" => "linux-armv4",
+            "armv6-unknown-freebsd" => "BSD-generic32",
+            "armv7-unknown-freebsd" => "BSD-generic32",
             "armv7-unknown-linux-gnueabihf" => "linux-armv4",
             "armv7-unknown-linux-musleabihf" => "linux-armv4",
             "asmjs-unknown-emscripten" => "gcc",
@@ -161,8 +171,10 @@ impl Build {
             "mipsel-unknown-linux-gnu" => "linux-mips32",
             "mipsel-unknown-linux-musl" => "linux-mips32",
             "powerpc-unknown-linux-gnu" => "linux-ppc",
+            "powerpc64-unknown-freebsd" => "BSD-generic64",
             "powerpc64-unknown-linux-gnu" => "linux-ppc64",
             "powerpc64le-unknown-linux-gnu" => "linux-ppc64le",
+            "riscv64gc-unknown-linux-gnu" => "linux-generic64",
             "s390x-unknown-linux-gnu" => "linux64-s390x",
             "x86_64-apple-darwin" => "darwin64-x86_64-cc",
             "x86_64-linux-android" => "linux-x86_64",
@@ -170,9 +182,11 @@ impl Build {
             "x86_64-pc-windows-msvc" => "VC-WIN64A",
             "x86_64-unknown-freebsd" => "BSD-x86_64",
             "x86_64-unknown-dragonfly" => "BSD-x86_64",
+            "x86_64-unknown-illumos" => "solaris64-x86_64-gcc",
             "x86_64-unknown-linux-gnu" => "linux-x86_64",
             "x86_64-unknown-linux-musl" => "linux-x86_64",
             "x86_64-unknown-netbsd" => "BSD-x86_64",
+            "x86_64-sun-solaris" => "solaris64-x86_64-gcc",
             "wasm32-unknown-emscripten" => "gcc",
             "wasm32-unknown-unknown" => "gcc",
             "aarch64-apple-ios" => "ios64-cross",

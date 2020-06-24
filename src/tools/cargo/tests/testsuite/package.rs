@@ -5,10 +5,10 @@ use std::io::prelude::*;
 use std::path::Path;
 
 use cargo_test_support::paths::CargoPathExt;
-use cargo_test_support::registry::Package;
+use cargo_test_support::publish::validate_crate_contents;
+use cargo_test_support::registry::{self, Package};
 use cargo_test_support::{
-    basic_manifest, cargo_process, git, path2url, paths, project, publish::validate_crate_contents,
-    registry, symlink_supported, t,
+    basic_manifest, cargo_process, git, path2url, paths, project, symlink_supported, t,
 };
 
 #[cargo_test]
@@ -1662,4 +1662,87 @@ src/lib.rs
     assert!(manifest.contains("license-file = \"LICENSE\""));
     let orig = read_to_string(p.root().join("target/package/foo-1.0.0/Cargo.toml.orig")).unwrap();
     assert!(orig.contains("license-file = \"../LICENSE\""));
+}
+
+#[cargo_test]
+#[cfg(not(windows))] // Don't want to create invalid files on Windows.
+fn package_restricted_windows() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            license = "MIT"
+            description = "foo"
+            homepage = "foo"
+            "#,
+        )
+        .file("src/lib.rs", "pub mod con;\npub mod aux;")
+        .file("src/con.rs", "pub fn f() {}")
+        .file("src/aux/mod.rs", "pub fn f() {}")
+        .build();
+
+    p.cargo("package")
+        .with_stderr(
+            "\
+[WARNING] file src/aux/mod.rs is a reserved Windows filename, it will not work on Windows platforms
+[WARNING] file src/con.rs is a reserved Windows filename, it will not work on Windows platforms
+[PACKAGING] foo [..]
+[VERIFYING] foo [..]
+[COMPILING] foo [..]
+[FINISHED] [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn list_with_path_and_lock() {
+    // Allow --list even for something that isn't packageable.
+
+    // Init an empty registry because a versionless path dep will search for
+    // the package on crates.io.
+    registry::init();
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            license = "MIT"
+            description = "foo"
+            homepage = "foo"
+
+            [dependencies]
+            bar = {path="bar"}
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "")
+        .build();
+
+    p.cargo("package --list")
+        .with_stdout(
+            "\
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+        )
+        .run();
+
+    p.cargo("package")
+        .with_status(101)
+        .with_stderr(
+            "\
+error: all path dependencies must have a version specified when packaging.
+dependency `bar` does not specify a version.
+",
+        )
+        .run();
 }

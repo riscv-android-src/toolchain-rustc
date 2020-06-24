@@ -1,7 +1,9 @@
-use crate::*;
-use rustc::mir;
-use rustc::ty::layout::Size;
 use std::iter;
+
+use rustc_middle::mir;
+use rustc_target::abi::Size;
+
+use crate::*;
 
 impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
@@ -13,35 +15,45 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         _ret: mir::BasicBlock,
     ) -> InterpResult<'tcx, bool> {
         let this = self.eval_context_mut();
-        let tcx = &{ this.tcx.tcx };
 
+        // Windows API stubs.
+        // HANDLE = isize
+        // DWORD = ULONG = u32
+        // BOOL = i32
         match link_name {
-            // Windows API stubs.
-            // HANDLE = isize
-            // DWORD = ULONG = u32
-            // BOOL = i32
-
             // Environment related shims
             "GetEnvironmentVariableW" => {
-                // args[0] : LPCWSTR lpName (32-bit ptr to a const string of 16-bit Unicode chars)
-                // args[1] : LPWSTR lpBuffer (32-bit pointer to a string of 16-bit Unicode chars)
-                // lpBuffer : ptr to buffer that receives contents of the env_var as a null-terminated string.
-                // Return `# of chars` stored in the buffer pointed to by lpBuffer, excluding null-terminator.
-                // Return 0 upon failure.
-
-                // This is not the env var you are looking for.
-                this.set_last_error(Scalar::from_u32(203))?; // ERROR_ENVVAR_NOT_FOUND
-                this.write_null(dest)?;
+                let result = this.GetEnvironmentVariableW(args[0], args[1], args[2])?;
+                this.write_scalar(Scalar::from_u32(result), dest)?;
             }
-
             "SetEnvironmentVariableW" => {
-                // args[0] : LPCWSTR lpName (32-bit ptr to a const string of 16-bit Unicode chars)
-                // args[1] : LPCWSTR lpValue (32-bit ptr to a const string of 16-bit Unicode chars)
-                // Return nonzero if success, else return 0.
-                throw_unsup_format!("can't set environment variable on Windows");
+                let result = this.SetEnvironmentVariableW(args[0], args[1])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "GetEnvironmentStringsW" => {
+                let result = this.GetEnvironmentStringsW()?;
+                this.write_scalar(result, dest)?;
+            }
+            "FreeEnvironmentStringsW" => {
+                let result = this.FreeEnvironmentStringsW(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "GetCurrentDirectoryW" => {
+                let result = this.GetCurrentDirectoryW(args[0], args[1])?;
+                this.write_scalar(Scalar::from_u32(result), dest)?;
+            }
+            "SetCurrentDirectoryW" => {
+                let result = this.SetCurrentDirectoryW(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
 
             // File related shims
+            "GetStdHandle" => {
+                let which = this.read_scalar(args[0])?.to_i32()?;
+                // We just make this the identity function, so we know later in `WriteFile`
+                // which one it is.
+                this.write_scalar(Scalar::from_machine_isize(which.into(), this), dest)?;
+            }
             "WriteFile" => {
                 let handle = this.read_scalar(args[0])?.to_machine_isize(this)?;
                 let buf = this.read_scalar(args[1])?.not_undef()?;
@@ -61,9 +73,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     };
                     res.ok().map(|n| n as u32)
                 } else {
-                    eprintln!("Miri: Ignored output to handle {}", handle);
-                    // Pretend it all went well.
-                    Some(n)
+                    throw_unsup_format!("on Windows, writing to anything except stdout/stderr is not supported")
                 };
                 // If there was no error, write back how much was written.
                 if let Some(n) = written {
@@ -71,16 +81,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
                 // Return whether this was a success.
                 this.write_scalar(
-                    Scalar::from_int(if written.is_some() { 1 } else { 0 }, dest.layout.size),
+                    Scalar::from_i32(if written.is_some() { 1 } else { 0 }),
                     dest,
                 )?;
             }
 
-            // Other shims
-            "GetProcessHeap" => {
-                // Just fake a HANDLE
-                this.write_scalar(Scalar::from_int(1, this.pointer_size()), dest)?;
-            }
+            // Allocation
             "HeapAlloc" => {
                 let _handle = this.read_scalar(args[0])?.to_machine_isize(this)?;
                 let flags = this.read_scalar(args[1])?.to_u32()?;
@@ -94,7 +100,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let _flags = this.read_scalar(args[1])?.to_u32()?;
                 let ptr = this.read_scalar(args[2])?.not_undef()?;
                 this.free(ptr, MiriMemoryKind::WinHeap)?;
-                this.write_scalar(Scalar::from_int(1, Size::from_bytes(4)), dest)?;
+                this.write_scalar(Scalar::from_i32(1), dest)?;
             }
             "HeapReAlloc" => {
                 let _handle = this.read_scalar(args[0])?.to_machine_isize(this)?;
@@ -105,6 +111,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_scalar(res, dest)?;
             }
 
+            // errno
             "SetLastError" => {
                 this.set_last_error(this.read_scalar(args[0])?.not_undef()?)?;
             }
@@ -113,30 +120,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_scalar(last_error, dest)?;
             }
 
-            "AddVectoredExceptionHandler" => {
-                // Any non zero value works for the stdlib. This is just used for stack overflows anyway.
-                this.write_scalar(Scalar::from_int(1, dest.layout.size), dest)?;
-            }
-
-            | "InitializeCriticalSection"
-            | "EnterCriticalSection"
-            | "LeaveCriticalSection"
-            | "DeleteCriticalSection"
-            => {
-                // Nothing to do, not even a return value.
-                // (Windows locks are reentrant, and we have only 1 thread,
-                // so not doing any futher checks here is at least not incorrect.)
-            }
-
-            | "GetModuleHandleW"
-            | "GetProcAddress"
-            | "GetConsoleScreenBufferInfo"
-            | "SetConsoleTextAttribute"
-            => {
-                // Pretend these do not exist / nothing happened, by returning zero.
-                this.write_null(dest)?;
-            }
-
+            // Querying system information
             "GetSystemInfo" => {
                 let system_info = this.deref_operand(args[0])?;
                 // Initialize with `0`.
@@ -150,60 +134,111 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_scalar(Scalar::from_int(NUM_CPUS, dword_size), num_cpus.into())?;
             }
 
+            // Thread-local storage
             "TlsAlloc" => {
                 // This just creates a key; Windows does not natively support TLS destructors.
 
                 // Create key and return it.
-                let key = this.machine.tls.create_tls_key(None) as u128;
-
-                // Figure out how large a TLS key actually is. This is `c::DWORD`.
-                if dest.layout.size.bits() < 128
-                    && key >= (1u128 << dest.layout.size.bits() as u128)
-                {
-                    throw_unsup!(OutOfTls);
-                }
+                let key = this.machine.tls.create_tls_key(None, dest.layout.size)?;
                 this.write_scalar(Scalar::from_uint(key, dest.layout.size), dest)?;
             }
             "TlsGetValue" => {
-                let key = this.read_scalar(args[0])?.to_u32()? as u128;
-                let ptr = this.machine.tls.load_tls(key, tcx)?;
+                let key = u128::from(this.read_scalar(args[0])?.to_u32()?);
+                let ptr = this.machine.tls.load_tls(key, this)?;
                 this.write_scalar(ptr, dest)?;
             }
             "TlsSetValue" => {
-                let key = this.read_scalar(args[0])?.to_u32()? as u128;
+                let key = u128::from(this.read_scalar(args[0])?.to_u32()?);
                 let new_ptr = this.read_scalar(args[1])?.not_undef()?;
                 this.machine.tls.store_tls(key, this.test_null(new_ptr)?)?;
 
                 // Return success (`1`).
-                this.write_scalar(Scalar::from_int(1, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_i32(1), dest)?;
             }
-            "GetStdHandle" => {
-                let which = this.read_scalar(args[0])?.to_i32()?;
-                // We just make this the identity function, so we know later in `WriteFile`
-                // which one it is.
-                this.write_scalar(Scalar::from_int(which, this.pointer_size()), dest)?;
-            }
-            "GetConsoleMode" => {
-                // Everything is a pipe.
-                this.write_null(dest)?;
-            }
+
+            // Access to command-line arguments
             "GetCommandLineW" => {
                 this.write_scalar(
                     this.machine.cmd_line.expect("machine must be initialized"),
                     dest,
                 )?;
             }
-            // The actual name of 'RtlGenRandom'
+
+            // Time related shims
+            "GetSystemTimeAsFileTime" => {
+                this.GetSystemTimeAsFileTime(args[0])?;
+            }
+            "QueryPerformanceCounter" => {
+                let result = this.QueryPerformanceCounter(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "QueryPerformanceFrequency" => {
+                let result = this.QueryPerformanceFrequency(args[0])?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+
+            // Miscellaneous
             "SystemFunction036" => {
+                // The actual name of 'RtlGenRandom'
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let len = this.read_scalar(args[1])?.to_u32()?;
-                this.gen_random(ptr, len as usize)?;
+                this.gen_random(ptr, len.into())?;
                 this.write_scalar(Scalar::from_bool(true), dest)?;
             }
-            // We don't support threading.
+            "GetConsoleScreenBufferInfo" => {
+                // `term` needs this, so we fake it.
+                let _console = this.read_scalar(args[0])?.to_machine_isize(this)?;
+                let _buffer_info = this.deref_operand(args[1])?;
+                // Indicate an error.
+                // FIXME: we should set last_error, but to what?
+                this.write_null(dest)?;
+            }
+            "GetConsoleMode" => {
+                // Windows "isatty" (in libtest) needs this, so we fake it.
+                let _console = this.read_scalar(args[0])?.to_machine_isize(this)?;
+                let _mode = this.deref_operand(args[1])?;
+                // Indicate an error.
+                // FIXME: we should set last_error, but to what?
+                this.write_null(dest)?;
+            }
+
+            // Better error for attempts to create a thread
             "CreateThread" => {
                 throw_unsup_format!("Miri does not support threading");
             }
+
+            // Incomplete shims that we "stub out" just to get pre-main initialization code to work.
+            // These shims are enabled only when the caller is in the standard library.
+            "GetProcessHeap" if this.frame().instance.to_string().starts_with("std::sys::windows::") => {
+                // Just fake a HANDLE
+                this.write_scalar(Scalar::from_machine_isize(1, this), dest)?;
+            }
+            | "GetModuleHandleW"
+            | "GetProcAddress"
+            | "SetConsoleTextAttribute" if this.frame().instance.to_string().starts_with("std::sys::windows::")
+            => {
+                // Pretend these do not exist / nothing happened, by returning zero.
+                this.write_null(dest)?;
+            }
+            "AddVectoredExceptionHandler" if this.frame().instance.to_string().starts_with("std::sys::windows::") => {
+                // Any non zero value works for the stdlib. This is just used for stack overflows anyway.
+                this.write_scalar(Scalar::from_machine_usize(1, this), dest)?;
+            }
+            | "InitializeCriticalSection"
+            | "EnterCriticalSection"
+            | "LeaveCriticalSection"
+            | "DeleteCriticalSection" if this.frame().instance.to_string().starts_with("std::sys::windows::")
+            => {
+                // Nothing to do, not even a return value.
+                // (Windows locks are reentrant, and we have only 1 thread,
+                // so not doing any futher checks here is at least not incorrect.)
+            }
+            "TryEnterCriticalSection" if this.frame().instance.to_string().starts_with("std::sys::windows::")
+            => {
+                // There is only one thread, so this always succeeds and returns TRUE
+                this.write_scalar(Scalar::from_i32(1), dest)?;
+            }
+
             _ => throw_unsup_format!("can't call foreign function: {}", link_name),
         }
 

@@ -1,7 +1,7 @@
 use crate::utils::{match_def_path, paths, span_lint, trait_ref_of_method, walk_ptrs_ty};
-use rustc::ty::{Adt, Array, RawPtr, Ref, Slice, Tuple, Ty, TypeAndMut};
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty::{Adt, Array, RawPtr, Ref, Slice, Tuple, Ty, TypeAndMut};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
@@ -59,7 +59,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MutableKeyType {
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ImplItem<'tcx>) {
-        if let hir::ImplItemKind::Method(ref sig, ..) = item.kind {
+        if let hir::ImplItemKind::Fn(ref sig, ..) = item.kind {
             if trait_ref_of_method(cx, item.hir_id).is_none() {
                 check_sig(cx, item.hir_id, &sig.decl);
             }
@@ -67,7 +67,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MutableKeyType {
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem<'tcx>) {
-        if let hir::TraitItemKind::Method(ref sig, ..) = item.kind {
+        if let hir::TraitItemKind::Fn(ref sig, ..) = item.kind {
             check_sig(cx, item.hir_id, &sig.decl);
         }
     }

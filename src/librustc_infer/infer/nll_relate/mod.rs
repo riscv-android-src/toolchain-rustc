@@ -24,12 +24,12 @@
 use crate::infer::InferCtxt;
 use crate::infer::{ConstVarValue, ConstVariableValue};
 use crate::traits::DomainGoal;
-use rustc::ty::error::TypeError;
-use rustc::ty::fold::{TypeFoldable, TypeVisitor};
-use rustc::ty::relate::{self, Relate, RelateResult, TypeRelation};
-use rustc::ty::subst::GenericArg;
-use rustc::ty::{self, InferConst, Ty, TyCtxt};
 use rustc_data_structures::fx::FxHashMap;
+use rustc_middle::ty::error::TypeError;
+use rustc_middle::ty::fold::{TypeFoldable, TypeVisitor};
+use rustc_middle::ty::relate::{self, Relate, RelateResult, TypeRelation};
+use rustc_middle::ty::subst::GenericArg;
+use rustc_middle::ty::{self, InferConst, Ty, TyCtxt};
 use std::fmt::Debug;
 
 #[derive(PartialEq)]
@@ -877,7 +877,7 @@ where
                     // If sub-roots are equal, then `for_vid` and
                     // `vid` are related via subtyping.
                     debug!("TypeGeneralizer::tys: occurs check failed");
-                    return Err(TypeError::Mismatch);
+                    Err(TypeError::Mismatch)
                 } else {
                     match variables.probe(vid) {
                         TypeVariableValue::Known { value: u } => {
@@ -898,13 +898,13 @@ where
 
                             let u = self.tcx().mk_ty_var(new_var_id);
                             debug!("generalize: replacing original vid={:?} with new={:?}", vid, u);
-                            return Ok(u);
+                            Ok(u)
                         }
                     }
                 }
             }
 
-            ty::Infer(ty::IntVar(_)) | ty::Infer(ty::FloatVar(_)) => {
+            ty::Infer(ty::IntVar(_) | ty::FloatVar(_)) => {
                 // No matter what mode we are in,
                 // integer/floating-point types must be equal to be
                 // relatable.

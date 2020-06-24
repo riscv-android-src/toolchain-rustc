@@ -3,15 +3,15 @@ use crate::utils::{
     span_lint_and_then,
 };
 use if_chain::if_chain;
-use rustc::lint::in_external_macro;
 use rustc_ast::ast::{
-    Block, Expr, ExprKind, GenericParamKind, Generics, Lit, LitFloatType, LitIntType, LitKind, NodeId, Pat, PatKind,
-    StmtKind, UnOp,
+    BindingMode, Block, Expr, ExprKind, GenericParamKind, Generics, Lit, LitFloatType, LitIntType, LitKind, Mutability,
+    NodeId, Pat, PatKind, StmtKind, UnOp,
 };
 use rustc_ast::visit::{walk_expr, FnKind, Visitor};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::Applicability;
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
+use rustc_middle::lint::in_external_macro;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
@@ -318,18 +318,6 @@ impl EarlyLintPass for MiscEarlyLints {
                 return;
             }
             if wilds > 0 {
-                let mut normal = vec![];
-
-                for field in pfields {
-                    match field.pat.kind {
-                        PatKind::Wild => {},
-                        _ => {
-                            if let Ok(n) = cx.sess().source_map().span_to_snippet(field.span) {
-                                normal.push(n);
-                            }
-                        },
-                    }
-                }
                 for field in pfields {
                     if let PatKind::Wild = field.pat.kind {
                         wilds -= 1;
@@ -341,6 +329,19 @@ impl EarlyLintPass for MiscEarlyLints {
                                 "You matched a field with a wildcard pattern. Consider using `..` instead",
                             );
                         } else {
+                            let mut normal = vec![];
+
+                            for field in pfields {
+                                match field.pat.kind {
+                                    PatKind::Wild => {},
+                                    _ => {
+                                        if let Ok(n) = cx.sess().source_map().span_to_snippet(field.span) {
+                                            normal.push(n);
+                                        }
+                                    },
+                                }
+                            }
+
                             span_lint_and_help(
                                 cx,
                                 UNNEEDED_FIELD_PATTERN,
@@ -355,7 +356,13 @@ impl EarlyLintPass for MiscEarlyLints {
             }
         }
 
-        if let PatKind::Ident(_, ident, Some(ref right)) = pat.kind {
+        if let PatKind::Ident(left, ident, Some(ref right)) = pat.kind {
+            let left_binding = match left {
+                BindingMode::ByRef(Mutability::Mut) => "ref mut ",
+                BindingMode::ByRef(Mutability::Not) => "ref ",
+                _ => "",
+            };
+
             if let PatKind::Wild = right.kind {
                 span_lint_and_sugg(
                     cx,
@@ -366,7 +373,7 @@ impl EarlyLintPass for MiscEarlyLints {
                         ident.name, ident.name,
                     ),
                     "try",
-                    format!("{}", ident.name),
+                    format!("{}{}", left_binding, ident.name),
                     Applicability::MachineApplicable,
                 );
             }
@@ -418,12 +425,12 @@ impl EarlyLintPass for MiscEarlyLints {
                                 REDUNDANT_CLOSURE_CALL,
                                 expr.span,
                                 "Try not to call a closure in the expression where it is declared.",
-                                |db| {
+                                |diag| {
                                     if decl.inputs.is_empty() {
                                         let mut app = Applicability::MachineApplicable;
                                         let hint =
                                             snippet_with_applicability(cx, block.span, "..", &mut app).into_owned();
-                                        db.span_suggestion(expr.span, "Try doing something like: ", hint, app);
+                                        diag.span_suggestion(expr.span, "Try doing something like: ", hint, app);
                                     }
                                 },
                             );
@@ -539,14 +546,14 @@ impl MiscEarlyLints {
                     ZERO_PREFIXED_LITERAL,
                     lit.span,
                     "this is a decimal constant",
-                    |db| {
-                        db.span_suggestion(
+                    |diag| {
+                        diag.span_suggestion(
                             lit.span,
                             "if you mean to use a decimal constant, remove the `0` to avoid confusion",
                             lit_snip.trim_start_matches(|c| c == '_' || c == '0').to_string(),
                             Applicability::MaybeIncorrect,
                         );
-                        db.span_suggestion(
+                        diag.span_suggestion(
                             lit.span,
                             "if you mean to use an octal constant, use `0o`",
                             format!("0o{}", lit_snip.trim_start_matches(|c| c == '_' || c == '0')),

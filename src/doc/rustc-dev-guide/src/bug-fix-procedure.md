@@ -230,6 +230,8 @@ lint name is mentioned (in the compiler, we use the upper-case name, and a macro
 automatically generates the lower-case string; so searching for
 `overlapping_inherent_impls` would not find much).
 
+> NOTE: these exact files don't exist anymore, but the procedure is still the same.
+
 #### Remove the lint.
 
 The first reference you will likely find is the lint definition [in
@@ -289,13 +291,13 @@ self.tcx.sess.add_lint(lint::builtin::OVERLAPPING_INHERENT_IMPLS,
                        msg);
 ```
 
-We want to convert this into an error. In some cases, there may be an existing
-error for this scenario. In others, we will need to allocate a fresh diagnostic
-code.
-[Instructions for allocating a fresh diagnostic code can be found here.](rustc-diagnostic-code.html)
-You may want to mention in the extended description that the compiler behavior
-changed on this point, and include a reference to the tracking issue for the
-change.
+We want to convert this into an error. In some cases, there may be an
+existing error for this scenario. In others, we will need to allocate a
+fresh diagnostic code.  [Instructions for allocating a fresh diagnostic
+code can be found here.](./diagnostics/diagnostic-codes.md) You may want
+to mention in the extended description that the compiler behavior
+changed on this point, and include a reference to the tracking issue for
+the change.
 
 Let's say that we've adopted `E0592` as our code. Then we can change the
 `add_lint()` call above to something like:
@@ -327,4 +329,3 @@ Open a PR. =)
 
 [rfc 1122]: https://github.com/rust-lang/rfcs/blob/master/text/1122-language-semver.md
 [breaking-change-issue]: https://gist.github.com/nikomatsakis/631ec8b4af9a18b5d062d9d9b7d3d967
-

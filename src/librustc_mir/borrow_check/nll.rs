@@ -1,15 +1,15 @@
 //! The entry point of the NLL borrow checker.
 
-use rustc::mir::{
-    BasicBlock, Body, BodyAndCache, ClosureOutlivesSubject, ClosureRegionRequirements, LocalKind,
-    Location, Promoted, ReadOnlyBodyAndCache,
-};
-use rustc::ty::{self, RegionKind, RegionVid};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_errors::Diagnostic;
 use rustc_hir::def_id::DefId;
 use rustc_index::vec::IndexVec;
 use rustc_infer::infer::InferCtxt;
+use rustc_middle::mir::{
+    BasicBlock, Body, BodyAndCache, ClosureOutlivesSubject, ClosureRegionRequirements, LocalKind,
+    Location, Promoted, ReadOnlyBodyAndCache,
+};
+use rustc_middle::ty::{self, RegionKind, RegionVid};
 use rustc_span::symbol::sym;
 use std::env;
 use std::fmt::Debug;
@@ -21,9 +21,9 @@ use std::str::FromStr;
 use self::mir_util::PassWhere;
 use polonius_engine::{Algorithm, Output};
 
-use crate::dataflow::generic::ResultsCursor;
 use crate::dataflow::move_paths::{InitKind, InitLocation, MoveData};
 use crate::dataflow::MaybeInitializedPlaces;
+use crate::dataflow::ResultsCursor;
 use crate::transform::MirSource;
 use crate::util as mir_util;
 use crate::util::pretty;
@@ -272,7 +272,7 @@ pub(in crate::borrow_check) fn compute_regions<'cx, 'tcx>(
     // Dump facts if requested.
     let polonius_output = all_facts.and_then(|all_facts| {
         if infcx.tcx.sess.opts.debugging_opts.nll_facts {
-            let def_path = infcx.tcx.hir().def_path(def_id);
+            let def_path = infcx.tcx.def_path(def_id);
             let dir_path =
                 PathBuf::from("nll-facts").join(def_path.to_filename_friendly_no_crate());
             all_facts.write_to_dir(dir_path, location_table).unwrap();
@@ -317,7 +317,7 @@ pub(super) fn dump_mir_results<'a, 'tcx>(
     regioncx: &RegionInferenceContext<'_>,
     closure_region_requirements: &Option<ClosureRegionRequirements<'_>>,
 ) {
-    if !mir_util::dump_enabled(infcx.tcx, "nll", source) {
+    if !mir_util::dump_enabled(infcx.tcx, "nll", source.def_id()) {
         return;
     }
 

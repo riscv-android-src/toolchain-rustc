@@ -1,13 +1,14 @@
 //! Main evaluator loop and setting up the initial stack frame.
 
+use std::convert::TryFrom;
 use std::ffi::OsStr;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 
-use rustc::ty::layout::{LayoutOf, Size};
-use rustc::ty::{self, TyCtxt};
 use rustc_hir::def_id::DefId;
+use rustc_middle::ty::{self, layout::LayoutCx, TyCtxt};
+use rustc_target::abi::LayoutOf;
 
 use crate::*;
 
@@ -18,6 +19,8 @@ pub struct MiriConfig {
     pub validate: bool,
     /// Determines if Stacked Borrows is enabled.
     pub stacked_borrows: bool,
+    /// Determines if alignment checking is enabled.
+    pub check_alignment: bool,
     /// Determines if communication with the host environment is enabled.
     pub communicate: bool,
     /// Determines if memory leaks should be ignored.
@@ -30,12 +33,25 @@ pub struct MiriConfig {
     pub seed: Option<u64>,
     /// The stacked borrow id to report about
     pub tracked_pointer_tag: Option<PtrId>,
+    /// The allocation id to report about.
+    pub tracked_alloc_id: Option<AllocId>,
 }
 
-/// Details of premature program termination.
-pub enum TerminationInfo {
-    Exit(i64),
-    Abort,
+impl Default for MiriConfig {
+    fn default() -> MiriConfig {
+        MiriConfig {
+            validate: true,
+            stacked_borrows: true,
+            check_alignment: true,
+            communicate: false,
+            ignore_leaks: false,
+            excluded_env_vars: vec![],
+            args: vec![],
+            seed: None,
+            tracked_pointer_tag: None,
+            tracked_alloc_id: None,
+        }
+    }
 }
 
 /// Returns a freshly created `InterpCx`, along with an `MPlaceTy` representing
@@ -47,19 +63,24 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     main_id: DefId,
     config: MiriConfig,
 ) -> InterpResult<'tcx, (InterpCx<'mir, 'tcx, Evaluator<'tcx>>, MPlaceTy<'tcx, Tag>)> {
+    let tcx_at = tcx.at(rustc_span::source_map::DUMMY_SP);
+    let param_env = ty::ParamEnv::reveal_all();
+    let layout_cx = LayoutCx { tcx, param_env };
     let mut ecx = InterpCx::new(
-        tcx.at(rustc_span::source_map::DUMMY_SP),
-        ty::ParamEnv::reveal_all(),
-        Evaluator::new(config.communicate, config.validate),
+        tcx_at,
+        param_env,
+        Evaluator::new(config.communicate, config.validate, layout_cx),
         MemoryExtra::new(
             StdRng::seed_from_u64(config.seed.unwrap_or(0)),
             config.stacked_borrows,
             config.tracked_pointer_tag,
+            config.tracked_alloc_id,
+            config.check_alignment,
         ),
     );
     // Complete initialization.
+    EnvVars::init(&mut ecx, config.excluded_env_vars)?;
     MemoryExtra::init_extern_statics(&mut ecx)?;
-    EnvVars::init(&mut ecx, config.excluded_env_vars);
 
     // Setup first stack-frame
     let main_instance = ty::Instance::mono(tcx, main_id);
@@ -82,14 +103,14 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     // First argument: pointer to `main()`.
     let main_ptr = ecx.memory.create_fn_alloc(FnVal::Instance(main_instance));
     // Second argument (argc): length of `config.args`.
-    let argc = Scalar::from_uint(config.args.len() as u128, ecx.pointer_size());
+    let argc = Scalar::from_machine_usize(u64::try_from(config.args.len()).unwrap(), &ecx);
     // Third argument (`argv`): created from `config.args`.
     let argv = {
         // Put each argument in memory, collect pointers.
         let mut argvs = Vec::<Scalar<Tag>>::new();
         for arg in config.args.iter() {
             // Make space for `0` terminator.
-            let size = arg.len() as u64 + 1;
+            let size = u64::try_from(arg.len()).unwrap().checked_add(1).unwrap();
             let arg_type = tcx.mk_array(tcx.types.u8, size);
             let arg_place = ecx.allocate(ecx.layout_of(arg_type)?, MiriMemoryKind::Machine.into());
             ecx.write_os_str_to_c_str(OsStr::new(arg), arg_place.ptr, size)?;
@@ -97,10 +118,10 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         }
         // Make an array with all these pointers, in the Miri memory.
         let argvs_layout =
-            ecx.layout_of(tcx.mk_array(tcx.mk_imm_ptr(tcx.types.u8), argvs.len() as u64))?;
+            ecx.layout_of(tcx.mk_array(tcx.mk_imm_ptr(tcx.types.u8), u64::try_from(argvs.len()).unwrap()))?;
         let argvs_place = ecx.allocate(argvs_layout, MiriMemoryKind::Machine.into());
         for (idx, arg) in argvs.into_iter().enumerate() {
-            let place = ecx.mplace_field(argvs_place, idx as u64)?;
+            let place = ecx.mplace_field(argvs_place, idx)?;
             ecx.write_scalar(arg, place.into())?;
         }
         ecx.memory.mark_immutable(argvs_place.ptr.assert_ptr().alloc_id)?;
@@ -134,14 +155,13 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
             cmd.push(std::char::from_u32(0).unwrap());
 
             let cmd_utf16: Vec<u16> = cmd.encode_utf16().collect();
-            let cmd_type = tcx.mk_array(tcx.types.u16, cmd_utf16.len() as u64);
+            let cmd_type = tcx.mk_array(tcx.types.u16, u64::try_from(cmd_utf16.len()).unwrap());
             let cmd_place = ecx.allocate(ecx.layout_of(cmd_type)?, MiriMemoryKind::Machine.into());
             ecx.machine.cmd_line = Some(cmd_place.ptr);
             // Store the UTF-16 string. We just allocated so we know the bounds are fine.
-            let char_size = Size::from_bytes(2);
             for (idx, &c) in cmd_utf16.iter().enumerate() {
-                let place = ecx.mplace_field(cmd_place, idx as u64)?;
-                ecx.write_scalar(Scalar::from_uint(c, char_size), place.into())?;
+                let place = ecx.mplace_field(cmd_place, idx)?;
+                ecx.write_scalar(Scalar::from_u16(c), place.into())?;
             }
         }
         argv
@@ -170,30 +190,33 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
 /// Returns `Some(return_code)` if program executed completed.
 /// Returns `None` if an evaluation error occured.
 pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) -> Option<i64> {
-    // FIXME: We always ignore leaks on some platforms where we do not
-    // correctly implement TLS destructors.
-    let target_os = tcx.sess.target.target.target_os.as_str();
-    let ignore_leaks = config.ignore_leaks || target_os == "windows" || target_os == "macos";
+    // FIXME: on Windows, we ignore leaks (https://github.com/rust-lang/miri/issues/1302).
+    let ignore_leaks = config.ignore_leaks || tcx.sess.target.target.target_os == "windows";
 
     let (mut ecx, ret_place) = match create_ecx(tcx, main_id, config) {
         Ok(v) => v,
         Err(mut err) => {
             err.print_backtrace();
-            panic!("Miri initialziation error: {}", err.kind)
+            panic!("Miri initialization error: {}", err.kind)
         }
     };
 
     // Perform the main execution.
     let res: InterpResult<'_, i64> = (|| {
+        // Main loop.
         while ecx.step()? {
             ecx.process_diagnostics();
         }
         // Read the return code pointer *before* we run TLS destructors, to assert
         // that it was written to by the time that `start` lang item returned.
         let return_code = ecx.read_scalar(ret_place.into())?.not_undef()?.to_machine_isize(&ecx)?;
+        // Global destructors.
         ecx.run_tls_dtors()?;
         Ok(return_code)
     })();
+
+    // Machine cleanup.
+    EnvVars::cleanup(&mut ecx).unwrap();
 
     // Process the result.
     match res {
@@ -209,6 +232,6 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
             }
             Some(return_code)
         }
-        Err(e) => report_diagnostic(&ecx, e),
+        Err(e) => report_error(&ecx, e),
     }
 }

@@ -3,9 +3,6 @@ use crate::utils::{
     must_use_attr, qpath_res, return_ty, snippet, snippet_opt, span_lint, span_lint_and_help, span_lint_and_then,
     trait_ref_of_method, type_is_unsafe_function,
 };
-use rustc::hir::map::Map;
-use rustc::lint::in_external_macro;
-use rustc::ty::{self, Ty};
 use rustc_ast::ast::Attribute;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
@@ -13,6 +10,9 @@ use rustc_hir as hir;
 use rustc_hir::intravisit;
 use rustc_hir::{def::Res, def_id::DefId};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::hir::map::Map;
+use rustc_middle::lint::in_external_macro;
+use rustc_middle::ty::{self, Ty};
 use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::Span;
 use rustc_target::spec::abi::Abi;
@@ -250,7 +250,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::ImplItem<'_>) {
-        if let hir::ImplItemKind::Method(ref sig, ref body_id) = item.kind {
+        if let hir::ImplItemKind::Fn(ref sig, ref body_id) = item.kind {
             let attr = must_use_attr(&item.attrs);
             if let Some(attr) = attr {
                 let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
@@ -273,7 +273,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx hir::TraitItem<'_>) {
-        if let hir::TraitItemKind::Method(ref sig, ref eid) = item.kind {
+        if let hir::TraitItemKind::Fn(ref sig, ref eid) = item.kind {
             // don't lint extern functions decls, it's not their fault
             if sig.header.abi == Abi::Rust {
                 self.check_arg_number(cx, &sig.decl, item.span.with_hi(sig.decl.output.span().hi()));
@@ -284,7 +284,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Functions {
                 let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
                 check_needless_must_use(cx, &sig.decl, item.hir_id, item.span, fn_header_span, attr);
             }
-            if let hir::TraitMethod::Provided(eid) = *eid {
+            if let hir::TraitFn::Provided(eid) = *eid {
                 let body = cx.tcx.hir().body(eid);
                 Self::check_raw_ptr(cx, sig.header.unsafety, &sig.decl, body, item.hir_id);
 
@@ -416,8 +416,8 @@ fn check_needless_must_use(
             MUST_USE_UNIT,
             fn_header_span,
             "this unit-returning function has a `#[must_use]` attribute",
-            |db| {
-                db.span_suggestion(
+            |diag| {
+                diag.span_suggestion(
                     attr.span,
                     "remove the attribute",
                     "".into(),
@@ -454,9 +454,9 @@ fn check_must_use_candidate<'a, 'tcx>(
     {
         return;
     }
-    span_lint_and_then(cx, MUST_USE_CANDIDATE, fn_span, msg, |db| {
+    span_lint_and_then(cx, MUST_USE_CANDIDATE, fn_span, msg, |diag| {
         if let Some(snippet) = snippet_opt(cx, fn_span) {
-            db.span_suggestion(
+            diag.span_suggestion(
                 fn_span,
                 "add the attribute",
                 format!("#[must_use] {}", snippet),
@@ -486,7 +486,7 @@ fn is_mutable_pat(cx: &LateContext<'_, '_>, pat: &hir::Pat<'_>, tys: &mut FxHash
     if let hir::PatKind::Wild = pat.kind {
         return false; // ignore `_` patterns
     }
-    let def_id = pat.hir_id.owner_def_id();
+    let def_id = pat.hir_id.owner.to_def_id();
     if cx.tcx.has_typeck_tables(def_id) {
         is_mutable_ty(cx, &cx.tcx.typeck_tables_of(def_id).pat_ty(pat), pat.span, tys)
     } else {
@@ -561,7 +561,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for DerefVisitor<'a, 'tcx> {
         intravisit::walk_expr(self, expr);
     }
 
-    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<Self::Map> {
         intravisit::NestedVisitorMap::None
     }
 }
@@ -601,7 +601,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for StaticMutVisitor<'a, 'tcx> {
             Call(_, args) | MethodCall(_, _, args) => {
                 let mut tys = FxHashSet::default();
                 for arg in args {
-                    let def_id = arg.hir_id.owner_def_id();
+                    let def_id = arg.hir_id.owner.to_def_id();
                     if self.cx.tcx.has_typeck_tables(def_id)
                         && is_mutable_ty(
                             self.cx,
@@ -624,7 +624,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for StaticMutVisitor<'a, 'tcx> {
         }
     }
 
-    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> intravisit::NestedVisitorMap<Self::Map> {
         intravisit::NestedVisitorMap::None
     }
 }

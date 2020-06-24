@@ -1,13 +1,16 @@
 // ignore-windows: File handling is not implemented yet
 // compile-flags: -Zmiri-disable-isolation
 
-use std::fs::{File, create_dir, read_dir, remove_dir, remove_dir_all, remove_file, rename};
+use std::fs::{
+    File, create_dir, OpenOptions, read_dir, remove_dir, remove_dir_all, remove_file, rename,
+};
 use std::io::{Read, Write, ErrorKind, Result, Seek, SeekFrom};
 use std::path::{PathBuf, Path};
 
 fn main() {
     test_file();
     test_file_clone();
+    test_file_create_new();
     test_seek();
     test_metadata();
     test_symlink();
@@ -16,10 +19,13 @@ fn main() {
     test_directory();
 }
 
+fn tmp() -> PathBuf {
+    std::env::var("MIRI_TEMP").map(PathBuf::from).unwrap_or_else(|_| std::env::temp_dir())
+}
+
 /// Prepare: compute filename and make sure the file does not exist.
 fn prepare(filename: &str) -> PathBuf {
-    let tmp = std::env::temp_dir();
-    let path = tmp.join(filename);
+    let path = tmp().join(filename);
     // Clean the paths for robustness.
     remove_file(&path).ok();
     path
@@ -27,8 +33,7 @@ fn prepare(filename: &str) -> PathBuf {
 
 /// Prepare directory: compute directory name and make sure it does not exist.
 fn prepare_dir(dirname: &str) -> PathBuf {
-    let tmp = std::env::temp_dir();
-    let path = tmp.join(&dirname);
+    let path = tmp().join(&dirname);
     // Clean the directory for robustness.
     remove_dir_all(&path).ok();
     path
@@ -80,6 +85,20 @@ fn test_file_clone() {
     assert_eq!(bytes, contents.as_slice());
 
     // Removing file should succeed.
+    remove_file(&path).unwrap();
+}
+
+fn test_file_create_new() {
+    let path = prepare("miri_test_fs_file_create_new.txt");
+
+    // Creating a new file that doesn't yet exist should succeed.
+    OpenOptions::new().write(true).create_new(true).open(&path).unwrap();
+    // Creating a new file that already exists should fail.
+    assert_eq!(ErrorKind::AlreadyExists, OpenOptions::new().write(true).create_new(true).open(&path).unwrap_err().kind());
+    // Optionally creating a new file that already exists should succeed.
+    OpenOptions::new().write(true).create(true).open(&path).unwrap();
+
+    // Clean up
     remove_file(&path).unwrap();
 }
 
@@ -142,7 +161,10 @@ fn test_symlink() {
     let symlink_path = prepare("miri_test_fs_symlink.txt");
 
     // Creating a symbolic link should succeed.
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&path, &symlink_path).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(&path, &symlink_path).unwrap();
     // Test that the symbolic link has the same contents as the file.
     let mut symlink_file = File::open(&symlink_path).unwrap();
     let mut contents = Vec::new();
@@ -215,9 +237,13 @@ fn test_directory() {
     // Clean up the files in the directory
     remove_file(&path_1).unwrap();
     remove_file(&path_2).unwrap();
+    // Now there should be nothing left in the directory.
+    let dir_iter = read_dir(&dir_path).unwrap();
+    let file_names = dir_iter.map(|e| e.unwrap().file_name()).collect::<Vec<_>>();
+    assert!(file_names.is_empty());
 
     // Deleting the directory should succeed.
     remove_dir(&dir_path).unwrap();
-    // Reading the metadata of a non-existent file should fail with a "not found" error.
+    // Reading the metadata of a non-existent directory should fail with a "not found" error.
     assert_eq!(ErrorKind::NotFound, check_metadata(&[], &dir_path).unwrap_err().kind());
 }

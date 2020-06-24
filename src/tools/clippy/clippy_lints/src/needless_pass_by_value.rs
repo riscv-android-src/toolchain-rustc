@@ -4,20 +4,19 @@ use crate::utils::{
     snippet, snippet_opt, span_lint_and_then,
 };
 use if_chain::if_chain;
-use matches::matches;
-use rustc::ty::{self, TypeFoldable};
 use rustc_ast::ast::Attribute;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir::intravisit::FnKind;
 use rustc_hir::{BindingAnnotation, Body, FnDecl, GenericArg, HirId, ItemKind, Node, PatKind, QPath, TyKind};
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_infer::traits;
-use rustc_infer::traits::misc::can_type_implement_copy;
 use rustc_lint::{LateContext, LateLintPass};
+use rustc_middle::ty::{self, TypeFoldable};
 use rustc_session::{declare_lint_pass, declare_tool_lint};
-use rustc_span::{Span, Symbol};
+use rustc_span::Span;
 use rustc_target::spec::abi::Abi;
+use rustc_trait_selection::traits;
+use rustc_trait_selection::traits::misc::can_type_implement_copy;
 use rustc_typeck::expr_use_visitor as euv;
 use std::borrow::Cow;
 
@@ -114,8 +113,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
 
         let preds = traits::elaborate_predicates(cx.tcx, cx.param_env.caller_bounds.to_vec())
             .filter(|p| !p.is_global())
-            .filter_map(|pred| {
-                if let ty::Predicate::Trait(poly_trait_ref, _) = pred {
+            .filter_map(|obligation| {
+                if let ty::Predicate::Trait(poly_trait_ref, _) = obligation.predicate {
                     if poly_trait_ref.def_id() == sized_trait || poly_trait_ref.skip_binder().has_escaping_bound_vars()
                     {
                         return None;
@@ -204,18 +203,18 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                     }
 
                     // Dereference suggestion
-                    let sugg = |db: &mut DiagnosticBuilder<'_>| {
+                    let sugg = |diag: &mut DiagnosticBuilder<'_>| {
                         if let ty::Adt(def, ..) = ty.kind {
                             if let Some(span) = cx.tcx.hir().span_if_local(def.did) {
                                 if can_type_implement_copy(cx.tcx, cx.param_env, ty).is_ok() {
-                                    db.span_help(span, "consider marking this type as `Copy`");
+                                    diag.span_help(span, "consider marking this type as `Copy`");
                                 }
                             }
                         }
 
                         let deref_span = spans_need_deref.get(&canonical_id);
                         if_chain! {
-                            if is_type_diagnostic_item(cx, ty, Symbol::intern("vec_type"));
+                            if is_type_diagnostic_item(cx, ty, sym!(vec_type));
                             if let Some(clone_spans) =
                                 get_spans(cx, Some(body.id()), idx, &[("clone", ".to_owned()")]);
                             if let TyKind::Path(QPath::Resolved(_, ref path)) = input.kind;
@@ -228,7 +227,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                                 }).unwrap());
                             then {
                                 let slice_ty = format!("&[{}]", snippet(cx, elem_ty.span, "_"));
-                                db.span_suggestion(
+                                diag.span_suggestion(
                                     input.span,
                                     "consider changing the type to",
                                     slice_ty,
@@ -236,7 +235,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                                 );
 
                                 for (span, suggestion) in clone_spans {
-                                    db.span_suggestion(
+                                    diag.span_suggestion(
                                         span,
                                         &snippet_opt(cx, span)
                                             .map_or(
@@ -257,7 +256,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                         if match_type(cx, ty, &paths::STRING) {
                             if let Some(clone_spans) =
                                 get_spans(cx, Some(body.id()), idx, &[("clone", ".to_string()"), ("as_str", "")]) {
-                                db.span_suggestion(
+                                diag.span_suggestion(
                                     input.span,
                                     "consider changing the type to",
                                     "&str".to_string(),
@@ -265,7 +264,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                                 );
 
                                 for (span, suggestion) in clone_spans {
-                                    db.span_suggestion(
+                                    diag.span_suggestion(
                                         span,
                                         &snippet_opt(cx, span)
                                             .map_or(
@@ -294,7 +293,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for NeedlessPassByValue {
                             );
                             spans.sort_by_key(|&(span, _)| span);
                         }
-                        multispan_sugg(db, "consider taking a reference instead".to_string(), spans);
+                        multispan_sugg(diag, "consider taking a reference instead".to_string(), spans);
                     };
 
                     span_lint_and_then(

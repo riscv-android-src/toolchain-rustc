@@ -1,13 +1,13 @@
-use rustc::hir::map as hir_map;
-use rustc::session::CrateDisambiguator;
-use rustc::ty::subst::Subst;
-use rustc::ty::{self, ToPredicate, Ty, TyCtxt, WithConstness};
 use rustc_data_structures::svh::Svh;
 use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use rustc_infer::traits;
+use rustc_middle::hir::map as hir_map;
+use rustc_middle::ty::subst::Subst;
+use rustc_middle::ty::{self, ToPredicate, Ty, TyCtxt, WithConstness};
+use rustc_session::CrateDisambiguator;
 use rustc_span::symbol::Symbol;
 use rustc_span::Span;
+use rustc_trait_selection::traits;
 
 fn sized_constraint_for_ty<'tcx>(
     tcx: TyCtxt<'tcx>,
@@ -85,7 +85,7 @@ fn associated_item_from_trait_item_ref(
     let def_id = tcx.hir().local_def_id(trait_item_ref.id.hir_id);
     let (kind, has_self) = match trait_item_ref.kind {
         hir::AssocItemKind::Const => (ty::AssocKind::Const, false),
-        hir::AssocItemKind::Method { has_self } => (ty::AssocKind::Method, has_self),
+        hir::AssocItemKind::Fn { has_self } => (ty::AssocKind::Fn, has_self),
         hir::AssocItemKind::Type => (ty::AssocKind::Type, false),
         hir::AssocItemKind::OpaqueTy => bug!("only impls can have opaque types"),
     };
@@ -98,7 +98,7 @@ fn associated_item_from_trait_item_ref(
         defaultness: trait_item_ref.defaultness,
         def_id,
         container: ty::TraitContainer(parent_def_id),
-        method_has_self_argument: has_self,
+        fn_has_self_parameter: has_self,
     }
 }
 
@@ -110,7 +110,7 @@ fn associated_item_from_impl_item_ref(
     let def_id = tcx.hir().local_def_id(impl_item_ref.id.hir_id);
     let (kind, has_self) = match impl_item_ref.kind {
         hir::AssocItemKind::Const => (ty::AssocKind::Const, false),
-        hir::AssocItemKind::Method { has_self } => (ty::AssocKind::Method, has_self),
+        hir::AssocItemKind::Fn { has_self } => (ty::AssocKind::Fn, has_self),
         hir::AssocItemKind::Type => (ty::AssocKind::Type, false),
         hir::AssocItemKind::OpaqueTy => (ty::AssocKind::OpaqueTy, false),
     };
@@ -123,7 +123,7 @@ fn associated_item_from_impl_item_ref(
         defaultness: impl_item_ref.defaultness,
         def_id,
         container: ty::ImplContainer(parent_def_id),
-        method_has_self_argument: has_self,
+        fn_has_self_parameter: has_self,
     }
 }
 
@@ -163,6 +163,16 @@ fn associated_item(tcx: TyCtxt<'_>, def_id: DefId) -> ty::AssocItem {
         "unexpected parent of trait or impl item or item not found: {:?}",
         parent_item.kind
     )
+}
+
+fn impl_defaultness(tcx: TyCtxt<'_>, def_id: DefId) -> hir::Defaultness {
+    let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
+    let item = tcx.hir().expect_item(hir_id);
+    if let hir::ItemKind::Impl { defaultness, .. } = item.kind {
+        defaultness
+    } else {
+        bug!("`impl_defaultness` called on {:?}", item);
+    }
 }
 
 /// Calculates the `Sized` constraint.
@@ -210,7 +220,7 @@ fn associated_item_def_ids(tcx: TyCtxt<'_>, def_id: DefId) -> &[DefId] {
     }
 }
 
-fn associated_items<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx ty::AssociatedItems {
+fn associated_items(tcx: TyCtxt<'_>, def_id: DefId) -> &ty::AssociatedItems {
     let items = tcx.associated_item_def_ids(def_id).iter().map(|did| tcx.associated_item(*did));
     tcx.arena.alloc(ty::AssociatedItems::new(items))
 }
@@ -255,7 +265,7 @@ fn param_env(tcx: TyCtxt<'_>, def_id: DefId) -> ty::ParamEnv<'_> {
     let unnormalized_env =
         ty::ParamEnv::new(tcx.intern_predicates(&predicates), traits::Reveal::UserFacing, None);
 
-    let body_id = tcx.hir().as_local_hir_id(def_id).map_or(hir::DUMMY_HIR_ID, |id| {
+    let body_id = tcx.hir().as_local_hir_id(def_id).map_or(hir::CRATE_HIR_ID, |id| {
         tcx.hir().maybe_body_owned_by(id).map_or(id, |body| body.hir_id)
     });
     let cause = traits::ObligationCause::misc(tcx.def_span(def_id), body_id);
@@ -273,8 +283,7 @@ fn original_crate_name(tcx: TyCtxt<'_>, crate_num: CrateNum) -> Symbol {
 }
 
 fn crate_hash(tcx: TyCtxt<'_>, crate_num: CrateNum) -> Svh {
-    assert_eq!(crate_num, LOCAL_CRATE);
-    tcx.hir().crate_hash
+    tcx.index_hir(crate_num).crate_hash
 }
 
 fn instance_def_size_estimate<'tcx>(
@@ -372,6 +381,7 @@ pub fn provide(providers: &mut ty::query::Providers<'_>) {
         crate_hash,
         instance_def_size_estimate,
         issue33140_self_ty,
+        impl_defaultness,
         ..*providers
     };
 }

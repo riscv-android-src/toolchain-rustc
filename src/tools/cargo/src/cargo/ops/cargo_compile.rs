@@ -30,6 +30,7 @@ use std::sync::Arc;
 
 use crate::core::compiler::standard_lib;
 use crate::core::compiler::unit_dependencies::build_unit_dependencies;
+use crate::core::compiler::unit_graph;
 use crate::core::compiler::{BuildConfig, BuildContext, Compilation, Context};
 use crate::core::compiler::{CompileKind, CompileMode, RustcTargetData, Unit};
 use crate::core::compiler::{DefaultExecutor, Executor, UnitInterner};
@@ -45,8 +46,7 @@ use crate::util::{closest_msg, profile, CargoResult};
 
 /// Contains information about how a package should be compiled.
 #[derive(Debug)]
-pub struct CompileOptions<'a> {
-    pub config: &'a Config,
+pub struct CompileOptions {
     /// Configuration information for a rustc build
     pub build_config: BuildConfig,
     /// Extra features to build for the root package
@@ -78,10 +78,9 @@ pub struct CompileOptions<'a> {
     pub export_dir: Option<PathBuf>,
 }
 
-impl<'a> CompileOptions<'a> {
-    pub fn new(config: &'a Config, mode: CompileMode) -> CargoResult<CompileOptions<'a>> {
+impl<'a> CompileOptions {
+    pub fn new(config: &Config, mode: CompileMode) -> CargoResult<CompileOptions> {
         Ok(CompileOptions {
-            config,
             build_config: BuildConfig::new(config, None, &None, mode)?,
             features: Vec::new(),
             all_features: false,
@@ -241,10 +240,7 @@ pub enum CompileFilter {
     },
 }
 
-pub fn compile<'a>(
-    ws: &Workspace<'a>,
-    options: &CompileOptions<'a>,
-) -> CargoResult<Compilation<'a>> {
+pub fn compile<'a>(ws: &Workspace<'a>, options: &CompileOptions) -> CargoResult<Compilation<'a>> {
     let exec: Arc<dyn Executor> = Arc::new(DefaultExecutor);
     compile_with_exec(ws, options, &exec)
 }
@@ -253,7 +249,7 @@ pub fn compile<'a>(
 /// calls and add custom logic. `compile` uses `DefaultExecutor` which just passes calls through.
 pub fn compile_with_exec<'a>(
     ws: &Workspace<'a>,
-    options: &CompileOptions<'a>,
+    options: &CompileOptions,
     exec: &Arc<dyn Executor>,
 ) -> CargoResult<Compilation<'a>> {
     ws.emit_warnings()?;
@@ -262,11 +258,10 @@ pub fn compile_with_exec<'a>(
 
 pub fn compile_ws<'a>(
     ws: &Workspace<'a>,
-    options: &CompileOptions<'a>,
+    options: &CompileOptions,
     exec: &Arc<dyn Executor>,
 ) -> CargoResult<Compilation<'a>> {
     let CompileOptions {
-        config,
         ref build_config,
         ref spec,
         ref features,
@@ -279,6 +274,7 @@ pub fn compile_ws<'a>(
         rustdoc_document_private_items,
         ref export_dir,
     } = *options;
+    let config = ws.config();
 
     match build_config.mode {
         CompileMode::Test
@@ -355,11 +351,8 @@ pub fn compile_ws<'a>(
 
     // Find the packages in the resolver that the user wants to build (those
     // passed in with `-p` or the defaults from the workspace), and convert
-    // Vec<PackageIdSpec> to a Vec<&PackageId>.
-    let to_build_ids = specs
-        .iter()
-        .map(|s| s.query(resolve.iter()))
-        .collect::<CargoResult<Vec<_>>>()?;
+    // Vec<PackageIdSpec> to a Vec<PackageId>.
+    let to_build_ids = resolve.specs_to_ids(&specs)?;
     // Now get the `Package` for each `PackageId`. This may trigger a download
     // if the user specified `-p` for a dependency that is not downloaded.
     // Dependencies will be downloaded during build_unit_dependencies.
@@ -490,6 +483,11 @@ pub fn compile_ws<'a>(
         &std_roots,
     )?;
 
+    if bcx.build_config.unit_graph {
+        unit_graph::emit_serialized_unit_graph(&units, &unit_dependencies)?;
+        return Ok(Compilation::new(&bcx, build_config.requested_kind)?);
+    }
+
     let ret = {
         let _p = profile::start("compiling");
         let cx = Context::new(config, &bcx, unit_dependencies, build_config.requested_kind)?;
@@ -607,16 +605,18 @@ impl CompileFilter {
     pub fn need_dev_deps(&self, mode: CompileMode) -> bool {
         match mode {
             CompileMode::Test | CompileMode::Doctest | CompileMode::Bench => true,
-            CompileMode::Build | CompileMode::Doc { .. } | CompileMode::Check { .. } => match *self
-            {
-                CompileFilter::Default { .. } => false,
-                CompileFilter::Only {
-                    ref examples,
-                    ref tests,
-                    ref benches,
-                    ..
-                } => examples.is_specific() || tests.is_specific() || benches.is_specific(),
-            },
+            CompileMode::Check { test: true } => true,
+            CompileMode::Build | CompileMode::Doc { .. } | CompileMode::Check { test: false } => {
+                match *self {
+                    CompileFilter::Default { .. } => false,
+                    CompileFilter::Only {
+                        ref examples,
+                        ref tests,
+                        ref benches,
+                        ..
+                    } => examples.is_specific() || tests.is_specific() || benches.is_specific(),
+                }
+            }
             CompileMode::RunCustomBuild => panic!("Invalid mode"),
         }
     }
@@ -749,10 +749,10 @@ fn generate_targets<'a>(
             bcx.profiles
                 .get_profile(pkg.package_id(), ws.is_member(pkg), unit_for, target_mode);
 
-        let features = Vec::from(resolved_features.activated_features(
-            pkg.package_id(),
-            FeaturesFor::NormalOrDev, // Root units are never build dependencies.
-        ));
+        // No need to worry about build-dependencies, roots are never build dependencies.
+        let features_for = FeaturesFor::from_for_host(target.proc_macro());
+        let features =
+            Vec::from(resolved_features.activated_features(pkg.package_id(), features_for));
         bcx.units.intern(
             pkg,
             target,
@@ -902,7 +902,12 @@ fn generate_targets<'a>(
         let unavailable_features = match target.required_features() {
             Some(rf) => {
                 let features = features_map.entry(pkg).or_insert_with(|| {
-                    resolve_all_features(resolve, resolved_features, pkg.package_id())
+                    resolve_all_features(
+                        resolve,
+                        resolved_features,
+                        &bcx.packages,
+                        pkg.package_id(),
+                    )
                 });
                 rf.iter().filter(|f| !features.contains(*f)).collect()
             }
@@ -936,9 +941,10 @@ fn generate_targets<'a>(
 ///
 /// Dependencies are added as `dep_name/feat_name` because `required-features`
 /// wants to support that syntax.
-fn resolve_all_features(
+pub fn resolve_all_features(
     resolve_with_overrides: &Resolve,
     resolved_features: &features::ResolvedFeatures,
+    package_set: &PackageSet<'_>,
     package_id: PackageId,
 ) -> HashSet<String> {
     let mut features: HashSet<String> = resolved_features
@@ -950,14 +956,14 @@ fn resolve_all_features(
     // Include features enabled for use by dependencies so targets can also use them with the
     // required-features field when deciding whether to be built or skipped.
     for (dep_id, deps) in resolve_with_overrides.deps(package_id) {
+        let is_proc_macro = package_set
+            .get_one(dep_id)
+            .expect("packages downloaded")
+            .proc_macro();
         for dep in deps {
-            let features_for = if dep.is_build() {
-                FeaturesFor::BuildDep
-            } else {
-                FeaturesFor::NormalOrDev
-            };
-            for feature in resolved_features.activated_features(dep_id, features_for) {
-                features.insert(dep.name_in_toml().to_string() + "/" + &feature);
+            let features_for = FeaturesFor::from_for_host(is_proc_macro || dep.is_build());
+            for feature in resolved_features.activated_features_unverified(dep_id, features_for) {
+                features.insert(format!("{}/{}", dep.name_in_toml(), feature));
             }
         }
     }

@@ -1,10 +1,10 @@
 use super::combine::{CombineFields, RelationDir};
 use super::Subtype;
 
-use rustc::ty::relate::{self, Relate, RelateResult, TypeRelation};
-use rustc::ty::subst::SubstsRef;
-use rustc::ty::TyVar;
-use rustc::ty::{self, Ty, TyCtxt};
+use rustc_middle::ty::relate::{self, Relate, RelateResult, TypeRelation};
+use rustc_middle::ty::subst::SubstsRef;
+use rustc_middle::ty::TyVar;
+use rustc_middle::ty::{self, Ty, TyCtxt};
 
 use rustc_hir::def_id::DefId;
 
@@ -136,7 +136,7 @@ impl TypeRelation<'tcx> for Equate<'combine, 'infcx, 'tcx> {
         } else {
             // Fast path for the common case.
             self.relate(a.skip_binder(), b.skip_binder())?;
-            return Ok(a.clone());
+            Ok(a.clone())
         }
     }
 }

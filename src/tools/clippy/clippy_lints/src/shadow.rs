@@ -1,13 +1,13 @@
 use crate::reexport::Name;
 use crate::utils::{contains_name, higher, iter_input_pats, snippet, span_lint_and_then};
-use rustc::lint::in_external_macro;
-use rustc::ty;
 use rustc_hir::intravisit::FnKind;
 use rustc_hir::{
     Block, Body, Expr, ExprKind, FnDecl, Guard, HirId, Local, MutTy, Pat, PatKind, Path, QPath, StmtKind, Ty, TyKind,
     UnOp,
 };
 use rustc_lint::{LateContext, LateLintPass, LintContext};
+use rustc_middle::lint::in_external_macro;
+use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
 
@@ -154,10 +154,14 @@ fn check_local<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, local: &'tcx Local<'_>, bin
 }
 
 fn is_binding(cx: &LateContext<'_, '_>, pat_id: HirId) -> bool {
-    let var_ty = cx.tables.node_type(pat_id);
-    match var_ty.kind {
-        ty::Adt(..) => false,
-        _ => true,
+    let var_ty = cx.tables.node_type_opt(pat_id);
+    if let Some(var_ty) = var_ty {
+        match var_ty.kind {
+            ty::Adt(..) => false,
+            _ => true,
+        }
+    } else {
+        false
     }
 }
 
@@ -264,8 +268,8 @@ fn lint_shadow<'a, 'tcx>(
                     snippet(cx, pattern_span, "_"),
                     snippet(cx, expr.span, "..")
                 ),
-                |db| {
-                    db.span_note(prev_span, "previous binding is here");
+                |diag| {
+                    diag.span_note(prev_span, "previous binding is here");
                 },
             );
         } else if contains_name(name, expr) {
@@ -278,9 +282,9 @@ fn lint_shadow<'a, 'tcx>(
                     snippet(cx, pattern_span, "_"),
                     snippet(cx, expr.span, "..")
                 ),
-                |db| {
-                    db.span_note(expr.span, "initialization happens here");
-                    db.span_note(prev_span, "previous binding is here");
+                |diag| {
+                    diag.span_note(expr.span, "initialization happens here");
+                    diag.span_note(prev_span, "previous binding is here");
                 },
             );
         } else {
@@ -293,9 +297,9 @@ fn lint_shadow<'a, 'tcx>(
                     snippet(cx, pattern_span, "_"),
                     snippet(cx, expr.span, "..")
                 ),
-                |db| {
-                    db.span_note(expr.span, "initialization happens here");
-                    db.span_note(prev_span, "previous binding is here");
+                |diag| {
+                    diag.span_note(expr.span, "initialization happens here");
+                    diag.span_note(prev_span, "previous binding is here");
                 },
             );
         }
@@ -305,8 +309,8 @@ fn lint_shadow<'a, 'tcx>(
             SHADOW_UNRELATED,
             span,
             &format!("`{}` shadows a previous declaration", snippet(cx, pattern_span, "_")),
-            |db| {
-                db.span_note(prev_span, "previous binding is here");
+            |diag| {
+                diag.span_note(prev_span, "previous binding is here");
             },
         );
     }

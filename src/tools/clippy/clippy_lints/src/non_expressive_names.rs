@@ -1,6 +1,6 @@
 use crate::utils::{span_lint, span_lint_and_then};
 use rustc_ast::ast::{
-    Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, Ident, Item, ItemKind, Local, Mac, Pat, PatKind,
+    Arm, AssocItem, AssocItemKind, Attribute, Block, FnDecl, Ident, Item, ItemKind, Local, MacCall, Pat, PatKind,
 };
 use rustc_ast::attr;
 use rustc_ast::visit::{walk_block, walk_expr, walk_pat, Visitor};
@@ -93,7 +93,7 @@ impl<'a, 'tcx> SimilarNamesLocalVisitor<'a, 'tcx> {
     fn check_single_char_names(&self) {
         let num_single_char_names = self.single_char_names.iter().flatten().count();
         let threshold = self.lint.single_char_binding_names_threshold;
-        if num_single_char_names as u64 >= threshold {
+        if num_single_char_names as u64 > threshold {
             let span = self
                 .single_char_names
                 .iter()
@@ -145,7 +145,7 @@ impl<'a, 'tcx, 'b> Visitor<'tcx> for SimilarNamesNameVisitor<'a, 'tcx, 'b> {
             _ => walk_pat(self, pat),
         }
     }
-    fn visit_mac(&mut self, _mac: &Mac) {
+    fn visit_mac(&mut self, _mac: &MacCall) {
         // do not check macs
     }
 }
@@ -347,7 +347,7 @@ impl<'a, 'tcx> Visitor<'tcx> for SimilarNamesLocalVisitor<'a, 'tcx> {
     fn visit_item(&mut self, _: &Item) {
         // do not recurse into inner items
     }
-    fn visit_mac(&mut self, _mac: &Mac) {
+    fn visit_mac(&mut self, _mac: &MacCall) {
         // do not check macs
     }
 }

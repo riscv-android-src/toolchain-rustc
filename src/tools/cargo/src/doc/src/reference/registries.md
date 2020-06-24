@@ -403,7 +403,7 @@ considered as an exhaustive list of restrictions [crates.io] imposes.
     },
     // The `links` string value from the package's manifest, or null if not
     // specified. This field is optional and defaults to null.
-    "links": null,
+    "links": null
 }
 ```
 

@@ -148,10 +148,17 @@ pub fn to_string(f: impl FnOnce(&mut State<'_>)) -> String {
 
 // This makes comma-separated lists look slightly nicer,
 // and also addresses a specific regression described in issue #63896.
-fn tt_prepend_space(tt: &TokenTree) -> bool {
+fn tt_prepend_space(tt: &TokenTree, prev: &TokenTree) -> bool {
     match tt {
         TokenTree::Token(token) => match token.kind {
             token::Comma => false,
+            _ => true,
+        },
+        TokenTree::Delimited(_, DelimToken::Paren, _) => match prev {
+            TokenTree::Token(token) => match token.kind {
+                token::Ident(_, _) => false,
+                _ => true,
+            },
             _ => true,
         },
         _ => true,
@@ -630,9 +637,8 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
         match tt {
             TokenTree::Token(ref token) => {
                 self.word(token_to_string_ext(&token, convert_dollar_crate));
-                match token.kind {
-                    token::DocComment(..) => self.hardbreak(),
-                    _ => {}
+                if let token::DocComment(..) = token.kind {
+                    self.hardbreak()
                 }
             }
             TokenTree::Delimited(dspan, delim, tts) => {
@@ -650,11 +656,14 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
     }
 
     fn print_tts(&mut self, tts: tokenstream::TokenStream, convert_dollar_crate: bool) {
-        for (i, tt) in tts.into_trees().enumerate() {
-            if i != 0 && tt_prepend_space(&tt) {
+        let mut iter = tts.into_trees().peekable();
+        while let Some(tt) = iter.next() {
+            let show_space =
+                if let Some(next) = iter.peek() { tt_prepend_space(next, &tt) } else { false };
+            self.print_tt(tt, convert_dollar_crate);
+            if show_space {
                 self.space();
             }
-            self.print_tt(tt, convert_dollar_crate);
         }
     }
 
@@ -786,31 +795,10 @@ impl<'a> PrintState<'a> for State<'a> {
         match *args {
             ast::GenericArgs::AngleBracketed(ref data) => {
                 self.s.word("<");
-
-                self.commasep(Inconsistent, &data.args, |s, generic_arg| {
-                    s.print_generic_arg(generic_arg)
+                self.commasep(Inconsistent, &data.args, |s, arg| match arg {
+                    ast::AngleBracketedArg::Arg(a) => s.print_generic_arg(a),
+                    ast::AngleBracketedArg::Constraint(c) => s.print_assoc_constraint(c),
                 });
-
-                let mut comma = !data.args.is_empty();
-
-                for constraint in data.constraints.iter() {
-                    if comma {
-                        self.word_space(",")
-                    }
-                    self.print_ident(constraint.ident);
-                    self.s.space();
-                    match constraint.kind {
-                        ast::AssocTyConstraintKind::Equality { ref ty } => {
-                            self.word_space("=");
-                            self.print_type(ty);
-                        }
-                        ast::AssocTyConstraintKind::Bound { ref bounds } => {
-                            self.print_type_bounds(":", &*bounds);
-                        }
-                    }
-                    comma = true;
-                }
-
                 self.s.word(">")
             }
 
@@ -881,7 +869,21 @@ impl<'a> State<'a> {
         }
     }
 
-    crate fn print_generic_arg(&mut self, generic_arg: &GenericArg) {
+    pub fn print_assoc_constraint(&mut self, constraint: &ast::AssocTyConstraint) {
+        self.print_ident(constraint.ident);
+        self.s.space();
+        match &constraint.kind {
+            ast::AssocTyConstraintKind::Equality { ty } => {
+                self.word_space("=");
+                self.print_type(ty);
+            }
+            ast::AssocTyConstraintKind::Bound { bounds } => {
+                self.print_type_bounds(":", &*bounds);
+            }
+        }
+    }
+
+    pub fn print_generic_arg(&mut self, generic_arg: &GenericArg) {
         match generic_arg {
             GenericArg::Lifetime(lt) => self.print_lifetime(*lt),
             GenericArg::Type(ty) => self.print_type(ty),
@@ -960,7 +962,7 @@ impl<'a> State<'a> {
             ast::TyKind::ImplicitSelf => {
                 self.s.word("Self");
             }
-            ast::TyKind::Mac(ref m) => {
+            ast::TyKind::MacCall(ref m) => {
                 self.print_mac(m);
             }
             ast::TyKind::CVarArgs => {
@@ -987,7 +989,7 @@ impl<'a> State<'a> {
             ast::ForeignItemKind::TyAlias(def, generics, bounds, ty) => {
                 self.print_associated_type(ident, generics, bounds, ty.as_deref(), vis, *def);
             }
-            ast::ForeignItemKind::Macro(m) => {
+            ast::ForeignItemKind::MacCall(m) => {
                 self.print_mac(m);
                 if m.args.need_semicolon() {
                     self.s.word(";");
@@ -1160,7 +1162,7 @@ impl<'a> State<'a> {
                     self.s.space();
                 }
 
-                if polarity == ast::ImplPolarity::Negative {
+                if let ast::ImplPolarity::Negative(_) = polarity {
                     self.s.word("!");
                 }
 
@@ -1231,14 +1233,14 @@ impl<'a> State<'a> {
                 self.print_where_clause(&generics.where_clause);
                 self.s.word(";");
             }
-            ast::ItemKind::Mac(ref mac) => {
+            ast::ItemKind::MacCall(ref mac) => {
                 self.print_mac(mac);
                 if mac.args.need_semicolon() {
                     self.s.word(";");
                 }
             }
             ast::ItemKind::MacroDef(ref macro_def) => {
-                let (kw, has_bang) = if macro_def.legacy {
+                let (kw, has_bang) = if macro_def.macro_rules {
                     ("macro_rules", true)
                 } else {
                     self.print_visibility(&item.vis);
@@ -1387,13 +1389,10 @@ impl<'a> State<'a> {
         self.print_visibility(&v.vis);
         let generics = ast::Generics::default();
         self.print_struct(&v.data, &generics, v.ident, v.span, false);
-        match v.disr_expr {
-            Some(ref d) => {
-                self.s.space();
-                self.word_space("=");
-                self.print_expr(&d.value)
-            }
-            _ => {}
+        if let Some(ref d) = v.disr_expr {
+            self.s.space();
+            self.word_space("=");
+            self.print_expr(&d.value)
         }
     }
 
@@ -1413,7 +1412,7 @@ impl<'a> State<'a> {
             ast::AssocItemKind::TyAlias(def, generics, bounds, ty) => {
                 self.print_associated_type(ident, generics, bounds, ty.as_deref(), vis, *def);
             }
-            ast::AssocItemKind::Macro(m) => {
+            ast::AssocItemKind::MacCall(m) => {
                 self.print_mac(m);
                 if m.args.need_semicolon() {
                     self.s.word(";");
@@ -1460,7 +1459,7 @@ impl<'a> State<'a> {
                 self.space_if_not_bol();
                 self.s.word(";");
             }
-            ast::StmtKind::Mac(ref mac) => {
+            ast::StmtKind::MacCall(ref mac) => {
                 let (ref mac, style, ref attrs) = **mac;
                 self.space_if_not_bol();
                 self.print_outer_attributes(attrs);
@@ -1570,7 +1569,7 @@ impl<'a> State<'a> {
         self.print_else(elseopt)
     }
 
-    crate fn print_mac(&mut self, m: &ast::Mac) {
+    crate fn print_mac(&mut self, m: &ast::MacCall) {
         self.print_mac_common(
             Some(MacHeader::Path(&m.path)),
             true,
@@ -1736,8 +1735,9 @@ impl<'a> State<'a> {
             // These cases need parens: `x as i32 < y` has the parser thinking that `i32 < y` is
             // the beginning of a path type. It starts trying to parse `x as (i32 < y ...` instead
             // of `(x as i32) < ...`. We need to convince it _not_ to do that.
-            (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Lt)
-            | (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Shl) => parser::PREC_FORCE_PAREN,
+            (&ast::ExprKind::Cast { .. }, ast::BinOpKind::Lt | ast::BinOpKind::Shl) => {
+                parser::PREC_FORCE_PAREN
+            }
             // We are given `(let _ = a) OP b`.
             //
             // - When `OP <= LAnd` we should print `let _ = a OP b` to avoid redundant parens
@@ -2014,8 +2014,8 @@ impl<'a> State<'a> {
                     self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
                 }
             }
-            ast::ExprKind::InlineAsm(ref a) => {
-                self.s.word("asm!");
+            ast::ExprKind::LlvmInlineAsm(ref a) => {
+                self.s.word("llvm_asm!");
                 self.popen();
                 self.print_string(&a.asm.as_str(), a.asm_str_style);
                 self.word_space(":");
@@ -2056,7 +2056,7 @@ impl<'a> State<'a> {
                 if a.alignstack {
                     options.push("alignstack");
                 }
-                if a.dialect == ast::AsmDialect::Intel {
+                if a.dialect == ast::LlvmAsmDialect::Intel {
                     options.push("intel");
                 }
 
@@ -2070,7 +2070,7 @@ impl<'a> State<'a> {
 
                 self.pclose();
             }
-            ast::ExprKind::Mac(ref m) => self.print_mac(m),
+            ast::ExprKind::MacCall(ref m) => self.print_mac(m),
             ast::ExprKind::Paren(ref e) => {
                 self.popen();
                 self.print_inner_attributes_inline(attrs);
@@ -2079,12 +2079,10 @@ impl<'a> State<'a> {
             }
             ast::ExprKind::Yield(ref e) => {
                 self.s.word("yield");
-                match *e {
-                    Some(ref expr) => {
-                        self.s.space();
-                        self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
-                    }
-                    _ => (),
+
+                if let Some(ref expr) = *e {
+                    self.s.space();
+                    self.print_expr_maybe_paren(expr, parser::PREC_JUMP);
                 }
             }
             ast::ExprKind::Try(ref e) => {
@@ -2136,9 +2134,8 @@ impl<'a> State<'a> {
         self.s.word("::");
         let item_segment = path.segments.last().unwrap();
         self.print_ident(item_segment.ident);
-        match item_segment.args {
-            Some(ref args) => self.print_generic_args(args, colons_before_params),
-            None => {}
+        if let Some(ref args) = item_segment.args {
+            self.print_generic_args(args, colons_before_params)
         }
     }
 
@@ -2254,7 +2251,7 @@ impl<'a> State<'a> {
                 self.print_pat(inner);
                 self.pclose();
             }
-            PatKind::Mac(ref m) => self.print_mac(m),
+            PatKind::MacCall(ref m) => self.print_mac(m),
         }
         self.ann.post(self, AnnNode::Pat(pat))
     }

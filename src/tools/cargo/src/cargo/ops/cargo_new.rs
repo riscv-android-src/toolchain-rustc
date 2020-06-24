@@ -1,7 +1,7 @@
-use crate::core::{compiler, Workspace};
+use crate::core::{Shell, Workspace};
 use crate::util::errors::{CargoResult, CargoResultExt};
 use crate::util::{existing_vcs_repo, FossilRepo, GitRepo, HgRepo, PijulRepo};
-use crate::util::{paths, validate_package_name, Config};
+use crate::util::{paths, restricted_names, Config};
 use git2::Config as GitConfig;
 use git2::Repository as GitRepository;
 use serde::de;
@@ -155,41 +155,71 @@ fn get_name<'a>(path: &'a Path, opts: &'a NewOptions) -> CargoResult<&'a str> {
     })
 }
 
-fn check_name(name: &str, opts: &NewOptions) -> CargoResult<()> {
-    // If --name is already used to override, no point in suggesting it
-    // again as a fix.
-    let name_help = match opts.name {
-        Some(_) => "",
-        None => "\nuse --name to override crate name",
-    };
+fn check_name(name: &str, name_help: &str, has_bin: bool, shell: &mut Shell) -> CargoResult<()> {
+    restricted_names::validate_package_name(name, "crate name", name_help)?;
 
-    // Ban keywords + test list found at
-    // https://doc.rust-lang.org/reference/keywords.html
-    let blacklist = [
-        "abstract", "alignof", "as", "become", "box", "break", "const", "continue", "crate", "do",
-        "else", "enum", "extern", "false", "final", "fn", "for", "if", "impl", "in", "let", "loop",
-        "macro", "match", "mod", "move", "mut", "offsetof", "override", "priv", "proc", "pub",
-        "pure", "ref", "return", "self", "sizeof", "static", "struct", "super", "test", "trait",
-        "true", "type", "typeof", "unsafe", "unsized", "use", "virtual", "where", "while", "yield",
-    ];
-    if blacklist.contains(&name) || (opts.kind.is_bin() && compiler::is_bad_artifact_name(name)) {
+    if restricted_names::is_keyword(name) {
         anyhow::bail!(
-            "The name `{}` cannot be used as a crate name{}",
+            "the name `{}` cannot be used as a crate name, it is a Rust keyword{}",
             name,
             name_help
-        )
+        );
     }
-
-    if let Some(ref c) = name.chars().next() {
-        if c.is_digit(10) {
+    if restricted_names::is_conflicting_artifact_name(name) {
+        if has_bin {
             anyhow::bail!(
-                "Package names starting with a digit cannot be used as a crate name{}",
+                "the name `{}` cannot be used as a crate name, \
+                it conflicts with cargo's build directory names{}",
+                name,
                 name_help
-            )
+            );
+        } else {
+            shell.warn(format!(
+                "the name `{}` will not support binary \
+                executables with that name, \
+                it conflicts with cargo's build directory names",
+                name
+            ))?;
         }
     }
+    if name == "test" {
+        anyhow::bail!(
+            "the name `test` cannot be used as a crate name, \
+            it conflicts with Rust's built-in test library{}",
+            name_help
+        );
+    }
+    if ["core", "std", "alloc", "proc_macro", "proc-macro"].contains(&name) {
+        shell.warn(format!(
+            "the name `{}` is part of Rust's standard library\n\
+            It is recommended to use a different name to avoid problems.",
+            name
+        ))?;
+    }
+    if restricted_names::is_windows_reserved(name) {
+        if cfg!(windows) {
+            anyhow::bail!(
+                "cannot use name `{}`, it is a reserved Windows filename{}",
+                name,
+                name_help
+            );
+        } else {
+            shell.warn(format!(
+                "the name `{}` is a reserved Windows filename\n\
+                This package will not work on Windows platforms.",
+                name
+            ))?;
+        }
+    }
+    if restricted_names::is_non_ascii_name(name) {
+        shell.warn(format!(
+            "the name `{}` contains non-ASCII characters\n\
+            Support for non-ASCII crate names is experimental and only valid \
+            on the nightly toolchain.",
+            name
+        ))?;
+    }
 
-    validate_package_name(name, "crate name", name_help)?;
     Ok(())
 }
 
@@ -337,7 +367,7 @@ pub fn new(opts: &NewOptions, config: &Config) -> CargoResult<()> {
     }
 
     let name = get_name(path, opts)?;
-    check_name(name, opts)?;
+    check_name(name, "", opts.kind.is_bin(), &mut config.shell())?;
 
     let mkopts = MkOptions {
         version_control: opts.version_control,
@@ -345,8 +375,8 @@ pub fn new(opts: &NewOptions, config: &Config) -> CargoResult<()> {
         name,
         source_files: vec![plan_new_source_file(opts.kind.is_bin(), name.to_string())],
         bin: opts.kind.is_bin(),
-        edition: opts.edition.as_ref().map(|s| &**s),
-        registry: opts.registry.as_ref().map(|s| &**s),
+        edition: opts.edition.as_deref(),
+        registry: opts.registry.as_deref(),
     };
 
     mk(config, &mkopts).chain_err(|| {
@@ -372,7 +402,6 @@ pub fn init(opts: &NewOptions, config: &Config) -> CargoResult<()> {
     }
 
     let name = get_name(path, opts)?;
-    check_name(name, opts)?;
 
     let mut src_paths_types = vec![];
 
@@ -385,6 +414,14 @@ pub fn init(opts: &NewOptions, config: &Config) -> CargoResult<()> {
         // Maybe when doing `cargo init --bin` inside a library package stub,
         // user may mean "initialize for library, but also add binary target"
     }
+    let has_bin = src_paths_types.iter().any(|x| x.bin);
+    // If --name is already used to override, no point in suggesting it
+    // again as a fix.
+    let name_help = match opts.name {
+        Some(_) => "",
+        None => "\nuse --name to override crate name",
+    };
+    check_name(name, name_help, has_bin, &mut config.shell())?;
 
     let mut version_control = opts.version_control;
 
@@ -426,10 +463,10 @@ pub fn init(opts: &NewOptions, config: &Config) -> CargoResult<()> {
         version_control,
         path,
         name,
-        bin: src_paths_types.iter().any(|x| x.bin),
+        bin: has_bin,
         source_files: src_paths_types,
-        edition: opts.edition.as_ref().map(|s| &**s),
-        registry: opts.registry.as_ref().map(|s| &**s),
+        edition: opts.edition.as_deref(),
+        registry: opts.registry.as_deref(),
     };
 
     mk(config, &mkopts).chain_err(|| {
@@ -725,12 +762,12 @@ mod tests {
     }
 
     if let Err(e) = Workspace::new(&path.join("Cargo.toml"), config) {
-        let msg = format!(
+        crate::display_warning_with_error(
             "compiling this new crate may not work due to invalid \
-             workspace configuration\n\n{:?}",
-            e,
+             workspace configuration",
+            &e,
+            &mut config.shell(),
         );
-        config.shell().warn(msg)?;
     }
 
     Ok(())

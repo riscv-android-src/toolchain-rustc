@@ -1,6 +1,7 @@
 #![cfg(feature = "integration")]
 
 use std::env;
+use std::ffi::OsStr;
 use std::process::Command;
 
 #[cfg_attr(feature = "integration", test)]
@@ -12,13 +13,16 @@ fn integration_test() {
         .nth(1)
         .expect("repo name should have format `<org>/<name>`");
 
-    let repo_dir = tempfile::tempdir()
-        .expect("couldn't create temp dir")
-        .path()
-        .join(crate_name);
+    let mut repo_dir = tempfile::tempdir().expect("couldn't create temp dir").into_path();
+    repo_dir.push(crate_name);
 
     let st = Command::new("git")
-        .args(&["clone", "--depth=1", &repo_url, repo_dir.to_str().unwrap()])
+        .args(&[
+            OsStr::new("clone"),
+            OsStr::new("--depth=1"),
+            OsStr::new(&repo_url),
+            OsStr::new(&repo_dir),
+        ])
         .status()
         .expect("unable to run git");
     assert!(st.success());
@@ -60,6 +64,9 @@ fn integration_test() {
     } else if stderr.contains("query stack during panic") {
         panic!("query stack during panic in the output");
     } else if stderr.contains("E0463") {
+        // Encountering E0463 (can't find crate for `x`) did _not_ cause the build to fail in the
+        // past. Even though it should have. That's why we explicitly panic here.
+        // See PR #3552 and issue #3523 for more background.
         panic!("error: E0463");
     } else if stderr.contains("E0514") {
         panic!("incompatible crate versions");
@@ -68,13 +75,8 @@ fn integration_test() {
     }
 
     match output.status.code() {
-        Some(code) => {
-            if code == 0 {
-                println!("Compilation successful");
-            } else {
-                eprintln!("Compilation failed. Exit code: {}", code);
-            }
-        },
+        Some(0) => println!("Compilation successful"),
+        Some(code) => eprintln!("Compilation failed. Exit code: {}", code),
         None => panic!("Process terminated by signal"),
     }
 }

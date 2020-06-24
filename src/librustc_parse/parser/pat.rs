@@ -1,9 +1,7 @@
 use super::{Parser, PathStyle};
 use crate::{maybe_recover_from_interpolated_ty_qpath, maybe_whole};
-use rustc_ast::ast::{
-    self, AttrVec, Attribute, FieldPat, Mac, Pat, PatKind, RangeEnd, RangeSyntax,
-};
-use rustc_ast::ast::{BindingMode, Expr, ExprKind, Ident, Mutability, Path, QSelf};
+use rustc_ast::ast::{self, AttrVec, Attribute, FieldPat, MacCall, Pat, PatKind, RangeEnd};
+use rustc_ast::ast::{BindingMode, Expr, ExprKind, Ident, Mutability, Path, QSelf, RangeSyntax};
 use rustc_ast::mut_visit::{noop_visit_mac, noop_visit_pat, MutVisitor};
 use rustc_ast::ptr::P;
 use rustc_ast::token;
@@ -164,7 +162,7 @@ impl<'a> Parser<'a> {
             _ => false,
         });
         match (is_end_ahead, &self.token.kind) {
-            (true, token::BinOp(token::Or)) | (true, token::OrOr) => {
+            (true, token::BinOp(token::Or) | token::OrOr) => {
                 self.ban_illegal_vert(lo, "trailing", "not allowed in an or-pattern");
                 self.bump();
                 true
@@ -297,6 +295,8 @@ impl<'a> Parser<'a> {
             // A rest pattern `..`.
             self.bump(); // `..`
             PatKind::Rest
+        } else if self.check(&token::DotDotDot) && !self.is_pat_range_end_start(1) {
+            self.recover_dotdotdot_rest_pat(lo)
         } else if let Some(form) = self.parse_range_end() {
             self.parse_pat_range_to(form)? // `..=X`, `...X`, or `..X`.
         } else if self.eat_keyword(kw::Underscore) {
@@ -362,6 +362,25 @@ impl<'a> Parser<'a> {
         }
 
         Ok(pat)
+    }
+
+    /// Recover from a typoed `...` pattern that was encountered
+    /// Ref: Issue #70388
+    fn recover_dotdotdot_rest_pat(&mut self, lo: Span) -> PatKind {
+        // A typoed rest pattern `...`.
+        self.bump(); // `...`
+
+        // The user probably mistook `...` for a rest pattern `..`.
+        self.struct_span_err(lo, "unexpected `...`")
+            .span_label(lo, "not a valid pattern")
+            .span_suggestion_short(
+                lo,
+                "for a rest pattern, use `..` instead of `...`",
+                "..".to_owned(),
+                Applicability::MachineApplicable,
+            )
+            .emit();
+        PatKind::Rest
     }
 
     /// Try to recover the more general form `intersect ::= $pat_lhs @ $pat_rhs`.
@@ -540,7 +559,7 @@ impl<'a> Parser<'a> {
     fn make_all_value_bindings_mutable(pat: &mut P<Pat>) -> bool {
         struct AddMut(bool);
         impl MutVisitor for AddMut {
-            fn visit_mac(&mut self, mac: &mut Mac) {
+            fn visit_mac(&mut self, mac: &mut MacCall) {
                 noop_visit_mac(mac, self);
             }
 
@@ -597,8 +616,8 @@ impl<'a> Parser<'a> {
     fn parse_pat_mac_invoc(&mut self, path: Path) -> PResult<'a, PatKind> {
         self.bump();
         let args = self.parse_mac_args()?;
-        let mac = Mac { path, args, prior_type_ascription: self.last_type_ascription };
-        Ok(PatKind::Mac(mac))
+        let mac = MacCall { path, args, prior_type_ascription: self.last_type_ascription };
+        Ok(PatKind::MacCall(mac))
     }
 
     fn fatal_unexpected_non_pat(
@@ -704,7 +723,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_pat_range_end(&mut self) -> PResult<'a, P<Expr>> {
-        if self.token.is_path_start() {
+        if self.check_path() {
             let lo = self.token.span;
             let (qself, path) = if self.eat_lt() {
                 // Parse a qualified path
@@ -920,7 +939,7 @@ impl<'a> Parser<'a> {
             }
             err.emit();
         }
-        return Ok((fields, etc));
+        Ok((fields, etc))
     }
 
     /// Recover on `...` as if it were `..` to avoid further errors.

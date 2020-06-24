@@ -1,12 +1,12 @@
 use crate::utils::sugg::Sugg;
 use crate::utils::{get_enclosing_block, match_qpath, span_lint_and_then, SpanlessEq};
 use if_chain::if_chain;
-use rustc::hir::map::Map;
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
 use rustc_hir::intravisit::{walk_block, walk_expr, walk_stmt, NestedVisitorMap, Visitor};
 use rustc_hir::{BindingAnnotation, Block, Expr, ExprKind, HirId, PatKind, QPath, Stmt, StmtKind};
 use rustc_lint::{LateContext, LateLintPass, Lint};
+use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::symbol::Symbol;
 
@@ -170,8 +170,8 @@ impl SlowVectorInit {
     ) {
         let len_expr = Sugg::hir(cx, vec_alloc.len_expr, "len");
 
-        span_lint_and_then(cx, lint, slow_fill.span, msg, |db| {
-            db.span_suggestion(
+        span_lint_and_then(cx, lint, slow_fill.span, msg, |diag| {
+            diag.span_suggestion(
                 vec_alloc.allocation_expr.span,
                 "consider replace allocation with",
                 format!("vec![0; {}]", len_expr),
@@ -318,7 +318,7 @@ impl<'a, 'tcx> Visitor<'tcx> for VectorInitializationVisitor<'a, 'tcx> {
         walk_expr(self, expr);
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::None
     }
 }

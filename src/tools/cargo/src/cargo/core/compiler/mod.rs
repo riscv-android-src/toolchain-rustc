@@ -15,6 +15,7 @@ pub mod standard_lib;
 mod timings;
 mod unit;
 pub mod unit_dependencies;
+pub mod unit_graph;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -37,9 +38,8 @@ pub use self::custom_build::{BuildOutput, BuildScriptOutputs, BuildScripts};
 pub use self::job::Freshness;
 use self::job::{Job, Work};
 use self::job_queue::{JobQueue, JobState};
-pub use self::layout::is_bad_artifact_name;
 use self::output_depinfo::output_depinfo;
-use self::unit_dependencies::UnitDep;
+use self::unit_graph::UnitDep;
 pub use crate::core::compiler::unit::{Unit, UnitInterner};
 use crate::core::manifest::TargetSourcePath;
 use crate::core::profiles::{Lto, PanicStrategy, Profile};
@@ -48,6 +48,8 @@ use crate::util::errors::{self, CargoResult, CargoResultExt, ProcessError, Verbo
 use crate::util::machine_message::Message;
 use crate::util::{self, machine_message, ProcessBuilder};
 use crate::util::{internal, join_paths, paths, profile};
+
+const RUSTDOC_CRATE_VERSION_FLAG: &str = "--crate-version";
 
 /// A glorified callback for executing calls to rustc. Rather than calling rustc
 /// directly, we'll use an `Executor`, giving clients an opportunity to intercept
@@ -539,8 +541,11 @@ fn prepare_rustc<'a, 'cfg>(
     unit: &Unit<'a>,
 ) -> CargoResult<ProcessBuilder> {
     let is_primary = cx.is_primary_package(unit);
+    let is_workspace = cx.bcx.ws.is_member(unit.pkg);
 
-    let mut base = cx.compilation.rustc_process(unit.pkg, is_primary)?;
+    let mut base = cx
+        .compilation
+        .rustc_process(unit.pkg, is_primary, is_workspace)?;
     if cx.bcx.config.cli_unstable().jobserver_per_rustc {
         let client = cx.new_jobserver()?;
         base.inherit_jobserver(&client);
@@ -559,7 +564,6 @@ fn rustdoc<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult
     let mut rustdoc = cx.compilation.rustdoc_process(unit.pkg, unit.target)?;
     rustdoc.inherit_jobserver(&cx.jobserver);
     rustdoc.arg("--crate-name").arg(&unit.target.crate_name());
-    add_crate_versions_if_requested(bcx, unit, &mut rustdoc);
     add_path_args(bcx, unit, &mut rustdoc);
     add_cap_lints(bcx, unit, &mut rustdoc);
 
@@ -589,6 +593,8 @@ fn rustdoc<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult
     build_deps_args(&mut rustdoc, cx, unit)?;
 
     rustdoc.args(bcx.rustdocflags_args(unit));
+
+    add_crate_versions_if_requested(bcx, unit, &mut rustdoc);
 
     let name = unit.pkg.name().to_string();
     let build_script_outputs = Arc::clone(&cx.build_script_outputs);
@@ -626,19 +632,29 @@ fn rustdoc<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult
     }))
 }
 
-fn add_crate_versions_if_requested(
-    bcx: &BuildContext<'_, '_>,
-    unit: &Unit<'_>,
+fn add_crate_versions_if_requested<'a>(
+    bcx: &BuildContext<'a, '_>,
+    unit: &Unit<'a>,
     rustdoc: &mut ProcessBuilder,
 ) {
-    if !bcx.config.cli_unstable().crate_versions {
-        return;
+    if bcx.config.cli_unstable().crate_versions && !crate_version_flag_already_present(rustdoc) {
+        append_crate_version_flag(unit, rustdoc);
     }
+}
+
+// The --crate-version flag could have already been passed in RUSTDOCFLAGS
+// or as an extra compiler argument for rustdoc
+fn crate_version_flag_already_present(rustdoc: &ProcessBuilder) -> bool {
+    rustdoc.get_args().iter().any(|flag| {
+        flag.to_str()
+            .map_or(false, |flag| flag.starts_with(RUSTDOC_CRATE_VERSION_FLAG))
+    })
+}
+
+fn append_crate_version_flag(unit: &Unit<'_>, rustdoc: &mut ProcessBuilder) {
     rustdoc
-        .arg("-Z")
-        .arg("unstable-options")
-        .arg("--crate-version")
-        .arg(&unit.pkg.version().to_string());
+        .arg(RUSTDOC_CRATE_VERSION_FLAG)
+        .arg(unit.pkg.version().to_string());
 }
 
 // The path that we pass to rustc is actually fairly important because it will
@@ -785,14 +801,30 @@ fn build_base_args<'a, 'cfg>(
 
     // Disable LTO for host builds as prefer_dynamic and it are mutually
     // exclusive.
-    if unit.target.can_lto() && !unit.target.for_host() {
-        match *lto {
-            Lto::Bool(false) => {}
-            Lto::Bool(true) => {
+    let lto_possible = unit.target.can_lto() && !unit.target.for_host();
+    match lto {
+        Lto::Bool(true) => {
+            if lto_possible {
                 cmd.args(&["-C", "lto"]);
             }
-            Lto::Named(ref s) => {
+        }
+        Lto::Named(s) => {
+            if lto_possible {
                 cmd.arg("-C").arg(format!("lto={}", s));
+            }
+        }
+        // If LTO isn't being enabled then there's no need for bitcode to be
+        // present in the intermediate artifacts, so shave off some build time
+        // by removing it.
+        Lto::Bool(false) => {
+            if cx
+                .bcx
+                .target_data
+                .info(CompileKind::Host)
+                .supports_embed_bitcode
+                .unwrap()
+            {
+                cmd.arg("-Cembed-bitcode=no");
             }
         }
     }

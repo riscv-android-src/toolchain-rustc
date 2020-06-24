@@ -1,11 +1,11 @@
-use crate::utils::{differing_macro_contexts, paths, snippet_with_applicability, span_lint_and_then};
-use crate::utils::{is_copy, match_type};
-use rustc::hir::map::Map;
+use crate::utils::{differing_macro_contexts, snippet_with_applicability, span_lint_and_then};
+use crate::utils::{is_copy, is_type_diagnostic_item};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
 use rustc_hir::intravisit::{walk_path, NestedVisitorMap, Visitor};
 use rustc_hir::{self, HirId, Path};
 use rustc_lint::LateContext;
+use rustc_middle::hir::map::Map;
 use rustc_span::source_map::Span;
 use rustc_span::symbol::Symbol;
 
@@ -20,7 +20,7 @@ pub(super) fn lint<'a, 'tcx>(
     map_span: Span,
 ) {
     // lint if the caller of `map()` is an `Option`
-    if match_type(cx, cx.tables.expr_ty(&map_args[0]), &paths::OPTION) {
+    if is_type_diagnostic_item(cx, cx.tables.expr_ty(&map_args[0]), sym!(option_type)) {
         if !is_copy(cx, cx.tables.expr_ty(&unwrap_args[1])) {
             // Do not lint if the `map` argument uses identifiers in the `map`
             // argument that are also used in the `unwrap_or` argument
@@ -66,7 +66,7 @@ pub(super) fn lint<'a, 'tcx>(
             arg, suggest
         );
 
-        span_lint_and_then(cx, OPTION_MAP_UNWRAP_OR, expr.span, msg, |db| {
+        span_lint_and_then(cx, OPTION_MAP_UNWRAP_OR, expr.span, msg, |diag| {
             let map_arg_span = map_args[1].span;
 
             let mut suggestion = vec![
@@ -81,7 +81,7 @@ pub(super) fn lint<'a, 'tcx>(
                 suggestion.push((map_arg_span.with_hi(map_arg_span.lo()), format!("{}, ", unwrap_snippet)));
             }
 
-            db.multipart_suggestion(&format!("use `{}` instead", suggest), suggestion, applicability);
+            diag.multipart_suggestion(&format!("use `{}` instead", suggest), suggestion, applicability);
         });
     }
 }
@@ -99,8 +99,8 @@ impl<'a, 'tcx> Visitor<'tcx> for UnwrapVisitor<'a, 'tcx> {
         walk_path(self, path);
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
-        NestedVisitorMap::All(&self.cx.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::All(self.cx.tcx.hir())
     }
 }
 
@@ -121,8 +121,8 @@ impl<'a, 'tcx> Visitor<'tcx> for MapExprVisitor<'a, 'tcx> {
         walk_path(self, path);
     }
 
-    fn nested_visit_map(&mut self) -> NestedVisitorMap<'_, Self::Map> {
-        NestedVisitorMap::All(&self.cx.tcx.hir())
+    fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
+        NestedVisitorMap::All(self.cx.tcx.hir())
     }
 }
 

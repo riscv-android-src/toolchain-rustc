@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "pretty_assertions"
-version = "0.5.1"
+version = "0.6.1"
 authors = ["Colin Kiegel <kiegel@gmx.de>", "Florent Fayolle <florent.fayolle69@gmail.com>"]
 description = "Overwrite `assert_eq!` and `assert_ne!` with drop-in replacements, adding colorful diffs."
 documentation = "https://docs.rs/pretty_assertions"
@@ -26,5 +27,10 @@ version = "0.11"
 
 [dependencies.difference]
 version = "2.0.0"
+[target."cfg(windows)".dependencies.ctor]
+version = "0.1.7"
+
+[target."cfg(windows)".dependencies.output_vt100]
+version = "0.1.2"
 [badges.travis-ci]
 repository = "colin-kiegel/rust-pretty-assertions"

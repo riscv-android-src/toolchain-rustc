@@ -99,6 +99,9 @@ declare_features! (
 
     // no-tracking-issue-start
 
+    /// Allows using `rustc_*` attributes (RFC 572).
+    (active, rustc_attrs, "1.0.0", None, None),
+
     /// Allows using compiler's own crates.
     (active, rustc_private, "1.0.0", Some(27812), None),
 
@@ -127,9 +130,6 @@ declare_features! (
 
     /// Allows using `#[link_name="llvm.*"]`.
     (active, link_llvm_intrinsics, "1.0.0", Some(29602), None),
-
-    /// Allows using `rustc_*` attributes (RFC 572).
-    (active, rustc_attrs, "1.0.0", Some(29642), None),
 
     /// Allows using the `box $expr` syntax.
     (active, box_syntax, "1.0.0", Some(49733), None),
@@ -173,6 +173,8 @@ declare_features! (
     // no-tracking-issue-end
 
     /// Allows using `#[structural_match]` which indicates that a type is structurally matchable.
+    /// FIXME: Subsumed by trait `StructuralPartialEq`, cannot move to removed until a library
+    /// feature with the same name exists.
     (active, structural_match, "1.8.0", Some(31434), None),
 
     /// Allows using the `may_dangle` attribute (RFC 1327).
@@ -203,6 +205,10 @@ declare_features! (
 
     /// Added for testing E0705; perma-unstable.
     (active, test_2018_feature, "1.31.0", None, Some(Edition::Edition2018)),
+
+    /// Allows `#[repr(no_niche)]` (an implementation detail of `rustc`,
+    /// it is not on path for eventual stabilization).
+    (active, no_niche, "1.42.0", None, None),
 
     // no-tracking-issue-end
 
@@ -285,9 +291,6 @@ declare_features! (
     /// Permits specifying whether a function should permit unwinding or abort on unwind.
     (active, unwind_attributes, "1.4.0", Some(58760), None),
 
-    /// Allows `#[no_debug]`.
-    (active, no_debug, "1.5.0", Some(29721), None),
-
     /// Allows attributes on expressions and non-item statements.
     (active, stmt_expr_attributes, "1.6.0", Some(15701), None),
 
@@ -299,6 +302,11 @@ declare_features! (
 
     /// Allows specialization of implementations (RFC 1210).
     (active, specialization, "1.7.0", Some(31844), None),
+
+    /// A minimal, sound subset of specialization intended to be used by the
+    /// standard library until the soundness issues with specialization
+    /// are fixed.
+    (active, min_specialization, "1.7.0", Some(31844), None),
 
     /// Allows using `#[naked]` on functions.
     (active, naked_functions, "1.9.0", Some(32408), None),
@@ -359,9 +367,6 @@ declare_features! (
     /// Allows `#[doc(masked)]`.
     (active, doc_masked, "1.21.0", Some(44027), None),
 
-    /// Allows `#[doc(spotlight)]`.
-    (active, doc_spotlight, "1.22.0", Some(45040), None),
-
     /// Allows `#[doc(include = "some-file")]`.
     (active, external_doc, "1.22.0", Some(44732), None),
 
@@ -383,7 +388,7 @@ declare_features! (
     /// Allows defining `trait X = A + B;` alias items.
     (active, trait_alias, "1.24.0", Some(41517), None),
 
-    /// Allows infering `'static` outlives requirements (RFC 2093).
+    /// Allows inferring `'static` outlives requirements (RFC 2093).
     (active, infer_static_outlives_requirements, "1.26.0", Some(54185), None),
 
     /// Allows accessing fields of unions inside `const` functions.
@@ -535,6 +540,10 @@ declare_features! (
     /// For example, you can write `x @ Some(y)`.
     (active, bindings_after_at, "1.41.0", Some(65490), None),
 
+    /// Allows patterns with concurrent by-move and by-ref bindings.
+    /// For example, you can write `Foo(a, ref b)` where `a` is by-move and `b` is by-ref.
+    (active, move_ref_pattern, "1.42.0", Some(68354), None),
+
     /// Allows `impl const Trait for T` syntax.
     (active, const_trait_impl, "1.42.0", Some(67792), None),
 
@@ -543,6 +552,12 @@ declare_features! (
 
     /// Allows the use of `no_sanitize` attribute.
     (active, no_sanitize, "1.42.0", Some(39699), None),
+
+    // Allows limiting the evaluation steps of const expressions
+    (active, const_eval_limit, "1.43.0", Some(67217), None),
+
+    /// Allow negative trait implementations.
+    (active, negative_impls, "1.44.0", Some(68318), None),
 
     // -------------------------------------------------------------------------
     // feature-group-end: actual feature gates

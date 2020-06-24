@@ -7,6 +7,7 @@
 #![feature(box_syntax)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
+#![feature(or_patterns)]
 #![feature(test)]
 #![feature(vec_remove_item)]
 #![feature(ptr_offset_from)]
@@ -15,8 +16,6 @@
 #![recursion_limit = "256"]
 
 extern crate env_logger;
-extern crate getopts;
-extern crate rustc;
 extern crate rustc_ast;
 extern crate rustc_ast_pretty;
 extern crate rustc_attr;
@@ -26,18 +25,21 @@ extern crate rustc_errors;
 extern crate rustc_expand;
 extern crate rustc_feature;
 extern crate rustc_hir;
+extern crate rustc_hir_pretty;
 extern crate rustc_index;
 extern crate rustc_infer;
 extern crate rustc_interface;
 extern crate rustc_lexer;
 extern crate rustc_lint;
 extern crate rustc_metadata;
+extern crate rustc_middle;
 extern crate rustc_mir;
 extern crate rustc_parse;
 extern crate rustc_resolve;
 extern crate rustc_session;
 extern crate rustc_span as rustc_span;
 extern crate rustc_target;
+extern crate rustc_trait_selection;
 extern crate rustc_typeck;
 extern crate test as testing;
 #[macro_use]
@@ -48,8 +50,9 @@ use std::env;
 use std::panic;
 use std::process;
 
-use rustc::session::config::{make_crate_type_option, ErrorOutputType, RustcOptGroup};
-use rustc::session::{early_error, early_warn};
+use rustc_session::config::{make_crate_type_option, ErrorOutputType, RustcOptGroup};
+use rustc_session::getopts;
+use rustc_session::{early_error, early_warn};
 
 #[macro_use]
 mod externalfiles;
@@ -266,7 +269,7 @@ fn opts() -> Vec<RustcOptGroup> {
         unstable("display-warnings", |o| {
             o.optflag("", "display-warnings", "to print code warnings when testing doc")
         }),
-        unstable("crate-version", |o| {
+        stable("crate-version", |o| {
             o.optopt("", "crate-version", "crate version to print into documentation", "VERSION")
         }),
         unstable("sort-modules-by-appearance", |o| {

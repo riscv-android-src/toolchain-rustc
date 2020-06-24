@@ -2,7 +2,6 @@
 
 use std::iter::once;
 
-use rustc::ty;
 use rustc_ast::ast;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
@@ -10,9 +9,9 @@ use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_hir::Mutability;
 use rustc_metadata::creader::LoadedMacro;
+use rustc_middle::ty;
 use rustc_mir::const_eval::is_min_const_fn;
 use rustc_span::hygiene::MacroKind;
-use rustc_span::symbol::sym;
 use rustc_span::Span;
 
 use crate::clean::{self, GetDefId, ToSource, TypeKind};
@@ -21,7 +20,7 @@ use crate::doctree;
 
 use super::Clean;
 
-type Attrs<'hir> = rustc::ty::Attributes<'hir>;
+type Attrs<'hir> = rustc_middle::ty::Attributes<'hir>;
 
 /// Attempt to inline a definition into this AST.
 ///
@@ -42,17 +41,13 @@ pub fn try_inline(
     attrs: Option<Attrs<'_>>,
     visited: &mut FxHashSet<DefId>,
 ) -> Option<Vec<clean::Item>> {
-    let did = if let Some(did) = res.opt_def_id() {
-        did
-    } else {
-        return None;
-    };
+    let did = res.opt_def_id()?;
     if did.is_local() {
         return None;
     }
     let mut ret = Vec::new();
 
-    let attrs_clone = attrs.clone();
+    let attrs_clone = attrs;
 
     let inner = match res {
         Res::Def(DefKind::Trait, did) => {
@@ -297,7 +292,7 @@ pub fn build_impls(cx: &DocContext<'_>, did: DefId, attrs: Option<Attrs<'_>>) ->
     let mut impls = Vec::new();
 
     for &did in tcx.inherent_impls(did).iter() {
-        build_impl(cx, did, attrs.clone(), &mut impls);
+        build_impl(cx, did, attrs, &mut impls);
     }
 
     impls
@@ -456,7 +451,11 @@ fn build_module(cx: &DocContext<'_>, did: DefId, visited: &mut FxHashSet<DefId>)
                         name: None,
                         attrs: clean::Attributes::default(),
                         source: clean::Span::empty(),
-                        def_id: cx.tcx.hir().local_def_id_from_node_id(ast::CRATE_NODE_ID),
+                        def_id: cx
+                            .tcx
+                            .hir()
+                            .local_def_id_from_node_id(ast::CRATE_NODE_ID)
+                            .to_def_id(),
                         visibility: clean::Public,
                         stability: None,
                         deprecation: None,
@@ -487,8 +486,8 @@ fn build_module(cx: &DocContext<'_>, did: DefId, visited: &mut FxHashSet<DefId>)
 }
 
 pub fn print_inlined_const(cx: &DocContext<'_>, did: DefId) -> String {
-    if let Some(node_id) = cx.tcx.hir().as_local_hir_id(did) {
-        cx.tcx.hir().hir_to_pretty_string(node_id)
+    if let Some(hir_id) = cx.tcx.hir().as_local_hir_id(did) {
+        rustc_hir_pretty::id_to_string(&cx.tcx.hir(), hir_id)
     } else {
         cx.tcx.rendered_const(did)
     }
@@ -579,7 +578,7 @@ fn filter_non_trait_generics(trait_did: DefId, mut g: clean::Generics) -> clean:
                     name: ref _name,
                 },
             ref bounds,
-        } => !(*s == "Self" && did == trait_did) && !bounds.is_empty(),
+        } => !(bounds.is_empty() || *s == "Self" && did == trait_did),
         _ => true,
     });
     g

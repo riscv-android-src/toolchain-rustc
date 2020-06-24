@@ -1,5 +1,5 @@
 # configure.ac -- Backtrace configure script.
-# Copyright (C) 2012-2018 Free Software Foundation, Inc.
+# Copyright (C) 2012-2020 Free Software Foundation, Inc.
 
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
@@ -29,7 +29,7 @@
 # IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-AC_PREREQ(2.64)
+AC_PREREQ(2.69)
 AC_INIT(package-unused, version-unused,, libbacktrace)
 AC_CONFIG_SRCDIR(backtrace.h)
 AC_CONFIG_HEADER(config.h)
@@ -44,6 +44,9 @@ AC_CANONICAL_SYSTEM
 target_alias=${target_alias-$host_alias}
 
 AC_USE_SYSTEM_EXTENSIONS
+
+# Default to not building a shared library.
+AC_DISABLE_SHARED
 
 libtool_VERSION=1:0:0
 AC_SUBST(libtool_VERSION)
@@ -74,10 +77,15 @@ m4_rename_force([backtrace_PRECIOUS],[_AC_ARG_VAR_PRECIOUS])
 
 AC_SUBST(CFLAGS)
 
+AC_PROG_RANLIB
+
 AC_PROG_AWK
 case "$AWK" in
 "") AC_MSG_ERROR([can't build without awk]) ;;
 esac
+
+AC_CHECK_PROG(DWZ, dwz, dwz)
+AM_CONDITIONAL(HAVE_DWZ, test "$DWZ" != "")
 
 LT_INIT
 AM_PROG_LIBTOOL
@@ -230,13 +238,11 @@ FORMAT_FILE=
 backtrace_supports_data=yes
 case "$libbacktrace_cv_sys_filetype" in
 elf*) FORMAT_FILE="elf.lo" ;;
+macho) FORMAT_FILE="macho.lo" ;;
 pecoff) FORMAT_FILE="pecoff.lo"
         backtrace_supports_data=no
 	;;
 xcoff*) FORMAT_FILE="xcoff.lo"
-        backtrace_supports_data=no
-        ;;
-macho*) FORMAT_FILE="macho.lo"
         backtrace_supports_data=no
         ;;
 *) AC_MSG_WARN([could not determine output file type])
@@ -254,6 +260,7 @@ elf64) elfsize=64 ;;
 *)     elfsize=unused
 esac
 AC_DEFINE_UNQUOTED([BACKTRACE_ELF_SIZE], [$elfsize], [ELF size: 32 or 64])
+AM_CONDITIONAL(HAVE_ELF, test "$FORMAT_FILE" = "elf.lo")
 
 # XCOFF defines.
 xcoffsize=
@@ -306,12 +313,12 @@ if test "$have_mmap" = "no"; then
   ALLOC_FILE=alloc.lo
 else
   VIEW_FILE=mmapio.lo
-  AC_PREPROC_IFELSE([
+  AC_PREPROC_IFELSE([AC_LANG_SOURCE([
 #include <sys/mman.h>
 #if !defined(MAP_ANONYMOUS) && !defined(MAP_ANON)
   #error no MAP_ANONYMOUS
 #endif
-], [ALLOC_FILE=mmap.lo], [ALLOC_FILE=alloc.lo])
+])], [ALLOC_FILE=mmap.lo], [ALLOC_FILE=alloc.lo])
 fi
 AC_SUBST(VIEW_FILE)
 AC_SUBST(ALLOC_FILE)
@@ -345,6 +352,9 @@ fi
 if test "$have_dl_iterate_phdr" = "yes"; then
   AC_DEFINE(HAVE_DL_ITERATE_PHDR, 1, [Define if dl_iterate_phdr is available.])
 fi
+
+# Check for header file for Mach-O image functions.
+AC_CHECK_HEADERS(mach-o/dyld.h)
 
 # Check for loadquery.
 AC_CHECK_HEADERS(sys/ldr.h)
@@ -395,6 +405,36 @@ if test "$have_getexecname" = "yes"; then
   AC_DEFINE(HAVE_GETEXECNAME, 1, [Define if getexecname is available.])
 fi
 
+# Check for sysctl definitions.
+
+AC_CACHE_CHECK([for KERN_PROC],
+[libbacktrace_cv_proc],
+[AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM([
+#include <sys/types.h>
+#include <sys/sysctl.h>
+], [int mib0 = CTL_KERN; int mib1 = KERN_PROC; int mib2 = KERN_PROC_PATHNAME;])],
+  [libbacktrace_cv_proc=yes],
+  [libbacktrace_cv_proc=no])])
+if test "$libbacktrace_cv_proc" = "yes"; then
+  AC_DEFINE([HAVE_KERN_PROC], 1,
+            [Define to 1 if you have KERN_PROC and KERN_PROC_PATHNAME in <sys/sysctl.h>.])
+fi
+
+AC_CACHE_CHECK([for KERN_PROG_ARGS],
+[libbacktrace_cv_procargs],
+[AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM([
+#include <sys/types.h>
+#include <sys/sysctl.h>
+], [int mib0 = CTL_KERN; int mib1 = KERN_PROC_ARGS; int mib2 = KERN_PROC_PATHNAME;])],
+  [libbacktrace_cv_procargs=yes],
+  [libbacktrace_cv_procargs=no])])
+if test "$libbacktrace_cv_procargs" = "yes"; then
+  AC_DEFINE([HAVE_KERN_PROC_ARGS], 1,
+            [Define to 1 if you have KERN_PROCARGS and KERN_PROC_PATHNAME in <sys/sysctl.h>.])
+fi
+
 # Check for the clock_gettime function.
 AC_CHECK_FUNCS(clock_gettime)
 clock_gettime_link=
@@ -415,7 +455,7 @@ AC_CACHE_CHECK([whether -pthread is supported],
 [libgo_cv_lib_pthread],
 [CFLAGS_hold=$CFLAGS
 CFLAGS="$CFLAGS -pthread"
-AC_COMPILE_IFELSE([[int i;]],
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([int i;])],
 [libgo_cv_lib_pthread=yes],
 [libgo_cv_lib_pthread=no])
 CFLAGS=$CFLAGS_hold])
@@ -427,10 +467,19 @@ AC_SUBST(PTHREAD_CFLAGS)
 
 AM_CONDITIONAL(HAVE_PTHREAD, test "$libgo_cv_lib_pthread" = yes)
 
-AC_CHECK_LIB([z], [compress], [])
-if test $ac_cv_lib_z_compress = "yes"; then
-  AC_DEFINE(HAVE_ZLIB, 1, [Define if -lz is available.])
-fi
+dnl Test whether the compiler supports the -gdwarf-5 option.
+AC_CACHE_CHECK([whether -gdwarf-5 is supported],
+[libbacktrace_cv_lib_dwarf5],
+[CFLAGS_hold=$CFLAGS
+CFLAGS="$CFLAGS -gdwarf-5"
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([int i;])],
+[libbacktrace_cv_lib_dwarf5=yes],
+[libbacktrace_cv_lib_dwarf5=no])
+CFLAGS=$CFLAGS_hold])
+AM_CONDITIONAL(HAVE_DWARF5, test "$libbacktrace_cv_lib_dwarf5" = yes)
+
+AC_CHECK_LIB([z], [compress],
+    [AC_DEFINE(HAVE_ZLIB, 1, [Define if -lz is available.])])
 AM_CONDITIONAL(HAVE_ZLIB, test "$ac_cv_lib_z_compress" = yes)
 
 dnl Test whether the linker supports the --compress_debug_sections option.
@@ -446,9 +495,12 @@ AM_CONDITIONAL(HAVE_COMPRESSED_DEBUG, test "$libgo_cv_ld_compress" = yes)
 
 AC_ARG_VAR(OBJCOPY, [location of objcopy])
 AC_CHECK_PROG(OBJCOPY, objcopy, objcopy,)
+AC_CHECK_PROG(READELF, readelf, readelf)
 AC_CACHE_CHECK([whether objcopy supports debuglink],
 [libbacktrace_cv_objcopy_debuglink],
 [if test -n "${with_target_subdir}"; then
+  libbacktrace_cv_objcopy_debuglink=no
+elif ! test -n "${OBJCOPY}"; then
   libbacktrace_cv_objcopy_debuglink=no
 elif ${OBJCOPY} --add-gnu-debuglink=x /bin/ls /tmp/ls$$; then
   rm -f /tmp/ls$$
@@ -457,6 +509,10 @@ else
   libbacktrace_cv_objcopy_debuglink=no
 fi])
 AM_CONDITIONAL(HAVE_OBJCOPY_DEBUGLINK, test "$libbacktrace_cv_objcopy_debuglink" = yes)
+
+AC_ARG_VAR(DSYMUTIL, [location of dsymutil])
+AC_CHECK_PROG(DSYMUTIL, dsymutil, dsymutil)
+AM_CONDITIONAL(HAVE_DSYMUTIL, test -n "${DSYMUTIL}")
 
 AC_CACHE_CHECK([whether tests can run],
   [libbacktrace_cv_sys_native],
@@ -473,6 +529,7 @@ else
 fi
 
 AC_CONFIG_FILES(Makefile backtrace-supported.h)
+AC_CONFIG_FILES(install-debuginfo-for-buildid.sh, chmod +x install-debuginfo-for-buildid.sh)
 
 # We need multilib support, but only if configuring for the target.
 AC_CONFIG_COMMANDS([default],

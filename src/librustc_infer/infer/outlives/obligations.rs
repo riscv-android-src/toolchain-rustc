@@ -63,9 +63,9 @@ use crate::infer::outlives::env::RegionBoundPairs;
 use crate::infer::outlives::verify::VerifyBoundCx;
 use crate::infer::{self, GenericKind, InferCtxt, RegionObligation, SubregionOrigin, VerifyBound};
 use crate::traits::ObligationCause;
-use rustc::ty::outlives::Component;
-use rustc::ty::subst::GenericArgKind;
-use rustc::ty::{self, Region, Ty, TyCtxt, TypeFoldable};
+use rustc_middle::ty::outlives::Component;
+use rustc_middle::ty::subst::GenericArgKind;
+use rustc_middle::ty::{self, Region, Ty, TyCtxt, TypeFoldable};
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
@@ -452,7 +452,7 @@ where
         // even though a satisfactory solution exists.
         let generic = GenericKind::Projection(projection_ty);
         let verify_bound = self.verify_bound.generic_bound(generic);
-        self.delegate.push_verify(origin, generic.clone(), region, verify_bound);
+        self.delegate.push_verify(origin, generic, region, verify_bound);
     }
 }
 

@@ -1,12 +1,11 @@
 mod windows;
 mod posix;
 
-use std::{convert::TryInto, iter};
+use std::{convert::{TryInto, TryFrom}, iter};
 
 use rustc_hir::def_id::DefId;
-use rustc::mir;
-use rustc::ty;
-use rustc::ty::layout::{Align, Size};
+use rustc_middle::{mir, ty};
+use rustc_target::abi::{Align, Size};
 use rustc_apfloat::Float;
 use rustc_span::symbol::sym;
 use rustc_ast::attr;
@@ -19,7 +18,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn min_align(&self, size: u64, kind: MiriMemoryKind) -> Align {
         let this = self.eval_context_ref();
         // List taken from `libstd/sys_common/alloc.rs`.
-        let min_align = match this.tcx.tcx.sess.target.target.arch.as_str() {
+        let min_align = match this.tcx.sess.target.target.arch.as_str() {
             "x86" | "arm" | "mips" | "powerpc" | "powerpc64" | "asmjs" | "wasm32" => 8,
             "x86_64" | "aarch64" | "mips64" | "s390x" | "sparc64" => 16,
             arch => bug!("Unsupported target architecture: {}", arch),
@@ -47,7 +46,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn malloc(&mut self, size: u64, zero_init: bool, kind: MiriMemoryKind) -> Scalar<Tag> {
         let this = self.eval_context_mut();
         if size == 0 {
-            Scalar::from_int(0, this.pointer_size())
+            Scalar::null_ptr(this)
         } else {
             let align = this.min_align(size, kind);
             let ptr = this.memory.allocate(Size::from_bytes(size), align, kind.into());
@@ -78,7 +77,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let new_align = this.min_align(new_size, kind);
         if this.is_null(old_ptr)? {
             if new_size == 0 {
-                Ok(Scalar::from_int(0, this.pointer_size()))
+                Ok(Scalar::null_ptr(this))
             } else {
                 let new_ptr =
                     this.memory.allocate(Size::from_bytes(new_size), new_align, kind.into());
@@ -88,7 +87,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             let old_ptr = this.force_ptr(old_ptr)?;
             if new_size == 0 {
                 this.memory.deallocate(old_ptr, None, kind.into())?;
-                Ok(Scalar::from_int(0, this.pointer_size()))
+                Ok(Scalar::null_ptr(this))
             } else {
                 let new_ptr = this.memory.reallocate(
                     old_ptr,
@@ -124,16 +123,40 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         };
         // Strip linker suffixes (seen on 32-bit macOS).
         let link_name = link_name.trim_end_matches("$UNIX2003");
-        let tcx = &{ this.tcx.tcx };
+        let tcx = this.tcx.tcx;
 
         // First: functions that diverge.
-        let (dest, ret) = match link_name {
-            // Note that this matches calls to the *foreign* item `__rust_start_panic* -
-            // that is, calls to `extern "Rust" { fn __rust_start_panic(...) }`.
+        let (dest, ret) = match ret {
+            None => match link_name {
+                // This matches calls to the foreign item `panic_impl`.
+                // The implementation is provided by the function with the `#[panic_handler]` attribute.
+                "panic_impl" => {
+                    this.check_panic_supported()?;
+                    let panic_impl_id = tcx.lang_items().panic_impl().unwrap();
+                    let panic_impl_instance = ty::Instance::mono(tcx, panic_impl_id);
+                    return Ok(Some(&*this.load_mir(panic_impl_instance.def, None)?));
+                }
+                | "exit"
+                | "ExitProcess"
+                => {
+                    // it's really u32 for ExitProcess, but we have to put it into the `Exit` variant anyway
+                    let code = this.read_scalar(args[0])?.to_i32()?;
+                    throw_machine_stop!(TerminationInfo::Exit(code.into()));
+                }
+                _ => throw_unsup_format!("can't call (diverging) foreign function: {}", link_name),
+            },
+            Some(p) => p,
+        };
+
+        // Second: some functions that we forward to MIR implementations.
+        match link_name {
+            // This matches calls to the foreign item `__rust_start_panic`, that is,
+            // calls to `extern "Rust" { fn __rust_start_panic(...) }`
+            // (and `__rust_panic_cleanup`, respectively).
             // We forward this to the underlying *implementation* in the panic runtime crate.
             // Normally, this will be either `libpanic_unwind` or `libpanic_abort`, but it could
             // also be a custom user-provided implementation via `#![feature(panic_runtime)]`
-            "__rust_start_panic" => {
+            "__rust_start_panic" | "__rust_panic_cleanup"=> {
                 // FIXME we might want to cache this... but it's not really performance-critical.
                 let panic_runtime = tcx
                     .crates()
@@ -142,34 +165,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     .expect("No panic runtime found!");
                 let panic_runtime = tcx.crate_name(*panic_runtime);
                 let start_panic_instance =
-                    this.resolve_path(&[&*panic_runtime.as_str(), "__rust_start_panic"])?;
+                    this.resolve_path(&[&*panic_runtime.as_str(), link_name]);
                 return Ok(Some(&*this.load_mir(start_panic_instance.def, None)?));
             }
-            // Similarly, we forward calls to the `panic_impl` foreign item to its implementation.
-            // The implementation is provided by the function with the `#[panic_handler]` attribute.
-            "panic_impl" => {
-                let panic_impl_id = this.tcx.lang_items().panic_impl().unwrap();
-                let panic_impl_instance = ty::Instance::mono(*this.tcx, panic_impl_id);
-                return Ok(Some(&*this.load_mir(panic_impl_instance.def, None)?));
-            }
+            _ => {}
+        }
 
-            | "exit"
-            | "ExitProcess"
-            => {
-                // it's really u32 for ExitProcess, but we have to put it into the `Exit` variant anyway
-                let code = this.read_scalar(args[0])?.to_i32()?;
-                throw_machine_stop!(TerminationInfo::Exit(code.into()));
-            }
-            _ => {
-                if let Some(p) = ret {
-                    p
-                } else {
-                    throw_unsup_format!("can't call (diverging) foreign function: {}", link_name);
-                }
-            }
-        };
-
-        // Next: functions that return.
+        // Third: functions that return.
         if this.emulate_foreign_item_by_name(link_name, args, dest, ret)? {
             this.dump_place(*dest);
             this.go_to_block(ret);
@@ -193,6 +195,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // Here we dispatch all the shims for foreign functions. If you have a platform specific
         // shim, add it to the corresponding submodule.
         match link_name {
+            // Standard C allocation
             "malloc" => {
                 let size = this.read_scalar(args[0])?.to_machine_usize(this)?;
                 let res = this.malloc(size, /*zero_init:*/ false, MiriMemoryKind::C);
@@ -217,15 +220,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_scalar(res, dest)?;
             }
 
+            // Rust allocation
+            // (Usually these would be forwarded to to `#[global_allocator]`; we instead implement a generic
+            // allocation that also checks that all conditions are met, such as not permitting zero-sized allocations.)
             "__rust_alloc" => {
                 let size = this.read_scalar(args[0])?.to_machine_usize(this)?;
                 let align = this.read_scalar(args[1])?.to_machine_usize(this)?;
-                if size == 0 {
-                    throw_unsup!(HeapAllocZeroBytes);
-                }
-                if !align.is_power_of_two() {
-                    throw_unsup!(HeapAllocNonPowerOfTwoAlignment(align));
-                }
+                Self::check_alloc_request(size, align)?;
                 let ptr = this.memory.allocate(
                     Size::from_bytes(size),
                     Align::from_bytes(align).unwrap(),
@@ -236,31 +237,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "__rust_alloc_zeroed" => {
                 let size = this.read_scalar(args[0])?.to_machine_usize(this)?;
                 let align = this.read_scalar(args[1])?.to_machine_usize(this)?;
-                if size == 0 {
-                    throw_unsup!(HeapAllocZeroBytes);
-                }
-                if !align.is_power_of_two() {
-                    throw_unsup!(HeapAllocNonPowerOfTwoAlignment(align));
-                }
+                Self::check_alloc_request(size, align)?;
                 let ptr = this.memory.allocate(
                     Size::from_bytes(size),
                     Align::from_bytes(align).unwrap(),
                     MiriMemoryKind::Rust.into(),
                 );
                 // We just allocated this, the access is definitely in-bounds.
-                this.memory.write_bytes(ptr.into(), iter::repeat(0u8).take(size as usize)).unwrap();
+                this.memory.write_bytes(ptr.into(), iter::repeat(0u8).take(usize::try_from(size).unwrap())).unwrap();
                 this.write_scalar(ptr, dest)?;
             }
             "__rust_dealloc" => {
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let old_size = this.read_scalar(args[1])?.to_machine_usize(this)?;
                 let align = this.read_scalar(args[2])?.to_machine_usize(this)?;
-                if old_size == 0 {
-                    throw_unsup!(HeapAllocZeroBytes);
-                }
-                if !align.is_power_of_two() {
-                    throw_unsup!(HeapAllocNonPowerOfTwoAlignment(align));
-                }
+                // No need to check old_size/align; we anyway check that they match the allocation.
                 let ptr = this.force_ptr(ptr)?;
                 this.memory.deallocate(
                     ptr,
@@ -272,12 +263,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let old_size = this.read_scalar(args[1])?.to_machine_usize(this)?;
                 let align = this.read_scalar(args[2])?.to_machine_usize(this)?;
                 let new_size = this.read_scalar(args[3])?.to_machine_usize(this)?;
-                if old_size == 0 || new_size == 0 {
-                    throw_unsup!(HeapAllocZeroBytes);
-                }
-                if !align.is_power_of_two() {
-                    throw_unsup!(HeapAllocNonPowerOfTwoAlignment(align));
-                }
+                Self::check_alloc_request(new_size, align)?;
+                // No need to check old_size; we anyway check that they match the allocation.
                 let ptr = this.force_ptr(this.read_scalar(args[0])?.not_undef()?)?;
                 let align = Align::from_bytes(align).unwrap();
                 let new_ptr = this.memory.reallocate(
@@ -290,11 +277,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_scalar(new_ptr, dest)?;
             }
 
-            "__rust_maybe_catch_panic" => {
-                this.handle_catch_panic(args, dest, ret)?;
-                return Ok(false);
-            }
-
+            // C memory handling functions
             "memcmp" => {
                 let left = this.read_scalar(args[0])?.not_undef()?;
                 let right = this.read_scalar(args[1])?.not_undef()?;
@@ -312,9 +295,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     }
                 };
 
-                this.write_scalar(Scalar::from_int(result, Size::from_bits(32)), dest)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
-
             "memrchr" => {
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let val = this.read_scalar(args[1])?.to_i32()? as u8;
@@ -332,7 +314,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     this.write_null(dest)?;
                 }
             }
-
             "memchr" => {
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let val = this.read_scalar(args[1])?.to_i32()? as u8;
@@ -349,11 +330,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                     this.write_null(dest)?;
                 }
             }
-
             "strlen" => {
                 let ptr = this.read_scalar(args[0])?.not_undef()?;
                 let n = this.memory.read_c_str(ptr)?.len();
-                this.write_scalar(Scalar::from_uint(n as u64, dest.layout.size), dest)?;
+                this.write_scalar(Scalar::from_machine_usize(u64::try_from(n).unwrap(), this), dest)?;
             }
 
             // math functions
@@ -379,11 +359,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 this.write_scalar(Scalar::from_u32(f.to_bits()), dest)?;
             }
-            // underscore case for windows
             | "_hypotf"
             | "hypotf"
             | "atan2f"
             => {
+                // underscore case for windows, here and below
+                // (see https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/floating-point-primitives?view=vs-2019)
                 // FIXME: Using host floats.
                 let f1 = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
                 let f2 = f32::from_bits(this.read_scalar(args[1])?.to_u32()?);
@@ -394,7 +375,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 this.write_scalar(Scalar::from_u32(n.to_bits()), dest)?;
             }
-
             | "cbrt"
             | "cosh"
             | "sinh"
@@ -417,8 +397,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 this.write_scalar(Scalar::from_u64(f.to_bits()), dest)?;
             }
-            // underscore case for windows, here and below
-            // (see https://docs.microsoft.com/en-us/cpp/c-runtime-library/reference/floating-point-primitives?view=vs-2019)
             | "_hypot"
             | "hypot"
             | "atan2"
@@ -433,20 +411,20 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 this.write_scalar(Scalar::from_u64(n.to_bits()), dest)?;
             }
-            // For radix-2 (binary) systems, `ldexp` and `scalbn` are the same.
             | "_ldexp"
             | "ldexp"
             | "scalbn"
             => {
+                // For radix-2 (binary) systems, `ldexp` and `scalbn` are the same.
                 let x = this.read_scalar(args[0])?.to_f64()?;
                 let exp = this.read_scalar(args[1])?.to_i32()?;
 
                 // Saturating cast to i16. Even those are outside the valid exponent range to
                 // `scalbn` below will do its over/underflow handling.
-                let exp = if exp > i16::max_value() as i32 {
-                    i16::max_value()
-                } else if exp < i16::min_value() as i32 {
-                    i16::min_value()
+                let exp = if exp > i32::from(i16::MAX) {
+                    i16::MAX
+                } else if exp < i32::from(i16::MIN) {
+                    i16::MIN
                 } else {
                     exp.try_into().unwrap()
                 };
@@ -455,29 +433,26 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_scalar(Scalar::from_f64(res), dest)?;
             }
 
+            // Target-specific shims
             _ => match this.tcx.sess.target.target.target_os.as_str() {
                 "linux" | "macos" => return posix::EvalContextExt::emulate_foreign_item_by_name(this, link_name, args, dest, ret),
                 "windows" => return windows::EvalContextExt::emulate_foreign_item_by_name(this, link_name, args, dest, ret),
-                target => throw_unsup_format!("The {} target platform is not supported", target),
+                target => throw_unsup_format!("the target `{}` is not supported", target),
             }
         };
 
         Ok(true)
     }
 
-    /// Evaluates the scalar at the specified path. Returns Some(val)
-    /// if the path could be resolved, and None otherwise
-    fn eval_path_scalar(
-        &mut self,
-        path: &[&str],
-    ) -> InterpResult<'tcx, Option<ScalarMaybeUndef<Tag>>> {
-        let this = self.eval_context_mut();
-        if let Ok(instance) = this.resolve_path(path) {
-            let cid = GlobalId { instance, promoted: None };
-            let const_val = this.const_eval_raw(cid)?;
-            let const_val = this.read_scalar(const_val.into())?;
-            return Ok(Some(const_val));
+    /// Check some basic requirements for this allocation request:
+    /// non-zero size, power-of-two alignment.
+    fn check_alloc_request(size: u64, align: u64) -> InterpResult<'tcx> {
+        if size == 0 {
+            throw_ub_format!("creating allocation with size 0");
         }
-        return Ok(None);
+        if !align.is_power_of_two() {
+            throw_ub_format!("creating allocation with non-power-of-two alignment {}", align);
+        }
+        Ok(())
     }
 }

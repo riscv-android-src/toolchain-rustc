@@ -1,8 +1,9 @@
-use rustc::mir::*;
-use rustc::ty::{self, adjustment::PointerCast, Predicate, Ty, TyCtxt};
 use rustc_attr as attr;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
+use rustc_middle::mir::*;
+use rustc_middle::ty::subst::GenericArgKind;
+use rustc_middle::ty::{self, adjustment::PointerCast, Predicate, Ty, TyCtxt};
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::Span;
 use std::borrow::Cow;
@@ -92,7 +93,15 @@ pub fn is_min_const_fn(tcx: TyCtxt<'tcx>, def_id: DefId, body: &'a Body<'tcx>) -
 }
 
 fn check_ty(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, span: Span, fn_def_id: DefId) -> McfResult {
-    for ty in ty.walk() {
+    for arg in ty.walk() {
+        let ty = match arg.unpack() {
+            GenericArgKind::Type(ty) => ty,
+
+            // No constraints on lifetimes or constants, except potentially
+            // constants' types, but `walk` will get to them as well.
+            GenericArgKind::Lifetime(_) | GenericArgKind::Const(_) => continue,
+        };
+
         match ty.kind {
             ty::Ref(_, _, hir::Mutability::Mut) => {
                 if !feature_allowed(tcx, fn_def_id, sym::const_mut_refs) {
@@ -150,27 +159,32 @@ fn check_rvalue(
         Rvalue::Len(place)
         | Rvalue::Discriminant(place)
         | Rvalue::Ref(_, _, place)
-        | Rvalue::AddressOf(_, place) => check_place(tcx, place, span, def_id, body),
+        | Rvalue::AddressOf(_, place) => check_place(tcx, *place, span, def_id, body),
         Rvalue::Cast(CastKind::Misc, operand, cast_ty) => {
-            use rustc::ty::cast::CastTy;
+            use rustc_middle::ty::cast::CastTy;
             let cast_in = CastTy::from_ty(operand.ty(body, tcx)).expect("bad input type for cast");
             let cast_out = CastTy::from_ty(cast_ty).expect("bad output type for cast");
             match (cast_in, cast_out) {
-                (CastTy::Ptr(_), CastTy::Int(_)) | (CastTy::FnPtr, CastTy::Int(_)) => {
+                (CastTy::Ptr(_) | CastTy::FnPtr, CastTy::Int(_)) => {
                     Err((span, "casting pointers to ints is unstable in const fn".into()))
                 }
                 _ => check_operand(tcx, operand, span, def_id, body),
             }
         }
-        Rvalue::Cast(CastKind::Pointer(PointerCast::MutToConstPointer), operand, _)
-        | Rvalue::Cast(CastKind::Pointer(PointerCast::ArrayToPointer), operand, _) => {
-            check_operand(tcx, operand, span, def_id, body)
-        }
-        Rvalue::Cast(CastKind::Pointer(PointerCast::UnsafeFnPointer), _, _)
-        | Rvalue::Cast(CastKind::Pointer(PointerCast::ClosureFnPointer(_)), _, _)
-        | Rvalue::Cast(CastKind::Pointer(PointerCast::ReifyFnPointer), _, _) => {
-            Err((span, "function pointer casts are not allowed in const fn".into()))
-        }
+        Rvalue::Cast(
+            CastKind::Pointer(PointerCast::MutToConstPointer | PointerCast::ArrayToPointer),
+            operand,
+            _,
+        ) => check_operand(tcx, operand, span, def_id, body),
+        Rvalue::Cast(
+            CastKind::Pointer(
+                PointerCast::UnsafeFnPointer
+                | PointerCast::ClosureFnPointer(_)
+                | PointerCast::ReifyFnPointer,
+            ),
+            _,
+            _,
+        ) => Err((span, "function pointer casts are not allowed in const fn".into())),
         Rvalue::Cast(CastKind::Pointer(PointerCast::Unsize), _, _) => {
             Err((span, "unsizing casts are not allowed in const fn".into()))
         }
@@ -215,7 +229,7 @@ fn check_statement(
     let span = statement.source_info.span;
     match &statement.kind {
         StatementKind::Assign(box (place, rval)) => {
-            check_place(tcx, place, span, def_id, body)?;
+            check_place(tcx, *place, span, def_id, body)?;
             check_rvalue(tcx, body, def_id, rval, span)
         }
 
@@ -225,12 +239,14 @@ fn check_statement(
             Err((span, "loops and conditional expressions are not stable in const fn".into()))
         }
 
-        StatementKind::FakeRead(_, place) => check_place(tcx, place, span, def_id, body),
+        StatementKind::FakeRead(_, place) => check_place(tcx, **place, span, def_id, body),
 
         // just an assignment
-        StatementKind::SetDiscriminant { place, .. } => check_place(tcx, place, span, def_id, body),
+        StatementKind::SetDiscriminant { place, .. } => {
+            check_place(tcx, **place, span, def_id, body)
+        }
 
-        StatementKind::InlineAsm { .. } => {
+        StatementKind::LlvmInlineAsm { .. } => {
             Err((span, "cannot use inline assembly in const fn".into()))
         }
 
@@ -251,7 +267,7 @@ fn check_operand(
     body: &Body<'tcx>,
 ) -> McfResult {
     match operand {
-        Operand::Move(place) | Operand::Copy(place) => check_place(tcx, place, span, def_id, body),
+        Operand::Move(place) | Operand::Copy(place) => check_place(tcx, *place, span, def_id, body),
         Operand::Constant(c) => match c.check_static_ptr(tcx) {
             Some(_) => Err((span, "cannot access `static` items in const fn".into())),
             None => Ok(()),
@@ -261,7 +277,7 @@ fn check_operand(
 
 fn check_place(
     tcx: TyCtxt<'tcx>,
-    place: &Place<'tcx>,
+    place: Place<'tcx>,
     span: Span,
     def_id: DefId,
     body: &Body<'tcx>,
@@ -330,9 +346,9 @@ fn check_terminator(
         | TerminatorKind::Return
         | TerminatorKind::Resume => Ok(()),
 
-        TerminatorKind::Drop { location, .. } => check_place(tcx, location, span, def_id, body),
+        TerminatorKind::Drop { location, .. } => check_place(tcx, *location, span, def_id, body),
         TerminatorKind::DropAndReplace { location, value, .. } => {
-            check_place(tcx, location, span, def_id, body)?;
+            check_place(tcx, *location, span, def_id, body)?;
             check_operand(tcx, value, span, def_id, body)
         }
 

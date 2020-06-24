@@ -1,17 +1,18 @@
 //! The `Visitor` responsible for actually checking a `mir::Body` for invalid operations.
 
-use rustc::middle::lang_items;
-use rustc::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
-use rustc::mir::*;
-use rustc::ty::cast::CastTy;
-use rustc::ty::{self, Instance, InstanceDef, TyCtxt};
 use rustc_errors::struct_span_err;
+use rustc_hir::lang_items;
 use rustc_hir::{def_id::DefId, HirId};
 use rustc_index::bit_set::BitSet;
 use rustc_infer::infer::TyCtxtInferExt;
-use rustc_infer::traits::{self, TraitEngine};
+use rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
+use rustc_middle::mir::*;
+use rustc_middle::ty::cast::CastTy;
+use rustc_middle::ty::{self, Instance, InstanceDef, TyCtxt};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
+use rustc_trait_selection::traits::error_reporting::InferCtxtExt;
+use rustc_trait_selection::traits::{self, TraitEngine};
 
 use std::borrow::Cow;
 use std::ops::Deref;
@@ -21,8 +22,8 @@ use super::qualifs::{self, HasMutInterior, NeedsDrop};
 use super::resolver::FlowSensitiveAnalysis;
 use super::{is_lang_panic_fn, ConstKind, Item, Qualif};
 use crate::const_eval::{is_const_fn, is_unstable_const_fn};
-use crate::dataflow::generic::{self as dataflow, Analysis};
 use crate::dataflow::MaybeMutBorrowedLocals;
+use crate::dataflow::{self, Analysis};
 
 // We are using `MaybeMutBorrowedLocals` as a proxy for whether an item may have been mutated
 // through a pointer prior to the given point. This is okay even though `MaybeMutBorrowedLocals`
@@ -182,7 +183,7 @@ impl Validator<'a, 'mir, 'tcx> {
             self.check_op_spanned(ops::Loop, body.span);
         }
 
-        self.visit_body(body);
+        self.visit_body(&body);
 
         // Ensure that the end result is `Sync` in a non-thread local `static`.
         let should_check_for_sync =
@@ -212,7 +213,7 @@ impl Validator<'a, 'mir, 'tcx> {
 
         // If an operation is supported in miri (and is not already controlled by a feature gate) it
         // can be turned on with `-Zunleash-the-miri-inside-of-you`.
-        let is_unleashable = O::IS_SUPPORTED_IN_MIRI && O::feature_gate(self.tcx).is_none();
+        let is_unleashable = O::IS_SUPPORTED_IN_MIRI && O::feature_gate().is_none();
 
         if is_unleashable && self.tcx.sess.opts.debugging_opts.unleash_the_miri_inside_of_you {
             self.tcx.sess.span_warn(span, "skipping const checks");
@@ -259,7 +260,7 @@ impl Visitor<'tcx> for Validator<'_, 'mir, 'tcx> {
 
         // Special-case reborrows to be more like a copy of a reference.
         match *rvalue {
-            Rvalue::Ref(_, kind, ref place) => {
+            Rvalue::Ref(_, kind, place) => {
                 if let Some(reborrowed_proj) = place_as_reborrow(self.tcx, *self.body, place) {
                     let ctx = match kind {
                         BorrowKind::Shared => {
@@ -280,7 +281,7 @@ impl Visitor<'tcx> for Validator<'_, 'mir, 'tcx> {
                     return;
                 }
             }
-            Rvalue::AddressOf(mutbl, ref place) => {
+            Rvalue::AddressOf(mutbl, place) => {
                 if let Some(reborrowed_proj) = place_as_reborrow(self.tcx, *self.body, place) {
                     let ctx = match mutbl {
                         Mutability::Not => {
@@ -340,10 +341,9 @@ impl Visitor<'tcx> for Validator<'_, 'mir, 'tcx> {
 
             Rvalue::AddressOf(Mutability::Mut, _) => self.check_op(ops::MutAddressOf),
 
-            Rvalue::Ref(_, BorrowKind::Shared, ref place)
-            | Rvalue::Ref(_, BorrowKind::Shallow, ref place)
+            Rvalue::Ref(_, BorrowKind::Shared | BorrowKind::Shallow, ref place)
             | Rvalue::AddressOf(Mutability::Not, ref place) => {
-                let borrowed_place_has_mut_interior = HasMutInterior::in_place(
+                let borrowed_place_has_mut_interior = qualifs::in_place::<HasMutInterior, _>(
                     &self.item,
                     &mut |local| self.qualifs.has_mut_interior(local, location),
                     place.as_ref(),
@@ -359,9 +359,7 @@ impl Visitor<'tcx> for Validator<'_, 'mir, 'tcx> {
                 let cast_in = CastTy::from_ty(operand_ty).expect("bad input type for cast");
                 let cast_out = CastTy::from_ty(cast_ty).expect("bad output type for cast");
 
-                if let (CastTy::Ptr(_), CastTy::Int(_)) | (CastTy::FnPtr, CastTy::Int(_)) =
-                    (cast_in, cast_out)
-                {
+                if let (CastTy::Ptr(_) | CastTy::FnPtr, CastTy::Int(_)) = (cast_in, cast_out) {
                     self.check_op(ops::RawPtrToIntCast);
                 }
             }
@@ -487,18 +485,18 @@ impl Visitor<'tcx> for Validator<'_, 'mir, 'tcx> {
             StatementKind::FakeRead(..)
             | StatementKind::StorageLive(_)
             | StatementKind::StorageDead(_)
-            | StatementKind::InlineAsm { .. }
+            | StatementKind::LlvmInlineAsm { .. }
             | StatementKind::Retag { .. }
             | StatementKind::AscribeUserType(..)
             | StatementKind::Nop => {}
         }
     }
 
-    fn visit_terminator_kind(&mut self, kind: &TerminatorKind<'tcx>, location: Location) {
-        trace!("visit_terminator_kind: kind={:?} location={:?}", kind, location);
-        self.super_terminator_kind(kind, location);
+    fn visit_terminator(&mut self, terminator: &Terminator<'tcx>, location: Location) {
+        trace!("visit_terminator: terminator={:?} location={:?}", terminator, location);
+        self.super_terminator(terminator, location);
 
-        match kind {
+        match &terminator.kind {
             TerminatorKind::Call { func, .. } => {
                 let fn_ty = func.ty(*self.body, self.tcx);
 
@@ -510,8 +508,7 @@ impl Visitor<'tcx> for Validator<'_, 'mir, 'tcx> {
                         return;
                     }
                     _ => {
-                        self.check_op(ops::FnCallOther);
-                        return;
+                        span_bug!(terminator.source_info.span, "invalid callee of type {:?}", fn_ty)
                     }
                 };
 
@@ -644,7 +641,7 @@ fn check_return_ty_is_sync(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, hir_id: HirId) 
 fn place_as_reborrow(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
-    place: &'a Place<'tcx>,
+    place: Place<'tcx>,
 ) -> Option<&'a [PlaceElem<'tcx>]> {
     place.projection.split_last().and_then(|(outermost, inner)| {
         if outermost != &ProjectionElem::Deref {

@@ -120,6 +120,7 @@ symbols! {
         abi_unadjusted,
         abi_vectorcall,
         abi_x86_interrupt,
+        abort,
         aborts,
         address,
         add_with_overflow,
@@ -143,6 +144,7 @@ symbols! {
         any,
         arbitrary_enum_discriminant,
         arbitrary_self_types,
+        Arc,
         Arguments,
         ArgumentV1,
         arm_target_feature,
@@ -181,6 +183,7 @@ symbols! {
         caller_location,
         cdylib,
         cfg,
+        cfg_accessible,
         cfg_attr,
         cfg_attr_multi,
         cfg_doctest,
@@ -251,6 +254,7 @@ symbols! {
         debug_trait,
         declare_lint_pass,
         decl_macro,
+        debug,
         Debug,
         Decodable,
         Default,
@@ -265,6 +269,7 @@ symbols! {
         derive,
         diagnostic,
         direct,
+        discriminant_value,
         doc,
         doc_alias,
         doc_cfg,
@@ -287,7 +292,6 @@ symbols! {
         dylib,
         dyn_trait,
         eh_personality,
-        eh_unwind_resume,
         enable,
         Encodable,
         env,
@@ -344,6 +348,7 @@ symbols! {
         generators,
         generic_associated_types,
         generic_param_attrs,
+        get_context,
         global_allocator,
         global_asm,
         globs,
@@ -421,6 +426,7 @@ symbols! {
         LintPass,
         lint_reasons,
         literal,
+        llvm_asm,
         local_inner_macros,
         log_syntax,
         loop_break_value,
@@ -452,6 +458,7 @@ symbols! {
         min_align_of,
         min_const_fn,
         min_const_unsafe_fn,
+        min_specialization,
         mips_target_feature,
         mmx_target_feature,
         module,
@@ -469,6 +476,7 @@ symbols! {
         needs_drop,
         needs_panic_runtime,
         negate_unsigned,
+        negative_impls,
         never,
         never_type,
         never_type_fallback,
@@ -540,8 +548,8 @@ symbols! {
         plugin,
         plugin_registrar,
         plugins,
+        poll,
         Poll,
-        poll_with_tls_context,
         powerpc_target_feature,
         precise_pointer_size_matching,
         pref_align_of,
@@ -576,6 +584,7 @@ symbols! {
         raw_dylib,
         raw_identifiers,
         raw_ref_op,
+        Rc,
         Ready,
         reason,
         recursion_limit,
@@ -653,6 +662,8 @@ symbols! {
         rustc_proc_macro_decls,
         rustc_promotable,
         rustc_regions,
+        rustc_unsafe_specialization_marker,
+        rustc_specialization_trait,
         rustc_stable,
         rustc_std_internal_symbol,
         rustc_symbol_name,
@@ -663,7 +674,6 @@ symbols! {
         rustc_variance,
         rustfmt,
         rust_eh_personality,
-        rust_eh_unwind_resume,
         rust_oom,
         rvalue_static_promotion,
         sanitize,
@@ -716,6 +726,7 @@ symbols! {
         target_has_atomic_load_store,
         target_thread_local,
         task,
+        _task_context,
         tbm_target_feature,
         termination_trait,
         termination_trait_test,
@@ -853,12 +864,12 @@ impl Ident {
     }
 
     /// "Normalize" ident for use in comparisons using "item hygiene".
-    /// Identifiers with same string value become same if they came from the same "modern" macro
+    /// Identifiers with same string value become same if they came from the same macro 2.0 macro
     /// (e.g., `macro` item, but not `macro_rules` item) and stay different if they came from
-    /// different "modern" macros.
+    /// different macro 2.0 macros.
     /// Technically, this operation strips all non-opaque marks from ident's syntactic context.
-    pub fn modern(self) -> Ident {
-        Ident::new(self.name, self.span.modern())
+    pub fn normalize_to_macros_2_0(self) -> Ident {
+        Ident::new(self.name, self.span.normalize_to_macros_2_0())
     }
 
     /// "Normalize" ident for use in comparisons using "local variable hygiene".
@@ -866,8 +877,8 @@ impl Ident {
     /// macro (e.g., `macro` or `macro_rules!` items) and stay different if they came from different
     /// non-transparent macros.
     /// Technically, this operation strips all transparent marks from ident's syntactic context.
-    pub fn modern_and_legacy(self) -> Ident {
-        Ident::new(self.name, self.span.modern_and_legacy())
+    pub fn normalize_to_macro_rules(self) -> Ident {
+        Ident::new(self.name, self.span.normalize_to_macro_rules())
     }
 
     /// Convert the name to a `SymbolStr`. This is a slowish operation because
@@ -979,6 +990,31 @@ impl fmt::Display for IdentPrinter {
     }
 }
 
+/// An newtype around `Ident` that calls [Ident::normalize_to_macro_rules] on
+/// construction.
+// FIXME(matthewj, petrochenkov) Use this more often, add a similar
+// `ModernIdent` struct and use that as well.
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub struct MacroRulesNormalizedIdent(Ident);
+
+impl MacroRulesNormalizedIdent {
+    pub fn new(ident: Ident) -> Self {
+        Self(ident.normalize_to_macro_rules())
+    }
+}
+
+impl fmt::Debug for MacroRulesNormalizedIdent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl fmt::Display for MacroRulesNormalizedIdent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
 /// An interned string.
 ///
 /// Internally, a `Symbol` is implemented as an index, and all operations
@@ -997,7 +1033,7 @@ rustc_index::newtype_index! {
 
 impl Symbol {
     const fn new(n: u32) -> Self {
-        Symbol(SymbolIndex::from_u32_const(n))
+        Symbol(SymbolIndex::from_u32(n))
     }
 
     /// Maps a string to its interned representation.
@@ -1118,12 +1154,20 @@ impl Interner {
 }
 
 // This module has a very short name because it's used a lot.
+/// This module contains all the defined keyword `Symbol`s.
+///
+/// Given that `kw` is imported, use them like `kw::keyword_name`.
+/// For example `kw::Loop` or `kw::Break`.
 pub mod kw {
     use super::Symbol;
     keywords!();
 }
 
 // This module has a very short name because it's used a lot.
+/// This module contains all the defined non-keyword `Symbol`s.
+///
+/// Given that `sym` is imported, use them like `sym::symbol_name`.
+/// For example `sym::rustfmt` or `sym::u8`.
 #[allow(rustc::default_hash_types)]
 pub mod sym {
     use super::Symbol;

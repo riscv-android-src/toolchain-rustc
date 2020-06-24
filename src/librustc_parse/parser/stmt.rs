@@ -1,13 +1,13 @@
+use super::attr::DEFAULT_INNER_ATTR_FORBIDDEN;
 use super::diagnostics::Error;
 use super::expr::LhsExpr;
 use super::pat::GateOr;
 use super::path::PathStyle;
 use super::{BlockMode, Parser, Restrictions, SemiColonMode};
 use crate::maybe_whole;
-use crate::DirectoryOwnership;
 
 use rustc_ast::ast;
-use rustc_ast::ast::{AttrStyle, AttrVec, Attribute, Mac, MacStmtStyle};
+use rustc_ast::ast::{AttrStyle, AttrVec, Attribute, MacCall, MacStmtStyle};
 use rustc_ast::ast::{Block, BlockCheckMode, Expr, ExprKind, Local, Stmt, StmtKind, DUMMY_NODE_ID};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, TokenKind};
@@ -47,16 +47,13 @@ impl<'a> Parser<'a> {
             self.bump(); // `var`
             let msg = "write `let` instead of `var` to introduce a new variable";
             self.recover_stmt_local(lo, attrs.into(), msg, "let")?
-        } else if self.token.is_path_start()
-            && !self.token.is_qpath_start()
-            && !self.is_path_start_item()
-        {
+        } else if self.check_path() && !self.token.is_qpath_start() && !self.is_path_start_item() {
             // We have avoided contextual keywords like `union`, items with `crate` visibility,
             // or `auto trait` items. We aim to parse an arbitrary path `a::b` but not something
             // that starts like a path (1 token), but it fact not a path.
             // Also, we avoid stealing syntax from `parse_item_`.
             self.parse_stmt_path_start(lo, attrs)?
-        } else if let Some(item) = self.parse_stmt_item(attrs.clone())? {
+        } else if let Some(item) = self.parse_item_common(attrs.clone(), false, true, |_| true)? {
             // FIXME: Bad copy of attrs
             self.mk_stmt(lo.to(item.span), StmtKind::Item(P(item)))
         } else if self.eat(&token::Semi) {
@@ -72,13 +69,6 @@ impl<'a> Parser<'a> {
             return Ok(None);
         };
         Ok(Some(stmt))
-    }
-
-    fn parse_stmt_item(&mut self, attrs: Vec<Attribute>) -> PResult<'a, Option<ast::Item>> {
-        let old = mem::replace(&mut self.directory.ownership, DirectoryOwnership::UnownedViaBlock);
-        let item = self.parse_item_common(attrs, false, true, |_| true)?;
-        self.directory.ownership = old;
-        Ok(item)
     }
 
     fn parse_stmt_path_start(&mut self, lo: Span, attrs: Vec<Attribute>) -> PResult<'a, Stmt> {
@@ -112,14 +102,14 @@ impl<'a> Parser<'a> {
         let style =
             if delim == token::Brace { MacStmtStyle::Braces } else { MacStmtStyle::NoBraces };
 
-        let mac = Mac { path, args, prior_type_ascription: self.last_type_ascription };
+        let mac = MacCall { path, args, prior_type_ascription: self.last_type_ascription };
 
         let kind = if delim == token::Brace || self.token == token::Semi || self.token == token::Eof
         {
-            StmtKind::Mac(P((mac, style, attrs)))
+            StmtKind::MacCall(P((mac, style, attrs)))
         } else {
             // Since none of the above applied, this is an expression statement macro.
-            let e = self.mk_expr(lo.to(hi), ExprKind::Mac(mac), AttrVec::new());
+            let e = self.mk_expr(lo.to(hi), ExprKind::MacCall(mac), AttrVec::new());
             let e = self.maybe_recover_from_bad_qpath(e, true)?;
             let e = self.parse_dot_or_call_expr_with(e, lo, attrs)?;
             let e = self.parse_assoc_expr_with(0, LhsExpr::AlreadyParsed(e))?;
@@ -175,9 +165,9 @@ impl<'a> Parser<'a> {
                     // Rewind to before attempting to parse the type and continue parsing.
                     let parser_snapshot_after_type = self.clone();
                     mem::replace(self, parser_snapshot_before_type);
-
-                    let snippet = self.span_to_snippet(pat.span).unwrap();
-                    err.span_label(pat.span, format!("while parsing the type for `{}`", snippet));
+                    if let Ok(snip) = self.span_to_snippet(pat.span) {
+                        err.span_label(pat.span, format!("while parsing the type for `{}`", snip));
+                    }
                     (Some((parser_snapshot_after_type, colon_sp, err)), None)
                 }
             }
@@ -227,26 +217,16 @@ impl<'a> Parser<'a> {
 
     /// Parses the RHS of a local variable declaration (e.g., '= 14;').
     fn parse_initializer(&mut self, skip_eq: bool) -> PResult<'a, Option<P<Expr>>> {
-        if self.eat(&token::Eq) {
-            Ok(Some(self.parse_expr()?))
-        } else if skip_eq {
-            Ok(Some(self.parse_expr()?))
-        } else {
-            Ok(None)
-        }
+        if self.eat(&token::Eq) || skip_eq { Ok(Some(self.parse_expr()?)) } else { Ok(None) }
     }
 
     /// Parses a block. No inner attributes are allowed.
     pub fn parse_block(&mut self) -> PResult<'a, P<Block>> {
-        maybe_whole!(self, NtBlock, |x| x);
-
-        let lo = self.token.span;
-
-        if !self.eat(&token::OpenDelim(token::Brace)) {
-            return self.error_block_no_opening_brace();
+        let (attrs, block) = self.parse_inner_attrs_and_block()?;
+        if let [.., last] = &*attrs {
+            self.error_on_forbidden_inner_attr(last.span, DEFAULT_INNER_ATTR_FORBIDDEN);
         }
-
-        self.parse_block_tail(lo, BlockCheckMode::Default)
+        Ok(block)
     }
 
     fn error_block_no_opening_brace<T>(&mut self) -> PResult<'a, T> {
@@ -262,16 +242,14 @@ impl<'a> Parser<'a> {
         //
         // which is valid in other languages, but not Rust.
         match self.parse_stmt_without_recovery() {
-            Ok(Some(stmt)) => {
+            // If the next token is an open brace (e.g., `if a b {`), the place-
+            // inside-a-block suggestion would be more likely wrong than right.
+            Ok(Some(_))
                 if self.look_ahead(1, |t| t == &token::OpenDelim(token::Brace))
-                    || do_not_suggest_help
-                {
-                    // If the next token is an open brace (e.g., `if a b {`), the place-
-                    // inside-a-block suggestion would be more likely wrong than right.
-                    e.span_label(sp, "expected `{`");
-                    return Err(e);
-                }
-                let stmt_span = if self.eat(&token::Semi) {
+                    || do_not_suggest_help => {}
+            Ok(Some(stmt)) => {
+                let stmt_own_line = self.sess.source_map().is_line_before_span_empty(sp);
+                let stmt_span = if stmt_own_line && self.eat(&token::Semi) {
                     // Expand the span to include the semicolon.
                     stmt.span.with_hi(self.prev_token.span.hi())
                 } else {
@@ -294,27 +272,34 @@ impl<'a> Parser<'a> {
             _ => {}
         }
         e.span_label(sp, "expected `{`");
-        return Err(e);
+        Err(e)
     }
 
     /// Parses a block. Inner attributes are allowed.
     pub(super) fn parse_inner_attrs_and_block(
         &mut self,
     ) -> PResult<'a, (Vec<Attribute>, P<Block>)> {
+        self.parse_block_common(self.token.span, BlockCheckMode::Default)
+    }
+
+    /// Parses a block. Inner attributes are allowed.
+    pub(super) fn parse_block_common(
+        &mut self,
+        lo: Span,
+        blk_mode: BlockCheckMode,
+    ) -> PResult<'a, (Vec<Attribute>, P<Block>)> {
         maybe_whole!(self, NtBlock, |x| (Vec::new(), x));
 
-        let lo = self.token.span;
-        self.expect(&token::OpenDelim(token::Brace))?;
-        Ok((self.parse_inner_attributes()?, self.parse_block_tail(lo, BlockCheckMode::Default)?))
+        if !self.eat(&token::OpenDelim(token::Brace)) {
+            return self.error_block_no_opening_brace();
+        }
+
+        Ok((self.parse_inner_attributes()?, self.parse_block_tail(lo, blk_mode)?))
     }
 
     /// Parses the rest of a block expression or function body.
     /// Precondition: already parsed the '{'.
-    pub(super) fn parse_block_tail(
-        &mut self,
-        lo: Span,
-        s: BlockCheckMode,
-    ) -> PResult<'a, P<Block>> {
+    fn parse_block_tail(&mut self, lo: Span, s: BlockCheckMode) -> PResult<'a, P<Block>> {
         let mut stmts = vec![];
         while !self.eat(&token::CloseDelim(token::Brace)) {
             if self.token == token::Eof {

@@ -87,7 +87,7 @@ declare_clippy_lint! {
     /// **Example:**
     /// ```rust
     /// # let x = 1;
-    /// if x & 0x1111 == 0 { }
+    /// if x & 0b1111 == 0 { }
     /// ```
     pub VERBOSE_BIT_MASK,
     style,
@@ -137,9 +137,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for BitMask {
                                    VERBOSE_BIT_MASK,
                                    e.span,
                                    "bit mask could be simplified with a call to `trailing_zeros`",
-                                   |db| {
+                                   |diag| {
                     let sugg = Sugg::hir(cx, left1, "...").maybe_par();
-                    db.span_suggestion(
+                    diag.span_suggestion(
                         e.span,
                         "try",
                         format!("{}.trailing_zeros() >= {}", sugg, n.count_ones()),

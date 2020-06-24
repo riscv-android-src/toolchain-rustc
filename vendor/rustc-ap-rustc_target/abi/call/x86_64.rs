@@ -2,7 +2,7 @@
 // https://github.com/jckarter/clay/blob/master/compiler/src/externals.cpp
 
 use crate::abi::call::{ArgAbi, CastTarget, FnAbi, Reg, RegKind};
-use crate::abi::{self, Abi, HasDataLayout, LayoutOf, Size, TyLayout, TyLayoutMethods};
+use crate::abi::{self, Abi, HasDataLayout, LayoutOf, Size, TyAndLayout, TyAndLayoutMethods};
 
 /// Classification of "eightbyte" components.
 // N.B., the order of the variants is from general to specific,
@@ -26,18 +26,18 @@ fn classify_arg<'a, Ty, C>(
     arg: &ArgAbi<'a, Ty>,
 ) -> Result<[Option<Class>; MAX_EIGHTBYTES], Memory>
 where
-    Ty: TyLayoutMethods<'a, C> + Copy,
-    C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout,
+    Ty: TyAndLayoutMethods<'a, C> + Copy,
+    C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout,
 {
     fn classify<'a, Ty, C>(
         cx: &C,
-        layout: TyLayout<'a, Ty>,
+        layout: TyAndLayout<'a, Ty>,
         cls: &mut [Option<Class>],
         off: Size,
     ) -> Result<(), Memory>
     where
-        Ty: TyLayoutMethods<'a, C> + Copy,
-        C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout,
+        Ty: TyAndLayoutMethods<'a, C> + Copy,
+        C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout,
     {
         if !off.is_aligned(layout.align.abi) {
             if !layout.is_zst() {
@@ -56,16 +56,24 @@ where
 
             Abi::Vector { .. } => Class::Sse,
 
-            Abi::ScalarPair(..) | Abi::Aggregate { .. } => match layout.variants {
-                abi::Variants::Single { .. } => {
-                    for i in 0..layout.fields.count() {
-                        let field_off = off + layout.fields.offset(i);
-                        classify(cx, layout.field(cx, i), cls, field_off)?;
-                    }
-                    return Ok(());
+            Abi::ScalarPair(..) | Abi::Aggregate { .. } => {
+                for i in 0..layout.fields.count() {
+                    let field_off = off + layout.fields.offset(i);
+                    classify(cx, layout.field(cx, i), cls, field_off)?;
                 }
-                abi::Variants::Multiple { .. } => return Err(Memory),
-            },
+
+                match &layout.variants {
+                    abi::Variants::Single { .. } => {}
+                    abi::Variants::Multiple { variants, .. } => {
+                        // Treat enum variants like union members.
+                        for variant_idx in variants.indices() {
+                            classify(cx, layout.for_variant(cx, variant_idx), cls, off)?;
+                        }
+                    }
+                }
+
+                return Ok(());
+            }
         };
 
         // Fill in `cls` for scalars (Int/Sse) and vectors (Sse).
@@ -164,8 +172,8 @@ const MAX_SSE_REGS: usize = 8; // XMM0-7
 
 pub fn compute_abi_info<'a, Ty, C>(cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
 where
-    Ty: TyLayoutMethods<'a, C> + Copy,
-    C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout,
+    Ty: TyAndLayoutMethods<'a, C> + Copy,
+    C: LayoutOf<Ty = Ty, TyAndLayout = TyAndLayout<'a, Ty>> + HasDataLayout,
 {
     let mut int_regs = MAX_INT_REGS;
     let mut sse_regs = MAX_SSE_REGS;

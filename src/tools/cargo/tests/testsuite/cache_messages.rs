@@ -1,8 +1,7 @@
 //! Tests for caching compiler diagnostics.
 
 use cargo_test_support::{
-    basic_manifest, command_is_available, is_coarse_mtime, process, project, registry::Package,
-    sleep_ms,
+    basic_manifest, is_coarse_mtime, process, project, registry::Package, sleep_ms,
 };
 use std::path::Path;
 
@@ -275,56 +274,6 @@ fn fix() {
 }
 
 #[cargo_test]
-fn clippy() {
-    if !command_is_available("clippy-driver") {
-        return;
-    }
-
-    // Caching clippy output.
-    // This is just a random clippy lint (assertions_on_constants) that
-    // hopefully won't change much in the future.
-    let p = project()
-        .file(
-            "src/lib.rs",
-            "pub fn f() { assert!(true); }\n\
-             fn unused_func() {}",
-        )
-        .build();
-
-    p.cargo("clippy-preview -Zunstable-options -v")
-        .masquerade_as_nightly_cargo()
-        .with_stderr_contains("[RUNNING] `clippy[..]")
-        .with_stderr_contains("[..]assert!(true)[..]")
-        .run();
-
-    // `check` should be separate from clippy.
-    p.cargo("check -v")
-        .with_stderr_contains(
-            "\
-[CHECKING] foo [..]
-[RUNNING] `rustc[..]
-[WARNING] [..]unused_func[..]
-",
-        )
-        .with_stderr_does_not_contain("[..]assert!(true)[..]")
-        .run();
-
-    // Again, reading from the cache.
-    p.cargo("clippy-preview -Zunstable-options -v")
-        .masquerade_as_nightly_cargo()
-        .with_stderr_contains("[FRESH] foo [..]")
-        .with_stderr_contains("[..]assert!(true)[..]")
-        .run();
-
-    // And `check` should also be fresh, reading from cache.
-    p.cargo("check -v")
-        .with_stderr_contains("[FRESH] foo [..]")
-        .with_stderr_contains("[WARNING] [..]unused_func[..]")
-        .with_stderr_does_not_contain("[..]assert!(true)[..]")
-        .run();
-}
-
-#[cargo_test]
 fn very_verbose() {
     // Handle cap-lints in dependencies.
     Package::new("bar", "1.0.0")
@@ -435,5 +384,110 @@ line 2
 [FINISHED] dev [..]
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn caching_large_output() {
+    // Handles large number of messages.
+    // This is an arbitrary amount that is greater than the 100 used in
+    // job_queue. This is here to check for deadlocks or any other problems.
+    const COUNT: usize = 250;
+    let rustc = project()
+        .at("rustc")
+        .file("Cargo.toml", &basic_manifest("rustc_alt", "1.0.0"))
+        .file(
+            "src/main.rs",
+            &format!(
+                r#"
+                fn main() {{
+                    for i in 0..{} {{
+                        eprintln!("{{{{\"message\": \"test message {{}}\", \"level\": \"warning\", \
+                            \"spans\": [], \"children\": [], \"rendered\": \"test message {{}}\"}}}}",
+                            i, i);
+                    }}
+                    let r = std::process::Command::new("rustc")
+                        .args(std::env::args_os().skip(1))
+                        .status();
+                    std::process::exit(r.unwrap().code().unwrap_or(2));
+                }}
+                "#,
+                COUNT
+            ),
+        )
+        .build();
+
+    let mut expected = String::new();
+    for i in 0..COUNT {
+        expected.push_str(&format!("test message {}\n", i));
+    }
+
+    rustc.cargo("build").run();
+    let p = project().file("src/lib.rs", "").build();
+    p.cargo("check")
+        .env("RUSTC", rustc.bin("rustc_alt"))
+        .with_stderr(&format!(
+            "\
+[CHECKING] foo [..]
+{}[FINISHED] dev [..]
+",
+            expected
+        ))
+        .run();
+
+    p.cargo("check")
+        .env("RUSTC", rustc.bin("rustc_alt"))
+        .with_stderr(&format!(
+            "\
+{}[FINISHED] dev [..]
+",
+            expected
+        ))
+        .run();
+}
+
+#[cargo_test]
+fn rustc_workspace_wrapper() {
+    use cargo_test_support::paths;
+
+    let p = project()
+        .file(
+            "src/lib.rs",
+            "pub fn f() { assert!(true); }\n\
+             fn unused_func() {}",
+        )
+        .build();
+
+    p.cargo("check -Zunstable-options -v")
+        .env("RUSTC_WORKSPACE_WRAPPER", paths::echo_wrapper())
+        .masquerade_as_nightly_cargo()
+        .with_stderr_contains("WRAPPER CALLED: rustc --crate-name foo src/lib.rs [..]")
+        .run();
+
+    // Check without a wrapper should rebuild
+    p.cargo("check -v")
+        .with_stderr_contains(
+            "\
+[CHECKING] foo [..]
+[RUNNING] `rustc[..]
+[WARNING] [..]unused_func[..]
+",
+        )
+        .with_stdout_does_not_contain("WRAPPER CALLED: rustc --crate-name foo src/lib.rs [..]")
+        .run();
+
+    // Again, reading from the cache.
+    p.cargo("check -Zunstable-options -v")
+        .env("RUSTC_WORKSPACE_WRAPPER", paths::echo_wrapper())
+        .masquerade_as_nightly_cargo()
+        .with_stderr_contains("[FRESH] foo [..]")
+        .with_stdout_does_not_contain("WRAPPER CALLED: rustc --crate-name foo src/lib.rs [..]")
+        .run();
+
+    // And `check` should also be fresh, reading from cache.
+    p.cargo("check -v")
+        .with_stderr_contains("[FRESH] foo [..]")
+        .with_stderr_contains("[WARNING] [..]unused_func[..]")
+        .with_stdout_does_not_contain("WRAPPER CALLED: rustc --crate-name foo src/lib.rs [..]")
         .run();
 }
