@@ -1,21 +1,25 @@
+use crate::utils::SpanlessEq;
 use crate::utils::{
-    is_expn_of, match_def_path, match_type, method_calls, paths, span_lint, span_lint_and_help, span_lint_and_sugg,
-    walk_ptrs_ty,
+    is_expn_of, match_def_path, match_qpath, match_type, method_calls, paths, run_lints, snippet, span_lint,
+    span_lint_and_help, span_lint_and_sugg, walk_ptrs_ty,
 };
 use if_chain::if_chain;
-use rustc_ast::ast::{Crate as AstCrate, ItemKind, LitKind, Name, NodeId};
+use rustc_ast::ast::{Crate as AstCrate, ItemKind, LitKind, NodeId};
 use rustc_ast::visit::FnKind;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_errors::Applicability;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
-use rustc_hir::intravisit::{walk_expr, NestedVisitorMap, Visitor};
-use rustc_hir::{Crate, Expr, ExprKind, HirId, Item, MutTy, Mutability, Path, Ty, TyKind};
+use rustc_hir::hir_id::CRATE_HIR_ID;
+use rustc_hir::intravisit::{NestedVisitorMap, Visitor};
+use rustc_hir::{Crate, Expr, ExprKind, HirId, Item, MutTy, Mutability, Path, StmtKind, Ty, TyKind};
 use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass};
 use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint, impl_lint_pass};
 use rustc_span::source_map::{Span, Spanned};
-use rustc_span::symbol::SymbolStr;
+use rustc_span::symbol::{Symbol, SymbolStr};
+
+use std::borrow::{Borrow, Cow};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for various things we like to keep tidy in clippy.
@@ -142,6 +146,67 @@ declare_clippy_lint! {
     "found 'default lint description' in a lint declaration"
 }
 
+declare_clippy_lint! {
+    /// **What it does:** Lints `span_lint_and_then` function calls, where the
+    /// closure argument has only one statement and that statement is a method
+    /// call to `span_suggestion`, `span_help`, `span_note` (using the same
+    /// span), `help` or `note`.
+    ///
+    /// These usages of `span_lint_and_then` should be replaced with one of the
+    /// wrapper functions `span_lint_and_sugg`, span_lint_and_help`, or
+    /// `span_lint_and_note`.
+    ///
+    /// **Why is this bad?** Using the wrapper `span_lint_and_*` functions, is more
+    /// convenient, readable and less error prone.
+    ///
+    /// **Known problems:** None
+    ///
+    /// *Example:**
+    /// Bad:
+    /// ```rust,ignore
+    /// span_lint_and_then(cx, TEST_LINT, expr.span, lint_msg, |diag| {
+    ///     diag.span_suggestion(
+    ///         expr.span,
+    ///         help_msg,
+    ///         sugg.to_string(),
+    ///         Applicability::MachineApplicable,
+    ///     );
+    /// });
+    /// span_lint_and_then(cx, TEST_LINT, expr.span, lint_msg, |diag| {
+    ///     diag.span_help(expr.span, help_msg);
+    /// });
+    /// span_lint_and_then(cx, TEST_LINT, expr.span, lint_msg, |diag| {
+    ///     diag.help(help_msg);
+    /// });
+    /// span_lint_and_then(cx, TEST_LINT, expr.span, lint_msg, |diag| {
+    ///     diag.span_note(expr.span, note_msg);
+    /// });
+    /// span_lint_and_then(cx, TEST_LINT, expr.span, lint_msg, |diag| {
+    ///     diag.note(note_msg);
+    /// });
+    /// ```
+    ///
+    /// Good:
+    /// ```rust,ignore
+    /// span_lint_and_sugg(
+    ///     cx,
+    ///     TEST_LINT,
+    ///     expr.span,
+    ///     lint_msg,
+    ///     help_msg,
+    ///     sugg.to_string(),
+    ///     Applicability::MachineApplicable,
+    /// );
+    /// span_lint_and_help(cx, TEST_LINT, expr.span, lint_msg, Some(expr.span), help_msg);
+    /// span_lint_and_help(cx, TEST_LINT, expr.span, lint_msg, None, help_msg);
+    /// span_lint_and_note(cx, TEST_LINT, expr.span, lint_msg, Some(expr.span), note_msg);
+    /// span_lint_and_note(cx, TEST_LINT, expr.span, lint_msg, None, note_msg);
+    /// ```
+    pub COLLAPSIBLE_SPAN_LINT_CALLS,
+    internal,
+    "found collapsible `span_lint_and_then` calls"
+}
+
 declare_lint_pass!(ClippyLintsInternal => [CLIPPY_LINTS_INTERNAL]);
 
 impl EarlyLintPass for ClippyLintsInternal {
@@ -180,23 +245,28 @@ impl EarlyLintPass for ClippyLintsInternal {
 
 #[derive(Clone, Debug, Default)]
 pub struct LintWithoutLintPass {
-    declared_lints: FxHashMap<Name, Span>,
-    registered_lints: FxHashSet<Name>,
+    declared_lints: FxHashMap<Symbol, Span>,
+    registered_lints: FxHashSet<Symbol>,
 }
 
 impl_lint_pass!(LintWithoutLintPass => [DEFAULT_LINT, LINT_WITHOUT_LINT_PASS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
     fn check_item(&mut self, cx: &LateContext<'a, 'tcx>, item: &'tcx Item<'_>) {
+        if !run_lints(cx, &[DEFAULT_LINT], item.hir_id) {
+            return;
+        }
+
         if let hir::ItemKind::Static(ref ty, Mutability::Not, body_id) = item.kind {
             if is_lint_ref_type(cx, ty) {
                 let expr = &cx.tcx.hir().body(body_id).value;
                 if_chain! {
                     if let ExprKind::AddrOf(_, _, ref inner_exp) = expr.kind;
                     if let ExprKind::Struct(_, ref fields, _) = inner_exp.kind;
-                    let field = fields.iter()
-                                      .find(|f| f.ident.as_str() == "desc")
-                                      .expect("lints must have a description field");
+                    let field = fields
+                        .iter()
+                        .find(|f| f.ident.as_str() == "desc")
+                        .expect("lints must have a description field");
                     if let ExprKind::Lit(Spanned {
                         node: LitKind::Str(ref sym, _),
                         ..
@@ -241,6 +311,10 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for LintWithoutLintPass {
     }
 
     fn check_crate_post(&mut self, cx: &LateContext<'a, 'tcx>, _: &'tcx Crate<'_>) {
+        if !run_lints(cx, &[LINT_WITHOUT_LINT_PASS], CRATE_HIR_ID) {
+            return;
+        }
+
         for (lint_name, &lint_span) in &self.declared_lints {
             // When using the `declare_tool_lint!` macro, the original `lint_span`'s
             // file points to "<rustc macros>".
@@ -283,22 +357,19 @@ fn is_lint_ref_type<'tcx>(cx: &LateContext<'_, 'tcx>, ty: &Ty<'_>) -> bool {
 }
 
 struct LintCollector<'a, 'tcx> {
-    output: &'a mut FxHashSet<Name>,
+    output: &'a mut FxHashSet<Symbol>,
     cx: &'a LateContext<'a, 'tcx>,
 }
 
 impl<'a, 'tcx> Visitor<'tcx> for LintCollector<'a, 'tcx> {
     type Map = Map<'tcx>;
 
-    fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
-        walk_expr(self, expr);
-    }
-
     fn visit_path(&mut self, path: &'tcx Path<'_>, _: HirId) {
         if path.segments.len() == 1 {
             self.output.insert(path.segments[0].ident.name);
         }
     }
+
     fn nested_visit_map(&mut self) -> NestedVisitorMap<Self::Map> {
         NestedVisitorMap::All(self.cx.tcx.hir())
     }
@@ -326,6 +397,10 @@ impl_lint_pass!(CompilerLintFunctions => [COMPILER_LINT_FUNCTIONS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
+        if !run_lints(cx, &[COMPILER_LINT_FUNCTIONS], expr.hir_id) {
+            return;
+        }
+
         if_chain! {
             if let ExprKind::MethodCall(ref path, _, ref args) = expr.kind;
             let fn_name = path.ident;
@@ -339,6 +414,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CompilerLintFunctions {
                     COMPILER_LINT_FUNCTIONS,
                     path.ident.span,
                     "usage of a compiler lint function",
+                    None,
                     &format!("please use the Clippy variant of this function: `{}`", sugg),
                 );
             }
@@ -350,6 +426,10 @@ declare_lint_pass!(OuterExpnDataPass => [OUTER_EXPN_EXPN_DATA]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for OuterExpnDataPass {
     fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
+        if !run_lints(cx, &[OUTER_EXPN_EXPN_DATA], expr.hir_id) {
+            return;
+        }
+
         let (method_names, arg_lists, spans) = method_calls(expr, 2);
         let method_names: Vec<SymbolStr> = method_names.iter().map(|s| s.as_str()).collect();
         let method_names: Vec<&str> = method_names.iter().map(|s| &**s).collect();
@@ -390,4 +470,189 @@ fn is_trigger_fn(fn_kind: FnKind<'_>) -> bool {
         FnKind::Fn(_, ident, ..) => ident.name.as_str() == "it_looks_like_you_are_trying_to_kill_clippy",
         FnKind::Closure(..) => false,
     }
+}
+
+declare_lint_pass!(CollapsibleCalls => [COLLAPSIBLE_SPAN_LINT_CALLS]);
+
+impl<'a, 'tcx> LateLintPass<'a, 'tcx> for CollapsibleCalls {
+    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx hir::Expr<'_>) {
+        if !run_lints(cx, &[COLLAPSIBLE_SPAN_LINT_CALLS], expr.hir_id) {
+            return;
+        }
+
+        if_chain! {
+            if let ExprKind::Call(ref func, ref and_then_args) = expr.kind;
+            if let ExprKind::Path(ref path) = func.kind;
+            if match_qpath(path, &["span_lint_and_then"]);
+            if and_then_args.len() == 5;
+            if let ExprKind::Closure(_, _, body_id, _, _) = &and_then_args[4].kind;
+            let body = cx.tcx.hir().body(*body_id);
+            if let ExprKind::Block(block, _) = &body.value.kind;
+            let stmts = &block.stmts;
+            if stmts.len() == 1 && block.expr.is_none();
+            if let StmtKind::Semi(only_expr) = &stmts[0].kind;
+            if let ExprKind::MethodCall(ref ps, _, ref span_call_args) = &only_expr.kind;
+            let and_then_snippets = get_and_then_snippets(cx, and_then_args);
+            let mut sle = SpanlessEq::new(cx).ignore_fn();
+            then {
+                match &*ps.ident.as_str() {
+                    "span_suggestion" if sle.eq_expr(&and_then_args[2], &span_call_args[1]) => {
+                        suggest_suggestion(cx, expr, &and_then_snippets, &span_suggestion_snippets(cx, span_call_args));
+                    },
+                    "span_help" if sle.eq_expr(&and_then_args[2], &span_call_args[1]) => {
+                        let help_snippet = snippet(cx, span_call_args[2].span, r#""...""#);
+                        suggest_help(cx, expr, &and_then_snippets, help_snippet.borrow(), true);
+                    },
+                    "span_note" if sle.eq_expr(&and_then_args[2], &span_call_args[1]) => {
+                        let note_snippet = snippet(cx, span_call_args[2].span, r#""...""#);
+                        suggest_note(cx, expr, &and_then_snippets, note_snippet.borrow(), true);
+                    },
+                    "help" => {
+                        let help_snippet = snippet(cx, span_call_args[1].span, r#""...""#);
+                        suggest_help(cx, expr, &and_then_snippets, help_snippet.borrow(), false);
+                    }
+                    "note" => {
+                        let note_snippet = snippet(cx, span_call_args[1].span, r#""...""#);
+                        suggest_note(cx, expr, &and_then_snippets, note_snippet.borrow(), false);
+                    }
+                    _  => (),
+                }
+            }
+        }
+    }
+}
+
+struct AndThenSnippets<'a> {
+    cx: Cow<'a, str>,
+    lint: Cow<'a, str>,
+    span: Cow<'a, str>,
+    msg: Cow<'a, str>,
+}
+
+fn get_and_then_snippets<'a, 'hir>(
+    cx: &LateContext<'_, '_>,
+    and_then_snippets: &'hir [Expr<'hir>],
+) -> AndThenSnippets<'a> {
+    let cx_snippet = snippet(cx, and_then_snippets[0].span, "cx");
+    let lint_snippet = snippet(cx, and_then_snippets[1].span, "..");
+    let span_snippet = snippet(cx, and_then_snippets[2].span, "span");
+    let msg_snippet = snippet(cx, and_then_snippets[3].span, r#""...""#);
+
+    AndThenSnippets {
+        cx: cx_snippet,
+        lint: lint_snippet,
+        span: span_snippet,
+        msg: msg_snippet,
+    }
+}
+
+struct SpanSuggestionSnippets<'a> {
+    help: Cow<'a, str>,
+    sugg: Cow<'a, str>,
+    applicability: Cow<'a, str>,
+}
+
+fn span_suggestion_snippets<'a, 'hir>(
+    cx: &LateContext<'_, '_>,
+    span_call_args: &'hir [Expr<'hir>],
+) -> SpanSuggestionSnippets<'a> {
+    let help_snippet = snippet(cx, span_call_args[2].span, r#""...""#);
+    let sugg_snippet = snippet(cx, span_call_args[3].span, "..");
+    let applicability_snippet = snippet(cx, span_call_args[4].span, "Applicability::MachineApplicable");
+
+    SpanSuggestionSnippets {
+        help: help_snippet,
+        sugg: sugg_snippet,
+        applicability: applicability_snippet,
+    }
+}
+
+fn suggest_suggestion(
+    cx: &LateContext<'_, '_>,
+    expr: &Expr<'_>,
+    and_then_snippets: &AndThenSnippets<'_>,
+    span_suggestion_snippets: &SpanSuggestionSnippets<'_>,
+) {
+    span_lint_and_sugg(
+        cx,
+        COLLAPSIBLE_SPAN_LINT_CALLS,
+        expr.span,
+        "this call is collapsible",
+        "collapse into",
+        format!(
+            "span_lint_and_sugg({}, {}, {}, {}, {}, {}, {})",
+            and_then_snippets.cx,
+            and_then_snippets.lint,
+            and_then_snippets.span,
+            and_then_snippets.msg,
+            span_suggestion_snippets.help,
+            span_suggestion_snippets.sugg,
+            span_suggestion_snippets.applicability
+        ),
+        Applicability::MachineApplicable,
+    );
+}
+
+fn suggest_help(
+    cx: &LateContext<'_, '_>,
+    expr: &Expr<'_>,
+    and_then_snippets: &AndThenSnippets<'_>,
+    help: &str,
+    with_span: bool,
+) {
+    let option_span = if with_span {
+        format!("Some({})", and_then_snippets.span)
+    } else {
+        "None".to_string()
+    };
+
+    span_lint_and_sugg(
+        cx,
+        COLLAPSIBLE_SPAN_LINT_CALLS,
+        expr.span,
+        "this call is collapsible",
+        "collapse into",
+        format!(
+            "span_lint_and_help({}, {}, {}, {}, {}, {})",
+            and_then_snippets.cx,
+            and_then_snippets.lint,
+            and_then_snippets.span,
+            and_then_snippets.msg,
+            &option_span,
+            help
+        ),
+        Applicability::MachineApplicable,
+    );
+}
+
+fn suggest_note(
+    cx: &LateContext<'_, '_>,
+    expr: &Expr<'_>,
+    and_then_snippets: &AndThenSnippets<'_>,
+    note: &str,
+    with_span: bool,
+) {
+    let note_span = if with_span {
+        format!("Some({})", and_then_snippets.span)
+    } else {
+        "None".to_string()
+    };
+
+    span_lint_and_sugg(
+        cx,
+        COLLAPSIBLE_SPAN_LINT_CALLS,
+        expr.span,
+        "this call is collspible",
+        "collapse into",
+        format!(
+            "span_lint_and_note({}, {}, {}, {}, {}, {})",
+            and_then_snippets.cx,
+            and_then_snippets.lint,
+            and_then_snippets.span,
+            and_then_snippets.msg,
+            note_span,
+            note
+        ),
+        Applicability::MachineApplicable,
+    );
 }

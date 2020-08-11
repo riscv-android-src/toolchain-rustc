@@ -120,10 +120,12 @@ define_Conf! {
         "GPLv2", "GPLv3",
         "GitHub", "GitLab",
         "IPv4", "IPv6",
-        "JavaScript",
+        "ClojureScript", "CoffeeScript", "JavaScript", "PureScript", "TypeScript",
         "NaN", "NaNs",
         "OAuth",
-        "OpenGL", "OpenSSH", "OpenSSL", "OpenStreetMap",
+        "OCaml",
+        "OpenGL", "OpenMP", "OpenSSH", "OpenSSL", "OpenStreetMap",
+        "TensorFlow",
         "TrueType",
         "iOS", "macOS",
         "TeX", "LaTeX", "BibTeX", "BibLaTeX",
@@ -158,6 +160,8 @@ define_Conf! {
     (max_struct_bools, "max_struct_bools": u64, 3),
     /// Lint: FN_PARAMS_EXCESSIVE_BOOLS. The maximum number of bools function parameters can have
     (max_fn_params_bools, "max_fn_params_bools": u64, 3),
+    /// Lint: WILDCARD_IMPORTS. Whether to allow certain wildcard imports (prelude, super in tests).
+    (warn_on_all_wildcard_imports, "warn_on_all_wildcard_imports": bool, false),
 }
 
 impl Default for Conf {

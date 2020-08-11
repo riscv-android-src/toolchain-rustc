@@ -258,6 +258,7 @@ class WasmObjectWriter : public MCObjectWriter {
 
   // TargetObjectWriter wrappers.
   bool is64Bit() const { return TargetObjectWriter->is64Bit(); }
+  bool isEmscripten() const { return TargetObjectWriter->isEmscripten(); }
 
   void startSection(SectionBookkeeping &Section, unsigned SectionId);
   void startCustomSection(SectionBookkeeping &Section, StringRef Name);
@@ -426,64 +427,38 @@ void WasmObjectWriter::recordRelocation(MCAssembler &Asm,
                                         const MCFragment *Fragment,
                                         const MCFixup &Fixup, MCValue Target,
                                         uint64_t &FixedValue) {
-  MCAsmBackend &Backend = Asm.getBackend();
-  bool IsPCRel = Backend.getFixupKindInfo(Fixup.getKind()).Flags &
-                 MCFixupKindInfo::FKF_IsPCRel;
+  // The WebAssembly backend should never generate FKF_IsPCRel fixups
+  assert(!(Asm.getBackend().getFixupKindInfo(Fixup.getKind()).Flags &
+           MCFixupKindInfo::FKF_IsPCRel));
+
   const auto &FixupSection = cast<MCSectionWasm>(*Fragment->getParent());
   uint64_t C = Target.getConstant();
   uint64_t FixupOffset = Layout.getFragmentOffset(Fragment) + Fixup.getOffset();
   MCContext &Ctx = Asm.getContext();
 
-  // The .init_array isn't translated as data, so don't do relocations in it.
-  if (FixupSection.getSectionName().startswith(".init_array"))
-    return;
-
   if (const MCSymbolRefExpr *RefB = Target.getSymB()) {
-    assert(RefB->getKind() == MCSymbolRefExpr::VK_None &&
-           "Should not have constructed this");
-
-    // Let A, B and C being the components of Target and R be the location of
-    // the fixup. If the fixup is not pcrel, we want to compute (A - B + C).
-    // If it is pcrel, we want to compute (A - B + C - R).
-
-    // In general, Wasm has no relocations for -B. It can only represent (A + C)
-    // or (A + C - R). If B = R + K and the relocation is not pcrel, we can
-    // replace B to implement it: (A - R - K + C)
-    if (IsPCRel) {
-      Ctx.reportError(
-          Fixup.getLoc(),
-          "No relocation available to represent this relative expression");
-      return;
-    }
-
+    // To get here the A - B expression must have failed evaluateAsRelocatable.
+    // This means either A or B must be undefined and in WebAssembly we can't
+    // support either of those cases.
     const auto &SymB = cast<MCSymbolWasm>(RefB->getSymbol());
-
-    if (SymB.isUndefined()) {
-      Ctx.reportError(Fixup.getLoc(),
-                      Twine("symbol '") + SymB.getName() +
-                          "' can not be undefined in a subtraction expression");
-      return;
-    }
-
-    assert(!SymB.isAbsolute() && "Should have been folded");
-    const MCSection &SecB = SymB.getSection();
-    if (&SecB != &FixupSection) {
-      Ctx.reportError(Fixup.getLoc(),
-                      "Cannot represent a difference across sections");
-      return;
-    }
-
-    uint64_t SymBOffset = Layout.getSymbolOffset(SymB);
-    uint64_t K = SymBOffset - FixupOffset;
-    IsPCRel = true;
-    C -= K;
+    Ctx.reportError(
+        Fixup.getLoc(),
+        Twine("symbol '") + SymB.getName() +
+            "': unsupported subtraction expression used in relocation.");
+    return;
   }
 
   // We either rejected the fixup or folded B into C at this point.
   const MCSymbolRefExpr *RefA = Target.getSymA();
-  const auto *SymA = RefA ? cast<MCSymbolWasm>(&RefA->getSymbol()) : nullptr;
+  const auto *SymA = cast<MCSymbolWasm>(&RefA->getSymbol());
 
-  if (SymA && SymA->isVariable()) {
+  // The .init_array isn't translated as data, so don't do relocations in it.
+  if (FixupSection.getSectionName().startswith(".init_array")) {
+    SymA->setUsedInInitArray();
+    return;
+  }
+
+  if (SymA->isVariable()) {
     const MCExpr *Expr = SymA->getVariableValue();
     const auto *Inner = cast<MCSymbolRefExpr>(Expr);
     if (Inner->getKind() == MCSymbolRefExpr::VK_WEAKREF)
@@ -496,8 +471,6 @@ void WasmObjectWriter::recordRelocation(MCAssembler &Asm,
   FixedValue = 0;
 
   unsigned Type = TargetObjectWriter->getRelocType(Target, Fixup);
-  assert(!IsPCRel);
-  assert(SymA);
 
   // Absolute offset within a section or a function.
   // Currently only supported for for metadata sections.
@@ -1113,16 +1086,13 @@ void WasmObjectWriter::registerEventType(const MCSymbolWasm &Symbol) {
 }
 
 static bool isInSymtab(const MCSymbolWasm &Sym) {
-  if (Sym.isUsedInReloc())
+  if (Sym.isUsedInReloc() || Sym.isUsedInInitArray())
     return true;
 
   if (Sym.isComdat() && !Sym.isDefined())
     return false;
 
-  if (Sym.isTemporary() && Sym.getName().empty())
-    return false;
-
-  if (Sym.isTemporary() && Sym.isData() && !Sym.getSize())
+  if (Sym.isTemporary())
     return false;
 
   if (Sym.isSection())
@@ -1296,12 +1266,12 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
 
       // Separate out the producers and target features sections
       if (Name == "producers") {
-        ProducersSection = llvm::make_unique<WasmCustomSection>(Name, &Section);
+        ProducersSection = std::make_unique<WasmCustomSection>(Name, &Section);
         continue;
       }
       if (Name == "target_features") {
         TargetFeaturesSection =
-            llvm::make_unique<WasmCustomSection>(Name, &Section);
+            std::make_unique<WasmCustomSection>(Name, &Section);
         continue;
       }
 
@@ -1353,6 +1323,14 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
           Comdats[C->getName()].emplace_back(
               WasmComdatEntry{wasm::WASM_COMDAT_FUNCTION, Index});
         }
+
+        if (WS.hasExportName()) {
+          wasm::WasmExport Export;
+          Export.Name = WS.getExportName();
+          Export.Kind = wasm::WASM_EXTERNAL_FUNCTION;
+          Export.Index = Index;
+          Exports.push_back(Export);
+        }
       } else {
         // An import; the index was assigned above.
         Index = WasmIndices.find(&WS)->second;
@@ -1379,7 +1357,9 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
         report_fatal_error(".size expression must be evaluatable");
 
       auto &DataSection = static_cast<MCSectionWasm &>(WS.getSection());
-      assert(DataSection.isWasmData());
+      if (!DataSection.isWasmData())
+        report_fatal_error("data symbols must live in a data section: " +
+                           WS.getName());
 
       // For each data symbol, export it in the symtab as a reference to the
       // corresponding Wasm data segment.
@@ -1473,10 +1453,16 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
       Flags |= wasm::WASM_SYMBOL_BINDING_LOCAL;
     if (WS.isUndefined())
       Flags |= wasm::WASM_SYMBOL_UNDEFINED;
-    if (WS.isExported())
-      Flags |= wasm::WASM_SYMBOL_EXPORTED;
-    if (WS.getName() != WS.getImportName())
+    if (WS.isNoStrip()) {
+      Flags |= wasm::WASM_SYMBOL_NO_STRIP;
+      if (isEmscripten()) {
+        Flags |= wasm::WASM_SYMBOL_EXPORTED;
+      }
+    }
+    if (WS.hasImportName())
       Flags |= wasm::WASM_SYMBOL_EXPLICIT_NAME;
+    if (WS.hasExportName())
+      Flags |= wasm::WASM_SYMBOL_EXPORTED;
 
     wasm::WasmSymbolInfo Info;
     Info.Name = WS.getName();
@@ -1578,7 +1564,7 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
         report_fatal_error("fixups in .init_array should be symbol references");
       const auto &TargetSym = cast<const MCSymbolWasm>(SymRef->getSymbol());
       if (TargetSym.getIndex() == InvalidIndex)
-        report_fatal_error("symbols in .init_array should exist in symbtab");
+        report_fatal_error("symbols in .init_array should exist in symtab");
       if (!TargetSym.isFunction())
         report_fatal_error("symbols in .init_array should be for functions");
       InitFuncs.push_back(
@@ -1618,5 +1604,5 @@ uint64_t WasmObjectWriter::writeObject(MCAssembler &Asm,
 std::unique_ptr<MCObjectWriter>
 llvm::createWasmObjectWriter(std::unique_ptr<MCWasmObjectTargetWriter> MOTW,
                              raw_pwrite_stream &OS) {
-  return llvm::make_unique<WasmObjectWriter>(std::move(MOTW), OS);
+  return std::make_unique<WasmObjectWriter>(std::move(MOTW), OS);
 }

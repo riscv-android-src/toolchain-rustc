@@ -29,14 +29,14 @@ Add this in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-colored = "1.6"
+colored = "1.9"
 ```
 
 and add this to your `lib.rs` or `main.rs`:
 
 ```rust
-    extern crate colored;
-
+    extern crate colored; // not needed in Rust 2018
+    
     use colored::*;
 
     // test the example with `cargo run --example most_simple`
@@ -50,6 +50,8 @@ and add this to your `lib.rs` or `main.rs`:
 
 - Safe rust, easy to use, minimal dependencies, complete test suite
 - Respect the `CLICOLOR`/`CLICOLOR_FORCE` behavior (see [the specs](http://bixense.com/clicolors/))
+- Respect the `NO_COLOR` behavior (see [the specs](https://no-color.org/))
+- Works on Linux, MacOS, and Windows (Powershell)
 
 #### Colors:
 
@@ -93,7 +95,7 @@ As `Color` implements `FromStr`, `From<&str>`, and `From<String>`, you can easil
 "white string".color("zorglub");
 
 // the safer way via a Result
-let color_res = "zorglub".parse(); // <- this returns a Result<Color, ()>
+let color_res : Result<Color, ()> = "zorglub".parse();
 "red string".color(color_res.unwrap_or(Color::Red));
 ```
 
@@ -108,17 +110,34 @@ For example, you can do this in your `Cargo.toml` to disable color in tests:
 ```toml
 [features]
 # this effectively enable the feature `no-color` of colored when testing with
-# `cargo test --feature test`
-test = ["colored/no-color"]
+# `cargo test --feature dumb_terminal`
+dumb_terminal = ["colored/no-color"]
 ```
 
 You can use have even finer control by using the
 `colored::control::set_override` method.
 
+## Build with Docker
+
+### Install Docker
+
+Use the install instructions located [here](https://docs.docker.com/v17.12/install/)
+
+### Build the Docker image
+
+```docker build -t colored_image .```
+
+### Build the library
+
+```docker run --rm -it -v "$PWD":/src -u `id -u`:`id -g` colored_image /bin/bash -c "cargo build"```
+
+### Test the library
+
+```docker run --rm -it -v "$PWD":/src -u `id -u`:`id -g` colored_image /bin/bash -c "cargo test"```
+
+
 ## Todo
 
-- **Windows console support**: this works only with ANSI terminals. I plan to
-  support the windows console also.
 - **More tests ?**: We always welcome more tests! Please contribute!
 
 ## Credits
@@ -129,10 +148,10 @@ Thanks for the [ansi\_term crate](https://github.com/ogham/rust-ansi-term) for
 providing a reference implementation, which greatly helped making this crate
 output correct strings.
 
-## Licence
+## License
 
-[Mozilla Public Licence 2.0](https://www.mozilla.org/en-US/MPL/2.0/). See the
-[LICENCE](https://github.com/mackwic/colored/blob/master/LICENCE) file at the
+[Mozilla Public License 2.0](https://www.mozilla.org/en-US/MPL/2.0/). See the
+[LICENSE](https://github.com/mackwic/colored/blob/master/LICENSE) file at the
 root of the repository.
 
 In non legal terms it means that:
@@ -140,7 +159,7 @@ In non legal terms it means that:
 - if you change/extend the API, you MUST give me the code you changed in the
   files under MPL2.
 - you CAN'T sue me for anything about this code
-- appart from that, you can do almost whatever you want. See the LICENCE file
+- apart from that, you can do almost whatever you want. See the LICENSE file
   for details.
 
 ## Contributors
@@ -151,3 +170,6 @@ In non legal terms it means that:
 - Alexis "Horgix" Chotard: [@horgix](https://github.com/horgix)
 - Keith Yeung: [@KiChjang](https://github.com/KiChjang)
 - Kyle Galloway: [@kylegalloway](https://github.com/kylegalloway)
+- Luke Hsiao: [@lukehsiao](https://github.com/lukehsiao)
+- kurtlawrence: [@kurtlawrence](https://github.com/kurtlawrence)
+

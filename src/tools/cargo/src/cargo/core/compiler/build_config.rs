@@ -2,14 +2,16 @@ use crate::core::compiler::CompileKind;
 use crate::core::interning::InternedString;
 use crate::util::ProcessBuilder;
 use crate::util::{CargoResult, Config, RustfixDiagnosticServer};
+use anyhow::bail;
 use serde::ser;
 use std::cell::RefCell;
+use std::path::PathBuf;
 
 /// Configuration information for a rustc build.
 #[derive(Debug)]
 pub struct BuildConfig {
     /// The requested kind of compilation for this session
-    pub requested_kind: CompileKind,
+    pub requested_kinds: Vec<CompileKind>,
     /// Number of rustc jobs to run in parallel.
     pub jobs: u32,
     /// Build profile
@@ -26,7 +28,15 @@ pub struct BuildConfig {
     pub unit_graph: bool,
     /// An optional override of the rustc process for primary units
     pub primary_unit_rustc: Option<ProcessBuilder>,
+    /// A thread used by `cargo fix` to receive messages on a socket regarding
+    /// the success/failure of applying fixes.
     pub rustfix_diagnostic_server: RefCell<Option<RustfixDiagnosticServer>>,
+    /// The directory to copy final artifacts to. Note that even if `out_dir` is
+    /// set, a copy of artifacts still could be found a `target/(debug\release)`
+    /// as usual.
+    // Note that, although the cmd-line flag name is `out-dir`, in code we use
+    // `export_dir`, to avoid confusion with out dir at `target/debug/deps`.
+    pub export_dir: Option<PathBuf>,
 }
 
 impl BuildConfig {
@@ -41,12 +51,11 @@ impl BuildConfig {
     pub fn new(
         config: &Config,
         jobs: Option<u32>,
-        requested_target: &Option<String>,
+        requested_targets: &[String],
         mode: CompileMode,
     ) -> CargoResult<BuildConfig> {
         let cfg = config.build_config()?;
-        let requested_kind =
-            CompileKind::from_requested_target(config, requested_target.as_deref())?;
+        let requested_kinds = CompileKind::from_requested_targets(config, requested_targets)?;
         if jobs == Some(0) {
             anyhow::bail!("jobs must be at least 1")
         }
@@ -60,7 +69,7 @@ impl BuildConfig {
         let jobs = jobs.or(cfg.jobs).unwrap_or(::num_cpus::get() as u32);
 
         Ok(BuildConfig {
-            requested_kind,
+            requested_kinds,
             jobs,
             requested_profile: InternedString::new("dev"),
             mode,
@@ -70,6 +79,7 @@ impl BuildConfig {
             unit_graph: false,
             primary_unit_rustc: None,
             rustfix_diagnostic_server: RefCell::new(None),
+            export_dir: None,
         })
     }
 
@@ -84,6 +94,13 @@ impl BuildConfig {
 
     pub fn test(&self) -> bool {
         self.mode == CompileMode::Test || self.mode == CompileMode::Bench
+    }
+
+    pub fn single_requested_kind(&self) -> CargoResult<CompileKind> {
+        match self.requested_kinds.len() {
+            1 => Ok(self.requested_kinds[0]),
+            _ => bail!("only one `--target` argument is supported"),
+        }
     }
 }
 

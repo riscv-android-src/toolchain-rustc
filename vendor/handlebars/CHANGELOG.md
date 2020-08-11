@@ -1,5 +1,32 @@
 # Change Log
 
+## [3.0.1](https://github.com/sunng87/handlebars-rust/compare/3.0.0...3.0.1) - 2020-01-25
+
+* [Fixed] Slash in partial path causing syntax error  #313
+
+## [3.0.0](https://github.com/sunng87/handlebars-rust/compare/2.0.3...3.0.0) - 2020-01-24
+
+* [Changed] Added lifetime specifier to `Handlebars` structure allowing helper definition to have non-static borrowed data #282
+* [Changed] Removed hashbrown dependency #279
+* [Changed] Features has been reorganized. `dir_source` were turned off by default. #289
+* [Changed] Refactored `RenderContext` API to improve performance up to 5x over `2.0`
+* [Added] Add new `BlockContext` API for helper developer to store block scope state #307
+* [Fixed] `RenderError` should be `Send` and `Sync` #304
+
+## [2.0.4](https://github.com/sunng87/handlebars-rust/compare/2.0.3...2.0.4) - 2020-01-06
+
+* [Fixed] `RenderError` should be `Send` and `Sync` #304
+
+## [2.0.3](https://github.com/sunng87/handlebars-rust/compare/2.0.2...2.0.3) - 2020-01-04
+
+* [Fixed] deprecated warnings on rust 1.42 nightly, due to changes in
+  `Error` trait
+
+## [2.0.2](https://github.com/sunng87/handlebars-rust/compare/2.0.1...2.0.2) - 2019-09-06
+
+* [Changed] Extended `eq` and `ne` helper for all json types #287
+* [Changed] Removed `regex` and `lazy_static` crate to optimize dependency tree
+
 ## [2.0.1](https://github.com/sunng87/handlebars-rust/compare/2.0.0...2.0.1) - 2019-07-12
 * [Changed] Fixed issue with block context #275
 * [Changed] Added support for array index in block context #276

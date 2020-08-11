@@ -22,6 +22,7 @@ use rustc_middle::ty::{self, Ty};
 use rustc_middle::{bug, span_bug};
 use rustc_span::Span;
 use rustc_target::abi::{self, HasDataLayout, LayoutOf, Primitive};
+use rustc_target::spec::PanicStrategy;
 
 use std::cmp::Ordering;
 use std::iter;
@@ -187,11 +188,11 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
             }
             "size_of" | "pref_align_of" | "min_align_of" | "needs_drop" | "type_id"
             | "type_name" => {
-                let ty_name = self
+                let value = self
                     .tcx
                     .const_eval_instance(ty::ParamEnv::reveal_all(), instance, None)
                     .unwrap();
-                OperandRef::from_const(self, ty_name, ret_ty).immediate_or_packed_pair(self)
+                OperandRef::from_const(self, value, ret_ty).immediate_or_packed_pair(self)
             }
             // Effectively no-op
             "forget" => {
@@ -548,7 +549,13 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                 }
             }
 
-            "discriminant_value" => args[0].deref(self.cx()).codegen_get_discr(self, ret_ty),
+            "discriminant_value" => {
+                if ret_ty.is_integral() {
+                    args[0].deref(self.cx()).codegen_get_discr(self, ret_ty)
+                } else {
+                    span_bug!(span, "Invalid discriminant type for `{:?}`", arg_tys[0])
+                }
+            }
 
             name if name.starts_with("simd_") => {
                 match generic_simd_intrinsic(self, name, callee_ty, args, ret_ty, llret_ty, span) {
@@ -804,7 +811,7 @@ fn try_intrinsic(
     catch_func: &'ll Value,
     dest: &'ll Value,
 ) {
-    if bx.sess().no_landing_pads() {
+    if bx.sess().panic_strategy() == PanicStrategy::Abort {
         bx.call(try_func, &[data], None);
         // Return 0 unconditionally from the intrinsic call;
         // we can never unwind.

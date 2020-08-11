@@ -65,7 +65,7 @@
 //! source `Repository`, to ensure that they do not outlive the repository
 //! itself.
 
-#![doc(html_root_url = "https://docs.rs/git2/0.10")]
+#![doc(html_root_url = "https://docs.rs/git2/0.13")]
 #![allow(trivial_numeric_casts, trivial_casts)]
 #![deny(missing_docs)]
 #![warn(rust_2018_idioms)]
@@ -132,12 +132,12 @@ pub use crate::util::IntoCString;
 
 // Create a convinience method on bitflag struct which checks the given flag
 macro_rules! is_bit_set {
-    ($name:ident, $flag:expr) => (
+    ($name:ident, $flag:expr) => {
         #[allow(missing_docs)]
         pub fn $name(&self) -> bool {
             self.intersects($flag)
         }
-    )
+    };
 }
 
 /// An enumeration of possible errors that can happen when working with a git
@@ -1360,6 +1360,27 @@ impl Default for AttrCheckFlags {
     fn default() -> Self {
         AttrCheckFlags::FILE_THEN_INDEX
     }
+}
+
+bitflags! {
+    #[allow(missing_docs)]
+    pub struct DiffFlags: u32 {
+        /// File(s) treated as binary data.
+        const BINARY = raw::GIT_DIFF_FLAG_BINARY as u32;
+        /// File(s) treated as text data.
+        const NOT_BINARY = raw::GIT_DIFF_FLAG_NOT_BINARY as u32;
+        /// `id` value is known correct.
+        const VALID_ID = raw::GIT_DIFF_FLAG_VALID_ID as u32;
+        /// File exists at this side of the delta.
+        const EXISTS = raw::GIT_DIFF_FLAG_EXISTS as u32;
+    }
+}
+
+impl DiffFlags {
+    is_bit_set!(is_binary, DiffFlags::BINARY);
+    is_bit_set!(is_not_binary, DiffFlags::NOT_BINARY);
+    is_bit_set!(has_valid_id, DiffFlags::VALID_ID);
+    is_bit_set!(exists, DiffFlags::EXISTS);
 }
 
 #[cfg(test)]

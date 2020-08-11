@@ -24,6 +24,7 @@ use rustc_middle::{bug, span_bug};
 use rustc_session::config::{CrateType, Input, OutputType};
 use rustc_session::output::{filename_for_metadata, out_filename};
 use rustc_span::source_map::Spanned;
+use rustc_span::symbol::Ident;
 use rustc_span::*;
 
 use std::cell::Cell;
@@ -86,7 +87,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
     pub fn compilation_output(&self, crate_name: &str) -> PathBuf {
         let sess = &self.tcx.sess;
         // Save-analysis is emitted per whole session, not per each crate type
-        let crate_type = sess.crate_types.borrow()[0];
+        let crate_type = sess.crate_types()[0];
         let outputs = &*self.tcx.output_filenames(LOCAL_CRATE);
 
         if outputs.outputs.contains_key(&OutputType::Metadata) {
@@ -405,7 +406,7 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
 
     // FIXME would be nice to take a MethodItem here, but the ast provides both
     // trait and impl flavours, so the caller must do the disassembly.
-    pub fn get_method_data(&self, id: ast::NodeId, ident: ast::Ident, span: Span) -> Option<Def> {
+    pub fn get_method_data(&self, id: ast::NodeId, ident: Ident, span: Span) -> Option<Def> {
         // The qualname for a method is the trait name or name of the struct in an impl in
         // which the method is declared in, followed by the method's name.
         let (qualname, parent_scope, decl_id, docs, attributes) = match self
@@ -619,7 +620,11 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
     }
 
     pub fn get_path_res(&self, id: NodeId) -> Res {
-        let hir_id = self.tcx.hir().node_id_to_hir_id(id);
+        // FIXME(#71104)
+        let hir_id = match self.tcx.hir().opt_node_id_to_hir_id(id) {
+            Some(id) => id,
+            None => return Res::Err,
+        };
         match self.tcx.hir().get(hir_id) {
             Node::TraitRef(tr) => tr.path.res,
 
@@ -760,9 +765,23 @@ impl<'l, 'tcx> SaveContext<'l, 'tcx> {
             Res::Def(HirDefKind::Mod, def_id) => {
                 Some(Ref { kind: RefKind::Mod, span, ref_id: id_from_def_id(def_id) })
             }
-            Res::PrimTy(..)
+
+            Res::Def(
+                HirDefKind::Macro(..)
+                | HirDefKind::ExternCrate
+                | HirDefKind::ForeignMod
+                | HirDefKind::LifetimeParam
+                | HirDefKind::AnonConst
+                | HirDefKind::Use
+                | HirDefKind::Field
+                | HirDefKind::GlobalAsm
+                | HirDefKind::Impl
+                | HirDefKind::Closure
+                | HirDefKind::Generator,
+                _,
+            )
+            | Res::PrimTy(..)
             | Res::SelfTy(..)
-            | Res::Def(HirDefKind::Macro(..), _)
             | Res::ToolMod
             | Res::NonMacroAttr(..)
             | Res::SelfCtor(..)
@@ -900,7 +919,7 @@ fn make_signature(decl: &ast::FnDecl, generics: &ast::Generics) -> String {
 // variables (idents) from patterns.
 struct PathCollector<'l> {
     collected_paths: Vec<(NodeId, &'l ast::Path)>,
-    collected_idents: Vec<(NodeId, ast::Ident, ast::Mutability)>,
+    collected_idents: Vec<(NodeId, Ident, ast::Mutability)>,
 }
 
 impl<'l> PathCollector<'l> {
@@ -968,8 +987,7 @@ impl<'a> DumpHandler<'a> {
                     error!("Could not create directory {}: {}", root_path.display(), e);
                 }
 
-                let executable =
-                    sess.crate_types.borrow().iter().any(|ct| *ct == CrateType::Executable);
+                let executable = sess.crate_types().iter().any(|ct| *ct == CrateType::Executable);
                 let mut out_name = if executable { String::new() } else { "lib".to_owned() };
                 out_name.push_str(&self.cratename);
                 out_name.push_str(&sess.opts.cg.extra_filename);

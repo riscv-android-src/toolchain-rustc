@@ -6,7 +6,7 @@ use crate::Namespace::*;
 use crate::{AmbiguityError, AmbiguityErrorMisc, AmbiguityKind, Determinacy};
 use crate::{CrateLint, ParentScope, ResolutionError, Resolver, Scope, ScopeSet, Weak};
 use crate::{ModuleKind, ModuleOrUniformRoot, NameBinding, PathResult, Segment, ToNameBinding};
-use rustc_ast::ast::{self, Ident, NodeId};
+use rustc_ast::ast::{self, NodeId};
 use rustc_ast_pretty::pprust;
 use rustc_attr::{self as attr, StabilityLevel};
 use rustc_data_structures::fx::FxHashSet;
@@ -23,7 +23,7 @@ use rustc_session::lint::builtin::UNUSED_MACROS;
 use rustc_session::Session;
 use rustc_span::edition::Edition;
 use rustc_span::hygiene::{self, ExpnData, ExpnId, ExpnKind};
-use rustc_span::symbol::{kw, sym, Symbol};
+use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{Span, DUMMY_SP};
 
 use rustc_data_structures::sync::Lrc;
@@ -165,7 +165,7 @@ impl<'a> base::Resolver for Resolver<'a> {
         parent_scope.module.unexpanded_invocations.borrow_mut().remove(&expansion);
     }
 
-    fn register_builtin_macro(&mut self, ident: ast::Ident, ext: SyntaxExtension) {
+    fn register_builtin_macro(&mut self, ident: Ident, ext: SyntaxExtension) {
         if self.builtin_macros.insert(ident.name, ext).is_some() {
             self.session
                 .span_err(ident.span, &format!("built-in macro `{}` was already defined", ident));
@@ -186,6 +186,7 @@ impl<'a> base::Resolver for Resolver<'a> {
             call_site,
             self.session.edition(),
             features.into(),
+            None,
         )));
 
         let parent_scope = if let Some(module_id) = parent_module_id {
@@ -290,13 +291,17 @@ impl<'a> base::Resolver for Resolver<'a> {
         let (ext, res) = self.smart_resolve_macro_path(path, kind, parent_scope, force)?;
 
         let span = invoc.span();
-        invoc_id.set_expn_data(ext.expn_data(parent_scope.expansion, span, fast_print_path(path)));
+        invoc_id.set_expn_data(ext.expn_data(
+            parent_scope.expansion,
+            span,
+            fast_print_path(path),
+            res.opt_def_id(),
+        ));
 
-        if let Res::Def(_, def_id) = res {
+        if let Res::Def(_, _) = res {
             if after_derive {
                 self.session.span_err(span, "macro attributes must be placed before `#[derive]`");
             }
-            self.macro_defs.insert(invoc_id, def_id);
             let normal_module_def_id = self.macro_def_scope(invoc_id).normal_ancestor_id;
             self.definitions.add_parent_module_of_macro_def(invoc_id, normal_module_def_id);
         }
@@ -328,7 +333,7 @@ impl<'a> base::Resolver for Resolver<'a> {
     }
 
     fn check_unused_macros(&mut self) {
-        for (&node_id, &span) in self.unused_macros.iter() {
+        for (_, &(node_id, span)) in self.unused_macros.iter() {
             self.lint_buffer.buffer_lint(UNUSED_MACROS, node_id, span, "unused macro definition");
         }
     }
@@ -411,9 +416,9 @@ impl<'a> Resolver<'a> {
 
         match res {
             Res::Def(DefKind::Macro(_), def_id) => {
-                if let Some(node_id) = self.definitions.as_local_node_id(def_id) {
-                    self.unused_macros.remove(&node_id);
-                    if self.proc_macro_stubs.contains(&node_id) {
+                if let Some(def_id) = def_id.as_local() {
+                    self.unused_macros.remove(&def_id);
+                    if self.proc_macro_stubs.contains(&def_id) {
                         self.session.span_err(
                             path.span,
                             "can't use a procedural macro from the same crate that defines it",

@@ -9,7 +9,7 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_mir::interpret::{AllocCheck, AllocId, InterpResult, Memory, Machine, Pointer, PointerArithmetic};
 use rustc_target::abi::{Size, HasDataLayout};
 
-use crate::{Evaluator, Tag, STACK_ADDR};
+use crate::{Evaluator, Tag, STACK_ADDR, CheckInAllocMsg};
 
 pub type MemoryExtra = RefCell<GlobalState>;
 
@@ -41,11 +41,13 @@ impl Default for GlobalState {
 impl<'mir, 'tcx> GlobalState {
     pub fn int_to_ptr(
         int: u64,
-        memory: &Memory<'mir, 'tcx, Evaluator<'tcx>>,
+        memory: &Memory<'mir, 'tcx, Evaluator<'mir, 'tcx>>,
     ) -> InterpResult<'tcx, Pointer<Tag>> {
         let global_state = memory.extra.intptrcast.borrow();
         let pos = global_state.int_to_ptr_map.binary_search_by_key(&int, |(addr, _)| *addr);
 
+        // The int must be in-bounds after being cast to a pointer, so we error
+        // with `CheckInAllocMsg::InboundsTest`.
         Ok(match pos {
             Ok(pos) => {
                 let (_, alloc_id) = global_state.int_to_ptr_map[pos];
@@ -53,7 +55,7 @@ impl<'mir, 'tcx> GlobalState {
                 // zero. The pointer is untagged because it was created from a cast
                 Pointer::new_with_tag(alloc_id, Size::from_bytes(0), Tag::Untagged)
             }
-            Err(0) => throw_ub!(InvalidIntPointerUsage(int)),
+            Err(0) => throw_ub!(DanglingIntPointer(int, CheckInAllocMsg::InboundsTest)),
             Err(pos) => {
                 // This is the largest of the adresses smaller than `int`,
                 // i.e. the greatest lower bound (glb)
@@ -65,7 +67,7 @@ impl<'mir, 'tcx> GlobalState {
                     // This pointer is untagged because it was created from a cast
                     Pointer::new_with_tag(alloc_id, Size::from_bytes(offset), Tag::Untagged)
                 } else {
-                    throw_ub!(InvalidIntPointerUsage(int))
+                    throw_ub!(DanglingIntPointer(int, CheckInAllocMsg::InboundsTest))
                 }
             }
         })
@@ -73,7 +75,7 @@ impl<'mir, 'tcx> GlobalState {
 
     pub fn ptr_to_int(
         ptr: Pointer<Tag>,
-        memory: &Memory<'mir, 'tcx, Evaluator<'tcx>>,
+        memory: &Memory<'mir, 'tcx, Evaluator<'mir, 'tcx>>,
     ) -> InterpResult<'tcx, u64> {
         let mut global_state = memory.extra.intptrcast.borrow_mut();
         let global_state = &mut *global_state;

@@ -12,7 +12,7 @@
 #![feature(generators)]
 #![feature(generator_trait)]
 #![feature(fn_traits)]
-#![feature(specialization)]
+#![feature(min_specialization)]
 #![feature(optin_builtin_traits)]
 #![feature(nll)]
 #![feature(allow_internal_unstable)]
@@ -28,8 +28,6 @@
 extern crate log;
 #[macro_use]
 extern crate cfg_if;
-
-pub use rustc_serialize::hex::ToHex;
 
 #[inline(never)]
 #[cold]
@@ -67,6 +65,7 @@ pub mod fx;
 pub mod graph;
 pub mod jobserver;
 pub mod macros;
+pub mod map_in_place;
 pub mod obligation_forest;
 pub mod owning_ref;
 pub mod ptr_key;
@@ -81,10 +80,12 @@ pub mod stable_set;
 #[macro_use]
 pub mod stable_hasher;
 pub mod sharded;
+pub mod stack;
 pub mod sync;
 pub mod thin_vec;
 pub mod tiny_list;
 pub mod transitive_relation;
+pub use ena::undo_log;
 pub use ena::unify;
 mod atomic_ref;
 pub mod fingerprint;

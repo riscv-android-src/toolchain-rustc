@@ -252,6 +252,10 @@ pub fn prepare_tool_cargo(
     // own copy
     cargo.env("LZMA_API_STATIC", "1");
 
+    // CFG_RELEASE is needed by rustfmt (and possibly other tools) which
+    // import rustc-ap-rustc_attr which requires this to be set for the
+    // `#[cfg(version(...))]` attribute.
+    cargo.env("CFG_RELEASE", builder.rust_release());
     cargo.env("CFG_RELEASE_CHANNEL", &builder.config.channel);
     cargo.env("CFG_VERSION", builder.rust_version());
     cargo.env("CFG_RELEASE_NUM", channel::CFG_RELEASE_NUM);
@@ -645,21 +649,21 @@ macro_rules! tool_extended {
     }
 }
 
+// Note: tools need to be also added to `Builder::get_step_descriptions` in `build.rs`
+// to make `./x.py build <tool>` work.
 tool_extended!((self, builder),
     Cargofmt, rustfmt, "src/tools/rustfmt", "cargo-fmt", {};
     CargoClippy, clippy, "src/tools/clippy", "cargo-clippy", {};
     Clippy, clippy, "src/tools/clippy", "clippy-driver", {};
     Miri, miri, "src/tools/miri", "miri", {};
-    CargoMiri, miri, "src/tools/miri", "cargo-miri", {};
+    CargoMiri, miri, "src/tools/miri/cargo-miri", "cargo-miri", {};
     Rls, rls, "src/tools/rls", "rls", {
-        let clippy = builder.ensure(Clippy {
+        builder.ensure(Clippy {
             compiler: self.compiler,
             target: self.target,
             extra_features: Vec::new(),
         });
-        if clippy.is_some() {
-            self.extra_features.push("clippy".to_owned());
-        }
+        self.extra_features.push("clippy".to_owned());
     };
     Rustfmt, rustfmt, "src/tools/rustfmt", "rustfmt", {};
 );

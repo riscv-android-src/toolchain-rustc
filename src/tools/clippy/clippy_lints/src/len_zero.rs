@@ -1,5 +1,5 @@
 use crate::utils::{get_item_name, snippet_with_applicability, span_lint, span_lint_and_sugg, walk_ptrs_ty};
-use rustc_ast::ast::{LitKind, Name};
+use rustc_ast::ast::LitKind;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::Applicability;
 use rustc_hir::def_id::DefId;
@@ -7,7 +7,7 @@ use rustc_hir::{AssocItemKind, BinOpKind, Expr, ExprKind, ImplItemRef, Item, Ite
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
-use rustc_span::source_map::{Span, Spanned};
+use rustc_span::source_map::{Span, Spanned, Symbol};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for getting the length of something via `.len()`
@@ -143,7 +143,7 @@ fn check_trait_items(cx: &LateContext<'_, '_>, visited_trait: &Item<'_>, trait_i
     if cx.access_levels.is_exported(visited_trait.hir_id) && trait_items.iter().any(|i| is_named_self(cx, i, "len")) {
         let mut current_and_super_traits = FxHashSet::default();
         let visited_trait_def_id = cx.tcx.hir().local_def_id(visited_trait.hir_id);
-        fill_trait_set(visited_trait_def_id, &mut current_and_super_traits, cx);
+        fill_trait_set(visited_trait_def_id.to_def_id(), &mut current_and_super_traits, cx);
 
         let is_empty_method_found = current_and_super_traits
             .iter()
@@ -226,7 +226,7 @@ fn check_cmp(cx: &LateContext<'_, '_>, span: Span, method: &Expr<'_>, lit: &Expr
 fn check_len(
     cx: &LateContext<'_, '_>,
     span: Span,
-    method_name: Name,
+    method_name: Symbol,
     args: &[Expr<'_>],
     lit: &LitKind,
     op: &str,

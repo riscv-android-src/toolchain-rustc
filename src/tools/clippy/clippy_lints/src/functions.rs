@@ -431,6 +431,7 @@ fn check_needless_must_use(
             DOUBLE_MUST_USE,
             fn_header_span,
             "this function has an empty `#[must_use]` attribute, but returns a type already marked as `#[must_use]`",
+            None,
             "either add some descriptive text or remove the attribute",
         );
     }
@@ -488,7 +489,12 @@ fn is_mutable_pat(cx: &LateContext<'_, '_>, pat: &hir::Pat<'_>, tys: &mut FxHash
     }
     let def_id = pat.hir_id.owner.to_def_id();
     if cx.tcx.has_typeck_tables(def_id) {
-        is_mutable_ty(cx, &cx.tcx.typeck_tables_of(def_id).pat_ty(pat), pat.span, tys)
+        is_mutable_ty(
+            cx,
+            &cx.tcx.typeck_tables_of(def_id.expect_local()).pat_ty(pat),
+            pat.span,
+            tys,
+        )
     } else {
         false
     }
@@ -605,7 +611,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for StaticMutVisitor<'a, 'tcx> {
                     if self.cx.tcx.has_typeck_tables(def_id)
                         && is_mutable_ty(
                             self.cx,
-                            self.cx.tcx.typeck_tables_of(def_id).expr_ty(arg),
+                            self.cx.tcx.typeck_tables_of(def_id.expect_local()).expr_ty(arg),
                             arg.span,
                             &mut tys,
                         )

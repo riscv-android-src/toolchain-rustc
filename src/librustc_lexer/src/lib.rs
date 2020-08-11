@@ -1,5 +1,11 @@
 //! Low-level Rust lexer.
 //!
+//! The idea with `librustc_lexer` is to make a reusable library,
+//! by separating out pure lexing and rustc-specific concerns, like spans,
+//! error reporting an interning.  So, rustc_lexer operates directly on `&str`,
+//! produces simple tokens which are a pair of type-tag and a bit of original text,
+//! and does not report errors, instead storing them as flags on the token.
+//!
 //! Tokens produced by this lexer are not yet ready for parsing the Rust syntax,
 //! for that see `librustc_parse::lexer`, which converts this basic token stream
 //! into wide tokens used by actual parser.
@@ -230,16 +236,24 @@ pub enum Base {
 }
 
 /// `rustc` allows files to have a shebang, e.g. "#!/usr/bin/rustrun",
-/// but shebang isn't a part of rust syntax, so this function
-/// skips the line if it starts with a shebang ("#!").
-/// Line won't be skipped if it represents a valid Rust syntax
-/// (e.g. "#![deny(missing_docs)]").
+/// but shebang isn't a part of rust syntax.
 pub fn strip_shebang(input: &str) -> Option<usize> {
-    debug_assert!(!input.is_empty());
-    if !input.starts_with("#!") || input.starts_with("#![") {
-        return None;
+    // Shebang must start with `#!` literally, without any preceding whitespace.
+    // For simplicity we consider any line starting with `#!` a shebang,
+    // regardless of restrictions put on shebangs by specific platforms.
+    if let Some(input_tail) = input.strip_prefix("#!") {
+        // Ok, this is a shebang but if the next non-whitespace token is `[` or maybe
+        // a doc comment (due to `TokenKind::(Line,Block)Comment` ambiguity at lexer level),
+        // then it may be valid Rust code, so consider it Rust code.
+        let next_non_whitespace_token = tokenize(input_tail).map(|tok| tok.kind).find(|tok|
+            !matches!(tok, TokenKind::Whitespace | TokenKind::LineComment | TokenKind::BlockComment { .. })
+        );
+        if next_non_whitespace_token != Some(TokenKind::OpenBracket) {
+            // No other choice than to consider this a shebang.
+            return Some(2 + input_tail.lines().next().unwrap_or_default().len());
+        }
     }
-    Some(input.find('\n').unwrap_or(input.len()))
+    None
 }
 
 /// Parses the first token from the provided input string.
@@ -719,6 +733,9 @@ impl Cursor<'_> {
 
             // Check that amount of closing '#' symbols
             // is equal to the amount of opening ones.
+            // Note that this will not consume extra trailing `#` characters:
+            // `r###"abcde"####` is lexed as a `LexedRawString { n_hashes: 3 }`
+            // followed by a `#` token.
             let mut hashes_left = n_start_hashes;
             let is_closing_hash = |c| {
                 if c == '#' && hashes_left != 0 {
@@ -739,8 +756,8 @@ impl Cursor<'_> {
                     possible_terminator_offset: None,
                 };
             } else if n_end_hashes > max_hashes {
-                // Keep track of possible terminators to give a hint about where there might be
-                // a missing terminator
+                // Keep track of possible terminators to give a hint about
+                // where there might be a missing terminator
                 possible_terminator_offset =
                     Some(self.len_consumed() - start_pos - n_end_hashes + prefix_len);
                 max_hashes = n_end_hashes;

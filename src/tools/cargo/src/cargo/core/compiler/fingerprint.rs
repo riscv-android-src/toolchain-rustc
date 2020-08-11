@@ -43,8 +43,9 @@
 //! The `Metadata` hash is a hash added to the output filenames to isolate
 //! each unit. See the documentation in the `compilation_files` module for
 //! more details. NOTE: Not all output files are isolated via filename hashes
-//! (like dylibs), but the fingerprint directory always has the `Metadata`
-//! hash in its directory name.
+//! (like dylibs). The fingerprint directory uses a hash, but sometimes units
+//! share the same fingerprint directory (when they don't have Metadata) so
+//! care should be taken to handle this!
 //!
 //! Fingerprints and Metadata are similar, and track some of the same things.
 //! The Metadata contains information that is required to keep Units separate.
@@ -71,6 +72,7 @@
 //! -C incremental=… flag                      | ✓           |
 //! mtime of sources                           | ✓[^3]       |
 //! RUSTFLAGS/RUSTDOCFLAGS                     | ✓           |
+//! LTO flags                                  | ✓           |
 //! is_std                                     |             | ✓
 //!
 //! [^1]: Build script and bin dependencies are not included.
@@ -103,8 +105,9 @@
 //! - A "dep-info" file which contains a list of source filenames for the
 //!   target. See below for details.
 //! - An `invoked.timestamp` file whose filesystem mtime is updated every time
-//!   the Unit is built. This is an experimental feature used for cleaning
-//!   unused artifacts.
+//!   the Unit is built. This is used for capturing the time when the build
+//!   starts, to detect if files are changed in the middle of the build. See
+//!   below for more details.
 //!
 //! Note that some units are a little different. A Unit for *running* a build
 //! script or for `rustdoc` does not have a dep-info file (it's not
@@ -343,19 +346,14 @@ use super::{BuildContext, Context, FileFlavor, Unit};
 /// transitively propagate throughout the dependency graph, it only forces this
 /// one unit which is very unlikely to be what you want unless you're
 /// exclusively talking about top-level units.
-pub fn prepare_target<'a, 'cfg>(
-    cx: &mut Context<'a, 'cfg>,
-    unit: &Unit<'a>,
-    force: bool,
-) -> CargoResult<Job> {
+pub fn prepare_target(cx: &mut Context<'_, '_>, unit: &Unit, force: bool) -> CargoResult<Job> {
     let _p = profile::start(format!(
         "fingerprint: {} / {}",
         unit.pkg.package_id(),
         unit.target.name()
     ));
     let bcx = cx.bcx;
-    let new = cx.files().fingerprint_dir(unit);
-    let loc = new.join(&filename(cx, unit));
+    let loc = cx.files().fingerprint_file_path(unit, "");
 
     debug!("fingerprint at: {}", loc.display());
 
@@ -1101,11 +1099,7 @@ impl<'de> de::Deserialize<'de> for MtimeSlot {
 }
 
 impl DepFingerprint {
-    fn new<'a, 'cfg>(
-        cx: &mut Context<'a, 'cfg>,
-        parent: &Unit<'a>,
-        dep: &UnitDep<'a>,
-    ) -> CargoResult<DepFingerprint> {
+    fn new(cx: &mut Context<'_, '_>, parent: &Unit, dep: &UnitDep) -> CargoResult<DepFingerprint> {
         let fingerprint = calculate(cx, &dep.unit)?;
         // We need to be careful about what we hash here. We have a goal of
         // supporting renaming a project directory and not rebuilding
@@ -1171,10 +1165,7 @@ impl StaleFile {
 ///
 /// Information like file modification time is only calculated for path
 /// dependencies.
-fn calculate<'a, 'cfg>(
-    cx: &mut Context<'a, 'cfg>,
-    unit: &Unit<'a>,
-) -> CargoResult<Arc<Fingerprint>> {
+fn calculate(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Arc<Fingerprint>> {
     // This function is slammed quite a lot, so the result is memoized.
     if let Some(s) = cx.fingerprints.get(unit) {
         return Ok(Arc::clone(s));
@@ -1193,16 +1184,14 @@ fn calculate<'a, 'cfg>(
     fingerprint.check_filesystem(&mut cx.mtime_cache, unit.pkg.root(), &target_root)?;
 
     let fingerprint = Arc::new(fingerprint);
-    cx.fingerprints.insert(*unit, Arc::clone(&fingerprint));
+    cx.fingerprints
+        .insert(unit.clone(), Arc::clone(&fingerprint));
     Ok(fingerprint)
 }
 
 /// Calculate a fingerprint for a "normal" unit, or anything that's not a build
 /// script. This is an internal helper of `calculate`, don't call directly.
-fn calculate_normal<'a, 'cfg>(
-    cx: &mut Context<'a, 'cfg>,
-    unit: &Unit<'a>,
-) -> CargoResult<Fingerprint> {
+fn calculate_normal(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Fingerprint> {
     // Recursively calculate the fingerprint for all of our dependencies.
     //
     // Skip fingerprints of binaries because they don't actually induce a
@@ -1222,7 +1211,12 @@ fn calculate_normal<'a, 'cfg>(
     let target_root = target_root(cx);
     let local = if unit.mode.is_doc() {
         // rustdoc does not have dep-info files.
-        let fingerprint = pkg_fingerprint(cx.bcx, unit.pkg)?;
+        let fingerprint = pkg_fingerprint(cx.bcx, &unit.pkg).chain_err(|| {
+            format!(
+                "failed to determine package fingerprint for documenting {}",
+                unit.pkg
+            )
+        })?;
         vec![LocalFingerprint::Precalculated(fingerprint)]
     } else {
         let dep_info = dep_info_loc(cx, unit);
@@ -1235,7 +1229,7 @@ fn calculate_normal<'a, 'cfg>(
     let outputs = cx
         .outputs(unit)?
         .iter()
-        .filter(|output| output.flavor != FileFlavor::DebugInfo)
+        .filter(|output| !matches!(output.flavor, FileFlavor::DebugInfo | FileFlavor::Auxiliary))
         .map(|output| output.path.clone())
         .collect();
 
@@ -1249,7 +1243,12 @@ fn calculate_normal<'a, 'cfg>(
     }
     .to_vec();
 
-    let profile_hash = util::hash_u64((&unit.profile, unit.mode, cx.bcx.extra_args_for(unit)));
+    let profile_hash = util::hash_u64((
+        &unit.profile,
+        unit.mode,
+        cx.bcx.extra_args_for(unit),
+        cx.lto[unit],
+    ));
     // Include metadata since it is exposed as environment variables.
     let m = unit.pkg.manifest().metadata();
     let metadata = util::hash_u64((&m.authors, &m.description, &m.homepage, &m.repository));
@@ -1273,10 +1272,7 @@ fn calculate_normal<'a, 'cfg>(
 
 /// Calculate a fingerprint for an "execute a build script" unit.  This is an
 /// internal helper of `calculate`, don't call directly.
-fn calculate_run_custom_build<'a, 'cfg>(
-    cx: &mut Context<'a, 'cfg>,
-    unit: &Unit<'a>,
-) -> CargoResult<Fingerprint> {
+fn calculate_run_custom_build(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Fingerprint> {
     assert!(unit.mode.is_run_custom_build());
     // Using the `BuildDeps` information we'll have previously parsed and
     // inserted into `build_explicit_deps` built an initial snapshot of the
@@ -1286,7 +1282,18 @@ fn calculate_run_custom_build<'a, 'cfg>(
     // the whole crate.
     let (gen_local, overridden) = build_script_local_fingerprints(cx, unit);
     let deps = &cx.build_explicit_deps[unit];
-    let local = (gen_local)(deps, Some(&|| pkg_fingerprint(cx.bcx, unit.pkg)))?.unwrap();
+    let local = (gen_local)(
+        deps,
+        Some(&|| {
+            pkg_fingerprint(cx.bcx, &unit.pkg).chain_err(|| {
+                format!(
+                    "failed to determine package fingerprint for build script for {}",
+                    unit.pkg
+                )
+            })
+        }),
+    )?
+    .unwrap();
     let output = deps.build_script_output.clone();
 
     // Include any dependencies of our execution, which is typically just the
@@ -1351,9 +1358,9 @@ fn calculate_run_custom_build<'a, 'cfg>(
 /// improve please do so!
 ///
 /// FIXME(#6779) - see all the words above
-fn build_script_local_fingerprints<'a, 'cfg>(
-    cx: &mut Context<'a, 'cfg>,
-    unit: &Unit<'a>,
+fn build_script_local_fingerprints(
+    cx: &mut Context<'_, '_>,
+    unit: &Unit,
 ) -> (
     Box<
         dyn FnOnce(
@@ -1426,9 +1433,9 @@ fn build_script_local_fingerprints<'a, 'cfg>(
 
 /// Create a `LocalFingerprint` for an overridden build script.
 /// Returns None if it is not overridden.
-fn build_script_override_fingerprint<'a, 'cfg>(
-    cx: &mut Context<'a, 'cfg>,
-    unit: &Unit<'a>,
+fn build_script_override_fingerprint(
+    cx: &mut Context<'_, '_>,
+    unit: &Unit,
 ) -> Option<LocalFingerprint> {
     // Build script output is only populated at this stage when it is
     // overridden.
@@ -1501,7 +1508,7 @@ fn write_fingerprint(loc: &Path, fingerprint: &Fingerprint) -> CargoResult<()> {
 }
 
 /// Prepare for work when a package starts to build
-pub fn prepare_init<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> CargoResult<()> {
+pub fn prepare_init(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<()> {
     let new1 = cx.files().fingerprint_dir(unit);
 
     // Doc tests have no output, thus no fingerprint.
@@ -1514,10 +1521,8 @@ pub fn prepare_init<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> Ca
 
 /// Returns the location that the dep-info file will show up at for the `unit`
 /// specified.
-pub fn dep_info_loc<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> PathBuf {
-    cx.files()
-        .fingerprint_dir(unit)
-        .join(&format!("dep-{}", filename(cx, unit)))
+pub fn dep_info_loc(cx: &mut Context<'_, '_>, unit: &Unit) -> PathBuf {
+    cx.files().fingerprint_file_path(unit, "dep-")
 }
 
 /// Returns an absolute path that target directory.
@@ -1537,7 +1542,7 @@ fn compare_old_fingerprint(
         // update the mtime so other cleaners know we used it
         let t = FileTime::from_system_time(SystemTime::now());
         debug!("mtime-on-use forcing {:?} to {}", loc, t);
-        filetime::set_file_times(loc, t, t)?;
+        paths::set_file_time_no_err(loc, t);
     }
 
     let new_hash = new_fingerprint.hash();
@@ -1558,7 +1563,7 @@ fn compare_old_fingerprint(
     result
 }
 
-fn log_compare(unit: &Unit<'_>, compare: &CargoResult<()>) {
+fn log_compare(unit: &Unit, compare: &CargoResult<()>) {
     let ce = match compare {
         Ok(..) => return,
         Err(e) => e,
@@ -1671,24 +1676,6 @@ where
         reference, reference_mtime
     );
     None
-}
-
-fn filename<'a, 'cfg>(cx: &mut Context<'a, 'cfg>, unit: &Unit<'a>) -> String {
-    // file_stem includes metadata hash. Thus we have a different
-    // fingerprint for every metadata hash version. This works because
-    // even if the package is fresh, we'll still link the fresh target
-    let file_stem = cx.files().file_stem(unit);
-    let kind = unit.target.kind().description();
-    let flavor = if unit.mode.is_any_test() {
-        "test-"
-    } else if unit.mode.is_doc() {
-        "doc-"
-    } else if unit.mode.is_run_custom_build() {
-        "run-"
-    } else {
-        ""
-    };
-    format!("{}{}-{}", flavor, kind, file_stem)
 }
 
 #[repr(u8)]

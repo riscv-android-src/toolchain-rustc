@@ -47,7 +47,9 @@ in your program, and cannot run all programs:
 * Miri runs the program as a platform-independent interpreter, so the program
   has no access to most platform-specific APIs or FFI. A few APIs have been
   implemented (such as printing to stdout) but most have not: for example, Miri
-  currently does not support concurrency, or SIMD, or networking.
+  currently does not support SIMD or networking.
+* Miri currently does not check for data-races and most other concurrency-related
+  issues.
 
 [rust]: https://www.rust-lang.org/
 [mir]: https://github.com/rust-lang/rfcs/blob/master/text/1211-mir.md
@@ -81,15 +83,16 @@ Now you can run your project in Miri:
 The first time you run Miri, it will perform some extra setup and install some
 dependencies.  It will ask you for confirmation before installing anything.
 
+You can pass arguments to Miri after the first `--`, and pass arguments to the
+interpreted program or test suite after the second `--`.  For example, `cargo
+miri run -- -Zmiri-disable-stacked-borrows` runs the program without checking
+the aliasing of references.  To filter the tests being run, use `cargo miri test
+-- -- filter`.
+
 Miri supports cross-execution: if you want to run the program as if it was a
 Linux program, you can do `cargo miri run --target x86_64-unknown-linux-gnu`.
 This is particularly useful if you are using Windows, as the Linux target is
 much better supported than Windows targets.
-
-You can pass arguments to Miri after the first `--`, and pass arguments to the
-interpreted program or test suite after the second `--`.  For example, `cargo
-miri run -- -Zmiri-disable-validation` runs the program without validation of
-basic type invariants and without checking the aliasing of references.
 
 When compiling code via `cargo miri`, the `miri` config flag is set.  You can
 use this to ignore test cases that fail under Miri because they do things Miri
@@ -109,7 +112,7 @@ There is no way to list all the infinite things Miri cannot do, but the
 interpreter will explicitly tell you when it finds something unsupported:
 
 ```
-error: unsupported operation: Miri does not support threading
+error: unsupported operation: can't call foreign function: bind
     ...
     = help: this is likely not a bug in the program; it indicates that the program \
             performed an operation that the interpreter does not support
@@ -127,15 +130,10 @@ MIRI_NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-his
 echo "Installing latest nightly with Miri: $MIRI_NIGHTLY"
 rustup set profile minimal
 rustup default "$MIRI_NIGHTLY"
-
 rustup component add miri
-cargo miri setup
 
 cargo miri test
 ```
-
-We use `cargo miri setup` to avoid getting interactive questions about the extra
-setup needed for Miri.
 
 ### Common Problems
 
@@ -158,8 +156,8 @@ Try deleting `~/.cache/miri`.
 
 This means the sysroot you are using was not compiled with Miri in mind.  This
 should never happen when you use `cargo miri` because that takes care of setting
-up the sysroot.  If you are using `miri` (the Miri driver) directly, see
-[below][testing-miri] for how to set up the sysroot.
+up the sysroot.  If you are using `miri` (the Miri driver) directly, see the
+[contributors' guide](CONTRIBUTING.md) for how to use `./miri` to best do that.
 
 
 ## Miri `-Z` flags and environment variables
@@ -225,6 +223,13 @@ Moreover, Miri recognizes some environment variables:
 * `MIRI_TEST_FLAGS` (recognized by the test suite) defines extra flags to be
   passed to Miri.
 
+The following environment variables are internal, but used to communicate between
+different Miri binaries, and as such worth documenting:
+
+* `MIRI_BE_RUSTC` when set to any value tells the Miri driver to actually not
+  interpret the code but compile it like rustc would. This is useful to be sure
+  that the compiled `rlib`s are compatible with Miri.
+
 ## Contributing and getting help
 
 If you want to contribute to Miri, great!  Please check out our
@@ -272,8 +277,11 @@ Definite bugs found:
 * [The Unix allocator calling `posix_memalign` in an invalid way](https://github.com/rust-lang/rust/issues/62251)
 * [`getrandom` calling the `getrandom` syscall in an invalid way](https://github.com/rust-random/getrandom/pull/73)
 * [`Vec`](https://github.com/rust-lang/rust/issues/69770) and [`BTreeMap`](https://github.com/rust-lang/rust/issues/69769) leaking memory under some (panicky) conditions
-* [Memory leak in `beef`](https://github.com/maciejhirsz/beef/issues/12)
-* [Invalid use of undefined memory in `EbrCell`](https://github.com/Firstyear/concread/commit/b15be53b6ec076acb295a5c0483cdb4bf9be838f#diff-6282b2fc8e98bd089a1f0c86f648157cR229)
+* [`beef` leaking memory](https://github.com/maciejhirsz/beef/issues/12)
+* [`EbrCell` using uninitialized memory incorrectly](https://github.com/Firstyear/concread/commit/b15be53b6ec076acb295a5c0483cdb4bf9be838f#diff-6282b2fc8e98bd089a1f0c86f648157cR229)
+* [TiKV performing an unaligned pointer access](https://github.com/tikv/tikv/issues/7613)
+* [`servo_arc` creating a dangling shared reference](https://github.com/servo/servo/issues/26357)
+* [TiKV constructing out-of-bounds pointers (and overlapping mutable references)](https://github.com/tikv/tikv/pull/7751)
 
 Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows is currently just an experiment):
 
@@ -282,8 +290,11 @@ Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows 
 * [`LinkedList` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/60072)
 * [`Vec::push` invalidating existing references into the vector](https://github.com/rust-lang/rust/issues/60847)
 * [`align_to_mut` violating uniqueness of mutable references](https://github.com/rust-lang/rust/issues/68549)
-* [Aliasing mutable references in `sized-chunks`](https://github.com/bodil/sized-chunks/issues/8)
+* [`sized-chunks` creating aliasing mutable references](https://github.com/bodil/sized-chunks/issues/8)
 * [`String::push_str` invalidating existing references into the string](https://github.com/rust-lang/rust/issues/70301)
+* [`ryu` using raw pointers outside their valid memory area](https://github.com/dtolnay/ryu/issues/24)
+* [ink! creating overlapping mutable references](https://github.com/rust-lang/miri/issues/1364)
+* [TiKV creating overlapping mutable reference and raw pointer](https://github.com/tikv/tikv/pull/7709)
 
 ## License
 

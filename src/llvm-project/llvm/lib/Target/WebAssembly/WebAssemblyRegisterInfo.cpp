@@ -91,8 +91,8 @@ void WebAssemblyRegisterInfo::eliminateFrameIndex(
   if (MI.getOpcode() == WebAssembly::ADD_I32) {
     MachineOperand &OtherMO = MI.getOperand(3 - FIOperandNum);
     if (OtherMO.isReg()) {
-      unsigned OtherMOReg = OtherMO.getReg();
-      if (TargetRegisterInfo::isVirtualRegister(OtherMOReg)) {
+      Register OtherMOReg = OtherMO.getReg();
+      if (Register::isVirtualRegister(OtherMOReg)) {
         MachineInstr *Def = MF.getRegInfo().getUniqueVRegDef(OtherMOReg);
         // TODO: For now we just opportunistically do this in the case where
         // the CONST_I32 happens to have exactly one def and one use. We
@@ -117,7 +117,7 @@ void WebAssemblyRegisterInfo::eliminateFrameIndex(
     // Create i32.add SP, offset and make it the operand.
     const TargetRegisterClass *PtrRC =
         MRI.getTargetRegisterInfo()->getPointerRegClass(MF);
-    unsigned OffsetOp = MRI.createVirtualRegister(PtrRC);
+    Register OffsetOp = MRI.createVirtualRegister(PtrRC);
     BuildMI(MBB, *II, II->getDebugLoc(), TII->get(WebAssembly::CONST_I32),
             OffsetOp)
         .addImm(FrameOffset);
@@ -138,16 +138,6 @@ WebAssemblyRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
       /*  hasFP */ {WebAssembly::FP32, WebAssembly::FP64}};
   const WebAssemblyFrameLowering *TFI = getFrameLowering(MF);
   return Regs[TFI->hasFP(MF)][TT.isArch64Bit()];
-}
-
-FrameBaseLocation
-WebAssemblyRegisterInfo::getFrameBaseLocation(const MachineFunction &MF) const {
-  const WebAssemblyFunctionInfo &MFI = *MF.getInfo<WebAssemblyFunctionInfo>();
-  FrameBaseLocation Loc;
-  Loc.Kind = FrameBaseLocation::TargetIndex;
-  signed Local = MFI.SPVReg != WebAssembly::NoRegister ? MFI.SPLocal : -1;
-  Loc.TI = {0, Local};
-  return Loc;
 }
 
 const TargetRegisterClass *

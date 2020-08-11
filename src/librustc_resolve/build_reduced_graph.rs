@@ -17,7 +17,6 @@ use crate::{Module, ModuleData, ModuleKind, NameBinding, NameBindingKind, Segmen
 
 use rustc_ast::ast::{self, Block, ForeignItem, ForeignItemKind, Item, ItemKind, NodeId};
 use rustc_ast::ast::{AssocItem, AssocItemKind, MetaItemKind, StmtKind};
-use rustc_ast::ast::{Ident, Name};
 use rustc_ast::token::{self, Token};
 use rustc_ast::visit::{self, AssocCtxt, Visitor};
 use rustc_attr as attr;
@@ -26,7 +25,7 @@ use rustc_errors::{struct_span_err, Applicability};
 use rustc_expand::base::SyntaxExtension;
 use rustc_expand::expand::AstFragment;
 use rustc_hir::def::{self, *};
-use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
+use rustc_hir::def_id::{DefId, LocalDefId, CRATE_DEF_INDEX};
 use rustc_metadata::creader::LoadedMacro;
 use rustc_middle::bug;
 use rustc_middle::hir::exports::Export;
@@ -34,7 +33,7 @@ use rustc_middle::middle::cstore::CrateStore;
 use rustc_middle::ty;
 use rustc_span::hygiene::{ExpnId, MacroKind};
 use rustc_span::source_map::{respan, Spanned};
-use rustc_span::symbol::{kw, sym};
+use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{Span, DUMMY_SP};
 
 use log::debug;
@@ -127,11 +126,11 @@ impl<'a> Resolver<'a> {
     }
 
     crate fn macro_def_scope(&mut self, expn_id: ExpnId) -> Module<'a> {
-        let def_id = match self.macro_defs.get(&expn_id) {
-            Some(def_id) => *def_id,
+        let def_id = match expn_id.expn_data().macro_def_id {
+            Some(def_id) => def_id,
             None => return self.ast_transform_scopes.get(&expn_id).unwrap_or(&self.graph_root),
         };
-        if let Some(id) = self.definitions.as_local_node_id(def_id) {
+        if let Some(id) = def_id.as_local() {
             self.local_macro_def_scopes[&id]
         } else {
             let module_def_id = ty::DefIdTree::parent(&*self, def_id).unwrap();
@@ -293,7 +292,7 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
         self.insert_field_names(def_id, field_names);
     }
 
-    fn insert_field_names(&mut self, def_id: DefId, field_names: Vec<Spanned<Name>>) {
+    fn insert_field_names(&mut self, def_id: DefId, field_names: Vec<Spanned<Symbol>>) {
         if !field_names.is_empty() {
             self.r.field_names.insert(def_id, field_names);
         }
@@ -427,7 +426,7 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
                             return;
                         }
 
-                        // Replace `use foo::self;` with `use foo;`
+                        // Replace `use foo::{ self };` with `use foo;`
                         source = module_path.pop().unwrap();
                         if rename.is_none() {
                             ident = source.ident;
@@ -436,10 +435,33 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
                 } else {
                     // Disallow `self`
                     if source.ident.name == kw::SelfLower {
+                        let parent = module_path.last();
+
+                        let span = match parent {
+                            // only `::self` from `use foo::self as bar`
+                            Some(seg) => seg.ident.span.shrink_to_hi().to(source.ident.span),
+                            None => source.ident.span,
+                        };
+                        let span_with_rename = match rename {
+                            // only `self as bar` from `use foo::self as bar`
+                            Some(rename) => source.ident.span.to(rename.span),
+                            None => source.ident.span,
+                        };
                         self.r.report_error(
-                            use_tree.span,
-                            ResolutionError::SelfImportsOnlyAllowedWithin,
+                            span,
+                            ResolutionError::SelfImportsOnlyAllowedWithin {
+                                root: parent.is_none(),
+                                span_with_rename,
+                            },
                         );
+
+                        // Error recovery: replace `use foo::self;` with `use foo;`
+                        if let Some(parent) = module_path.pop() {
+                            source = parent;
+                            if rename.is_none() {
+                                ident = source.ident;
+                            }
+                        }
                     }
 
                     // Disallow `use $crate;`
@@ -618,9 +640,10 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
                 } else if orig_name == Some(kw::SelfLower) {
                     self.r.graph_root
                 } else {
+                    let def_id = self.r.definitions.local_def_id(item.id);
                     let crate_id =
                         self.r.crate_loader.process_extern_crate(item, &self.r.definitions);
-                    self.r.extern_crate_map.insert(item.id, crate_id);
+                    self.r.extern_crate_map.insert(def_id, crate_id);
                     self.r.get_module(DefId { krate: crate_id, index: CRATE_DEF_INDEX })
                 };
 
@@ -906,7 +929,21 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
             Res::Def(DefKind::Macro(..), _) | Res::NonMacroAttr(..) => {
                 self.r.define(parent, ident, MacroNS, (res, vis, span, expansion))
             }
-            Res::Def(DefKind::TyParam | DefKind::ConstParam, _)
+            Res::Def(
+                DefKind::TyParam
+                | DefKind::ConstParam
+                | DefKind::ExternCrate
+                | DefKind::Use
+                | DefKind::ForeignMod
+                | DefKind::AnonConst
+                | DefKind::Field
+                | DefKind::LifetimeParam
+                | DefKind::GlobalAsm
+                | DefKind::Closure
+                | DefKind::Impl
+                | DefKind::Generator,
+                _,
+            )
             | Res::Local(..)
             | Res::SelfTy(..)
             | Res::SelfCtor(..)
@@ -939,7 +976,7 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
 
     fn add_macro_use_binding(
         &mut self,
-        name: ast::Name,
+        name: Symbol,
         binding: &'a NameBinding<'a>,
         span: Span,
         allow_shadowing: bool,
@@ -1113,15 +1150,22 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
     // Mark the given macro as unused unless its name starts with `_`.
     // Macro uses will remove items from this set, and the remaining
     // items will be reported as `unused_macros`.
-    fn insert_unused_macro(&mut self, ident: Ident, node_id: NodeId, span: Span) {
+    fn insert_unused_macro(
+        &mut self,
+        ident: Ident,
+        def_id: LocalDefId,
+        node_id: NodeId,
+        span: Span,
+    ) {
         if !ident.as_str().starts_with('_') {
-            self.r.unused_macros.insert(node_id, span);
+            self.r.unused_macros.insert(def_id, (node_id, span));
         }
     }
 
     fn define_macro(&mut self, item: &ast::Item) -> MacroRulesScope<'a> {
         let parent_scope = self.parent_scope;
         let expansion = parent_scope.expansion;
+        let def_id = self.r.definitions.local_def_id(item.id);
         let (ext, ident, span, macro_rules) = match &item.kind {
             ItemKind::MacroDef(def) => {
                 let ext = Lrc::new(self.r.compile_macro(item, self.r.session.edition()));
@@ -1129,7 +1173,7 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
             }
             ItemKind::Fn(..) => match Self::proc_macro_stub(item) {
                 Some((macro_kind, ident, span)) => {
-                    self.r.proc_macro_stubs.insert(item.id);
+                    self.r.proc_macro_stubs.insert(def_id);
                     (self.r.dummy_ext(macro_kind), ident, span, false)
                 }
                 None => return parent_scope.macro_rules,
@@ -1137,10 +1181,9 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
             _ => unreachable!(),
         };
 
-        let def_id = self.r.definitions.local_def_id(item.id).to_def_id();
-        let res = Res::Def(DefKind::Macro(ext.macro_kind()), def_id);
-        self.r.macro_map.insert(def_id, ext);
-        self.r.local_macro_def_scopes.insert(item.id, parent_scope.module);
+        let res = Res::Def(DefKind::Macro(ext.macro_kind()), def_id.to_def_id());
+        self.r.macro_map.insert(def_id.to_def_id(), ext);
+        self.r.local_macro_def_scopes.insert(def_id, parent_scope.module);
 
         if macro_rules {
             let ident = ident.normalize_to_macros_2_0();
@@ -1159,7 +1202,7 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
                 self.r.define(module, ident, MacroNS, (res, vis, span, expansion, IsMacroExport));
             } else {
                 self.r.check_reserved_macro_name(ident, res);
-                self.insert_unused_macro(ident, item.id, span);
+                self.insert_unused_macro(ident, def_id, item.id, span);
             }
             MacroRulesScope::Binding(self.r.arenas.alloc_macro_rules_binding(MacroRulesBinding {
                 parent_macro_rules_scope: parent_scope.macro_rules,
@@ -1177,7 +1220,7 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
                 _ => self.resolve_visibility(&item.vis),
             };
             if vis != ty::Visibility::Public {
-                self.insert_unused_macro(ident, item.id, span);
+                self.insert_unused_macro(ident, def_id, item.id, span);
             }
             self.r.define(module, ident, MacroNS, (res, vis, span, expansion));
             self.parent_scope.macro_rules

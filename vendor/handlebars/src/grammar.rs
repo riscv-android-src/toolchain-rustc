@@ -273,18 +273,19 @@ fn test_path() {
         "a.[0].[1].[2]",
         "a.[abc]",
         "a/v/c.d.s",
-        "a.[0]/b/c/../d",
-        "a.[bb c]/b/c/../d",
+        "a.[0]/b/c/d",
+        "a.[bb c]/b/c/d",
         "a.[0].[#hello]",
         "../a/b.[0].[1]",
-        "./this.[0]/[1]/this/../a",
+        "this.[0]/[1]/this/a",
         "./this_name",
         "./goo/[/bar]",
         "a.[你好]",
         "a.[10].[#comment]",
         "a.[]", // empty key
-        "././[/foo]",
+        "./[/foo]",
         "[foo]",
+        "@root/a/b",
     ];
     for i in s.iter() {
         assert_rule_match!(Rule::path, i);
@@ -292,22 +293,22 @@ fn test_path() {
 }
 
 #[test]
-fn test_directive_expression() {
+fn test_decorator_expression() {
     let s = vec!["{{* ssh}}", "{{~* ssh}}"];
     for i in s.iter() {
-        assert_rule!(Rule::directive_expression, i);
+        assert_rule!(Rule::decorator_expression, i);
     }
 }
 
 #[test]
-fn test_directive_block() {
+fn test_decorator_block() {
     let s = vec![
         "{{#* inline}}something{{/inline}}",
         "{{~#* inline}}hello{{/inline}}",
         "{{#* inline \"partialname\"}}something{{/inline}}",
     ];
     for i in s.iter() {
-        assert_rule!(Rule::directive_block, i);
+        assert_rule!(Rule::decorator_block, i);
     }
 }
 

@@ -7,9 +7,8 @@
 // modified, or distributed except according to those terms.
 
 //! Output types
-use chrono::Utc;
 use crate::constants::*;
-use failure::Fallible;
+use chrono::Utc;
 use std::collections::HashMap;
 use std::env;
 use std::process::Command;
@@ -17,7 +16,9 @@ use std::process::Command;
 pub mod codegen;
 pub mod envvar;
 
-pub fn generate_build_info(flags: ConstantsFlags) -> Fallible<HashMap<VergenKey, String>> {
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+pub fn generate_build_info(flags: ConstantsFlags) -> Result<HashMap<VergenKey, String>> {
     let mut build_info = HashMap::new();
     let now = Utc::now();
 
@@ -85,12 +86,12 @@ pub fn generate_build_info(flags: ConstantsFlags) -> Fallible<HashMap<VergenKey,
 }
 
 fn run_command(command: &mut Command) -> String {
-    let raw_output = if let Ok(o) = command.output() {
-        String::from_utf8_lossy(&o.stdout).into_owned()
-    } else {
-        "UNKNOWN".to_string()
-    };
-    raw_output.trim().to_string()
+    if let Ok(o) = command.output() {
+        if o.status.success() {
+            return String::from_utf8_lossy(&o.stdout).trim().to_owned();
+        }
+    }
+    return "UNKNOWN".to_owned();
 }
 
 /// Build information keys.

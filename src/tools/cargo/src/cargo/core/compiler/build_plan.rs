@@ -14,7 +14,7 @@ use serde::Serialize;
 use super::context::OutputFile;
 use super::{CompileKind, CompileMode, Context, Unit};
 use crate::core::TargetKind;
-use crate::util::{internal, CargoResult, ProcessBuilder};
+use crate::util::{internal, CargoResult, Config, ProcessBuilder};
 
 #[derive(Debug, Serialize)]
 struct Invocation {
@@ -45,7 +45,7 @@ struct SerializedBuildPlan {
 }
 
 impl Invocation {
-    pub fn new(unit: &Unit<'_>, deps: Vec<usize>) -> Invocation {
+    pub fn new(unit: &Unit, deps: Vec<usize>) -> Invocation {
         let id = unit.pkg.package_id();
         Invocation {
             package_name: id.name().to_string(),
@@ -109,7 +109,7 @@ impl BuildPlan {
         }
     }
 
-    pub fn add<'a>(&mut self, cx: &Context<'a, '_>, unit: &Unit<'a>) -> CargoResult<()> {
+    pub fn add(&mut self, cx: &Context<'_, '_>, unit: &Unit) -> CargoResult<()> {
         let id = self.plan.invocations.len();
         self.invocation_map.insert(unit.buildkey(), id);
         let deps = cx
@@ -146,9 +146,9 @@ impl BuildPlan {
         self.plan.inputs = inputs;
     }
 
-    pub fn output_plan(self) {
+    pub fn output_plan(self, config: &Config) {
         let encoded = serde_json::to_string(&self.plan).unwrap();
-        println!("{}", encoded);
+        crate::drop_println!(config, "{}", encoded);
     }
 }
 

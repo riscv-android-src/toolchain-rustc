@@ -41,9 +41,6 @@ public:
   // Debug information queries.
   Register getFrameRegister(const MachineFunction &MF) const override;
 
-  FrameBaseLocation
-  getFrameBaseLocation(const MachineFunction &MF) const override;
-
   const TargetRegisterClass *
   getPointerRegClass(const MachineFunction &MF,
                      unsigned Kind = 0) const override;

@@ -17,7 +17,7 @@ use crate::traits::select::IntercrateAmbiguityCause;
 use crate::traits::{self, coherence, FutureCompatOverlapErrorKind, ObligationCause, TraitEngine};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::struct_span_err;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_middle::lint::LintDiagnosticBuilder;
 use rustc_middle::ty::subst::{InternalSubsts, Subst, SubstsRef};
 use rustc_middle::ty::{self, TyCtxt};
@@ -254,7 +254,7 @@ fn fulfill_implication<'a, 'tcx>(
 pub(super) fn specialization_graph_provider(
     tcx: TyCtxt<'_>,
     trait_id: DefId,
-) -> &specialization_graph::Graph {
+) -> specialization_graph::Graph {
     let mut sg = specialization_graph::Graph::new();
 
     let mut trait_impls: Vec<_> = tcx.all_impls(trait_id).collect();
@@ -267,9 +267,9 @@ pub(super) fn specialization_graph_provider(
         .sort_unstable_by_key(|def_id| (-(def_id.krate.as_u32() as i64), def_id.index.index()));
 
     for impl_def_id in trait_impls {
-        if impl_def_id.is_local() {
+        if let Some(impl_def_id) = impl_def_id.as_local() {
             // This is where impl overlap checking happens:
-            let insert_result = sg.insert(tcx, impl_def_id);
+            let insert_result = sg.insert(tcx, impl_def_id.to_def_id());
             // Report error if there was one.
             let (overlap, used_to_be_allowed) = match insert_result {
                 Err(overlap) => (Some(overlap), None),
@@ -286,17 +286,17 @@ pub(super) fn specialization_graph_provider(
         }
     }
 
-    tcx.arena.alloc(sg)
+    sg
 }
 
 fn report_overlap_conflict(
     tcx: TyCtxt<'_>,
     overlap: OverlapError,
-    impl_def_id: DefId,
+    impl_def_id: LocalDefId,
     used_to_be_allowed: Option<FutureCompatOverlapErrorKind>,
     sg: &mut specialization_graph::Graph,
 ) {
-    let impl_polarity = tcx.impl_polarity(impl_def_id);
+    let impl_polarity = tcx.impl_polarity(impl_def_id.to_def_id());
     let other_polarity = tcx.impl_polarity(overlap.with_impl);
     match (impl_polarity, other_polarity) {
         (ty::ImplPolarity::Negative, ty::ImplPolarity::Positive) => {
@@ -304,7 +304,7 @@ fn report_overlap_conflict(
                 tcx,
                 &overlap,
                 impl_def_id,
-                impl_def_id,
+                impl_def_id.to_def_id(),
                 overlap.with_impl,
                 sg,
             );
@@ -316,7 +316,7 @@ fn report_overlap_conflict(
                 &overlap,
                 impl_def_id,
                 overlap.with_impl,
-                impl_def_id,
+                impl_def_id.to_def_id(),
                 sg,
             );
         }
@@ -330,13 +330,15 @@ fn report_overlap_conflict(
 fn report_negative_positive_conflict(
     tcx: TyCtxt<'_>,
     overlap: &OverlapError,
-    local_impl_def_id: DefId,
+    local_impl_def_id: LocalDefId,
     negative_impl_def_id: DefId,
     positive_impl_def_id: DefId,
     sg: &mut specialization_graph::Graph,
 ) {
-    let impl_span =
-        tcx.sess.source_map().guess_head_span(tcx.span_of_impl(local_impl_def_id).unwrap());
+    let impl_span = tcx
+        .sess
+        .source_map()
+        .guess_head_span(tcx.span_of_impl(local_impl_def_id.to_def_id()).unwrap());
 
     let mut err = struct_span_err!(
         tcx.sess,
@@ -378,11 +380,12 @@ fn report_negative_positive_conflict(
 fn report_conflicting_impls(
     tcx: TyCtxt<'_>,
     overlap: OverlapError,
-    impl_def_id: DefId,
+    impl_def_id: LocalDefId,
     used_to_be_allowed: Option<FutureCompatOverlapErrorKind>,
     sg: &mut specialization_graph::Graph,
 ) {
-    let impl_span = tcx.sess.source_map().guess_head_span(tcx.span_of_impl(impl_def_id).unwrap());
+    let impl_span =
+        tcx.sess.source_map().guess_head_span(tcx.span_of_impl(impl_def_id.to_def_id()).unwrap());
 
     // Work to be done after we've built the DiagnosticBuilder. We have to define it
     // now because the struct_lint methods don't return back the DiagnosticBuilder
@@ -445,7 +448,7 @@ fn report_conflicting_impls(
             };
             tcx.struct_span_lint_hir(
                 lint,
-                tcx.hir().as_local_hir_id(impl_def_id).unwrap(),
+                tcx.hir().as_local_hir_id(impl_def_id),
                 impl_span,
                 decorate,
             )

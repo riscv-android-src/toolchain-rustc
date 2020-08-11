@@ -1,14 +1,14 @@
 aho-corasick
 ============
-A library for finding occurrences of many patterns at once. This library
-provides multiple pattern search principally through an implementation of the
+A library for finding occurrences of many patterns at once with SIMD
+acceleration in some cases. This library provides multiple pattern
+search principally through an implementation of the
 [Aho-Corasick algorithm](https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm),
-which builds a fast finite state machine for executing searches in linear time.
+which builds a finite state machine for executing searches in linear time.
 Features include case insensitive matching, overlapping matches and search &
 replace in streams.
 
-[![Linux build status](https://api.travis-ci.org/BurntSushi/aho-corasick.svg)](https://travis-ci.org/BurntSushi/aho-corasick)
-[![Windows build status](https://ci.appveyor.com/api/projects/status/github/BurntSushi/aho-corasick?svg=true)](https://ci.appveyor.com/project/BurntSushi/aho-corasick)
+[![Build status](https://github.com/BurntSushi/aho-corasick/workflows/ci/badge.svg)](https://github.com/BurntSushi/aho-corasick/actions)
 [![](http://meritbadge.herokuapp.com/aho-corasick)](https://crates.io/crates/aho-corasick)
 
 Dual-licensed under MIT or the [UNLICENSE](http://unlicense.org).
@@ -94,7 +94,6 @@ loading the entire stream into memory first.
 ```rust
 use aho_corasick::AhoCorasick;
 
-# fn example() -> Result<(), ::std::io::Error> {
 let patterns = &["fox", "brown", "quick"];
 let replace_with = &["sloth", "grey", "slow"];
 
@@ -106,7 +105,6 @@ let mut wtr = vec![];
 let ac = AhoCorasick::new(patterns);
 ac.stream_replace_all(rdr.as_bytes(), &mut wtr, replace_with)?;
 assert_eq!(b"The slow grey sloth.".to_vec(), wtr);
-# Ok(()) }; example().unwrap()
 ```
 
 
@@ -163,11 +161,16 @@ expression alternation. See `MatchKind` in the docs for more details.
 
 ### Minimum Rust version policy
 
-This crate's minimum supported `rustc` version is `1.24.1`.
+This crate's minimum supported `rustc` version is `1.28.0`.
+
+The current policy is that the minimum Rust version required to use this crate
+can be increased in minor version updates. For example, if `crate 1.0` requires
+Rust 1.20.0, then `crate 1.0.z` for all values of `z` will also require Rust
+1.20.0 or newer. However, `crate 1.y` for `y > 0` may require a newer minimum
+version of Rust.
 
 In general, this crate will be conservative with respect to the minimum
-supported version of Rust. In general, it will follow the `regex` crate's
-policy, since `regex` is an important dependent.
+supported version of Rust.
 
 
 ### Future work
@@ -176,13 +179,6 @@ Here are some plans for the future:
 
 * Assuming the current API is sufficient, I'd like to commit to it and release
   a `1.0` version of this crate some time in the next 6-12 months.
-* Despite the crate's name, it seems prudent to consolidate all
-  multi-pattern search optimizations into this crate so that they get the
-  widest possible use. A good place to start will be to move the regex
-  crate's Teddy algorithm into this one. (This is more than just a move. It
-  will require fleshing out the somewhat simplistic `Prefilter` design that
-  exists internally currently.) In the future, it would be good to loot
-  Hyperscan for some of its pertinent algorithms, such as FDR.
 * Support stream searching with leftmost match semantics. Currently, only
   standard match semantics are supported. Getting this right seems possible,
   but is tricky since the match state needs to be propagated through multiple

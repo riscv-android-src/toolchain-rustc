@@ -949,8 +949,8 @@ impl Config {
         let possible = dir.join(filename_without_extension);
         let possible_with_extension = dir.join(format!("{}.toml", filename_without_extension));
 
-        if fs::metadata(&possible).is_ok() {
-            if warn && fs::metadata(&possible_with_extension).is_ok() {
+        if possible.exists() {
+            if warn && possible_with_extension.exists() {
                 // We don't want to print a warning if the version
                 // without the extension is just a symlink to the version
                 // WITH an extension, which people may want to do to
@@ -973,7 +973,7 @@ impl Config {
             }
 
             Ok(Some(possible))
-        } else if fs::metadata(&possible_with_extension).is_ok() {
+        } else if possible_with_extension.exists() {
             Ok(Some(possible_with_extension))
         } else {
             Ok(None)
@@ -1016,12 +1016,15 @@ impl Config {
         )
     }
 
-    /// Gets the index for the default registry.
-    pub fn get_default_registry_index(&self) -> CargoResult<Option<Url>> {
-        Ok(match self.get_string("registry.index")? {
-            Some(index) => Some(self.resolve_registry_index(index)?),
-            None => None,
-        })
+    /// Returns an error if `registry.index` is set.
+    pub fn check_registry_index_not_set(&self) -> CargoResult<()> {
+        if self.get_string("registry.index")?.is_some() {
+            bail!(
+                "the `registry.index` config value is no longer supported\n\
+                Use `[source]` replacement to alter the default index for crates.io."
+            );
+        }
+        Ok(())
     }
 
     fn resolve_registry_index(&self, index: Value<String>) -> CargoResult<Url> {
@@ -1619,9 +1622,11 @@ pub fn save_credentials(cfg: &Config, token: String, registry: Option<String>) -
 
     let contents = toml.to_string();
     file.seek(SeekFrom::Start(0))?;
-    file.write_all(contents.as_bytes())?;
+    file.write_all(contents.as_bytes())
+        .chain_err(|| format!("failed to write to `{}`", file.path().display()))?;
     file.file().set_len(contents.len() as u64)?;
-    set_permissions(file.file(), 0o600)?;
+    set_permissions(file.file(), 0o600)
+        .chain_err(|| format!("failed to set permissions of `{}`", file.path().display()))?;
 
     return Ok(());
 
@@ -1738,4 +1743,46 @@ impl StringList {
     pub fn as_slice(&self) -> &[String] {
         &self.0
     }
+}
+
+#[macro_export]
+macro_rules! __shell_print {
+    ($config:expr, $which:ident, $newline:literal, $($arg:tt)*) => ({
+        let mut shell = $config.shell();
+        let out = shell.$which();
+        drop(out.write_fmt(format_args!($($arg)*)));
+        if $newline {
+            drop(out.write_all(b"\n"));
+        }
+    });
+}
+
+#[macro_export]
+macro_rules! drop_println {
+    ($config:expr) => ( $crate::drop_print!($config, "\n") );
+    ($config:expr, $($arg:tt)*) => (
+        $crate::__shell_print!($config, out, true, $($arg)*)
+    );
+}
+
+#[macro_export]
+macro_rules! drop_eprintln {
+    ($config:expr) => ( $crate::drop_eprint!($config, "\n") );
+    ($config:expr, $($arg:tt)*) => (
+        $crate::__shell_print!($config, err, true, $($arg)*)
+    );
+}
+
+#[macro_export]
+macro_rules! drop_print {
+    ($config:expr, $($arg:tt)*) => (
+        $crate::__shell_print!($config, out, false, $($arg)*)
+    );
+}
+
+#[macro_export]
+macro_rules! drop_eprint {
+    ($config:expr, $($arg:tt)*) => (
+        $crate::__shell_print!($config, err, false, $($arg)*)
+    );
 }

@@ -1,8 +1,6 @@
 use std::time::{Duration, SystemTime, Instant};
 use std::convert::TryFrom;
 
-use rustc_target::abi::LayoutOf;
-
 use crate::stacked_borrows::Tag;
 use crate::*;
 use helpers::{immty_from_int_checked, immty_from_uint_checked};
@@ -13,8 +11,7 @@ pub fn system_time_to_duration<'tcx>(time: &SystemTime) -> InterpResult<'tcx, Du
         .map_err(|_| err_unsup_format!("times before the Unix epoch are not supported").into())
 }
 
-
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn clock_gettime(
         &mut self,
@@ -107,7 +104,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let dwLowDateTime = u32::try_from(duration_ticks & 0x00000000FFFFFFFF).unwrap();
         let dwHighDateTime = u32::try_from((duration_ticks & 0xFFFFFFFF00000000) >> 32).unwrap();
-        let DWORD_tylayout = this.layout_of(this.tcx.types.u32)?;
+        let DWORD_tylayout = this.machine.layouts.u32;
         let imms = [
             immty_from_uint_checked(dwLowDateTime, DWORD_tylayout)?,
             immty_from_uint_checked(dwHighDateTime, DWORD_tylayout)?,

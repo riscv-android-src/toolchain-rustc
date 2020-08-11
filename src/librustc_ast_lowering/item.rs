@@ -12,7 +12,7 @@ use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::LocalDefId;
 use rustc_span::source_map::{respan, DesugaringKind};
-use rustc_span::symbol::{kw, sym};
+use rustc_span::symbol::{kw, sym, Ident};
 use rustc_span::Span;
 use rustc_target::spec::abi;
 
@@ -1321,12 +1321,15 @@ impl<'hir> LoweringContext<'_, 'hir> {
                                     .get_partial_res(bound_pred.bounded_ty.id)
                                     .map(|d| d.base_res())
                                 {
-                                    if let Some(node_id) =
-                                        self.resolver.definitions().as_local_node_id(def_id)
-                                    {
+                                    if let Some(def_id) = def_id.as_local() {
                                         for param in &generics.params {
                                             if let GenericParamKind::Type { .. } = param.kind {
-                                                if node_id == param.id {
+                                                if def_id
+                                                    == self
+                                                        .resolver
+                                                        .definitions()
+                                                        .local_def_id(param.id)
+                                                {
                                                     add_bounds
                                                         .entry(param.id)
                                                         .or_default()

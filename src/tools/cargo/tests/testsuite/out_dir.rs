@@ -1,11 +1,10 @@
 //! Tests for --out-dir flag.
 
-use std::env;
-use std::fs::{self, File};
-use std::path::Path;
-
 use cargo_test_support::sleep_ms;
 use cargo_test_support::{basic_manifest, project};
+use std::env;
+use std::fs;
+use std::path::Path;
 
 #[cargo_test]
 fn binary_with_debug() {
@@ -21,6 +20,7 @@ fn binary_with_debug() {
         &["foo"],
         &["foo", "foo.dSYM"],
         &["foo.exe", "foo.pdb"],
+        &["foo.exe"],
     );
 }
 
@@ -56,6 +56,7 @@ fn static_library_with_debug() {
         &["libfoo.a"],
         &["libfoo.a"],
         &["foo.lib"],
+        &["libfoo.a"],
     );
 }
 
@@ -89,8 +90,9 @@ fn dynamic_library_with_debug() {
     check_dir_contents(
         &p.root().join("out"),
         &["libfoo.so"],
-        &["libfoo.dylib"],
-        &["foo.dll", "foo.dll.lib"],
+        &["libfoo.dylib", "libfoo.dylib.dSYM"],
+        &["foo.dll", "foo.dll.exp", "foo.dll.lib", "foo.pdb"],
+        &["foo.dll", "libfoo.dll.a"],
     );
 }
 
@@ -122,6 +124,7 @@ fn rlib_with_debug() {
         .run();
     check_dir_contents(
         &p.root().join("out"),
+        &["libfoo.rlib"],
         &["libfoo.rlib"],
         &["libfoo.rlib"],
         &["libfoo.rlib"],
@@ -168,6 +171,7 @@ fn include_only_the_binary_from_the_current_package() {
         &["foo"],
         &["foo", "foo.dSYM"],
         &["foo.exe", "foo.pdb"],
+        &["foo.exe"],
     );
 }
 
@@ -175,8 +179,8 @@ fn include_only_the_binary_from_the_current_package() {
 fn out_dir_is_a_file() {
     let p = project()
         .file("src/main.rs", r#"fn main() { println!("Hello, World!") }"#)
+        .file("out", "")
         .build();
-    File::create(p.root().join("out")).unwrap();
 
     p.cargo("build -Z unstable-options --out-dir out")
         .masquerade_as_nightly_cargo()
@@ -243,6 +247,7 @@ fn avoid_build_scripts() {
         &["a", "b"],
         &["a", "a.dSYM", "b", "b.dSYM"],
         &["a.exe", "a.pdb", "b.exe", "b.pdb"],
+        &["a.exe", "b.exe"],
     );
 }
 
@@ -267,6 +272,7 @@ fn cargo_build_out_dir() {
         &["foo"],
         &["foo", "foo.dSYM"],
         &["foo.exe", "foo.pdb"],
+        &["foo.exe"],
     );
 }
 
@@ -274,10 +280,15 @@ fn check_dir_contents(
     out_dir: &Path,
     expected_linux: &[&str],
     expected_mac: &[&str],
-    expected_win: &[&str],
+    expected_win_msvc: &[&str],
+    expected_win_gnu: &[&str],
 ) {
     let expected = if cfg!(target_os = "windows") {
-        expected_win
+        if cfg!(target_env = "msvc") {
+            expected_win_msvc
+        } else {
+            expected_win_gnu
+        }
     } else if cfg!(target_os = "macos") {
         expected_mac
     } else {

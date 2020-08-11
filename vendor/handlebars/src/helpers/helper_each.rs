@@ -1,12 +1,14 @@
 use serde_json::value::Value as Json;
 
-use crate::context::{BlockParams, Context};
+use crate::block::{BlockContext, BlockParams};
+use crate::context::Context;
 use crate::error::RenderError;
 use crate::helpers::{HelperDef, HelperResult};
+use crate::json::value::{to_json, JsonTruthy};
 use crate::output::Output;
 use crate::registry::Registry;
 use crate::render::{Helper, RenderContext, Renderable};
-use crate::value::{to_json, JsonTruthy};
+use crate::util::copy_on_push_vec;
 
 #[derive(Clone, Copy)]
 pub struct EachHelper;
@@ -16,8 +18,8 @@ impl HelperDef for EachHelper {
         &self,
         h: &Helper<'reg, 'rc>,
         r: &'reg Registry,
-        ctx: &Context,
-        rc: &mut RenderContext<'reg>,
+        ctx: &'rc Context,
+        rc: &mut RenderContext<'reg, 'rc>,
         out: &mut dyn Output,
     ) -> HelperResult {
         let value = h
@@ -28,117 +30,98 @@ impl HelperDef for EachHelper {
 
         match template {
             Some(t) => {
-                rc.promote_local_vars();
-                let local_path_root = value
-                    .path_root()
-                    .map(|p| format!("{}/{}", rc.get_path(), p));
+                let mut block_context = BlockContext::new();
 
-                debug!("each value {:?}", value.value());
+                if let Some(path) = value.context_path() {
+                    *block_context.base_path_mut() = path.to_vec();
+                    // TODO: disable base value support for now.
+                    // block_context.set_base_value(value.value());
+                }
+
+                rc.push_block(block_context);
+
                 let rendered = match (value.value().is_truthy(false), value.value()) {
                     (true, &Json::Array(ref list)) => {
                         let len = list.len();
 
-                        let array_path = value.path().map(|p| {
-                            if value.is_absolute_path() {
-                                p.to_string()
-                            } else {
-                                format!("{}/{}", rc.get_path(), p)
-                            }
-                        });
+                        let array_path = value.context_path();
 
                         for (i, _) in list.iter().enumerate().take(len) {
-                            let mut local_rc = rc.derive();
-                            if let Some(ref p) = local_path_root {
-                                local_rc.push_local_path_root(p.clone());
+                            if let Some(ref mut block) = rc.block_mut() {
+                                let is_first = i == 0usize;
+                                let is_last = i == len - 1;
+
+                                block.set_local_var("@first".to_string(), to_json(is_first));
+                                block.set_local_var("@last".to_string(), to_json(is_last));
+                                block.set_local_var("@index".to_string(), to_json(i));
+                                if let Some(ref p) = array_path {
+                                    if is_first {
+                                        *block.base_path_mut() = copy_on_push_vec(p, i.to_string());
+                                    } else if let Some(ptr) = block.base_path_mut().last_mut() {
+                                        *ptr = i.to_string();
+                                    }
+                                }
+
+                                // TODO: base value
+
+                                if let Some(bp_val) = h.block_param() {
+                                    let mut params = BlockParams::new();
+                                    params.add_path(bp_val, Vec::with_capacity(0))?;
+
+                                    block.set_block_params(params);
+                                } else if let Some((bp_val, bp_index)) = h.block_param_pair() {
+                                    let mut params = BlockParams::new();
+                                    params.add_path(bp_val, Vec::with_capacity(0))?;
+                                    params.add_value(bp_index, to_json(i))?;
+
+                                    block.set_block_params(params);
+                                }
                             }
 
-                            local_rc.set_local_var("@first".to_string(), to_json(i == 0usize));
-                            local_rc.set_local_var("@last".to_string(), to_json(i == len - 1));
-                            local_rc.set_local_var("@index".to_string(), to_json(i));
-
-                            if let Some(ref p) = array_path {
-                                let new_path = format!("{}/[{}]", p, i);
-                                debug!("each path {:?}", new_path);
-                                local_rc.set_path(new_path);
-                            }
-
-                            if let Some(bp_val) = h.block_param() {
-                                let mut params = BlockParams::new();
-                                params.add_path(bp_val, local_rc.get_path())?;
-
-                                local_rc.push_block_context(params)?;
-                            } else if let Some((bp_val, bp_index)) = h.block_param_pair() {
-                                let mut params = BlockParams::new();
-                                params.add_path(bp_val, local_rc.get_path())?;
-                                params.add_value(bp_index, to_json(i))?;
-
-                                local_rc.push_block_context(params)?;
-                            }
-
-                            t.render(r, ctx, &mut local_rc, out)?;
-
-                            if h.has_block_param() {
-                                local_rc.pop_block_context();
-                            }
-
-                            if local_path_root.is_some() {
-                                local_rc.pop_local_path_root();
-                            }
+                            t.render(r, ctx, rc, out)?;
                         }
+
                         Ok(())
                     }
                     (true, &Json::Object(ref obj)) => {
-                        let mut first: bool = true;
-                        let obj_path = value.path().map(|p| {
-                            if value.is_absolute_path() {
-                                p.to_string()
-                            } else {
-                                format!("{}/{}", rc.get_path(), p)
-                            }
-                        });
+                        let mut is_first = true;
+                        let obj_path = value.context_path();
 
                         for (k, _) in obj.iter() {
-                            let mut local_rc = rc.derive();
+                            if let Some(ref mut block) = rc.block_mut() {
+                                block.set_local_var("@first".to_string(), to_json(is_first));
+                                block.set_local_var("@key".to_string(), to_json(k));
 
-                            if let Some(ref p) = local_path_root {
-                                local_rc.push_local_path_root(p.clone());
-                            }
-                            local_rc.set_local_var("@first".to_string(), to_json(first));
-                            if first {
-                                first = false;
-                            }
+                                if let Some(ref p) = obj_path {
+                                    if is_first {
+                                        *block.base_path_mut() = copy_on_push_vec(p, k.clone());
+                                    } else if let Some(ptr) = block.base_path_mut().last_mut() {
+                                        *ptr = k.clone();
+                                    }
+                                }
 
-                            local_rc.set_local_var("@key".to_string(), to_json(k));
+                                // TODO
 
-                            if let Some(ref p) = obj_path {
-                                let new_path = format!("{}/[{}]", p, k);
-                                local_rc.set_path(new_path);
-                            }
+                                if let Some(bp_val) = h.block_param() {
+                                    let mut params = BlockParams::new();
+                                    params.add_path(bp_val, Vec::with_capacity(0))?;
 
-                            if let Some(bp_val) = h.block_param() {
-                                let mut params = BlockParams::new();
-                                params.add_path(bp_val, local_rc.get_path())?;
+                                    block.set_block_params(params);
+                                } else if let Some((bp_val, bp_key)) = h.block_param_pair() {
+                                    let mut params = BlockParams::new();
+                                    params.add_path(bp_val, Vec::with_capacity(0))?;
+                                    params.add_value(bp_key, to_json(&k))?;
 
-                                local_rc.push_block_context(params)?;
-                            } else if let Some((bp_val, bp_key)) = h.block_param_pair() {
-                                let mut params = BlockParams::new();
-                                params.add_path(bp_val, local_rc.get_path())?;
-                                params.add_value(bp_key, to_json(&k))?;
-
-                                local_rc.push_block_context(params)?;
+                                    block.set_block_params(params);
+                                }
                             }
 
-                            t.render(r, ctx, &mut local_rc, out)?;
+                            t.render(r, ctx, rc, out)?;
 
-                            if h.has_block_param() {
-                                local_rc.pop_block_context();
-                            }
-
-                            if local_path_root.is_some() {
-                                local_rc.pop_local_path_root();
+                            if is_first {
+                                is_first = false;
                             }
                         }
-
                         Ok(())
                     }
                     (false, _) => {
@@ -153,7 +136,7 @@ impl HelperDef for EachHelper {
                     ))),
                 };
 
-                rc.demote_local_vars();
+                rc.pop_block();
                 rendered
             }
             None => Ok(()),
@@ -165,9 +148,8 @@ pub static EACH_HELPER: EachHelper = EachHelper;
 
 #[cfg(test)]
 mod test {
+    use crate::json::value::to_json;
     use crate::registry::Registry;
-    use crate::value::to_json;
-
     use serde_json::value::Value as Json;
     use std::collections::BTreeMap;
     use std::str::FromStr;
@@ -274,19 +256,13 @@ mod test {
         let r0 = handlebars
             .render(
                 "t0",
-                &({
-                    let mut rv = BTreeMap::new();
-                    rv.insert("foo".to_owned(), {
-                        let mut rv = BTreeMap::new();
-                        rv.insert("value".to_owned(), "bar".to_owned());
-                        rv
-                    });
-                    rv.insert("".to_owned(), {
-                        let mut rv = BTreeMap::new();
-                        rv.insert("value".to_owned(), "baz".to_owned());
-                        rv
-                    });
-                    rv
+                &json!({
+                    "foo": {
+                        "value": "bar"
+                    },
+                    "": {
+                        "value": "baz"
+                    }
                 }),
             )
             .unwrap();
@@ -416,5 +392,21 @@ mod test {
         assert!(r0.contains("#special key: 3"));
         assert!(r0.contains("😂: 4"));
         assert!(r0.contains("me.dot.key: 5"));
+    }
+
+    #[test]
+    fn test_base_path_after_each() {
+        let mut handlebars = Registry::new();
+        assert!(handlebars
+            .register_template_string("t0", "{{#each a}}{{this}}{{/each}} {{b}}")
+            .is_ok());
+        let data = json!({
+            "a": [1, 2, 3, 4],
+            "b": "good",
+        });
+
+        let r0 = handlebars.render("t0", &data).ok().unwrap();
+
+        assert_eq!("1234 good", r0);
     }
 }

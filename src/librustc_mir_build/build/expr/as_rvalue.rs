@@ -53,6 +53,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let source_info = this.source_info(expr_span);
 
         match expr.kind {
+            ExprKind::ThreadLocalRef(did) => block.and(Rvalue::ThreadLocalRef(did)),
             ExprKind::Scope { region_scope, lint_level, value } => {
                 let region_scope = (region_scope, source_info);
                 this.in_scope(region_scope, lint_level, |this| this.as_rvalue(block, scope, value))
@@ -97,7 +98,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 // The `Box<T>` temporary created here is not a part of the HIR,
                 // and therefore is not considered during generator OIBIT
                 // determination. See the comment about `box` at `yield_in_scope`.
-                let result = this.local_decls.push(LocalDecl::new_internal(expr.ty, expr_span));
+                let result = this.local_decls.push(LocalDecl::new(expr.ty, expr_span).internal());
                 this.cfg.push(
                     block,
                     Statement { source_info, kind: StatementKind::StorageLive(result) },
@@ -252,6 +253,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             | ExprKind::Break { .. }
             | ExprKind::Continue { .. }
             | ExprKind::Return { .. }
+            | ExprKind::InlineAsm { .. }
             | ExprKind::LlvmInlineAsm { .. }
             | ExprKind::PlaceTypeAscription { .. }
             | ExprKind::ValueTypeAscription { .. } => {
@@ -292,7 +294,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             let of_fld = Field::new(1);
 
             let tcx = self.hir.tcx();
-            let val = tcx.mk_place_field(result_value.clone(), val_fld, ty);
+            let val = tcx.mk_place_field(result_value, val_fld, ty);
             let of = tcx.mk_place_field(result_value, of_fld, bool_ty);
 
             let err = AssertKind::Overflow(op);
@@ -377,7 +379,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let this = self;
 
         let source_info = this.source_info(upvar_span);
-        let temp = this.local_decls.push(LocalDecl::new_temp(upvar_ty, upvar_span));
+        let temp = this.local_decls.push(LocalDecl::new(upvar_ty, upvar_span));
 
         this.cfg.push(block, Statement { source_info, kind: StatementKind::StorageLive(temp) });
 

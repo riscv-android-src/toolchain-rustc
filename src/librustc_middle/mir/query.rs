@@ -15,15 +15,27 @@ use super::{Field, SourceInfo};
 
 #[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, HashStable)]
 pub enum UnsafetyViolationKind {
+    /// Only permitted in regular `fn`s, prohibitted in `const fn`s.
     General,
     /// Permitted both in `const fn`s and regular `fn`s.
     GeneralAndConstFn,
-    BorrowPacked(hir::HirId),
+    /// Borrow of packed field.
+    /// Has to be handled as a lint for backwards compatibility.
+    BorrowPacked,
+    /// Unsafe operation in an `unsafe fn` but outside an `unsafe` block.
+    /// Has to be handled as a lint for backwards compatibility.
+    /// Should stay gated under `#![feature(unsafe_block_in_unsafe_fn)]`.
+    UnsafeFn,
+    /// Borrow of packed field in an `unsafe fn` but outside an `unsafe` block.
+    /// Has to be handled as a lint for backwards compatibility.
+    /// Should stay gated under `#![feature(unsafe_block_in_unsafe_fn)]`.
+    UnsafeFnBorrowPacked,
 }
 
 #[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, HashStable)]
 pub struct UnsafetyViolation {
     pub source_info: SourceInfo,
+    pub lint_root: hir::HirId,
     pub description: Symbol,
     pub details: Symbol,
     pub kind: UnsafetyViolationKind,
@@ -80,6 +92,7 @@ pub struct BorrowCheckResult<'tcx> {
 pub struct ConstQualifs {
     pub has_mut_interior: bool,
     pub needs_drop: bool,
+    pub custom_eq: bool,
 }
 
 /// After we borrow check a closure, we are left with various
@@ -166,7 +179,7 @@ pub struct ClosureOutlivesRequirement<'tcx> {
 /// are interesting (for error reporting). Order of variants indicates sort
 /// order of the category, thereby influencing diagnostic output.
 ///
-/// See also [rustc_mir::borrow_check::nll::constraints].
+/// See also `rustc_mir::borrow_check::constraints`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
 #[derive(RustcEncodable, RustcDecodable, HashStable)]
 pub enum ConstraintCategory {

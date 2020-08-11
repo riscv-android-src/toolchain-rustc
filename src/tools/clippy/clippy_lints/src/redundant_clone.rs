@@ -1,6 +1,6 @@
 use crate::utils::{
-    fn_has_unsatisfiable_preds, has_drop, is_copy, match_def_path, match_type, paths, snippet_opt, span_lint_hir,
-    span_lint_hir_and_then, walk_ptrs_ty_depth,
+    fn_has_unsatisfiable_preds, has_drop, is_copy, is_type_diagnostic_item, match_def_path, match_type, paths,
+    snippet_opt, span_lint_hir, span_lint_hir_and_then, walk_ptrs_ty_depth,
 };
 use if_chain::if_chain;
 use rustc_data_structures::{fx::FxHashMap, transitive_relation::TransitiveRelation};
@@ -85,7 +85,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
         }
 
         let mir = cx.tcx.optimized_mir(def_id.to_def_id());
-        let mir_read_only = mir.unwrap_read_only();
 
         let maybe_storage_live_result = MaybeStorageLive
             .into_engine(cx.tcx, mir, def_id.to_def_id())
@@ -93,7 +92,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
             .into_results_cursor(mir);
         let mut possible_borrower = {
             let mut vis = PossibleBorrowerVisitor::new(cx, mir);
-            vis.visit_body(&mir_read_only);
+            vis.visit_body(&mir);
             vis.into_map(cx, maybe_storage_live_result)
         };
 
@@ -114,7 +113,8 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
 
             let from_borrow = match_def_path(cx, fn_def_id, &paths::CLONE_TRAIT_METHOD)
                 || match_def_path(cx, fn_def_id, &paths::TO_OWNED_METHOD)
-                || (match_def_path(cx, fn_def_id, &paths::TO_STRING_METHOD) && match_type(cx, arg_ty, &paths::STRING));
+                || (match_def_path(cx, fn_def_id, &paths::TO_STRING_METHOD)
+                    && is_type_diagnostic_item(cx, arg_ty, sym!(string_type)));
 
             let from_deref = !from_borrow
                 && (match_def_path(cx, fn_def_id, &paths::PATH_TO_PATH_BUF)
@@ -146,7 +146,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
                 // `arg` is a reference as it is `.deref()`ed in the previous block.
                 // Look into the predecessor block and find out the source of deref.
 
-                let ps = mir_read_only.predecessors_for(bb);
+                let ps = &mir.predecessors()[bb];
                 if ps.len() != 1 {
                     continue;
                 }
@@ -191,7 +191,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for RedundantClone {
                 (local, deref_clone_ret)
             };
 
-            let is_temp = mir_read_only.local_kind(ret_local) == mir::LocalKind::Temp;
+            let is_temp = mir.local_kind(ret_local) == mir::LocalKind::Temp;
 
             // 1. `local` can be moved out if it is not used later.
             // 2. If `ret_local` is a temporary and is neither consumed nor mutated, we can remove this `clone`
@@ -591,7 +591,7 @@ struct PossibleBorrowerMap<'a, 'tcx> {
 impl PossibleBorrowerMap<'_, '_> {
     /// Returns true if the set of borrowers of `borrowed` living at `at` matches with `borrowers`.
     fn only_borrowers(&mut self, borrowers: &[mir::Local], borrowed: mir::Local, at: mir::Location) -> bool {
-        self.maybe_live.seek_after(at);
+        self.maybe_live.seek_after_primary_effect(at);
 
         self.bitset.0.clear();
         let maybe_live = &mut self.maybe_live;

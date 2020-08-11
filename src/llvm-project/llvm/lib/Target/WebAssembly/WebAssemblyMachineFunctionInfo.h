@@ -60,8 +60,7 @@ class WebAssemblyFunctionInfo final : public MachineFunctionInfo {
   bool CFGStackified = false;
 
 public:
-  explicit WebAssemblyFunctionInfo(MachineFunction &MF)
-      : MF(MF), SPVReg(WebAssembly::NoRegister), SPLocal(-1) {}
+  explicit WebAssemblyFunctionInfo(MachineFunction &MF) : MF(MF) {}
   ~WebAssemblyFunctionInfo() override;
   void initializeBaseYamlFields(const yaml::WebAssemblyFunctionInfo &YamlMFI);
 
@@ -97,13 +96,18 @@ public:
 
   void stackifyVReg(unsigned VReg) {
     assert(MF.getRegInfo().getUniqueVRegDef(VReg));
-    auto I = TargetRegisterInfo::virtReg2Index(VReg);
+    auto I = Register::virtReg2Index(VReg);
     if (I >= VRegStackified.size())
       VRegStackified.resize(I + 1);
     VRegStackified.set(I);
   }
+  void unstackifyVReg(unsigned VReg) {
+    auto I = Register::virtReg2Index(VReg);
+    if (I < VRegStackified.size())
+      VRegStackified.reset(I);
+  }
   bool isVRegStackified(unsigned VReg) const {
-    auto I = TargetRegisterInfo::virtReg2Index(VReg);
+    auto I = Register::virtReg2Index(VReg);
     if (I >= VRegStackified.size())
       return false;
     return VRegStackified.test(I);
@@ -112,12 +116,12 @@ public:
   void initWARegs();
   void setWAReg(unsigned VReg, unsigned WAReg) {
     assert(WAReg != UnusedReg);
-    auto I = TargetRegisterInfo::virtReg2Index(VReg);
+    auto I = Register::virtReg2Index(VReg);
     assert(I < WARegs.size());
     WARegs[I] = WAReg;
   }
   unsigned getWAReg(unsigned VReg) const {
-    auto I = TargetRegisterInfo::virtReg2Index(VReg);
+    auto I = Register::virtReg2Index(VReg);
     assert(I < WARegs.size());
     return WARegs[I];
   }
@@ -130,9 +134,6 @@ public:
 
   bool isCFGStackified() const { return CFGStackified; }
   void setCFGStackified(bool Value = true) { CFGStackified = Value; }
-
-  unsigned SPVReg;
-  unsigned SPLocal;
 };
 
 void computeLegalValueVTs(const Function &F, const TargetMachine &TM, Type *Ty,

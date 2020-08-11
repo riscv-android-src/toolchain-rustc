@@ -1,4 +1,4 @@
-use crate::core::compiler::{CompileKind, CompileTarget, RustcTargetData};
+use crate::core::compiler::{CompileKind, RustcTargetData};
 use crate::core::dependency::DepKind;
 use crate::core::resolver::{HasDevUnits, Resolve, ResolveOpts};
 use crate::core::{Dependency, InternedString, Package, PackageId, Workspace};
@@ -17,7 +17,7 @@ pub struct OutputMetadataOptions {
     pub all_features: bool,
     pub no_deps: bool,
     pub version: u32,
-    pub filter_platform: Option<String>,
+    pub filter_platforms: Vec<String>,
 }
 
 /// Loads the manifest, resolves the dependencies of the package to the concrete
@@ -105,11 +105,9 @@ fn build_resolve_graph(
 ) -> CargoResult<(Vec<Package>, MetadataResolve)> {
     // TODO: Without --filter-platform, features are being resolved for `host` only.
     // How should this work?
-    let requested_kind = match &metadata_opts.filter_platform {
-        Some(t) => CompileKind::Target(CompileTarget::new(t)?),
-        None => CompileKind::Host,
-    };
-    let target_data = RustcTargetData::new(ws, requested_kind)?;
+    let requested_kinds =
+        CompileKind::from_requested_targets(ws.config(), &metadata_opts.filter_platforms)?;
+    let target_data = RustcTargetData::new(ws, &requested_kinds)?;
     // Resolve entire workspace.
     let specs = Packages::All.to_package_id_specs(ws)?;
     let resolve_opts = ResolveOpts::new(
@@ -121,10 +119,11 @@ fn build_resolve_graph(
     let ws_resolve = ops::resolve_ws_with_opts(
         ws,
         &target_data,
-        requested_kind,
+        &requested_kinds,
         &resolve_opts,
         &specs,
         HasDevUnits::Yes,
+        crate::core::resolver::features::ForceAllTargets::No,
     )?;
     // Download all Packages. This is needed to serialize the information
     // for every package. In theory this could honor target filtering,
@@ -133,7 +132,8 @@ fn build_resolve_graph(
         .pkg_set
         .get_many(ws_resolve.pkg_set.package_ids())?
         .into_iter()
-        .map(|pkg| (pkg.package_id(), pkg.clone()))
+        // This is a little lazy, but serde doesn't handle Rc fields very well.
+        .map(|pkg| (pkg.package_id(), Package::clone(pkg)))
         .collect();
 
     // Start from the workspace roots, and recurse through filling out the
@@ -146,7 +146,7 @@ fn build_resolve_graph(
             &ws_resolve.targeted_resolve,
             &package_map,
             &target_data,
-            requested_kind,
+            &requested_kinds,
         );
     }
     // Get a Vec of Packages.
@@ -167,7 +167,7 @@ fn build_resolve_graph_r(
     resolve: &Resolve,
     package_map: &HashMap<PackageId, Package>,
     target_data: &RustcTargetData,
-    requested_kind: CompileKind,
+    requested_kinds: &[CompileKind],
 ) {
     if node_map.contains_key(&pkg_id) {
         return;
@@ -176,12 +176,15 @@ fn build_resolve_graph_r(
 
     let deps: Vec<Dep> = resolve
         .deps(pkg_id)
-        .filter(|(_dep_id, deps)| match requested_kind {
-            CompileKind::Target(_) => deps
-                .iter()
-                .any(|dep| target_data.dep_platform_activated(dep, requested_kind)),
-            // No --filter-platform is interpreted as "all platforms".
-            CompileKind::Host => true,
+        .filter(|(_dep_id, deps)| {
+            if requested_kinds == [CompileKind::Host] {
+                true
+            } else {
+                requested_kinds.iter().any(|kind| {
+                    deps.iter()
+                        .any(|dep| target_data.dep_platform_activated(dep, *kind))
+                })
+            }
         })
         .filter_map(|(dep_id, deps)| {
             let dep_kinds: Vec<_> = deps.iter().map(DepKindInfo::from).collect();
@@ -212,7 +215,7 @@ fn build_resolve_graph_r(
             resolve,
             package_map,
             target_data,
-            requested_kind,
+            requested_kinds,
         );
     }
 }

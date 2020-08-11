@@ -30,9 +30,11 @@ use crate::hashmap::HashMap;
 use crate::nodes::btree::{BTreeValue, Insert, Node, Remove};
 #[cfg(has_specialisation)]
 use crate::util::linear_search_by;
-use crate::util::Ref;
+use crate::util::{Pool, PoolRef};
 
-pub use crate::nodes::btree::{ConsumingIter, DiffItem, DiffIter, Iter as RangedIter};
+pub use crate::nodes::btree::{
+    ConsumingIter, DiffItem as NodeDiffItem, DiffIter as NodeDiffIter, Iter as RangedIter,
+};
 
 /// Construct a map from a sequence of key/value pairs.
 ///
@@ -146,6 +148,8 @@ impl<K: Ord + Copy, V> BTreeValue for (K, V) {
     }
 }
 
+def_pool!(OrdMapPool<K, V>, Node<(K, V)>);
+
 /// An ordered map.
 ///
 /// An immutable ordered map implemented as a B-tree.
@@ -161,16 +165,32 @@ impl<K: Ord + Copy, V> BTreeValue for (K, V) {
 /// [std::cmp::Ord]: https://doc.rust-lang.org/std/cmp/trait.Ord.html
 pub struct OrdMap<K, V> {
     size: usize,
-    root: Ref<Node<(K, V)>>,
+    pool: OrdMapPool<K, V>,
+    root: PoolRef<Node<(K, V)>>,
 }
 
 impl<K, V> OrdMap<K, V> {
     /// Construct an empty map.
     #[must_use]
     pub fn new() -> Self {
+        let pool = OrdMapPool::default();
+        let root = PoolRef::default(&pool.0);
         OrdMap {
             size: 0,
-            root: Ref::from(Node::new()),
+            pool,
+            root,
+        }
+    }
+
+    /// Construct an empty map using a specific memory pool.
+    #[cfg(feature = "pool")]
+    #[must_use]
+    pub fn with_pool(pool: &OrdMapPool<K, V>) -> Self {
+        let root = PoolRef::default(&pool.0);
+        OrdMap {
+            size: 0,
+            pool: pool.clone(),
+            root,
         }
     }
 
@@ -181,20 +201,21 @@ impl<K, V> OrdMap<K, V> {
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map = OrdMap::unit(123, "onetwothree");
     /// assert_eq!(
     ///   map.get(&123),
     ///   Some(&"onetwothree")
     /// );
-    /// # }
     /// ```
     #[inline]
     #[must_use]
     pub fn unit(key: K, value: V) -> Self {
+        let pool = OrdMapPool::default();
+        let root = PoolRef::new(&pool.0, Node::unit((key, value)));
         OrdMap {
             size: 1,
-            root: Ref::from(Node::unit((key, value))),
+            pool,
+            root,
         }
     }
 
@@ -207,19 +228,30 @@ impl<K, V> OrdMap<K, V> {
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// assert!(
     ///   !ordmap!{1 => 2}.is_empty()
     /// );
     /// assert!(
     ///   OrdMap::<i32, i32>::new().is_empty()
     /// );
-    /// # }
     /// ```
     #[inline]
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Test whether two maps refer to the same content in memory.
+    ///
+    /// This is true if the two sides are references to the same map,
+    /// or if the two maps refer to the same root node.
+    ///
+    /// This would return true if you're comparing a map to itself, or
+    /// if you're comparing a map to a fresh clone of itself.
+    ///
+    /// Time: O(1)
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other) || PoolRef::ptr_eq(&self.root, &other.root)
     }
 
     /// Get the size of a map.
@@ -231,18 +263,25 @@ impl<K, V> OrdMap<K, V> {
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// assert_eq!(3, ordmap!{
     ///   1 => 11,
     ///   2 => 22,
     ///   3 => 33
     /// }.len());
-    /// # }
     /// ```
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.size
+    }
+
+    /// Get a reference to the memory pool used by this map.
+    ///
+    /// Note that if you didn't specifically construct it with a pool, you'll
+    /// get back a reference to a pool of size 0.
+    #[cfg(feature = "pool")]
+    pub fn pool(&self) -> &OrdMapPool<K, V> {
+        &self.pool
     }
 
     /// Discard all elements from the map.
@@ -257,15 +296,13 @@ impl<K, V> OrdMap<K, V> {
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::OrdMap;
-    /// # fn main() {
     /// let mut map = ordmap![1=>1, 2=>2, 3=>3];
     /// map.clear();
     /// assert!(map.is_empty());
-    /// # }
     /// ```
     pub fn clear(&mut self) {
         if !self.is_empty() {
-            self.root = Default::default();
+            self.root = PoolRef::default(&self.pool.0);
             self.size = 0;
         }
     }
@@ -285,13 +322,11 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// assert_eq!(Some(&(3, 33)), ordmap!{
     ///   1 => 11,
     ///   2 => 22,
     ///   3 => 33
     /// }.get_max());
-    /// # }
     /// ```
     #[must_use]
     pub fn get_max(&self) -> Option<&(K, V)> {
@@ -308,13 +343,11 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// assert_eq!(Some(&(1, 11)), ordmap!{
     ///   1 => 11,
     ///   2 => 22,
     ///   3 => 33
     /// }.get_min());
-    /// # }
     /// ```
     #[must_use]
     pub fn get_min(&self) -> Option<&(K, V)> {
@@ -323,21 +356,23 @@ where
 
     /// Get an iterator over the key/value pairs of a map.
     #[must_use]
-    pub fn iter(&self) -> Iter<(K, V)> {
+    pub fn iter(&self) -> Iter<'_, K, V> {
         Iter {
             it: RangedIter::new(&self.root, self.size, ..),
         }
     }
 
-    // Create an iterator over a range of key/value pairs.
+    /// Create an iterator over a range of key/value pairs.
     #[must_use]
-    pub fn range<R, BK>(&self, range: R) -> RangedIter<(K, V)>
+    pub fn range<R, BK>(&self, range: R) -> Iter<'_, K, V>
     where
         R: RangeBounds<BK>,
         K: Borrow<BK>,
         BK: Ord + ?Sized,
     {
-        RangedIter::new(&self.root, self.size, range)
+        Iter {
+            it: RangedIter::new(&self.root, self.size, range),
+        }
     }
 
     /// Get an iterator over a map's keys.
@@ -364,8 +399,10 @@ where
     /// the two maps, minus the number of elements belonging to nodes
     /// shared between them)
     #[must_use]
-    pub fn diff<'a>(&'a self, other: &'a Self) -> DiffIter<'a, (K, V)> {
-        DiffIter::new(&self.root, &other.root)
+    pub fn diff<'a>(&'a self, other: &'a Self) -> DiffIter<'a, K, V> {
+        DiffIter {
+            it: NodeDiffIter::new(&self.root, &other.root),
+        }
     }
 
     /// Get the value for a key from a map.
@@ -377,13 +414,11 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map = ordmap!{123 => "lol"};
     /// assert_eq!(
     ///   map.get(&123),
     ///   Some(&"lol")
     /// );
-    /// # }
     /// ```
     #[must_use]
     pub fn get<BK>(&self, key: &BK) -> Option<&V>
@@ -392,6 +427,80 @@ where
         K: Borrow<BK>,
     {
         self.root.lookup(key).map(|(_, v)| v)
+    }
+
+    /// Get the key/value pair for a key from a map.
+    ///
+    /// Time: O(log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordmap::OrdMap;
+    /// let map = ordmap!{123 => "lol"};
+    /// assert_eq!(
+    ///   map.get_key_value(&123),
+    ///   Some((&123, &"lol"))
+    /// );
+    /// ```
+    #[must_use]
+    pub fn get_key_value<BK>(&self, key: &BK) -> Option<(&K, &V)>
+    where
+        BK: Ord + ?Sized,
+        K: Borrow<BK>,
+    {
+        self.root.lookup(key).map(|&(ref k, ref v)| (k, v))
+    }
+
+    /// Get the closest smaller entry in a map to a given key
+    /// as a mutable reference.
+    ///
+    /// If the map contains the given key, this is returned.
+    /// Otherwise, the closest key in the map smaller than the
+    /// given value is returned. If the smallest key in the map
+    /// is larger than the given key, `None` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::OrdMap;
+    /// let map = ordmap![1 => 1, 3 => 3, 5 => 5];
+    /// assert_eq!(Some((&3, &3)), map.get_prev(&4));
+    /// ```
+    #[must_use]
+    pub fn get_prev<BK>(&self, key: &BK) -> Option<(&K, &V)>
+    where
+        BK: Ord + ?Sized,
+        K: Borrow<BK>,
+    {
+        self.root.lookup_prev(key).map(|(k, v)| (k, v))
+    }
+
+    /// Get the closest larger entry in a map to a given key
+    /// as a mutable reference.
+    ///
+    /// If the set contains the given value, this is returned.
+    /// Otherwise, the closest value in the set larger than the
+    /// given value is returned. If the largest value in the set
+    /// is smaller than the given value, `None` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::OrdMap;
+    /// let map = ordmap![1 => 1, 3 => 3, 5 => 5];
+    /// assert_eq!(Some((&5, &5)), map.get_next(&4));
+    /// ```
+    #[must_use]
+    pub fn get_next<BK>(&self, key: &BK) -> Option<(&K, &V)>
+    where
+        BK: Ord + ?Sized,
+        K: Borrow<BK>,
+    {
+        self.root.lookup_next(key).map(|(k, v)| (k, v))
     }
 
     /// Test for the presence of a key in a map.
@@ -403,7 +512,6 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map = ordmap!{123 => "lol"};
     /// assert!(
     ///   map.contains_key(&123)
@@ -411,7 +519,6 @@ where
     /// assert!(
     ///   !map.contains_key(&321)
     /// );
-    /// # }
     /// ```
     #[must_use]
     pub fn contains_key<BK>(&self, k: &BK) -> bool
@@ -467,11 +574,9 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 2 => 2};
     /// let map2 = ordmap!{1 => 1, 2 => 2, 3 => 3};
     /// assert!(map1.is_submap(map2));
-    /// # }
     /// ```
     #[must_use]
     pub fn is_submap<RM>(&self, other: RM) -> bool
@@ -494,7 +599,6 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 2 => 2};
     /// let map2 = ordmap!{1 => 1, 2 => 2, 3 => 3};
     /// assert!(map1.is_proper_submap(map2));
@@ -502,7 +606,6 @@ where
     /// let map3 = ordmap!{1 => 1, 2 => 2};
     /// let map4 = ordmap!{1 => 1, 2 => 2};
     /// assert!(!map3.is_proper_submap(map4));
-    /// # }
     /// ```
     #[must_use]
     pub fn is_proper_submap<RM>(&self, other: RM) -> bool
@@ -519,14 +622,94 @@ where
     K: Ord + Clone,
     V: Clone,
 {
+    /// Get a mutable reference to the value for a key from a map.
+    ///
+    /// Time: O(log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::ordmap::OrdMap;
+    /// let mut map = ordmap!{123 => "lol"};
+    /// if let Some(value) = map.get_mut(&123) {
+    ///     *value = "omg";
+    /// }
+    /// assert_eq!(
+    ///   map.get(&123),
+    ///   Some(&"omg")
+    /// );
+    /// ```
     #[must_use]
-    fn get_mut<BK>(&mut self, key: &BK) -> Option<&mut V>
+    pub fn get_mut<BK>(&mut self, key: &BK) -> Option<&mut V>
     where
         BK: Ord + ?Sized,
         K: Borrow<BK>,
     {
-        let root = Ref::make_mut(&mut self.root);
-        root.lookup_mut(key).map(|(_, v)| v)
+        let root = PoolRef::make_mut(&self.pool.0, &mut self.root);
+        root.lookup_mut(&self.pool.0, key).map(|(_, v)| v)
+    }
+
+    /// Get the closest smaller entry in a map to a given key
+    /// as a mutable reference.
+    ///
+    /// If the map contains the given key, this is returned.
+    /// Otherwise, the closest key in the map smaller than the
+    /// given value is returned. If the smallest key in the map
+    /// is larger than the given key, `None` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::OrdMap;
+    /// let mut map = ordmap![1 => 1, 3 => 3, 5 => 5];
+    /// if let Some((key, value)) = map.get_prev_mut(&4) {
+    ///     *value = 4;
+    /// }
+    /// assert_eq!(ordmap![1 => 1, 3 => 4, 5 => 5], map);
+    /// ```
+    #[must_use]
+    pub fn get_prev_mut<BK>(&mut self, key: &BK) -> Option<(&K, &mut V)>
+    where
+        BK: Ord + ?Sized,
+        K: Borrow<BK>,
+    {
+        let pool = &self.pool.0;
+        PoolRef::make_mut(pool, &mut self.root)
+            .lookup_prev_mut(pool, key)
+            .map(|(ref k, ref mut v)| (k, v))
+    }
+
+    /// Get the closest larger entry in a map to a given key
+    /// as a mutable reference.
+    ///
+    /// If the set contains the given value, this is returned.
+    /// Otherwise, the closest value in the set larger than the
+    /// given value is returned. If the largest value in the set
+    /// is smaller than the given value, `None` is returned.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::OrdMap;
+    /// let mut map = ordmap![1 => 1, 3 => 3, 5 => 5];
+    /// if let Some((key, value)) = map.get_next_mut(&4) {
+    ///     *value = 4;
+    /// }
+    /// assert_eq!(ordmap![1 => 1, 3 => 3, 5 => 4], map);
+    /// ```
+    #[must_use]
+    pub fn get_next_mut<BK>(&mut self, key: &BK) -> Option<(&K, &mut V)>
+    where
+        BK: Ord + ?Sized,
+        K: Borrow<BK>,
+    {
+        let pool = &self.pool.0;
+        PoolRef::make_mut(pool, &mut self.root)
+            .lookup_next_mut(pool, key)
+            .map(|(ref k, ref mut v)| (k, v))
     }
 
     /// Insert a key/value mapping into a map.
@@ -545,7 +728,6 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let mut map = ordmap!{};
     /// map.insert(123, "123");
     /// map.insert(456, "456");
@@ -553,24 +735,23 @@ where
     ///   map,
     ///   ordmap!{123 => "123", 456 => "456"}
     /// );
-    /// # }
     /// ```
     ///
     /// [insert]: #method.insert
     #[inline]
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         let new_root = {
-            let root = Ref::make_mut(&mut self.root);
-            match root.insert((key, value)) {
+            let root = PoolRef::make_mut(&self.pool.0, &mut self.root);
+            match root.insert(&self.pool.0, (key, value)) {
                 Insert::Replaced((_, old_value)) => return Some(old_value),
                 Insert::Added => {
                     self.size += 1;
                     return None;
                 }
-                Insert::Update(root) => Ref::from(root),
-                Insert::Split(left, median, right) => {
-                    Ref::from(Node::new_from_split(left, median, right))
-                }
+                Insert::Split(left, median, right) => PoolRef::new(
+                    &self.pool.0,
+                    Node::new_from_split(&self.pool.0, left, median, right),
+                ),
             }
         };
         self.size += 1;
@@ -587,12 +768,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let mut map = ordmap!{123 => "123", 456 => "456"};
     /// map.remove(&123);
     /// map.remove(&456);
     /// assert!(map.is_empty());
-    /// # }
     /// ```
     ///
     /// [remove]: #method.remove
@@ -615,14 +794,14 @@ where
         K: Borrow<BK>,
     {
         let (new_root, removed_value) = {
-            let root = Ref::make_mut(&mut self.root);
-            match root.remove(k) {
+            let root = PoolRef::make_mut(&self.pool.0, &mut self.root);
+            match root.remove(&self.pool.0, k) {
                 Remove::NoChange => return None,
                 Remove::Removed(pair) => {
                     self.size -= 1;
                     return Some(pair);
                 }
-                Remove::Update(pair, root) => (Ref::from(root), Some(pair)),
+                Remove::Update(pair, root) => (PoolRef::new(&self.pool.0, root), Some(pair)),
             }
         };
         self.size -= 1;
@@ -643,13 +822,11 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map = ordmap!{};
     /// assert_eq!(
     ///   map.update(123, "123"),
     ///   ordmap!{123 => "123"}
     /// );
-    /// # }
     /// ```
     #[must_use]
     pub fn update(&self, key: K, value: V) -> Self {
@@ -797,12 +974,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 3};
     /// let map2 = ordmap!{2 => 2, 3 => 4};
     /// let expected = ordmap!{1 => 1, 2 => 2, 3 => 3};
     /// assert_eq!(expected, map1.union(map2));
-    /// # }
     /// ```
     #[inline]
     #[must_use]
@@ -847,7 +1022,6 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 4};
     /// let map2 = ordmap!{2 => 2, 3 => 5};
     /// let expected = ordmap!{1 => 1, 2 => 2, 3 => 9};
@@ -855,7 +1029,6 @@ where
     ///     map2,
     ///     |key, left, right| left + right
     /// ));
-    /// # }
     /// ```
     #[must_use]
     pub fn union_with_key<F>(mut self, other: Self, mut f: F) -> Self
@@ -886,12 +1059,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 3};
     /// let map2 = ordmap!{2 => 2};
     /// let expected = ordmap!{1 => 1, 2 => 2, 3 => 3};
     /// assert_eq!(expected, OrdMap::unions(vec![map1, map2]));
-    /// # }
     /// ```
     #[must_use]
     pub fn unions<I>(i: I) -> Self
@@ -955,12 +1126,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 4};
     /// let map2 = ordmap!{2 => 2, 3 => 5};
     /// let expected = ordmap!{1 => 1, 2 => 2};
     /// assert_eq!(expected, map1.difference(map2));
-    /// # }
     /// ```
     ///
     /// [symmetric_difference]: #method.symmetric_difference
@@ -980,12 +1149,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 4};
     /// let map2 = ordmap!{2 => 2, 3 => 5};
     /// let expected = ordmap!{1 => 1, 2 => 2};
     /// assert_eq!(expected, map1.symmetric_difference(map2));
-    /// # }
     /// ```
     #[inline]
     #[must_use]
@@ -1039,7 +1206,6 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 4};
     /// let map2 = ordmap!{2 => 2, 3 => 5};
     /// let expected = ordmap!{1 => 1, 2 => 2, 3 => 9};
@@ -1047,7 +1213,6 @@ where
     ///     map2,
     ///     |key, left, right| Some(left + right)
     /// ));
-    /// # }
     /// ```
     /// [symmetric_difference_with_key]: #method.symmetric_difference_with_key
     #[must_use]
@@ -1069,7 +1234,6 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 4};
     /// let map2 = ordmap!{2 => 2, 3 => 5};
     /// let expected = ordmap!{1 => 1, 2 => 2, 3 => 9};
@@ -1077,7 +1241,6 @@ where
     ///     map2,
     ///     |key, left, right| Some(left + right)
     /// ));
-    /// # }
     /// ```
     #[must_use]
     pub fn symmetric_difference_with_key<F>(mut self, other: Self, mut f: F) -> Self
@@ -1110,12 +1273,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 3 => 4};
     /// let map2 = ordmap!{2 => 2, 3 => 5};
     /// let expected = ordmap!{1 => 1};
     /// assert_eq!(expected, map1.relative_complement(map2));
-    /// # }
     /// ```
     #[inline]
     #[must_use]
@@ -1136,12 +1297,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 2 => 2};
     /// let map2 = ordmap!{2 => 3, 3 => 4};
     /// let expected = ordmap!{2 => 2};
     /// assert_eq!(expected, map1.intersection(map2));
-    /// # }
     /// ```
     #[inline]
     #[must_use]
@@ -1176,7 +1335,6 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordmap::OrdMap;
-    /// # fn main() {
     /// let map1 = ordmap!{1 => 1, 2 => 2};
     /// let map2 = ordmap!{2 => 3, 3 => 4};
     /// let expected = ordmap!{2 => 5};
@@ -1184,7 +1342,6 @@ where
     ///     map2,
     ///     |key, left, right| left + right
     /// ));
-    /// # }
     /// ```
     #[must_use]
     pub fn intersection_with_key<B, C, F>(mut self, other: OrdMap<K, B>, mut f: F) -> OrdMap<K, C>
@@ -1247,14 +1404,20 @@ where
     /// map.
     #[must_use]
     pub fn take(&self, n: usize) -> Self {
-        self.iter().take(n).cloned().collect()
+        self.iter()
+            .take(n)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// Construct a map with the `n` smallest keys removed from a
     /// given map.
     #[must_use]
     pub fn skip(&self, n: usize) -> Self {
-        self.iter().skip(n).cloned().collect()
+        self.iter()
+            .skip(n)
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// Remove the smallest key from a map, and return its value as
@@ -1319,17 +1482,19 @@ where
 /// A handle for a key and its associated value.
 pub enum Entry<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: Ord + Clone,
+    V: Clone,
 {
+    /// An entry which exists in the map.
     Occupied(OccupiedEntry<'a, K, V>),
+    /// An entry which doesn't exist in the map.
     Vacant(VacantEntry<'a, K, V>),
 }
 
 impl<'a, K, V> Entry<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: Ord + Clone,
+    V: Clone,
 {
     /// Insert the default value provided if there was no value
     /// already, and return a mutable reference to the value.
@@ -1385,8 +1550,8 @@ where
 /// An entry for a mapping that already exists in the map.
 pub struct OccupiedEntry<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: Ord + Clone,
+    V: Clone,
 {
     map: &'a mut OrdMap<K, V>,
     key: K,
@@ -1442,8 +1607,8 @@ where
 /// An entry for a mapping that does not already exist in the map.
 pub struct VacantEntry<'a, K, V>
 where
-    K: 'a + Ord + Clone,
-    V: 'a + Clone,
+    K: Ord + Clone,
+    V: Clone,
 {
     map: &'a mut OrdMap<K, V>,
     key: K,
@@ -1477,9 +1642,14 @@ where
 // Core traits
 
 impl<K, V> Clone for OrdMap<K, V> {
+    /// Clone a map.
+    ///
+    /// Time: O(1)
+    #[inline]
     fn clone(&self) -> Self {
         OrdMap {
             size: self.size,
+            pool: self.pool.clone(),
             root: self.root.clone(),
         }
     }
@@ -1514,7 +1684,7 @@ where
     V: Eq,
 {
     fn eq(&self, other: &Self) -> bool {
-        Ref::ptr_eq(&self.root, &other.root)
+        PoolRef::ptr_eq(&self.root, &other.root)
             || (self.len() == other.len() && self.diff(other).next().is_none())
     }
 }
@@ -1636,8 +1806,8 @@ where
     V: Clone,
 {
     fn index_mut(&mut self, key: &BK) -> &mut Self::Output {
-        let root = Ref::make_mut(&mut self.root);
-        match root.lookup_mut(key) {
+        let root = PoolRef::make_mut(&self.pool.0, &mut self.root);
+        match root.lookup_mut(&self.pool.0, key) {
             None => panic!("OrdMap::index: invalid key"),
             Some(&mut (_, ref mut value)) => value,
         }
@@ -1649,9 +1819,9 @@ where
     K: Ord + Debug,
     V: Debug,
 {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         let mut d = f.debug_map();
-        for (k, v) in self {
+        for (k, v) in self.iter() {
             d.entry(k, v);
         }
         d.finish()
@@ -1660,18 +1830,19 @@ where
 
 // Iterators
 
-pub struct Iter<'a, A: 'a> {
-    it: RangedIter<'a, A>,
+/// An iterator over the key/value pairs of a map.
+pub struct Iter<'a, K, V> {
+    it: RangedIter<'a, (K, V)>,
 }
 
-impl<'a, A> Iterator for Iter<'a, A>
+impl<'a, K, V> Iterator for Iter<'a, K, V>
 where
-    A: 'a + BTreeValue,
+    (K, V): 'a + BTreeValue,
 {
-    type Item = &'a A;
+    type Item = (&'a K, &'a V);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.it.next()
+        self.it.next().map(|(k, v)| (k, v))
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1679,19 +1850,62 @@ where
     }
 }
 
-impl<'a, A> DoubleEndedIterator for Iter<'a, A>
+impl<'a, K, V> DoubleEndedIterator for Iter<'a, K, V>
 where
-    A: 'a + BTreeValue,
+    (K, V): 'a + BTreeValue,
 {
     fn next_back(&mut self) -> Option<Self::Item> {
-        self.it.next_back()
+        self.it.next_back().map(|(k, v)| (k, v))
     }
 }
 
-impl<'a, A> ExactSizeIterator for Iter<'a, A> where A: 'a + BTreeValue {}
+impl<'a, K, V> ExactSizeIterator for Iter<'a, K, V> where (K, V): 'a + BTreeValue {}
 
-pub struct Keys<'a, K: 'a, V: 'a> {
-    it: Iter<'a, (K, V)>,
+/// An iterator over the differences between two maps.
+pub struct DiffIter<'a, K, V> {
+    it: NodeDiffIter<'a, (K, V)>,
+}
+
+/// A description of a difference between two ordered maps.
+#[derive(PartialEq, Eq, Debug)]
+pub enum DiffItem<'a, K, V> {
+    /// This value has been added to the new map.
+    Add(&'a K, &'a V),
+    /// This value has been changed between the two maps.
+    Update {
+        /// The old value.
+        old: (&'a K, &'a V),
+        /// The new value.
+        new: (&'a K, &'a V),
+    },
+    /// This value has been removed from the new map.
+    Remove(&'a K, &'a V),
+}
+
+impl<'a, K, V> Iterator for DiffIter<'a, K, V>
+where
+    (K, V): 'a + BTreeValue + PartialEq,
+{
+    type Item = DiffItem<'a, K, V>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.it.next().map(|item| match item {
+            NodeDiffItem::Add((k, v)) => DiffItem::Add(k, v),
+            NodeDiffItem::Update {
+                old: (oldk, oldv),
+                new: (newk, newv),
+            } => DiffItem::Update {
+                old: (oldk, oldv),
+                new: (newk, newv),
+            },
+            NodeDiffItem::Remove((k, v)) => DiffItem::Remove(k, v),
+        })
+    }
+}
+
+/// An iterator ove the keys of a map.
+pub struct Keys<'a, K, V> {
+    it: Iter<'a, K, V>,
 }
 
 impl<'a, K, V> Iterator for Keys<'a, K, V>
@@ -1702,10 +1916,7 @@ where
     type Item = &'a K;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.it.next() {
-            None => None,
-            Some((k, _)) => Some(k),
-        }
+        self.it.next().map(|(k, _)| k)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1733,8 +1944,9 @@ where
 {
 }
 
-pub struct Values<'a, K: 'a, V: 'a> {
-    it: Iter<'a, (K, V)>,
+/// An iterator over the values of a map.
+pub struct Values<'a, K, V> {
+    it: Iter<'a, K, V>,
 }
 
 impl<'a, K, V> Iterator for Values<'a, K, V>
@@ -1745,10 +1957,7 @@ where
     type Item = &'a V;
 
     fn next(&mut self) -> Option<Self::Item> {
-        match self.it.next() {
-            None => None,
-            Some((_, v)) => Some(v),
-        }
+        self.it.next().map(|(_, v)| v)
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -1797,8 +2006,8 @@ impl<'a, K, V> IntoIterator for &'a OrdMap<K, V>
 where
     K: Ord,
 {
-    type Item = &'a (K, V);
-    type IntoIter = Iter<'a, (K, V)>;
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
@@ -1944,68 +2153,27 @@ impl<'a, K: Ord + Hash + Eq + Clone, V: Clone, S: BuildHasher> From<&'a HashMap<
     for OrdMap<K, V>
 {
     fn from(m: &'a HashMap<K, V, S>) -> Self {
-        m.iter().cloned().collect()
-    }
-}
-
-// QuickCheck
-
-#[cfg(all(threadsafe, feature = "quickcheck"))]
-use quickcheck::{Arbitrary, Gen};
-
-#[cfg(all(threadsafe, feature = "quickcheck"))]
-impl<K: Ord + Clone + Arbitrary + Sync, V: Clone + Arbitrary + Sync> Arbitrary for OrdMap<K, V> {
-    fn arbitrary<G: Gen>(g: &mut G) -> Self {
-        OrdMap::from_iter(Vec::<(K, V)>::arbitrary(g))
+        m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
     }
 }
 
 // Proptest
-
 #[cfg(any(test, feature = "proptest"))]
+#[doc(hidden)]
 pub mod proptest {
-    use super::*;
-    use ::proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
-    use std::ops::Range;
-
-    /// A strategy for a map of a given size.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// proptest! {
-    ///     #[test]
-    ///     fn proptest_works(ref m in map(0..9999, ".*", 10..100)) {
-    ///         assert!(m.len() < 100);
-    ///         assert!(m.len() >= 10);
-    ///     }
-    /// }
-    /// ```
-    pub fn ord_map<K: Strategy + 'static, V: Strategy + 'static>(
-        key: K,
-        value: V,
-        size: Range<usize>,
-    ) -> BoxedStrategy<OrdMap<<K::Tree as ValueTree>::Value, <V::Tree as ValueTree>::Value>>
-    where
-        <K::Tree as ValueTree>::Value: Ord + Clone,
-        <V::Tree as ValueTree>::Value: Clone,
-    {
-        ::proptest::collection::vec((key, value), size.clone())
-            .prop_map(OrdMap::from)
-            .prop_filter("OrdMap minimum size".to_owned(), move |m| {
-                m.len() >= size.start
-            })
-            .boxed()
-    }
+    #[deprecated(
+        since = "14.3.0",
+        note = "proptest strategies have moved to im::proptest"
+    )]
+    pub use crate::proptest::ord_map;
 }
 
 // Tests
 
 #[cfg(test)]
 mod test {
-    use super::proptest::*;
     use super::*;
-    use crate::nodes::btree::DiffItem;
+    use crate::proptest::*;
     use crate::test::is_sorted;
     use ::proptest::num::{i16, usize};
     use ::proptest::{bool, collection, proptest};
@@ -2024,15 +2192,15 @@ mod test {
             6 => 66
         };
         let mut it = map.iter();
-        assert_eq!(it.next(), Some(&(1, 11)));
-        assert_eq!(it.next(), Some(&(2, 22)));
-        assert_eq!(it.next(), Some(&(3, 33)));
-        assert_eq!(it.next(), Some(&(4, 44)));
-        assert_eq!(it.next(), Some(&(5, 55)));
-        assert_eq!(it.next(), Some(&(6, 66)));
-        assert_eq!(it.next(), Some(&(7, 77)));
-        assert_eq!(it.next(), Some(&(8, 88)));
-        assert_eq!(it.next(), Some(&(9, 99)));
+        assert_eq!(it.next(), Some((&1, &11)));
+        assert_eq!(it.next(), Some((&2, &22)));
+        assert_eq!(it.next(), Some((&3, &33)));
+        assert_eq!(it.next(), Some((&4, &44)));
+        assert_eq!(it.next(), Some((&5, &55)));
+        assert_eq!(it.next(), Some((&6, &66)));
+        assert_eq!(it.next(), Some((&7, &77)));
+        assert_eq!(it.next(), Some((&8, &88)));
+        assert_eq!(it.next(), Some((&9, &99)));
         assert_eq!(it.next(), None);
     }
 
@@ -2074,14 +2242,14 @@ mod test {
         let (popped, less) = map.extract(&5).unwrap();
         assert_eq!(popped, 55);
         let mut it = less.iter();
-        assert_eq!(it.next(), Some(&(1, 11)));
-        assert_eq!(it.next(), Some(&(2, 22)));
-        assert_eq!(it.next(), Some(&(3, 33)));
-        assert_eq!(it.next(), Some(&(4, 44)));
-        assert_eq!(it.next(), Some(&(6, 66)));
-        assert_eq!(it.next(), Some(&(7, 77)));
-        assert_eq!(it.next(), Some(&(8, 88)));
-        assert_eq!(it.next(), Some(&(9, 99)));
+        assert_eq!(it.next(), Some((&1, &11)));
+        assert_eq!(it.next(), Some((&2, &22)));
+        assert_eq!(it.next(), Some((&3, &33)));
+        assert_eq!(it.next(), Some((&4, &44)));
+        assert_eq!(it.next(), Some((&6, &66)));
+        assert_eq!(it.next(), Some((&7, &77)));
+        assert_eq!(it.next(), Some((&8, &88)));
+        assert_eq!(it.next(), Some((&9, &99)));
         assert_eq!(it.next(), None);
     }
 
@@ -2119,10 +2287,10 @@ mod test {
     fn double_ended_iterator_1() {
         let m = ordmap! {1 => 1, 2 => 2, 3 => 3, 4 => 4};
         let mut it = m.iter();
-        assert_eq!(Some(&(1, 1)), it.next());
-        assert_eq!(Some(&(4, 4)), it.next_back());
-        assert_eq!(Some(&(2, 2)), it.next());
-        assert_eq!(Some(&(3, 3)), it.next_back());
+        assert_eq!(Some((&1, &1)), it.next());
+        assert_eq!(Some((&4, &4)), it.next_back());
+        assert_eq!(Some((&2, &2)), it.next());
+        assert_eq!(Some((&3, &3)), it.next_back());
         assert_eq!(None, it.next());
     }
 
@@ -2130,10 +2298,10 @@ mod test {
     fn double_ended_iterator_2() {
         let m = ordmap! {1 => 1, 2 => 2, 3 => 3, 4 => 4};
         let mut it = m.iter();
-        assert_eq!(Some(&(1, 1)), it.next());
-        assert_eq!(Some(&(4, 4)), it.next_back());
-        assert_eq!(Some(&(2, 2)), it.next());
-        assert_eq!(Some(&(3, 3)), it.next_back());
+        assert_eq!(Some((&1, &1)), it.next());
+        assert_eq!(Some((&4, &4)), it.next_back());
+        assert_eq!(Some((&2, &2)), it.next());
+        assert_eq!(Some((&3, &3)), it.next_back());
         assert_eq!(None, it.next_back());
     }
 
@@ -2187,25 +2355,25 @@ mod test {
     #[test]
     fn ranged_iter() {
         let map: OrdMap<i32, i32> = ordmap![1=>2, 2=>3, 3=>4, 4=>5, 5=>6];
-        let range: Vec<(i32, i32)> = map.range(..).cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(..).map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(1, 2), (2, 3), (3, 4), (4, 5), (5, 6)], range);
-        let range: Vec<(i32, i32)> = map.range(..).rev().cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(..).rev().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(5, 6), (4, 5), (3, 4), (2, 3), (1, 2)], range);
-        let range: Vec<(i32, i32)> = map.range(2..5).cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(2..5).map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(2, 3), (3, 4), (4, 5)], range);
-        let range: Vec<(i32, i32)> = map.range(2..5).rev().cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(2..5).rev().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(4, 5), (3, 4), (2, 3)], range);
-        let range: Vec<(i32, i32)> = map.range(3..).cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(3..).map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(3, 4), (4, 5), (5, 6)], range);
-        let range: Vec<(i32, i32)> = map.range(3..).rev().cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(3..).rev().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(5, 6), (4, 5), (3, 4)], range);
-        let range: Vec<(i32, i32)> = map.range(..4).cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(..4).map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(1, 2), (2, 3), (3, 4)], range);
-        let range: Vec<(i32, i32)> = map.range(..4).rev().cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(..4).rev().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(3, 4), (2, 3), (1, 2)], range);
-        let range: Vec<(i32, i32)> = map.range(..=3).cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(..=3).map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(1, 2), (2, 3), (3, 4)], range);
-        let range: Vec<(i32, i32)> = map.range(..=3).rev().cloned().collect();
+        let range: Vec<(i32, i32)> = map.range(..=3).rev().map(|(k, v)| (*k, *v)).collect();
         assert_eq!(vec![(3, 4), (2, 3), (1, 2)], range);
     }
 
@@ -2258,7 +2426,7 @@ mod test {
             ref ops in collection::vec((bool::ANY, usize::ANY, usize::ANY), 1..1000)
         ) {
             let mut map = input.clone();
-            let mut tree: collections::BTreeMap<usize, usize> = input.iter().cloned().collect();
+            let mut tree: collections::BTreeMap<usize, usize> = input.iter().map(|(k, v)| (*k, *v)).collect();
             for (ins, key, val) in ops {
                 if *ins {
                     tree.insert(*key, *val);
@@ -2313,7 +2481,7 @@ mod test {
         fn lookup(ref m in ord_map(i16::ANY, i16::ANY, 0..1000)) {
             let map: OrdMap<i16, i16> =
                 FromIterator::from_iter(m.iter().map(|(k, v)| (*k, *v)));
-            for (k, v) in m {
+            for (k, v) in m.iter() {
                 assert_eq!(Some(*v), map.get(k).cloned());
             }
         }
@@ -2397,51 +2565,32 @@ mod test {
         }
 
         #[test]
-        fn diff_added_values(a in ord_map(i16::ANY, i16::ANY, 0..1000), b in ord_map(i16::ANY, i16::ANY, 0..1000)) {
-            let ab = a.clone().union(b.clone());
-            assert!(a.diff(&ab).eq(b.iter().filter(|&(ref k, _)| !a.contains_key(k)).map(DiffItem::Add)));
+        fn diff_all_values(a in collection::vec((usize::ANY, usize::ANY), 1..1000), b in collection::vec((usize::ANY, usize::ANY), 1..1000)) {
+            let a: OrdMap<usize, usize> = OrdMap::from(a);
+            let b: OrdMap<usize, usize> = OrdMap::from(b);
+
+            let diff: Vec<_> = a.diff(&b).collect();
+            let union = b.clone().union(a.clone());
+            let expected: Vec<_> = union.iter().filter_map(|(k, v)| {
+                if a.contains_key(&k) {
+                    if b.contains_key(&k) {
+                        let old = a.get(&k).unwrap();
+                        if old != v	{
+                            Some(DiffItem::Update {
+                                old: (k, old),
+                                new: (k, v),
+                            })
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(DiffItem::Remove(k, v))
+                    }
+                } else {
+                    Some(DiffItem::Add(k, v))
+                }
+            }).collect();
+            assert_eq!(expected, diff);
         }
-
-        // fn diff_updated_values(a: Vec<(usize, usize)>, b: Vec<(usize, usize)>) -> bool {
-        //     let a: OrdMap<usize, usize> = OrdMap::from(a);
-        //     let b: OrdMap<usize, usize> = OrdMap::from(b);
-        //     let ab: OrdMap<usize, usize> = a.union(&b);
-        //     let ba: OrdMap<usize, usize> = ab.union_with(&b, |_, b| *b);
-        //     ab.diff(&ba).eq(b.iter().filter(|&(ref k, ref v)| ab.get(k) != Some(&v))
-        //                    .map(|(k, v)| DiffItem::Update {
-        //                        old: &(*k, *(ab.get(&k).unwrap())),
-        //                        new: &(*k, *v)
-        //                    }))
-        // }
-
-        #[test]
-        fn diff_removed_values(a in ord_map(i16::ANY, i16::ANY, 0..1000), b in ord_map(i16::ANY, i16::ANY, 0..1000)) {
-            let ab = a.clone().union(b.clone());
-            assert!(ab.diff(&a).eq(b.iter().filter(|&(ref k, _)| !a.contains_key(k)).map(DiffItem::Remove)));
-        }
-
-        // fn diff_all_values(a: Vec<(usize, usize)>, b: Vec<(usize, usize)>) -> bool {
-        //     let a: OrdMap<usize, usize> = OrdMap::from(a);
-        //     let b: OrdMap<usize, usize> = OrdMap::from(b);
-        //     a.diff(&b).eq(b.union(&a).iter().filter_map(|(k, v)| {
-        //         if a.contains_key(&k) {
-        //             if b.contains_key(&k) {
-        //                 let old = a.get(&k).unwrap();
-        //                 if old != v	{
-        //                     Some(DiffItem::Update {
-        //                         old: &(*k, *old),
-        //                         new: &(*k, *v),
-        //                     })
-        //                 } else {
-        //                     None
-        //                 }
-        //             } else {
-        //                 Some(DiffItem::Remove(&(*k, *v)))
-        //             }
-        //         } else {
-        //             Some(DiffItem::Add(&(*k, *v)))
-        //         }
-        //     }))
-        // }
     }
 }

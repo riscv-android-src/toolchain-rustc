@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str;
@@ -15,9 +14,11 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::core::dependency::DepKind;
-use crate::core::manifest::{LibKind, ManifestMetadata, TargetSourcePath, Warnings};
+use crate::core::manifest::{ManifestMetadata, TargetSourcePath, Warnings};
+use crate::core::profiles::Strip;
+use crate::core::resolver::ResolveBehavior;
 use crate::core::{Dependency, InternedString, Manifest, PackageId, Summary, Target};
-use crate::core::{Edition, EitherManifest, Feature, Features, VirtualManifest};
+use crate::core::{Edition, EitherManifest, Feature, Features, VirtualManifest, Workspace};
 use crate::core::{GitReference, PackageIdSpec, SourceId, WorkspaceConfig, WorkspaceRootConfig};
 use crate::sources::{CRATES_IO_INDEX, CRATES_IO_REGISTRY};
 use crate::util::errors::{CargoResult, CargoResultExt, ManifestError};
@@ -78,7 +79,7 @@ fn do_read_manifest(
         let (mut manifest, paths) =
             TomlManifest::to_real_manifest(&manifest, source_id, package_root, config)?;
         add_unused(manifest.warnings_mut());
-        if !manifest.targets().iter().any(|t| !t.is_custom_build()) {
+        if manifest.targets().iter().all(|t| t.is_custom_build()) {
             bail!(
                 "no targets specified in the manifest\n  \
                  either src/lib.rs, src/main.rs, a [lib] section, or \
@@ -321,7 +322,7 @@ impl<'de> de::Deserialize<'de> for TomlOptLevel {
                 } else {
                     Err(E::custom(format!(
                         "must be an integer, `z`, or `s`, \
-                         but found: {}",
+                         but found the string: \"{}\"",
                         value
                     )))
                 }
@@ -407,6 +408,7 @@ pub struct TomlProfile {
     pub build_override: Option<Box<TomlProfile>>,
     pub dir_name: Option<InternedString>,
     pub inherits: Option<InternedString>,
+    pub strip: Option<Strip>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Ord, PartialOrd, Hash)]
@@ -521,6 +523,10 @@ impl TomlProfile {
                     panic
                 );
             }
+        }
+
+        if self.strip.is_some() {
+            features.require(Feature::strip())?;
         }
         Ok(())
     }
@@ -640,6 +646,10 @@ impl TomlProfile {
 
         if let Some(v) = &profile.dir_name {
             self.dir_name = Some(*v);
+        }
+
+        if let Some(v) = profile.strip {
+            self.strip = Some(v);
         }
     }
 }
@@ -806,6 +816,7 @@ pub struct TomlProject {
     license_file: Option<String>,
     repository: Option<String>,
     metadata: Option<toml::Value>,
+    resolver: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -814,6 +825,7 @@ pub struct TomlWorkspace {
     #[serde(rename = "default-members")]
     default_members: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
+    resolver: Option<String>,
 }
 
 impl TomlProject {
@@ -837,9 +849,10 @@ struct Context<'a, 'b> {
 impl TomlManifest {
     pub fn prepare_for_publish(
         &self,
-        config: &Config,
+        ws: &Workspace<'_>,
         package_root: &Path,
     ) -> CargoResult<TomlManifest> {
+        let config = ws.config();
         let mut package = self
             .package
             .as_ref()
@@ -847,6 +860,19 @@ impl TomlManifest {
             .unwrap()
             .clone();
         package.workspace = None;
+        let mut cargo_features = self.cargo_features.clone();
+        package.resolver = ws.resolve_behavior().to_manifest();
+        if package.resolver.is_some() {
+            // This should be removed when stabilizing.
+            match &mut cargo_features {
+                None => cargo_features = Some(vec!["resolver".to_string()]),
+                Some(feats) => {
+                    if !feats.iter().any(|feat| feat == "resolver") {
+                        feats.push("resolver".to_string());
+                    }
+                }
+            }
+        }
         if let Some(license_file) = &package.license_file {
             let license_path = Path::new(&license_file);
             let abs_license_path = paths::normalize_path(&package_root.join(license_path));
@@ -928,7 +954,7 @@ impl TomlManifest {
             patch: None,
             workspace: None,
             badges: self.badges.clone(),
-            cargo_features: self.cargo_features.clone(),
+            cargo_features,
         });
 
         fn map_deps(
@@ -1015,6 +1041,25 @@ impl TomlManifest {
         if project.metabuild.is_some() {
             features.require(Feature::metabuild())?;
         }
+
+        if project.resolver.is_some()
+            || me
+                .workspace
+                .as_ref()
+                .map_or(false, |ws| ws.resolver.is_some())
+        {
+            features.require(Feature::resolver())?;
+        }
+        let resolve_behavior = match (
+            project.resolver.as_ref(),
+            me.workspace.as_ref().and_then(|ws| ws.resolver.as_ref()),
+        ) {
+            (None, None) => None,
+            (Some(s), None) | (None, Some(s)) => Some(ResolveBehavior::from_manifest(s)?),
+            (Some(_), Some(_)) => {
+                bail!("cannot specify `resolver` field in both `[workspace]` and `[package]`")
+            }
+        };
 
         // If we have no lib at all, use the inferred lib, if available.
         // If we have a lib with a path, we're done.
@@ -1257,6 +1302,7 @@ impl TomlManifest {
             project.default_run.clone(),
             Rc::clone(me),
             project.metabuild.clone().map(|sov| sov.0),
+            resolve_behavior,
         );
         if project.license_file.is_some() && project.license.is_some() {
             manifest.warnings_mut().add_warning(
@@ -1284,43 +1330,43 @@ impl TomlManifest {
         config: &Config,
     ) -> CargoResult<(VirtualManifest, Vec<PathBuf>)> {
         if me.project.is_some() {
-            bail!("virtual manifests do not define [project]");
+            bail!("this virtual manifest specifies a [project] section, which is not allowed");
         }
         if me.package.is_some() {
-            bail!("virtual manifests do not define [package]");
+            bail!("this virtual manifest specifies a [package] section, which is not allowed");
         }
         if me.lib.is_some() {
-            bail!("virtual manifests do not specify [lib]");
+            bail!("this virtual manifest specifies a [lib] section, which is not allowed");
         }
         if me.bin.is_some() {
-            bail!("virtual manifests do not specify [[bin]]");
+            bail!("this virtual manifest specifies a [[bin]] section, which is not allowed");
         }
         if me.example.is_some() {
-            bail!("virtual manifests do not specify [[example]]");
+            bail!("this virtual manifest specifies a [[example]] section, which is not allowed");
         }
         if me.test.is_some() {
-            bail!("virtual manifests do not specify [[test]]");
+            bail!("this virtual manifest specifies a [[test]] section, which is not allowed");
         }
         if me.bench.is_some() {
-            bail!("virtual manifests do not specify [[bench]]");
+            bail!("this virtual manifest specifies a [[bench]] section, which is not allowed");
         }
         if me.dependencies.is_some() {
-            bail!("virtual manifests do not specify [dependencies]");
+            bail!("this virtual manifest specifies a [dependencies] section, which is not allowed");
         }
         if me.dev_dependencies.is_some() || me.dev_dependencies2.is_some() {
-            bail!("virtual manifests do not specify [dev-dependencies]");
+            bail!("this virtual manifest specifies a [dev-dependencies] section, which is not allowed");
         }
         if me.build_dependencies.is_some() || me.build_dependencies2.is_some() {
-            bail!("virtual manifests do not specify [build-dependencies]");
+            bail!("this virtual manifest specifies a [build-dependencies] section, which is not allowed");
         }
         if me.features.is_some() {
-            bail!("virtual manifests do not specify [features]");
+            bail!("this virtual manifest specifies a [features] section, which is not allowed");
         }
         if me.target.is_some() {
-            bail!("virtual manifests do not specify [target]");
+            bail!("this virtual manifest specifies a [target] section, which is not allowed");
         }
         if me.badges.is_some() {
-            bail!("virtual manifests do not specify [badges]");
+            bail!("this virtual manifest specifies a [badges] section, which is not allowed");
         }
 
         let mut nested_paths = Vec::new();
@@ -1348,6 +1394,19 @@ impl TomlManifest {
         if let Some(profiles) = &profiles {
             profiles.validate(&features, &mut warnings)?;
         }
+        if me
+            .workspace
+            .as_ref()
+            .map_or(false, |ws| ws.resolver.is_some())
+        {
+            features.require(Feature::resolver())?;
+        }
+        let resolve_behavior = me
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.resolver.as_deref())
+            .map(|r| ResolveBehavior::from_manifest(r))
+            .transpose()?;
         let workspace_config = match me.workspace {
             Some(ref config) => WorkspaceConfig::Root(WorkspaceRootConfig::new(
                 root,
@@ -1360,7 +1419,14 @@ impl TomlManifest {
             }
         };
         Ok((
-            VirtualManifest::new(replace, patch, workspace_config, profiles, features),
+            VirtualManifest::new(
+                replace,
+                patch,
+                workspace_config,
+                profiles,
+                features,
+                resolve_behavior,
+            ),
             nested_paths,
         ))
     }
@@ -1441,11 +1507,12 @@ impl TomlManifest {
             Some(StringOrBool::Bool(true)) => Some(build_rs),
             Some(StringOrBool::String(ref s)) => Some(PathBuf::from(s)),
             None => {
-                match fs::metadata(&build_rs) {
-                    // If there is a `build.rs` file next to the `Cargo.toml`, assume it is
-                    // a build script.
-                    Ok(ref e) if e.is_file() => Some(build_rs),
-                    Ok(_) | Err(_) => None,
+                // If there is a `build.rs` file next to the `Cargo.toml`, assume it is
+                // a build script.
+                if build_rs.is_file() {
+                    Some(build_rs)
+                } else {
+                    None
                 }
             }
         }

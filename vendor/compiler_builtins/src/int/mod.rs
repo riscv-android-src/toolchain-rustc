@@ -19,7 +19,7 @@ pub mod shift;
 pub mod udiv;
 
 /// Trait for some basic operations on integers
-pub trait Int:
+pub(crate) trait Int:
     Copy
     + PartialEq
     + PartialOrd
@@ -88,55 +88,55 @@ fn unwrap<T>(t: Option<T>) -> T {
 
 macro_rules! int_impl_common {
     ($ty:ty, $bits:expr) => {
-            const BITS: u32 = $bits;
+        const BITS: u32 = $bits;
 
-            const ZERO: Self = 0;
-            const ONE: Self = 1;
+        const ZERO: Self = 0;
+        const ONE: Self = 1;
 
-            fn from_bool(b: bool) -> Self {
-                b as $ty
-            }
+        fn from_bool(b: bool) -> Self {
+            b as $ty
+        }
 
-            fn max_value() -> Self {
-                <Self>::max_value()
-            }
+        fn max_value() -> Self {
+            <Self>::max_value()
+        }
 
-            fn min_value() -> Self {
-                <Self>::min_value()
-            }
+        fn min_value() -> Self {
+            <Self>::min_value()
+        }
 
-            fn wrapping_add(self, other: Self) -> Self {
-                <Self>::wrapping_add(self, other)
-            }
+        fn wrapping_add(self, other: Self) -> Self {
+            <Self>::wrapping_add(self, other)
+        }
 
-            fn wrapping_mul(self, other: Self) -> Self {
-                <Self>::wrapping_mul(self, other)
-            }
+        fn wrapping_mul(self, other: Self) -> Self {
+            <Self>::wrapping_mul(self, other)
+        }
 
-            fn wrapping_sub(self, other: Self) -> Self {
-                <Self>::wrapping_sub(self, other)
-            }
+        fn wrapping_sub(self, other: Self) -> Self {
+            <Self>::wrapping_sub(self, other)
+        }
 
-            fn wrapping_shl(self, other: u32) -> Self {
-                <Self>::wrapping_shl(self, other)
-            }
+        fn wrapping_shl(self, other: u32) -> Self {
+            <Self>::wrapping_shl(self, other)
+        }
 
-            fn overflowing_add(self, other: Self) -> (Self, bool) {
-                <Self>::overflowing_add(self, other)
-            }
+        fn overflowing_add(self, other: Self) -> (Self, bool) {
+            <Self>::overflowing_add(self, other)
+        }
 
-            fn aborting_div(self, other: Self) -> Self {
-                unwrap(<Self>::checked_div(self, other))
-            }
+        fn aborting_div(self, other: Self) -> Self {
+            unwrap(<Self>::checked_div(self, other))
+        }
 
-            fn aborting_rem(self, other: Self) -> Self {
-                unwrap(<Self>::checked_rem(self, other))
-            }
+        fn aborting_rem(self, other: Self) -> Self {
+            unwrap(<Self>::checked_rem(self, other))
+        }
 
-            fn leading_zeros(self) -> u32 {
-                <Self>::leading_zeros(self)
-            }
-    }
+        fn leading_zeros(self) -> u32 {
+            <Self>::leading_zeros(self)
+        }
+    };
 }
 
 macro_rules! int_impl {
@@ -190,7 +190,7 @@ int_impl!(i64, u64, 64);
 int_impl!(i128, u128, 128);
 
 /// Trait to convert an integer to/from smaller parts
-pub trait LargeInt: Int {
+pub(crate) trait LargeInt: Int {
     type LowHalf: Int;
     type HighHalf: Int;
 
@@ -232,7 +232,7 @@ large_int!(u128, u64, u64, 64);
 large_int!(i128, u64, i64, 64);
 
 /// Trait to express (possibly lossy) casting of integers
-pub trait CastInto<T: Copy>: Copy {
+pub(crate) trait CastInto<T: Copy>: Copy {
     fn cast(self) -> T;
 }
 
@@ -256,7 +256,7 @@ cast_into!(i64);
 cast_into!(u128);
 cast_into!(i128);
 
-pub trait WideInt: Int {
+pub(crate) trait WideInt: Int {
     type Output: Int;
 
     fn wide_mul(self, other: Self) -> (Self, Self);

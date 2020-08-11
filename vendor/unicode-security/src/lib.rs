@@ -58,12 +58,15 @@ extern crate test;
 
 pub use tables::UNICODE_VERSION;
 
+pub mod confusable_detection;
 pub mod general_security_profile;
 pub mod mixed_script;
 pub mod restriction_level;
 
+pub use confusable_detection::skeleton;
 pub use general_security_profile::GeneralSecurityProfile;
 pub use mixed_script::MixedScript;
+pub use restriction_level::{RestrictionLevel, RestrictionLevelDetection};
 
 #[rustfmt::skip]
 pub(crate) mod tables;

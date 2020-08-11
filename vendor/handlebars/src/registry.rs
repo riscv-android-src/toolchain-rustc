@@ -1,28 +1,22 @@
+use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
 use std::io::prelude::*;
 use std::path::Path;
 
-use hashbrown::HashMap;
 use serde::Serialize;
 
-use regex::{Captures, Regex};
-
 use crate::context::Context;
-use crate::directives::{self, DirectiveDef};
+use crate::decorators::{self, DecoratorDef};
 use crate::error::{RenderError, TemplateError, TemplateFileError, TemplateRenderError};
 use crate::helpers::{self, HelperDef};
 use crate::output::{Output, StringOutput, WriteOutput};
 use crate::render::{RenderContext, Renderable};
-use crate::support::str::StringWriter;
+use crate::support::str::{self, StringWriter};
 use crate::template::Template;
 
-#[cfg(not(feature = "no_dir_source"))]
+#[cfg(feature = "dir_source")]
 use walkdir::{DirEntry, WalkDir};
-
-lazy_static! {
-    static ref DEFAULT_REPLACE: Regex = Regex::new(">|<|\"|&").unwrap();
-}
 
 /// This type represents an *escape fn*, that is a function who's purpose it is
 /// to escape potentially problematic characters in a string.
@@ -34,18 +28,7 @@ pub type EscapeFn = Box<dyn Fn(&str) -> String + Send + Sync>;
 /// The default *escape fn* replaces the characters `&"<>`
 /// with the equivalent html / xml entities.
 pub fn html_escape(data: &str) -> String {
-    DEFAULT_REPLACE
-        .replace_all(data, |cap: &Captures| {
-            match cap.get(0).map(|m| m.as_str()) {
-                Some("<") => "&lt;",
-                Some(">") => "&gt;",
-                Some("\"") => "&quot;",
-                Some("&") => "&amp;",
-                _ => unreachable!(),
-            }
-            .to_owned()
-        })
-        .into_owned()
+    str::escape_html(data)
 }
 
 /// `EscapeFn` that do not change any thing. Useful when using in a non-html
@@ -57,33 +40,33 @@ pub fn no_escape(data: &str) -> String {
 /// The single entry point of your Handlebars templates
 ///
 /// It maintains compiled templates and registered helpers.
-pub struct Registry {
+pub struct Registry<'reg> {
     templates: HashMap<String, Template>,
-    helpers: HashMap<String, Box<dyn HelperDef + 'static>>,
-    directives: HashMap<String, Box<dyn DirectiveDef + 'static>>,
+    helpers: HashMap<String, Box<dyn HelperDef + 'reg>>,
+    decorators: HashMap<String, Box<dyn DecoratorDef + 'reg>>,
     escape_fn: EscapeFn,
     source_map: bool,
     strict_mode: bool,
 }
 
-impl Debug for Registry {
+impl<'reg> Debug for Registry<'reg> {
     fn fmt(&self, f: &mut Formatter) -> Result<(), fmt::Error> {
         f.debug_struct("Handlebars")
             .field("templates", &self.templates)
             .field("helpers", &self.helpers.keys())
-            .field("directives", &self.directives.keys())
+            .field("decorators", &self.decorators.keys())
             .field("source_map", &self.source_map)
             .finish()
     }
 }
 
-impl Default for Registry {
+impl<'reg> Default for Registry<'reg> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(not(feature = "no_dir_source"))]
+#[cfg(feature = "dir_source")]
 fn filter_file(entry: &DirEntry, suffix: &str) -> bool {
     let path = entry.path();
 
@@ -98,12 +81,12 @@ fn filter_file(entry: &DirEntry, suffix: &str) -> bool {
             .unwrap_or(true)
 }
 
-impl Registry {
-    pub fn new() -> Registry {
+impl<'reg> Registry<'reg> {
+    pub fn new() -> Registry<'reg> {
         let r = Registry {
             templates: HashMap::new(),
             helpers: HashMap::new(),
-            directives: HashMap::new(),
+            decorators: HashMap::new(),
             escape_fn: Box::new(html_escape),
             source_map: true,
             strict_mode: false,
@@ -112,7 +95,7 @@ impl Registry {
         r.setup_builtins()
     }
 
-    fn setup_builtins(mut self) -> Registry {
+    fn setup_builtins(mut self) -> Registry<'reg> {
         self.register_helper("if", Box::new(helpers::IF_HELPER));
         self.register_helper("unless", Box::new(helpers::UNLESS_HELPER));
         self.register_helper("each", Box::new(helpers::EACH_HELPER));
@@ -131,7 +114,7 @@ impl Registry {
         self.register_helper("or", Box::new(helpers::helper_boolean::or));
         self.register_helper("not", Box::new(helpers::helper_boolean::not));
 
-        self.register_decorator("inline", Box::new(directives::INLINE_DIRECTIVE));
+        self.register_decorator("inline", Box::new(decorators::INLINE_DECORATOR));
         self
     }
 
@@ -217,7 +200,7 @@ impl Registry {
     /// will use their relative name as template name. For example, when `dir_path` is
     /// `templates/` and `tpl_extension` is `.hbs`, the file
     /// `templates/some/path/file.hbs` will be registerd as `some/path/file`.
-    #[cfg(not(feature = "no_dir_source"))]
+    #[cfg(feature = "dir_source")]
     pub fn register_templates_directory<P>(
         &mut self,
         tpl_extension: &'static str,
@@ -280,8 +263,8 @@ impl Registry {
     pub fn register_helper(
         &mut self,
         name: &str,
-        def: Box<dyn HelperDef + 'static>,
-    ) -> Option<Box<dyn HelperDef + 'static>> {
+        def: Box<dyn HelperDef + 'reg>,
+    ) -> Option<Box<dyn HelperDef + 'reg>> {
         self.helpers.insert(name.to_string(), def)
     }
 
@@ -289,9 +272,9 @@ impl Registry {
     pub fn register_decorator(
         &mut self,
         name: &str,
-        def: Box<dyn DirectiveDef + 'static>,
-    ) -> Option<Box<dyn DirectiveDef + 'static>> {
-        self.directives.insert(name.to_string(), def)
+        def: Box<dyn DecoratorDef + 'reg>,
+    ) -> Option<Box<dyn DecoratorDef + 'reg>> {
+        self.decorators.insert(name.to_string(), def)
     }
 
     /// Register a new *escape fn* to be used from now on by this registry.
@@ -323,13 +306,13 @@ impl Registry {
     }
 
     /// Return a registered helper
-    pub fn get_helper(&self, name: &str) -> Option<&(dyn HelperDef + 'static)> {
+    pub fn get_helper(&self, name: &str) -> Option<&(dyn HelperDef)> {
         self.helpers.get(name).map(|v| v.as_ref())
     }
 
-    /// Return a registered directive, aka decorator
-    pub fn get_decorator(&self, name: &str) -> Option<&(dyn DirectiveDef + 'static)> {
-        self.directives.get(name).map(|v| v.as_ref())
+    /// Return a registered decorator, aka decorator
+    pub fn get_decorator(&self, name: &str) -> Option<&(dyn DecoratorDef)> {
+        self.decorators.get(name).map(|v| v.as_ref())
     }
 
     /// Return all templates registered
@@ -450,11 +433,11 @@ mod test {
     use crate::registry::Registry;
     use crate::render::{Helper, RenderContext, Renderable};
     use crate::support::str::StringWriter;
-    #[cfg(not(feature = "no_dir_source"))]
+    #[cfg(feature = "dir_source")]
     use std::fs::{DirBuilder, File};
-    #[cfg(not(feature = "no_dir_source"))]
+    #[cfg(feature = "dir_source")]
     use std::io::Write;
-    #[cfg(not(feature = "no_dir_source"))]
+    #[cfg(feature = "dir_source")]
     use tempfile::tempdir;
 
     #[derive(Clone, Copy)]
@@ -465,8 +448,8 @@ mod test {
             &self,
             h: &Helper<'reg, 'rc>,
             r: &'reg Registry,
-            ctx: &Context,
-            rc: &mut RenderContext<'reg>,
+            ctx: &'rc Context,
+            rc: &mut RenderContext<'reg, 'rc>,
             out: &mut dyn Output,
         ) -> Result<(), RenderError> {
             h.template().unwrap().render(r, ctx, rc, out)
@@ -503,7 +486,7 @@ mod test {
     }
 
     #[test]
-    #[cfg(not(feature = "no_dir_source"))]
+    #[cfg(feature = "dir_source")]
     fn test_register_templates_directory() {
         let mut r = Registry::new();
         {
@@ -702,7 +685,7 @@ mod test {
         );
     }
 
-    use crate::value::ScopedJson;
+    use crate::json::value::ScopedJson;
     struct GenMissingHelper;
     impl HelperDef for GenMissingHelper {
         fn call_inner<'reg: 'rc, 'rc>(
@@ -710,7 +693,7 @@ mod test {
             _: &Helper<'reg, 'rc>,
             _: &'reg Registry,
             _: &'rc Context,
-            _: &mut RenderContext<'reg>,
+            _: &mut RenderContext,
         ) -> Result<Option<ScopedJson<'reg, 'rc>>, RenderError> {
             Ok(Some(ScopedJson::Missing))
         }

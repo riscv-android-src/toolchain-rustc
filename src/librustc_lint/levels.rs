@@ -14,15 +14,15 @@ use rustc_middle::lint::LintDiagnosticBuilder;
 use rustc_middle::lint::{struct_lint_level, LintLevelMap, LintLevelSets, LintSet, LintSource};
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
-use rustc_session::lint::{builtin, Level, Lint};
+use rustc_session::lint::{builtin, Level, Lint, LintId};
 use rustc_session::parse::feature_err;
 use rustc_session::Session;
-use rustc_span::source_map::MultiSpan;
 use rustc_span::symbol::{sym, Symbol};
+use rustc_span::{source_map::MultiSpan, Span, DUMMY_SP};
 
 use std::cmp;
 
-fn lint_levels(tcx: TyCtxt<'_>, cnum: CrateNum) -> &LintLevelMap {
+fn lint_levels(tcx: TyCtxt<'_>, cnum: CrateNum) -> LintLevelMap {
     assert_eq!(cnum, LOCAL_CRATE);
     let store = unerased_lint_store(tcx);
     let levels = LintLevelsBuilder::new(tcx.sess, false, &store);
@@ -37,7 +37,7 @@ fn lint_levels(tcx: TyCtxt<'_>, cnum: CrateNum) -> &LintLevelMap {
     intravisit::walk_crate(&mut builder, krate);
     builder.levels.pop(push);
 
-    tcx.arena.alloc(builder.levels.build_map())
+    builder.levels.build_map()
 }
 
 pub struct LintLevelsBuilder<'s> {
@@ -80,11 +80,13 @@ impl<'s> LintLevelsBuilder<'s> {
             let level = cmp::min(level, self.sets.lint_cap);
 
             let lint_flag_val = Symbol::intern(lint_name);
+
             let ids = match store.find_lints(&lint_name) {
                 Ok(ids) => ids,
                 Err(_) => continue, // errors handled in check_lint_name_cmdline above
             };
             for id in ids {
+                self.check_gated_lint(id, DUMMY_SP);
                 let src = LintSource::CommandLine(lint_flag_val);
                 specs.insert(id, (level, src));
             }
@@ -103,8 +105,8 @@ impl<'s> LintLevelsBuilder<'s> {
     /// * It'll validate all lint-related attributes in `attrs`
     /// * It'll mark all lint-related attributes as used
     /// * Lint levels will be updated based on the attributes provided
-    /// * Lint attributes are validated, e.g., a #[forbid] can't be switched to
-    ///   #[allow]
+    /// * Lint attributes are validated, e.g., a `#[forbid]` can't be switched to
+    ///   `#[allow]`
     ///
     /// Don't forget to call `pop`!
     pub fn push(&mut self, attrs: &[ast::Attribute], store: &LintStore) -> BuilderPush {
@@ -213,6 +215,7 @@ impl<'s> LintLevelsBuilder<'s> {
                     CheckLintNameResult::Ok(ids) => {
                         let src = LintSource::Node(name, li.span(), reason);
                         for id in ids {
+                            self.check_gated_lint(*id, attr.span);
                             specs.insert(*id, (level, src));
                         }
                     }
@@ -383,9 +386,28 @@ impl<'s> LintLevelsBuilder<'s> {
         BuilderPush { prev, changed: prev != self.cur }
     }
 
+    fn check_gated_lint(&self, id: LintId, span: Span) {
+        if id == LintId::of(builtin::UNSAFE_OP_IN_UNSAFE_FN)
+            && !self.sess.features_untracked().unsafe_block_in_unsafe_fn
+        {
+            feature_err(
+                &self.sess.parse_sess,
+                sym::unsafe_block_in_unsafe_fn,
+                span,
+                "the `unsafe_op_in_unsafe_fn` lint is unstable",
+            )
+            .emit();
+        }
+    }
+
     /// Called after `push` when the scope of a set of attributes are exited.
     pub fn pop(&mut self, push: BuilderPush) {
         self.cur = push.prev;
+    }
+
+    /// Find the lint level for a lint.
+    pub fn lint_level(&self, lint: &'static Lint) -> (Level, LintSource) {
+        self.sets.get_lint_level(lint, self.cur, None, self.sess)
     }
 
     /// Used to emit a lint-related diagnostic based on the current state of
@@ -396,7 +418,7 @@ impl<'s> LintLevelsBuilder<'s> {
         span: Option<MultiSpan>,
         decorate: impl for<'a> FnOnce(LintDiagnosticBuilder<'a>),
     ) {
-        let (level, src) = self.sets.get_lint_level(lint, self.cur, None, self.sess);
+        let (level, src) = self.lint_level(lint);
         struct_lint_level(self.sess, lint, level, src, span, decorate)
     }
 

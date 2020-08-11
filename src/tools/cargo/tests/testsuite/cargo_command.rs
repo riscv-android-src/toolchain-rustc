@@ -2,8 +2,9 @@
 
 use std::env;
 use std::fs::{self, File};
-use std::io::prelude::*;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::str;
 
 use cargo_test_support::cargo_process;
@@ -174,15 +175,14 @@ fn find_closest_alias() {
     let root = paths::root();
     let my_home = root.join("my_home");
     fs::create_dir(&my_home).unwrap();
-    File::create(&my_home.join("config"))
-        .unwrap()
-        .write_all(
-            br#"
-        [alias]
-        myalias = "build"
-    "#,
-        )
-        .unwrap();
+    fs::write(
+        &my_home.join("config"),
+        r#"
+            [alias]
+            myalias = "build"
+        "#,
+    )
+    .unwrap();
 
     cargo_process("myalais")
         .env("CARGO_HOME", &my_home)
@@ -239,17 +239,16 @@ fn override_cargo_home() {
     let root = paths::root();
     let my_home = root.join("my_home");
     fs::create_dir(&my_home).unwrap();
-    File::create(&my_home.join("config"))
-        .unwrap()
-        .write_all(
-            br#"
-        [cargo-new]
-        name = "foo"
-        email = "bar"
-        git = false
-    "#,
-        )
-        .unwrap();
+    fs::write(
+        &my_home.join("config"),
+        r#"
+            [cargo-new]
+            name = "foo"
+            email = "bar"
+            git = false
+        "#,
+    )
+    .unwrap();
 
     cargo_process("new foo")
         .env("USER", "foo")
@@ -257,11 +256,7 @@ fn override_cargo_home() {
         .run();
 
     let toml = paths::root().join("foo/Cargo.toml");
-    let mut contents = String::new();
-    File::open(&toml)
-        .unwrap()
-        .read_to_string(&mut contents)
-        .unwrap();
+    let contents = fs::read_to_string(&toml).unwrap();
     assert!(contents.contains(r#"authors = ["foo <bar>"]"#));
 }
 
@@ -377,4 +372,25 @@ fn z_flags_help() {
     cargo_process("-Z help")
         .with_stdout_contains("    -Z unstable-options -- Allow the usage of unstable options")
         .run();
+}
+
+#[cargo_test]
+fn closed_output_ok() {
+    // Checks that closed output doesn't cause an error.
+    let mut p = cargo_process("--list").build_command();
+    p.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = p.spawn().unwrap();
+    // Close stdout
+    drop(child.stdout.take());
+    // Read stderr
+    let mut s = String::new();
+    child
+        .stderr
+        .as_mut()
+        .unwrap()
+        .read_to_string(&mut s)
+        .unwrap();
+    let status = child.wait().unwrap();
+    assert!(status.success());
+    assert!(s.is_empty(), s);
 }

@@ -11,7 +11,7 @@ use sized_chunks::Chunk;
 use typenum::{Add1, Unsigned};
 
 use crate::config::OrdChunkSize as NodeSize;
-use crate::util::{clone_ref, Ref};
+use crate::util::{Pool, PoolClone, PoolDefault, PoolRef};
 
 use self::Insert::*;
 use self::InsertAction::*;
@@ -37,15 +37,45 @@ pub trait BTreeValue {
     fn cmp_values(&self, other: &Self) -> Ordering;
 }
 
-pub struct Node<A> {
+pub(crate) struct Node<A> {
     keys: Chunk<A, NodeSize>,
-    children: Chunk<Option<Ref<Node<A>>>, Add1<NodeSize>>,
+    children: Chunk<Option<PoolRef<Node<A>>>, Add1<NodeSize>>,
 }
 
-pub enum Insert<A> {
+#[cfg(feature = "pool")]
+#[allow(unsafe_code)]
+unsafe fn cast_uninit<A>(target: &mut A) -> &mut mem::MaybeUninit<A> {
+    &mut *(target as *mut A as *mut mem::MaybeUninit<A>)
+}
+
+#[allow(unsafe_code)]
+impl<A> PoolDefault for Node<A> {
+    #[cfg(feature = "pool")]
+    unsafe fn default_uninit(target: &mut mem::MaybeUninit<Self>) {
+        let ptr: *mut Self = target.as_mut_ptr();
+        Chunk::default_uninit(cast_uninit(&mut (*ptr).keys));
+        Chunk::default_uninit(cast_uninit(&mut (*ptr).children));
+        (*ptr).children.push_back(None);
+    }
+}
+
+#[allow(unsafe_code)]
+impl<A> PoolClone for Node<A>
+where
+    A: Clone,
+{
+    #[cfg(feature = "pool")]
+    unsafe fn clone_uninit(&self, target: &mut mem::MaybeUninit<Self>) {
+        self.keys
+            .clone_uninit(cast_uninit(&mut (*target.as_mut_ptr()).keys));
+        self.children
+            .clone_uninit(cast_uninit(&mut (*target.as_mut_ptr()).children));
+    }
+}
+
+pub(crate) enum Insert<A> {
     Added,
     Replaced(A),
-    Update(Node<A>),
     Split(Node<A>, A, Node<A>),
 }
 
@@ -56,7 +86,7 @@ enum InsertAction<A> {
     InsertSplit(Node<A>, A, Node<A>),
 }
 
-pub enum Remove<A> {
+pub(crate) enum Remove<A> {
     NoChange,
     Removed(A),
     Update(A, Node<A>),
@@ -110,12 +140,7 @@ impl<A> Node<A> {
     }
 
     #[inline]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[inline]
-    pub fn unit(value: A) -> Self {
+    pub(crate) fn unit(value: A) -> Self {
         Node {
             keys: Chunk::unit(value),
             children: Chunk::pair(None, None),
@@ -123,21 +148,29 @@ impl<A> Node<A> {
     }
 
     #[inline]
-    pub fn new_from_split(left: Node<A>, median: A, right: Node<A>) -> Self {
+    pub(crate) fn new_from_split(
+        pool: &Pool<Node<A>>,
+        left: Node<A>,
+        median: A,
+        right: Node<A>,
+    ) -> Self {
         Node {
             keys: Chunk::unit(median),
-            children: Chunk::pair(Some(Ref::from(left)), Some(Ref::from(right))),
+            children: Chunk::pair(
+                Some(PoolRef::new(pool, left)),
+                Some(PoolRef::new(pool, right)),
+            ),
         }
     }
 
-    pub fn min(&self) -> Option<&A> {
+    pub(crate) fn min(&self) -> Option<&A> {
         match self.children.first().unwrap() {
             None => self.keys.first(),
             Some(ref child) => child.min(),
         }
     }
 
-    pub fn max(&self) -> Option<&A> {
+    pub(crate) fn max(&self) -> Option<&A> {
         match self.children.last().unwrap() {
             None => self.keys.last(),
             Some(ref child) => child.max(),
@@ -158,7 +191,7 @@ impl<A: BTreeValue> Node<A> {
         }
     }
 
-    pub fn lookup<BK>(&self, key: &BK) -> Option<&A>
+    pub(crate) fn lookup<BK>(&self, key: &BK) -> Option<&A>
     where
         BK: Ord + ?Sized,
         A::Key: Borrow<BK>,
@@ -178,7 +211,7 @@ impl<A: BTreeValue> Node<A> {
         }
     }
 
-    pub fn lookup_mut<BK>(&mut self, key: &BK) -> Option<&mut A>
+    pub(crate) fn lookup_mut<BK>(&mut self, pool: &Pool<Node<A>>, key: &BK) -> Option<&mut A>
     where
         A: Clone,
         BK: Ord + ?Sized,
@@ -195,14 +228,106 @@ impl<A: BTreeValue> Node<A> {
             Err(index) => match self.children[index] {
                 None => None,
                 Some(ref mut child_ref) => {
-                    let child = Ref::make_mut(child_ref);
-                    child.lookup_mut(key)
+                    let child = PoolRef::make_mut(pool, child_ref);
+                    child.lookup_mut(pool, key)
                 }
             },
         }
     }
 
-    pub fn path_first<'a, BK>(
+    pub(crate) fn lookup_prev<'a, BK>(&'a self, key: &BK) -> Option<&A>
+    where
+        BK: Ord + ?Sized,
+        A::Key: Borrow<BK>,
+    {
+        if self.keys.is_empty() {
+            return None;
+        }
+        match A::search_key(&self.keys, key) {
+            Ok(index) => Some(&self.keys[index]),
+            Err(index) => match self.children[index] {
+                None if index == 0 => None,
+                None => match self.keys.get(index - 1) {
+                    Some(_) => Some(&self.keys[index - 1]),
+                    None => None,
+                },
+                Some(ref node) => node.lookup_prev(key),
+            },
+        }
+    }
+
+    pub(crate) fn lookup_next<'a, BK>(&'a self, key: &BK) -> Option<&A>
+    where
+        BK: Ord + ?Sized,
+        A::Key: Borrow<BK>,
+    {
+        if self.keys.is_empty() {
+            return None;
+        }
+        match A::search_key(&self.keys, key) {
+            Ok(index) => Some(&self.keys[index]),
+            Err(index) => match self.children[index] {
+                None => match self.keys.get(index) {
+                    Some(_) => Some(&self.keys[index]),
+                    None => None,
+                },
+                Some(ref node) => node.lookup_next(key),
+            },
+        }
+    }
+
+    pub(crate) fn lookup_prev_mut<'a, BK>(
+        &'a mut self,
+        pool: &Pool<Node<A>>,
+        key: &BK,
+    ) -> Option<&mut A>
+    where
+        A: Clone,
+        BK: Ord + ?Sized,
+        A::Key: Borrow<BK>,
+    {
+        if self.keys.is_empty() {
+            return None;
+        }
+        match A::search_key(&self.keys, key) {
+            Ok(index) => Some(&mut self.keys[index]),
+            Err(index) => match self.children[index] {
+                None if index == 0 => None,
+                None => match self.keys.get(index - 1) {
+                    Some(_) => Some(&mut self.keys[index - 1]),
+                    None => None,
+                },
+                Some(ref mut node) => PoolRef::make_mut(pool, node).lookup_prev_mut(pool, key),
+            },
+        }
+    }
+
+    pub(crate) fn lookup_next_mut<'a, BK>(
+        &'a mut self,
+        pool: &Pool<Node<A>>,
+        key: &BK,
+    ) -> Option<&mut A>
+    where
+        A: Clone,
+        BK: Ord + ?Sized,
+        A::Key: Borrow<BK>,
+    {
+        if self.keys.is_empty() {
+            return None;
+        }
+        match A::search_key(&self.keys, key) {
+            Ok(index) => Some(&mut self.keys[index]),
+            Err(index) => match self.children[index] {
+                None => match self.keys.get(index) {
+                    Some(_) => Some(&mut self.keys[index]),
+                    None => None,
+                },
+                Some(ref mut node) => PoolRef::make_mut(pool, node).lookup_next_mut(pool, key),
+            },
+        }
+    }
+
+    pub(crate) fn path_first<'a, BK>(
         &'a self,
         mut path: Vec<(&'a Node<A>, usize)>,
     ) -> Vec<(&'a Node<A>, usize)>
@@ -226,7 +351,7 @@ impl<A: BTreeValue> Node<A> {
         }
     }
 
-    pub fn path_last<'a, BK>(
+    pub(crate) fn path_last<'a, BK>(
         &'a self,
         mut path: Vec<(&'a Node<A>, usize)>,
     ) -> Vec<(&'a Node<A>, usize)>
@@ -251,7 +376,7 @@ impl<A: BTreeValue> Node<A> {
         }
     }
 
-    pub fn path_next<'a, BK>(
+    pub(crate) fn path_next<'a, BK>(
         &'a self,
         key: &BK,
         mut path: Vec<(&'a Node<A>, usize)>,
@@ -285,7 +410,7 @@ impl<A: BTreeValue> Node<A> {
         }
     }
 
-    pub fn path_prev<'a, BK>(
+    pub(crate) fn path_prev<'a, BK>(
         &'a self,
         key: &BK,
         mut path: Vec<(&'a Node<A>, usize)>,
@@ -322,58 +447,63 @@ impl<A: BTreeValue> Node<A> {
 
     fn split(
         &mut self,
+        pool: &Pool<Node<A>>,
         value: A,
         ins_left: Option<Node<A>>,
         ins_right: Option<Node<A>>,
     ) -> Insert<A> {
-        let left_child = ins_left.map(Ref::from);
-        let right_child = ins_right.map(Ref::from);
+        let left_child = ins_left.map(|node| PoolRef::new(pool, node));
+        let right_child = ins_right.map(|node| PoolRef::new(pool, node));
         let index = A::search_value(&self.keys, &value).unwrap_err();
         let mut left_keys;
         let mut left_children;
         let mut right_keys;
         let mut right_children;
         let median;
-        if index < MEDIAN {
-            self.children[index] = left_child;
+        match index.cmp(&MEDIAN) {
+            Ordering::Less => {
+                self.children[index] = left_child;
 
-            left_keys = Chunk::from_front(&mut self.keys, index);
-            left_keys.push_back(value);
-            left_keys.drain_from_front(&mut self.keys, MEDIAN - index - 1);
+                left_keys = Chunk::from_front(&mut self.keys, index);
+                left_keys.push_back(value);
+                left_keys.drain_from_front(&mut self.keys, MEDIAN - index - 1);
 
-            left_children = Chunk::from_front(&mut self.children, index + 1);
-            left_children.push_back(right_child);
-            left_children.drain_from_front(&mut self.children, MEDIAN - index - 1);
+                left_children = Chunk::from_front(&mut self.children, index + 1);
+                left_children.push_back(right_child);
+                left_children.drain_from_front(&mut self.children, MEDIAN - index - 1);
 
-            median = self.keys.pop_front();
+                median = self.keys.pop_front();
 
-            right_keys = Chunk::drain_from(&mut self.keys);
-            right_children = Chunk::drain_from(&mut self.children);
-        } else if index > MEDIAN {
-            self.children[index] = left_child;
+                right_keys = Chunk::drain_from(&mut self.keys);
+                right_children = Chunk::drain_from(&mut self.children);
+            }
+            Ordering::Greater => {
+                self.children[index] = left_child;
 
-            left_keys = Chunk::from_front(&mut self.keys, MEDIAN);
-            left_children = Chunk::from_front(&mut self.children, MEDIAN + 1);
+                left_keys = Chunk::from_front(&mut self.keys, MEDIAN);
+                left_children = Chunk::from_front(&mut self.children, MEDIAN + 1);
 
-            median = self.keys.pop_front();
+                median = self.keys.pop_front();
 
-            right_keys = Chunk::from_front(&mut self.keys, index - MEDIAN - 1);
-            right_keys.push_back(value);
-            right_keys.append(&mut self.keys);
+                right_keys = Chunk::from_front(&mut self.keys, index - MEDIAN - 1);
+                right_keys.push_back(value);
+                right_keys.append(&mut self.keys);
 
-            right_children = Chunk::from_front(&mut self.children, index - MEDIAN);
-            right_children.push_back(right_child);
-            right_children.append(&mut self.children);
-        } else {
-            left_keys = Chunk::from_front(&mut self.keys, MEDIAN);
-            left_children = Chunk::from_front(&mut self.children, MEDIAN);
-            left_children.push_back(left_child);
+                right_children = Chunk::from_front(&mut self.children, index - MEDIAN);
+                right_children.push_back(right_child);
+                right_children.append(&mut self.children);
+            }
+            Ordering::Equal => {
+                left_keys = Chunk::from_front(&mut self.keys, MEDIAN);
+                left_children = Chunk::from_front(&mut self.children, MEDIAN);
+                left_children.push_back(left_child);
 
-            median = value;
+                median = value;
 
-            right_keys = Chunk::drain_from(&mut self.keys);
-            right_children = Chunk::drain_from(&mut self.children);
-            right_children[0] = right_child;
+                right_keys = Chunk::drain_from(&mut self.keys);
+                right_children = Chunk::drain_from(&mut self.children);
+                right_children[0] = right_child;
+            }
         }
 
         debug_assert!(left_keys.len() == MEDIAN);
@@ -403,29 +533,29 @@ impl<A: BTreeValue> Node<A> {
         Node { keys, children }
     }
 
-    fn pop_min(&mut self) -> (A, Option<Ref<Node<A>>>) {
+    fn pop_min(&mut self) -> (A, Option<PoolRef<Node<A>>>) {
         let value = self.keys.pop_front();
         let child = self.children.pop_front();
         (value, child)
     }
 
-    fn pop_max(&mut self) -> (A, Option<Ref<Node<A>>>) {
+    fn pop_max(&mut self) -> (A, Option<PoolRef<Node<A>>>) {
         let value = self.keys.pop_back();
         let child = self.children.pop_back();
         (value, child)
     }
 
-    fn push_min(&mut self, child: Option<Ref<Node<A>>>, value: A) {
+    fn push_min(&mut self, child: Option<PoolRef<Node<A>>>, value: A) {
         self.keys.push_front(value);
         self.children.push_front(child);
     }
 
-    fn push_max(&mut self, child: Option<Ref<Node<A>>>, value: A) {
+    fn push_max(&mut self, child: Option<PoolRef<Node<A>>>, value: A) {
         self.keys.push_back(value);
         self.children.push_back(child);
     }
 
-    pub fn insert(&mut self, value: A) -> Insert<A>
+    pub(crate) fn insert(&mut self, pool: &Pool<Node<A>>, value: A) -> Insert<A>
     where
         A: Clone,
     {
@@ -447,11 +577,10 @@ impl<A: BTreeValue> Node<A> {
                     None => InsertAt,
                     // Child at location, pass it on.
                     Some(ref mut child_ref) => {
-                        let child = Ref::make_mut(child_ref);
-                        match child.insert(value.clone()) {
+                        let child = PoolRef::make_mut(pool, child_ref);
+                        match child.insert(pool, value.clone()) {
                             Insert::Added => AddedAction,
                             Insert::Replaced(value) => ReplacedAction(value),
-                            Insert::Update(_) => unreachable!(),
                             Insert::Split(left, median, right) => InsertSplit(left, median, right),
                         }
                     }
@@ -472,9 +601,10 @@ impl<A: BTreeValue> Node<A> {
                     }
                     InsertSplit(left, median, right) => {
                         if has_room {
-                            self.children[index] = Some(Ref::from(left));
+                            self.children[index] = Some(PoolRef::new(pool, left));
                             self.keys.insert(index, median);
-                            self.children.insert(index + 1, Some(Ref::from(right)));
+                            self.children
+                                .insert(index + 1, Some(PoolRef::new(pool, right)));
                             return Insert::Added;
                         } else {
                             (median, Some(left), Some(right))
@@ -483,20 +613,25 @@ impl<A: BTreeValue> Node<A> {
                 }
             }
         };
-        self.split(median, left, right)
+        self.split(pool, median, left, right)
     }
 
-    pub fn remove<BK>(&mut self, key: &BK) -> Remove<A>
+    pub(crate) fn remove<BK>(&mut self, pool: &Pool<Node<A>>, key: &BK) -> Remove<A>
     where
         A: Clone,
         BK: Ord + ?Sized,
         A::Key: Borrow<BK>,
     {
         let index = A::search_key(&self.keys, key);
-        self.remove_index(index, key)
+        self.remove_index(pool, index, key)
     }
 
-    fn remove_index<BK>(&mut self, index: Result<usize, usize>, key: &BK) -> Remove<A>
+    fn remove_index<BK>(
+        &mut self,
+        pool: &Pool<Node<A>>,
+        index: Result<usize, usize>,
+        key: &BK,
+    ) -> Remove<A>
     where
         A: Clone,
         BK: Ord + ?Sized,
@@ -574,8 +709,8 @@ impl<A: BTreeValue> Node<A> {
                 let mut update = None;
                 let value;
                 if let Some(&mut Some(ref mut child_ref)) = children.get_mut(child_index) {
-                    let child = Ref::make_mut(child_ref);
-                    match child.remove_index(Ok(target_index), key) {
+                    let child = PoolRef::make_mut(pool, child_ref);
+                    match child.remove_index(pool, Ok(target_index), key) {
                         Remove::NoChange => unreachable!(),
                         Remove::Removed(pulled_value) => {
                             value = self.keys.set(pull_to, pulled_value);
@@ -589,7 +724,7 @@ impl<A: BTreeValue> Node<A> {
                     unreachable!()
                 }
                 if let Some(new_child) = update {
-                    children[child_index] = Some(Ref::from(new_child));
+                    children[child_index] = Some(PoolRef::new(pool, new_child));
                 }
                 Remove::Removed(value)
             }
@@ -597,8 +732,12 @@ impl<A: BTreeValue> Node<A> {
                 let left = self.children.remove(index).unwrap();
                 let right = mem::replace(&mut self.children[index], None).unwrap();
                 let value = self.keys.remove(index);
-                let mut merged_child = Node::merge(value, clone_ref(left), clone_ref(right));
-                let (removed, new_child) = match merged_child.remove(key) {
+                let mut merged_child = Node::merge(
+                    value,
+                    PoolRef::unwrap_or_clone(left),
+                    PoolRef::unwrap_or_clone(right),
+                );
+                let (removed, new_child) = match merged_child.remove(pool, key) {
                     Remove::NoChange => unreachable!(),
                     Remove::Removed(removed) => (removed, merged_child),
                     Remove::Update(removed, updated_child) => (removed, updated_child),
@@ -607,7 +746,7 @@ impl<A: BTreeValue> Node<A> {
                     // If we've depleted the root node, the merged child becomes the root.
                     Remove::Update(removed, new_child)
                 } else {
-                    self.children[index] = Some(Ref::from(new_child));
+                    self.children[index] = Some(PoolRef::new(pool, new_child));
                     Remove::Removed(removed)
                 }
             }
@@ -624,14 +763,14 @@ impl<A: BTreeValue> Node<A> {
                                 unreachable!()
                             }
                         });
-                    let left = Ref::make_mut(children.next().unwrap());
-                    let child = Ref::make_mut(children.next().unwrap());
+                    let left = PoolRef::make_mut(pool, children.next().unwrap());
+                    let child = PoolRef::make_mut(pool, children.next().unwrap());
                     // Prepare the rebalanced node.
                     child.push_min(
                         left.children.last().unwrap().clone(),
                         self.keys[index - 1].clone(),
                     );
-                    match child.remove(key) {
+                    match child.remove(pool, key) {
                         Remove::NoChange => {
                             // Key wasn't there, we need to revert the steal.
                             child.pop_min();
@@ -653,7 +792,7 @@ impl<A: BTreeValue> Node<A> {
                     }
                 }
                 if let Some(new_child) = update {
-                    self.children[index] = Some(Ref::from(new_child));
+                    self.children[index] = Some(PoolRef::new(pool, new_child));
                 }
                 Remove::Removed(out_value)
             }
@@ -670,11 +809,11 @@ impl<A: BTreeValue> Node<A> {
                                 unreachable!()
                             }
                         });
-                    let child = Ref::make_mut(children.next().unwrap());
-                    let right = Ref::make_mut(children.next().unwrap());
+                    let child = PoolRef::make_mut(pool, children.next().unwrap());
+                    let right = PoolRef::make_mut(pool, children.next().unwrap());
                     // Prepare the rebalanced node.
                     child.push_max(right.children[0].clone(), self.keys[index].clone());
-                    match child.remove(key) {
+                    match child.remove(pool, key) {
                         Remove::NoChange => {
                             // Key wasn't there, we need to revert the steal.
                             child.pop_max();
@@ -696,7 +835,7 @@ impl<A: BTreeValue> Node<A> {
                     }
                 }
                 if let Some(new_child) = update {
-                    self.children[index] = Some(Ref::from(new_child));
+                    self.children[index] = Some(PoolRef::new(pool, new_child));
                 }
                 Remove::Removed(out_value)
             }
@@ -710,10 +849,14 @@ impl<A: BTreeValue> Node<A> {
                 let left = self.children.remove(index).unwrap();
                 let right = mem::replace(&mut self.children[index], None).unwrap();
                 let middle = self.keys.remove(index);
-                let mut merged = Node::merge(middle, clone_ref(left), clone_ref(right));
+                let mut merged = Node::merge(
+                    middle,
+                    PoolRef::unwrap_or_clone(left),
+                    PoolRef::unwrap_or_clone(right),
+                );
                 let update;
                 let out_value;
-                match merged.remove(key) {
+                match merged.remove(pool, key) {
                     Remove::NoChange => {
                         panic!("nodes::btree::Node::remove: caught an absent key too late while merging");
                     }
@@ -732,15 +875,15 @@ impl<A: BTreeValue> Node<A> {
                         out_value = value;
                     }
                 }
-                self.children[index] = Some(Ref::from(update));
+                self.children[index] = Some(PoolRef::new(pool, update));
                 Remove::Removed(out_value)
             }
             RemoveAction::ContinueDown(index) => {
                 let mut update = None;
                 let out_value;
                 if let Some(&mut Some(ref mut child_ref)) = self.children.get_mut(index) {
-                    let child = Ref::make_mut(child_ref);
-                    match child.remove(key) {
+                    let child = PoolRef::make_mut(pool, child_ref);
+                    match child.remove(pool, key) {
                         Remove::NoChange => return Remove::NoChange,
                         Remove::Removed(value) => {
                             out_value = value;
@@ -754,7 +897,7 @@ impl<A: BTreeValue> Node<A> {
                     unreachable!()
                 }
                 if let Some(new_child) = update {
-                    self.children[index] = Some(Ref::from(new_child));
+                    self.children[index] = Some(PoolRef::new(pool, new_child));
                 }
                 Remove::Removed(out_value)
             }
@@ -764,14 +907,15 @@ impl<A: BTreeValue> Node<A> {
 
 // Iterator
 
-pub struct Iter<'a, A: 'a> {
+/// An iterator over an ordered set.
+pub struct Iter<'a, A> {
     fwd_path: Vec<(&'a Node<A>, usize)>,
     back_path: Vec<(&'a Node<A>, usize)>,
     pub(crate) remaining: usize,
 }
 
-impl<'a, A: 'a + BTreeValue> Iter<'a, A> {
-    pub fn new<R, BK>(root: &'a Node<A>, size: usize, range: R) -> Self
+impl<'a, A: BTreeValue> Iter<'a, A> {
+    pub(crate) fn new<R, BK>(root: &'a Node<A>, size: usize, range: R) -> Self
     where
         R: RangeBounds<BK>,
         A::Key: Borrow<BK>,
@@ -951,6 +1095,7 @@ enum ConsumingIterItem<A> {
     Yield(A),
 }
 
+/// A consuming iterator over an ordered set.
 pub struct ConsumingIter<A> {
     fwd_last: Option<A>,
     fwd_stack: Vec<ConsumingIterItem<A>>,
@@ -960,7 +1105,7 @@ pub struct ConsumingIter<A> {
 }
 
 impl<A: Clone> ConsumingIter<A> {
-    pub fn new(root: &Node<A>, total: usize) -> Self {
+    pub(crate) fn new(root: &Node<A>, total: usize) -> Self {
         ConsumingIter {
             fwd_last: None,
             fwd_stack: vec![ConsumingIterItem::Consider(root.clone())],
@@ -970,9 +1115,9 @@ impl<A: Clone> ConsumingIter<A> {
         }
     }
 
-    fn push_node(stack: &mut Vec<ConsumingIterItem<A>>, maybe_node: Option<Ref<Node<A>>>) {
+    fn push_node(stack: &mut Vec<ConsumingIterItem<A>>, maybe_node: Option<PoolRef<Node<A>>>) {
         if let Some(node) = maybe_node {
-            stack.push(ConsumingIterItem::Consider(clone_ref(node)))
+            stack.push(ConsumingIterItem::Consider(PoolRef::unwrap_or_clone(node)))
         }
     }
 
@@ -988,10 +1133,10 @@ impl<A: Clone> ConsumingIter<A> {
         ConsumingIter::push(&mut self.fwd_stack, node)
     }
 
-    fn push_node_back(&mut self, maybe_node: Option<Ref<Node<A>>>) {
+    fn push_node_back(&mut self, maybe_node: Option<PoolRef<Node<A>>>) {
         if let Some(node) = maybe_node {
             self.back_stack
-                .push(ConsumingIterItem::Consider(clone_ref(node)))
+                .push(ConsumingIterItem::Consider(PoolRef::unwrap_or_clone(node)))
         }
     }
 
@@ -1075,25 +1220,35 @@ impl<A: BTreeValue + Clone> ExactSizeIterator for ConsumingIter<A> {}
 
 // DiffIter
 
-pub struct DiffIter<'a, A: 'a> {
+/// An iterator over the differences between two ordered sets.
+pub struct DiffIter<'a, A> {
     old_stack: Vec<IterItem<'a, A>>,
     new_stack: Vec<IterItem<'a, A>>,
 }
 
-#[derive(PartialEq, Eq)]
-pub enum DiffItem<'a, A: 'a> {
+/// A description of a difference between two ordered sets.
+#[derive(PartialEq, Eq, Debug)]
+pub enum DiffItem<'a, A> {
+    /// This value has been added to the new set.
     Add(&'a A),
-    Update { old: &'a A, new: &'a A },
+    /// This value has been changed between the two sets.
+    Update {
+        /// The old value.
+        old: &'a A,
+        /// The new value.
+        new: &'a A,
+    },
+    /// This value has been removed from the new set.
     Remove(&'a A),
 }
 
-enum IterItem<'a, A: 'a> {
+enum IterItem<'a, A> {
     Consider(&'a Node<A>),
     Yield(&'a A),
 }
 
 impl<'a, A: 'a> DiffIter<'a, A> {
-    pub fn new(old: &'a Node<A>, new: &'a Node<A>) -> Self {
+    pub(crate) fn new(old: &'a Node<A>, new: &'a Node<A>) -> Self {
         DiffIter {
             old_stack: if old.keys.is_empty() {
                 Vec::new()
@@ -1108,7 +1263,7 @@ impl<'a, A: 'a> DiffIter<'a, A> {
         }
     }
 
-    fn push_node(stack: &mut Vec<IterItem<'a, A>>, maybe_node: &'a Option<Ref<Node<A>>>) {
+    fn push_node(stack: &mut Vec<IterItem<'a, A>>, maybe_node: &'a Option<PoolRef<Node<A>>>) {
         if let Some(ref node) = *maybe_node {
             stack.push(IterItem::Consider(&node))
         }
@@ -1144,18 +1299,20 @@ where
                 },
                 (Some(old), Some(new)) => match (old, new) {
                     (IterItem::Consider(old), IterItem::Consider(new)) => {
-                        match old.keys[0].cmp_values(&new.keys[0]) {
-                            Ordering::Less => {
-                                Self::push(&mut self.old_stack, &old);
-                                self.new_stack.push(IterItem::Consider(new));
-                            }
-                            Ordering::Greater => {
-                                self.old_stack.push(IterItem::Consider(old));
-                                Self::push(&mut self.new_stack, &new);
-                            }
-                            Ordering::Equal => {
-                                Self::push(&mut self.old_stack, &old);
-                                Self::push(&mut self.new_stack, &new);
+                        if !std::ptr::eq(old, new) {
+                            match old.keys[0].cmp_values(&new.keys[0]) {
+                                Ordering::Less => {
+                                    Self::push(&mut self.old_stack, &old);
+                                    self.new_stack.push(IterItem::Consider(new));
+                                }
+                                Ordering::Greater => {
+                                    self.old_stack.push(IterItem::Consider(old));
+                                    Self::push(&mut self.new_stack, &new);
+                                }
+                                Ordering::Equal => {
+                                    Self::push(&mut self.old_stack, &old);
+                                    Self::push(&mut self.new_stack, &new);
+                                }
                             }
                         }
                     }

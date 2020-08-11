@@ -15,6 +15,11 @@ pub use self::neon::*;
 mod crypto;
 pub use self::crypto::*;
 
+#[cfg(not(bootstrap))]
+mod tme;
+#[cfg(not(bootstrap))]
+pub use self::tme::*;
+
 mod crc;
 pub use self::crc::*;
 

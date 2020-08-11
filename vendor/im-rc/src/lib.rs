@@ -47,7 +47,7 @@
 //!
 //! Another goal of this library has been the idea that you shouldn't
 //! even have to think about what data structure to use in any given
-//! situation, until the point where you need to start worring about
+//! situation, until the point where you need to start worrying about
 //! optimisation - which, in practice, often never comes. Beyond the
 //! shape of your data (ie. whether to use a list or a map), it should
 //! be fine not to think too carefully about data structures - you can
@@ -303,10 +303,12 @@
 //!
 //! | Feature | Description |
 //! | ------- | ----------- |
+//! | [`pool`](https://crates.io/crates/refpool) | Constructors and pool types for [`refpool`](https://crates.io/crates/refpool) memory pools (only available in `im-rc`) |
 //! | [`proptest`](https://crates.io/crates/proptest) | Strategies for all `im` datatypes under a `proptest` namespace, eg. `im::vector::proptest::vector()` |
-//! | [`quickcheck`](https://crates.io/crates/quickcheck) | `Arbitrary` implementations for all `im` datatypes (not available in `im-rc`) |
-//! | [`rayon`](https://crates.io/crates/rayon) | parallel iterator implementations for `Vector` (not available in `im-rc`) |
-//! | [`serde`](https://crates.io/crates/serde) | `Serialize` and `Deserialize` implementations for all `im` datatypes |
+//! | [`quickcheck`](https://crates.io/crates/quickcheck) | [`quickcheck::Arbitrary`](https://docs.rs/quickcheck/latest/quickcheck/trait.Arbitrary.html) implementations for all `im` datatypes (not available in `im-rc`) |
+//! | [`rayon`](https://crates.io/crates/rayon) | parallel iterator implementations for [`Vector`][vector::Vector] (not available in `im-rc`) |
+//! | [`serde`](https://crates.io/crates/serde) | [`Serialize`](https://docs.rs/serde/latest/serde/trait.Serialize.html) and [`Deserialize`](https://docs.rs/serde/latest/serde/trait.Deserialize.html) implementations for all `im` datatypes |
+//! | [`arbitrary`](https://crates.io/crates/arbitrary/) | [`arbitrary::Arbitrary`](https://docs.rs/arbitrary/latest/arbitrary/trait.Arbitrary.html) implementations for all `im` datatypes |
 //!
 //! [std::collections]: https://doc.rust-lang.org/std/collections/index.html
 //! [std::collections::VecDeque]: https://doc.rust-lang.org/std/collections/struct.VecDeque.html
@@ -322,18 +324,20 @@
 //! [std::hash::Hash]: https://doc.rust-lang.org/std/hash/trait.Hash.html
 //! [std::marker::Send]: https://doc.rust-lang.org/std/marker/trait.Send.html
 //! [std::marker::Sync]: https://doc.rust-lang.org/std/marker/trait.Sync.html
-//! [hashmap::HashMap]: ./hashmap/struct.HashMap.html
-//! [hashset::HashSet]: ./hashset/struct.HashSet.html
-//! [ordmap::OrdMap]: ./ordmap/struct.OrdMap.html
-//! [ordset::OrdSet]: ./ordset/struct.OrdSet.html
-//! [vector::Vector]: ./vector/enum.Vector.html
+//! [hashmap::HashMap]: ./struct.HashMap.html
+//! [hashset::HashSet]: ./struct.HashSet.html
+//! [ordmap::OrdMap]: ./struct.OrdMap.html
+//! [ordset::OrdSet]: ./struct.OrdSet.html
+//! [vector::Vector]: ./struct.Vector.html
 //! [vector::Vector::push_back]: ./vector/enum.Vector.html#method.push_back
 //! [rrb-tree]: https://infoscience.epfl.ch/record/213452/files/rrbvector.pdf
 //! [hamt]: https://en.wikipedia.org/wiki/Hash_array_mapped_trie
 //! [b-tree]: https://en.wikipedia.org/wiki/B-tree
 //! [cons-list]: https://en.wikipedia.org/wiki/Cons#Lists
 
-#![deny(unsafe_code)]
+#![forbid(rust_2018_idioms)]
+#![deny(unsafe_code, nonstandard_style)]
+#![warn(unreachable_pub, missing_docs)]
 #![cfg_attr(has_specialisation, feature(specialization))]
 
 #[cfg(test)]
@@ -344,6 +348,8 @@ mod config;
 mod nodes;
 mod sort;
 mod sync;
+
+#[macro_use]
 mod util;
 
 #[macro_use]
@@ -361,8 +367,28 @@ pub mod vector;
 
 pub mod iter;
 
+#[cfg(any(test, feature = "proptest"))]
+pub mod proptest;
+
 #[cfg(any(test, feature = "serde"))]
+#[doc(hidden)]
 pub mod ser;
+
+#[cfg(feature = "arbitrary")]
+#[doc(hidden)]
+pub mod arbitrary;
+
+#[cfg(all(threadsafe, feature = "quickcheck"))]
+#[doc(hidden)]
+pub mod quickcheck;
+
+#[cfg(any(threadsafe, not(feature = "pool")))]
+mod fakepool;
+
+#[cfg(all(threadsafe, feature = "pool"))]
+compile_error!(
+    "The `pool` feature is not threadsafe but you've enabled it on a threadsafe version of `im`."
+);
 
 pub use crate::hashmap::HashMap;
 pub use crate::hashset::HashSet;

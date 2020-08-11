@@ -9,7 +9,7 @@ use lazycell::LazyCell;
 use log::{debug, trace};
 use std::cell::{Cell, Ref, RefCell};
 use std::fmt::Write as FmtWrite;
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::prelude::*;
 use std::io::SeekFrom;
 use std::mem;
@@ -225,7 +225,7 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
 
         // Create a dummy file to record the mtime for when we updated the
         // index.
-        File::create(&path.join(LAST_UPDATED_FILE))?;
+        paths::create(&path.join(LAST_UPDATED_FILE))?;
 
         Ok(())
     }
@@ -283,7 +283,8 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
             .create(true)
             .read(true)
             .write(true)
-            .open(&path)?;
+            .open(&path)
+            .chain_err(|| format!("failed to open `{}`", path.display()))?;
         let meta = dst.metadata()?;
         if meta.len() > 0 {
             return Ok(dst);
@@ -300,10 +301,8 @@ impl<'cfg> RegistryData for RemoteRegistry<'cfg> {
 
         let path = self.cache_path.join(path);
         let path = self.config.assert_package_cache_locked(&path);
-        if let Ok(dst) = File::open(path) {
-            if let Ok(meta) = dst.metadata() {
-                return meta.len() > 0;
-            }
+        if let Ok(meta) = fs::metadata(path) {
+            return meta.len() > 0;
         }
         false
     }

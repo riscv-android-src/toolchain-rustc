@@ -1,8 +1,7 @@
 //! This crate provides Serde's two derive macros.
 //!
-//! ```rust
-//! # #[macro_use]
-//! # extern crate serde_derive;
+//! ```edition2018
+//! # use serde_derive::{Serialize, Deserialize};
 //! #
 //! #[derive(Serialize, Deserialize)]
 //! # struct S;
@@ -14,37 +13,45 @@
 //!
 //! [https://serde.rs/derive.html]: https://serde.rs/derive.html
 
-#![doc(html_root_url = "https://docs.rs/serde_derive/1.0.81")]
+#![doc(html_root_url = "https://docs.rs/serde_derive/1.0.106")]
+#![allow(unknown_lints, bare_trait_objects)]
 #![cfg_attr(feature = "cargo-clippy", allow(renamed_and_removed_lints))]
 #![cfg_attr(feature = "cargo-clippy", deny(clippy, clippy_pedantic))]
-// Whitelisted clippy lints
+// Ignored clippy lints
 #![cfg_attr(
     feature = "cargo-clippy",
     allow(
-        cyclomatic_complexity,
+        cognitive_complexity,
         enum_variant_names,
         needless_pass_by_value,
         redundant_field_names,
         too_many_arguments,
+        trivially_copy_pass_by_ref,
         used_underscore_binding,
+        wildcard_in_or_patterns,
     )
 )]
-// Whitelisted clippy_pedantic lints
+// Ignored clippy_pedantic lints
 #![cfg_attr(
     feature = "cargo-clippy",
     allow(
         cast_possible_truncation,
+        checked_conversions,
         doc_markdown,
         enum_glob_use,
         filter_map,
         indexing_slicing,
         items_after_statements,
         match_same_arms,
+        module_name_repetitions,
+        must_use_candidate,
         similar_names,
         single_match_else,
-        stutter,
+        struct_excessive_bools,
+        too_many_lines,
         unseparated_literal_suffix,
         use_self,
+        wildcard_imports,
     )
 )]
 // The `quote!` macro requires deep recursion.
@@ -69,6 +76,7 @@ mod bound;
 mod fragment;
 
 mod de;
+mod dummy;
 mod pretend;
 mod ser;
 mod try;

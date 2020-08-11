@@ -309,7 +309,8 @@ impl<T: Ord> BTreeSet<T> {
     /// let mut set: BTreeSet<i32> = BTreeSet::new();
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn new() -> BTreeSet<T> {
+    #[rustc_const_unstable(feature = "const_btree_new", issue = "71835")]
+    pub const fn new() -> BTreeSet<T> {
         BTreeSet { map: BTreeMap::new() }
     }
 
@@ -1151,12 +1152,22 @@ impl<T: Ord> Extend<T> for BTreeSet<T> {
             self.insert(elem);
         });
     }
+
+    #[inline]
+    fn extend_one(&mut self, elem: T) {
+        self.insert(elem);
+    }
 }
 
 #[stable(feature = "extend_ref", since = "1.2.0")]
 impl<'a, T: 'a + Ord + Copy> Extend<&'a T> for BTreeSet<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         self.extend(iter.into_iter().cloned());
+    }
+
+    #[inline]
+    fn extend_one(&mut self, &elem: &'a T) {
+        self.insert(elem);
     }
 }
 

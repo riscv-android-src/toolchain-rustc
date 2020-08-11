@@ -20,6 +20,28 @@ use rustc_span::source_map::Span;
 use rustc_span::symbol::Symbol;
 use semver::Version;
 
+static UNIX_SYSTEMS: &[&str] = &[
+    "android",
+    "dragonfly",
+    "emscripten",
+    "freebsd",
+    "fuchsia",
+    "haiku",
+    "illumos",
+    "ios",
+    "l4re",
+    "linux",
+    "macos",
+    "netbsd",
+    "openbsd",
+    "redox",
+    "solaris",
+    "vxworks",
+];
+
+// NOTE: windows is excluded from the list because it's also a valid target family.
+static NON_UNIX_SYSTEMS: &[&str] = &["cloudabi", "hermit", "none", "wasi"];
+
 declare_clippy_lint! {
     /// **What it does:** Checks for items annotated with `#[inline(always)]`,
     /// unless the annotated function is empty or simply panics.
@@ -189,11 +211,43 @@ declare_clippy_lint! {
     "usage of `cfg_attr(rustfmt)` instead of tool attributes"
 }
 
+declare_clippy_lint! {
+    /// **What it does:** Checks for cfg attributes having operating systems used in target family position.
+    ///
+    /// **Why is this bad?** The configuration option will not be recognised and the related item will not be included
+    /// by the conditional compilation engine.
+    ///
+    /// **Known problems:** None.
+    ///
+    /// **Example:**
+    ///
+    /// Bad:
+    /// ```rust
+    /// #[cfg(linux)]
+    /// fn conditional() { }
+    /// ```
+    ///
+    /// Good:
+    /// ```rust
+    /// #[cfg(target_os = "linux")]
+    /// fn conditional() { }
+    /// ```
+    ///
+    /// Or:
+    /// ```rust
+    /// #[cfg(unix)]
+    /// fn conditional() { }
+    /// ```
+    /// Check the [Rust Reference](https://doc.rust-lang.org/reference/conditional-compilation.html#target_os) for more details.
+    pub MISMATCHED_TARGET_OS,
+    correctness,
+    "usage of `cfg(operating_system)` instead of `cfg(target_os = \"operating_system\")`"
+}
+
 declare_lint_pass!(Attributes => [
     INLINE_ALWAYS,
     DEPRECATED_SEMVER,
     USELESS_ATTRIBUTE,
-    EMPTY_LINE_AFTER_OUTER_ATTR,
     UNKNOWN_CLIPPY_LINTS,
 ]);
 
@@ -425,36 +479,6 @@ fn check_attrs(cx: &LateContext<'_, '_>, span: Span, name: Name, attrs: &[Attrib
     }
 
     for attr in attrs {
-        let attr_item = if let AttrKind::Normal(ref attr) = attr.kind {
-            attr
-        } else {
-            continue;
-        };
-
-        if attr.style == AttrStyle::Outer {
-            if attr_item.args.inner_tokens().is_empty() || !is_present_in_source(cx, attr.span) {
-                return;
-            }
-
-            let begin_of_attr_to_item = Span::new(attr.span.lo(), span.lo(), span.ctxt());
-            let end_of_attr_to_item = Span::new(attr.span.hi(), span.lo(), span.ctxt());
-
-            if let Some(snippet) = snippet_opt(cx, end_of_attr_to_item) {
-                let lines = snippet.split('\n').collect::<Vec<_>>();
-                let lines = without_block_comments(lines);
-
-                if lines.iter().filter(|l| l.trim().is_empty()).count() > 2 {
-                    span_lint(
-                        cx,
-                        EMPTY_LINE_AFTER_OUTER_ATTR,
-                        begin_of_attr_to_item,
-                        "Found an empty line after an outer attribute. \
-                         Perhaps you forgot to add a `!` to make it an inner attribute?",
-                    );
-                }
-            }
-        }
-
         if let Some(values) = attr.meta_item_list() {
             if values.len() != 1 || !attr.check_name(sym!(inline)) {
                 continue;
@@ -496,36 +520,149 @@ fn is_word(nmi: &NestedMetaItem, expected: Symbol) -> bool {
     }
 }
 
-declare_lint_pass!(DeprecatedCfgAttribute => [DEPRECATED_CFG_ATTR]);
+declare_lint_pass!(EarlyAttributes => [
+    DEPRECATED_CFG_ATTR,
+    MISMATCHED_TARGET_OS,
+    EMPTY_LINE_AFTER_OUTER_ATTR,
+]);
 
-impl EarlyLintPass for DeprecatedCfgAttribute {
+impl EarlyLintPass for EarlyAttributes {
+    fn check_item(&mut self, cx: &EarlyContext<'_>, item: &rustc_ast::ast::Item) {
+        check_empty_line_after_outer_attr(cx, item);
+    }
+
     fn check_attribute(&mut self, cx: &EarlyContext<'_>, attr: &Attribute) {
-        if_chain! {
-            // check cfg_attr
-            if attr.check_name(sym!(cfg_attr));
-            if let Some(items) = attr.meta_item_list();
-            if items.len() == 2;
-            // check for `rustfmt`
-            if let Some(feature_item) = items[0].meta_item();
-            if feature_item.check_name(sym!(rustfmt));
-            // check for `rustfmt_skip` and `rustfmt::skip`
-            if let Some(skip_item) = &items[1].meta_item();
-            if skip_item.check_name(sym!(rustfmt_skip)) ||
-                skip_item.path.segments.last().expect("empty path in attribute").ident.name == sym!(skip);
-            // Only lint outer attributes, because custom inner attributes are unstable
-            // Tracking issue: https://github.com/rust-lang/rust/issues/54726
-            if let AttrStyle::Outer = attr.style;
-            then {
-                span_lint_and_sugg(
-                    cx,
-                    DEPRECATED_CFG_ATTR,
-                    attr.span,
-                    "`cfg_attr` is deprecated for rustfmt and got replaced by tool attributes",
-                    "use",
-                    "#[rustfmt::skip]".to_string(),
-                    Applicability::MachineApplicable,
-                );
+        check_deprecated_cfg_attr(cx, attr);
+        check_mismatched_target_os(cx, attr);
+    }
+}
+
+fn check_empty_line_after_outer_attr(cx: &EarlyContext<'_>, item: &rustc_ast::ast::Item) {
+    for attr in &item.attrs {
+        let attr_item = if let AttrKind::Normal(ref attr) = attr.kind {
+            attr
+        } else {
+            return;
+        };
+
+        if attr.style == AttrStyle::Outer {
+            if attr_item.args.inner_tokens().is_empty() || !is_present_in_source(cx, attr.span) {
+                return;
             }
+
+            let begin_of_attr_to_item = Span::new(attr.span.lo(), item.span.lo(), item.span.ctxt());
+            let end_of_attr_to_item = Span::new(attr.span.hi(), item.span.lo(), item.span.ctxt());
+
+            if let Some(snippet) = snippet_opt(cx, end_of_attr_to_item) {
+                let lines = snippet.split('\n').collect::<Vec<_>>();
+                let lines = without_block_comments(lines);
+
+                if lines.iter().filter(|l| l.trim().is_empty()).count() > 2 {
+                    span_lint(
+                        cx,
+                        EMPTY_LINE_AFTER_OUTER_ATTR,
+                        begin_of_attr_to_item,
+                        "Found an empty line after an outer attribute. \
+                        Perhaps you forgot to add a `!` to make it an inner attribute?",
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn check_deprecated_cfg_attr(cx: &EarlyContext<'_>, attr: &Attribute) {
+    if_chain! {
+        // check cfg_attr
+        if attr.check_name(sym!(cfg_attr));
+        if let Some(items) = attr.meta_item_list();
+        if items.len() == 2;
+        // check for `rustfmt`
+        if let Some(feature_item) = items[0].meta_item();
+        if feature_item.check_name(sym!(rustfmt));
+        // check for `rustfmt_skip` and `rustfmt::skip`
+        if let Some(skip_item) = &items[1].meta_item();
+        if skip_item.check_name(sym!(rustfmt_skip)) ||
+            skip_item.path.segments.last().expect("empty path in attribute").ident.name == sym!(skip);
+        // Only lint outer attributes, because custom inner attributes are unstable
+        // Tracking issue: https://github.com/rust-lang/rust/issues/54726
+        if let AttrStyle::Outer = attr.style;
+        then {
+            span_lint_and_sugg(
+                cx,
+                DEPRECATED_CFG_ATTR,
+                attr.span,
+                "`cfg_attr` is deprecated for rustfmt and got replaced by tool attributes",
+                "use",
+                "#[rustfmt::skip]".to_string(),
+                Applicability::MachineApplicable,
+            );
+        }
+    }
+}
+
+fn check_mismatched_target_os(cx: &EarlyContext<'_>, attr: &Attribute) {
+    fn find_os(name: &str) -> Option<&'static str> {
+        UNIX_SYSTEMS
+            .iter()
+            .chain(NON_UNIX_SYSTEMS.iter())
+            .find(|&&os| os == name)
+            .copied()
+    }
+
+    fn is_unix(name: &str) -> bool {
+        UNIX_SYSTEMS.iter().any(|&os| os == name)
+    }
+
+    fn find_mismatched_target_os(items: &[NestedMetaItem]) -> Vec<(&str, Span)> {
+        let mut mismatched = Vec::new();
+
+        for item in items {
+            if let NestedMetaItem::MetaItem(meta) = item {
+                match &meta.kind {
+                    MetaItemKind::List(list) => {
+                        mismatched.extend(find_mismatched_target_os(&list));
+                    },
+                    MetaItemKind::Word => {
+                        if_chain! {
+                            if let Some(ident) = meta.ident();
+                            if let Some(os) = find_os(&*ident.name.as_str());
+                            then {
+                                mismatched.push((os, ident.span));
+                            }
+                        }
+                    },
+                    _ => {},
+                }
+            }
+        }
+
+        mismatched
+    }
+
+    if_chain! {
+        if attr.check_name(sym!(cfg));
+        if let Some(list) = attr.meta_item_list();
+        let mismatched = find_mismatched_target_os(&list);
+        if !mismatched.is_empty();
+        then {
+            let mess = "operating system used in target family position";
+
+            span_lint_and_then(cx, MISMATCHED_TARGET_OS, attr.span, &mess, |diag| {
+                // Avoid showing the unix suggestion multiple times in case
+                // we have more than one mismatch for unix-like systems
+                let mut unix_suggested = false;
+
+                for (os, span) in mismatched {
+                    let sugg = format!("target_os = \"{}\"", os);
+                    diag.span_suggestion(span, "try", sugg, Applicability::MaybeIncorrect);
+
+                    if !unix_suggested && is_unix(os) {
+                        diag.help("Did you mean `unix`?");
+                        unix_suggested = true;
+                    }
+                }
+            });
         }
     }
 }

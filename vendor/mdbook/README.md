@@ -1,6 +1,6 @@
 # mdBook
 
-[![Build Status](https://github.com/rust-lang/mdBook/workflows/CI/badge.svg)](https://github.com/rust-lang/mdBook/actions?workflow=CI)
+[![Build Status](https://github.com/rust-lang/mdBook/workflows/CI/badge.svg?event=push)](https://github.com/rust-lang/mdBook/actions?workflow=CI)
 [![crates.io](https://img.shields.io/crates/v/mdbook.svg)](https://crates.io/crates/mdbook)
 [![LICENSE](https://img.shields.io/github/license/rust-lang/mdBook.svg)](LICENSE)
 
@@ -42,10 +42,14 @@ There are multiple ways to install mdBook.
 
    This will constrain the server to install the latest **non-breaking**
    version of mdBook and will prevent your books from failing to build because
-   we released a new version. For example:
+   we released a new version.
+   
+   You can also disable default features to speed up compile time.
+   
+   Example:
 
    ```
-   cargo install mdbook --vers "^0.1.0"
+   cargo install mdbook --no-default-features --features output --vers "^0.1.0"
    ```
 
 3. **From Git**
@@ -200,7 +204,7 @@ Contributions are highly appreciated and encouraged! Don't hesitate to
 participate to discussions in the issues, propose new features and ask for
 help.
 
-If you are just starting out with Rust, there are a series of issus that are
+If you are just starting out with Rust, there are a series of issues that are
 tagged [E-Easy] and **we will gladly mentor you** so that you can successfully
 go through the process of fixing a bug or adding a new feature! Let us know if
 you need any help.

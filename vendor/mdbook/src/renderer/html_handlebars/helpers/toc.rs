@@ -16,9 +16,9 @@ impl HelperDef for RenderToc {
     fn call<'reg: 'rc, 'rc>(
         &self,
         _h: &Helper<'reg, 'rc>,
-        _r: &'reg Handlebars,
+        _r: &'reg Handlebars<'_>,
         ctx: &'rc Context,
-        rc: &mut RenderContext<'reg>,
+        rc: &mut RenderContext<'reg, 'rc>,
         out: &mut dyn Output,
     ) -> Result<(), RenderError> {
         // get value from context data
@@ -191,7 +191,7 @@ fn write_li_open_tag(
     is_expanded: bool,
     is_affix: bool,
 ) -> Result<(), std::io::Error> {
-    let mut li = String::from("<li class=\"");
+    let mut li = String::from("<li class=\"chapter-item ");
     if is_expanded {
         li.push_str("expanded ");
     }

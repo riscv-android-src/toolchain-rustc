@@ -61,7 +61,11 @@ impl HtmlHandlebars {
                     .get("book_title")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
-                title = ch.name.clone() + " - " + book_title;
+
+                title = match book_title {
+                    "" => ch.name.clone(),
+                    _ => ch.name.clone() + " - " + book_title,
+                }
             }
 
             ctx.data.insert("path".to_owned(), json!(path));
@@ -208,7 +212,7 @@ impl HtmlHandlebars {
         );
     }
 
-    fn register_hbs_helpers(&self, handlebars: &mut Handlebars, html_config: &HtmlConfig) {
+    fn register_hbs_helpers(&self, handlebars: &mut Handlebars<'_>, html_config: &HtmlConfig) {
         handlebars.register_helper(
             "toc",
             Box::new(helpers::toc::RenderToc {
@@ -287,6 +291,7 @@ impl Renderer for HtmlHandlebars {
         let src_dir = ctx.root.join(&ctx.config.book.src);
         let destination = &ctx.destination;
         let book = &ctx.book;
+        let build_dir = ctx.root.join(&ctx.config.build.build_dir);
 
         if destination.exists() {
             utils::fs::remove_dir_content(destination)
@@ -373,8 +378,8 @@ impl Renderer for HtmlHandlebars {
             }
         }
 
-        // Copy all remaining files
-        utils::fs::copy_files_except_ext(&src_dir, &destination, true, &["md"])?;
+        // Copy all remaining files, avoid a recursive copy from/to the book build dir
+        utils::fs::copy_files_except_ext(&src_dir, &destination, true, Some(&build_dir), &["md"])?;
 
         Ok(())
     }
@@ -701,7 +706,7 @@ fn partition_source(s: &str) -> (String, String) {
 }
 
 struct RenderItemContext<'a> {
-    handlebars: &'a Handlebars,
+    handlebars: &'a Handlebars<'a>,
     destination: PathBuf,
     data: serde_json::Map<String, serde_json::Value>,
     is_index: bool,

@@ -20,6 +20,7 @@
 namespace llvm {
 class AsmPrinter;
 
+/// This struct describes target specific location.
 struct TargetIndexLocation {
   int Index;
   int Offset;
@@ -56,9 +57,9 @@ class DbgValueLoc {
   } Constant;
 
   union {
-    // Or a location in the machine frame.
+    /// Or a location in the machine frame.
     MachineLocation Loc;
-    // Or a location from target specific location.
+    /// Or a location from target specific location.
     TargetIndexLocation TIL;
   };
 

@@ -35,7 +35,6 @@ use super::FnCtxt;
 use crate::expr_use_visitor as euv;
 use crate::mem_categorization as mc;
 use crate::mem_categorization::PlaceBase;
-use rustc_ast::ast;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
@@ -43,7 +42,7 @@ use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_infer::infer::UpvarRegion;
 use rustc_middle::ty::{self, Ty, TyCtxt, UpvarSubsts};
-use rustc_span::Span;
+use rustc_span::{Span, Symbol};
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     pub fn closure_analyze(&self, body: &'tcx hir::Body<'tcx>) {
@@ -112,8 +111,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             None
         };
 
-        if let Some(upvars) = self.tcx.upvars(closure_def_id) {
-            let mut upvar_list: FxIndexMap<hir::HirId, ty::UpvarId> =
+        if let Some(upvars) = self.tcx.upvars_mentioned(closure_def_id) {
+            let mut closure_captures: FxIndexMap<hir::HirId, ty::UpvarId> =
                 FxIndexMap::with_capacity_and_hasher(upvars.len(), Default::default());
             for (&var_hir_id, _) in upvars.iter() {
                 let upvar_id = ty::UpvarId {
@@ -123,7 +122,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 debug!("seed upvar_id {:?}", upvar_id);
                 // Adding the upvar Id to the list of Upvars, which will be added
                 // to the map for the closure at the end of the for loop.
-                upvar_list.insert(var_hir_id, upvar_id);
+                closure_captures.insert(var_hir_id, upvar_id);
 
                 let capture_kind = match capture_clause {
                     hir::CaptureBy::Value => ty::UpvarCapture::ByValue,
@@ -141,13 +140,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // Add the vector of upvars to the map keyed with the closure id.
             // This gives us an easier access to them without having to call
             // tcx.upvars again..
-            if !upvar_list.is_empty() {
-                self.tables.borrow_mut().upvar_list.insert(closure_def_id, upvar_list);
+            if !closure_captures.is_empty() {
+                self.tables.borrow_mut().closure_captures.insert(closure_def_id, closure_captures);
             }
         }
 
-        let body_owner_def_id = self.tcx.hir().body_owner_def_id(body.id()).to_def_id();
-        assert_eq!(body_owner_def_id, closure_def_id);
+        let body_owner_def_id = self.tcx.hir().body_owner_def_id(body.id());
+        assert_eq!(body_owner_def_id.to_def_id(), closure_def_id);
         let mut delegate = InferBorrowKind {
             fcx: self,
             closure_def_id,
@@ -219,14 +218,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let tcx = self.tcx;
         let closure_def_id = tcx.hir().local_def_id(closure_id);
 
-        tcx.upvars(closure_def_id)
+        tcx.upvars_mentioned(closure_def_id)
             .iter()
             .flat_map(|upvars| {
                 upvars.iter().map(|(&var_hir_id, _)| {
                     let upvar_ty = self.node_ty(var_hir_id);
                     let upvar_id = ty::UpvarId {
                         var_path: ty::UpvarPath { hir_id: var_hir_id },
-                        closure_expr_id: closure_def_id.expect_local(),
+                        closure_expr_id: closure_def_id,
                     };
                     let capture = self.tables.borrow().upvar_capture(upvar_id);
 
@@ -261,7 +260,7 @@ struct InferBorrowKind<'a, 'tcx> {
 
     // If we modified `current_closure_kind`, this field contains a `Some()` with the
     // variable access that caused us to do so.
-    current_origin: Option<(Span, ast::Name)>,
+    current_origin: Option<(Span, Symbol)>,
 
     // For each upvar that we access, we track the minimal kind of
     // access we need (ref, ref mut, move, etc).
@@ -415,7 +414,7 @@ impl<'a, 'tcx> InferBorrowKind<'a, 'tcx> {
         closure_id: LocalDefId,
         new_kind: ty::ClosureKind,
         upvar_span: Span,
-        var_name: ast::Name,
+        var_name: Symbol,
     ) {
         debug!(
             "adjust_closure_kind(closure_id={:?}, new_kind={:?}, upvar_span={:?}, var_name={})",
@@ -480,6 +479,6 @@ impl<'a, 'tcx> euv::Delegate<'tcx> for InferBorrowKind<'a, 'tcx> {
     }
 }
 
-fn var_name(tcx: TyCtxt<'_>, var_hir_id: hir::HirId) -> ast::Name {
+fn var_name(tcx: TyCtxt<'_>, var_hir_id: hir::HirId) -> Symbol {
     tcx.hir().name(var_hir_id)
 }

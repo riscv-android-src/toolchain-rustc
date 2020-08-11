@@ -15,12 +15,12 @@ use tar::{Archive, Builder, EntryType, Header};
 use crate::core::compiler::{BuildConfig, CompileMode, DefaultExecutor, Executor};
 use crate::core::{Feature, Shell, Verbosity, Workspace};
 use crate::core::{Package, PackageId, PackageSet, Resolve, Source, SourceId};
-use crate::ops;
 use crate::sources::PathSource;
 use crate::util::errors::{CargoResult, CargoResultExt};
 use crate::util::paths;
 use crate::util::toml::TomlManifest;
 use crate::util::{self, restricted_names, Config, FileLock};
+use crate::{drop_println, ops};
 
 pub struct PackageOpts<'cfg> {
     pub config: &'cfg Config,
@@ -29,7 +29,7 @@ pub struct PackageOpts<'cfg> {
     pub allow_dirty: bool,
     pub verify: bool,
     pub jobs: Option<u32>,
-    pub target: Option<String>,
+    pub targets: Vec<String>,
     pub features: Vec<String>,
     pub all_features: bool,
     pub no_default_features: bool,
@@ -102,7 +102,7 @@ pub fn package(ws: &Workspace<'_>, opts: &PackageOpts<'_>) -> CargoResult<Option
 
     if opts.list {
         for ar_file in ar_files {
-            println!("{}", ar_file.rel_str);
+            drop_println!(config, "{}", ar_file.rel_str);
         }
         return Ok(None);
     }
@@ -274,7 +274,7 @@ fn build_lock(ws: &Workspace<'_>) -> CargoResult<String> {
         orig_pkg
             .manifest()
             .original()
-            .prepare_for_publish(config, orig_pkg.root())?,
+            .prepare_for_publish(ws, orig_pkg.root())?,
     );
     let package_root = orig_pkg.root();
     let source_id = orig_pkg.package_id().source_id();
@@ -539,7 +539,7 @@ fn tar(
             }
             FileContents::Generated(generated_kind) => {
                 let contents = match generated_kind {
-                    GeneratedFile::Manifest => pkg.to_registry_toml(ws.config())?,
+                    GeneratedFile::Manifest => pkg.to_registry_toml(ws)?,
                     GeneratedFile::Lockfile => build_lock(ws)?,
                     GeneratedFile::VcsInfo(s) => s,
                 };
@@ -716,7 +716,7 @@ fn run_verify(ws: &Workspace<'_>, tar: &FileLock, opts: &PackageOpts<'_>) -> Car
     ops::compile_with_exec(
         &ws,
         &ops::CompileOptions {
-            build_config: BuildConfig::new(config, opts.jobs, &opts.target, CompileMode::Build)?,
+            build_config: BuildConfig::new(config, opts.jobs, &opts.targets, CompileMode::Build)?,
             features: opts.features.clone(),
             no_default_features: opts.no_default_features,
             all_features: opts.all_features,
@@ -728,7 +728,6 @@ fn run_verify(ws: &Workspace<'_>, tar: &FileLock, opts: &PackageOpts<'_>) -> Car
             target_rustc_args: rustc_args,
             local_rustdoc_args: None,
             rustdoc_document_private_items: false,
-            export_dir: None,
         },
         &exec,
     )?;
@@ -836,25 +835,12 @@ fn check_filename(file: &Path, shell: &mut Shell) -> CargoResult<()> {
             file.display()
         )
     }
-    let mut check_windows = |name| -> CargoResult<()> {
-        if restricted_names::is_windows_reserved(name) {
-            shell.warn(format!(
-                "file {} is a reserved Windows filename, \
+    if restricted_names::is_windows_reserved_path(file) {
+        shell.warn(format!(
+            "file {} is a reserved Windows filename, \
                 it will not work on Windows platforms",
-                file.display()
-            ))?;
-        }
-        Ok(())
-    };
-    for component in file.iter() {
-        if let Some(component) = component.to_str() {
-            check_windows(component)?;
-        }
-    }
-    if file.extension().is_some() {
-        if let Some(stem) = file.file_stem().and_then(|s| s.to_str()) {
-            check_windows(stem)?;
-        }
+            file.display()
+        ))?;
     }
     Ok(())
 }

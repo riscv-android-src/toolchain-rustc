@@ -106,21 +106,24 @@
 //!}
 //!```
 #![crate_type = "proc-macro"]
-
 #![recursion_limit = "192"]
 
 extern crate proc_macro;
 extern crate proc_macro2;
 #[macro_use]
 extern crate quote;
-#[macro_use]
 extern crate syn;
 
 macro_rules! my_quote {
     ($($t:tt)*) => (quote_spanned!(proc_macro2::Span::call_site() => $($t)*))
 }
 
+fn path_to_string(path: &syn::Path) -> String {
+    path.segments.iter().map(|s| s.ident.to_string()).collect::<Vec<String>>().join("::")
+}
+
 use proc_macro::TokenStream;
+use syn::Token;
 
 #[proc_macro_derive(new, attributes(new))]
 pub fn derive(input: TokenStream) -> TokenStream {
@@ -133,21 +136,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
     result.into()
 }
 
-
-fn new_for_struct(ast: &syn::DeriveInput,
-                  fields: &syn::Fields,
-                  variant: Option<&syn::Ident>) -> proc_macro2::TokenStream
-{
+fn new_for_struct(
+    ast: &syn::DeriveInput,
+    fields: &syn::Fields,
+    variant: Option<&syn::Ident>,
+) -> proc_macro2::TokenStream {
     match *fields {
-        syn::Fields::Named(ref fields) => {
-            new_impl(&ast, Some(&fields.named), true, variant)
-        },
-        syn::Fields::Unit => {
-            new_impl(&ast, None, false, variant)
-        },
-        syn::Fields::Unnamed(ref fields) => {
-            new_impl(&ast, Some(&fields.unnamed), false, variant)
-        },
+        syn::Fields::Named(ref fields) => new_impl(&ast, Some(&fields.named), true, variant),
+        syn::Fields::Unit => new_impl(&ast, None, false, variant),
+        syn::Fields::Unnamed(ref fields) => new_impl(&ast, Some(&fields.unnamed), false, variant),
     }
 }
 
@@ -164,19 +161,23 @@ fn new_for_enum(ast: &syn::DeriveInput, data: &syn::DataEnum) -> proc_macro2::To
     my_quote!(#(#impls)*)
 }
 
-fn new_impl(ast: &syn::DeriveInput,
-            fields: Option<&syn::punctuated::Punctuated<syn::Field, Token![,]>>,
-            named: bool, variant: Option<&syn::Ident>) -> proc_macro2::TokenStream
-{
+fn new_impl(
+    ast: &syn::DeriveInput,
+    fields: Option<&syn::punctuated::Punctuated<syn::Field, Token![,]>>,
+    named: bool,
+    variant: Option<&syn::Ident>,
+) -> proc_macro2::TokenStream {
     let name = &ast.ident;
     let unit = fields.is_none();
     let empty = Default::default();
-    let fields: Vec<_> = fields.unwrap_or(&empty).iter()
-        .enumerate().map(|(i, f)| FieldExt::new(f, i, named)).collect();
-    let args = fields.iter()
-        .filter(|f| f.needs_arg()).map(|f| f.as_arg());
-    let inits = fields.iter()
-        .map(|f| f.as_init());
+    let fields: Vec<_> = fields
+        .unwrap_or(&empty)
+        .iter()
+        .enumerate()
+        .map(|(i, f)| FieldExt::new(f, i, named))
+        .collect();
+    let args = fields.iter().filter(|f| f.needs_arg()).map(|f| f.as_arg());
+    let inits = fields.iter().map(|f| f.as_init());
     let inits = if unit {
         my_quote!()
     } else if named {
@@ -217,17 +218,15 @@ fn new_impl(ast: &syn::DeriveInput,
 fn collect_parent_lint_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
     fn is_lint(item: &syn::Meta) -> bool {
         if let syn::Meta::List(ref l) = *item {
-            match l.ident.to_string().as_str() {
-                "allow" | "deny" | "forbid" | "warn" => return true,
-                _ => (),
-            }
+            let path = &l.path;
+            return path.is_ident("allow") || path.is_ident("deny") || path.is_ident("forbid") || path.is_ident("warn")
         }
         false
     }
 
     fn is_cfg_attr_lint(item: &syn::Meta) -> bool {
         if let syn::Meta::List(ref l) = *item {
-            if l.ident == "cfg_attr" && l.nested.len() == 2 {
+            if l.path.is_ident("cfg_attr") && l.nested.len() == 2 {
                 if let syn::NestedMeta::Meta(ref item) = l.nested[1] {
                     return is_lint(item);
                 }
@@ -236,10 +235,9 @@ fn collect_parent_lint_attrs(attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
         false
     }
 
-    attrs.iter()
-        .filter_map(|a| {
-            a.interpret_meta().map(|m| (m, a))
-        })
+    attrs
+        .iter()
+        .filter_map(|a| a.parse_meta().ok().map(|m| (m, a)))
         .filter(|&(ref m, _)| is_lint(m) || is_cfg_attr_lint(m))
         .map(|p| p.1)
         .cloned()
@@ -254,13 +252,19 @@ enum FieldAttr {
 impl FieldAttr {
     pub fn as_tokens(&self) -> proc_macro2::TokenStream {
         match *self {
-            FieldAttr::Default => my_quote!(::std::default::Default::default()),
+            FieldAttr::Default => {
+                if cfg!(feature = "std") {
+                    my_quote!(::std::default::Default::default())
+                } else {
+                    my_quote!(::core::default::Default::default())
+                }
+            }
             FieldAttr::Value(ref s) => my_quote!(#s),
         }
     }
 
     pub fn parse(attrs: &[syn::Attribute]) -> Option<FieldAttr> {
-        use syn::{Meta, NestedMeta, AttrStyle};
+        use syn::{AttrStyle, Meta, NestedMeta};
 
         let mut result = None;
         for attr in attrs.iter() {
@@ -268,18 +272,24 @@ impl FieldAttr {
                 AttrStyle::Outer => {}
                 _ => continue,
             }
-            let last_attr_path = attr.path.segments.iter().last()
+            let last_attr_path = attr
+                .path
+                .segments
+                .iter()
+                .last()
                 .expect("Expected at least one segment where #[segment[::segment*](..)]");
             if (*last_attr_path).ident != "new" {
-                continue
+                continue;
             }
-            let meta = match attr.interpret_meta() {
-                Some(meta) => meta,
-                None => continue,
+            let meta = match attr.parse_meta() {
+                Ok(meta) => meta,
+                Err(_) => continue,
             };
             let list = match meta {
                 Meta::List(l) => l,
-                _ if meta.name() == "new" => panic!("Invalid #[new] attribute, expected #[new(..)]"),
+                _ if meta.path().is_ident("new") => {
+                    panic!("Invalid #[new] attribute, expected #[new(..)]")
+                }
                 _ => continue,
             };
             if result.is_some() {
@@ -287,31 +297,32 @@ impl FieldAttr {
             }
             for item in list.nested.iter() {
                 match *item {
-                    NestedMeta::Meta(Meta::Word(ref ident)) => {
-                        if ident == "default" {
+                    NestedMeta::Meta(Meta::Path(ref path)) => {
+                        if path.is_ident("default") {
                             result = Some(FieldAttr::Default);
                         } else {
-                            panic!("Invalid #[new] attribute: #[new({})]", ident);
+                            panic!("Invalid #[new] attribute: #[new({})]", path_to_string(&path));
                         }
-                    },
+                    }
                     NestedMeta::Meta(Meta::NameValue(ref kv)) => {
                         if let syn::Lit::Str(ref s) = kv.lit {
-                            if kv.ident == "value" {
-                                let tokens = s.value().parse().ok()
-                                    .expect(&format!(
-                                        "Invalid expression in #[new]: `{}`", s.value()));
+                            if kv.path.is_ident("value") {
+                                let tokens = s.value().parse().ok().expect(&format!(
+                                    "Invalid expression in #[new]: `{}`",
+                                    s.value()
+                                ));
                                 result = Some(FieldAttr::Value(tokens));
                             } else {
-                                panic!("Invalid #[new] attribute: #[new({} = ..)]", kv.ident);
+                                panic!("Invalid #[new] attribute: #[new({} = ..)]", path_to_string(&kv.path));
                             }
                         } else {
                             panic!("Non-string literal value in #[new] attribute");
                         }
-                    },
+                    }
                     NestedMeta::Meta(Meta::List(ref l)) => {
-                        panic!("Invalid #[new] attribute: #[new({}(..))]", l.ident);
-                    },
-                    NestedMeta::Literal(_) => {
+                        panic!("Invalid #[new] attribute: #[new({}(..))]", path_to_string(&l.path));
+                    }
+                    NestedMeta::Lit(_) => {
                         panic!("Invalid #[new] attribute: literal value in #[new(..)]");
                     }
                 }
@@ -319,7 +330,6 @@ impl FieldAttr {
         }
         result
     }
-
 }
 
 struct FieldExt<'a> {
@@ -349,11 +359,14 @@ impl<'a> FieldExt<'a> {
 
     pub fn is_phantom_data(&self) -> bool {
         match *self.ty {
-            syn::Type::Path(syn::TypePath { qself: None, ref path }) => {
-                path.segments.last()
-                    .map(|x| x.value().ident == "PhantomData")
-                    .unwrap_or(false)
-            },
+            syn::Type::Path(syn::TypePath {
+                qself: None,
+                ref path,
+            }) => path
+                .segments
+                .last()
+                .map(|x| x.ident == "PhantomData")
+                .unwrap_or(false),
             _ => false,
         }
     }
@@ -371,7 +384,11 @@ impl<'a> FieldExt<'a> {
     pub fn as_init(&self) -> proc_macro2::TokenStream {
         let f_name = &self.ident;
         let init = if self.is_phantom_data() {
-            my_quote!(::std::marker::PhantomData)
+            if cfg!(feature = "std") {
+                my_quote!(::std::marker::PhantomData)
+            } else {
+                my_quote!(::core::marker::PhantomData)
+            }
         } else {
             match self.attr {
                 None => my_quote!(#f_name),
@@ -388,21 +405,23 @@ impl<'a> FieldExt<'a> {
 
 fn to_snake_case(s: &str) -> String {
     let (ch, next, mut acc): (Option<char>, Option<char>, String) =
-        s.chars().fold((None, None, String::new()), |(prev, ch, mut acc), next| {
-            if let Some(ch) = ch {
-                if let Some(prev) = prev {
-                    if ch.is_uppercase() {
-                        if prev.is_lowercase() || prev.is_numeric() ||
-                            (prev.is_uppercase() && next.is_lowercase())
-                        {
-                            acc.push('_');
+        s.chars()
+            .fold((None, None, String::new()), |(prev, ch, mut acc), next| {
+                if let Some(ch) = ch {
+                    if let Some(prev) = prev {
+                        if ch.is_uppercase() {
+                            if prev.is_lowercase()
+                                || prev.is_numeric()
+                                || (prev.is_uppercase() && next.is_lowercase())
+                            {
+                                acc.push('_');
+                            }
                         }
                     }
+                    acc.extend(ch.to_lowercase());
                 }
-                acc.extend(ch.to_lowercase());
-            }
-            (ch, Some(next), acc)
-        });
+                (ch, Some(next), acc)
+            });
     if let Some(next) = next {
         if let Some(ch) = ch {
             if (ch.is_lowercase() || ch.is_numeric()) && next.is_uppercase() {
@@ -413,7 +432,6 @@ fn to_snake_case(s: &str) -> String {
     }
     acc
 }
-
 
 #[test]
 fn test_to_snake_case() {

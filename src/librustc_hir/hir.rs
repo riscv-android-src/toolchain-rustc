@@ -3,18 +3,19 @@ use crate::def_id::DefId;
 crate use crate::hir_id::HirId;
 use crate::itemlikevisit;
 
-use rustc_ast::ast::{self, CrateSugar, Ident, LlvmAsmDialect, Name};
+use rustc_ast::ast::{self, CrateSugar, LlvmAsmDialect};
 use rustc_ast::ast::{AttrVec, Attribute, FloatTy, IntTy, Label, LitKind, StrStyle, UintTy};
 pub use rustc_ast::ast::{BorrowKind, ImplPolarity, IsAuto};
 pub use rustc_ast::ast::{CaptureBy, Movability, Mutability};
+use rustc_ast::ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 use rustc_ast::node_id::NodeMap;
 use rustc_ast::util::parser::ExprPrecedence;
-use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::{par_for_each_in, Send, Sync};
 use rustc_macros::HashStable_Generic;
 use rustc_span::source_map::{SourceMap, Spanned};
-use rustc_span::symbol::{kw, sym, Symbol};
+use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{MultiSpan, Span, DUMMY_SP};
+use rustc_target::asm::InlineAsmRegOrRegClass;
 use rustc_target::spec::abi::Abi;
 
 use smallvec::SmallVec;
@@ -522,6 +523,13 @@ impl WhereClause<'_> {
     /// space where the `where` clause should be. Only of use for diagnostic suggestions.
     pub fn span_for_predicates_or_empty_place(&self) -> Span {
         self.span
+    }
+
+    /// `Span` where further predicates would be suggested, accounting for trailing commas, like
+    ///  in `fn foo<T>(t: T) where T: Foo,` so we don't suggest two trailing commas.
+    pub fn tail_span_for_suggestion(&self) -> Span {
+        let end = self.span_for_predicates_or_empty_place().shrink_to_hi();
+        self.predicates.last().map(|p| p.span()).unwrap_or(end).shrink_to_hi().to(end)
     }
 }
 
@@ -1291,6 +1299,53 @@ impl BodyOwnerKind {
     }
 }
 
+/// The kind of an item that requires const-checking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConstContext {
+    /// A `const fn`.
+    ConstFn,
+
+    /// A `static` or `static mut`.
+    Static(Mutability),
+
+    /// A `const`, associated `const`, or other const context.
+    ///
+    /// Other contexts include:
+    /// - Array length expressions
+    /// - Enum discriminants
+    /// - Const generics
+    ///
+    /// For the most part, other contexts are treated just like a regular `const`, so they are
+    /// lumped into the same category.
+    Const,
+}
+
+impl ConstContext {
+    /// A description of this const context that can appear between backticks in an error message.
+    ///
+    /// E.g. `const` or `static mut`.
+    pub fn keyword_name(self) -> &'static str {
+        match self {
+            Self::Const => "const",
+            Self::Static(Mutability::Not) => "static",
+            Self::Static(Mutability::Mut) => "static mut",
+            Self::ConstFn => "const fn",
+        }
+    }
+}
+
+/// A colloquial, trivially pluralizable description of this const context for use in error
+/// messages.
+impl fmt::Display for ConstContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::Const => write!(f, "constant"),
+            Self::Static(_) => write!(f, "static"),
+            Self::ConstFn => write!(f, "constant function"),
+        }
+    }
+}
+
 /// A literal.
 pub type Lit = Spanned<LitKind>;
 
@@ -1344,6 +1399,7 @@ impl Expr<'_> {
             ExprKind::Break(..) => ExprPrecedence::Break,
             ExprKind::Continue(..) => ExprPrecedence::Continue,
             ExprKind::Ret(..) => ExprPrecedence::Ret,
+            ExprKind::InlineAsm(..) => ExprPrecedence::InlineAsm,
             ExprKind::LlvmInlineAsm(..) => ExprPrecedence::InlineAsm,
             ExprKind::Struct(..) => ExprPrecedence::Struct,
             ExprKind::Repeat(..) => ExprPrecedence::Repeat,
@@ -1399,6 +1455,7 @@ impl Expr<'_> {
             | ExprKind::Ret(..)
             | ExprKind::Loop(..)
             | ExprKind::Assign(..)
+            | ExprKind::InlineAsm(..)
             | ExprKind::LlvmInlineAsm(..)
             | ExprKind::AssignOp(..)
             | ExprKind::Lit(_)
@@ -1575,6 +1632,8 @@ pub enum ExprKind<'hir> {
     /// A `return`, with an optional value to be returned.
     Ret(Option<&'hir Expr<'hir>>),
 
+    /// Inline assembly (from `asm!`), with its outputs and inputs.
+    InlineAsm(&'hir InlineAsm<'hir>),
     /// Inline assembly (from `llvm_asm!`), with its outputs and inputs.
     LlvmInlineAsm(&'hir LlvmInlineAsm<'hir>),
 
@@ -1601,7 +1660,7 @@ pub enum ExprKind<'hir> {
 ///
 /// To resolve the path to a `DefId`, call [`qpath_res`].
 ///
-/// [`qpath_res`]: ../ty/struct.TypeckTables.html#method.qpath_res
+/// [`qpath_res`]: ../rustc_middle/ty/struct.TypeckTables.html#method.qpath_res
 #[derive(RustcEncodable, RustcDecodable, Debug, HashStable_Generic)]
 pub enum QPath<'hir> {
     /// Path to a definition, optionally "fully-qualified" with a `Self`
@@ -2007,6 +2066,56 @@ pub enum TyKind<'hir> {
     Err,
 }
 
+#[derive(RustcEncodable, RustcDecodable, Debug, HashStable_Generic)]
+pub enum InlineAsmOperand<'hir> {
+    In {
+        reg: InlineAsmRegOrRegClass,
+        expr: Expr<'hir>,
+    },
+    Out {
+        reg: InlineAsmRegOrRegClass,
+        late: bool,
+        expr: Option<Expr<'hir>>,
+    },
+    InOut {
+        reg: InlineAsmRegOrRegClass,
+        late: bool,
+        expr: Expr<'hir>,
+    },
+    SplitInOut {
+        reg: InlineAsmRegOrRegClass,
+        late: bool,
+        in_expr: Expr<'hir>,
+        out_expr: Option<Expr<'hir>>,
+    },
+    Const {
+        expr: Expr<'hir>,
+    },
+    Sym {
+        expr: Expr<'hir>,
+    },
+}
+
+impl<'hir> InlineAsmOperand<'hir> {
+    pub fn reg(&self) -> Option<InlineAsmRegOrRegClass> {
+        match *self {
+            Self::In { reg, .. }
+            | Self::Out { reg, .. }
+            | Self::InOut { reg, .. }
+            | Self::SplitInOut { reg, .. } => Some(reg),
+            Self::Const { .. } | Self::Sym { .. } => None,
+        }
+    }
+}
+
+#[derive(RustcEncodable, RustcDecodable, Debug, HashStable_Generic)]
+pub struct InlineAsm<'hir> {
+    pub template: &'hir [InlineAsmTemplatePiece],
+    pub operands: &'hir [InlineAsmOperand<'hir>],
+    pub options: InlineAsmOptions,
+    pub line_spans: &'hir [Span],
+}
+
 #[derive(Copy, Clone, RustcEncodable, RustcDecodable, Debug, HashStable_Generic, PartialEq)]
 pub struct LlvmInlineAsmOutput {
     pub constraint: Symbol,
@@ -2050,7 +2159,7 @@ pub struct Param<'hir> {
 pub struct FnDecl<'hir> {
     /// The types of the function's parameters.
     ///
-    /// Additional argument data is stored in the function's [body](Body::parameters).
+    /// Additional argument data is stored in the function's [body](Body::params).
     pub inputs: &'hir [Ty<'hir>],
     pub output: FnRetTy<'hir>,
     pub c_variadic: bool,
@@ -2396,7 +2505,7 @@ pub enum ItemKind<'hir> {
     /// An `extern crate` item, with optional *original* crate name if the crate was renamed.
     ///
     /// E.g., `extern crate foo` or `extern crate foo_bar as foo`.
-    ExternCrate(Option<Name>),
+    ExternCrate(Option<Symbol>),
 
     /// `use foo::bar::*;` or `use foo::bar::baz as quux;`
     ///
@@ -2452,27 +2561,6 @@ pub enum ItemKind<'hir> {
 }
 
 impl ItemKind<'_> {
-    pub fn descr(&self) -> &str {
-        match *self {
-            ItemKind::ExternCrate(..) => "extern crate",
-            ItemKind::Use(..) => "`use` import",
-            ItemKind::Static(..) => "static item",
-            ItemKind::Const(..) => "constant item",
-            ItemKind::Fn(..) => "function",
-            ItemKind::Mod(..) => "module",
-            ItemKind::ForeignMod(..) => "extern block",
-            ItemKind::GlobalAsm(..) => "global asm item",
-            ItemKind::TyAlias(..) => "type alias",
-            ItemKind::OpaqueTy(..) => "opaque type",
-            ItemKind::Enum(..) => "enum",
-            ItemKind::Struct(..) => "struct",
-            ItemKind::Union(..) => "union",
-            ItemKind::Trait(..) => "trait",
-            ItemKind::TraitAlias(..) => "trait alias",
-            ItemKind::Impl { .. } => "implementation",
-        }
-    }
-
     pub fn generics(&self) -> Option<&Generics<'_>> {
         Some(match *self {
             ItemKind::Fn(_, ref generics, _)
@@ -2551,16 +2639,6 @@ pub enum ForeignItemKind<'hir> {
     Type,
 }
 
-impl ForeignItemKind<'hir> {
-    pub fn descriptive_variant(&self) -> &str {
-        match *self {
-            ForeignItemKind::Fn(..) => "foreign function",
-            ForeignItemKind::Static(..) => "foreign static item",
-            ForeignItemKind::Type => "foreign type",
-        }
-    }
-}
-
 /// A variable captured by a closure.
 #[derive(Debug, Copy, Clone, RustcEncodable, RustcDecodable, HashStable_Generic)]
 pub struct Upvar {
@@ -2592,10 +2670,6 @@ impl<ID> TraitCandidate<ID> {
 
 // Trait method resolution
 pub type TraitMap<ID = HirId> = NodeMap<Vec<TraitCandidate<ID>>>;
-
-// Map from the NodeId of a glob import to a list of items which are actually
-// imported.
-pub type GlobMap = NodeMap<FxHashSet<Name>>;
 
 #[derive(Copy, Clone, Debug, HashStable_Generic)]
 pub enum Node<'hir> {
@@ -2657,8 +2731,42 @@ impl Node<'_> {
         match self {
             Node::TraitItem(TraitItem { generics, .. })
             | Node::ImplItem(ImplItem { generics, .. })
-            | Node::Item(Item { kind: ItemKind::Fn(_, generics, _), .. }) => Some(generics),
+            | Node::Item(Item {
+                kind:
+                    ItemKind::Trait(_, _, generics, ..)
+                    | ItemKind::Impl { generics, .. }
+                    | ItemKind::Fn(_, generics, _),
+                ..
+            }) => Some(generics),
             _ => None,
+        }
+    }
+
+    pub fn hir_id(&self) -> Option<HirId> {
+        match self {
+            Node::Item(Item { hir_id, .. })
+            | Node::ForeignItem(ForeignItem { hir_id, .. })
+            | Node::TraitItem(TraitItem { hir_id, .. })
+            | Node::ImplItem(ImplItem { hir_id, .. })
+            | Node::Field(StructField { hir_id, .. })
+            | Node::AnonConst(AnonConst { hir_id, .. })
+            | Node::Expr(Expr { hir_id, .. })
+            | Node::Stmt(Stmt { hir_id, .. })
+            | Node::Ty(Ty { hir_id, .. })
+            | Node::Binding(Pat { hir_id, .. })
+            | Node::Pat(Pat { hir_id, .. })
+            | Node::Arm(Arm { hir_id, .. })
+            | Node::Block(Block { hir_id, .. })
+            | Node::Local(Local { hir_id, .. })
+            | Node::MacroDef(MacroDef { hir_id, .. })
+            | Node::Lifetime(Lifetime { hir_id, .. })
+            | Node::Param(Param { hir_id, .. })
+            | Node::GenericParam(GenericParam { hir_id, .. }) => Some(*hir_id),
+            Node::TraitRef(TraitRef { hir_ref_id, .. }) => Some(*hir_ref_id),
+            Node::PathSegment(PathSegment { hir_id, .. }) => *hir_id,
+            Node::Variant(Variant { id, .. }) => Some(*id),
+            Node::Ctor(variant) => variant.ctor_hir_id(),
+            Node::Crate(_) | Node::Visibility(_) => None,
         }
     }
 }

@@ -246,7 +246,7 @@ impl DefPath {
 
         let mut opt_delimiter = None;
         for component in &self.data {
-            opt_delimiter.map(|d| s.push(d));
+            s.extend(opt_delimiter);
             opt_delimiter = Some('-');
             if component.disambiguator == 0 {
                 write!(s, "{}", component.data.as_symbol()).unwrap();
@@ -327,27 +327,14 @@ impl Definitions {
 
     #[inline]
     pub fn local_def_id(&self, node: ast::NodeId) -> LocalDefId {
-        self.opt_local_def_id(node).unwrap()
+        self.opt_local_def_id(node).unwrap_or_else(|| {
+            panic!("no entry for node id: `{:?}` / `{:?}`", node, self.opt_node_id_to_hir_id(node))
+        })
     }
 
     #[inline]
-    pub fn as_local_node_id(&self, def_id: DefId) -> Option<ast::NodeId> {
-        if let Some(def_id) = def_id.as_local() {
-            let node_id = self.def_id_to_node_id[def_id];
-            if node_id != ast::DUMMY_NODE_ID {
-                return Some(node_id);
-            }
-        }
-        None
-    }
-
-    #[inline]
-    pub fn as_local_hir_id(&self, def_id: DefId) -> Option<hir::HirId> {
-        if let Some(def_id) = def_id.as_local() {
-            Some(self.local_def_id_to_hir_id(def_id))
-        } else {
-            None
-        }
+    pub fn as_local_hir_id(&self, def_id: LocalDefId) -> hir::HirId {
+        self.local_def_id_to_hir_id(def_id)
     }
 
     #[inline]

@@ -1,9 +1,7 @@
 use super::ty::AllowPlus;
 use super::{BlockMode, Parser, PathStyle, SemiColonMode, SeqSep, TokenExpectType, TokenType};
 
-use rustc_ast::ast::{
-    self, BinOpKind, BindingMode, BlockCheckMode, Expr, ExprKind, Ident, Item, Param,
-};
+use rustc_ast::ast::{self, BinOpKind, BindingMode, BlockCheckMode, Expr, ExprKind, Item, Param};
 use rustc_ast::ast::{AttrVec, ItemKind, Mutability, Pat, PatKind, PathSegment, QSelf, Ty, TyKind};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, Lit, LitKind, TokenKind};
@@ -13,7 +11,7 @@ use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{pluralize, struct_span_err};
 use rustc_errors::{Applicability, DiagnosticBuilder, Handler, PResult};
 use rustc_span::source_map::Spanned;
-use rustc_span::symbol::kw;
+use rustc_span::symbol::{kw, Ident};
 use rustc_span::{MultiSpan, Span, SpanSnippetError, DUMMY_SP};
 
 use log::{debug, trace};
@@ -97,6 +95,7 @@ impl RecoverQPath for Expr {
             kind: ExprKind::Path(qself, path),
             attrs: AttrVec::new(),
             id: ast::DUMMY_NODE_ID,
+            tokens: None,
         }
     }
 }
@@ -929,13 +928,26 @@ impl<'a> Parser<'a> {
             return Ok(());
         }
         let sm = self.sess.source_map();
-        let msg = format!("expected `;`, found `{}`", super::token_descr(&self.token));
+        let msg = format!("expected `;`, found {}", super::token_descr(&self.token));
         let appl = Applicability::MachineApplicable;
         if self.token.span == DUMMY_SP || self.prev_token.span == DUMMY_SP {
             // Likely inside a macro, can't provide meaningful suggestions.
             return self.expect(&token::Semi).map(drop);
         } else if !sm.is_multiline(self.prev_token.span.until(self.token.span)) {
             // The current token is in the same line as the prior token, not recoverable.
+        } else if [token::Comma, token::Colon].contains(&self.token.kind)
+            && &self.prev_token.kind == &token::CloseDelim(token::Paren)
+        {
+            // Likely typo: The current token is on a new line and is expected to be
+            // `.`, `;`, `?`, or an operator after a close delimiter token.
+            //
+            // let a = std::process::Command::new("echo")
+            //         .arg("1")
+            //         ,arg("2")
+            //         ^
+            // https://github.com/rust-lang/rust/issues/72253
+            self.expect(&token::Semi)?;
+            return Ok(());
         } else if self.look_ahead(1, |t| {
             t == &token::CloseDelim(token::Brace) || t.can_begin_expr() && t.kind != token::Colon
         }) && [token::Comma, token::Colon].contains(&self.token.kind)

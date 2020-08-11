@@ -1,63 +1,61 @@
-use hashbrown::HashMap;
+use std::collections::HashMap;
 
 use serde_json::value::Value as Json;
 
 use crate::context::{merge_json, Context};
 use crate::error::RenderError;
+use crate::json::path::Path;
 use crate::output::Output;
 use crate::registry::Registry;
-use crate::render::{Directive, Evaluable, RenderContext, Renderable};
+use crate::render::{Decorator, Evaluable, RenderContext, Renderable};
 use crate::template::Template;
 
 fn render_partial<'reg: 'rc, 'rc>(
     t: &'reg Template,
-    d: &Directive<'reg, 'rc>,
+    d: &Decorator<'reg, 'rc>,
     r: &'reg Registry,
     ctx: &'rc Context,
-    local_rc: &mut RenderContext<'reg>,
+    local_rc: &mut RenderContext<'reg, 'rc>,
     out: &mut dyn Output,
 ) -> Result<(), RenderError> {
     // partial context path
     if let Some(ref param_ctx) = d.param(0) {
-        let param_path = param_ctx.path().map(|p| {
-            if param_ctx.is_absolute_path() {
-                p.to_string()
-            } else {
-                format!("{}/{}", local_rc.get_path(), p)
-            }
-        });
-
-        if let Some(param_path) = param_path {
-            local_rc.promote_local_vars();
-            local_rc.set_path(param_path);
+        if let (Some(p), Some(block)) = (param_ctx.context_path(), local_rc.block_mut()) {
+            *block.base_path_mut() = p.clone();
         }
-    };
+    }
 
     // @partial-block
     if let Some(t) = d.template() {
         local_rc.set_partial("@partial-block".to_owned(), t);
     }
 
-    if d.hash().is_empty() {
+    let result = if d.hash().is_empty() {
         t.render(r, ctx, local_rc, out)
     } else {
         let hash_ctx = d
             .hash()
             .iter()
-            .map(|(k, v)| (k.clone(), v.value().clone()))
-            .collect::<HashMap<String, Json>>();
-        let partial_context = merge_json(local_rc.evaluate(ctx, ".")?.as_json(), &hash_ctx);
+            .map(|(k, v)| (k, v.value()))
+            .collect::<HashMap<&&str, &Json>>();
+        let current_path = Path::current();
+        let partial_context =
+            merge_json(local_rc.evaluate2(ctx, &current_path)?.as_json(), &hash_ctx);
         let ctx = Context::wraps(&partial_context)?;
         let mut partial_rc = local_rc.new_for_block();
         t.render(r, &ctx, &mut partial_rc, out)
-    }
+    };
+
+    local_rc.remove_partial("@partial-block");
+
+    result
 }
 
 pub fn expand_partial<'reg: 'rc, 'rc>(
-    d: &Directive<'reg, 'rc>,
+    d: &Decorator<'reg, 'rc>,
     r: &'reg Registry,
     ctx: &'rc Context,
-    rc: &mut RenderContext<'reg>,
+    rc: &mut RenderContext<'reg, 'rc>,
     out: &mut dyn Output,
 ) -> Result<(), RenderError> {
     // try eval inline partials first
@@ -74,12 +72,12 @@ pub fn expand_partial<'reg: 'rc, 'rc>(
 
     match partial {
         Some(t) => {
-            let mut local_rc = rc.derive();
+            let mut local_rc = rc.clone();
             render_partial(&t, d, r, ctx, &mut local_rc, out)?;
         }
         None => {
             if let Some(t) = r.get_template(tname).or_else(|| d.template()) {
-                let mut local_rc = rc.derive();
+                let mut local_rc = rc.clone();
                 render_partial(t, d, r, ctx, &mut local_rc, out)?;
             }
         }

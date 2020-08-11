@@ -6,7 +6,7 @@
 #![allow(unused_features)]
 #![cfg_attr(thumb, no_main)]
 #![deny(dead_code)]
-#![feature(asm)]
+#![feature(llvm_asm)]
 #![feature(lang_items)]
 #![feature(start)]
 #![feature(allocator_api)]
@@ -14,7 +14,7 @@
 
 extern crate panic_handler;
 
-#[cfg(all(not(thumb), not(windows)))]
+#[cfg(all(not(thumb), not(windows), not(target_arch = "wasm32")))]
 #[link(name = "c")]
 extern "C" {}
 
@@ -280,7 +280,7 @@ fn run() {
 
     // A copy of "test::black_box". Used to prevent LLVM from optimizing away the intrinsics during LTO
     fn bb<T>(dummy: T) -> T {
-        unsafe { asm!("" : : "r"(&dummy)) }
+        unsafe { llvm_asm!("" : : "r"(&dummy)) }
         dummy
     }
 
@@ -340,11 +340,11 @@ fn run() {
     something_with_a_dtor(&|| assert_eq!(bb(1), 1));
 
     extern "C" {
-        fn rust_begin_unwind();
+        fn rust_begin_unwind(x: usize);
     }
     // if bb(false) {
     unsafe {
-        rust_begin_unwind();
+        rust_begin_unwind(0);
     }
     // }
 }

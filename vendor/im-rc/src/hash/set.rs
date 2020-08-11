@@ -31,11 +31,9 @@ use std::iter::FusedIterator;
 use std::iter::{FromIterator, IntoIterator, Sum};
 use std::ops::{Add, Deref, Mul};
 
-use crate::nodes::hamt::{
-    hash_key, Drain as NodeDrain, HashValue, Iter as NodeIter, IterMut as NodeIterMut, Node,
-};
+use crate::nodes::hamt::{hash_key, Drain as NodeDrain, HashValue, Iter as NodeIter, Node};
 use crate::ordset::OrdSet;
-use crate::util::Ref;
+use crate::util::{Pool, PoolRef, Ref};
 
 /// Construct a set from a sequence of values.
 ///
@@ -72,6 +70,8 @@ macro_rules! hashset {
     }};
 }
 
+def_pool!(HashSetPool<A>, Node<Value<A>>);
+
 /// An unordered set.
 ///
 /// An immutable hash set using [hash array mapped tries] [1].
@@ -92,7 +92,8 @@ macro_rules! hashset {
 /// [std::collections::hash_map::RandomState]: https://doc.rust-lang.org/std/collections/hash_map/struct.RandomState.html
 pub struct HashSet<A, S = RandomState> {
     hasher: Ref<S>,
-    root: Ref<Node<Value<A>>>,
+    pool: HashSetPool<A>,
+    root: PoolRef<Node<Value<A>>>,
     size: usize,
 }
 
@@ -129,6 +130,18 @@ impl<A> HashSet<A, RandomState> {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Construct an empty set using a specific memory pool.
+    #[cfg(feature = "pool")]
+    #[must_use]
+    pub fn with_pool(pool: &HashSetPool<A>) -> Self {
+        Self {
+            pool: pool.clone(),
+            hasher: Default::default(),
+            size: 0,
+            root: PoolRef::default(&pool.0),
+        }
+    }
 }
 
 impl<A> HashSet<A, RandomState>
@@ -143,10 +156,8 @@ where
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
     /// # use std::sync::Arc;
-    /// # fn main() {
     /// let set = HashSet::unit(123);
     /// assert!(set.contains(&123));
-    /// # }
     /// ```
     #[inline]
     #[must_use]
@@ -165,14 +176,12 @@ impl<A, S> HashSet<A, S> {
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
-    /// # fn main() {
     /// assert!(
     ///   !hashset![1, 2, 3].is_empty()
     /// );
     /// assert!(
     ///   HashSet::<i32>::new().is_empty()
     /// );
-    /// # }
     /// ```
     #[inline]
     #[must_use]
@@ -189,14 +198,34 @@ impl<A, S> HashSet<A, S> {
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
-    /// # fn main() {
     /// assert_eq!(3, hashset![1, 2, 3].len());
-    /// # }
     /// ```
     #[inline]
     #[must_use]
     pub fn len(&self) -> usize {
         self.size
+    }
+
+    /// Test whether two sets refer to the same content in memory.
+    ///
+    /// This is true if the two sides are references to the same set,
+    /// or if the two sets refer to the same root node.
+    ///
+    /// This would return true if you're comparing a set to itself, or
+    /// if you're comparing a set to a fresh clone of itself.
+    ///
+    /// Time: O(1)
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other) || PoolRef::ptr_eq(&self.root, &other.root)
+    }
+
+    /// Get a reference to the memory pool used by this set.
+    ///
+    /// Note that if you didn't specifically construct it with a pool, you'll
+    /// get back a reference to a pool of size 0.
+    #[cfg(feature = "pool")]
+    pub fn pool(&self) -> &HashSetPool<A> {
+        &self.pool
     }
 
     /// Construct an empty hash set using the provided hasher.
@@ -206,9 +235,29 @@ impl<A, S> HashSet<A, S> {
     where
         Ref<S>: From<RS>,
     {
+        let pool = HashSetPool::default();
+        let root = PoolRef::default(&pool.0);
         HashSet {
             size: 0,
-            root: Ref::new(Node::new()),
+            pool,
+            root,
+            hasher: From::from(hasher),
+        }
+    }
+
+    /// Construct an empty hash set using the provided memory pool and hasher.
+    #[cfg(feature = "pool")]
+    #[inline]
+    #[must_use]
+    pub fn with_pool_hasher<RS>(pool: &HashSetPool<A>, hasher: RS) -> Self
+    where
+        Ref<S>: From<RS>,
+    {
+        let root = PoolRef::default(&pool.0);
+        HashSet {
+            size: 0,
+            pool: pool.clone(),
+            root,
             hasher: From::from(hasher),
         }
     }
@@ -228,9 +277,12 @@ impl<A, S> HashSet<A, S> {
     where
         A1: Hash + Eq + Clone,
     {
+        let pool = HashSetPool::default();
+        let root = PoolRef::default(&pool.0);
         HashSet {
             size: 0,
-            root: Ref::new(Node::new()),
+            pool,
+            root,
             hasher: self.hasher.clone(),
         }
     }
@@ -247,15 +299,13 @@ impl<A, S> HashSet<A, S> {
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::HashSet;
-    /// # fn main() {
     /// let mut set = hashset![1, 2, 3];
     /// set.clear();
     /// assert!(set.is_empty());
-    /// # }
     /// ```
     pub fn clear(&mut self) {
         if !self.is_empty() {
-            self.root = Default::default();
+            self.root = PoolRef::default(&self.pool.0);
             self.size = 0;
         }
     }
@@ -343,28 +393,14 @@ where
     A: Hash + Eq + Clone,
     S: BuildHasher,
 {
-    /// Get a mutable iterator over the values in a hash set.
-    ///
-    /// Please note that the order is consistent between sets using the same
-    /// hasher, but no other ordering guarantee is offered.  Items will not come
-    /// out in insertion order or sort order.  They will, however, come out in
-    /// the same order every time for the same set.
-    #[must_use]
-    pub fn iter_mut(&mut self) -> IterMut<'_, A> {
-        let root = Ref::make_mut(&mut self.root);
-        IterMut {
-            it: NodeIterMut::new(root, self.size),
-        }
-    }
-
     /// Insert a value into a set.
     ///
     /// Time: O(log n)
     #[inline]
     pub fn insert(&mut self, a: A) -> Option<A> {
         let hash = hash_key(&*self.hasher, &a);
-        let root = Ref::make_mut(&mut self.root);
-        match root.insert(hash, 0, Value(a)) {
+        let root = PoolRef::make_mut(&self.pool.0, &mut self.root);
+        match root.insert(&self.pool.0, hash, 0, Value(a)) {
             None => {
                 self.size += 1;
                 None
@@ -381,8 +417,8 @@ where
         BA: Hash + Eq + ?Sized,
         A: Borrow<BA>,
     {
-        let root = Ref::make_mut(&mut self.root);
-        let result = root.remove(hash_key(&*self.hasher, a), 0, a);
+        let root = PoolRef::make_mut(&self.pool.0, &mut self.root);
+        let result = root.remove(&self.pool.0, hash_key(&*self.hasher, a), 0, a);
         if result.is_some() {
             self.size -= 1;
         }
@@ -400,13 +436,11 @@ where
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
     /// # use std::sync::Arc;
-    /// # fn main() {
     /// let set = hashset![123];
     /// assert_eq!(
     ///   set.update(456),
     ///   hashset![123, 456]
     /// );
-    /// # }
     /// ```
     #[must_use]
     pub fn update(&self, a: A) -> Self {
@@ -438,14 +472,25 @@ where
     /// structure of the set.
     ///
     /// Time: O(n log n)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # #[macro_use] extern crate im_rc as im;
+    /// # use im::HashSet;
+    /// let mut set = hashset![1, 2, 3];
+    /// set.retain(|v| *v > 1);
+    /// let expected = hashset![2, 3];
+    /// assert_eq!(expected, set);
+    /// ```
     pub fn retain<F>(&mut self, mut f: F)
     where
         F: FnMut(&A) -> bool,
     {
         let old_root = self.root.clone();
-        let root = Ref::make_mut(&mut self.root);
+        let root = PoolRef::make_mut(&self.pool.0, &mut self.root);
         for (value, hash) in NodeIter::new(&old_root, self.size) {
-            if !f(value) && root.remove(hash, 0, value).is_some() {
+            if !f(value) && root.remove(&self.pool.0, hash, 0, value).is_some() {
                 self.size -= 1;
             }
         }
@@ -460,12 +505,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
-    /// # fn main() {
     /// let set1 = hashset!{1, 2};
     /// let set2 = hashset!{2, 3};
     /// let expected = hashset!{1, 2, 3};
     /// assert_eq!(expected, set1.union(set2));
-    /// # }
     /// ```
     #[must_use]
     pub fn union(mut self, other: Self) -> Self {
@@ -499,12 +542,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
-    /// # fn main() {
     /// let set1 = hashset!{1, 2};
     /// let set2 = hashset!{2, 3};
     /// let expected = hashset!{1, 3};
     /// assert_eq!(expected, set1.difference(set2));
-    /// # }
     /// ```
     ///
     /// [symmetric_difference]: #method.symmetric_difference
@@ -522,12 +563,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
-    /// # fn main() {
     /// let set1 = hashset!{1, 2};
     /// let set2 = hashset!{2, 3};
     /// let expected = hashset!{1, 3};
     /// assert_eq!(expected, set1.symmetric_difference(set2));
-    /// # }
     /// ```
     #[must_use]
     pub fn symmetric_difference(mut self, other: Self) -> Self {
@@ -549,12 +588,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::ordset::OrdSet;
-    /// # fn main() {
     /// let set1 = ordset!{1, 2};
     /// let set2 = ordset!{2, 3};
     /// let expected = ordset!{1};
     /// assert_eq!(expected, set1.relative_complement(set2));
-    /// # }
     /// ```
     #[must_use]
     pub fn relative_complement(mut self, other: Self) -> Self {
@@ -573,12 +610,10 @@ where
     /// ```
     /// # #[macro_use] extern crate im_rc as im;
     /// # use im::hashset::HashSet;
-    /// # fn main() {
     /// let set1 = hashset!{1, 2};
     /// let set2 = hashset!{2, 3};
     /// let expected = hashset!{2};
     /// assert_eq!(expected, set1.intersection(set2));
-    /// # }
     /// ```
     #[must_use]
     pub fn intersection(self, other: Self) -> Self {
@@ -598,9 +633,14 @@ impl<A, S> Clone for HashSet<A, S>
 where
     A: Clone,
 {
+    /// Clone a set.
+    ///
+    /// Time: O(1)
+    #[inline]
     fn clone(&self) -> Self {
         HashSet {
             hasher: self.hasher.clone(),
+            pool: self.pool.clone(),
             root: self.root.clone(),
             size: self.size,
         }
@@ -633,9 +673,7 @@ where
         if Ref::ptr_eq(&self.hasher, &other.hasher) {
             return self.iter().partial_cmp(other.iter());
         }
-        let m1: ::std::collections::HashSet<A> = self.iter().cloned().collect();
-        let m2: ::std::collections::HashSet<A> = other.iter().cloned().collect();
-        m1.iter().partial_cmp(m2.iter())
+        self.iter().partial_cmp(other.iter())
     }
 }
 
@@ -648,9 +686,7 @@ where
         if Ref::ptr_eq(&self.hasher, &other.hasher) {
             return self.iter().cmp(other.iter());
         }
-        let m1: ::std::collections::HashSet<A> = self.iter().cloned().collect();
-        let m2: ::std::collections::HashSet<A> = other.iter().cloned().collect();
-        m1.iter().cmp(m2.iter())
+        self.iter().cmp(other.iter())
     }
 }
 
@@ -674,9 +710,12 @@ where
     S: BuildHasher + Default,
 {
     fn default() -> Self {
+        let pool = HashSetPool::default();
+        let root = PoolRef::default(&pool.0);
         HashSet {
             hasher: Ref::<S>::default(),
-            root: Ref::new(Node::new()),
+            pool,
+            root,
             size: 0,
         }
     }
@@ -764,7 +803,7 @@ where
     A: Hash + Eq + Debug,
     S: BuildHasher,
 {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         f.debug_set().entries(self.iter()).finish()
     }
 }
@@ -775,7 +814,7 @@ where
     A: Hash + Eq + Debug,
     S: BuildHasher,
 {
-    default fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+    default fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         f.debug_set().entries(self.iter()).finish()
     }
 }
@@ -786,18 +825,15 @@ where
     A: Hash + Eq + Debug + Ord,
     S: BuildHasher,
 {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         f.debug_set().entries(self.iter()).finish()
     }
 }
 
 // Iterators
 
-// An iterator over the elements of a set.
-pub struct Iter<'a, A>
-where
-    A: 'a,
-{
+/// An iterator over the elements of a set.
+pub struct Iter<'a, A> {
     it: NodeIter<'a, Value<A>>,
 }
 
@@ -820,34 +856,7 @@ impl<'a, A> ExactSizeIterator for Iter<'a, A> {}
 
 impl<'a, A> FusedIterator for Iter<'a, A> {}
 
-// A mutable iterator over the elements of a set.
-pub struct IterMut<'a, A>
-where
-    A: 'a,
-{
-    it: NodeIterMut<'a, Value<A>>,
-}
-
-impl<'a, A> Iterator for IterMut<'a, A>
-where
-    A: 'a + Clone,
-{
-    type Item = &'a mut A;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.it.next().map(|(v, _)| &mut v.0)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.it.size_hint()
-    }
-}
-
-impl<'a, A> ExactSizeIterator for IterMut<'a, A> where A: Clone {}
-
-impl<'a, A> FusedIterator for IterMut<'a, A> where A: Clone {}
-
-// A consuming iterator over the elements of a set.
+/// A consuming iterator over the elements of a set.
 pub struct ConsumingIter<A>
 where
     A: Hash + Eq + Clone,
@@ -916,7 +925,7 @@ where
 
     fn into_iter(self) -> Self::IntoIter {
         ConsumingIter {
-            it: NodeDrain::new(self.root, self.size),
+            it: NodeDrain::new(&self.pool.0, self.root, self.size),
         }
     }
 }
@@ -1015,57 +1024,15 @@ where
     }
 }
 
-// QuickCheck
-
-#[cfg(all(threadsafe, feature = "quickcheck"))]
-use quickcheck::{Arbitrary, Gen};
-
-#[cfg(all(threadsafe, feature = "quickcheck"))]
-impl<A, S> Arbitrary for HashSet<A, S>
-where
-    A: Hash + Eq + Arbitrary + Sync,
-    S: BuildHasher + Default + Send + Sync + 'static,
-{
-    fn arbitrary<G: Gen>(g: &mut G) -> Self {
-        HashSet::from_iter(Vec::<A>::arbitrary(g))
-    }
-}
-
 // Proptest
-
 #[cfg(any(test, feature = "proptest"))]
+#[doc(hidden)]
 pub mod proptest {
-    use super::*;
-    use ::proptest::strategy::{BoxedStrategy, Strategy, ValueTree};
-    use std::ops::Range;
-
-    /// A strategy for a hash set of a given size.
-    ///
-    /// # Examples
-    ///
-    /// ```rust,ignore
-    /// proptest! {
-    ///     #[test]
-    ///     fn proptest_a_set(ref s in hashset(".*", 10..100)) {
-    ///         assert!(s.len() < 100);
-    ///         assert!(s.len() >= 10);
-    ///     }
-    /// }
-    /// ```
-    pub fn hash_set<A: Strategy + 'static>(
-        element: A,
-        size: Range<usize>,
-    ) -> BoxedStrategy<HashSet<<A::Tree as ValueTree>::Value>>
-    where
-        <A::Tree as ValueTree>::Value: Hash + Eq + Clone,
-    {
-        ::proptest::collection::vec(element, size.clone())
-            .prop_map(HashSet::from)
-            .prop_filter("HashSet minimum size".to_owned(), move |s| {
-                s.len() >= size.start
-            })
-            .boxed()
-    }
+    #[deprecated(
+        since = "14.3.0",
+        note = "proptest strategies have moved to im::proptest"
+    )]
+    pub use crate::proptest::hash_set;
 }
 
 #[cfg(test)]

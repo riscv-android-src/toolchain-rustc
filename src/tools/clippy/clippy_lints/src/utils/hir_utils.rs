@@ -1,15 +1,16 @@
 use crate::consts::{constant_context, constant_simple};
 use crate::utils::differing_macro_contexts;
-use rustc_ast::ast::Name;
+use rustc_ast::ast::InlineAsmTemplatePiece;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir::{
     BinOpKind, Block, BlockCheckMode, BodyId, BorrowKind, CaptureBy, Expr, ExprKind, Field, FnRetTy, GenericArg,
-    GenericArgs, Guard, Lifetime, LifetimeName, ParamName, Pat, PatKind, Path, PathSegment, QPath, Stmt, StmtKind, Ty,
-    TyKind, TypeBinding,
+    GenericArgs, Guard, InlineAsmOperand, Lifetime, LifetimeName, ParamName, Pat, PatKind, Path, PathSegment, QPath,
+    Stmt, StmtKind, Ty, TyKind, TypeBinding,
 };
 use rustc_lint::LateContext;
 use rustc_middle::ich::StableHashingContextProvider;
 use rustc_middle::ty::TypeckTables;
+use rustc_span::Symbol;
 use std::hash::Hash;
 
 /// Type used to check whether two ast are the same. This is different from the
@@ -474,6 +475,56 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                 self.hash_expr(a);
                 self.hash_expr(i);
             },
+            ExprKind::InlineAsm(ref asm) => {
+                for piece in asm.template {
+                    match piece {
+                        InlineAsmTemplatePiece::String(s) => s.hash(&mut self.s),
+                        InlineAsmTemplatePiece::Placeholder {
+                            operand_idx,
+                            modifier,
+                            span: _,
+                        } => {
+                            operand_idx.hash(&mut self.s);
+                            modifier.hash(&mut self.s);
+                        },
+                    }
+                }
+                asm.options.hash(&mut self.s);
+                for op in asm.operands {
+                    match op {
+                        InlineAsmOperand::In { reg, expr } => {
+                            reg.hash(&mut self.s);
+                            self.hash_expr(expr);
+                        },
+                        InlineAsmOperand::Out { reg, late, expr } => {
+                            reg.hash(&mut self.s);
+                            late.hash(&mut self.s);
+                            if let Some(expr) = expr {
+                                self.hash_expr(expr);
+                            }
+                        },
+                        InlineAsmOperand::InOut { reg, late, expr } => {
+                            reg.hash(&mut self.s);
+                            late.hash(&mut self.s);
+                            self.hash_expr(expr);
+                        },
+                        InlineAsmOperand::SplitInOut {
+                            reg,
+                            late,
+                            in_expr,
+                            out_expr,
+                        } => {
+                            reg.hash(&mut self.s);
+                            late.hash(&mut self.s);
+                            self.hash_expr(in_expr);
+                            if let Some(out_expr) = out_expr {
+                                self.hash_expr(out_expr);
+                            }
+                        },
+                        InlineAsmOperand::Const { expr } | InlineAsmOperand::Sym { expr } => self.hash_expr(expr),
+                    }
+                }
+            },
             ExprKind::LlvmInlineAsm(..) | ExprKind::Err => {},
             ExprKind::Lit(ref l) => {
                 l.node.hash(&mut self.s);
@@ -544,7 +595,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
         }
     }
 
-    pub fn hash_name(&mut self, n: Name) {
+    pub fn hash_name(&mut self, n: Symbol) {
         n.as_str().hash(&mut self.s);
     }
 

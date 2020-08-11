@@ -42,7 +42,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // This attribute causes us to dump some writeback information
         // in the form of errors, which is uSymbol for unit tests.
-        let rustc_dump_user_substs = self.tcx.has_attr(item_def_id, sym::rustc_dump_user_substs);
+        let rustc_dump_user_substs =
+            self.tcx.has_attr(item_def_id.to_def_id(), sym::rustc_dump_user_substs);
 
         let mut wbcx = WritebackCx::new(self, body, rustc_dump_user_substs);
         for param in body.params {
@@ -73,8 +74,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         debug!("used_trait_imports({:?}) = {:?}", item_def_id, used_trait_imports);
         wbcx.tables.used_trait_imports = used_trait_imports;
 
-        wbcx.tables.upvar_list =
-            mem::replace(&mut self.tables.borrow_mut().upvar_list, Default::default());
+        wbcx.tables.closure_captures =
+            mem::replace(&mut self.tables.borrow_mut().closure_captures, Default::default());
 
         if self.is_tainted_by_errors() {
             // FIXME(eddyb) keep track of `ErrorReported` from where the error was emitted.
@@ -164,12 +165,18 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                         hir::ExprKind::Binary(..) => {
                             if !op.node.is_by_value() {
                                 let mut adjustments = tables.adjustments_mut();
-                                adjustments.get_mut(lhs.hir_id).map(|a| a.pop());
-                                adjustments.get_mut(rhs.hir_id).map(|a| a.pop());
+                                if let Some(a) = adjustments.get_mut(lhs.hir_id) {
+                                    a.pop();
+                                }
+                                if let Some(a) = adjustments.get_mut(rhs.hir_id) {
+                                    a.pop();
+                                }
                             }
                         }
                         hir::ExprKind::AssignOp(..) => {
-                            tables.adjustments_mut().get_mut(lhs.hir_id).map(|a| a.pop());
+                            if let Some(a) = tables.adjustments_mut().get_mut(lhs.hir_id) {
+                                a.pop();
+                            }
                         }
                         _ => {}
                     }
@@ -214,7 +221,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                     tables.type_dependent_defs_mut().remove(e.hir_id);
                     tables.node_substs_mut().remove(e.hir_id);
 
-                    tables.adjustments_mut().get_mut(base.hir_id).map(|a| {
+                    if let Some(a) = tables.adjustments_mut().get_mut(base.hir_id) {
                         // Discard the need for a mutable borrow
 
                         // Extra adjustment made when indexing causes a drop
@@ -228,7 +235,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
                             // So the borrow discard actually happens here
                             a.pop();
                         }
-                    });
+                    }
                 }
             }
         }
@@ -426,7 +433,7 @@ impl<'cx, 'tcx> WritebackCx<'cx, 'tcx> {
 
     fn visit_opaque_types(&mut self, span: Span) {
         for (&def_id, opaque_defn) in self.fcx.opaque_types.borrow().iter() {
-            let hir_id = self.tcx().hir().as_local_hir_id(def_id).unwrap();
+            let hir_id = self.tcx().hir().as_local_hir_id(def_id.expect_local());
             let instantiated_ty = self.resolve(&opaque_defn.concrete_ty, &hir_id);
 
             debug_assert!(!instantiated_ty.has_escaping_bound_vars());
@@ -640,10 +647,23 @@ impl<'cx, 'tcx> Resolver<'cx, 'tcx> {
         Resolver { tcx: fcx.tcx, infcx: fcx, span, body, replaced_with_error: false }
     }
 
-    fn report_error(&self, t: Ty<'tcx>) {
+    fn report_type_error(&self, t: Ty<'tcx>) {
         if !self.tcx.sess.has_errors() {
             self.infcx
                 .need_type_info_err(Some(self.body.id()), self.span.to_span(self.tcx), t, E0282)
+                .emit();
+        }
+    }
+
+    fn report_const_error(&self, c: &'tcx ty::Const<'tcx>) {
+        if !self.tcx.sess.has_errors() {
+            self.infcx
+                .need_type_info_err_const(
+                    Some(self.body.id()),
+                    self.span.to_span(self.tcx),
+                    c,
+                    E0282,
+                )
                 .emit();
         }
     }
@@ -659,7 +679,7 @@ impl<'cx, 'tcx> TypeFolder<'tcx> for Resolver<'cx, 'tcx> {
             Ok(t) => self.infcx.tcx.erase_regions(&t),
             Err(_) => {
                 debug!("Resolver::fold_ty: input type `{:?}` not fully resolvable", t);
-                self.report_error(t);
+                self.report_type_error(t);
                 self.replaced_with_error = true;
                 self.tcx().types.err
             }
@@ -676,8 +696,7 @@ impl<'cx, 'tcx> TypeFolder<'tcx> for Resolver<'cx, 'tcx> {
             Ok(ct) => self.infcx.tcx.erase_regions(&ct),
             Err(_) => {
                 debug!("Resolver::fold_const: input const `{:?}` not fully resolvable", ct);
-                // FIXME: we'd like to use `self.report_error`, but it doesn't yet
-                // accept a &'tcx ty::Const.
+                self.report_const_error(ct);
                 self.replaced_with_error = true;
                 self.tcx().mk_const(ty::Const { val: ty::ConstKind::Error, ty: ct.ty })
             }

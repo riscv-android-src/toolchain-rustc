@@ -2,8 +2,8 @@ extern crate semver;
 
 #[test]
 fn test_regressions() {
-    use semver::VersionReq;
     use semver::ReqParseError;
+    use semver::VersionReq;
 
     let versions = vec![
         (".*", VersionReq::any()),
@@ -17,6 +17,9 @@ fn test_regressions() {
         let parsed = VersionReq::parse(version);
         let error = parsed.err().unwrap();
 
-        assert_eq!(ReqParseError::DeprecatedVersionRequirement(requirement), error);
+        assert_eq!(
+            ReqParseError::DeprecatedVersionRequirement(requirement),
+            error
+        );
     }
 }

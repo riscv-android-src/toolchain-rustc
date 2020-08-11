@@ -278,6 +278,7 @@ use crate::vec::Vec;
 /// [`Deref`]: ../../std/ops/trait.Deref.html
 /// [`as_str()`]: struct.String.html#method.as_str
 #[derive(PartialOrd, Eq, Ord)]
+#[cfg_attr(not(test), rustc_diagnostic_item = "string_type")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct String {
     vec: Vec<u8>,
@@ -1798,12 +1799,32 @@ impl Extend<char> for String {
         self.reserve(lower_bound);
         iterator.for_each(move |c| self.push(c));
     }
+
+    #[inline]
+    fn extend_one(&mut self, c: char) {
+        self.push(c);
+    }
+
+    #[inline]
+    fn extend_reserve(&mut self, additional: usize) {
+        self.reserve(additional);
+    }
 }
 
 #[stable(feature = "extend_ref", since = "1.2.0")]
 impl<'a> Extend<&'a char> for String {
     fn extend<I: IntoIterator<Item = &'a char>>(&mut self, iter: I) {
         self.extend(iter.into_iter().cloned());
+    }
+
+    #[inline]
+    fn extend_one(&mut self, &c: &'a char) {
+        self.push(c);
+    }
+
+    #[inline]
+    fn extend_reserve(&mut self, additional: usize) {
+        self.reserve(additional);
     }
 }
 
@@ -1812,6 +1833,11 @@ impl<'a> Extend<&'a str> for String {
     fn extend<I: IntoIterator<Item = &'a str>>(&mut self, iter: I) {
         iter.into_iter().for_each(move |s| self.push_str(s));
     }
+
+    #[inline]
+    fn extend_one(&mut self, s: &'a str) {
+        self.push_str(s);
+    }
 }
 
 #[stable(feature = "extend_string", since = "1.4.0")]
@@ -1819,12 +1845,22 @@ impl Extend<String> for String {
     fn extend<I: IntoIterator<Item = String>>(&mut self, iter: I) {
         iter.into_iter().for_each(move |s| self.push_str(&s));
     }
+
+    #[inline]
+    fn extend_one(&mut self, s: String) {
+        self.push_str(&s);
+    }
 }
 
 #[stable(feature = "herd_cows", since = "1.19.0")]
 impl<'a> Extend<Cow<'a, str>> for String {
     fn extend<I: IntoIterator<Item = Cow<'a, str>>>(&mut self, iter: I) {
         iter.into_iter().for_each(move |s| self.push_str(&s));
+    }
+
+    #[inline]
+    fn extend_one(&mut self, s: Cow<'a, str>) {
+        self.push_str(&s);
     }
 }
 

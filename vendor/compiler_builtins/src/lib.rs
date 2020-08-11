@@ -1,6 +1,6 @@
 #![cfg_attr(feature = "compiler-builtins", compiler_builtins)]
 #![feature(abi_unadjusted)]
-#![feature(asm)]
+#![feature(llvm_asm)]
 #![feature(global_asm)]
 #![feature(cfg_target_has_atomic)]
 #![feature(compiler_builtins)]
@@ -30,6 +30,7 @@
 #[cfg(test)]
 extern crate core;
 
+#[allow(unused_unsafe)]
 fn abort() -> ! {
     unsafe { core::intrinsics::abort() }
 }

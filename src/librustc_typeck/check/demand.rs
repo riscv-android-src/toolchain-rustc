@@ -1,15 +1,15 @@
 use crate::check::FnCtxt;
 use rustc_infer::infer::InferOk;
 use rustc_trait_selection::infer::InferCtxtExt as _;
-use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
-use rustc_trait_selection::traits::{self, ObligationCause};
+use rustc_trait_selection::traits::ObligationCause;
 
 use rustc_ast::util::parser::PREC_POSTFIX;
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
+use rustc_hir::lang_items::CloneTraitLangItem;
 use rustc_hir::{is_range_literal, Node};
 use rustc_middle::ty::adjustment::AllowTwoPhase;
-use rustc_middle::ty::{self, AssocItem, Ty};
+use rustc_middle::ty::{self, AssocItem, Ty, TypeAndMut};
 use rustc_span::symbol::sym;
 use rustc_span::Span;
 
@@ -25,7 +25,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ) {
         self.annotate_expected_due_to_let_ty(err, expr);
         self.suggest_compatible_variants(err, expr, expected, expr_ty);
-        self.suggest_ref_or_into(err, expr, expected, expr_ty);
+        self.suggest_deref_ref_or_into(err, expr, expected, expr_ty);
         if self.suggest_calling_boxed_future_when_appropriate(err, expr, expected, expr_ty) {
             return;
         }
@@ -36,7 +36,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     // Requires that the two types unify, and prints an error message if
     // they don't.
     pub fn demand_suptype(&self, sp: Span, expected: Ty<'tcx>, actual: Ty<'tcx>) {
-        self.demand_suptype_diag(sp, expected, actual).map(|mut e| e.emit());
+        if let Some(mut e) = self.demand_suptype_diag(sp, expected, actual) {
+            e.emit();
+        }
     }
 
     pub fn demand_suptype_diag(
@@ -351,6 +353,17 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         false
     }
 
+    fn replace_prefix<A, B, C>(&self, s: A, old: B, new: C) -> Option<String>
+    where
+        A: AsRef<str>,
+        B: AsRef<str>,
+        C: AsRef<str>,
+    {
+        let s = s.as_ref();
+        let old = old.as_ref();
+        if s.starts_with(old) { Some(new.as_ref().to_owned() + &s[old.len()..]) } else { None }
+    }
+
     /// This function is used to determine potential "simple" improvements or users' errors and
     /// provide them useful help. For example:
     ///
@@ -372,7 +385,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         expr: &hir::Expr<'_>,
         checked_ty: Ty<'tcx>,
         expected: Ty<'tcx>,
-    ) -> Option<(Span, &'static str, String)> {
+    ) -> Option<(Span, &'static str, String, Applicability)> {
         let sm = self.sess().source_map();
         let sp = expr.span;
         if sm.is_imported(sp) {
@@ -396,11 +409,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 (&ty::Str, &ty::Array(arr, _) | &ty::Slice(arr)) if arr == self.tcx.types.u8 => {
                     if let hir::ExprKind::Lit(_) = expr.kind {
                         if let Ok(src) = sm.span_to_snippet(sp) {
-                            if src.starts_with("b\"") {
+                            if let Some(src) = self.replace_prefix(src, "b\"", "\"") {
                                 return Some((
                                     sp,
                                     "consider removing the leading `b`",
-                                    src[1..].to_string(),
+                                    src,
+                                    Applicability::MachineApplicable,
                                 ));
                             }
                         }
@@ -409,11 +423,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 (&ty::Array(arr, _) | &ty::Slice(arr), &ty::Str) if arr == self.tcx.types.u8 => {
                     if let hir::ExprKind::Lit(_) = expr.kind {
                         if let Ok(src) = sm.span_to_snippet(sp) {
-                            if src.starts_with('"') {
+                            if let Some(src) = self.replace_prefix(src, "\"", "b\"") {
                                 return Some((
                                     sp,
                                     "consider adding a leading `b`",
-                                    format!("b{}", src),
+                                    src,
+                                    Applicability::MachineApplicable,
                                 ));
                             }
                         }
@@ -440,8 +455,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 };
                 if self.can_coerce(ref_ty, expected) {
                     let mut sugg_sp = sp;
-                    if let hir::ExprKind::MethodCall(segment, _sp, args) = &expr.kind {
-                        let clone_trait = self.tcx.lang_items().clone_trait().unwrap();
+                    if let hir::ExprKind::MethodCall(ref segment, sp, ref args) = expr.kind {
+                        let clone_trait = self.tcx.require_lang_item(CloneTraitLangItem, Some(sp));
                         if let ([arg], Some(true), sym::clone) = (
                             &args[..],
                             self.tables.borrow().type_dependent_def_id(expr.hir_id).map(|did| {
@@ -466,7 +481,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         let sugg_expr = if needs_parens { format!("({})", src) } else { src };
 
                         if let Some(sugg) = self.can_use_as_ref(expr) {
-                            return Some(sugg);
+                            return Some((
+                                sugg.0,
+                                sugg.1,
+                                sugg.2,
+                                Applicability::MachineApplicable,
+                            ));
                         }
                         let field_name = if is_struct_pat_shorthand_field {
                             format!("{}: ", sugg_expr)
@@ -491,6 +511,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                         "consider dereferencing here to assign to the mutable \
                                          borrowed piece of memory",
                                         format!("*{}", src),
+                                        Applicability::MachineApplicable,
                                     ));
                                 }
                             }
@@ -501,11 +522,13 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 sp,
                                 "consider mutably borrowing here",
                                 format!("{}&mut {}", field_name, sugg_expr),
+                                Applicability::MachineApplicable,
                             ),
                             hir::Mutability::Not => (
                                 sp,
                                 "consider borrowing here",
                                 format!("{}&{}", field_name, sugg_expr),
+                                Applicability::MachineApplicable,
                             ),
                         });
                     }
@@ -522,63 +545,116 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // We have `&T`, check if what was expected was `T`. If so,
                 // we may want to suggest removing a `&`.
                 if sm.is_imported(expr.span) {
-                    if let Ok(code) = sm.span_to_snippet(sp) {
-                        if code.starts_with('&') {
+                    if let Ok(src) = sm.span_to_snippet(sp) {
+                        if let Some(src) = self.replace_prefix(src, "&", "") {
                             return Some((
                                 sp,
                                 "consider removing the borrow",
-                                code[1..].to_string(),
+                                src,
+                                Applicability::MachineApplicable,
                             ));
                         }
                     }
                     return None;
                 }
                 if let Ok(code) = sm.span_to_snippet(expr.span) {
-                    return Some((sp, "consider removing the borrow", code));
+                    return Some((
+                        sp,
+                        "consider removing the borrow",
+                        code,
+                        Applicability::MachineApplicable,
+                    ));
+                }
+            }
+            (
+                _,
+                &ty::RawPtr(TypeAndMut { ty: ty_b, mutbl: mutbl_b }),
+                &ty::Ref(_, ty_a, mutbl_a),
+            ) => {
+                if let Some(steps) = self.deref_steps(ty_a, ty_b) {
+                    // Only suggest valid if dereferencing needed.
+                    if steps > 0 {
+                        // The pointer type implements `Copy` trait so the suggestion is always valid.
+                        if let Ok(src) = sm.span_to_snippet(sp) {
+                            let derefs = &"*".repeat(steps);
+                            if let Some((src, applicability)) = match mutbl_b {
+                                hir::Mutability::Mut => {
+                                    let new_prefix = "&mut ".to_owned() + derefs;
+                                    match mutbl_a {
+                                        hir::Mutability::Mut => {
+                                            if let Some(s) =
+                                                self.replace_prefix(src, "&mut ", new_prefix)
+                                            {
+                                                Some((s, Applicability::MachineApplicable))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        hir::Mutability::Not => {
+                                            if let Some(s) =
+                                                self.replace_prefix(src, "&", new_prefix)
+                                            {
+                                                Some((s, Applicability::Unspecified))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                    }
+                                }
+                                hir::Mutability::Not => {
+                                    let new_prefix = "&".to_owned() + derefs;
+                                    match mutbl_a {
+                                        hir::Mutability::Mut => {
+                                            if let Some(s) =
+                                                self.replace_prefix(src, "&mut ", new_prefix)
+                                            {
+                                                Some((s, Applicability::MachineApplicable))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                        hir::Mutability::Not => {
+                                            if let Some(s) =
+                                                self.replace_prefix(src, "&", new_prefix)
+                                            {
+                                                Some((s, Applicability::MachineApplicable))
+                                            } else {
+                                                None
+                                            }
+                                        }
+                                    }
+                                }
+                            } {
+                                return Some((sp, "consider dereferencing", src, applicability));
+                            }
+                        }
+                    }
                 }
             }
             _ if sp == expr.span && !is_macro => {
-                // Check for `Deref` implementations by constructing a predicate to
-                // prove: `<T as Deref>::Output == U`
-                let deref_trait = self.tcx.lang_items().deref_trait().unwrap();
-                let item_def_id = self
-                    .tcx
-                    .associated_items(deref_trait)
-                    .in_definition_order()
-                    .find(|item| item.kind == ty::AssocKind::Type)
-                    .unwrap()
-                    .def_id;
-                let predicate =
-                    ty::Predicate::Projection(ty::Binder::bind(ty::ProjectionPredicate {
-                        // `<T as Deref>::Output`
-                        projection_ty: ty::ProjectionTy {
-                            // `T`
-                            substs: self.tcx.intern_substs(&[checked_ty.into()]),
-                            // `Deref::Output`
-                            item_def_id,
-                        },
-                        // `U`
-                        ty: expected,
-                    }));
-                let obligation = traits::Obligation::new(self.misc(sp), self.param_env, predicate);
-                let impls_deref = self.infcx.predicate_may_hold(&obligation);
-
-                // For a suggestion to make sense, the type would need to be `Copy`.
-                let is_copy = self.infcx.type_is_copy_modulo_regions(self.param_env, expected, sp);
-
-                if is_copy && impls_deref {
-                    if let Ok(code) = sm.span_to_snippet(sp) {
-                        let message = if checked_ty.is_region_ptr() {
-                            "consider dereferencing the borrow"
-                        } else {
-                            "consider dereferencing the type"
-                        };
-                        let suggestion = if is_struct_pat_shorthand_field {
-                            format!("{}: *{}", code, code)
-                        } else {
-                            format!("*{}", code)
-                        };
-                        return Some((sp, message, suggestion));
+                if let Some(steps) = self.deref_steps(checked_ty, expected) {
+                    if steps == 1 {
+                        // For a suggestion to make sense, the type would need to be `Copy`.
+                        if self.infcx.type_is_copy_modulo_regions(self.param_env, expected, sp) {
+                            if let Ok(code) = sm.span_to_snippet(sp) {
+                                let message = if checked_ty.is_region_ptr() {
+                                    "consider dereferencing the borrow"
+                                } else {
+                                    "consider dereferencing the type"
+                                };
+                                let suggestion = if is_struct_pat_shorthand_field {
+                                    format!("{}: *{}", code, code)
+                                } else {
+                                    format!("*{}", code)
+                                };
+                                return Some((
+                                    sp,
+                                    message,
+                                    suggestion,
+                                    Applicability::MachineApplicable,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -614,24 +690,24 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // For now, don't suggest casting with `as`.
         let can_cast = false;
 
-        let mut prefix = String::new();
-        if let Some(hir::Node::Expr(hir::Expr {
-            kind: hir::ExprKind::Struct(_, fields, _), ..
+        let prefix = if let Some(hir::Node::Expr(hir::Expr {
+            kind: hir::ExprKind::Struct(_, fields, _),
+            ..
         })) = self.tcx.hir().find(self.tcx.hir().get_parent_node(expr.hir_id))
         {
             // `expr` is a literal field for a struct, only suggest if appropriate
-            for field in *fields {
-                if field.expr.hir_id == expr.hir_id && field.is_shorthand {
-                    // This is a field literal
-                    prefix = format!("{}: ", field.ident);
-                    break;
-                }
-            }
-            if &prefix == "" {
+            match (*fields)
+                .iter()
+                .find(|field| field.expr.hir_id == expr.hir_id && field.is_shorthand)
+            {
+                // This is a field literal
+                Some(field) => format!("{}: ", field.ident),
                 // Likely a field was meant, but this field wasn't found. Do not suggest anything.
-                return false;
+                None => return false,
             }
-        }
+        } else {
+            String::new()
+        };
         if let hir::ExprKind::Call(path, args) = &expr.kind {
             if let (hir::ExprKind::Path(hir::QPath::TypeRelative(base_ty, path_segment)), 1) =
                 (&path.kind, args.len())
@@ -723,7 +799,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
             let suggest_to_change_suffix_or_into =
                 |err: &mut DiagnosticBuilder<'_>, is_fallible: bool| {
-                    let into_sugg = into_suggestion.clone();
                     err.span_suggestion(
                         expr.span,
                         if literal_is_ty_suffixed(expr) {
@@ -738,7 +813,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                         } else if is_fallible {
                             try_into_suggestion
                         } else {
-                            into_sugg
+                            into_suggestion.clone()
                         },
                         Applicability::MachineApplicable,
                     );
@@ -765,7 +840,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     suggest_to_change_suffix_or_into(err, is_fallible);
                     true
                 }
-                (&ty::Int(_), &ty::Uint(_)) | (&ty::Uint(_), &ty::Int(_)) => {
+                (&ty::Int(exp), &ty::Uint(found)) => {
+                    let is_fallible = match (exp.bit_width(), found.bit_width()) {
+                        (Some(exp), Some(found)) if found < exp => false,
+                        (None, Some(8)) => false,
+                        _ => true,
+                    };
+                    suggest_to_change_suffix_or_into(err, is_fallible);
+                    true
+                }
+                (&ty::Uint(_), &ty::Int(_)) => {
                     suggest_to_change_suffix_or_into(err, true);
                     true
                 }
@@ -805,13 +889,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             &format!("{}, rounding the float towards zero", msg),
                             cast_suggestion,
                             Applicability::MaybeIncorrect, // lossy conversion
-                        );
-                        err.warn(
-                            "if the rounded value cannot be represented by the target \
-                                integer type, including `Inf` and `NaN`, casting will cause \
-                                undefined behavior \
-                                (see issue #10184 <https://github.com/rust-lang/rust/issues/10184> \
-                                for more information)",
                         );
                     }
                     true

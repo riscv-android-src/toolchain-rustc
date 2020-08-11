@@ -24,8 +24,25 @@ declare_clippy_lint! {
     /// **Known problems:** None.
     ///
     /// **Example:**
-    /// ```ignore
-    /// let { a: _, b: ref b, c: _ } = ..
+    /// ```rust
+    /// # struct Foo {
+    /// #     a: i32,
+    /// #     b: i32,
+    /// #     c: i32,
+    /// # }
+    /// let f = Foo { a: 0, b: 0, c: 0 };
+    ///
+    /// // Bad
+    /// match f {
+    ///     Foo { a: _, b: 0, .. } => {},
+    ///     Foo { a: _, b: _, c: _ } => {},
+    /// }
+    ///
+    /// // Good
+    /// match f {
+    ///     Foo { b: 0, .. } => {},
+    ///     Foo { .. } => {},
+    /// }
     /// ```
     pub UNNEEDED_FIELD_PATTERN,
     restriction,
@@ -313,6 +330,7 @@ impl EarlyLintPass for MiscEarlyLints {
                     UNNEEDED_FIELD_PATTERN,
                     pat.span,
                     "All the struct fields are matched to a wildcard pattern, consider using `..`.",
+                    None,
                     &format!("Try with `{} {{ .. }}` instead", type_name),
                 );
                 return;
@@ -348,6 +366,7 @@ impl EarlyLintPass for MiscEarlyLints {
                                 field.span,
                                 "You matched a field with a wildcard pattern. Consider using `..` \
                                  instead",
+                                None,
                                 &format!("Try with `{} {{ {}, .. }}`", type_name, normal[..].join(", ")),
                             );
                         }
@@ -360,7 +379,7 @@ impl EarlyLintPass for MiscEarlyLints {
             let left_binding = match left {
                 BindingMode::ByRef(Mutability::Mut) => "ref mut ",
                 BindingMode::ByRef(Mutability::Not) => "ref ",
-                _ => "",
+                BindingMode::ByValue(..) => "",
             };
 
             if let PatKind::Wild = right.kind {

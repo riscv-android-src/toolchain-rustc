@@ -24,7 +24,7 @@ use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::TraitCandidate;
 use rustc_middle::{bug, span_bug};
 use rustc_session::lint;
-use rustc_span::symbol::{kw, sym};
+use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::Span;
 use smallvec::{smallvec, SmallVec};
 
@@ -347,7 +347,7 @@ struct DiagnosticMetadata<'ast> {
     currently_processing_generics: bool,
 
     /// The current enclosing function (used for better errors).
-    current_function: Option<Span>,
+    current_function: Option<(FnKind<'ast>, Span)>,
 
     /// A list of labels as of yet unused. Labels will be removed from this map when
     /// they are used (in a `break` or `continue` statement)
@@ -466,7 +466,8 @@ impl<'a, 'ast> Visitor<'ast> for LateResolutionVisitor<'a, '_, 'ast> {
             FnKind::Fn(FnCtxt::Free | FnCtxt::Foreign, ..) => FnItemRibKind,
             FnKind::Fn(FnCtxt::Assoc(_), ..) | FnKind::Closure(..) => NormalRibKind,
         };
-        let previous_value = replace(&mut self.diagnostic_metadata.current_function, Some(sp));
+        let previous_value =
+            replace(&mut self.diagnostic_metadata.current_function, Some((fn_kind, sp)));
         debug!("(resolving function) entering function");
         let declaration = fn_kind.decl();
 
@@ -1194,7 +1195,7 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
 
     fn check_trait_item<F>(&mut self, ident: Ident, ns: Namespace, span: Span, err: F)
     where
-        F: FnOnce(Name, &str) -> ResolutionError<'_>,
+        F: FnOnce(Symbol, &str) -> ResolutionError<'_>,
     {
         // If there is a TraitRef in scope for an impl, then the method must be in the
         // trait.
@@ -1620,11 +1621,10 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
         let report_errors = |this: &mut Self, res: Option<Res>| {
             let (err, candidates) = this.smart_resolve_report_errors(path, span, source, res);
             let def_id = this.parent_scope.module.normal_ancestor_id;
-            let node_id = this.r.definitions.as_local_node_id(def_id).unwrap();
             let better = res.is_some();
             let suggestion =
                 if res.is_none() { this.report_missing_type_error(path) } else { None };
-            this.r.use_injections.push(UseError { err, candidates, node_id, better, suggestion });
+            this.r.use_injections.push(UseError { err, candidates, def_id, better, suggestion });
             PartialRes::new(Res::Err)
         };
 
@@ -2000,7 +2000,9 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
                     this.visit_expr(cond);
                     this.visit_block(then);
                 });
-                opt_else.as_ref().map(|expr| self.visit_expr(expr));
+                if let Some(expr) = opt_else {
+                    self.visit_expr(expr);
+                }
             }
 
             ExprKind::Loop(ref block, label) => self.resolve_labeled_block(label, expr.id, &block),
@@ -2206,7 +2208,8 @@ impl<'a, 'b, 'ast> LateResolutionVisitor<'a, 'b, 'ast> {
     ) -> SmallVec<[NodeId; 1]> {
         let mut import_ids = smallvec![];
         while let NameBindingKind::Import { import, binding, .. } = kind {
-            self.r.maybe_unused_trait_imports.insert(import.id);
+            let id = self.r.definitions.local_def_id(import.id);
+            self.r.maybe_unused_trait_imports.insert(id);
             self.r.add_to_glob_map(&import, trait_name);
             import_ids.push(import.id);
             kind = &binding.kind;

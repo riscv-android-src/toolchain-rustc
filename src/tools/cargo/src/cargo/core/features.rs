@@ -82,6 +82,11 @@ impl FromStr for Edition {
         match s {
             "2015" => Ok(Edition::Edition2015),
             "2018" => Ok(Edition::Edition2018),
+            s if s.parse().map_or(false, |y: u16| y > 2020 && y < 2050) => bail!(
+                "this version of Cargo is older than the `{}` edition, \
+                 and only supports `2015` and `2018` editions.",
+                s
+            ),
             s => bail!(
                 "supported edition values are `2015` or `2018`, but `{}` \
                  is unknown",
@@ -206,6 +211,12 @@ features! {
 
         // Allow to specify profiles other than 'dev', 'release', 'test', etc.
         [unstable] named_profiles: bool,
+
+        // Opt-in new-resolver behavior.
+        [unstable] resolver: bool,
+
+        // Allow to specify whether binaries should be stripped.
+        [unstable] strip: bool,
     }
 }
 
@@ -344,6 +355,7 @@ pub struct CliUnstable {
     pub features: Option<Vec<String>>,
     pub crate_versions: bool,
     pub separate_nightlies: bool,
+    pub multitarget: bool,
 }
 
 impl CliUnstable {
@@ -422,6 +434,7 @@ impl CliUnstable {
             "features" => self.features = Some(parse_features(v)),
             "crate-versions" => self.crate_versions = parse_empty(k, v)?,
             "separate-nightlies" => self.separate_nightlies = parse_empty(k, v)?,
+            "multitarget" => self.multitarget = parse_empty(k, v)?,
             _ => bail!("unknown `-Z` flag specified: {}", k),
         }
 

@@ -267,6 +267,7 @@ impl<'cb> RepoBuilder<'cb> {
         }
 
         let url = CString::new(url)?;
+        // Normal file path OK (does not need Windows conversion).
         let into = into.into_c_string()?;
         let mut raw = ptr::null_mut();
         unsafe {
@@ -503,7 +504,7 @@ impl<'cb> CheckoutBuilder<'cb> {
     /// If no paths are specified, then all files are checked out. Otherwise
     /// only these specified paths are checked out.
     pub fn path<T: IntoCString>(&mut self, path: T) -> &mut CheckoutBuilder<'cb> {
-        let path = path.into_c_string().unwrap();
+        let path = util::cstring_to_repo_path(path).unwrap();
         self.path_ptrs.push(path.as_ptr());
         self.paths.push(path);
         self
@@ -511,6 +512,7 @@ impl<'cb> CheckoutBuilder<'cb> {
 
     /// Set the directory to check out to
     pub fn target_dir(&mut self, dst: &Path) -> &mut CheckoutBuilder<'cb> {
+        // Normal file path OK (does not need Windows conversion).
         self.target_dir = Some(dst.into_c_string().unwrap());
         self
     }

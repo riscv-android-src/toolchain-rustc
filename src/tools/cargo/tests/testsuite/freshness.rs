@@ -1,7 +1,7 @@
 //! Tests for fingerprinting (rebuild detection).
 
 use filetime::FileTime;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io;
 use std::io::prelude::*;
 use std::net::TcpListener;
@@ -10,6 +10,7 @@ use std::process::Stdio;
 use std::thread;
 use std::time::SystemTime;
 
+use super::death;
 use cargo_test_support::paths::{self, CargoPathExt};
 use cargo_test_support::registry::Package;
 use cargo_test_support::{basic_manifest, is_coarse_mtime, project, rustc_host, sleep_ms};
@@ -34,10 +35,7 @@ fn modifying_and_moving() {
     p.root().move_into_the_past();
     p.root().join("target").move_into_the_past();
 
-    File::create(&p.root().join("src/a.rs"))
-        .unwrap()
-        .write_all(b"#[allow(unused)]fn main() {}")
-        .unwrap();
+    p.change_file("src/a.rs", "#[allow(unused)]fn main() {}");
     p.cargo("build")
         .with_stderr(
             "\
@@ -78,16 +76,8 @@ fn modify_only_some_files() {
     assert!(p.bin("foo").is_file());
 
     let lib = p.root().join("src/lib.rs");
-    let bin = p.root().join("src/b.rs");
-
-    File::create(&lib)
-        .unwrap()
-        .write_all(b"invalid rust code")
-        .unwrap();
-    File::create(&bin)
-        .unwrap()
-        .write_all(b"#[allow(unused)]fn foo() {}")
-        .unwrap();
+    p.change_file("src/lib.rs", "invalid rust code");
+    p.change_file("src/b.rs", "#[allow(unused)]fn foo() {}");
     lib.move_into_the_past();
 
     // Make sure the binary is rebuilt, not the lib
@@ -501,8 +491,8 @@ fn changing_bin_features_caches_targets() {
     /* Targets should be cached from the first build */
 
     let mut e = p.cargo("build");
-    // MSVC does not include hash in binary filename, so it gets recompiled.
-    if cfg!(target_env = "msvc") {
+    // MSVC/apple does not include hash in binary filename, so it gets recompiled.
+    if cfg!(any(target_env = "msvc", target_vendor = "apple")) {
         e.with_stderr("[COMPILING] foo[..]\n[FINISHED] dev[..]");
     } else {
         e.with_stderr("[FINISHED] dev[..]");
@@ -511,7 +501,7 @@ fn changing_bin_features_caches_targets() {
     p.rename_run("foo", "off2").with_stdout("feature off").run();
 
     let mut e = p.cargo("build --features foo");
-    if cfg!(target_env = "msvc") {
+    if cfg!(any(target_env = "msvc", target_vendor = "apple")) {
         e.with_stderr("[COMPILING] foo[..]\n[FINISHED] dev[..]");
     } else {
         e.with_stderr("[FINISHED] dev[..]");
@@ -538,7 +528,7 @@ fn rebuild_tests_if_lib_changes() {
     p.cargo("test").run();
 
     sleep_ms(1000);
-    File::create(&p.root().join("src/lib.rs")).unwrap();
+    p.change_file("src/lib.rs", "");
 
     p.cargo("build -v").run();
     p.cargo("test -v")
@@ -838,18 +828,16 @@ fn rebuild_if_environment_changes() {
         )
         .run();
 
-    File::create(&p.root().join("Cargo.toml"))
-        .unwrap()
-        .write_all(
-            br#"
-        [package]
-        name = "foo"
-        description = "new desc"
-        version = "0.0.1"
-        authors = []
-    "#,
-        )
-        .unwrap();
+    p.change_file(
+        "Cargo.toml",
+        r#"
+            [package]
+            name = "foo"
+            description = "new desc"
+            version = "0.0.1"
+            authors = []
+        "#,
+    );
 
     p.cargo("run")
         .with_stdout("new desc")
@@ -1471,7 +1459,7 @@ fn bust_patched_dep() {
         sleep_ms(1000);
     }
 
-    File::create(&p.root().join("reg1new/src/lib.rs")).unwrap();
+    p.change_file("reg1new/src/lib.rs", "");
     if is_coarse_mtime() {
         sleep_ms(1000);
     }
@@ -2329,8 +2317,14 @@ LLVM version: 9.0
 fn linking_interrupted() {
     // Interrupt during the linking phase shouldn't leave test executable as "fresh".
 
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    // This is used to detect when linking starts, then to pause the linker so
+    // that the test can kill cargo.
+    let link_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let link_addr = link_listener.local_addr().unwrap();
+
+    // This is used to detect when rustc exits.
+    let rustc_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let rustc_addr = rustc_listener.local_addr().unwrap();
 
     // Create a linker that we can interrupt.
     let linker = project()
@@ -2339,8 +2333,6 @@ fn linking_interrupted() {
         .file(
             "src/main.rs",
             &r#"
-            use std::io::Read;
-
             fn main() {
                 // Figure out the output filename.
                 let output = match std::env::args().find(|a| a.starts_with("/OUT:")) {
@@ -2359,14 +2351,40 @@ fn linking_interrupted() {
                 std::fs::write(&output, "").unwrap();
                 // Tell the test that we are ready to be interrupted.
                 let mut socket = std::net::TcpStream::connect("__ADDR__").unwrap();
-                // Wait for the test to tell us to exit.
-                let _ = socket.read(&mut [0; 1]);
+                // Wait for the test to kill us.
+                std::thread::sleep(std::time::Duration::new(60, 0));
             }
             "#
-            .replace("__ADDR__", &addr.to_string()),
+            .replace("__ADDR__", &link_addr.to_string()),
         )
         .build();
     linker.cargo("build").run();
+
+    // Create a wrapper around rustc that will tell us when rustc is finished.
+    let rustc = project()
+        .at("rustc-waiter")
+        .file("Cargo.toml", &basic_manifest("rustc-waiter", "1.0.0"))
+        .file(
+            "src/main.rs",
+            &r#"
+            fn main() {
+                let mut conn = None;
+                // Check for a normal build (not -vV or --print).
+                if std::env::args().any(|arg| arg == "t1") {
+                    // Tell the test that rustc has started.
+                    conn = Some(std::net::TcpStream::connect("__ADDR__").unwrap());
+                }
+                let status = std::process::Command::new("rustc")
+                    .args(std::env::args().skip(1))
+                    .status()
+                    .expect("rustc to run");
+                std::process::exit(status.code().unwrap_or(1));
+            }
+            "#
+            .replace("__ADDR__", &rustc_addr.to_string()),
+        )
+        .build();
+    rustc.cargo("build").run();
 
     // Build it once so that the fingerprint gets saved to disk.
     let p = project()
@@ -2374,28 +2392,38 @@ fn linking_interrupted() {
         .file("tests/t1.rs", "")
         .build();
     p.cargo("test --test t1 --no-run").run();
+
     // Make a change, start a build, then interrupt it.
     p.change_file("src/lib.rs", "// modified");
     let linker_env = format!(
         "CARGO_TARGET_{}_LINKER",
         rustc_host().to_uppercase().replace('-', "_")
     );
+    // NOTE: This assumes that the paths to the linker or rustc are not in the
+    // fingerprint. But maybe they should be?
     let mut cmd = p
         .cargo("test --test t1 --no-run")
         .env(&linker_env, linker.bin("linker"))
+        .env("RUSTC", rustc.bin("rustc-waiter"))
         .build_command();
     let mut child = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .env("__CARGO_TEST_SETSID_PLEASE_DONT_USE_ELSEWHERE", "1")
         .spawn()
         .unwrap();
+    // Wait for rustc to start.
+    let mut rustc_conn = rustc_listener.accept().unwrap().0;
     // Wait for linking to start.
-    let mut conn = listener.accept().unwrap().0;
+    drop(link_listener.accept().unwrap());
 
     // Interrupt the child.
-    child.kill().unwrap();
-    // Note: rustc and the linker are still running, let them exit here.
-    conn.write(b"X").unwrap();
+    death::ctrl_c(&mut child);
+    assert!(!child.wait().unwrap().success());
+    // Wait for rustc to exit. If we don't wait, then the command below could
+    // start while rustc is still being torn down.
+    let mut buf = [0];
+    drop(rustc_conn.read_exact(&mut buf));
 
     // Build again, shouldn't be fresh.
     p.cargo("test --test t1")
@@ -2406,5 +2434,41 @@ fn linking_interrupted() {
 [RUNNING] target/debug/deps/t1[..]
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+#[cfg_attr(
+    not(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc")),
+    ignore
+)]
+fn lld_is_fresh() {
+    // Check for bug when using lld linker that it remains fresh with dylib.
+    let p = project()
+        .file(
+            ".cargo/config",
+            r#"
+                [target.x86_64-pc-windows-msvc]
+                linker = "rust-lld"
+                rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+            "#,
+        )
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [lib]
+                crate-type = ["dylib"]
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("build").run();
+    p.cargo("build -v")
+        .with_stderr("[FRESH] foo [..]\n[FINISHED] [..]")
         .run();
 }

@@ -1,14 +1,9 @@
 // FIXME: switch to something more ergonomic here, once available.
 // (Currently, there is no way to opt into sysroot crates without `extern crate`.)
-#[allow(unused_extern_crates)]
 extern crate rustc_driver;
-#[allow(unused_extern_crates)]
 extern crate rustc_interface;
-#[allow(unused_extern_crates)]
 extern crate rustc_save_analysis;
-#[allow(unused_extern_crates)]
 extern crate rustc_session;
-#[allow(unused_extern_crates)]
 extern crate rustc_span;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -331,7 +326,7 @@ fn clippy_config(config: &mut interface::Config) {
 
         let conf = clippy_lints::read_conf(&[], &sess);
         clippy_lints::register_plugins(&mut lint_store, &sess, &conf);
-        clippy_lints::register_pre_expansion_lints(&mut lint_store, &conf);
+        clippy_lints::register_pre_expansion_lints(&mut lint_store);
         clippy_lints::register_renamed(&mut lint_store);
     }));
 }
@@ -367,17 +362,20 @@ impl FileLoader for ReplacedFileLoader {
         self.real_file_loader.file_exists(path)
     }
 
-    fn abs_path(&self, path: &Path) -> Option<PathBuf> {
-        self.real_file_loader.abs_path(path)
-    }
-
     fn read_file(&self, path: &Path) -> io::Result<String> {
-        if let Some(abs_path) = self.abs_path(path) {
-            if self.replacements.contains_key(&abs_path) {
-                return Ok(self.replacements[&abs_path].clone());
-            }
+        if let Some(contents) = abs_path(path).and_then(|x| self.replacements.get(&x)) {
+            return Ok(contents.clone());
         }
+
         self.real_file_loader.read_file(path)
+    }
+}
+
+fn abs_path(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        env::current_dir().ok().map(|cwd| cwd.join(path))
     }
 }
 

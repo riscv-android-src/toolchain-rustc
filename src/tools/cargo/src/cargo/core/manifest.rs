@@ -3,13 +3,16 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use semver::Version;
 use serde::ser;
 use serde::Serialize;
 use url::Url;
 
+use crate::core::compiler::CrateType;
 use crate::core::interning::InternedString;
+use crate::core::resolver::ResolveBehavior;
 use crate::core::{Dependency, PackageId, PackageIdSpec, SourceId, Summary};
 use crate::core::{Edition, Feature, Features, WorkspaceConfig};
 use crate::util::errors::*;
@@ -44,6 +47,7 @@ pub struct Manifest {
     im_a_teapot: Option<bool>,
     default_run: Option<String>,
     metabuild: Option<Vec<String>>,
+    resolve_behavior: Option<ResolveBehavior>,
 }
 
 /// When parsing `Cargo.toml`, some warnings should silenced
@@ -66,6 +70,7 @@ pub struct VirtualManifest {
     profiles: Option<TomlProfiles>,
     warnings: Warnings,
     features: Features,
+    resolve_behavior: Option<ResolveBehavior>,
 }
 
 /// General metadata about a package which is just blindly uploaded to the
@@ -92,73 +97,13 @@ pub struct ManifestMetadata {
     pub links: Option<String>,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum LibKind {
-    Lib,
-    Rlib,
-    Dylib,
-    ProcMacro,
-    Other(String),
-}
-
-impl LibKind {
-    /// Returns the argument suitable for `--crate-type` to pass to rustc.
-    pub fn crate_type(&self) -> &str {
-        match *self {
-            LibKind::Lib => "lib",
-            LibKind::Rlib => "rlib",
-            LibKind::Dylib => "dylib",
-            LibKind::ProcMacro => "proc-macro",
-            LibKind::Other(ref s) => s,
-        }
-    }
-
-    pub fn linkable(&self) -> bool {
-        match *self {
-            LibKind::Lib | LibKind::Rlib | LibKind::Dylib | LibKind::ProcMacro => true,
-            LibKind::Other(..) => false,
-        }
-    }
-
-    pub fn requires_upstream_objects(&self) -> bool {
-        match *self {
-            // "lib" == "rlib" and is a compilation that doesn't actually
-            // require upstream object files to exist, only upstream metadata
-            // files. As a result, it doesn't require upstream artifacts
-            LibKind::Lib | LibKind::Rlib => false,
-
-            // Everything else, however, is some form of "linkable output" or
-            // something that requires upstream object files.
-            _ => true,
-        }
-    }
-}
-
-impl fmt::Debug for LibKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.crate_type().fmt(f)
-    }
-}
-
-impl<'a> From<&'a String> for LibKind {
-    fn from(string: &'a String) -> Self {
-        match string.as_ref() {
-            "lib" => LibKind::Lib,
-            "rlib" => LibKind::Rlib,
-            "dylib" => LibKind::Dylib,
-            "proc-macro" => LibKind::ProcMacro,
-            s => LibKind::Other(s.to_string()),
-        }
-    }
-}
-
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TargetKind {
-    Lib(Vec<LibKind>),
+    Lib(Vec<CrateType>),
     Bin,
     Test,
     Bench,
-    ExampleLib(Vec<LibKind>),
+    ExampleLib(Vec<CrateType>),
     ExampleBin,
     CustomBuild,
 }
@@ -169,8 +114,8 @@ impl ser::Serialize for TargetKind {
         S: ser::Serializer,
     {
         use self::TargetKind::*;
-        match *self {
-            Lib(ref kinds) => s.collect_seq(kinds.iter().map(LibKind::crate_type)),
+        match self {
+            Lib(kinds) => s.collect_seq(kinds.iter().map(|t| t.to_string())),
             Bin => ["bin"].serialize(s),
             ExampleBin | ExampleLib(_) => ["example"].serialize(s),
             Test => ["test"].serialize(s),
@@ -219,12 +164,29 @@ impl TargetKind {
             _ => true,
         }
     }
+
+    /// Returns the arguments suitable for `--crate-type` to pass to rustc.
+    pub fn rustc_crate_types(&self) -> Vec<CrateType> {
+        match self {
+            TargetKind::Lib(kinds) | TargetKind::ExampleLib(kinds) => kinds.clone(),
+            TargetKind::CustomBuild
+            | TargetKind::Bench
+            | TargetKind::Test
+            | TargetKind::ExampleBin
+            | TargetKind::Bin => vec![CrateType::Bin],
+        }
+    }
 }
 
 /// Information about a binary, a library, an example, etc. that is part of the
 /// package.
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Target {
+    inner: Arc<TargetInner>,
+}
+
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+struct TargetInner {
     kind: TargetKind,
     name: String,
     // Note that the `src_path` here is excluded from the `Hash` implementation
@@ -294,7 +256,7 @@ struct SerializedTarget<'a> {
     kind: &'a TargetKind,
     /// Corresponds to `--crate-type` compiler attribute.
     /// See https://doc.rust-lang.org/reference/linkage.html
-    crate_types: Vec<&'a str>,
+    crate_types: Vec<CrateType>,
     name: &'a str,
     src_path: Option<&'a PathBuf>,
     edition: &'a str,
@@ -305,30 +267,35 @@ struct SerializedTarget<'a> {
 
 impl ser::Serialize for Target {
     fn serialize<S: ser::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let src_path = match &self.src_path {
+        let src_path = match self.src_path() {
             TargetSourcePath::Path(p) => Some(p),
             // Unfortunately getting the correct path would require access to
             // target_dir, which is not available here.
             TargetSourcePath::Metabuild => None,
         };
         SerializedTarget {
-            kind: &self.kind,
+            kind: self.kind(),
             crate_types: self.rustc_crate_types(),
-            name: &self.name,
+            name: self.name(),
             src_path,
-            edition: &self.edition.to_string(),
+            edition: &self.edition().to_string(),
             required_features: self
-                .required_features
-                .as_ref()
+                .required_features()
                 .map(|rf| rf.iter().map(|s| &**s).collect()),
-            doctest: self.doctest && self.doctestable(),
+            doctest: self.doctested() && self.doctestable(),
         }
         .serialize(s)
     }
 }
 
+impl fmt::Debug for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
 compact_debug! {
-    impl fmt::Debug for Target {
+    impl fmt::Debug for TargetInner {
         fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
             let (default, default_name) = {
                 match &self.kind {
@@ -337,9 +304,9 @@ compact_debug! {
                             Target::lib_target(
                                 &self.name,
                                 kinds.clone(),
-                                self.src_path().path().unwrap().to_path_buf(),
+                                self.src_path.path().unwrap().to_path_buf(),
                                 self.edition,
-                            ),
+                            ).inner,
                             format!("lib_target({:?}, {:?}, {:?}, {:?})",
                                     self.name, kinds, self.src_path, self.edition),
                         )
@@ -352,21 +319,21 @@ compact_debug! {
                                         &self.name,
                                         path.to_path_buf(),
                                         self.edition,
-                                    ),
+                                    ).inner,
                                     format!("custom_build_target({:?}, {:?}, {:?})",
                                             self.name, path, self.edition),
                                 )
                             }
                             TargetSourcePath::Metabuild => {
                                 (
-                                    Target::metabuild_target(&self.name),
+                                    Target::metabuild_target(&self.name).inner,
                                     format!("metabuild_target({:?})", self.name),
                                 )
                             }
                         }
                     }
                     _ => (
-                        Target::new(self.src_path.clone(), self.edition),
+                        Target::new(self.src_path.clone(), self.edition).inner,
                         format!("with_path({:?}, {:?})", self.src_path, self.edition),
                     ),
                 }
@@ -410,6 +377,7 @@ impl Manifest {
         default_run: Option<String>,
         original: Rc<TomlManifest>,
         metabuild: Option<Vec<String>>,
+        resolve_behavior: Option<ResolveBehavior>,
     ) -> Manifest {
         Manifest {
             summary,
@@ -432,6 +400,7 @@ impl Manifest {
             default_run,
             publish_lockfile,
             metabuild,
+            resolve_behavior,
         }
     }
 
@@ -462,6 +431,7 @@ impl Manifest {
     pub fn targets(&self) -> &[Target] {
         &self.targets
     }
+    // It is used by cargo-c, please do not remove it
     pub fn targets_mut(&mut self) -> &mut [Target] {
         &mut self.targets
     }
@@ -501,6 +471,13 @@ impl Manifest {
         &self.features
     }
 
+    /// The style of resolver behavior to use, declared with the `resolver` field.
+    ///
+    /// Returns `None` if it is not specified.
+    pub fn resolve_behavior(&self) -> Option<ResolveBehavior> {
+        self.resolve_behavior
+    }
+
     pub fn map_source(self, to_replace: SourceId, replace_with: SourceId) -> Manifest {
         Manifest {
             summary: self.summary.map_source(to_replace, replace_with),
@@ -527,7 +504,7 @@ impl Manifest {
     pub fn print_teapot(&self, config: &Config) {
         if let Some(teapot) = self.im_a_teapot {
             if config.cli_unstable().print_im_a_teapot {
-                println!("im-a-teapot = {}", teapot);
+                crate::drop_println!(config, "im-a-teapot = {}", teapot);
             }
         }
     }
@@ -564,6 +541,7 @@ impl VirtualManifest {
         workspace: WorkspaceConfig,
         profiles: Option<TomlProfiles>,
         features: Features,
+        resolve_behavior: Option<ResolveBehavior>,
     ) -> VirtualManifest {
         VirtualManifest {
             replace,
@@ -572,6 +550,7 @@ impl VirtualManifest {
             profiles,
             warnings: Warnings::new(),
             features,
+            resolve_behavior,
         }
     }
 
@@ -602,23 +581,32 @@ impl VirtualManifest {
     pub fn features(&self) -> &Features {
         &self.features
     }
+
+    /// The style of resolver behavior to use, declared with the `resolver` field.
+    ///
+    /// Returns `None` if it is not specified.
+    pub fn resolve_behavior(&self) -> Option<ResolveBehavior> {
+        self.resolve_behavior
+    }
 }
 
 impl Target {
     fn new(src_path: TargetSourcePath, edition: Edition) -> Target {
         Target {
-            kind: TargetKind::Bin,
-            name: String::new(),
-            src_path,
-            required_features: None,
-            doc: false,
-            doctest: false,
-            harness: true,
-            for_host: false,
-            proc_macro: false,
-            edition,
-            tested: true,
-            benched: true,
+            inner: Arc::new(TargetInner {
+                kind: TargetKind::Bin,
+                name: String::new(),
+                src_path,
+                required_features: None,
+                doc: false,
+                doctest: false,
+                harness: true,
+                for_host: false,
+                proc_macro: false,
+                edition,
+                tested: true,
+                benched: true,
+            }),
         }
     }
 
@@ -628,17 +616,17 @@ impl Target {
 
     pub fn lib_target(
         name: &str,
-        crate_targets: Vec<LibKind>,
+        crate_targets: Vec<CrateType>,
         src_path: PathBuf,
         edition: Edition,
     ) -> Target {
-        Target {
-            kind: TargetKind::Lib(crate_targets),
-            name: name.to_string(),
-            doctest: true,
-            doc: true,
-            ..Target::with_path(src_path, edition)
-        }
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::Lib(crate_targets))
+            .set_name(name)
+            .set_doctest(true)
+            .set_doc(true);
+        target
     }
 
     pub fn bin_target(
@@ -647,63 +635,59 @@ impl Target {
         required_features: Option<Vec<String>>,
         edition: Edition,
     ) -> Target {
-        Target {
-            kind: TargetKind::Bin,
-            name: name.to_string(),
-            required_features,
-            doc: true,
-            ..Target::with_path(src_path, edition)
-        }
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::Bin)
+            .set_name(name)
+            .set_required_features(required_features)
+            .set_doc(true);
+        target
     }
 
     /// Builds a `Target` corresponding to the `build = "build.rs"` entry.
     pub fn custom_build_target(name: &str, src_path: PathBuf, edition: Edition) -> Target {
-        Target {
-            kind: TargetKind::CustomBuild,
-            name: name.to_string(),
-            for_host: true,
-            benched: false,
-            tested: false,
-            ..Target::with_path(src_path, edition)
-        }
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::CustomBuild)
+            .set_name(name)
+            .set_for_host(true)
+            .set_benched(false)
+            .set_tested(false);
+        target
     }
 
     pub fn metabuild_target(name: &str) -> Target {
-        Target {
-            kind: TargetKind::CustomBuild,
-            name: name.to_string(),
-            for_host: true,
-            benched: false,
-            tested: false,
-            ..Target::new(TargetSourcePath::Metabuild, Edition::Edition2018)
-        }
+        let mut target = Target::new(TargetSourcePath::Metabuild, Edition::Edition2018);
+        target
+            .set_kind(TargetKind::CustomBuild)
+            .set_name(name)
+            .set_for_host(true)
+            .set_benched(false)
+            .set_tested(false);
+        target
     }
 
     pub fn example_target(
         name: &str,
-        crate_targets: Vec<LibKind>,
+        crate_targets: Vec<CrateType>,
         src_path: PathBuf,
         required_features: Option<Vec<String>>,
         edition: Edition,
     ) -> Target {
-        let kind = if crate_targets.is_empty()
-            || crate_targets
-                .iter()
-                .all(|t| *t == LibKind::Other("bin".into()))
+        let kind = if crate_targets.is_empty() || crate_targets.iter().all(|t| *t == CrateType::Bin)
         {
             TargetKind::ExampleBin
         } else {
             TargetKind::ExampleLib(crate_targets)
         };
-
-        Target {
-            kind,
-            name: name.to_string(),
-            required_features,
-            tested: false,
-            benched: false,
-            ..Target::with_path(src_path, edition)
-        }
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(kind)
+            .set_name(name)
+            .set_required_features(required_features)
+            .set_tested(false)
+            .set_benched(false);
+        target
     }
 
     pub fn test_target(
@@ -712,13 +696,13 @@ impl Target {
         required_features: Option<Vec<String>>,
         edition: Edition,
     ) -> Target {
-        Target {
-            kind: TargetKind::Test,
-            name: name.to_string(),
-            required_features,
-            benched: false,
-            ..Target::with_path(src_path, edition)
-        }
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::Test)
+            .set_name(name)
+            .set_required_features(required_features)
+            .set_benched(false);
+        target
     }
 
     pub fn bench_target(
@@ -727,117 +711,106 @@ impl Target {
         required_features: Option<Vec<String>>,
         edition: Edition,
     ) -> Target {
-        Target {
-            kind: TargetKind::Bench,
-            name: name.to_string(),
-            required_features,
-            tested: false,
-            ..Target::with_path(src_path, edition)
-        }
+        let mut target = Target::with_path(src_path, edition);
+        target
+            .set_kind(TargetKind::Bench)
+            .set_name(name)
+            .set_required_features(required_features)
+            .set_tested(false);
+        target
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        &self.inner.name
     }
     pub fn crate_name(&self) -> String {
-        self.name.replace("-", "_")
+        self.name().replace("-", "_")
     }
     pub fn src_path(&self) -> &TargetSourcePath {
-        &self.src_path
+        &self.inner.src_path
     }
     pub fn set_src_path(&mut self, src_path: TargetSourcePath) {
-        self.src_path = src_path;
+        Arc::make_mut(&mut self.inner).src_path = src_path;
     }
     pub fn required_features(&self) -> Option<&Vec<String>> {
-        self.required_features.as_ref()
+        self.inner.required_features.as_ref()
     }
     pub fn kind(&self) -> &TargetKind {
-        &self.kind
-    }
-    pub fn kind_mut(&mut self) -> &mut TargetKind {
-        &mut self.kind
+        &self.inner.kind
     }
     pub fn tested(&self) -> bool {
-        self.tested
+        self.inner.tested
     }
     pub fn harness(&self) -> bool {
-        self.harness
+        self.inner.harness
     }
     pub fn documented(&self) -> bool {
-        self.doc
+        self.inner.doc
     }
     // A plugin, proc-macro, or build-script.
     pub fn for_host(&self) -> bool {
-        self.for_host
+        self.inner.for_host
     }
     pub fn proc_macro(&self) -> bool {
-        self.proc_macro
+        self.inner.proc_macro
     }
     pub fn edition(&self) -> Edition {
-        self.edition
+        self.inner.edition
     }
     pub fn benched(&self) -> bool {
-        self.benched
+        self.inner.benched
     }
     pub fn doctested(&self) -> bool {
-        self.doctest
+        self.inner.doctest
     }
 
     pub fn doctestable(&self) -> bool {
-        match self.kind {
-            TargetKind::Lib(ref kinds) => kinds
-                .iter()
-                .any(|k| *k == LibKind::Rlib || *k == LibKind::Lib || *k == LibKind::ProcMacro),
+        match self.kind() {
+            TargetKind::Lib(ref kinds) => kinds.iter().any(|k| {
+                *k == CrateType::Rlib || *k == CrateType::Lib || *k == CrateType::ProcMacro
+            }),
             _ => false,
         }
     }
 
-    pub fn allows_underscores(&self) -> bool {
-        self.is_bin() || self.is_example() || self.is_custom_build()
-    }
-
     pub fn is_lib(&self) -> bool {
-        match self.kind {
+        match self.kind() {
             TargetKind::Lib(_) => true,
             _ => false,
         }
     }
 
     pub fn is_dylib(&self) -> bool {
-        match self.kind {
-            TargetKind::Lib(ref libs) => libs.iter().any(|l| *l == LibKind::Dylib),
+        match self.kind() {
+            TargetKind::Lib(libs) => libs.iter().any(|l| *l == CrateType::Dylib),
             _ => false,
         }
     }
 
     pub fn is_cdylib(&self) -> bool {
-        let libs = match self.kind {
-            TargetKind::Lib(ref libs) => libs,
-            _ => return false,
-        };
-        libs.iter().any(|l| match *l {
-            LibKind::Other(ref s) => s == "cdylib",
+        match self.kind() {
+            TargetKind::Lib(libs) => libs.iter().any(|l| *l == CrateType::Cdylib),
             _ => false,
-        })
+        }
     }
 
     /// Returns whether this target produces an artifact which can be linked
     /// into a Rust crate.
     ///
     /// This only returns true for certain kinds of libraries.
-    pub fn linkable(&self) -> bool {
-        match self.kind {
-            TargetKind::Lib(ref kinds) => kinds.iter().any(|k| k.linkable()),
+    pub fn is_linkable(&self) -> bool {
+        match self.kind() {
+            TargetKind::Lib(kinds) => kinds.iter().any(|k| k.is_linkable()),
             _ => false,
         }
     }
 
     pub fn is_bin(&self) -> bool {
-        self.kind == TargetKind::Bin
+        *self.kind() == TargetKind::Bin
     }
 
     pub fn is_example(&self) -> bool {
-        match self.kind {
+        match self.kind() {
             TargetKind::ExampleBin | TargetKind::ExampleLib(..) => true,
             _ => false,
         }
@@ -852,82 +825,74 @@ impl Target {
     /// Returns `true` if it is an executable example.
     pub fn is_exe_example(&self) -> bool {
         // Needed for --all-examples in contexts where only runnable examples make sense
-        match self.kind {
+        match self.kind() {
             TargetKind::ExampleBin => true,
             _ => false,
         }
     }
 
     pub fn is_test(&self) -> bool {
-        self.kind == TargetKind::Test
+        *self.kind() == TargetKind::Test
     }
     pub fn is_bench(&self) -> bool {
-        self.kind == TargetKind::Bench
+        *self.kind() == TargetKind::Bench
     }
     pub fn is_custom_build(&self) -> bool {
-        self.kind == TargetKind::CustomBuild
+        *self.kind() == TargetKind::CustomBuild
     }
 
     /// Returns the arguments suitable for `--crate-type` to pass to rustc.
-    pub fn rustc_crate_types(&self) -> Vec<&str> {
-        match self.kind {
-            TargetKind::Lib(ref kinds) | TargetKind::ExampleLib(ref kinds) => {
-                kinds.iter().map(LibKind::crate_type).collect()
-            }
-            TargetKind::CustomBuild
-            | TargetKind::Bench
-            | TargetKind::Test
-            | TargetKind::ExampleBin
-            | TargetKind::Bin => vec!["bin"],
-        }
-    }
-
-    pub fn can_lto(&self) -> bool {
-        match self.kind {
-            TargetKind::Lib(ref v) => {
-                !v.contains(&LibKind::Rlib)
-                    && !v.contains(&LibKind::Dylib)
-                    && !v.contains(&LibKind::Lib)
-            }
-            _ => true,
-        }
+    pub fn rustc_crate_types(&self) -> Vec<CrateType> {
+        self.kind().rustc_crate_types()
     }
 
     pub fn set_tested(&mut self, tested: bool) -> &mut Target {
-        self.tested = tested;
+        Arc::make_mut(&mut self.inner).tested = tested;
         self
     }
     pub fn set_benched(&mut self, benched: bool) -> &mut Target {
-        self.benched = benched;
+        Arc::make_mut(&mut self.inner).benched = benched;
         self
     }
     pub fn set_doctest(&mut self, doctest: bool) -> &mut Target {
-        self.doctest = doctest;
+        Arc::make_mut(&mut self.inner).doctest = doctest;
         self
     }
     pub fn set_for_host(&mut self, for_host: bool) -> &mut Target {
-        self.for_host = for_host;
+        Arc::make_mut(&mut self.inner).for_host = for_host;
         self
     }
     pub fn set_proc_macro(&mut self, proc_macro: bool) -> &mut Target {
-        self.proc_macro = proc_macro;
+        Arc::make_mut(&mut self.inner).proc_macro = proc_macro;
         self
     }
     pub fn set_edition(&mut self, edition: Edition) -> &mut Target {
-        self.edition = edition;
+        Arc::make_mut(&mut self.inner).edition = edition;
         self
     }
     pub fn set_harness(&mut self, harness: bool) -> &mut Target {
-        self.harness = harness;
+        Arc::make_mut(&mut self.inner).harness = harness;
         self
     }
     pub fn set_doc(&mut self, doc: bool) -> &mut Target {
-        self.doc = doc;
+        Arc::make_mut(&mut self.inner).doc = doc;
+        self
+    }
+    pub fn set_kind(&mut self, kind: TargetKind) -> &mut Target {
+        Arc::make_mut(&mut self.inner).kind = kind;
+        self
+    }
+    pub fn set_name(&mut self, name: &str) -> &mut Target {
+        Arc::make_mut(&mut self.inner).name = name.to_string();
+        self
+    }
+    pub fn set_required_features(&mut self, required_features: Option<Vec<String>>) -> &mut Target {
+        Arc::make_mut(&mut self.inner).required_features = required_features;
         self
     }
 
     pub fn description_named(&self) -> String {
-        match self.kind {
+        match self.kind() {
             TargetKind::Lib(..) => "lib".to_string(),
             TargetKind::Bin => format!("bin \"{}\"", self.name()),
             TargetKind::Test => format!("test \"{}\"", self.name()),
@@ -942,13 +907,13 @@ impl Target {
 
 impl fmt::Display for Target {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.kind {
+        match self.kind() {
             TargetKind::Lib(..) => write!(f, "Target(lib)"),
-            TargetKind::Bin => write!(f, "Target(bin: {})", self.name),
-            TargetKind::Test => write!(f, "Target(test: {})", self.name),
-            TargetKind::Bench => write!(f, "Target(bench: {})", self.name),
+            TargetKind::Bin => write!(f, "Target(bin: {})", self.name()),
+            TargetKind::Test => write!(f, "Target(test: {})", self.name()),
+            TargetKind::Bench => write!(f, "Target(bench: {})", self.name()),
             TargetKind::ExampleBin | TargetKind::ExampleLib(..) => {
-                write!(f, "Target(example: {})", self.name)
+                write!(f, "Target(example: {})", self.name())
             }
             TargetKind::CustomBuild => write!(f, "Target(script)"),
         }

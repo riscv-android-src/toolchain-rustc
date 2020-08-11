@@ -108,6 +108,7 @@ impl<'a> Sugg<'a> {
             | hir::ExprKind::Call(..)
             | hir::ExprKind::Field(..)
             | hir::ExprKind::Index(..)
+            | hir::ExprKind::InlineAsm(..)
             | hir::ExprKind::LlvmInlineAsm(..)
             | hir::ExprKind::Lit(..)
             | hir::ExprKind::Loop(..)
@@ -150,6 +151,7 @@ impl<'a> Sugg<'a> {
             | ast::ExprKind::Field(..)
             | ast::ExprKind::ForLoop(..)
             | ast::ExprKind::Index(..)
+            | ast::ExprKind::InlineAsm(..)
             | ast::ExprKind::LlvmInlineAsm(..)
             | ast::ExprKind::Lit(..)
             | ast::ExprKind::Loop(..)
@@ -528,7 +530,7 @@ pub trait DiagnosticBuilderExt<'a, T: LintContext> {
 
     /// Suggest to add an item before another.
     ///
-    /// The item should not be indented (expect for inner indentation).
+    /// The item should not be indented (except for inner indentation).
     ///
     /// # Example
     ///

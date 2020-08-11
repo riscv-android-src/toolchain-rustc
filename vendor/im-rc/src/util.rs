@@ -8,17 +8,34 @@ use std::cmp::Ordering;
 use std::ops::{Bound, IndexMut, Range, RangeBounds};
 use std::ptr;
 
-// The `Ref` type is an alias for either `Rc` or `Arc`, user's choice.
-#[cfg(threadsafe)]
-use std::sync::Arc;
-#[cfg(threadsafe)]
-pub type Ref<A> = Arc<A>;
-#[cfg(not(threadsafe))]
-use std::rc::Rc;
-#[cfg(not(threadsafe))]
-pub type Ref<A> = Rc<A>;
+#[cfg(feature = "pool")]
+pub(crate) use refpool::{PoolClone, PoolDefault};
 
-pub fn clone_ref<A>(r: Ref<A>) -> A
+// The `Ref` type is an alias for either `Rc` or `Arc`, user's choice.
+
+// `Arc` without refpool
+#[cfg(all(threadsafe))]
+pub(crate) use crate::fakepool::{Arc as PoolRef, Pool, PoolClone, PoolDefault};
+
+// `Ref` == `Arc` when threadsafe
+#[cfg(threadsafe)]
+pub(crate) type Ref<A> = std::sync::Arc<A>;
+
+// `Rc` without refpool
+#[cfg(all(not(threadsafe), not(feature = "pool")))]
+pub(crate) use crate::fakepool::{Pool, PoolClone, PoolDefault, Rc as PoolRef};
+
+// `Rc` with refpool
+#[cfg(all(not(threadsafe), feature = "pool"))]
+pub(crate) type PoolRef<A> = refpool::PoolRef<A>;
+#[cfg(all(not(threadsafe), feature = "pool"))]
+pub(crate) type Pool<A> = refpool::Pool<A>;
+
+// `Ref` == `Rc` when not threadsafe
+#[cfg(not(threadsafe))]
+pub(crate) type Ref<A> = std::rc::Rc<A>;
+
+pub(crate) fn clone_ref<A>(r: Ref<A>) -> A
 where
     A: Clone,
 {
@@ -26,7 +43,7 @@ where
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Side {
+pub(crate) enum Side {
     Left,
     Right,
 }
@@ -35,7 +52,7 @@ pub enum Side {
 ///
 /// Like `slice::swap`, but more generic.
 #[allow(unsafe_code)]
-pub fn swap_indices<V>(vector: &mut V, a: usize, b: usize)
+pub(crate) fn swap_indices<V>(vector: &mut V, a: usize, b: usize)
 where
     V: IndexMut<usize>,
     V::Output: Sized,
@@ -53,7 +70,7 @@ where
 }
 
 #[allow(dead_code)]
-pub fn linear_search_by<'a, A, I, F>(iterable: I, mut cmp: F) -> Result<usize, usize>
+pub(crate) fn linear_search_by<'a, A, I, F>(iterable: I, mut cmp: F) -> Result<usize, usize>
 where
     A: 'a,
     I: IntoIterator<Item = &'a A>,
@@ -71,7 +88,7 @@ where
     Err(pos)
 }
 
-pub fn to_range<R>(range: &R, right_unbounded: usize) -> Range<usize>
+pub(crate) fn to_range<R>(range: &R, right_unbounded: usize) -> Range<usize>
 where
     R: RangeBounds<usize>,
 {
@@ -86,4 +103,40 @@ where
         Bound::Unbounded => right_unbounded,
     };
     start_index..end_index
+}
+
+macro_rules! def_pool {
+    ($name:ident<$($arg:tt),*>, $pooltype:ty) => {
+        /// A memory pool for the appropriate node type.
+        pub struct $name<$($arg,)*>(Pool<$pooltype>);
+
+        impl<$($arg,)*> $name<$($arg,)*> {
+            /// Create a new pool with the given size.
+            pub fn new(size: usize) -> Self {
+                Self(Pool::new(size))
+            }
+
+            /// Fill the pool with preallocated chunks.
+            pub fn fill(&self) {
+                self.0.fill();
+            }
+
+            ///Get the current size of the pool.
+            pub fn pool_size(&self) -> usize {
+                self.0.get_pool_size()
+            }
+        }
+
+        impl<$($arg,)*> Default for $name<$($arg,)*> {
+            fn default() -> Self {
+                Self::new($crate::config::POOL_SIZE)
+            }
+        }
+
+        impl<$($arg,)*> Clone for $name<$($arg,)*> {
+            fn clone(&self) -> Self {
+                Self(self.0.clone())
+            }
+        }
+    };
 }

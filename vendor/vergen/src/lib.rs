@@ -53,7 +53,7 @@
 //! #..
 //!
 //! [build-dependencies]
-//! vergen = "2"
+//! vergen = "3"
 //! ```
 //!
 //! ### Example 'build.rs'
@@ -68,7 +68,7 @@
 //!     flags.toggle(ConstantsFlags::SEMVER_FROM_CARGO_PKG);
 //!
 //!     // Generate the 'cargo:' key output
-//!     generate_cargo_keys(ConstantsFlags::all()).expect("Unable to generate the cargo keys!");
+//!     generate_cargo_keys(flags).expect("Unable to generate the cargo keys!");
 //! }
 //! ```
 //!
@@ -106,5 +106,6 @@ mod constants;
 mod output;
 
 pub use crate::constants::ConstantsFlags;
+#[allow(deprecated)]
 pub use crate::output::codegen::generate_version_rs;
 pub use crate::output::envvar::generate_cargo_keys;

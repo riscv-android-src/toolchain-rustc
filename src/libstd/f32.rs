@@ -171,7 +171,7 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn signum(self) -> f32 {
-        if self.is_nan() { NAN } else { 1.0_f32.copysign(self) }
+        if self.is_nan() { Self::NAN } else { 1.0_f32.copysign(self) }
     }
 
     /// Returns a number composed of the magnitude of `self` and the sign of
@@ -832,8 +832,8 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn asinh(self) -> f32 {
-        if self == NEG_INFINITY {
-            NEG_INFINITY
+        if self == Self::NEG_INFINITY {
+            Self::NEG_INFINITY
         } else {
             (self + ((self * self) + 1.0).sqrt()).ln().copysign(self)
         }
@@ -855,7 +855,7 @@ impl f32 {
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
     pub fn acosh(self) -> f32 {
-        if self < 1.0 { crate::f32::NAN } else { (self + ((self * self) - 1.0).sqrt()).ln() }
+        if self < 1.0 { Self::NAN } else { (self + ((self * self) - 1.0).sqrt()).ln() }
     }
 
     /// Inverse hyperbolic tangent function.
@@ -882,7 +882,7 @@ impl f32 {
     /// Returns `max` if `self` is greater than `max`, and `min` if `self` is
     /// less than `min`. Otherwise this returns `self`.
     ///
-    /// Not that this function returns NaN if the initial value was NaN as
+    /// Note that this function returns NaN if the initial value was NaN as
     /// well.
     ///
     /// # Panics
@@ -1530,5 +1530,148 @@ mod tests {
     #[should_panic]
     fn test_clamp_max_is_nan() {
         let _ = 1.0f32.clamp(3.0, NAN);
+    }
+
+    #[test]
+    fn test_total_cmp() {
+        use core::cmp::Ordering;
+
+        fn quiet_bit_mask() -> u32 {
+            1 << (f32::MANTISSA_DIGITS - 2)
+        }
+
+        fn min_subnorm() -> f32 {
+            f32::MIN_POSITIVE / f32::powf(2.0, f32::MANTISSA_DIGITS as f32 - 1.0)
+        }
+
+        fn max_subnorm() -> f32 {
+            f32::MIN_POSITIVE - min_subnorm()
+        }
+
+        fn q_nan() -> f32 {
+            f32::from_bits(f32::NAN.to_bits() | quiet_bit_mask())
+        }
+
+        fn s_nan() -> f32 {
+            f32::from_bits((f32::NAN.to_bits() & !quiet_bit_mask()) + 42)
+        }
+
+        assert_eq!(Ordering::Equal, (-q_nan()).total_cmp(&-q_nan()));
+        assert_eq!(Ordering::Equal, (-s_nan()).total_cmp(&-s_nan()));
+        assert_eq!(Ordering::Equal, (-f32::INFINITY).total_cmp(&-f32::INFINITY));
+        assert_eq!(Ordering::Equal, (-f32::MAX).total_cmp(&-f32::MAX));
+        assert_eq!(Ordering::Equal, (-2.5_f32).total_cmp(&-2.5));
+        assert_eq!(Ordering::Equal, (-1.0_f32).total_cmp(&-1.0));
+        assert_eq!(Ordering::Equal, (-1.5_f32).total_cmp(&-1.5));
+        assert_eq!(Ordering::Equal, (-0.5_f32).total_cmp(&-0.5));
+        assert_eq!(Ordering::Equal, (-f32::MIN_POSITIVE).total_cmp(&-f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Equal, (-max_subnorm()).total_cmp(&-max_subnorm()));
+        assert_eq!(Ordering::Equal, (-min_subnorm()).total_cmp(&-min_subnorm()));
+        assert_eq!(Ordering::Equal, (-0.0_f32).total_cmp(&-0.0));
+        assert_eq!(Ordering::Equal, 0.0_f32.total_cmp(&0.0));
+        assert_eq!(Ordering::Equal, min_subnorm().total_cmp(&min_subnorm()));
+        assert_eq!(Ordering::Equal, max_subnorm().total_cmp(&max_subnorm()));
+        assert_eq!(Ordering::Equal, f32::MIN_POSITIVE.total_cmp(&f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Equal, 0.5_f32.total_cmp(&0.5));
+        assert_eq!(Ordering::Equal, 1.0_f32.total_cmp(&1.0));
+        assert_eq!(Ordering::Equal, 1.5_f32.total_cmp(&1.5));
+        assert_eq!(Ordering::Equal, 2.5_f32.total_cmp(&2.5));
+        assert_eq!(Ordering::Equal, f32::MAX.total_cmp(&f32::MAX));
+        assert_eq!(Ordering::Equal, f32::INFINITY.total_cmp(&f32::INFINITY));
+        assert_eq!(Ordering::Equal, s_nan().total_cmp(&s_nan()));
+        assert_eq!(Ordering::Equal, q_nan().total_cmp(&q_nan()));
+
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-s_nan()));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-f32::INFINITY));
+        assert_eq!(Ordering::Less, (-f32::INFINITY).total_cmp(&-f32::MAX));
+        assert_eq!(Ordering::Less, (-f32::MAX).total_cmp(&-2.5));
+        assert_eq!(Ordering::Less, (-2.5_f32).total_cmp(&-1.5));
+        assert_eq!(Ordering::Less, (-1.5_f32).total_cmp(&-1.0));
+        assert_eq!(Ordering::Less, (-1.0_f32).total_cmp(&-0.5));
+        assert_eq!(Ordering::Less, (-0.5_f32).total_cmp(&-f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Less, (-f32::MIN_POSITIVE).total_cmp(&-max_subnorm()));
+        assert_eq!(Ordering::Less, (-max_subnorm()).total_cmp(&-min_subnorm()));
+        assert_eq!(Ordering::Less, (-min_subnorm()).total_cmp(&-0.0));
+        assert_eq!(Ordering::Less, (-0.0_f32).total_cmp(&0.0));
+        assert_eq!(Ordering::Less, 0.0_f32.total_cmp(&min_subnorm()));
+        assert_eq!(Ordering::Less, min_subnorm().total_cmp(&max_subnorm()));
+        assert_eq!(Ordering::Less, max_subnorm().total_cmp(&f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Less, f32::MIN_POSITIVE.total_cmp(&0.5));
+        assert_eq!(Ordering::Less, 0.5_f32.total_cmp(&1.0));
+        assert_eq!(Ordering::Less, 1.0_f32.total_cmp(&1.5));
+        assert_eq!(Ordering::Less, 1.5_f32.total_cmp(&2.5));
+        assert_eq!(Ordering::Less, 2.5_f32.total_cmp(&f32::MAX));
+        assert_eq!(Ordering::Less, f32::MAX.total_cmp(&f32::INFINITY));
+        assert_eq!(Ordering::Less, f32::INFINITY.total_cmp(&s_nan()));
+        assert_eq!(Ordering::Less, s_nan().total_cmp(&q_nan()));
+
+        assert_eq!(Ordering::Greater, (-s_nan()).total_cmp(&-q_nan()));
+        assert_eq!(Ordering::Greater, (-f32::INFINITY).total_cmp(&-s_nan()));
+        assert_eq!(Ordering::Greater, (-f32::MAX).total_cmp(&-f32::INFINITY));
+        assert_eq!(Ordering::Greater, (-2.5_f32).total_cmp(&-f32::MAX));
+        assert_eq!(Ordering::Greater, (-1.5_f32).total_cmp(&-2.5));
+        assert_eq!(Ordering::Greater, (-1.0_f32).total_cmp(&-1.5));
+        assert_eq!(Ordering::Greater, (-0.5_f32).total_cmp(&-1.0));
+        assert_eq!(Ordering::Greater, (-f32::MIN_POSITIVE).total_cmp(&-0.5));
+        assert_eq!(Ordering::Greater, (-max_subnorm()).total_cmp(&-f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Greater, (-min_subnorm()).total_cmp(&-max_subnorm()));
+        assert_eq!(Ordering::Greater, (-0.0_f32).total_cmp(&-min_subnorm()));
+        assert_eq!(Ordering::Greater, 0.0_f32.total_cmp(&-0.0));
+        assert_eq!(Ordering::Greater, min_subnorm().total_cmp(&0.0));
+        assert_eq!(Ordering::Greater, max_subnorm().total_cmp(&min_subnorm()));
+        assert_eq!(Ordering::Greater, f32::MIN_POSITIVE.total_cmp(&max_subnorm()));
+        assert_eq!(Ordering::Greater, 0.5_f32.total_cmp(&f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Greater, 1.0_f32.total_cmp(&0.5));
+        assert_eq!(Ordering::Greater, 1.5_f32.total_cmp(&1.0));
+        assert_eq!(Ordering::Greater, 2.5_f32.total_cmp(&1.5));
+        assert_eq!(Ordering::Greater, f32::MAX.total_cmp(&2.5));
+        assert_eq!(Ordering::Greater, f32::INFINITY.total_cmp(&f32::MAX));
+        assert_eq!(Ordering::Greater, s_nan().total_cmp(&f32::INFINITY));
+        assert_eq!(Ordering::Greater, q_nan().total_cmp(&s_nan()));
+
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-s_nan()));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-f32::INFINITY));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-f32::MAX));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-2.5));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-1.5));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-1.0));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-0.5));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-max_subnorm()));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-min_subnorm()));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&-0.0));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&0.0));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&min_subnorm()));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&max_subnorm()));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&0.5));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&1.0));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&1.5));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&2.5));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&f32::MAX));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&f32::INFINITY));
+        assert_eq!(Ordering::Less, (-q_nan()).total_cmp(&s_nan()));
+
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-f32::INFINITY));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-f32::MAX));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-2.5));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-1.5));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-1.0));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-0.5));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-max_subnorm()));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-min_subnorm()));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&-0.0));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&0.0));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&min_subnorm()));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&max_subnorm()));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&f32::MIN_POSITIVE));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&0.5));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&1.0));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&1.5));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&2.5));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&f32::MAX));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&f32::INFINITY));
+        assert_eq!(Ordering::Less, (-s_nan()).total_cmp(&s_nan()));
     }
 }

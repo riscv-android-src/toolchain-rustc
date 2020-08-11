@@ -121,11 +121,6 @@ impl FlagComputation {
                 self.add_projection_ty(data);
             }
 
-            &ty::UnnormalizedProjection(ref data) => {
-                self.add_flags(TypeFlags::HAS_TY_PROJECTION);
-                self.add_projection_ty(data);
-            }
-
             &ty::Opaque(_, substs) => {
                 self.add_flags(TypeFlags::HAS_TY_OPAQUE);
                 self.add_substs(substs);
@@ -134,7 +129,7 @@ impl FlagComputation {
             &ty::Dynamic(ref obj, r) => {
                 let mut computation = FlagComputation::new();
                 for predicate in obj.skip_binder().iter() {
-                    match *predicate {
+                    match predicate {
                         ty::ExistentialPredicate::Trait(tr) => computation.add_substs(tr.substs),
                         ty::ExistentialPredicate::Projection(p) => {
                             let mut proj_computation = FlagComputation::new();

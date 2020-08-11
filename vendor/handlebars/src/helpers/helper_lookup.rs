@@ -3,10 +3,10 @@ use serde_json::value::Value as Json;
 use crate::context::Context;
 use crate::error::RenderError;
 use crate::helpers::{HelperDef, HelperResult};
+use crate::json::value::JsonRender;
 use crate::output::Output;
 use crate::registry::Registry;
 use crate::render::{Helper, RenderContext};
-use crate::value::JsonRender;
 
 #[derive(Clone, Copy)]
 pub struct LookupHelper;
@@ -14,10 +14,10 @@ pub struct LookupHelper;
 impl HelperDef for LookupHelper {
     fn call<'reg: 'rc, 'rc>(
         &self,
-        h: &Helper,
-        _: &Registry,
-        _: &Context,
-        _: &mut RenderContext,
+        h: &Helper<'reg, 'rc>,
+        _: &'reg Registry,
+        _: &'rc Context,
+        _: &mut RenderContext<'reg, 'rc>,
         out: &mut dyn Output,
     ) -> HelperResult {
         let collection_value = h
@@ -32,8 +32,7 @@ impl HelperDef for LookupHelper {
             Json::Array(ref v) => index
                 .value()
                 .as_u64()
-                .and_then(|u| Some(u as usize))
-                .and_then(|u| v.get(u))
+                .and_then(|u| v.get(u as usize))
                 .unwrap_or(&null),
             Json::Object(ref m) => index
                 .value()
@@ -60,10 +59,10 @@ mod test {
     fn test_lookup() {
         let mut handlebars = Registry::new();
         assert!(handlebars
-            .register_template_string("t0", "{{#each v1}}{{lookup ../../v2 @index}}{{/each}}")
+            .register_template_string("t0", "{{#each v1}}{{lookup ../v2 @index}}{{/each}}")
             .is_ok());
         assert!(handlebars
-            .register_template_string("t1", "{{#each v1}}{{lookup ../../v2 1}}{{/each}}")
+            .register_template_string("t1", "{{#each v1}}{{lookup ../v2 1}}{{/each}}")
             .is_ok());
         assert!(handlebars
             .register_template_string("t2", "{{lookup kk \"a\"}}")

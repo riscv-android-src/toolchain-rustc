@@ -9,7 +9,6 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
-use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -273,10 +272,7 @@ fn detect_source_paths_and_types(
         let pp = i.proposed_path;
 
         // path/pp does not exist or is not a file
-        if !fs::metadata(&path.join(&pp))
-            .map(|x| x.is_file())
-            .unwrap_or(false)
-        {
+        if !path.join(&pp).is_file() {
             continue;
         }
 
@@ -358,7 +354,7 @@ fn plan_new_source_file(bin: bool, package_name: String) -> SourceFileInformatio
 
 pub fn new(opts: &NewOptions, config: &Config) -> CargoResult<()> {
     let path = &opts.path;
-    if fs::metadata(path).is_ok() {
+    if path.exists() {
         anyhow::bail!(
             "destination `{}` already exists\n\n\
              Use `cargo init` to initialize the directory",
@@ -397,7 +393,7 @@ pub fn init(opts: &NewOptions, config: &Config) -> CargoResult<()> {
 
     let path = &opts.path;
 
-    if fs::metadata(&path.join("Cargo.toml")).is_ok() {
+    if path.join("Cargo.toml").exists() {
         anyhow::bail!("`cargo init` cannot be run on existing Cargo packages")
     }
 
@@ -428,22 +424,22 @@ pub fn init(opts: &NewOptions, config: &Config) -> CargoResult<()> {
     if version_control == None {
         let mut num_detected_vsces = 0;
 
-        if fs::metadata(&path.join(".git")).is_ok() {
+        if path.join(".git").exists() {
             version_control = Some(VersionControl::Git);
             num_detected_vsces += 1;
         }
 
-        if fs::metadata(&path.join(".hg")).is_ok() {
+        if path.join(".hg").exists() {
             version_control = Some(VersionControl::Hg);
             num_detected_vsces += 1;
         }
 
-        if fs::metadata(&path.join(".pijul")).is_ok() {
+        if path.join(".pijul").exists() {
             version_control = Some(VersionControl::Pijul);
             num_detected_vsces += 1;
         }
 
-        if fs::metadata(&path.join(".fossil")).is_ok() {
+        if path.join(".fossil").exists() {
             version_control = Some(VersionControl::Fossil);
             num_detected_vsces += 1;
         }
@@ -565,10 +561,10 @@ fn write_ignore_file(
         VersionControl::NoVcs => return Ok("".to_string()),
     };
 
-    let ignore: String = match fs::File::open(&fp_ignore) {
-        Err(why) => match why.kind() {
-            ErrorKind::NotFound => list.format_new(vcs),
-            _ => return Err(anyhow::format_err!("{}", why)),
+    let ignore: String = match paths::open(&fp_ignore) {
+        Err(err) => match err.downcast_ref::<std::io::Error>() {
+            Some(io_err) if io_err.kind() == ErrorKind::NotFound => list.format_new(vcs),
+            _ => return Err(err),
         },
         Ok(file) => list.format_existing(BufReader::new(file), vcs),
     };
@@ -743,10 +739,7 @@ mod tests {
 "
         };
 
-        if !fs::metadata(&path_of_source_file)
-            .map(|x| x.is_file())
-            .unwrap_or(false)
-        {
+        if !path_of_source_file.is_file() {
             paths::write(&path_of_source_file, default_file_content)?;
 
             // Format the newly created source file

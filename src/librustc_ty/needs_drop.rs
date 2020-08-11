@@ -5,13 +5,14 @@ use rustc_hir::def_id::DefId;
 use rustc_middle::ty::subst::Subst;
 use rustc_middle::ty::util::{needs_drop_components, AlwaysRequiresDrop};
 use rustc_middle::ty::{self, Ty, TyCtxt};
+use rustc_session::Limit;
 use rustc_span::DUMMY_SP;
 
 type NeedsDropResult<T> = Result<T, AlwaysRequiresDrop>;
 
 fn needs_drop_raw<'tcx>(tcx: TyCtxt<'tcx>, query: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
     let adt_fields =
-        move |adt_def: &ty::AdtDef| tcx.adt_drop_tys(adt_def.did).map(|tys| tys.iter().copied());
+        move |adt_def: &ty::AdtDef| tcx.adt_drop_tys(adt_def.did).map(|tys| tys.iter());
     // If we don't know a type doesn't need drop, for example if it's a type
     // parameter without a `Copy` bound, then we conservatively return that it
     // needs drop.
@@ -30,7 +31,7 @@ struct NeedsDropTypes<'tcx, F> {
     /// if it needs drop. If the result depends on whether some other types
     /// need drop we push them onto the stack.
     unchecked_tys: Vec<(Ty<'tcx>, usize)>,
-    recursion_limit: usize,
+    recursion_limit: Limit,
     adt_components: F,
 }
 
@@ -43,14 +44,13 @@ impl<'tcx, F> NeedsDropTypes<'tcx, F> {
     ) -> Self {
         let mut seen_tys = FxHashSet::default();
         seen_tys.insert(ty);
-        let recursion_limit = *tcx.sess.recursion_limit.get();
         Self {
             tcx,
             param_env,
             seen_tys,
             query_ty: ty,
             unchecked_tys: vec![(ty, 0)],
-            recursion_limit,
+            recursion_limit: tcx.sess.recursion_limit(),
             adt_components,
         }
     }
@@ -67,7 +67,7 @@ where
         let tcx = self.tcx;
 
         while let Some((ty, level)) = self.unchecked_tys.pop() {
-            if level > self.recursion_limit {
+            if !self.recursion_limit.value_within_limit(level) {
                 // Not having a `Span` isn't great. But there's hopefully some other
                 // recursion limit error as well.
                 tcx.sess.span_err(

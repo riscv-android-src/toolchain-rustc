@@ -1,14 +1,15 @@
-use std::collections::VecDeque;
 use std::cmp;
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::mem::size_of;
+use std::ops::{Index, IndexMut};
 
 use ahocorasick::MatchKind;
 use automaton::Automaton;
-use classes::{ByteClasses, ByteClassBuilder};
+use classes::{ByteClassBuilder, ByteClasses};
 use error::Result;
-use prefilter::{self, Prefilter, PrefilterObj};
-use state_id::{StateID, dead_id, fail_id, usize_to_state_id};
+use prefilter::{self, opposite_ascii_case, Prefilter, PrefilterObj};
+use state_id::{dead_id, fail_id, usize_to_state_id, StateID};
 use Match;
 
 /// The identifier for a pattern, which is simply the position of the pattern
@@ -59,6 +60,8 @@ pub struct NFA<S> {
     heap_bytes: usize,
     /// A prefilter for quickly skipping to candidate matches, if pertinent.
     prefilter: Option<PrefilterObj>,
+    /// Whether this automaton anchors all matches to the start of input.
+    anchored: bool,
     /// A set of equivalence classes in terms of bytes. We compute this while
     /// building the NFA, but don't use it in the NFA's states. Instead, we
     /// use this for building the DFA. We store it on the NFA since it's easy
@@ -94,7 +97,7 @@ impl<S: StateID> NFA<S> {
         &self.byte_classes
     }
 
-    /// Returns a start byte prefilter, if one exists.
+    /// Returns a prefilter, if one exists.
     pub fn prefilter_obj(&self) -> Option<&PrefilterObj> {
         self.prefilter.as_ref()
     }
@@ -103,6 +106,7 @@ impl<S: StateID> NFA<S> {
     /// table.
     pub fn heap_bytes(&self) -> usize {
         self.heap_bytes
+            + self.prefilter.as_ref().map_or(0, |p| p.as_ref().heap_bytes())
     }
 
     /// Return the length of the longest pattern in this automaton.
@@ -173,9 +177,8 @@ impl<S: StateID> NFA<S> {
     }
 
     fn copy_matches(&mut self, src: S, dst: S) {
-        let (src, dst) = get_two_mut(
-            &mut self.states, src.to_usize(), dst.to_usize(),
-        );
+        let (src, dst) =
+            get_two_mut(&mut self.states, src.to_usize(), dst.to_usize());
         dst.matches.extend_from_slice(&src.matches);
     }
 
@@ -185,12 +188,13 @@ impl<S: StateID> NFA<S> {
     }
 
     fn add_dense_state(&mut self, depth: usize) -> Result<S> {
-        let trans = Transitions::Dense(vec![fail_id(); 256]);
+        let trans = Transitions::Dense(Dense::new());
         let id = usize_to_state_id(self.states.len())?;
         self.states.push(State {
             trans,
-            fail: self.start_id,
-            depth: depth,
+            // Anchored automatons do not have any failure transitions.
+            fail: if self.anchored { dead_id() } else { self.start_id },
+            depth,
             matches: vec![],
         });
         Ok(id)
@@ -201,8 +205,9 @@ impl<S: StateID> NFA<S> {
         let id = usize_to_state_id(self.states.len())?;
         self.states.push(State {
             trans,
-            fail: self.start_id,
-            depth: depth,
+            // Anchored automatons do not have any failure transitions.
+            fail: if self.anchored { dead_id() } else { self.start_id },
+            depth,
             matches: vec![],
         });
         Ok(id)
@@ -216,7 +221,11 @@ impl<S: StateID> Automaton for NFA<S> {
         &self.match_kind
     }
 
-    fn prefilter(&self) -> Option<&Prefilter> {
+    fn anchored(&self) -> bool {
+        self.anchored
+    }
+
+    fn prefilter(&self) -> Option<&dyn Prefilter> {
         self.prefilter.as_ref().map(|p| p.as_ref())
     }
 
@@ -242,23 +251,25 @@ impl<S: StateID> Automaton for NFA<S> {
             None => return None,
             Some(state) => state,
         };
-        state.matches
-            .get(match_index)
-            .map(|&(id, len)| Match { pattern: id, len, end })
+        state.matches.get(match_index).map(|&(id, len)| Match {
+            pattern: id,
+            len,
+            end,
+        })
     }
 
     fn match_count(&self, id: S) -> usize {
         self.states[id.to_usize()].matches.len()
     }
 
-    unsafe fn next_state_unchecked(&self, mut current: S, input: u8) -> S {
+    fn next_state(&self, mut current: S, input: u8) -> S {
         // This terminates since:
         //
         // 1. `State.fail` never points to fail_id().
         // 2. All `State.fail` values point to a state closer to `start`.
         // 3. The start state has no transitions to fail_id().
         loop {
-            let state = self.states.get_unchecked(current.to_usize());
+            let state = &self.states[current.to_usize()];
             let next = state.next_state(input);
             if next != fail_id() {
                 return next;
@@ -291,7 +302,7 @@ pub struct State<S> {
 impl<S: StateID> State<S> {
     fn heap_bytes(&self) -> usize {
         self.trans.heap_bytes()
-        + (self.matches.len() * size_of::<(PatternID, PatternLength)>())
+            + (self.matches.len() * size_of::<(PatternID, PatternLength)>())
     }
 
     fn add_match(&mut self, i: PatternID, len: PatternLength) {
@@ -322,6 +333,48 @@ impl<S: StateID> State<S> {
     }
 }
 
+/// Represents the transitions for a single dense state.
+///
+/// The primary purpose here is to encapsulate index access. Namely, since a
+/// dense representation always contains 256 elements, all values of `u8` are
+/// valid indices.
+#[derive(Clone, Debug)]
+struct Dense<S>(Vec<S>);
+
+impl<S> Dense<S>
+where
+    S: StateID,
+{
+    fn new() -> Self {
+        Dense(vec![fail_id(); 256])
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl<S> Index<u8> for Dense<S> {
+    type Output = S;
+
+    #[inline]
+    fn index(&self, i: u8) -> &S {
+        // SAFETY: This is safe because all dense transitions have
+        // exactly 256 elements, so all u8 values are valid indices.
+        &self.0[i as usize]
+    }
+}
+
+impl<S> IndexMut<u8> for Dense<S> {
+    #[inline]
+    fn index_mut(&mut self, i: u8) -> &mut S {
+        // SAFETY: This is safe because all dense transitions have
+        // exactly 256 elements, so all u8 values are valid indices.
+        &mut self.0[i as usize]
+    }
+}
+
 /// A representation of transitions in an NFA.
 ///
 /// Transitions have either a sparse representation, which is slower for
@@ -336,7 +389,7 @@ impl<S: StateID> State<S> {
 #[derive(Clone, Debug)]
 enum Transitions<S> {
     Sparse(Vec<(u8, S)>),
-    Dense(Vec<S>),
+    Dense(Dense<S>),
 }
 
 impl<S: StateID> Transitions<S> {
@@ -345,9 +398,7 @@ impl<S: StateID> Transitions<S> {
             Transitions::Sparse(ref sparse) => {
                 sparse.len() * size_of::<(u8, S)>()
             }
-            Transitions::Dense(ref dense) => {
-                dense.len() * size_of::<S>()
-            }
+            Transitions::Dense(ref dense) => dense.len() * size_of::<S>(),
         }
     }
 
@@ -361,11 +412,7 @@ impl<S: StateID> Transitions<S> {
                 }
                 fail_id()
             }
-            Transitions::Dense(ref dense) => {
-                // SAFETY: This is safe because all dense transitions have
-                // exactly 256 elements, so all u8 values are valid indices.
-                unsafe { *dense.get_unchecked(input as usize) }
-            }
+            Transitions::Dense(ref dense) => dense[input],
         }
     }
 
@@ -378,7 +425,7 @@ impl<S: StateID> Transitions<S> {
                 }
             }
             Transitions::Dense(ref mut dense) => {
-                dense[input as usize] = next;
+                dense[input] = next;
             }
         }
     }
@@ -394,7 +441,7 @@ impl<S: StateID> Transitions<S> {
             }
             Transitions::Dense(ref dense) => {
                 for b in AllBytesIter::new() {
-                    let id = dense[b as usize];
+                    let id = dense[b];
                     if id != fail_id() {
                         f(b, id);
                     }
@@ -413,7 +460,7 @@ impl<S: StateID> Transitions<S> {
                 }
                 Transitions::Dense(ref dense) => {
                     for b in AllBytesIter::new() {
-                        f(b, dense[b as usize]);
+                        f(b, dense[b]);
                     }
                 }
             }
@@ -433,7 +480,7 @@ impl<S: StateID> Transitions<S> {
                 }
                 Transitions::Dense(ref dense) => {
                     for b in classes.representatives() {
-                        f(b, dense[b as usize]);
+                        f(b, dense[b]);
                     }
                 }
             }
@@ -485,7 +532,7 @@ impl<'a, S: StateID> Iterator for IterTransitionsMut<'a, S> {
                     debug_assert!(self.cur < 256);
 
                     let b = self.cur as u8;
-                    let id = dense[self.cur];
+                    let id = dense[b];
                     self.cur += 1;
                     if id != fail_id() {
                         return Some((b, id));
@@ -503,6 +550,7 @@ pub struct Builder {
     dense_depth: usize,
     match_kind: MatchKind,
     prefilter: bool,
+    anchored: bool,
     ascii_case_insensitive: bool,
 }
 
@@ -512,6 +560,7 @@ impl Default for Builder {
             dense_depth: 2,
             match_kind: MatchKind::default(),
             prefilter: true,
+            anchored: false,
             ascii_case_insensitive: false,
         }
     }
@@ -522,12 +571,10 @@ impl Builder {
         Builder::default()
     }
 
-    pub fn build<I, P, S: StateID>(
-        &self,
-        patterns: I,
-    ) -> Result<NFA<S>>
-    where I: IntoIterator<Item=P>,
-          P: AsRef<[u8]>
+    pub fn build<I, P, S: StateID>(&self, patterns: I) -> Result<NFA<S>>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
     {
         Compiler::new(self)?.compile(patterns)
     }
@@ -547,6 +594,11 @@ impl Builder {
         self
     }
 
+    pub fn anchored(&mut self, yes: bool) -> &mut Builder {
+        self.anchored = yes;
+        self
+    }
+
     pub fn ascii_case_insensitive(&mut self, yes: bool) -> &mut Builder {
         self.ascii_case_insensitive = yes;
         self
@@ -559,6 +611,7 @@ impl Builder {
 #[derive(Debug)]
 struct Compiler<'a, S: StateID> {
     builder: &'a Builder,
+    prefilter: prefilter::Builder,
     nfa: NFA<S>,
     byte_classes: ByteClassBuilder,
 }
@@ -566,7 +619,9 @@ struct Compiler<'a, S: StateID> {
 impl<'a, S: StateID> Compiler<'a, S> {
     fn new(builder: &'a Builder) -> Result<Compiler<'a, S>> {
         Ok(Compiler {
-            builder: builder,
+            builder,
+            prefilter: prefilter::Builder::new(builder.match_kind)
+                .ascii_case_insensitive(builder.ascii_case_insensitive),
             nfa: NFA {
                 match_kind: builder.match_kind,
                 start_id: usize_to_state_id(2)?,
@@ -574,6 +629,7 @@ impl<'a, S: StateID> Compiler<'a, S> {
                 pattern_count: 0,
                 heap_bytes: 0,
                 prefilter: None,
+                anchored: builder.anchored,
                 byte_classes: ByteClasses::singletons(),
                 states: vec![],
             },
@@ -581,12 +637,10 @@ impl<'a, S: StateID> Compiler<'a, S> {
         })
     }
 
-    fn compile<I, P>(
-        mut self,
-        patterns: I,
-    ) -> Result<NFA<S>>
-    where I: IntoIterator<Item=P>,
-          P: AsRef<[u8]>
+    fn compile<I, P>(mut self, patterns: I) -> Result<NFA<S>>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
     {
         self.add_state(0)?; // the fail state, which is never entered
         self.add_state(0)?; // the dead state, only used for leftmost
@@ -594,14 +648,18 @@ impl<'a, S: StateID> Compiler<'a, S> {
         self.build_trie(patterns)?;
         self.add_start_state_loop();
         self.add_dead_state_loop();
-        if self.match_kind().is_leftmost() {
-            self.fill_failure_transitions_leftmost();
-        } else {
-            self.fill_failure_transitions_standard();
+        if !self.builder.anchored {
+            if self.match_kind().is_leftmost() {
+                self.fill_failure_transitions_leftmost();
+            } else {
+                self.fill_failure_transitions_standard();
+            }
         }
         self.close_start_state_loop();
         self.nfa.byte_classes = self.byte_classes.build();
-        self.build_prefilters();
+        if !self.builder.anchored {
+            self.nfa.prefilter = self.prefilter.build();
+        }
         self.calculate_size();
         Ok(self.nfa)
     }
@@ -610,19 +668,15 @@ impl<'a, S: StateID> Compiler<'a, S> {
     /// automaton. Effectively, it creates the basic structure of the
     /// automaton, where every pattern given has a path from the start state to
     /// the end of the pattern.
-    fn build_trie<I, P>(
-        &mut self,
-        patterns: I,
-    ) -> Result<()>
-    where I: IntoIterator<Item=P>,
-          P: AsRef<[u8]>
+    fn build_trie<I, P>(&mut self, patterns: I) -> Result<()>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<[u8]>,
     {
-    'PATTERNS:
-        for (pati, pat) in patterns.into_iter().enumerate() {
+        'PATTERNS: for (pati, pat) in patterns.into_iter().enumerate() {
             let pat = pat.as_ref();
-            self.nfa.max_pattern_len = cmp::max(
-                self.nfa.max_pattern_len, pat.len(),
-            );
+            self.nfa.max_pattern_len =
+                cmp::max(self.nfa.max_pattern_len, pat.len());
             self.nfa.pattern_count += 1;
 
             let mut prev = self.nfa.start_id;
@@ -648,6 +702,10 @@ impl<'a, S: StateID> Compiler<'a, S> {
                 // building a DFA. They would technically be useful for the
                 // NFA, but it would require a second pass over the patterns.
                 self.byte_classes.set_range(b, b);
+                if self.builder.ascii_case_insensitive {
+                    let b = opposite_ascii_case(b);
+                    self.byte_classes.set_range(b, b);
+                }
 
                 // If the transition from prev using the current byte already
                 // exists, then just move through it. Otherwise, add a new
@@ -663,13 +721,8 @@ impl<'a, S: StateID> Compiler<'a, S> {
                     let next = self.add_state(depth + 1)?;
                     self.nfa.state_mut(prev).set_next_state(b, next);
                     if self.builder.ascii_case_insensitive {
-                        if b'A' <= b && b <= b'Z' {
-                            let b = b.to_ascii_lowercase();
-                            self.nfa.state_mut(prev).set_next_state(b, next);
-                        } else if b'a' <= b && b <= b'z' {
-                            let b = b.to_ascii_uppercase();
-                            self.nfa.state_mut(prev).set_next_state(b, next);
-                        }
+                        let b = opposite_ascii_case(b);
+                        self.nfa.state_mut(prev).set_next_state(b, next);
                     }
                     prev = next;
                 }
@@ -677,6 +730,10 @@ impl<'a, S: StateID> Compiler<'a, S> {
             // Once the pattern has been added, log the match in the final
             // state that it reached.
             self.nfa.state_mut(prev).add_match(pati, pat.len());
+            // ... and hand it to the prefilter builder, if applicable.
+            if self.builder.prefilter {
+                self.prefilter.add(pat);
+            }
         }
         Ok(())
     }
@@ -788,16 +845,23 @@ impl<'a, S: StateID> Compiler<'a, S> {
         // we only want to follow non-self transitions. If we followed self
         // transitions, then this would never terminate.
         let mut queue = VecDeque::new();
+        let mut seen = self.queued_set();
         for b in AllBytesIter::new() {
             let next = self.nfa.start().next_state(b);
             if next != self.nfa.start_id {
-                queue.push_back(next);
+                if !seen.contains(next) {
+                    queue.push_back(next);
+                    seen.insert(next);
+                }
             }
         }
         while let Some(id) = queue.pop_front() {
             let mut it = self.nfa.iter_transitions_mut(id);
             while let Some((b, next)) = it.next() {
-                queue.push_back(next);
+                if !seen.contains(next) {
+                    queue.push_back(next);
+                    seen.insert(next);
+                }
 
                 let mut fail = it.nfa().state(id).fail;
                 while it.nfa().state(fail).next_state(b) == fail_id() {
@@ -873,11 +937,7 @@ impl<'a, S: StateID> Compiler<'a, S> {
             /// state.
             fn start(nfa: &NFA<S>) -> QueuedState<S> {
                 let match_at_depth =
-                    if nfa.start().is_match() {
-                        Some(0)
-                    } else {
-                        None
-                    };
+                    if nfa.start().is_match() { Some(0) } else { None };
                 QueuedState { id: nfa.start_id, match_at_depth }
             }
 
@@ -909,8 +969,7 @@ impl<'a, S: StateID> Compiler<'a, S> {
                     None if nfa.state(next).is_match() => {}
                     None => return None,
                 }
-                let depth =
-                    nfa.state(next).depth
+                let depth = nfa.state(next).depth
                     - nfa.state(next).get_longest_match_len().unwrap()
                     + 1;
                 Some(depth)
@@ -922,11 +981,27 @@ impl<'a, S: StateID> Compiler<'a, S> {
         // we only want to follow non-self transitions. If we followed self
         // transitions, then this would never terminate.
         let mut queue: VecDeque<QueuedState<S>> = VecDeque::new();
+        let mut seen = self.queued_set();
         let start = QueuedState::start(&self.nfa);
         for b in AllBytesIter::new() {
-            let next = self.nfa.start().next_state(b);
-            if next != start.id {
-                queue.push_back(start.next_queued_state(&self.nfa, next));
+            let next_id = self.nfa.start().next_state(b);
+            if next_id != start.id {
+                let next = start.next_queued_state(&self.nfa, next_id);
+                if !seen.contains(next.id) {
+                    queue.push_back(next);
+                    seen.insert(next.id);
+                }
+                // If a state immediately following the start state is a match
+                // state, then we never want to follow its failure transition
+                // since the failure transition necessarily leads back to the
+                // start state, which we never want to do for leftmost matching
+                // after a match has been found.
+                //
+                // N.B. This is a special case of the more general handling
+                // found below.
+                if self.nfa.state(next_id).is_match() {
+                    self.nfa.state_mut(next_id).fail = dead_id();
+                }
             }
         }
         while let Some(item) = queue.pop_front() {
@@ -937,7 +1012,10 @@ impl<'a, S: StateID> Compiler<'a, S> {
 
                 // Queue up the next state.
                 let next = item.next_queued_state(it.nfa(), next_id);
-                queue.push_back(next);
+                if !seen.contains(next.id) {
+                    queue.push_back(next);
+                    seen.insert(next.id);
+                }
 
                 // Find the failure state for next. Same as standard.
                 let mut fail = it.nfa().state(item.id).fail;
@@ -986,6 +1064,13 @@ impl<'a, S: StateID> Compiler<'a, S> {
                         it.nfa().state_mut(next.id).fail = dead_id();
                         continue;
                     }
+                    assert_ne!(
+                        start.id,
+                        it.nfa().state(next.id).fail,
+                        "states that are match states or follow match \
+                         states should never have a failure transition \
+                         back to the start state in leftmost searching",
+                    );
                 }
                 it.nfa().state_mut(next.id).fail = fail;
                 it.nfa().copy_matches(fail, next.id);
@@ -1002,19 +1087,18 @@ impl<'a, S: StateID> Compiler<'a, S> {
         }
     }
 
-    /// Construct prefilters from the automaton, if applicable.
-    fn build_prefilters(&mut self) {
-        if !self.builder.prefilter {
-            return;
+    /// Returns a set that tracked queued states.
+    ///
+    /// This is only necessary when ASCII case insensitivity is enabled, since
+    /// it is the only way to visit the same state twice. Otherwise, this
+    /// returns an inert set that nevers adds anything and always reports
+    /// `false` for every member test.
+    fn queued_set(&self) -> QueuedSet<S> {
+        if self.builder.ascii_case_insensitive {
+            QueuedSet::active()
+        } else {
+            QueuedSet::inert()
         }
-
-        let mut builder = prefilter::StartBytesBuilder::new();
-        for b in AllBytesIter::new() {
-            if self.nfa.start().next_state(b) != self.nfa.start_id {
-                builder.add(b);
-            }
-        }
-        self.nfa.prefilter = builder.build();
     }
 
     /// Set the failure transitions on the start state to loop back to the
@@ -1041,7 +1125,9 @@ impl<'a, S: StateID> Compiler<'a, S> {
     ///
     /// The loop is only closed when two conditions are met: the start state
     /// is a match state and the match kind is leftmost-first or
-    /// leftmost-longest.
+    /// leftmost-longest. (Alternatively, if this is an anchored automaton,
+    /// then the start state is always closed, regardless of aforementioned
+    /// conditions.)
     ///
     /// The reason for this is that under leftmost semantics, a start state
     /// that is also a match implies that we should never restart the search
@@ -1049,7 +1135,9 @@ impl<'a, S: StateID> Compiler<'a, S> {
     /// none exist, we transition to the dead state, which signals that
     /// searching should stop.
     fn close_start_state_loop(&mut self) {
-        if self.match_kind().is_leftmost() && self.nfa.start().is_match() {
+        if self.builder.anchored
+            || (self.match_kind().is_leftmost() && self.nfa.start().is_match())
+        {
             let start_id = self.nfa.start_id;
             let start = self.nfa.start_mut();
             for b in AllBytesIter::new() {
@@ -1098,6 +1186,48 @@ impl<'a, S: StateID> Compiler<'a, S> {
     }
 }
 
+/// A set of state identifiers used to avoid revisiting the same state multiple
+/// times when filling in failure transitions.
+///
+/// This set has an "inert" and an "active" mode. When inert, the set never
+/// stores anything and always returns `false` for every member test. This is
+/// useful to avoid the performance and memory overhead of maintaining this
+/// set when it is not needed.
+#[derive(Debug)]
+struct QueuedSet<S> {
+    set: Option<BTreeSet<S>>,
+}
+
+impl<S: StateID> QueuedSet<S> {
+    /// Return an inert set that returns `false` for every state ID membership
+    /// test.
+    fn inert() -> QueuedSet<S> {
+        QueuedSet { set: None }
+    }
+
+    /// Return an active set that tracks state ID membership.
+    fn active() -> QueuedSet<S> {
+        QueuedSet { set: Some(BTreeSet::new()) }
+    }
+
+    /// Inserts the given state ID into this set. (If the set is inert, then
+    /// this is a no-op.)
+    fn insert(&mut self, state_id: S) {
+        if let Some(ref mut set) = self.set {
+            set.insert(state_id);
+        }
+    }
+
+    /// Returns true if and only if the given state ID is in this set. If the
+    /// set is inert, this always returns false.
+    fn contains(&self, state_id: S) -> bool {
+        match self.set {
+            None => false,
+            Some(ref set) => set.contains(&state_id),
+        }
+    }
+}
+
 /// An iterator over every byte value.
 ///
 /// We use this instead of (0..256).map(|b| b as u8) because this optimizes
@@ -1133,6 +1263,7 @@ impl<S: StateID> fmt::Debug for NFA<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         writeln!(f, "NFA(")?;
         writeln!(f, "match_kind: {:?}", self.match_kind)?;
+        writeln!(f, "prefilter: {:?}", self.prefilter)?;
         writeln!(f, "{}", "-".repeat(79))?;
         for (id, s) in self.states.iter().enumerate() {
             let mut trans = vec![];
@@ -1154,7 +1285,8 @@ impl<S: StateID> fmt::Debug for NFA<S> {
             });
             writeln!(f, "{:04}: {}", id, trans.join(", "))?;
 
-            let matches: Vec<String> = s.matches
+            let matches: Vec<String> = s
+                .matches
                 .iter()
                 .map(|&(pattern_id, _)| pattern_id.to_string())
                 .collect();
@@ -1215,7 +1347,8 @@ mod tests {
         let nfa: NFA<usize> = Builder::new()
             .dense_depth(0)
             // .match_kind(MatchKind::LeftmostShortest)
-            .match_kind(MatchKind::LeftmostLongest)
+            // .match_kind(MatchKind::LeftmostLongest)
+            .match_kind(MatchKind::LeftmostFirst)
             // .build(&["abcd", "ce", "b"])
             // .build(&["ab", "bc"])
             // .build(&["b", "bcd", "ce"])
@@ -1223,7 +1356,7 @@ mod tests {
             // .build(&["abc", "bd", "ab"])
             // .build(&["abcdefghi", "hz", "abcdefgh"])
             // .build(&["abcd", "bce", "b"])
-            .build(&["a", "ababcde"])
+            .build(&["abcdefg", "bcde", "bcdef"])
             .unwrap();
         println!("{:?}", nfa);
     }

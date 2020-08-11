@@ -741,7 +741,7 @@ impl<T> Vec<T> {
                 return;
             }
             let remaining_len = self.len - len;
-            let s = slice::from_raw_parts_mut(self.as_mut_ptr().add(len), remaining_len);
+            let s = ptr::slice_from_raw_parts_mut(self.as_mut_ptr().add(len), remaining_len);
             self.len = len;
             ptr::drop_in_place(s);
         }
@@ -1619,8 +1619,8 @@ impl<T: Default> Vec<T> {
     #[unstable(feature = "vec_resize_default", issue = "41758")]
     #[rustc_deprecated(
         reason = "This is moving towards being removed in favor \
-        of `.resize_with(Default::default)`.  If you disagree, please comment \
-        in the tracking issue.",
+                  of `.resize_with(Default::default)`.  If you disagree, please comment \
+                  in the tracking issue.",
         since = "1.33.0"
     )]
     pub fn resize_default(&mut self, new_len: usize) {
@@ -1825,6 +1825,7 @@ impl<T: Clone + IsZero> SpecFromElem for T {
     }
 }
 
+#[rustc_specialization_trait]
 unsafe trait IsZero {
     /// Whether this value is zero
     fn is_zero(&self) -> bool;
@@ -1874,18 +1875,14 @@ unsafe impl<T> IsZero for *mut T {
     }
 }
 
-// `Option<&T>`, `Option<&mut T>` and `Option<Box<T>>` are guaranteed to represent `None` as null.
-// For fat pointers, the bytes that would be the pointer metadata in the `Some` variant
-// are padding in the `None` variant, so ignoring them and zero-initializing instead is ok.
+// `Option<&T>` and `Option<Box<T>>` are guaranteed to represent `None` as null.
+// For fat pointers, the bytes that would be the pointer metadata in the `Some`
+// variant are padding in the `None` variant, so ignoring them and
+// zero-initializing instead is ok.
+// `Option<&mut T>` never implements `Clone`, so there's no need for an impl of
+// `SpecFromElem`.
 
 unsafe impl<T: ?Sized> IsZero for Option<&T> {
-    #[inline]
-    fn is_zero(&self) -> bool {
-        self.is_none()
-    }
-}
-
-unsafe impl<T: ?Sized> IsZero for Option<&mut T> {
     #[inline]
     fn is_zero(&self) -> bool {
         self.is_none()
@@ -2047,6 +2044,16 @@ impl<T> Extend<T> for Vec<T> {
     #[inline]
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         <Self as SpecExtend<T, I::IntoIter>>::spec_extend(self, iter.into_iter())
+    }
+
+    #[inline]
+    fn extend_one(&mut self, item: T) {
+        self.push(item);
+    }
+
+    #[inline]
+    fn extend_reserve(&mut self, additional: usize) {
+        self.reserve(additional);
     }
 }
 
@@ -2319,6 +2326,16 @@ impl<'a, T: 'a + Copy> Extend<&'a T> for Vec<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         self.spec_extend(iter.into_iter())
     }
+
+    #[inline]
+    fn extend_one(&mut self, &item: &'a T) {
+        self.push(item);
+    }
+
+    #[inline]
+    fn extend_reserve(&mut self, additional: usize) {
+        self.reserve(additional);
+    }
 }
 
 macro_rules! __impl_slice_eq1 {
@@ -2379,7 +2396,9 @@ unsafe impl<#[may_dangle] T> Drop for Vec<T> {
     fn drop(&mut self) {
         unsafe {
             // use drop for [T]
-            ptr::drop_in_place(&mut self[..]);
+            // use a raw slice to refer to the elements of the vector as weakest necessary type;
+            // could avoid questions of validity in certain cases
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(self.as_mut_ptr(), self.len))
         }
         // RawVec handles deallocation
     }
@@ -2596,7 +2615,11 @@ impl<T> IntoIter<T> {
     /// ```
     #[stable(feature = "vec_into_iter_as_slice", since = "1.15.0")]
     pub fn as_mut_slice(&mut self) -> &mut [T] {
-        unsafe { slice::from_raw_parts_mut(self.ptr as *mut T, self.len()) }
+        unsafe { &mut *self.as_raw_mut_slice() }
+    }
+
+    fn as_raw_mut_slice(&mut self) -> *mut [T] {
+        ptr::slice_from_raw_parts_mut(self.ptr as *mut T, self.len())
     }
 }
 
@@ -2708,7 +2731,7 @@ unsafe impl<#[may_dangle] T> Drop for IntoIter<T> {
         let guard = DropGuard(self);
         // destroy the remaining elements
         unsafe {
-            ptr::drop_in_place(guard.0.as_mut_slice());
+            ptr::drop_in_place(guard.0.as_raw_mut_slice());
         }
         // now `guard` will be dropped and do the rest
     }

@@ -28,7 +28,7 @@ use rustc_middle::ty::{
 };
 use rustc_session::config::nightly_options;
 use rustc_session::lint;
-use rustc_span::{symbol::Symbol, Span, DUMMY_SP};
+use rustc_span::{symbol::Ident, Span, Symbol, DUMMY_SP};
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt;
 use rustc_trait_selection::traits::query::method_autoderef::MethodAutoderefBadTy;
 use rustc_trait_selection::traits::query::method_autoderef::{
@@ -55,7 +55,7 @@ struct ProbeContext<'a, 'tcx> {
     fcx: &'a FnCtxt<'a, 'tcx>,
     span: Span,
     mode: Mode,
-    method_name: Option<ast::Ident>,
+    method_name: Option<Ident>,
     return_type: Option<Ty<'tcx>>,
 
     /// This is the OriginalQueryValues for the steps queries
@@ -268,7 +268,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         &self,
         span: Span,
         mode: Mode,
-        item_name: ast::Ident,
+        item_name: Ident,
         is_suggestion: IsSuggestion,
         self_ty: Ty<'tcx>,
         scope_expr_id: hir::HirId,
@@ -295,7 +295,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         &'a self,
         span: Span,
         mode: Mode,
-        method_name: Option<ast::Ident>,
+        method_name: Option<Ident>,
         return_type: Option<Ty<'tcx>>,
         is_suggestion: IsSuggestion,
         self_ty: Ty<'tcx>,
@@ -518,7 +518,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         fcx: &'a FnCtxt<'a, 'tcx>,
         span: Span,
         mode: Mode,
-        method_name: Option<ast::Ident>,
+        method_name: Option<Ident>,
         return_type: Option<Ty<'tcx>>,
         orig_steps_var_values: OriginalQueryValues<'tcx>,
         steps: Lrc<Vec<CandidateStep<'tcx>>>,
@@ -796,22 +796,26 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
     fn assemble_inherent_candidates_from_param(&mut self, param_ty: ty::ParamTy) {
         // FIXME: do we want to commit to this behavior for param bounds?
 
-        let bounds = self.param_env.caller_bounds.iter().filter_map(|predicate| match *predicate {
-            ty::Predicate::Trait(ref trait_predicate, _) => {
-                match trait_predicate.skip_binder().trait_ref.self_ty().kind {
-                    ty::Param(ref p) if *p == param_ty => Some(trait_predicate.to_poly_trait_ref()),
-                    _ => None,
+        let bounds =
+            self.param_env.caller_bounds.iter().filter_map(|predicate| match predicate.kind() {
+                ty::PredicateKind::Trait(ref trait_predicate, _) => {
+                    match trait_predicate.skip_binder().trait_ref.self_ty().kind {
+                        ty::Param(ref p) if *p == param_ty => {
+                            Some(trait_predicate.to_poly_trait_ref())
+                        }
+                        _ => None,
+                    }
                 }
-            }
-            ty::Predicate::Subtype(..)
-            | ty::Predicate::Projection(..)
-            | ty::Predicate::RegionOutlives(..)
-            | ty::Predicate::WellFormed(..)
-            | ty::Predicate::ObjectSafe(..)
-            | ty::Predicate::ClosureKind(..)
-            | ty::Predicate::TypeOutlives(..)
-            | ty::Predicate::ConstEvaluatable(..) => None,
-        });
+                ty::PredicateKind::Subtype(..)
+                | ty::PredicateKind::Projection(..)
+                | ty::PredicateKind::RegionOutlives(..)
+                | ty::PredicateKind::WellFormed(..)
+                | ty::PredicateKind::ObjectSafe(..)
+                | ty::PredicateKind::ClosureKind(..)
+                | ty::PredicateKind::TypeOutlives(..)
+                | ty::PredicateKind::ConstEvaluatable(..)
+                | ty::PredicateKind::ConstEquate(..) => None,
+            });
 
         self.elaborate_bounds(bounds, |this, poly_trait_ref, item| {
             let trait_ref = this.erase_late_bound_regions(&poly_trait_ref);
@@ -978,7 +982,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
         Ok(())
     }
 
-    fn candidate_method_names(&self) -> Vec<ast::Ident> {
+    fn candidate_method_names(&self) -> Vec<Ident> {
         let mut set = FxHashSet::default();
         let mut names: Vec<_> = self
             .inherent_candidates
@@ -1373,7 +1377,7 @@ impl<'a, 'tcx> ProbeContext<'a, 'tcx> {
                 }
 
                 TraitCandidate(trait_ref) => {
-                    let predicate = trait_ref.without_const().to_predicate();
+                    let predicate = trait_ref.without_const().to_predicate(self.tcx);
                     let obligation = traits::Obligation::new(cause, self.param_env, predicate);
                     if !self.predicate_may_hold(&obligation) {
                         result = ProbeResult::NoMatch;

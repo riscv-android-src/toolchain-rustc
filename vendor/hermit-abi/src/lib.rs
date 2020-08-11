@@ -15,6 +15,7 @@ extern "C" {
 	fn sys_malloc(size: usize, align: usize) -> *mut u8;
 	fn sys_realloc(ptr: *mut u8, size: usize, align: usize, new_size: usize) -> *mut u8;
 	fn sys_free(ptr: *mut u8, size: usize, align: usize);
+	fn sys_init_queue(ptr: usize) -> i32;
 	fn sys_notify(id: usize, count: i32) -> i32;
 	fn sys_add_queue(id: usize, timeout_ns: i64) -> i32;
 	fn sys_wait(id: usize) -> i32;
@@ -42,6 +43,13 @@ extern "C" {
 		prio: u8,
 		core_id: isize,
 	) -> i32;
+	fn sys_spawn2(
+		func: extern "C" fn(usize),
+		arg: usize,
+		prio: u8,
+		stack_size: usize,
+		core_id: isize,
+	) -> Tid;
 	fn sys_join(id: Tid) -> i32;
 	fn sys_yield();
 	fn sys_clock_gettime(clock_id: u64, tp: *mut timespec) -> i32;
@@ -58,13 +66,13 @@ pub type Tid = u32;
 pub struct Priority(u8);
 
 impl Priority {
-    pub const fn into(self) -> u8 {
-        self.0
-    }
+	pub const fn into(self) -> u8 {
+		self.0
+	}
 
-    pub const fn from(x: u8) -> Self {
-        Priority(x)
-    }
+	pub const fn from(x: u8) -> Self {
+		Priority(x)
+	}
 }
 
 pub const HIGH_PRIO: Priority = Priority::from(3);
@@ -149,6 +157,12 @@ pub unsafe fn add_queue(id: usize, timeout_ns: i64) -> i32 {
 #[inline(always)]
 pub unsafe fn wait(id: usize) -> i32 {
 	sys_wait(id)
+}
+
+#[doc(hidden)]
+#[inline(always)]
+pub unsafe fn init_queue(id: usize) -> i32 {
+	sys_init_queue(id)
 }
 
 #[doc(hidden)]
@@ -304,6 +318,28 @@ pub unsafe fn spawn(
 	core_id: isize,
 ) -> i32 {
 	sys_spawn(id, func, arg, prio, core_id)
+}
+
+/// spawn a new thread with user-specified stack size
+///
+/// spawn2() starts a new thread. The new thread starts execution
+/// by invoking `func(usize)`; `arg` is passed as the argument
+/// to `func`. `prio` defines the priority of the new thread,
+/// which can be between `LOW_PRIO` and `HIGH_PRIO`.
+/// `core_id` defines the core, where the thread is located.
+/// A negative value give the operating system the possibility
+/// to select the core by its own.
+/// In contrast to spawn(), spawn2() is able to define the
+/// stack size.
+#[inline(always)]
+pub unsafe fn spawn2(
+	func: extern "C" fn(usize),
+	arg: usize,
+	prio: u8,
+	stack_size: usize,
+	core_id: isize,
+) -> Tid {
+	sys_spawn2(func, arg, prio, stack_size, core_id)
 }
 
 /// join with a terminated thread

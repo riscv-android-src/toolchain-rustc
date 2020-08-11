@@ -1,6 +1,6 @@
 //! Tests for the `cargo install` command.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::prelude::*;
 
 use cargo_test_support::cross_compile;
@@ -10,7 +10,9 @@ use cargo_test_support::install::{
 };
 use cargo_test_support::paths;
 use cargo_test_support::registry::Package;
-use cargo_test_support::{basic_manifest, cargo_process, project, NO_SUCH_FILE_ERR_MSG};
+use cargo_test_support::{
+    basic_manifest, cargo_process, project, symlink_supported, t, NO_SUCH_FILE_ERR_MSG,
+};
 
 fn pkg(name: &str, vers: &str) {
     Package::new(name, vers)
@@ -73,7 +75,7 @@ fn multiple_pkgs() {
 [FINISHED] release [optimized] target(s) in [..]
 [INSTALLING] [CWD]/home/.cargo/bin/bar[EXE]
 [INSTALLED] package `bar v0.0.2` (executable `bar[EXE]`)
-[ERROR] could not find `baz` in registry `[..]`
+[ERROR] could not find `baz` in registry `[..]` with version `*`
 [SUMMARY] Successfully installed foo, bar! Failed to install baz (see error(s) above).
 [WARNING] be sure to add `[..]` to your PATH to be able to run the installed binaries
 [ERROR] some crates failed to install
@@ -145,7 +147,21 @@ fn missing() {
         .with_stderr(
             "\
 [UPDATING] [..] index
-[ERROR] could not find `bar` in registry `[..]`
+[ERROR] could not find `bar` in registry `[..]` with version `*`
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn missing_current_working_directory() {
+    cargo_process("install .")
+        .with_status(101)
+        .with_stderr(
+            "\
+error: To install the binaries for the package in current working \
+directory use `cargo install --path .`. Use `cargo build` if you \
+want to simply build the package.
 ",
         )
         .run();
@@ -201,18 +217,16 @@ fn install_location_precedence() {
     let t4 = cargo_home();
 
     fs::create_dir(root.join(".cargo")).unwrap();
-    File::create(root.join(".cargo/config"))
-        .unwrap()
-        .write_all(
-            format!(
-                "[install]
-                 root = '{}'
-                ",
-                t3.display()
-            )
-            .as_bytes(),
-        )
-        .unwrap();
+    fs::write(
+        root.join(".cargo/config"),
+        &format!(
+            "[install]
+             root = '{}'
+            ",
+            t3.display()
+        ),
+    )
+    .unwrap();
 
     println!("install --root");
 
@@ -1444,5 +1458,42 @@ fn git_install_reads_workspace_manifest() {
     cargo_process(&format!("install --git {}", p.url().to_string()))
         .with_status(101)
         .with_stderr_contains("  invalid type: integer `3`[..]")
+        .run();
+}
+
+#[cargo_test]
+fn install_git_with_symlink_home() {
+    // Ensure that `cargo install` with a git repo is OK when CARGO_HOME is a
+    // symlink, and uses an build script.
+    if !symlink_supported() {
+        return;
+    }
+    let p = git::new("foo", |p| {
+        p.file("Cargo.toml", &basic_manifest("foo", "1.0.0"))
+            .file("src/main.rs", "fn main() {}")
+            // This triggers discover_git_and_list_files for detecting changed files.
+            .file("build.rs", "fn main() {}")
+    });
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir as symlink;
+
+    let actual = paths::root().join("actual-home");
+    t!(std::fs::create_dir(&actual));
+    t!(symlink(&actual, paths::home().join(".cargo")));
+    cargo_process("install --git")
+        .arg(p.url().to_string())
+        .with_stderr(
+            "\
+[UPDATING] git repository [..]
+[INSTALLING] foo v1.0.0 [..]
+[COMPILING] foo v1.0.0 [..]
+[FINISHED] [..]
+[INSTALLING] [..]home/.cargo/bin/foo[..]
+[INSTALLED] package `foo [..]
+[WARNING] be sure to add [..]
+",
+        )
         .run();
 }

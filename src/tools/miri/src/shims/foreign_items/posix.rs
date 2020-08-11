@@ -6,10 +6,11 @@ use std::convert::TryFrom;
 use log::trace;
 
 use crate::*;
+use helpers::check_arg_count;
 use rustc_middle::mir;
 use rustc_target::abi::{Align, LayoutOf, Size};
 
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn emulate_foreign_item_by_name(
         &mut self,
@@ -23,49 +24,69 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         match link_name {
             // Environment related shims
             "getenv" => {
-                let result = this.getenv(args[0])?;
+                let &[name] = check_arg_count(args)?;
+                let result = this.getenv(name)?;
                 this.write_scalar(result, dest)?;
             }
             "unsetenv" => {
-                let result = this.unsetenv(args[0])?;
+                let &[name] = check_arg_count(args)?;
+                let result = this.unsetenv(name)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "setenv" => {
-                let result = this.setenv(args[0], args[1])?;
+                let &[name, value, overwrite] = check_arg_count(args)?;
+                this.read_scalar(overwrite)?.to_i32()?;
+                let result = this.setenv(name, value)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "getcwd" => {
-                let result = this.getcwd(args[0], args[1])?;
+                let &[buf, size] = check_arg_count(args)?;
+                let result = this.getcwd(buf, size)?;
                 this.write_scalar(result, dest)?;
             }
             "chdir" => {
-                let result = this.chdir(args[0])?;
+                let &[path] = check_arg_count(args)?;
+                let result = this.chdir(path)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
 
             // File related shims
             "open" | "open64" => {
-                let result = this.open(args[0], args[1])?;
+                let &[path, flag, mode] = check_arg_count(args)?;
+                let result = this.open(path, flag, mode)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "fcntl" => {
-                let result = this.fcntl(args[0], args[1], args.get(2).cloned())?;
+                let result = this.fcntl(args)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "read" => {
-                let result = this.read(args[0], args[1], args[2])?;
+                let &[fd, buf, count] = check_arg_count(args)?;
+                let fd = this.read_scalar(fd)?.to_i32()?;
+                let buf = this.read_scalar(buf)?.not_undef()?;
+                let count = this.read_scalar(count)?.to_machine_usize(this)?;
+                let result = if fd == 0 {
+                    throw_unsup_format!("reading from stdin is not implemented")
+                } else if fd == 1 || fd == 2 {
+                    throw_unsup_format!("cannot read from stdout/stderr")
+                } else {
+                    this.read(fd, buf, count)?
+                };
                 this.write_scalar(Scalar::from_machine_isize(result, this), dest)?;
             }
             "write" => {
-                let fd = this.read_scalar(args[0])?.to_i32()?;
-                let buf = this.read_scalar(args[1])?.not_undef()?;
-                let n = this.read_scalar(args[2])?.to_machine_usize(this)?;
-                trace!("Called write({:?}, {:?}, {:?})", fd, buf, n);
-                let result = if fd == 1 || fd == 2 {
+                let &[fd, buf, n] = check_arg_count(args)?;
+                let fd = this.read_scalar(fd)?.to_i32()?;
+                let buf = this.read_scalar(buf)?.not_undef()?;
+                let count = this.read_scalar(n)?.to_machine_usize(this)?;
+                trace!("Called write({:?}, {:?}, {:?})", fd, buf, count);
+                let result = if fd == 0 {
+                    throw_unsup_format!("cannot write to stdin")
+                } else if fd == 1 || fd == 2 {
                     // stdout/stderr
                     use std::io::{self, Write};
 
-                    let buf_cont = this.memory.read_bytes(buf, Size::from_bytes(n))?;
+                    let buf_cont = this.memory.read_bytes(buf, Size::from_bytes(count))?;
                     // We need to flush to make sure this actually appears on the screen
                     let res = if fd == 1 {
                         // Stdout is buffered, flush to make sure it appears on the screen.
@@ -84,46 +105,54 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                         Err(_) => -1,
                     }
                 } else {
-                    this.write(args[0], args[1], args[2])?
+                    this.write(fd, buf, count)?
                 };
                 // Now, `result` is the value we return back to the program.
                 this.write_scalar(Scalar::from_machine_isize(result, this), dest)?;
             }
             "unlink" => {
-                let result = this.unlink(args[0])?;
+                let &[path] = check_arg_count(args)?;
+                let result = this.unlink(path)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "symlink" => {
-                let result = this.symlink(args[0], args[1])?;
+                let &[target, linkpath] = check_arg_count(args)?;
+                let result = this.symlink(target, linkpath)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "rename" => {
-                let result = this.rename(args[0], args[1])?;
+                let &[oldpath, newpath] = check_arg_count(args)?;
+                let result = this.rename(oldpath, newpath)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "mkdir" => {
-                let result = this.mkdir(args[0], args[1])?;
+                let &[path, mode] = check_arg_count(args)?;
+                let result = this.mkdir(path, mode)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "rmdir" => {
-                let result = this.rmdir(args[0])?;
+                let &[path] = check_arg_count(args)?;
+                let result = this.rmdir(path)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "closedir" => {
-                let result = this.closedir(args[0])?;
+                let &[dirp] = check_arg_count(args)?;
+                let result = this.closedir(dirp)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "lseek" | "lseek64" => {
-                let result = this.lseek64(args[0], args[1], args[2])?;
+                let &[fd, offset, whence] = check_arg_count(args)?;
+                let result = this.lseek64(fd, offset, whence)?;
                 // "lseek" is only used on macOS which is 64bit-only, so `i64` always works.
                 this.write_scalar(Scalar::from_i64(result), dest)?;
             }
 
             // Allocation
             "posix_memalign" => {
-                let ret = this.deref_operand(args[0])?;
-                let align = this.read_scalar(args[1])?.to_machine_usize(this)?;
-                let size = this.read_scalar(args[2])?.to_machine_usize(this)?;
+                let &[ret, align, size] = check_arg_count(args)?;
+                let ret = this.deref_operand(ret)?;
+                let align = this.read_scalar(align)?.to_machine_usize(this)?;
+                let size = this.read_scalar(size)?.to_machine_usize(this)?;
                 // Align must be power of 2, and also at least ptr-sized (POSIX rules).
                 if !align.is_power_of_two() {
                     throw_ub_format!("posix_memalign: alignment must be a power of two, but is {}", align);
@@ -150,12 +179,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
             // Dynamic symbol loading
             "dlsym" => {
-                let _handle = this.read_scalar(args[0])?;
-                let symbol = this.read_scalar(args[1])?.not_undef()?;
+                let &[handle, symbol] = check_arg_count(args)?;
+                this.read_scalar(handle)?.to_machine_usize(this)?;
+                let symbol = this.read_scalar(symbol)?.not_undef()?;
                 let symbol_name = this.memory.read_c_str(symbol)?;
-                let err = format!("bad c unicode symbol: {:?}", symbol_name);
-                let symbol_name = ::std::str::from_utf8(symbol_name).unwrap_or(&err);
-                if let Some(dlsym) = Dlsym::from_str(symbol_name)? {
+                if let Some(dlsym) = Dlsym::from_str(symbol_name, &this.tcx.sess.target.target.target_os)? {
                     let ptr = this.memory.create_fn_alloc(FnVal::Other(dlsym));
                     this.write_scalar(Scalar::from(ptr), dest)?;
                 } else {
@@ -165,7 +193,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
             // Querying system information
             "sysconf" => {
-                let name = this.read_scalar(args[0])?.to_i32()?;
+                let &[name] = check_arg_count(args)?;
+                let name = this.read_scalar(name)?.to_i32()?;
 
                 let sysconfs = &[
                     ("_SC_PAGESIZE", Scalar::from_int(PAGE_SIZE, this.pointer_size())),
@@ -188,17 +217,19 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
             // Thread-local storage
             "pthread_key_create" => {
-                let key_place = this.deref_operand(args[0])?;
+                let &[key, dtor] = check_arg_count(args)?;
+                let key_place = this.deref_operand(key)?;
+                let dtor = this.read_scalar(dtor)?.not_undef()?;
 
                 // Extract the function type out of the signature (that seems easier than constructing it ourselves).
-                let dtor = match this.test_null(this.read_scalar(args[1])?.not_undef()?)? {
+                let dtor = match this.test_null(dtor)? {
                     Some(dtor_ptr) => Some(this.memory.get_fn(dtor_ptr)?.as_instance()?),
                     None => None,
                 };
 
                 // Figure out how large a pthread TLS key actually is.
                 // To this end, deref the argument type. This is `libc::pthread_key_t`.
-                let key_type = args[0].layout.ty
+                let key_type = key.layout.ty
                     .builtin_deref(true)
                     .ok_or_else(|| err_ub_format!(
                         "wrong signature used for `pthread_key_create`: first argument must be a raw pointer."
@@ -214,20 +245,25 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_null(dest)?;
             }
             "pthread_key_delete" => {
-                let key = this.force_bits(this.read_scalar(args[0])?.not_undef()?, args[0].layout.size)?;
+                let &[key] = check_arg_count(args)?;
+                let key = this.force_bits(this.read_scalar(key)?.not_undef()?, key.layout.size)?;
                 this.machine.tls.delete_tls_key(key)?;
                 // Return success (0)
                 this.write_null(dest)?;
             }
             "pthread_getspecific" => {
-                let key = this.force_bits(this.read_scalar(args[0])?.not_undef()?, args[0].layout.size)?;
-                let ptr = this.machine.tls.load_tls(key, this)?;
+                let &[key] = check_arg_count(args)?;
+                let key = this.force_bits(this.read_scalar(key)?.not_undef()?, key.layout.size)?;
+                let active_thread = this.get_active_thread();
+                let ptr = this.machine.tls.load_tls(key, active_thread, this)?;
                 this.write_scalar(ptr, dest)?;
             }
             "pthread_setspecific" => {
-                let key = this.force_bits(this.read_scalar(args[0])?.not_undef()?, args[0].layout.size)?;
-                let new_ptr = this.read_scalar(args[1])?.not_undef()?;
-                this.machine.tls.store_tls(key, this.test_null(new_ptr)?)?;
+                let &[key, new_ptr] = check_arg_count(args)?;
+                let key = this.force_bits(this.read_scalar(key)?.not_undef()?, key.layout.size)?;
+                let active_thread = this.get_active_thread();
+                let new_ptr = this.read_scalar(new_ptr)?.not_undef()?;
+                this.machine.tls.store_tls(key, active_thread, this.test_null(new_ptr)?)?;
 
                 // Return success (`0`).
                 this.write_null(dest)?;
@@ -235,70 +271,145 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
             // Synchronization primitives
             "pthread_mutexattr_init" => {
-                let result = this.pthread_mutexattr_init(args[0])?;
+                let &[attr] = check_arg_count(args)?;
+                let result = this.pthread_mutexattr_init(attr)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_mutexattr_settype" => {
-                let result = this.pthread_mutexattr_settype(args[0], args[1])?;
+                let &[attr, kind] = check_arg_count(args)?;
+                let result = this.pthread_mutexattr_settype(attr, kind)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_mutexattr_destroy" => {
-                let result = this.pthread_mutexattr_destroy(args[0])?;
+                let &[attr] = check_arg_count(args)?;
+                let result = this.pthread_mutexattr_destroy(attr)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_mutex_init" => {
-                let result = this.pthread_mutex_init(args[0], args[1])?;
+                let &[mutex, attr] = check_arg_count(args)?;
+                let result = this.pthread_mutex_init(mutex, attr)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_mutex_lock" => {
-                let result = this.pthread_mutex_lock(args[0])?;
+                let &[mutex] = check_arg_count(args)?;
+                let result = this.pthread_mutex_lock(mutex)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_mutex_trylock" => {
-                let result = this.pthread_mutex_trylock(args[0])?;
+                let &[mutex] = check_arg_count(args)?;
+                let result = this.pthread_mutex_trylock(mutex)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_mutex_unlock" => {
-                let result = this.pthread_mutex_unlock(args[0])?;
+                let &[mutex] = check_arg_count(args)?;
+                let result = this.pthread_mutex_unlock(mutex)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_mutex_destroy" => {
-                let result = this.pthread_mutex_destroy(args[0])?;
+                let &[mutex] = check_arg_count(args)?;
+                let result = this.pthread_mutex_destroy(mutex)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_rwlock_rdlock" => {
-                let result = this.pthread_rwlock_rdlock(args[0])?;
+                let &[rwlock] = check_arg_count(args)?;
+                let result = this.pthread_rwlock_rdlock(rwlock)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_rwlock_tryrdlock" => {
-                let result = this.pthread_rwlock_tryrdlock(args[0])?;
+                let &[rwlock] = check_arg_count(args)?;
+                let result = this.pthread_rwlock_tryrdlock(rwlock)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_rwlock_wrlock" => {
-                let result = this.pthread_rwlock_wrlock(args[0])?;
+                let &[rwlock] = check_arg_count(args)?;
+                let result = this.pthread_rwlock_wrlock(rwlock)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_rwlock_trywrlock" => {
-                let result = this.pthread_rwlock_trywrlock(args[0])?;
+                let &[rwlock] = check_arg_count(args)?;
+                let result = this.pthread_rwlock_trywrlock(rwlock)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_rwlock_unlock" => {
-                let result = this.pthread_rwlock_unlock(args[0])?;
+                let &[rwlock] = check_arg_count(args)?;
+                let result = this.pthread_rwlock_unlock(rwlock)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
             "pthread_rwlock_destroy" => {
-                let result = this.pthread_rwlock_destroy(args[0])?;
+                let &[rwlock] = check_arg_count(args)?;
+                let result = this.pthread_rwlock_destroy(rwlock)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_condattr_init" => {
+                let &[attr] = check_arg_count(args)?;
+                let result = this.pthread_condattr_init(attr)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_condattr_destroy" => {
+                let &[attr] = check_arg_count(args)?;
+                let result = this.pthread_condattr_destroy(attr)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_cond_init" => {
+                let &[cond, attr] = check_arg_count(args)?;
+                let result = this.pthread_cond_init(cond, attr)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_cond_signal" => {
+                let &[cond] = check_arg_count(args)?;
+                let result = this.pthread_cond_signal(cond)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_cond_broadcast" => {
+                let &[cond] = check_arg_count(args)?;
+                let result = this.pthread_cond_broadcast(cond)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_cond_wait" => {
+                let &[cond, mutex] = check_arg_count(args)?;
+                let result = this.pthread_cond_wait(cond, mutex)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_cond_timedwait" => {
+                let &[cond, mutex, abstime] = check_arg_count(args)?;
+                this.pthread_cond_timedwait(cond, mutex, abstime, dest)?;
+            }
+            "pthread_cond_destroy" => {
+                let &[cond] = check_arg_count(args)?;
+                let result = this.pthread_cond_destroy(cond)?;
                 this.write_scalar(Scalar::from_i32(result), dest)?;
             }
 
-            // Better error for attempts to create a thread
+            // Threading
             "pthread_create" => {
-                throw_unsup_format!("Miri does not support threading");
+                let &[thread, attr, start, arg] = check_arg_count(args)?;
+                let result = this.pthread_create(thread, attr, start, arg)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_join" => {
+                let &[thread, retval] = check_arg_count(args)?;
+                let result = this.pthread_join(thread, retval)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_detach" => {
+                let &[thread] = check_arg_count(args)?;
+                let result = this.pthread_detach(thread)?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
+            }
+            "pthread_self" => {
+                let &[] = check_arg_count(args)?;
+                this.pthread_self(dest)?;
+            }
+            "sched_yield" => {
+                let &[] = check_arg_count(args)?;
+                let result = this.sched_yield()?;
+                this.write_scalar(Scalar::from_i32(result), dest)?;
             }
 
             // Miscellaneous
             "isatty" => {
-                let _fd = this.read_scalar(args[0])?.to_i32()?;
+                let &[fd] = check_arg_count(args)?;
+                this.read_scalar(fd)?.to_i32()?;
                 // "returns 1 if fd is an open file descriptor referring to a terminal; otherwise 0 is returned, and errno is set to indicate the error"
                 // FIXME: we just say nothing is a terminal.
                 let enotty = this.eval_libc("ENOTTY")?;
@@ -306,33 +417,49 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 this.write_null(dest)?;
             }
             "pthread_atfork" => {
-                let _prepare = this.read_scalar(args[0])?.not_undef()?;
-                let _parent = this.read_scalar(args[1])?.not_undef()?;
-                let _child = this.read_scalar(args[1])?.not_undef()?;
+                let &[prepare, parent, child] = check_arg_count(args)?;
+                this.force_bits(this.read_scalar(prepare)?.not_undef()?, this.memory.pointer_size())?;
+                this.force_bits(this.read_scalar(parent)?.not_undef()?, this.memory.pointer_size())?;
+                this.force_bits(this.read_scalar(child)?.not_undef()?, this.memory.pointer_size())?;
                 // We do not support forking, so there is nothing to do here.
                 this.write_null(dest)?;
             }
 
             // Incomplete shims that we "stub out" just to get pre-main initialization code to work.
             // These shims are enabled only when the caller is in the standard library.
+            "pthread_attr_getguardsize"
+            if this.frame().instance.to_string().starts_with("std::sys::unix::") => {
+                let &[_attr, guard_size] = check_arg_count(args)?;
+                let guard_size = this.deref_operand(guard_size)?;
+                let guard_size_layout = this.libc_ty_layout("size_t")?;
+                this.write_scalar(Scalar::from_uint(crate::PAGE_SIZE, guard_size_layout.size), guard_size.into())?;
+
+                // Return success (`0`).
+                this.write_null(dest)?;
+            }
+
             | "pthread_attr_init"
             | "pthread_attr_destroy"
-            | "pthread_self"
+            if this.frame().instance.to_string().starts_with("std::sys::unix::") => {
+                let &[_] = check_arg_count(args)?;
+                this.write_null(dest)?;
+            }
             | "pthread_attr_setstacksize"
-            | "pthread_condattr_init"
-            | "pthread_condattr_setclock"
-            | "pthread_cond_init"
-            | "pthread_condattr_destroy"
-            | "pthread_cond_destroy" if this.frame().instance.to_string().starts_with("std::sys::unix::")
-            => {
+            if this.frame().instance.to_string().starts_with("std::sys::unix::") => {
+                let &[_, _] = check_arg_count(args)?;
                 this.write_null(dest)?;
             }
 
             | "signal"
-            | "sigaction"
             | "sigaltstack"
-            | "mprotect" if this.frame().instance.to_string().starts_with("std::sys::unix::")
-            => {
+            if this.frame().instance.to_string().starts_with("std::sys::unix::") => {
+                let &[_, _] = check_arg_count(args)?;
+                this.write_null(dest)?;
+            }
+            | "sigaction"
+            | "mprotect"
+            if this.frame().instance.to_string().starts_with("std::sys::unix::") => {
+                let &[_, _, _] = check_arg_count(args)?;
                 this.write_null(dest)?;
             }
 

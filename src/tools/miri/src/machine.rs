@@ -22,6 +22,7 @@ use rustc_middle::{
     },
 };
 use rustc_span::symbol::{sym, Symbol};
+use rustc_span::def_id::DefId;
 use rustc_target::abi::{LayoutOf, Size};
 
 use crate::*;
@@ -168,7 +169,7 @@ impl MemoryExtra {
             "linux" => {
                 // "__cxa_thread_atexit_impl"
                 // This should be all-zero, pointer-sized.
-                let layout = this.layout_of(this.tcx.types.usize)?;
+                let layout = this.machine.layouts.usize;
                 let place = this.allocate(layout, MiriMemoryKind::Machine.into());
                 this.write_scalar(Scalar::from_machine_usize(0, this), place.into())?;
                 Self::add_extern_static(this, "__cxa_thread_atexit_impl", place.ptr);
@@ -178,7 +179,7 @@ impl MemoryExtra {
             "windows" => {
                 // "_tls_used"
                 // This is some obscure hack that is part of the Windows TLS story. It's a `u8`.
-                let layout = this.layout_of(this.tcx.types.u8)?;
+                let layout = this.machine.layouts.u8;
                 let place = this.allocate(layout, MiriMemoryKind::Machine.into());
                 this.write_scalar(Scalar::from_u8(0), place.into())?;
                 Self::add_extern_static(this, "_tls_used", place.ptr);
@@ -190,22 +191,32 @@ impl MemoryExtra {
 }
 
 /// Precomputed layouts of primitive types
-pub(crate) struct PrimitiveLayouts<'tcx> {
-    pub(crate) i32: TyAndLayout<'tcx>,
-    pub(crate) u32: TyAndLayout<'tcx>,
+pub struct PrimitiveLayouts<'tcx> {
+    pub unit: TyAndLayout<'tcx>,
+    pub i8: TyAndLayout<'tcx>,
+    pub i32: TyAndLayout<'tcx>,
+    pub isize: TyAndLayout<'tcx>,
+    pub u8: TyAndLayout<'tcx>,
+    pub u32: TyAndLayout<'tcx>,
+    pub usize: TyAndLayout<'tcx>,
 }
 
 impl<'mir, 'tcx: 'mir> PrimitiveLayouts<'tcx> {
     fn new(layout_cx: LayoutCx<'tcx, TyCtxt<'tcx>>) -> Result<Self, LayoutError<'tcx>> {
         Ok(Self {
+            unit: layout_cx.layout_of(layout_cx.tcx.mk_unit())?,
+            i8: layout_cx.layout_of(layout_cx.tcx.types.i8)?,
             i32: layout_cx.layout_of(layout_cx.tcx.types.i32)?,
+            isize: layout_cx.layout_of(layout_cx.tcx.types.isize)?,
+            u8: layout_cx.layout_of(layout_cx.tcx.types.u8)?,
             u32: layout_cx.layout_of(layout_cx.tcx.types.u32)?,
+            usize: layout_cx.layout_of(layout_cx.tcx.types.usize)?,
         })
     }
 }
 
 /// The machine itself.
-pub struct Evaluator<'tcx> {
+pub struct Evaluator<'mir, 'tcx> {
     /// Environment variables set by `setenv`.
     /// Miri does not expose env vars from the host to the emulated program.
     pub(crate) env_vars: EnvVars<'tcx>,
@@ -241,13 +252,14 @@ pub struct Evaluator<'tcx> {
     /// The "time anchor" for this machine's monotone clock (for `Instant` simulation).
     pub(crate) time_anchor: Instant,
 
+    /// The set of threads.
+    pub(crate) threads: ThreadManager<'mir, 'tcx>,
+
     /// Precomputed `TyLayout`s for primitive data types that are commonly used inside Miri.
-    /// FIXME: Search through the rest of the codebase for more layout_of() calls that
-    /// could be stored here.
     pub(crate) layouts: PrimitiveLayouts<'tcx>,
 }
 
-impl<'tcx> Evaluator<'tcx> {
+impl<'mir, 'tcx> Evaluator<'mir, 'tcx> {
     pub(crate) fn new(
         communicate: bool,
         validate: bool,
@@ -271,12 +283,13 @@ impl<'tcx> Evaluator<'tcx> {
             panic_payload: None,
             time_anchor: Instant::now(),
             layouts,
+            threads: ThreadManager::default(),
         }
     }
 }
 
 /// A rustc InterpCx for Miri.
-pub type MiriEvalContext<'mir, 'tcx> = InterpCx<'mir, 'tcx, Evaluator<'tcx>>;
+pub type MiriEvalContext<'mir, 'tcx> = InterpCx<'mir, 'tcx, Evaluator<'mir, 'tcx>>;
 
 /// A little trait that's useful to be inherited by extension traits.
 pub trait MiriEvalContextExt<'mir, 'tcx> {
@@ -295,7 +308,7 @@ impl<'mir, 'tcx> MiriEvalContextExt<'mir, 'tcx> for MiriEvalContext<'mir, 'tcx> 
 }
 
 /// Machine hook implementations.
-impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
+impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
     type MemoryKind = MiriMemoryKind;
 
     type FrameExtra = FrameData<'tcx>;
@@ -404,10 +417,26 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         Ok(())
     }
 
+    fn thread_local_alloc_id(
+        ecx: &mut InterpCx<'mir, 'tcx, Self>,
+        def_id: DefId,
+    ) -> InterpResult<'tcx, AllocId> {
+        ecx.get_or_create_thread_local_alloc_id(def_id)
+    }
+
+    fn adjust_global_const(
+        ecx: &InterpCx<'mir, 'tcx, Self>,
+        mut val: mir::interpret::ConstValue<'tcx>,
+    ) -> InterpResult<'tcx, mir::interpret::ConstValue<'tcx>> {
+        // FIXME: Remove this, do The Right Thing in `thread_local_alloc_id` instead.
+        ecx.remap_thread_local_alloc_ids(&mut val)?;
+        Ok(val)
+    }
+
     fn canonical_alloc_id(mem: &Memory<'mir, 'tcx, Self>, id: AllocId) -> AllocId {
         let tcx = mem.tcx;
         // Figure out if this is an extern static, and if yes, which one.
-        let def_id = match tcx.alloc_map.lock().get(id) {
+        let def_id = match tcx.get_global_alloc(id) {
             Some(GlobalAlloc::Static(def_id)) if tcx.is_foreign_item(def_id) => def_id,
             _ => {
                 // No need to canonicalize anything.
@@ -474,7 +503,7 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         if Some(id) == memory_extra.tracked_alloc_id {
             register_diagnostic(NonHaltingDiagnostic::FreedAlloc(id));
         }
-        
+
         Ok(())
     }
 
@@ -511,6 +540,18 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'tcx> {
         });
         let extra = FrameData { call_id, catch_unwind: None };
         Ok(frame.with_extra(extra))
+    }
+
+    fn stack<'a>(
+        ecx: &'a InterpCx<'mir, 'tcx, Self>
+    ) -> &'a [Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>] {
+        ecx.active_thread_stack()
+    }
+
+    fn stack_mut<'a>(
+        ecx: &'a mut InterpCx<'mir, 'tcx, Self>
+    ) -> &'a mut Vec<Frame<'mir, 'tcx, Self::PointerTag, Self::FrameExtra>> {
+        ecx.active_thread_stack_mut()
     }
 
     #[inline(always)]

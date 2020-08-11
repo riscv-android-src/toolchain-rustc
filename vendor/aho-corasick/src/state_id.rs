@@ -49,7 +49,7 @@ pub fn dead_id<S: StateID>() -> S {
 mod private {
     /// Sealed stops crates other than aho-corasick from implementing any
     /// traits that use it.
-    pub trait Sealed{}
+    pub trait Sealed {}
     impl Sealed for u8 {}
     impl Sealed for u16 {}
     impl Sealed for u32 {}
@@ -69,20 +69,16 @@ mod private {
 /// other type. In particular, this crate provides implementations for `u8`,
 /// `u16`, `u32`, `u64` and `usize`. (`u32` and `u64` are only provided for
 /// targets that can represent all corresponding values in a `usize`.)
-///
-/// # Safety
-///
-/// This trait is unsafe because the correctness of its implementations may be
-/// relied upon by other unsafe code. For example, one possible way to
-/// implement this trait incorrectly would be to return a maximum identifier
-/// in `max_id` that is greater than the real maximum identifier. This will
-/// likely result in wrap-on-overflow semantics in release mode, which can in
-/// turn produce incorrect state identifiers. Those state identifiers may then
-/// in turn access out-of-bounds memory in an automaton's search routine, where
-/// bounds checks are explicitly elided for performance reasons.
-pub unsafe trait StateID:
+pub trait StateID:
     private::Sealed
-    + Clone + Copy + Debug + Eq + Hash + PartialEq + PartialOrd + Ord
+    + Clone
+    + Copy
+    + Debug
+    + Eq
+    + Hash
+    + PartialEq
+    + PartialOrd
+    + Ord
 {
     /// Convert from a `usize` to this implementation's representation.
     ///
@@ -104,63 +100,93 @@ pub unsafe trait StateID:
     /// Return the maximum state identifier supported by this representation.
     ///
     /// Implementors must return a correct bound. Doing otherwise may result
-    /// in memory unsafety.
+    /// in unspecified behavior (but will not violate memory safety).
     fn max_id() -> usize;
 }
 
-unsafe impl StateID for usize {
+impl StateID for usize {
     #[inline]
-    fn from_usize(n: usize) -> usize { n }
+    fn from_usize(n: usize) -> usize {
+        n
+    }
 
     #[inline]
-    fn to_usize(self) -> usize { self }
+    fn to_usize(self) -> usize {
+        self
+    }
 
     #[inline]
-    fn max_id() -> usize { ::std::usize::MAX }
+    fn max_id() -> usize {
+        ::std::usize::MAX
+    }
 }
 
-unsafe impl StateID for u8 {
+impl StateID for u8 {
     #[inline]
-    fn from_usize(n: usize) -> u8 { n as u8 }
+    fn from_usize(n: usize) -> u8 {
+        n as u8
+    }
 
     #[inline]
-    fn to_usize(self) -> usize { self as usize }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 
     #[inline]
-    fn max_id() -> usize { ::std::u8::MAX as usize }
+    fn max_id() -> usize {
+        ::std::u8::MAX as usize
+    }
 }
 
-unsafe impl StateID for u16 {
+impl StateID for u16 {
     #[inline]
-    fn from_usize(n: usize) -> u16 { n as u16 }
+    fn from_usize(n: usize) -> u16 {
+        n as u16
+    }
 
     #[inline]
-    fn to_usize(self) -> usize { self as usize }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 
     #[inline]
-    fn max_id() -> usize { ::std::u16::MAX as usize }
+    fn max_id() -> usize {
+        ::std::u16::MAX as usize
+    }
 }
 
 #[cfg(any(target_pointer_width = "32", target_pointer_width = "64"))]
-unsafe impl StateID for u32 {
+impl StateID for u32 {
     #[inline]
-    fn from_usize(n: usize) -> u32 { n as u32 }
+    fn from_usize(n: usize) -> u32 {
+        n as u32
+    }
 
     #[inline]
-    fn to_usize(self) -> usize { self as usize }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 
     #[inline]
-    fn max_id() -> usize { ::std::u32::MAX as usize }
+    fn max_id() -> usize {
+        ::std::u32::MAX as usize
+    }
 }
 
 #[cfg(target_pointer_width = "64")]
-unsafe impl StateID for u64 {
+impl StateID for u64 {
     #[inline]
-    fn from_usize(n: usize) -> u64 { n as u64 }
+    fn from_usize(n: usize) -> u64 {
+        n as u64
+    }
 
     #[inline]
-    fn to_usize(self) -> usize { self as usize }
+    fn to_usize(self) -> usize {
+        self as usize
+    }
 
     #[inline]
-    fn max_id() -> usize { ::std::u64::MAX as usize }
+    fn max_id() -> usize {
+        ::std::u64::MAX as usize
+    }
 }

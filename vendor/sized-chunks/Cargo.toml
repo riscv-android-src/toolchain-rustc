@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "sized-chunks"
-version = "0.5.0"
+version = "0.6.2"
 authors = ["Bodil Stokke <bodil@bodil.org>"]
 exclude = ["release.toml", "proptest-regressions/**"]
 description = "Efficient sized chunk datatypes"
@@ -23,15 +23,33 @@ keywords = ["sparse-array"]
 categories = ["data-structures"]
 license = "MPL-2.0+"
 repository = "https://github.com/bodil/sized-chunks"
+[package.metadata.docs.rs]
+all-features = true
+
+[[bench]]
+name = "sized_chunk"
+harness = false
+[dependencies.arbitrary]
+version = "0.4"
+optional = true
+
+[dependencies.array-ops]
+version = "0.1"
+optional = true
+
 [dependencies.bitmaps]
 version = "2.0.0"
 
-[dependencies.typenum]
-version = "1.10.0"
-[dev-dependencies.proptest]
-version = "0.9.1"
+[dependencies.refpool]
+version = "0.4"
+optional = true
 
-[dev-dependencies.proptest-derive]
-version = "0.1.0"
-[badges.travis-ci]
-repository = "bodil/sized-chunks"
+[dependencies.typenum]
+version = "1.11.2"
+[dev-dependencies.criterion]
+version = "0.3"
+
+[features]
+default = ["std"]
+ringbuffer = ["array-ops"]
+std = []

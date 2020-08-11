@@ -97,7 +97,7 @@ impl<'tcx> TraitAliasExpander<'tcx> {
     fn expand(&mut self, item: &TraitAliasExpansionInfo<'tcx>) -> bool {
         let tcx = self.tcx;
         let trait_ref = item.trait_ref();
-        let pred = trait_ref.without_const().to_predicate();
+        let pred = trait_ref.without_const().to_predicate(tcx);
 
         debug!("expand_trait_aliases: trait_ref={:?}", trait_ref);
 
@@ -108,9 +108,9 @@ impl<'tcx> TraitAliasExpander<'tcx> {
         }
 
         // Don't recurse if this trait alias is already on the stack for the DFS search.
-        let anon_pred = anonymize_predicate(tcx, &pred);
+        let anon_pred = anonymize_predicate(tcx, pred);
         if item.path.iter().rev().skip(1).any(|(tr, _)| {
-            anonymize_predicate(tcx, &tr.without_const().to_predicate()) == anon_pred
+            anonymize_predicate(tcx, tr.without_const().to_predicate(tcx)) == anon_pred
         }) {
             return false;
         }
@@ -217,7 +217,6 @@ pub fn impl_trait_ref_and_oblig<'a, 'tcx>(
     (impl_trait_ref, impl_obligations)
 }
 
-/// See [`super::obligations_for_generics`].
 pub fn predicates_for_generics<'tcx>(
     cause: ObligationCause<'tcx>,
     recursion_depth: usize,
@@ -235,6 +234,7 @@ pub fn predicates_for_generics<'tcx>(
 }
 
 pub fn predicate_for_trait_ref<'tcx>(
+    tcx: TyCtxt<'tcx>,
     cause: ObligationCause<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     trait_ref: ty::TraitRef<'tcx>,
@@ -244,7 +244,7 @@ pub fn predicate_for_trait_ref<'tcx>(
         cause,
         param_env,
         recursion_depth,
-        predicate: trait_ref.without_const().to_predicate(),
+        predicate: trait_ref.without_const().to_predicate(tcx),
     }
 }
 
@@ -259,7 +259,7 @@ pub fn predicate_for_trait_def(
 ) -> PredicateObligation<'tcx> {
     let trait_ref =
         ty::TraitRef { def_id: trait_def_id, substs: tcx.mk_substs_trait(self_ty, params) };
-    predicate_for_trait_ref(cause, param_env, trait_ref, recursion_depth)
+    predicate_for_trait_ref(tcx, cause, param_env, trait_ref, recursion_depth)
 }
 
 /// Casts a trait reference into a reference to one of its super

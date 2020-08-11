@@ -269,7 +269,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         self.fcx
             .autoderef(self.span, self_ty)
             .include_raw_pointers()
-            .filter_map(|(ty, _)| match ty.kind {
+            .find_map(|(ty, _)| match ty.kind {
                 ty::Dynamic(ref data, ..) => Some(closure(
                     self,
                     ty,
@@ -279,7 +279,6 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
                 )),
                 _ => None,
             })
-            .next()
             .unwrap_or_else(|| {
                 span_bug!(
                     self.span,
@@ -313,7 +312,7 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
             parent_substs,
             false,
             None,
-            arg_count_correct.is_ok(),
+            arg_count_correct,
             // Provide the generic args, and whether types should be inferred.
             |def_id| {
                 // The last component of the returned tuple here is unimportant.
@@ -469,7 +468,9 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
 
             match expr.kind {
                 hir::ExprKind::Index(ref base_expr, ref index_expr) => {
-                    let index_expr_ty = self.node_ty(index_expr.hir_id);
+                    // We need to get the final type in case dereferences were needed for the trait
+                    // to apply (#72002).
+                    let index_expr_ty = self.tables.borrow().expr_ty_adjusted(index_expr);
                     self.convert_place_op_to_mutable(
                         PlaceOp::Index,
                         expr,
@@ -573,34 +574,35 @@ impl<'a, 'tcx> ConfirmContext<'a, 'tcx> {
         };
 
         traits::elaborate_predicates(self.tcx, predicates.predicates.iter().copied())
-            .filter_map(|obligation| match obligation.predicate {
-                ty::Predicate::Trait(trait_pred, _) if trait_pred.def_id() == sized_def_id => {
+            .filter_map(|obligation| match obligation.predicate.kind() {
+                ty::PredicateKind::Trait(trait_pred, _) if trait_pred.def_id() == sized_def_id => {
                     let span = predicates
                         .predicates
                         .iter()
                         .zip(predicates.spans.iter())
-                        .filter_map(
+                        .find_map(
                             |(p, span)| if *p == obligation.predicate { Some(*span) } else { None },
                         )
-                        .next()
                         .unwrap_or(rustc_span::DUMMY_SP);
                     Some((trait_pred, span))
                 }
                 _ => None,
             })
-            .filter_map(|(trait_pred, span)| match trait_pred.skip_binder().self_ty().kind {
+            .find_map(|(trait_pred, span)| match trait_pred.skip_binder().self_ty().kind {
                 ty::Dynamic(..) => Some(span),
                 _ => None,
             })
-            .next()
     }
 
     fn enforce_illegal_method_limitations(&self, pick: &probe::Pick<'_>) {
         // Disallow calls to the method `drop` defined in the `Drop` trait.
         match pick.item.container {
-            ty::TraitContainer(trait_def_id) => {
-                callee::check_legal_trait_for_method_call(self.tcx, self.span, trait_def_id)
-            }
+            ty::TraitContainer(trait_def_id) => callee::check_legal_trait_for_method_call(
+                self.tcx,
+                self.span,
+                Some(self.self_expr.span),
+                trait_def_id,
+            ),
             ty::ImplContainer(..) => {}
         }
     }

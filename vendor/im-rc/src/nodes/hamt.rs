@@ -14,15 +14,15 @@ use sized_chunks::sparse_chunk::{Iter as ChunkIter, IterMut as ChunkIterMut, Spa
 use typenum::{Pow, Unsigned, U2};
 
 use crate::config::HashLevelSize;
-use crate::util::{clone_ref, Ref};
+use crate::util::{clone_ref, Pool, PoolClone, PoolDefault, PoolRef, Ref};
 
-pub type HashWidth = <U2 as Pow<HashLevelSize>>::Output;
-pub type HashBits = <HashWidth as Bits>::Store; // a uint of HASH_SIZE bits
-pub const HASH_SHIFT: usize = HashLevelSize::USIZE;
-pub const HASH_WIDTH: usize = HashWidth::USIZE;
-pub const HASH_MASK: HashBits = (HASH_WIDTH - 1) as HashBits;
+pub(crate) type HashWidth = <U2 as Pow<HashLevelSize>>::Output;
+pub(crate) type HashBits = <HashWidth as Bits>::Store; // a uint of HASH_SIZE bits
+pub(crate) const HASH_SHIFT: usize = HashLevelSize::USIZE;
+pub(crate) const HASH_WIDTH: usize = HashWidth::USIZE;
+pub(crate) const HASH_MASK: HashBits = (HASH_WIDTH - 1) as HashBits;
 
-pub fn hash_key<K: Hash + ?Sized, S: BuildHasher>(bh: &S, key: &K) -> HashBits {
+pub(crate) fn hash_key<K: Hash + ?Sized, S: BuildHasher>(bh: &S, key: &K) -> HashBits {
     let mut hasher = bh.build_hasher();
     key.hash(&mut hasher);
     hasher.finish() as HashBits
@@ -41,20 +41,51 @@ pub trait HashValue {
 }
 
 #[derive(Clone)]
-pub struct Node<A> {
+pub(crate) struct Node<A> {
     data: SparseChunk<Entry<A>, HashWidth>,
 }
 
+#[allow(unsafe_code)]
+impl<A> PoolDefault for Node<A> {
+    #[cfg(feature = "pool")]
+    unsafe fn default_uninit(target: &mut mem::MaybeUninit<Self>) {
+        SparseChunk::default_uninit(
+            target
+                .as_mut_ptr()
+                .cast::<mem::MaybeUninit<SparseChunk<Entry<A>, HashWidth>>>()
+                .as_mut()
+                .unwrap(),
+        )
+    }
+}
+
+#[allow(unsafe_code)]
+impl<A> PoolClone for Node<A>
+where
+    A: Clone,
+{
+    #[cfg(feature = "pool")]
+    unsafe fn clone_uninit(&self, target: &mut mem::MaybeUninit<Self>) {
+        self.data.clone_uninit(
+            target
+                .as_mut_ptr()
+                .cast::<mem::MaybeUninit<SparseChunk<Entry<A>, HashWidth>>>()
+                .as_mut()
+                .unwrap(),
+        )
+    }
+}
+
 #[derive(Clone)]
-pub struct CollisionNode<A> {
+pub(crate) struct CollisionNode<A> {
     hash: HashBits,
     data: Vec<A>,
 }
 
-pub enum Entry<A> {
+pub(crate) enum Entry<A> {
     Value(A, HashBits),
     Collision(Ref<CollisionNode<A>>),
-    Node(Ref<Node<A>>),
+    Node(PoolRef<Node<A>>),
 }
 
 impl<A: Clone> Clone for Entry<A> {
@@ -81,11 +112,9 @@ impl<A> Entry<A> {
             _ => panic!("nodes::hamt::Entry::unwrap_value: unwrapped a non-value"),
         }
     }
-}
 
-impl<A> From<Node<A>> for Entry<A> {
-    fn from(node: Node<A>) -> Self {
-        Entry::Node(Ref::new(node))
+    fn from_node(pool: &Pool<Node<A>>, node: Node<A>) -> Self {
+        Entry::Node(PoolRef::new(pool, node))
     }
 }
 
@@ -103,7 +132,7 @@ impl<A> Default for Node<A> {
 
 impl<A> Node<A> {
     #[inline]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Node {
             data: SparseChunk::new(),
         }
@@ -115,23 +144,23 @@ impl<A> Node<A> {
     }
 
     #[inline]
-    pub fn unit(index: usize, value: Entry<A>) -> Self {
+    pub(crate) fn unit(index: usize, value: Entry<A>) -> Self {
         Node {
             data: SparseChunk::unit(index, value),
         }
     }
 
     #[inline]
-    pub fn pair(index1: usize, value1: Entry<A>, index2: usize, value2: Entry<A>) -> Self {
+    pub(crate) fn pair(index1: usize, value1: Entry<A>, index2: usize, value2: Entry<A>) -> Self {
         Node {
             data: SparseChunk::pair(index1, value1, index2, value2),
         }
     }
 
     #[inline]
-    pub fn single_child(index: usize, node: Self) -> Self {
+    pub(crate) fn single_child(pool: &Pool<Node<A>>, index: usize, node: Self) -> Self {
         Node {
-            data: SparseChunk::unit(index, Entry::from(node)),
+            data: SparseChunk::unit(index, Entry::from_node(pool, node)),
         }
     }
 
@@ -141,7 +170,14 @@ impl<A> Node<A> {
 }
 
 impl<A: HashValue> Node<A> {
-    fn merge_values(value1: A, hash1: HashBits, value2: A, hash2: HashBits, shift: usize) -> Self {
+    fn merge_values(
+        pool: &Pool<Node<A>>,
+        value1: A,
+        hash1: HashBits,
+        value2: A,
+        hash2: HashBits,
+        shift: usize,
+    ) -> Self {
         let index1 = mask(hash1, shift) as usize;
         let index2 = mask(hash2, shift) as usize;
         if index1 != index2 {
@@ -160,12 +196,12 @@ impl<A: HashValue> Node<A> {
             )
         } else {
             // Pass the values down a level.
-            let node = Node::merge_values(value1, hash1, value2, hash2, shift + HASH_SHIFT);
-            Node::single_child(index1, node)
+            let node = Node::merge_values(pool, value1, hash1, value2, hash2, shift + HASH_SHIFT);
+            Node::single_child(pool, index1, node)
         }
     }
 
-    pub fn get<BK>(&self, hash: HashBits, shift: usize, key: &BK) -> Option<&A>
+    pub(crate) fn get<BK>(&self, hash: HashBits, shift: usize, key: &BK) -> Option<&A>
     where
         BK: Eq + ?Sized,
         A::Key: Borrow<BK>,
@@ -188,7 +224,13 @@ impl<A: HashValue> Node<A> {
         }
     }
 
-    pub fn get_mut<BK>(&mut self, hash: HashBits, shift: usize, key: &BK) -> Option<&mut A>
+    pub(crate) fn get_mut<BK>(
+        &mut self,
+        pool: &Pool<Node<A>>,
+        hash: HashBits,
+        shift: usize,
+        key: &BK,
+    ) -> Option<&mut A>
     where
         A: Clone,
         BK: Eq + ?Sized,
@@ -209,8 +251,8 @@ impl<A: HashValue> Node<A> {
                     coll.get_mut(key)
                 }
                 Entry::Node(ref mut child_ref) => {
-                    let child = Ref::make_mut(child_ref);
-                    child.get_mut(hash, shift + HASH_SHIFT, key)
+                    let child = PoolRef::make_mut(pool, child_ref);
+                    child.get_mut(pool, hash, shift + HASH_SHIFT, key)
                 }
             }
         } else {
@@ -218,7 +260,13 @@ impl<A: HashValue> Node<A> {
         }
     }
 
-    pub fn insert(&mut self, hash: HashBits, shift: usize, value: A) -> Option<A>
+    pub(crate) fn insert(
+        &mut self,
+        pool: &Pool<Node<A>>,
+        hash: HashBits,
+        shift: usize,
+        value: A,
+    ) -> Option<A>
     where
         A: Clone,
     {
@@ -244,8 +292,8 @@ impl<A: HashValue> Node<A> {
                 }
                 Entry::Node(ref mut child_ref) => {
                     // Child node
-                    let child = Ref::make_mut(child_ref);
-                    return child.insert(hash, shift + HASH_SHIFT, value);
+                    let child = PoolRef::make_mut(pool, child_ref);
+                    return child.insert(pool, hash, shift + HASH_SHIFT, value);
                 }
             }
             if !fallthrough {
@@ -262,11 +310,17 @@ impl<A: HashValue> Node<A> {
                         ptr::write(entry, Entry::from(coll))
                     };
                 } else if let Entry::Value(old_value, old_hash) = old_entry {
-                    let node =
-                        Node::merge_values(old_value, old_hash, value, hash, shift + HASH_SHIFT);
+                    let node = Node::merge_values(
+                        pool,
+                        old_value,
+                        old_hash,
+                        value,
+                        hash,
+                        shift + HASH_SHIFT,
+                    );
                     #[allow(unsafe_code)]
                     unsafe {
-                        ptr::write(entry, Entry::from(node))
+                        ptr::write(entry, Entry::from_node(pool, node))
                     };
                 } else {
                     unreachable!()
@@ -282,7 +336,13 @@ impl<A: HashValue> Node<A> {
             .map(Entry::unwrap_value)
     }
 
-    pub fn remove<BK>(&mut self, hash: HashBits, shift: usize, key: &BK) -> Option<A>
+    pub(crate) fn remove<BK>(
+        &mut self,
+        pool: &Pool<Node<A>>,
+        hash: HashBits,
+        shift: usize,
+        key: &BK,
+    ) -> Option<A>
     where
         A: Clone,
         BK: Eq + ?Sized,
@@ -309,8 +369,8 @@ impl<A: HashValue> Node<A> {
                     }
                 }
                 Entry::Node(ref mut child_ref) => {
-                    let child = Ref::make_mut(child_ref);
-                    match child.remove(hash, shift + HASH_SHIFT, key) {
+                    let child = PoolRef::make_mut(pool, child_ref);
+                    match child.remove(pool, hash, shift + HASH_SHIFT, key) {
                         None => {
                             return None;
                         }
@@ -412,10 +472,7 @@ impl<A: HashValue> CollisionNode<A> {
 
 // Ref iterator
 
-pub struct Iter<'a, A>
-where
-    A: 'a,
-{
+pub(crate) struct Iter<'a, A> {
     count: usize,
     stack: Vec<ChunkIter<'a, Entry<A>, HashWidth>>,
     current: ChunkIter<'a, Entry<A>, HashWidth>,
@@ -426,7 +483,7 @@ impl<'a, A> Iter<'a, A>
 where
     A: 'a,
 {
-    pub fn new(root: &'a Node<A>, size: usize) -> Self {
+    pub(crate) fn new(root: &'a Node<A>, size: usize) -> Self {
         Iter {
             count: size,
             stack: Vec::with_capacity((HASH_WIDTH / HASH_SHIFT) + 1),
@@ -494,11 +551,9 @@ impl<'a, A> FusedIterator for Iter<'a, A> where A: 'a {}
 
 // Mut ref iterator
 
-pub struct IterMut<'a, A>
-where
-    A: 'a,
-{
+pub(crate) struct IterMut<'a, A> {
     count: usize,
+    pool: Pool<Node<A>>,
     stack: Vec<ChunkIterMut<'a, Entry<A>, HashWidth>>,
     current: ChunkIterMut<'a, Entry<A>, HashWidth>,
     collision: Option<(HashBits, SliceIterMut<'a, A>)>,
@@ -508,9 +563,10 @@ impl<'a, A> IterMut<'a, A>
 where
     A: 'a,
 {
-    pub fn new(root: &'a mut Node<A>, size: usize) -> Self {
+    pub(crate) fn new(pool: &Pool<Node<A>>, root: &'a mut Node<A>, size: usize) -> Self {
         IterMut {
             count: size,
+            pool: pool.clone(),
             stack: Vec::with_capacity((HASH_WIDTH / HASH_SHIFT) + 1),
             current: root.data.iter_mut(),
             collision: None,
@@ -547,7 +603,7 @@ where
                 Some((value, *hash))
             }
             Some(Entry::Node(child_ref)) => {
-                let child = Ref::make_mut(child_ref);
+                let child = PoolRef::make_mut(&self.pool, child_ref);
                 let current = mem::replace(&mut self.current, child.data.iter_mut());
                 self.stack.push(current);
                 self.next()
@@ -578,13 +634,14 @@ impl<'a, A> FusedIterator for IterMut<'a, A> where A: Clone + 'a {}
 
 // Consuming iterator
 
-pub struct Drain<A>
+pub(crate) struct Drain<A>
 where
     A: HashValue,
 {
     count: usize,
-    stack: Vec<Ref<Node<A>>>,
-    current: Ref<Node<A>>,
+    pool: Pool<Node<A>>,
+    stack: Vec<PoolRef<Node<A>>>,
+    current: PoolRef<Node<A>>,
     collision: Option<CollisionNode<A>>,
 }
 
@@ -592,9 +649,10 @@ impl<A> Drain<A>
 where
     A: HashValue,
 {
-    pub fn new(root: Ref<Node<A>>, size: usize) -> Self {
+    pub(crate) fn new(pool: &Pool<Node<A>>, root: PoolRef<Node<A>>, size: usize) -> Self {
         Drain {
             count: size,
+            pool: pool.clone(),
             stack: vec![],
             current: root,
             collision: None,
@@ -622,7 +680,7 @@ where
             self.collision = None;
             return self.next();
         }
-        match Ref::make_mut(&mut self.current).data.pop() {
+        match PoolRef::make_mut(&self.pool, &mut self.current).data.pop() {
             Some(Entry::Value(value, hash)) => {
                 self.count -= 1;
                 Some((value, hash))
@@ -656,7 +714,7 @@ impl<A: HashValue> ExactSizeIterator for Drain<A> where A: Clone {}
 impl<A: HashValue> FusedIterator for Drain<A> where A: Clone {}
 
 impl<A: HashValue + fmt::Debug> fmt::Debug for Node<A> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         write!(f, "Node[ ")?;
         for i in self.data.indices() {
             write!(f, "{}: ", i)?;

@@ -14,6 +14,11 @@
 use std::process::Command;
 
 use crate::Tool;
+#[cfg(windows)]
+use crate::ToolFamily;
+
+#[cfg(windows)]
+const MSVC_FAMILY: ToolFamily = ToolFamily::Msvc { clang_cl: false };
 
 /// Attempts to find a tool within an MSVC installation using the Windows
 /// registry as a point to search from.
@@ -70,7 +75,7 @@ pub fn find_tool(target: &str, tool: &str) -> Option<Tool> {
                     .map(|p| p.join(tool))
                     .find(|p| p.exists())
             })
-            .map(|path| Tool::new(path.into()));
+            .map(|path| Tool::with_family(path.into(), MSVC_FAMILY));
     }
 
     // Ok, if we're here, now comes the fun part of the probing. Default shells
@@ -175,6 +180,7 @@ mod impl_ {
     use std::path::{Path, PathBuf};
     use std::str::FromStr;
 
+    use super::MSVC_FAMILY;
     use crate::Tool;
 
     struct MsvcTool {
@@ -201,7 +207,7 @@ mod impl_ {
                 path,
                 include,
             } = self;
-            let mut tool = Tool::new(tool.into());
+            let mut tool = Tool::with_family(tool.into(), MSVC_FAMILY);
             add_env(&mut tool, "LIB", libs);
             add_env(&mut tool, "PATH", path);
             add_env(&mut tool, "INCLUDE", include);
@@ -221,6 +227,11 @@ mod impl_ {
             let installation_name = instance.installation_name().ok()?;
             if installation_name.to_str()?.starts_with("VisualStudio/16.") {
                 Some(PathBuf::from(instance.installation_path().ok()?))
+            } else if installation_name
+                .to_str()?
+                .starts_with("VisualStudioPreview/16.")
+            {
+                Some(PathBuf::from(instance.installation_path().ok()?))
             } else {
                 None
             }
@@ -234,7 +245,7 @@ mod impl_ {
                 if !path.is_file() {
                     return None;
                 }
-                let mut tool = Tool::new(path);
+                let mut tool = Tool::with_family(path, MSVC_FAMILY);
                 if target.contains("x86_64") {
                     tool.env.push(("Platform".into(), "X64".into()));
                 }
@@ -315,7 +326,7 @@ mod impl_ {
         }
 
         path.map(|path| {
-            let mut tool = Tool::new(path);
+            let mut tool = Tool::with_family(path, MSVC_FAMILY);
             if target.contains("x86_64") {
                 tool.env.push(("Platform".into(), "X64".into()));
             }
@@ -760,7 +771,7 @@ mod impl_ {
             .map(|path| {
                 let mut path = PathBuf::from(path);
                 path.push("MSBuild.exe");
-                let mut tool = Tool::new(path);
+                let mut tool = Tool::with_family(path, MSVC_FAMILY);
                 if target.contains("x86_64") {
                     tool.env.push(("Platform".into(), "X64".into()));
                 }

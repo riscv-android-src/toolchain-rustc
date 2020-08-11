@@ -187,7 +187,7 @@ void CriticalAntiDepBreaker::PrescanInstruction(MachineInstr &MI) {
   for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
     MachineOperand &MO = MI.getOperand(i);
     if (!MO.isReg()) continue;
-    unsigned Reg = MO.getReg();
+    Register Reg = MO.getReg();
     if (Reg == 0) continue;
     const TargetRegisterClass *NewRC = nullptr;
 
@@ -282,7 +282,7 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
       }
 
       if (!MO.isReg()) continue;
-      unsigned Reg = MO.getReg();
+      Register Reg = MO.getReg();
       if (Reg == 0) continue;
       if (!MO.isDef()) continue;
 
@@ -313,7 +313,7 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
   for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
     MachineOperand &MO = MI.getOperand(i);
     if (!MO.isReg()) continue;
-    unsigned Reg = MO.getReg();
+    Register Reg = MO.getReg();
     if (Reg == 0) continue;
     if (!MO.isUse()) continue;
 
@@ -467,6 +467,7 @@ BreakAntiDependencies(const std::vector<SUnit> &SUnits,
     if (!Max || SU->getDepth() + SU->Latency > Max->getDepth() + Max->Latency)
       Max = SU;
   }
+  assert(Max && "Failed to find bottom of the critical path");
 
 #ifndef NDEBUG
   {
@@ -622,7 +623,7 @@ BreakAntiDependencies(const std::vector<SUnit> &SUnits,
       for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
         MachineOperand &MO = MI.getOperand(i);
         if (!MO.isReg()) continue;
-        unsigned Reg = MO.getReg();
+        Register Reg = MO.getReg();
         if (Reg == 0) continue;
         if (MO.isUse() && TRI->regsOverlap(AntiDepReg, Reg)) {
           AntiDepReg = 0;

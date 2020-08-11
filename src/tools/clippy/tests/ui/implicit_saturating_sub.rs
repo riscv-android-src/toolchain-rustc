@@ -25,8 +25,8 @@ fn main() {
         _ => u_8 = 0,
     }
 
-    let end_16: u16 = 35;
-    let start_16: u16 = 40;
+    let end_16: u16 = 40;
+    let start_16: u16 = 35;
 
     let mut u_16: u16 = end_16 - start_16;
 
@@ -35,8 +35,8 @@ fn main() {
         u_16 -= 1;
     }
 
-    let mut end_32: u32 = 7000;
-    let mut start_32: u32 = 7010;
+    let mut end_32: u32 = 7010;
+    let mut start_32: u32 = 7000;
 
     let mut u_32: u32 = end_32 - start_32;
 

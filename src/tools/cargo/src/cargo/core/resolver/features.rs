@@ -41,9 +41,9 @@
 use crate::core::compiler::{CompileKind, RustcTargetData};
 use crate::core::dependency::{DepKind, Dependency};
 use crate::core::resolver::types::FeaturesSet;
-use crate::core::resolver::Resolve;
+use crate::core::resolver::{Resolve, ResolveBehavior};
 use crate::core::{FeatureValue, InternedString, PackageId, PackageIdSpec, PackageSet, Workspace};
-use crate::util::{CargoResult, Config};
+use crate::util::CargoResult;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
@@ -91,6 +91,13 @@ pub enum HasDevUnits {
     No,
 }
 
+/// Flag to indicate that target-specific filtering should be disabled.
+#[derive(Copy, Clone, PartialEq)]
+pub enum ForceAllTargets {
+    Yes,
+    No,
+}
+
 /// Flag to indicate if features are requested for a build dependency or not.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum FeaturesFor {
@@ -110,9 +117,13 @@ impl FeaturesFor {
 }
 
 impl FeatureOpts {
-    fn new(config: &Config, has_dev_units: HasDevUnits) -> CargoResult<FeatureOpts> {
+    fn new(
+        ws: &Workspace<'_>,
+        has_dev_units: HasDevUnits,
+        force_all_targets: ForceAllTargets,
+    ) -> CargoResult<FeatureOpts> {
         let mut opts = FeatureOpts::default();
-        let unstable_flags = config.cli_unstable();
+        let unstable_flags = ws.config().cli_unstable();
         opts.package_features = unstable_flags.package_features;
         let mut enable = |feat_opts: &Vec<String>| {
             opts.new_resolver = true;
@@ -136,6 +147,12 @@ impl FeatureOpts {
         if let Some(feat_opts) = unstable_flags.features.as_ref() {
             enable(feat_opts)?;
         }
+        match ws.resolve_behavior() {
+            ResolveBehavior::V1 => {}
+            ResolveBehavior::V2 => {
+                enable(&vec!["all".to_string()]).unwrap();
+            }
+        }
         // This env var is intended for testing only.
         if let Ok(env_opts) = std::env::var("__CARGO_FORCE_NEW_FEATURES") {
             if env_opts == "1" {
@@ -146,7 +163,11 @@ impl FeatureOpts {
             }
         }
         if let HasDevUnits::Yes = has_dev_units {
+            // Dev deps cannot be decoupled when they are in use.
             opts.decouple_dev_deps = false;
+        }
+        if let ForceAllTargets::Yes = force_all_targets {
+            opts.ignore_inactive_targets = false;
         }
         Ok(opts)
     }
@@ -201,36 +222,34 @@ impl ResolvedFeatures {
         pkg_id: PackageId,
         features_for: FeaturesFor,
     ) -> Vec<InternedString> {
-        self.activated_features_int(pkg_id, features_for, true)
+        self.activated_features_int(pkg_id, features_for)
+            .expect("activated_features for invalid package")
     }
 
-    /// Variant of `activated_features` that returns an empty Vec if this is
+    /// Variant of `activated_features` that returns `None` if this is
     /// not a valid pkg_id/is_build combination. Used in places which do
     /// not know which packages are activated (like `cargo clean`).
     pub fn activated_features_unverified(
         &self,
         pkg_id: PackageId,
         features_for: FeaturesFor,
-    ) -> Vec<InternedString> {
-        self.activated_features_int(pkg_id, features_for, false)
+    ) -> Option<Vec<InternedString>> {
+        self.activated_features_int(pkg_id, features_for).ok()
     }
 
     fn activated_features_int(
         &self,
         pkg_id: PackageId,
         features_for: FeaturesFor,
-        verify: bool,
-    ) -> Vec<InternedString> {
+    ) -> CargoResult<Vec<InternedString>> {
         if let Some(legacy) = &self.legacy {
-            legacy.get(&pkg_id).map_or_else(Vec::new, |v| v.clone())
+            Ok(legacy.get(&pkg_id).map_or_else(Vec::new, |v| v.clone()))
         } else {
             let is_build = self.opts.decouple_host_deps && features_for == FeaturesFor::HostDep;
             if let Some(fs) = self.activated_features.get(&(pkg_id, is_build)) {
-                fs.iter().cloned().collect()
-            } else if verify {
-                panic!("features did not find {:?} {:?}", pkg_id, is_build)
+                Ok(fs.iter().cloned().collect())
             } else {
-                Vec::new()
+                anyhow::bail!("features did not find {:?} {:?}", pkg_id, is_build)
             }
         }
     }
@@ -239,8 +258,8 @@ impl ResolvedFeatures {
 pub struct FeatureResolver<'a, 'cfg> {
     ws: &'a Workspace<'cfg>,
     target_data: &'a RustcTargetData,
-    /// The platform to build for, requested by the user.
-    requested_target: CompileKind,
+    /// The platforms to build for, requested by the user.
+    requested_targets: &'a [CompileKind],
     resolve: &'a Resolve,
     package_set: &'a PackageSet<'cfg>,
     /// Options that change how the feature resolver operates.
@@ -262,13 +281,14 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         package_set: &'a PackageSet<'cfg>,
         requested_features: &RequestedFeatures,
         specs: &[PackageIdSpec],
-        requested_target: CompileKind,
+        requested_targets: &[CompileKind],
         has_dev_units: HasDevUnits,
+        force_all_targets: ForceAllTargets,
     ) -> CargoResult<ResolvedFeatures> {
         use crate::util::profile;
         let _p = profile::start("resolve features");
 
-        let opts = FeatureOpts::new(ws.config(), has_dev_units)?;
+        let opts = FeatureOpts::new(ws, has_dev_units, force_all_targets)?;
         if !opts.new_resolver {
             // Legacy mode.
             return Ok(ResolvedFeatures {
@@ -280,7 +300,7 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         let mut r = FeatureResolver {
             ws,
             target_data,
-            requested_target,
+            requested_targets,
             resolve,
             package_set,
             opts,
@@ -529,8 +549,9 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
                     .dep_platform_activated(dep, CompileKind::Host);
             }
             // Not a build dependency, and not for a build script, so must be Target.
-            self.target_data
-                .dep_platform_activated(dep, self.requested_target)
+            self.requested_targets
+                .iter()
+                .any(|kind| self.target_data.dep_platform_activated(dep, *kind))
         };
         self.resolve
             .deps(pkg_id)
@@ -567,9 +588,13 @@ impl<'a, 'cfg> FeatureResolver<'a, 'cfg> {
         for ((pkg_id, dep_kind), features) in &self.activated_features {
             let r_features = self.resolve.features(*pkg_id);
             if !r_features.iter().eq(features.iter()) {
-                eprintln!(
+                crate::drop_eprintln!(
+                    self.ws.config(),
                     "{}/{:?} features mismatch\nresolve: {:?}\nnew: {:?}\n",
-                    pkg_id, dep_kind, r_features, features
+                    pkg_id,
+                    dep_kind,
+                    r_features,
+                    features
                 );
                 found = true;
             }

@@ -1,6 +1,6 @@
 //! Clippy wrappers around rustc's diagnostic functions.
 
-use rustc_errors::{Applicability, CodeSuggestion, DiagnosticBuilder, Substitution, SubstitutionPart, SuggestionStyle};
+use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir::HirId;
 use rustc_lint::{LateContext, Lint, LintContext};
 use rustc_span::source_map::{MultiSpan, Span};
@@ -49,7 +49,7 @@ pub fn span_lint<T: LintContext>(cx: &T, lint: &'static Lint, sp: impl Into<Mult
 /// Use this if you want to provide some general help but
 /// can't provide a specific machine applicable suggestion.
 ///
-/// The `help` message is not attached to any `Span`.
+/// The `help` message can be optionally attached to a `Span`.
 ///
 /// # Example
 ///
@@ -62,10 +62,21 @@ pub fn span_lint<T: LintContext>(cx: &T, lint: &'static Lint, sp: impl Into<Mult
 ///    |
 ///    = help: Consider using `f64::NAN` if you would like a constant representing NaN
 /// ```
-pub fn span_lint_and_help<'a, T: LintContext>(cx: &'a T, lint: &'static Lint, span: Span, msg: &str, help: &str) {
+pub fn span_lint_and_help<'a, T: LintContext>(
+    cx: &'a T,
+    lint: &'static Lint,
+    span: Span,
+    msg: &str,
+    help_span: Option<Span>,
+    help: &str,
+) {
     cx.struct_span_lint(lint, span, |diag| {
         let mut diag = diag.build(msg);
-        diag.help(help);
+        if let Some(help_span) = help_span {
+            diag.span_help(help_span, help);
+        } else {
+            diag.help(help);
+        }
         docs_link(&mut diag, lint);
         diag.emit();
     });
@@ -97,15 +108,15 @@ pub fn span_lint_and_note<'a, T: LintContext>(
     lint: &'static Lint,
     span: Span,
     msg: &str,
-    note_span: Span,
+    note_span: Option<Span>,
     note: &str,
 ) {
     cx.struct_span_lint(lint, span, |diag| {
         let mut diag = diag.build(msg);
-        if note_span == span {
-            diag.note(note);
-        } else {
+        if let Some(note_span) = note_span {
             diag.span_note(note_span, note);
+        } else {
+            diag.note(note);
         }
         docs_link(&mut diag, lint);
         diag.emit();
@@ -166,6 +177,7 @@ pub fn span_lint_hir_and_then(
 ///     |
 ///     = note: `-D fold-any` implied by `-D warnings`
 /// ```
+#[allow(clippy::collapsible_span_lint_calls)]
 pub fn span_lint_and_sugg<'a, T: LintContext>(
     cx: &'a T,
     lint: &'static Lint,
@@ -186,20 +198,20 @@ pub fn span_lint_and_sugg<'a, T: LintContext>(
 /// appear once per
 /// replacement. In human-readable format though, it only appears once before
 /// the whole suggestion.
-pub fn multispan_sugg<I>(diag: &mut DiagnosticBuilder<'_>, help_msg: String, sugg: I)
+pub fn multispan_sugg<I>(diag: &mut DiagnosticBuilder<'_>, help_msg: &str, sugg: I)
 where
     I: IntoIterator<Item = (Span, String)>,
 {
-    let sugg = CodeSuggestion {
-        substitutions: vec![Substitution {
-            parts: sugg
-                .into_iter()
-                .map(|(span, snippet)| SubstitutionPart { snippet, span })
-                .collect(),
-        }],
-        msg: help_msg,
-        style: SuggestionStyle::ShowCode,
-        applicability: Applicability::Unspecified,
-    };
-    diag.suggestions.push(sugg);
+    multispan_sugg_with_applicability(diag, help_msg, Applicability::Unspecified, sugg)
+}
+
+pub fn multispan_sugg_with_applicability<I>(
+    diag: &mut DiagnosticBuilder<'_>,
+    help_msg: &str,
+    applicability: Applicability,
+    sugg: I,
+) where
+    I: IntoIterator<Item = (Span, String)>,
+{
+    diag.multipart_suggestion(help_msg, sugg.into_iter().collect(), applicability);
 }

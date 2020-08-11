@@ -14,9 +14,10 @@
 use log::trace;
 
 use rustc_middle::{mir, ty};
-use rustc_target::{spec::PanicStrategy, abi::LayoutOf};
+use rustc_target::spec::PanicStrategy;
 
 use crate::*;
+use helpers::check_arg_count;
 
 /// Holds all of the relevant data for when unwinding hits a `try` frame.
 #[derive(Debug)]
@@ -31,7 +32,7 @@ pub struct CatchUnwindData<'tcx> {
     ret: mir::BasicBlock,
 }
 
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     /// Check if panicking is supported on this target, and give a good error otherwise.
     fn check_panic_supported(&self) -> InterpResult<'tcx> {
@@ -53,7 +54,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         trace!("miri_start_panic: {:?}", this.frame().instance);
 
         // Get the raw pointer stored in arg[0] (the panic payload).
-        let payload = this.read_scalar(args[0])?.not_undef()?;
+        let &[payload] = check_arg_count(args)?;
+        let payload = this.read_scalar(payload)?.not_undef()?;
         assert!(
             this.machine.panic_payload.is_none(),
             "the panic runtime should avoid double-panics"
@@ -86,14 +88,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // a pointer to `Box<dyn Any + Send + 'static>`.
 
         // Get all the arguments.
-        let try_fn = this.read_scalar(args[0])?.not_undef()?;
-        let data = this.read_scalar(args[1])?.not_undef()?;
-        let catch_fn = this.read_scalar(args[2])?.not_undef()?;
+        let &[try_fn, data, catch_fn] = check_arg_count(args)?;
+        let try_fn = this.read_scalar(try_fn)?.not_undef()?;
+        let data = this.read_scalar(data)?.not_undef()?;
+        let catch_fn = this.read_scalar(catch_fn)?.not_undef()?;
 
         // Now we make a function call, and pass `data` as first and only argument.
         let f_instance = this.memory.get_fn(try_fn)?.as_instance()?;
         trace!("try_fn: {:?}", f_instance);
-        let ret_place = MPlaceTy::dangling(this.layout_of(this.tcx.mk_unit())?, this).into();
+        let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
         this.call_function(
             f_instance,
             &[data.into()],
@@ -144,7 +147,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // Push the `catch_fn` stackframe.
             let f_instance = this.memory.get_fn(catch_unwind.catch_fn)?.as_instance()?;
             trace!("catch_fn: {:?}", f_instance);
-            let ret_place = MPlaceTy::dangling(this.layout_of(this.tcx.mk_unit())?, this).into();
+            let ret_place = MPlaceTy::dangling(this.machine.layouts.unit, this).into();
             this.call_function(
                 f_instance,
                 &[catch_unwind.data.into(), payload.into()],

@@ -9,6 +9,7 @@ use rustc_middle::hir::map::Map;
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::Session;
+use rustc_span::hygiene::DesugaringKind;
 use rustc_span::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,7 +69,9 @@ impl<'a, 'hir> Visitor<'hir> for CheckLoopVisitor<'a, 'hir> {
                 self.with_context(LabeledBlock, |v| v.visit_block(&b));
             }
             hir::ExprKind::Break(label, ref opt_expr) => {
-                opt_expr.as_ref().map(|e| self.visit_expr(e));
+                if let Some(e) = opt_expr {
+                    self.visit_expr(e);
+                }
 
                 if self.require_label_in_labeled_block(e.span, &label, "break") {
                     // If we emitted an error about an unlabeled break in a labeled
@@ -201,7 +204,7 @@ impl<'a, 'hir> CheckLoopVisitor<'a, 'hir> {
         label: &Destination,
         cf_type: &str,
     ) -> bool {
-        if self.cx == LabeledBlock {
+        if !span.is_desugaring(DesugaringKind::QuestionMark) && self.cx == LabeledBlock {
             if label.label.is_none() {
                 struct_span_err!(
                     self.sess,

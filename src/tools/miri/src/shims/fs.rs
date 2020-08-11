@@ -5,12 +5,14 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
+use log::trace;
+
 use rustc_data_structures::fx::FxHashMap;
 use rustc_target::abi::{Align, LayoutOf, Size};
 
 use crate::stacked_borrows::Tag;
 use crate::*;
-use helpers::{immty_from_int_checked, immty_from_uint_checked};
+use helpers::{check_arg_count, immty_from_int_checked, immty_from_uint_checked};
 use shims::time::system_time_to_duration;
 
 #[derive(Debug)]
@@ -64,7 +66,7 @@ impl FileHandler {
     }
 }
 
-impl<'mir, 'tcx> EvalContextExtPrivate<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExtPrivate<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     /// Emulate `stat` or `lstat` on `macos`. This function is not intended to be
     /// called directly from `emulate_foreign_item_by_name`, so it does not check if isolation is
@@ -232,18 +234,27 @@ impl Default for DirHandler {
     }
 }
 
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn open(
         &mut self,
         path_op: OpTy<'tcx, Tag>,
         flag_op: OpTy<'tcx, Tag>,
+        mode_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
         this.check_no_isolation("open")?;
 
         let flag = this.read_scalar(flag_op)?.to_i32()?;
+
+        // Get the mode.  On macOS, the argument type `mode_t` is actually `u16`, but
+        // C integer promotion rules mean that on the ABI level, it gets passed as `u32`
+        // (see https://github.com/rust-lang/rust/issues/71915).
+        let mode = this.read_scalar(mode_op)?.to_u32()?;
+        if mode != 0o666 {
+            throw_unsup_format!("non-default mode 0o{:o} is not supported", mode);
+        }
 
         let mut options = OpenOptions::new();
 
@@ -322,22 +333,24 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn fcntl(
         &mut self,
-        fd_op: OpTy<'tcx, Tag>,
-        cmd_op: OpTy<'tcx, Tag>,
-        start_op: Option<OpTy<'tcx, Tag>>,
+        args: &[OpTy<'tcx, Tag>],
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
         this.check_no_isolation("fcntl")?;
 
-        let fd = this.read_scalar(fd_op)?.to_i32()?;
-        let cmd = this.read_scalar(cmd_op)?.to_i32()?;
+        if args.len() < 2 {
+            throw_ub_format!("incorrect number of arguments for fcntl: got {}, expected at least 2", args.len());
+        }
+        let fd = this.read_scalar(args[0])?.to_i32()?;
+        let cmd = this.read_scalar(args[1])?.to_i32()?;
         // We only support getting the flags for a descriptor.
         if cmd == this.eval_libc_i32("F_GETFD")? {
             // Currently this is the only flag that `F_GETFD` returns. It is OK to just return the
             // `FD_CLOEXEC` value without checking if the flag is set for the file because `std`
             // always sets this flag when opening a file. However we still need to check that the
             // file itself is open.
+            let &[_, _] = check_arg_count(args)?;
             if this.machine.file_handler.handles.contains_key(&fd) {
                 Ok(this.eval_libc_i32("FD_CLOEXEC")?)
             } else {
@@ -350,15 +363,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // because exec() isn't supported. The F_DUPFD and F_DUPFD_CLOEXEC commands only
             // differ in whether the FD_CLOEXEC flag is pre-set on the new file descriptor,
             // thus they can share the same implementation here.
+            let &[_, _, start] = check_arg_count(args)?;
+            let start = this.read_scalar(start)?.to_i32()?;
             if fd < MIN_NORMAL_FILE_FD {
                 throw_unsup_format!("duplicating file descriptors for stdin, stdout, or stderr is not supported")
             }
-            let start_op = start_op.ok_or_else(|| {
-                err_unsup_format!(
-                    "fcntl with command F_DUPFD or F_DUPFD_CLOEXEC requires a third argument"
-                )
-            })?;
-            let start = this.read_scalar(start_op)?.to_i32()?;
             let fh = &mut this.machine.file_handler;
             let (file_result, writable) = match fh.handles.get(&fd) {
                 Some(FileHandle { file, writable }) => (file.try_clone(), *writable),
@@ -406,17 +415,16 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn read(
         &mut self,
-        fd_op: OpTy<'tcx, Tag>,
-        buf_op: OpTy<'tcx, Tag>,
-        count_op: OpTy<'tcx, Tag>,
+        fd: i32,
+        buf: Scalar<Tag>,
+        count: u64,
     ) -> InterpResult<'tcx, i64> {
         let this = self.eval_context_mut();
 
         this.check_no_isolation("read")?;
+        assert!(fd >= 3);
 
-        let fd = this.read_scalar(fd_op)?.to_i32()?;
-        let buf = this.read_scalar(buf_op)?.not_undef()?;
-        let count = this.read_scalar(count_op)?.to_machine_usize(&*this.tcx)?;
+        trace!("Reading from FD {}, size {}", fd, count);
 
         // Check that the *entire* buffer is actually valid memory.
         this.memory.check_ptr_access(
@@ -430,6 +438,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let count = count.min(this.machine_isize_max() as u64).min(isize::MAX as u64);
 
         if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
+            trace!("read: FD mapped to {:?}", file);
             // This can never fail because `count` was capped to be smaller than
             // `isize::MAX`.
             let count = isize::try_from(count).unwrap();
@@ -454,23 +463,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
             }
         } else {
+            trace!("read: FD not found");
             this.handle_not_found()
         }
     }
 
     fn write(
         &mut self,
-        fd_op: OpTy<'tcx, Tag>,
-        buf_op: OpTy<'tcx, Tag>,
-        count_op: OpTy<'tcx, Tag>,
+        fd: i32,
+        buf: Scalar<Tag>,
+        count: u64,
     ) -> InterpResult<'tcx, i64> {
         let this = self.eval_context_mut();
 
         this.check_no_isolation("write")?;
-
-        let fd = this.read_scalar(fd_op)?.to_i32()?;
-        let buf = this.read_scalar(buf_op)?.not_undef()?;
-        let count = this.read_scalar(count_op)?.to_machine_usize(&*this.tcx)?;
+        assert!(fd >= 3);
 
         // Check that the *entire* buffer is actually valid memory.
         this.memory.check_ptr_access(
@@ -542,12 +549,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         target_op: OpTy<'tcx, Tag>,
         linkpath_op: OpTy<'tcx, Tag>
     ) -> InterpResult<'tcx, i32> {
-        #[cfg(target_family = "unix")]
+        #[cfg(unix)]
         fn create_link(src: &Path, dst: &Path) -> std::io::Result<()> {
             std::os::unix::fs::symlink(src, dst)
         }
 
-        #[cfg(target_family = "windows")]
+        #[cfg(windows)]
         fn create_link(src: &Path, dst: &Path) -> std::io::Result<()> {
             use std::os::windows::fs;
             if src.is_dir() {
@@ -809,7 +816,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("mkdir")?;
 
-        let _mode = if this.tcx.sess.target.target.target_os == "macos" {
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        let mode = if this.tcx.sess.target.target.target_os == "macos" {
             u32::from(this.read_scalar(mode_op)?.not_undef()?.to_u16()?)
         } else {
             this.read_scalar(mode_op)?.to_u32()?
@@ -817,14 +825,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
 
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = DirBuilder::new();
 
         // If the host supports it, forward on the mode of the directory
         // (i.e. permission bits and the sticky bit)
-        #[cfg(target_family = "unix")]
+        #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            builder.mode(_mode.into());
+            builder.mode(mode.into());
         }
 
         let result = builder.create(path).map(|_| 0i32);
@@ -1058,6 +1067,38 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         if let Some(dir_iter) = this.machine.dir_handler.streams.remove(&dirp) {
             drop(dir_iter);
             Ok(0)
+        } else {
+            this.handle_not_found()
+        }
+    }
+
+    fn ftruncate64(
+        &mut self,
+        fd_op: OpTy<'tcx, Tag>,
+        length_op: OpTy<'tcx, Tag>,
+    ) -> InterpResult<'tcx, i32> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("ftruncate64")?;
+
+        let fd = this.read_scalar(fd_op)?.to_i32()?;
+        let length = this.read_scalar(length_op)?.to_i64()?;
+        if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.get_mut(&fd) {
+            if *writable {
+                if let Ok(length) = length.try_into() {
+                    let result = file.set_len(length);
+                    this.try_unwrap_io_result(result.map(|_| 0i32))
+                } else {
+                    let einval = this.eval_libc("EINVAL")?;
+                    this.set_last_error(einval)?;
+                    Ok(-1)
+                }
+            } else {
+                // The file is not writable
+                let einval = this.eval_libc("EINVAL")?;
+                this.set_last_error(einval)?;
+                Ok(-1)
+            }
         } else {
             this.handle_not_found()
         }

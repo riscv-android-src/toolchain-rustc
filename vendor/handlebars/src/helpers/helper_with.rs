@@ -1,10 +1,11 @@
-use crate::context::{BlockParams, Context};
+use crate::block::{BlockContext, BlockParams};
+use crate::context::Context;
 use crate::error::RenderError;
 use crate::helpers::{HelperDef, HelperResult};
+use crate::json::value::JsonTruthy;
 use crate::output::Output;
 use crate::registry::Registry;
 use crate::render::{Helper, RenderContext, Renderable};
-use crate::value::JsonTruthy;
 
 #[derive(Clone, Copy)]
 pub struct WithHelper;
@@ -12,69 +13,49 @@ pub struct WithHelper;
 impl HelperDef for WithHelper {
     fn call<'reg: 'rc, 'rc>(
         &self,
-        h: &Helper,
-        r: &Registry,
-        ctx: &Context,
-        rc: &mut RenderContext,
+        h: &Helper<'reg, 'rc>,
+        r: &'reg Registry,
+        ctx: &'rc Context,
+        rc: &mut RenderContext<'reg, 'rc>,
         out: &mut dyn Output,
     ) -> HelperResult {
         let param = h
             .param(0)
             .ok_or_else(|| RenderError::new("Param not found for helper \"with\""))?;
 
-        rc.promote_local_vars();
+        let not_empty = param.value().is_truthy(false);
+        let template = if not_empty { h.template() } else { h.inverse() };
 
-        let result = {
-            let mut local_rc = rc.derive();
+        if not_empty {
+            let mut block = BlockContext::new();
 
-            let not_empty = param.value().is_truthy(false);
-            let template = if not_empty { h.template() } else { h.inverse() };
-
-            if let Some(path_root) = param.path_root() {
-                let local_path_root = format!("{}/{}", local_rc.get_path(), path_root);
-                local_rc.push_local_path_root(local_path_root);
+            let new_path = param.context_path();
+            if let Some(new_path) = new_path {
+                *block.base_path_mut() = new_path.clone();
             }
-            if not_empty {
-                let new_path = param.path().map(|p| {
-                    if param.is_absolute_path() {
-                        p.to_string()
-                    } else {
-                        format!("{}/{}", rc.get_path(), p)
-                    }
-                });
-                if let Some(ref new_path) = new_path {
-                    local_rc.set_path(new_path.clone());
+
+            if let Some(block_param) = h.block_param() {
+                let mut params = BlockParams::new();
+                if new_path.is_some() {
+                    params.add_path(block_param, Vec::with_capacity(0))?;
+                } else {
+                    params.add_value(block_param, param.value().clone())?;
                 }
 
-                if let Some(block_param) = h.block_param() {
-                    let mut params = BlockParams::new();
-                    if new_path.is_some() {
-                        params.add_path(block_param, local_rc.get_path())?;
-                    } else {
-                        params.add_value(block_param, param.value().clone())?;
-                    }
-
-                    local_rc.push_block_context(params)?;
-                }
+                block.set_block_params(params);
             }
 
-            let result = match template {
-                Some(t) => t.render(r, ctx, &mut local_rc, out),
-                None => Ok(()),
-            };
+            rc.push_block(block);
+        }
 
-            if h.block_param().is_some() {
-                local_rc.pop_block_context();
-            }
-
-            if param.path_root().is_some() {
-                local_rc.pop_local_path_root();
-            }
-
-            result
+        let result = match template {
+            Some(t) => t.render(r, ctx, rc, out),
+            None => Ok(()),
         };
 
-        rc.demote_local_vars();
+        if not_empty {
+            rc.pop_block();
+        }
         result
     }
 }
@@ -83,8 +64,8 @@ pub static WITH_HELPER: WithHelper = WithHelper;
 
 #[cfg(test)]
 mod test {
+    use crate::json::value::to_json;
     use crate::registry::Registry;
-    use crate::value::to_json;
 
     #[derive(Serialize)]
     struct Address {

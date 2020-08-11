@@ -33,7 +33,7 @@
 #![feature(array_value_iter)]
 #![feature(crate_visibility_modifier)]
 #![feature(marker_trait_attr)]
-#![feature(specialization)]
+#![feature(specialization)] // FIXME: min_specialization does not work
 #![feature(or_patterns)]
 #![recursion_limit = "256"]
 
@@ -63,7 +63,7 @@ use rustc_session::parse::ParseSess;
 use rustc_session::Session;
 use rustc_span::hygiene::ExpnId;
 use rustc_span::source_map::{respan, DesugaringKind, ExpnData, ExpnKind};
-use rustc_span::symbol::{kw, sym, Symbol};
+use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::Span;
 
 use log::{debug, trace};
@@ -269,7 +269,7 @@ pub fn lower_crate<'a, 'hir>(
     let _prof_timer = sess.prof.verbose_generic_activity("hir_lowering");
 
     LoweringContext {
-        crate_root: sess.parse_sess.injected_crate_name.try_get().copied(),
+        crate_root: sess.parse_sess.injected_crate_name.get().copied(),
         sess,
         resolver,
         nt_to_tokenstream,
@@ -688,7 +688,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
     ) -> Span {
         span.fresh_expansion(ExpnData {
             allow_internal_unstable,
-            ..ExpnData::default(ExpnKind::Desugaring(reason), span, self.sess.edition())
+            ..ExpnData::default(ExpnKind::Desugaring(reason), span, self.sess.edition(), None)
         })
     }
 
@@ -1126,6 +1126,7 @@ impl<'a, 'hir> LoweringContext<'a, 'hir> {
                                 kind: ExprKind::Path(qself.clone(), path.clone()),
                                 span: ty.span,
                                 attrs: AttrVec::new(),
+                                tokens: None,
                             };
 
                             let ct = self.with_new_scopes(|this| hir::AnonConst {

@@ -4,11 +4,12 @@ use colored::*;
 
 fn main() {
     // TADAA !
-    println!("{} {} {}!",
-             "it".green(),
-             "works".blue().bold(),
-             "great".bold().yellow());
-
+    println!(
+        "{} {} {}!",
+        "it".green(),
+        "works".blue().bold(),
+        "great".bold().yellow()
+    );
 
     println!("{}", String::from("this also works!").green().bold());
 
@@ -18,7 +19,6 @@ fn main() {
     s.push_str(&"a little further ?".green().to_string());
     println!("{}", s);
 
-
-    let s = String::from(format!("{} {} {}", "this".red(), "is".blue(), "easier".green()));
+    let s = format!("{} {} {}", "this".red(), "is".blue(), "easier".green());
     println!("{}", s);
 }

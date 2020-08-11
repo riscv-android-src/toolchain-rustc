@@ -2,8 +2,8 @@
 
 use crate::utils::ptr::get_spans;
 use crate::utils::{
-    is_type_diagnostic_item, match_qpath, match_type, paths, snippet_opt, span_lint, span_lint_and_then,
-    walk_ptrs_hir_ty,
+    is_allowed, is_type_diagnostic_item, match_qpath, match_type, paths, snippet_opt, span_lint, span_lint_and_sugg,
+    span_lint_and_then, walk_ptrs_hir_ty,
 };
 use if_chain::if_chain;
 use rustc_errors::Applicability;
@@ -150,8 +150,16 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
     let fn_def_id = cx.tcx.hir().local_def_id(fn_id);
     let sig = cx.tcx.fn_sig(fn_def_id);
     let fn_ty = sig.skip_binder();
+    let body = opt_body_id.map(|id| cx.tcx.hir().body(id));
 
     for (idx, (arg, ty)) in decl.inputs.iter().zip(fn_ty.inputs()).enumerate() {
+        // Honor the allow attribute on parameters. See issue 5644.
+        if let Some(body) = &body {
+            if is_allowed(cx, PTR_ARG, body.params[idx].hir_id) {
+                continue;
+            }
+        }
+
         if let ty::Ref(_, ty, Mutability::Not) = ty.kind {
             if is_type_diagnostic_item(cx, ty, sym!(vec_type)) {
                 let mut ty_snippet = None;
@@ -197,7 +205,7 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
                         },
                     );
                 }
-            } else if match_type(cx, ty, &paths::STRING) {
+            } else if is_type_diagnostic_item(cx, ty, sym!(string_type)) {
                 if let Some(spans) = get_spans(cx, opt_body_id, idx, &[("clone", ".to_string()"), ("as_str", "")]) {
                     span_lint_and_then(
                         cx,
@@ -234,19 +242,14 @@ fn check_fn(cx: &LateContext<'_, '_>, decl: &FnDecl<'_>, fn_id: HirId, opt_body_
                     then {
                         let replacement = snippet_opt(cx, inner.span);
                         if let Some(r) = replacement {
-                            span_lint_and_then(
+                            span_lint_and_sugg(
                                 cx,
                                 PTR_ARG,
                                 arg.span,
                                 "using a reference to `Cow` is not recommended.",
-                                |diag| {
-                                    diag.span_suggestion(
-                                        arg.span,
-                                        "change this to",
-                                        "&".to_owned() + &r,
-                                        Applicability::Unspecified,
-                                    );
-                                },
+                                "change this to",
+                                "&".to_owned() + &r,
+                                Applicability::Unspecified,
                             );
                         }
                     }

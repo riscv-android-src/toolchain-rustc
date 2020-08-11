@@ -71,7 +71,7 @@ fn check_missing_inline_attrs(cx: &LateContext<'_, '_>, attrs: &[ast::Attribute]
 fn is_executable(cx: &LateContext<'_, '_>) -> bool {
     use rustc_session::config::CrateType;
 
-    cx.tcx.sess.crate_types.get().iter().any(|t: &CrateType| match t {
+    cx.tcx.sess.crate_types().iter().any(|t: &CrateType| match t {
         CrateType::Executable => true,
         _ => false,
     })
@@ -152,8 +152,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingInline {
         };
 
         if let Some(trait_def_id) = trait_def_id {
-            if cx.tcx.hir().as_local_node_id(trait_def_id).is_some() && !cx.access_levels.is_exported(impl_item.hir_id)
-            {
+            if trait_def_id.is_local() && !cx.access_levels.is_exported(impl_item.hir_id) {
                 // If a trait is being implemented for an item, and the
                 // trait is not exported, we don't need #[inline]
                 return;

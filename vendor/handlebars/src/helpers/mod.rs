@@ -1,9 +1,9 @@
 use crate::context::Context;
 use crate::error::RenderError;
+use crate::json::value::ScopedJson;
 use crate::output::Output;
 use crate::registry::Registry;
 use crate::render::{Helper, RenderContext};
-use crate::value::ScopedJson;
 
 pub use self::helper_each::EACH_HELPER;
 pub use self::helper_if::{IF_HELPER, UNLESS_HELPER};
@@ -12,6 +12,7 @@ pub use self::helper_lookup::LOOKUP_HELPER;
 pub use self::helper_raw::RAW_HELPER;
 pub use self::helper_with::WITH_HELPER;
 
+/// A type alias for `Result<(), RenderError>`
 pub type HelperResult = Result<(), RenderError>;
 
 /// Helper Definition
@@ -50,8 +51,8 @@ pub type HelperResult = Result<(), RenderError>;
 /// fn dummy_block<'reg, 'rc>(
 ///     h: &Helper<'reg, 'rc>,
 ///     r: &'reg Handlebars,
-///     ctx: &Context,
-///     rc: &mut RenderContext<'reg>,
+///     ctx: &'rc Context,
+///     rc: &mut RenderContext<'reg, 'rc>,
 ///     out: &mut dyn Output,
 /// ) -> HelperResult {
 ///     h.template()
@@ -80,7 +81,7 @@ pub trait HelperDef: Send + Sync {
         _: &Helper<'reg, 'rc>,
         _: &'reg Registry,
         _: &'rc Context,
-        _: &mut RenderContext<'reg>,
+        _: &mut RenderContext<'reg, 'rc>,
     ) -> Result<Option<ScopedJson<'reg, 'rc>>, RenderError> {
         Ok(None)
     }
@@ -90,7 +91,7 @@ pub trait HelperDef: Send + Sync {
         h: &Helper<'reg, 'rc>,
         r: &'reg Registry,
         ctx: &'rc Context,
-        rc: &mut RenderContext<'reg>,
+        rc: &mut RenderContext<'reg, 'rc>,
         out: &mut dyn Output,
     ) -> HelperResult {
         if let Some(result) = self.call_inner(h, r, ctx, rc)? {
@@ -113,7 +114,7 @@ impl<
                 &Helper<'reg, 'rc>,
                 &'reg Registry,
                 &'rc Context,
-                &mut RenderContext<'reg>,
+                &mut RenderContext<'reg, 'rc>,
                 &mut dyn Output,
             ) -> HelperResult,
     > HelperDef for F
@@ -123,7 +124,7 @@ impl<
         h: &Helper<'reg, 'rc>,
         r: &'reg Registry,
         ctx: &'rc Context,
-        rc: &mut RenderContext<'reg>,
+        rc: &mut RenderContext<'reg, 'rc>,
         out: &mut dyn Output,
     ) -> HelperResult {
         (*self)(h, r, ctx, rc, out)
@@ -152,10 +153,10 @@ mod test {
     use crate::context::Context;
     use crate::error::RenderError;
     use crate::helpers::HelperDef;
+    use crate::json::value::JsonRender;
     use crate::output::Output;
     use crate::registry::Registry;
     use crate::render::{Helper, RenderContext, Renderable};
-    use crate::value::JsonRender;
 
     #[derive(Clone, Copy)]
     struct MetaHelper;
@@ -165,8 +166,8 @@ mod test {
             &self,
             h: &Helper<'reg, 'rc>,
             r: &'reg Registry,
-            ctx: &Context,
-            rc: &mut RenderContext<'reg>,
+            ctx: &'rc Context,
+            rc: &mut RenderContext<'reg, 'rc>,
             out: &mut dyn Output,
         ) -> Result<(), RenderError> {
             let v = h.param(0).unwrap();

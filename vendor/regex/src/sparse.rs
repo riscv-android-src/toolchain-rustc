@@ -1,3 +1,4 @@
+use std::fmt;
 use std::ops::Deref;
 use std::slice;
 
@@ -11,7 +12,7 @@ use std::slice;
 /// Note though that we don't actually use uninitialized memory. We generally
 /// reuse allocations, so the initial allocation cost is bareable. However,
 /// its other properties listed above are extremely useful.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct SparseSet {
     /// Dense contains the instruction pointers in the order in which they
     /// were inserted.
@@ -60,6 +61,12 @@ impl SparseSet {
     }
 }
 
+impl fmt::Debug for SparseSet {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "SparseSet({:?})", self.dense)
+    }
+}
+
 impl Deref for SparseSet {
     type Target = [usize];
 
@@ -71,5 +78,7 @@ impl Deref for SparseSet {
 impl<'a> IntoIterator for &'a SparseSet {
     type Item = &'a usize;
     type IntoIter = slice::Iter<'a, usize>;
-    fn into_iter(self) -> Self::IntoIter { self.iter() }
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
 }

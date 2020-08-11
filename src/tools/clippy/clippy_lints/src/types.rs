@@ -29,10 +29,10 @@ use rustc_typeck::hir_ty_to_ty;
 use crate::consts::{constant, Constant};
 use crate::utils::paths;
 use crate::utils::{
-    clip, comparisons, differing_macro_contexts, higher, in_constant, int_bits, last_path_segment, match_def_path,
-    match_path, method_chain_args, multispan_sugg, numeric_literal::NumericLiteral, qpath_res, same_tys, sext, snippet,
-    snippet_opt, snippet_with_applicability, snippet_with_macro_callsite, span_lint, span_lint_and_help,
-    span_lint_and_sugg, span_lint_and_then, unsext,
+    clip, comparisons, differing_macro_contexts, higher, in_constant, int_bits, is_type_diagnostic_item,
+    last_path_segment, match_def_path, match_path, method_chain_args, multispan_sugg, numeric_literal::NumericLiteral,
+    qpath_res, same_tys, sext, snippet, snippet_opt, snippet_with_applicability, snippet_with_macro_callsite,
+    span_lint, span_lint_and_help, span_lint_and_sugg, span_lint_and_then, unsext,
 };
 
 declare_clippy_lint! {
@@ -343,6 +343,7 @@ impl Types {
                                 BOX_VEC,
                                 hir_ty.span,
                                 "you seem to be trying to use `Box<Vec<T>>`. Consider using just `Vec<T>`",
+                                None,
                                 "`Vec<T>` is already on the heap, `Box<Vec<T>>` makes an extra allocation.",
                             );
                             return; // don't recurse into the type
@@ -437,6 +438,7 @@ impl Types {
                             LINKEDLIST,
                             hir_ty.span,
                             "I see you're using a LinkedList! Perhaps you meant some other data structure?",
+                            None,
                             "a `VecDeque` might work",
                         );
                         return; // don't recurse into the type
@@ -531,11 +533,12 @@ impl Types {
                         } else {
                             format!("{} ", lt.name.ident().as_str())
                         };
-                        let mutopt = if mut_ty.mutbl == Mutability::Mut {
-                            "mut "
-                        } else {
-                            ""
-                        };
+
+                        if mut_ty.mutbl == Mutability::Mut {
+                            // Ignore `&mut Box<T>` types; see issue #2907 for
+                            // details.
+                            return;
+                        }
                         let mut applicability = Applicability::MachineApplicable;
                         span_lint_and_sugg(
                             cx,
@@ -544,9 +547,8 @@ impl Types {
                             "you seem to be trying to use `&Box<T>`. Consider using just `&T`",
                             "try",
                             format!(
-                                "&{}{}{}",
+                                "&{}{}",
                                 ltopt,
-                                mutopt,
                                 &snippet_with_applicability(cx, inner.span, "..", &mut applicability)
                             ),
                             Applicability::Unspecified,
@@ -1900,7 +1902,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for AbsurdExtremeComparisons {
                         conclusion
                     );
 
-                    span_lint_and_help(cx, ABSURD_EXTREME_COMPARISONS, expr.span, msg, &help);
+                    span_lint_and_help(cx, ABSURD_EXTREME_COMPARISONS, expr.span, msg, None, &help);
                 }
             }
         }
@@ -2204,7 +2206,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitHasher {
 
             multispan_sugg(
                 diag,
-                "consider adding a type parameter".to_string(),
+                "consider adding a type parameter",
                 vec![
                     (
                         generics_suggestion_span,
@@ -2228,7 +2230,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for ImplicitHasher {
             );
 
             if !vis.suggestions.is_empty() {
-                multispan_sugg(diag, "...and use generic constructor".into(), vis.suggestions);
+                multispan_sugg(diag, "...and use generic constructor", vis.suggestions);
             }
         }
 
@@ -2350,14 +2352,14 @@ impl<'tcx> ImplicitHasherType<'tcx> {
 
             let ty = hir_ty_to_ty(cx.tcx, hir_ty);
 
-            if match_path(path, &paths::HASHMAP) && params_len == 2 {
+            if is_type_diagnostic_item(cx, ty, sym!(hashmap_type)) && params_len == 2 {
                 Some(ImplicitHasherType::HashMap(
                     hir_ty.span,
                     ty,
                     snippet(cx, params[0].span, "K"),
                     snippet(cx, params[1].span, "V"),
                 ))
-            } else if match_path(path, &paths::HASHSET) && params_len == 1 {
+            } else if is_type_diagnostic_item(cx, ty, sym!(hashset_type)) && params_len == 1 {
                 Some(ImplicitHasherType::HashSet(
                     hir_ty.span,
                     ty,
@@ -2458,7 +2460,7 @@ impl<'a, 'b, 'tcx> Visitor<'tcx> for ImplicitHasherConstructorVisitor<'a, 'b, 't
         if_chain! {
             if let ExprKind::Call(ref fun, ref args) = e.kind;
             if let ExprKind::Path(QPath::TypeRelative(ref ty, ref method)) = fun.kind;
-            if let TyKind::Path(QPath::Resolved(None, ref ty_path)) = ty.kind;
+            if let TyKind::Path(QPath::Resolved(None, ty_path)) = ty.kind;
             then {
                 if !same_tys(self.cx, self.target.ty(), self.body.expr_ty(e)) {
                     return;

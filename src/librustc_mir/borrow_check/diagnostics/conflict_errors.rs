@@ -1,3 +1,4 @@
+use either::Either;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
@@ -9,10 +10,9 @@ use rustc_middle::mir::{
     FakeReadCause, Local, LocalDecl, LocalInfo, LocalKind, Location, Operand, Place, PlaceRef,
     ProjectionElem, Rvalue, Statement, StatementKind, TerminatorKind, VarBindingForm,
 };
-use rustc_middle::ty::{self, Ty};
+use rustc_middle::ty::{self, suggest_constraining_type_param, Ty};
 use rustc_span::source_map::DesugaringKind;
 use rustc_span::Span;
-use rustc_trait_selection::traits::error_reporting::suggest_constraining_type_param;
 
 use crate::dataflow::drop_flag_effects;
 use crate::dataflow::indexes::{MoveOutIndex, MovePathIndex};
@@ -186,12 +186,12 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
             }
 
             let ty =
-                Place::ty_from(used_place.local, used_place.projection, *self.body, self.infcx.tcx)
+                Place::ty_from(used_place.local, used_place.projection, self.body, self.infcx.tcx)
                     .ty;
             let needs_note = match ty.kind {
                 ty::Closure(id, _) => {
-                    let tables = self.infcx.tcx.typeck_tables_of(id);
-                    let hir_id = self.infcx.tcx.hir().as_local_hir_id(id).unwrap();
+                    let tables = self.infcx.tcx.typeck_tables_of(id.expect_local());
+                    let hir_id = self.infcx.tcx.hir().as_local_hir_id(id.expect_local());
 
                     tables.closure_kind_origins().get(hir_id).is_none()
                 }
@@ -202,7 +202,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 let mpi = self.move_data.moves[move_out_indices[0]].path;
                 let place = &self.move_data.move_paths[mpi].place;
 
-                let ty = place.ty(*self.body, self.infcx.tcx).ty;
+                let ty = place.ty(self.body, self.infcx.tcx).ty;
                 let opt_name =
                     self.describe_place_with_options(place.as_ref(), IncludingDowncast(true));
                 let note_msg = match opt_name {
@@ -214,7 +214,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                     let generics = tcx.generics_of(self.mir_def_id);
                     let param = generics.type_param(&param_ty, tcx);
                     if let Some(generics) =
-                        tcx.hir().get_generics(tcx.closure_base_def_id(self.mir_def_id))
+                        tcx.hir().get_generics(tcx.closure_base_def_id(self.mir_def_id.to_def_id()))
                     {
                         suggest_constraining_type_param(
                             tcx,
@@ -581,8 +581,10 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     ///
     /// This is used when creating error messages like below:
     ///
-    /// >  cannot borrow `a.u` (via `a.u.z.c`) as immutable because it is also borrowed as
-    /// >  mutable (via `a.u.s.b`) [E0502]
+    /// ```text
+    /// cannot borrow `a.u` (via `a.u.z.c`) as immutable because it is also borrowed as
+    /// mutable (via `a.u.s.b`) [E0502]
+    /// ```
     pub(in crate::borrow_check) fn describe_place_for_conflicting_borrow(
         &self,
         first_borrowed_place: Place<'tcx>,
@@ -591,7 +593,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         // Define a small closure that we can use to check if the type of a place
         // is a union.
         let union_ty = |place_base, place_projection| {
-            let ty = Place::ty_from(place_base, place_projection, *self.body, self.infcx.tcx).ty;
+            let ty = Place::ty_from(place_base, place_projection, self.body, self.infcx.tcx).ty;
             ty.ty_adt_def().filter(|adt| adt.is_union()).map(|_| ty)
         };
 
@@ -863,48 +865,42 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 format!("`{}` would have to be valid for `{}`...", name, region_name),
             );
 
-            if let Some(fn_hir_id) = self.infcx.tcx.hir().as_local_hir_id(self.mir_def_id) {
-                err.span_label(
-                    drop_span,
-                    format!(
-                        "...but `{}` will be dropped here, when the {} returns",
-                        name,
-                        self.infcx
-                            .tcx
-                            .hir()
-                            .opt_name(fn_hir_id)
-                            .map(|name| format!("function `{}`", name))
-                            .unwrap_or_else(|| {
-                                match &self
-                                    .infcx
-                                    .tcx
-                                    .typeck_tables_of(self.mir_def_id)
-                                    .node_type(fn_hir_id)
-                                    .kind
-                                {
-                                    ty::Closure(..) => "enclosing closure",
-                                    ty::Generator(..) => "enclosing generator",
-                                    kind => bug!("expected closure or generator, found {:?}", kind),
-                                }
-                                .to_string()
-                            })
-                    ),
-                );
+            let fn_hir_id = self.infcx.tcx.hir().as_local_hir_id(self.mir_def_id);
+            err.span_label(
+                drop_span,
+                format!(
+                    "...but `{}` will be dropped here, when the {} returns",
+                    name,
+                    self.infcx
+                        .tcx
+                        .hir()
+                        .opt_name(fn_hir_id)
+                        .map(|name| format!("function `{}`", name))
+                        .unwrap_or_else(|| {
+                            match &self
+                                .infcx
+                                .tcx
+                                .typeck_tables_of(self.mir_def_id)
+                                .node_type(fn_hir_id)
+                                .kind
+                            {
+                                ty::Closure(..) => "enclosing closure",
+                                ty::Generator(..) => "enclosing generator",
+                                kind => bug!("expected closure or generator, found {:?}", kind),
+                            }
+                            .to_string()
+                        })
+                ),
+            );
 
-                err.note(
-                    "functions cannot return a borrow to data owned within the function's scope, \
-                     functions can only return borrows to data passed as arguments",
-                );
-                err.note(
-                    "to learn more, visit <https://doc.rust-lang.org/book/ch04-02-\
-                     references-and-borrowing.html#dangling-references>",
-                );
-            } else {
-                err.span_label(
-                    drop_span,
-                    format!("...but `{}` dropped here while still borrowed", name),
-                );
-            }
+            err.note(
+                "functions cannot return a borrow to data owned within the function's scope, \
+                    functions can only return borrows to data passed as arguments",
+            );
+            err.note(
+                "to learn more, visit <https://doc.rust-lang.org/book/ch04-02-\
+                    references-and-borrowing.html#dangling-references>",
+            );
 
             if let BorrowExplanation::MustBeValidFor { .. } = explanation {
             } else {
@@ -1234,7 +1230,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     ) -> DiagnosticBuilder<'cx> {
         let tcx = self.infcx.tcx;
 
-        let (_, escapes_from) = tcx.article_and_description(self.mir_def_id);
+        let (_, escapes_from) = tcx.article_and_description(self.mir_def_id.to_def_id());
 
         let mut err =
             borrowck_errors::borrowed_data_escapes_closure(tcx, escape_span, escapes_from);
@@ -1262,8 +1258,23 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     }
 
     fn get_moved_indexes(&mut self, location: Location, mpi: MovePathIndex) -> Vec<MoveSite> {
+        fn predecessor_locations(
+            body: &'a mir::Body<'tcx>,
+            location: Location,
+        ) -> impl Iterator<Item = Location> + 'a {
+            if location.statement_index == 0 {
+                let predecessors = body.predecessors()[location.block].to_vec();
+                Either::Left(predecessors.into_iter().map(move |bb| body.terminator_loc(bb)))
+            } else {
+                Either::Right(std::iter::once(Location {
+                    statement_index: location.statement_index - 1,
+                    ..location
+                }))
+            }
+        }
+
         let mut stack = Vec::new();
-        stack.extend(self.body.predecessor_locations(location).map(|predecessor| {
+        stack.extend(predecessor_locations(self.body, location).map(|predecessor| {
             let is_back_edge = location.dominates(predecessor, &self.dominators);
             (predecessor, is_back_edge)
         }));
@@ -1345,7 +1356,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                 continue 'dfs;
             }
 
-            stack.extend(self.body.predecessor_locations(location).map(|predecessor| {
+            stack.extend(predecessor_locations(self.body, location).map(|predecessor| {
                 let back_edge = location.dominates(predecessor, &self.dominators);
                 (predecessor, is_back_edge || back_edge)
             }));
@@ -1429,15 +1440,15 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
         let (place_description, assigned_span) = match local_decl {
             Some(LocalDecl {
                 local_info:
-                    LocalInfo::User(
+                    Some(box LocalInfo::User(
                         ClearCrossCrate::Clear
                         | ClearCrossCrate::Set(BindingForm::Var(VarBindingForm {
                             opt_match_place: None,
                             ..
                         })),
-                    )
-                    | LocalInfo::StaticRef { .. }
-                    | LocalInfo::Other,
+                    ))
+                    | Some(box LocalInfo::StaticRef { .. })
+                    | None,
                 ..
             })
             | None => (self.describe_any_place(place.as_ref()), assigned_span),
@@ -1486,7 +1497,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                         StorageDeadOrDrop::LocalStorageDead
                         | StorageDeadOrDrop::BoxedStorageDead => {
                             assert!(
-                                Place::ty_from(place.local, proj_base, *self.body, tcx).ty.is_box(),
+                                Place::ty_from(place.local, proj_base, self.body, tcx).ty.is_box(),
                                 "Drop of value behind a reference or raw pointer"
                             );
                             StorageDeadOrDrop::BoxedStorageDead
@@ -1494,7 +1505,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
                         StorageDeadOrDrop::Destructor(_) => base_access,
                     },
                     ProjectionElem::Field(..) | ProjectionElem::Downcast(..) => {
-                        let base_ty = Place::ty_from(place.local, proj_base, *self.body, tcx).ty;
+                        let base_ty = Place::ty_from(place.local, proj_base, self.body, tcx).ty;
                         match base_ty.kind {
                             ty::Adt(def, _) if def.has_dtor(tcx) => {
                                 // Report the outermost adt with a destructor
@@ -1554,14 +1565,16 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     ) -> Option<AnnotatedBorrowFnSignature<'tcx>> {
         // Define a fallback for when we can't match a closure.
         let fallback = || {
-            let is_closure = self.infcx.tcx.is_closure(self.mir_def_id);
+            let is_closure = self.infcx.tcx.is_closure(self.mir_def_id.to_def_id());
             if is_closure {
                 None
             } else {
                 let ty = self.infcx.tcx.type_of(self.mir_def_id);
                 match ty.kind {
-                    ty::FnDef(_, _) | ty::FnPtr(_) => self
-                        .annotate_fn_sig(self.mir_def_id, self.infcx.tcx.fn_sig(self.mir_def_id)),
+                    ty::FnDef(_, _) | ty::FnPtr(_) => self.annotate_fn_sig(
+                        self.mir_def_id.to_def_id(),
+                        self.infcx.tcx.fn_sig(self.mir_def_id),
+                    ),
                     _ => None,
                 }
             }
@@ -1766,7 +1779,7 @@ impl<'cx, 'tcx> MirBorrowckCtxt<'cx, 'tcx> {
     ) -> Option<AnnotatedBorrowFnSignature<'tcx>> {
         debug!("annotate_fn_sig: did={:?} sig={:?}", did, sig);
         let is_closure = self.infcx.tcx.is_closure(did);
-        let fn_hir_id = self.infcx.tcx.hir().as_local_hir_id(did)?;
+        let fn_hir_id = self.infcx.tcx.hir().as_local_hir_id(did.as_local()?);
         let fn_decl = self.infcx.tcx.hir().fn_decl_by_hir_id(fn_hir_id)?;
 
         // We need to work out which arguments to highlight. We do this by looking

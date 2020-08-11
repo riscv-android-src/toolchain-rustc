@@ -62,7 +62,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     tcx: TyCtxt<'tcx>,
     main_id: DefId,
     config: MiriConfig,
-) -> InterpResult<'tcx, (InterpCx<'mir, 'tcx, Evaluator<'tcx>>, MPlaceTy<'tcx, Tag>)> {
+) -> InterpResult<'tcx, (InterpCx<'mir, 'tcx, Evaluator<'mir, 'tcx>>, MPlaceTy<'tcx, Tag>)> {
     let tcx_at = tcx.at(rustc_span::source_map::DUMMY_SP);
     let param_env = ty::ParamEnv::reveal_all();
     let layout_cx = LayoutCx { tcx, param_env };
@@ -98,6 +98,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         start_id,
         tcx.mk_substs(::std::iter::once(ty::subst::GenericArg::from(main_ret_ty))),
     )
+    .unwrap()
     .unwrap();
 
     // First argument: pointer to `main()`.
@@ -130,7 +131,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
         // Store `argc` and `argv` for macOS `_NSGetArg{c,v}`.
         {
             let argc_place =
-                ecx.allocate(ecx.layout_of(tcx.types.isize)?, MiriMemoryKind::Machine.into());
+                ecx.allocate(ecx.machine.layouts.isize, MiriMemoryKind::Machine.into());
             ecx.write_scalar(argc, argc_place.into())?;
             ecx.machine.argc = Some(argc_place.ptr);
 
@@ -168,7 +169,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     };
 
     // Return place (in static memory so that it does not count as leak).
-    let ret_place = ecx.allocate(ecx.layout_of(tcx.types.isize)?, MiriMemoryKind::Machine.into());
+    let ret_place = ecx.allocate(ecx.machine.layouts.isize, MiriMemoryKind::Machine.into());
     // Call start function.
     ecx.call_function(
         start_instance,
@@ -178,7 +179,7 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     )?;
 
     // Set the last_error to 0
-    let errno_layout = ecx.layout_of(tcx.types.u32)?;
+    let errno_layout = ecx.machine.layouts.u32;
     let errno_place = ecx.allocate(errno_layout, MiriMemoryKind::Machine.into());
     ecx.write_scalar(Scalar::from_u32(0), errno_place.into())?;
     ecx.machine.last_error = Some(errno_place);
@@ -195,7 +196,7 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
 
     let (mut ecx, ret_place) = match create_ecx(tcx, main_id, config) {
         Ok(v) => v,
-        Err(mut err) => {
+        Err(err) => {
             err.print_backtrace();
             panic!("Miri initialization error: {}", err.kind)
         }
@@ -204,14 +205,30 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
     // Perform the main execution.
     let res: InterpResult<'_, i64> = (|| {
         // Main loop.
-        while ecx.step()? {
+        loop {
+            match ecx.schedule()? {
+                SchedulingAction::ExecuteStep => {
+                    assert!(ecx.step()?, "a terminated thread was scheduled for execution");
+                }
+                SchedulingAction::ExecuteTimeoutCallback => {
+                    assert!(ecx.machine.communicate,
+                        "scheduler callbacks require disabled isolation, but the code \
+                        that created the callback did not check it");
+                    ecx.run_timeout_callback()?;
+                }
+                SchedulingAction::ExecuteDtors => {
+                    // This will either enable the thread again (so we go back
+                    // to `ExecuteStep`), or determine that this thread is done
+                    // for good.
+                    ecx.schedule_next_tls_dtor_for_active_thread()?;
+                }
+                SchedulingAction::Stop => {
+                    break;
+                }
+            }
             ecx.process_diagnostics();
         }
-        // Read the return code pointer *before* we run TLS destructors, to assert
-        // that it was written to by the time that `start` lang item returned.
         let return_code = ecx.read_scalar(ret_place.into())?.not_undef()?.to_machine_isize(&ecx)?;
-        // Global destructors.
-        ecx.run_tls_dtors()?;
         Ok(return_code)
     })();
 

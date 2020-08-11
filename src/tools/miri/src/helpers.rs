@@ -1,5 +1,6 @@
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::mem;
+use std::num::NonZeroUsize;
 
 use log::trace;
 
@@ -12,7 +13,7 @@ use rand::RngCore;
 
 use crate::*;
 
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 
 /// Gets an instance for a path.
 fn try_resolve_did<'mir, 'tcx>(tcx: TyCtxt<'tcx>, path: &[&str]) -> Option<DefId> {
@@ -53,7 +54,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn eval_path_scalar(
         &mut self,
         path: &[&str],
-    ) -> InterpResult<'tcx, ScalarMaybeUndef<Tag>> {
+    ) -> InterpResult<'tcx, ScalarMaybeUninit<Tag>> {
         let this = self.eval_context_mut();
         let instance = this.resolve_path(path);
         let cid = GlobalId { instance, promoted: None };
@@ -264,7 +265,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             unsafe_cell_action: F,
         }
 
-        impl<'ecx, 'mir, 'tcx, F> ValueVisitor<'mir, 'tcx, Evaluator<'tcx>>
+        impl<'ecx, 'mir, 'tcx: 'mir, F> ValueVisitor<'mir, 'tcx, Evaluator<'mir, 'tcx>>
             for UnsafeCellVisitor<'ecx, 'mir, 'tcx, F>
         where
             F: FnMut(MPlaceTy<'tcx, Tag>) -> InterpResult<'tcx>,
@@ -333,17 +334,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                         places.sort_by_key(|place| place.ptr.assert_ptr().offset);
                         self.walk_aggregate(place, places.into_iter().map(Ok))
                     }
-                    FieldsShape::Union { .. } => {
+                    FieldsShape::Union { .. } | FieldsShape::Primitive => {
                         // Uh, what?
-                        bug!("a union is not an aggregate we should ever visit")
+                        bug!("unions/primitives are not aggregates we should ever visit")
                     }
                 }
             }
 
             // We have to do *something* for unions.
-            fn visit_union(&mut self, v: MPlaceTy<'tcx, Tag>, fields: usize) -> InterpResult<'tcx> {
-                assert!(fields > 0); // we should never reach "pseudo-unions" with 0 fields, like primitives
-
+            fn visit_union(&mut self, v: MPlaceTy<'tcx, Tag>, _fields: NonZeroUsize) -> InterpResult<'tcx> {
                 // With unions, we fall back to whatever the type says, to hopefully be consistent
                 // with LLVM IR.
                 // FIXME: are we consistent, and is this really the behavior we want?
@@ -470,6 +469,15 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
         }
     }
+}
+
+/// Check that the number of args is what we expect.
+pub fn check_arg_count<'a, 'tcx, const N: usize>(args: &'a [OpTy<'tcx, Tag>]) -> InterpResult<'tcx, &'a [OpTy<'tcx, Tag>; N]>
+    where &'a [OpTy<'tcx, Tag>; N]: TryFrom<&'a [OpTy<'tcx, Tag>]> {
+    if let Ok(ops) = args.try_into() {
+        return Ok(ops);
+    }
+    throw_ub_format!("incorrect number of arguments: got {}, expected {}", args.len(), N)
 }
 
 pub fn immty_from_int_checked<'tcx>(

@@ -6,16 +6,18 @@
 //!
 //! See [`RingBuffer`](struct.RingBuffer.html)
 
-use std::borrow::Borrow;
-use std::cmp::Ordering;
-use std::fmt::{Debug, Error, Formatter};
-use std::hash::{Hash, Hasher};
-use std::iter::FromIterator;
-use std::mem::MaybeUninit;
-use std::ops::{Bound, Range, RangeBounds};
-use std::ops::{Index, IndexMut};
+use core::borrow::Borrow;
+use core::cmp::Ordering;
+use core::fmt::{Debug, Error, Formatter};
+use core::hash::{Hash, Hasher};
+use core::iter::FromIterator;
+use core::mem::MaybeUninit;
+use core::ops::{Bound, Range, RangeBounds};
+use core::ops::{Index, IndexMut};
 
 use typenum::U64;
+
+pub use array_ops::{Array, ArrayMut, HasLength};
 
 use crate::types::ChunkLength;
 
@@ -27,6 +29,9 @@ pub use iter::{Drain, Iter, IterMut, OwnedIter};
 
 mod slice;
 pub use slice::{Slice, SliceMut};
+
+#[cfg(feature = "refpool")]
+mod refpool;
 
 /// A fixed capacity ring buffer.
 ///
@@ -46,8 +51,12 @@ pub use slice::{Slice, SliceMut};
 /// The `RingBuffer` offers its own [`Slice`][Slice] and [`SliceMut`][SliceMut]
 /// types to compensate for the loss of being able to take a slice, but they're
 /// somewhat less efficient, so the general rule should be that you shouldn't
-/// choose a `RingBuffer` if you really need to take slices - but if you don't,
+/// choose a `RingBuffer` if you rely heavily on slices - but if you don't,
 /// it's probably a marginally better choice overall than [`Chunk`][Chunk].
+///
+/// # Feature Flag
+///
+/// To use this data structure, you need to enable the `ringbuffer` feature.
 ///
 /// [Chunk]: ../sized_chunk/struct.Chunk.html
 /// [Slice]: struct.Slice.html
@@ -56,7 +65,7 @@ pub struct RingBuffer<A, N = U64>
 where
     N: ChunkLength<A>,
 {
-    origin: RawIndex<A, N>,
+    origin: RawIndex<N>,
     length: usize,
     data: MaybeUninit<N::SizedType>,
 }
@@ -64,10 +73,52 @@ where
 impl<A, N: ChunkLength<A>> Drop for RingBuffer<A, N> {
     #[inline]
     fn drop(&mut self) {
-        if std::mem::needs_drop::<A>() {
+        if core::mem::needs_drop::<A>() {
             for i in self.range() {
                 unsafe { self.force_drop(i) }
             }
+        }
+    }
+}
+
+impl<A, N> HasLength for RingBuffer<A, N>
+where
+    N: ChunkLength<A>,
+{
+    /// Get the length of the ring buffer.
+    #[inline]
+    #[must_use]
+    fn len(&self) -> usize {
+        self.length
+    }
+}
+
+impl<A, N> Array for RingBuffer<A, N>
+where
+    N: ChunkLength<A>,
+{
+    /// Get a reference to the value at a given index.
+    #[must_use]
+    fn get(&self, index: usize) -> Option<&A> {
+        if index >= self.len() {
+            None
+        } else {
+            Some(unsafe { self.get_unchecked(index) })
+        }
+    }
+}
+
+impl<A, N> ArrayMut for RingBuffer<A, N>
+where
+    N: ChunkLength<A>,
+{
+    /// Get a mutable reference to the value at a given index.
+    #[must_use]
+    fn get_mut(&mut self, index: usize) -> Option<&mut A> {
+        if index >= self.len() {
+            None
+        } else {
+            Some(unsafe { self.get_unchecked_mut(index) })
         }
     }
 }
@@ -81,60 +132,60 @@ where
 
     /// Get the raw index for a logical index.
     #[inline]
-    fn raw(&self, index: usize) -> RawIndex<A, N> {
+    fn raw(&self, index: usize) -> RawIndex<N> {
         self.origin + index
     }
 
     #[inline]
-    unsafe fn ptr(&self, index: RawIndex<A, N>) -> *const A {
+    unsafe fn ptr(&self, index: RawIndex<N>) -> *const A {
         debug_assert!(index.to_usize() < Self::CAPACITY);
         (&self.data as *const _ as *const A).add(index.to_usize())
     }
 
     #[inline]
-    unsafe fn mut_ptr(&mut self, index: RawIndex<A, N>) -> *mut A {
+    unsafe fn mut_ptr(&mut self, index: RawIndex<N>) -> *mut A {
         debug_assert!(index.to_usize() < Self::CAPACITY);
         (&mut self.data as *mut _ as *mut A).add(index.to_usize())
     }
 
     /// Drop the value at a raw index.
     #[inline]
-    unsafe fn force_drop(&mut self, index: RawIndex<A, N>) {
-        std::ptr::drop_in_place(self.mut_ptr(index))
+    unsafe fn force_drop(&mut self, index: RawIndex<N>) {
+        core::ptr::drop_in_place(self.mut_ptr(index))
     }
 
     /// Copy the value at a raw index, discarding ownership of the copied value
     #[inline]
-    unsafe fn force_read(&self, index: RawIndex<A, N>) -> A {
-        std::ptr::read(self.ptr(index))
+    unsafe fn force_read(&self, index: RawIndex<N>) -> A {
+        core::ptr::read(self.ptr(index))
     }
 
     /// Write a value at a raw index without trying to drop what's already there
     #[inline]
-    unsafe fn force_write(&mut self, index: RawIndex<A, N>, value: A) {
-        std::ptr::write(self.mut_ptr(index), value)
+    unsafe fn force_write(&mut self, index: RawIndex<N>, value: A) {
+        core::ptr::write(self.mut_ptr(index), value)
     }
 
     /// Copy a range of raw indices from another buffer.
     unsafe fn copy_from(
         &mut self,
         source: &mut Self,
-        from: RawIndex<A, N>,
-        to: RawIndex<A, N>,
+        from: RawIndex<N>,
+        to: RawIndex<N>,
         count: usize,
     ) {
         #[inline]
         unsafe fn force_copy_to<A, N: ChunkLength<A>>(
             source: &mut RingBuffer<A, N>,
-            from: RawIndex<A, N>,
+            from: RawIndex<N>,
             target: &mut RingBuffer<A, N>,
-            to: RawIndex<A, N>,
+            to: RawIndex<N>,
             count: usize,
         ) {
             if count > 0 {
                 debug_assert!(from.to_usize() + count <= RingBuffer::<A, N>::CAPACITY);
                 debug_assert!(to.to_usize() + count <= RingBuffer::<A, N>::CAPACITY);
-                std::ptr::copy_nonoverlapping(source.mut_ptr(from), target.mut_ptr(to), count)
+                core::ptr::copy_nonoverlapping(source.mut_ptr(from), target.mut_ptr(to), count)
             }
         }
 
@@ -154,31 +205,32 @@ where
     }
 
     /// Copy values from a slice.
-    unsafe fn copy_from_slice(&mut self, source: &[A], to: RawIndex<A, N>) {
+    #[allow(dead_code)]
+    unsafe fn copy_from_slice(&mut self, source: &[A], to: RawIndex<N>) {
         let count = source.len();
         debug_assert!(to.to_usize() + count <= Self::CAPACITY);
         if to.to_usize() + count > Self::CAPACITY {
             let first_length = Self::CAPACITY - to.to_usize();
             let first_slice = &source[..first_length];
             let last_slice = &source[first_length..];
-            std::ptr::copy_nonoverlapping(
+            core::ptr::copy_nonoverlapping(
                 first_slice.as_ptr(),
                 self.mut_ptr(to),
                 first_slice.len(),
             );
-            std::ptr::copy_nonoverlapping(
+            core::ptr::copy_nonoverlapping(
                 last_slice.as_ptr(),
                 self.mut_ptr(0.into()),
                 last_slice.len(),
             );
         } else {
-            std::ptr::copy_nonoverlapping(source.as_ptr(), self.mut_ptr(to), count)
+            core::ptr::copy_nonoverlapping(source.as_ptr(), self.mut_ptr(to), count)
         }
     }
 
     /// Get an iterator over the raw indices of the buffer from left to right.
     #[inline]
-    fn range(&self) -> IndexIter<A, N> {
+    fn range(&self) -> IndexIter<N> {
         IndexIter {
             remaining: self.len(),
             left_index: self.origin,
@@ -278,20 +330,6 @@ where
         buffer
     }
 
-    /// Get the length of the ring buffer.
-    #[inline]
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.length
-    }
-
-    /// Test if the ring buffer is empty.
-    #[inline]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Test if the ring buffer is full.
     #[inline]
     #[must_use]
@@ -317,12 +355,7 @@ where
     #[inline]
     #[must_use]
     pub fn iter_mut(&mut self) -> IterMut<'_, A, N> {
-        IterMut {
-            left_index: self.origin,
-            right_index: self.origin + self.len(),
-            remaining: self.len(),
-            buffer: self,
-        }
+        IterMut::new(self)
     }
 
     #[must_use]
@@ -347,7 +380,7 @@ where
 
     /// Get a `Slice` for a subset of the ring buffer.
     #[must_use]
-    pub fn slice<R: RangeBounds<usize>>(&self, range: R) -> Slice<A, N> {
+    pub fn slice<R: RangeBounds<usize>>(&self, range: R) -> Slice<'_, A, N> {
         Slice {
             buffer: self,
             range: self.parse_range(range),
@@ -356,67 +389,31 @@ where
 
     /// Get a `SliceMut` for a subset of the ring buffer.
     #[must_use]
-    pub fn slice_mut<R: RangeBounds<usize>>(&mut self, range: R) -> SliceMut<A, N> {
+    pub fn slice_mut<R: RangeBounds<usize>>(&mut self, range: R) -> SliceMut<'_, A, N> {
         SliceMut {
             range: self.parse_range(range),
             buffer: self,
         }
     }
 
-    /// Get a reference to the value at a given index.
+    /// Get an unchecked reference to the value at the given index.
+    ///
+    /// # Safety
+    ///
+    /// You must ensure the index is not out of bounds.
     #[must_use]
-    pub fn get(&self, index: usize) -> Option<&A> {
-        if index >= self.len() {
-            None
-        } else {
-            Some(unsafe { &*self.ptr(self.raw(index)) })
-        }
+    pub unsafe fn get_unchecked(&self, index: usize) -> &A {
+        &*self.ptr(self.raw(index))
     }
 
-    /// Get a mutable reference to the value at a given index.
+    /// Get an unchecked mutable reference to the value at the given index.
+    ///
+    /// # Safety
+    ///
+    /// You must ensure the index is not out of bounds.
     #[must_use]
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut A> {
-        if index >= self.len() {
-            None
-        } else {
-            Some(unsafe { &mut *self.mut_ptr(self.raw(index)) })
-        }
-    }
-
-    /// Get a reference to the first value in the buffer.
-    #[inline]
-    #[must_use]
-    pub fn first(&self) -> Option<&A> {
-        self.get(0)
-    }
-
-    /// Get a mutable reference to the first value in the buffer.
-    #[inline]
-    #[must_use]
-    pub fn first_mut(&mut self) -> Option<&mut A> {
-        self.get_mut(0)
-    }
-
-    /// Get a reference to the last value in the buffer.
-    #[inline]
-    #[must_use]
-    pub fn last(&self) -> Option<&A> {
-        if self.is_empty() {
-            None
-        } else {
-            self.get(self.len() - 1)
-        }
-    }
-
-    /// Get a mutable reference to the last value in the buffer.
-    #[inline]
-    #[must_use]
-    pub fn last_mut(&mut self) -> Option<&mut A> {
-        if self.is_empty() {
-            None
-        } else {
-            self.get_mut(self.len() - 1)
-        }
+    pub unsafe fn get_unchecked_mut(&mut self, index: usize) -> &mut A {
+        &mut *self.mut_ptr(self.raw(index))
     }
 
     /// Push a value to the back of the buffer.
@@ -593,15 +590,6 @@ where
         self.length += count;
     }
 
-    /// Update the value at index `index`, returning the old value.
-    ///
-    /// Panics if `index` is out of bounds.
-    ///
-    /// Time: O(1)
-    pub fn set(&mut self, index: usize, value: A) -> A {
-        std::mem::replace(&mut self[index], value)
-    }
-
     /// Insert a new value at index `index`, shifting all the following values
     /// to the right.
     ///
@@ -642,6 +630,94 @@ where
             }
         }
         unsafe { self.force_write(self.raw(index), value) };
+    }
+
+    /// Insert a new value into the buffer in sorted order.
+    ///
+    /// This assumes every element of the buffer is already in sorted order.
+    /// If not, the value will still be inserted but the ordering is not
+    /// guaranteed.
+    ///
+    /// Time: O(log n) to find the insert position, then O(n) for the number
+    /// of elements shifted.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # use std::iter::FromIterator;
+    /// # use sized_chunks::Chunk;
+    /// # use typenum::U64;
+    /// let mut chunk = Chunk::<i32, U64>::from_iter(0..5);
+    /// chunk.insert_ordered(3);
+    /// assert_eq!(&[0, 1, 2, 3, 3, 4], chunk.as_slice());
+    /// ```
+    pub fn insert_ordered(&mut self, value: A)
+    where
+        A: Ord,
+    {
+        if self.is_full() {
+            panic!("Chunk::insert: chunk is full");
+        }
+        match self.slice(..).binary_search(&value) {
+            Ok(index) => self.insert(index, value),
+            Err(index) => self.insert(index, value),
+        }
+    }
+
+    /// Insert multiple values at index `index`, shifting all the following values
+    /// to the right.
+    ///
+    /// Panics if the index is out of bounds or the chunk doesn't have room for
+    /// all the values.
+    ///
+    /// Time: O(m+n) where m is the number of elements inserted and n is the number
+    /// of elements following the insertion index. Calling `insert`
+    /// repeatedly would be O(m*n).
+    pub fn insert_from<Iterable, I>(&mut self, index: usize, iter: Iterable)
+    where
+        Iterable: IntoIterator<Item = A, IntoIter = I>,
+        I: ExactSizeIterator<Item = A>,
+    {
+        let iter = iter.into_iter();
+        let insert_size = iter.len();
+        if self.len() + insert_size > Self::CAPACITY {
+            panic!(
+                "Chunk::insert_from: chunk cannot fit {} elements",
+                insert_size
+            );
+        }
+        if index > self.len() {
+            panic!("Chunk::insert_from: index out of bounds");
+        }
+        if index == self.len() {
+            self.extend(iter);
+            return;
+        }
+        let right_count = self.len() - index;
+        // Check which side has fewer elements to shift.
+        if right_count < index {
+            // Shift to the right.
+            let mut i = self.raw(self.len() - 1);
+            let target = self.raw(index);
+            while i != target {
+                unsafe { self.force_write(i + insert_size, self.force_read(i)) };
+                i -= 1;
+            }
+            unsafe { self.force_write(target + insert_size, self.force_read(target)) };
+            self.length += insert_size;
+        } else {
+            // Shift to the left.
+            self.origin -= insert_size;
+            self.length += insert_size;
+            for i in self.range().take(index) {
+                unsafe { self.force_write(i, self.force_read(i + insert_size)) };
+            }
+        }
+        let mut index = self.raw(index);
+        for value in iter {
+            unsafe { self.force_write(index, value) };
+            index += 1;
+        }
     }
 
     /// Remove the value at index `index`, shifting all the following values to
@@ -762,16 +838,36 @@ impl<A: PartialEq, N: ChunkLength<A>> PartialEq for RingBuffer<A, N> {
     }
 }
 
-impl<A, N, Slice> PartialEq<Slice> for RingBuffer<A, N>
+impl<A, N, PrimSlice> PartialEq<PrimSlice> for RingBuffer<A, N>
 where
-    Slice: Borrow<[A]>,
+    PrimSlice: Borrow<[A]>,
     A: PartialEq,
     N: ChunkLength<A>,
 {
     #[inline]
     #[must_use]
-    fn eq(&self, other: &Slice) -> bool {
+    fn eq(&self, other: &PrimSlice) -> bool {
         let other = other.borrow();
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl<A, N> PartialEq<Slice<'_, A, N>> for RingBuffer<A, N>
+where
+    A: PartialEq,
+    N: ChunkLength<A>,
+{
+    fn eq(&self, other: &Slice<'_, A, N>) -> bool {
+        self.len() == other.len() && self.iter().eq(other.iter())
+    }
+}
+
+impl<A, N> PartialEq<SliceMut<'_, A, N>> for RingBuffer<A, N>
+where
+    A: PartialEq,
+    N: ChunkLength<A>,
+{
+    fn eq(&self, other: &SliceMut<'_, A, N>) -> bool {
         self.len() == other.len() && self.iter().eq(other.iter())
     }
 }
@@ -813,7 +909,7 @@ impl<'a, A: Clone + 'a, N: ChunkLength<A>> Extend<&'a A> for RingBuffer<A, N> {
 }
 
 impl<A: Debug, N: ChunkLength<A>> Debug for RingBuffer<A, N> {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         f.write_str("RingBuffer")?;
         f.debug_list().entries(self.iter()).finish()
     }
@@ -828,6 +924,7 @@ impl<A: Hash, N: ChunkLength<A>> Hash for RingBuffer<A, N> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<N: ChunkLength<u8>> std::io::Write for RingBuffer<u8, N> {
     fn write(&mut self, mut buf: &[u8]) -> std::io::Result<usize> {
         let max_new = Self::CAPACITY - self.len();
@@ -845,6 +942,7 @@ impl<N: ChunkLength<u8>> std::io::Write for RingBuffer<u8, N> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<N: ChunkLength<u8>> std::io::Read for RingBuffer<u8, N> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         let read_size = buf.len().min(self.len());
@@ -908,6 +1006,11 @@ mod test {
     use super::*;
 
     #[test]
+    fn validity_invariant() {
+        assert!(Some(RingBuffer::<Box<()>>::new()).is_some());
+    }
+
+    #[test]
     fn is_full() {
         let mut chunk = RingBuffer::<_, U64>::new();
         for i in 0..64 {
@@ -954,6 +1057,7 @@ mod test {
         assert_eq!(half, should);
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn io_write() {
         use std::io::Write;
@@ -963,6 +1067,7 @@ mod test {
         assert_eq!(buffer, (0..64).collect::<Vec<u8>>());
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn io_read() {
         use std::io::Read;
@@ -994,30 +1099,14 @@ mod test {
         assert_eq!(buffer, expected);
     }
 
+    use crate::tests::DropTest;
     use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct DropTest<'a> {
-        counter: &'a AtomicUsize,
-    }
-
-    impl<'a> DropTest<'a> {
-        fn new(counter: &'a AtomicUsize) -> Self {
-            counter.fetch_add(1, Ordering::Relaxed);
-            DropTest { counter }
-        }
-    }
-
-    impl<'a> Drop for DropTest<'a> {
-        fn drop(&mut self) {
-            self.counter.fetch_sub(1, Ordering::Relaxed);
-        }
-    }
 
     #[test]
     fn dropping() {
         let counter = AtomicUsize::new(0);
         {
-            let mut chunk: RingBuffer<DropTest> = RingBuffer::new();
+            let mut chunk: RingBuffer<DropTest<'_>> = RingBuffer::new();
             for _i in 0..20 {
                 chunk.push_back(DropTest::new(&counter))
             }

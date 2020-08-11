@@ -11,7 +11,7 @@ use log::trace;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_middle::mir::RetagKind;
 use rustc_middle::ty;
-use rustc_target::abi::{LayoutOf, Size};
+use rustc_target::abi::{Align, LayoutOf, Size};
 use rustc_hir::Mutability;
 
 use crate::*;
@@ -506,7 +506,7 @@ impl Stacks {
 
 /// Retagging/reborrowing.  There is some policy in here, such as which permissions
 /// to grant for which references, and when to add protectors.
-impl<'mir, 'tcx> EvalContextPrivExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextPrivExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn reborrow(
         &mut self,
@@ -577,11 +577,13 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             .size_and_align_of_mplace(place)?
             .map(|(size, _)| size)
             .unwrap_or_else(|| place.layout.size);
+        // `reborrow` relies on getting a `Pointer` and everything being in-bounds,
+        // so let's ensure that. However, we do not care about alignment.
         // We can see dangling ptrs in here e.g. after a Box's `Unique` was
-        // updated using "self.0 = ..." (can happen in Box::from_raw); see miri#1050.
-        let place = this.mplace_access_checked(place)?;
+        // updated using "self.0 = ..." (can happen in Box::from_raw) so we cannot ICE; see miri#1050.
+        let place = this.mplace_access_checked(place, Some(Align::from_bytes(1).unwrap()))?;
+        // Nothing to do for ZSTs.
         if size == Size::ZERO {
-            // Nothing to do for ZSTs.
             return Ok(val);
         }
 
@@ -607,7 +609,7 @@ trait EvalContextPrivExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     }
 }
 
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn retag(&mut self, kind: RetagKind, place: PlaceTy<'tcx, Tag>) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();

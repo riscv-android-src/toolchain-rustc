@@ -163,6 +163,7 @@ language_item_table! {
     CopyTraitLangItem,           "copy",               copy_trait,              Target::Trait;
     CloneTraitLangItem,          "clone",              clone_trait,             Target::Trait;
     SyncTraitLangItem,           "sync",               sync_trait,              Target::Trait;
+    DiscriminantKindTraitLangItem,"discriminant_kind", discriminant_kind_trait, Target::Trait;
     FreezeTraitLangItem,         "freeze",             freeze_trait,            Target::Trait;
 
     DropTraitLangItem,           "drop",               drop_trait,              Target::Trait;
@@ -256,4 +257,6 @@ language_item_table! {
     AlignOffsetLangItem,         "align_offset",       align_offset_fn,         Target::Fn;
 
     TerminationTraitLangItem,    "termination",        termination,             Target::Trait;
+
+    TryTraitLangItem,            "try",                try_trait,               Target::Trait;
 }

@@ -1,15 +1,56 @@
-#![feature(test)]
-extern crate handlebars;
+#[macro_use]
+extern crate criterion;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
-
-extern crate test;
+extern crate cpuprofiler;
 
 use std::collections::BTreeMap;
+use std::fs::create_dir_all;
+use std::path::Path;
 
+use cpuprofiler::PROFILER;
+use criterion::profiler::Profiler;
+use criterion::Criterion;
 use handlebars::{to_json, Handlebars, Template};
 use serde_json::value::Value as Json;
+
+struct CpuProfiler;
+
+impl Profiler for CpuProfiler {
+    fn start_profiling(&mut self, benchmark_id: &str, benchmark_dir: &Path) {
+        create_dir_all(&benchmark_dir).unwrap();
+        let result = benchmark_dir.join(format!("{}.profile", benchmark_id));
+        PROFILER
+            .lock()
+            .unwrap()
+            .start(result.to_str().unwrap())
+            .unwrap();
+    }
+
+    fn stop_profiling(&mut self, _benchmark_id: &str, _benchmark_dir: &Path) {
+        PROFILER.lock().unwrap().stop().unwrap();
+    }
+}
+
+fn profiled() -> Criterion {
+    Criterion::default().with_profiler(CpuProfiler)
+}
+
+#[derive(Serialize)]
+struct DataWrapper {
+    v: String,
+}
+
+#[derive(Serialize)]
+struct RowWrapper {
+    real: Vec<DataWrapper>,
+    dummy: Vec<DataWrapper>,
+}
+
+#[derive(Serialize)]
+struct NestedRowWrapper {
+    parent: Vec<Vec<DataWrapper>>,
+}
 
 static SOURCE: &'static str = "<html>
   <head>
@@ -53,13 +94,13 @@ fn make_data() -> BTreeMap<String, Json> {
     data
 }
 
-#[bench]
-fn parse_template(b: &mut test::Bencher) {
-    b.iter(|| Template::compile(SOURCE).ok().unwrap());
+fn parse_template(c: &mut Criterion) {
+    c.bench_function("parse_template", move |b| {
+        b.iter(|| Template::compile(SOURCE).ok().unwrap())
+    });
 }
 
-#[bench]
-fn render_template(b: &mut test::Bencher) {
+fn render_template(c: &mut Criterion) {
     let mut handlebars = Handlebars::new();
     handlebars
         .register_template_string("table", SOURCE)
@@ -67,22 +108,12 @@ fn render_template(b: &mut test::Bencher) {
         .expect("Invalid template format");
 
     let data = make_data();
-    b.iter(|| handlebars.render("table", &data).ok().unwrap())
+    c.bench_function("render_template", move |b| {
+        b.iter(|| handlebars.render("table", &data).ok().unwrap())
+    });
 }
 
-#[derive(Serialize)]
-struct DataWrapper {
-    v: String,
-}
-
-#[derive(Serialize)]
-struct RowWrapper {
-    real: Vec<DataWrapper>,
-    dummy: Vec<DataWrapper>,
-}
-
-#[bench]
-fn large_loop_helper(b: &mut test::Bencher) {
+fn large_loop_helper(c: &mut Criterion) {
     let mut handlebars = Handlebars::new();
     handlebars
         .register_template_string("test", "BEFORE\n{{#each real}}{{this.v}}{{/each}}AFTER")
@@ -90,17 +121,52 @@ fn large_loop_helper(b: &mut test::Bencher) {
         .expect("Invalid template format");
 
     let real: Vec<DataWrapper> = (1..1000)
-        .into_iter()
         .map(|i| DataWrapper {
             v: format!("n={}", i),
         })
         .collect();
     let dummy: Vec<DataWrapper> = (1..1000)
-        .into_iter()
         .map(|i| DataWrapper {
             v: format!("n={}", i),
         })
         .collect();
     let rows = RowWrapper { real, dummy };
-    b.iter(|| handlebars.render("test", &rows).ok().unwrap());
+
+    c.bench_function("large_loop_helper", move |b| {
+        b.iter(|| handlebars.render("test", &rows).ok().unwrap())
+    });
 }
+
+fn large_nested_loop(c: &mut Criterion) {
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_template_string(
+            "test",
+            "BEFORE\n{{#each parent as |child|}}{{#each child}}{{this.v}}{{/each}}{{/each}}AFTER",
+        )
+        .ok()
+        .expect("Invalid template format");
+
+    let parent: Vec<Vec<DataWrapper>> = (1..100)
+        .map(|_| {
+            (1..10)
+                .map(|v| DataWrapper {
+                    v: format!("v={}", v),
+                })
+                .collect()
+        })
+        .collect();
+
+    let rows = NestedRowWrapper { parent };
+
+    c.bench_function("large_nested_loop", move |b| {
+        b.iter(|| handlebars.render("test", &rows).ok().unwrap())
+    });
+}
+
+criterion_group!(
+    name = benches;
+    config = profiled();
+    targets = parse_template, render_template, large_loop_helper, large_nested_loop
+);
+criterion_main!(benches);

@@ -2,11 +2,9 @@
 
 A port of [dlmalloc] to Rust.
 
-[![Build Status](https://travis-ci.com/alexcrichton/dlmalloc-rs.svg?branch=master)](https://travis-ci.com/alexcrichton/dlmalloc-rs)
-
 [Documentation](https://docs.rs/dlmalloc)
 
-[dlmalloc]: http://g.oswego.edu/dl/html/malloc.html
+[dlmalloc]: http://gee.cs.oswego.edu/dl/html/malloc.html
 
 ## Why dlmalloc?
 

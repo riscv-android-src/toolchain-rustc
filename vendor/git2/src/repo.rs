@@ -8,10 +8,13 @@ use std::ptr;
 use std::str;
 
 use crate::build::{CheckoutBuilder, RepoBuilder};
+use crate::diff::{
+    binary_cb_c, file_cb_c, hunk_cb_c, line_cb_c, BinaryCb, DiffCallbacks, FileCb, HunkCb, LineCb,
+};
 use crate::oid_array::OidArray;
 use crate::stash::{stash_cb, StashApplyOptions, StashCbData};
 use crate::string_array::StringArray;
-use crate::util::{self, Binding};
+use crate::util::{self, path_to_repo_path, Binding};
 use crate::CherrypickOptions;
 use crate::{
     init, raw, AttrCheckFlags, Buf, Error, Object, Remote, RepositoryOpenFlags, RepositoryState,
@@ -61,6 +64,7 @@ impl Repository {
     /// The path can point to either a normal or bare repository.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Repository, Error> {
         init();
+        // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let mut ret = ptr::null_mut();
         unsafe {
@@ -74,6 +78,7 @@ impl Repository {
     /// The path can point to only a bare repository.
     pub fn open_bare<P: AsRef<Path>>(path: P) -> Result<Repository, Error> {
         init();
+        // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let mut ret = ptr::null_mut();
         unsafe {
@@ -139,6 +144,7 @@ impl Repository {
         I: IntoIterator<Item = O>,
     {
         init();
+        // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let ceiling_dirs_os = env::join_paths(ceiling_dirs)?;
         let ceiling_dirs = ceiling_dirs_os.into_c_string()?;
@@ -162,6 +168,7 @@ impl Repository {
         // TODO: this diverges significantly from the libgit2 API
         init();
         let buf = Buf::new();
+        // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         unsafe {
             try_call!(raw::git_repository_discover(
@@ -198,6 +205,7 @@ impl Repository {
         opts: &RepositoryInitOptions,
     ) -> Result<Repository, Error> {
         init();
+        // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let mut ret = ptr::null_mut();
         unsafe {
@@ -390,6 +398,7 @@ impl Repository {
     /// and set config "core.worktree" (if workdir is not the parent of the .git
     /// directory).
     pub fn set_workdir(&self, path: &Path, update_gitlink: bool) -> Result<(), Error> {
+        // Normal file path OK (does not need Windows conversion).
         let path = path.into_c_string()?;
         unsafe {
             try_call!(raw::git_repository_set_workdir(
@@ -673,7 +682,7 @@ impl Repository {
         T: IntoCString,
         I: IntoIterator<Item = T>,
     {
-        let (_a, _b, mut arr) = crate::util::iter2cstrs(paths)?;
+        let (_a, _b, mut arr) = crate::util::iter2cstrs_paths(paths)?;
         let target = target.map(|t| t.raw());
         unsafe {
             try_call!(raw::git_reset_default(self.raw, target, &mut arr));
@@ -853,7 +862,7 @@ impl Repository {
     /// directory containing the file, would it be added or not?
     pub fn status_should_ignore(&self, path: &Path) -> Result<bool, Error> {
         let mut ret = 0 as c_int;
-        let path = path.into_c_string()?;
+        let path = util::cstring_to_repo_path(path)?;
         unsafe {
             try_call!(raw::git_status_should_ignore(&mut ret, self.raw, path));
         }
@@ -878,13 +887,7 @@ impl Repository {
     /// through looking for the path that you are interested in.
     pub fn status_file(&self, path: &Path) -> Result<Status, Error> {
         let mut ret = 0 as c_uint;
-        let path = if cfg!(windows) {
-            // `git_status_file` does not work with windows path separator
-            // so we convert \ to /
-            std::ffi::CString::new(path.to_string_lossy().replace('\\', "/"))?
-        } else {
-            path.into_c_string()?
-        };
+        let path = path_to_repo_path(path)?;
         unsafe {
             try_call!(raw::git_status_file(&mut ret, self.raw, path));
         }
@@ -953,7 +956,7 @@ impl Repository {
         flags: AttrCheckFlags,
     ) -> Result<Option<&[u8]>, Error> {
         let mut ret = ptr::null();
-        let path = path.into_c_string()?;
+        let path = util::cstring_to_repo_path(path)?;
         let name = CString::new(name)?;
         unsafe {
             try_call!(raw::git_attr_get(
@@ -994,6 +997,7 @@ impl Repository {
     /// The Oid returned can in turn be passed to `find_blob` to get a handle to
     /// the blob.
     pub fn blob_path(&self, path: &Path) -> Result<Oid, Error> {
+        // Normal file path OK (does not need Windows conversion).
         let path = path.into_c_string()?;
         let mut raw = raw::git_oid {
             id: [0; raw::GIT_OID_RAWSZ],
@@ -1548,7 +1552,7 @@ impl Repository {
         use_gitlink: bool,
     ) -> Result<Submodule<'_>, Error> {
         let url = CString::new(url)?;
-        let path = path.into_c_string()?;
+        let path = path_to_repo_path(path)?;
         let mut raw = ptr::null_mut();
         unsafe {
             try_call!(raw::git_submodule_add_setup(
@@ -2072,7 +2076,7 @@ impl Repository {
         path: &Path,
         opts: Option<&mut BlameOptions>,
     ) -> Result<Blame<'_>, Error> {
-        let path = path.into_c_string()?;
+        let path = path_to_repo_path(path)?;
         let mut raw = ptr::null_mut();
 
         unsafe {
@@ -2246,6 +2250,78 @@ impl Repository {
         unsafe {
             try_call!(raw::git_describe_workdir(&mut ret, self.raw, opts.raw()));
             Ok(Binding::from_raw(ret))
+        }
+    }
+
+    /// Directly run a diff on two blobs.
+    ///
+    /// Compared to a file, a blob lacks some contextual information. As such, the
+    /// `DiffFile` given to the callback will have some fake data; i.e. mode will be
+    /// 0 and path will be `None`.
+    ///
+    /// `None` is allowed for either `old_blob` or `new_blob` and will be treated
+    /// as an empty blob, with the oid set to zero in the `DiffFile`. Passing `None`
+    /// for both blobs is a noop; no callbacks will be made at all.
+    ///
+    /// We do run a binary content check on the blob content and if either blob looks
+    /// like binary data, the `DiffFile` binary attribute will be set to 1 and no call to
+    /// the `hunk_cb` nor `line_cb` will be made (unless you set the `force_text`
+    /// option).
+    pub fn diff_blobs(
+        &self,
+        old_blob: Option<&Blob<'_>>,
+        old_as_path: Option<&str>,
+        new_blob: Option<&Blob<'_>>,
+        new_as_path: Option<&str>,
+        opts: Option<&mut DiffOptions>,
+        file_cb: Option<&mut FileCb<'_>>,
+        binary_cb: Option<&mut BinaryCb<'_>>,
+        hunk_cb: Option<&mut HunkCb<'_>>,
+        line_cb: Option<&mut LineCb<'_>>,
+    ) -> Result<(), Error> {
+        let old_as_path = crate::opt_cstr(old_as_path)?;
+        let new_as_path = crate::opt_cstr(new_as_path)?;
+        let mut cbs = DiffCallbacks {
+            file: file_cb,
+            binary: binary_cb,
+            hunk: hunk_cb,
+            line: line_cb,
+        };
+        let ptr = &mut cbs as *mut _;
+        unsafe {
+            let file_cb_c: raw::git_diff_file_cb = if cbs.file.is_some() {
+                Some(file_cb_c)
+            } else {
+                None
+            };
+            let binary_cb_c: raw::git_diff_binary_cb = if cbs.binary.is_some() {
+                Some(binary_cb_c)
+            } else {
+                None
+            };
+            let hunk_cb_c: raw::git_diff_hunk_cb = if cbs.hunk.is_some() {
+                Some(hunk_cb_c)
+            } else {
+                None
+            };
+            let line_cb_c: raw::git_diff_line_cb = if cbs.line.is_some() {
+                Some(line_cb_c)
+            } else {
+                None
+            };
+            try_call!(raw::git_diff_blobs(
+                old_blob.map(|s| s.raw()),
+                old_as_path,
+                new_blob.map(|s| s.raw()),
+                new_as_path,
+                opts.map(|s| s.raw()),
+                file_cb_c,
+                binary_cb_c,
+                hunk_cb_c,
+                line_cb_c,
+                ptr as *mut _
+            ));
+            Ok(())
         }
     }
 
@@ -2528,13 +2604,7 @@ impl Repository {
 
     /// Test if the ignore rules apply to a given path.
     pub fn is_path_ignored<P: AsRef<Path>>(&self, path: P) -> Result<bool, Error> {
-        let path = if cfg!(windows) {
-            // `git_ignore_path_is_ignored` dose not work with windows path separator
-            // so we convert \ to /
-            std::ffi::CString::new(path.as_ref().to_string_lossy().replace('\\', "/"))?
-        } else {
-            path.as_ref().into_c_string()?
-        };
+        let path = util::cstring_to_repo_path(path.as_ref())?;
         let mut ignored: c_int = 0;
         unsafe {
             try_call!(raw::git_ignore_path_is_ignored(
@@ -2737,12 +2807,13 @@ impl RepositoryInitOptions {
         self
     }
 
-    /// The path do the working directory.
+    /// The path to the working directory.
     ///
     /// If this is a relative path it will be evaulated relative to the repo
     /// path. If this is not the "natural" working directory, a .git gitlink
     /// file will be created here linking to the repo path.
     pub fn workdir_path(&mut self, path: &Path) -> &mut RepositoryInitOptions {
+        // Normal file path OK (does not need Windows conversion).
         self.workdir_path = Some(path.into_c_string().unwrap());
         self
     }
@@ -2760,6 +2831,7 @@ impl RepositoryInitOptions {
     /// If this is not configured, then the default locations will be searched
     /// instead.
     pub fn template_path(&mut self, path: &Path) -> &mut RepositoryInitOptions {
+        // Normal file path OK (does not need Windows conversion).
         self.template_path = Some(path.into_c_string().unwrap());
         self
     }
@@ -3283,18 +3355,18 @@ mod tests {
     fn smoke_is_path_ignored() {
         let (_td, repo) = graph_repo_init();
 
-        assert!(!repo.is_path_ignored(Path::new("/foo")).unwrap());
+        assert!(!repo.is_path_ignored(Path::new("foo")).unwrap());
 
         let _ = repo.add_ignore_rule("/foo");
-        assert!(repo.is_path_ignored(Path::new("/foo")).unwrap());
+        assert!(repo.is_path_ignored(Path::new("foo")).unwrap());
         if cfg!(windows) {
-            assert!(repo.is_path_ignored(Path::new("\\foo\\thing")).unwrap());
+            assert!(repo.is_path_ignored(Path::new("foo\\thing")).unwrap());
         }
 
         let _ = repo.clear_ignore_rules();
-        assert!(!repo.is_path_ignored(Path::new("/foo")).unwrap());
+        assert!(!repo.is_path_ignored(Path::new("foo")).unwrap());
         if cfg!(windows) {
-            assert!(!repo.is_path_ignored(Path::new("\\foo\\thing")).unwrap());
+            assert!(!repo.is_path_ignored(Path::new("foo\\thing")).unwrap());
         }
     }
 

@@ -12,12 +12,21 @@
 
 [package]
 name = "regex-syntax"
-version = "0.6.6"
+version = "0.6.17"
 authors = ["The Rust Project Developers"]
 description = "A regular expression parser."
 homepage = "https://github.com/rust-lang/regex"
 documentation = "https://docs.rs/regex-syntax"
 license = "MIT/Apache-2.0"
 repository = "https://github.com/rust-lang/regex"
-[dependencies.ucd-util]
-version = "0.1.0"
+
+[features]
+default = ["unicode"]
+unicode = ["unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"]
+unicode-age = []
+unicode-bool = []
+unicode-case = []
+unicode-gencat = []
+unicode-perl = []
+unicode-script = []
+unicode-segment = []

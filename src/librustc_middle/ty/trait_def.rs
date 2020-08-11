@@ -171,10 +171,7 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn all_impls(self, def_id: DefId) -> impl Iterator<Item = DefId> + 'tcx {
         let TraitImpls { blanket_impls, non_blanket_impls } = self.trait_impls_of(def_id);
 
-        blanket_impls
-            .into_iter()
-            .chain(non_blanket_impls.into_iter().map(|(_, v)| v).flatten())
-            .cloned()
+        blanket_impls.iter().chain(non_blanket_impls.iter().map(|(_, v)| v).flatten()).cloned()
     }
 }
 
@@ -187,7 +184,7 @@ pub(super) fn all_local_trait_impls<'tcx>(
 }
 
 // Query provider for `trait_impls_of`.
-pub(super) fn trait_impls_of_provider(tcx: TyCtxt<'_>, trait_id: DefId) -> &TraitImpls {
+pub(super) fn trait_impls_of_provider(tcx: TyCtxt<'_>, trait_id: DefId) -> TraitImpls {
     let mut impls = TraitImpls::default();
 
     {
@@ -215,11 +212,11 @@ pub(super) fn trait_impls_of_provider(tcx: TyCtxt<'_>, trait_id: DefId) -> &Trai
         }
 
         for &hir_id in tcx.hir().trait_impls(trait_id) {
-            add_impl(tcx.hir().local_def_id(hir_id));
+            add_impl(tcx.hir().local_def_id(hir_id).to_def_id());
         }
     }
 
-    tcx.arena.alloc(impls)
+    impls
 }
 
 impl<'a> HashStable<StableHashingContext<'a>> for TraitImpls {

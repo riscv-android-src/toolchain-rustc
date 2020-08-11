@@ -16,7 +16,6 @@ use log::debug;
 use rustc_session::CtfeBacktrace;
 use rustc_driver::Compilation;
 use rustc_hir::def_id::LOCAL_CRATE;
-use rustc_interface::{interface, Queries};
 use rustc_middle::ty::TyCtxt;
 
 struct MiriCompilerCalls {
@@ -26,8 +25,8 @@ struct MiriCompilerCalls {
 impl rustc_driver::Callbacks for MiriCompilerCalls {
     fn after_analysis<'tcx>(
         &mut self,
-        compiler: &interface::Compiler,
-        queries: &'tcx Queries<'tcx>,
+        compiler: &rustc_interface::interface::Compiler,
+        queries: &'tcx rustc_interface::Queries<'tcx>,
     ) -> Compilation {
         compiler.session().abort_if_errors();
 
@@ -39,7 +38,7 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
             // Add filename to `miri` arguments.
             config.args.insert(0, compiler.input().filestem().to_string());
 
-            if let Some(return_code) = miri::eval_main(tcx, entry_def_id, config) {
+            if let Some(return_code) = miri::eval_main(tcx, entry_def_id.to_def_id(), config) {
                 std::process::exit(
                     i32::try_from(return_code).expect("Return value was too large!"),
                 );
@@ -61,7 +60,7 @@ fn init_early_loggers() {
     // If it is not set, we avoid initializing now so that we can initialize
     // later with our custom settings, and *not* log anything for what happens before
     // `miri` gets started.
-    if env::var("RUSTC_LOG").is_ok() {
+    if env::var_os("RUSTC_LOG").is_some() {
         rustc_driver::init_rustc_env_logger();
     }
 }
@@ -69,8 +68,9 @@ fn init_early_loggers() {
 fn init_late_loggers(tcx: TyCtxt<'_>) {
     // We initialize loggers right before we start evaluation. We overwrite the `RUSTC_LOG`
     // env var if it is not set, control it based on `MIRI_LOG`.
+    // (FIXME: use `var_os`, but then we need to manually concatenate instead of `format!`.)
     if let Ok(var) = env::var("MIRI_LOG") {
-        if env::var("RUSTC_LOG").is_err() {
+        if env::var_os("RUSTC_LOG").is_none() {
             // We try to be a bit clever here: if `MIRI_LOG` is just a single level
             // used for everything, we only apply it to the parts of rustc that are
             // CTFE-related. Otherwise, we use it verbatim for `RUSTC_LOG`.
@@ -90,8 +90,8 @@ fn init_late_loggers(tcx: TyCtxt<'_>) {
 
     // If `MIRI_BACKTRACE` is set and `RUSTC_CTFE_BACKTRACE` is not, set `RUSTC_CTFE_BACKTRACE`.
     // Do this late, so we ideally only apply this to Miri's errors.
-    if let Ok(val) = env::var("MIRI_BACKTRACE") {
-        let ctfe_backtrace = match &*val {
+    if let Some(val) = env::var_os("MIRI_BACKTRACE") {
+        let ctfe_backtrace = match &*val.to_string_lossy() {
             "immediate" => CtfeBacktrace::Immediate,
             "0" => CtfeBacktrace::Disabled,
             _ => CtfeBacktrace::Capture,
@@ -105,12 +105,12 @@ fn init_late_loggers(tcx: TyCtxt<'_>) {
 fn compile_time_sysroot() -> Option<String> {
     if option_env!("RUSTC_STAGE").is_some() {
         // This is being built as part of rustc, and gets shipped with rustup.
-        // We can rely on the sysroot computation in librustc.
+        // We can rely on the sysroot computation in librustc_session.
         return None;
     }
     // For builds outside rustc, we need to ensure that we got a sysroot
-    // that gets used as a default.  The sysroot computation in librustc would
-    // end up somewhere in the build dir.
+    // that gets used as a default.  The sysroot computation in librustc_session would
+    // end up somewhere in the build dir (see `get_or_default_sysroot`).
     // Taken from PR <https://github.com/Manishearth/rust-clippy/pull/911>.
     let home = option_env!("RUSTUP_HOME").or(option_env!("MULTIRUST_HOME"));
     let toolchain = option_env!("RUSTUP_TOOLCHAIN").or(option_env!("MULTIRUST_TOOLCHAIN"));
@@ -122,7 +122,46 @@ fn compile_time_sysroot() -> Option<String> {
     })
 }
 
+/// Execute a compiler with the given CLI arguments and callbacks.
+fn run_compiler(mut args: Vec<String>, callbacks: &mut (dyn rustc_driver::Callbacks + Send)) -> ! {
+    // Make sure we use the right default sysroot. The default sysroot is wrong,
+    // because `get_or_default_sysroot` in `librustc_session` bases that on `current_exe`.
+    //
+    // Make sure we always call `compile_time_sysroot` as that also does some sanity-checks
+    // of the environment we were built in.
+    // FIXME: Ideally we'd turn a bad build env into a compile-time error via CTFE or so.
+    if let Some(sysroot) = compile_time_sysroot() {
+        let sysroot_flag = "--sysroot";
+        if !args.iter().any(|e| e == sysroot_flag) {
+            // We need to overwrite the default that librustc_session would compute.
+            args.push(sysroot_flag.to_owned());
+            args.push(sysroot);
+        }
+    }
+
+    // Some options have different defaults in Miri than in plain rustc; apply those by making
+    // them the first arguments after the binary name (but later arguments can overwrite them).
+    args.splice(1..1, miri::miri_default_args().iter().map(ToString::to_string));
+
+    // Invoke compiler, and handle return code.
+    let exit_code = rustc_driver::catch_with_exit_code(move || {
+        rustc_driver::run_compiler(&args, callbacks, None, None)
+    });
+    std::process::exit(exit_code)
+}
+
 fn main() {
+    rustc_driver::install_ice_hook();
+
+    // If the environment asks us to actually be rustc, then do that.
+    if env::var_os("MIRI_BE_RUSTC").is_some() {
+        rustc_driver::init_rustc_env_logger();
+        // We cannot use `rustc_driver::main` as we need to adjust the CLI arguments.
+        let mut callbacks = rustc_driver::TimePassesCallbacks::default();
+        run_compiler(env::args().collect(), &mut callbacks)
+    }
+
+    // Init loggers the Miri way.
     init_early_loggers();
 
     // Parse our arguments and split them across `rustc` and `miri`.
@@ -135,16 +174,16 @@ fn main() {
     let mut tracked_pointer_tag: Option<miri::PtrId> = None;
     let mut tracked_alloc_id: Option<miri::AllocId> = None;
     let mut rustc_args = vec![];
-    let mut miri_args = vec![];
+    let mut crate_args = vec![];
     let mut after_dashdash = false;
     let mut excluded_env_vars = vec![];
-    for arg in std::env::args() {
+    for arg in env::args() {
         if rustc_args.is_empty() {
-            // Very first arg: for `rustc`.
+            // Very first arg: binary name.
             rustc_args.push(arg);
         } else if after_dashdash {
-            // Everything that comes after are `miri` args.
-            miri_args.push(arg);
+            // Everything that comes after `--` is forwarded to the interpreted crate.
+            crate_args.push(arg);
         } else {
             match arg.as_str() {
                 "-Zmiri-disable-validation" => {
@@ -169,7 +208,7 @@ fn main() {
                     if seed.is_some() {
                         panic!("Cannot specify -Zmiri-seed multiple times!");
                     }
-                    let seed_raw = hex::decode(arg.trim_start_matches("-Zmiri-seed="))
+                    let seed_raw = hex::decode(arg.strip_prefix("-Zmiri-seed=").unwrap())
                         .unwrap_or_else(|err| match err {
                             FromHexError::InvalidHexCharacter { .. } => panic!(
                                 "-Zmiri-seed should only contain valid hex digits [0-9a-fA-F]"
@@ -191,10 +230,10 @@ fn main() {
                 }
                 arg if arg.starts_with("-Zmiri-env-exclude=") => {
                     excluded_env_vars
-                        .push(arg.trim_start_matches("-Zmiri-env-exclude=").to_owned());
+                        .push(arg.strip_prefix("-Zmiri-env-exclude=").unwrap().to_owned());
                 }
                 arg if arg.starts_with("-Zmiri-track-pointer-tag=") => {
-                    let id: u64 = match arg.trim_start_matches("-Zmiri-track-pointer-tag=").parse()
+                    let id: u64 = match arg.strip_prefix("-Zmiri-track-pointer-tag=").unwrap().parse()
                     {
                         Ok(id) => id,
                         Err(err) => panic!(
@@ -209,7 +248,7 @@ fn main() {
                     }
                 }
                 arg if arg.starts_with("-Zmiri-track-alloc-id=") => {
-                    let id: u64 = match arg.trim_start_matches("-Zmiri-track-alloc-id=").parse()
+                    let id: u64 = match arg.strip_prefix("-Zmiri-track-alloc-id=").unwrap().parse()
                     {
                         Ok(id) => id,
                         Err(err) => panic!(
@@ -220,30 +259,15 @@ fn main() {
                     tracked_alloc_id = Some(miri::AllocId(id));
                 }
                 _ => {
+                    // Forward to rustc.
                     rustc_args.push(arg);
                 }
             }
         }
     }
 
-    // Determine sysroot if needed.  Make sure we always call `compile_time_sysroot`
-    // as that also does some sanity-checks of the environment we were built in.
-    // FIXME: Ideally we'd turn a bad build env into a compile-time error, but
-    // CTFE does not seem powerful enough for that yet.
-    if let Some(sysroot) = compile_time_sysroot() {
-        let sysroot_flag = "--sysroot";
-        if !rustc_args.iter().any(|e| e == sysroot_flag) {
-            // We need to overwrite the default that librustc would compute.
-            rustc_args.push(sysroot_flag.to_owned());
-            rustc_args.push(sysroot);
-        }
-    }
-
-    // Finally, add the default flags all the way in the beginning, but after the binary name.
-    rustc_args.splice(1..1, miri::miri_default_args().iter().map(ToString::to_string));
-
     debug!("rustc arguments: {:?}", rustc_args);
-    debug!("miri arguments: {:?}", miri_args);
+    debug!("crate arguments: {:?}", crate_args);
     let miri_config = miri::MiriConfig {
         validate,
         stacked_borrows,
@@ -252,13 +276,9 @@ fn main() {
         ignore_leaks,
         excluded_env_vars,
         seed,
-        args: miri_args,
+        args: crate_args,
         tracked_pointer_tag,
         tracked_alloc_id,
     };
-    rustc_driver::install_ice_hook();
-    let result = rustc_driver::catch_fatal_errors(move || {
-        rustc_driver::run_compiler(&rustc_args, &mut MiriCompilerCalls { miri_config }, None, None)
-    });
-    std::process::exit(result.is_err() as i32);
+    run_compiler(rustc_args, &mut MiriCompilerCalls { miri_config })
 }

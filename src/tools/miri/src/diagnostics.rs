@@ -16,7 +16,7 @@ pub enum TerminationInfo {
     Deadlock,
 }
 
-impl fmt::Debug for TerminationInfo {
+impl fmt::Display for TerminationInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         use TerminationInfo::*;
         match self {
@@ -47,8 +47,8 @@ pub enum NonHaltingDiagnostic {
 
 /// Emit a custom diagnostic without going through the miri-engine machinery
 pub fn report_error<'tcx, 'mir>(
-    ecx: &InterpCx<'mir, 'tcx, Evaluator<'tcx>>,
-    mut e: InterpErrorInfo<'tcx>,
+    ecx: &InterpCx<'mir, 'tcx, Evaluator<'mir, 'tcx>>,
+    e: InterpErrorInfo<'tcx>,
 ) -> Option<i64> {
     use InterpError::*;
 
@@ -92,6 +92,8 @@ pub fn report_error<'tcx, 'mir>(
             let helps = match e.kind {
                 Unsupported(UnsupportedOpInfo::NoMirFor(..)) =>
                     vec![format!("make sure to use a Miri sysroot, which you can prepare with `cargo miri setup`")],
+                Unsupported(UnsupportedOpInfo::ReadBytesAsPointer) =>
+                    panic!("`ReadBytesAsPointer` cannot be raised by Miri"),
                 Unsupported(_) =>
                     vec![format!("this is likely not a bug in the program; it indicates that the program performed an operation that the interpreter does not support")],
                 UndefinedBehavior(UndefinedBehaviorInfo::AlignmentCheckFailed { .. }) =>
@@ -113,19 +115,35 @@ pub fn report_error<'tcx, 'mir>(
 
     e.print_backtrace();
     let msg = e.to_string();
-    report_msg(ecx, &format!("{}: {}", title, msg), msg, helps, true)
+    report_msg(ecx, &format!("{}: {}", title, msg), msg, helps, true);
+
+    // Extra output to help debug specific issues.
+    match e.kind {
+        UndefinedBehavior(UndefinedBehaviorInfo::InvalidUninitBytes(Some(access))) => {
+            eprintln!(
+                "Uninitialized read occurred at offsets 0x{:x}..0x{:x} into this allocation:",
+                access.uninit_ptr.offset.bytes(),
+                access.uninit_ptr.offset.bytes() + access.uninit_size.bytes(),
+            );
+            ecx.memory.dump_alloc(access.uninit_ptr.alloc_id);
+            eprintln!();
+        }
+        _ => {}
+    }
+
+    None
 }
 
 /// Report an error or note (depending on the `error` argument) at the current frame's current statement.
 /// Also emits a full stacktrace of the interpreter stack.
 fn report_msg<'tcx, 'mir>(
-    ecx: &InterpCx<'mir, 'tcx, Evaluator<'tcx>>,
+    ecx: &InterpCx<'mir, 'tcx, Evaluator<'mir, 'tcx>>,
     title: &str,
     span_msg: String,
     mut helps: Vec<String>,
     error: bool,
-) -> Option<i64> {
-    let span = if let Some(frame) = ecx.stack().last() {
+) {
+    let span = if let Some(frame) = ecx.active_thread_stack().last() {
         frame.current_source_info().unwrap().span
     } else {
         DUMMY_SP
@@ -157,7 +175,7 @@ fn report_msg<'tcx, 'mir>(
 
     err.emit();
 
-    for (i, frame) in ecx.stack().iter().enumerate() {
+    for (i, frame) in ecx.active_thread_stack().iter().enumerate() {
         trace!("-------------------");
         trace!("Frame {}", i);
         trace!("    return: {:?}", frame.return_place.map(|p| *p));
@@ -165,8 +183,6 @@ fn report_msg<'tcx, 'mir>(
             trace!("    local {}: {:?}", i, local.value);
         }
     }
-    // Let the reported error determine the return code.
-    return None;
 }
 
 thread_local! {
@@ -179,7 +195,7 @@ pub fn register_diagnostic(e: NonHaltingDiagnostic) {
     DIAGNOSTICS.with(|diagnostics| diagnostics.borrow_mut().push(e));
 }
 
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     /// Emit all diagnostics that were registed with `register_diagnostics`
     fn process_diagnostics(&self) {

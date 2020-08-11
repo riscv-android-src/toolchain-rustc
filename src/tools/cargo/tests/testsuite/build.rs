@@ -4,12 +4,13 @@ use cargo::util::paths::dylib_path_envvar;
 use cargo_test_support::paths::{root, CargoPathExt};
 use cargo_test_support::registry::Package;
 use cargo_test_support::{
-    basic_bin_manifest, basic_lib_manifest, basic_manifest, main_file, project, rustc_host,
-    sleep_ms, symlink_supported, t, Execs, ProjectBuilder,
+    basic_bin_manifest, basic_lib_manifest, basic_manifest, lines_match, main_file, project,
+    rustc_host, sleep_ms, symlink_supported, t, Execs, ProjectBuilder,
 };
 use std::env;
-use std::fs::{self, File};
-use std::io::prelude::*;
+use std::fs;
+use std::io::Read;
+use std::process::Stdio;
 
 #[cargo_test]
 fn cargo_compile_simple() {
@@ -1024,7 +1025,7 @@ fn incompatible_dependencies() {
 error: failed to select a version for `bad`.
     ... required by package `qux v0.1.0`
     ... which is depended on by `foo v0.0.1 ([..])`
-versions that meet the requirements `>= 1.0.1` are: 1.0.2, 1.0.1
+versions that meet the requirements `>=1.0.1` are: 1.0.2, 1.0.1
 
 all possible versions conflict with previously selected packages.
 
@@ -1069,7 +1070,7 @@ fn incompatible_dependencies_with_multi_semver() {
             "\
 error: failed to select a version for `bad`.
     ... required by package `foo v0.0.1 ([..])`
-versions that meet the requirements `>= 1.0.1, <= 2.0.0` are: 2.0.0, 1.0.1
+versions that meet the requirements `>=1.0.1, <=2.0.0` are: 2.0.0, 1.0.1
 
 all possible versions conflict with previously selected packages.
 
@@ -1108,10 +1109,7 @@ fn compile_path_dep_then_change_version() {
 
     p.cargo("build").run();
 
-    File::create(&p.root().join("bar/Cargo.toml"))
-        .unwrap()
-        .write_all(basic_manifest("bar", "0.0.2").as_bytes())
-        .unwrap();
+    p.change_file("bar/Cargo.toml", &basic_manifest("bar", "0.0.2"));
 
     p.cargo("build").run();
 }
@@ -1125,17 +1123,8 @@ fn ignores_carriage_return_in_lockfile() {
 
     p.cargo("build").run();
 
-    let lockfile = p.root().join("Cargo.lock");
-    let mut lock = String::new();
-    File::open(&lockfile)
-        .unwrap()
-        .read_to_string(&mut lock)
-        .unwrap();
-    let lock = lock.replace("\n", "\r\n");
-    File::create(&lockfile)
-        .unwrap()
-        .write_all(lock.as_bytes())
-        .unwrap();
+    let lock = p.read_lockfile();
+    p.change_file("Cargo.lock", &lock.replace("\n", "\r\n"));
     p.cargo("build").run();
 }
 
@@ -2164,7 +2153,7 @@ fn freshness_ignores_excluded() {
 
     // Modify an ignored file and make sure we don't rebuild
     println!("second pass");
-    File::create(&foo.root().join("src/bar.rs")).unwrap();
+    foo.change_file("src/bar.rs", "");
     foo.cargo("build").with_stdout("").run();
 }
 
@@ -2212,7 +2201,7 @@ fn rebuild_preserves_out_dir() {
         )
         .run();
 
-    File::create(&foo.root().join("src/bar.rs")).unwrap();
+    foo.change_file("src/bar.rs", "");
     foo.cargo("build")
         .with_stderr(
             "\
@@ -2280,11 +2269,12 @@ fn credentials_is_unreadable() {
 
     let credentials = home().join(".cargo/credentials");
     t!(fs::create_dir_all(credentials.parent().unwrap()));
-    t!(t!(File::create(&credentials)).write_all(
-        br#"
-        [registry]
-        token = "api-token"
-    "#
+    t!(fs::write(
+        &credentials,
+        r#"
+            [registry]
+            token = "api-token"
+        "#
     ));
     let stat = fs::metadata(credentials.as_path()).unwrap();
     let mut perms = stat.permissions();
@@ -2445,12 +2435,7 @@ fn cargo_platform_specific_dependency_wrong_platform() {
     assert!(p.bin("foo").is_file());
     p.process(&p.bin("foo")).run();
 
-    let loc = p.root().join("Cargo.lock");
-    let mut lockfile = String::new();
-    File::open(&loc)
-        .unwrap()
-        .read_to_string(&mut lockfile)
-        .unwrap();
+    let lockfile = p.read_lockfile();
     assert!(lockfile.contains("bar"));
 }
 
@@ -2868,16 +2853,13 @@ fn custom_target_dir_env() {
         .run();
     assert!(p.root().join("foo2/target/debug").join(&exe_name).is_file());
 
-    fs::create_dir(p.root().join(".cargo")).unwrap();
-    File::create(p.root().join(".cargo/config"))
-        .unwrap()
-        .write_all(
-            br#"
-        [build]
-        target-dir = "foo/target"
-    "#,
-        )
-        .unwrap();
+    p.change_file(
+        ".cargo/config",
+        r#"
+            [build]
+            target-dir = "foo/target"
+        "#,
+    );
     p.cargo("build").env("CARGO_TARGET_DIR", "bar/target").run();
     assert!(p.root().join("bar/target/debug").join(&exe_name).is_file());
     assert!(p.root().join("foo/target/debug").join(&exe_name).is_file());
@@ -2898,16 +2880,13 @@ fn custom_target_dir_line_parameter() {
     assert!(p.root().join("foo/target/debug").join(&exe_name).is_file());
     assert!(p.root().join("target/debug").join(&exe_name).is_file());
 
-    fs::create_dir(p.root().join(".cargo")).unwrap();
-    File::create(p.root().join(".cargo/config"))
-        .unwrap()
-        .write_all(
-            br#"
-        [build]
-        target-dir = "foo/target"
-    "#,
-        )
-        .unwrap();
+    p.change_file(
+        ".cargo/config",
+        r#"
+            [build]
+            target-dir = "foo/target"
+        "#,
+    );
     p.cargo("build --target-dir bar/target").run();
     assert!(p.root().join("bar/target/debug").join(&exe_name).is_file());
     assert!(p.root().join("foo/target/debug").join(&exe_name).is_file());
@@ -3792,7 +3771,11 @@ fn cdylib_not_lifted() {
     p.cargo("build").run();
 
     let files = if cfg!(windows) {
-        vec!["foo.dll.lib", "foo.dll.exp", "foo.dll"]
+        if cfg!(target_env = "msvc") {
+            vec!["foo.dll.lib", "foo.dll.exp", "foo.dll"]
+        } else {
+            vec!["libfoo.dll.a", "foo.dll"]
+        }
     } else if cfg!(target_os = "macos") {
         vec!["libfoo.dylib"]
     } else {
@@ -3826,7 +3809,11 @@ fn cdylib_final_outputs() {
     p.cargo("build").run();
 
     let files = if cfg!(windows) {
-        vec!["foo_bar.dll.lib", "foo_bar.dll"]
+        if cfg!(target_env = "msvc") {
+            vec!["foo_bar.dll.lib", "foo_bar.dll"]
+        } else {
+            vec!["foo_bar.dll", "libfoo_bar.dll.a"]
+        }
     } else if cfg!(target_os = "macos") {
         vec!["libfoo_bar.dylib"]
     } else {
@@ -4162,7 +4149,7 @@ fn uplift_dsym_of_bin_on_mac() {
     assert!(p.target_debug_dir().join("foo.dSYM").is_dir());
     assert!(p.target_debug_dir().join("b.dSYM").is_dir());
     assert!(p.target_debug_dir().join("b.dSYM").is_symlink());
-    assert!(p.target_debug_dir().join("examples/c.dSYM").is_symlink());
+    assert!(p.target_debug_dir().join("examples/c.dSYM").is_dir());
     assert!(!p.target_debug_dir().join("c.dSYM").exists());
     assert!(!p.target_debug_dir().join("d.dSYM").exists());
 }
@@ -4201,6 +4188,7 @@ fn uplift_pdb_of_bin_on_windows() {
     let p = project()
         .file("src/main.rs", "fn main() { panic!(); }")
         .file("src/bin/b.rs", "fn main() { panic!(); }")
+        .file("src/bin/foo-bar.rs", "fn main() { panic!(); }")
         .file("examples/c.rs", "fn main() { panic!(); }")
         .file("tests/d.rs", "fn main() { panic!(); }")
         .build();
@@ -4209,6 +4197,8 @@ fn uplift_pdb_of_bin_on_windows() {
     assert!(p.target_debug_dir().join("foo.pdb").is_file());
     assert!(p.target_debug_dir().join("b.pdb").is_file());
     assert!(p.target_debug_dir().join("examples/c.pdb").exists());
+    assert!(p.target_debug_dir().join("foo-bar.exe").is_file());
+    assert!(p.target_debug_dir().join("foo_bar.pdb").is_file());
     assert!(!p.target_debug_dir().join("c.pdb").exists());
     assert!(!p.target_debug_dir().join("d.pdb").exists());
 }
@@ -4829,4 +4819,113 @@ fn user_specific_cfgs_are_filtered_out() {
     p.cargo("rustc -- --cfg debug_assertions --cfg proc_macro")
         .run();
     p.process(&p.bin("foo")).run();
+}
+
+#[cargo_test]
+fn close_output() {
+    // What happens when stdout or stderr is closed during a build.
+
+    // Server to know when rustc has spawned.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                edition = "2018"
+
+                [lib]
+                proc-macro = true
+            "#,
+        )
+        .file(
+            "src/lib.rs",
+            &r#"
+                use proc_macro::TokenStream;
+                use std::io::Read;
+
+                #[proc_macro]
+                pub fn repro(_input: TokenStream) -> TokenStream {
+                    println!("hello stdout!");
+                    eprintln!("hello stderr!");
+                    // Tell the test we have started.
+                    let mut socket = std::net::TcpStream::connect("__ADDR__").unwrap();
+                    // Wait for the test to tell us to start printing.
+                    let mut buf = [0];
+                    drop(socket.read_exact(&mut buf));
+                    let use_stderr = std::env::var("__CARGO_REPRO_STDERR").is_ok();
+                    for i in 0..10000 {
+                        if use_stderr {
+                            eprintln!("{}", i);
+                        } else {
+                            println!("{}", i);
+                        }
+                        std::thread::sleep(std::time::Duration::new(0, 1));
+                    }
+                    TokenStream::new()
+                }
+            "#
+            .replace("__ADDR__", &addr.to_string()),
+        )
+        .file(
+            "src/main.rs",
+            r#"
+                foo::repro!();
+
+                fn main() {}
+            "#,
+        )
+        .build();
+
+    // The `stderr` flag here indicates if this should forcefully close stderr or stdout.
+    let spawn = |stderr: bool| {
+        let mut cmd = p.cargo("build").build_command();
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        if stderr {
+            cmd.env("__CARGO_REPRO_STDERR", "1");
+        }
+        let mut child = cmd.spawn().unwrap();
+        // Wait for proc macro to start.
+        let pm_conn = listener.accept().unwrap().0;
+        // Close stderr or stdout.
+        if stderr {
+            drop(child.stderr.take());
+        } else {
+            drop(child.stdout.take());
+        }
+        // Tell the proc-macro to continue;
+        drop(pm_conn);
+        // Read the output from the other channel.
+        let out: &mut dyn Read = if stderr {
+            child.stdout.as_mut().unwrap()
+        } else {
+            child.stderr.as_mut().unwrap()
+        };
+        let mut result = String::new();
+        out.read_to_string(&mut result).unwrap();
+        let status = child.wait().unwrap();
+        assert!(!status.success());
+        result
+    };
+
+    let stderr = spawn(false);
+    lines_match(
+        "\
+[COMPILING] foo [..]
+hello stderr!
+[ERROR] [..]
+[WARNING] build failed, waiting for other jobs to finish...
+[ERROR] build failed
+",
+        &stderr,
+    );
+
+    // Try again with stderr.
+    p.build_dir().rm_rf();
+    let stdout = spawn(true);
+    lines_match("hello_stdout!", &stdout);
 }

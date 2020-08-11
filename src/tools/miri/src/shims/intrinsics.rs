@@ -1,13 +1,16 @@
 use std::iter;
-use std::convert::TryFrom;
 
+use rustc_attr as attr;
+use rustc_ast::ast::FloatTy;
 use rustc_middle::{mir, ty};
-use rustc_apfloat::Float;
-use rustc_target::abi::{Align, LayoutOf};
+use rustc_middle::ty::layout::IntegerExt;
+use rustc_apfloat::{Float, Round};
+use rustc_target::abi::{Align, Integer, LayoutOf};
 
 use crate::*;
+use helpers::check_arg_count;
 
-impl<'mir, 'tcx> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
+impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mir, 'tcx> {}
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn call_intrinsic(
         &mut self,
@@ -44,16 +47,17 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "copy"
             | "copy_nonoverlapping"
             => {
+                let &[src, dest, count] = check_arg_count(args)?;
                 let elem_ty = substs.type_at(0);
                 let elem_layout = this.layout_of(elem_ty)?;
-                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
+                let count = this.read_scalar(count)?.to_machine_usize(this)?;
                 let elem_align = elem_layout.align.abi;
 
                 let size = elem_layout.size.checked_mul(count, this)
                     .ok_or_else(|| err_ub_format!("overflow computing total size of `{}`", intrinsic_name))?;
-                let src = this.read_scalar(args[0])?.not_undef()?;
+                let src = this.read_scalar(src)?.not_undef()?;
                 let src = this.memory.check_ptr_access(src, size, elem_align)?;
-                let dest = this.read_scalar(args[1])?.not_undef()?;
+                let dest = this.read_scalar(dest)?.not_undef()?;
                 let dest = this.memory.check_ptr_access(dest, size, elem_align)?;
 
                 if let (Some(src), Some(dest)) = (src, dest) {
@@ -67,47 +71,33 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "move_val_init" => {
-                let place = this.deref_operand(args[0])?;
-                this.copy_op(args[1], place.into())?;
+                let &[place, dest] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
+                this.copy_op(dest, place.into())?;
             }
 
             "volatile_load" => {
-                let place = this.deref_operand(args[0])?;
+                let &[place] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
                 this.copy_op(place.into(), dest)?;
             }
             "volatile_store" => {
-                let place = this.deref_operand(args[0])?;
-                this.copy_op(args[1], place.into())?;
+                let &[place, dest] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
+                this.copy_op(dest, place.into())?;
             }
 
             "write_bytes" => {
+                let &[ptr, val_byte, count] = check_arg_count(args)?;
                 let ty = substs.type_at(0);
                 let ty_layout = this.layout_of(ty)?;
-                let val_byte = this.read_scalar(args[1])?.to_u8()?;
-                let ptr = this.read_scalar(args[0])?.not_undef()?;
-                let count = this.read_scalar(args[2])?.to_machine_usize(this)?;
+                let val_byte = this.read_scalar(val_byte)?.to_u8()?;
+                let ptr = this.read_scalar(ptr)?.not_undef()?;
+                let count = this.read_scalar(count)?.to_machine_usize(this)?;
                 let byte_count = ty_layout.size.checked_mul(count, this)
                     .ok_or_else(|| err_ub_format!("overflow computing total size of `write_bytes`"))?;
                 this.memory
                     .write_bytes(ptr, iter::repeat(val_byte).take(byte_count.bytes() as usize))?;
-            }
-
-            // Pointer arithmetic
-            "arith_offset" => {
-                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
-                let ptr = this.read_scalar(args[0])?.not_undef()?;
-
-                let pointee_ty = substs.type_at(0);
-                let pointee_size = i64::try_from(this.layout_of(pointee_ty)?.size.bytes()).unwrap();
-                let offset = offset.overflowing_mul(pointee_size).0;
-                let result_ptr = ptr.ptr_wrapping_signed_offset(offset, this);
-                this.write_scalar(result_ptr, dest)?;
-            }
-            "offset" => {
-                let offset = this.read_scalar(args[1])?.to_machine_isize(this)?;
-                let ptr = this.read_scalar(args[0])?.not_undef()?;
-                let result_ptr = this.pointer_offset_inbounds(ptr, substs.type_at(0), offset)?;
-                this.write_scalar(result_ptr, dest)?;
             }
 
             // Floating-point operations
@@ -126,8 +116,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "truncf32"
             | "roundf32"
             => {
+                let &[f] = check_arg_count(args)?;
                 // FIXME: Using host floats.
-                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
+                let f = f32::from_bits(this.read_scalar(f)?.to_u32()?);
                 let f = match intrinsic_name {
                     "sinf32" => f.sin(),
                     "fabsf32" => f.abs(),
@@ -162,8 +153,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "truncf64"
             | "roundf64"
             => {
+                let &[f] = check_arg_count(args)?;
                 // FIXME: Using host floats.
-                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
+                let f = f64::from_bits(this.read_scalar(f)?.to_u64()?);
                 let f = match intrinsic_name {
                     "sinf64" => f.sin(),
                     "fabsf64" => f.abs(),
@@ -190,8 +182,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "fdiv_fast"
             | "frem_fast"
             => {
-                let a = this.read_immediate(args[0])?;
-                let b = this.read_immediate(args[1])?;
+                let &[a, b] = check_arg_count(args)?;
+                let a = this.read_immediate(a)?;
+                let b = this.read_immediate(b)?;
                 let op = match intrinsic_name {
                     "fadd_fast" => mir::BinOp::Add,
                     "fsub_fast" => mir::BinOp::Sub,
@@ -208,8 +201,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "maxnumf32"
             | "copysignf32"
             => {
-                let a = this.read_scalar(args[0])?.to_f32()?;
-                let b = this.read_scalar(args[1])?.to_f32()?;
+                let &[a, b] = check_arg_count(args)?;
+                let a = this.read_scalar(a)?.to_f32()?;
+                let b = this.read_scalar(b)?.to_f32()?;
                 let res = match intrinsic_name {
                     "minnumf32" => a.min(b),
                     "maxnumf32" => a.max(b),
@@ -224,8 +218,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "maxnumf64"
             | "copysignf64"
             => {
-                let a = this.read_scalar(args[0])?.to_f64()?;
-                let b = this.read_scalar(args[1])?.to_f64()?;
+                let &[a, b] = check_arg_count(args)?;
+                let a = this.read_scalar(a)?.to_f64()?;
+                let b = this.read_scalar(b)?.to_f64()?;
                 let res = match intrinsic_name {
                     "minnumf64" => a.min(b),
                     "maxnumf64" => a.max(b),
@@ -234,49 +229,72 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 };
                 this.write_scalar(Scalar::from_f64(res), dest)?;
             }
-            
+
             "powf32" => {
+                let &[f, f2] = check_arg_count(args)?;
                 // FIXME: Using host floats.
-                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
-                let f2 = f32::from_bits(this.read_scalar(args[1])?.to_u32()?);
+                let f = f32::from_bits(this.read_scalar(f)?.to_u32()?);
+                let f2 = f32::from_bits(this.read_scalar(f2)?.to_u32()?);
                 this.write_scalar(Scalar::from_u32(f.powf(f2).to_bits()), dest)?;
             }
 
             "powf64" => {
+                let &[f, f2] = check_arg_count(args)?;
                 // FIXME: Using host floats.
-                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
-                let f2 = f64::from_bits(this.read_scalar(args[1])?.to_u64()?);
+                let f = f64::from_bits(this.read_scalar(f)?.to_u64()?);
+                let f2 = f64::from_bits(this.read_scalar(f2)?.to_u64()?);
                 this.write_scalar(Scalar::from_u64(f.powf(f2).to_bits()), dest)?;
             }
 
             "fmaf32" => {
-                let a = this.read_scalar(args[0])?.to_f32()?;
-                let b = this.read_scalar(args[1])?.to_f32()?;
-                let c = this.read_scalar(args[2])?.to_f32()?;
+                let &[a, b, c] = check_arg_count(args)?;
+                let a = this.read_scalar(a)?.to_f32()?;
+                let b = this.read_scalar(b)?.to_f32()?;
+                let c = this.read_scalar(c)?.to_f32()?;
                 let res = a.mul_add(b, c).value;
                 this.write_scalar(Scalar::from_f32(res), dest)?;
             }
 
             "fmaf64" => {
-                let a = this.read_scalar(args[0])?.to_f64()?;
-                let b = this.read_scalar(args[1])?.to_f64()?;
-                let c = this.read_scalar(args[2])?.to_f64()?;
+                let &[a, b, c] = check_arg_count(args)?;
+                let a = this.read_scalar(a)?.to_f64()?;
+                let b = this.read_scalar(b)?.to_f64()?;
+                let c = this.read_scalar(c)?.to_f64()?;
                 let res = a.mul_add(b, c).value;
                 this.write_scalar(Scalar::from_f64(res), dest)?;
             }
 
             "powif32" => {
+                let &[f, i] = check_arg_count(args)?;
                 // FIXME: Using host floats.
-                let f = f32::from_bits(this.read_scalar(args[0])?.to_u32()?);
-                let i = this.read_scalar(args[1])?.to_i32()?;
+                let f = f32::from_bits(this.read_scalar(f)?.to_u32()?);
+                let i = this.read_scalar(i)?.to_i32()?;
                 this.write_scalar(Scalar::from_u32(f.powi(i).to_bits()), dest)?;
             }
 
             "powif64" => {
+                let &[f, i] = check_arg_count(args)?;
                 // FIXME: Using host floats.
-                let f = f64::from_bits(this.read_scalar(args[0])?.to_u64()?);
-                let i = this.read_scalar(args[1])?.to_i32()?;
+                let f = f64::from_bits(this.read_scalar(f)?.to_u64()?);
+                let i = this.read_scalar(i)?.to_i32()?;
                 this.write_scalar(Scalar::from_u64(f.powi(i).to_bits()), dest)?;
+            }
+
+            "float_to_int_unchecked" => {
+                let &[val] = check_arg_count(args)?;
+                let val = this.read_immediate(val)?;
+
+                let res = match val.layout.ty.kind {
+                    ty::Float(FloatTy::F32) => {
+                        this.float_to_int_unchecked(val.to_scalar()?.to_f32()?, dest.layout.ty)?
+                    }
+                    ty::Float(FloatTy::F64) => {
+                        this.float_to_int_unchecked(val.to_scalar()?.to_f64()?, dest.layout.ty)?
+                    }
+                    _ => bug!("`float_to_int_unchecked` called with non-float input type {:?}", val.layout.ty),
+                };
+
+                this.write_scalar(res, dest)?;
             }
 
             // Atomic operations
@@ -285,7 +303,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "atomic_load_relaxed"
             | "atomic_load_acq"
             => {
-                let place = this.deref_operand(args[0])?;
+                let &[place] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
                 let val = this.read_scalar(place.into())?; // make sure it fits into a scalar; otherwise it cannot be atomic
 
                 // Check alignment requirements. Atomics must always be aligned to their size,
@@ -302,8 +321,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "atomic_store_relaxed"
             | "atomic_store_rel"
             => {
-                let place = this.deref_operand(args[0])?;
-                let val = this.read_scalar(args[1])?; // make sure it fits into a scalar; otherwise it cannot be atomic
+                let &[place, val] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
+                let val = this.read_scalar(val)?; // make sure it fits into a scalar; otherwise it cannot be atomic
 
                 // Check alignment requirements. Atomics must always be aligned to their size,
                 // even if the type they wrap would be less aligned (e.g. AtomicU64 on 32bit must
@@ -324,12 +344,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "atomic_singlethreadfence_acqrel"
             | "atomic_singlethreadfence"
             => {
-                // we are inherently singlethreaded and singlecored, this is a nop
+                let &[] = check_arg_count(args)?;
+                // FIXME: this will become relevant once we try to detect data races.
             }
 
             _ if intrinsic_name.starts_with("atomic_xchg") => {
-                let place = this.deref_operand(args[0])?;
-                let new = this.read_scalar(args[1])?;
+                let &[place, new] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
+                let new = this.read_scalar(new)?;
                 let old = this.read_scalar(place.into())?;
 
                 // Check alignment requirements. Atomics must always be aligned to their size,
@@ -343,9 +365,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             _ if intrinsic_name.starts_with("atomic_cxchg") => {
-                let place = this.deref_operand(args[0])?;
-                let expect_old = this.read_immediate(args[1])?; // read as immediate for the sake of `binary_op()`
-                let new = this.read_scalar(args[2])?;
+                let &[place, expect_old, new] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
+                let expect_old = this.read_immediate(expect_old)?; // read as immediate for the sake of `binary_op()`
+                let new = this.read_scalar(new)?;
                 let old = this.read_immediate(place.into())?; // read as immediate for the sake of `binary_op()`
 
                 // Check alignment requirements. Atomics must always be aligned to their size,
@@ -397,11 +420,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "atomic_xsub_acqrel"
             | "atomic_xsub_relaxed"
             => {
-                let place = this.deref_operand(args[0])?;
+                let &[place, rhs] = check_arg_count(args)?;
+                let place = this.deref_operand(place)?;
                 if !place.layout.ty.is_integral() {
                     bug!("Atomic arithmetic operations only work on integer types");
                 }
-                let rhs = this.read_immediate(args[1])?;
+                let rhs = this.read_immediate(rhs)?;
                 let old = this.read_immediate(place.into())?;
 
                 // Check alignment requirements. Atomics must always be aligned to their size,
@@ -430,6 +454,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             "assert_inhabited" |
             "assert_zero_valid" |
             "assert_uninit_valid" => {
+                let &[] = check_arg_count(args)?;
                 let ty = substs.type_at(0);
                 let layout = this.layout_of(ty)?;
                 // Abort here because the caller might not be panic safe.
@@ -445,7 +470,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "min_align_of_val" => {
-                let mplace = this.deref_operand(args[0])?;
+                let &[mplace] = check_arg_count(args)?;
+                let mplace = this.deref_operand(mplace)?;
                 let (_, align) = this
                     .size_and_align_of_mplace(mplace)?
                     .expect("size_of_val called on extern type");
@@ -453,7 +479,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             "size_of_val" => {
-                let mplace = this.deref_operand(args[0])?;
+                let &[mplace] = check_arg_count(args)?;
+                let mplace = this.deref_operand(mplace)?;
                 let (size, _) = this
                     .size_and_align_of_mplace(mplace)?
                     .expect("size_of_val called on extern type");
@@ -462,17 +489,21 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
             // Other
             "assume" => {
-                let cond = this.read_scalar(args[0])?.to_bool()?;
+                let &[cond] = check_arg_count(args)?;
+                let cond = this.read_scalar(cond)?.not_undef()?.to_bool()?;
                 if !cond {
                     throw_ub_format!("`assume` intrinsic called with `false`");
                 }
             }
 
-            "exact_div" =>
-                this.exact_div(this.read_immediate(args[0])?, this.read_immediate(args[1])?, dest)?,
+            "exact_div" => {
+                let &[num, denom] = check_arg_count(args)?;
+                this.exact_div(this.read_immediate(num)?, this.read_immediate(denom)?, dest)?;
+            }
 
             "forget" => {
                 // We get an argument... and forget about it.
+                let &[_] = check_arg_count(args)?;
             }
 
             #[rustfmt::skip]
@@ -480,7 +511,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             | "unlikely"
             => {
                 // These just return their argument
-                let b = this.read_immediate(args[0])?;
+                let &[b] = check_arg_count(args)?;
+                let b = this.read_immediate(b)?;
                 this.write_immediate(*b, dest)?;
             }
 
@@ -492,5 +524,56 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.dump_place(*dest);
         this.go_to_block(ret);
         Ok(())
+    }
+
+    fn float_to_int_unchecked<F>(
+        &self,
+        f: F,
+        dest_ty: ty::Ty<'tcx>,
+    ) -> InterpResult<'tcx, Scalar<Tag>>
+    where
+        F: Float + Into<Scalar<Tag>>
+    {
+        let this = self.eval_context_ref();
+
+        // Step 1: cut off the fractional part of `f`. The result of this is
+        // guaranteed to be precisely representable in IEEE floats.
+        let f = f.round_to_integral(Round::TowardZero).value;
+
+        // Step 2: Cast the truncated float to the target integer type and see if we lose any information in this step.
+        Ok(match dest_ty.kind {
+            // Unsigned
+            ty::Uint(t) => {
+                let size = Integer::from_attr(this, attr::IntType::UnsignedInt(t)).size();
+                let res = f.to_u128(size.bits_usize());
+                if res.status.is_empty() {
+                    // No status flags means there was no further rounding or other loss of precision.
+                    Scalar::from_uint(res.value, size)
+                } else {
+                    // `f` was not representable in this integer type.
+                    throw_ub_format!(
+                        "`float_to_int_unchecked` intrinsic called on {} which cannot be represented in target type `{:?}`",
+                        f, dest_ty,
+                    );
+                }
+            }
+            // Signed
+            ty::Int(t) => {
+                let size = Integer::from_attr(this, attr::IntType::SignedInt(t)).size();
+                let res = f.to_i128(size.bits_usize());
+                if res.status.is_empty() {
+                    // No status flags means there was no further rounding or other loss of precision.
+                    Scalar::from_int(res.value, size)
+                } else {
+                    // `f` was not representable in this integer type.
+                    throw_ub_format!(
+                        "`float_to_int_unchecked` intrinsic called on {} which cannot be represented in target type `{:?}`",
+                        f, dest_ty,
+                    );
+                }
+            }
+            // Nothing else
+            _ => bug!("`float_to_int_unchecked` called with non-int output type {:?}", dest_ty),
+        })
     }
 }

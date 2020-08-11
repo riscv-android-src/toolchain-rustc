@@ -143,7 +143,7 @@ impl<T> LinkedList<T> {
         unsafe {
             node.next = self.head;
             node.prev = None;
-            let node = Some(Box::into_raw_non_null(node));
+            let node = Some(Box::leak(node).into());
 
             match self.head {
                 None => self.tail = node,
@@ -184,7 +184,7 @@ impl<T> LinkedList<T> {
         unsafe {
             node.next = None;
             node.prev = self.tail;
-            let node = Some(Box::into_raw_non_null(node));
+            let node = Some(Box::leak(node).into());
 
             match self.tail {
                 None => self.head = node,
@@ -972,7 +972,7 @@ unsafe impl<#[may_dangle] T> Drop for LinkedList<T> {
             fn drop(&mut self) {
                 // Continue the same loop we do below. This only runs when a destructor has
                 // panicked. If another one panics this will abort.
-                while let Some(_) = self.0.pop_front_node() {}
+                while self.0.pop_front_node().is_some() {}
             }
         }
 
@@ -1133,11 +1133,9 @@ impl<T> IterMut<'_, T> {
                     Some(prev) => prev,
                 };
 
-                let node = Some(Box::into_raw_non_null(box Node {
-                    next: Some(head),
-                    prev: Some(prev),
-                    element,
-                }));
+                let node = Some(
+                    Box::leak(box Node { next: Some(head), prev: Some(prev), element }).into(),
+                );
 
                 // Not creating references to entire nodes to not invalidate the
                 // reference to `element` we handed to the user.
@@ -1450,7 +1448,7 @@ impl<'a, T> CursorMut<'a, T> {
     #[unstable(feature = "linked_list_cursors", issue = "58533")]
     pub fn insert_after(&mut self, item: T) {
         unsafe {
-            let spliced_node = Box::into_raw_non_null(Box::new(Node::new(item)));
+            let spliced_node = Box::leak(Box::new(Node::new(item))).into();
             let node_next = match self.current {
                 None => self.list.head,
                 Some(node) => node.as_ref().next,
@@ -1470,7 +1468,7 @@ impl<'a, T> CursorMut<'a, T> {
     #[unstable(feature = "linked_list_cursors", issue = "58533")]
     pub fn insert_before(&mut self, item: T) {
         unsafe {
-            let spliced_node = Box::into_raw_non_null(Box::new(Node::new(item)));
+            let spliced_node = Box::leak(Box::new(Node::new(item))).into();
             let node_prev = match self.current {
                 None => self.list.tail,
                 Some(node) => node.as_ref().prev,
@@ -1495,6 +1493,31 @@ impl<'a, T> CursorMut<'a, T> {
             self.list.unlink_node(unlinked_node);
             let unlinked_node = Box::from_raw(unlinked_node.as_ptr());
             Some(unlinked_node.element)
+        }
+    }
+
+    /// Removes the current element from the `LinkedList` without deallocating the list node.
+    ///
+    /// The node that was removed is returned as a new `LinkedList` containing only this node.
+    /// The cursor is moved to point to the next element in the current `LinkedList`.
+    ///
+    /// If the cursor is currently pointing to the "ghost" non-element then no element
+    /// is removed and `None` is returned.
+    #[unstable(feature = "linked_list_cursors", issue = "58533")]
+    pub fn remove_current_as_list(&mut self) -> Option<LinkedList<T>> {
+        let mut unlinked_node = self.current?;
+        unsafe {
+            self.current = unlinked_node.as_ref().next;
+            self.list.unlink_node(unlinked_node);
+
+            unlinked_node.as_mut().prev = None;
+            unlinked_node.as_mut().next = None;
+            Some(LinkedList {
+                head: Some(unlinked_node),
+                tail: Some(unlinked_node),
+                len: 1,
+                marker: PhantomData,
+            })
         }
     }
 
@@ -1725,6 +1748,11 @@ impl<T> Extend<T> for LinkedList<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         <Self as SpecExtend<I>>::spec_extend(self, iter);
     }
+
+    #[inline]
+    fn extend_one(&mut self, elem: T) {
+        self.push_back(elem);
+    }
 }
 
 impl<I: IntoIterator> SpecExtend<I> for LinkedList<I::Item> {
@@ -1743,6 +1771,11 @@ impl<T> SpecExtend<LinkedList<T>> for LinkedList<T> {
 impl<'a, T: 'a + Copy> Extend<&'a T> for LinkedList<T> {
     fn extend<I: IntoIterator<Item = &'a T>>(&mut self, iter: I) {
         self.extend(iter.into_iter().cloned());
+    }
+
+    #[inline]
+    fn extend_one(&mut self, &elem: &'a T) {
+        self.push_back(elem);
     }
 }
 
@@ -1843,3 +1876,15 @@ unsafe impl<T: Send> Send for IterMut<'_, T> {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
 unsafe impl<T: Sync> Sync for IterMut<'_, T> {}
+
+#[unstable(feature = "linked_list_cursors", issue = "58533")]
+unsafe impl<T: Sync> Send for Cursor<'_, T> {}
+
+#[unstable(feature = "linked_list_cursors", issue = "58533")]
+unsafe impl<T: Sync> Sync for Cursor<'_, T> {}
+
+#[unstable(feature = "linked_list_cursors", issue = "58533")]
+unsafe impl<T: Send> Send for CursorMut<'_, T> {}
+
+#[unstable(feature = "linked_list_cursors", issue = "58533")]
+unsafe impl<T: Sync> Sync for CursorMut<'_, T> {}

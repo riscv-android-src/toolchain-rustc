@@ -351,16 +351,16 @@ impl<'c, 'cc> ConstEvalLateContext<'c, 'cc> {
         let index = self.expr(index);
 
         match (lhs, index) {
-            (Some(Constant::Vec(vec)), Some(Constant::Int(index))) => match vec[index as usize] {
-                Constant::F32(x) => Some(Constant::F32(x)),
-                Constant::F64(x) => Some(Constant::F64(x)),
+            (Some(Constant::Vec(vec)), Some(Constant::Int(index))) => match vec.get(index as usize) {
+                Some(Constant::F32(x)) => Some(Constant::F32(*x)),
+                Some(Constant::F64(x)) => Some(Constant::F64(*x)),
                 _ => None,
             },
             (Some(Constant::Vec(vec)), _) => {
                 if !vec.is_empty() && vec.iter().all(|x| *x == vec[0]) {
-                    match vec[0] {
-                        Constant::F32(x) => Some(Constant::F32(x)),
-                        Constant::F64(x) => Some(Constant::F64(x)),
+                    match vec.get(0) {
+                        Some(Constant::F32(x)) => Some(Constant::F32(*x)),
+                        Some(Constant::F64(x)) => Some(Constant::F64(*x)),
                         _ => None,
                     }
                 } else {
