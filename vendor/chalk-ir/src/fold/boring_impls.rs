@@ -6,8 +6,6 @@
 
 use crate::interner::TargetInterner;
 use crate::*;
-use chalk_engine::context::Context;
-use chalk_engine::{ExClause, FlounderedSubgoal, Literal};
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -113,8 +111,8 @@ impl<T: Fold<I, TI>, I: Interner, TI: TargetInterner<I>> Fold<I, TI> for Option<
     }
 }
 
-impl<I: Interner, TI: TargetInterner<I>> Fold<I, TI> for Parameter<I> {
-    type Result = Parameter<TI>;
+impl<I: Interner, TI: TargetInterner<I>> Fold<I, TI> for GenericArg<I> {
+    type Result = GenericArg<TI>;
     fn fold_with<'i>(
         &self,
         folder: &mut dyn Folder<'i, I, TI>,
@@ -128,7 +126,7 @@ impl<I: Interner, TI: TargetInterner<I>> Fold<I, TI> for Parameter<I> {
         let target_interner = folder.target_interner();
 
         let data = self.data(interner).fold_with(folder, outer_binder)?;
-        Ok(Parameter::new(target_interner, data))
+        Ok(GenericArg::new(target_interner, data))
     }
 }
 
@@ -215,6 +213,7 @@ impl<I: Interner, TI: TargetInterner<I>> Fold<I, TI> for QuantifiedWhereClauses<
     }
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! copy_fold {
     ($t:ty) => {
@@ -224,7 +223,7 @@ macro_rules! copy_fold {
                 &self,
                 _folder: &mut dyn ($crate::fold::Folder<'i, I, TI>),
                 _outer_binder: DebruijnIndex,
-            ) -> ::chalk_engine::fallible::Fallible<Self::Result>
+            ) -> ::chalk_ir::Fallible<Self::Result>
             where
                 I: 'i,
                 TI: 'i,
@@ -235,36 +234,41 @@ macro_rules! copy_fold {
     };
 }
 
-copy_fold!(UniverseIndex);
+copy_fold!(bool);
 copy_fold!(usize);
+copy_fold!(UniverseIndex);
 copy_fold!(PlaceholderIndex);
 copy_fold!(QuantifierKind);
 copy_fold!(DebruijnIndex);
-copy_fold!(chalk_engine::TableIndex);
-copy_fold!(chalk_engine::TimeStamp);
 copy_fold!(());
 copy_fold!(UintTy);
 copy_fold!(IntTy);
 copy_fold!(FloatTy);
 copy_fold!(Scalar);
 copy_fold!(ClausePriority);
+copy_fold!(Mutability);
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! id_fold {
     ($t:ident) => {
+        $crate::id_fold!($t, transfer_def_id);
+    };
+
+    ($t:ident, $transfer_fn:ident) => {
         impl<I: Interner, TI: TargetInterner<I>> $crate::fold::Fold<I, TI> for $t<I> {
             type Result = $t<TI>;
             fn fold_with<'i>(
                 &self,
                 _folder: &mut dyn ($crate::fold::Folder<'i, I, TI>),
                 _outer_binder: DebruijnIndex,
-            ) -> ::chalk_engine::fallible::Fallible<Self::Result>
+            ) -> ::chalk_ir::Fallible<Self::Result>
             where
                 I: 'i,
                 TI: 'i,
             {
                 let $t(def_id_tf) = *self;
-                let def_id_ttf = TI::transfer_def_id(def_id_tf);
+                let def_id_ttf = TI::$transfer_fn(def_id_tf);
                 Ok($t(def_id_ttf))
             }
         }
@@ -272,29 +276,24 @@ macro_rules! id_fold {
 }
 
 id_fold!(ImplId);
-id_fold!(StructId);
+id_fold!(AdtId, transfer_adt_id);
 id_fold!(TraitId);
 id_fold!(AssocTypeId);
 id_fold!(OpaqueTyId);
+id_fold!(FnDefId);
+id_fold!(ClosureId);
 
 impl<I: Interner, TI: TargetInterner<I>> SuperFold<I, TI> for ProgramClauseData<I> {
     fn super_fold_with<'i>(
         &self,
         folder: &mut dyn Folder<'i, I, TI>,
         outer_binder: DebruijnIndex,
-    ) -> ::chalk_engine::fallible::Fallible<Self::Result>
+    ) -> ::chalk_ir::Fallible<Self::Result>
     where
         I: 'i,
         TI: 'i,
     {
-        match self {
-            ProgramClauseData::Implies(pci) => Ok(ProgramClauseData::Implies(
-                pci.fold_with(folder, outer_binder)?,
-            )),
-            ProgramClauseData::ForAll(pci) => Ok(ProgramClauseData::ForAll(
-                pci.fold_with(folder, outer_binder)?,
-            )),
-        }
+        Ok(ProgramClauseData(self.0.fold_with(folder, outer_binder)?))
     }
 }
 
@@ -303,7 +302,7 @@ impl<I: Interner, TI: TargetInterner<I>> SuperFold<I, TI> for ProgramClause<I> {
         &self,
         folder: &mut dyn Folder<'i, I, TI>,
         outer_binder: DebruijnIndex,
-    ) -> ::chalk_engine::fallible::Fallible<Self::Result>
+    ) -> ::chalk_ir::Fallible<Self::Result>
     where
         I: 'i,
         TI: 'i,
@@ -322,129 +321,11 @@ impl<I: Interner, TI: TargetInterner<I>> Fold<I, TI> for PhantomData<I> {
         &self,
         _folder: &mut dyn Folder<'i, I, TI>,
         _outer_binder: DebruijnIndex,
-    ) -> ::chalk_engine::fallible::Fallible<Self::Result>
+    ) -> ::chalk_ir::Fallible<Self::Result>
     where
         I: 'i,
         TI: 'i,
     {
         Ok(PhantomData)
-    }
-}
-
-impl<I: Interner, TI: TargetInterner<I>, T, L> Fold<I, TI> for ParameterKind<T, L>
-where
-    T: Fold<I, TI>,
-    L: Fold<I, TI>,
-{
-    type Result = ParameterKind<T::Result, L::Result>;
-
-    fn fold_with<'i>(
-        &self,
-        folder: &mut dyn Folder<'i, I, TI>,
-        outer_binder: DebruijnIndex,
-    ) -> Fallible<Self::Result>
-    where
-        I: 'i,
-        TI: 'i,
-    {
-        match self {
-            ParameterKind::Ty(a) => Ok(ParameterKind::Ty(a.fold_with(folder, outer_binder)?)),
-            ParameterKind::Lifetime(a) => {
-                Ok(ParameterKind::Lifetime(a.fold_with(folder, outer_binder)?))
-            }
-        }
-    }
-}
-
-impl<C: Context, I: Interner, TI: TargetInterner<I>> Fold<I, TI> for ExClause<C>
-where
-    C: Context,
-    C::Substitution: Fold<I, TI, Result = C::Substitution>,
-    C::RegionConstraint: Fold<I, TI, Result = C::RegionConstraint>,
-    C::CanonicalConstrainedSubst: Fold<I, TI, Result = C::CanonicalConstrainedSubst>,
-    C::GoalInEnvironment: Fold<I, TI, Result = C::GoalInEnvironment>,
-{
-    type Result = ExClause<C>;
-
-    fn fold_with<'i>(
-        &self,
-        folder: &mut dyn Folder<'i, I, TI>,
-        outer_binder: DebruijnIndex,
-    ) -> Fallible<Self::Result>
-    where
-        I: 'i,
-        TI: 'i,
-    {
-        let ExClause {
-            subst,
-            ambiguous,
-            constraints,
-            subgoals,
-            delayed_subgoals,
-            answer_time,
-            floundered_subgoals,
-        } = self;
-        Ok(ExClause {
-            subst: subst.fold_with(folder, outer_binder)?,
-            ambiguous: *ambiguous,
-            constraints: constraints.fold_with(folder, outer_binder)?,
-            subgoals: subgoals.fold_with(folder, outer_binder)?,
-            delayed_subgoals: delayed_subgoals.fold_with(folder, outer_binder)?,
-            answer_time: answer_time.fold_with(folder, outer_binder)?,
-            floundered_subgoals: floundered_subgoals.fold_with(folder, outer_binder)?,
-        })
-    }
-}
-
-impl<C: Context, I: Interner, TI: TargetInterner<I>> Fold<I, TI> for FlounderedSubgoal<C>
-where
-    C: Context,
-    C::Substitution: Fold<I, TI, Result = C::Substitution>,
-    C::RegionConstraint: Fold<I, TI, Result = C::RegionConstraint>,
-    C::CanonicalConstrainedSubst: Fold<I, TI, Result = C::CanonicalConstrainedSubst>,
-    C::GoalInEnvironment: Fold<I, TI, Result = C::GoalInEnvironment>,
-{
-    type Result = FlounderedSubgoal<C>;
-
-    fn fold_with<'i>(
-        &self,
-        folder: &mut dyn Folder<'i, I, TI>,
-        outer_binder: DebruijnIndex,
-    ) -> Fallible<Self::Result>
-    where
-        I: 'i,
-        TI: 'i,
-    {
-        let FlounderedSubgoal {
-            floundered_literal,
-            floundered_time,
-        } = self;
-        Ok(FlounderedSubgoal {
-            floundered_literal: floundered_literal.fold_with(folder, outer_binder)?,
-            floundered_time: floundered_time.fold_with(folder, outer_binder)?,
-        })
-    }
-}
-
-impl<C: Context, I: Interner, TI: TargetInterner<I>> Fold<I, TI> for Literal<C>
-where
-    C: Context,
-    C::GoalInEnvironment: Fold<I, TI, Result = C::GoalInEnvironment>,
-{
-    type Result = Literal<C>;
-
-    fn fold_with<'i>(
-        &self,
-        folder: &mut dyn Folder<'i, I, TI>,
-        outer_binder: DebruijnIndex,
-    ) -> Fallible<Self::Result>
-    where
-        I: 'i,
-        TI: 'i,
-    {
-        match self {
-            Literal::Positive(goal) => Ok(Literal::Positive(goal.fold_with(folder, outer_binder)?)),
-            Literal::Negative(goal) => Ok(Literal::Negative(goal.fold_with(folder, outer_binder)?)),
-        }
     }
 }

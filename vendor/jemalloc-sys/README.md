@@ -96,7 +96,8 @@ hyphens `-` are replaced with underscores `_`(see
 * `JEMALLOC_SYS_WITH_MALLOC_CONF=<malloc_conf>`: Embed `<malloc_conf>` as a
   run-time options string that is processed prior to the `malloc_conf` global
   variable, the `/etc/malloc.conf` symlink, and the `MALLOC_CONF` environment
-  variable. For example, to change the default decay time to 30 seconds:
+  variable (note: this variable might be prefixed as `_RJEM_MALLOC_CONF`). For
+  example, to change the default decay time to 30 seconds:
   
   ```
   JEMALLOC_SYS_WITH_MALLOC_CONF=decay_ms:30000
@@ -143,6 +144,10 @@ hyphens `-` are replaced with underscores `_`(see
   virtual address size on those platforms where it knows how, and picks a
   default otherwise. This option may be useful when cross-compiling.
 
+* `JEMALLOC_SYS_GIT_DEV_BRANCH`: when this environment variable is defined, the
+  latest commit from `jemalloc`'s dev branch is fetched from
+  `https://github.com/jemalloc/jemalloc` and built.
+
 [jemalloc_install]: https://github.com/jemalloc/jemalloc/blob/dev/INSTALL.md#advanced-configuration
 
 ## License
@@ -162,12 +167,12 @@ Unless you explicitly state otherwise, any contribution intentionally submitted
 for inclusion in `jemalloc-sys` by you, as defined in the Apache-2.0 license,
 shall be dual licensed as above, without any additional terms or conditions.
 
-[travis]: https://travis-ci.org/alexcrichton/jemallocator
-[Travis-CI Status]: https://travis-ci.org/alexcrichton/jemallocator.svg?branch=master
-[appveyor]: https://ci.appveyor.com/project/alexcrichton/jemallocator/branch/master
-[Appveyor Status]: https://ci.appveyor.com/api/projects/status/github/alexcrichton/jemallocator?branch=master&svg=true
+[travis]: https://travis-ci.org/gnzlbg/jemallocator
+[Travis-CI Status]: https://travis-ci.org/gnzlbg/jemallocator.svg?branch=master
+[appveyor]: https://ci.appveyor.com/project/gnzlbg/jemallocator/branch/master
+[Appveyor Status]: https://ci.appveyor.com/api/projects/status/github/gnzlbg/jemallocator?branch=master&svg=true
 [Latest Version]: https://img.shields.io/crates/v/jemalloc-sys.svg
 [crates.io]: https://crates.io/crates/jemalloc-ctl
 [docs]: https://docs.rs/jemalloc-sys/badge.svg
 [docs.rs]: https://docs.rs/jemalloc-sys/
-[master_docs]: https://alexcrichton.github.io/jemallocator/jemalloc-sys
+[master_docs]: https://gnzlbg.github.io/jemallocator/jemalloc-sys

@@ -1,5 +1,3 @@
-// Copyright 2016 Dtoa Developers
-//
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
@@ -469,20 +467,27 @@ inline char* dtoa(double value, char* buffer, int maxDecimalPlaces = 324) {
 }
 */
 
+#[allow(deprecated)]
 #[inline]
 unsafe fn dtoa<W: io::Write>(mut wr: W, mut value: $fty) -> io::Result<usize> {
     if value == 0.0 {
         if value.is_sign_negative() {
-            try!(wr.write_all(b"-0.0"));
-            Ok(4)
+            match wr.write_all(b"-0.0") {
+                Ok(()) => Ok(4),
+                Err(e) => Err(e),
+            }
         } else {
-            try!(wr.write_all(b"0.0"));
-            Ok(3)
+            match wr.write_all(b"0.0") {
+                Ok(()) => Ok(3),
+                Err(e) => Err(e),
+            }
         }
     } else {
         let negative = value < 0.0;
         if negative {
-            try!(wr.write_all(b"-"));
+            if let Err(e) = wr.write_all(b"-") {
+                return Err(e);
+            }
             value = -value;
         }
         let mut buffer: [u8; 24] = mem::uninitialized();
@@ -490,7 +495,9 @@ unsafe fn dtoa<W: io::Write>(mut wr: W, mut value: $fty) -> io::Result<usize> {
         let (length, k) = grisu2(value, buf_ptr);
         let end = prettify(buf_ptr, length, k);
         let len = end as usize - buf_ptr as usize;
-        try!(wr.write_all(slice::from_raw_parts(buf_ptr, len)));
+        if let Err(e) = wr.write_all(slice::from_raw_parts(buf_ptr, len)) {
+            return Err(e);
+        }
         if negative {
             Ok(len + 1)
         } else {

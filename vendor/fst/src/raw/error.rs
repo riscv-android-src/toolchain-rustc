@@ -1,11 +1,13 @@
-use std::error;
 use std::fmt;
 use std::str;
 use std::string::FromUtf8Error;
 
-use raw::FstType;
+use crate::raw::FstType;
 
 /// An error that occurred while using a finite state transducer.
+///
+/// This enum is non-exhaustive. New variants may be added to it in
+/// compatible releases.
 pub enum Error {
     /// A version mismatch occurred while reading a finite state transducer.
     ///
@@ -27,7 +29,22 @@ pub enum Error {
     /// An unexpected error occurred while reading a finite state transducer.
     /// Usually this occurs because the data is corrupted or is not actually
     /// a finite state transducer serialized by this library.
-    Format,
+    Format {
+        /// The number of bytes given to the FST constructor.
+        size: usize,
+    },
+    /// An error that is returned if verification of an FST fails because of a
+    /// checksum mismatch.
+    ChecksumMismatch {
+        /// The checksum that was expected.
+        expected: u32,
+        /// The checksum that was actually computed.
+        got: u32,
+    },
+    /// An error that is returned if the caller attempts to verify an FST
+    /// that does not have a checksum, as is the case for all FSTs generated
+    /// by this crate before version `0.4`.
+    ChecksumMissing,
     /// A duplicate key was inserted into a finite state transducer, which is
     /// not allowed.
     DuplicateKey {
@@ -56,56 +73,77 @@ pub enum Error {
     },
     /// An error that occurred when trying to decode a UTF-8 byte key.
     FromUtf8(FromUtf8Error),
+    /// Hints that destructuring should not be exhaustive.
+    ///
+    /// This enum may grow additional variants, so this makes sure clients
+    /// don't count on exhaustive matching. (Otherwise, adding a new variant
+    /// could break existing code.)
+    #[doc(hidden)]
+    __Nonexhaustive,
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use self::Error::*;
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            FromUtf8(ref err) => err.fmt(f),
-            Version { expected, got } => {
-                write!(f, "\
-Error opening FST: expected API version {}, got API version {}.
-It looks like the FST you're trying to open is either not an FST file or it
-was generated with a different version of the 'fst' crate. You'll either need
+            Error::FromUtf8(ref err) => err.fmt(f),
+            Error::Version { expected, got } => write!(
+                f,
+                "\
+Error opening FST: expected API version {}, got API version {}. \
+It looks like the FST you're trying to open is either not an FST file or it \
+was generated with a different version of the 'fst' crate. You'll either need \
 to change the version of the 'fst' crate you're using, or re-generate the
-FST.", expected, got)
-            }
-            Format => write!(f, "\
-Error opening FST: An unknown error occurred. This usually means you're trying
-to read data that isn't actually an encoded FST."),
-            DuplicateKey { ref got } => write!(f, "\
-Error inserting duplicate key: {}.", format_bytes(&*got)),
-            OutOfOrder { ref previous, ref got } => write!(f, "\
-Error inserting out-of-order key: {}. (Previous key was {}.) Keys must be
+FST.",
+                expected, got
+            ),
+            Error::Format { size } => write!(
+                f,
+                "\
+Error opening FST with size {} bytes: An unknown error occurred. This \
+usually means you're trying to read data that isn't actually an encoded FST.",
+                size
+            ),
+            Error::ChecksumMismatch { expected, got } => write!(
+                f,
+                "FST verification failed: expected checksum of {} but got {}",
+                expected, got,
+            ),
+            Error::ChecksumMissing => write!(
+                f,
+                "FST verification failed: FST does not contain a checksum",
+            ),
+            Error::DuplicateKey { ref got } => write!(
+                f,
+                "Error inserting duplicate key: '{}'.",
+                format_bytes(&*got)
+            ),
+            Error::OutOfOrder { ref previous, ref got } => write!(
+                f,
+                "\
+Error inserting out-of-order key: '{}'. (Previous key was '{}'.) Keys must be \
 inserted in lexicographic order.",
-format_bytes(&*got), format_bytes(&*previous)),
-            WrongType { expected, got } => write!(f, "\
-Error opening FST: expected type {}, got type {}.", expected, got),
+                format_bytes(&*got),
+                format_bytes(&*previous)
+            ),
+            Error::WrongType { expected, got } => write!(
+                f,
+                "\
+Error opening FST: expected type '{}', got type '{}'.",
+                expected, got
+            ),
+            Error::__Nonexhaustive => unreachable!(),
         }
     }
 }
 
 impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
-impl error::Error for Error {
-    fn description(&self) -> &str {
-        use self::Error::*;
-        match *self {
-            FromUtf8(ref err) => err.description(),
-            Version { .. } => "incompatible version found when opening FST",
-            Format => "unknown invalid format found when opening FST",
-            DuplicateKey { .. } => "duplicate key insertion",
-            OutOfOrder { .. } => "out-of-order key insertion",
-            WrongType { .. } => "incompatible type found when opening FST",
-        }
-    }
-
-    fn cause(&self) -> Option<&error::Error> {
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
             Error::FromUtf8(ref err) => Some(err),
             _ => None,
@@ -114,7 +152,8 @@ impl error::Error for Error {
 }
 
 impl From<FromUtf8Error> for Error {
-    fn from(err: FromUtf8Error) -> Self {
+    #[inline]
+    fn from(err: FromUtf8Error) -> Error {
         Error::FromUtf8(err)
     }
 }

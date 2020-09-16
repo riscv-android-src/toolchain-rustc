@@ -6,7 +6,9 @@ use rustc_session::config::Strip;
 use rustc_session::config::{build_configuration, build_session_options, to_crate_config};
 use rustc_session::config::{rustc_optgroups, ErrorOutputType, ExternLocation, Options, Passes};
 use rustc_session::config::{CFGuard, ExternEntry, LinkerPluginLto, LtoCli, SwitchWithOptPath};
-use rustc_session::config::{Externs, OutputType, OutputTypes, Sanitizer, SymbolManglingVersion};
+use rustc_session::config::{
+    Externs, OutputType, OutputTypes, SanitizerSet, SymbolManglingVersion,
+};
 use rustc_session::lint::Level;
 use rustc_session::search_paths::SearchPath;
 use rustc_session::utils::NativeLibKind;
@@ -71,7 +73,7 @@ fn mk_map<K: Ord, V>(entries: Vec<(K, V)>) -> BTreeMap<K, V> {
 // When the user supplies --test we should implicitly supply --cfg test
 #[test]
 fn test_switch_implies_cfg_test() {
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["--test".to_string()]).unwrap();
         let (sess, cfg) = mk_session(matches);
         let cfg = build_configuration(&sess, to_crate_config(cfg));
@@ -82,7 +84,7 @@ fn test_switch_implies_cfg_test() {
 // When the user supplies --test and --cfg test, don't implicitly add another --cfg test
 #[test]
 fn test_switch_implies_cfg_test_unless_cfg_test() {
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["--test".to_string(), "--cfg=test".to_string()]).unwrap();
         let (sess, cfg) = mk_session(matches);
         let cfg = build_configuration(&sess, to_crate_config(cfg));
@@ -94,20 +96,20 @@ fn test_switch_implies_cfg_test_unless_cfg_test() {
 
 #[test]
 fn test_can_print_warnings() {
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["-Awarnings".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(!sess.diagnostic().can_emit_warnings());
     });
 
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches =
             optgroups().parse(&["-Awarnings".to_string(), "-Dwarnings".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(sess.diagnostic().can_emit_warnings());
     });
 
-    rustc_ast::with_default_globals(|| {
+    rustc_ast::with_default_session_globals(|| {
         let matches = optgroups().parse(&["-Adead_code".to_string()]).unwrap();
         let (sess, _) = mk_session(matches);
         assert!(sess.diagnostic().can_emit_warnings());
@@ -463,7 +465,6 @@ fn test_debugging_options_tracking_hash() {
     untracked!(ast_json_noexpand, true);
     untracked!(borrowck, String::from("other"));
     untracked!(borrowck_stats, true);
-    untracked!(control_flow_guard, CFGuard::Checks);
     untracked!(deduplicate_diagnostics, true);
     untracked!(dep_tasks, true);
     untracked!(dont_buffer_diagnostics, true);
@@ -499,13 +500,13 @@ fn test_debugging_options_tracking_hash() {
     untracked!(print_link_args, true);
     untracked!(print_llvm_passes, true);
     untracked!(print_mono_items, Some(String::from("abc")));
-    untracked!(print_region_graph, true);
     untracked!(print_type_sizes, true);
     untracked!(query_dep_graph, true);
     untracked!(query_stats, true);
     untracked!(save_analysis, true);
     untracked!(self_profile, SwitchWithOptPath::Enabled(None));
     untracked!(self_profile_events, Some(vec![String::new()]));
+    untracked!(span_debug, true);
     untracked!(span_free_formats, true);
     untracked!(strip, Strip::None);
     untracked!(terminal_width, Some(80));
@@ -536,6 +537,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(binary_dep_depinfo, true);
     tracked!(chalk, true);
     tracked!(codegen_backend, Some("abc".to_string()));
+    tracked!(control_flow_guard, CFGuard::Checks);
     tracked!(crate_attr, vec!["abc".to_string()]);
     tracked!(debug_macros, true);
     tracked!(dep_info_omit_d_target, true);
@@ -547,6 +549,7 @@ fn test_debugging_options_tracking_hash() {
     tracked!(human_readable_cgu_names, true);
     tracked!(inline_in_all_cgus, Some(true));
     tracked!(insert_sideeffect, true);
+    tracked!(instrument_coverage, true);
     tracked!(instrument_mcount, true);
     tracked!(link_only, true);
     tracked!(merge_functions, Some(MergeFunctions::Disabled));
@@ -567,9 +570,9 @@ fn test_debugging_options_tracking_hash() {
     tracked!(relro_level, Some(RelroLevel::Full));
     tracked!(report_delayed_bugs, true);
     tracked!(run_dsymutil, false);
-    tracked!(sanitizer, Some(Sanitizer::Address));
+    tracked!(sanitizer, SanitizerSet::ADDRESS);
     tracked!(sanitizer_memory_track_origins, 2);
-    tracked!(sanitizer_recover, vec![Sanitizer::Address]);
+    tracked!(sanitizer_recover, SanitizerSet::ADDRESS);
     tracked!(saturating_float_casts, Some(true));
     tracked!(share_generics, Some(true));
     tracked!(show_span, Some(String::from("abc")));

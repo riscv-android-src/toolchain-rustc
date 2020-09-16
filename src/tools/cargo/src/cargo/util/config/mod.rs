@@ -70,6 +70,7 @@ use serde::Deserialize;
 use url::Url;
 
 use self::ConfigValue as CV;
+use crate::core::compiler::rustdoc::RustdocExternMap;
 use crate::core::shell::Verbosity;
 use crate::core::{nightly_features_allowed, CliUnstable, Shell, SourceId, Workspace};
 use crate::ops;
@@ -121,7 +122,7 @@ macro_rules! get_value_typed {
 /// relating to cargo itself.
 #[derive(Debug)]
 pub struct Config {
-    /// The location of the user's 'home' directory. OS-dependent.
+    /// The location of the user's Cargo home directory. OS-dependent.
     home_path: Filesystem,
     /// Information about how to write messages to the shell
     shell: RefCell<Shell>,
@@ -172,6 +173,7 @@ pub struct Config {
     net_config: LazyCell<CargoNetConfig>,
     build_config: LazyCell<CargoBuildConfig>,
     target_cfgs: LazyCell<Vec<(String, TargetCfgConfig)>>,
+    doc_extern_map: LazyCell<RustdocExternMap>,
 }
 
 impl Config {
@@ -241,6 +243,7 @@ impl Config {
             net_config: LazyCell::new(),
             build_config: LazyCell::new(),
             target_cfgs: LazyCell::new(),
+            doc_extern_map: LazyCell::new(),
         }
     }
 
@@ -1008,12 +1011,16 @@ impl Config {
     /// Gets the index for a registry.
     pub fn get_registry_index(&self, registry: &str) -> CargoResult<Url> {
         validate_package_name(registry, "registry name", "")?;
-        Ok(
-            match self.get_string(&format!("registries.{}.index", registry))? {
-                Some(index) => self.resolve_registry_index(index)?,
-                None => bail!("No index found for registry: `{}`", registry),
-            },
-        )
+        if let Some(index) = self.get_string(&format!("registries.{}.index", registry))? {
+            self.resolve_registry_index(&index).chain_err(|| {
+                format!(
+                    "invalid index URL for registry `{}` defined in {}",
+                    registry, index.definition
+                )
+            })
+        } else {
+            bail!("no index found for registry: `{}`", registry);
+        }
     }
 
     /// Returns an error if `registry.index` is set.
@@ -1027,7 +1034,8 @@ impl Config {
         Ok(())
     }
 
-    fn resolve_registry_index(&self, index: Value<String>) -> CargoResult<Url> {
+    fn resolve_registry_index(&self, index: &Value<String>) -> CargoResult<Url> {
+        // This handles relative file: URLs, relative to the config definition.
         let base = index
             .definition
             .root(self)
@@ -1036,7 +1044,7 @@ impl Config {
         let _parsed = index.val.into_url()?;
         let url = index.val.into_url_with_base(Some(&*base))?;
         if url.password().is_some() {
-            bail!("Registry URLs may not contain passwords");
+            bail!("registry URLs may not contain passwords");
         }
         Ok(url)
     }
@@ -1152,6 +1160,14 @@ impl Config {
     pub fn target_cfgs(&self) -> CargoResult<&Vec<(String, TargetCfgConfig)>> {
         self.target_cfgs
             .try_borrow_with(|| target::load_target_cfgs(self))
+    }
+
+    pub fn doc_extern_map(&self) -> CargoResult<&RustdocExternMap> {
+        // Note: This does not support environment variables. The `Unit`
+        // fundamentally does not have access to the registry name, so there is
+        // nothing to query. Plumbing the name into SourceId is quite challenging.
+        self.doc_extern_map
+            .try_borrow_with(|| self.get::<RustdocExternMap>("doc.extern-map"))
     }
 
     /// Returns the `[target]` table definition for the given target triple.
@@ -1436,12 +1452,10 @@ impl ConfigValue {
     fn merge(&mut self, from: ConfigValue, force: bool) -> CargoResult<()> {
         match (self, from) {
             (&mut CV::List(ref mut old, _), CV::List(ref mut new, _)) => {
-                let new = mem::replace(new, Vec::new());
-                old.extend(new.into_iter());
+                old.extend(mem::take(new).into_iter());
             }
             (&mut CV::Table(ref mut old, _), CV::Table(ref mut new, _)) => {
-                let new = mem::replace(new, HashMap::new());
-                for (key, value) in new {
+                for (key, value) in mem::take(new) {
                     match old.entry(key.clone()) {
                         Occupied(mut entry) => {
                             let new_def = value.definition().clone();

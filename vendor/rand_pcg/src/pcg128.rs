@@ -11,38 +11,138 @@
 //! PCG random number generators
 
 // This is the default multiplier used by PCG for 64-bit state.
-const MULTIPLIER: u128 = 2549297995355413924u128 << 64 | 4865540595714422341;
+const MULTIPLIER: u128 = 0x2360_ED05_1FC6_5DA4_4385_DF64_9FCC_F645;
 
 use core::fmt;
-use core::mem::transmute;
 use rand_core::{RngCore, SeedableRng, Error, le};
+#[cfg(feature="serde1")] use serde::{Serialize, Deserialize};
+
+/// A PCG random number generator (XSL RR 128/64 (LCG) variant).
+///
+/// Permuted Congruential Generator with 128-bit state, internal Linear
+/// Congruential Generator, and 64-bit output via "xorshift low (bits),
+/// random rotation" output function.
+///
+/// This is a 128-bit LCG with explicitly chosen stream with the PCG-XSL-RR
+/// output function. This combination is the standard `pcg64`.
+///
+/// Despite the name, this implementation uses 32 bytes (256 bit) space
+/// comprising 128 bits of state and 128 bits stream selector. These are both
+/// set by `SeedableRng`, using a 256-bit seed.
+#[derive(Clone)]
+#[cfg_attr(feature="serde1", derive(Serialize,Deserialize))]
+pub struct Lcg128Xsl64 {
+    state: u128,
+    increment: u128,
+}
+
+/// `Lcg128Xsl64` is also officially known as `pcg64`.
+pub type Pcg64 = Lcg128Xsl64;
+
+impl Lcg128Xsl64 {
+    /// Construct an instance compatible with PCG seed and stream.
+    ///
+    /// Note that PCG specifies default values for both parameters:
+    ///
+    /// - `state = 0xcafef00dd15ea5e5`
+    /// - `stream = 0xa02bdbf7bb3c0a7ac28fa16a64abf96`
+    pub fn new(state: u128, stream: u128) -> Self {
+        // The increment must be odd, hence we discard one bit:
+        let increment = (stream << 1) | 1;
+        Lcg128Xsl64::from_state_incr(state, increment)
+    }
+
+    #[inline]
+    fn from_state_incr(state: u128, increment: u128) -> Self {
+        let mut pcg = Lcg128Xsl64 { state, increment };
+        // Move away from inital value:
+        pcg.state = pcg.state.wrapping_add(pcg.increment);
+        pcg.step();
+        pcg
+    }
+
+    #[inline]
+    fn step(&mut self) {
+        // prepare the LCG for the next round
+        self.state = self.state
+            .wrapping_mul(MULTIPLIER)
+            .wrapping_add(self.increment);
+    }
+}
+
+// Custom Debug implementation that does not expose the internal state
+impl fmt::Debug for Lcg128Xsl64 {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Lcg128Xsl64 {{}}")
+    }
+}
+
+/// We use a single 255-bit seed to initialise the state and select a stream.
+/// One `seed` bit (lowest bit of `seed[8]`) is ignored.
+impl SeedableRng for Lcg128Xsl64 {
+    type Seed = [u8; 32];
+
+    fn from_seed(seed: Self::Seed) -> Self {
+        let mut seed_u64 = [0u64; 4];
+        le::read_u64_into(&seed, &mut seed_u64);
+        let state = u128::from(seed_u64[0]) | (u128::from(seed_u64[1]) << 64);
+        let incr = u128::from(seed_u64[2]) | (u128::from(seed_u64[3]) << 64);
+
+        // The increment must be odd, hence we discard one bit:
+        Lcg128Xsl64::from_state_incr(state, incr | 1)
+    }
+}
+
+impl RngCore for Lcg128Xsl64 {
+    #[inline]
+    fn next_u32(&mut self) -> u32 {
+        self.next_u64() as u32
+    }
+
+    #[inline]
+    fn next_u64(&mut self) -> u64 {
+        self.step();
+        output_xsl_rr(self.state)
+    }
+
+    #[inline]
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        fill_bytes_impl(self, dest)
+    }
+
+    #[inline]
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+
 
 /// A PCG random number generator (XSL 128/64 (MCG) variant).
-/// 
+///
 /// Permuted Congruential Generator with 128-bit state, internal Multiplicative
 /// Congruential Generator, and 64-bit output via "xorshift low (bits),
 /// random rotation" output function.
-/// 
-/// This is a 128-bit MCG with the PCG-XSL-RR output function.
+///
+/// This is a 128-bit MCG with the PCG-XSL-RR output function, also known as
+/// `pcg64_fast`.
 /// Note that compared to the standard `pcg64` (128-bit LCG with PCG-XSL-RR
 /// output function), this RNG is faster, also has a long cycle, and still has
 /// good performance on statistical tests.
-/// 
-/// Note: this RNG is only available using Rust 1.26 or later.
 #[derive(Clone)]
 #[cfg_attr(feature="serde1", derive(Serialize,Deserialize))]
 pub struct Mcg128Xsl64 {
     state: u128,
 }
 
-/// A friendly name for `Mcg128Xsl64`.
+/// A friendly name for `Mcg128Xsl64` (also known as `pcg64_fast`).
 pub type Pcg64Mcg = Mcg128Xsl64;
 
 impl Mcg128Xsl64 {
     /// Construct an instance compatible with PCG seed.
-    /// 
+    ///
     /// Note that PCG specifies a default value for the parameter:
-    /// 
+    ///
     /// - `state = 0xcafef00dd15ea5e5`
     pub fn new(state: u128) -> Self {
         // Force low bit to 1, as in C version (C++ uses `state | 3` instead).
@@ -66,8 +166,8 @@ impl SeedableRng for Mcg128Xsl64 {
         // Read as if a little-endian u128 value:
         let mut seed_u64 = [0u64; 2];
         le::read_u64_into(&seed, &mut seed_u64);
-        let state = (seed_u64[0] as u128) |
-                    (seed_u64[1] as u128) << 64;
+        let state = u128::from(seed_u64[0])  |
+                    u128::from(seed_u64[1]) << 64;
         Mcg128Xsl64::new(state)
     }
 }
@@ -80,102 +180,46 @@ impl RngCore for Mcg128Xsl64 {
 
     #[inline]
     fn next_u64(&mut self) -> u64 {
-        // prepare the LCG for the next round
-        let state = self.state.wrapping_mul(MULTIPLIER);
-        self.state = state;
-
-        // Output function XSL RR ("xorshift low (bits), random rotation")
-        // Constants are for 128-bit state, 64-bit output
-        const XSHIFT: u32 = 64;     // (128 - 64 + 64) / 2
-        const ROTATE: u32 = 122;    // 128 - 6
-
-        let rot = (state >> ROTATE) as u32;
-        let xsl = ((state >> XSHIFT) as u64) ^ (state as u64);
-        xsl.rotate_right(rot)
+        self.state = self.state.wrapping_mul(MULTIPLIER);
+        output_xsl_rr(self.state)
     }
 
     #[inline]
     fn fill_bytes(&mut self, dest: &mut [u8]) {
-        // specialisation of impls::fill_bytes_via_next; approx 3x faster
-        let mut left = dest;
-        while left.len() >= 8 {
-            let (l, r) = {left}.split_at_mut(8);
-            left = r;
-            let chunk: [u8; 8] = unsafe {
-                transmute(self.next_u64().to_le())
-            };
-            l.copy_from_slice(&chunk);
-        }
-        let n = left.len();
-        if n > 0 {
-            let chunk: [u8; 8] = unsafe {
-                transmute(self.next_u64().to_le())
-            };
-            left.copy_from_slice(&chunk[..n]);
-        }
+        fill_bytes_impl(self, dest)
     }
 
     #[inline]
     fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), Error> {
-        Ok(self.fill_bytes(dest))
+        self.fill_bytes(dest);
+        Ok(())
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use ::rand_core::{RngCore, SeedableRng};
-    use super::*;
+#[inline(always)]
+fn output_xsl_rr(state: u128) -> u64 {
+    // Output function XSL RR ("xorshift low (bits), random rotation")
+    // Constants are for 128-bit state, 64-bit output
+    const XSHIFT: u32 = 64;     // (128 - 64 + 64) / 2
+    const ROTATE: u32 = 122;    // 128 - 6
 
-    #[test]
-    fn test_mcg128xsl64_construction() {
-        // Test that various construction techniques produce a working RNG.
-        let seed = [1,2,3,4, 5,6,7,8, 9,10,11,12, 13,14,15,16];
-        let mut rng1 = Mcg128Xsl64::from_seed(seed);
-        assert_eq!(rng1.next_u64(), 7071994460355047496);
+    let rot = (state >> ROTATE) as u32;
+    let xsl = ((state >> XSHIFT) as u64) ^ (state as u64);
+    xsl.rotate_right(rot)
+}
 
-        let mut rng2 = Mcg128Xsl64::from_rng(&mut rng1).unwrap();
-        assert_eq!(rng2.next_u64(), 12300796107712034932);
-
-        let mut rng3 = Mcg128Xsl64::seed_from_u64(0);
-        assert_eq!(rng3.next_u64(), 6198063878555692194);
-
-        // This is the same as Mcg128Xsl64, so we only have a single test:
-        let mut rng4 = Pcg64Mcg::seed_from_u64(0);
-        assert_eq!(rng4.next_u64(), 6198063878555692194);
+#[inline(always)]
+fn fill_bytes_impl<R: RngCore + ?Sized>(rng: &mut R, dest: &mut [u8]) {
+    let mut left = dest;
+    while left.len() >= 8 {
+        let (l, r) = {left}.split_at_mut(8);
+        left = r;
+        let chunk: [u8; 8] = rng.next_u64().to_le_bytes();
+        l.copy_from_slice(&chunk);
     }
-
-    #[test]
-    fn test_mcg128xsl64_true_values() {
-        // Numbers copied from official test suite (C version).
-        let mut rng = Mcg128Xsl64::new(42);
-
-        let mut results = [0u64; 6];
-        for i in results.iter_mut() { *i = rng.next_u64(); }
-        let expected: [u64; 6] = [0x63b4a3a813ce700a, 0x382954200617ab24,
-            0xa7fd85ae3fe950ce, 0xd715286aa2887737, 0x60c92fee2e59f32c, 0x84c4e96beff30017];
-        assert_eq!(results, expected);
-    }
-
-    #[cfg(feature="serde1")]
-    #[test]
-    fn test_mcg128xsl64_serde() {
-        use bincode;
-        use std::io::{BufWriter, BufReader};
-
-        let mut rng = Mcg128Xsl64::seed_from_u64(0);
-
-        let buf: Vec<u8> = Vec::new();
-        let mut buf = BufWriter::new(buf);
-        bincode::serialize_into(&mut buf, &rng).expect("Could not serialize");
-
-        let buf = buf.into_inner().unwrap();
-        let mut read = BufReader::new(&buf[..]);
-        let mut deserialized: Mcg128Xsl64 = bincode::deserialize_from(&mut read).expect("Could not deserialize");
-
-        assert_eq!(rng.state, deserialized.state);
-
-        for _ in 0..16 {
-            assert_eq!(rng.next_u64(), deserialized.next_u64());
-        }
+    let n = left.len();
+    if n > 0 {
+        let chunk: [u8; 8] = rng.next_u64().to_le_bytes();
+        left.copy_from_slice(&chunk[..n]);
     }
 }

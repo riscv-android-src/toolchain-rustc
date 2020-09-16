@@ -291,6 +291,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 } else if self.ecx.type_is_freeze(v.layout.ty) {
                     // This is `Freeze`, there cannot be an `UnsafeCell`
                     Ok(())
+                } else if matches!(v.layout.fields, FieldsShape::Union(..)) {
+                    // A (non-frozen) union. We fall back to whatever the type says.
+                    (self.unsafe_cell_action)(v)
                 } else {
                     // We want to not actually read from memory for this visit. So, before
                     // walking this value, we have to make sure it is not a
@@ -341,13 +344,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
             }
 
-            // We have to do *something* for unions.
-            fn visit_union(&mut self, v: MPlaceTy<'tcx, Tag>, _fields: NonZeroUsize) -> InterpResult<'tcx> {
-                // With unions, we fall back to whatever the type says, to hopefully be consistent
-                // with LLVM IR.
-                // FIXME: are we consistent, and is this really the behavior we want?
-                let frozen = self.ecx.type_is_freeze(v.layout.ty);
-                if frozen { Ok(()) } else { (self.unsafe_cell_action)(v) }
+            fn visit_union(&mut self, _v: MPlaceTy<'tcx, Tag>, _fields: NonZeroUsize) -> InterpResult<'tcx> {
+                bug!("we should have already handled unions in `visit_value`")
             }
         }
     }
@@ -468,6 +466,37 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 Ok((-1).into())
             }
         }
+    }
+    
+    fn read_scalar_at_offset(
+        &self,
+        op: OpTy<'tcx, Tag>,
+        offset: u64,
+        layout: TyAndLayout<'tcx>,
+    ) -> InterpResult<'tcx, ScalarMaybeUninit<Tag>> {
+        let this = self.eval_context_ref();
+        let op_place = this.deref_operand(op)?;
+        let offset = Size::from_bytes(offset);
+        // Ensure that the following read at an offset is within bounds
+        assert!(op_place.layout.size >= offset + layout.size);
+        let value_place = op_place.offset(offset, MemPlaceMeta::None, layout, this)?;
+        this.read_scalar(value_place.into())
+    }
+
+    fn write_scalar_at_offset(
+        &mut self,
+        op: OpTy<'tcx, Tag>,
+        offset: u64,
+        value: impl Into<ScalarMaybeUninit<Tag>>,
+        layout: TyAndLayout<'tcx>,
+    ) -> InterpResult<'tcx, ()> {
+        let this = self.eval_context_mut();
+        let op_place = this.deref_operand(op)?;
+        let offset = Size::from_bytes(offset);
+        // Ensure that the following read at an offset is within bounds
+        assert!(op_place.layout.size >= offset + layout.size);
+        let value_place = op_place.offset(offset, MemPlaceMeta::None, layout, this)?;
+        this.write_scalar(value, value_place.into())
     }
 }
 

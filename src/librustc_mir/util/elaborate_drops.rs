@@ -238,7 +238,7 @@ where
                 self.elaborator.patch().patch_terminator(
                     bb,
                     TerminatorKind::Drop {
-                        location: self.place,
+                        place: self.place,
                         target: self.succ,
                         unwind: self.unwind.into_option(),
                     },
@@ -279,7 +279,7 @@ where
                 let subpath = self.elaborator.field_subpath(variant_path, field);
                 let tcx = self.tcx();
 
-                assert_eq!(self.elaborator.param_env().reveal, Reveal::All);
+                assert_eq!(self.elaborator.param_env().reveal(), Reveal::All);
                 let field_ty =
                     tcx.normalize_erasing_regions(self.elaborator.param_env(), f.ty(tcx, substs));
                 (tcx.mk_place_field(base_place, field, field_ty), subpath)
@@ -644,6 +644,7 @@ where
                     destination: Some((unit_temp, succ)),
                     cleanup: unwind.into_option(),
                     from_hir_call: true,
+                    fn_span: self.source_info.span,
                 },
                 source_info: self.source_info,
             }),
@@ -722,7 +723,7 @@ where
         self.elaborator.patch().patch_terminator(
             drop_block,
             TerminatorKind::Drop {
-                location: tcx.mk_place_deref(ptr),
+                place: tcx.mk_place_deref(ptr),
                 target: loop_block,
                 unwind: unwind.into_option(),
             },
@@ -988,6 +989,7 @@ where
             destination: Some((unit_temp, target)),
             cleanup: None,
             from_hir_call: false,
+            fn_span: self.source_info.span,
         }; // FIXME(#43234)
         let free_block = self.new_block(unwind, call);
 
@@ -998,7 +1000,7 @@ where
 
     fn drop_block(&mut self, target: BasicBlock, unwind: Unwind) -> BasicBlock {
         let block =
-            TerminatorKind::Drop { location: self.place, target, unwind: unwind.into_option() };
+            TerminatorKind::Drop { place: self.place, target, unwind: unwind.into_option() };
         self.new_block(unwind, block)
     }
 

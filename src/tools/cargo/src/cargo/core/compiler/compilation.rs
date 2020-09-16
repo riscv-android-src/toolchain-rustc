@@ -20,6 +20,8 @@ pub struct Doctest {
     pub args: Vec<OsString>,
     /// Whether or not -Zunstable-options is needed.
     pub unstable_opts: bool,
+    /// The -Clinker value to use.
+    pub linker: Option<PathBuf>,
 }
 
 /// A structure returning the result of a compilation.
@@ -31,6 +33,9 @@ pub struct Compilation<'cfg> {
 
     /// An array of all binaries created.
     pub binaries: Vec<(Unit, PathBuf)>,
+
+    /// An array of all cdylibs created.
+    pub cdylibs: Vec<(Unit, PathBuf)>,
 
     /// All directories for the output of native build commands.
     ///
@@ -121,6 +126,7 @@ impl<'cfg> Compilation<'cfg> {
                 .collect(),
             tests: Vec::new(),
             binaries: Vec::new(),
+            cdylibs: Vec::new(),
             extra_env: HashMap::new(),
             to_doc_test: Vec::new(),
             cfgs: HashMap::new(),
@@ -155,17 +161,15 @@ impl<'cfg> Compilation<'cfg> {
             self.rustc_process.clone()
         };
 
-        self.fill_env(rustc, &unit.pkg, unit.kind, true)
+        let cmd = fill_rustc_tool_env(rustc, unit);
+        self.fill_env(cmd, &unit.pkg, unit.kind, true)
     }
 
     /// See `process`.
     pub fn rustdoc_process(&self, unit: &Unit) -> CargoResult<ProcessBuilder> {
-        let mut p = self.fill_env(
-            process(&*self.config.rustdoc()?),
-            &unit.pkg,
-            unit.kind,
-            true,
-        )?;
+        let rustdoc = process(&*self.config.rustdoc()?);
+        let cmd = fill_rustc_tool_env(rustdoc, unit);
+        let mut p = self.fill_env(cmd, &unit.pkg, unit.kind, true)?;
         if unit.target.edition() != Edition::Edition2015 {
             p.arg(format!("--edition={}", unit.target.edition()));
         }
@@ -293,10 +297,28 @@ impl<'cfg> Compilation<'cfg> {
                 "CARGO_PKG_REPOSITORY",
                 metadata.repository.as_ref().unwrap_or(&String::new()),
             )
+            .env(
+                "CARGO_PKG_LICENSE",
+                metadata.license.as_ref().unwrap_or(&String::new()),
+            )
+            .env(
+                "CARGO_PKG_LICENSE_FILE",
+                metadata.license_file.as_ref().unwrap_or(&String::new()),
+            )
             .env("CARGO_PKG_AUTHORS", &pkg.authors().join(":"))
             .cwd(pkg.root());
         Ok(cmd)
     }
+}
+
+/// Prepares a rustc_tool process with additional environment variables
+/// that are only relevant in a context that has a unit
+fn fill_rustc_tool_env(mut cmd: ProcessBuilder, unit: &Unit) -> ProcessBuilder {
+    if unit.target.is_bin() {
+        cmd.env("CARGO_BIN_NAME", unit.target.name());
+    }
+    cmd.env("CARGO_CRATE_NAME", unit.target.crate_name());
+    cmd
 }
 
 fn pre_version_component(v: &Version) -> String {

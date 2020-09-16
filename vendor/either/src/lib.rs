@@ -384,6 +384,144 @@ impl<L, R> Either<L, R> {
             Right(r) => Right(r.into_iter()),
         }
     }
+
+    /// Return left value or given value
+    ///
+    /// Arguments passed to `left_or` are eagerly evaluated; if you are passing
+    /// the result of a function call, it is recommended to use [`left_or_else`],
+    /// which is lazily evaluated.
+    ///
+    /// [`left_or_else`]: #method.left_or_else
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use either::*;
+    /// let left: Either<&str, &str> = Left("left");
+    /// assert_eq!(left.left_or("foo"), "left");
+    ///
+    /// let right: Either<&str, &str> = Right("right");
+    /// assert_eq!(right.left_or("left"), "left");
+    /// ```
+    pub fn left_or(self, other: L) -> L {
+        match self {
+            Either::Left(l) => l,
+            Either::Right(_) => other,
+        }
+    }
+
+    /// Return left or a default
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use either::*;
+    /// let left: Either<String, u32> = Left("left".to_string());
+    /// assert_eq!(left.left_or_default(), "left");
+    ///
+    /// let right: Either<String, u32> = Right(42);
+    /// assert_eq!(right.left_or_default(), String::default());
+    /// ```
+    pub fn left_or_default(self) -> L
+    where
+        L: Default,
+    {
+        match self {
+            Either::Left(l) => l,
+            Either::Right(_) => L::default(),
+        }
+    }
+
+    /// Returns left value or computes it from a closure
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use either::*;
+    /// let left: Either<String, u32> = Left("3".to_string());
+    /// assert_eq!(left.left_or_else(|_| unreachable!()), "3");
+    ///
+    /// let right: Either<String, u32> = Right(3);
+    /// assert_eq!(right.left_or_else(|x| x.to_string()), "3");
+    /// ```
+    pub fn left_or_else<F>(self, f: F) -> L
+        where
+            F: FnOnce(R) -> L,
+    {
+        match self {
+            Either::Left(l) => l,
+            Either::Right(r) => f(r),
+        }
+    }
+
+    /// Return right value or given value
+    ///
+    /// Arguments passed to `right_or` are eagerly evaluated; if you are passing
+    /// the result of a function call, it is recommended to use [`right_or_else`],
+    /// which is lazily evaluated.
+    ///
+    /// [`right_or_else`]: #method.right_or_else
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use either::*;
+    /// let right: Either<&str, &str> = Right("right");
+    /// assert_eq!(right.right_or("foo"), "right");
+    ///
+    /// let left: Either<&str, &str> = Left("left");
+    /// assert_eq!(left.right_or("right"), "right");
+    /// ```
+    pub fn right_or(self, other: R) -> R {
+        match self {
+            Either::Left(_) => other,
+            Either::Right(r) => r,
+        }
+    }
+
+    /// Return right or a default
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use either::*;
+    /// let left: Either<String, u32> = Left("left".to_string());
+    /// assert_eq!(left.right_or_default(), u32::default());
+    ///
+    /// let right: Either<String, u32> = Right(42);
+    /// assert_eq!(right.right_or_default(), 42);
+    /// ```
+    pub fn right_or_default(self) -> R
+    where
+        R: Default,
+    {
+        match self {
+            Either::Left(_) => R::default(),
+            Either::Right(r) => r,
+        }
+    }
+
+    /// Returns right value or computes it from a closure
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use either::*;
+    /// let left: Either<String, u32> = Left("3".to_string());
+    /// assert_eq!(left.right_or_else(|x| x.parse().unwrap()), 3);
+    ///
+    /// let right: Either<String, u32> = Right(3);
+    /// assert_eq!(right.right_or_else(|_| unreachable!()), 3);
+    /// ```
+    pub fn right_or_else<F>(self, f: F) -> R
+        where
+            F: FnOnce(L) -> R,
+    {
+        match self {
+            Either::Left(l) => f(l),
+            Either::Right(r) => r,
+        }
+    }
 }
 
 impl<T, L, R> Either<(T, L), (T, R)> {
@@ -442,6 +580,26 @@ impl<T> Either<T, T> {
     /// ```
     pub fn into_inner(self) -> T {
         either!(self, inner => inner)
+    }
+
+    /// Map `f` over the contained value and return the result in the
+    /// corresponding variant.
+    ///
+    /// ```
+    /// use either::*;
+    ///
+    /// let value: Either<_, i32> = Right(42);
+    ///
+    /// let other = value.map(|x| x * 2);
+    /// assert_eq!(other, Right(84));
+    /// ```
+    pub fn map<F, M>(self, f: F) -> Either<M, M>
+        where F: FnOnce(T) -> M
+    {
+        match self {
+            Left(l) => Left(f(l)),
+            Right(r) => Right(f(r)),
+        }
     }
 }
 
@@ -587,10 +745,65 @@ impl<L, R, Target> AsRef<Target> for Either<L, R>
     }
 }
 
+macro_rules! impl_specific_ref_and_mut {
+    ($t:ty, $($attr:meta),* ) => {
+        $(#[$attr])*
+        impl<L, R> AsRef<$t> for Either<L, R>
+            where L: AsRef<$t>, R: AsRef<$t>
+        {
+            fn as_ref(&self) -> &$t {
+                either!(*self, ref inner => inner.as_ref())
+            }
+        }
+
+        $(#[$attr])*
+        impl<L, R> AsMut<$t> for Either<L, R>
+            where L: AsMut<$t>, R: AsMut<$t>
+        {
+            fn as_mut(&mut self) -> &mut $t {
+                either!(*self, ref mut inner => inner.as_mut())
+            }
+        }
+    };
+}
+
+impl_specific_ref_and_mut!(str,);
+impl_specific_ref_and_mut!(
+    ::std::path::Path,
+    cfg(feature = "use_std"),
+    doc = "Requires crate feature `use_std`."
+);
+impl_specific_ref_and_mut!(
+    ::std::ffi::OsStr,
+    cfg(feature = "use_std"),
+    doc = "Requires crate feature `use_std`."
+);
+impl_specific_ref_and_mut!(
+    ::std::ffi::CStr,
+    cfg(feature = "use_std"),
+    doc = "Requires crate feature `use_std`."
+);
+
+impl<L, R, Target> AsRef<[Target]> for Either<L, R>
+    where L: AsRef<[Target]>, R: AsRef<[Target]>
+{
+    fn as_ref(&self) -> &[Target] {
+        either!(*self, ref inner => inner.as_ref())
+    }
+}
+
 impl<L, R, Target> AsMut<Target> for Either<L, R>
     where L: AsMut<Target>, R: AsMut<Target>
 {
     fn as_mut(&mut self) -> &mut Target {
+        either!(*self, ref mut inner => inner.as_mut())
+    }
+}
+
+impl<L, R, Target> AsMut<[Target]> for Either<L, R>
+    where L: AsMut<[Target]>, R: AsMut<[Target]>
+{
+    fn as_mut(&mut self) -> &mut [Target] {
         either!(*self, ref mut inner => inner.as_mut())
     }
 }
@@ -622,6 +835,7 @@ impl<L, R> Error for Either<L, R>
         either!(*self, ref inner => inner.description())
     }
 
+    #[allow(deprecated)]
     fn cause(&self) -> Option<&Error> {
         either!(*self, ref inner => inner.cause())
     }
@@ -673,7 +887,7 @@ fn deref() {
 fn iter() {
     let x = 3;
     let mut iter = match x {
-        1...3 => Left(0..10),
+        3 => Left(0..10),
         _ => Right(17..),
     };
 
@@ -719,4 +933,42 @@ fn error() {
     }();
     assert!(res.is_err());
     res.unwrap_err().description(); // make sure this can be called
+}
+
+/// A helper macro to check if AsRef and AsMut are implemented for a given type.
+macro_rules! check_t {
+    ($t:ty) => {{
+        fn check_ref<T: AsRef<$t>>() {}
+        fn propagate_ref<T1: AsRef<$t>, T2: AsRef<$t>>() {
+            check_ref::<Either<T1, T2>>()
+        }
+        fn check_mut<T: AsMut<$t>>() {}
+        fn propagate_mut<T1: AsMut<$t>, T2: AsMut<$t>>() {
+            check_mut::<Either<T1, T2>>()
+        }
+    }};
+}
+
+// This "unused" method is here to ensure that compilation doesn't fail on given types.
+fn _unsized_ref_propagation() {
+    check_t!(str);
+
+    fn check_array_ref<T: AsRef<[Item]>, Item>() {}
+    fn check_array_mut<T: AsMut<[Item]>, Item>() {}
+
+    fn propagate_array_ref<T1: AsRef<[Item]>, T2: AsRef<[Item]>, Item>() {
+        check_array_ref::<Either<T1, T2>, _>()
+    }
+
+    fn propagate_array_mut<T1: AsMut<[Item]>, T2: AsMut<[Item]>, Item>() {
+        check_array_mut::<Either<T1, T2>, _>()
+    }
+}
+
+// This "unused" method is here to ensure that compilation doesn't fail on given types.
+#[cfg(feature = "use_std")]
+fn _unsized_std_propagation() {
+    check_t!(::std::path::Path);
+    check_t!(::std::ffi::OsStr);
+    check_t!(::std::ffi::CStr);
 }

@@ -2,7 +2,7 @@
 
 use super::unify::UnificationResult;
 use super::*;
-use chalk_ir::interner::ChalkIr;
+use chalk_integration::interner::ChalkIr;
 
 #[test]
 fn infer() {
@@ -184,9 +184,9 @@ fn quantify_simple() {
             binders: CanonicalVarKinds::from(
                 interner,
                 vec![
-                    ParameterKind::Ty(U2),
-                    ParameterKind::Ty(U1),
-                    ParameterKind::Ty(U0),
+                    CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U2),
+                    CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U1),
+                    CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U0),
                 ]
             ),
         }
@@ -225,9 +225,9 @@ fn quantify_bound() {
             binders: CanonicalVarKinds::from(
                 interner,
                 vec![
-                    ParameterKind::Ty(U1),
-                    ParameterKind::Ty(U0),
-                    ParameterKind::Ty(U2),
+                    CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U1),
+                    CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U0),
+                    CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U2),
                 ]
             ),
         }
@@ -268,7 +268,10 @@ fn quantify_ty_under_binder() {
             value: ty!(function 3 (apply (item 0) (bound 1) (bound 1 0) (bound 1 0) (lifetime (bound 1 1)))),
             binders: CanonicalVarKinds::from(
                 interner,
-                vec![ParameterKind::Ty(U0), ParameterKind::Lifetime(U0)]
+                vec![
+                    CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U0),
+                    CanonicalVarKind::new(VariableKind::Lifetime, U0)
+                ]
             ),
         }
     );
@@ -289,10 +292,8 @@ fn lifetime_constraint_indirect() {
     // '!1.
     let t_a = ty!(apply (item 0) (lifetime (placeholder 1)));
     let t_b = ty!(apply (item 0) (lifetime (infer 1)));
-    let UnificationResult { goals, constraints } =
-        table.unify(interner, &environment0, &t_a, &t_b).unwrap();
+    let UnificationResult { goals } = table.unify(interner, &environment0, &t_a, &t_b).unwrap();
     assert!(goals.is_empty());
-    assert!(constraints.is_empty());
 
     // Here, we try to unify `?0` (the type variable in universe 0)
     // with something that involves `'?1`. Since `'?1` has been
@@ -300,12 +301,17 @@ fn lifetime_constraint_indirect() {
     // we will replace `'!1` with a new variable `'?2` and introduce a
     // (likely unsatisfiable) constraint relating them.
     let t_c = ty!(infer 0);
-    let UnificationResult { goals, constraints } =
-        table.unify(interner, &environment0, &t_c, &t_b).unwrap();
-    assert!(goals.is_empty());
-    assert_eq!(constraints.len(), 1);
+    let goals = table
+        .unify(interner, &environment0, &t_c, &t_b)
+        .unwrap()
+        .goals;
+    assert_eq!(goals.len(), 2);
     assert_eq!(
-        format!("{:?}", constraints[0]),
-        "InEnvironment { environment: Env([]), goal: \'?2 == \'!1_0 }",
+        format!("{:?}", goals[0]),
+        "InEnvironment { environment: Env([]), goal: AddRegionConstraint(\'!1_0: \'?2) }",
+    );
+    assert_eq!(
+        format!("{:?}", goals[1]),
+        "InEnvironment { environment: Env([]), goal: AddRegionConstraint(\'?2: \'!1_0) }",
     );
 }

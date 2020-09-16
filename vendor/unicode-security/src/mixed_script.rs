@@ -1,11 +1,12 @@
 //! [Mixed-script detection](https://www.unicode.org/reports/tr39/#Mixed_Script_Detection)
 
+use core::fmt::{self, Debug};
 use unicode_script::{Script, ScriptExtension};
 
 /// An Augmented script set, as defined by UTS 39
 ///
 /// https://www.unicode.org/reports/tr39/#def-augmented-script-set
-#[derive(Copy, Clone, PartialEq, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Hash, Eq)]
 pub struct AugmentedScriptSet {
     /// The base ScriptExtension value
     pub base: ScriptExtension,
@@ -23,10 +24,7 @@ impl From<ScriptExtension> for AugmentedScriptSet {
         let mut jpan = false;
         let mut kore = false;
 
-        if ext == ScriptExtension::Single(Script::Common)
-            || ext == ScriptExtension::Single(Script::Inherited)
-            || ext.contains_script(Script::Han)
-        {
+        if ext.is_common() || ext.is_inherited() || ext.contains_script(Script::Han) {
             hanb = true;
             jpan = true;
             kore = true;
@@ -67,11 +65,77 @@ impl From<&'_ str> for AugmentedScriptSet {
 impl Default for AugmentedScriptSet {
     fn default() -> Self {
         AugmentedScriptSet {
-            base: ScriptExtension::Single(Script::Common),
+            base: Script::Common.into(),
             hanb: true,
             jpan: true,
             kore: true,
         }
+    }
+}
+
+impl Debug for AugmentedScriptSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            write!(f, "AugmentedScriptSet {{∅}}")?;
+        } else if self.is_all() {
+            write!(f, "AugmentedScriptSet {{ALL}}")?;
+        } else {
+            write!(f, "AugmentedScriptSet {{")?;
+            let mut first_entry = true;
+            let hanb = if self.hanb { Some("Hanb") } else { None };
+            let jpan = if self.jpan { Some("Jpan") } else { None };
+            let kore = if self.kore { Some("Kore") } else { None };
+            for writing_system in None
+                .into_iter()
+                .chain(hanb)
+                .chain(jpan)
+                .chain(kore)
+                .chain(self.base.iter().map(Script::short_name))
+            {
+                if !first_entry {
+                    write!(f, ", ")?;
+                } else {
+                    first_entry = false;
+                }
+                write!(f, "{}", writing_system)?;
+            }
+            write!(f, "}}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for AugmentedScriptSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.is_empty() {
+            write!(f, "Empty")?;
+        } else if self.is_all() {
+            write!(f, "All")?;
+        } else {
+            let mut first_entry = true;
+            let hanb = if self.hanb {
+                Some("Han with Bopomofo")
+            } else {
+                None
+            };
+            let jpan = if self.jpan { Some("Japanese") } else { None };
+            let kore = if self.kore { Some("Korean") } else { None };
+            for writing_system in None
+                .into_iter()
+                .chain(hanb)
+                .chain(jpan)
+                .chain(kore)
+                .chain(self.base.iter().map(Script::full_name))
+            {
+                if !first_entry {
+                    write!(f, ", ")?;
+                } else {
+                    first_entry = false;
+                }
+                write!(f, "{}", writing_system)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -91,8 +155,7 @@ impl AugmentedScriptSet {
 
     /// Check if the set is "All" (Common or Inherited)
     pub fn is_all(&self) -> bool {
-        self.base == ScriptExtension::Single(Script::Common)
-            || self.base == ScriptExtension::Single(Script::Inherited)
+        self.base.is_common() || self.base.is_inherited()
     }
 
     /// Construct an AugmentedScriptSet for a given character
@@ -129,4 +192,18 @@ impl MixedScript for &'_ str {
     fn resolve_script_set(self) -> AugmentedScriptSet {
         self.into()
     }
+}
+
+/// Check if a character is considered potential mixed script confusable.
+///
+/// If the specified character is not restricted from use for identifiers,
+/// this function returns whether it is considered mixed script confusable
+/// with another character that is not restricted from use for identifiers.
+///
+/// If the specified character is restricted from use for identifiers,
+/// the return value is unspecified.
+pub fn is_potential_mixed_script_confusable_char(c: char) -> bool {
+    use crate::tables::potential_mixed_script_confusable::potential_mixed_script_confusable;
+
+    potential_mixed_script_confusable(c)
 }

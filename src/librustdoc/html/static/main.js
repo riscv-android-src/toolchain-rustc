@@ -100,6 +100,8 @@ function defocusSearchBar() {
     // 2 for "In Return Types"
     var currentTab = 0;
 
+    var mouseMovedAfterSearch = true;
+
     var titleBeforeSearch = document.title;
 
     function clearInputTimeout() {
@@ -110,9 +112,11 @@ function defocusSearchBar() {
     }
 
     function getPageId() {
-        var id = document.location.href.split("#")[1];
-        if (id) {
-            return id.split("?")[0].split("&")[0];
+        if (window.location.hash) {
+            var tmp = window.location.hash.replace(/^#/, "");
+            if (tmp.length > 0) {
+                return tmp;
+            }
         }
         return null;
     }
@@ -162,6 +166,7 @@ function defocusSearchBar() {
         }
         addClass(main, "hidden");
         removeClass(search, "hidden");
+        mouseMovedAfterSearch = false;
     }
 
     function hideSearchResults(search) {
@@ -423,6 +428,12 @@ function defocusSearchBar() {
 
     document.addEventListener("keypress", handleShortcut);
     document.addEventListener("keydown", handleShortcut);
+
+    function resetMouseMoved(ev) {
+        mouseMovedAfterSearch = true;
+    }
+
+    document.addEventListener("mousemove", resetMouseMoved);
 
     var handleSourceHighlight = (function() {
         var prev_line_id = 0;
@@ -1354,20 +1365,22 @@ function defocusSearchBar() {
                 }
             };
             var mouseover_func = function(e) {
-                var el = e.target;
-                // to retrieve the real "owner" of the event.
-                while (el.tagName !== "TR") {
-                    el = el.parentNode;
-                }
-                clearTimeout(hoverTimeout);
-                hoverTimeout = setTimeout(function() {
-                    onEachLazy(document.getElementsByClassName("search-results"), function(e) {
-                        onEachLazy(e.getElementsByClassName("result"), function(i_e) {
-                            removeClass(i_e, "highlighted");
+                if (mouseMovedAfterSearch) {
+                    var el = e.target;
+                    // to retrieve the real "owner" of the event.
+                    while (el.tagName !== "TR") {
+                        el = el.parentNode;
+                    }
+                    clearTimeout(hoverTimeout);
+                    hoverTimeout = setTimeout(function() {
+                        onEachLazy(document.getElementsByClassName("search-results"), function(e) {
+                            onEachLazy(e.getElementsByClassName("result"), function(i_e) {
+                                removeClass(i_e, "highlighted");
+                            });
                         });
-                    });
-                    addClass(el, "highlighted");
-                }, 20);
+                        addClass(el, "highlighted");
+                    }, 20);
+                }
             };
             onEachLazy(document.getElementsByClassName("search-results"), function(e) {
                 onEachLazy(e.getElementsByClassName("result"), function(i_e) {
@@ -1397,6 +1410,7 @@ function defocusSearchBar() {
 
                     addClass(actives[currentTab][0].previousElementSibling, "highlighted");
                     removeClass(actives[currentTab][0], "highlighted");
+                    e.preventDefault();
                 } else if (e.which === 40) { // down
                     if (!actives[currentTab].length) {
                         var results = document.getElementById("results").childNodes;
@@ -1410,6 +1424,7 @@ function defocusSearchBar() {
                         addClass(actives[currentTab][0].nextElementSibling, "highlighted");
                         removeClass(actives[currentTab][0], "highlighted");
                     }
+                    e.preventDefault();
                 } else if (e.which === 13) { // return
                     if (actives[currentTab].length) {
                         document.location.href =
@@ -2375,7 +2390,9 @@ function defocusSearchBar() {
             if (!next) {
                 return;
             }
-            if (next.getElementsByClassName("method").length > 0 && hasClass(e, "impl")) {
+            if (hasClass(e, "impl") &&
+                (next.getElementsByClassName("method").length > 0 ||
+                 next.getElementsByClassName("associatedconstant").length > 0)) {
                 insertAfter(toggle.cloneNode(true), e.childNodes[e.childNodes.length - 1]);
             }
         };
@@ -2536,6 +2553,13 @@ function defocusSearchBar() {
 
         onEachLazy(document.getElementsByClassName("docblock"), buildToggleWrapper);
         onEachLazy(document.getElementsByClassName("sub-variant"), buildToggleWrapper);
+        var pageId = getPageId();
+
+        autoCollapse(pageId, getCurrentValue("rustdoc-collapse") === "true");
+
+        if (pageId !== null) {
+            expandSection(pageId);
+        }
     }());
 
     function createToggleWrapper(tog) {
@@ -2670,12 +2694,6 @@ function defocusSearchBar() {
     window.onresize = function() {
         hideSidebar();
     };
-
-    autoCollapse(getPageId(), getCurrentValue("rustdoc-collapse") === "true");
-
-    if (window.location.hash && window.location.hash.length > 0) {
-        expandSection(window.location.hash.replace(/^#/, ""));
-    }
 
     if (main) {
         onEachLazy(main.getElementsByClassName("loading-content"), function(e) {

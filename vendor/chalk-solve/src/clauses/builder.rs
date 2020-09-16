@@ -1,10 +1,12 @@
+use std::iter;
+use std::marker::PhantomData;
+
 use crate::cast::{Cast, CastTo};
 use crate::RustIrDatabase;
-use chalk_ir::fold::Fold;
+use chalk_ir::fold::{Fold, Shift};
 use chalk_ir::interner::{HasInterner, Interner};
 use chalk_ir::*;
-use chalk_rust_ir::*;
-use std::marker::PhantomData;
+use tracing::{debug, instrument};
 
 /// The "clause builder" is a useful tool for building up sets of
 /// program clauses. It takes ownership of the output vector while it
@@ -13,8 +15,8 @@ use std::marker::PhantomData;
 pub struct ClauseBuilder<'me, I: Interner> {
     pub db: &'me dyn RustIrDatabase<I>,
     clauses: &'me mut Vec<ProgramClause<I>>,
-    binders: Vec<ParameterKind<()>>,
-    parameters: Vec<Parameter<I>>,
+    binders: Vec<VariableKind<I>>,
+    parameters: Vec<GenericArg<I>>,
 }
 
 impl<'me, I: Interner> ClauseBuilder<'me, I> {
@@ -76,24 +78,26 @@ impl<'me, I: Interner> ClauseBuilder<'me, I> {
             priority,
         };
 
-        if self.binders.len() == 0 {
-            self.clauses
-                .push(ProgramClauseData::Implies(clause).intern(interner));
+        let clause = if self.binders.is_empty() {
+            // Compensate for the added empty binder
+            clause.shifted_in(interner)
         } else {
-            self.clauses.push(
-                ProgramClauseData::ForAll(Binders::new(
-                    ParameterKinds::from(interner, self.binders.clone()),
-                    clause,
-                ))
-                .intern(interner),
-            );
-        }
+            clause
+        };
+
+        self.clauses.push(
+            ProgramClauseData(Binders::new(
+                VariableKinds::from(interner, self.binders.clone()),
+                clause,
+            ))
+            .intern(interner),
+        );
 
         debug!("pushed clause {:?}", self.clauses.last());
     }
 
     /// Accesses the placeholders for the current list of parameters in scope.
-    pub fn placeholders_in_scope(&self) -> &[Parameter<I>] {
+    pub fn placeholders_in_scope(&self) -> &[GenericArg<I>] {
         &self.parameters
     }
 
@@ -113,13 +117,16 @@ impl<'me, I: Interner> ClauseBuilder<'me, I> {
     /// The new binders are always pushed onto the end of the internal
     /// list of binders; this means that any extant values where were
     /// created referencing the *old* list of binders are still valid.
-    pub fn push_binders<V>(&mut self, binders: &Binders<V>, op: impl FnOnce(&mut Self, V::Result))
+    #[instrument(level = "debug", skip(self, op))]
+    pub fn push_binders<R, V>(
+        &mut self,
+        binders: &Binders<V>,
+        op: impl FnOnce(&mut Self, V::Result) -> R,
+    ) -> R
     where
         V: Fold<I> + HasInterner<Interner = I>,
         V::Result: std::fmt::Debug,
     {
-        debug_heading!("push_binders({:?})", binders);
-
         let old_len = self.binders.len();
         let interner = self.interner();
         self.binders.extend(binders.binders.iter(interner).cloned());
@@ -128,15 +135,16 @@ impl<'me, I: Interner> ClauseBuilder<'me, I> {
                 .binders
                 .iter(interner)
                 .zip(old_len..)
-                .map(|p| p.to_parameter(interner)),
+                .map(|(pk, i)| (i, pk).to_generic_arg(interner)),
         );
 
         let value = binders.substitute(self.interner(), &self.parameters[old_len..]);
         debug!("push_binders: value={:?}", value);
-        op(self, value);
+        let res = op(self, value);
 
         self.binders.truncate(old_len);
         self.parameters.truncate(old_len);
+        res
     }
 
     /// Push a single binder, for a type, at the end of the binder
@@ -148,7 +156,7 @@ impl<'me, I: Interner> ClauseBuilder<'me, I> {
     pub fn push_bound_ty(&mut self, op: impl FnOnce(&mut Self, Ty<I>)) {
         let interner = self.interner();
         let binders = Binders::new(
-            ParameterKinds::from(interner, vec![ParameterKind::Ty(())]),
+            VariableKinds::from(interner, iter::once(VariableKind::Ty(TyKind::General))),
             PhantomData::<I>,
         );
         self.push_binders(&binders, |this, PhantomData| {

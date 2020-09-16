@@ -470,6 +470,8 @@ fn thin_lto_works() {
 }
 
 #[cargo_test]
+// Strip doesn't work on macos.
+#[cfg_attr(target_os = "macos", ignore)]
 fn strip_works() {
     if !is_nightly() {
         return;
@@ -535,7 +537,7 @@ fn strip_requires_cargo_feature() {
 Caused by:
   feature `strip` is required
 
-consider adding `cargo-features = [\"strip\"]` to the manifest
+  consider adding `cargo-features = [\"strip\"]` to the manifest
 ",
         )
         .run();

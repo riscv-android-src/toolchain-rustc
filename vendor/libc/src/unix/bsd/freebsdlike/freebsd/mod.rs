@@ -107,6 +107,15 @@ s! {
         pub msg_hdr: ::msghdr,
         pub msg_len: ::ssize_t,
     }
+
+    pub struct sockcred {
+        pub sc_uid: ::uid_t,
+        pub sc_euid: ::uid_t,
+        pub sc_gid: ::gid_t,
+        pub sc_egid: ::gid_t,
+        pub sc_ngroups: ::c_int,
+        pub sc_groups: [::gid_t; 1],
+    }
 }
 
 s_no_extra_traits! {
@@ -339,6 +348,13 @@ pub const RLIMIT_KQUEUES: ::c_int = 13;
 pub const RLIMIT_UMTXP: ::c_int = 14;
 #[deprecated(since = "0.2.64", note = "Not stable across OS versions")]
 pub const RLIM_NLIMITS: ::rlim_t = 15;
+
+pub const NI_NOFQDN: ::c_int = 0x00000001;
+pub const NI_NUMERICHOST: ::c_int = 0x00000002;
+pub const NI_NAMEREQD: ::c_int = 0x00000004;
+pub const NI_NUMERICSERV: ::c_int = 0x00000008;
+pub const NI_DGRAM: ::c_int = 0x00000010;
+pub const NI_NUMERICSCOPE: ::c_int = 0x00000020;
 
 pub const Q_GETQUOTA: ::c_int = 0x700;
 pub const Q_SETQUOTA: ::c_int = 0x800;
@@ -1134,6 +1150,15 @@ f! {
     pub fn CMSG_SPACE(length: ::c_uint) -> ::c_uint {
         (_ALIGN(::mem::size_of::<::cmsghdr>()) + _ALIGN(length as usize))
             as ::c_uint
+    }
+
+    pub fn SOCKCREDSIZE(ngrps: usize) -> usize {
+        let ngrps = if ngrps > 0 {
+            ngrps - 1
+        } else {
+            0
+        };
+        ::mem::size_of::<sockcred>() + ::mem::size_of::<::gid_t>() * ngrps
     }
 
     pub fn uname(buf: *mut ::utsname) -> ::c_int {

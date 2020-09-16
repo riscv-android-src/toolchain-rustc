@@ -69,3 +69,85 @@ fn test_confusable_detection() {
     assert_eq!(&skeleton("ﶛ").collect::<String>(), "نمى");
     assert_eq!(&skeleton("ﶛﶛ").collect::<String>(), "نمىنمى");
 }
+
+#[test]
+fn test_potential_mixed_script_detection() {
+    use crate::is_potential_mixed_script_confusable_char;
+
+    assert!(is_potential_mixed_script_confusable_char('A'));
+    assert!(!is_potential_mixed_script_confusable_char('D'));
+}
+
+#[test]
+fn test_augmented_script_set_fmt_debug() {
+    use crate::mixed_script::AugmentedScriptSet;
+    let augmented_script_sets = vec![
+        AugmentedScriptSet::default(),
+        AugmentedScriptSet::from('0'),
+        AugmentedScriptSet::from('a'),
+        AugmentedScriptSet::from('μ'),
+        AugmentedScriptSet::from('汉'),
+        AugmentedScriptSet::from('ひ'),
+        AugmentedScriptSet::from('カ'),
+        AugmentedScriptSet::from('한'),
+        AugmentedScriptSet::from("汉ひ"),
+        AugmentedScriptSet::from("汉a"),
+        AugmentedScriptSet::from("汉μ"),
+        AugmentedScriptSet::from("〆切"),
+    ];
+    let debug_output = vec![
+        "AugmentedScriptSet {ALL}",
+        "AugmentedScriptSet {ALL}",
+        "AugmentedScriptSet {Latn}",
+        "AugmentedScriptSet {Grek}",
+        "AugmentedScriptSet {Hanb, Jpan, Kore, Hani}",
+        "AugmentedScriptSet {Jpan, Hira}",
+        "AugmentedScriptSet {Jpan, Kana}",
+        "AugmentedScriptSet {Kore, Hang}",
+        "AugmentedScriptSet {Jpan}",
+        "AugmentedScriptSet {∅}",
+        "AugmentedScriptSet {∅}",
+        "AugmentedScriptSet {Hanb, Jpan, Kore, Hani}",
+    ];
+
+    for (ss, output) in augmented_script_sets.into_iter().zip(debug_output) {
+        assert_eq!(format!("{:?}", ss), output);
+    }
+}
+
+#[test]
+fn test_augmented_script_set_fmt_display() {
+    use crate::mixed_script::AugmentedScriptSet;
+    let augmented_script_sets = vec![
+        AugmentedScriptSet::default(),
+        AugmentedScriptSet::from('0'),
+        AugmentedScriptSet::from('a'),
+        AugmentedScriptSet::from('μ'),
+        AugmentedScriptSet::from('汉'),
+        AugmentedScriptSet::from('ひ'),
+        AugmentedScriptSet::from('カ'),
+        AugmentedScriptSet::from('한'),
+        AugmentedScriptSet::from("汉ひ"),
+        AugmentedScriptSet::from("汉a"),
+        AugmentedScriptSet::from("汉μ"),
+        AugmentedScriptSet::from("〆切"),
+    ];
+    let debug_output = vec![
+        "All",
+        "All",
+        "Latin",
+        "Greek",
+        "Han with Bopomofo, Japanese, Korean, Han",
+        "Japanese, Hiragana",
+        "Japanese, Katakana",
+        "Korean, Hangul",
+        "Japanese",
+        "Empty",
+        "Empty",
+        "Han with Bopomofo, Japanese, Korean, Han",
+    ];
+
+    for (ss, output) in augmented_script_sets.into_iter().zip(debug_output) {
+        assert_eq!(format!("{}", ss), output);
+    }
+}

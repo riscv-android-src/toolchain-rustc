@@ -15,7 +15,7 @@ use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::subst::{GenericArgKind, SubstsRef};
 use rustc_middle::ty::Instance;
 use rustc_middle::ty::{SymbolName, TyCtxt};
-use rustc_session::config::{CrateType, Sanitizer};
+use rustc_session::config::{CrateType, SanitizerSet};
 
 pub fn threshold(tcx: TyCtxt<'_>) -> SymbolExportLevel {
     crates_export_threshold(&tcx.sess.crate_types())
@@ -89,10 +89,12 @@ fn reachable_non_generics_provider(tcx: TyCtxt<'_>, cnum: CrateNum) -> DefIdMap<
                 | Node::ImplItem(&hir::ImplItem { kind: hir::ImplItemKind::Fn(..), .. }) => {
                     let def_id = tcx.hir().local_def_id(hir_id);
                     let generics = tcx.generics_of(def_id);
-                    if !generics.requires_monomorphization(tcx) &&
-                        // Functions marked with #[inline] are only ever codegened
-                        // with "internal" linkage and are never exported.
-                        !Instance::mono(tcx, def_id.to_def_id()).def.generates_cgu_internal_copy(tcx)
+                    if !generics.requires_monomorphization(tcx)
+                        // Functions marked with #[inline] are codegened with "internal"
+                        // linkage and are not exported unless marked with an extern
+                        // inidicator
+                        && (!Instance::mono(tcx, def_id.to_def_id()).def.generates_cgu_internal_copy(tcx)
+                            || tcx.codegen_fn_attrs(def_id.to_def_id()).contains_extern_indicator())
                     {
                         Some(def_id)
                     } else {
@@ -159,9 +161,9 @@ fn is_reachable_non_generic_provider_extern(tcx: TyCtxt<'_>, def_id: DefId) -> b
 }
 
 fn exported_symbols_provider_local(
-    tcx: TyCtxt<'_>,
+    tcx: TyCtxt<'tcx>,
     cnum: CrateNum,
-) -> &'tcx [(ExportedSymbol<'_>, SymbolExportLevel)] {
+) -> &'tcx [(ExportedSymbol<'tcx>, SymbolExportLevel)] {
     assert_eq!(cnum, LOCAL_CRATE);
 
     if !tcx.sess.opts.output_types.should_codegen() {
@@ -202,7 +204,7 @@ fn exported_symbols_provider_local(
         }));
     }
 
-    if let Some(Sanitizer::Memory) = tcx.sess.opts.debugging_opts.sanitizer {
+    if tcx.sess.opts.debugging_opts.sanitizer.contains(SanitizerSet::MEMORY) {
         // Similar to profiling, preserve weak msan symbol during LTO.
         const MSAN_WEAK_SYMBOLS: [&str; 2] = ["__msan_track_origins", "__msan_keep_going"];
 
@@ -364,7 +366,7 @@ fn is_unreachable_local_definition_provider(tcx: TyCtxt<'_>, def_id: DefId) -> b
     }
 }
 
-pub fn provide(providers: &mut Providers<'_>) {
+pub fn provide(providers: &mut Providers) {
     providers.reachable_non_generics = reachable_non_generics_provider;
     providers.is_reachable_non_generic = is_reachable_non_generic_provider_local;
     providers.exported_symbols = exported_symbols_provider_local;
@@ -373,7 +375,7 @@ pub fn provide(providers: &mut Providers<'_>) {
     providers.upstream_drop_glue_for = upstream_drop_glue_for_provider;
 }
 
-pub fn provide_extern(providers: &mut Providers<'_>) {
+pub fn provide_extern(providers: &mut Providers) {
     providers.is_reachable_non_generic = is_reachable_non_generic_provider_extern;
     providers.upstream_monomorphizations_for = upstream_monomorphizations_for_provider;
 }

@@ -3,7 +3,7 @@
 #![allow(clippy::blacklisted_name)]
 #![allow(clippy::explicit_iter_loop)]
 #![allow(clippy::redundant_closure)]
-#![allow(clippy::block_in_if_condition_stmt)] // clippy doesn't agree with rustfmt 😂
+#![allow(clippy::blocks_in_if_conditions)] // clippy doesn't agree with rustfmt 😂
 #![allow(clippy::inefficient_to_string)] // this causes suggestions that result in `(*s).to_string()`
 #![warn(clippy::needless_borrow)]
 #![warn(clippy::redundant_clone)]
@@ -98,6 +98,7 @@ mod run;
 mod rustc;
 mod rustc_info_cache;
 mod rustdoc;
+mod rustdoc_extern_html;
 mod rustdocflags;
 mod rustflags;
 mod search;

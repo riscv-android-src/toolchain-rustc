@@ -13,16 +13,14 @@
 [package]
 edition = "2018"
 name = "home"
-version = "0.5.1"
+version = "0.5.3"
 authors = ["Brian Anderson <andersrb@gmail.com>"]
+include = ["/src", "/Cargo.toml", "/CHANGELOG", "/LICENSE-*", "/README.md"]
 description = "Shared definitions of home directories"
 documentation = "https://docs.rs/home"
+readme = "README.md"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/brson/home"
-[target."cfg(windows)".dependencies.scopeguard]
-version = "1"
-default-features = false
-
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3"
-features = ["errhandlingapi", "handleapi", "processthreadsapi", "std", "winerror", "winnt", "userenv"]
+features = ["shlobj", "std", "winerror"]

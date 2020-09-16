@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 pub use self::fold::{TypeFoldable, TypeVisitor};
 pub use self::AssocItemContainer::*;
 pub use self::BorrowKind::*;
@@ -14,7 +16,7 @@ use crate::mir::Body;
 use crate::mir::GeneratorLayout;
 use crate::traits::{self, Reveal};
 use crate::ty;
-use crate::ty::subst::{InternalSubsts, Subst, SubstsRef};
+use crate::ty::subst::{GenericArg, InternalSubsts, Subst, SubstsRef};
 use crate::ty::util::{Discr, IntTypeExt};
 use rustc_ast::ast;
 use rustc_attr as attr;
@@ -45,6 +47,7 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::marker::PhantomData;
 use std::ops::Range;
 use std::ptr;
 
@@ -84,6 +87,8 @@ pub use self::trait_def::TraitDef;
 
 pub use self::query::queries;
 
+pub use self::consts::ConstInt;
+
 pub mod adjustment;
 pub mod binding;
 pub mod cast;
@@ -108,6 +113,7 @@ pub mod trait_def;
 pub mod util;
 pub mod walk;
 
+mod consts;
 mod context;
 mod diagnostics;
 mod instance;
@@ -121,10 +127,9 @@ pub struct ResolverOutputs {
     pub definitions: rustc_hir::definitions::Definitions,
     pub cstore: Box<CrateStoreDyn>,
     pub extern_crate_map: FxHashMap<LocalDefId, CrateNum>,
-    pub trait_map: FxHashMap<hir::HirId, Vec<hir::TraitCandidate<hir::HirId>>>,
     pub maybe_unused_trait_imports: FxHashSet<LocalDefId>,
     pub maybe_unused_extern_crates: Vec<(LocalDefId, Span)>,
-    pub export_map: ExportMap<hir::HirId>,
+    pub export_map: ExportMap<LocalDefId>,
     pub glob_map: FxHashMap<LocalDefId, FxHashSet<Symbol>>,
     /// Extern prelude entries. The value is `true` if the entry was introduced
     /// via `extern crate` item and not `--extern` option or compiler built-in.
@@ -198,14 +203,13 @@ pub struct AssocItem {
 pub enum AssocKind {
     Const,
     Fn,
-    OpaqueTy,
     Type,
 }
 
 impl AssocKind {
     pub fn namespace(&self) -> Namespace {
         match *self {
-            ty::AssocKind::OpaqueTy | ty::AssocKind::Type => Namespace::TypeNS,
+            ty::AssocKind::Type => Namespace::TypeNS,
             ty::AssocKind::Const | ty::AssocKind::Fn => Namespace::ValueNS,
         }
     }
@@ -215,22 +219,11 @@ impl AssocKind {
             AssocKind::Const => DefKind::AssocConst,
             AssocKind::Fn => DefKind::AssocFn,
             AssocKind::Type => DefKind::AssocTy,
-            AssocKind::OpaqueTy => DefKind::AssocOpaqueTy,
         }
     }
 }
 
 impl AssocItem {
-    /// Tests whether the associated item admits a non-trivial implementation
-    /// for !
-    pub fn relevant_for_never(&self) -> bool {
-        match self.kind {
-            AssocKind::OpaqueTy | AssocKind::Const | AssocKind::Type => true,
-            // FIXME(canndrew): Be more thorough here, check if any argument is uninhabited.
-            AssocKind::Fn => !self.fn_has_self_parameter,
-        }
-    }
-
     pub fn signature(&self, tcx: TyCtxt<'_>) -> String {
         match self.kind {
             ty::AssocKind::Fn => {
@@ -241,8 +234,6 @@ impl AssocItem {
                 tcx.fn_sig(self.def_id).skip_binder().to_string()
             }
             ty::AssocKind::Type => format!("type {};", self.ident),
-            // FIXME(type_alias_impl_trait): we should print bounds here too.
-            ty::AssocKind::OpaqueTy => format!("type {};", self.ident),
             ty::AssocKind::Const => {
                 format!("const {}: {:?};", self.ident, tcx.type_of(self.def_id))
             }
@@ -642,7 +633,7 @@ impl<'tcx> Hash for TyS<'tcx> {
     }
 }
 
-impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ty::TyS<'tcx> {
+impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TyS<'tcx> {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
         let ty::TyS {
             ref kind,
@@ -1016,16 +1007,35 @@ impl<'tcx> GenericPredicates<'tcx> {
     }
 }
 
-#[derive(Clone, Copy, Hash, RustcEncodable, RustcDecodable, Lift)]
-#[derive(HashStable)]
-pub struct Predicate<'tcx> {
-    kind: &'tcx PredicateKind<'tcx>,
+#[derive(Debug)]
+crate struct PredicateInner<'tcx> {
+    kind: PredicateKind<'tcx>,
+    flags: TypeFlags,
+    /// See the comment for the corresponding field of [TyS].
+    outer_exclusive_binder: ty::DebruijnIndex,
 }
+
+#[cfg(target_arch = "x86_64")]
+static_assert_size!(PredicateInner<'_>, 40);
+
+#[derive(Clone, Copy, Lift)]
+pub struct Predicate<'tcx> {
+    inner: &'tcx PredicateInner<'tcx>,
+}
+
+impl rustc_serialize::UseSpecializedEncodable for Predicate<'_> {}
+impl rustc_serialize::UseSpecializedDecodable for Predicate<'_> {}
 
 impl<'tcx> PartialEq for Predicate<'tcx> {
     fn eq(&self, other: &Self) -> bool {
         // `self.kind` is always interned.
-        ptr::eq(self.kind, other.kind)
+        ptr::eq(self.inner, other.inner)
+    }
+}
+
+impl Hash for Predicate<'_> {
+    fn hash<H: Hasher>(&self, s: &mut H) {
+        (self.inner as *const PredicateInner<'_>).hash(s)
     }
 }
 
@@ -1034,7 +1044,22 @@ impl<'tcx> Eq for Predicate<'tcx> {}
 impl<'tcx> Predicate<'tcx> {
     #[inline(always)]
     pub fn kind(self) -> &'tcx PredicateKind<'tcx> {
-        self.kind
+        &self.inner.kind
+    }
+}
+
+impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for Predicate<'tcx> {
+    fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
+        let PredicateInner {
+            ref kind,
+
+            // The other fields just provide fast access to information that is
+            // also contained in `kind`, so no need to hash them.
+            flags: _,
+            outer_exclusive_binder: _,
+        } = self.inner;
+
+        kind.hash_stable(hcx, hasher);
     }
 }
 
@@ -1061,7 +1086,7 @@ pub enum PredicateKind<'tcx> {
     Projection(PolyProjectionPredicate<'tcx>),
 
     /// No syntax: `T` well-formed.
-    WellFormed(Ty<'tcx>),
+    WellFormed(GenericArg<'tcx>),
 
     /// Trait must be object-safe.
     ObjectSafe(DefId),
@@ -1312,18 +1337,18 @@ impl<'tcx> ToPolyTraitRef<'tcx> for PolyTraitPredicate<'tcx> {
 }
 
 pub trait ToPredicate<'tcx> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx>;
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx>;
 }
 
 impl ToPredicate<'tcx> for PredicateKind<'tcx> {
     #[inline(always)]
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        tcx.mk_predicate(*self)
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+        tcx.mk_predicate(self)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<TraitRef<'tcx>> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
         ty::PredicateKind::Trait(
             ty::Binder::dummy(ty::TraitPredicate { trait_ref: self.value }),
             self.constness,
@@ -1333,7 +1358,7 @@ impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<TraitRef<'tcx>> {
 }
 
 impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<&TraitRef<'tcx>> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
         ty::PredicateKind::Trait(
             ty::Binder::dummy(ty::TraitPredicate { trait_ref: *self.value }),
             self.constness,
@@ -1343,34 +1368,34 @@ impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<&TraitRef<'tcx>> {
 }
 
 impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<PolyTraitRef<'tcx>> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
         ty::PredicateKind::Trait(self.value.to_poly_trait_predicate(), self.constness)
             .to_predicate(tcx)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<&PolyTraitRef<'tcx>> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
         ty::PredicateKind::Trait(self.value.to_poly_trait_predicate(), self.constness)
             .to_predicate(tcx)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyRegionOutlivesPredicate<'tcx> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        PredicateKind::RegionOutlives(*self).to_predicate(tcx)
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+        PredicateKind::RegionOutlives(self).to_predicate(tcx)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyTypeOutlivesPredicate<'tcx> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        PredicateKind::TypeOutlives(*self).to_predicate(tcx)
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+        PredicateKind::TypeOutlives(self).to_predicate(tcx)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyProjectionPredicate<'tcx> {
-    fn to_predicate(&self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        PredicateKind::Projection(*self).to_predicate(tcx)
+    fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
+        PredicateKind::Projection(self).to_predicate(tcx)
     }
 }
 
@@ -1549,22 +1574,91 @@ pub type PlaceholderConst = Placeholder<BoundVar>;
 /// When type checking, we use the `ParamEnv` to track
 /// details about the set of where-clauses that are in scope at this
 /// particular point.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, HashStable, TypeFoldable)]
+#[derive(Copy, Clone)]
 pub struct ParamEnv<'tcx> {
+    // We pack the caller_bounds List pointer and a Reveal enum into this usize.
+    // Specifically, the low bit represents Reveal, with 0 meaning `UserFacing`
+    // and 1 meaning `All`. The rest is the pointer.
+    //
+    // This relies on the List<ty::Predicate<'tcx>> type having at least 2-byte
+    // alignment. Lists start with a usize and are repr(C) so this should be
+    // fine; there is a debug_assert in the constructor as well.
+    //
+    // Note that the choice of 0 for UserFacing is intentional -- since it is the
+    // first variant in Reveal this means that joining the pointer is a simple `or`.
+    packed_data: usize,
+
     /// `Obligation`s that the caller must satisfy. This is basically
     /// the set of bounds on the in-scope type parameters, translated
     /// into `Obligation`s, and elaborated and normalized.
-    pub caller_bounds: &'tcx List<ty::Predicate<'tcx>>,
+    ///
+    /// Note: This is packed into the `packed_data` usize above, use the
+    /// `caller_bounds()` method to access it.
+    caller_bounds: PhantomData<&'tcx List<ty::Predicate<'tcx>>>,
 
     /// Typically, this is `Reveal::UserFacing`, but during codegen we
-    /// want `Reveal::All` -- note that this is always paired with an
-    /// empty environment. To get that, use `ParamEnv::reveal()`.
-    pub reveal: traits::Reveal,
+    /// want `Reveal::All`.
+    ///
+    /// Note: This is packed into the caller_bounds usize above, use the reveal()
+    /// method to access it.
+    reveal: PhantomData<traits::Reveal>,
 
     /// If this `ParamEnv` comes from a call to `tcx.param_env(def_id)`,
     /// register that `def_id` (useful for transitioning to the chalk trait
     /// solver).
     pub def_id: Option<DefId>,
+}
+
+impl<'tcx> fmt::Debug for ParamEnv<'tcx> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ParamEnv")
+            .field("caller_bounds", &self.caller_bounds())
+            .field("reveal", &self.reveal())
+            .field("def_id", &self.def_id)
+            .finish()
+    }
+}
+
+impl<'tcx> Hash for ParamEnv<'tcx> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // List hashes as the raw pointer, so we can skip splitting into the
+        // pointer and the enum.
+        self.packed_data.hash(state);
+        self.def_id.hash(state);
+    }
+}
+
+impl<'tcx> PartialEq for ParamEnv<'tcx> {
+    fn eq(&self, other: &Self) -> bool {
+        self.caller_bounds() == other.caller_bounds()
+            && self.reveal() == other.reveal()
+            && self.def_id == other.def_id
+    }
+}
+impl<'tcx> Eq for ParamEnv<'tcx> {}
+
+impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ParamEnv<'tcx> {
+    fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
+        self.caller_bounds().hash_stable(hcx, hasher);
+        self.reveal().hash_stable(hcx, hasher);
+        self.def_id.hash_stable(hcx, hasher);
+    }
+}
+
+impl<'tcx> TypeFoldable<'tcx> for ParamEnv<'tcx> {
+    fn super_fold_with<F: ty::fold::TypeFolder<'tcx>>(&self, folder: &mut F) -> Self {
+        ParamEnv::new(
+            self.caller_bounds().fold_with(folder),
+            self.reveal().fold_with(folder),
+            self.def_id.fold_with(folder),
+        )
+    }
+
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
+        self.caller_bounds().visit_with(visitor)
+            || self.reveal().visit_with(visitor)
+            || self.def_id.visit_with(visitor)
+    }
 }
 
 impl<'tcx> ParamEnv<'tcx> {
@@ -1575,6 +1669,17 @@ impl<'tcx> ParamEnv<'tcx> {
     #[inline]
     pub fn empty() -> Self {
         Self::new(List::empty(), Reveal::UserFacing, None)
+    }
+
+    #[inline]
+    pub fn caller_bounds(self) -> &'tcx List<ty::Predicate<'tcx>> {
+        // mask out bottom bit
+        unsafe { &*((self.packed_data & (!1)) as *const _) }
+    }
+
+    #[inline]
+    pub fn reveal(self) -> traits::Reveal {
+        if self.packed_data & 1 == 0 { traits::Reveal::UserFacing } else { traits::Reveal::All }
     }
 
     /// Construct a trait environment with no where-clauses in scope
@@ -1596,7 +1701,25 @@ impl<'tcx> ParamEnv<'tcx> {
         reveal: Reveal,
         def_id: Option<DefId>,
     ) -> Self {
-        ty::ParamEnv { caller_bounds, reveal, def_id }
+        let packed_data = caller_bounds as *const _ as usize;
+        // Check that we can pack the reveal data into the pointer.
+        debug_assert!(packed_data & 1 == 0);
+        ty::ParamEnv {
+            packed_data: packed_data
+                | match reveal {
+                    Reveal::UserFacing => 0,
+                    Reveal::All => 1,
+                },
+            caller_bounds: PhantomData,
+            reveal: PhantomData,
+            def_id,
+        }
+    }
+
+    pub fn with_user_facing(mut self) -> Self {
+        // clear bottom bit
+        self.packed_data &= !1;
+        self
     }
 
     /// Returns a new parameter environment with the same clauses, but
@@ -1605,13 +1728,14 @@ impl<'tcx> ParamEnv<'tcx> {
     /// the desired behavior during codegen and certain other special
     /// contexts; normally though we want to use `Reveal::UserFacing`,
     /// which is the default.
-    pub fn with_reveal_all(self) -> Self {
-        ty::ParamEnv { reveal: Reveal::All, ..self }
+    pub fn with_reveal_all(mut self) -> Self {
+        self.packed_data |= 1;
+        self
     }
 
     /// Returns this same environment but with no caller bounds.
     pub fn without_caller_bounds(self) -> Self {
-        ty::ParamEnv { caller_bounds: List::empty(), ..self }
+        Self::new(List::empty(), self.reveal(), self.def_id)
     }
 
     /// Creates a suitable environment in which to perform trait
@@ -1627,7 +1751,7 @@ impl<'tcx> ParamEnv<'tcx> {
     /// satisfiable. We generally want to behave as if they were true,
     /// although the surrounding function is never reachable.
     pub fn and<T: TypeFoldable<'tcx>>(self, value: T) -> ParamEnvAnd<'tcx, T> {
-        match self.reveal {
+        match self.reveal() {
             Reveal::UserFacing => ParamEnvAnd { param_env: self, value },
 
             Reveal::All => {
@@ -1821,6 +1945,19 @@ impl<'tcx> VariantDef {
     pub fn is_field_list_non_exhaustive(&self) -> bool {
         self.flags.intersects(VariantFlags::IS_FIELD_LIST_NON_EXHAUSTIVE)
     }
+
+    /// `repr(transparent)` structs can have a single non-ZST field, this function returns that
+    /// field.
+    pub fn transparent_newtype_field(&self, tcx: TyCtxt<'tcx>) -> Option<&FieldDef> {
+        for field in &self.fields {
+            let field_ty = field.ty(tcx, InternalSubsts::identity_for_item(tcx, self.def_id));
+            if !field_ty.is_zst(tcx, self.def_id) {
+                return Some(field);
+            }
+        }
+
+        None
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable)]
@@ -1846,7 +1983,7 @@ pub struct FieldDef {
 
 /// The definition of a user-defined type, e.g., a `struct`, `enum`, or `union`.
 ///
-/// These are all interned (by `intern_adt_def`) into the `adt_defs` table.
+/// These are all interned (by `alloc_adt_def`) into the global arena.
 ///
 /// The initialism *ADT* stands for an [*algebraic data type (ADT)*][adt].
 /// This is slightly wrong because `union`s are not ADTs.
@@ -2353,6 +2490,7 @@ impl<'tcx> AdtDef {
     /// Alternatively, if there is no explicit discriminant, returns the
     /// inferred discriminant directly.
     pub fn discriminant_def_for_variant(&self, variant_index: VariantIdx) -> (Option<DefId>, u32) {
+        assert!(!self.variants.is_empty());
         let mut explicit_index = variant_index.as_u32();
         let expr_did;
         loop {
@@ -2556,10 +2694,6 @@ impl<'tcx> TyCtxt<'tcx> {
         self.associated_items(id)
             .in_definition_order()
             .filter(|item| item.kind == AssocKind::Fn && item.defaultness.has_value())
-    }
-
-    pub fn trait_relevant_for_never(self, did: DefId) -> bool {
-        self.associated_items(did).in_definition_order().any(|item| item.relevant_for_never())
     }
 
     pub fn opt_item_name(self, def_id: DefId) -> Option<Ident> {
@@ -2832,7 +2966,7 @@ pub fn is_impl_trait_defn(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
     None
 }
 
-pub fn provide(providers: &mut ty::query::Providers<'_>) {
+pub fn provide(providers: &mut ty::query::Providers) {
     context::provide(providers);
     erase_regions::provide(providers);
     layout::provide(providers);

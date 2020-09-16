@@ -1,55 +1,61 @@
 use crate::clauses::program_clauses_for_goal;
 use crate::coinductive_goal::IsCoinductive;
-use crate::infer::ucanonicalize::{UCanonicalized, UniverseMap};
+use crate::infer::ucanonicalize::UCanonicalized;
 use crate::infer::unify::UnificationResult;
 use crate::infer::InferenceTable;
 use crate::solve::truncate;
-use crate::solve::Solution;
 use crate::RustIrDatabase;
 use chalk_derive::HasInterner;
 use chalk_engine::context;
-use chalk_engine::context::Floundered;
-use chalk_engine::fallible::Fallible;
-use chalk_engine::hh::HhGoal;
-use chalk_engine::{CompleteAnswer, ExClause, Literal};
+use chalk_engine::{ExClause, Literal};
 use chalk_ir::cast::Cast;
 use chalk_ir::cast::Caster;
 use chalk_ir::interner::Interner;
 use chalk_ir::*;
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::marker::PhantomData;
 
-mod aggregate;
+pub(crate) mod aggregate;
 mod resolvent;
+
+#[derive(Debug)]
+pub enum SubstitutionResult<S> {
+    Definite(S),
+    Ambiguous(S),
+    Floundered,
+}
+
+impl<S> SubstitutionResult<S> {
+    pub fn as_ref(&self) -> SubstitutionResult<&S> {
+        match self {
+            SubstitutionResult::Definite(subst) => SubstitutionResult::Definite(subst),
+            SubstitutionResult::Ambiguous(subst) => SubstitutionResult::Ambiguous(subst),
+            SubstitutionResult::Floundered => SubstitutionResult::Floundered,
+        }
+    }
+    pub fn map<U, F: FnOnce(S) -> U>(self, f: F) -> SubstitutionResult<U> {
+        match self {
+            SubstitutionResult::Definite(subst) => SubstitutionResult::Definite(f(subst)),
+            SubstitutionResult::Ambiguous(subst) => SubstitutionResult::Ambiguous(f(subst)),
+            SubstitutionResult::Floundered => SubstitutionResult::Floundered,
+        }
+    }
+}
+
+impl<S: Display> Display for SubstitutionResult<S> {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SubstitutionResult::Definite(subst) => write!(fmt, "{}", subst),
+            SubstitutionResult::Ambiguous(subst) => write!(fmt, "Ambiguous({})", subst),
+            SubstitutionResult::Floundered => write!(fmt, "Floundered"),
+        }
+    }
+}
 
 #[derive(Clone, Debug, HasInterner)]
 pub(crate) struct SlgContext<I: Interner> {
-    max_size: usize,
-    /// The expected number of answers for a solution.
-    /// Only really sseful for tests, since `make_solution`
-    /// will panic if the number of cached answers does not
-    /// equal this when a solution is made.
-    expected_answers: Option<usize>,
     phantom: PhantomData<I>,
-}
-
-impl<I: Interner> SlgContext<I> {
-    pub(crate) fn new(max_size: usize, expected_answers: Option<usize>) -> SlgContext<I> {
-        SlgContext {
-            max_size,
-            expected_answers,
-            phantom: PhantomData,
-        }
-    }
-
-    pub(crate) fn ops<'p>(&self, program: &'p dyn RustIrDatabase<I>) -> SlgContextOps<'p, I> {
-        SlgContextOps {
-            program,
-            max_size: self.max_size,
-            expected_answers: self.expected_answers,
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -59,85 +65,31 @@ pub(crate) struct SlgContextOps<'me, I: Interner> {
     expected_answers: Option<usize>,
 }
 
+impl<I: Interner> SlgContextOps<'_, I> {
+    pub(crate) fn new<'p>(
+        program: &'p dyn RustIrDatabase<I>,
+        max_size: usize,
+        expected_answers: Option<usize>,
+    ) -> SlgContextOps<'p, I> {
+        SlgContextOps {
+            program,
+            max_size,
+            expected_answers,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct TruncatingInferenceTable<I: Interner> {
     max_size: usize,
     infer: InferenceTable<I>,
 }
 
-impl<I: Interner> context::Context for SlgContext<I> {
-    type CanonicalGoalInEnvironment = Canonical<InEnvironment<Goal<I>>>;
-    type CanonicalExClause = Canonical<ExClause<Self>>;
-    type UCanonicalGoalInEnvironment = UCanonical<InEnvironment<Goal<I>>>;
-    type UniverseMap = UniverseMap;
-    type InferenceNormalizedSubst = Substitution<I>;
-    type Solution = Solution<I>;
+impl<I: Interner> context::Context<I> for SlgContext<I> {
     type InferenceTable = TruncatingInferenceTable<I>;
-    type Environment = Environment<I>;
-    type DomainGoal = DomainGoal<I>;
-    type Goal = Goal<I>;
-    type BindersGoal = Binders<Goal<I>>;
-    type Parameter = Parameter<I>;
-    type ProgramClause = ProgramClause<I>;
-    type ProgramClauses = ProgramClauses<I>;
-    type CanonicalConstrainedSubst = Canonical<ConstrainedSubst<I>>;
-    type CanonicalAnswerSubst = Canonical<AnswerSubst<I>>;
-    type GoalInEnvironment = InEnvironment<Goal<I>>;
-    type Substitution = Substitution<I>;
-    type RegionConstraint = InEnvironment<Constraint<I>>;
-    type Variance = ();
-    type Interner = I;
-
-    fn goal_in_environment(environment: &Environment<I>, goal: Goal<I>) -> InEnvironment<Goal<I>> {
-        InEnvironment::new(environment, goal)
-    }
-
-    fn inference_normalized_subst_from_ex_clause(
-        canon_ex_clause: &Canonical<ExClause<SlgContext<I>>>,
-    ) -> &Substitution<I> {
-        &canon_ex_clause.value.subst
-    }
-
-    fn empty_constraints(ccs: &Canonical<AnswerSubst<I>>) -> bool {
-        ccs.value.constraints.is_empty()
-    }
-
-    fn inference_normalized_subst_from_subst(ccs: &Canonical<AnswerSubst<I>>) -> &Substitution<I> {
-        &ccs.value.subst
-    }
-
-    fn canonical(
-        u_canon: &UCanonical<InEnvironment<Goal<I>>>,
-    ) -> &Canonical<InEnvironment<Goal<I>>> {
-        &u_canon.canonical
-    }
-
-    fn has_delayed_subgoals(canonical_subst: &Canonical<AnswerSubst<I>>) -> bool {
-        !canonical_subst.value.delayed_subgoals.is_empty()
-    }
-
-    fn num_universes(u_canon: &UCanonical<InEnvironment<Goal<I>>>) -> usize {
-        u_canon.universes
-    }
-
-    fn canonical_constrained_subst_from_canonical_constrained_answer(
-        canonical_subst: &Canonical<AnswerSubst<I>>,
-    ) -> Canonical<ConstrainedSubst<I>> {
-        Canonical {
-            binders: canonical_subst.binders.clone(),
-            value: ConstrainedSubst {
-                subst: canonical_subst.value.subst.clone(),
-                constraints: canonical_subst.value.constraints.clone(),
-            },
-        }
-    }
-
-    fn goal_from_goal_in_environment(goal: &InEnvironment<Goal<I>>) -> &Goal<I> {
-        &goal.goal
-    }
 
     // Used by: logic
-    fn next_subgoal_index(ex_clause: &ExClause<SlgContext<I>>) -> usize {
+    fn next_subgoal_index(ex_clause: &ExClause<I>) -> usize {
         // For now, we always pick the last subgoal in the
         // list.
         //
@@ -149,7 +101,7 @@ impl<I: Interner> context::Context for SlgContext<I> {
     }
 }
 
-impl<'me, I: Interner> context::ContextOps<SlgContext<I>> for SlgContextOps<'me, I> {
+impl<'me, I: Interner> context::ContextOps<I, SlgContext<I>> for SlgContextOps<'me, I> {
     fn is_coinductive(&self, goal: &UCanonical<InEnvironment<Goal<I>>>) -> bool {
         goal.is_coinductive(self.program)
     }
@@ -159,6 +111,7 @@ impl<'me, I: Interner> context::ContextOps<SlgContext<I>> for SlgContextOps<'me,
         map: &UniverseMap,
         value: &Canonical<InEnvironment<Goal<I>>>,
     ) -> Canonical<InEnvironment<Goal<I>>> {
+        use crate::infer::ucanonicalize::UniverseMapExt;
         map.map_from_canonical(self.program.interner(), value)
     }
 
@@ -167,6 +120,7 @@ impl<'me, I: Interner> context::ContextOps<SlgContext<I>> for SlgContextOps<'me,
         map: &UniverseMap,
         value: &Canonical<AnswerSubst<I>>,
     ) -> Canonical<AnswerSubst<I>> {
+        use crate::infer::ucanonicalize::UniverseMapExt;
         map.map_from_canonical(self.program.interner(), value)
     }
 
@@ -205,8 +159,8 @@ impl<'me, I: Interner> context::ContextOps<SlgContext<I>> for SlgContextOps<'me,
     fn instantiate_ex_clause(
         &self,
         num_universes: usize,
-        canonical_ex_clause: &Canonical<ExClause<SlgContext<I>>>,
-    ) -> (TruncatingInferenceTable<I>, ExClause<SlgContext<I>>) {
+        canonical_ex_clause: &Canonical<ExClause<I>>,
+    ) -> (TruncatingInferenceTable<I>, ExClause<I>) {
         let (infer, _subst, ex_cluse) = InferenceTable::from_canonical(
             self.program.interner(),
             num_universes,
@@ -239,14 +193,6 @@ impl<'me, I: Interner> context::ContextOps<SlgContext<I>> for SlgContextOps<'me,
         (infer_table, subst, constraints, delayed_subgoals)
     }
 
-    fn constrained_subst_from_answer(
-        &self,
-        answer: CompleteAnswer<SlgContext<I>>,
-    ) -> Canonical<ConstrainedSubst<I>> {
-        let CompleteAnswer { subst, .. } = answer;
-        subst
-    }
-
     fn identity_constrained_subst(
         &self,
         goal: &UCanonical<InEnvironment<Goal<I>>>,
@@ -275,6 +221,14 @@ impl<'me, I: Interner> context::ContextOps<SlgContext<I>> for SlgContextOps<'me,
         domain_goal.cast(self.program.interner())
     }
 
+    fn is_trivial_constrained_substitution(
+        &self,
+        constrained_subst: &Canonical<ConstrainedSubst<I>>,
+    ) -> bool {
+        let interner = self.interner();
+        constrained_subst.value.subst.is_identity_subst(interner)
+    }
+
     fn is_trivial_substitution(
         &self,
         u_canon: &UCanonical<InEnvironment<Goal<I>>>,
@@ -282,24 +236,6 @@ impl<'me, I: Interner> context::ContextOps<SlgContext<I>> for SlgContextOps<'me,
     ) -> bool {
         let interner = self.interner();
         u_canon.is_trivial_substitution(interner, canonical_subst)
-    }
-
-    fn into_hh_goal(&self, goal: Goal<I>) -> HhGoal<SlgContext<I>> {
-        let interner = self.interner();
-        match goal.data(interner).clone() {
-            GoalData::Quantified(QuantifierKind::ForAll, binders_goal) => {
-                HhGoal::ForAll(binders_goal)
-            }
-            GoalData::Quantified(QuantifierKind::Exists, binders_goal) => {
-                HhGoal::Exists(binders_goal)
-            }
-            GoalData::Implies(dg, subgoal) => HhGoal::Implies(dg, subgoal),
-            GoalData::All(goals) => HhGoal::All(goals.iter(interner).cloned().collect()),
-            GoalData::Not(g1) => HhGoal::Not(g1),
-            GoalData::EqGoal(EqGoal { a, b }) => HhGoal::Unify((), a, b),
-            GoalData::DomainGoal(domain_goal) => HhGoal::DomainGoal(domain_goal),
-            GoalData::CannotProve(()) => HhGoal::CannotProve,
-        }
     }
 }
 
@@ -309,7 +245,7 @@ impl<I: Interner> TruncatingInferenceTable<I> {
     }
 }
 
-impl<I: Interner> context::TruncateOps<SlgContext<I>> for TruncatingInferenceTable<I> {
+impl<I: Interner> context::TruncateOps<I, SlgContext<I>> for TruncatingInferenceTable<I> {
     fn goal_needs_truncation(&mut self, interner: &I, subgoal: &InEnvironment<Goal<I>>) -> bool {
         truncate::needs_truncation(interner, &mut self.infer, self.max_size, &subgoal)
     }
@@ -319,9 +255,9 @@ impl<I: Interner> context::TruncateOps<SlgContext<I>> for TruncatingInferenceTab
     }
 }
 
-impl<I: Interner> context::InferenceTable<SlgContext<I>> for TruncatingInferenceTable<I> {}
+impl<I: Interner> context::InferenceTable<I, SlgContext<I>> for TruncatingInferenceTable<I> {}
 
-impl<I: Interner> context::UnificationOps<SlgContext<I>> for TruncatingInferenceTable<I> {
+impl<I: Interner> context::UnificationOps<I, SlgContext<I>> for TruncatingInferenceTable<I> {
     fn instantiate_binders_universally(&mut self, interner: &I, arg: &Binders<Goal<I>>) -> Goal<I> {
         self.infer.instantiate_binders_universally(interner, arg)
     }
@@ -334,11 +270,7 @@ impl<I: Interner> context::UnificationOps<SlgContext<I>> for TruncatingInference
         self.infer.instantiate_binders_existentially(interner, arg)
     }
 
-    fn debug_ex_clause<'v>(
-        &mut self,
-        interner: &I,
-        value: &'v ExClause<SlgContext<I>>,
-    ) -> Box<dyn Debug + 'v> {
+    fn debug_ex_clause<'v>(&mut self, interner: &I, value: &'v ExClause<I>) -> Box<dyn Debug + 'v> {
         Box::new(self.infer.normalize_deep(interner, value))
     }
 
@@ -358,8 +290,8 @@ impl<I: Interner> context::UnificationOps<SlgContext<I>> for TruncatingInference
     fn canonicalize_ex_clause(
         &mut self,
         interner: &I,
-        value: &ExClause<SlgContext<I>>,
-    ) -> Canonical<ExClause<SlgContext<I>>> {
+        value: &ExClause<I>,
+    ) -> Canonical<ExClause<I>> {
         self.infer.canonicalize(interner, value).quantified
     }
 
@@ -401,14 +333,13 @@ impl<I: Interner> context::UnificationOps<SlgContext<I>> for TruncatingInference
         self.infer.invert(interner, value)
     }
 
-    fn unify_parameters_into_ex_clause(
+    fn unify_generic_args_into_ex_clause(
         &mut self,
         interner: &I,
         environment: &Environment<I>,
-        _: (),
-        a: &Parameter<I>,
-        b: &Parameter<I>,
-        ex_clause: &mut ExClause<SlgContext<I>>,
+        a: &GenericArg<I>,
+        b: &GenericArg<I>,
+        ex_clause: &mut ExClause<I>,
     ) -> Fallible<()> {
         let result = self.infer.unify(interner, environment, a, b)?;
         Ok(into_ex_clause(interner, result, ex_clause))
@@ -419,7 +350,7 @@ impl<I: Interner> context::UnificationOps<SlgContext<I>> for TruncatingInference
 fn into_ex_clause<I: Interner>(
     interner: &I,
     result: UnificationResult<I>,
-    ex_clause: &mut ExClause<SlgContext<I>>,
+    ex_clause: &mut ExClause<I>,
 ) {
     ex_clause.subgoals.extend(
         result
@@ -428,7 +359,6 @@ fn into_ex_clause<I: Interner>(
             .casted(interner)
             .map(Literal::Positive),
     );
-    ex_clause.constraints.extend(result.constraints);
 }
 
 trait SubstitutionExt<I: Interner> {
@@ -439,7 +369,7 @@ impl<I: Interner> SubstitutionExt<I> for Substitution<I> {
     fn may_invalidate(&self, interner: &I, subst: &Canonical<Substitution<I>>) -> bool {
         self.iter(interner)
             .zip(subst.value.iter(interner))
-            .any(|(new, current)| MayInvalidate { interner }.aggregate_parameters(new, current))
+            .any(|(new, current)| MayInvalidate { interner }.aggregate_generic_args(new, current))
     }
 }
 
@@ -449,21 +379,24 @@ struct MayInvalidate<'i, I> {
 }
 
 impl<I: Interner> MayInvalidate<'_, I> {
-    fn aggregate_parameters(&mut self, new: &Parameter<I>, current: &Parameter<I>) -> bool {
+    fn aggregate_generic_args(&mut self, new: &GenericArg<I>, current: &GenericArg<I>) -> bool {
         let interner = self.interner;
         match (new.data(interner), current.data(interner)) {
-            (ParameterKind::Ty(ty1), ParameterKind::Ty(ty2)) => self.aggregate_tys(ty1, ty2),
-            (ParameterKind::Lifetime(l1), ParameterKind::Lifetime(l2)) => {
+            (GenericArgData::Ty(ty1), GenericArgData::Ty(ty2)) => self.aggregate_tys(ty1, ty2),
+            (GenericArgData::Lifetime(l1), GenericArgData::Lifetime(l2)) => {
                 self.aggregate_lifetimes(l1, l2)
             }
-            (ParameterKind::Ty(_), _) | (ParameterKind::Lifetime(_), _) => panic!(
+            (GenericArgData::Const(c1), GenericArgData::Const(c2)) => self.aggregate_consts(c1, c2),
+            (GenericArgData::Ty(_), _)
+            | (GenericArgData::Lifetime(_), _)
+            | (GenericArgData::Const(_), _) => panic!(
                 "mismatched parameter kinds: new={:?} current={:?}",
                 new, current
             ),
         }
     }
 
-    // Returns true if the two types could be unequal.
+    /// Returns true if the two types could be unequal.
     fn aggregate_tys(&mut self, new: &Ty<I>, current: &Ty<I>) -> bool {
         let interner = self.interner;
         match (new.data(interner), current.data(interner)) {
@@ -493,7 +426,7 @@ impl<I: Interner> MayInvalidate<'_, I> {
                 true
             }
 
-            (TyData::InferenceVar(_), _) | (_, TyData::InferenceVar(_)) => {
+            (TyData::InferenceVar(_, _), _) | (_, TyData::InferenceVar(_, _)) => {
                 panic!(
                     "unexpected free inference variable in may-invalidate: {:?} vs {:?}",
                     new, current,
@@ -505,7 +438,7 @@ impl<I: Interner> MayInvalidate<'_, I> {
             }
 
             (TyData::Placeholder(p1), TyData::Placeholder(p2)) => {
-                self.aggregate_placeholder_tys(p1, p2)
+                self.aggregate_placeholders(p1, p2)
             }
 
             (
@@ -527,8 +460,56 @@ impl<I: Interner> MayInvalidate<'_, I> {
         }
     }
 
+    /// Returns true if the two consts could be unequal.    
     fn aggregate_lifetimes(&mut self, _: &Lifetime<I>, _: &Lifetime<I>) -> bool {
         true
+    }
+
+    /// Returns true if the two consts could be unequal.
+    fn aggregate_consts(&mut self, new: &Const<I>, current: &Const<I>) -> bool {
+        let interner = self.interner;
+        let ConstData {
+            ty: new_ty,
+            value: new_value,
+        } = new.data(interner);
+        let ConstData {
+            ty: current_ty,
+            value: current_value,
+        } = current.data(interner);
+
+        if self.aggregate_tys(new_ty, current_ty) {
+            return true;
+        }
+
+        match (new_value, current_value) {
+            (_, ConstValue::BoundVar(_)) => {
+                // see comment in aggregate_tys
+                false
+            }
+
+            (ConstValue::BoundVar(_), _) => {
+                // see comment in aggregate_tys
+                true
+            }
+
+            (ConstValue::InferenceVar(_), _) | (_, ConstValue::InferenceVar(_)) => {
+                panic!(
+                    "unexpected free inference variable in may-invalidate: {:?} vs {:?}",
+                    new, current,
+                );
+            }
+
+            (ConstValue::Placeholder(p1), ConstValue::Placeholder(p2)) => {
+                self.aggregate_placeholders(p1, p2)
+            }
+
+            (ConstValue::Concrete(c1), ConstValue::Concrete(c2)) => {
+                !c1.const_eq(new_ty, c2, interner)
+            }
+
+            // Only variants left are placeholder = concrete, which always fails
+            (ConstValue::Placeholder(_), _) | (ConstValue::Concrete(_), _) => true,
+        }
     }
 
     fn aggregate_application_tys(
@@ -553,7 +534,7 @@ impl<I: Interner> MayInvalidate<'_, I> {
         )
     }
 
-    fn aggregate_placeholder_tys(
+    fn aggregate_placeholders(
         &mut self,
         new: &PlaceholderIndex,
         current: &PlaceholderIndex,
@@ -630,6 +611,6 @@ impl<I: Interner> MayInvalidate<'_, I> {
         new_substitution
             .iter(interner)
             .zip(current_substitution.iter(interner))
-            .any(|(new, current)| self.aggregate_parameters(new, current))
+            .any(|(new, current)| self.aggregate_generic_args(new, current))
     }
 }

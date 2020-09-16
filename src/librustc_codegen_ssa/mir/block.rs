@@ -200,6 +200,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         targets: &Vec<mir::BasicBlock>,
     ) {
         let discr = self.codegen_operand(&mut bx, &discr);
+        // `switch_ty` is redundant, sanity-check that.
+        assert_eq!(discr.layout.ty, switch_ty);
         if targets.len() == 2 {
             // If there are two targets, emit br instead of switch
             let lltrue = helper.llblock(self, targets[0]);
@@ -378,7 +380,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         // checked operation, just a comparison with the minimum
         // value, so we have to check for the assert message.
         if !bx.check_overflow() {
-            if let AssertKind::OverflowNeg = *msg {
+            if let AssertKind::OverflowNeg(_) = *msg {
                 const_cond = Some(expected);
             }
         }
@@ -530,6 +532,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         args: &Vec<mir::Operand<'tcx>>,
         destination: &Option<(mir::Place<'tcx>, mir::BasicBlock)>,
         cleanup: Option<mir::BasicBlock>,
+        fn_span: Span,
     ) {
         let span = terminator.source_info.span;
         // Create the callee. This is a fn ptr or zero-sized and hence a kind of scalar.
@@ -634,7 +637,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         if intrinsic == Some("caller_location") {
             if let Some((_, target)) = destination.as_ref() {
-                let location = self.get_caller_location(&mut bx, span);
+                let location = self.get_caller_location(&mut bx, fn_span);
 
                 if let ReturnDest::IndirectOperand(tmp, _) = ret_dest {
                     location.val.store(&mut bx, tmp);
@@ -648,6 +651,18 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         }
 
         if intrinsic.is_some() && intrinsic != Some("drop_in_place") {
+            let intrinsic = intrinsic.unwrap();
+
+            // `is_codegen_intrinsic()` allows the backend implementation to perform compile-time
+            // operations before converting the `args` to backend values.
+            if !bx.is_codegen_intrinsic(intrinsic, &args, self.instance) {
+                // If the intrinsic call was fully addressed by the `is_codegen_intrinsic()` call
+                // (as a compile-time operation), return immediately. This avoids the need to
+                // convert the arguments, the call to `codegen_intrinsic_call()`, and the return
+                // value handling.
+                return;
+            }
+
             let dest = match ret_dest {
                 _ if fn_abi.ret.is_indirect() => llargs[0],
                 ReturnDest::Nothing => {
@@ -667,7 +682,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     // third argument must be constant. This is
                     // checked by const-qualification, which also
                     // promotes any complex rvalues to constants.
-                    if i == 2 && intrinsic.unwrap().starts_with("simd_shuffle") {
+                    if i == 2 && intrinsic.starts_with("simd_shuffle") {
                         if let mir::Operand::Constant(constant) = arg {
                             let c = self.eval_mir_constant(constant);
                             let (llval, ty) = self.simd_shuffle_indices(
@@ -692,6 +707,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 &args,
                 dest,
                 terminator.source_info.span,
+                self.instance,
             );
 
             if let ReturnDest::IndirectOperand(dst, _) = ret_dest {
@@ -798,7 +814,12 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 args.len() + 1,
                 "#[track_caller] fn's must have 1 more argument in their ABI than in their MIR",
             );
-            let location = self.get_caller_location(&mut bx, span);
+            let location = self.get_caller_location(&mut bx, fn_span);
+            debug!(
+                "codegen_call_terminator({:?}): location={:?} (fn_span {:?})",
+                terminator, location, fn_span
+            );
+
             let last_arg = fn_abi.args.last().unwrap();
             self.codegen_argument(&mut bx, location, &mut llargs, last_arg);
         }
@@ -921,12 +942,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         span_bug!(span, "invalid type for asm sym (fn)");
                     }
                 }
-                mir::InlineAsmOperand::SymStatic { ref value } => {
-                    if let Some(def_id) = value.check_static_ptr(bx.tcx()) {
-                        InlineAsmOperandRef::SymStatic { def_id }
-                    } else {
-                        span_bug!(span, "invalid type for asm sym (static)");
-                    }
+                mir::InlineAsmOperand::SymStatic { def_id } => {
+                    InlineAsmOperandRef::SymStatic { def_id }
                 }
             })
             .collect();
@@ -996,8 +1013,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 bx.unreachable();
             }
 
-            mir::TerminatorKind::Drop { location, target, unwind } => {
-                self.codegen_drop_terminator(helper, bx, location, target, unwind);
+            mir::TerminatorKind::Drop { place, target, unwind } => {
+                self.codegen_drop_terminator(helper, bx, place, target, unwind);
             }
 
             mir::TerminatorKind::Assert { ref cond, expected, ref msg, target, cleanup } => {
@@ -1016,6 +1033,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 ref destination,
                 cleanup,
                 from_hir_call: _,
+                fn_span,
             } => {
                 self.codegen_call_terminator(
                     helper,
@@ -1025,12 +1043,13 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     args,
                     destination,
                     cleanup,
+                    fn_span,
                 );
             }
             mir::TerminatorKind::GeneratorDrop | mir::TerminatorKind::Yield { .. } => {
                 bug!("generator ops in codegen")
             }
-            mir::TerminatorKind::FalseEdges { .. } | mir::TerminatorKind::FalseUnwind { .. } => {
+            mir::TerminatorKind::FalseEdge { .. } | mir::TerminatorKind::FalseUnwind { .. } => {
                 bug!("borrowck false edges in codegen")
             }
 

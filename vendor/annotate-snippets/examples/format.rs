@@ -1,6 +1,7 @@
-use annotate_snippets::display_list::DisplayList;
-use annotate_snippets::formatter::DisplayListFormatter;
-use annotate_snippets::snippet::{Annotation, AnnotationType, Slice, Snippet, SourceAnnotation};
+use annotate_snippets::{
+    display_list::{DisplayList, FormatOptions},
+    snippet::{Annotation, AnnotationType, Slice, Snippet, SourceAnnotation},
+};
 
 fn main() {
     let snippet = Snippet {
@@ -26,33 +27,35 @@ fn main() {
             }
             _ => continue,
         }
-    }"#
-            .to_string(),
+    }"#,
             line_start: 51,
-            origin: Some("src/format.rs".to_string()),
+            origin: Some("src/format.rs"),
             fold: false,
             annotations: vec![
                 SourceAnnotation {
-                    label: "expected `Option<String>` because of return type".to_string(),
+                    label: "expected `Option<String>` because of return type",
                     annotation_type: AnnotationType::Warning,
                     range: (5, 19),
                 },
                 SourceAnnotation {
-                    label: "expected enum `std::option::Option`".to_string(),
+                    label: "expected enum `std::option::Option`",
                     annotation_type: AnnotationType::Error,
-                    range: (23, 745),
+                    range: (26, 724),
                 },
             ],
         }],
         title: Some(Annotation {
-            label: Some("mismatched types".to_string()),
-            id: Some("E0308".to_string()),
+            label: Some("mismatched types"),
+            id: Some("E0308"),
             annotation_type: AnnotationType::Error,
         }),
         footer: vec![],
+        opt: FormatOptions {
+            color: true,
+            ..Default::default()
+        },
     };
 
     let dl = DisplayList::from(snippet);
-    let dlf = DisplayListFormatter::new(true, false);
-    println!("{}", dlf.format(&dl));
+    println!("{}", dl);
 }

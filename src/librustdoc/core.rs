@@ -62,6 +62,8 @@ pub struct DocContext<'tcx> {
     // FIXME(eddyb) make this a `ty::TraitRef<'tcx>` set.
     pub generated_synthetics: RefCell<FxHashSet<(Ty<'tcx>, DefId)>>,
     pub auto_traits: Vec<DefId>,
+    /// The options given to rustdoc that could be relevant to a pass.
+    pub render_options: RenderOptions,
 }
 
 impl<'tcx> DocContext<'tcx> {
@@ -191,8 +193,15 @@ pub fn new_handler(
                 Lrc::new(source_map::SourceMap::new(source_map::FilePathMapping::empty()))
             });
             Box::new(
-                JsonEmitter::stderr(None, source_map, pretty, json_rendered, false)
-                    .ui_testing(debugging_opts.ui_testing),
+                JsonEmitter::stderr(
+                    None,
+                    source_map,
+                    pretty,
+                    json_rendered,
+                    debugging_opts.terminal_width,
+                    false,
+                )
+                .ui_testing(debugging_opts.ui_testing),
             )
         }
     };
@@ -216,7 +225,7 @@ pub fn new_handler(
 ///  * Vector of tuples of lints' name and their associated "max" level
 ///  * HashMap of lint id with their associated "max" level
 pub fn init_lints<F>(
-    mut whitelisted_lints: Vec<String>,
+    mut allowed_lints: Vec<String>,
     lint_opts: Vec<(String, lint::Level)>,
     filter_call: F,
 ) -> (Vec<(String, lint::Level)>, FxHashMap<lint::LintId, lint::Level>)
@@ -225,13 +234,8 @@ where
 {
     let warnings_lint_name = lint::builtin::WARNINGS.name;
 
-    // Whitelist feature-gated lints to avoid feature errors when trying to
-    // allow all lints.
-    // FIXME(#72694): handle feature-gated lints properly.
-    let unsafe_op_in_unsafe_fn_name = rustc_lint::builtin::UNSAFE_OP_IN_UNSAFE_FN.name;
-
-    whitelisted_lints.push(warnings_lint_name.to_owned());
-    whitelisted_lints.extend(lint_opts.iter().map(|(lint, _)| lint).cloned());
+    allowed_lints.push(warnings_lint_name.to_owned());
+    allowed_lints.extend(lint_opts.iter().map(|(lint, _)| lint).cloned());
 
     let lints = || {
         lint::builtin::HardwiredLints::get_lints()
@@ -241,7 +245,9 @@ where
 
     let lint_opts = lints()
         .filter_map(|lint| {
-            if lint.name == warnings_lint_name || lint.name == unsafe_op_in_unsafe_fn_name {
+            // Permit feature-gated lints to avoid feature errors when trying to
+            // allow all lints.
+            if lint.name == warnings_lint_name || lint.feature_gate.is_some() {
                 None
             } else {
                 filter_call(lint)
@@ -252,9 +258,9 @@ where
 
     let lint_caps = lints()
         .filter_map(|lint| {
-            // We don't want to whitelist *all* lints so let's
-            // ignore those ones.
-            if whitelisted_lints.iter().any(|l| lint.name == l) {
+            // We don't want to allow *all* lints so let's ignore
+            // those ones.
+            if allowed_lints.iter().any(|l| lint.name == l) {
                 None
             } else {
                 Some((lint::LintId::of(lint), lint::Allow))
@@ -284,8 +290,6 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
         describe_lints,
         lint_cap,
         mut default_passes,
-        mut document_private,
-        document_hidden,
         mut manual_passes,
         display_warnings,
         render_options,
@@ -313,9 +317,9 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
     let no_crate_level_docs = rustc_lint::builtin::MISSING_CRATE_LEVEL_DOCS.name;
     let invalid_codeblock_attribute_name = rustc_lint::builtin::INVALID_CODEBLOCK_ATTRIBUTES.name;
 
-    // In addition to those specific lints, we also need to whitelist those given through
+    // In addition to those specific lints, we also need to allow those given through
     // command line, otherwise they'll get ignored and we don't want that.
-    let whitelisted_lints = vec![
+    let allowed_lints = vec![
         intra_link_resolution_failure_name.to_owned(),
         missing_docs.to_owned(),
         missing_doc_example.to_owned(),
@@ -324,7 +328,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
         invalid_codeblock_attribute_name.to_owned(),
     ];
 
-    let (lint_opts, lint_caps) = init_lints(whitelisted_lints, lint_opts, |lint| {
+    let (lint_opts, lint_caps) = init_lints(allowed_lints, lint_opts, |lint| {
         if lint.name == intra_link_resolution_failure_name
             || lint.name == invalid_codeblock_attribute_name
         {
@@ -372,7 +376,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
         registry: rustc_driver::diagnostics_registry(),
     };
 
-    interface::run_compiler_in_existing_thread_pool(config, |compiler| {
+    interface::create_compiler_and_run(config, |compiler| {
         compiler.enter(|queries| {
             let sess = compiler.session();
 
@@ -451,6 +455,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                         .cloned()
                         .filter(|trait_def_id| tcx.trait_is_auto(*trait_def_id))
                         .collect(),
+                    render_options,
                 };
                 debug!("crate: {:?}", tcx.hir().krate());
 
@@ -527,7 +532,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                     }
 
                     if attr.is_word() && name == sym::document_private_items {
-                        document_private = true;
+                        ctxt.render_options.document_private = true;
                     }
                 }
 
@@ -547,9 +552,9 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
                 for p in passes {
                     let run = match p.condition {
                         Always => true,
-                        WhenDocumentPrivate => document_private,
-                        WhenNotDocumentPrivate => !document_private,
-                        WhenNotDocumentHidden => !document_hidden,
+                        WhenDocumentPrivate => ctxt.render_options.document_private,
+                        WhenNotDocumentPrivate => !ctxt.render_options.document_private,
+                        WhenNotDocumentHidden => !ctxt.render_options.document_hidden,
                     };
                     if run {
                         debug!("running pass {}", p.pass.name);
@@ -559,7 +564,7 @@ pub fn run_core(options: RustdocOptions) -> (clean::Crate, RenderInfo, RenderOpt
 
                 ctxt.sess().abort_if_errors();
 
-                (krate, ctxt.renderinfo.into_inner(), render_options)
+                (krate, ctxt.renderinfo.into_inner(), ctxt.render_options)
             })
         })
     })

@@ -1,15 +1,21 @@
 use crate::context::{
-    Context, ContextOps, Floundered, InferenceTable, ResolventOps, TruncateOps, UnificationOps,
+    Context, ContextOps, InferenceTable, ResolventOps, TruncateOps, UnificationOps,
 };
-use crate::fallible::NoSolution;
 use crate::forest::Forest;
-use crate::hh::HhGoal;
 use crate::stack::{Stack, StackIndex};
 use crate::strand::{CanonicalStrand, SelectedSubgoal, Strand};
-use crate::table::AnswerIndex;
+use crate::table::{AnswerIndex, Table};
 use crate::{
-    Answer, CompleteAnswer, ExClause, FlounderedSubgoal, Literal, Minimums, TableIndex, TimeStamp,
+    Answer, AnswerMode, CompleteAnswer, ExClause, FlounderedSubgoal, Literal, Minimums, TableIndex,
+    TimeStamp,
 };
+
+use chalk_ir::interner::Interner;
+use chalk_ir::{
+    Canonical, ConstrainedSubst, Floundered, Goal, GoalData, InEnvironment, NoSolution,
+    Substitution, UCanonical, UniverseMap,
+};
+use tracing::{debug, debug_span, info, instrument};
 
 type RootSearchResult<T> = Result<T, RootSearchFail>;
 
@@ -41,18 +47,16 @@ pub(super) enum RootSearchFail {
 }
 
 /// This is returned when we try to select a subgoal for a strand.
+#[derive(PartialEq)]
 enum SubGoalSelection {
     /// A subgoal was successfully selected. It has already been checked
     /// to not be floundering. However, it may have an answer already, be
     /// coinductive, or create a cycle.
     Selected,
 
-    /// This strand has no remaining subgoals.
-    NoRemainingSubgoals,
-
-    /// This strand has floundered. Either all the positive subgoals
-    /// have floundered or a single negative subgoal has floundered.
-    Floundered,
+    /// This strand has no remaining subgoals, but there may still be
+    /// floundered subgoals.
+    NotSelected,
 }
 
 /// This is returned `on_no_remaining_subgoals`
@@ -67,17 +71,17 @@ enum NoRemainingSubgoalsResult {
     Success,
 }
 
-impl<C: Context> Forest<C> {
+impl<I: Interner, C: Context<I>> Forest<I, C> {
     /// Returns an answer with a given index for the given table. This
     /// may require activating a strand and following it. It returns
     /// `Ok(answer)` if they answer is available and otherwise a
     /// `RootSearchFail` result.
     pub(super) fn root_answer(
         &mut self,
-        context: &impl ContextOps<C>,
+        context: &impl ContextOps<I, C>,
         table: TableIndex,
         answer_index: AnswerIndex,
-    ) -> RootSearchResult<CompleteAnswer<C>> {
+    ) -> RootSearchResult<CompleteAnswer<I>> {
         let stack = Stack::default();
 
         let mut state = SolveState {
@@ -90,14 +94,17 @@ impl<C: Context> Forest<C> {
             Ok(()) => {
                 assert!(state.stack.is_empty());
                 let answer = state.forest.answer(table, answer_index);
-                let has_delayed_subgoals = C::has_delayed_subgoals(&answer.subst);
-                if has_delayed_subgoals {
+                if !answer.subst.value.delayed_subgoals.is_empty() {
                     return Err(RootSearchFail::InvalidAnswer);
                 }
                 Ok(CompleteAnswer {
-                    subst: C::canonical_constrained_subst_from_canonical_constrained_answer(
-                        &answer.subst,
-                    ),
+                    subst: Canonical {
+                        binders: answer.subst.binders.clone(),
+                        value: ConstrainedSubst {
+                            subst: answer.subst.value.subst.clone(),
+                            constraints: answer.subst.value.constraints.clone(),
+                        },
+                    },
                     ambiguous: answer.ambiguous,
                 })
             }
@@ -109,25 +116,26 @@ impl<C: Context> Forest<C> {
         &self,
         table: TableIndex,
         answer: AnswerIndex,
-        mut test: impl FnMut(&C::InferenceNormalizedSubst) -> bool,
+        mut test: impl FnMut(&Substitution<I>) -> bool,
     ) -> bool {
         if let Some(answer) = self.tables[table].answer(answer) {
             info!("answer cached = {:?}", answer);
-            return test(C::inference_normalized_subst_from_subst(&answer.subst));
+            return test(&answer.subst.value.subst);
         }
 
-        self.tables[table].strands().any(|strand| {
-            test(C::inference_normalized_subst_from_ex_clause(
-                &strand.canonical_ex_clause,
-            ))
-        })
+        self.tables[table]
+            .strands()
+            .any(|strand| test(&strand.canonical_ex_clause.value.subst))
     }
 
-    pub(crate) fn answer(&self, table: TableIndex, answer: AnswerIndex) -> &Answer<C> {
+    pub(crate) fn answer(&self, table: TableIndex, answer: AnswerIndex) -> &Answer<I> {
         self.tables[table].answer(answer).unwrap()
     }
 
-    fn canonicalize_strand(context: &impl ContextOps<C>, strand: Strand<C>) -> CanonicalStrand<C> {
+    fn canonicalize_strand(
+        context: &impl ContextOps<I, C>,
+        strand: Strand<I, C>,
+    ) -> CanonicalStrand<I> {
         let Strand {
             mut infer,
             ex_clause,
@@ -144,12 +152,12 @@ impl<C: Context> Forest<C> {
     }
 
     fn canonicalize_strand_from(
-        context: &impl ContextOps<C>,
-        infer: &mut dyn InferenceTable<C>,
-        ex_clause: &ExClause<C>,
-        selected_subgoal: Option<SelectedSubgoal<C>>,
+        context: &impl ContextOps<I, C>,
+        infer: &mut dyn InferenceTable<I, C>,
+        ex_clause: &ExClause<I>,
+        selected_subgoal: Option<SelectedSubgoal>,
         last_pursued_time: TimeStamp,
-    ) -> CanonicalStrand<C> {
+    ) -> CanonicalStrand<I> {
         let canonical_ex_clause = infer.canonicalize_ex_clause(context.interner(), &ex_clause);
         CanonicalStrand {
             canonical_ex_clause,
@@ -171,14 +179,13 @@ impl<C: Context> Forest<C> {
     /// In terms of the NFTD paper, creating a new table corresponds
     /// to the *New Subgoal* step as well as the *Program Clause
     /// Resolution* steps.
+    #[instrument(level = "debug", skip(self, context, infer))]
     fn get_or_create_table_for_subgoal(
         &mut self,
-        context: &impl ContextOps<C>,
-        infer: &mut dyn InferenceTable<C>,
-        subgoal: &Literal<C>,
-    ) -> Option<(TableIndex, C::UniverseMap)> {
-        debug_heading!("get_or_create_table_for_subgoal(subgoal={:?})", subgoal);
-
+        context: &impl ContextOps<I, C>,
+        infer: &mut dyn InferenceTable<I, C>,
+        subgoal: &Literal<I>,
+    ) -> Option<(TableIndex, UniverseMap)> {
         // Subgoal abstraction:
         let (ucanonical_subgoal, universe_map) = match subgoal {
             Literal::Positive(subgoal) => {
@@ -204,27 +211,24 @@ impl<C: Context> Forest<C> {
     /// In terms of the NFTD paper, creating a new table corresponds
     /// to the *New Subgoal* step as well as the *Program Clause
     /// Resolution* steps.
+    #[instrument(level = "debug", skip(self, context))]
     pub(crate) fn get_or_create_table_for_ucanonical_goal(
         &mut self,
-        context: &impl ContextOps<C>,
-        goal: C::UCanonicalGoalInEnvironment,
+        context: &impl ContextOps<I, C>,
+        goal: UCanonical<InEnvironment<Goal<I>>>,
     ) -> TableIndex {
-        debug_heading!("get_or_create_table_for_ucanonical_goal({:?})", goal);
-
         if let Some(table) = self.tables.index_of(&goal) {
             debug!("found existing table {:?}", table);
             return table;
         }
 
-        info_heading!(
+        info!(
             "creating new table {:?} and goal {:#?}",
             self.tables.next_index(),
             goal
         );
-        let coinductive_goal = context.is_coinductive(&goal);
-        let table = self.tables.insert(goal, coinductive_goal);
-        self.push_initial_strands(context, table);
-        table
+        let table = Self::build_table(context, self.tables.next_index(), goal);
+        self.tables.insert(table)
     }
 
     /// When a table is first created, this function is invoked to
@@ -232,31 +236,23 @@ impl<C: Context> Forest<C> {
     /// domain goal, these strands are created from the program
     /// clauses as well as the clauses found in the environment.  If
     /// the table represents a non-domain goal, such as `for<T> G`
-    /// etc, then `simplify_hh_goal` is invoked to create a strand
+    /// etc, then `simplify_goal` is invoked to create a strand
     /// that breaks the goal down.
     ///
     /// In terms of the NFTD paper, this corresponds to the *Program
     /// Clause Resolution* step being applied eagerly, as many times
     /// as possible.
-    fn push_initial_strands(&mut self, context: &impl ContextOps<C>, table: TableIndex) {
-        // Instantiate the table goal with fresh inference variables.
-        let table_goal = self.tables[table].table_goal.clone();
-        let (infer, subst, environment, goal) = context.instantiate_ucanonical_goal(&table_goal);
-        self.push_initial_strands_instantiated(context, table, infer, subst, environment, goal);
-    }
+    fn build_table(
+        context: &impl ContextOps<I, C>,
+        table_idx: TableIndex,
+        goal: UCanonical<InEnvironment<Goal<I>>>,
+    ) -> Table<I> {
+        let mut table = Table::new(goal.clone(), context.is_coinductive(&goal));
+        let (mut infer, subst, environment, goal) = context.instantiate_ucanonical_goal(&goal);
+        let goal_data = goal.data(context.interner());
 
-    fn push_initial_strands_instantiated(
-        &mut self,
-        context: &impl ContextOps<C>,
-        table: TableIndex,
-        mut infer: C::InferenceTable,
-        subst: C::Substitution,
-        environment: C::Environment,
-        goal: C::Goal,
-    ) {
-        let table_ref = &mut self.tables[table];
-        match context.into_hh_goal(goal) {
-            HhGoal::DomainGoal(domain_goal) => {
+        match goal_data {
+            GoalData::DomainGoal(domain_goal) => {
                 match context.program_clauses(&environment, &domain_goal, &mut infer) {
                     Ok(clauses) => {
                         for clause in clauses {
@@ -277,28 +273,31 @@ impl<C: Context> Forest<C> {
                                     last_pursued_time: TimeStamp::default(),
                                 };
                                 let canonical_strand = Self::canonicalize_strand(context, strand);
-                                table_ref.enqueue_strand(canonical_strand);
+                                table.enqueue_strand(canonical_strand);
                             }
                         }
                     }
                     Err(Floundered) => {
-                        debug!("Marking table {:?} as floundered!", table);
-                        table_ref.mark_floundered();
+                        debug!(
+                            "Marking table {:?} as floundered! (failed to create program clauses)",
+                            table_idx
+                        );
+                        table.mark_floundered();
                     }
                 }
             }
 
-            hh_goal => {
-                // `canonical_goal` is an HH goal. We can simplify it
+            _ => {
+                // `canonical_goal` is a goal. We can simplify it
                 // into a series of *literals*, all of which must be
                 // true. Thus, in EWFS terms, we are effectively
                 // creating a single child of the `A :- A` goal that
                 // is like `A :- B, C, D` where B, C, and D are the
                 // simplified subgoals. You can think of this as
                 // applying built-in "meta program clauses" that
-                // reduce HH goals into Domain goals.
+                // reduce goals into Domain goals.
                 if let Ok(ex_clause) =
-                    Self::simplify_hh_goal(context, &mut infer, subst, environment, hh_goal)
+                    Self::simplify_goal(context, &mut infer, subst, environment, goal)
                 {
                     info!(
                         "pushing initial strand with ex-clause: {:#?}",
@@ -311,10 +310,12 @@ impl<C: Context> Forest<C> {
                         last_pursued_time: TimeStamp::default(),
                     };
                     let canonical_strand = Self::canonicalize_strand(context, strand);
-                    table_ref.enqueue_strand(canonical_strand);
+                    table.enqueue_strand(canonical_strand);
                 }
             }
         }
+
+        table
     }
 
     /// Given a selected positive subgoal, applies the subgoal
@@ -324,10 +325,10 @@ impl<C: Context> Forest<C> {
     /// of `subgoal`; but if the subgoal is getting too big, we return
     /// `None`, which causes the subgoal to flounder.
     fn abstract_positive_literal(
-        context: &impl ContextOps<C>,
-        infer: &mut dyn InferenceTable<C>,
-        subgoal: &C::GoalInEnvironment,
-    ) -> Option<(C::UCanonicalGoalInEnvironment, C::UniverseMap)> {
+        context: &impl ContextOps<I, C>,
+        infer: &mut dyn InferenceTable<I, C>,
+        subgoal: &InEnvironment<Goal<I>>,
+    ) -> Option<(UCanonical<InEnvironment<Goal<I>>>, UniverseMap)> {
         if infer.goal_needs_truncation(context.interner(), subgoal) {
             None
         } else {
@@ -336,17 +337,17 @@ impl<C: Context> Forest<C> {
     }
 
     /// Given a selected negative subgoal, the subgoal is "inverted"
-    /// (see `InferenceTable<C>::invert`) and then potentially truncated
+    /// (see `InferenceTable<I, C>::invert`) and then potentially truncated
     /// (see `abstract_positive_literal`). The result subgoal is
     /// canonicalized. In some cases, this may return `None` and hence
     /// fail to yield a useful result, for example if free existential
     /// variables appear in `subgoal` (in which case the execution is
     /// said to "flounder").
     fn abstract_negative_literal(
-        context: &impl ContextOps<C>,
-        infer: &mut dyn InferenceTable<C>,
-        subgoal: &C::GoalInEnvironment,
-    ) -> Option<(C::UCanonicalGoalInEnvironment, C::UniverseMap)> {
+        context: &impl ContextOps<I, C>,
+        infer: &mut dyn InferenceTable<I, C>,
+        subgoal: &InEnvironment<Goal<I>>,
+    ) -> Option<(UCanonical<InEnvironment<Goal<I>>>, UniverseMap)> {
         // First, we have to check that the selected negative literal
         // is ground, and invert any universally quantified variables.
         //
@@ -394,14 +395,14 @@ impl<C: Context> Forest<C> {
     }
 }
 
-pub(crate) struct SolveState<'forest, C: Context, CO: ContextOps<C>> {
-    forest: &'forest mut Forest<C>,
+pub(crate) struct SolveState<'forest, I: Interner, C: Context<I>, CO: ContextOps<I, C>> {
+    forest: &'forest mut Forest<I, C>,
     context: &'forest CO,
-    stack: Stack<C>,
+    stack: Stack<I, C>,
 }
 
-impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> Drop
-    for SolveState<'forest, C, CO>
+impl<'forest, I: Interner, C: Context<I> + 'forest, CO: ContextOps<I, C> + 'forest> Drop
+    for SolveState<'forest, I, C, CO>
 {
     fn drop(&mut self) {
         if !self.stack.is_empty() {
@@ -416,23 +417,21 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> Drop
     }
 }
 
-impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'forest, C, CO> {
+impl<'forest, I: Interner, C: Context<I> + 'forest, CO: ContextOps<I, C> + 'forest>
+    SolveState<'forest, I, C, CO>
+{
     /// Ensures that answer with the given index is available from the
     /// given table. Returns `Ok` if there is an answer.
     ///
     /// This function first attempts to fetch answer that is cached in
     /// the table. If none is found, then it will recursively search
     /// to find an answer.
+    #[instrument(level = "info", skip(self))]
     fn ensure_root_answer(
         &mut self,
         initial_table: TableIndex,
         initial_answer: AnswerIndex,
     ) -> RootSearchResult<()> {
-        info_heading!(
-            "ensure_answer(table={:?}, answer={:?})",
-            initial_table,
-            initial_answer
-        );
         info!(
             "table goal = {:#?}",
             self.forest.tables[initial_table].table_goal
@@ -462,25 +461,37 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
             let clock = self.stack.top().clock;
             // If we had an active strand, continue to pursue it
             let table = self.stack.top().table;
+            let table_answer_mode = self.forest.tables[table].answer_mode;
 
             // We track when we last pursued each strand. If all the strands have been
             // pursued at this depth, then that means they all encountered a cycle.
             // We also know that if the first strand has been pursued at this depth,
             // then all have. Otherwise, an answer to any strand would have provided an
             // answer for the table.
+            let num_universes = self.forest.tables[table].table_goal.universes;
+            let forest = &mut self.forest;
+            let context = &self.context;
             let next_strand = self.stack.top().active_strand.take().or_else(|| {
-                self.forest.tables[table]
-                    .dequeue_next_strand_if(|strand| strand.last_pursued_time < clock)
+                forest.tables[table]
+                    .dequeue_next_strand_that(|strand| {
+                        let (_, ex_clause) = context
+                            .instantiate_ex_clause(num_universes, &strand.canonical_ex_clause);
+                        let time_eligble = strand.last_pursued_time < clock;
+                        let mode_eligble = match (table_answer_mode, ex_clause.ambiguous) {
+                            (AnswerMode::Complete, false) => true,
+                            (AnswerMode::Complete, true) => false,
+                            (AnswerMode::Ambiguous, _) => true,
+                        };
+                        time_eligble && mode_eligble
+                    })
                     .map(|canonical_strand| {
-                        let num_universes = C::num_universes(&self.forest.tables[table].table_goal);
                         let CanonicalStrand {
                             canonical_ex_clause,
                             selected_subgoal,
                             last_pursued_time,
                         } = canonical_strand;
-                        let (infer, ex_clause) = self
-                            .context
-                            .instantiate_ex_clause(num_universes, &canonical_ex_clause);
+                        let (infer, ex_clause) =
+                            context.instantiate_ex_clause(num_universes, &canonical_ex_clause);
                         let strand = Strand {
                             infer,
                             ex_clause,
@@ -504,19 +515,12 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                             self.on_subgoal_selected(strand)?;
                             continue;
                         }
-                        SubGoalSelection::NoRemainingSubgoals => {
+                        SubGoalSelection::NotSelected => {
                             match self.on_no_remaining_subgoals(strand) {
                                 NoRemainingSubgoalsResult::RootAnswerAvailable => return Ok(()),
                                 NoRemainingSubgoalsResult::RootSearchFail(e) => return Err(e),
-                                NoRemainingSubgoalsResult::Success => {}
+                                NoRemainingSubgoalsResult::Success => continue,
                             };
-                            continue;
-                        }
-                        SubGoalSelection::Floundered => {
-                            // The strand floundered when trying to select a subgoal.
-                            // This will always return a `RootSearchFail`, either because the
-                            // root table floundered or we yield with `QuantumExceeded`.
-                            return Err(self.on_subgoal_selection_flounder(strand));
                         }
                     }
                 }
@@ -534,29 +538,72 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     /// answer into the provided `Strand`.
     /// On success, `Ok` is returned and the `Strand` can be continued to process
     /// On failure, `Err` is returned and the `Strand` should be discarded
-    fn merge_answer_into_strand(&mut self, strand: &mut Strand<C>) -> RootSearchResult<()> {
+    fn merge_answer_into_strand(&mut self, strand: &mut Strand<I, C>) -> RootSearchResult<()> {
         // At this point, we know we have an answer for
         // the selected subgoal of the strand.
         // Now, we have to unify that answer onto the strand.
 
+        // If this answer is ambiguous and we don't want ambiguous answers
+        // yet, then we act like this is a floundered subgoal.
+        let ambiguous = {
+            let selected_subgoal = strand.selected_subgoal.as_ref().unwrap();
+            let answer = self.forest.answer(
+                selected_subgoal.subgoal_table,
+                selected_subgoal.answer_index,
+            );
+            answer.ambiguous
+        };
+        if let AnswerMode::Complete = self.forest.tables[self.stack.top().table].answer_mode {
+            if ambiguous {
+                // FIXME: we could try to be a little bit smarter here. This can
+                // really be split into cases:
+                // 1) Cases where no amount of solving will cause this ambiguity to change.
+                //    (e.g. `CannnotProve`)
+                // 2) Cases where we may be able to get a better answer if we
+                //    solve other subgoals first.
+                //    (e.g. the `non_enumerable_traits_reorder` test)
+                // We really only need to delay merging an ambiguous answer for
+                // case 2. Do note, though, that even if we *do* merge the answer
+                // case 1, we should stop solving this strand when in
+                // `AnswerMode::Complete` since we wouldn't use this answer yet
+                // *anyways*.
+
+                // The selected subgoal returned an ambiguous answer, but we don't want that.
+                // So, we treat this subgoal as floundered.
+                let selected_subgoal = strand.selected_subgoal.take().unwrap();
+                self.flounder_subgoal(&mut strand.ex_clause, selected_subgoal.subgoal_index);
+                return Ok(());
+            }
+        }
+
         // If this subgoal was a `Positive` one, whichever way this
-        // particular answer turns out, there may yet be *more* answers.
+        // particular answer turns out, there may yet be *more* answers,
+        // if this isn't a trivial substitution.
         // Enqueue that alternative for later.
         // NOTE: this is separate from the match below because we `take` the selected_subgoal
         // below, but here we keep it for the new `Strand`.
         let selected_subgoal = strand.selected_subgoal.as_ref().unwrap();
         if let Literal::Positive(_) = strand.ex_clause.subgoals[selected_subgoal.subgoal_index] {
-            let mut next_subgoal = selected_subgoal.clone();
-            next_subgoal.answer_index.increment();
-            let next_strand = Strand {
-                infer: strand.infer.clone(),
-                ex_clause: strand.ex_clause.clone(),
-                selected_subgoal: Some(next_subgoal),
-                last_pursued_time: strand.last_pursued_time.clone(),
-            };
-            let table = self.stack.top().table;
-            let canonical_next_strand = Forest::canonicalize_strand(self.context, next_strand);
-            self.forest.tables[table].enqueue_strand(canonical_next_strand);
+            let answer = self.forest.answer(
+                selected_subgoal.subgoal_table,
+                selected_subgoal.answer_index,
+            );
+            if !self.context.is_trivial_substitution(
+                &self.forest.tables[selected_subgoal.subgoal_table].table_goal,
+                &answer.subst,
+            ) {
+                let mut next_subgoal = selected_subgoal.clone();
+                next_subgoal.answer_index.increment();
+                let next_strand = Strand {
+                    infer: strand.infer.clone(),
+                    ex_clause: strand.ex_clause.clone(),
+                    selected_subgoal: Some(next_subgoal),
+                    last_pursued_time: strand.last_pursued_time.clone(),
+                };
+                let table = self.stack.top().table;
+                let canonical_next_strand = Forest::canonicalize_strand(self.context, next_strand);
+                self.forest.tables[table].enqueue_strand(canonical_next_strand);
+            }
         }
 
         // Deselect and remove the selected subgoal, now that we have an answer for it.
@@ -575,7 +622,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                 } = selected_subgoal;
                 let table_goal = &self.context.map_goal_from_canonical(
                     &universe_map,
-                    &C::canonical(&self.forest.tables[subgoal_table].table_goal),
+                    &self.forest.tables[subgoal_table].table_goal.canonical,
                 );
                 let answer_subst = &self.context.map_subst_from_canonical(
                     &universe_map,
@@ -601,6 +648,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                         // the SLG FACTOR operation, though NFTD just makes it
                         // part of computing the SLG resolvent.
                         if self.forest.answer(subgoal_table, answer_index).ambiguous {
+                            debug!("Marking Strand as ambiguous because answer to (positive) subgoal was ambiguous");
                             ex_clause.ambiguous = true;
                         }
 
@@ -643,7 +691,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                 // need to permit `not { L }` where `L` is a
                 // coinductive goal. We could improve this if needed,
                 // but it keeps things simple.
-                if C::has_delayed_subgoals(&answer.subst) {
+                if !answer.subst.value.delayed_subgoals.is_empty() {
                     panic!("Negative subgoal had delayed_subgoals");
                 }
 
@@ -667,6 +715,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                 // We want to disproval the subgoal, but we
                 // have an unconditional answer for the subgoal,
                 // therefore we have failed to disprove it.
+                debug!("Marking Strand as ambiguous because answer to (negative) subgoal was ambiguous");
                 strand.ex_clause.ambiguous = true;
 
                 // Strand is ambigious.
@@ -685,7 +734,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     ///   be discarded.
     ///
     /// In other words, we return whether this strand flounders.
-    fn propagate_floundered_subgoal(&mut self, strand: &mut Strand<C>) -> bool {
+    fn propagate_floundered_subgoal(&mut self, strand: &mut Strand<I, C>) -> bool {
         // This subgoal selection for the strand is finished, so take it
         let selected_subgoal = strand.selected_subgoal.take().unwrap();
         match strand.ex_clause.subgoals[selected_subgoal.subgoal_index] {
@@ -729,7 +778,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
 
     /// This is called if the selected subgoal for a `Strand` is
     /// a coinductive cycle.
-    fn on_coinductive_subgoal(&mut self, mut strand: Strand<C>) -> Result<(), RootSearchFail> {
+    fn on_coinductive_subgoal(&mut self, mut strand: Strand<I, C>) -> Result<(), RootSearchFail> {
         // This is a co-inductive cycle. That is, this table
         // appears somewhere higher on the stack, and has now
         // recursively requested an answer for itself. This
@@ -773,7 +822,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     /// * `minimums` is the collected minimum clock times
     fn on_positive_cycle(
         &mut self,
-        strand: Strand<C>,
+        strand: Strand<I, C>,
         minimums: Minimums,
     ) -> Result<(), RootSearchFail> {
         // We can't take this because we might need it later to clear the cycle
@@ -819,7 +868,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     ///
     /// * `Ok` if we should keep searching.
     /// * `Err` if the subgoal failed in some way such that the strand can be abandoned.
-    fn on_subgoal_selected(&mut self, mut strand: Strand<C>) -> Result<(), RootSearchFail> {
+    fn on_subgoal_selected(&mut self, mut strand: Strand<I, C>) -> Result<(), RootSearchFail> {
         // This may be a newly selected subgoal or an existing selected subgoal.
 
         let SelectedSubgoal {
@@ -895,9 +944,27 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
         Ok(())
     }
 
-    fn on_no_remaining_subgoals(&mut self, strand: Strand<C>) -> NoRemainingSubgoalsResult {
-        debug!("no remaining subgoals for the table");
-
+    /// This is called when there are no remaining subgoals for a strand, so
+    /// it represents an answer. If the strand is ambiguous and we don't want
+    /// it yet, we just enqueue it again to pick it up later. Otherwise, we
+    /// add the answer from the strand onto the table.
+    fn on_no_remaining_subgoals(&mut self, strand: Strand<I, C>) -> NoRemainingSubgoalsResult {
+        let ambiguous = strand.ex_clause.ambiguous;
+        if let AnswerMode::Complete = self.forest.tables[self.stack.top().table].answer_mode {
+            if ambiguous {
+                // The strand can only return an ambiguous answer, but we don't
+                // want that right now, so requeue and we'll deal with it later.
+                let canonical_strand = Forest::canonicalize_strand(self.context, strand);
+                self.forest.tables[self.stack.top().table].enqueue_strand(canonical_strand);
+                return NoRemainingSubgoalsResult::RootSearchFail(RootSearchFail::QuantumExceeded);
+            }
+        }
+        let floundered = strand.ex_clause.floundered_subgoals.len() > 0;
+        if floundered {
+            debug!("all remaining subgoals floundered for the table");
+        } else {
+            debug!("no remaining subgoals for the table");
+        };
         match self.pursue_answer(strand) {
             Some(answer_index) => {
                 debug!("answer is available");
@@ -906,8 +973,11 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                 // answer for this table. Now, this table was either a
                 // subgoal for another strand, or was the root table.
                 let table = self.stack.top().table;
-                let mut caller_strand = match self.stack.pop_and_take_caller_strand() {
-                    Some(s) => s,
+                match self.stack.pop_and_take_caller_strand() {
+                    Some(caller_strand) => {
+                        self.stack.top().active_strand = Some(caller_strand);
+                        return NoRemainingSubgoalsResult::Success;
+                    }
                     None => {
                         // That was the root table, so we are done --
                         // *well*, unless there were delayed
@@ -919,36 +989,22 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                         // we might have to build on it (see the
                         // Delayed Trivial Self Cycle, Variant 3
                         // example).
-                        let (_, _, _, table_goal) = self
-                            .context
-                            .instantiate_ucanonical_goal(&self.forest.tables[table].table_goal);
 
                         let answer = self.forest.answer(table, answer_index);
-                        if let Some(strand) =
-                            self.create_refinement_strand(table, answer, table_goal)
-                        {
+                        if let Some(strand) = self.create_refinement_strand(table, answer) {
                             self.forest.tables[table].enqueue_strand(strand);
                         }
 
                         return NoRemainingSubgoalsResult::RootAnswerAvailable;
                     }
                 };
-
-                match self.merge_answer_into_strand(&mut caller_strand) {
-                    Err(e) => {
-                        drop(caller_strand);
-                        return NoRemainingSubgoalsResult::RootSearchFail(e);
-                    }
-                    Ok(_) => {
-                        self.stack.top().active_strand = Some(caller_strand);
-                        return NoRemainingSubgoalsResult::Success;
-                    }
-                }
             }
             None => {
                 debug!("answer is not available (or not new)");
 
-                // This table ned nowhere of interest
+                // This strand led nowhere of interest. There might be *other*
+                // answers on this table, but we don't care right now, we'll
+                // try again at another time.
 
                 // Now we yield with `QuantumExceeded`
                 self.unwind_stack();
@@ -973,30 +1029,21 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     fn create_refinement_strand(
         &self,
         table: TableIndex,
-        answer: &Answer<C>,
-        table_goal: C::Goal,
-    ) -> Option<CanonicalStrand<C>> {
+        answer: &Answer<I>,
+    ) -> Option<CanonicalStrand<I>> {
         // If there are no delayed subgoals, then there is no need for
         // a refinement strand.
-        if !C::has_delayed_subgoals(&answer.subst) {
+        if answer.subst.value.delayed_subgoals.is_empty() {
             return None;
         }
 
-        let num_universes = C::num_universes(&self.forest.tables[table].table_goal);
+        let num_universes = self.forest.tables[table].table_goal.universes;
         let (table, subst, constraints, delayed_subgoals) = self
             .context
             .instantiate_answer_subst(num_universes, &answer.subst);
 
-        // FIXME: it would be nice if these delayed subgoals didn't get added to the answer
-        // at all. However, we can't compare the delayed subgoals with the table goal until
-        // we call `canonicalize_answer_subst` in `pursue_answer`. However, at this point,
-        // it's a bit late since `pursue_answer` doesn't know about the table goal. This could
-        // be refactored a bit.
-        let filtered_delayed_subgoals = delayed_subgoals
+        let delayed_subgoals = delayed_subgoals
             .into_iter()
-            .filter(|delayed_subgoal| {
-                *C::goal_from_goal_in_environment(delayed_subgoal) != table_goal
-            })
             .map(Literal::Positive)
             .collect();
 
@@ -1006,7 +1053,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
                 subst,
                 ambiguous: answer.ambiguous,
                 constraints,
-                subgoals: filtered_delayed_subgoals,
+                subgoals: delayed_subgoals,
                 delayed_subgoals: Vec::new(),
                 answer_time: TimeStamp::default(),
                 floundered_subgoals: Vec::new(),
@@ -1018,53 +1065,12 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
         Some(Forest::canonicalize_strand(self.context, strand))
     }
 
-    fn on_subgoal_selection_flounder(&mut self, strand: Strand<C>) -> RootSearchFail {
-        debug!("all subgoals floundered");
-
-        // We were unable to select a subgoal for this strand
-        // because all of them had floundered or because any one
-        // that we dependended on negatively floundered
-
-        // We discard this strand because it led nowhere of interest
-        drop(strand);
-
-        loop {
-            // This table is marked as floundered
-            let table = self.stack.top().table;
-            debug!("Marking table {:?} as floundered!", table);
-            self.forest.tables[table].mark_floundered();
-
-            let mut strand = match self.stack.pop_and_take_caller_strand() {
-                Some(s) => s,
-                None => {
-                    // That was the root table, so we are done.
-                    return RootSearchFail::Floundered;
-                }
-            };
-
-            if self.propagate_floundered_subgoal(&mut strand) {
-                // This strand will never lead anywhere of interest.
-                // Drop it and continue around the loop.
-                drop(strand);
-            } else {
-                // We want to maybe pursue this strand later
-                let table = self.stack.top().table;
-                let canonical_strand = Forest::canonicalize_strand(self.context, strand);
-                self.forest.tables[table].enqueue_strand(canonical_strand);
-
-                // Now we yield with `QuantumExceeded`
-                self.unwind_stack();
-                return RootSearchFail::QuantumExceeded;
-            }
-        }
-    }
-
     fn on_no_strands_left(&mut self) -> Result<(), RootSearchFail> {
         debug!("no more strands available (or all cycles)");
 
         // No more strands left to try! This is either because all
-        // strands have failed or because all strands encountered a
-        // cycle.
+        // strands have failed, because all strands encountered a
+        // cycle, or all strands have would give ambiguous answers.
 
         let table = self.stack.top().table;
         if self.forest.tables[table].strands_mut().count() == 0 {
@@ -1113,6 +1119,38 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
             };
         }
 
+        let num_universes = self.forest.tables[table].table_goal.universes;
+        let table_answer_mode = self.forest.tables[table].answer_mode;
+        let forest = &mut self.forest;
+        let context = &self.context;
+        let strand_is_participating = |strand: &CanonicalStrand<I>| {
+            let (_, ex_clause) =
+                context.instantiate_ex_clause(num_universes, &strand.canonical_ex_clause);
+            match (table_answer_mode, ex_clause.ambiguous) {
+                (AnswerMode::Complete, true) => false,
+                (AnswerMode::Complete, false) => true,
+                (AnswerMode::Ambiguous, _) => true,
+            }
+        };
+        if forest.tables[table]
+            .strands_mut()
+            .all(|s| !strand_is_participating(s))
+        {
+            // If no strands are participating, then that means they are all
+            // ambiguous and we are in complete mode.
+            debug!("All strands would return ambiguous answers.");
+            match self.forest.tables[table].answer_mode {
+                AnswerMode::Complete => {
+                    debug!("Allowing ambiguous answers.");
+                    self.forest.tables[table].answer_mode = AnswerMode::Ambiguous;
+                    return Err(RootSearchFail::QuantumExceeded);
+                }
+                AnswerMode::Ambiguous => {
+                    unreachable!();
+                }
+            }
+        }
+
         let clock = self.stack.top().clock;
         let cyclic_minimums = self.stack.top().cyclic_minimums;
         if cyclic_minimums.positive >= clock && cyclic_minimums.negative >= clock {
@@ -1129,7 +1167,9 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
             // then no more answers are forthcoming. We can clear all
             // the strands for those things recursively.
             let table = self.stack.top().table;
-            let cyclic_strands = self.forest.tables[table].take_strands();
+            // N.B. If we try to pursue a strand and it's found to be ambiguous,
+            // we know that isn't part of a cycle.
+            let cyclic_strands = self.forest.tables[table].drain_strands(strand_is_participating);
             self.clear_strands_after_cycle(cyclic_strands);
 
             // Now we yield with `QuantumExceeded`
@@ -1205,7 +1245,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     /// recursively clears the active strands from the tables
     /// referenced in `strands`, since all of them must encounter
     /// cycles too.
-    fn clear_strands_after_cycle(&mut self, strands: impl IntoIterator<Item = CanonicalStrand<C>>) {
+    fn clear_strands_after_cycle(&mut self, strands: impl IntoIterator<Item = CanonicalStrand<I>>) {
         for strand in strands {
             let CanonicalStrand {
                 canonical_ex_clause,
@@ -1226,19 +1266,23 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
         }
     }
 
-    fn select_subgoal(&mut self, strand: &mut Strand<C>) -> SubGoalSelection {
+    fn select_subgoal(&mut self, mut strand: &mut Strand<I, C>) -> SubGoalSelection {
         loop {
             while strand.selected_subgoal.is_none() {
-                if strand.ex_clause.subgoals.len() == 0 {
+                if strand.ex_clause.subgoals.is_empty() {
                     if strand.ex_clause.floundered_subgoals.is_empty() {
-                        return SubGoalSelection::NoRemainingSubgoals;
+                        return SubGoalSelection::NotSelected;
                     }
 
                     self.reconsider_floundered_subgoals(&mut strand.ex_clause);
 
                     if strand.ex_clause.subgoals.is_empty() {
+                        // All the subgoals of this strand floundered. We may be able
+                        // to get helpful information from this strand still, but it
+                        // will *always* be ambiguous, so mark it as so.
                         assert!(!strand.ex_clause.floundered_subgoals.is_empty());
-                        return SubGoalSelection::Floundered;
+                        strand.ex_clause.ambiguous = true;
+                        return SubGoalSelection::NotSelected;
                     }
 
                     continue;
@@ -1274,7 +1318,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
             if self.forest.tables[selected_subgoal_table].is_floundered() {
                 if self.propagate_floundered_subgoal(strand) {
                     // This strand will never lead anywhere of interest.
-                    return SubGoalSelection::Floundered;
+                    return SubGoalSelection::NotSelected;
                 } else {
                     // This subgoal has floundered and has been marked.
                     // We previously would immediately mark the table as
@@ -1296,7 +1340,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     ///   strand led nowhere of interest.
     /// - the strand may represent a new answer, in which case it is
     ///   added to the table and `Some(())` is returned.
-    fn pursue_answer(&mut self, strand: Strand<C>) -> Option<AnswerIndex> {
+    fn pursue_answer(&mut self, strand: Strand<I, C>) -> Option<AnswerIndex> {
         let table = self.stack.top().table;
         let Strand {
             mut infer,
@@ -1313,8 +1357,18 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
             selected_subgoal: _,
             last_pursued_time: _,
         } = strand;
+        // If there are subgoals left, they should be followed
         assert!(subgoals.is_empty());
-        assert!(floundered_subgoals.is_empty());
+        // We can still try to get an ambiguous answer if there are floundered subgoals
+        let floundered = !floundered_subgoals.is_empty();
+        // So let's make sure that it *really* is an ambiguous answer (this should be set previously)
+        assert!(!floundered || ambiguous);
+
+        // FIXME: If there are floundered subgoals, we *could* potentially
+        // actually check if the partial answers to any of these subgoals
+        // conflict. But this requires that we think about whether they are
+        // positive or negative subgoals. This duplicates some of the logic
+        // in `merge_answer_into_strand`, so a bit of refactoring is needed.
 
         // If the answer gets too large, mark the table as floundered.
         // This is the *most conservative* course. There are a few alternatives:
@@ -1338,13 +1392,28 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
             return None;
         }
 
+        let table_goal = &self.forest.tables[table].table_goal;
+
+        // FIXME: Avoid double canonicalization
+        let filtered_delayed_subgoals = delayed_subgoals
+            .into_iter()
+            .filter(|delayed_subgoal| {
+                let (canonicalized, _) =
+                    infer.fully_canonicalize_goal(self.context.interner(), delayed_subgoal);
+                *table_goal != canonicalized
+            })
+            .collect();
+
         let subst = infer.canonicalize_answer_subst(
             self.context.interner(),
             subst,
             constraints,
-            delayed_subgoals,
+            filtered_delayed_subgoals,
         );
-        debug!("answer: table={:?}, subst={:?}", table, subst);
+        debug!(
+            "answer: table={:?}, subst={:?}, floundered={:?}",
+            table, subst, floundered
+        );
 
         let answer = Answer { subst, ambiguous };
 
@@ -1407,15 +1476,15 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
         // is a *bit* suspect; e.g., those things in the environment
         // must be backed by an impl *eventually*).
         let is_trivial_answer = {
-            !answer.ambiguous
-                && self
-                    .context
-                    .is_trivial_substitution(&self.forest.tables[table].table_goal, &answer.subst)
-                && C::empty_constraints(&answer.subst)
+            self.context
+                .is_trivial_substitution(&self.forest.tables[table].table_goal, &answer.subst)
+                && answer.subst.value.constraints.is_empty()
         };
 
         if let Some(answer_index) = self.forest.tables[table].push_answer(answer) {
-            if is_trivial_answer {
+            // See above, if we have a *complete* and trivial answer, we don't
+            // want to follow any more strands
+            if !ambiguous && is_trivial_answer {
                 self.forest.tables[table].take_strands();
             }
 
@@ -1426,7 +1495,7 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
         }
     }
 
-    fn reconsider_floundered_subgoals(&mut self, ex_clause: &mut ExClause<impl Context>) {
+    fn reconsider_floundered_subgoals(&mut self, ex_clause: &mut ExClause<I>) {
         info!("reconsider_floundered_subgoals(ex_clause={:#?})", ex_clause,);
         let ExClause {
             answer_time,
@@ -1445,12 +1514,14 @@ impl<'forest, C: Context + 'forest, CO: ContextOps<C> + 'forest> SolveState<'for
     /// Removes the subgoal at `subgoal_index` from the strand's
     /// subgoal list and adds it to the strand's floundered subgoal
     /// list.
-    fn flounder_subgoal(&self, ex_clause: &mut ExClause<impl Context>, subgoal_index: usize) {
-        info_heading!(
-            "flounder_subgoal(answer_time={:?}, subgoal={:?})",
-            ex_clause.answer_time,
-            ex_clause.subgoals[subgoal_index],
+    fn flounder_subgoal(&self, ex_clause: &mut ExClause<I>, subgoal_index: usize) {
+        let _s = debug_span!(
+            "flounder_subgoal",
+            answer_time = ?ex_clause.answer_time,
+            subgoal = ?ex_clause.subgoals[subgoal_index],
         );
+        let _s = _s.enter();
+
         let floundered_time = ex_clause.answer_time;
         let floundered_literal = ex_clause.subgoals.remove(subgoal_index);
         ex_clause.floundered_subgoals.push(FlounderedSubgoal {

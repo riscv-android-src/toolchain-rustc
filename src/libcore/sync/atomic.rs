@@ -153,6 +153,9 @@ pub fn spin_loop_hint() {
 ///
 /// This type has the same in-memory representation as a [`bool`].
 ///
+/// **Note**: This type is only available on platforms that support atomic
+/// loads and stores of `u8`.
+///
 /// [`bool`]: ../../../std/primitive.bool.html
 #[cfg(target_has_atomic_load_store = "8")]
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -178,6 +181,9 @@ unsafe impl Sync for AtomicBool {}
 /// A raw pointer type which can be safely shared between threads.
 ///
 /// This type has the same in-memory representation as a `*mut T`.
+///
+/// **Note**: This type is only available on platforms that support atomic
+/// loads and stores of pointers. Its size depends on the target pointer's size.
 #[cfg(target_has_atomic_load_store = "ptr")]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[cfg_attr(target_pointer_width = "16", repr(C, align(2)))]
@@ -447,6 +453,9 @@ impl AtomicBool {
     /// [`Acquire`] makes the store part of this operation [`Relaxed`], and
     /// using [`Release`] makes the load part [`Relaxed`].
     ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
+    ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
     /// [`Release`]: enum.Ordering.html#variant.Release
@@ -480,6 +489,9 @@ impl AtomicBool {
     /// might fail and hence just perform an `Acquire` load, but not have `Release` semantics.
     /// Using [`Acquire`] makes the store part of this operation [`Relaxed`] if it
     /// happens, and using [`Release`] makes the load part [`Relaxed`].
+    ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
     ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -524,6 +536,8 @@ impl AtomicBool {
     /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
     /// and must be equivalent to or weaker than the success ordering.
     ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
     ///
     /// [`bool`]: ../../../std/primitive.bool.html
     /// [`Ordering`]: enum.Ordering.html
@@ -586,6 +600,9 @@ impl AtomicBool {
     /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
     /// and must be equivalent to or weaker than the success ordering.
     ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
+    ///
     /// [`bool`]: ../../../std/primitive.bool.html
     /// [`compare_exchange`]: #method.compare_exchange
     /// [`Ordering`]: enum.Ordering.html
@@ -646,6 +663,9 @@ impl AtomicBool {
     /// [`Release`]: enum.Ordering.html#variant.Release
     /// [`Acquire`]: enum.Ordering.html#variant.Acquire
     ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
+    ///
     /// # Examples
     ///
     /// ```
@@ -682,6 +702,9 @@ impl AtomicBool {
     /// of this operation. All ordering modes are possible. Note that using
     /// [`Acquire`] makes the store part of this operation [`Relaxed`], and
     /// using [`Release`] makes the load part [`Relaxed`].
+    ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
     ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -737,6 +760,9 @@ impl AtomicBool {
     /// [`Acquire`] makes the store part of this operation [`Relaxed`], and
     /// using [`Release`] makes the load part [`Relaxed`].
     ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
+    ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
     /// [`Release`]: enum.Ordering.html#variant.Release
@@ -778,6 +804,9 @@ impl AtomicBool {
     /// of this operation. All ordering modes are possible. Note that using
     /// [`Acquire`] makes the store part of this operation [`Relaxed`], and
     /// using [`Release`] makes the load part [`Relaxed`].
+    ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on `u8`.
     ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -981,6 +1010,9 @@ impl<T> AtomicPtr<T> {
     /// [`Acquire`] makes the store part of this operation [`Relaxed`], and
     /// using [`Release`] makes the load part [`Relaxed`].
     ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on pointers.
+    ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
     /// [`Release`]: enum.Ordering.html#variant.Release
@@ -1016,6 +1048,9 @@ impl<T> AtomicPtr<T> {
     /// might fail and hence just perform an `Acquire` load, but not have `Release` semantics.
     /// Using [`Acquire`] makes the store part of this operation [`Relaxed`] if it
     /// happens, and using [`Release`] makes the load part [`Relaxed`].
+    ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on pointers.
     ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -1057,6 +1092,9 @@ impl<T> AtomicPtr<T> {
     /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
     /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
     /// and must be equivalent to or weaker than the success ordering.
+    ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on pointers.
     ///
     /// [`Ordering`]: enum.Ordering.html
     /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -1117,6 +1155,9 @@ impl<T> AtomicPtr<T> {
     /// of this operation [`Relaxed`], and using [`Release`] makes the successful load
     /// [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
     /// and must be equivalent to or weaker than the success ordering.
+    ///
+    /// **Note:** This method is only available on platforms that support atomic
+    /// operations on pointers.
     ///
     /// [`compare_exchange`]: #method.compare_exchange
     /// [`Ordering`]: enum.Ordering.html
@@ -1222,6 +1263,13 @@ macro_rules! atomic_int {
         /// ). For more about the differences between atomic types and
         /// non-atomic types as well as information about the portability of
         /// this type, please see the [module-level documentation].
+        ///
+        /// **Note:** This type is only available on platforms that support
+        /// atomic loads and stores of [`
+        #[doc = $s_int_type]
+        /// `](
+        #[doc = $int_ref]
+        /// ).
         ///
         /// [module-level documentation]: index.html
         #[$stable]
@@ -1408,6 +1456,9 @@ of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
 
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
+
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
 [`Release`]: enum.Ordering.html#variant.Release
@@ -1443,6 +1494,9 @@ ordering of this operation. Notice that even when using [`AcqRel`], the operatio
 might fail and hence just perform an `Acquire` load, but not have `Release` semantics.
 Using [`Acquire`] makes the store part of this operation [`Relaxed`] if it
 happens, and using [`Release`] makes the load part [`Relaxed`].
+
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
 
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -1495,6 +1549,9 @@ operation fails. Using [`Acquire`] as success ordering makes the store part
 of this operation [`Relaxed`], and using [`Release`] makes the successful load
 [`Relaxed`]. The failure ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
 and must be equivalent to or weaker than the success ordering.
+
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
 
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -1558,6 +1615,9 @@ and must be equivalent to or weaker than the success ordering.
 [`Acquire`]: enum.Ordering.html#variant.Acquire
 [`SeqCst`]: enum.Ordering.html#variant.SeqCst
 
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
+
 # Examples
 
 ```
@@ -1599,6 +1659,9 @@ of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
 
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
+
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
 [`Release`]: enum.Ordering.html#variant.Release
@@ -1631,6 +1694,9 @@ This operation wraps around on overflow.
 of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
+
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
 
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -1668,6 +1734,9 @@ of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
 
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
+
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
 [`Release`]: enum.Ordering.html#variant.Release
@@ -1703,6 +1772,9 @@ Returns the previous value.
 of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
+
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
 
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -1741,6 +1813,9 @@ of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
 
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
+
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
 [`Release`]: enum.Ordering.html#variant.Release
@@ -1776,6 +1851,9 @@ Returns the previous value.
 of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
+
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
 
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -1818,6 +1896,9 @@ Using [`Acquire`] as success ordering makes the store part
 of this operation [`Relaxed`], and using [`Release`] makes the final successful load
 [`Relaxed`]. The (failed) load ordering can only be [`SeqCst`], [`Acquire`] or [`Relaxed`]
 and must be equivalent to or weaker than the success ordering.
+
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
 
 [`bool`]: ../../../std/primitive.bool.html
 [`compare_exchange`]: #method.compare_exchange
@@ -1870,6 +1951,9 @@ of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
 
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
+
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
 [`Release`]: enum.Ordering.html#variant.Release
@@ -1916,6 +2000,9 @@ Returns the previous value.
 of this operation. All ordering modes are possible. Note that using
 [`Acquire`] makes the store part of this operation [`Relaxed`], and
 using [`Release`] makes the load part [`Relaxed`].
+
+**Note**: This method is only available on platforms that support atomic
+operations on [`", $s_int_type, "`](", $int_ref, ").
 
 [`Ordering`]: enum.Ordering.html
 [`Relaxed`]: enum.Ordering.html#variant.Relaxed
@@ -2248,35 +2335,44 @@ fn strongest_failure_ordering(order: Ordering) -> Ordering {
 
 #[inline]
 unsafe fn atomic_store<T: Copy>(dst: *mut T, val: T, order: Ordering) {
-    match order {
-        Release => intrinsics::atomic_store_rel(dst, val),
-        Relaxed => intrinsics::atomic_store_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_store(dst, val),
-        Acquire => panic!("there is no such thing as an acquire store"),
-        AcqRel => panic!("there is no such thing as an acquire/release store"),
+    // SAFETY: the caller must uphold the safety contract for `atomic_store`.
+    unsafe {
+        match order {
+            Release => intrinsics::atomic_store_rel(dst, val),
+            Relaxed => intrinsics::atomic_store_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_store(dst, val),
+            Acquire => panic!("there is no such thing as an acquire store"),
+            AcqRel => panic!("there is no such thing as an acquire/release store"),
+        }
     }
 }
 
 #[inline]
 unsafe fn atomic_load<T: Copy>(dst: *const T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_load_acq(dst),
-        Relaxed => intrinsics::atomic_load_relaxed(dst),
-        SeqCst => intrinsics::atomic_load(dst),
-        Release => panic!("there is no such thing as a release load"),
-        AcqRel => panic!("there is no such thing as an acquire/release load"),
+    // SAFETY: the caller must uphold the safety contract for `atomic_load`.
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_load_acq(dst),
+            Relaxed => intrinsics::atomic_load_relaxed(dst),
+            SeqCst => intrinsics::atomic_load(dst),
+            Release => panic!("there is no such thing as a release load"),
+            AcqRel => panic!("there is no such thing as an acquire/release load"),
+        }
     }
 }
 
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_swap<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_xchg_acq(dst, val),
-        Release => intrinsics::atomic_xchg_rel(dst, val),
-        AcqRel => intrinsics::atomic_xchg_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_xchg_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_xchg(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_swap`.
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_xchg_acq(dst, val),
+            Release => intrinsics::atomic_xchg_rel(dst, val),
+            AcqRel => intrinsics::atomic_xchg_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_xchg_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_xchg(dst, val),
+        }
     }
 }
 
@@ -2284,12 +2380,15 @@ unsafe fn atomic_swap<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_add<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_xadd_acq(dst, val),
-        Release => intrinsics::atomic_xadd_rel(dst, val),
-        AcqRel => intrinsics::atomic_xadd_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_xadd_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_xadd(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_add`.
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_xadd_acq(dst, val),
+            Release => intrinsics::atomic_xadd_rel(dst, val),
+            AcqRel => intrinsics::atomic_xadd_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_xadd_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_xadd(dst, val),
+        }
     }
 }
 
@@ -2297,12 +2396,15 @@ unsafe fn atomic_add<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_sub<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_xsub_acq(dst, val),
-        Release => intrinsics::atomic_xsub_rel(dst, val),
-        AcqRel => intrinsics::atomic_xsub_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_xsub_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_xsub(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_sub`.
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_xsub_acq(dst, val),
+            Release => intrinsics::atomic_xsub_rel(dst, val),
+            AcqRel => intrinsics::atomic_xsub_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_xsub_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_xsub(dst, val),
+        }
     }
 }
 
@@ -2315,19 +2417,22 @@ unsafe fn atomic_compare_exchange<T: Copy>(
     success: Ordering,
     failure: Ordering,
 ) -> Result<T, T> {
-    let (val, ok) = match (success, failure) {
-        (Acquire, Acquire) => intrinsics::atomic_cxchg_acq(dst, old, new),
-        (Release, Relaxed) => intrinsics::atomic_cxchg_rel(dst, old, new),
-        (AcqRel, Acquire) => intrinsics::atomic_cxchg_acqrel(dst, old, new),
-        (Relaxed, Relaxed) => intrinsics::atomic_cxchg_relaxed(dst, old, new),
-        (SeqCst, SeqCst) => intrinsics::atomic_cxchg(dst, old, new),
-        (Acquire, Relaxed) => intrinsics::atomic_cxchg_acq_failrelaxed(dst, old, new),
-        (AcqRel, Relaxed) => intrinsics::atomic_cxchg_acqrel_failrelaxed(dst, old, new),
-        (SeqCst, Relaxed) => intrinsics::atomic_cxchg_failrelaxed(dst, old, new),
-        (SeqCst, Acquire) => intrinsics::atomic_cxchg_failacq(dst, old, new),
-        (_, AcqRel) => panic!("there is no such thing as an acquire/release failure ordering"),
-        (_, Release) => panic!("there is no such thing as a release failure ordering"),
-        _ => panic!("a failure ordering can't be stronger than a success ordering"),
+    // SAFETY: the caller must uphold the safety contract for `atomic_compare_exchange`.
+    let (val, ok) = unsafe {
+        match (success, failure) {
+            (Acquire, Acquire) => intrinsics::atomic_cxchg_acq(dst, old, new),
+            (Release, Relaxed) => intrinsics::atomic_cxchg_rel(dst, old, new),
+            (AcqRel, Acquire) => intrinsics::atomic_cxchg_acqrel(dst, old, new),
+            (Relaxed, Relaxed) => intrinsics::atomic_cxchg_relaxed(dst, old, new),
+            (SeqCst, SeqCst) => intrinsics::atomic_cxchg(dst, old, new),
+            (Acquire, Relaxed) => intrinsics::atomic_cxchg_acq_failrelaxed(dst, old, new),
+            (AcqRel, Relaxed) => intrinsics::atomic_cxchg_acqrel_failrelaxed(dst, old, new),
+            (SeqCst, Relaxed) => intrinsics::atomic_cxchg_failrelaxed(dst, old, new),
+            (SeqCst, Acquire) => intrinsics::atomic_cxchg_failacq(dst, old, new),
+            (_, AcqRel) => panic!("there is no such thing as an acquire/release failure ordering"),
+            (_, Release) => panic!("there is no such thing as a release failure ordering"),
+            _ => panic!("a failure ordering can't be stronger than a success ordering"),
+        }
     };
     if ok { Ok(val) } else { Err(val) }
 }
@@ -2341,19 +2446,22 @@ unsafe fn atomic_compare_exchange_weak<T: Copy>(
     success: Ordering,
     failure: Ordering,
 ) -> Result<T, T> {
-    let (val, ok) = match (success, failure) {
-        (Acquire, Acquire) => intrinsics::atomic_cxchgweak_acq(dst, old, new),
-        (Release, Relaxed) => intrinsics::atomic_cxchgweak_rel(dst, old, new),
-        (AcqRel, Acquire) => intrinsics::atomic_cxchgweak_acqrel(dst, old, new),
-        (Relaxed, Relaxed) => intrinsics::atomic_cxchgweak_relaxed(dst, old, new),
-        (SeqCst, SeqCst) => intrinsics::atomic_cxchgweak(dst, old, new),
-        (Acquire, Relaxed) => intrinsics::atomic_cxchgweak_acq_failrelaxed(dst, old, new),
-        (AcqRel, Relaxed) => intrinsics::atomic_cxchgweak_acqrel_failrelaxed(dst, old, new),
-        (SeqCst, Relaxed) => intrinsics::atomic_cxchgweak_failrelaxed(dst, old, new),
-        (SeqCst, Acquire) => intrinsics::atomic_cxchgweak_failacq(dst, old, new),
-        (_, AcqRel) => panic!("there is no such thing as an acquire/release failure ordering"),
-        (_, Release) => panic!("there is no such thing as a release failure ordering"),
-        _ => panic!("a failure ordering can't be stronger than a success ordering"),
+    // SAFETY: the caller must uphold the safety contract for `atomic_compare_exchange_weak`.
+    let (val, ok) = unsafe {
+        match (success, failure) {
+            (Acquire, Acquire) => intrinsics::atomic_cxchgweak_acq(dst, old, new),
+            (Release, Relaxed) => intrinsics::atomic_cxchgweak_rel(dst, old, new),
+            (AcqRel, Acquire) => intrinsics::atomic_cxchgweak_acqrel(dst, old, new),
+            (Relaxed, Relaxed) => intrinsics::atomic_cxchgweak_relaxed(dst, old, new),
+            (SeqCst, SeqCst) => intrinsics::atomic_cxchgweak(dst, old, new),
+            (Acquire, Relaxed) => intrinsics::atomic_cxchgweak_acq_failrelaxed(dst, old, new),
+            (AcqRel, Relaxed) => intrinsics::atomic_cxchgweak_acqrel_failrelaxed(dst, old, new),
+            (SeqCst, Relaxed) => intrinsics::atomic_cxchgweak_failrelaxed(dst, old, new),
+            (SeqCst, Acquire) => intrinsics::atomic_cxchgweak_failacq(dst, old, new),
+            (_, AcqRel) => panic!("there is no such thing as an acquire/release failure ordering"),
+            (_, Release) => panic!("there is no such thing as a release failure ordering"),
+            _ => panic!("a failure ordering can't be stronger than a success ordering"),
+        }
     };
     if ok { Ok(val) } else { Err(val) }
 }
@@ -2361,48 +2469,60 @@ unsafe fn atomic_compare_exchange_weak<T: Copy>(
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_and<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_and_acq(dst, val),
-        Release => intrinsics::atomic_and_rel(dst, val),
-        AcqRel => intrinsics::atomic_and_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_and_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_and(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_and`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_and_acq(dst, val),
+            Release => intrinsics::atomic_and_rel(dst, val),
+            AcqRel => intrinsics::atomic_and_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_and_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_and(dst, val),
+        }
     }
 }
 
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_nand<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_nand_acq(dst, val),
-        Release => intrinsics::atomic_nand_rel(dst, val),
-        AcqRel => intrinsics::atomic_nand_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_nand_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_nand(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_nand`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_nand_acq(dst, val),
+            Release => intrinsics::atomic_nand_rel(dst, val),
+            AcqRel => intrinsics::atomic_nand_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_nand_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_nand(dst, val),
+        }
     }
 }
 
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_or<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_or_acq(dst, val),
-        Release => intrinsics::atomic_or_rel(dst, val),
-        AcqRel => intrinsics::atomic_or_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_or_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_or(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_or`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_or_acq(dst, val),
+            Release => intrinsics::atomic_or_rel(dst, val),
+            AcqRel => intrinsics::atomic_or_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_or_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_or(dst, val),
+        }
     }
 }
 
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_xor<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_xor_acq(dst, val),
-        Release => intrinsics::atomic_xor_rel(dst, val),
-        AcqRel => intrinsics::atomic_xor_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_xor_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_xor(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_xor`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_xor_acq(dst, val),
+            Release => intrinsics::atomic_xor_rel(dst, val),
+            AcqRel => intrinsics::atomic_xor_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_xor_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_xor(dst, val),
+        }
     }
 }
 
@@ -2410,12 +2530,15 @@ unsafe fn atomic_xor<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_max<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_max_acq(dst, val),
-        Release => intrinsics::atomic_max_rel(dst, val),
-        AcqRel => intrinsics::atomic_max_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_max_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_max(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_max`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_max_acq(dst, val),
+            Release => intrinsics::atomic_max_rel(dst, val),
+            AcqRel => intrinsics::atomic_max_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_max_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_max(dst, val),
+        }
     }
 }
 
@@ -2423,12 +2546,15 @@ unsafe fn atomic_max<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_min<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_min_acq(dst, val),
-        Release => intrinsics::atomic_min_rel(dst, val),
-        AcqRel => intrinsics::atomic_min_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_min_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_min(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_min`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_min_acq(dst, val),
+            Release => intrinsics::atomic_min_rel(dst, val),
+            AcqRel => intrinsics::atomic_min_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_min_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_min(dst, val),
+        }
     }
 }
 
@@ -2436,12 +2562,15 @@ unsafe fn atomic_min<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_umax<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_umax_acq(dst, val),
-        Release => intrinsics::atomic_umax_rel(dst, val),
-        AcqRel => intrinsics::atomic_umax_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_umax_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_umax(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_umax`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_umax_acq(dst, val),
+            Release => intrinsics::atomic_umax_rel(dst, val),
+            AcqRel => intrinsics::atomic_umax_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_umax_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_umax(dst, val),
+        }
     }
 }
 
@@ -2449,12 +2578,15 @@ unsafe fn atomic_umax<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 #[inline]
 #[cfg(target_has_atomic = "8")]
 unsafe fn atomic_umin<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
-    match order {
-        Acquire => intrinsics::atomic_umin_acq(dst, val),
-        Release => intrinsics::atomic_umin_rel(dst, val),
-        AcqRel => intrinsics::atomic_umin_acqrel(dst, val),
-        Relaxed => intrinsics::atomic_umin_relaxed(dst, val),
-        SeqCst => intrinsics::atomic_umin(dst, val),
+    // SAFETY: the caller must uphold the safety contract for `atomic_umin`
+    unsafe {
+        match order {
+            Acquire => intrinsics::atomic_umin_acq(dst, val),
+            Release => intrinsics::atomic_umin_rel(dst, val),
+            AcqRel => intrinsics::atomic_umin_acqrel(dst, val),
+            Relaxed => intrinsics::atomic_umin_relaxed(dst, val),
+            SeqCst => intrinsics::atomic_umin(dst, val),
+        }
     }
 }
 
@@ -2536,15 +2668,7 @@ unsafe fn atomic_umin<T: Copy>(dst: *mut T, val: T, order: Ordering) -> T {
 /// [`Relaxed`]: enum.Ordering.html#variant.Relaxed
 #[inline]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[cfg_attr(target_arch = "wasm32", allow(unused_variables))]
 pub fn fence(order: Ordering) {
-    // On wasm32 it looks like fences aren't implemented in LLVM yet in that
-    // they will cause LLVM to abort. The wasm instruction set doesn't have
-    // fences right now. There's discussion online about the best way for tools
-    // to conventionally implement fences at
-    // https://github.com/WebAssembly/tool-conventions/issues/59. We should
-    // follow that discussion and implement a solution when one comes about!
-    #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: using an atomic fence is safe.
     unsafe {
         match order {

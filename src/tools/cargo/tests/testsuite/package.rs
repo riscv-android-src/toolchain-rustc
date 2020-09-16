@@ -796,7 +796,7 @@ fn do_not_package_if_repository_is_dirty() {
             homepage = "foo"
             repository = "foo"
             # change
-    "#,
+        "#,
     );
 
     p.cargo("package")
@@ -1112,14 +1112,14 @@ error: failed to verify package tarball
 
 Caused by:
   Source directory was modified by build.rs during cargo publish. \
-Build scripts should not modify anything outside of OUT_DIR.
-Changed: [CWD]/target/package/foo-0.0.1/bar.txt
-Added: [CWD]/target/package/foo-0.0.1/new-dir
-<tab>[CWD]/target/package/foo-0.0.1/src/generated.txt
-Removed: [CWD]/target/package/foo-0.0.1/dir
-<tab>[CWD]/target/package/foo-0.0.1/dir/foo.txt
+  Build scripts should not modify anything outside of OUT_DIR.
+  Changed: [CWD]/target/package/foo-0.0.1/bar.txt
+  Added: [CWD]/target/package/foo-0.0.1/new-dir
+  <tab>[CWD]/target/package/foo-0.0.1/src/generated.txt
+  Removed: [CWD]/target/package/foo-0.0.1/dir
+  <tab>[CWD]/target/package/foo-0.0.1/dir/foo.txt
 
-To proceed despite this, pass the `--no-verify` flag.",
+  To proceed despite this, pass the `--no-verify` flag.",
         )
         .run();
 
@@ -1843,5 +1843,75 @@ error: all path dependencies must have a version specified when packaging.
 dependency `bar` does not specify a version.
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn long_file_names() {
+    // Filenames over 100 characters require a GNU extension tarfile.
+    // See #8453.
+
+    registry::init();
+    let long_name = concat!(
+        "012345678901234567890123456789012345678901234567890123456789",
+        "012345678901234567890123456789012345678901234567890123456789",
+        "012345678901234567890123456789012345678901234567890123456789"
+    );
+    if cfg!(windows) {
+        // Long paths on Windows require a special registry entry that is
+        // disabled by default (even on Windows 10).
+        // https://docs.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+        // If the directory where Cargo runs happens to be more than 80 characters
+        // long, then it will bump into this limit.
+        //
+        // First create a directory to account for various paths Cargo will
+        // be using in the target directory (such as "target/package/foo-0.1.0").
+        let test_path = paths::root().join("test-dir-probe-long-path-support");
+        test_path.mkdir_p();
+        let test_path = test_path.join(long_name);
+        if let Err(e) = File::create(&test_path) {
+            use std::io::Write;
+            writeln!(
+                std::io::stderr(),
+                "\nSkipping long_file_names test, this OS or filesystem does not \
+                appear to support long file paths: {:?}\n{:?}",
+                e,
+                test_path
+            )
+            .unwrap();
+            return;
+        }
+    }
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+            license = "MIT"
+            description = "foo"
+            homepage = "foo"
+
+            [dependencies]
+            "#,
+        )
+        .file(long_name, "something")
+        .file("src/main.rs", "fn main() {}")
+        .build();
+
+    p.cargo("package").run();
+    p.cargo("package --list")
+        .with_stdout(&format!(
+            "\
+{}
+Cargo.lock
+Cargo.toml
+Cargo.toml.orig
+src/main.rs
+",
+            long_name
+        ))
         .run();
 }

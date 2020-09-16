@@ -1,3 +1,5 @@
+//! Debug impls for types.
+
 use std::fmt::{Debug, Display, Error, Formatter};
 
 use super::*;
@@ -8,9 +10,9 @@ impl<I: Interner> Debug for TraitId<I> {
     }
 }
 
-impl<I: Interner> Debug for StructId<I> {
+impl<I: Interner> Debug for AdtId<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        I::debug_struct_id(*self, fmt).unwrap_or_else(|| write!(fmt, "StructId({:?})", self.0))
+        I::debug_adt_id(*self, fmt).unwrap_or_else(|| write!(fmt, "AdtId({:?})", self.0))
     }
 }
 
@@ -18,6 +20,18 @@ impl<I: Interner> Debug for AssocTypeId<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         I::debug_assoc_type_id(*self, fmt)
             .unwrap_or_else(|| write!(fmt, "AssocTypeId({:?})", self.0))
+    }
+}
+
+impl<I: Interner> Debug for FnDefId<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> std::fmt::Result {
+        I::debug_fn_def_id(*self, fmt).unwrap_or_else(|| write!(fmt, "FnDefId({:?})", self.0))
+    }
+}
+
+impl<I: Interner> Debug for ClosureId<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> std::fmt::Result {
+        I::debug_closure_id(*self, fmt).unwrap_or_else(|| write!(fmt, "ClosureId({:?})", self.0))
     }
 }
 
@@ -33,9 +47,21 @@ impl<I: Interner> Debug for Lifetime<I> {
     }
 }
 
-impl<I: Interner> Debug for Parameter<I> {
+impl<I: Interner> Debug for Const<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        I::debug_parameter(self, fmt).unwrap_or_else(|| write!(fmt, "{:?}", self.interned))
+        I::debug_const(self, fmt).unwrap_or_else(|| write!(fmt, "{:?}", self.interned))
+    }
+}
+
+impl<I: Interner> Debug for ConcreteConst<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        write!(fmt, "{:?}", self.interned)
+    }
+}
+
+impl<I: Interner> Debug for GenericArg<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        I::debug_generic_arg(self, fmt).unwrap_or_else(|| write!(fmt, "{:?}", self.interned))
     }
 }
 
@@ -139,11 +165,19 @@ impl Debug for UniverseIndex {
 impl<I: Interner> Debug for TypeName<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         match self {
-            TypeName::Struct(id) => write!(fmt, "{:?}", id),
+            TypeName::Adt(id) => write!(fmt, "{:?}", id),
             TypeName::AssociatedType(assoc_ty) => write!(fmt, "{:?}", assoc_ty),
             TypeName::Scalar(scalar) => write!(fmt, "{:?}", scalar),
+            TypeName::Str => write!(fmt, "Str"),
             TypeName::Tuple(arity) => write!(fmt, "{:?}", arity),
             TypeName::OpaqueType(opaque_ty) => write!(fmt, "!{:?}", opaque_ty),
+            TypeName::Slice => write!(fmt, "{{slice}}"),
+            TypeName::FnDef(fn_def) => write!(fmt, "{:?}", fn_def),
+            TypeName::Raw(mutability) => write!(fmt, "{:?}", mutability),
+            TypeName::Ref(mutability) => write!(fmt, "{:?}", mutability),
+            TypeName::Never => write!(fmt, "Never"),
+            TypeName::Array => write!(fmt, "{{array}}"),
+            TypeName::Closure(id) => write!(fmt, "{{closure:{:?}}}", id),
             TypeName::Error => write!(fmt, "{{error}}"),
         }
     }
@@ -154,7 +188,9 @@ impl<I: Interner> Debug for TyData<I> {
         match self {
             TyData::BoundVar(db) => write!(fmt, "{:?}", db),
             TyData::Dyn(clauses) => write!(fmt, "{:?}", clauses),
-            TyData::InferenceVar(var) => write!(fmt, "{:?}", var),
+            TyData::InferenceVar(var, TyKind::General) => write!(fmt, "{:?}", var),
+            TyData::InferenceVar(var, TyKind::Integer) => write!(fmt, "{:?}i", var),
+            TyData::InferenceVar(var, TyKind::Float) => write!(fmt, "{:?}f", var),
             TyData::Apply(apply) => write!(fmt, "{:?}", apply),
             TyData::Alias(alias) => write!(fmt, "{:?}", alias),
             TyData::Placeholder(index) => write!(fmt, "{:?}", index),
@@ -179,8 +215,8 @@ impl Debug for DebruijnIndex {
 
 impl<I: Interner> Debug for DynTy<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        let DynTy { bounds } = self;
-        write!(fmt, "dyn {:?}", bounds)
+        let DynTy { bounds, lifetime } = self;
+        write!(fmt, "dyn {:?} + {:?}", bounds, lifetime)
     }
 }
 
@@ -212,50 +248,66 @@ impl<I: Interner> Debug for LifetimeData<I> {
     }
 }
 
-impl<I: Interner> ParameterKinds<I> {
-    fn debug(&self) -> ParameterKindsDebug<'_, I> {
-        ParameterKindsDebug(self)
+impl<I: Interner> VariableKinds<I> {
+    fn debug(&self) -> VariableKindsDebug<'_, I> {
+        VariableKindsDebug(self)
     }
 
-    pub fn inner_debug<'a>(&'a self, interner: &'a I) -> ParameterKindsInnerDebug<'a, I> {
-        ParameterKindsInnerDebug {
-            parameter_kinds: self,
+    /// Helper method for debugging variable kinds.
+    pub fn inner_debug<'a>(&'a self, interner: &'a I) -> VariableKindsInnerDebug<'a, I> {
+        VariableKindsInnerDebug {
+            variable_kinds: self,
             interner,
         }
     }
 }
 
-struct ParameterKindsDebug<'a, I: Interner>(&'a ParameterKinds<I>);
+struct VariableKindsDebug<'a, I: Interner>(&'a VariableKinds<I>);
 
-impl<'a, I: Interner> Debug for ParameterKindsDebug<'a, I> {
+impl<'a, I: Interner> Debug for VariableKindsDebug<'a, I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        I::debug_parameter_kinds_with_angles(self.0, fmt)
+        I::debug_variable_kinds_with_angles(self.0, fmt)
             .unwrap_or_else(|| write!(fmt, "{:?}", self.0.interned))
     }
 }
 
-pub struct ParameterKindsInnerDebug<'a, I: Interner> {
-    parameter_kinds: &'a ParameterKinds<I>,
+/// Helper struct for showing debug output for `VariableKinds`.
+pub struct VariableKindsInnerDebug<'a, I: Interner> {
+    variable_kinds: &'a VariableKinds<I>,
     interner: &'a I,
 }
 
-impl<'a, I: Interner> Debug for ParameterKindsInnerDebug<'a, I> {
+impl<'a, I: Interner> Debug for VariableKindsInnerDebug<'a, I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        // NB: We print parameter kinds as a list delimited by `<>`,
-        // like `<K1, K2, ..>`. This is because parameter kind lists
+        // NB: We print variable kinds as a list delimited by `<>`,
+        // like `<K1, K2, ..>`. This is because variable kind lists
         // are always associated with binders like `forall<type> {
         // ... }`.
         write!(fmt, "<")?;
-        for (index, binder) in self.parameter_kinds.iter(self.interner).enumerate() {
+        for (index, binder) in self.variable_kinds.iter(self.interner).enumerate() {
             if index > 0 {
                 write!(fmt, ", ")?;
             }
-            match *binder {
-                ParameterKind::Ty(()) => write!(fmt, "type")?,
-                ParameterKind::Lifetime(()) => write!(fmt, "lifetime")?,
+            match binder {
+                VariableKind::Ty(TyKind::General) => write!(fmt, "type")?,
+                VariableKind::Ty(TyKind::Integer) => write!(fmt, "integer type")?,
+                VariableKind::Ty(TyKind::Float) => write!(fmt, "float type")?,
+                VariableKind::Lifetime => write!(fmt, "lifetime")?,
+                VariableKind::Const(ty) => write!(fmt, "const: {:?}", ty)?,
             }
         }
         write!(fmt, ">")
+    }
+}
+
+impl<I: Interner> Debug for ConstData<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        match &self.value {
+            ConstValue::BoundVar(db) => write!(fmt, "{:?}", db),
+            ConstValue::InferenceVar(var) => write!(fmt, "{:?}", var),
+            ConstValue::Placeholder(index) => write!(fmt, "{:?}", index),
+            ConstValue::Concrete(evaluated) => write!(fmt, "{:?}", evaluated),
+        }
     }
 }
 
@@ -274,11 +326,15 @@ impl<I: Interner> Debug for GoalData<I> {
             GoalData::Not(ref g) => write!(fmt, "not {{ {:?} }}", g),
             GoalData::EqGoal(ref wc) => write!(fmt, "{:?}", wc),
             GoalData::DomainGoal(ref wc) => write!(fmt, "{:?}", wc),
+            GoalData::AddRegionConstraint(ref a, ref b) => {
+                write!(fmt, "AddRegionConstraint({:?}: {:?})", a, b)
+            }
             GoalData::CannotProve(()) => write!(fmt, r"¯\_(ツ)_/¯"),
         }
     }
 }
 
+/// Helper struct for showing debug output for `Goals`.
 pub struct GoalsDebug<'a, I: Interner> {
     goals: &'a Goals<I>,
     interner: &'a I,
@@ -299,6 +355,7 @@ impl<'a, I: Interner> Debug for GoalsDebug<'a, I> {
 }
 
 impl<I: Interner> Goals<I> {
+    /// Show debug output for `Goals`.
     pub fn debug<'a>(&'a self, interner: &'a I) -> GoalsDebug<'a, I> {
         GoalsDebug {
             goals: self,
@@ -307,23 +364,27 @@ impl<I: Interner> Goals<I> {
     }
 }
 
-pub struct ParameterDataInnerDebug<'a, I: Interner>(&'a ParameterData<I>);
+/// Helper struct for showing debug output for `GenericArgData`.
+pub struct GenericArgDataInnerDebug<'a, I: Interner>(&'a GenericArgData<I>);
 
-impl<'a, I: Interner> Debug for ParameterDataInnerDebug<'a, I> {
+impl<'a, I: Interner> Debug for GenericArgDataInnerDebug<'a, I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         match self.0 {
-            ParameterKind::Ty(n) => write!(fmt, "{:?}", n),
-            ParameterKind::Lifetime(n) => write!(fmt, "{:?}", n),
+            GenericArgData::Ty(n) => write!(fmt, "{:?}", n),
+            GenericArgData::Lifetime(n) => write!(fmt, "{:?}", n),
+            GenericArgData::Const(n) => write!(fmt, "{:?}", n),
         }
     }
 }
 
-impl<I: Interner> ParameterData<I> {
-    pub fn inner_debug(&self) -> ParameterDataInnerDebug<'_, I> {
-        ParameterDataInnerDebug(self)
+impl<I: Interner> GenericArgData<I> {
+    /// Helper method for debugging `GenericArgData`.
+    pub fn inner_debug(&self) -> GenericArgDataInnerDebug<'_, I> {
+        GenericArgDataInnerDebug(self)
     }
 }
 
+/// Helper struct for showing debug output for program clause implications.
 pub struct ProgramClauseImplicationDebug<'a, I: Interner> {
     pci: &'a ProgramClauseImplication<I>,
     interner: &'a I,
@@ -350,6 +411,7 @@ impl<'a, I: Interner> Debug for ProgramClauseImplicationDebug<'a, I> {
 }
 
 impl<I: Interner> ProgramClauseImplication<I> {
+    /// Show debug output for the program clause implication.
     pub fn debug<'a>(&'a self, interner: &'a I) -> ProgramClauseImplicationDebug<'a, I> {
         ProgramClauseImplicationDebug {
             pci: self,
@@ -358,6 +420,7 @@ impl<I: Interner> ProgramClauseImplication<I> {
     }
 }
 
+/// Helper struct for showing debug output for application types.
 pub struct ApplicationTyDebug<'a, I: Interner> {
     application_ty: &'a ApplicationTy<I>,
     interner: &'a I,
@@ -375,6 +438,7 @@ impl<'a, I: Interner> Debug for ApplicationTyDebug<'a, I> {
 }
 
 impl<I: Interner> ApplicationTy<I> {
+    /// Show debug output for the application type.
     pub fn debug<'a>(&'a self, interner: &'a I) -> ApplicationTyDebug<'a, I> {
         ApplicationTyDebug {
             application_ty: self,
@@ -383,6 +447,7 @@ impl<I: Interner> ApplicationTy<I> {
     }
 }
 
+/// Helper struct for showing debug output for substitutions.
 pub struct SubstitutionDebug<'a, I: Interner> {
     substitution: &'a Substitution<I>,
     interner: &'a I,
@@ -415,6 +480,7 @@ impl<'a, I: Interner> Debug for SubstitutionDebug<'a, I> {
 }
 
 impl<I: Interner> Substitution<I> {
+    /// Show debug output for the substitution.
     pub fn debug<'a>(&'a self, interner: &'a I) -> SubstitutionDebug<'a, I> {
         SubstitutionDebug {
             substitution: self,
@@ -431,7 +497,7 @@ impl Debug for PlaceholderIndex {
 }
 
 impl<I: Interner> TraitRef<I> {
-    /// Returns a "Debuggable" type that prints like `P0 as Trait<P1..>`
+    /// Returns a "Debuggable" type that prints like `P0 as Trait<P1..>`.
     pub fn with_as(&self) -> impl std::fmt::Debug + '_ {
         SeparatorTraitRef {
             trait_ref: self,
@@ -439,7 +505,7 @@ impl<I: Interner> TraitRef<I> {
         }
     }
 
-    /// Returns a "Debuggable" type that prints like `P0: Trait<P1..>`
+    /// Returns a "Debuggable" type that prints like `P0: Trait<P1..>`.
     pub fn with_colon(&self) -> impl std::fmt::Debug + '_ {
         SeparatorTraitRef {
             trait_ref: self,
@@ -454,11 +520,16 @@ impl<I: Interner> Debug for TraitRef<I> {
     }
 }
 
+/// Trait ref with associated separator used for debug output.
 pub struct SeparatorTraitRef<'me, I: Interner> {
+    /// The `TraitRef` itself.
     pub trait_ref: &'me TraitRef<I>,
+
+    /// The separator used for displaying the `TraitRef`.
     pub separator: &'me str,
 }
 
+/// Helper struct for showing debug output for the `SeperatorTraitRef`.
 pub struct SeparatorTraitRefDebug<'a, 'me, I: Interner> {
     separator_trait_ref: &'a SeparatorTraitRef<'me, I>,
     interner: &'a I,
@@ -486,6 +557,7 @@ impl<'a, 'me, I: Interner> Debug for SeparatorTraitRefDebug<'a, 'me, I> {
 }
 
 impl<'me, I: Interner> SeparatorTraitRef<'me, I> {
+    /// Show debug output for the `SeperatorTraitRef`.
     pub fn debug<'a>(&'a self, interner: &'a I) -> SeparatorTraitRefDebug<'a, 'me, I> {
         SeparatorTraitRefDebug {
             separator_trait_ref: self,
@@ -494,6 +566,13 @@ impl<'me, I: Interner> SeparatorTraitRef<'me, I> {
     }
 }
 
+impl<I: Interner> Debug for LifetimeOutlives<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        write!(fmt, "{:?}: {:?}", self.a, self.b)
+    }
+}
+
+/// Helper struct for showing debug output for projection types.
 pub struct ProjectionTyDebug<'a, I: Interner> {
     projection_ty: &'a ProjectionTy<I>,
     interner: &'a I,
@@ -515,6 +594,7 @@ impl<'a, I: Interner> Debug for ProjectionTyDebug<'a, I> {
 }
 
 impl<I: Interner> ProjectionTy<I> {
+    /// Show debug output for the projection type.
     pub fn debug<'a>(&'a self, interner: &'a I) -> ProjectionTyDebug<'a, I> {
         ProjectionTyDebug {
             projection_ty: self,
@@ -523,6 +603,7 @@ impl<I: Interner> ProjectionTy<I> {
     }
 }
 
+/// Helper struct for showing debug output for opaque types.
 pub struct OpaqueTyDebug<'a, I: Interner> {
     opaque_ty: &'a OpaqueTy<I>,
     interner: &'a I,
@@ -544,6 +625,7 @@ impl<'a, I: Interner> Debug for OpaqueTyDebug<'a, I> {
 }
 
 impl<I: Interner> OpaqueTy<I> {
+    /// Show debug output for the opaque type.
     pub fn debug<'a>(&'a self, interner: &'a I) -> OpaqueTyDebug<'a, I> {
         OpaqueTyDebug {
             opaque_ty: self,
@@ -552,6 +634,7 @@ impl<I: Interner> OpaqueTy<I> {
     }
 }
 
+/// Wraps debug output in angle brackets (`<>`).
 pub struct Angle<'a, T>(pub &'a [T]);
 
 impl<'a, T: Debug> Debug for Angle<'a, T> {
@@ -588,6 +671,7 @@ impl<I: Interner> Debug for WhereClause<I> {
         match self {
             WhereClause::Implemented(tr) => write!(fmt, "Implemented({:?})", tr.with_colon()),
             WhereClause::AliasEq(a) => write!(fmt, "{:?}", a),
+            WhereClause::LifetimeOutlives(l_o) => write!(fmt, "{:?}", l_o),
         }
     }
 }
@@ -626,6 +710,7 @@ impl<I: Interner> Debug for DomainGoal<I> {
             DomainGoal::Compatible(_) => write!(fmt, "Compatible"),
             DomainGoal::DownstreamType(n) => write!(fmt, "DownstreamType({:?})", n),
             DomainGoal::Reveal(_) => write!(fmt, "Reveal"),
+            DomainGoal::ObjectSafe(n) => write!(fmt, "ObjectSafe({:?})", n),
         }
     }
 }
@@ -649,10 +734,7 @@ impl<T: HasInterner + Debug> Debug for Binders<T> {
 
 impl<I: Interner> Debug for ProgramClauseData<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        match self {
-            ProgramClauseData::Implies(pc) => write!(fmt, "{:?}", pc),
-            ProgramClauseData::ForAll(pc) => write!(fmt, "{:?}", pc),
-        }
+        write!(fmt, "{:?}", self.0)
     }
 }
 
@@ -670,6 +752,7 @@ impl<I: Interner> Debug for CanonicalVarKinds<I> {
 }
 
 impl<T: HasInterner + Display> Canonical<T> {
+    /// Display the canonicalized item.
     pub fn display<'a>(&'a self, interner: &'a T::Interner) -> CanonicalDisplay<'a, T> {
         CanonicalDisplay {
             canonical: self,
@@ -678,6 +761,7 @@ impl<T: HasInterner + Display> Canonical<T> {
     }
 }
 
+/// Helper struct for displaying canonicalized items.
 pub struct CanonicalDisplay<'a, T: HasInterner> {
     canonical: &'a Canonical<T>,
     interner: &'a T::Interner,
@@ -703,7 +787,7 @@ impl<'a, T: HasInterner + Display> Display for CanonicalDisplay<'a, T> {
                 if i > 0 {
                     write!(f, ",")?;
                 }
-                write!(f, "?{}", pk.into_inner())?;
+                write!(f, "?{}", pk.skip_kind())?;
             }
 
             write!(f, "> {{ {} }}", value)?;
@@ -713,11 +797,37 @@ impl<'a, T: HasInterner + Display> Display for CanonicalDisplay<'a, T> {
     }
 }
 
-impl<T: Debug, L: Debug> Debug for ParameterKind<T, L> {
+impl<I: Interner> Debug for GenericArgData<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        match *self {
-            ParameterKind::Ty(ref n) => write!(fmt, "Ty({:?})", n),
-            ParameterKind::Lifetime(ref n) => write!(fmt, "Lifetime({:?})", n),
+        match self {
+            GenericArgData::Ty(t) => write!(fmt, "Ty({:?})", t),
+            GenericArgData::Lifetime(l) => write!(fmt, "Lifetime({:?})", l),
+            GenericArgData::Const(c) => write!(fmt, "Const({:?})", c),
+        }
+    }
+}
+
+impl<I: Interner> Debug for VariableKind<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        match self {
+            VariableKind::Ty(TyKind::General) => write!(fmt, "type"),
+            VariableKind::Ty(TyKind::Integer) => write!(fmt, "integer type"),
+            VariableKind::Ty(TyKind::Float) => write!(fmt, "float type"),
+            VariableKind::Lifetime => write!(fmt, "lifetime"),
+            VariableKind::Const(ty) => write!(fmt, "const: {:?}", ty),
+        }
+    }
+}
+
+impl<I: Interner, T: Debug> Debug for WithKind<I, T> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        let value = self.skip_kind();
+        match &self.kind {
+            VariableKind::Ty(TyKind::General) => write!(fmt, "{:?} with kind type", value),
+            VariableKind::Ty(TyKind::Integer) => write!(fmt, "{:?} with kind integer type", value),
+            VariableKind::Ty(TyKind::Float) => write!(fmt, "{:?} with kind float type", value),
+            VariableKind::Lifetime => write!(fmt, "{:?} with kind lifetime", value),
+            VariableKind::Const(ty) => write!(fmt, "{:?} with kind {:?}", value, ty),
         }
     }
 }
@@ -725,7 +835,7 @@ impl<T: Debug, L: Debug> Debug for ParameterKind<T, L> {
 impl<I: Interner> Debug for Constraint<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         match self {
-            Constraint::LifetimeEq(a, b) => write!(fmt, "{:?} == {:?}", a, b),
+            Constraint::Outlives(a, b) => write!(fmt, "{:?}: {:?}", a, b),
         }
     }
 }
@@ -745,7 +855,7 @@ impl<I: Interner> Display for ConstrainedSubst<I> {
 impl<I: Interner> Substitution<I> {
     /// Displays the substitution in the form `< P0, .. Pn >`, or (if
     /// the substitution is empty) as an empty string.
-    pub fn with_angle(&self, interner: &I) -> Angle<'_, Parameter<I>> {
+    pub fn with_angle(&self, interner: &I) -> Angle<'_, GenericArg<I>> {
         Angle(self.parameters(interner))
     }
 }

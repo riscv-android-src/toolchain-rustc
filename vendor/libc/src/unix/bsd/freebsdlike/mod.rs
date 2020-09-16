@@ -738,6 +738,7 @@ pub const MSG_DONTWAIT: ::c_int = 0x00000080;
 pub const MSG_EOF: ::c_int = 0x00000100;
 
 pub const SCM_TIMESTAMP: ::c_int = 0x02;
+pub const SCM_CREDS: ::c_int = 0x03;
 
 pub const SOCK_STREAM: ::c_int = 1;
 pub const SOCK_DGRAM: ::c_int = 2;
@@ -756,8 +757,10 @@ pub const IP_DROP_MEMBERSHIP: ::c_int = 13;
 pub const IP_RECVIF: ::c_int = 20;
 pub const IPV6_JOIN_GROUP: ::c_int = 12;
 pub const IPV6_LEAVE_GROUP: ::c_int = 13;
+pub const IPV6_CHECKSUM: ::c_int = 26;
 pub const IPV6_RECVPKTINFO: ::c_int = 36;
 pub const IPV6_PKTINFO: ::c_int = 46;
+pub const IPV6_HOPLIMIT: ::c_int = 47;
 pub const IPV6_RECVTCLASS: ::c_int = 57;
 pub const IPV6_TCLASS: ::c_int = 61;
 
@@ -1042,8 +1045,6 @@ pub const TIOCSPGRP: ::c_ulong = 0x80047476;
 pub const TIOCGPGRP: ::c_uint = 0x40047477;
 pub const TIOCCDTR: ::c_uint = 0x20007478;
 pub const TIOCSDTR: ::c_uint = 0x20007479;
-pub const TIOCCBRK: ::c_uint = 0x2000747a;
-pub const TIOCSBRK: ::c_uint = 0x2000747b;
 pub const TTYDISC: ::c_int = 0x0;
 pub const SLIPDISC: ::c_int = 0x4;
 pub const PPPDISC: ::c_int = 0x5;

@@ -256,6 +256,12 @@ impl GlobalArgs {
 }
 
 fn cli() -> App {
+    let is_rustup = std::env::var_os("RUSTUP_HOME").is_some();
+    let usage = if is_rustup {
+        "cargo [+toolchain] [OPTIONS] [SUBCOMMAND]"
+    } else {
+        "cargo [OPTIONS] [SUBCOMMAND]"
+    };
     App::new("cargo")
         .settings(&[
             AppSettings::UnifiedHelpMessage,
@@ -263,6 +269,7 @@ fn cli() -> App {
             AppSettings::VersionlessSubcommands,
             AppSettings::AllowExternalSubcommands,
         ])
+        .usage(usage)
         .template(
             "\
 Rust's package manager
@@ -274,14 +281,14 @@ OPTIONS:
 {unified}
 
 Some common cargo commands are (see all commands with --list):
-    build       Compile the current package
-    check       Analyze the current package and report errors, but don't build object files
+    build, b    Compile the current package
+    check, c    Analyze the current package and report errors, but don't build object files
     clean       Remove the target directory
     doc         Build this package's and its dependencies' documentation
     new         Create a new cargo package
     init        Create a new cargo package in an existing directory
-    run         Run a binary or example of the local package
-    test        Run the tests
+    run, r      Run a binary or example of the local package
+    test, t     Run the tests
     bench       Run the benchmarks
     update      Update dependencies listed in Cargo.lock
     search      Search registry for crates

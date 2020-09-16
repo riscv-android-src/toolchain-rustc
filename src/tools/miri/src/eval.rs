@@ -31,8 +31,10 @@ pub struct MiriConfig {
     pub args: Vec<String>,
     /// The seed to use when non-determinism or randomness are required (e.g. ptr-to-int cast, `getrandom()`).
     pub seed: Option<u64>,
-    /// The stacked borrow id to report about
+    /// The stacked borrows pointer id to report about
     pub tracked_pointer_tag: Option<PtrId>,
+    /// The stacked borrows call ID to report about
+    pub tracked_call_id: Option<CallId>,
     /// The allocation id to report about.
     pub tracked_alloc_id: Option<AllocId>,
 }
@@ -49,6 +51,7 @@ impl Default for MiriConfig {
             args: vec![],
             seed: None,
             tracked_pointer_tag: None,
+            tracked_call_id: None,
             tracked_alloc_id: None,
         }
     }
@@ -63,17 +66,18 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
     main_id: DefId,
     config: MiriConfig,
 ) -> InterpResult<'tcx, (InterpCx<'mir, 'tcx, Evaluator<'mir, 'tcx>>, MPlaceTy<'tcx, Tag>)> {
-    let tcx_at = tcx.at(rustc_span::source_map::DUMMY_SP);
     let param_env = ty::ParamEnv::reveal_all();
     let layout_cx = LayoutCx { tcx, param_env };
     let mut ecx = InterpCx::new(
-        tcx_at,
+        tcx,
+        rustc_span::source_map::DUMMY_SP,
         param_env,
         Evaluator::new(config.communicate, config.validate, layout_cx),
         MemoryExtra::new(
             StdRng::seed_from_u64(config.seed.unwrap_or(0)),
             config.stacked_borrows,
             config.tracked_pointer_tag,
+            config.tracked_call_id,
             config.tracked_alloc_id,
             config.check_alignment,
         ),

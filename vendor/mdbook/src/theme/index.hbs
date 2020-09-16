@@ -7,13 +7,21 @@
         {{#if is_print }}
         <meta name="robots" content="noindex" />
         {{/if}}
+        {{#if base_url}}
+        <base href="{{ base_url }}">
+        {{/if}}
+
+
+        <!-- Custom HTML head -->
+        {{> head}}
 
         <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
         <meta name="description" content="{{ description }}">
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff" />
 
-        <link rel="shortcut icon" href="{{ path_to_root }}{{ favicon }}">
+        <link rel="icon" href="{{ path_to_root }}favicon.svg">
+        <link rel="shortcut icon" href="{{ path_to_root }}favicon.png">
         <link rel="stylesheet" href="{{ path_to_root }}css/variables.css">
         <link rel="stylesheet" href="{{ path_to_root }}css/general.css">
         <link rel="stylesheet" href="{{ path_to_root }}css/chrome.css">
@@ -21,8 +29,9 @@
 
         <!-- Fonts -->
         <link rel="stylesheet" href="{{ path_to_root }}FontAwesome/css/font-awesome.css">
-        <link href="https://fonts.googleapis.com/css?family=Open+Sans:300italic,400italic,600italic,700italic,800italic,400,300,600,700,800" rel="stylesheet" type="text/css">
-        <link href="https://fonts.googleapis.com/css?family=Source+Code+Pro:500" rel="stylesheet" type="text/css">
+        {{#if copy_fonts}}
+        <link rel="stylesheet" href="{{ path_to_root }}fonts/fonts.css">
+        {{/if}}
 
         <!-- Highlight.js Stylesheets -->
         <link rel="stylesheet" href="{{ path_to_root }}highlight.css">
@@ -232,19 +241,19 @@
         </script>
         {{/if}}
 
-        {{#if playpen_line_numbers}}
+        {{#if playground_line_numbers}}
         <script type="text/javascript">
-            window.playpen_line_numbers = true;
-        </script>
-        {{/if}}
-        
-        {{#if playpen_copyable}}
-        <script type="text/javascript">
-            window.playpen_copyable = true;
+            window.playground_line_numbers = true;
         </script>
         {{/if}}
 
-        {{#if playpen_js}}
+        {{#if playground_copyable}}
+        <script type="text/javascript">
+            window.playground_copyable = true;
+        </script>
+        {{/if}}
+
+        {{#if playground_js}}
         <script src="{{ path_to_root }}ace.js" type="text/javascript" charset="utf-8"></script>
         <script src="{{ path_to_root }}editor.js" type="text/javascript" charset="utf-8"></script>
         <script src="{{ path_to_root }}mode-rust.js" type="text/javascript" charset="utf-8"></script>

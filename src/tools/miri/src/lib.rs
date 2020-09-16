@@ -34,23 +34,22 @@ mod stacked_borrows;
 mod sync;
 mod thread;
 
+// Establish a "crate-wide prelude": we often import `crate::*`.
+
 // Make all those symbols available in the same place as our own.
 pub use rustc_mir::interpret::*;
 // Resolve ambiguity.
 pub use rustc_mir::interpret::{self, AllocMap, PlaceTy};
 
-pub use crate::shims::dlsym::{Dlsym, EvalContextExt as DlsymEvalContextExt};
-pub use crate::shims::env::{EnvVars, EvalContextExt as EnvEvalContextExt};
-pub use crate::shims::foreign_items::EvalContextExt as ForeignItemsEvalContextExt;
-pub use crate::shims::fs::{DirHandler, EvalContextExt as FileEvalContextExt, FileHandler};
-pub use crate::shims::intrinsics::EvalContextExt as IntrinsicsEvalContextExt;
-pub use crate::shims::os_str::EvalContextExt as OsStrEvalContextExt;
-pub use crate::shims::panic::{CatchUnwindData, EvalContextExt as PanicEvalContextExt};
-pub use crate::shims::sync::{EvalContextExt as SyncShimsEvalContextExt};
-pub use crate::shims::thread::EvalContextExt as ThreadShimsEvalContextExt;
-pub use crate::shims::time::EvalContextExt as TimeEvalContextExt;
-pub use crate::shims::tls::{EvalContextExt as TlsEvalContextExt, TlsData};
-pub use crate::shims::EvalContextExt as ShimsEvalContextExt;
+pub use crate::shims::dlsym::{Dlsym, EvalContextExt as _};
+pub use crate::shims::env::{EnvVars, EvalContextExt as _};
+pub use crate::shims::foreign_items::EvalContextExt as _;
+pub use crate::shims::intrinsics::EvalContextExt as _;
+pub use crate::shims::os_str::EvalContextExt as _;
+pub use crate::shims::time::EvalContextExt as _;
+pub use crate::shims::panic::{CatchUnwindData, EvalContextExt as _};
+pub use crate::shims::tls::{EvalContextExt as _, TlsData};
+pub use crate::shims::EvalContextExt as _;
 
 pub use crate::diagnostics::{
     register_diagnostic, report_error, EvalContextExt as DiagnosticsEvalContextExt,
@@ -66,7 +65,7 @@ pub use crate::mono_hash_map::MonoHashMap;
 pub use crate::operator::EvalContextExt as OperatorEvalContextExt;
 pub use crate::range_map::RangeMap;
 pub use crate::stacked_borrows::{
-    EvalContextExt as StackedBorEvalContextExt, Item, Permission, PtrId, Stack, Stacks, Tag,
+    EvalContextExt as StackedBorEvalContextExt, Item, Permission, CallId, PtrId, Stack, Stacks, Tag,
 };
 pub use crate::thread::{
     EvalContextExt as ThreadsEvalContextExt, SchedulingAction, ThreadId, ThreadManager, ThreadState,

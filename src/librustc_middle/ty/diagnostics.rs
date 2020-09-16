@@ -236,21 +236,35 @@ pub fn suggest_constraining_type_param(
     }
 }
 
-pub struct TraitObjectVisitor(pub Vec<rustc_span::Span>);
-impl<'v> hir::intravisit::Visitor<'v> for TraitObjectVisitor {
+/// Collect al types that have an implicit `'static` obligation that we could suggest `'_` for.
+pub struct TraitObjectVisitor<'tcx>(pub Vec<&'tcx hir::Ty<'tcx>>, pub crate::hir::map::Map<'tcx>);
+
+impl<'v> hir::intravisit::Visitor<'v> for TraitObjectVisitor<'v> {
     type Map = rustc_hir::intravisit::ErasedMap<'v>;
 
     fn nested_visit_map(&mut self) -> hir::intravisit::NestedVisitorMap<Self::Map> {
         hir::intravisit::NestedVisitorMap::None
     }
 
-    fn visit_ty(&mut self, ty: &hir::Ty<'_>) {
-        if let hir::TyKind::TraitObject(
-            _,
-            hir::Lifetime { name: hir::LifetimeName::ImplicitObjectLifetimeDefault, .. },
-        ) = ty.kind
-        {
-            self.0.push(ty.span);
+    fn visit_ty(&mut self, ty: &'v hir::Ty<'v>) {
+        match ty.kind {
+            hir::TyKind::TraitObject(
+                _,
+                hir::Lifetime {
+                    name:
+                        hir::LifetimeName::ImplicitObjectLifetimeDefault | hir::LifetimeName::Static,
+                    ..
+                },
+            ) => {
+                self.0.push(ty);
+            }
+            hir::TyKind::OpaqueDef(item_id, _) => {
+                self.0.push(ty);
+                let item = self.1.expect_item(item_id.id);
+                hir::intravisit::walk_item(self, item);
+            }
+            _ => {}
         }
+        hir::intravisit::walk_ty(self, ty);
     }
 }

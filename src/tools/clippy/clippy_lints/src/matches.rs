@@ -36,9 +36,16 @@ declare_clippy_lint! {
     /// ```rust
     /// # fn bar(stool: &str) {}
     /// # let x = Some("abc");
+    ///
+    /// // Bad
     /// match x {
     ///     Some(ref foo) => bar(foo),
     ///     _ => (),
+    /// }
+    ///
+    /// // Good
+    /// if let Some(ref foo) = x {
+    ///     bar(foo);
     /// }
     /// ```
     pub SINGLE_MATCH,
@@ -97,10 +104,18 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust,ignore
+    /// // Bad
     /// match x {
     ///     &A(ref y) => foo(y),
     ///     &B => bar(),
     ///     _ => frob(&x),
+    /// }
+    ///
+    /// // Good
+    /// match *x {
+    ///     A(ref y) => foo(y),
+    ///     B => bar(),
+    ///     _ => frob(x),
     /// }
     /// ```
     pub MATCH_REF_PATS,
@@ -197,10 +212,15 @@ declare_clippy_lint! {
     /// **Example:**
     /// ```rust
     /// let x: Option<()> = None;
+    ///
+    /// // Bad
     /// let r: Option<&()> = match x {
     ///     None => None,
     ///     Some(ref v) => Some(v),
     /// };
+    ///
+    /// // Good
+    /// let r: Option<&()> = x.as_ref();
     /// ```
     pub MATCH_AS_REF,
     complexity,
@@ -219,9 +239,17 @@ declare_clippy_lint! {
     /// ```rust
     /// # enum Foo { A(usize), B(usize) }
     /// # let x = Foo::B(1);
+    ///
+    /// // Bad
     /// match x {
     ///     Foo::A(_) => {},
     ///     _ => {},
+    /// }
+    ///
+    /// // Good
+    /// match x {
+    ///     Foo::A(_) => {},
+    ///     Foo::B(_) => {},
     /// }
     /// ```
     pub WILDCARD_ENUM_MATCH_ARM,
@@ -242,16 +270,14 @@ declare_clippy_lint! {
     /// ```rust
     /// # enum Foo { A, B, C }
     /// # let x = Foo::B;
+    /// // Bad
     /// match x {
     ///     Foo::A => {},
     ///     Foo::B => {},
     ///     _ => {},
     /// }
-    /// ```
-    /// Use instead:
-    /// ```rust
-    /// # enum Foo { A, B, C }
-    /// # let x = Foo::B;
+    ///
+    /// // Good
     /// match x {
     ///     Foo::A => {},
     ///     Foo::B => {},
@@ -273,9 +299,16 @@ declare_clippy_lint! {
     ///
     /// **Example:**
     /// ```rust
+    /// // Bad
     /// match "foo" {
     ///     "a" => {},
     ///     "bar" | _ => {},
+    /// }
+    ///
+    /// // Good
+    /// match "foo" {
+    ///     "a" => {},
+    ///     _ => {},
     /// }
     /// ```
     pub WILDCARD_IN_OR_PATTERNS,
@@ -397,8 +430,8 @@ impl_lint_pass!(Matches => [
     REST_PAT_IN_FULLY_BOUND_STRUCTS
 ]);
 
-impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
-    fn check_expr(&mut self, cx: &LateContext<'a, 'tcx>, expr: &'tcx Expr<'_>) {
+impl<'tcx> LateLintPass<'tcx> for Matches {
+    fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         if in_external_macro(cx.sess(), expr.span) {
             return;
         }
@@ -422,7 +455,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
         }
     }
 
-    fn check_local(&mut self, cx: &LateContext<'a, 'tcx>, local: &'tcx Local<'_>) {
+    fn check_local(&mut self, cx: &LateContext<'tcx>, local: &'tcx Local<'_>) {
         if_chain! {
             if !in_external_macro(cx.sess(), local.span);
             if !in_macro(local.span);
@@ -458,7 +491,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
         }
     }
 
-    fn check_pat(&mut self, cx: &LateContext<'a, 'tcx>, pat: &'tcx Pat<'_>) {
+    fn check_pat(&mut self, cx: &LateContext<'tcx>, pat: &'tcx Pat<'_>) {
         if_chain! {
             if !in_external_macro(cx.sess(), pat.span);
             if !in_macro(pat.span);
@@ -485,7 +518,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Matches {
 }
 
 #[rustfmt::skip]
-fn check_single_match(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
+fn check_single_match(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     if arms.len() == 2 && arms[0].guard.is_none() && arms[1].guard.is_none() {
         if in_macro(expr.span) {
             // Don't lint match expressions present in
@@ -507,7 +540,7 @@ fn check_single_match(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>],
             // allow match arms with just expressions
             return;
         };
-        let ty = cx.tables.expr_ty(ex);
+        let ty = cx.tables().expr_ty(ex);
         if ty.kind != ty::Bool || is_allowed(cx, MATCH_BOOL, ex.hir_id) {
             check_single_match_single_pattern(cx, ex, arms, expr, els);
             check_single_match_opt_like(cx, ex, arms, expr, ty, els);
@@ -516,7 +549,7 @@ fn check_single_match(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>],
 }
 
 fn check_single_match_single_pattern(
-    cx: &LateContext<'_, '_>,
+    cx: &LateContext<'_>,
     ex: &Expr<'_>,
     arms: &[Arm<'_>],
     expr: &Expr<'_>,
@@ -528,7 +561,7 @@ fn check_single_match_single_pattern(
 }
 
 fn report_single_match_single_pattern(
-    cx: &LateContext<'_, '_>,
+    cx: &LateContext<'_>,
     ex: &Expr<'_>,
     arms: &[Arm<'_>],
     expr: &Expr<'_>,
@@ -557,7 +590,7 @@ fn report_single_match_single_pattern(
 }
 
 fn check_single_match_opt_like(
-    cx: &LateContext<'_, '_>,
+    cx: &LateContext<'_>,
     ex: &Expr<'_>,
     arms: &[Arm<'_>],
     expr: &Expr<'_>,
@@ -597,9 +630,9 @@ fn check_single_match_opt_like(
     }
 }
 
-fn check_match_bool(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
+fn check_match_bool(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     // Type of expression is `bool`.
-    if cx.tables.expr_ty(ex).kind == ty::Bool {
+    if cx.tables().expr_ty(ex).kind == ty::Bool {
         span_lint_and_then(
             cx,
             MATCH_BOOL,
@@ -661,9 +694,9 @@ fn check_match_bool(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], e
     }
 }
 
-fn check_overlapping_arms<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ex: &'tcx Expr<'_>, arms: &'tcx [Arm<'_>]) {
-    if arms.len() >= 2 && cx.tables.expr_ty(ex).is_integral() {
-        let ranges = all_ranges(cx, arms, cx.tables.expr_ty(ex));
+fn check_overlapping_arms<'tcx>(cx: &LateContext<'tcx>, ex: &'tcx Expr<'_>, arms: &'tcx [Arm<'_>]) {
+    if arms.len() >= 2 && cx.tables().expr_ty(ex).is_integral() {
+        let ranges = all_ranges(cx, arms, cx.tables().expr_ty(ex));
         let type_ranges = type_ranges(&ranges);
         if !type_ranges.is_empty() {
             if let Some((start, end)) = overlapping(&type_ranges) {
@@ -680,8 +713,8 @@ fn check_overlapping_arms<'a, 'tcx>(cx: &LateContext<'a, 'tcx>, ex: &'tcx Expr<'
     }
 }
 
-fn check_wild_err_arm(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>]) {
-    let ex_ty = walk_ptrs_ty(cx.tables.expr_ty(ex));
+fn check_wild_err_arm(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>]) {
+    let ex_ty = walk_ptrs_ty(cx.tables().expr_ty(ex));
     if is_type_diagnostic_item(cx, ex_ty, sym!(result_type)) {
         for arm in arms {
             if let PatKind::TupleStruct(ref path, ref inner, _) = arm.pat.kind {
@@ -721,8 +754,8 @@ fn check_wild_err_arm(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>])
     }
 }
 
-fn check_wild_enum_match(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>]) {
-    let ty = cx.tables.expr_ty(ex);
+fn check_wild_enum_match(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>]) {
+    let ty = cx.tables().expr_ty(ex);
     if !ty.is_enum() {
         // If there isn't a nice closed set of possible values that can be conveniently enumerated,
         // don't complain about not enumerating the mall.
@@ -851,7 +884,7 @@ fn is_panic_block(block: &Block<'_>) -> bool {
     }
 }
 
-fn check_match_ref_pats(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
+fn check_match_ref_pats(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     if has_only_ref_pats(arms) {
         let mut suggs = Vec::with_capacity(arms.len() + 1);
         let (title, msg) = if let ExprKind::AddrOf(BorrowKind::Ref, Mutability::Not, ref inner) = ex.kind {
@@ -886,7 +919,7 @@ fn check_match_ref_pats(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>
     }
 }
 
-fn check_match_as_ref(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
+fn check_match_as_ref(cx: &LateContext<'_>, ex: &Expr<'_>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     if arms.len() == 2 && arms[0].guard.is_none() && arms[1].guard.is_none() {
         let arm_ref: Option<BindingAnnotation> = if is_none_arm(&arms[0]) {
             is_ref_some_arm(&arms[1])
@@ -902,8 +935,8 @@ fn check_match_as_ref(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>],
                 "as_mut"
             };
 
-            let output_ty = cx.tables.expr_ty(expr);
-            let input_ty = cx.tables.expr_ty(ex);
+            let output_ty = cx.tables().expr_ty(expr);
+            let input_ty = cx.tables().expr_ty(ex);
 
             let cast = if_chain! {
                 if let ty::Adt(_, substs) = input_ty.kind;
@@ -938,7 +971,7 @@ fn check_match_as_ref(cx: &LateContext<'_, '_>, ex: &Expr<'_>, arms: &[Arm<'_>],
     }
 }
 
-fn check_wild_in_or_pats(cx: &LateContext<'_, '_>, arms: &[Arm<'_>]) {
+fn check_wild_in_or_pats(cx: &LateContext<'_>, arms: &[Arm<'_>]) {
     for arm in arms {
         if let PatKind::Or(ref fields) = arm.pat.kind {
             // look for multiple fields in this arm that contains at least one Wild pattern
@@ -956,7 +989,7 @@ fn check_wild_in_or_pats(cx: &LateContext<'_, '_>, arms: &[Arm<'_>]) {
     }
 }
 
-fn check_match_single_binding<'a>(cx: &LateContext<'_, 'a>, ex: &Expr<'a>, arms: &[Arm<'_>], expr: &Expr<'_>) {
+fn check_match_single_binding<'a>(cx: &LateContext<'a>, ex: &Expr<'a>, arms: &[Arm<'_>], expr: &Expr<'_>) {
     if in_macro(expr.span) || arms.len() != 1 || is_refutable(cx, arms[0].pat) {
         return;
     }
@@ -973,13 +1006,13 @@ fn check_match_single_binding<'a>(cx: &LateContext<'_, 'a>, ex: &Expr<'a>, arms:
     match match_body.kind {
         ExprKind::Block(block, _) => {
             // macro + expr_ty(body) == ()
-            if block.span.from_expansion() && cx.tables.expr_ty(&match_body).is_unit() {
+            if block.span.from_expansion() && cx.tables().expr_ty(&match_body).is_unit() {
                 snippet_body.push(';');
             }
         },
         _ => {
             // expr_ty(body) == ()
-            if cx.tables.expr_ty(&match_body).is_unit() {
+            if cx.tables().expr_ty(&match_body).is_unit() {
                 snippet_body.push(';');
             }
         },
@@ -1052,7 +1085,7 @@ fn check_match_single_binding<'a>(cx: &LateContext<'_, 'a>, ex: &Expr<'a>, arms:
 }
 
 /// Returns true if the `ex` match expression is in a local (`let`) statement
-fn opt_parent_let<'a>(cx: &LateContext<'_, 'a>, ex: &Expr<'a>) -> Option<&'a Local<'a>> {
+fn opt_parent_let<'a>(cx: &LateContext<'a>, ex: &Expr<'a>) -> Option<&'a Local<'a>> {
     if_chain! {
         let map = &cx.tcx.hir();
         if let Some(Node::Expr(parent_arm_expr)) = map.find(map.get_parent_node(ex.hir_id));
@@ -1065,11 +1098,7 @@ fn opt_parent_let<'a>(cx: &LateContext<'_, 'a>, ex: &Expr<'a>) -> Option<&'a Loc
 }
 
 /// Gets all arms that are unbounded `PatRange`s.
-fn all_ranges<'a, 'tcx>(
-    cx: &LateContext<'a, 'tcx>,
-    arms: &'tcx [Arm<'_>],
-    ty: Ty<'tcx>,
-) -> Vec<SpannedRange<Constant>> {
+fn all_ranges<'tcx>(cx: &LateContext<'tcx>, arms: &'tcx [Arm<'_>], ty: Ty<'tcx>) -> Vec<SpannedRange<Constant>> {
     arms.iter()
         .flat_map(|arm| {
             if let Arm {
@@ -1078,11 +1107,11 @@ fn all_ranges<'a, 'tcx>(
             {
                 if let PatKind::Range(ref lhs, ref rhs, range_end) = pat.kind {
                     let lhs = match lhs {
-                        Some(lhs) => constant(cx, cx.tables, lhs)?.0,
+                        Some(lhs) => constant(cx, cx.tables(), lhs)?.0,
                         None => miri_to_const(ty.numeric_min_val(cx.tcx)?)?,
                     };
                     let rhs = match rhs {
-                        Some(rhs) => constant(cx, cx.tables, rhs)?.0,
+                        Some(rhs) => constant(cx, cx.tables(), rhs)?.0,
                         None => miri_to_const(ty.numeric_max_val(cx.tcx)?)?,
                     };
                     let rhs = match range_end {
@@ -1096,7 +1125,7 @@ fn all_ranges<'a, 'tcx>(
                 }
 
                 if let PatKind::Lit(ref value) = pat.kind {
-                    let value = constant(cx, cx.tables, value)?.0;
+                    let value = constant(cx, cx.tables(), value)?.0;
                     return Some(SpannedRange {
                         span: pat.span,
                         node: (value.clone(), Bound::Included(value)),

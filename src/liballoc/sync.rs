@@ -16,7 +16,7 @@ use core::hash::{Hash, Hasher};
 use core::intrinsics::abort;
 use core::iter;
 use core::marker::{PhantomData, Unpin, Unsize};
-use core::mem::{self, align_of, align_of_val, size_of_val};
+use core::mem::{self, align_of_val, size_of_val};
 use core::ops::{CoerceUnsized, Deref, DispatchFromDyn, Receiver};
 use core::pin::Pin;
 use core::ptr::{self, NonNull};
@@ -232,7 +232,7 @@ impl<T: ?Sized> Arc<T> {
     }
 
     unsafe fn from_ptr(ptr: *mut ArcInner<T>) -> Self {
-        Self::from_inner(NonNull::new_unchecked(ptr))
+        unsafe { Self::from_inner(NonNull::new_unchecked(ptr)) }
     }
 }
 
@@ -267,6 +267,7 @@ pub struct Weak<T: ?Sized> {
     // `Weak::new` sets this to `usize::MAX` so that it doesn’t need
     // to allocate space on the heap.  That's not a value a real pointer
     // will ever have because RcBox has alignment at least 2.
+    // This is only possible when `T: Sized`; unsized `T` never dangle.
     ptr: NonNull<ArcInner<T>>,
 }
 
@@ -418,8 +419,7 @@ impl<T> Arc<T> {
     #[inline]
     #[stable(feature = "arc_unique", since = "1.4.0")]
     pub fn try_unwrap(this: Self) -> Result<T, Self> {
-        // See `drop` for why all these atomics are like this
-        if this.inner().strong.compare_exchange(1, 0, Release, Relaxed).is_err() {
+        if this.inner().strong.compare_exchange(1, 0, Relaxed, Relaxed).is_err() {
             return Err(this);
         }
 
@@ -543,7 +543,7 @@ impl<T> Arc<[mem::MaybeUninit<T>]> {
     #[unstable(feature = "new_uninit", issue = "63291")]
     #[inline]
     pub unsafe fn assume_init(self) -> Arc<[T]> {
-        Arc::from_ptr(mem::ManuallyDrop::new(self).ptr.as_ptr() as _)
+        unsafe { Arc::from_ptr(mem::ManuallyDrop::new(self).ptr.as_ptr() as _) }
     }
 }
 
@@ -587,20 +587,14 @@ impl<T: ?Sized> Arc<T> {
     /// assert_eq!(x_ptr, Arc::as_ptr(&y));
     /// assert_eq!(unsafe { &*x_ptr }, "hello");
     /// ```
-    #[stable(feature = "weak_into_raw", since = "1.45.0")]
+    #[stable(feature = "rc_as_ptr", since = "1.45.0")]
     pub fn as_ptr(this: &Self) -> *const T {
         let ptr: *mut ArcInner<T> = NonNull::as_ptr(this.ptr);
-        let fake_ptr = ptr as *mut T;
 
-        // SAFETY: This cannot go through Deref::deref.
-        // Instead, we manually offset the pointer rather than manifesting a reference.
-        // This is so that the returned pointer retains the same provenance as our pointer.
-        // This is required so that e.g. `get_mut` can write through the pointer
-        // after the Arc is recovered through `from_raw`.
-        unsafe {
-            let offset = data_offset(&(*ptr).data);
-            set_data_ptr(fake_ptr, (ptr as *mut u8).offset(offset))
-        }
+        // SAFETY: This cannot go through Deref::deref or RcBoxPtr::inner because
+        // this is required to retain raw/mut provenance such that e.g. `get_mut` can
+        // write through the pointer after the Rc is recovered through `from_raw`.
+        unsafe { &raw const (*ptr).data }
     }
 
     /// Constructs an `Arc<T>` from a raw pointer.
@@ -642,13 +636,15 @@ impl<T: ?Sized> Arc<T> {
     /// ```
     #[stable(feature = "rc_raw", since = "1.17.0")]
     pub unsafe fn from_raw(ptr: *const T) -> Self {
-        let offset = data_offset(ptr);
+        unsafe {
+            let offset = data_offset(ptr);
 
-        // Reverse the offset to find the original ArcInner.
-        let fake_ptr = ptr as *mut ArcInner<T>;
-        let arc_ptr = set_data_ptr(fake_ptr, (ptr as *mut u8).offset(-offset));
+            // Reverse the offset to find the original ArcInner.
+            let fake_ptr = ptr as *mut ArcInner<T>;
+            let arc_ptr = set_data_ptr(fake_ptr, (ptr as *mut u8).offset(-offset));
 
-        Self::from_ptr(arc_ptr)
+            Self::from_ptr(arc_ptr)
+        }
     }
 
     /// Consumes the `Arc`, returning the wrapped pointer as `NonNull<T>`.
@@ -807,7 +803,7 @@ impl<T: ?Sized> Arc<T> {
     #[unstable(feature = "arc_mutate_strong_count", issue = "71983")]
     pub unsafe fn incr_strong_count(ptr: *const T) {
         // Retain Arc, but don't touch refcount by wrapping in ManuallyDrop
-        let arc = mem::ManuallyDrop::new(Arc::<T>::from_raw(ptr));
+        let arc = unsafe { mem::ManuallyDrop::new(Arc::<T>::from_raw(ptr)) };
         // Now increase refcount, but don't drop new refcount either
         let _arc_clone: mem::ManuallyDrop<_> = arc.clone();
     }
@@ -847,7 +843,7 @@ impl<T: ?Sized> Arc<T> {
     #[inline]
     #[unstable(feature = "arc_mutate_strong_count", issue = "71983")]
     pub unsafe fn decr_strong_count(ptr: *const T) {
-        mem::drop(Arc::from_raw(ptr));
+        unsafe { mem::drop(Arc::from_raw(ptr)) };
     }
 
     #[inline]
@@ -865,7 +861,7 @@ impl<T: ?Sized> Arc<T> {
     unsafe fn drop_slow(&mut self) {
         // Destroy the data at this time, even though we may not free the box
         // allocation itself (there may still be weak pointers lying around).
-        ptr::drop_in_place(Self::get_mut_unchecked(self));
+        unsafe { ptr::drop_in_place(Self::get_mut_unchecked(self)) };
 
         // Drop the weak ref collectively held by all strong references
         drop(Weak { ptr: self.ptr });
@@ -917,10 +913,12 @@ impl<T: ?Sized> Arc<T> {
 
         // Initialize the ArcInner
         let inner = mem_to_arcinner(mem.ptr.as_ptr());
-        debug_assert_eq!(Layout::for_value(&*inner), layout);
+        debug_assert_eq!(unsafe { Layout::for_value(&*inner) }, layout);
 
-        ptr::write(&mut (*inner).strong, atomic::AtomicUsize::new(1));
-        ptr::write(&mut (*inner).weak, atomic::AtomicUsize::new(1));
+        unsafe {
+            ptr::write(&mut (*inner).strong, atomic::AtomicUsize::new(1));
+            ptr::write(&mut (*inner).weak, atomic::AtomicUsize::new(1));
+        }
 
         inner
     }
@@ -928,9 +926,11 @@ impl<T: ?Sized> Arc<T> {
     /// Allocates an `ArcInner<T>` with sufficient space for an unsized inner value.
     unsafe fn allocate_for_ptr(ptr: *const T) -> *mut ArcInner<T> {
         // Allocate for the `ArcInner<T>` using the given value.
-        Self::allocate_for_layout(Layout::for_value(&*ptr), |mem| {
-            set_data_ptr(ptr as *mut T, mem) as *mut ArcInner<T>
-        })
+        unsafe {
+            Self::allocate_for_layout(Layout::for_value(&*ptr), |mem| {
+                set_data_ptr(ptr as *mut T, mem) as *mut ArcInner<T>
+            })
+        }
     }
 
     fn from_box(v: Box<T>) -> Arc<T> {
@@ -959,9 +959,11 @@ impl<T: ?Sized> Arc<T> {
 impl<T> Arc<[T]> {
     /// Allocates an `ArcInner<[T]>` with the given length.
     unsafe fn allocate_for_slice(len: usize) -> *mut ArcInner<[T]> {
-        Self::allocate_for_layout(Layout::array::<T>(len).unwrap(), |mem| {
-            ptr::slice_from_raw_parts_mut(mem as *mut T, len) as *mut ArcInner<[T]>
-        })
+        unsafe {
+            Self::allocate_for_layout(Layout::array::<T>(len).unwrap(), |mem| {
+                ptr::slice_from_raw_parts_mut(mem as *mut T, len) as *mut ArcInner<[T]>
+            })
+        }
     }
 }
 
@@ -970,7 +972,9 @@ impl<T> Arc<[T]> {
 /// For a slice/trait object, this sets the `data` field and leaves the rest
 /// unchanged. For a sized raw pointer, this simply sets the pointer.
 unsafe fn set_data_ptr<T: ?Sized, U>(mut ptr: *mut T, data: *mut U) -> *mut T {
-    ptr::write(&mut ptr as *mut _ as *mut *mut u8, data as *mut u8);
+    unsafe {
+        ptr::write(&mut ptr as *mut _ as *mut *mut u8, data as *mut u8);
+    }
     ptr
 }
 
@@ -979,11 +983,13 @@ impl<T> Arc<[T]> {
     ///
     /// Unsafe because the caller must either take ownership or bind `T: Copy`.
     unsafe fn copy_from_slice(v: &[T]) -> Arc<[T]> {
-        let ptr = Self::allocate_for_slice(v.len());
+        unsafe {
+            let ptr = Self::allocate_for_slice(v.len());
 
-        ptr::copy_nonoverlapping(v.as_ptr(), &mut (*ptr).data as *mut [T] as *mut T, v.len());
+            ptr::copy_nonoverlapping(v.as_ptr(), &mut (*ptr).data as *mut [T] as *mut T, v.len());
 
-        Self::from_ptr(ptr)
+            Self::from_ptr(ptr)
+        }
     }
 
     /// Constructs an `Arc<[T]>` from an iterator known to be of a certain size.
@@ -1011,25 +1017,27 @@ impl<T> Arc<[T]> {
             }
         }
 
-        let ptr = Self::allocate_for_slice(len);
+        unsafe {
+            let ptr = Self::allocate_for_slice(len);
 
-        let mem = ptr as *mut _ as *mut u8;
-        let layout = Layout::for_value(&*ptr);
+            let mem = ptr as *mut _ as *mut u8;
+            let layout = Layout::for_value(&*ptr);
 
-        // Pointer to first element
-        let elems = &mut (*ptr).data as *mut [T] as *mut T;
+            // Pointer to first element
+            let elems = &mut (*ptr).data as *mut [T] as *mut T;
 
-        let mut guard = Guard { mem: NonNull::new_unchecked(mem), elems, layout, n_elems: 0 };
+            let mut guard = Guard { mem: NonNull::new_unchecked(mem), elems, layout, n_elems: 0 };
 
-        for (i, item) in iter.enumerate() {
-            ptr::write(elems.add(i), item);
-            guard.n_elems += 1;
+            for (i, item) in iter.enumerate() {
+                ptr::write(elems.add(i), item);
+                guard.n_elems += 1;
+            }
+
+            // All clear. Forget the guard so it doesn't free the new ArcInner.
+            mem::forget(guard);
+
+            Self::from_ptr(ptr)
         }
-
-        // All clear. Forget the guard so it doesn't free the new ArcInner.
-        mem::forget(guard);
-
-        Self::from_ptr(ptr)
     }
 }
 
@@ -1093,11 +1101,7 @@ impl<T: ?Sized> Clone for Arc<T> {
         // We abort because such a program is incredibly degenerate, and we
         // don't care to support it.
         if old_size > MAX_REFCOUNT {
-            // remove `unsafe` on bootstrap bump
-            #[cfg_attr(not(bootstrap), allow(unused_unsafe))]
-            unsafe {
-                abort();
-            }
+            abort();
         }
 
         Self::from_inner(self.ptr)
@@ -1278,7 +1282,7 @@ impl<T: ?Sized> Arc<T> {
     pub unsafe fn get_mut_unchecked(this: &mut Self) -> &mut T {
         // We are careful to *not* create a reference covering the "count" fields, as
         // this would alias with concurrent access to the reference counts (e.g. by `Weak`).
-        &mut (*this.ptr.as_ptr()).data
+        unsafe { &mut (*this.ptr.as_ptr()).data }
     }
 
     /// Determine whether this is the unique reference (including weak refs) to
@@ -1466,9 +1470,18 @@ impl<T> Weak<T> {
     /// [`null`]: ../../std/ptr/fn.null.html
     #[stable(feature = "weak_into_raw", since = "1.45.0")]
     pub fn as_ptr(&self) -> *const T {
-        let offset = data_offset_sized::<T>();
-        let ptr = self.ptr.cast::<u8>().as_ptr().wrapping_offset(offset);
-        ptr as *const T
+        let ptr: *mut ArcInner<T> = NonNull::as_ptr(self.ptr);
+
+        // SAFETY: we must offset the pointer manually, and said pointer may be
+        // a dangling weak (usize::MAX) if T is sized. data_offset is safe to call,
+        // because we know that a pointer to unsized T was derived from a real
+        // unsized T, as dangling weaks are only created for sized T. wrapping_offset
+        // is used so that we can use the same code path for the non-dangling
+        // unsized case and the potentially dangling sized case.
+        unsafe {
+            let offset = data_offset(ptr as *mut T);
+            set_data_ptr(ptr as *mut T, (ptr as *mut u8).wrapping_offset(offset))
+        }
     }
 
     /// Consumes the `Weak<T>` and turns it into a raw pointer.
@@ -1555,10 +1568,12 @@ impl<T> Weak<T> {
             Self::new()
         } else {
             // See Arc::from_raw for details
-            let offset = data_offset(ptr);
-            let fake_ptr = ptr as *mut ArcInner<T>;
-            let ptr = set_data_ptr(fake_ptr, (ptr as *mut u8).offset(-offset));
-            Weak { ptr: NonNull::new(ptr).expect("Invalid pointer passed to from_raw") }
+            unsafe {
+                let offset = data_offset(ptr);
+                let fake_ptr = ptr as *mut ArcInner<T>;
+                let ptr = set_data_ptr(fake_ptr, (ptr as *mut u8).offset(-offset));
+                Weak { ptr: NonNull::new(ptr).expect("Invalid pointer passed to from_raw") }
+            }
         }
     }
 }
@@ -1616,11 +1631,7 @@ impl<T: ?Sized> Weak<T> {
 
             // See comments in `Arc::clone` for why we do this (for `mem::forget`).
             if n > MAX_REFCOUNT {
-                // remove `unsafe` on bootstrap bump
-                #[cfg_attr(not(bootstrap), allow(unused_unsafe))]
-                unsafe {
-                    abort();
-                }
+                abort();
             }
 
             // Relaxed is valid for the same reason it is on Arc's Clone impl
@@ -1767,10 +1778,7 @@ impl<T: ?Sized> Clone for Weak<T> {
 
         // See comments in Arc::clone() for why we do this (for mem::forget).
         if old_size > MAX_REFCOUNT {
-            #[cfg_attr(not(bootstrap), allow(unused_unsafe))] // remove `unsafe` on bootstrap bump
-            unsafe {
-                abort();
-            }
+            abort();
         }
 
         Weak { ptr: self.ptr }
@@ -2265,20 +2273,22 @@ impl<T: ?Sized> AsRef<T> for Arc<T> {
 #[stable(feature = "pin", since = "1.33.0")]
 impl<T: ?Sized> Unpin for Arc<T> {}
 
-/// Computes the offset of the data field within `ArcInner`.
+/// Get the offset within an `ArcInner` for
+/// a payload of type described by a pointer.
+///
+/// # Safety
+///
+/// This has the same safety requirements as `align_of_val_raw`. In effect:
+///
+/// - This function is safe for any argument if `T` is sized, and
+/// - if `T` is unsized, the pointer must have appropriate pointer metadata
+///   aquired from the real instance that you are getting this offset for.
 unsafe fn data_offset<T: ?Sized>(ptr: *const T) -> isize {
     // Align the unsized value to the end of the `ArcInner`.
     // Because it is `?Sized`, it will always be the last field in memory.
     // Note: This is a detail of the current implementation of the compiler,
     // and is not a guaranteed language detail. Do not rely on it outside of std.
-    data_offset_align(align_of_val(&*ptr))
-}
-
-/// Computes the offset of the data field within `ArcInner`.
-///
-/// Unlike [`data_offset`], this doesn't need the pointer, but it works only on `T: Sized`.
-fn data_offset_sized<T>() -> isize {
-    data_offset_align(align_of::<T>())
+    unsafe { data_offset_align(align_of_val(&*ptr)) }
 }
 
 #[inline]

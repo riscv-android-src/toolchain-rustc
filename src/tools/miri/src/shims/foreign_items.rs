@@ -1,6 +1,3 @@
-mod windows;
-mod posix;
-
 use std::{convert::{TryInto, TryFrom}, iter};
 
 use rustc_hir::def_id::DefId;
@@ -132,7 +129,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 // This matches calls to the foreign item `panic_impl`.
                 // The implementation is provided by the function with the `#[panic_handler]` attribute.
                 "panic_impl" => {
-                    this.check_panic_supported()?;
                     let panic_impl_id = tcx.lang_items().panic_impl().unwrap();
                     let panic_impl_instance = ty::Instance::mono(tcx, panic_impl_id);
                     return Ok(Some(&*this.load_mir(panic_impl_instance.def, None)?));
@@ -455,13 +451,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // Architecture-specific shims
             "llvm.x86.sse2.pause" if this.tcx.sess.target.target.arch == "x86" || this.tcx.sess.target.target.arch == "x86_64" => {
                 let &[] = check_arg_count(args)?;
-                this.sched_yield()?;
+                this.yield_active_thread();
             }
 
             // Platform-specific shims
             _ => match this.tcx.sess.target.target.target_os.as_str() {
-                "linux" | "macos" => return posix::EvalContextExt::emulate_foreign_item_by_name(this, link_name, args, dest, ret),
-                "windows" => return windows::EvalContextExt::emulate_foreign_item_by_name(this, link_name, args, dest, ret),
+                "linux" | "macos" => return shims::posix::foreign_items::EvalContextExt::emulate_foreign_item_by_name(this, link_name, args, dest, ret),
+                "windows" => return shims::windows::foreign_items::EvalContextExt::emulate_foreign_item_by_name(this, link_name, args, dest, ret),
                 target => throw_unsup_format!("the target `{}` is not supported", target),
             }
         };

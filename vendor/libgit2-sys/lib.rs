@@ -1200,6 +1200,23 @@ pub const GIT_DIFF_BREAK_REWRITES_FOR_RENAMES_ONLY: u32 = 1 << 15;
 pub const GIT_DIFF_FIND_REMOVE_UNMODIFIED: u32 = 1 << 16;
 
 #[repr(C)]
+pub struct git_diff_format_email_options {
+    pub version: c_uint,
+    pub flags: u32,
+    pub patch_no: usize,
+    pub total_patches: usize,
+    pub id: *const git_oid,
+    pub summary: *const c_char,
+    pub body: *const c_char,
+    pub author: *const git_signature,
+}
+
+pub const GIT_DIFF_FORMAT_EMAIL_OPTIONS_VERSION: c_uint = 1;
+
+pub const GIT_DIFF_FORMAT_EMAIL_NONE: u32 = 0;
+pub const GIT_DIFF_FORMAT_EMAIL_EXCLUDE_SUBJECT_PATCH_MARKER: u32 = 1 << 0;
+
+#[repr(C)]
 pub struct git_diff_binary {
     pub contains_data: c_uint,
     pub old_file: git_diff_binary_file,
@@ -3153,6 +3170,11 @@ extern "C" {
         line_cb: git_diff_line_cb,
         payload: *mut c_void,
     ) -> c_int;
+    pub fn git_diff_from_buffer(
+        diff: *mut *mut git_diff,
+        content: *const c_char,
+        content_len: size_t,
+    ) -> c_int;
     pub fn git_diff_find_similar(
         diff: *mut git_diff,
         options: *const git_diff_find_options,
@@ -3243,6 +3265,16 @@ extern "C" {
         repo: *mut git_repository,
         commit: *const git_oid,
         ancestor: *const git_oid,
+    ) -> c_int;
+
+    pub fn git_diff_format_email(
+        out: *mut git_buf,
+        diff: *mut git_diff,
+        opts: *const git_diff_format_email_options,
+    ) -> c_int;
+    pub fn git_diff_format_email_options_init(
+        opts: *mut git_diff_format_email_options,
+        version: c_uint,
     ) -> c_int;
 
     // patch
@@ -3596,6 +3628,8 @@ extern "C" {
         rebase: *mut git_rebase,
         idx: size_t,
     ) -> *mut git_rebase_operation;
+    pub fn git_rebase_orig_head_id(rebase: *mut git_rebase) -> *const git_oid;
+    pub fn git_rebase_orig_head_name(rebase: *mut git_rebase) -> *const c_char;
     pub fn git_rebase_next(
         operation: *mut *mut git_rebase_operation,
         rebase: *mut git_rebase,

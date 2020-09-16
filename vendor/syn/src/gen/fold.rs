@@ -2,6 +2,7 @@
 // It is not intended for manual editing.
 
 #![allow(unreachable_code, unused_variables)]
+#![allow(clippy::match_wildcard_for_single_variants)]
 #[cfg(any(feature = "full", feature = "derive"))]
 use crate::gen::helper::fold::*;
 #[cfg(any(feature = "full", feature = "derive"))]
@@ -26,7 +27,7 @@ macro_rules! full {
 ///
 /// [module documentation]: self
 ///
-/// *This trait is available if Syn is built with the `"fold"` feature.*
+/// *This trait is available only if Syn is built with the `"fold"` feature.*
 pub trait Fold {
     #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_abi(&mut self, i: Abi) -> Abi {
@@ -433,35 +434,27 @@ pub trait Fold {
     fn fold_lifetime_def(&mut self, i: LifetimeDef) -> LifetimeDef {
         fold_lifetime_def(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit(&mut self, i: Lit) -> Lit {
         fold_lit(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit_bool(&mut self, i: LitBool) -> LitBool {
         fold_lit_bool(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit_byte(&mut self, i: LitByte) -> LitByte {
         fold_lit_byte(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit_byte_str(&mut self, i: LitByteStr) -> LitByteStr {
         fold_lit_byte_str(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit_char(&mut self, i: LitChar) -> LitChar {
         fold_lit_char(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit_float(&mut self, i: LitFloat) -> LitFloat {
         fold_lit_float(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit_int(&mut self, i: LitInt) -> LitInt {
         fold_lit_int(self, i)
     }
-    #[cfg(any(feature = "derive", feature = "full"))]
     fn fold_lit_str(&mut self, i: LitStr) -> LitStr {
         fold_lit_str(self, i)
     }
@@ -2189,7 +2182,6 @@ where
         bounds: FoldHelper::lift(node.bounds, |it| f.fold_lifetime(it)),
     }
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit<F>(f: &mut F, node: Lit) -> Lit
 where
     F: Fold + ?Sized,
@@ -2205,7 +2197,6 @@ where
         Lit::Verbatim(_binding_0) => Lit::Verbatim(_binding_0),
     }
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit_bool<F>(f: &mut F, node: LitBool) -> LitBool
 where
     F: Fold + ?Sized,
@@ -2215,7 +2206,6 @@ where
         span: f.fold_span(node.span),
     }
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit_byte<F>(f: &mut F, node: LitByte) -> LitByte
 where
     F: Fold + ?Sized,
@@ -2225,7 +2215,6 @@ where
     node.set_span(span);
     node
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit_byte_str<F>(f: &mut F, node: LitByteStr) -> LitByteStr
 where
     F: Fold + ?Sized,
@@ -2235,7 +2224,6 @@ where
     node.set_span(span);
     node
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit_char<F>(f: &mut F, node: LitChar) -> LitChar
 where
     F: Fold + ?Sized,
@@ -2245,7 +2233,6 @@ where
     node.set_span(span);
     node
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit_float<F>(f: &mut F, node: LitFloat) -> LitFloat
 where
     F: Fold + ?Sized,
@@ -2255,7 +2242,6 @@ where
     node.set_span(span);
     node
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit_int<F>(f: &mut F, node: LitInt) -> LitInt
 where
     F: Fold + ?Sized,
@@ -2265,7 +2251,6 @@ where
     node.set_span(span);
     node
 }
-#[cfg(any(feature = "derive", feature = "full"))]
 pub fn fold_lit_str<F>(f: &mut F, node: LitStr) -> LitStr
 where
     F: Fold + ?Sized,

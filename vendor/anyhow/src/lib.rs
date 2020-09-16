@@ -1,3 +1,11 @@
+//! [![github]](https://github.com/dtolnay/anyhow)&ensp;[![crates-io]](https://crates.io/crates/anyhow)&ensp;[![docs-rs]](https://docs.rs/anyhow)
+//!
+//! [github]: https://img.shields.io/badge/github-8da0cb?style=for-the-badge&labelColor=555555&logo=github
+//! [crates-io]: https://img.shields.io/badge/crates.io-fc8d62?style=for-the-badge&labelColor=555555&logo=rust
+//! [docs-rs]: https://img.shields.io/badge/docs.rs-66c2a5?style=for-the-badge&labelColor=555555&logoColor=white&logo=data:image/svg+xml;base64,PHN2ZyByb2xlPSJpbWciIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgdmlld0JveD0iMCAwIDUxMiA1MTIiPjxwYXRoIGZpbGw9IiNmNWY1ZjUiIGQ9Ik00ODguNiAyNTAuMkwzOTIgMjE0VjEwNS41YzAtMTUtOS4zLTI4LjQtMjMuNC0zMy43bC0xMDAtMzcuNWMtOC4xLTMuMS0xNy4xLTMuMS0yNS4zIDBsLTEwMCAzNy41Yy0xNC4xIDUuMy0yMy40IDE4LjctMjMuNCAzMy43VjIxNGwtOTYuNiAzNi4yQzkuMyAyNTUuNSAwIDI2OC45IDAgMjgzLjlWMzk0YzAgMTMuNiA3LjcgMjYuMSAxOS45IDMyLjJsMTAwIDUwYzEwLjEgNS4xIDIyLjEgNS4xIDMyLjIgMGwxMDMuOS01MiAxMDMuOSA1MmMxMC4xIDUuMSAyMi4xIDUuMSAzMi4yIDBsMTAwLTUwYzEyLjItNi4xIDE5LjktMTguNiAxOS45LTMyLjJWMjgzLjljMC0xNS05LjMtMjguNC0yMy40LTMzLjd6TTM1OCAyMTQuOGwtODUgMzEuOXYtNjguMmw4NS0zN3Y3My4zek0xNTQgMTA0LjFsMTAyLTM4LjIgMTAyIDM4LjJ2LjZsLTEwMiA0MS40LTEwMi00MS40di0uNnptODQgMjkxLjFsLTg1IDQyLjV2LTc5LjFsODUtMzguOHY3NS40em0wLTExMmwtMTAyIDQxLjQtMTAyLTQxLjR2LS42bDEwMi0zOC4yIDEwMiAzOC4ydi42em0yNDAgMTEybC04NSA0Mi41di03OS4xbDg1LTM4Ljh2NzUuNHptMC0xMTJsLTEwMiA0MS40LTEwMi00MS40di0uNmwxMDItMzguMiAxMDIgMzguMnYuNnoiPjwvcGF0aD48L3N2Zz4K
+//!
+//! <br>
+//!
 //! This library provides [`anyhow::Error`][Error], a trait object based error
 //! type for easy idiomatic error handling in Rust applications.
 //!
@@ -120,9 +128,21 @@
 //!   # ;
 //!   ```
 //!
-//! - A backtrace is captured and printed with the error if the underlying error
-//!   type does not already provide its own. In order to see backtraces, the
-//!   `RUST_LIB_BACKTRACE=1` environment variable must be defined.
+//! - If using the nightly channel, a backtrace is captured and printed with the
+//!   error if the underlying error type does not already provide its own. In
+//!   order to see backtraces, they must be enabled through the environment
+//!   variables described in [`std::backtrace`]:
+//!
+//!   - If you want panics and errors to both have backtraces, set
+//!     `RUST_BACKTRACE=1`;
+//!   - If you want only errors to have backtraces, set `RUST_LIB_BACKTRACE=1`;
+//!   - If you want only panics to have backtraces, set `RUST_BACKTRACE=1` and
+//!     `RUST_LIB_BACKTRACE=0`.
+//!
+//!   The tracking issue for this feature is [rust-lang/rust#53487].
+//!
+//!   [`std::backtrace`]: https://doc.rust-lang.org/std/backtrace/index.html#environment-variables
+//!   [rust-lang/rust#53487]: https://github.com/rust-lang/rust/issues/53487
 //!
 //! - Anyhow works with any error type that has an impl of `std::error::Error`,
 //!   including ones defined in your crate. We do not bundle a `derive(Error)`
@@ -177,8 +197,9 @@
 //! will require an explicit `.map_err(Error::msg)` when working with a
 //! non-Anyhow error type inside a function that returns Anyhow's error type.
 
-#![doc(html_root_url = "https://docs.rs/anyhow/1.0.26")]
+#![doc(html_root_url = "https://docs.rs/anyhow/1.0.31")]
 #![cfg_attr(backtrace, feature(backtrace))]
+#![cfg_attr(doc_cfg, feature(doc_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(
     clippy::needless_doctest_main,
@@ -261,6 +282,15 @@ pub use anyhow as format_err;
 /// The Debug format "{:?}" includes your backtrace if one was captured. Note
 /// that this is the representation you get by default if you return an error
 /// from `fn main` instead of printing it explicitly yourself.
+///
+/// ```console
+/// Error: Failed to read instrs from ./path/to/instrs.json
+///
+/// Caused by:
+///     No such file or directory (os error 2)
+/// ```
+///
+/// and if there is a backtrace available:
 ///
 /// ```console
 /// Error: Failed to read instrs from ./path/to/instrs.json

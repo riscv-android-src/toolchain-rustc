@@ -1,9 +1,12 @@
+//! Fast matching check for zippable values.
+
 use crate::interner::HasInterner;
 use crate::zip::{Zip, Zipper};
 use crate::*;
 
 /// A fast check to see whether two things could ever possibly match.
 pub trait CouldMatch<T: ?Sized + HasInterner> {
+    /// Checks whether `self` and `other` could possibly match.
     fn could_match(&self, interner: &T::Interner, other: &T) -> bool;
 }
 
@@ -48,6 +51,10 @@ where
                 Ok(())
             }
 
+            fn zip_consts(&mut self, _: &Const<I>, _: &Const<I>) -> Fallible<()> {
+                Ok(())
+            }
+
             fn zip_binders<T>(&mut self, a: &Binders<T>, b: &Binders<T>) -> Fallible<()>
             where
                 T: HasInterner + Zip<I>,
@@ -64,15 +71,7 @@ where
 
 impl<I: Interner> CouldMatch<DomainGoal<I>> for ProgramClauseData<I> {
     fn could_match(&self, interner: &I, other: &DomainGoal<I>) -> bool {
-        match self {
-            ProgramClauseData::Implies(implication) => {
-                implication.consequence.could_match(interner, other)
-            }
-
-            ProgramClauseData::ForAll(clause) => {
-                clause.value.consequence.could_match(interner, other)
-            }
-        }
+        self.0.value.consequence.could_match(interner, other)
     }
 }
 

@@ -1,13 +1,14 @@
+use crate::job::{JobFifo, JobRef, StackJob};
+use crate::latch::{CountLatch, Latch, LatchProbe, LockLatch, SpinLatch, TickleLatch};
+use crate::log::Event::*;
+use crate::sleep::Sleep;
+use crate::unwind;
+use crate::util::leak;
+use crate::{
+    ErrorKind, ExitHandler, PanicHandler, StartHandler, ThreadPoolBuildError, ThreadPoolBuilder,
+};
 use crossbeam_deque::{Steal, Stealer, Worker};
 use crossbeam_queue::SegQueue;
-#[cfg(rayon_unstable)]
-use internal::task::Task;
-#[cfg(rayon_unstable)]
-use job::Job;
-use job::{JobFifo, JobRef, StackJob};
-use latch::{CountLatch, Latch, LatchProbe, LockLatch, SpinLatch, TickleLatch};
-use log::Event::*;
-use sleep::Sleep;
 use std::any::Any;
 use std::cell::Cell;
 use std::collections::hash_map::DefaultHasher;
@@ -22,9 +23,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 use std::thread;
 use std::usize;
-use unwind;
-use util::leak;
-use {ErrorKind, ExitHandler, PanicHandler, StartHandler, ThreadPoolBuildError, ThreadPoolBuilder};
 
 /// Thread builder used for customization via
 /// [`ThreadPoolBuilder::spawn_handler`](struct.ThreadPoolBuilder.html#method.spawn_handler).
@@ -37,22 +35,22 @@ pub struct ThreadBuilder {
 }
 
 impl ThreadBuilder {
-    /// Get the index of this thread in the pool, within `0..num_threads`.
+    /// Gets the index of this thread in the pool, within `0..num_threads`.
     pub fn index(&self) -> usize {
         self.index
     }
 
-    /// Get the string that was specified by `ThreadPoolBuilder::name()`.
+    /// Gets the string that was specified by `ThreadPoolBuilder::name()`.
     pub fn name(&self) -> Option<&str> {
         self.name.as_ref().map(String::as_str)
     }
 
-    /// Get the value that was specified by `ThreadPoolBuilder::stack_size()`.
+    /// Gets the value that was specified by `ThreadPoolBuilder::stack_size()`.
     pub fn stack_size(&self) -> Option<usize> {
         self.stack_size
     }
 
-    /// Execute the main loop for this thread. This will not return until the
+    /// Executes the main loop for this thread. This will not return until the
     /// thread pool is dropped.
     pub fn run(self) {
         unsafe { main_loop(self.worker, self.registry, self.index) }
@@ -60,7 +58,7 @@ impl ThreadBuilder {
 }
 
 impl fmt::Debug for ThreadBuilder {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ThreadBuilder")
             .field("pool", &self.registry.id())
             .field("index", &self.index)
@@ -79,7 +77,7 @@ pub trait ThreadSpawn {
 
     /// Spawn a thread with the `ThreadBuilder` parameters, and then
     /// call `ThreadBuilder::run()`.
-    fn spawn(&mut self, ThreadBuilder) -> io::Result<()>;
+    fn spawn(&mut self, thread: ThreadBuilder) -> io::Result<()>;
 }
 
 /// Spawns a thread in the "normal" way with `std::thread::Builder`.
@@ -267,11 +265,6 @@ impl Registry {
         Ok(registry.clone())
     }
 
-    #[cfg(rayon_unstable)]
-    pub(super) fn global() -> Arc<Registry> {
-        global_registry().clone()
-    }
-
     pub(super) fn current() -> Arc<Registry> {
         unsafe {
             let worker_thread = WorkerThread::current();
@@ -377,53 +370,6 @@ impl Registry {
         }
     }
 
-    /// Unsafe: the caller must guarantee that `task` will stay valid
-    /// until it executes.
-    #[cfg(rayon_unstable)]
-    pub(super) unsafe fn submit_task<T>(&self, task: Arc<T>)
-    where
-        T: Task,
-    {
-        let task_job = TaskJob::new(task);
-        let task_job_ref = TaskJob::into_job_ref(task_job);
-        return self.inject_or_push(task_job_ref);
-
-        /// A little newtype wrapper for `T`, just because I did not
-        /// want to implement `Job` for all `T: Task`.
-        struct TaskJob<T: Task> {
-            _data: T,
-        }
-
-        impl<T: Task> TaskJob<T> {
-            fn new(arc: Arc<T>) -> Arc<Self> {
-                // `TaskJob<T>` has the same layout as `T`, so we can safely
-                // tranmsute this `T` into a `TaskJob<T>`. This lets us write our
-                // impls of `Job` for `TaskJob<T>`, making them more restricted.
-                // Since `Job` is a private trait, this is not strictly necessary,
-                // I don't think, but makes me feel better.
-                unsafe { mem::transmute(arc) }
-            }
-
-            fn into_task(this: Arc<TaskJob<T>>) -> Arc<T> {
-                // Same logic as `new()`
-                unsafe { mem::transmute(this) }
-            }
-
-            unsafe fn into_job_ref(this: Arc<Self>) -> JobRef {
-                let this: *const Self = mem::transmute(this);
-                JobRef::new(this)
-            }
-        }
-
-        impl<T: Task> Job for TaskJob<T> {
-            unsafe fn execute(this: *const Self) {
-                let this: Arc<Self> = mem::transmute(this);
-                let task: Arc<T> = TaskJob::into_task(this);
-                Task::execute(task);
-            }
-        }
-    }
-
     /// Push a job into the "external jobs" queue; it will be taken by
     /// whatever worker has nothing to do. Use this is you know that
     /// you are not on a worker of this registry.
@@ -517,7 +463,7 @@ impl Registry {
         // This thread is a member of a different pool, so let it process
         // other work while waiting for this `op` to complete.
         debug_assert!(current_thread.registry().id() != self.id());
-        let latch = TickleLatch::new(SpinLatch::new(), &current_thread.registry().sleep);
+        let latch = TickleLatch::new(SpinLatch::new(), current_thread.registry());
         let job = StackJob::new(
             |injected| {
                 let worker_thread = WorkerThread::current();
@@ -531,7 +477,7 @@ impl Registry {
         job.into_result()
     }
 
-    /// Increment the terminate counter. This increment should be
+    /// Increments the terminate counter. This increment should be
     /// balanced by a call to `terminate`, which will decrement. This
     /// is used when spawning asynchronous work, which needs to
     /// prevent the registry from terminating so long as it is active.
@@ -560,6 +506,10 @@ impl Registry {
     /// extant work is completed.
     pub(super) fn terminate(&self) {
         self.terminate_latch.set();
+        self.sleep.tickle(usize::MAX);
+    }
+
+    pub(super) fn tickle(&self) {
         self.sleep.tickle(usize::MAX);
     }
 }

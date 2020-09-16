@@ -109,10 +109,18 @@
 
 use lib::*;
 
+mod fmt;
 mod impls;
 mod impossible;
 
 pub use self::impossible::Impossible;
+
+#[cfg(feature = "std")]
+#[doc(no_inline)]
+pub use std::error::Error as StdError;
+#[cfg(not(feature = "std"))]
+#[doc(no_inline)]
+pub use std_error::Error as StdError;
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -172,7 +180,7 @@ macro_rules! declare_error_trait {
 }
 
 #[cfg(feature = "std")]
-declare_error_trait!(Error: Sized + error::Error);
+declare_error_trait!(Error: Sized + StdError);
 
 #[cfg(not(feature = "std"))]
 declare_error_trait!(Error: Sized + Debug + Display);
@@ -1270,7 +1278,7 @@ pub trait Serializer: Sized {
         <I as IntoIterator>::Item: Serialize,
     {
         let iter = iter.into_iter();
-        let mut serializer = try!(self.serialize_seq(iter.len_hint()));
+        let mut serializer = try!(self.serialize_seq(iterator_len_hint(&iter)));
         for item in iter {
             try!(serializer.serialize_element(&item));
         }
@@ -1310,7 +1318,7 @@ pub trait Serializer: Sized {
         I: IntoIterator<Item = (K, V)>,
     {
         let iter = iter.into_iter();
-        let mut serializer = try!(self.serialize_map(iter.len_hint()));
+        let mut serializer = try!(self.serialize_map(iterator_len_hint(&iter)));
         for (key, value) in iter {
             try!(serializer.serialize_entry(&key, &value));
         }
@@ -1352,10 +1360,7 @@ pub trait Serializer: Sized {
     where
         T: Display,
     {
-        use lib::fmt::Write;
-        let mut string = String::new();
-        write!(string, "{}", value).unwrap();
-        self.serialize_str(&string)
+        self.serialize_str(&value.to_string())
     }
 
     /// Serialize a string produced by an implementation of `Display`.
@@ -1946,35 +1951,6 @@ pub trait SerializeStructVariant {
 
     /// Finish serializing a struct variant.
     fn end(self) -> Result<Self::Ok, Self::Error>;
-}
-
-trait LenHint: Iterator {
-    fn len_hint(&self) -> Option<usize>;
-}
-
-impl<I> LenHint for I
-where
-    I: Iterator,
-{
-    #[cfg(not(feature = "unstable"))]
-    fn len_hint(&self) -> Option<usize> {
-        iterator_len_hint(self)
-    }
-
-    #[cfg(feature = "unstable")]
-    default fn len_hint(&self) -> Option<usize> {
-        iterator_len_hint(self)
-    }
-}
-
-#[cfg(feature = "unstable")]
-impl<I> LenHint for I
-where
-    I: ExactSizeIterator,
-{
-    fn len_hint(&self) -> Option<usize> {
-        Some(self.len())
-    }
 }
 
 fn iterator_len_hint<I>(iter: &I) -> Option<usize>

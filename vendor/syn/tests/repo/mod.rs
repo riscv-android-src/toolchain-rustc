@@ -1,3 +1,6 @@
+mod progress;
+
+use self::progress::Progress;
 use anyhow::Result;
 use flate2::read::GzDecoder;
 use std::fs;
@@ -5,7 +8,26 @@ use std::path::Path;
 use tar::Archive;
 use walkdir::DirEntry;
 
-const REVISION: &str = "7979016aff545f7b41cc517031026020b340989d";
+const REVISION: &str = "46e85b4328fe18492894093c1092dfe509df4370";
+
+#[rustfmt::skip]
+static EXCLUDE: &[&str] = &[
+    // Deprecated anonymous parameter syntax in traits
+    "test/ui/issues/issue-13105.rs",
+    "test/ui/issues/issue-13775.rs",
+    "test/ui/issues/issue-34074.rs",
+    "test/ui/proc-macro/trait-fn-args-2015.rs",
+
+    // not actually test cases
+    "test/rustdoc-ui/test-compile-fail2.rs",
+    "test/rustdoc-ui/test-compile-fail3.rs",
+    "test/ui/include-single-expr-helper.rs",
+    "test/ui/include-single-expr-helper-1.rs",
+    "test/ui/issues/auxiliary/issue-21146-inc.rs",
+    "test/ui/json-bom-plus-crlf-multifile-aux.rs",
+    "test/ui/macros/auxiliary/macro-comma-support.rs",
+    "test/ui/macros/auxiliary/macro-include-items-expr.rs",
+];
 
 pub fn base_dir_filter(entry: &DirEntry) -> bool {
     let path = entry.path();
@@ -15,47 +37,39 @@ pub fn base_dir_filter(entry: &DirEntry) -> bool {
     if path.extension().map(|e| e != "rs").unwrap_or(true) {
         return false;
     }
-    let path_string = path.to_string_lossy();
-    let path_string = if cfg!(windows) {
-        path_string.replace('\\', "/").into()
-    } else {
-        path_string
-    };
+
+    let mut path_string = path.to_string_lossy();
+    if cfg!(windows) {
+        path_string = path_string.replace('\\', "/").into();
+    }
+    assert!(path_string.starts_with("tests/rust/src/"));
+    let path = &path_string["tests/rust/src/".len()..];
+
     // TODO assert that parsing fails on the parse-fail cases
-    if path_string.starts_with("tests/rust/src/test/parse-fail")
-        || path_string.starts_with("tests/rust/src/test/compile-fail")
-        || path_string.starts_with("tests/rust/src/test/rustfix")
+    if path.starts_with("test/parse-fail")
+        || path.starts_with("test/compile-fail")
+        || path.starts_with("test/rustfix")
     {
         return false;
     }
 
-    if path_string.starts_with("tests/rust/src/test/ui") {
-        let stderr_path = path.with_extension("stderr");
+    if path.starts_with("test/ui") {
+        let stderr_path = entry.path().with_extension("stderr");
         if stderr_path.exists() {
             // Expected to fail in some way
             return false;
         }
     }
 
-    match path_string.as_ref() {
-        // Deprecated placement syntax
-        "tests/rust/src/test/ui/obsolete-in-place/bad.rs" |
-        // Deprecated anonymous parameter syntax in traits
-        "tests/rust/src/test/ui/error-codes/e0119/auxiliary/issue-23563-a.rs" |
-        "tests/rust/src/test/ui/issues/issue-13105.rs" |
-        "tests/rust/src/test/ui/issues/issue-13775.rs" |
-        "tests/rust/src/test/ui/issues/issue-34074.rs" |
-        // Deprecated await macro syntax
-        "tests/rust/src/test/ui/async-await/await-macro.rs" |
-        // 2015-style dyn that libsyntax rejects
-        "tests/rust/src/test/ui/dyn-keyword/dyn-2015-no-warnings-without-lints.rs" |
-        // not actually test cases
-        "tests/rust/src/test/ui/include-single-expr-helper.rs" |
-        "tests/rust/src/test/ui/include-single-expr-helper-1.rs" |
-        "tests/rust/src/test/ui/issues/auxiliary/issue-21146-inc.rs" |
-        "tests/rust/src/test/ui/macros/auxiliary/macro-comma-support.rs" |
-        "tests/rust/src/test/ui/macros/auxiliary/macro-include-items-expr.rs" => false,
-        _ => true,
+    !EXCLUDE.contains(&path)
+}
+
+#[allow(dead_code)]
+pub fn edition(path: &Path) -> &'static str {
+    if path.ends_with("dyn-2015-no-warnings-without-lints.rs") {
+        "2015"
+    } else {
+        "2018"
     }
 }
 
@@ -67,6 +81,17 @@ pub fn clone_rust() {
     if needs_clone {
         download_and_unpack().unwrap();
     }
+    let mut missing = String::new();
+    let test_src = Path::new("tests/rust/src");
+    for exclude in EXCLUDE {
+        if !test_src.join(exclude).exists() {
+            missing += "\ntests/rust/src/";
+            missing += exclude;
+        }
+    }
+    if !missing.is_empty() {
+        panic!("excluded test file does not exist:{}\n", missing);
+    }
 }
 
 fn download_and_unpack() -> Result<()> {
@@ -75,7 +100,8 @@ fn download_and_unpack() -> Result<()> {
         REVISION
     );
     let response = reqwest::blocking::get(&url)?.error_for_status()?;
-    let decoder = GzDecoder::new(response);
+    let progress = Progress::new(response);
+    let decoder = GzDecoder::new(progress);
     let mut archive = Archive::new(decoder);
     let prefix = format!("rust-{}", REVISION);
 

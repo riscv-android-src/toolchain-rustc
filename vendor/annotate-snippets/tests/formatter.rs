@@ -1,5 +1,5 @@
 use annotate_snippets::display_list::*;
-use annotate_snippets::formatter::DisplayListFormatter;
+use annotate_snippets::snippet::{self, Snippet};
 
 #[test]
 fn test_source_empty() {
@@ -9,9 +9,7 @@ fn test_source_empty() {
         line: DisplaySourceLine::Empty,
     }]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), " |");
+    assert_eq!(dl.to_string(), " |");
 }
 
 #[test]
@@ -21,7 +19,7 @@ fn test_source_content() {
             lineno: Some(56),
             inline_marks: vec![],
             line: DisplaySourceLine::Content {
-                text: "This is an example".to_string(),
+                text: "This is an example",
                 range: (0, 19),
             },
         },
@@ -29,16 +27,14 @@ fn test_source_content() {
             lineno: Some(57),
             inline_marks: vec![],
             line: DisplaySourceLine::Content {
-                text: "of content lines".to_string(),
+                text: "of content lines",
                 range: (0, 19),
             },
         },
     ]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
     assert_eq!(
-        dlf.format(&dl),
+        dl.to_string(),
         "56 | This is an example\n57 | of content lines"
     );
 }
@@ -54,7 +50,7 @@ fn test_source_annotation_standalone_singleline() {
                 annotation_type: DisplayAnnotationType::None,
                 id: None,
                 label: vec![DisplayTextFragment {
-                    content: String::from("Example string"),
+                    content: "Example string",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -63,9 +59,7 @@ fn test_source_annotation_standalone_singleline() {
         },
     }]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), " | ^^^^^ Example string");
+    assert_eq!(dl.to_string(), " | ^^^^^ Example string");
 }
 
 #[test]
@@ -80,7 +74,7 @@ fn test_source_annotation_standalone_multiline() {
                     annotation_type: DisplayAnnotationType::Help,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("Example string"),
+                        content: "Example string",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -97,7 +91,7 @@ fn test_source_annotation_standalone_multiline() {
                     annotation_type: DisplayAnnotationType::Help,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("Second line"),
+                        content: "Second line",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -107,10 +101,8 @@ fn test_source_annotation_standalone_multiline() {
         },
     ]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
     assert_eq!(
-        dlf.format(&dl),
+        dl.to_string(),
         " | ----- help: Example string\n |             Second line"
     );
 }
@@ -127,7 +119,7 @@ fn test_source_annotation_standalone_multi_annotation() {
                     annotation_type: DisplayAnnotationType::Info,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("Example string"),
+                        content: "Example string",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -144,7 +136,7 @@ fn test_source_annotation_standalone_multi_annotation() {
                     annotation_type: DisplayAnnotationType::Info,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("Second line"),
+                        content: "Second line",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -161,7 +153,7 @@ fn test_source_annotation_standalone_multi_annotation() {
                     annotation_type: DisplayAnnotationType::Warning,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("This is a note"),
+                        content: "This is a note",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -178,7 +170,7 @@ fn test_source_annotation_standalone_multi_annotation() {
                     annotation_type: DisplayAnnotationType::Warning,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("Second line of the warning"),
+                        content: "Second line of the warning",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -195,7 +187,7 @@ fn test_source_annotation_standalone_multi_annotation() {
                     annotation_type: DisplayAnnotationType::Info,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("This is an info"),
+                        content: "This is an info",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -212,7 +204,7 @@ fn test_source_annotation_standalone_multi_annotation() {
                     annotation_type: DisplayAnnotationType::Help,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("This is help"),
+                        content: "This is help",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -229,7 +221,7 @@ fn test_source_annotation_standalone_multi_annotation() {
                     annotation_type: DisplayAnnotationType::None,
                     id: None,
                     label: vec![DisplayTextFragment {
-                        content: String::from("This is an annotation of type none"),
+                        content: "This is an annotation of type none",
                         style: DisplayTextStyle::Regular,
                     }],
                 },
@@ -239,9 +231,7 @@ fn test_source_annotation_standalone_multi_annotation() {
         },
     ]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), " | ----- info: Example string\n |             Second line\n |       warning: This is a note\n |                Second line of the warning\n | ----- info: This is an info\n | ----- help: This is help\n |  This is an annotation of type none");
+    assert_eq!(dl.to_string(), " | ----- info: Example string\n |             Second line\n |       warning: This is a note\n |                Second line of the warning\n | ----- info: This is an info\n | ----- help: This is help\n |  This is an annotation of type none");
 }
 
 #[test]
@@ -251,7 +241,7 @@ fn test_fold_line() {
             lineno: Some(5),
             inline_marks: vec![],
             line: DisplaySourceLine::Content {
-                text: "This is line 5".to_string(),
+                text: "This is line 5",
                 range: (0, 19),
             },
         },
@@ -262,16 +252,14 @@ fn test_fold_line() {
             lineno: Some(10021),
             inline_marks: vec![],
             line: DisplaySourceLine::Content {
-                text: "... and now we're at line 10021".to_string(),
+                text: "... and now we're at line 10021",
                 range: (0, 19),
             },
         },
     ]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
     assert_eq!(
-        dlf.format(&dl),
+        dl.to_string(),
         "    5 | This is line 5\n...\n10021 | ... and now we're at line 10021"
     );
 }
@@ -279,40 +267,34 @@ fn test_fold_line() {
 #[test]
 fn test_raw_origin_initial_nopos() {
     let dl = DisplayList::from(vec![DisplayLine::Raw(DisplayRawLine::Origin {
-        path: "src/test.rs".to_string(),
+        path: "src/test.rs",
         pos: None,
         header_type: DisplayHeaderType::Initial,
     })]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), "--> src/test.rs");
+    assert_eq!(dl.to_string(), "--> src/test.rs");
 }
 
 #[test]
 fn test_raw_origin_initial_pos() {
     let dl = DisplayList::from(vec![DisplayLine::Raw(DisplayRawLine::Origin {
-        path: "src/test.rs".to_string(),
+        path: "src/test.rs",
         pos: Some((23, 15)),
         header_type: DisplayHeaderType::Initial,
     })]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), "--> src/test.rs:23:15");
+    assert_eq!(dl.to_string(), "--> src/test.rs:23:15");
 }
 
 #[test]
 fn test_raw_origin_continuation() {
     let dl = DisplayList::from(vec![DisplayLine::Raw(DisplayRawLine::Origin {
-        path: "src/test.rs".to_string(),
+        path: "src/test.rs",
         pos: Some((23, 15)),
         header_type: DisplayHeaderType::Continuation,
     })]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), "::: src/test.rs:23:15");
+    assert_eq!(dl.to_string(), "::: src/test.rs:23:15");
 }
 
 #[test]
@@ -320,9 +302,9 @@ fn test_raw_annotation_unaligned() {
     let dl = DisplayList::from(vec![DisplayLine::Raw(DisplayRawLine::Annotation {
         annotation: Annotation {
             annotation_type: DisplayAnnotationType::Error,
-            id: Some("E0001".to_string()),
+            id: Some("E0001"),
             label: vec![DisplayTextFragment {
-                content: String::from("This is an error"),
+                content: "This is an error",
                 style: DisplayTextStyle::Regular,
             }],
         },
@@ -330,9 +312,7 @@ fn test_raw_annotation_unaligned() {
         continuation: false,
     })]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), "error[E0001]: This is an error");
+    assert_eq!(dl.to_string(), "error[E0001]: This is an error");
 }
 
 #[test]
@@ -341,9 +321,9 @@ fn test_raw_annotation_unaligned_multiline() {
         DisplayLine::Raw(DisplayRawLine::Annotation {
             annotation: Annotation {
                 annotation_type: DisplayAnnotationType::Warning,
-                id: Some("E0001".to_string()),
+                id: Some("E0001"),
                 label: vec![DisplayTextFragment {
-                    content: String::from("This is an error"),
+                    content: "This is an error",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -353,9 +333,9 @@ fn test_raw_annotation_unaligned_multiline() {
         DisplayLine::Raw(DisplayRawLine::Annotation {
             annotation: Annotation {
                 annotation_type: DisplayAnnotationType::Warning,
-                id: Some("E0001".to_string()),
+                id: Some("E0001"),
                 label: vec![DisplayTextFragment {
-                    content: String::from("Second line of the error"),
+                    content: "Second line of the error",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -364,10 +344,8 @@ fn test_raw_annotation_unaligned_multiline() {
         }),
     ]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
     assert_eq!(
-        dlf.format(&dl),
+        dl.to_string(),
         "warning[E0001]: This is an error\n                Second line of the error"
     );
 }
@@ -377,9 +355,9 @@ fn test_raw_annotation_aligned() {
     let dl = DisplayList::from(vec![DisplayLine::Raw(DisplayRawLine::Annotation {
         annotation: Annotation {
             annotation_type: DisplayAnnotationType::Error,
-            id: Some("E0001".to_string()),
+            id: Some("E0001"),
             label: vec![DisplayTextFragment {
-                content: String::from("This is an error"),
+                content: "This is an error",
                 style: DisplayTextStyle::Regular,
             }],
         },
@@ -387,9 +365,7 @@ fn test_raw_annotation_aligned() {
         continuation: false,
     })]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), " = error[E0001]: This is an error");
+    assert_eq!(dl.to_string(), " = error[E0001]: This is an error");
 }
 
 #[test]
@@ -398,9 +374,9 @@ fn test_raw_annotation_aligned_multiline() {
         DisplayLine::Raw(DisplayRawLine::Annotation {
             annotation: Annotation {
                 annotation_type: DisplayAnnotationType::Warning,
-                id: Some("E0001".to_string()),
+                id: Some("E0001"),
                 label: vec![DisplayTextFragment {
-                    content: String::from("This is an error"),
+                    content: "This is an error",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -410,9 +386,9 @@ fn test_raw_annotation_aligned_multiline() {
         DisplayLine::Raw(DisplayRawLine::Annotation {
             annotation: Annotation {
                 annotation_type: DisplayAnnotationType::Warning,
-                id: Some("E0001".to_string()),
+                id: Some("E0001"),
                 label: vec![DisplayTextFragment {
-                    content: String::from("Second line of the error"),
+                    content: "Second line of the error",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -421,10 +397,8 @@ fn test_raw_annotation_aligned_multiline() {
         }),
     ]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
     assert_eq!(
-        dlf.format(&dl),
+        dl.to_string(),
         " = warning[E0001]: This is an error\n                   Second line of the error"
     );
 }
@@ -437,7 +411,7 @@ fn test_different_annotation_types() {
                 annotation_type: DisplayAnnotationType::Note,
                 id: None,
                 label: vec![DisplayTextFragment {
-                    content: String::from("This is a note"),
+                    content: "This is a note",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -449,7 +423,7 @@ fn test_different_annotation_types() {
                 annotation_type: DisplayAnnotationType::None,
                 id: None,
                 label: vec![DisplayTextFragment {
-                    content: String::from("This is just a string"),
+                    content: "This is just a string",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -461,7 +435,7 @@ fn test_different_annotation_types() {
                 annotation_type: DisplayAnnotationType::None,
                 id: None,
                 label: vec![DisplayTextFragment {
-                    content: String::from("Second line of none type annotation"),
+                    content: "Second line of none type annotation",
                     style: DisplayTextStyle::Regular,
                 }],
             },
@@ -470,10 +444,8 @@ fn test_different_annotation_types() {
         }),
     ]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
     assert_eq!(
-        dlf.format(&dl),
+        dl.to_string(),
         "note: This is a note\nThis is just a string\n  Second line of none type annotation",
     );
 }
@@ -489,19 +461,17 @@ fn test_inline_marks_empty_line() {
         line: DisplaySourceLine::Empty,
     }]);
 
-    let dlf = DisplayListFormatter::new(false, false);
-
-    assert_eq!(dlf.format(&dl), " | |",);
+    assert_eq!(dl.to_string(), " | |",);
 }
 
 #[test]
 fn test_anon_lines() {
-    let dl = DisplayList::from(vec![
+    let mut dl = DisplayList::from(vec![
         DisplayLine::Source {
             lineno: Some(56),
             inline_marks: vec![],
             line: DisplaySourceLine::Content {
-                text: "This is an example".to_string(),
+                text: "This is an example",
                 range: (0, 19),
             },
         },
@@ -509,7 +479,7 @@ fn test_anon_lines() {
             lineno: Some(57),
             inline_marks: vec![],
             line: DisplaySourceLine::Content {
-                text: "of content lines".to_string(),
+                text: "of content lines",
                 range: (0, 19),
             },
         },
@@ -522,30 +492,61 @@ fn test_anon_lines() {
             lineno: None,
             inline_marks: vec![],
             line: DisplaySourceLine::Content {
-                text: "abc".to_string(),
+                text: "abc",
                 range: (0, 19),
             },
         },
     ]);
 
-    let dlf = DisplayListFormatter::new(false, true);
-
+    dl.anonymized_line_numbers = true;
     assert_eq!(
-        dlf.format(&dl),
+        dl.to_string(),
         "LL | This is an example\nLL | of content lines\n   |\n   | abc"
     );
 }
 
 #[test]
 fn test_raw_origin_initial_pos_anon_lines() {
-    let dl = DisplayList::from(vec![DisplayLine::Raw(DisplayRawLine::Origin {
-        path: "src/test.rs".to_string(),
+    let mut dl = DisplayList::from(vec![DisplayLine::Raw(DisplayRawLine::Origin {
+        path: "src/test.rs",
         pos: Some((23, 15)),
         header_type: DisplayHeaderType::Initial,
     })]);
 
-    let dlf = DisplayListFormatter::new(false, true);
-
     // Using anonymized_line_numbers should not affect the inital position
-    assert_eq!(dlf.format(&dl), "--> src/test.rs:23:15");
+    dl.anonymized_line_numbers = true;
+    assert_eq!(dl.to_string(), "--> src/test.rs:23:15");
+}
+
+#[test]
+fn test_i_29() {
+    let snippets = Snippet {
+        title: Some(snippet::Annotation {
+            id: None,
+            label: Some("oops"),
+            annotation_type: snippet::AnnotationType::Error,
+        }),
+        footer: vec![],
+        slices: vec![snippet::Slice {
+            source: "First line\r\nSecond oops line",
+            line_start: 1,
+            origin: Some("<current file>"),
+            annotations: vec![snippet::SourceAnnotation {
+                range: (19, 23),
+                label: "oops",
+                annotation_type: snippet::AnnotationType::Error,
+            }],
+            fold: true,
+        }],
+        opt: Default::default(),
+    };
+    let expected = r#"error: oops
+ --> <current file>:2:8
+  |
+1 | First line
+2 | Second oops line
+  |        ^^^^ oops
+  |"#;
+
+    assert_eq!(DisplayList::from(snippets).to_string(), expected);
 }

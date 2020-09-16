@@ -28,11 +28,8 @@ pub fn write_file<P: AsRef<Path>>(build_dir: &Path, filename: P, content: &[u8])
 /// ```rust
 /// # use std::path::Path;
 /// # use mdbook::utils::fs::path_to_root;
-/// #
-/// # fn main() {
 /// let path = Path::new("some/relative/path");
 /// assert_eq!(path_to_root(path), "../../");
-/// # }
 /// ```
 ///
 /// **note:** it's not very fool-proof, if you find a situation where
@@ -178,6 +175,13 @@ pub fn copy_files_except_ext(
         }
     }
     Ok(())
+}
+
+pub fn get_404_output_file(input_404: &Option<String>) -> String {
+    input_404
+        .as_ref()
+        .unwrap_or(&"404.md".to_string())
+        .replace(".md", ".html")
 }
 
 #[cfg(test)]

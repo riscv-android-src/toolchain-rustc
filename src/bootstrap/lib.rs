@@ -225,6 +225,7 @@ pub struct Build {
     rust_info: channel::GitInfo,
     cargo_info: channel::GitInfo,
     rls_info: channel::GitInfo,
+    rust_analyzer_info: channel::GitInfo,
     clippy_info: channel::GitInfo,
     miri_info: channel::GitInfo,
     rustfmt_info: channel::GitInfo,
@@ -270,14 +271,20 @@ struct Crate {
 }
 
 impl Crate {
-    fn is_local(&self, build: &Build) -> bool {
-        self.path.starts_with(&build.config.src) && !self.path.to_string_lossy().ends_with("_shim")
-    }
-
     fn local_path(&self, build: &Build) -> PathBuf {
-        assert!(self.is_local(build));
         self.path.strip_prefix(&build.config.src).unwrap().into()
     }
+}
+
+/// When building Rust various objects are handled differently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DependencyType {
+    /// Libraries originating from proc-macros.
+    Host,
+    /// Typical Rust libraries.
+    Target,
+    /// Non Rust libraries and objects shipped to ease usage of certain targets.
+    TargetSelfContained,
 }
 
 /// The various "modes" of invoking Cargo.
@@ -295,16 +302,21 @@ pub enum Mode {
     /// Build codegen libraries, placing output in the "stageN-codegen" directory
     Codegen,
 
-    /// Build some tools, placing output in the "stageN-tools" directory. The
-    /// "other" here is for miscellaneous sets of tools that are built using the
-    /// bootstrap compiler in its entirety (target libraries and all).
-    /// Typically these tools compile with stable Rust.
+    /// Build a tool, placing output in the "stage0-bootstrap-tools"
+    /// directory. This is for miscellaneous sets of tools that are built
+    /// using the bootstrap stage0 compiler in its entirety (target libraries
+    /// and all). Typically these tools compile with stable Rust.
     ToolBootstrap,
 
-    /// Compile a tool which uses all libraries we compile (up to rustc).
-    /// Doesn't use the stage0 compiler libraries like "other", and includes
-    /// tools like rustdoc, cargo, rls, etc.
+    /// Build a tool which uses the locally built std, placing output in the
+    /// "stageN-tools" directory. Its usage is quite rare, mainly used by
+    /// compiletest which needs libtest.
     ToolStd,
+
+    /// Build a tool which uses the locally built rustc and the target std,
+    /// placing the output in the "stageN-tools" directory. This is used for
+    /// anything that needs a fully functional rustc, such as rustdoc, clippy,
+    /// cargo, rls, rustfmt, miri, etc.
     ToolRustc,
 }
 
@@ -338,6 +350,8 @@ impl Build {
         let rust_info = channel::GitInfo::new(ignore_git, &src);
         let cargo_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/cargo"));
         let rls_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/rls"));
+        let rust_analyzer_info =
+            channel::GitInfo::new(ignore_git, &src.join("src/tools/rust-analyzer"));
         let clippy_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/clippy"));
         let miri_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/miri"));
         let rustfmt_info = channel::GitInfo::new(ignore_git, &src.join("src/tools/rustfmt"));
@@ -394,6 +408,7 @@ impl Build {
             rust_info,
             cargo_info,
             rls_info,
+            rust_analyzer_info,
             clippy_info,
             miri_info,
             rustfmt_info,
@@ -421,10 +436,9 @@ impl Build {
             output(Command::new(&build.initial_rustc).arg("--version").arg("--verbose"));
         let local_release = local_version_verbose
             .lines()
-            .filter(|x| x.starts_with("release:"))
+            .filter_map(|x| x.strip_prefix("release:"))
             .next()
             .unwrap()
-            .trim_start_matches("release:")
             .trim();
         let my_version = channel::CFG_RELEASE_NUM;
         if local_release.split('.').take(2).eq(my_version.split('.').take(2)) {
@@ -877,6 +891,15 @@ impl Build {
             .map(|p| &**p)
     }
 
+    /// Returns the "musl libdir" for this `target`.
+    fn musl_libdir(&self, target: Interned<String>) -> Option<PathBuf> {
+        let t = self.config.target_config.get(&target)?;
+        if let libdir @ Some(_) = &t.musl_libdir {
+            return libdir.clone();
+        }
+        self.musl_root(target).map(|root| root.join("lib"))
+    }
+
     /// Returns the sysroot for the wasi target, if defined
     fn wasi_root(&self, target: Interned<String>) -> Option<&Path> {
         self.config.target_config.get(&target).and_then(|t| t.wasi_root.as_ref()).map(|p| &**p)
@@ -963,29 +986,15 @@ impl Build {
             return s;
         }
 
-        let beta = output(
-            Command::new("git").arg("ls-remote").arg("origin").arg("beta").current_dir(&self.src),
-        );
-        let beta = beta.trim().split_whitespace().next().unwrap();
-        let master = output(
-            Command::new("git").arg("ls-remote").arg("origin").arg("master").current_dir(&self.src),
-        );
-        let master = master.trim().split_whitespace().next().unwrap();
-
-        // Figure out where the current beta branch started.
-        let base = output(
-            Command::new("git").arg("merge-base").arg(beta).arg(master).current_dir(&self.src),
-        );
-        let base = base.trim();
-
-        // Next figure out how many merge commits happened since we branched off
-        // beta. That's our beta number!
+        // Figure out how many merge commits happened since we branched off master.
+        // That's our beta number!
+        // (Note that we use a `..` range, not the `...` symmetric difference.)
         let count = output(
             Command::new("git")
                 .arg("rev-list")
                 .arg("--count")
                 .arg("--merges")
-                .arg(format!("{}...HEAD", base))
+                .arg("refs/remotes/origin/master..HEAD")
                 .current_dir(&self.src),
         );
         let n = count.trim().parse().unwrap();
@@ -1026,6 +1035,11 @@ impl Build {
     /// Returns the value of `package_vers` above for rls
     fn rls_package_vers(&self) -> String {
         self.package_vers(&self.release_num("rls"))
+    }
+
+    /// Returns the value of `package_vers` above for rust-analyzer
+    fn rust_analyzer_package_vers(&self) -> String {
+        self.package_vers(&self.release_num("rust-analyzer/crates/rust-analyzer"))
     }
 
     /// Returns the value of `package_vers` above for clippy
@@ -1074,10 +1088,10 @@ impl Build {
         let toml_file_name = self.src.join(&format!("src/tools/{}/Cargo.toml", package));
         let toml = t!(fs::read_to_string(&toml_file_name));
         for line in toml.lines() {
-            let prefix = "version = \"";
-            let suffix = "\"";
-            if line.starts_with(prefix) && line.ends_with(suffix) {
-                return line[prefix.len()..line.len() - suffix.len()].to_string();
+            if let Some(stripped) =
+                line.strip_prefix("version = \"").and_then(|s| s.strip_suffix("\""))
+            {
+                return stripped.to_owned();
             }
         }
 
@@ -1093,17 +1107,29 @@ impl Build {
         }
     }
 
+    /// Returns a Vec of all the dependencies of the given root crate,
+    /// including transitive dependencies and the root itself. Only includes
+    /// "local" crates (those in the local source tree, not from a registry).
     fn in_tree_crates(&self, root: &str) -> Vec<&Crate> {
         let mut ret = Vec::new();
         let mut list = vec![INTERNER.intern_str(root)];
         let mut visited = HashSet::new();
         while let Some(krate) = list.pop() {
             let krate = &self.crates[&krate];
-            if krate.is_local(self) {
-                ret.push(krate);
-            }
+            ret.push(krate);
             for dep in &krate.deps {
-                if visited.insert(dep) && dep != "build_helper" {
+                // Don't include optional deps if their features are not
+                // enabled. Ideally this would be computed from `cargo
+                // metadata --features …`, but that is somewhat slow. Just
+                // skip `build_helper` since there aren't any operations we
+                // want to perform on it. In the future, we may want to
+                // consider just filtering all build and dev dependencies in
+                // metadata::build.
+                if visited.insert(dep)
+                    && dep != "build_helper"
+                    && (dep != "profiler_builtins" || self.config.profiler)
+                    && (dep != "rustc_codegen_llvm" || self.config.llvm_enabled())
+                {
                     list.push(*dep);
                 }
             }
@@ -1111,7 +1137,7 @@ impl Build {
         ret
     }
 
-    fn read_stamp_file(&self, stamp: &Path) -> Vec<(PathBuf, bool)> {
+    fn read_stamp_file(&self, stamp: &Path) -> Vec<(PathBuf, DependencyType)> {
         if self.config.dry_run {
             return Vec::new();
         }
@@ -1124,9 +1150,14 @@ impl Build {
             if part.is_empty() {
                 continue;
             }
-            let host = part[0] as char == 'h';
+            let dependency_type = match part[0] as char {
+                'h' => DependencyType::Host,
+                's' => DependencyType::TargetSelfContained,
+                't' => DependencyType::Target,
+                _ => unreachable!(),
+            };
             let path = PathBuf::from(t!(str::from_utf8(&part[1..])));
-            paths.push((path, host));
+            paths.push((path, dependency_type));
         }
         paths
     }

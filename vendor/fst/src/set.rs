@@ -1,13 +1,11 @@
 use std::fmt;
-use std::iter::FromIterator;
 use std::io;
-#[cfg(feature = "mmap")]
-use std::path::Path;
+use std::iter::{self, FromIterator};
 
-use automaton::{Automaton, AlwaysMatch};
-use raw;
-use stream::{IntoStreamer, Streamer};
-use Result;
+use crate::automaton::{AlwaysMatch, Automaton};
+use crate::raw;
+use crate::stream::{IntoStreamer, Streamer};
+use crate::Result;
 
 /// Set is a lexicographically ordered set of byte strings.
 ///
@@ -17,8 +15,7 @@ use Result;
 ///
 /// A key feature of `Set` is that it can be serialized to disk compactly. Its
 /// underlying representation is built such that the `Set` can be memory mapped
-/// (`Set::from_path`) and searched without necessarily loading the entire
-/// set into memory.
+/// and searched without necessarily loading the entire set into memory.
 ///
 /// It supports most common operations associated with sets, such as
 /// membership, union, intersection, subset/superset, etc. It also supports
@@ -29,37 +26,10 @@ use Result;
 ///
 /// 1. Once constructed, a `Set` can never be modified.
 /// 2. Sets must be constructed with lexicographically ordered byte sequences.
-pub struct Set(raw::Fst);
+#[derive(Clone)]
+pub struct Set<D>(raw::Fst<D>);
 
-impl Set {
-    /// Opens a set stored at the given file path via a memory map.
-    ///
-    /// The set must have been written with a compatible finite state
-    /// transducer builder (`SetBuilder` qualifies). If the format is invalid
-    /// or if there is a mismatch between the API version of this library
-    /// and the set, then an error is returned.
-    ///
-    /// This is unsafe because Rust programs cannot guarantee that memory
-    /// backed by a memory mapped file won't be mutably aliased. It is up to
-    /// the caller to enforce that the memory map is not modified while it is
-    /// opened.
-    #[cfg(feature = "mmap")]
-    pub unsafe fn from_path<P: AsRef<Path>>(path: P) -> Result<Self> {
-        raw::Fst::from_path(path).map(Set)
-    }
-
-    /// Creates a set from its representation as a raw byte sequence.
-    ///
-    /// Note that this operation is very cheap (no allocations and no copies).
-    ///
-    /// The set must have been written with a compatible finite state
-    /// transducer builder (`SetBuilder` qualifies). If the format is invalid
-    /// or if there is a mismatch between the API version of this library
-    /// and the set, then an error is returned.
-    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
-        raw::Fst::from_bytes(bytes).map(Set)
-    }
-
+impl Set<Vec<u8>> {
     /// Create a `Set` from an iterator of lexicographically ordered byte
     /// strings.
     ///
@@ -69,11 +39,40 @@ impl Set {
     /// Note that this is a convenience function to build a set in memory.
     /// To build a set that streams to an arbitrary `io::Write`, use
     /// `SetBuilder`.
-    pub fn from_iter<T, I>(iter: I) -> Result<Self>
-            where T: AsRef<[u8]>, I: IntoIterator<Item=T> {
+    pub fn from_iter<T, I>(iter: I) -> Result<Set<Vec<u8>>>
+    where
+        T: AsRef<[u8]>,
+        I: IntoIterator<Item = T>,
+    {
         let mut builder = SetBuilder::memory();
         builder.extend_iter(iter)?;
-        Set::from_bytes(builder.into_inner()?)
+        Set::new(builder.into_inner()?)
+    }
+}
+
+impl<D: AsRef<[u8]>> Set<D> {
+    /// Creates a set from its representation as a raw byte sequence.
+    ///
+    /// This accepts anything that can be cheaply converted to a `&[u8]`. The
+    /// caller is responsible for guaranteeing that the given bytes refer to
+    /// a valid FST. While memory safety will not be violated by invalid input,
+    /// a panic could occur while reading the FST at any point.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use fst::Set;
+    ///
+    /// // File written from a build script using SetBuilder.
+    /// # const IGNORE: &str = stringify! {
+    /// static FST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/set.fst"));
+    /// # };
+    /// # static FST: &[u8] = &[];
+    ///
+    /// let set = Set::new(FST).unwrap();
+    /// ```
+    pub fn new(data: D) -> Result<Set<D>> {
+        raw::Fst::new(data).map(Set)
     }
 
     /// Tests the membership of a single key.
@@ -119,7 +118,8 @@ impl Set {
     /// }
     /// assert_eq!(keys, vec![b"a", b"b", b"c"]);
     /// ```
-    pub fn stream(&self) -> Stream {
+    #[inline]
+    pub fn stream(&self) -> Stream<'_> {
         Stream(self.0.stream())
     }
 
@@ -148,7 +148,8 @@ impl Set {
     /// }
     /// assert_eq!(keys, vec![b"b", b"c", b"d"]);
     /// ```
-    pub fn range(&self) -> StreamBuilder {
+    #[inline]
+    pub fn range(&self) -> StreamBuilder<'_> {
         StreamBuilder(self.0.range())
     }
 
@@ -161,48 +162,101 @@ impl Set {
     ///
     /// # Example
     ///
-    /// An implementation of regular expressions for `Automaton` is available
-    /// in the `fst-regex` crate, which can be used to search sets.
+    /// An implementation of subsequence search for `Automaton` can be used
+    /// to search sets:
     ///
     /// ```rust
-    /// extern crate fst;
-    /// extern crate fst_regex;
-    ///
-    /// use std::error::Error;
-    ///
+    /// use fst::automaton::Subsequence;
     /// use fst::{IntoStreamer, Streamer, Set};
-    /// use fst_regex::Regex;
     ///
     /// # fn main() { example().unwrap(); }
-    /// fn example() -> Result<(), Box<Error>> {
+    /// fn example() -> Result<(), Box<dyn std::error::Error>> {
     ///     let set = Set::from_iter(&[
-    ///         "foo", "foo1", "foo2", "foo3", "foobar",
+    ///         "a foo bar", "foo", "foo1", "foo2", "foo3", "foobar",
     ///     ]).unwrap();
     ///
-    ///     let re = Regex::new("f[a-z]+3?").unwrap();
-    ///     let mut stream = set.search(&re).into_stream();
+    ///     let matcher = Subsequence::new("for");
+    ///     let mut stream = set.search(&matcher).into_stream();
     ///
     ///     let mut keys = vec![];
     ///     while let Some(key) = stream.next() {
-    ///         keys.push(key.to_vec());
+    ///         keys.push(String::from_utf8(key.to_vec())?);
     ///     }
     ///     assert_eq!(keys, vec![
-    ///         "foo".as_bytes(), "foo3".as_bytes(), "foobar".as_bytes(),
+    ///         "a foo bar", "foobar",
     ///     ]);
     ///
     ///     Ok(())
     /// }
     /// ```
-    pub fn search<A: Automaton>(&self, aut: A) -> StreamBuilder<A> {
+    pub fn search<A: Automaton>(&self, aut: A) -> StreamBuilder<'_, A> {
         StreamBuilder(self.0.search(aut))
     }
 
+    /// Executes an automaton on the values of this set and yields matching
+    /// values along with the corresponding matching states in the given
+    /// automaton.
+    ///
+    /// Note that this returns a `StreamWithStateBuilder`, which can be used to
+    /// add a range query to the search (see the `range` method).
+    ///
+    /// Memory requirements are the same as described on `Map::stream`.
+    ///
+    #[cfg_attr(
+        feature = "levenshtein",
+        doc = r##"
+# Example
+
+An implementation of fuzzy search using Levenshtein automata can be used
+to search sets:
+
+```rust
+use fst::automaton::Levenshtein;
+use fst::{IntoStreamer, Streamer, Set};
+
+# fn main() { example().unwrap(); }
+fn example() -> Result<(), Box<dyn std::error::Error>> {
+    let set = Set::from_iter(vec![
+        "foo",
+        "foob",
+        "foobar",
+        "fozb",
+    ]).unwrap();
+
+    let query = Levenshtein::new("foo", 2)?;
+    let mut stream = set.search_with_state(&query).into_stream();
+
+    let mut vs = vec![];
+    while let Some((v, s)) = stream.next() {
+        vs.push((String::from_utf8(v.to_vec())?, s));
+    }
+    // Currently, there isn't much interesting that you can do with the states.
+    assert_eq!(vs, vec![
+        ("foo".to_string(), Some(183)),
+        ("foob".to_string(), Some(123)),
+        ("fozb".to_string(), Some(83)),
+    ]);
+
+    Ok(())
+}
+```
+"##
+    )]
+    pub fn search_with_state<A: Automaton>(
+        &self,
+        aut: A,
+    ) -> StreamWithStateBuilder<'_, A> {
+        StreamWithStateBuilder(self.0.search_with_state(aut))
+    }
+
     /// Returns the number of elements in this set.
+    #[inline]
     pub fn len(&self) -> usize {
         self.0.len()
     }
 
     /// Returns true if and only if this set is empty.
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
@@ -229,7 +283,8 @@ impl Set {
     /// }
     /// assert_eq!(keys, vec![b"a", b"b", b"c", b"y", b"z"]);
     /// ```
-    pub fn op(&self) -> OpBuilder {
+    #[inline]
+    pub fn op(&self) -> OpBuilder<'_> {
         OpBuilder::new().add(self)
     }
 
@@ -253,8 +308,10 @@ impl Set {
     /// assert_eq!(set1.is_disjoint(&set3), false);
     /// ```
     pub fn is_disjoint<'f, I, S>(&self, stream: I) -> bool
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-                  S: 'f + for<'a> Streamer<'a, Item=&'a [u8]> {
+    where
+        I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+        S: 'f + for<'a> Streamer<'a, Item = &'a [u8]>,
+    {
         self.0.is_disjoint(StreamZeroOutput(stream.into_stream()))
     }
 
@@ -278,8 +335,10 @@ impl Set {
     /// assert_eq!(set3.is_subset(&set1), true);
     /// ```
     pub fn is_subset<'f, I, S>(&self, stream: I) -> bool
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-                  S: 'f + for<'a> Streamer<'a, Item=&'a [u8]> {
+    where
+        I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+        S: 'f + for<'a> Streamer<'a, Item = &'a [u8]>,
+    {
         self.0.is_subset(StreamZeroOutput(stream.into_stream()))
     }
 
@@ -303,19 +362,63 @@ impl Set {
     /// assert_eq!(set3.is_superset(&set1), false);
     /// ```
     pub fn is_superset<'f, I, S>(&self, stream: I) -> bool
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-                  S: 'f + for<'a> Streamer<'a, Item=&'a [u8]> {
+    where
+        I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+        S: 'f + for<'a> Streamer<'a, Item = &'a [u8]>,
+    {
         self.0.is_superset(StreamZeroOutput(stream.into_stream()))
     }
 
     /// Returns a reference to the underlying raw finite state transducer.
-    pub fn as_fst(&self) -> &raw::Fst {
+    #[inline]
+    pub fn as_fst(&self) -> &raw::Fst<D> {
         &self.0
+    }
+
+    /// Returns the underlying raw finite state transducer.
+    #[inline]
+    pub fn into_fst(self) -> raw::Fst<D> {
+        self.0
+    }
+
+    /// Maps the underlying data of the fst Set to another data type.
+    ///
+    /// # Example
+    ///
+    /// This example shows that you can map an fst Set based on a `Vec<u8>`
+    /// into an fst Set based on a `Cow<[u8]>`, it can also work with a
+    /// reference counted type (e.g. `Arc`, `Rc`).
+    ///
+    /// ```
+    /// use std::borrow::Cow;
+    ///
+    /// use fst::Set;
+    ///
+    /// let set: Set<Vec<u8>> = Set::from_iter(
+    ///     &["hello", "world"],
+    /// ).unwrap();
+    ///
+    /// let set_on_cow: Set<Cow<[u8]>> = set.map_data(Cow::Owned).unwrap();
+    /// ```
+    #[inline]
+    pub fn map_data<F, T>(self, f: F) -> Result<Set<T>>
+    where
+        F: FnMut(D) -> T,
+        T: AsRef<[u8]>,
+    {
+        self.into_fst().map_data(f).map(Set::from)
     }
 }
 
-impl fmt::Debug for Set {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl Default for Set<Vec<u8>> {
+    #[inline]
+    fn default() -> Set<Vec<u8>> {
+        Set::from_iter(iter::empty::<&[u8]>()).unwrap()
+    }
+}
+
+impl<D: AsRef<[u8]>> fmt::Debug for Set<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Set([")?;
         let mut stream = self.stream();
         let mut first = true;
@@ -331,24 +434,27 @@ impl fmt::Debug for Set {
 }
 
 /// Returns the underlying finite state transducer.
-impl AsRef<raw::Fst> for Set {
-    fn as_ref(&self) -> &raw::Fst {
+impl<D: AsRef<[u8]>> AsRef<raw::Fst<D>> for Set<D> {
+    #[inline]
+    fn as_ref(&self) -> &raw::Fst<D> {
         &self.0
     }
 }
 
-impl<'s, 'a> IntoStreamer<'a> for &'s Set {
+impl<'s, 'a, D: AsRef<[u8]>> IntoStreamer<'a> for &'s Set<D> {
     type Item = &'a [u8];
     type Into = Stream<'s>;
 
-    fn into_stream(self) -> Self::Into {
+    #[inline]
+    fn into_stream(self) -> Stream<'s> {
         Stream(self.0.stream())
     }
 }
 
 // Construct a set from an Fst object.
-impl From<raw::Fst> for Set {
-    fn from(fst: raw::Fst) -> Set {
+impl<D: AsRef<[u8]>> From<raw::Fst<D>> for Set<D> {
+    #[inline]
+    fn from(fst: raw::Fst<D>) -> Set<D> {
         Set(fst)
     }
 }
@@ -398,7 +504,7 @@ impl From<raw::Fst> for Set {
 /// let bytes = build.into_inner().unwrap();
 ///
 /// // At this point, the set has been constructed, but here's how to read it.
-/// let set = Set::from_bytes(bytes).unwrap();
+/// let set = Set::new(bytes).unwrap();
 /// let mut stream = set.into_stream();
 /// let mut keys = vec![];
 /// while let Some(key) = stream.next() {
@@ -430,7 +536,9 @@ impl From<raw::Fst> for Set {
 /// build.finish().unwrap();
 ///
 /// // At this point, the set has been constructed, but here's how to read it.
-/// let set = unsafe { Set::from_path("set.fst").unwrap() };
+/// // NOTE: Normally, one would memory map a file instead of reading its
+/// // entire contents on to the heap.
+/// let set = Set::new(std::fs::read("set.fst").unwrap()).unwrap();
 /// let mut stream = set.into_stream();
 /// let mut keys = vec![];
 /// while let Some(key) = stream.next() {
@@ -444,8 +552,15 @@ pub struct SetBuilder<W>(raw::Builder<W>);
 
 impl SetBuilder<Vec<u8>> {
     /// Create a builder that builds a set in memory.
-    pub fn memory() -> Self {
+    #[inline]
+    pub fn memory() -> SetBuilder<Vec<u8>> {
         SetBuilder(raw::Builder::memory())
+    }
+
+    /// Finishes the construction of the set and returns it.
+    #[inline]
+    pub fn into_set(self) -> Set<Vec<u8>> {
+        Set(self.0.into_fst())
     }
 }
 
@@ -470,7 +585,10 @@ impl<W: io::Write> SetBuilder<W> {
     /// If an error occurred while adding an element, processing is stopped
     /// and the error is returned.
     pub fn extend_iter<T, I>(&mut self, iter: I) -> Result<()>
-            where T: AsRef<[u8]>, I: IntoIterator<Item=T> {
+    where
+        T: AsRef<[u8]>,
+        I: IntoIterator<Item = T>,
+    {
         for key in iter {
             self.0.add(key)?;
         }
@@ -482,8 +600,10 @@ impl<W: io::Write> SetBuilder<W> {
     /// Note that unlike `extend_iter`, this is not generic on the items in
     /// the stream.
     pub fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-                  S: 'f + for<'a> Streamer<'a, Item=&'a [u8]> {
+    where
+        I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+        S: 'f + for<'a> Streamer<'a, Item = &'a [u8]>,
+    {
         self.0.extend_stream(StreamZeroOutput(stream.into_stream()))
     }
 
@@ -509,7 +629,6 @@ impl<W: io::Write> SetBuilder<W> {
     pub fn bytes_written(&self) -> u64 {
         self.0.bytes_written()
     }
-
 }
 
 /// A lexicographically ordered stream of keys from a set.
@@ -518,17 +637,11 @@ impl<W: io::Write> SetBuilder<W> {
 /// the stream. By default, no filtering is done.
 ///
 /// The `'s` lifetime parameter refers to the lifetime of the underlying set.
-pub struct Stream<'s, A=AlwaysMatch>(raw::Stream<'s, A>) where A: Automaton;
+pub struct Stream<'s, A = AlwaysMatch>(raw::Stream<'s, A>)
+where
+    A: Automaton;
 
 impl<'s, A: Automaton> Stream<'s, A> {
-    /// Creates a new set stream from an fst stream.
-    ///
-    /// Not part of the public API, but useful in sibling module `map`.
-    #[doc(hidden)]
-    pub fn new(fst_stream: raw::Stream<'s, A>) -> Self {
-        Stream(fst_stream)
-    }
-
     /// Convert this stream into a vector of Unicode strings.
     ///
     /// If any key is not valid UTF-8, then iteration on the stream is stopped
@@ -550,8 +663,32 @@ impl<'s, A: Automaton> Stream<'s, A> {
 impl<'a, 's, A: Automaton> Streamer<'a> for Stream<'s, A> {
     type Item = &'a [u8];
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    fn next(&'a mut self) -> Option<&'a [u8]> {
         self.0.next().map(|(key, _)| key)
+    }
+}
+
+/// A lexicographically ordered stream of key-state pairs from a set and
+/// an automaton.
+///
+/// The keys are from the set while the states are from the automaton.
+///
+/// The `A` type parameter corresponds to an optional automaton to filter
+/// the stream. By default, no filtering is done.
+///
+/// The `'m` lifetime parameter refers to the lifetime of the underlying set.
+pub struct StreamWithState<'m, A = AlwaysMatch>(raw::StreamWithState<'m, A>)
+where
+    A: Automaton;
+
+impl<'a, 'm, A: 'a + Automaton> Streamer<'a> for StreamWithState<'m, A>
+where
+    A::State: Clone,
+{
+    type Item = (&'a [u8], A::State);
+
+    fn next(&'a mut self) -> Option<(&'a [u8], A::State)> {
+        self.0.next().map(|(key, _, state)| (key, state))
     }
 }
 
@@ -567,26 +704,26 @@ impl<'a, 's, A: Automaton> Streamer<'a> for Stream<'s, A> {
 /// the stream. By default, no filtering is done.
 ///
 /// The `'s` lifetime parameter refers to the lifetime of the underlying set.
-pub struct StreamBuilder<'s, A=AlwaysMatch>(raw::StreamBuilder<'s, A>);
+pub struct StreamBuilder<'s, A = AlwaysMatch>(raw::StreamBuilder<'s, A>);
 
 impl<'s, A: Automaton> StreamBuilder<'s, A> {
     /// Specify a greater-than-or-equal-to bound.
-    pub fn ge<T: AsRef<[u8]>>(self, bound: T) -> Self {
+    pub fn ge<T: AsRef<[u8]>>(self, bound: T) -> StreamBuilder<'s, A> {
         StreamBuilder(self.0.ge(bound))
     }
 
     /// Specify a greater-than bound.
-    pub fn gt<T: AsRef<[u8]>>(self, bound: T) -> Self {
+    pub fn gt<T: AsRef<[u8]>>(self, bound: T) -> StreamBuilder<'s, A> {
         StreamBuilder(self.0.gt(bound))
     }
 
     /// Specify a less-than-or-equal-to bound.
-    pub fn le<T: AsRef<[u8]>>(self, bound: T) -> Self {
+    pub fn le<T: AsRef<[u8]>>(self, bound: T) -> StreamBuilder<'s, A> {
         StreamBuilder(self.0.le(bound))
     }
 
     /// Specify a less-than bound.
-    pub fn lt<T: AsRef<[u8]>>(self, bound: T) -> Self {
+    pub fn lt<T: AsRef<[u8]>>(self, bound: T) -> StreamBuilder<'s, A> {
         StreamBuilder(self.0.lt(bound))
     }
 }
@@ -595,8 +732,76 @@ impl<'s, 'a, A: Automaton> IntoStreamer<'a> for StreamBuilder<'s, A> {
     type Item = &'a [u8];
     type Into = Stream<'s, A>;
 
-    fn into_stream(self) -> Self::Into {
+    fn into_stream(self) -> Stream<'s, A> {
         Stream(self.0.into_stream())
+    }
+}
+
+/// A builder for constructing range queries on streams that include automaton
+/// states.
+///
+/// In general, one should use `StreamBuilder` unless you have a specific need
+/// for accessing the states of the underlying automaton that is being used to
+/// filter this stream.
+///
+/// Once all bounds are set, one should call `into_stream` to get a
+/// `Stream`.
+///
+/// Bounds are not additive. That is, if `ge` is called twice on the same
+/// builder, then the second setting wins.
+///
+/// The `A` type parameter corresponds to an optional automaton to filter
+/// the stream. By default, no filtering is done.
+///
+/// The `'s` lifetime parameter refers to the lifetime of the underlying set.
+pub struct StreamWithStateBuilder<'s, A = AlwaysMatch>(
+    raw::StreamWithStateBuilder<'s, A>,
+);
+
+impl<'s, A: Automaton> StreamWithStateBuilder<'s, A> {
+    /// Specify a greater-than-or-equal-to bound.
+    pub fn ge<T: AsRef<[u8]>>(
+        self,
+        bound: T,
+    ) -> StreamWithStateBuilder<'s, A> {
+        StreamWithStateBuilder(self.0.ge(bound))
+    }
+
+    /// Specify a greater-than bound.
+    pub fn gt<T: AsRef<[u8]>>(
+        self,
+        bound: T,
+    ) -> StreamWithStateBuilder<'s, A> {
+        StreamWithStateBuilder(self.0.gt(bound))
+    }
+
+    /// Specify a less-than-or-equal-to bound.
+    pub fn le<T: AsRef<[u8]>>(
+        self,
+        bound: T,
+    ) -> StreamWithStateBuilder<'s, A> {
+        StreamWithStateBuilder(self.0.le(bound))
+    }
+
+    /// Specify a less-than bound.
+    pub fn lt<T: AsRef<[u8]>>(
+        self,
+        bound: T,
+    ) -> StreamWithStateBuilder<'s, A> {
+        StreamWithStateBuilder(self.0.lt(bound))
+    }
+}
+
+impl<'s, 'a, A: 'a + Automaton> IntoStreamer<'a>
+    for StreamWithStateBuilder<'s, A>
+where
+    A::State: Clone,
+{
+    type Item = (&'a [u8], A::State);
+    type Into = StreamWithState<'s, A>;
+
+    fn into_stream(self) -> StreamWithState<'s, A> {
+        StreamWithState(self.0.into_stream())
     }
 }
 
@@ -618,7 +823,8 @@ pub struct OpBuilder<'s>(raw::OpBuilder<'s>);
 
 impl<'s> OpBuilder<'s> {
     /// Create a new set operation builder.
-    pub fn new() -> Self {
+    #[inline]
+    pub fn new() -> OpBuilder<'s> {
         OpBuilder(raw::OpBuilder::new())
     }
 
@@ -629,9 +835,11 @@ impl<'s> OpBuilder<'s> {
     ///
     /// The stream must emit a lexicographically ordered sequence of byte
     /// strings.
-    pub fn add<I, S>(mut self, streamable: I) -> Self
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-                  S: 's + for<'a> Streamer<'a, Item=&'a [u8]> {
+    pub fn add<I, S>(mut self, streamable: I) -> OpBuilder<'s>
+    where
+        I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+        S: 's + for<'a> Streamer<'a, Item = &'a [u8]>,
+    {
         self.push(streamable);
         self
     }
@@ -641,8 +849,10 @@ impl<'s> OpBuilder<'s> {
     /// The stream must emit a lexicographically ordered sequence of byte
     /// strings.
     pub fn push<I, S>(&mut self, streamable: I)
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-                  S: 's + for<'a> Streamer<'a, Item=&'a [u8]> {
+    where
+        I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+        S: 's + for<'a> Streamer<'a, Item = &'a [u8]>,
+    {
         self.0.push(StreamZeroOutput(streamable.into_stream()));
     }
 
@@ -664,6 +874,7 @@ impl<'s> OpBuilder<'s> {
     /// }
     /// assert_eq!(keys, vec![b"a", b"b", b"c", b"y", b"z"]);
     /// ```
+    #[inline]
     pub fn union(self) -> Union<'s> {
         Union(self.0.union())
     }
@@ -686,6 +897,7 @@ impl<'s> OpBuilder<'s> {
     /// }
     /// assert_eq!(keys, vec![b"a"]);
     /// ```
+    #[inline]
     pub fn intersection(self) -> Intersection<'s> {
         Intersection(self.0.intersection())
     }
@@ -710,6 +922,7 @@ impl<'s> OpBuilder<'s> {
     /// }
     /// assert_eq!(keys, vec![b"b", b"c"]);
     /// ```
+    #[inline]
     pub fn difference(self) -> Difference<'s> {
         Difference(self.0.difference())
     }
@@ -739,15 +952,21 @@ impl<'s> OpBuilder<'s> {
     /// }
     /// assert_eq!(keys, vec![b"b", b"c", b"y", b"z"]);
     /// ```
+    #[inline]
     pub fn symmetric_difference(self) -> SymmetricDifference<'s> {
         SymmetricDifference(self.0.symmetric_difference())
     }
 }
 
 impl<'f, I, S> Extend<I> for OpBuilder<'f>
-    where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-          S: 'f + for<'a> Streamer<'a, Item=&'a [u8]> {
-    fn extend<T>(&mut self, it: T) where T: IntoIterator<Item=I> {
+where
+    I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+    S: 'f + for<'a> Streamer<'a, Item = &'a [u8]>,
+{
+    fn extend<T>(&mut self, it: T)
+    where
+        T: IntoIterator<Item = I>,
+    {
         for stream in it {
             self.push(stream);
         }
@@ -755,9 +974,14 @@ impl<'f, I, S> Extend<I> for OpBuilder<'f>
 }
 
 impl<'f, I, S> FromIterator<I> for OpBuilder<'f>
-    where I: for<'a> IntoStreamer<'a, Into=S, Item=&'a [u8]>,
-          S: 'f + for<'a> Streamer<'a, Item=&'a [u8]> {
-    fn from_iter<T>(it: T) -> Self where T: IntoIterator<Item=I> {
+where
+    I: for<'a> IntoStreamer<'a, Into = S, Item = &'a [u8]>,
+    S: 'f + for<'a> Streamer<'a, Item = &'a [u8]>,
+{
+    fn from_iter<T>(it: T) -> OpBuilder<'f>
+    where
+        T: IntoIterator<Item = I>,
+    {
         let mut op = OpBuilder::new();
         op.extend(it);
         op
@@ -772,7 +996,8 @@ pub struct Union<'s>(raw::Union<'s>);
 impl<'a, 's> Streamer<'a> for Union<'s> {
     type Item = &'a [u8];
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    #[inline]
+    fn next(&'a mut self) -> Option<&'a [u8]> {
         self.0.next().map(|(key, _)| key)
     }
 }
@@ -785,7 +1010,8 @@ pub struct Intersection<'s>(raw::Intersection<'s>);
 impl<'a, 's> Streamer<'a> for Intersection<'s> {
     type Item = &'a [u8];
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    #[inline]
+    fn next(&'a mut self) -> Option<&'a [u8]> {
         self.0.next().map(|(key, _)| key)
     }
 }
@@ -802,7 +1028,8 @@ pub struct Difference<'s>(raw::Difference<'s>);
 impl<'a, 's> Streamer<'a> for Difference<'s> {
     type Item = &'a [u8];
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    #[inline]
+    fn next(&'a mut self) -> Option<&'a [u8]> {
         self.0.next().map(|(key, _)| key)
     }
 }
@@ -816,7 +1043,8 @@ pub struct SymmetricDifference<'s>(raw::SymmetricDifference<'s>);
 impl<'a, 's> Streamer<'a> for SymmetricDifference<'s> {
     type Item = &'a [u8];
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    #[inline]
+    fn next(&'a mut self) -> Option<&'a [u8]> {
         self.0.next().map(|(key, _)| key)
     }
 }
@@ -831,15 +1059,15 @@ struct StreamZeroOutput<S>(S);
 impl<'a, S: Streamer<'a>> Streamer<'a> for StreamZeroOutput<S> {
     type Item = (S::Item, raw::Output);
 
-    fn next(&'a mut self) -> Option<Self::Item> {
+    fn next(&'a mut self) -> Option<(S::Item, raw::Output)> {
         self.0.next().map(|key| (key, raw::Output::zero()))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use Streamer;
     use super::OpBuilder;
+    use crate::Streamer;
 
     #[test]
     fn no_fsts() {
@@ -850,7 +1078,7 @@ mod tests {
 
         impl<'a> Iter<'a> {
             fn new(xs: Vec<&'a [u8]>) -> Iter<'a> {
-                Iter { i: 0, xs: xs }
+                Iter { i: 0, xs }
             }
         }
 
@@ -875,11 +1103,7 @@ mod tests {
                 &b"fubar"[..],
                 &b"quux"[..],
             ]))
-            .add(Iter::new(vec![
-                &b"bar"[..],
-                &b"foofoo"[..],
-                &b"fubar"[..],
-            ]))
+            .add(Iter::new(vec![&b"bar"[..], &b"foofoo"[..], &b"fubar"[..]]))
             .intersection();
 
         let mut got = vec![];

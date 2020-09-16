@@ -104,8 +104,10 @@ pub struct GlobalState {
     next_call_id: CallId,
     /// Those call IDs corresponding to functions that are still running.
     active_calls: FxHashSet<CallId>,
-    /// The id to trace in this execution run
+    /// The pointer id to trace
     tracked_pointer_tag: Option<PtrId>,
+    /// The call id to trace
+    tracked_call_id: Option<CallId>,
 }
 /// Memory extra state gives us interior mutable access to the global state.
 pub type MemoryExtra = Rc<RefCell<GlobalState>>;
@@ -153,13 +155,14 @@ impl fmt::Display for RefKind {
 
 /// Utilities for initialization and ID generation
 impl GlobalState {
-    pub fn new(tracked_pointer_tag: Option<PtrId>) -> Self {
+    pub fn new(tracked_pointer_tag: Option<PtrId>, tracked_call_id: Option<CallId>) -> Self {
         GlobalState {
             next_ptr_id: NonZeroU64::new(1).unwrap(),
             base_ptr_ids: FxHashMap::default(),
             next_call_id: NonZeroU64::new(1).unwrap(),
             active_calls: FxHashSet::default(),
             tracked_pointer_tag,
+            tracked_call_id,
         }
     }
 
@@ -172,6 +175,9 @@ impl GlobalState {
     pub fn new_call(&mut self) -> CallId {
         let id = self.next_call_id;
         trace!("new_call: Assigning ID {}", id);
+        if Some(id) == self.tracked_call_id {
+            register_diagnostic(NonHaltingDiagnostic::CreatedCallId(id));
+        }
         assert!(self.active_calls.insert(id));
         self.next_call_id = NonZeroU64::new(id.get() + 1).unwrap();
         id
@@ -277,7 +283,7 @@ impl<'tcx> Stack {
     fn check_protector(item: &Item, tag: Option<Tag>, global: &GlobalState) -> InterpResult<'tcx> {
         if let Tag::Tagged(id) = item.tag {
             if Some(id) == global.tracked_pointer_tag {
-                register_diagnostic(NonHaltingDiagnostic::PoppedTrackedPointerTag(item.clone()));
+                register_diagnostic(NonHaltingDiagnostic::PoppedPointerTag(item.clone()));
             }
         }
         if let Some(call) = item.protector {
@@ -460,13 +466,13 @@ impl Stacks {
             // everything else off the stack, invalidating all previous pointers,
             // and in particular, *all* raw pointers.
             MemoryKind::Stack => (Tag::Tagged(extra.borrow_mut().new_ptr()), Permission::Unique),
-            // Global memory can be referenced by global pointers from `tcx`.
+            // `Global` memory can be referenced by global pointers from `tcx`.
             // Thus we call `global_base_ptr` such that the global pointers get the same tag
             // as what we use here.
-            // `Machine` is used for extern statics, and thus must also be listed here.
+            // `ExternGlobal` is used for extern statics, and thus must also be listed here.
             // `Env` we list because we can get away with precise tracking there.
             // The base pointer is not unique, so the base permission is `SharedReadWrite`.
-            MemoryKind::Machine(MiriMemoryKind::Global | MiriMemoryKind::Machine | MiriMemoryKind::Env) =>
+            MemoryKind::Machine(MiriMemoryKind::Global | MiriMemoryKind::ExternGlobal | MiriMemoryKind::Env) =>
                 (extra.borrow_mut().global_base_ptr(id), Permission::SharedReadWrite),
             // Everything else we handle entirely untagged for now.
             // FIXME: experiment with more precise tracking.

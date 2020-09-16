@@ -10,8 +10,8 @@ Rust MIR: a lowered representation of Rust.
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(const_fn)]
-#![feature(const_if_match)]
-#![feature(const_loop)]
+#![cfg_attr(bootstrap, feature(const_if_match))]
+#![cfg_attr(bootstrap, feature(const_loop))]
 #![feature(const_panic)]
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
@@ -47,7 +47,7 @@ pub mod util;
 
 use rustc_middle::ty::query::Providers;
 
-pub fn provide(providers: &mut Providers<'_>) {
+pub fn provide(providers: &mut Providers) {
     borrow_check::provide(providers);
     const_eval::provide(providers);
     shim::provide(providers);

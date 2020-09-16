@@ -183,7 +183,8 @@ impl char {
     #[unstable(feature = "assoc_char_funcs", reason = "recently added", issue = "71763")]
     #[inline]
     pub unsafe fn from_u32_unchecked(i: u32) -> char {
-        super::convert::from_u32_unchecked(i)
+        // SAFETY: the safety contract must be upheld by the caller.
+        unsafe { super::convert::from_u32_unchecked(i) }
     }
 
     /// Converts a digit in the given radix to a `char`.
@@ -229,16 +230,11 @@ impl char {
     ///
     /// Passing a large radix, causing a panic:
     ///
-    /// ```
-    /// use std::thread;
+    /// ```should_panic
     /// use std::char;
     ///
-    /// let result = thread::spawn(|| {
-    ///     // this panics
-    ///     let c = char::from_digit(1, 37);
-    /// }).join();
-    ///
-    /// assert!(result.is_err());
+    /// // this panics
+    /// char::from_digit(1, 37);
     /// ```
     #[unstable(feature = "assoc_char_funcs", reason = "recently added", issue = "71763")]
     #[inline]
@@ -282,15 +278,9 @@ impl char {
     ///
     /// Passing a large radix, causing a panic:
     ///
-    /// ```
-    /// use std::thread;
-    ///
-    /// let result = thread::spawn(|| {
-    ///     // this panics
-    ///     '1'.is_digit(37);
-    /// }).join();
-    ///
-    /// assert!(result.is_err());
+    /// ```should_panic
+    /// // this panics
+    /// '1'.is_digit(37);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
@@ -337,14 +327,9 @@ impl char {
     ///
     /// Passing a large radix, causing a panic:
     ///
-    /// ```
-    /// use std::thread;
-    ///
-    /// let result = thread::spawn(|| {
-    ///     '1'.to_digit(37);
-    /// }).join();
-    ///
-    /// assert!(result.is_err());
+    /// ```should_panic
+    /// // this panics
+    /// '1'.to_digit(37);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
@@ -646,17 +631,11 @@ impl char {
     ///
     /// A buffer that's too small:
     ///
-    /// ```
-    /// use std::thread;
+    /// ```should_panic
+    /// let mut b = [0; 1];
     ///
-    /// let result = thread::spawn(|| {
-    ///     let mut b = [0; 1];
-    ///
-    ///     // this panics
-    ///    'ß'.encode_utf8(&mut b);
-    /// }).join();
-    ///
-    /// assert!(result.is_err());
+    /// // this panics
+    /// 'ß'.encode_utf8(&mut b);
     /// ```
     #[stable(feature = "unicode_encode_char", since = "1.15.0")]
     #[inline]
@@ -687,17 +666,11 @@ impl char {
     ///
     /// A buffer that's too small:
     ///
-    /// ```
-    /// use std::thread;
+    /// ```should_panic
+    /// let mut b = [0; 1];
     ///
-    /// let result = thread::spawn(|| {
-    ///     let mut b = [0; 1];
-    ///
-    ///     // this panics
-    ///     '𝕊'.encode_utf16(&mut b);
-    /// }).join();
-    ///
-    /// assert!(result.is_err());
+    /// // this panics
+    /// '𝕊'.encode_utf16(&mut b);
     /// ```
     #[stable(feature = "unicode_encode_char", since = "1.15.0")]
     #[inline]

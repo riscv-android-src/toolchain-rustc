@@ -365,7 +365,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
             | TerminatorKind::Resume
             | TerminatorKind::Abort
             | TerminatorKind::GeneratorDrop
-            | TerminatorKind::FalseEdges { .. }
+            | TerminatorKind::FalseEdge { .. }
             | TerminatorKind::FalseUnwind { .. }
             | TerminatorKind::Unreachable => {}
 
@@ -387,13 +387,13 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
                 self.gather_init(place.as_ref(), InitKind::Deep);
             }
 
-            TerminatorKind::Drop { location, target: _, unwind: _ } => {
-                self.gather_move(location);
+            TerminatorKind::Drop { place, target: _, unwind: _ } => {
+                self.gather_move(place);
             }
-            TerminatorKind::DropAndReplace { location, ref value, .. } => {
-                self.create_move_path(location);
+            TerminatorKind::DropAndReplace { place, ref value, .. } => {
+                self.create_move_path(place);
                 self.gather_operand(value);
-                self.gather_init(location.as_ref(), InitKind::Deep);
+                self.gather_init(place.as_ref(), InitKind::Deep);
             }
             TerminatorKind::Call {
                 ref func,
@@ -401,6 +401,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
                 ref destination,
                 cleanup: _,
                 from_hir_call: _,
+                fn_span: _,
             } => {
                 self.gather_operand(func);
                 for arg in args {
@@ -438,7 +439,7 @@ impl<'b, 'a, 'tcx> Gatherer<'b, 'a, 'tcx> {
                             }
                         }
                         InlineAsmOperand::SymFn { value: _ }
-                        | InlineAsmOperand::SymStatic { value: _ } => {}
+                        | InlineAsmOperand::SymStatic { def_id: _ } => {}
                     }
                 }
             }

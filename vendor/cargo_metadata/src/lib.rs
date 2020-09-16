@@ -7,10 +7,7 @@
 //!
 //! ## Examples
 //!
-//! With [`std::env::args()`](https://doc.rust-lang.org/std/env/fn.args.html):
-//!
 //! ```rust
-//! # // This should be kept in sync with the equivalent example in the readme.
 //! # extern crate cargo_metadata;
 //! # use std::path::Path;
 //! let mut args = std::env::args().skip_while(|val| !val.starts_with("--manifest-path"));
@@ -27,85 +24,6 @@
 //! };
 //!
 //! let _metadata = cmd.exec().unwrap();
-//! ```
-//!
-//! With [`docopt`](https://docs.rs/docopt):
-//!
-//! ```rust
-//! # // This should be kept in sync with the equivalent example in the readme.
-//! # extern crate cargo_metadata;
-//! # extern crate docopt;
-//! # #[macro_use] extern crate serde_derive;
-//! # use std::path::Path;
-//! # use docopt::Docopt;
-//! # fn main() {
-//! const USAGE: &str = "
-//!     Cargo metadata test function
-//!
-//!     Usage:
-//!       cargo_metadata [--manifest-path PATH]
-//! ";
-//!
-//! #[derive(Debug, Deserialize)]
-//! struct Args {
-//!     arg_manifest_path: Option<String>,
-//! }
-//!
-//! let args: Args = Docopt::new(USAGE)
-//!     .and_then(|d| d.deserialize())
-//!     .unwrap_or_else(|e| e.exit());
-//!
-//! let mut cmd = cargo_metadata::MetadataCommand::new();
-//! if let Some(path) = args.arg_manifest_path {
-//!     cmd.manifest_path(path);
-//! }
-//! let _metadata = cmd.exec().unwrap();
-//! # }
-//! ```
-//!
-//! With [`clap`](https://docs.rs/clap):
-//!
-//! ```rust
-//! # // This should be kept in sync with the equivalent example in the readme.
-//! # extern crate cargo_metadata;
-//! # extern crate clap;
-//! let matches = clap::App::new("myapp")
-//!     .arg(
-//!         clap::Arg::with_name("manifest-path")
-//!             .long("manifest-path")
-//!             .value_name("PATH")
-//!             .takes_value(true),
-//!     )
-//!     .get_matches();
-//!
-//! let mut cmd = cargo_metadata::MetadataCommand::new();
-//! if let Some(path) = matches.value_of("manifest-path") {
-//!     cmd.manifest_path(path);
-//! }
-//! let _metadata = cmd.exec().unwrap();
-//! ```
-//! With [`structopt`](https://docs.rs/structopt):
-//!
-//! ```rust
-//! # // This should be kept in sync with the equivalent example in the readme.
-//! # extern crate cargo_metadata;
-//! # #[macro_use] extern crate structopt;
-//! # use std::path::PathBuf;
-//! # use structopt::StructOpt;
-//! # fn main() {
-//! #[derive(Debug, StructOpt)]
-//! struct Opt {
-//!     #[structopt(name = "PATH", long="manifest-path", parse(from_os_str))]
-//!     manifest_path: Option<PathBuf>,
-//! }
-//!
-//! let opt = Opt::from_args();
-//! let mut cmd = cargo_metadata::MetadataCommand::new();
-//! if let Some(path) = opt.manifest_path {
-//!     cmd.manifest_path(path);
-//! }
-//! let _metadata = cmd.exec().unwrap();
-//! # }
 //! ```
 //!
 //! Pass features flags
@@ -138,7 +56,8 @@
 //!     .spawn()
 //!     .unwrap();
 //!
-//! for message in cargo_metadata::parse_messages(command.stdout.take().unwrap()) {
+//! let reader = std::io::BufReader::new(command.stdout.take().unwrap());
+//! for message in cargo_metadata::Message::parse_stream(reader) {
 //!     match message.unwrap() {
 //!         Message::CompilerMessage(msg) => {
 //!             println!("{:?}", msg);
@@ -148,6 +67,9 @@
 //!         },
 //!         Message::BuildScriptExecuted(script) => {
 //!             println!("{:?}", script);
+//!         },
+//!         Message::BuildFinished(finished) => {
+//!             println!("{:?}", finished);
 //!         },
 //!         _ => () // Unknown message
 //!     }
@@ -165,7 +87,7 @@ extern crate serde_json;
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::str::from_utf8;
 
@@ -175,8 +97,10 @@ pub use dependency::{Dependency, DependencyKind};
 use diagnostic::Diagnostic;
 pub use errors::{Error, Result};
 pub use messages::{
-    parse_messages, Artifact, ArtifactProfile, BuildScript, CompilerMessage, Message,
+    Artifact, ArtifactProfile, BuildFinished, BuildScript, CompilerMessage, Message, MessageIter
 };
+#[allow(deprecated)]
+pub use messages::parse_messages;
 
 mod dependency;
 pub mod diagnostic;
@@ -400,7 +324,7 @@ impl Package {
     pub fn license_file(&self) -> Option<PathBuf> {
         self.license_file
             .as_ref()
-            .map(|file| self.manifest_path.join(file))
+            .map(|file| self.manifest_path.parent().unwrap_or(&self.manifest_path).join(file))
     }
 
     /// Full path to the readme file if one is present in the manifest
@@ -414,18 +338,21 @@ impl Package {
 /// The source of a package such as crates.io.
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(transparent)]
-pub struct Source(String);
+pub struct Source {
+    /// The underlying string representation of a source.
+    pub repr: String,
+}
 
 impl Source {
     /// Returns true if the source is crates.io.
     pub fn is_crates_io(&self) -> bool {
-        self.0 == "registry+https://github.com/rust-lang/crates.io-index"
+        self.repr == "registry+https://github.com/rust-lang/crates.io-index"
     }
 }
 
 impl std::fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+        fmt::Display::fmt(&self.repr, f)
     }
 }
 
@@ -436,7 +363,7 @@ pub struct Target {
     pub name: String,
     /// Kind of target ("bin", "example", "test", "bench", "lib")
     pub kind: Vec<String>,
-    /// Almost the same as `kind`, except when an example is a library instad of an executable.
+    /// Almost the same as `kind`, except when an example is a library instead of an executable.
     /// In that case `crate_types` contains things like `rlib` and `dylib` while `kind` is `example`
     #[serde(default)]
     pub crate_types: Vec<String>,
@@ -501,18 +428,18 @@ impl MetadataCommand {
     /// Path to `cargo` executable.  If not set, this will use the
     /// the `$CARGO` environment variable, and if that is not set, will
     /// simply be `cargo`.
-    pub fn cargo_path(&mut self, path: impl AsRef<Path>) -> &mut MetadataCommand {
-        self.cargo_path = Some(path.as_ref().to_path_buf());
+    pub fn cargo_path(&mut self, path: impl Into<PathBuf>) -> &mut MetadataCommand {
+        self.cargo_path = Some(path.into());
         self
     }
     /// Path to `Cargo.toml`
-    pub fn manifest_path(&mut self, path: impl AsRef<Path>) -> &mut MetadataCommand {
-        self.manifest_path = Some(path.as_ref().to_path_buf());
+    pub fn manifest_path(&mut self, path: impl Into<PathBuf>) -> &mut MetadataCommand {
+        self.manifest_path = Some(path.into());
         self
     }
     /// Current directory of the `cargo metadata` process.
-    pub fn current_dir(&mut self, path: impl AsRef<Path>) -> &mut MetadataCommand {
-        self.current_dir = Some(path.as_ref().to_path_buf());
+    pub fn current_dir(&mut self, path: impl Into<PathBuf>) -> &mut MetadataCommand {
+        self.current_dir = Some(path.into());
         self
     }
     /// Output information only about the root package and don't fetch dependencies.
@@ -527,12 +454,14 @@ impl MetadataCommand {
     }
     /// Arbitrary command line flags to pass to `cargo`.  These will be added
     /// to the end of the command line invocation.
-    pub fn other_options(&mut self, options: impl AsRef<[String]>) -> &mut MetadataCommand {
-        self.other_options = options.as_ref().to_vec();
+    pub fn other_options(&mut self, options: impl Into<Vec<String>>) -> &mut MetadataCommand {
+        self.other_options = options.into();
         self
     }
-    /// Runs configured `cargo metadata` and returns parsed `Metadata`.
-    pub fn exec(&mut self) -> Result<Metadata> {
+
+    /// Builds a command for `cargo metadata`.  This is the first
+    /// part of the work of `exec`.
+    pub fn cargo_command(&self) -> Result<Command> {
         let cargo = self
             .cargo_path
             .clone()
@@ -561,6 +490,20 @@ impl MetadataCommand {
             cmd.arg("--manifest-path").arg(manifest_path.as_os_str());
         }
         cmd.args(&self.other_options);
+
+        Ok(cmd)
+    }
+
+    /// Parses `cargo metadata` output.  `data` must have been
+    /// produced by a command built with `cargo_command`.
+    pub fn parse<T : AsRef<str>>(data : T) -> Result<Metadata> {
+        let meta = serde_json::from_str(data.as_ref())?;
+        Ok(meta)
+    }
+
+    /// Runs configured `cargo metadata` and returns parsed `Metadata`.
+    pub fn exec(&self) -> Result<Metadata> {
+        let mut cmd = self.cargo_command()?;
         let output = cmd.output()?;
         if !output.status.success() {
             return Err(Error::CargoMetadata {
@@ -571,7 +514,6 @@ impl MetadataCommand {
             .lines()
             .find(|line| line.starts_with('{'))
             .ok_or_else(|| Error::NoJson)?;
-        let meta = serde_json::from_str(stdout)?;
-        Ok(meta)
+        Self::parse(stdout)
     }
 }

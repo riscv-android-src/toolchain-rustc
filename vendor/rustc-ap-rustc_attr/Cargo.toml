@@ -13,10 +13,10 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_attr"
-version = "659.0.0"
+version = "664.0.0"
 authors = ["The Rust Project Developers"]
 build = "build.rs"
-description = "Automatically published version of the package `rustc_attr` in the rust-lang/rust repository from commit d4bf05693c2c16e299f1adc279b54c37a8edef27 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_attr` in the rust-lang/rust repository from commit 3ddf48053e83f4949d00dcaf6eb8d9e28fc6bb95 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
@@ -24,39 +24,39 @@ repository = "https://github.com/rust-lang/rust"
 path = "lib.rs"
 doctest = false
 [dependencies.rustc_ast]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_ast"
 
 [dependencies.rustc_ast_pretty]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_ast_pretty"
 
 [dependencies.rustc_data_structures]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_data_structures"
 
 [dependencies.rustc_errors]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_errors"
 
 [dependencies.rustc_feature]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_feature"
 
 [dependencies.rustc_macros]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_macros"
 
 [dependencies.rustc_serialize]
-version = "659.0.0"
-package = "rustc-ap-serialize"
+version = "664.0.0"
+package = "rustc-ap-rustc_serialize"
 
 [dependencies.rustc_session]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_session"
 
 [dependencies.rustc_span]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_span"
 
 [dependencies.version_check]

@@ -76,7 +76,6 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
     fn statement(&mut self, stmt: &mir::Statement<'tcx>) -> InterpResult<'tcx> {
         info!("{:?}", stmt);
-        self.set_span(stmt.source_info.span);
 
         use rustc_middle::mir::StatementKind::*;
 
@@ -89,7 +88,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
             SetDiscriminant { place, variant_index } => {
                 let dest = self.eval_place(**place)?;
-                self.write_discriminant_index(*variant_index, dest)?;
+                self.write_discriminant(*variant_index, dest)?;
             }
 
             // Mark locals as alive
@@ -180,7 +179,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             Aggregate(ref kind, ref operands) => {
                 let (dest, active_field_index) = match **kind {
                     mir::AggregateKind::Adt(adt_def, variant_index, _, _, active_field_index) => {
-                        self.write_discriminant_index(variant_index, dest)?;
+                        self.write_discriminant(variant_index, dest)?;
                         if adt_def.is_enum() {
                             (self.place_downcast(dest, variant_index)?, active_field_index)
                         } else {
@@ -279,7 +278,6 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
     fn terminator(&mut self, terminator: &mir::Terminator<'tcx>) -> InterpResult<'tcx> {
         info!("{:?}", terminator.kind);
-        self.set_span(terminator.source_info.span);
 
         self.eval_terminator(terminator)?;
         if !self.stack().is_empty() {

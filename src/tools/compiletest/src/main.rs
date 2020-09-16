@@ -1,6 +1,4 @@
 #![crate_name = "compiletest"]
-#![feature(vec_remove_item)]
-#![deny(warnings)]
 // The `test` crate is the only unstable feature
 // allowed here, just to share similar code.
 #![feature(test)]
@@ -10,8 +8,6 @@ extern crate test;
 use crate::common::{expected_output_path, output_base_dir, output_relative_path, UI_EXTENSIONS};
 use crate::common::{CompareMode, Config, Debugger, Mode, PassMode, Pretty, TestPaths};
 use crate::util::logv;
-use env_logger;
-use getopts;
 use getopts::Options;
 use log::*;
 use std::env;
@@ -405,7 +401,7 @@ fn configure_lldb(config: &Config) -> Option<Config> {
     }
 
     if let Some(lldb_version) = config.lldb_version.as_ref() {
-        if is_blacklisted_lldb_version(&lldb_version) {
+        if lldb_version == "350" {
             println!(
                 "WARNING: The used version of LLDB ({}) has a \
                  known issue that breaks debuginfo tests. See \
@@ -464,11 +460,13 @@ fn common_inputs_stamp(config: &Config) -> Stamp {
 
     // Relevant pretty printer files
     let pretty_printer_files = [
-        "src/etc/debugger_pretty_printers_common.py",
+        "src/etc/rust_types.py",
         "src/etc/gdb_load_rust_pretty_printers.py",
-        "src/etc/gdb_rust_pretty_printing.py",
+        "src/etc/gdb_lookup.py",
+        "src/etc/gdb_providers.py",
         "src/etc/lldb_batchmode.py",
-        "src/etc/lldb_rust_formatters.py",
+        "src/etc/lldb_lookup.py",
+        "src/etc/lldb_providers.py",
     ];
     for file in &pretty_printer_files {
         let path = rust_src_dir.join(file);
@@ -980,8 +978,4 @@ fn extract_lldb_version(full_version_line: Option<String>) -> (Option<String>, b
         }
     }
     (None, false)
-}
-
-fn is_blacklisted_lldb_version(version: &str) -> bool {
-    version == "350"
 }

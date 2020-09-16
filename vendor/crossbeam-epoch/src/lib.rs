@@ -52,18 +52,19 @@
 //! [`Collector`]: struct.Collector.html
 //! [`Shared`]: struct.Shared.html
 //! [`pin`]: fn.pin.html
-//! [`defer`]: fn.defer.html
+//! [`defer`]: struct.Guard.html#method.defer
 
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 #![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(feature = "nightly", feature(const_fn))]
 #![cfg_attr(feature = "nightly", feature(cfg_target_has_atomic))]
 
 #[macro_use]
 extern crate cfg_if;
 #[cfg(feature = "std")]
 extern crate core;
+
+extern crate maybe_uninit;
 
 cfg_if! {
     if #[cfg(feature = "alloc")] {
@@ -73,13 +74,9 @@ cfg_if! {
     }
 }
 
-#[cfg_attr(
-    feature = "nightly",
-    cfg(all(target_has_atomic = "cas", target_has_atomic = "ptr"))
-)]
+#[cfg_attr(feature = "nightly", cfg(target_has_atomic = "ptr"))]
 cfg_if! {
     if #[cfg(any(feature = "alloc", feature = "std"))] {
-        extern crate arrayvec;
         extern crate crossbeam_utils;
         #[macro_use]
         extern crate memoffset;

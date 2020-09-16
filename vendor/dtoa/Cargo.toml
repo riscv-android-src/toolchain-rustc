@@ -12,14 +12,14 @@
 
 [package]
 name = "dtoa"
-version = "0.4.4"
+version = "0.4.6"
 authors = ["David Tolnay <dtolnay@gmail.com>"]
 exclude = ["performance.png"]
 description = "Fast functions for printing floating-point primitives to an io::Write"
 documentation = "https://github.com/dtolnay/dtoa"
 readme = "README.md"
 categories = ["value-formatting"]
-license = "MIT/Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/dtolnay/dtoa"
-[badges.travis-ci]
-repository = "dtolnay/dtoa"
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]

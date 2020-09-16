@@ -1,11 +1,12 @@
-use annotate_snippets::display_list::DisplayList;
-use annotate_snippets::formatter::DisplayListFormatter;
-use annotate_snippets::snippet::{Annotation, AnnotationType, Slice, Snippet, SourceAnnotation};
+use annotate_snippets::{
+    display_list::{DisplayList, FormatOptions},
+    snippet::{Annotation, AnnotationType, Slice, Snippet, SourceAnnotation},
+};
 
 fn main() {
     let snippet = Snippet {
         title: Some(Annotation {
-            label: Some("expected type, found `22`".to_string()),
+            label: Some("expected type, found `22`"),
             id: None,
             annotation_type: AnnotationType::Error,
         }),
@@ -13,28 +14,30 @@ fn main() {
         slices: vec![Slice {
             source: r#"                annotations: vec![SourceAnnotation {
                 label: "expected struct `annotate_snippets::snippet::Slice`, found reference"
-                    .to_string(),
-                range: <22, 25>,"#
-                .to_string(),
+                    ,
+                range: <22, 25>,"#,
             line_start: 26,
-            origin: Some("examples/footer.rs".to_string()),
+            origin: Some("examples/footer.rs"),
             fold: true,
             annotations: vec![
                 SourceAnnotation {
-                    label: "".to_string(),
+                    label: "",
                     annotation_type: AnnotationType::Error,
-                    range: (208, 210),
+                    range: (205, 207),
                 },
                 SourceAnnotation {
-                    label: "while parsing this struct".to_string(),
+                    label: "while parsing this struct",
                     annotation_type: AnnotationType::Info,
                     range: (34, 50),
                 },
             ],
         }],
+        opt: FormatOptions {
+            color: true,
+            ..Default::default()
+        },
     };
 
     let dl = DisplayList::from(snippet);
-    let dlf = DisplayListFormatter::new(true, false);
-    println!("{}", dlf.format(&dl));
+    println!("{}", dl);
 }

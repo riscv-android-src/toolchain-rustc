@@ -1,8 +1,10 @@
 use super::*;
 
+use serde::{de::DeserializeOwned, Serialize};
+
 pub trait Request {
-    type Params;
-    type Result;
+    type Params: DeserializeOwned + Serialize;
+    type Result: DeserializeOwned + Serialize;
     const METHOD: &'static str;
 }
 
@@ -31,6 +33,10 @@ macro_rules! lsp_request {
     };
     ("workspace/executeCommand") => {
         $crate::request::ExecuteCommand
+    };
+
+    ("textDocument/willSaveWaitUntil") => {
+        $crate::request::WillSaveWaitUntil
     };
 
     ("textDocument/completion") => {
@@ -117,17 +123,40 @@ macro_rules! lsp_request {
     ("workspace/configuration") => {
         $crate::request::WorkspaceConfiguration
     };
+    ("window/workDoneProgress/create") => {
+        $crate::request::WorkDoneProgressCreate
+    };
+    // Requires #[cfg(feature = "proposed")]
+    ("callHierarchy/incomingCalls") => {
+        $crate::request::CallHierarchyIncomingCalls
+    };
+    // Requires #[cfg(feature = "proposed")]
+    ("callHierarchy/outgoingCalls") => {
+        $crate::request::CallHierarchyOutgoingCalls
+    };
+    // Requires #[cfg(feature = "proposed")]
+    ("textDocument/prepareCallHierarchy") => {
+        $crate::request::CallHierarchyPrepare
+    };
+    // Requires #[cfg(feature = "proposed")]
+    ("textDocument/semanticTokens") => {
+        $crate::request::SemanticTokensRequest
+    };
+    // Requires #[cfg(feature = "proposed")]
+    ("textDocument/semanticTokens/edits") => {
+        $crate::request::SemanticTokensEditsRequest
+    };
+    // Requires #[cfg(feature = "proposed")]
+    ("textDocument/semanticTokens/range") => {
+        $crate::request::SemanticTokensRangeRequest
+    };
 }
 
-/**
-
- The initialize request is sent as the first request from the client to the server.
- If the server receives request or notification before the `initialize` request it should act as follows:
-
- * for a request the respond should be errored with `code: -32001`. The message can be picked by the server.
- * notifications should be dropped.
-
-*/
+/// The initialize request is sent as the first request from the client to the server.
+/// If the server receives request or notification before the `initialize` request it should act as follows:
+///
+/// * for a request the respond should be errored with `code: -32001`. The message can be picked by the server.
+/// * notifications should be dropped.
 #[derive(Debug)]
 pub enum Initialize {}
 
@@ -137,11 +166,9 @@ impl Request for Initialize {
     const METHOD: &'static str = "initialize";
 }
 
-/**
- * The shutdown request is sent from the client to the server. It asks the server to shut down,
- * but to not exit (otherwise the response might not be delivered correctly to the client).
- * There is a separate exit notification that asks the server to exit.
- */
+/// The shutdown request is sent from the client to the server. It asks the server to shut down,
+/// but to not exit (otherwise the response might not be delivered correctly to the client).
+/// There is a separate exit notification that asks the server to exit.
 #[derive(Debug)]
 pub enum Shutdown {}
 
@@ -151,11 +178,9 @@ impl Request for Shutdown {
     const METHOD: &'static str = "shutdown";
 }
 
-/**
- * The show message request is sent from a server to a client to ask the client to display a particular message
- * in the user interface. In addition to the show message notification the request allows to pass actions and to
- * wait for an answer from the client.
- */
+/// The show message request is sent from a server to a client to ask the client to display a particular message
+/// in the user interface. In addition to the show message notification the request allows to pass actions and to
+/// wait for an answer from the client.
 #[derive(Debug)]
 pub enum ShowMessageRequest {}
 
@@ -165,9 +190,9 @@ impl Request for ShowMessageRequest {
     const METHOD: &'static str = "window/showMessageRequest";
 }
 
-/**
- * The client/registerCapability request is sent from the server to the client to register for a new capability on the client side. Not all clients need to support dynamic capability registration. A client opts in via the ClientCapabilities.GenericCapability property.
- */
+/// The client/registerCapability request is sent from the server to the client to register for a new capability
+/// on the client side. Not all clients need to support dynamic capability registration. A client opts in via the
+/// ClientCapabilities.GenericCapability property.
 #[derive(Debug)]
 pub enum RegisterCapability {}
 
@@ -188,19 +213,16 @@ impl Request for UnregisterCapability {
     const METHOD: &'static str = "client/unregisterCapability";
 }
 
-/**
- The Completion request is sent from the client to the server to compute completion items at a given cursor position.
- Completion items are presented in the IntelliSense user interface. If computing full completion items is expensive,
- servers can additionally provide a handler for the completion item resolve request ('completionItem/resolve').
- This request is sent when a completion item is selected in the user interface. A typical use case is for example:
- the 'textDocument/completion' request doesn’t fill in the documentation property for returned completion items
- since it is expensive to compute. When the item is selected in the user interface then a ‘completionItem/resolve’
- request is sent with the selected completion item as a param. The returned completion item should have the
- documentation property filled in. The request can delay the computation of the detail and documentation properties.
- However, properties that are needed for the initial sorting and filtering, like sortText, filterText, insertText,
- and textEdit must be provided in the textDocument/completion request and must not be changed during resolve.
-
-*/
+/// The Completion request is sent from the client to the server to compute completion items at a given cursor position.
+/// Completion items are presented in the IntelliSense user interface. If computing full completion items is expensive,
+/// servers can additionally provide a handler for the completion item resolve request ('completionItem/resolve').
+/// This request is sent when a completion item is selected in the user interface. A typical use case is for example:
+/// the 'textDocument/completion' request doesn’t fill in the documentation property for returned completion items
+/// since it is expensive to compute. When the item is selected in the user interface then a ‘completionItem/resolve’
+/// request is sent with the selected completion item as a param. The returned completion item should have the
+/// documentation property filled in. The request can delay the computation of the detail and documentation properties.
+/// However, properties that are needed for the initial sorting and filtering, like sortText, filterText, insertText,
+/// and textEdit must be provided in the textDocument/completion request and must not be changed during resolve.
 #[derive(Debug)]
 pub enum Completion {}
 
@@ -226,7 +248,7 @@ impl Request for ResolveCompletionItem {
 pub enum HoverRequest {}
 
 impl Request for HoverRequest {
-    type Params = TextDocumentPositionParams;
+    type Params = HoverParams;
     type Result = Option<Hover>;
     const METHOD: &'static str = "textDocument/hover";
 }
@@ -237,19 +259,21 @@ impl Request for HoverRequest {
 pub enum SignatureHelpRequest {}
 
 impl Request for SignatureHelpRequest {
-    type Params = TextDocumentPositionParams;
+    type Params = SignatureHelpParams;
     type Result = Option<SignatureHelp>;
     const METHOD: &'static str = "textDocument/signatureHelp";
 }
 
 #[derive(Debug)]
 pub enum GotoDeclaration {}
+pub type GotoDeclarationParams = GotoDefinitionParams;
+pub type GotoDeclarationResponse = GotoDefinitionResponse;
 
 /// The goto declaration request is sent from the client to the server to resolve the declaration location of
 /// a symbol at a given text document position.
 impl Request for GotoDeclaration {
-    type Params = TextDocumentPositionParams;
-    type Result = Option<GotoDefinitionResponse>;
+    type Params = GotoDeclarationParams;
+    type Result = Option<GotoDeclarationResponse>;
     const METHOD: &'static str = "textDocument/declaration";
 }
 
@@ -259,36 +283,9 @@ impl Request for GotoDeclaration {
 pub enum GotoDefinition {}
 
 impl Request for GotoDefinition {
-    type Params = TextDocumentPositionParams;
+    type Params = GotoDefinitionParams;
     type Result = Option<GotoDefinitionResponse>;
     const METHOD: &'static str = "textDocument/definition";
-}
-
-/// GotoDefinition response can be single location, or multiple Locations or a link.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum GotoDefinitionResponse {
-    Scalar(Location),
-    Array(Vec<Location>),
-    Link(Vec<LocationLink>),
-}
-
-impl From<Location> for GotoDefinitionResponse {
-    fn from(location: Location) -> Self {
-        GotoDefinitionResponse::Scalar(location)
-    }
-}
-
-impl From<Vec<Location>> for GotoDefinitionResponse {
-    fn from(locations: Vec<Location>) -> Self {
-        GotoDefinitionResponse::Array(locations)
-    }
-}
-
-impl From<Vec<LocationLink>> for GotoDefinitionResponse {
-    fn from(locations: Vec<LocationLink>) -> Self {
-        GotoDefinitionResponse::Link(locations)
-    }
 }
 
 /// The references request is sent from the client to the server to resolve project-wide references for the
@@ -308,10 +305,11 @@ impl Request for References {
 #[derive(Debug)]
 pub enum GotoTypeDefinition {}
 
+pub type GotoTypeDefinitionParams = GotoDefinitionParams;
 pub type GotoTypeDefinitionResponse = GotoDefinitionResponse;
 
 impl Request for GotoTypeDefinition {
-    type Params = TextDocumentPositionParams;
+    type Params = GotoTypeDefinitionParams;
     type Result = Option<GotoTypeDefinitionResponse>;
     const METHOD: &'static str = "textDocument/typeDefinition";
 }
@@ -322,36 +320,33 @@ impl Request for GotoTypeDefinition {
 #[derive(Debug)]
 pub enum GotoImplementation {}
 
+pub type GotoImplementationParams = GotoTypeDefinitionParams;
 pub type GotoImplementationResponse = GotoDefinitionResponse;
 
 impl Request for GotoImplementation {
-    type Params = TextDocumentPositionParams;
+    type Params = GotoImplementationParams;
     type Result = Option<GotoImplementationResponse>;
     const METHOD: &'static str = "textDocument/implementation";
 }
 
-/**
- The document highlight request is sent from the client to the server to resolve a document highlights
- for a given text document position.
- For programming languages this usually highlights all references to the symbol scoped to this file.
- However we kept 'textDocument/documentHighlight' and 'textDocument/references' separate requests since
- the first one is allowed to be more fuzzy.
- Symbol matches usually have a DocumentHighlightKind of Read or Write whereas fuzzy or textual matches
- use Text as the kind.
-*/
+/// The document highlight request is sent from the client to the server to resolve a document highlights
+/// for a given text document position.
+/// For programming languages this usually highlights all references to the symbol scoped to this file.
+/// However we kept 'textDocument/documentHighlight' and 'textDocument/references' separate requests since
+/// the first one is allowed to be more fuzzy.
+/// Symbol matches usually have a DocumentHighlightKind of Read or Write whereas fuzzy or textual matches
+/// use Text as the kind.
 #[derive(Debug)]
 pub enum DocumentHighlightRequest {}
 
 impl Request for DocumentHighlightRequest {
-    type Params = TextDocumentPositionParams;
+    type Params = DocumentHighlightParams;
     type Result = Option<Vec<DocumentHighlight>>;
     const METHOD: &'static str = "textDocument/documentHighlight";
 }
 
-/**
- * The document symbol request is sent from the client to the server to list all symbols found in a given
- * text document.
- */
+/// The document symbol request is sent from the client to the server to list all symbols found in a given
+/// text document.
 #[derive(Debug)]
 pub enum DocumentSymbolRequest {}
 
@@ -361,10 +356,8 @@ impl Request for DocumentSymbolRequest {
     const METHOD: &'static str = "textDocument/documentSymbol";
 }
 
-/**
- * The workspace symbol request is sent from the client to the server to list project-wide symbols
- * matching the query string.
- */
+/// The workspace symbol request is sent from the client to the server to list project-wide symbols
+/// matching the query string.
 #[derive(Debug)]
 pub enum WorkspaceSymbol {}
 
@@ -374,7 +367,9 @@ impl Request for WorkspaceSymbol {
     const METHOD: &'static str = "workspace/symbol";
 }
 
-/// The workspace/executeCommand request is sent from the client to the server to trigger command execution on the server. In most cases the server creates a WorkspaceEdit structure and applies the changes to the workspace using the request workspace/applyEdit which is sent from the server to the client.
+/// The workspace/executeCommand request is sent from the client to the server to trigger command execution on the server.
+/// In most cases the server creates a WorkspaceEdit structure and applies the changes to the workspace using the request
+/// workspace/applyEdit which is sent from the server to the client.
 #[derive(Debug)]
 pub enum ExecuteCommand {}
 
@@ -382,6 +377,20 @@ impl Request for ExecuteCommand {
     type Params = ExecuteCommandParams;
     type Result = Option<Value>;
     const METHOD: &'static str = "workspace/executeCommand";
+}
+
+/// The document will save request is sent from the client to the server before the document is
+/// actually saved. The request can return an array of TextEdits which will be applied to the text
+/// document before it is saved. Please note that clients might drop results if computing the text
+/// edits took too long or if a server constantly fails on this request. This is done to keep the
+/// save fast and reliable.
+#[derive(Debug)]
+pub enum WillSaveWaitUntil {}
+
+impl Request for WillSaveWaitUntil {
+    type Params = WillSaveTextDocumentParams;
+    type Result = Option<Vec<TextEdit>>;
+    const METHOD: &'static str = "textDocument/willSaveWaitUntil";
 }
 
 /// The workspace/applyEdit request is sent from the server to the client to modify resource on the
@@ -417,11 +426,9 @@ impl Request for WorkspaceConfiguration {
     const METHOD: &'static str = "workspace/configuration";
 }
 
-/**
- * The code action request is sent from the client to the server to compute commands for a given text document
- * and range. The request is triggered when the user moves the cursor into a problem marker in the editor or
- * presses the lightbulb associated with a marker.
- */
+/// The code action request is sent from the client to the server to compute commands for a given text document
+/// and range. The request is triggered when the user moves the cursor into a problem marker in the editor or
+/// presses the lightbulb associated with a marker.
 #[derive(Debug)]
 pub enum CodeActionRequest {}
 
@@ -431,9 +438,7 @@ impl Request for CodeActionRequest {
     const METHOD: &'static str = "textDocument/codeAction";
 }
 
-/**
- * The code lens request is sent from the client to the server to compute code lenses for a given text document.
- */
+/// The code lens request is sent from the client to the server to compute code lenses for a given text document.
 #[derive(Debug)]
 pub enum CodeLensRequest {}
 
@@ -443,10 +448,8 @@ impl Request for CodeLensRequest {
     const METHOD: &'static str = "textDocument/codeLens";
 }
 
-/**
- * The code lens resolve request is sent from the client to the server to resolve the command for a
- * given code lens item.
- */
+/// The code lens resolve request is sent from the client to the server to resolve the command for a
+/// given code lens item.
 #[derive(Debug)]
 pub enum CodeLensResolve {}
 
@@ -466,10 +469,8 @@ impl Request for DocumentLinkRequest {
     const METHOD: &'static str = "textDocument/documentLink";
 }
 
-/**
- The document link resolve request is sent from the client to the server to resolve the target of
- a given document link.
-*/
+/// The document link resolve request is sent from the client to the server to resolve the target of
+/// a given document link.
 #[derive(Debug)]
 pub enum DocumentLinkResolve {}
 
@@ -479,9 +480,7 @@ impl Request for DocumentLinkResolve {
     const METHOD: &'static str = "documentLink/resolve";
 }
 
-/**
- * The document formatting request is sent from the server to the client to format a whole document.
- */
+/// The document formatting request is sent from the server to the client to format a whole document.
 #[derive(Debug)]
 pub enum Formatting {}
 
@@ -501,10 +500,8 @@ impl Request for RangeFormatting {
     const METHOD: &'static str = "textDocument/rangeFormatting";
 }
 
-/**
- * The document on type formatting request is sent from the client to the server to format parts of
- * the document during typing.
- */
+/// The document on type formatting request is sent from the client to the server to format parts of
+/// the document during typing.
 #[derive(Debug)]
 pub enum OnTypeFormatting {}
 
@@ -514,9 +511,7 @@ impl Request for OnTypeFormatting {
     const METHOD: &'static str = "textDocument/onTypeFormatting";
 }
 
-/**
- * The rename request is sent from the client to the server to perform a workspace-wide rename of a symbol.
- */
+/// The rename request is sent from the client to the server to perform a workspace-wide rename of a symbol.
 #[derive(Debug)]
 pub enum Rename {}
 
@@ -581,22 +576,92 @@ impl Request for WorkspaceFoldersRequest {
     const METHOD: &'static str = "workspace/workspaceFolders";
 }
 
-///The selection range request is sent from the client to the server to return
-///suggested selection ranges at given positions. A selection range is a range
-///around the cursor position which the user might be interested in selecting.
-///Typically, but not necessary, selection ranges correspond to the nodes of the
-///syntax tree.
-/// Selection ranges should be computed independently for each position. Ranges
-/// for a specific position should form hierarchy: each range has an optional,
-/// strictly larger, parent range.
-#[cfg(feature = "proposed")]
+/// The `window/workDoneProgress/create` request is sent from the server
+/// to the clientto ask the client to create a work done progress.
+#[derive(Debug)]
+pub enum WorkDoneProgressCreate {}
+
+impl Request for WorkDoneProgressCreate {
+    type Params = WorkDoneProgressCreateParams;
+    type Result = ();
+    const METHOD: &'static str = "window/workDoneProgress/create";
+}
+
+/// The selection range request is sent from the client to the server to return
+/// suggested selection ranges at given positions. A selection range is a range
+/// around the cursor position which the user might be interested in selecting.
+///
+/// A selection range in the return array is for the position in the provided parameters at the same index.
+/// Therefore positions[i] must be contained in result[i].range.
+///
+/// Typically, but not necessary, selection ranges correspond to the nodes of the
+/// syntax tree.
 pub enum SelectionRangeRequest {}
 
-#[cfg(feature = "proposed")]
 impl Request for SelectionRangeRequest {
     type Params = SelectionRangeParams;
-    type Result = Vec<SelectionRange>;
+    type Result = Option<Vec<SelectionRange>>;
     const METHOD: &'static str = "textDocument/selectionRange";
+}
+
+#[cfg(feature = "proposed")]
+pub enum CallHierarchyPrepare {}
+
+#[cfg(feature = "proposed")]
+impl Request for CallHierarchyPrepare {
+    type Params = CallHierarchyPrepareParams;
+    type Result = Option<Vec<CallHierarchyItem>>;
+    const METHOD: &'static str = "textDocument/prepareCallHierarchy";
+}
+
+#[cfg(feature = "proposed")]
+pub enum CallHierarchyIncomingCalls {}
+
+#[cfg(feature = "proposed")]
+impl Request for CallHierarchyIncomingCalls {
+    type Params = CallHierarchyIncomingCallsParams;
+    type Result = Option<Vec<CallHierarchyIncomingCall>>;
+    const METHOD: &'static str = "callHierarchy/incomingCalls";
+}
+
+#[cfg(feature = "proposed")]
+pub enum CallHierarchyOutgoingCalls {}
+
+#[cfg(feature = "proposed")]
+impl Request for CallHierarchyOutgoingCalls {
+    type Params = CallHierarchyOutgoingCallsParams;
+    type Result = Option<Vec<CallHierarchyOutgoingCall>>;
+    const METHOD: &'static str = "callHierarchy/outgoingCalls";
+}
+
+#[cfg(feature = "proposed")]
+pub enum SemanticTokensRequest {}
+
+#[cfg(feature = "proposed")]
+impl Request for SemanticTokensRequest {
+    type Params = SemanticTokensParams;
+    type Result = Option<SemanticTokensResult>;
+    const METHOD: &'static str = "textDocument/semanticTokens";
+}
+
+#[cfg(feature = "proposed")]
+pub enum SemanticTokensEditsRequest {}
+
+#[cfg(feature = "proposed")]
+impl Request for SemanticTokensEditsRequest {
+    type Params = SemanticTokensEditsParams;
+    type Result = Option<SemanticTokensEditResult>;
+    const METHOD: &'static str = "textDocument/semanticTokens/edits";
+}
+
+#[cfg(feature = "proposed")]
+pub enum SemanticTokensRangeRequest {}
+
+#[cfg(feature = "proposed")]
+impl Request for SemanticTokensRangeRequest {
+    type Params = SemanticTokensRangeParams;
+    type Result = Option<SemanticTokensRangeResult>;
+    const METHOD: &'static str = "textDocument/semanticTokens/range";
 }
 
 #[cfg(test)]
@@ -625,10 +690,12 @@ mod test {
         check_macro!("initialize");
         check_macro!("shutdown");
         check_macro!("window/showMessageRequest");
+        check_macro!("window/workDoneProgress/create");
         check_macro!("client/registerCapability");
         check_macro!("client/unregisterCapability");
         check_macro!("workspace/symbol");
         check_macro!("workspace/executeCommand");
+        check_macro!("textDocument/willSaveWaitUntil");
         check_macro!("textDocument/completion");
         check_macro!("completionItem/resolve");
         check_macro!("textDocument/hover");
@@ -654,6 +721,7 @@ mod test {
         check_macro!("textDocument/prepareRename");
         check_macro!("workspace/workspaceFolders");
         check_macro!("textDocument/implementation");
+        check_macro!("textDocument/selectionRange");
         check_macro!("textDocument/typeDefinition");
         check_macro!("workspace/configuration");
     }
@@ -661,6 +729,11 @@ mod test {
     #[test]
     #[cfg(feature = "proposed")]
     fn check_proposed_macro_definitions() {
-        check_macro!("textDocument/selectionRange");
+        check_macro!("callHierarchy/incomingCalls");
+        check_macro!("callHierarchy/outgoingCalls");
+        check_macro!("textDocument/prepareCallHierarchy");
+        check_macro!("textDocument/semanticTokens");
+        check_macro!("textDocument/semanticTokens/edits");
+        check_macro!("textDocument/semanticTokens/range");
     }
 }

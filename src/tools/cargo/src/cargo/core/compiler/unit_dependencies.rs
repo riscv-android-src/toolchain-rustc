@@ -22,8 +22,9 @@ use crate::core::dependency::DepKind;
 use crate::core::profiles::{Profile, Profiles, UnitFor};
 use crate::core::resolver::features::{FeaturesFor, ResolvedFeatures};
 use crate::core::resolver::Resolve;
-use crate::core::{InternedString, Package, PackageId, PackageSet, Target, Workspace};
+use crate::core::{Package, PackageId, PackageSet, Target, Workspace};
 use crate::ops::resolve_all_features;
+use crate::util::interning::InternedString;
 use crate::util::Config;
 use crate::CargoResult;
 use log::trace;
@@ -119,10 +120,7 @@ fn calc_deps_of_std(
         deps_of_roots(roots, &mut state)?;
     }
     state.is_std = false;
-    Ok(Some(std::mem::replace(
-        &mut state.unit_dependencies,
-        HashMap::new(),
-    )))
+    Ok(Some(std::mem::take(&mut state.unit_dependencies)))
 }
 
 /// Add the standard library units to the `unit_dependencies`.

@@ -28,7 +28,7 @@
 #![allow(clippy::unneeded_field_pattern)]
 // false positives in target-specific code, for details see
 // https://github.com/rust-lang/cargo/pull/7251#pullrequestreview-274914270
-#![allow(clippy::identity_conversion)]
+#![allow(clippy::useless_conversion)]
 
 use crate::core::shell::Verbosity::Verbose;
 use crate::core::Shell;
@@ -163,7 +163,13 @@ fn _display_error(err: &Error, shell: &mut Shell, as_err: bool) -> bool {
             return true;
         }
         drop(writeln!(shell.err(), "\nCaused by:"));
-        drop(writeln!(shell.err(), "  {}", cause));
+        for line in cause.to_string().lines() {
+            if line.is_empty() {
+                drop(writeln!(shell.err(), ""));
+            } else {
+                drop(writeln!(shell.err(), "  {}", line));
+            }
+        }
     }
     false
 }

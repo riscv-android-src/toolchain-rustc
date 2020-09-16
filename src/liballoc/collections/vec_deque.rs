@@ -7,6 +7,8 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+// ignore-tidy-filelength
+
 use core::array::LengthAtMost32;
 use core::cmp::{self, Ordering};
 use core::fmt;
@@ -201,25 +203,27 @@ impl<T> VecDeque<T> {
     /// Turn ptr into a slice
     #[inline]
     unsafe fn buffer_as_slice(&self) -> &[T] {
-        slice::from_raw_parts(self.ptr(), self.cap())
+        unsafe { slice::from_raw_parts(self.ptr(), self.cap()) }
     }
 
     /// Turn ptr into a mut slice
     #[inline]
     unsafe fn buffer_as_mut_slice(&mut self) -> &mut [T] {
-        slice::from_raw_parts_mut(self.ptr(), self.cap())
+        unsafe { slice::from_raw_parts_mut(self.ptr(), self.cap()) }
     }
 
     /// Moves an element out of the buffer
     #[inline]
     unsafe fn buffer_read(&mut self, off: usize) -> T {
-        ptr::read(self.ptr().add(off))
+        unsafe { ptr::read(self.ptr().add(off)) }
     }
 
     /// Writes an element into the buffer, moving it.
     #[inline]
     unsafe fn buffer_write(&mut self, off: usize, value: T) {
-        ptr::write(self.ptr().add(off), value);
+        unsafe {
+            ptr::write(self.ptr().add(off), value);
+        }
     }
 
     /// Returns `true` if the buffer is at full capacity.
@@ -268,7 +272,9 @@ impl<T> VecDeque<T> {
             len,
             self.cap()
         );
-        ptr::copy(self.ptr().add(src), self.ptr().add(dst), len);
+        unsafe {
+            ptr::copy(self.ptr().add(src), self.ptr().add(dst), len);
+        }
     }
 
     /// Copies a contiguous block of memory len long from src to dst
@@ -290,7 +296,9 @@ impl<T> VecDeque<T> {
             len,
             self.cap()
         );
-        ptr::copy_nonoverlapping(self.ptr().add(src), self.ptr().add(dst), len);
+        unsafe {
+            ptr::copy_nonoverlapping(self.ptr().add(src), self.ptr().add(dst), len);
+        }
     }
 
     /// Copies a potentially wrapping block of memory len long from src to dest.
@@ -330,7 +338,9 @@ impl<T> VecDeque<T> {
                 // 2 [_ _ A A A A B B _]
                 //            D . . .
                 //
-                self.copy(dst, src, len);
+                unsafe {
+                    self.copy(dst, src, len);
+                }
             }
             (false, false, true) => {
                 // dst before src, src doesn't wrap, dst wraps
@@ -341,8 +351,10 @@ impl<T> VecDeque<T> {
                 // 3 [B B B B _ _ _ A A]
                 //    . .           D .
                 //
-                self.copy(dst, src, dst_pre_wrap_len);
-                self.copy(0, src + dst_pre_wrap_len, len - dst_pre_wrap_len);
+                unsafe {
+                    self.copy(dst, src, dst_pre_wrap_len);
+                    self.copy(0, src + dst_pre_wrap_len, len - dst_pre_wrap_len);
+                }
             }
             (true, false, true) => {
                 // src before dst, src doesn't wrap, dst wraps
@@ -353,8 +365,10 @@ impl<T> VecDeque<T> {
                 // 3 [B B _ _ _ A A A A]
                 //    . .           D .
                 //
-                self.copy(0, src + dst_pre_wrap_len, len - dst_pre_wrap_len);
-                self.copy(dst, src, dst_pre_wrap_len);
+                unsafe {
+                    self.copy(0, src + dst_pre_wrap_len, len - dst_pre_wrap_len);
+                    self.copy(dst, src, dst_pre_wrap_len);
+                }
             }
             (false, true, false) => {
                 // dst before src, src wraps, dst doesn't wrap
@@ -365,8 +379,10 @@ impl<T> VecDeque<T> {
                 // 3 [C C _ _ _ B B C C]
                 //              D . . .
                 //
-                self.copy(dst, src, src_pre_wrap_len);
-                self.copy(dst + src_pre_wrap_len, 0, len - src_pre_wrap_len);
+                unsafe {
+                    self.copy(dst, src, src_pre_wrap_len);
+                    self.copy(dst + src_pre_wrap_len, 0, len - src_pre_wrap_len);
+                }
             }
             (true, true, false) => {
                 // src before dst, src wraps, dst doesn't wrap
@@ -377,8 +393,10 @@ impl<T> VecDeque<T> {
                 // 3 [C C A A _ _ _ C C]
                 //    D . . .
                 //
-                self.copy(dst + src_pre_wrap_len, 0, len - src_pre_wrap_len);
-                self.copy(dst, src, src_pre_wrap_len);
+                unsafe {
+                    self.copy(dst + src_pre_wrap_len, 0, len - src_pre_wrap_len);
+                    self.copy(dst, src, src_pre_wrap_len);
+                }
             }
             (false, true, true) => {
                 // dst before src, src wraps, dst wraps
@@ -392,9 +410,11 @@ impl<T> VecDeque<T> {
                 //
                 debug_assert!(dst_pre_wrap_len > src_pre_wrap_len);
                 let delta = dst_pre_wrap_len - src_pre_wrap_len;
-                self.copy(dst, src, src_pre_wrap_len);
-                self.copy(dst + src_pre_wrap_len, 0, delta);
-                self.copy(0, delta, len - dst_pre_wrap_len);
+                unsafe {
+                    self.copy(dst, src, src_pre_wrap_len);
+                    self.copy(dst + src_pre_wrap_len, 0, delta);
+                    self.copy(0, delta, len - dst_pre_wrap_len);
+                }
             }
             (true, true, true) => {
                 // src before dst, src wraps, dst wraps
@@ -408,9 +428,11 @@ impl<T> VecDeque<T> {
                 //
                 debug_assert!(src_pre_wrap_len > dst_pre_wrap_len);
                 let delta = src_pre_wrap_len - dst_pre_wrap_len;
-                self.copy(delta, 0, len - src_pre_wrap_len);
-                self.copy(0, self.cap() - delta, delta);
-                self.copy(dst, src, dst_pre_wrap_len);
+                unsafe {
+                    self.copy(delta, 0, len - src_pre_wrap_len);
+                    self.copy(0, self.cap() - delta, delta);
+                    self.copy(dst, src, dst_pre_wrap_len);
+                }
             }
         }
     }
@@ -440,13 +462,17 @@ impl<T> VecDeque<T> {
             // Nop
         } else if self.head < old_capacity - self.tail {
             // B
-            self.copy_nonoverlapping(old_capacity, 0, self.head);
+            unsafe {
+                self.copy_nonoverlapping(old_capacity, 0, self.head);
+            }
             self.head += old_capacity;
             debug_assert!(self.head > self.tail);
         } else {
             // C
             let new_tail = new_capacity - (old_capacity - self.tail);
-            self.copy_nonoverlapping(new_tail, self.tail, old_capacity - self.tail);
+            unsafe {
+                self.copy_nonoverlapping(new_tail, self.tail, old_capacity - self.tail);
+            }
             self.tail = new_tail;
             debug_assert!(self.head < self.tail);
         }
@@ -1058,6 +1084,108 @@ impl<T> VecDeque<T> {
         self.tail == self.head
     }
 
+    fn range_start_end<R>(&self, range: R) -> (usize, usize)
+    where
+        R: RangeBounds<usize>,
+    {
+        let len = self.len();
+        let start = match range.start_bound() {
+            Included(&n) => n,
+            Excluded(&n) => n + 1,
+            Unbounded => 0,
+        };
+        let end = match range.end_bound() {
+            Included(&n) => n + 1,
+            Excluded(&n) => n,
+            Unbounded => len,
+        };
+        assert!(start <= end, "lower bound was too large");
+        assert!(end <= len, "upper bound was too large");
+        (start, end)
+    }
+
+    /// Creates an iterator that covers the specified range in the `VecDeque`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the starting point is greater than the end point or if
+    /// the end point is greater than the length of the vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(deque_range)]
+    ///
+    /// use std::collections::VecDeque;
+    ///
+    /// let v: VecDeque<_> = vec![1, 2, 3].into_iter().collect();
+    /// let range = v.range(2..).copied().collect::<VecDeque<_>>();
+    /// assert_eq!(range, [3]);
+    ///
+    /// // A full range covers all contents
+    /// let all = v.range(..);
+    /// assert_eq!(all.len(), 3);
+    /// ```
+    #[inline]
+    #[unstable(feature = "deque_range", issue = "74217")]
+    pub fn range<R>(&self, range: R) -> Iter<'_, T>
+    where
+        R: RangeBounds<usize>,
+    {
+        let (start, end) = self.range_start_end(range);
+        let tail = self.wrap_add(self.tail, start);
+        let head = self.wrap_add(self.tail, end);
+        Iter {
+            tail,
+            head,
+            // The shared reference we have in &self is maintained in the '_ of Iter.
+            ring: unsafe { self.buffer_as_slice() },
+        }
+    }
+
+    /// Creates an iterator that covers the specified mutable range in the `VecDeque`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the starting point is greater than the end point or if
+    /// the end point is greater than the length of the vector.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(deque_range)]
+    ///
+    /// use std::collections::VecDeque;
+    ///
+    /// let mut v: VecDeque<_> = vec![1, 2, 3].into_iter().collect();
+    /// for v in v.range_mut(2..) {
+    ///   *v *= 2;
+    /// }
+    /// assert_eq!(v, vec![1, 2, 6]);
+    ///
+    /// // A full range covers all contents
+    /// for v in v.range_mut(..) {
+    ///   *v *= 2;
+    /// }
+    /// assert_eq!(v, vec![2, 4, 12]);
+    /// ```
+    #[inline]
+    #[unstable(feature = "deque_range", issue = "74217")]
+    pub fn range_mut<R>(&mut self, range: R) -> IterMut<'_, T>
+    where
+        R: RangeBounds<usize>,
+    {
+        let (start, end) = self.range_start_end(range);
+        let tail = self.wrap_add(self.tail, start);
+        let head = self.wrap_add(self.tail, end);
+        IterMut {
+            tail,
+            head,
+            // The shared reference we have in &mut self is maintained in the '_ of IterMut.
+            ring: unsafe { self.buffer_as_mut_slice() },
+        }
+    }
+
     /// Creates a draining iterator that removes the specified range in the
     /// `VecDeque` and yields the removed items.
     ///
@@ -1103,19 +1231,7 @@ impl<T> VecDeque<T> {
         // When finished, the remaining data will be copied back to cover the hole,
         // and the head/tail values will be restored correctly.
         //
-        let len = self.len();
-        let start = match range.start_bound() {
-            Included(&n) => n,
-            Excluded(&n) => n + 1,
-            Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            Included(&n) => n + 1,
-            Excluded(&n) => n,
-            Unbounded => len,
-        };
-        assert!(start <= end, "drain lower bound was too large");
-        assert!(end <= len, "drain upper bound was too large");
+        let (start, end) = self.range_start_end(range);
 
         // The deque's elements are parted into three segments:
         // * self.tail  -> drain_tail
@@ -2297,7 +2413,9 @@ impl<T> VecDeque<T> {
 
     unsafe fn rotate_left_inner(&mut self, mid: usize) {
         debug_assert!(mid * 2 <= self.len());
-        self.wrap_copy(self.head, self.tail, mid);
+        unsafe {
+            self.wrap_copy(self.head, self.tail, mid);
+        }
         self.head = self.wrap_add(self.head, mid);
         self.tail = self.wrap_add(self.tail, mid);
     }
@@ -2306,7 +2424,9 @@ impl<T> VecDeque<T> {
         debug_assert!(k * 2 <= self.len());
         self.head = self.wrap_sub(self.head, k);
         self.tail = self.wrap_sub(self.tail, k);
-        self.wrap_copy(self.tail, self.head, k);
+        unsafe {
+            self.wrap_copy(self.tail, self.head, k);
+        }
     }
 }
 

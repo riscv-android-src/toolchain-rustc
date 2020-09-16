@@ -7,10 +7,10 @@
 // <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
-use smallvec::SmallVec;
-use std::fmt::{self, Write};
-use std::iter::Fuse;
-use std::ops::Range;
+use core::fmt::{self, Write};
+use core::iter::Fuse;
+use core::ops::Range;
+use tinyvec::TinyVec;
 
 #[derive(Clone)]
 enum DecompositionType {
@@ -32,26 +32,26 @@ pub struct Decompositions<I> {
     // 2) "Ready" characters which are sorted and ready to emit on demand;
     // 3) A "pending" block which stills needs more characters for us to be able
     //    to sort in canonical order and is not safe to emit.
-    buffer: SmallVec<[(u8, char); 4]>,
+    buffer: TinyVec<[(u8, char); 4]>,
     ready: Range<usize>,
 }
 
 #[inline]
-pub fn new_canonical<I: Iterator<Item=char>>(iter: I) -> Decompositions<I> {
+pub fn new_canonical<I: Iterator<Item = char>>(iter: I) -> Decompositions<I> {
     Decompositions {
         kind: self::DecompositionType::Canonical,
         iter: iter.fuse(),
-        buffer: SmallVec::new(),
+        buffer: TinyVec::new(),
         ready: 0..0,
     }
 }
 
 #[inline]
-pub fn new_compatible<I: Iterator<Item=char>>(iter: I) -> Decompositions<I> {
+pub fn new_compatible<I: Iterator<Item = char>>(iter: I) -> Decompositions<I> {
     Decompositions {
         kind: self::DecompositionType::Compatible,
         iter: iter.fuse(),
-        buffer: SmallVec::new(),
+        buffer: TinyVec::new(),
         ready: 0..0,
     }
 }
@@ -78,8 +78,8 @@ impl<I> Decompositions<I> {
 
     #[inline]
     fn reset_buffer(&mut self) {
-        // Equivalent to `self.buffer.drain(0..self.ready.end)` (if SmallVec
-        // supported this API)
+        // Equivalent to `self.buffer.drain(0..self.ready.end)`
+        // but faster than drain() if the buffer is a SmallVec or TinyVec
         let pending = self.buffer.len() - self.ready.end;
         for i in 0..pending {
             self.buffer[i] = self.buffer[i + self.ready.end];
@@ -99,7 +99,7 @@ impl<I> Decompositions<I> {
     }
 }
 
-impl<I: Iterator<Item=char>> Iterator for Decompositions<I> {
+impl<I: Iterator<Item = char>> Iterator for Decompositions<I> {
     type Item = char;
 
     #[inline]
@@ -149,7 +149,7 @@ impl<I: Iterator<Item=char>> Iterator for Decompositions<I> {
     }
 }
 
-impl<I: Iterator<Item=char> + Clone> fmt::Display for Decompositions<I> {
+impl<I: Iterator<Item = char> + Clone> fmt::Display for Decompositions<I> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         for c in self.clone() {
             f.write_char(c)?;

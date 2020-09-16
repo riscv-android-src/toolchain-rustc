@@ -20,7 +20,6 @@ use serde::Serialize;
 
 use crate::core::compiler::{CompileKind, RustcTargetData};
 use crate::core::dependency::DepKind;
-use crate::core::interning::InternedString;
 use crate::core::resolver::{HasDevUnits, Resolve};
 use crate::core::source::MaybePackage;
 use crate::core::{Dependency, Manifest, PackageId, SourceId, Target};
@@ -28,6 +27,7 @@ use crate::core::{FeatureMap, SourceMap, Summary, Workspace};
 use crate::ops;
 use crate::util::config::PackageCacheLock;
 use crate::util::errors::{CargoResult, CargoResultExt, HttpNot200};
+use crate::util::interning::InternedString;
 use crate::util::network::Retry;
 use crate::util::{self, internal, Config, Progress, ProgressStyle};
 
@@ -735,7 +735,7 @@ impl<'a, 'cfg> Downloads<'a, 'cfg> {
                 .pending
                 .remove(&token)
                 .expect("got a token for a non-in-progress transfer");
-            let data = mem::replace(&mut *dl.data.borrow_mut(), Vec::new());
+            let data = mem::take(&mut *dl.data.borrow_mut());
             let mut handle = self.set.multi.remove(handle)?;
             self.pending_ids.remove(&dl.id);
 

@@ -13,34 +13,41 @@
 [package]
 edition = "2018"
 name = "annotate-snippets"
-version = "0.6.1"
+version = "0.8.0"
 authors = ["Zibi Braniecki <gandalf@mozilla.com>"]
 description = "Library for building code annotations"
 readme = "README.md"
 keywords = ["code", "analysis", "ascii", "errors", "debug"]
 license = "Apache-2.0/MIT"
 repository = "https://github.com/rust-lang/annotate-snippets-rs"
-[dependencies.ansi_term]
-version = "0.11.0"
+
+[[bench]]
+name = "simple"
+harness = false
+[dependencies.yansi-term]
+version = "0.1"
 optional = true
-[dev-dependencies.ansi_term]
-version = "^0.12"
+[dev-dependencies.criterion]
+version = "0.3"
 
 [dev-dependencies.difference]
-version = "^2.0"
+version = "2.0"
 
 [dev-dependencies.glob]
-version = "^0.3"
+version = "0.3"
 
 [dev-dependencies.serde]
-version = "^1.0"
+version = "1.0"
 features = ["derive"]
 
-[dev-dependencies.serde_yaml]
-version = "^0.8"
+[dev-dependencies.toml]
+version = "0.5"
+
+[dev-dependencies.yansi-term]
+version = "0.1"
 
 [features]
-color = ["ansi_term"]
+color = ["yansi-term"]
 default = []
 [badges.coveralls]
 branch = "master"

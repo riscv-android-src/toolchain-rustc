@@ -110,6 +110,9 @@ extern crate fnv;
 extern crate log;
 extern crate regex;
 
+#[cfg(feature = "serde1")]
+extern crate serde;
+
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
@@ -119,15 +122,18 @@ use std::path::Path;
 use std::str;
 
 use aho_corasick::AhoCorasick;
-use bstr::{B, BStr, BString};
+use bstr::{ByteSlice, ByteVec, B};
 use regex::bytes::{Regex, RegexBuilder, RegexSet};
 
-use pathutil::{file_name, file_name_ext, normalize_path};
 use glob::MatchStrategy;
 pub use glob::{Glob, GlobBuilder, GlobMatcher};
+use pathutil::{file_name, file_name_ext, normalize_path};
 
 mod glob;
 mod pathutil;
+
+#[cfg(feature = "serde1")]
+mod serde_impl;
 
 /// Represents an error that can occur when parsing a glob pattern.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -202,9 +208,7 @@ impl ErrorKind {
             ErrorKind::UnclosedClass => {
                 "unclosed character class; missing ']'"
             }
-            ErrorKind::InvalidRange(_, _) => {
-                "invalid character range"
-            }
+            ErrorKind::InvalidRange(_, _) => "invalid character range",
             ErrorKind::UnopenedAlternates => {
                 "unopened alternate group; missing '{' \
                 (maybe escape '}' with '[}]'?)"
@@ -216,9 +220,7 @@ impl ErrorKind {
             ErrorKind::NestedAlternates => {
                 "nested alternate groups are not allowed"
             }
-            ErrorKind::DanglingEscape => {
-                "dangling '\\'"
-            }
+            ErrorKind::DanglingEscape => "dangling '\\'",
             ErrorKind::Regex(ref err) => err,
             ErrorKind::__Nonexhaustive => unreachable!(),
         }
@@ -245,9 +247,7 @@ impl fmt::Display for ErrorKind {
             | ErrorKind::UnclosedAlternates
             | ErrorKind::NestedAlternates
             | ErrorKind::DanglingEscape
-            | ErrorKind::Regex(_) => {
-                write!(f, "{}", self.description())
-            }
+            | ErrorKind::Regex(_) => write!(f, "{}", self.description()),
             ErrorKind::InvalidRange(s, e) => {
                 write!(f, "invalid range; '{}' > '{}'", s, e)
             }
@@ -262,21 +262,20 @@ fn new_regex(pat: &str) -> Result<Regex, Error> {
         .size_limit(10 * (1 << 20))
         .dfa_size_limit(10 * (1 << 20))
         .build()
-        .map_err(|err| {
-            Error {
-                glob: Some(pat.to_string()),
-                kind: ErrorKind::Regex(err.to_string()),
-            }
+        .map_err(|err| Error {
+            glob: Some(pat.to_string()),
+            kind: ErrorKind::Regex(err.to_string()),
         })
 }
 
 fn new_regex_set<I, S>(pats: I) -> Result<RegexSet, Error>
-        where S: AsRef<str>, I: IntoIterator<Item=S> {
-    RegexSet::new(pats).map_err(|err| {
-        Error {
-            glob: None,
-            kind: ErrorKind::Regex(err.to_string()),
-        }
+where
+    S: AsRef<str>,
+    I: IntoIterator<Item = S>,
+{
+    RegexSet::new(pats).map_err(|err| Error {
+        glob: None,
+        kind: ErrorKind::Regex(err.to_string()),
     })
 }
 
@@ -294,10 +293,7 @@ impl GlobSet {
     /// Create an empty `GlobSet`. An empty set matches nothing.
     #[inline]
     pub fn empty() -> GlobSet {
-        GlobSet {
-            len: 0,
-            strats: vec![],
-        }
+        GlobSet { len: 0, strats: vec![] }
     }
 
     /// Returns true if this set is empty, and therefore matches nothing.
@@ -432,11 +428,17 @@ impl GlobSet {
                 }
             }
         }
-        debug!("built glob set; {} literals, {} basenames, {} extensions, \
+        debug!(
+            "built glob set; {} literals, {} basenames, {} extensions, \
                 {} prefixes, {} suffixes, {} required extensions, {} regexes",
-                lits.0.len(), base_lits.0.len(), exts.0.len(),
-                prefixes.literals.len(), suffixes.literals.len(),
-                required_exts.0.len(), regexes.literals.len());
+            lits.0.len(),
+            base_lits.0.len(),
+            exts.0.len(),
+            prefixes.literals.len(),
+            suffixes.literals.len(),
+            required_exts.0.len(),
+            regexes.literals.len()
+        );
         Ok(GlobSet {
             len: pats.len(),
             strats: vec![
@@ -446,7 +448,8 @@ impl GlobSet {
                 GlobSetMatchStrategy::Suffix(suffixes.suffix()),
                 GlobSetMatchStrategy::Prefix(prefixes.prefix()),
                 GlobSetMatchStrategy::RequiredExtension(
-                    required_exts.build()?),
+                    required_exts.build()?,
+                ),
                 GlobSetMatchStrategy::Regex(regexes.regex_set()?),
             ],
         })
@@ -490,25 +493,21 @@ impl GlobSetBuilder {
 /// path against multiple globs or sets of globs.
 #[derive(Clone, Debug)]
 pub struct Candidate<'a> {
-    path: Cow<'a, BStr>,
-    basename: Cow<'a, BStr>,
-    ext: Cow<'a, BStr>,
+    path: Cow<'a, [u8]>,
+    basename: Cow<'a, [u8]>,
+    ext: Cow<'a, [u8]>,
 }
 
 impl<'a> Candidate<'a> {
     /// Create a new candidate for matching from the given path.
     pub fn new<P: AsRef<Path> + ?Sized>(path: &'a P) -> Candidate<'a> {
-        let path = normalize_path(BString::from_path_lossy(path.as_ref()));
+        let path = normalize_path(Vec::from_path_lossy(path.as_ref()));
         let basename = file_name(&path).unwrap_or(Cow::Borrowed(B("")));
         let ext = file_name_ext(&basename).unwrap_or(Cow::Borrowed(B("")));
-        Candidate {
-            path: path,
-            basename: basename,
-            ext: ext,
-        }
+        Candidate { path: path, basename: basename, ext: ext }
     }
 
-    fn path_prefix(&self, max: usize) -> &BStr {
+    fn path_prefix(&self, max: usize) -> &[u8] {
         if self.path.len() <= max {
             &*self.path
         } else {
@@ -516,7 +515,7 @@ impl<'a> Candidate<'a> {
         }
     }
 
-    fn path_suffix(&self, max: usize) -> &BStr {
+    fn path_suffix(&self, max: usize) -> &[u8] {
         if self.path.len() <= max {
             &*self.path
         } else {
@@ -767,11 +766,7 @@ struct MultiStrategyBuilder {
 
 impl MultiStrategyBuilder {
     fn new() -> MultiStrategyBuilder {
-        MultiStrategyBuilder {
-            literals: vec![],
-            map: vec![],
-            longest: 0,
-        }
+        MultiStrategyBuilder { literals: vec![], map: vec![], longest: 0 }
     }
 
     fn add(&mut self, global_index: usize, literal: String) {

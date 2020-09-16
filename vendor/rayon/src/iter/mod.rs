@@ -72,6 +72,12 @@
 //! to mirror the unstable `std::ops::Try` with implementations for `Option` and
 //! `Result`, where `Some`/`Ok` values will let those iterators continue, but
 //! `None`/`Err` values will exit early.
+//!
+//! A note about object safety: It is currently _not_ possible to wrap
+//! a `ParallelIterator` (or any trait that depends on it) using a
+//! `Box<dyn ParallelIterator>` or other kind of dynamic allocation,
+//! because `ParallelIterator` is **not object-safe**.
+//! (This keeps the implementation simpler and allows extra optimizations.)
 
 use self::plumbing::*;
 use self::private::Try;
@@ -80,9 +86,14 @@ use std::cmp::{self, Ordering};
 use std::iter::{Product, Sum};
 use std::ops::Fn;
 
+pub mod plumbing;
+
+#[cfg(test)]
+mod test;
+
 // There is a method to the madness here:
 //
-// - Most of these modules are private but expose certain types to the end-user
+// - These modules are private but expose certain types to the end-user
 //   (e.g., `enumerate::Enumerate`) -- specifically, the types that appear in the
 //   public API surface of the `ParallelIterator` traits.
 // - In **this** module, those public types are always used unprefixed, which forces
@@ -91,92 +102,90 @@ use std::ops::Fn;
 //   e.g. `find::find()`, are always used **prefixed**, so that they
 //   can be readily distinguished.
 
-mod par_bridge;
-pub use self::par_bridge::{IterBridge, ParallelBridge};
-
 mod chain;
+mod chunks;
+mod cloned;
+mod collect;
+mod copied;
+mod empty;
+mod enumerate;
+mod extend;
+mod filter;
+mod filter_map;
 mod find;
 mod find_first_last;
-pub use self::chain::Chain;
-mod chunks;
-pub use self::chunks::Chunks;
-mod collect;
-mod enumerate;
-pub use self::enumerate::Enumerate;
-mod filter;
-pub use self::filter::Filter;
-mod filter_map;
-pub use self::filter_map::FilterMap;
 mod flat_map;
-pub use self::flat_map::FlatMap;
 mod flatten;
-pub use self::flatten::Flatten;
 mod fold;
 mod for_each;
 mod from_par_iter;
-pub mod plumbing;
-pub use self::fold::{Fold, FoldWith};
-mod try_fold;
-pub use self::try_fold::{TryFold, TryFoldWith};
+mod inspect;
+mod interleave;
+mod interleave_shortest;
+mod intersperse;
+mod len;
+mod map;
+mod map_with;
+mod multizip;
+mod noop;
+mod once;
+mod panic_fuse;
+mod par_bridge;
+mod product;
 mod reduce;
+mod repeat;
+mod rev;
 mod skip;
+mod splitter;
+mod sum;
+mod take;
+mod try_fold;
 mod try_reduce;
 mod try_reduce_with;
-pub use self::skip::Skip;
-mod splitter;
-pub use self::splitter::{split, Split};
-mod take;
-pub use self::take::Take;
-mod map;
-pub use self::map::Map;
-mod map_with;
-pub use self::map_with::{MapInit, MapWith};
-mod zip;
-pub use self::zip::Zip;
-mod zip_eq;
-pub use self::zip_eq::ZipEq;
-mod interleave;
-pub use self::interleave::Interleave;
-mod interleave_shortest;
-pub use self::interleave_shortest::InterleaveShortest;
-mod intersperse;
-pub use self::intersperse::Intersperse;
-mod update;
-pub use self::update::Update;
-
-mod noop;
-mod rev;
-pub use self::rev::Rev;
-mod len;
-pub use self::len::{MaxLen, MinLen};
-
-mod cloned;
-pub use self::cloned::Cloned;
-mod copied;
-pub use self::copied::Copied;
-
-mod product;
-mod sum;
-
-mod inspect;
-pub use self::inspect::Inspect;
-mod panic_fuse;
-pub use self::panic_fuse::PanicFuse;
-mod while_some;
-pub use self::while_some::WhileSome;
-mod extend;
-mod repeat;
 mod unzip;
-pub use self::repeat::{repeat, Repeat};
-pub use self::repeat::{repeatn, RepeatN};
+mod update;
+mod while_some;
+mod zip;
+mod zip_eq;
 
-mod empty;
-pub use self::empty::{empty, Empty};
-mod once;
-pub use self::once::{once, Once};
+pub use self::{
+    chain::Chain,
+    chunks::Chunks,
+    cloned::Cloned,
+    copied::Copied,
+    empty::{empty, Empty},
+    enumerate::Enumerate,
+    filter::Filter,
+    filter_map::FilterMap,
+    flat_map::FlatMap,
+    flatten::Flatten,
+    fold::{Fold, FoldWith},
+    inspect::Inspect,
+    interleave::Interleave,
+    interleave_shortest::InterleaveShortest,
+    intersperse::Intersperse,
+    len::{MaxLen, MinLen},
+    map::Map,
+    map_with::{MapInit, MapWith},
+    multizip::MultiZip,
+    once::{once, Once},
+    panic_fuse::PanicFuse,
+    par_bridge::{IterBridge, ParallelBridge},
+    repeat::{repeat, repeatn, Repeat, RepeatN},
+    rev::Rev,
+    skip::Skip,
+    splitter::{split, Split},
+    take::Take,
+    try_fold::{TryFold, TryFoldWith},
+    update::Update,
+    while_some::WhileSome,
+    zip::Zip,
+    zip_eq::ZipEq,
+};
 
-#[cfg(test)]
-mod test;
+mod step_by;
+#[cfg(step_by)]
+pub use self::step_by::StepBy;
 
 /// `IntoParallelIterator` implements the conversion to a [`ParallelIterator`].
 ///
@@ -395,9 +404,6 @@ pub trait ParallelIterator: Sized + Send {
     /// # Examples
     ///
     /// ```
-    /// extern crate rand;
-    /// extern crate rayon;
-    ///
     /// use rand::Rng;
     /// use rayon::prelude::*;
     ///
@@ -506,9 +512,6 @@ pub trait ParallelIterator: Sized + Send {
     /// # Examples
     ///
     /// ```
-    /// extern crate rand;
-    /// extern crate rayon;
-    ///
     /// use rand::Rng;
     /// use rayon::prelude::*;
     ///
@@ -628,9 +631,6 @@ pub trait ParallelIterator: Sized + Send {
     /// # Examples
     ///
     /// ```
-    /// extern crate rand;
-    /// extern crate rayon;
-    ///
     /// use rand::Rng;
     /// use rayon::prelude::*;
     ///
@@ -1201,7 +1201,7 @@ pub trait ParallelIterator: Sized + Send {
         FoldWith::new(self, init, fold_op)
     }
 
-    /// Perform a fallible parallel fold.
+    /// Performs a fallible parallel fold.
     ///
     /// This is a variation of [`fold()`] for operations which can fail with
     /// `Option::None` or `Result::Err`.  The first such failure stops
@@ -1235,7 +1235,7 @@ pub trait ParallelIterator: Sized + Send {
         TryFold::new(self, identity, fold_op)
     }
 
-    /// Perform a fallible parallel fold with a cloneable `init` value.
+    /// Performs a fallible parallel fold with a cloneable `init` value.
     ///
     /// This combines the `init` semantics of [`fold_with()`] and the failure
     /// semantics of [`try_fold()`].
@@ -1653,9 +1653,9 @@ pub trait ParallelIterator: Sized + Send {
     ///
     /// let c = ["lol", "NaN", "5", "5"];
     ///
-    /// let first_number = c.par_iter().find_map_first(|s| s.parse().ok());
+    /// let found_number = c.par_iter().find_map_any(|s| s.parse().ok());
     ///
-    /// assert_eq!(first_number, Some(5));
+    /// assert_eq!(found_number, Some(5));
     /// ```
     fn find_map_any<P, R>(self, predicate: P) -> Option<R>
     where
@@ -1721,9 +1721,9 @@ pub trait ParallelIterator: Sized + Send {
     ///
     /// let c = ["lol", "NaN", "2", "5"];
     ///
-    /// let first_number = c.par_iter().find_map_last(|s| s.parse().ok());
+    /// let last_number = c.par_iter().find_map_last(|s| s.parse().ok());
     ///
-    /// assert_eq!(first_number, Some(5));
+    /// assert_eq!(last_number, Some(5));
     /// ```
     fn find_map_last<P, R>(self, predicate: P) -> Option<R>
     where
@@ -1861,7 +1861,7 @@ pub trait ParallelIterator: Sized + Send {
         PanicFuse::new(self)
     }
 
-    /// Create a fresh collection containing all the element produced
+    /// Creates a fresh collection containing all the elements produced
     /// by this parallel iterator.
     ///
     /// You may prefer to use `collect_into_vec()`, which allocates more
@@ -2135,7 +2135,7 @@ pub trait IndexedParallelIterator: ParallelIterator {
         collect::unzip_into_vecs(self, left, right);
     }
 
-    /// Iterate over tuples `(A, B)`, where the items `A` are from
+    /// Iterates over tuples `(A, B)`, where the items `A` are from
     /// this iterator and `B` are from the iterator given as argument.
     /// Like the `zip` method on ordinary iterators, if the two
     /// iterators are of unequal length, you only get the items they
@@ -2190,7 +2190,7 @@ pub trait IndexedParallelIterator: ParallelIterator {
         ZipEq::new(self, zip_op_iter)
     }
 
-    /// Interleave elements of this iterator and the other given
+    /// Interleaves elements of this iterator and the other given
     /// iterator. Alternately yields elements from this iterator and
     /// the given iterator, until both are exhausted. If one iterator
     /// is exhausted before the other, the last elements are provided
@@ -2212,7 +2212,7 @@ pub trait IndexedParallelIterator: ParallelIterator {
         Interleave::new(self, other.into_par_iter())
     }
 
-    /// Interleave elements of this iterator and the other given
+    /// Interleaves elements of this iterator and the other given
     /// iterator, until one is exhausted.
     ///
     /// # Examples
@@ -2231,7 +2231,7 @@ pub trait IndexedParallelIterator: ParallelIterator {
         InterleaveShortest::new(self, other.into_par_iter())
     }
 
-    /// Split an iterator up into fixed-size chunks.
+    /// Splits an iterator up into fixed-size chunks.
     ///
     /// Returns an iterator that returns `Vec`s of the given number of elements.
     /// If the number of elements in the iterator is not divisible by `chunk_size`,
@@ -2425,6 +2425,30 @@ pub trait IndexedParallelIterator: ParallelIterator {
     /// ```
     fn enumerate(self) -> Enumerate<Self> {
         Enumerate::new(self)
+    }
+
+    /// Creates an iterator that steps by the given amount
+    ///
+    /// # Examples
+    ///
+    /// ```
+    ///use rayon::prelude::*;
+    ///
+    /// let range = (3..10);
+    /// let result: Vec<i32> = range
+    ///    .into_par_iter()
+    ///    .step_by(3)
+    ///    .collect();
+    ///
+    /// assert_eq!(result, [3, 6, 9])
+    /// ```
+    ///
+    /// # Compatibility
+    ///
+    /// This method is only available on Rust 1.38 or greater.
+    #[cfg(step_by)]
+    fn step_by(self, step: usize) -> StepBy<Self> {
+        StepBy::new(self, step)
     }
 
     /// Creates an iterator that skips the first `n` elements.

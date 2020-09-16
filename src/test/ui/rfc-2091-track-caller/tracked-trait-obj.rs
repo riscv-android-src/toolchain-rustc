@@ -1,7 +1,5 @@
 // run-pass
 
-#![feature(track_caller)]
-
 trait Tracked {
     #[track_caller]
     fn handle(&self) {

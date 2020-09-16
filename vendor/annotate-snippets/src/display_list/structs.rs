@@ -1,52 +1,82 @@
+use std::fmt;
+
+use crate::formatter::{get_term_style, style::Stylesheet};
+
 /// List of lines to be displayed.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DisplayList {
-    pub body: Vec<DisplayLine>,
+pub struct DisplayList<'a> {
+    pub body: Vec<DisplayLine<'a>>,
+    pub stylesheet: Box<dyn Stylesheet>,
+    pub anonymized_line_numbers: bool,
 }
 
-impl From<Vec<DisplayLine>> for DisplayList {
-    fn from(body: Vec<DisplayLine>) -> Self {
-        Self { body }
+impl<'a> From<Vec<DisplayLine<'a>>> for DisplayList<'a> {
+    fn from(body: Vec<DisplayLine<'a>>) -> DisplayList<'a> {
+        Self {
+            body,
+            anonymized_line_numbers: false,
+            stylesheet: get_term_style(false),
+        }
     }
 }
 
+impl<'a> PartialEq for DisplayList<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        self.body == other.body && self.anonymized_line_numbers == other.anonymized_line_numbers
+    }
+}
+
+impl<'a> fmt::Debug for DisplayList<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DisplayList")
+            .field("body", &self.body)
+            .field("anonymized_line_numbers", &self.anonymized_line_numbers)
+            .finish()
+    }
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+pub struct FormatOptions {
+    pub color: bool,
+    pub anonymized_line_numbers: bool,
+}
+
 /// Inline annotation which can be used in either Raw or Source line.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Annotation {
+#[derive(Debug, PartialEq)]
+pub struct Annotation<'a> {
     pub annotation_type: DisplayAnnotationType,
-    pub id: Option<String>,
-    pub label: Vec<DisplayTextFragment>,
+    pub id: Option<&'a str>,
+    pub label: Vec<DisplayTextFragment<'a>>,
 }
 
 /// A single line used in `DisplayList`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DisplayLine {
+#[derive(Debug, PartialEq)]
+pub enum DisplayLine<'a> {
     /// A line with `lineno` portion of the slice.
     Source {
         lineno: Option<usize>,
         inline_marks: Vec<DisplayMark>,
-        line: DisplaySourceLine,
+        line: DisplaySourceLine<'a>,
     },
 
     /// A line indicating a folded part of the slice.
     Fold { inline_marks: Vec<DisplayMark> },
 
     /// A line which is displayed outside of slices.
-    Raw(DisplayRawLine),
+    Raw(DisplayRawLine<'a>),
 }
 
 /// A source line.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DisplaySourceLine {
+#[derive(Debug, PartialEq)]
+pub enum DisplaySourceLine<'a> {
     /// A line with the content of the Slice.
     Content {
-        text: String,
+        text: &'a str,
         range: (usize, usize), // meta information for annotation placement.
     },
 
     /// An annotation line which is displayed in context of the slice.
     Annotation {
-        annotation: Annotation,
+        annotation: Annotation<'a>,
         range: (usize, usize),
         annotation_type: DisplayAnnotationType,
         annotation_part: DisplayAnnotationPart,
@@ -58,19 +88,19 @@ pub enum DisplaySourceLine {
 
 /// Raw line - a line which does not have the `lineno` part and is not considered
 /// a part of the snippet.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DisplayRawLine {
+#[derive(Debug, PartialEq)]
+pub enum DisplayRawLine<'a> {
     /// A line which provides information about the location of the given
     /// slice in the project structure.
     Origin {
-        path: String,
+        path: &'a str,
         pos: Option<(usize, usize)>,
         header_type: DisplayHeaderType,
     },
 
     /// An annotation line which is not part of any snippet.
     Annotation {
-        annotation: Annotation,
+        annotation: Annotation<'a>,
 
         /// If set to `true`, the annotation will be aligned to the
         /// lineno delimiter of the snippet.
@@ -84,9 +114,9 @@ pub enum DisplayRawLine {
 }
 
 /// An inline text fragment which any label is composed of.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DisplayTextFragment {
-    pub content: String,
+#[derive(Debug, PartialEq)]
+pub struct DisplayTextFragment<'a> {
+    pub content: &'a str,
     pub style: DisplayTextStyle,
 }
 
@@ -125,63 +155,8 @@ pub struct DisplayMark {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DisplayMarkType {
     /// A mark indicating a multiline annotation going through the current line.
-    ///
-    /// Example:
-    /// ```
-    /// use annotate_snippets::display_list::*;
-    /// use annotate_snippets::formatter::DisplayListFormatter;
-    ///
-    /// let dlf = DisplayListFormatter::new(false, false); // Don't use colors
-    ///
-    /// let dl = DisplayList {
-    ///     body: vec![
-    ///         DisplayLine::Source {
-    ///             lineno: Some(51),
-    ///             inline_marks: vec![
-    ///                 DisplayMark {
-    ///                     mark_type: DisplayMarkType::AnnotationThrough,
-    ///                     annotation_type: DisplayAnnotationType::Error,
-    ///                 }
-    ///             ],
-    ///             line: DisplaySourceLine::Content {
-    ///                 text: "Example".to_string(),
-    ///                 range: (0, 7),
-    ///             }
-    ///         }
-    ///     ]
-    /// };
-    /// assert_eq!(dlf.format(&dl), "51 | | Example");
-    /// ```
     AnnotationThrough,
-
     /// A mark indicating a multiline annotation starting on the given line.
-    ///
-    /// Example:
-    /// ```
-    /// use annotate_snippets::display_list::*;
-    /// use annotate_snippets::formatter::DisplayListFormatter;
-    ///
-    /// let dlf = DisplayListFormatter::new(false, false); // Don't use colors
-    ///
-    /// let dl = DisplayList {
-    ///     body: vec![
-    ///         DisplayLine::Source {
-    ///             lineno: Some(51),
-    ///             inline_marks: vec![
-    ///                 DisplayMark {
-    ///                     mark_type: DisplayMarkType::AnnotationStart,
-    ///                     annotation_type: DisplayAnnotationType::Error,
-    ///                 }
-    ///             ],
-    ///             line: DisplaySourceLine::Content {
-    ///                 text: "Example".to_string(),
-    ///                 range: (0, 7),
-    ///             }
-    ///         }
-    ///     ]
-    /// };
-    /// assert_eq!(dlf.format(&dl), "51 | / Example");
-    /// ```
     AnnotationStart,
 }
 
@@ -205,49 +180,12 @@ pub enum DisplayAnnotationType {
 
 /// Information whether the header is the initial one or a consequitive one
 /// for multi-slice cases.
+// TODO: private
 #[derive(Debug, Clone, PartialEq)]
 pub enum DisplayHeaderType {
     /// Initial header is the first header in the snippet.
-    ///
-    /// Example:
-    /// ```
-    /// use annotate_snippets::display_list::*;
-    /// use annotate_snippets::formatter::DisplayListFormatter;
-    ///
-    /// let dlf = DisplayListFormatter::new(false, false); // Don't use colors
-    ///
-    /// let dl = DisplayList {
-    ///     body: vec![
-    ///         DisplayLine::Raw(DisplayRawLine::Origin {
-    ///             path: "file1.rs".to_string(),
-    ///             pos: Some((51, 5)),
-    ///             header_type: DisplayHeaderType::Initial,
-    ///         })
-    ///     ]
-    /// };
-    /// assert_eq!(dlf.format(&dl), "--> file1.rs:51:5");
-    /// ```
     Initial,
 
     /// Continuation marks all headers of following slices in the snippet.
-    ///
-    /// Example:
-    /// ```
-    /// use annotate_snippets::display_list::*;
-    /// use annotate_snippets::formatter::DisplayListFormatter;
-    ///
-    /// let dlf = DisplayListFormatter::new(false, false); // Don't use colors
-    ///
-    /// let dl = DisplayList {
-    ///     body: vec![
-    ///         DisplayLine::Raw(DisplayRawLine::Origin {
-    ///             path: "file1.rs".to_string(),
-    ///             pos: Some((51, 5)),
-    ///             header_type: DisplayHeaderType::Continuation,
-    ///         })
-    ///     ]
-    /// };
-    /// assert_eq!(dlf.format(&dl), "::: file1.rs:51:5");
-    /// ```
     Continuation,
 }

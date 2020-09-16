@@ -1,11 +1,13 @@
-# Serde &emsp; [![Build Status]][travis] [![Latest Version]][crates.io] [![Rustc Version 1.13+]][rustc]
+# Serde &emsp; [![Build Status]][actions] [![Latest Version]][crates.io] [![serde: rustc 1.13+]][Rust 1.13] [![serde_derive: rustc 1.31+]][Rust 1.31]
 
-[Build Status]: https://api.travis-ci.org/serde-rs/serde.svg?branch=master
-[travis]: https://travis-ci.org/serde-rs/serde
+[Build Status]: https://img.shields.io/github/workflow/status/serde-rs/serde/CI/master
+[actions]: https://github.com/serde-rs/serde/actions?query=branch%3Amaster
 [Latest Version]: https://img.shields.io/crates/v/serde.svg
 [crates.io]: https://crates.io/crates/serde
-[Rustc Version 1.13+]: https://img.shields.io/badge/rustc-1.13+-lightgray.svg
-[rustc]: https://blog.rust-lang.org/2016/11/10/Rust-1.13.html
+[serde: rustc 1.13+]: https://img.shields.io/badge/serde-rustc_1.13+-lightgray.svg
+[serde_derive: rustc 1.31+]: https://img.shields.io/badge/serde_derive-rustc_1.31+-lightgray.svg
+[Rust 1.13]: https://blog.rust-lang.org/2016/11/10/Rust-1.13.html
+[Rust 1.31]: https://blog.rust-lang.org/2018/12/06/Rust-1.31-and-rust-2018.html
 
 **Serde is a framework for *ser*ializing and *de*serializing Rust data structures efficiently and generically.**
 
@@ -73,13 +75,23 @@ fn main() {
 
 ## Getting help
 
-Serde developers live in the #serde channel on [`irc.mozilla.org`][irc]. The
-\#rust channel is also a good resource with generally faster response time but
-less specific knowledge about Serde. If IRC is not your thing or you don't get a
-good response, we are happy to respond to [GitHub issues][issues] as well.
+Serde is one of the most widely used Rust libraries so any place that Rustaceans
+congregate will be able to help you out. For chat, consider trying the
+[#general] or [#beginners] channels of the unofficial community Discord, the
+[#rust-usage] channel of the official Rust Project Discord, or the
+[#general][zulip] stream in Zulip. For asynchronous, consider the [\[rust\] tag
+on StackOverflow][stackoverflow], the [/r/rust] subreddit which has a pinned
+weekly easy questions post, or the Rust [Discourse forum][discourse]. It's
+acceptable to file a support issue in this repo but they tend not to get as many
+eyes as any of the above and may get closed without a response after some time.
 
-[irc]: https://wiki.mozilla.org/IRC
-[issues]: https://github.com/serde-rs/serde/issues/new/choose
+[#general]: https://discord.com/channels/273534239310479360/274215136414400513
+[#beginners]: https://discord.com/channels/273534239310479360/273541522815713281
+[#rust-usage]: https://discord.com/channels/442252698964721669/443150878111694848
+[zulip]: https://rust-lang.zulipchat.com/#narrow/stream/122651-general
+[stackoverflow]: https://stackoverflow.com/questions/tagged/rust
+[/r/rust]: https://www.reddit.com/r/rust
+[discourse]: https://users.rust-lang.org
 
 <br>
 

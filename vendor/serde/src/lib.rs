@@ -47,11 +47,16 @@
 //! - [Avro], a binary format used within Apache Hadoop, with support for schema
 //!   definition.
 //! - [JSON5], A superset of JSON including some productions from ES5.
+//! - [Postcard], a no\_std and embedded-systems friendly compact binary format.
 //! - [URL], the x-www-form-urlencoded format.
 //! - [Envy], a way to deserialize environment variables into Rust structs.
 //!   *(deserialization only)*
 //! - [Envy Store], a way to deserialize [AWS Parameter Store] parameters into
 //!   Rust structs. *(deserialization only)*
+//! - [S-expressions], the textual representation of code and data used by the
+//!   Lisp language family.
+//! - [D-Bus]'s binary wire format.
+//! - [FlexBuffers], the schemaless cousin of Google's FlatBuffers zero-copy serialization format.
 //!
 //! [JSON]: https://github.com/serde-rs/json
 //! [Bincode]: https://github.com/TyOverby/bincode
@@ -64,23 +69,27 @@
 //! [BSON]: https://github.com/zonyitoo/bson-rs
 //! [Avro]: https://github.com/flavray/avro-rs
 //! [JSON5]: https://github.com/callum-oakley/json5-rs
+//! [Postcard]: https://github.com/jamesmunns/postcard
 //! [URL]: https://github.com/nox/serde_urlencoded
 //! [Envy]: https://github.com/softprops/envy
 //! [Envy Store]: https://github.com/softprops/envy-store
 //! [Cargo]: http://doc.crates.io/manifest.html
 //! [AWS Parameter Store]: https://docs.aws.amazon.com/systems-manager/latest/userguide/systems-manager-paramstore.html
+//! [S-expressions]: https://github.com/rotty/lexpr-rs
+//! [D-Bus]: https://docs.rs/zvariant
+//! [FlexBuffers]: https://github.com/google/flatbuffers/tree/master/rust/flexbuffers
 
 ////////////////////////////////////////////////////////////////////////////////
 
 // Serde types in rustdoc of other crates get linked to here.
-#![doc(html_root_url = "https://docs.rs/serde/1.0.99")]
+#![doc(html_root_url = "https://docs.rs/serde/1.0.114")]
 // Support using Serde without the standard library!
 #![cfg_attr(not(feature = "std"), no_std)]
 // Unstable functionality only if the user asks for it. For tracking and
 // discussion of these features please refer to this issue:
 //
 //    https://github.com/serde-rs/serde/issues/812
-#![cfg_attr(feature = "unstable", feature(specialization, never_type))]
+#![cfg_attr(feature = "unstable", feature(never_type))]
 #![allow(unknown_lints, bare_trait_objects, deprecated)]
 #![cfg_attr(feature = "cargo-clippy", allow(renamed_and_removed_lints))]
 #![cfg_attr(feature = "cargo-clippy", deny(clippy, clippy_pedantic))]
@@ -88,6 +97,8 @@
 #![cfg_attr(
     feature = "cargo-clippy",
     allow(
+        // clippy bug: https://github.com/rust-lang/rust-clippy/issues/5704
+        unnested_or_patterns,
         // not available in our oldest supported compiler
         checked_conversions,
         empty_enum,
@@ -104,14 +115,25 @@
         type_complexity,
         use_self,
         zero_prefixed_literal,
+        // correctly used
+        enum_glob_use,
+        wildcard_imports,
         // not practical
         needless_pass_by_value,
         similar_names,
+        too_many_lines,
         // preference
         doc_markdown,
+        unseparated_literal_suffix,
+        // false positive
+        needless_doctest_main,
+        // noisy
+        missing_errors_doc,
+        must_use_candidate,
     )
 )]
 // Rustc lints.
+#![forbid(unsafe_code)]
 #![deny(missing_docs, unused_imports)]
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -247,6 +269,9 @@ pub mod export;
 // Helpers used by generated code and doc tests. Not public API.
 #[doc(hidden)]
 pub mod private;
+
+#[cfg(not(feature = "std"))]
+mod std_error;
 
 // Re-export #[derive(Serialize, Deserialize)].
 //

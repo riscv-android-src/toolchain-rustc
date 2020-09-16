@@ -35,10 +35,9 @@
 
 extern crate backtrace_sys as bt;
 
-use core::{ptr, slice};
+use core::{marker, ptr, slice};
 use libc::{self, c_char, c_int, c_void, uintptr_t};
 
-use crate::symbolize::dladdr;
 use crate::symbolize::{ResolveWhat, SymbolName};
 use crate::types::BytesOrWideString;
 
@@ -46,6 +45,7 @@ pub enum Symbol<'a> {
     Syminfo {
         pc: uintptr_t,
         symname: *const c_char,
+        _marker: marker::PhantomData<&'a ()>,
     },
     Pcinfo {
         pc: uintptr_t,
@@ -54,11 +54,10 @@ pub enum Symbol<'a> {
         function: *const c_char,
         symname: *const c_char,
     },
-    Dladdr(dladdr::Symbol<'a>),
 }
 
 impl Symbol<'_> {
-    pub fn name(&self) -> Option<SymbolName> {
+    pub fn name(&self) -> Option<SymbolName<'_>> {
         let symbol = |ptr: *const c_char| unsafe {
             if ptr.is_null() {
                 None
@@ -89,7 +88,6 @@ impl Symbol<'_> {
                 }
                 symbol(symname)
             }
-            Symbol::Dladdr(ref s) => s.name(),
         }
     }
 
@@ -97,7 +95,6 @@ impl Symbol<'_> {
         let pc = match *self {
             Symbol::Syminfo { pc, .. } => pc,
             Symbol::Pcinfo { pc, .. } => pc,
-            Symbol::Dladdr(ref s) => return s.addr(),
         };
         if pc == 0 {
             None
@@ -119,11 +116,10 @@ impl Symbol<'_> {
                     Some(slice::from_raw_parts(ptr, len))
                 }
             }
-            Symbol::Dladdr(_) => None,
         }
     }
 
-    pub fn filename_raw(&self) -> Option<BytesOrWideString> {
+    pub fn filename_raw(&self) -> Option<BytesOrWideString<'_>> {
         self.filename_bytes().map(BytesOrWideString::Bytes)
     }
 
@@ -151,7 +147,6 @@ impl Symbol<'_> {
         match *self {
             Symbol::Syminfo { .. } => None,
             Symbol::Pcinfo { lineno, .. } => Some(lineno as u32),
-            Symbol::Dladdr(ref s) => s.lineno(),
         }
     }
 }
@@ -162,7 +157,7 @@ extern "C" fn error_cb(_data: *mut c_void, _msg: *const c_char, _errnum: c_int) 
 
 /// Type of the `data` pointer passed into `syminfo_cb`
 struct SyminfoState<'a> {
-    cb: &'a mut (FnMut(&super::Symbol) + 'a),
+    cb: &'a mut (dyn FnMut(&super::Symbol) + 'a),
     pc: usize,
 }
 
@@ -183,7 +178,7 @@ extern "C" fn syminfo_cb(
     // not debug info, so if that happens we're sure to call the callback with
     // at least one symbol from the `syminfo_cb`.
     unsafe {
-        let syminfo_state = &mut *(data as *mut SyminfoState);
+        let syminfo_state = &mut *(data as *mut SyminfoState<'_>);
         let mut pcinfo_state = PcinfoState {
             symname,
             called: false,
@@ -201,6 +196,7 @@ extern "C" fn syminfo_cb(
                 inner: Symbol::Syminfo {
                     pc: pc,
                     symname: symname,
+                    _marker: marker::PhantomData,
                 },
             });
         }
@@ -211,7 +207,7 @@ extern "C" fn syminfo_cb(
 
 /// Type of the `data` pointer passed into `pcinfo_cb`
 struct PcinfoState<'a> {
-    cb: &'a mut (FnMut(&super::Symbol) + 'a),
+    cb: &'a mut (dyn FnMut(&super::Symbol) + 'a),
     symname: *const c_char,
     called: bool,
 }
@@ -226,7 +222,7 @@ extern "C" fn pcinfo_cb(
     let mut bomb = crate::Bomb { enabled: true };
 
     unsafe {
-        let state = &mut *(data as *mut PcinfoState);
+        let state = &mut *(data as *mut PcinfoState<'_>);
         state.called = true;
         (state.cb)(&super::Symbol {
             inner: Symbol::Pcinfo {
@@ -442,48 +438,27 @@ unsafe fn init_state() -> *mut bt::backtrace_state {
     }
 }
 
-pub unsafe fn resolve(what: ResolveWhat, cb: &mut FnMut(&super::Symbol)) {
+pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol)) {
     let symaddr = what.address_or_ip() as usize;
 
     // backtrace errors are currently swept under the rug
     let state = init_state();
     if state.is_null() {
-        return dladdr_fallback(what.address_or_ip(), cb);
+        return;
     }
 
-    // Call the `backtrace_syminfo` API first. This is (from reading the code)
-    // guaranteed to call `syminfo_cb` exactly once (or fail with an error
+    // Call the `backtrace_syminfo` API which (from reading the code)
+    // should call `syminfo_cb` exactly once (or fail with an error
     // presumably). We then handle more within the `syminfo_cb`.
     //
     // Note that we do this since `syminfo` will consult the symbol table,
     // finding symbol names even if there's no debug information in the binary.
-    let mut called = false;
-    {
-        let mut syminfo_state = SyminfoState {
-            pc: symaddr,
-            cb: &mut |sym| {
-                called = true;
-                cb(sym);
-            },
-        };
-        bt::backtrace_syminfo(
-            state,
-            symaddr as uintptr_t,
-            syminfo_cb,
-            error_cb,
-            &mut syminfo_state as *mut _ as *mut _,
-        );
-    }
-
-    if !called {
-        dladdr_fallback(what.address_or_ip(), cb);
-    }
-}
-
-unsafe fn dladdr_fallback(addr: *mut c_void, cb: &mut FnMut(&super::Symbol)) {
-    dladdr::resolve(addr, &mut |sym| {
-        cb(&super::Symbol {
-            inner: Symbol::Dladdr(sym),
-        })
-    });
+    let mut syminfo_state = SyminfoState { pc: symaddr, cb };
+    bt::backtrace_syminfo(
+        state,
+        symaddr as uintptr_t,
+        syminfo_cb,
+        error_cb,
+        &mut syminfo_state as *mut _ as *mut _,
+    );
 }

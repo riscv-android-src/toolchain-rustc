@@ -16,8 +16,8 @@
 /// #\[proc_macro_attribute\] attribute.
 ///
 /// ```
-/// extern crate proc_macro;
-///
+/// # extern crate proc_macro;
+/// #
 /// use proc_macro::TokenStream;
 /// use syn::{parse_macro_input, Result};
 /// use syn::parse::{Parse, ParseStream};
@@ -43,7 +43,7 @@
 /// #   "".parse().unwrap()
 /// }
 /// ```
-#[macro_export(local_inner_macros)]
+#[macro_export]
 macro_rules! parse_macro_input {
     ($tokenstream:ident as $ty:ty) => {
         match $crate::parse_macro_input::parse::<$ty>($tokenstream) {
@@ -54,7 +54,7 @@ macro_rules! parse_macro_input {
         }
     };
     ($tokenstream:ident) => {
-        parse_macro_input!($tokenstream as _)
+        $crate::parse_macro_input!($tokenstream as _)
     };
 }
 

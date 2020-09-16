@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "racer"
-version = "2.1.34"
+version = "2.1.35"
 authors = ["Phil Dawes <phil@phildawes.net>", "The Racer developers"]
 description = "Code completion for Rust"
 homepage = "https://github.com/racer-rust/racer"
@@ -64,31 +64,31 @@ optional = true
 version = "0.5.1"
 
 [dependencies.rustc_ast]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_ast"
 
 [dependencies.rustc_ast_pretty]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_ast_pretty"
 
 [dependencies.rustc_data_structures]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_data_structures"
 
 [dependencies.rustc_errors]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_errors"
 
 [dependencies.rustc_parse]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_parse"
 
 [dependencies.rustc_session]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_session"
 
 [dependencies.rustc_span]
-version = "659.0.0"
+version = "664.0.0"
 package = "rustc-ap-rustc_span"
 [dev-dependencies.racer-testutils]
 version = "0.1"

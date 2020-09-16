@@ -6,7 +6,7 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(crate_visibility_modifier)]
-#![feature(const_if_match)]
+#![cfg_attr(bootstrap, feature(const_if_match))]
 #![feature(const_fn)]
 #![feature(const_panic)]
 #![feature(negative_impls)]
@@ -25,12 +25,14 @@ use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 mod caching_source_map_view;
 pub mod source_map;
 pub use self::caching_source_map_view::CachingSourceMapView;
+use source_map::SourceMap;
 
 pub mod edition;
 use edition::Edition;
 pub mod hygiene;
+pub use hygiene::SyntaxContext;
 use hygiene::Transparency;
-pub use hygiene::{DesugaringKind, ExpnData, ExpnId, ExpnKind, MacroKind, SyntaxContext};
+pub use hygiene::{DesugaringKind, ExpnData, ExpnId, ExpnKind, ForLoopLoc, MacroKind};
 pub mod def_id;
 use def_id::{CrateNum, DefId, LOCAL_CRATE};
 mod span_encoding;
@@ -63,23 +65,29 @@ use sha1::Sha1;
 #[cfg(test)]
 mod tests;
 
-pub struct Globals {
+// Per-session global variables: this struct is stored in thread-local storage
+// in such a way that it is accessible without any kind of handle to all
+// threads within the compilation session, but is not accessible outside the
+// session.
+pub struct SessionGlobals {
     symbol_interner: Lock<symbol::Interner>,
     span_interner: Lock<span_encoding::SpanInterner>,
     hygiene_data: Lock<hygiene::HygieneData>,
+    source_map: Lock<Option<Lrc<SourceMap>>>,
 }
 
-impl Globals {
-    pub fn new(edition: Edition) -> Globals {
-        Globals {
+impl SessionGlobals {
+    pub fn new(edition: Edition) -> SessionGlobals {
+        SessionGlobals {
             symbol_interner: Lock::new(symbol::Interner::fresh()),
             span_interner: Lock::new(span_encoding::SpanInterner::default()),
             hygiene_data: Lock::new(hygiene::HygieneData::new(edition)),
+            source_map: Lock::new(None),
         }
     }
 }
 
-scoped_tls::scoped_thread_local!(pub static GLOBALS: Globals);
+scoped_tls::scoped_thread_local!(pub static SESSION_GLOBALS: SessionGlobals);
 
 // FIXME: Perhaps this should not implement Rustc{Decodable, Encodable}
 //
@@ -305,7 +313,9 @@ impl Ord for Span {
     }
 }
 
-/// A collection of spans. Spans have two orthogonal attributes:
+/// A collection of `Span`s.
+///
+/// Spans have two orthogonal attributes:
 ///
 /// - They can be *primary spans*. In this case they are the locus of
 ///   the error, and would be rendered with `^^^`.
@@ -697,12 +707,52 @@ impl rustc_serialize::UseSpecializedDecodable for Span {
     }
 }
 
+/// Calls the provided closure, using the provided `SourceMap` to format
+/// any spans that are debug-printed during the closure'e exectuino.
+///
+/// Normally, the global `TyCtxt` is used to retrieve the `SourceMap`
+/// (see `rustc_interface::callbacks::span_debug1). However, some parts
+/// of the compiler (e.g. `rustc_parse`) may debug-print `Span`s before
+/// a `TyCtxt` is available. In this case, we fall back to
+/// the `SourceMap` provided to this function. If that is not available,
+/// we fall back to printing the raw `Span` field values
+pub fn with_source_map<T, F: FnOnce() -> T>(source_map: Lrc<SourceMap>, f: F) -> T {
+    SESSION_GLOBALS.with(|session_globals| {
+        *session_globals.source_map.borrow_mut() = Some(source_map);
+    });
+    struct ClearSourceMap;
+    impl Drop for ClearSourceMap {
+        fn drop(&mut self) {
+            SESSION_GLOBALS.with(|session_globals| {
+                session_globals.source_map.borrow_mut().take();
+            });
+        }
+    }
+
+    let _guard = ClearSourceMap;
+    f()
+}
+
+pub fn debug_with_source_map(
+    span: Span,
+    f: &mut fmt::Formatter<'_>,
+    source_map: &SourceMap,
+) -> fmt::Result {
+    write!(f, "{} ({:?})", source_map.span_to_string(span), span.ctxt())
+}
+
 pub fn default_span_debug(span: Span, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-    f.debug_struct("Span")
-        .field("lo", &span.lo())
-        .field("hi", &span.hi())
-        .field("ctxt", &span.ctxt())
-        .finish()
+    SESSION_GLOBALS.with(|session_globals| {
+        if let Some(source_map) = &*session_globals.source_map.borrow() {
+            debug_with_source_map(span, f, source_map)
+        } else {
+            f.debug_struct("Span")
+                .field("lo", &span.lo())
+                .field("hi", &span.hi())
+                .field("ctxt", &span.ctxt())
+                .finish()
+        }
+    })
 }
 
 impl fmt::Debug for Span {
@@ -1215,7 +1265,7 @@ impl SourceFile {
             hasher.finish::<u128>()
         };
         let end_pos = start_pos.to_usize() + src.len();
-        assert!(end_pos <= u32::max_value() as usize);
+        assert!(end_pos <= u32::MAX as usize);
 
         let (lines, multibyte_chars, non_narrow_chars) =
             analyze_source_file::analyze_source_file(&src[..], start_pos);

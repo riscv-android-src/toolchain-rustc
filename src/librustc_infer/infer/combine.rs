@@ -112,7 +112,7 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
 
             // All other cases of inference are errors
             (&ty::Infer(_), _) | (_, &ty::Infer(_)) => {
-                Err(TypeError::Sorts(ty::relate::expected_found(relation, &a, &b)))
+                Err(TypeError::Sorts(ty::relate::expected_found(relation, a, b)))
             }
 
             _ => ty::relate::super_relate_tys(relation, a, b),
@@ -307,7 +307,7 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
             self.obligations.push(Obligation::new(
                 self.trace.cause.clone(),
                 self.param_env,
-                ty::PredicateKind::WellFormed(b_ty).to_predicate(self.infcx.tcx),
+                ty::PredicateKind::WellFormed(b_ty.into()).to_predicate(self.infcx.tcx),
             ));
         }
 
@@ -318,10 +318,10 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
         // to associate causes/spans with each of the relations in
         // the stack to get this right.
         match dir {
-            EqTo => self.equate(a_is_expected).relate(&a_ty, &b_ty),
-            SubtypeOf => self.sub(a_is_expected).relate(&a_ty, &b_ty),
+            EqTo => self.equate(a_is_expected).relate(a_ty, b_ty),
+            SubtypeOf => self.sub(a_is_expected).relate(a_ty, b_ty),
             SupertypeOf => {
-                self.sub(a_is_expected).relate_with_variance(ty::Contravariant, &a_ty, &b_ty)
+                self.sub(a_is_expected).relate_with_variance(ty::Contravariant, a_ty, b_ty)
             }
         }?;
 
@@ -379,7 +379,7 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
             param_env: self.param_env,
         };
 
-        let ty = match generalize.relate(&ty, &ty) {
+        let ty = match generalize.relate(ty, ty) {
             Ok(ty) => ty,
             Err(e) => {
                 debug!("generalize: failure {:?}", e);
@@ -490,8 +490,8 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
 
     fn binders<T>(
         &mut self,
-        a: &ty::Binder<T>,
-        b: &ty::Binder<T>,
+        a: ty::Binder<T>,
+        b: ty::Binder<T>,
     ) -> RelateResult<'tcx, ty::Binder<T>>
     where
         T: Relate<'tcx>,
@@ -519,8 +519,8 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
     fn relate_with_variance<T: Relate<'tcx>>(
         &mut self,
         variance: ty::Variance,
-        a: &T,
-        b: &T,
+        a: T,
+        b: T,
     ) -> RelateResult<'tcx, T> {
         let old_ambient_variance = self.ambient_variance;
         self.ambient_variance = self.ambient_variance.xform(variance);
@@ -552,7 +552,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                     match probe {
                         TypeVariableValue::Known { value: u } => {
                             debug!("generalize: known value {:?}", u);
-                            self.relate(&u, &u)
+                            self.relate(u, u)
                         }
                         TypeVariableValue::Unknown { universe } => {
                             match self.ambient_variance {
@@ -655,7 +655,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                 let variable_table = &mut inner.const_unification_table();
                 let var_value = variable_table.probe_value(vid);
                 match var_value.val {
-                    ConstVariableValue::Known { value: u } => self.relate(&u, &u),
+                    ConstVariableValue::Known { value: u } => self.relate(u, u),
                     ConstVariableValue::Unknown { universe } => {
                         if self.for_universe.can_name(universe) {
                             Ok(c)
@@ -701,7 +701,7 @@ pub fn const_unification_error<'tcx>(
     a_is_expected: bool,
     (a, b): (&'tcx ty::Const<'tcx>, &'tcx ty::Const<'tcx>),
 ) -> TypeError<'tcx> {
-    TypeError::ConstMismatch(ty::relate::expected_found_bool(a_is_expected, &a, &b))
+    TypeError::ConstMismatch(ty::relate::expected_found_bool(a_is_expected, a, b))
 }
 
 fn int_unification_error<'tcx>(
@@ -709,7 +709,7 @@ fn int_unification_error<'tcx>(
     v: (ty::IntVarValue, ty::IntVarValue),
 ) -> TypeError<'tcx> {
     let (a, b) = v;
-    TypeError::IntMismatch(ty::relate::expected_found_bool(a_is_expected, &a, &b))
+    TypeError::IntMismatch(ty::relate::expected_found_bool(a_is_expected, a, b))
 }
 
 fn float_unification_error<'tcx>(
@@ -717,5 +717,5 @@ fn float_unification_error<'tcx>(
     v: (ty::FloatVarValue, ty::FloatVarValue),
 ) -> TypeError<'tcx> {
     let (ty::FloatVarValue(a), ty::FloatVarValue(b)) = v;
-    TypeError::FloatMismatch(ty::relate::expected_found_bool(a_is_expected, &a, &b))
+    TypeError::FloatMismatch(ty::relate::expected_found_bool(a_is_expected, a, b))
 }

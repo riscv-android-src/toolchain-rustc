@@ -6,21 +6,28 @@
 
 use self::gimli::read::EndianSlice;
 use self::gimli::LittleEndian as Endian;
-use crate::symbolize::dladdr;
+use self::mmap::Mmap;
+use self::stash::Stash;
 use crate::symbolize::ResolveWhat;
 use crate::types::BytesOrWideString;
 use crate::SymbolName;
 use addr2line::gimli;
+use core::convert::TryInto;
 use core::mem;
 use core::u32;
-use findshlibs::{self, Segment, SharedLibrary};
 use libc::c_void;
-use memmap::Mmap;
-use std::env;
 use std::ffi::OsString;
 use std::fs::File;
 use std::path::Path;
 use std::prelude::v1::*;
+
+#[cfg(windows)]
+#[path = "gimli/mmap_windows.rs"]
+mod mmap;
+#[cfg(unix)]
+#[path = "gimli/mmap_unix.rs"]
+mod mmap;
+mod stash;
 
 const MAPPINGS_CACHE_SIZE: usize = 4;
 
@@ -33,343 +40,355 @@ struct Mapping {
     // 'static lifetime is a lie to hack around lack of support for self-referential structs.
     cx: Context<'static>,
     _map: Mmap,
+    _stash: Stash,
 }
 
-fn cx<'data>(object: Object<'data>) -> Option<Context<'data>> {
-    fn load_section<'data, S>(obj: &Object<'data>) -> S
+fn cx<'data>(stash: &'data Stash, object: Object<'data>) -> Option<Context<'data>> {
+    fn load_section<'data, S>(stash: &'data Stash, obj: &Object<'data>) -> S
     where
         S: gimli::Section<gimli::EndianSlice<'data, Endian>>,
     {
-        let data = obj.section(S::section_name()).unwrap_or(&[]);
+        let data = obj.section(stash, S::section_name()).unwrap_or(&[]);
         S::from(EndianSlice::new(data, Endian))
     }
 
     let dwarf = addr2line::Context::from_sections(
-        load_section(&object),
-        load_section(&object),
-        load_section(&object),
-        load_section(&object),
-        load_section(&object),
-        load_section(&object),
-        load_section(&object),
-        load_section(&object),
-        load_section(&object),
+        load_section(stash, &object),
+        load_section(stash, &object),
+        load_section(stash, &object),
+        load_section(stash, &object),
+        load_section(stash, &object),
+        load_section(stash, &object),
+        load_section(stash, &object),
+        load_section(stash, &object),
+        load_section(stash, &object),
         gimli::EndianSlice::new(&[], Endian),
     )
     .ok()?;
     Some(Context { dwarf, object })
 }
 
-fn assert_lifetimes<'a>(_: &'a Mmap, _: &Context<'a>) {}
-
 macro_rules! mk {
-    (Mapping { $map:expr, $inner:expr }) => {{
-        assert_lifetimes(&$map, &$inner);
+    (Mapping { $map:expr, $inner:expr, $stash:expr }) => {{
+        use crate::symbolize::gimli::{Context, Mapping, Mmap};
+
+        fn assert_lifetimes<'a>(_: &'a Mmap, _: &Context<'a>, _: &'a Stash) {}
+        assert_lifetimes(&$map, &$inner, &$stash);
         Mapping {
             // Convert to 'static lifetimes since the symbols should
-            // only borrow `map` and we're preserving `map` below.
-            cx: unsafe { mem::transmute::<Context<'_>, Context<'static>>($inner) },
+            // only borrow `map` and `stash` and we're preserving them below.
+            cx: unsafe { core::mem::transmute::<Context<'_>, Context<'static>>($inner) },
             _map: $map,
+            _stash: $stash,
         }
     }};
 }
 
 fn mmap(path: &Path) -> Option<Mmap> {
     let file = File::open(path).ok()?;
-    // TODO: not completely safe, see https://github.com/danburkert/memmap-rs/issues/25
-    unsafe { Mmap::map(&file).ok() }
+    let len = file.metadata().ok()?.len().try_into().ok()?;
+    unsafe { Mmap::map(&file, len) }
 }
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
-        use goblin::pe::{self, PE};
-        use goblin::strtab::Strtab;
-        use std::cmp;
-        use std::convert::TryFrom;
+        use core::mem::MaybeUninit;
+        use crate::windows::*;
+        use std::os::windows::prelude::*;
 
-        struct Object<'a> {
-            pe: PE<'a>,
-            data: &'a [u8],
-            symbols: Vec<(usize, pe::symbol::Symbol)>,
-            strtab: Strtab<'a>,
+        mod coff;
+        use self::coff::Object;
+
+        // For loading native libraries on Windows, see some discussion on
+        // rust-lang/rust#71060 for the various strategies here.
+        fn native_libraries() -> Vec<Library> {
+            let mut ret = Vec::new();
+            unsafe { add_loaded_images(&mut ret); }
+            return ret;
         }
 
-        impl<'a> Object<'a> {
-            fn parse(data: &'a [u8]) -> Option<Object<'a>> {
-                let pe = PE::parse(data).ok()?;
-                let syms = pe.header.coff_header.symbols(data).ok()?;
-                let strtab = pe.header.coff_header.strings(data).ok()?;
+        unsafe fn add_loaded_images(ret: &mut Vec<Library>) {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, 0);
+            if snap == INVALID_HANDLE_VALUE {
+                return;
+            }
 
-                // Collect all the symbols into a local vector which is sorted
-                // by address and contains enough data to learn about the symbol
-                // name. Note that we only look at function symbols and also
-                // note that the sections are 1-indexed because the zero section
-                // is special (apparently).
-                let mut symbols = Vec::new();
-                for (_, _, sym) in syms.iter() {
-                    if sym.derived_type() != pe::symbol::IMAGE_SYM_DTYPE_FUNCTION
-                        || sym.section_number == 0
-                    {
-                        continue;
+            let mut me = MaybeUninit::<MODULEENTRY32W>::zeroed().assume_init();
+            me.dwSize = mem::size_of_val(&me) as DWORD;
+            if Module32FirstW(snap, &mut me) == TRUE {
+                loop {
+                    if let Some(lib) = load_library(&me) {
+                        ret.push(lib);
                     }
-                    let addr = usize::try_from(sym.value).ok()?;
-                    let section = pe.sections.get(usize::try_from(sym.section_number).ok()? - 1)?;
-                    let va = usize::try_from(section.virtual_address).ok()?;
-                    symbols.push((addr + va + pe.image_base, sym));
+
+                    if Module32NextW(snap, &mut me) != TRUE {
+                        break;
+                    }
                 }
-                symbols.sort_unstable_by_key(|x| x.0);
-                Some(Object { pe, data, symbols, strtab })
+
             }
 
-            fn section(&self, name: &str) -> Option<&'a [u8]> {
-                let section = self.pe
-                    .sections
-                    .iter()
-                    .find(|section| section.name().ok() == Some(name));
-                section
-                    .and_then(|section| {
-                        let offset = section.pointer_to_raw_data as usize;
-                        let size = cmp::min(section.virtual_size, section.size_of_raw_data) as usize;
-                        self.data.get(offset..).and_then(|data| data.get(..size))
-                    })
-            }
+            CloseHandle(snap);
+        }
 
-            fn search_symtab<'b>(&'b self, addr: u64) -> Option<&'b [u8]> {
-                // Note that unlike other formats COFF doesn't embed the size of
-                // each symbol. As a last ditch effort search for the *closest*
-                // symbol to a particular address and return that one. This gets
-                // really wonky once symbols start getting removed because the
-                // symbols returned here can be totally incorrect, but we have
-                // no idea of knowing how to detect that.
-                let addr = usize::try_from(addr).ok()?;
-                let i = match self.symbols.binary_search_by_key(&addr, |p| p.0) {
-                    Ok(i) => i,
-                    // typically `addr` isn't in the array, but `i` is where
-                    // we'd insert it, so the previous position must be the
-                    // greatest less than `addr`
-                    Err(i) => i.checked_sub(1)?,
-                };
-                Some(self.symbols[i].1.name(&self.strtab).ok()?.as_bytes())
-            }
+        unsafe fn load_library(me: &MODULEENTRY32W) -> Option<Library> {
+            let pos = me
+                .szExePath
+                .iter()
+                .position(|i| *i == 0)
+                .unwrap_or(me.szExePath.len());
+            let name = OsString::from_wide(&me.szExePath[..pos]);
+
+            // MinGW libraries currently don't support ASLR
+            // (rust-lang/rust#16514), but DLLs can still be relocated around in
+            // the address space. It appears that addresses in debug info are
+            // all as-if this library was loaded at its "image base", which is a
+            // field in its COFF file headers. Since this is what debuginfo
+            // seems to list we parse the symbol table and store addresses as if
+            // the library was loaded at "image base" as well.
+            //
+            // The library may not be loaded at "image base", however.
+            // (presumably something else may be loaded there?) This is where
+            // the `bias` field comes into play, and we need to figure out the
+            // value of `bias` here. Unfortunately though it's not clear how to
+            // acquire this from a loaded module. What we do have, however, is
+            // the actual load address (`modBaseAddr`).
+            //
+            // As a bit of a cop-out for now we mmap the file, read the file
+            // header information, then drop the mmap. This is wasteful because
+            // we'll probably reopen the mmap later, but this should work well
+            // enough for now.
+            //
+            // Once we have the `image_base` (desired load location) and the
+            // `base_addr` (actual load location) we can fill in the `bias`
+            // (difference between the actual and desired) and then the stated
+            // address of each segment is the `image_base` since that's what the
+            // file says.
+            //
+            // For now it appears that unlike ELF/MachO we can make do with one
+            // segment per library, using `modBaseSize` as the whole size.
+            let mmap = mmap(name.as_ref())?;
+            let image_base = coff::get_image_base(&mmap)?;
+            let base_addr = me.modBaseAddr as usize;
+            Some(Library {
+                name,
+                bias: base_addr.wrapping_sub(image_base),
+                segments: vec![LibrarySegment {
+                    stated_virtual_memory_address: image_base,
+                    len: me.modBaseSize as usize,
+                }],
+            })
         }
     } else if #[cfg(target_os = "macos")] {
-        use goblin::mach::MachO;
+        // macOS uses the Mach-O file format and uses DYLD-specific APIs to
+        // load a list of native libraries that are part of the appplication.
 
-        struct Object<'a> {
-            macho: MachO<'a>,
-            dwarf: Option<usize>,
-            syms: Vec<(&'a str, u64)>,
+        use std::os::unix::prelude::*;
+        use std::ffi::{OsStr, CStr};
+
+        mod macho;
+        use self::macho::Object;
+
+        #[allow(deprecated)]
+        fn native_libraries() -> Vec<Library> {
+            let mut ret = Vec::new();
+            let images = unsafe { libc::_dyld_image_count() };
+            for i in 0..images {
+                ret.extend(native_library(i));
+            }
+            return ret;
         }
 
-        impl<'a> Object<'a> {
-            fn parse(macho: MachO<'a>) -> Option<Object<'a>> {
-                if !macho.little_endian {
+        #[allow(deprecated)]
+        fn native_library(i: u32) -> Option<Library> {
+            use object::macho;
+            use object::read::macho::{MachHeader, Segment};
+            use object::{Bytes, NativeEndian};
+
+            // Fetch the name of this library which corresponds to the path of
+            // where to load it as well.
+            let name = unsafe {
+                let name = libc::_dyld_get_image_name(i);
+                if name.is_null() {
                     return None;
                 }
-                let dwarf = macho
-                    .segments
-                    .iter()
-                    .enumerate()
-                    .find(|(_, segment)| segment.name().ok() == Some("__DWARF"))
-                    .map(|p| p.0);
-                let mut syms = Vec::new();
-                if let Some(s) = &macho.symbols {
-                    syms = s.iter()
-                        .filter_map(|e| e.ok())
-                        .filter(|(name, nlist)| name.len() > 0 && !nlist.is_undefined())
-                        .map(|(name, nlist)| (name, nlist.n_value))
-                        .collect();
+                CStr::from_ptr(name)
+            };
+
+            // Load the image header of this library and delegate to `object` to
+            // parse all the load commands so we can figure out all the segments
+            // involved here.
+            let (mut load_commands, endian) = unsafe {
+                let header = libc::_dyld_get_image_header(i);
+                if header.is_null() {
+                    return None;
                 }
-                syms.sort_unstable_by_key(|(_, addr)| *addr);
-                Some(Object { macho, dwarf, syms })
-            }
+                match (*header).magic {
+                    macho::MH_MAGIC => {
+                        let endian = NativeEndian;
+                        let header = &*(header as *const macho::MachHeader32<NativeEndian>);
+                        let data = core::slice::from_raw_parts(
+                            header as *const _ as *const u8,
+                            mem::size_of_val(header) + header.sizeofcmds.get(endian) as usize
+                        );
+                        (header.load_commands(endian, Bytes(data)).ok()?, endian)
+                    }
+                    macho::MH_MAGIC_64 => {
+                        let endian = NativeEndian;
+                        let header = &*(header as *const macho::MachHeader64<NativeEndian>);
+                        let data = core::slice::from_raw_parts(
+                            header as *const _ as *const u8,
+                            mem::size_of_val(header) + header.sizeofcmds.get(endian) as usize
+                        );
+                        (header.load_commands(endian, Bytes(data)).ok()?, endian)
+                    }
+                    _ => return None,
+                }
+            };
 
-            fn section(&self, name: &str) -> Option<&'a [u8]> {
-                let dwarf = self.dwarf?;
-                let dwarf = &self.macho.segments[dwarf];
-                dwarf
-                    .into_iter()
-                    .filter_map(|s| s.ok())
-                    .find(|(section, _data)| {
-                        let section_name = match section.name() {
-                            Ok(s) => s,
-                            Err(_) => return false,
-                        };
-                        &section_name[..] == name || {
-                            section_name.starts_with("__")
-                                && name.starts_with(".")
-                                && &section_name[2..] == &name[1..]
+            // Iterate over the segments and register known regions for segments
+            // that we find. Additionally record information bout text segments
+            // for processing later, see comments below.
+            let mut segments = Vec::new();
+            let mut first_text = 0;
+            let mut text_fileoff_zero = false;
+            while let Some(cmd) = load_commands.next().ok()? {
+                if let Some((seg, _)) = cmd.segment_32().ok()? {
+                    if seg.name() == b"__TEXT" {
+                        first_text = segments.len();
+                        if seg.fileoff(endian) == 0 && seg.filesize(endian) > 0 {
+                            text_fileoff_zero = true;
                         }
-                    })
-                    .map(|p| p.1)
+                    }
+                    segments.push(LibrarySegment {
+                        len: seg.vmsize(endian).try_into().ok()?,
+                        stated_virtual_memory_address: seg.vmaddr(endian).try_into().ok()?,
+                    });
+                }
+                if let Some((seg, _)) = cmd.segment_64().ok()? {
+                    if seg.name() == b"__TEXT" {
+                        first_text = segments.len();
+                        if seg.fileoff(endian) == 0 && seg.filesize(endian) > 0 {
+                            text_fileoff_zero = true;
+                        }
+                    }
+                    segments.push(LibrarySegment {
+                        len: seg.vmsize(endian).try_into().ok()?,
+                        stated_virtual_memory_address: seg.vmaddr(endian).try_into().ok()?,
+                    });
+                }
             }
 
-            fn search_symtab<'b>(&'b self, addr: u64) -> Option<&'b [u8]> {
-                let i = match self.syms.binary_search_by_key(&addr, |(_, addr)| *addr) {
-                    Ok(i) => i,
-                    Err(i) => i.checked_sub(1)?,
-                };
-                let (sym, _addr) = self.syms.get(i)?;
-                Some(sym.as_bytes())
+            // Determine the "slide" for this library which ends up being the
+            // bias we use to figure out where in memory objects are loaded.
+            // This is a bit of a weird computation though and is the result of
+            // trying a few things in the wild and seeing what sticks.
+            //
+            // The general idea is that the `bias` plus a segment's
+            // `stated_virtual_memory_address` is going to be where in the
+            // actual address space the segment resides. The other thing we rely
+            // on though is that a real address minus the `bias` is the index to
+            // look up in the symbol table and debuginfo.
+            //
+            // It turns out, though, that for system loaded libraries these
+            // calculations are incorrect. For native executables, however, it
+            // appears correct. Lifting some logic from LLDB's source it has
+            // some special-casing for the first `__TEXT` section loaded from
+            // file offset 0 with a nonzero size. For whatever reason when this
+            // is present it appears to mean that the symbol table is relative
+            // to just the vmaddr slide for the library. If it's *not* present
+            // then the symbol table is relative to the the vmaddr slide plus
+            // the segment's stated address.
+            //
+            // To handle this situation if we *don't* find a text section at
+            // file offset zero then we increase the bias by the first text
+            // sections's stated address and decrease all stated addresses by
+            // that amount as well. That way the symbol table is always appears
+            // relative to the library's bias amount. This appears to have the
+            // right results for symbolizing via the symbol table.
+            //
+            // Honestly I'm not entirely sure whether this is right or if
+            // there's something else that should indicate how to do this. For
+            // now though this seems to work well enough (?) and we should
+            // always be able to tweak this over time if necessary.
+            //
+            // For some more information see #318
+            let mut slide = unsafe { libc::_dyld_get_image_vmaddr_slide(i) as usize };
+            if !text_fileoff_zero {
+                let adjust = segments[first_text].stated_virtual_memory_address;
+                for segment in segments.iter_mut() {
+                    segment.stated_virtual_memory_address -= adjust;
+                }
+                slide += adjust;
             }
+
+            Some(Library {
+                name: OsStr::from_bytes(name.to_bytes()).to_owned(),
+                segments,
+                bias: slide,
+            })
+        }
+    } else if #[cfg(any(
+        target_os = "linux",
+        target_os = "fuchsia",
+    ))] {
+        // Other Unix (e.g. Linux) platforms use ELF as an object file format
+        // and typically implement an API called `dl_iterate_phdr` to load
+        // native libraries.
+
+        use std::os::unix::prelude::*;
+        use std::ffi::{OsStr, CStr};
+
+        mod elf;
+        use self::elf::Object;
+
+        fn native_libraries() -> Vec<Library> {
+            let mut ret = Vec::new();
+            unsafe {
+                libc::dl_iterate_phdr(Some(callback), &mut ret as *mut _ as *mut _);
+            }
+            return ret;
+        }
+
+        unsafe extern "C" fn callback(
+            info: *mut libc::dl_phdr_info,
+            _size: libc::size_t,
+            vec: *mut libc::c_void,
+        ) -> libc::c_int {
+            let libs = &mut *(vec as *mut Vec<Library>);
+            let name = if (*info).dlpi_name.is_null() || *(*info).dlpi_name == 0{
+                if libs.is_empty() {
+                    std::env::current_exe().map(|e| e.into()).unwrap_or_default()
+                } else {
+                    OsString::new()
+                }
+            } else {
+                let bytes = CStr::from_ptr((*info).dlpi_name).to_bytes();
+                OsStr::from_bytes(bytes).to_owned()
+            };
+            let headers = core::slice::from_raw_parts((*info).dlpi_phdr, (*info).dlpi_phnum as usize);
+            libs.push(Library {
+                name,
+                segments: headers
+                    .iter()
+                    .map(|header| LibrarySegment {
+                        len: (*header).p_memsz as usize,
+                        stated_virtual_memory_address: (*header).p_vaddr as usize,
+                    })
+                    .collect(),
+                bias: (*info).dlpi_addr as usize,
+            });
+            0
         }
     } else {
-        use goblin::elf::Elf;
+        // Everything else should use ELF, but doesn't know how to load native
+        // libraries.
 
-        struct Object<'a> {
-            elf: Elf<'a>,
-            data: &'a [u8],
-            // List of pre-parsed and sorted symbols by base address. The
-            // boolean indicates whether it comes from the dynamic symbol table
-            // or the normal symbol table, affecting where it's symbolicated.
-            syms: Vec<(goblin::elf::Sym, bool)>,
-        }
+        mod elf;
+        use self::elf::Object;
 
-        impl<'a> Object<'a> {
-            fn parse(data: &'a [u8]) -> Option<Object<'a>> {
-                let elf = Elf::parse(data).ok()?;
-                if !elf.little_endian {
-                    return None;
-                }
-                let mut syms = elf
-                    .syms
-                    .iter()
-                    .map(|s| (s, false))
-                    .chain(elf.dynsyms.iter().map(|s| (s, true)))
-                    // Only look at function/object symbols. This mirrors what
-                    // libbacktrace does and in general we're only symbolicating
-                    // function addresses in theory. Object symbols correspond
-                    // to data, and maybe someone's crazy enough to have a
-                    // function go into static data?
-                    .filter(|(s, _)| {
-                        s.is_function() || s.st_type() == goblin::elf::sym::STT_OBJECT
-                    })
-                    // skip anything that's in an undefined section header,
-                    // since it means it's an imported function and we're only
-                    // symbolicating with locally defined functions.
-                    .filter(|(s, _)| {
-                        s.st_shndx != goblin::elf::section_header::SHN_UNDEF as usize
-                    })
-                    .collect::<Vec<_>>();
-                syms.sort_unstable_by_key(|s| s.0.st_value);
-                Some(Object {
-                    syms,
-                    elf,
-                    data,
-                })
-            }
-
-            fn section(&self, name: &str) -> Option<&'a [u8]> {
-                let section = self.elf.section_headers.iter().find(|section| {
-                    match self.elf.shdr_strtab.get(section.sh_name) {
-                        Some(Ok(section_name)) => section_name == name,
-                        _ => false,
-                    }
-                });
-                section
-                    .and_then(|section| {
-                        self.data.get(section.sh_offset as usize..)
-                            .and_then(|data| data.get(..section.sh_size as usize))
-                    })
-            }
-
-            fn search_symtab<'b>(&'b self, addr: u64) -> Option<&'b [u8]> {
-                // Same sort of binary search as Windows above
-                let i = match self.syms.binary_search_by_key(&addr, |s| s.0.st_value) {
-                    Ok(i) => i,
-                    Err(i) => i.checked_sub(1)?,
-                };
-                let (sym, dynamic) = self.syms.get(i)?;
-                if sym.st_value <= addr && addr <= sym.st_value + sym.st_size {
-                    let strtab = if *dynamic {
-                        &self.elf.dynstrtab
-                    } else {
-                        &self.elf.strtab
-                    };
-                    Some(strtab.get(sym.st_name)?.ok()?.as_bytes())
-                } else {
-                    None
-                }
-            }
-        }
-    }
-}
-
-impl Mapping {
-    #[cfg(not(target_os = "macos"))]
-    fn new(path: &Path) -> Option<Mapping> {
-        let map = mmap(path)?;
-        let cx = cx(Object::parse(&map)?)?;
-        Some(mk!(Mapping { map, cx }))
-    }
-
-    // The loading path for OSX is is so different we just have a completely
-    // different implementation of the function here. On OSX we need to go
-    // probing the filesystem for a bunch of files.
-    #[cfg(target_os = "macos")]
-    fn new(path: &Path) -> Option<Mapping> {
-        // First up we need to load the unique UUID which is stored in the macho
-        // header of the file we're reading, specified at `path`.
-        let map = mmap(path)?;
-        let macho = MachO::parse(&map, 0).ok()?;
-        let uuid = find_uuid(&macho)?;
-
-        // Next we need to look for a `*.dSYM` file. For now we just probe the
-        // containing directory and look around for something that matches
-        // `*.dSYM`. Once it's found we root through the dwarf resources that it
-        // contains and try to find a macho file which has a matching UUID as
-        // the one of our own file. If we find a match that's the dwarf file we
-        // want to return.
-        let parent = path.parent()?;
-        for entry in parent.read_dir().ok()? {
-            let entry = entry.ok()?;
-            let filename = match entry.file_name().into_string() {
-                Ok(name) => name,
-                Err(_) => continue,
-            };
-            if !filename.ends_with(".dSYM") {
-                continue;
-            }
-            let candidates = entry.path().join("Contents/Resources/DWARF");
-            if let Some(mapping) = load_dsym(&candidates, &uuid) {
-                return Some(mapping);
-            }
-        }
-
-        // Looks like nothing matched our UUID, so let's at least return our own
-        // file. This should have the symbol table for at least some
-        // symbolication purposes.
-        let inner = cx(Object::parse(macho)?)?;
-        return Some(mk!(Mapping { map, inner }));
-
-        fn load_dsym(dir: &Path, uuid: &[u8; 16]) -> Option<Mapping> {
-            for entry in dir.read_dir().ok()? {
-                let entry = entry.ok()?;
-                let map = mmap(&entry.path())?;
-                let macho = MachO::parse(&map, 0).ok()?;
-                let entry_uuid = find_uuid(&macho)?;
-                if entry_uuid != uuid {
-                    continue;
-                }
-                if let Some(cx) = Object::parse(macho).and_then(cx) {
-                    return Some(mk!(Mapping { map, cx }));
-                }
-            }
-
-            None
-        }
-
-        fn find_uuid<'a>(object: &'a MachO) -> Option<&'a [u8; 16]> {
-            use goblin::mach::load_command::CommandVariant;
-
-            object
-                .load_commands
-                .iter()
-                .filter_map(|cmd| match &cmd.command {
-                    CommandVariant::Uuid(u) => Some(&u.uuid),
-                    _ => None,
-                })
-                .next()
+        fn native_libraries() -> Vec<Library> {
+            Vec::new()
         }
     }
 }
@@ -393,13 +412,23 @@ struct Cache {
 
 struct Library {
     name: OsString,
+    /// Segments of this library loaded into memory, and where they're loaded.
     segments: Vec<LibrarySegment>,
-    bias: findshlibs::Bias,
+    /// The "bias" of this library, typically where it's loaded into memory.
+    /// This value is added to each segment's stated address to get the actual
+    /// virtual memory address that the segment is loaded into. Additionally
+    /// this bias is subtracted from real virtual memory addresses to index into
+    /// debuginfo and the symbol table.
+    bias: usize,
 }
 
 struct LibrarySegment {
+    /// The stated address of this segment in the object file. This is not
+    /// actually where the segment is loaded, but rather this address plus the
+    /// containing library's `bias` is where to find it.
+    stated_virtual_memory_address: usize,
+    /// The size of ths segment in memory.
     len: usize,
-    stated_virtual_memory_address: findshlibs::Svma,
 }
 
 // unsafe because this is required to be externally synchronized
@@ -409,29 +438,9 @@ pub unsafe fn clear_symbol_cache() {
 
 impl Cache {
     fn new() -> Cache {
-        let mut libraries = Vec::new();
-        // Iterate over all loaded shared libraries and cache information we
-        // learn about them. This way we only load information here once instead
-        // of once per symbol.
-        findshlibs::TargetSharedLibrary::each(|so| {
-            use findshlibs::IterationControl::*;
-            libraries.push(Library {
-                name: so.name().to_owned(),
-                segments: so
-                    .segments()
-                    .map(|s| LibrarySegment {
-                        len: s.len(),
-                        stated_virtual_memory_address: s.stated_virtual_memory_address(),
-                    })
-                    .collect(),
-                bias: so.virtual_memory_bias(),
-            });
-            Continue
-        });
-
         Cache {
             mappings: Vec::with_capacity(MAPPINGS_CACHE_SIZE),
-            libraries,
+            libraries: native_libraries(),
         }
     }
 
@@ -452,17 +461,7 @@ impl Cache {
         f(MAPPINGS_CACHE.get_or_insert_with(|| Cache::new()))
     }
 
-    fn avma_to_svma(&self, addr: *const u8) -> Option<(usize, findshlibs::Svma)> {
-        // Note that for now `findshlibs` is unimplemented on Windows, so we
-        // just unhelpfully assume that the address is an SVMA. Surprisingly it
-        // seems to at least somewhat work on Wine on Linux though...
-        //
-        // This probably means ASLR on Windows is busted.
-        if cfg!(windows) {
-            let addr = findshlibs::Svma(addr);
-            return Some((usize::max_value(), addr));
-        }
-
+    fn avma_to_svma(&self, addr: *const u8) -> Option<(usize, *const u8)> {
         self.libraries
             .iter()
             .enumerate()
@@ -471,23 +470,27 @@ impl Cache {
                 // `addr` (handling relocation). If this check passes then we
                 // can continue below and actually translate the address.
                 //
-                // Note that this is an inlining of `contains_avma` in the
-                // `findshlibs` crate here.
+                // Note that we're using `wrapping_add` here to avoid overflow
+                // checks. It's been seen in the wild that the SVMA + bias
+                // computation overflows. It seems a bit odd that would happen
+                // but there's not a huge amount we can do about it other than
+                // probably just ignore those segments since they're likely
+                // pointing off into space. This originally came up in
+                // rust-lang/backtrace-rs#329.
                 if !lib.segments.iter().any(|s| {
                     let svma = s.stated_virtual_memory_address;
-                    let start = unsafe { svma.0.offset(lib.bias.0) as usize };
-                    let end = start + s.len;
+                    let start = svma.wrapping_add(lib.bias);
+                    let end = start.wrapping_add(s.len);
                     let address = addr as usize;
                     start <= address && address < end
                 }) {
                     return None;
                 }
 
-                // Now that we know `lib` contains `addr`, do the equiavlent of
-                // `avma_to_svma` in the `findshlibs` crate.
-                let reverse_bias = -lib.bias.0;
-                let svma = findshlibs::Svma(unsafe { addr.offset(reverse_bias) });
-                Some((i, svma))
+                // Now that we know `lib` contains `addr`, we can offset with
+                // the bias to find the stated virutal memory address.
+                let svma = (addr as usize).wrapping_sub(lib.bias);
+                Some((i, svma as *const u8))
             })
             .next()
     }
@@ -508,15 +511,8 @@ impl Cache {
             // When the mapping is not in the cache, create a new mapping,
             // insert it into the front of the cache, and evict the oldest cache
             // entry if necessary.
-            let storage;
-            let path = match self.libraries.get(lib) {
-                Some(lib) => &lib.name,
-                None => {
-                    storage = env::current_exe().ok()?.into();
-                    &storage
-                }
-            };
-            let mapping = Mapping::new(path.as_ref())?;
+            let name = &self.libraries[lib].name;
+            let mapping = Mapping::new(name.as_ref())?;
 
             if self.mappings.len() == MAPPINGS_CACHE_SIZE {
                 self.mappings.pop();
@@ -532,12 +528,14 @@ impl Cache {
     }
 }
 
-pub unsafe fn resolve(what: ResolveWhat, cb: &mut FnMut(&super::Symbol)) {
+pub unsafe fn resolve(what: ResolveWhat<'_>, cb: &mut dyn FnMut(&super::Symbol)) {
     let addr = what.address_or_ip();
-    let mut cb = DladdrFallback {
-        cb,
-        addr,
-        called: false,
+    let mut call = |sym: Symbol<'_>| {
+        // Extend the lifetime of `sym` to `'static` since we are unfortunately
+        // required to here, but it's ony ever going out as a reference so no
+        // reference to it should be persisted beyond this frame anyway.
+        let sym = mem::transmute::<Symbol<'_>, Symbol<'static>>(sym);
+        (cb)(&super::Symbol { inner: sym });
     };
 
     Cache::with_global(|cache| {
@@ -552,60 +550,27 @@ pub unsafe fn resolve(what: ResolveWhat, cb: &mut FnMut(&super::Symbol)) {
             Some(cx) => cx,
             None => return,
         };
-        if let Ok(mut frames) = cx.dwarf.find_frames(addr.0 as u64) {
+        let mut any_frames = false;
+        if let Ok(mut frames) = cx.dwarf.find_frames(addr as u64) {
             while let Ok(Some(frame)) = frames.next() {
-                cb.call(Symbol::Frame {
-                    addr: addr.0 as *mut c_void,
+                any_frames = true;
+                call(Symbol::Frame {
+                    addr: addr as *mut c_void,
                     location: frame.location,
                     name: frame.function.map(|f| f.name.slice()),
                 });
             }
         }
 
-        if !cb.called {
-            if let Some(name) = cx.object.search_symtab(addr.0 as u64) {
-                cb.call(Symbol::Symtab {
-                    addr: addr.0 as *mut c_void,
+        if !any_frames {
+            if let Some(name) = cx.object.search_symtab(addr as u64) {
+                call(Symbol::Symtab {
+                    addr: addr as *mut c_void,
                     name,
                 });
             }
         }
     });
-
-    drop(cb);
-}
-
-struct DladdrFallback<'a, 'b> {
-    addr: *mut c_void,
-    called: bool,
-    cb: &'a mut (FnMut(&super::Symbol) + 'b),
-}
-
-impl DladdrFallback<'_, '_> {
-    fn call(&mut self, sym: Symbol) {
-        self.called = true;
-
-        // Extend the lifetime of `sym` to `'static` since we are unfortunately
-        // required to here, but it's ony ever going out as a reference so no
-        // reference to it should be persisted beyond this frame anyway.
-        let sym = unsafe { mem::transmute::<Symbol, Symbol<'static>>(sym) };
-        (self.cb)(&super::Symbol { inner: sym });
-    }
-}
-
-impl Drop for DladdrFallback<'_, '_> {
-    fn drop(&mut self) {
-        if self.called {
-            return;
-        }
-        unsafe {
-            dladdr::resolve(self.addr, &mut |sym| {
-                (self.cb)(&super::Symbol {
-                    inner: Symbol::Dladdr(sym),
-                })
-            });
-        }
-    }
 }
 
 pub enum Symbol<'a> {
@@ -619,15 +584,11 @@ pub enum Symbol<'a> {
     /// Couldn't find debug information, but we found it in the symbol table of
     /// the elf executable.
     Symtab { addr: *mut c_void, name: &'a [u8] },
-    /// We weren't able to find anything in the original file, so we had to fall
-    /// back to using `dladdr` which had a hit.
-    Dladdr(dladdr::Symbol<'a>),
 }
 
 impl Symbol<'_> {
-    pub fn name(&self) -> Option<SymbolName> {
+    pub fn name(&self) -> Option<SymbolName<'_>> {
         match self {
-            Symbol::Dladdr(s) => s.name(),
             Symbol::Frame { name, .. } => {
                 let name = name.as_ref()?;
                 Some(SymbolName::new(name))
@@ -638,15 +599,13 @@ impl Symbol<'_> {
 
     pub fn addr(&self) -> Option<*mut c_void> {
         match self {
-            Symbol::Dladdr(s) => s.addr(),
             Symbol::Frame { addr, .. } => Some(*addr),
             Symbol::Symtab { .. } => None,
         }
     }
 
-    pub fn filename_raw(&self) -> Option<BytesOrWideString> {
+    pub fn filename_raw(&self) -> Option<BytesOrWideString<'_>> {
         match self {
-            Symbol::Dladdr(s) => return s.filename_raw(),
             Symbol::Frame { location, .. } => {
                 let file = location.as_ref()?.file?;
                 Some(BytesOrWideString::Bytes(file.as_bytes()))
@@ -657,7 +616,6 @@ impl Symbol<'_> {
 
     pub fn filename(&self) -> Option<&Path> {
         match self {
-            Symbol::Dladdr(s) => return s.filename(),
             Symbol::Frame { location, .. } => {
                 let file = location.as_ref()?.file?;
                 Some(Path::new(file))
@@ -668,7 +626,6 @@ impl Symbol<'_> {
 
     pub fn lineno(&self) -> Option<u32> {
         match self {
-            Symbol::Dladdr(s) => return s.lineno(),
             Symbol::Frame { location, .. } => location.as_ref()?.line,
             Symbol::Symtab { .. } => None,
         }

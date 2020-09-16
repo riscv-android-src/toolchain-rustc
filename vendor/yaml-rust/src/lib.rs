@@ -36,7 +36,7 @@
 //!
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/yaml-rust/0.4.3")]
+#![doc(html_root_url = "https://docs.rs/yaml-rust/0.4.4")]
 #![cfg_attr(feature = "cargo-clippy", allow(renamed_and_removed_lints))]
 #![cfg_attr(feature = "cargo-clippy", warn(cyclomatic_complexity))]
 #![cfg_attr(
@@ -52,10 +52,10 @@ pub mod scanner;
 pub mod yaml;
 
 // reexport key APIs
-pub use emitter::{EmitError, YamlEmitter};
-pub use parser::Event;
-pub use scanner::ScanError;
-pub use yaml::{Yaml, YamlLoader};
+pub use crate::emitter::{EmitError, YamlEmitter};
+pub use crate::parser::Event;
+pub use crate::scanner::ScanError;
+pub use crate::yaml::{Yaml, YamlLoader};
 
 #[cfg(test)]
 mod tests {

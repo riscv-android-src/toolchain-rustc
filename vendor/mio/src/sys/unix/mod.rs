@@ -3,10 +3,20 @@ use libc::{self, c_int};
 #[macro_use]
 pub mod dlsym;
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "solaris"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "illumos",
+    target_os = "linux",
+    target_os = "solaris"
+))]
 mod epoll;
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "solaris"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "illumos",
+    target_os = "linux",
+    target_os = "solaris"
+))]
 pub use self::epoll::{Events, Selector};
 
 #[cfg(any(target_os = "bitrig", target_os = "dragonfly",
@@ -25,6 +35,7 @@ mod io;
 mod ready;
 mod tcp;
 mod udp;
+mod uio;
 
 #[cfg(feature = "with-deprecated")]
 mod uds;
@@ -49,22 +60,26 @@ pub fn pipe() -> ::io::Result<(Io, Io)> {
     dlsym!(fn pipe2(*mut c_int, c_int) -> c_int);
 
     let mut pipes = [0; 2];
-    let flags = libc::O_NONBLOCK | libc::O_CLOEXEC;
     unsafe {
         match pipe2.get() {
             Some(pipe2_fn) => {
+                let flags = libc::O_NONBLOCK | libc::O_CLOEXEC;
                 cvt(pipe2_fn(pipes.as_mut_ptr(), flags))?;
+                Ok((Io::from_raw_fd(pipes[0]), Io::from_raw_fd(pipes[1])))
             }
             None => {
                 cvt(libc::pipe(pipes.as_mut_ptr()))?;
-                libc::fcntl(pipes[0], libc::F_SETFL, flags);
-                libc::fcntl(pipes[1], libc::F_SETFL, flags);
+                // Ensure the pipe are closed if any of the system calls below
+                // fail.
+                let r = Io::from_raw_fd(pipes[0]);
+                let w = Io::from_raw_fd(pipes[1]);
+                cvt(libc::fcntl(pipes[0], libc::F_SETFD, libc::FD_CLOEXEC))?;
+                cvt(libc::fcntl(pipes[1], libc::F_SETFD, libc::FD_CLOEXEC))?;
+                cvt(libc::fcntl(pipes[0], libc::F_SETFL, libc::O_NONBLOCK))?;
+                cvt(libc::fcntl(pipes[1], libc::F_SETFL, libc::O_NONBLOCK))?;
+                Ok((r, w))
             }
         }
-    }
-
-    unsafe {
-        Ok((Io::from_raw_fd(pipes[0]), Io::from_raw_fd(pipes[1])))
     }
 }
 

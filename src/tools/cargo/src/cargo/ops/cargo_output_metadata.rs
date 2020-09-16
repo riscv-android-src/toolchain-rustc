@@ -1,8 +1,9 @@
 use crate::core::compiler::{CompileKind, RustcTargetData};
 use crate::core::dependency::DepKind;
 use crate::core::resolver::{HasDevUnits, Resolve, ResolveOpts};
-use crate::core::{Dependency, InternedString, Package, PackageId, Workspace};
+use crate::core::{Dependency, Package, PackageId, Workspace};
 use crate::ops::{self, Packages};
+use crate::util::interning::InternedString;
 use crate::util::CargoResult;
 use cargo_platform::Platform;
 use serde::Serialize;
@@ -46,6 +47,7 @@ pub fn output_metadata(ws: &Workspace<'_>, opt: &OutputMetadataOptions) -> Cargo
         target_directory: ws.target_dir().into_path_unlocked(),
         version: VERSION,
         workspace_root: ws.root().to_path_buf(),
+        metadata: ws.custom_metadata().cloned(),
     })
 }
 
@@ -60,6 +62,7 @@ pub struct ExportInfo {
     target_directory: PathBuf,
     version: u32,
     workspace_root: PathBuf,
+    metadata: Option<toml::Value>,
 }
 
 #[derive(Serialize)]

@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -11,53 +11,43 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "fst"
-version = "0.3.0"
+version = "0.4.4"
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
 description = "Use finite state transducers to compactly represents sets or maps of many\nstrings (> 1 billion is possible).\n"
 homepage = "https://github.com/BurntSushi/fst"
-documentation = "http://burntsushi.net/rustdoc/fst/"
+documentation = "https://docs.rs/fst"
 readme = "README.md"
 keywords = ["search", "information", "retrieval", "dictionary", "map"]
 license = "Unlicense/MIT"
 repository = "https://github.com/BurntSushi/fst"
+[package.metadata.docs.rs]
+features = ["levenshtein"]
 [profile.bench]
-opt-level = 3
 debug = true
 
 [profile.release]
 debug = true
-
-[[bench]]
-name = "build"
-path = "./benches/build.rs"
-test = false
-bench = true
-
-[[bench]]
-name = "search"
-path = "./benches/search.rs"
-test = false
-bench = true
-[dependencies.byteorder]
-version = "1"
-
-[dependencies.memmap]
-version = "0.6.0"
+[dependencies.utf8-ranges]
+version = "1.0.4"
 optional = true
-[dev-dependencies.fnv]
-version = "1.0.5"
+[dev-dependencies.doc-comment]
+version = "0.3.1"
 
-[dev-dependencies.lazy_static]
-version = "0.2.8"
+[dev-dependencies.fnv]
+version = "1.0.6"
+
+[dev-dependencies.memmap]
+version = "0.7"
 
 [dev-dependencies.quickcheck]
-version = "0.4.1"
+version = "0.9.2"
 default-features = false
 
 [dev-dependencies.rand]
-version = "0.3.15"
+version = "0.7.3"
 
 [features]
-default = ["mmap"]
-mmap = ["memmap"]
+default = []
+levenshtein = ["utf8-ranges"]

@@ -1,29 +1,33 @@
-use std::sync::Arc;
-
-use automaton::AlwaysMatch;
-use error::Error;
-use raw::{self, VERSION, Builder, Bound, Fst, Stream, Output};
-use stream::Streamer;
+use crate::automaton::AlwaysMatch;
+use crate::error::Error;
+use crate::raw::{self, Bound, Builder, Fst, Output, Stream, VERSION};
+use crate::stream::Streamer;
 
 const TEXT: &'static str = include_str!("./../../data/words-100000");
 
-pub fn fst_set<I, S>(ss: I) -> Fst
-        where I: IntoIterator<Item=S>, S: AsRef<[u8]> {
+pub fn fst_set<I, S>(ss: I) -> Fst<Vec<u8>>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<[u8]>,
+{
     let mut bfst = Builder::memory();
     let mut ss: Vec<Vec<u8>> =
         ss.into_iter().map(|s| s.as_ref().to_vec()).collect();
     ss.sort();
+    ss.dedup();
     for s in ss.iter().into_iter() {
         bfst.add(s).unwrap();
     }
-    let fst = Fst::from_bytes(bfst.into_inner().unwrap()).unwrap();
-    ss.dedup();
+    let fst = bfst.into_fst();
     assert_eq!(fst.len(), ss.len());
     fst
 }
 
-pub fn fst_map<I, S>(ss: I) -> Fst
-        where I: IntoIterator<Item=(S, u64)>, S: AsRef<[u8]> {
+pub fn fst_map<I, S>(ss: I) -> Fst<Vec<u8>>
+where
+    I: IntoIterator<Item = (S, u64)>,
+    S: AsRef<[u8]>,
+{
     let mut bfst = Builder::memory();
     let mut ss: Vec<(Vec<u8>, u64)> =
         ss.into_iter().map(|(s, o)| (s.as_ref().to_vec(), o)).collect();
@@ -32,10 +36,10 @@ pub fn fst_map<I, S>(ss: I) -> Fst
     for (s, o) in ss.into_iter() {
         bfst.insert(s, o).unwrap();
     }
-    Fst::from_bytes(bfst.into_inner().unwrap()).unwrap()
+    bfst.into_fst()
 }
 
-pub fn fst_inputs(fst: &Fst) -> Vec<Vec<u8>> {
+pub fn fst_inputs<D: AsRef<[u8]>>(fst: &Fst<D>) -> Vec<Vec<u8>> {
     let mut words = vec![];
     let mut rdr = fst.stream();
     while let Some((word, _)) = rdr.next() {
@@ -44,7 +48,9 @@ pub fn fst_inputs(fst: &Fst) -> Vec<Vec<u8>> {
     words
 }
 
-pub fn fst_inputs_outputs(fst: &Fst) -> Vec<(Vec<u8>, u64)> {
+pub fn fst_inputs_outputs<D: AsRef<[u8]>>(
+    fst: &Fst<D>,
+) -> Vec<(Vec<u8>, u64)> {
     let mut words = vec![];
     let mut rdr = fst.stream();
     while let Some((word, out)) = rdr.next() {
@@ -98,15 +104,16 @@ test_set_fail!(fst_set_order2, "a", "b", "c", "a");
 
 #[test]
 fn fst_set_100000() {
-    let words: Vec<Vec<u8>> = TEXT.lines()
-                                  .map(|s| s.as_bytes().to_vec())
-                                  .collect();
+    let words: Vec<Vec<u8>> =
+        TEXT.lines().map(|s| s.as_bytes().to_vec()).collect();
     let fst = fst_set(words.clone());
     assert_eq!(words, fst_inputs(&fst));
     for word in &words {
-        assert!(fst.get(word).is_some(),
-                "failed to find word: {}",
-                ::std::str::from_utf8(word).unwrap());
+        assert!(
+            fst.get(word).is_some(),
+            "failed to find word: {}",
+            std::str::from_utf8(word).unwrap()
+        );
     }
 }
 
@@ -149,8 +156,18 @@ test_map!(fst_map_two, "a", 1, "b", 2);
 test_map!(fst_map_many1, "a", 34786, "ab", 26);
 test_map!(
     fst_map_many2,
-    "a", 34786, "ab", 26, "abc", 58976, "abcd", 25,
-    "z", 58, "zabc", 6798
+    "a",
+    34786,
+    "ab",
+    26,
+    "abc",
+    58976,
+    "abcd",
+    25,
+    "z",
+    58,
+    "zabc",
+    6798
 );
 test_map!(fst_map_many3, "a", 1, "ab", 0, "abc", 0);
 
@@ -162,11 +179,11 @@ test_map_fail!(fst_map_order2, "a", 0, "b", 0, "c", 0, "a", 0);
 
 #[test]
 fn fst_map_100000_increments() {
-    let words: Vec<(Vec<u8>, u64)> =
-        TEXT.lines()
-            .enumerate()
-            .map(|(i, s)| (s.as_bytes().to_vec(), i as u64))
-            .collect();
+    let words: Vec<(Vec<u8>, u64)> = TEXT
+        .lines()
+        .enumerate()
+        .map(|(i, s)| (s.as_bytes().to_vec(), i as u64))
+        .collect();
     let fst = fst_map(words.clone());
     assert_eq!(words, fst_inputs_outputs(&fst));
     for &(ref word, out) in &words {
@@ -176,10 +193,10 @@ fn fst_map_100000_increments() {
 
 #[test]
 fn fst_map_100000_lengths() {
-    let words: Vec<(Vec<u8>, u64)> =
-        TEXT.lines()
-            .map(|s| (s.as_bytes().to_vec(), s.len() as u64))
-            .collect();
+    let words: Vec<(Vec<u8>, u64)> = TEXT
+        .lines()
+        .map(|s| (s.as_bytes().to_vec(), s.len() as u64))
+        .collect();
     let fst = fst_map(words.clone());
     assert_eq!(words, fst_inputs_outputs(&fst));
     for &(ref word, out) in &words {
@@ -189,7 +206,7 @@ fn fst_map_100000_lengths() {
 
 #[test]
 fn invalid_version() {
-    match Fst::from_bytes(vec![0; 32]) {
+    match Fst::new(vec![0; 36]) {
         Err(Error::Fst(raw::Error::Version { got, .. })) => assert_eq!(got, 0),
         Err(err) => panic!("expected version error, got {:?}", err),
         Ok(_) => panic!("expected version error, got FST"),
@@ -198,11 +215,9 @@ fn invalid_version() {
 
 #[test]
 fn invalid_version_crate_too_old() {
-    use byteorder::{ByteOrder, LittleEndian};
-
-    let mut buf = vec![0; 32];
-    LittleEndian::write_u64(&mut buf, VERSION + 1);
-    match Fst::from_bytes(buf) {
+    let mut buf = vec![0; 36];
+    crate::bytes::write_u64_le(VERSION + 1, &mut buf);
+    match Fst::new(buf) {
         Err(Error::Fst(raw::Error::Version { got, .. })) => {
             assert_eq!(got, VERSION + 1);
         }
@@ -213,8 +228,8 @@ fn invalid_version_crate_too_old() {
 
 #[test]
 fn invalid_format() {
-    match Fst::from_bytes(vec![0; 0]) {
-        Err(Error::Fst(raw::Error::Format)) => {}
+    match Fst::new(vec![0; 0]) {
+        Err(Error::Fst(raw::Error::Format { .. })) => {}
         Err(err) => panic!("expected format error, got {:?}", err),
         Ok(_) => panic!("expected format error, got FST"),
     }
@@ -239,14 +254,18 @@ macro_rules! test_range {
         #[test]
         fn $name() {
             let items: Vec<&'static str> = vec![$($s),*];
-            let items: Vec<_> =
-                items.into_iter().enumerate()
-                     .map(|(i, k)| (k, i as u64)).collect();
+            let items: Vec<_> = items
+                .into_iter()
+                .enumerate()
+                .map(|(i, k)| (k, i as u64))
+                .collect();
             let fst = fst_map(items.clone());
-            let mut rdr = Stream::new(&fst, AlwaysMatch, $min, $max);
+            let mut rdr = Stream::new(fst.as_ref(), AlwaysMatch, $min, $max);
             for i in $imin..$imax {
-                assert_eq!(rdr.next().unwrap(),
-                           (items[i].0.as_bytes(), Output::new(items[i].1)));
+                assert_eq!(
+                    rdr.next().unwrap(),
+                    (items[i].0.as_bytes(), Output::new(items[i].1)),
+                );
             }
             assert_eq!(rdr.next(), None);
         }
@@ -473,11 +492,13 @@ fn one_vec_multiple_fsts() {
     let mut bfst2 = Builder::new(bytes).unwrap();
     bfst2.add(b"bar").unwrap();
     bfst2.add(b"foo").unwrap();
-    let bytes = Arc::new(bfst2.into_inner().unwrap());
 
-    let fst1 = Fst::from_shared_bytes(bytes.clone(), 0, fst1_len).unwrap();
-    let fst2 = Fst::from_shared_bytes(
-        bytes.clone(), fst1_len, bytes.len() - fst1_len).unwrap();
+    let bytes = bfst2.into_inner().unwrap();
+    let slice1 = &bytes[0..fst1_len];
+    let slice2 = &bytes[fst1_len..bytes.len()];
+
+    let fst1 = Fst::new(slice1).unwrap();
+    let fst2 = Fst::new(slice2).unwrap();
 
     assert_eq!(fst_inputs(&fst1), vec![b"bar".to_vec(), b"baz".to_vec()]);
     assert_eq!(fst_inputs(&fst2), vec![b"bar".to_vec(), b"foo".to_vec()]);
@@ -491,6 +512,78 @@ fn bytes_written() {
     let counted_len = bfst1.bytes_written();
     let bytes = bfst1.into_inner().unwrap();
     let fst1_len = bytes.len() as u64;
-    let footer_size = 24;
+    let footer_size = 28;
     assert_eq!(counted_len + footer_size, fst1_len);
+}
+
+#[test]
+fn get_key_simple() {
+    let map = fst_map(vec![("abc", 2), ("xyz", 3)]);
+    assert_eq!(map.get_key(0), None);
+    assert_eq!(map.get_key(1), None);
+    assert_eq!(map.get_key(2), Some(b"abc".to_vec()));
+    assert_eq!(map.get_key(3), Some(b"xyz".to_vec()));
+    assert_eq!(map.get_key(4), None);
+}
+
+#[test]
+fn get_key_words() {
+    let words: Vec<(Vec<u8>, u64)> = TEXT
+        .lines()
+        .enumerate()
+        .map(|(i, line)| (line.as_bytes().to_vec(), i as u64))
+        .collect();
+    let map = fst_map(words.clone());
+    for (key, value) in words {
+        assert_eq!(map.get_key(value), Some(key));
+    }
+}
+
+#[test]
+fn get_key_words_discontiguous() {
+    let words: Vec<(Vec<u8>, u64)> = TEXT
+        .lines()
+        .enumerate()
+        .map(|(i, line)| (line.as_bytes().to_vec(), i as u64 * 2))
+        .collect();
+    let map = fst_map(words.clone());
+    for (key, value) in words {
+        assert_eq!(map.get_key(value), Some(key));
+    }
+}
+
+#[test]
+fn verify_ok_nonempty() {
+    let words: Vec<(Vec<u8>, u64)> = TEXT
+        .lines()
+        .enumerate()
+        .map(|(i, line)| (line.as_bytes().to_vec(), i as u64 * 2))
+        .collect();
+    let map = fst_map(words.clone());
+    assert!(map.verify().is_ok());
+}
+
+#[test]
+fn verify_ok_empty() {
+    let map = fst_map(Vec::<(&str, u64)>::new());
+    assert!(map.verify().is_ok());
+}
+
+#[test]
+fn verify_err() {
+    let mut b = Builder::memory();
+    b.add(b"bar").unwrap();
+    b.add(b"baz").unwrap();
+    let mut bytes = b.into_inner().unwrap();
+
+    {
+        let fst = Fst::new(&bytes).unwrap();
+        assert!(fst.verify().is_ok());
+    }
+
+    bytes[17] = b'\xFF';
+    {
+        let fst = Fst::new(&bytes).unwrap();
+        assert!(fst.verify().is_err());
+    }
 }

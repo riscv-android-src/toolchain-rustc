@@ -1,3 +1,5 @@
+//! Traits for "zipping" types, walking through two structures and checking that they match.
+
 use crate::fold::Fold;
 use crate::*;
 use std::fmt::Debug;
@@ -20,13 +22,14 @@ use std::sync::Arc;
 /// `ItemId` requires that all `ItemId` in the two zipped values match
 /// up.
 pub trait Zipper<'i, I: Interner> {
-    /// Indicates that the two types `a` and `b` were found in
-    /// matching spots, beneath `binders` levels of binders.
+    /// Indicates that the two types `a` and `b` were found in matching spots.
     fn zip_tys(&mut self, a: &Ty<I>, b: &Ty<I>) -> Fallible<()>;
 
-    /// Indicates that the two lifetimes `a` and `b` were found in
-    /// matching spots, beneath `binders` levels of binders.
+    /// Indicates that the two lifetimes `a` and `b` were found in matching spots.
     fn zip_lifetimes(&mut self, a: &Lifetime<I>, b: &Lifetime<I>) -> Fallible<()>;
+
+    /// Indicates that the two consts `a` and `b` were found in matching spots.
+    fn zip_consts(&mut self, a: &Const<I>, b: &Const<I>) -> Fallible<()>;
 
     /// Zips two values appearing beneath binders.
     fn zip_binders<T>(&mut self, a: &Binders<T>, b: &Binders<T>) -> Fallible<()>
@@ -48,6 +51,10 @@ where
 
     fn zip_lifetimes(&mut self, a: &Lifetime<I>, b: &Lifetime<I>) -> Fallible<()> {
         (**self).zip_lifetimes(a, b)
+    }
+
+    fn zip_consts(&mut self, a: &Const<I>, b: &Const<I>) -> Fallible<()> {
+        (**self).zip_consts(a, b)
     }
 
     fn zip_binders<T>(&mut self, a: &Binders<T>, b: &Binders<T>) -> Fallible<()>
@@ -73,6 +80,7 @@ pub trait Zip<I>: Debug
 where
     I: Interner,
 {
+    /// Uses the zipper to walk through two values, ensuring that they match.
     fn zip_with<'i, Z: Zipper<'i, I>>(zipper: &mut Z, a: &Self, b: &Self) -> Fallible<()>
     where
         I: 'i;
@@ -166,6 +174,14 @@ impl<I: Interner> Zip<I> for Lifetime<I> {
     }
 }
 
+impl<I: Interner> Zip<I> for Const<I> {
+    fn zip_with<'i, Z: Zipper<'i, I>>(zipper: &mut Z, a: &Self, b: &Self) -> Fallible<()>
+    where
+        I: 'i,
+    {
+        zipper.zip_consts(a, b)
+    }
+}
 impl<I: Interner, T: HasInterner<Interner = I> + Zip<I> + Fold<I, I, Result = T>> Zip<I>
     for Binders<T>
 {
@@ -195,7 +211,7 @@ macro_rules! eq_zip {
     };
 }
 
-eq_zip!(I => StructId<I>);
+eq_zip!(I => AdtId<I>);
 eq_zip!(I => TraitId<I>);
 eq_zip!(I => AssocTypeId<I>);
 eq_zip!(I => OpaqueTyId<I>);
@@ -289,23 +305,25 @@ impl<I: Interner> Zip<I> for Goal<I> {
 }
 
 // I'm too lazy to make `enum_zip` support type parameters.
-impl<T: Zip<I>, L: Zip<I>, I: Interner> Zip<I> for ParameterKind<T, L> {
+impl<I: Interner> Zip<I> for VariableKind<I> {
     fn zip_with<'i, Z: Zipper<'i, I>>(zipper: &mut Z, a: &Self, b: &Self) -> Fallible<()>
     where
         I: 'i,
     {
         match (a, b) {
-            (ParameterKind::Ty(a), ParameterKind::Ty(b)) => Zip::zip_with(zipper, a, b),
-            (ParameterKind::Lifetime(a), ParameterKind::Lifetime(b)) => Zip::zip_with(zipper, a, b),
-            (ParameterKind::Ty(_), _) | (ParameterKind::Lifetime(_), _) => {
-                panic!("zipping things of mixed kind")
+            (VariableKind::Ty(a), VariableKind::Ty(b)) if a == b => Ok(()),
+            (VariableKind::Lifetime, VariableKind::Lifetime) => Ok(()),
+            (VariableKind::Const(ty_a), VariableKind::Const(ty_b)) => {
+                Zip::zip_with(zipper, ty_a, ty_b)
             }
+            (VariableKind::Ty(_), _)
+            | (VariableKind::Lifetime, _)
+            | (VariableKind::Const(_), _) => panic!("zipping things of mixed kind"),
         }
     }
 }
 
-#[allow(unreachable_code, unused_variables)]
-impl<I: Interner> Zip<I> for Parameter<I> {
+impl<I: Interner> Zip<I> for GenericArg<I> {
     fn zip_with<'i, Z: Zipper<'i, I>>(zipper: &mut Z, a: &Self, b: &Self) -> Fallible<()>
     where
         I: 'i,

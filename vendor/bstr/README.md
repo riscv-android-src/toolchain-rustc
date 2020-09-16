@@ -1,12 +1,11 @@
 bstr
 ====
-This crate provides a `BString` and `BStr` types that are conventionally UTF-8
-for Rust. They differ from the standard library's `String` and `str` types in
-that they are not required to be valid UTF-8, but may be fully or partially
-valid UTF-8.
+This crate provides extension traits for `&[u8]` and `Vec<u8>` that enable
+their use as byte strings, where byte strings are _conventionally_ UTF-8. This
+differs from the standard library's `String` and `str` types in that they are
+not required to be valid UTF-8, but may be fully or partially valid UTF-8.
 
-[![Linux build status](https://api.travis-ci.org/BurntSushi/bstr.svg)](https://travis-ci.org/BurntSushi/bstr)
-[![Windows build status](https://ci.appveyor.com/api/projects/status/github/BurntSushi/bstr?svg=true)](https://ci.appveyor.com/project/BurntSushi/bstr)
+[![Build status](https://github.com/BurntSushi/bstr/workflows/ci/badge.svg)](https://github.com/BurntSushi/bstr/actions)
 [![](http://meritbadge.herokuapp.com/bstr)](https://crates.io/crates/bstr)
 
 
@@ -18,7 +17,7 @@ https://docs.rs/bstr
 ### When should I use byte strings?
 
 See this part of the documentation for more details:
-https://docs.rs/bstr/0.1.0/bstr/#when-should-i-use-byte-strings.
+https://docs.rs/bstr/0.2.0/bstr/#when-should-i-use-byte-strings.
 
 The short story is that byte strings are useful when it is inconvenient or
 incorrect to require valid UTF-8.
@@ -30,7 +29,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bstr = "0.1"
+bstr = "0.2"
 ```
 
 
@@ -46,15 +45,15 @@ stdin, and print out lines containing a particular substring:
 use std::error::Error;
 use std::io::{self, Write};
 
-use bstr::io::BufReadExt;
+use bstr::{ByteSlice, io::BufReadExt};
 
-fn main() -> Result<(), Box<Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let mut stdout = io::BufWriter::new(io::stdout());
 
     stdin.lock().for_byte_line_with_terminator(|line| {
-        if line.contains("Dimension") {
-            stdout.write_all(line.as_bytes())?;
+        if line.contains_str("Dimension") {
+            stdout.write_all(line)?;
         }
         Ok(true)
     })?;
@@ -69,9 +68,9 @@ line-by-line:
 use std::error::Error;
 use std::io;
 
-use bstr::io::BufReadExt;
+use bstr::{ByteSlice, io::BufReadExt};
 
-fn main() -> Result<(), Box<Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let mut words = 0;
     stdin.lock().for_byte_line_with_terminator(|line| {
@@ -92,18 +91,17 @@ library APIs. (N.B. Any invalid UTF-8 bytes are passed through unchanged.)
 use std::error::Error;
 use std::io::{self, Write};
 
-use bstr::BString;
-use bstr::io::BufReadExt;
+use bstr::{ByteSlice, io::BufReadExt};
 
-fn main() -> Result<(), Box<Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let mut stdout = io::BufWriter::new(io::stdout());
 
-    let mut upper = BString::new();
+    let mut upper = vec![];
     stdin.lock().for_byte_line_with_terminator(|line| {
         upper.clear();
         line.to_uppercase_into(&mut upper);
-        stdout.write_all(upper.as_bytes())?;
+        stdout.write_all(&upper)?;
         Ok(true)
     })?;
     Ok(())
@@ -118,9 +116,9 @@ as a single character and are passed through correctly:
 use std::error::Error;
 use std::io::{self, Write};
 
-use bstr::io::BufReadExt;
+use bstr::{ByteSlice, io::BufReadExt};
 
-fn main() -> Result<(), Box<Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let mut stdout = io::BufWriter::new(io::stdout());
 
@@ -131,7 +129,7 @@ fn main() -> Result<(), Box<Error>> {
             .take(10)
             .last()
             .unwrap_or(line.len());
-        stdout.write_all(line[..end].trim_end().as_bytes())?;
+        stdout.write_all(line[..end].trim_end())?;
         stdout.write_all(b"\n")?;
         Ok(true)
     })?;
@@ -146,7 +144,7 @@ This crates comes with a few features that control standard library, serde
 and Unicode support.
 
 * `std` - **Enabled** by default. This provides APIs that require the standard
-  library, such as `BString`.
+  library, such as `Vec<u8>`.
 * `unicode` - **Enabled** by default. This provides APIs that require sizable
   Unicode data compiled into the binary. This includes, but is not limited to,
   grapheme/word/sentence segmenters. When this is disabled, basic support such
@@ -206,8 +204,8 @@ except for `memchr`, is optional.
 ### High level motivation
 
 Strictly speaking, the `bstr` crate provides very little that can't already be
-achieved with a `Vec<u8>`/`&[u8]` and the ecosystem of library crates. For
-example:
+achieved with the standard library `Vec<u8>`/`&[u8]` APIs and the ecosystem of
+library crates. For example:
 
 * The standard library's
   [`Utf8Error`](https://doc.rust-lang.org/std/str/struct.Utf8Error.html)
@@ -250,3 +248,7 @@ This project is licensed under either of
    http://opensource.org/licenses/MIT)
 
 at your option.
+
+The data in `src/unicode/data/` is licensed under the Unicode License Agreement
+([LICENSE-UNICODE](http://www.unicode.org/copyright.html#License)), although
+this data is only used in tests.

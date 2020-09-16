@@ -1,7 +1,7 @@
+use crate::raw;
+#[cfg(maybe_uninit)]
+use core::mem::MaybeUninit;
 use core::{mem, slice, str};
-
-use raw;
-
 #[cfg(feature = "no-panic")]
 use no_panic::no_panic;
 
@@ -13,13 +13,15 @@ const NEG_INFINITY: &'static str = "-inf";
 ///
 /// ## Example
 ///
-/// ```edition2018
+/// ```
 /// let mut buffer = ryu::Buffer::new();
 /// let printed = buffer.format_finite(1.234);
 /// assert_eq!(printed, "1.234");
 /// ```
-#[derive(Copy, Clone)]
 pub struct Buffer {
+    #[cfg(maybe_uninit)]
+    bytes: [MaybeUninit<u8>; 24],
+    #[cfg(not(maybe_uninit))]
     bytes: [u8; 24],
 }
 
@@ -29,9 +31,14 @@ impl Buffer {
     #[inline]
     #[cfg_attr(feature = "no-panic", no_panic)]
     pub fn new() -> Self {
-        Buffer {
-            bytes: unsafe { mem::uninitialized() },
-        }
+        // assume_init is safe here, since this is an array of MaybeUninit, which does not need
+        // to be initialized.
+        #[cfg(maybe_uninit)]
+        let bytes = [MaybeUninit::<u8>::uninit(); 24];
+        #[cfg(not(maybe_uninit))]
+        let bytes = unsafe { mem::uninitialized() };
+
+        Buffer { bytes: bytes }
     }
 
     /// Print a floating point number into this buffer and return a reference to
@@ -74,11 +81,20 @@ impl Buffer {
     #[cfg_attr(feature = "no-panic", no_panic)]
     pub fn format_finite<F: Float>(&mut self, f: F) -> &str {
         unsafe {
-            let n = f.write_to_ryu_buffer(&mut self.bytes[0]);
+            let n = f.write_to_ryu_buffer(self.bytes.as_mut_ptr() as *mut u8);
             debug_assert!(n <= self.bytes.len());
-            let slice = slice::from_raw_parts(&self.bytes[0], n);
+            let slice = slice::from_raw_parts(self.bytes.as_ptr() as *const u8, n);
             str::from_utf8_unchecked(slice)
         }
+    }
+}
+
+impl Copy for Buffer {}
+
+impl Clone for Buffer {
+    #[inline]
+    fn clone(&self) -> Self {
+        Buffer::new()
     }
 }
 

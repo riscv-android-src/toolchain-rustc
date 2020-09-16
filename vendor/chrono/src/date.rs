@@ -3,16 +3,19 @@
 
 //! ISO 8601 calendar date with time zone.
 
-use std::{fmt, hash};
-use std::cmp::Ordering;
-use std::ops::{Add, Sub};
+#[cfg(any(feature = "alloc", feature = "std", test))]
+use core::borrow::Borrow;
+use core::cmp::Ordering;
+use core::ops::{Add, Sub};
+use core::{fmt, hash};
 use oldtime::Duration as OldDuration;
 
-use {Weekday, Datelike};
+#[cfg(any(feature = "alloc", feature = "std", test))]
+use format::{DelayedFormat, Item, StrftimeItems};
+use naive::{self, IsoWeek, NaiveDate, NaiveTime};
 use offset::{TimeZone, Utc};
-use naive::{self, NaiveDate, NaiveTime, IsoWeek};
 use DateTime;
-use format::{Item, DelayedFormat, StrftimeItems};
+use {Datelike, Weekday};
 
 /// ISO 8601 calendar date with time zone.
 ///
@@ -53,7 +56,7 @@ impl<Tz: TimeZone> Date<Tz> {
     /// Makes a new `Date` with given *UTC* date and offset.
     /// The local date should be constructed via the `TimeZone` trait.
     //
-    // note: this constructor is purposedly not named to `new` to discourage the direct usage.
+    // note: this constructor is purposely not named to `new` to discourage the direct usage.
     #[inline]
     pub fn from_utc(date: NaiveDate, offset: Tz::Offset) -> Date<Tz> {
         Date { date: date, offset: offset }
@@ -103,8 +106,13 @@ impl<Tz: TimeZone> Date<Tz> {
     ///
     /// Returns `None` on invalid hour, minute, second and/or millisecond.
     #[inline]
-    pub fn and_hms_milli_opt(&self, hour: u32, min: u32, sec: u32,
-                             milli: u32) -> Option<DateTime<Tz>> {
+    pub fn and_hms_milli_opt(
+        &self,
+        hour: u32,
+        min: u32,
+        sec: u32,
+        milli: u32,
+    ) -> Option<DateTime<Tz>> {
         NaiveTime::from_hms_milli_opt(hour, min, sec, milli).and_then(|time| self.and_time(time))
     }
 
@@ -124,8 +132,13 @@ impl<Tz: TimeZone> Date<Tz> {
     ///
     /// Returns `None` on invalid hour, minute, second and/or microsecond.
     #[inline]
-    pub fn and_hms_micro_opt(&self, hour: u32, min: u32, sec: u32,
-                             micro: u32) -> Option<DateTime<Tz>> {
+    pub fn and_hms_micro_opt(
+        &self,
+        hour: u32,
+        min: u32,
+        sec: u32,
+        micro: u32,
+    ) -> Option<DateTime<Tz>> {
         NaiveTime::from_hms_micro_opt(hour, min, sec, micro).and_then(|time| self.and_time(time))
     }
 
@@ -145,8 +158,13 @@ impl<Tz: TimeZone> Date<Tz> {
     ///
     /// Returns `None` on invalid hour, minute, second and/or nanosecond.
     #[inline]
-    pub fn and_hms_nano_opt(&self, hour: u32, min: u32, sec: u32,
-                            nano: u32) -> Option<DateTime<Tz>> {
+    pub fn and_hms_nano_opt(
+        &self,
+        hour: u32,
+        min: u32,
+        sec: u32,
+        nano: u32,
+    ) -> Option<DateTime<Tz>> {
         NaiveTime::from_hms_nano_opt(hour, min, sec, nano).and_then(|time| self.and_time(time))
     }
 
@@ -224,7 +242,6 @@ impl<Tz: TimeZone> Date<Tz> {
     ///
     /// This does not overflow or underflow at all,
     /// as all possible output fits in the range of `Duration`.
-    #[cfg_attr(feature = "cargo-clippy", allow(needless_pass_by_value))]
     #[inline]
     pub fn signed_duration_since<Tz2: TimeZone>(self, rhs: Date<Tz2>) -> OldDuration {
         self.date.signed_duration_since(rhs.date)
@@ -238,7 +255,7 @@ impl<Tz: TimeZone> Date<Tz> {
 
     /// Returns a view to the naive local date.
     ///
-    /// This is technically same to [`naive_utc`](#method.naive_utc)
+    /// This is technically the same as [`naive_utc`](#method.naive_utc)
     /// because the offset is restricted to never exceed one day,
     /// but provided for the consistency.
     #[inline]
@@ -249,21 +266,31 @@ impl<Tz: TimeZone> Date<Tz> {
 
 /// Maps the local date to other date with given conversion function.
 fn map_local<Tz: TimeZone, F>(d: &Date<Tz>, mut f: F) -> Option<Date<Tz>>
-        where F: FnMut(NaiveDate) -> Option<NaiveDate> {
+where
+    F: FnMut(NaiveDate) -> Option<NaiveDate>,
+{
     f(d.naive_local()).and_then(|date| d.timezone().from_local_date(&date).single())
 }
 
-impl<Tz: TimeZone> Date<Tz> where Tz::Offset: fmt::Display {
+impl<Tz: TimeZone> Date<Tz>
+where
+    Tz::Offset: fmt::Display,
+{
     /// Formats the date with the specified formatting items.
+    #[cfg(any(feature = "alloc", feature = "std", test))]
     #[inline]
-    pub fn format_with_items<'a, I>(&self, items: I) -> DelayedFormat<I>
-            where I: Iterator<Item=Item<'a>> + Clone {
+    pub fn format_with_items<'a, I, B>(&self, items: I) -> DelayedFormat<I>
+    where
+        I: Iterator<Item = B> + Clone,
+        B: Borrow<Item<'a>>,
+    {
         DelayedFormat::new_with_offset(Some(self.naive_local()), None, &self.offset, items)
     }
 
     /// Formats the date with the specified format string.
     /// See the [`format::strftime` module](./format/strftime/index.html)
     /// on the supported escape sequences.
+    #[cfg(any(feature = "alloc", feature = "std", test))]
     #[inline]
     pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
         self.format_with_items(StrftimeItems::new(fmt))
@@ -271,15 +298,42 @@ impl<Tz: TimeZone> Date<Tz> where Tz::Offset: fmt::Display {
 }
 
 impl<Tz: TimeZone> Datelike for Date<Tz> {
-    #[inline] fn year(&self) -> i32 { self.naive_local().year() }
-    #[inline] fn month(&self) -> u32 { self.naive_local().month() }
-    #[inline] fn month0(&self) -> u32 { self.naive_local().month0() }
-    #[inline] fn day(&self) -> u32 { self.naive_local().day() }
-    #[inline] fn day0(&self) -> u32 { self.naive_local().day0() }
-    #[inline] fn ordinal(&self) -> u32 { self.naive_local().ordinal() }
-    #[inline] fn ordinal0(&self) -> u32 { self.naive_local().ordinal0() }
-    #[inline] fn weekday(&self) -> Weekday { self.naive_local().weekday() }
-    #[inline] fn iso_week(&self) -> IsoWeek { self.naive_local().iso_week() }
+    #[inline]
+    fn year(&self) -> i32 {
+        self.naive_local().year()
+    }
+    #[inline]
+    fn month(&self) -> u32 {
+        self.naive_local().month()
+    }
+    #[inline]
+    fn month0(&self) -> u32 {
+        self.naive_local().month0()
+    }
+    #[inline]
+    fn day(&self) -> u32 {
+        self.naive_local().day()
+    }
+    #[inline]
+    fn day0(&self) -> u32 {
+        self.naive_local().day0()
+    }
+    #[inline]
+    fn ordinal(&self) -> u32 {
+        self.naive_local().ordinal()
+    }
+    #[inline]
+    fn ordinal0(&self) -> u32 {
+        self.naive_local().ordinal0()
+    }
+    #[inline]
+    fn weekday(&self) -> Weekday {
+        self.naive_local().weekday()
+    }
+    #[inline]
+    fn iso_week(&self) -> IsoWeek {
+        self.naive_local().iso_week()
+    }
 
     #[inline]
     fn with_year(&self, year: i32) -> Option<Date<Tz>> {
@@ -322,11 +376,12 @@ impl<Tz: TimeZone> Copy for Date<Tz> where <Tz as TimeZone>::Offset: Copy {}
 unsafe impl<Tz: TimeZone> Send for Date<Tz> where <Tz as TimeZone>::Offset: Send {}
 
 impl<Tz: TimeZone, Tz2: TimeZone> PartialEq<Date<Tz2>> for Date<Tz> {
-    fn eq(&self, other: &Date<Tz2>) -> bool { self.date == other.date }
+    fn eq(&self, other: &Date<Tz2>) -> bool {
+        self.date == other.date
+    }
 }
 
-impl<Tz: TimeZone> Eq for Date<Tz> {
-}
+impl<Tz: TimeZone> Eq for Date<Tz> {}
 
 impl<Tz: TimeZone> PartialOrd for Date<Tz> {
     fn partial_cmp(&self, other: &Date<Tz>) -> Option<Ordering> {
@@ -335,11 +390,15 @@ impl<Tz: TimeZone> PartialOrd for Date<Tz> {
 }
 
 impl<Tz: TimeZone> Ord for Date<Tz> {
-    fn cmp(&self, other: &Date<Tz>) -> Ordering { self.date.cmp(&other.date) }
+    fn cmp(&self, other: &Date<Tz>) -> Ordering {
+        self.date.cmp(&other.date)
+    }
 }
 
 impl<Tz: TimeZone> hash::Hash for Date<Tz> {
-    fn hash<H: hash::Hasher>(&self, state: &mut H) { self.date.hash(state) }
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        self.date.hash(state)
+    }
 }
 
 impl<Tz: TimeZone> Add<OldDuration> for Date<Tz> {
@@ -375,9 +434,11 @@ impl<Tz: TimeZone> fmt::Debug for Date<Tz> {
     }
 }
 
-impl<Tz: TimeZone> fmt::Display for Date<Tz> where Tz::Offset: fmt::Display {
+impl<Tz: TimeZone> fmt::Display for Date<Tz>
+where
+    Tz::Offset: fmt::Display,
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}{}", self.naive_local(), self.offset)
     }
 }
-

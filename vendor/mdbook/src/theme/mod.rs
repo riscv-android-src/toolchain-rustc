@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 
-pub mod playpen_editor;
+pub mod playground_editor;
+
+pub mod fonts;
 
 #[cfg(feature = "search")]
 pub mod searcher;
@@ -12,12 +14,15 @@ use std::path::Path;
 use crate::errors::*;
 
 pub static INDEX: &[u8] = include_bytes!("index.hbs");
+pub static HEAD: &[u8] = include_bytes!("head.hbs");
+pub static REDIRECT: &[u8] = include_bytes!("redirect.hbs");
 pub static HEADER: &[u8] = include_bytes!("header.hbs");
 pub static CHROME_CSS: &[u8] = include_bytes!("css/chrome.css");
 pub static GENERAL_CSS: &[u8] = include_bytes!("css/general.css");
 pub static PRINT_CSS: &[u8] = include_bytes!("css/print.css");
 pub static VARIABLES_CSS: &[u8] = include_bytes!("css/variables.css");
-pub static FAVICON: &[u8] = include_bytes!("favicon.png");
+pub static FAVICON_PNG: &[u8] = include_bytes!("favicon.png");
+pub static FAVICON_SVG: &[u8] = include_bytes!("favicon.svg");
 pub static JS: &[u8] = include_bytes!("book.js");
 pub static HIGHLIGHT_JS: &[u8] = include_bytes!("highlight.js");
 pub static TOMORROW_NIGHT_CSS: &[u8] = include_bytes!("tomorrow-night.css");
@@ -42,12 +47,15 @@ pub static FONT_AWESOME_OTF: &[u8] = include_bytes!("FontAwesome/fonts/FontAweso
 #[derive(Debug, PartialEq)]
 pub struct Theme {
     pub index: Vec<u8>,
+    pub head: Vec<u8>,
+    pub redirect: Vec<u8>,
     pub header: Vec<u8>,
     pub chrome_css: Vec<u8>,
     pub general_css: Vec<u8>,
     pub print_css: Vec<u8>,
     pub variables_css: Vec<u8>,
-    pub favicon: Vec<u8>,
+    pub favicon_png: Vec<u8>,
+    pub favicon_svg: Vec<u8>,
     pub js: Vec<u8>,
     pub highlight_css: Vec<u8>,
     pub tomorrow_night_css: Vec<u8>,
@@ -72,6 +80,8 @@ impl Theme {
         {
             let files = vec![
                 (theme_dir.join("index.hbs"), &mut theme.index),
+                (theme_dir.join("head.hbs"), &mut theme.head),
+                (theme_dir.join("redirect.hbs"), &mut theme.redirect),
                 (theme_dir.join("header.hbs"), &mut theme.header),
                 (theme_dir.join("book.js"), &mut theme.js),
                 (theme_dir.join("css/chrome.css"), &mut theme.chrome_css),
@@ -81,7 +91,8 @@ impl Theme {
                     theme_dir.join("css/variables.css"),
                     &mut theme.variables_css,
                 ),
-                (theme_dir.join("favicon.png"), &mut theme.favicon),
+                (theme_dir.join("favicon.png"), &mut theme.favicon_png),
+                (theme_dir.join("favicon.svg"), &mut theme.favicon_svg),
                 (theme_dir.join("highlight.js"), &mut theme.highlight_js),
                 (theme_dir.join("clipboard.min.js"), &mut theme.clipboard_js),
                 (theme_dir.join("highlight.css"), &mut theme.highlight_css),
@@ -114,12 +125,15 @@ impl Default for Theme {
     fn default() -> Theme {
         Theme {
             index: INDEX.to_owned(),
+            head: HEAD.to_owned(),
+            redirect: REDIRECT.to_owned(),
             header: HEADER.to_owned(),
             chrome_css: CHROME_CSS.to_owned(),
             general_css: GENERAL_CSS.to_owned(),
             print_css: PRINT_CSS.to_owned(),
             variables_css: VARIABLES_CSS.to_owned(),
-            favicon: FAVICON.to_owned(),
+            favicon_png: FAVICON_PNG.to_owned(),
+            favicon_svg: FAVICON_SVG.to_owned(),
             js: JS.to_owned(),
             highlight_css: HIGHLIGHT_CSS.to_owned(),
             tomorrow_night_css: TOMORROW_NIGHT_CSS.to_owned(),
@@ -168,9 +182,13 @@ mod tests {
     fn theme_dir_overrides_defaults() {
         let files = [
             "index.hbs",
+            "head.hbs",
+            "redirect.hbs",
             "header.hbs",
             "favicon.png",
+            "favicon.svg",
             "css/chrome.css",
+            "css/fonts.css",
             "css/general.css",
             "css/print.css",
             "css/variables.css",
@@ -194,12 +212,15 @@ mod tests {
 
         let empty = Theme {
             index: Vec::new(),
+            head: Vec::new(),
+            redirect: Vec::new(),
             header: Vec::new(),
             chrome_css: Vec::new(),
             general_css: Vec::new(),
             print_css: Vec::new(),
             variables_css: Vec::new(),
-            favicon: Vec::new(),
+            favicon_png: Vec::new(),
+            favicon_svg: Vec::new(),
             js: Vec::new(),
             highlight_css: Vec::new(),
             tomorrow_night_css: Vec::new(),

@@ -1,11 +1,13 @@
 use core::char;
 use core::cmp;
+use core::fmt;
+use core::str;
 #[cfg(feature = "std")]
 use std::error;
-use core::fmt;
 
 use ascii;
 use bstr::BStr;
+use ext_slice::ByteSlice;
 
 // The UTF-8 decoder provided here is based on the one presented here:
 // https://bjoern.hoehrmann.de/utf-8/decoder/dfa/
@@ -40,7 +42,10 @@ use bstr::BStr;
 const ACCEPT: usize = 12;
 const REJECT: usize = 0;
 
-static CLASSES: [u8; 256] = [
+/// SAFETY: The decode below function relies on the correctness of these
+/// equivalence classes.
+#[cfg_attr(rustfmt, rustfmt::skip)]
+const CLASSES: [u8; 256] = [
    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
@@ -51,7 +56,10 @@ static CLASSES: [u8; 256] = [
   10,3,3,3,3,3,3,3,3,3,3,3,3,4,3,3, 11,6,6,6,5,8,8,8,8,8,8,8,8,8,8,8,
 ];
 
-static STATES_FORWARD: &'static [u8] = &[
+/// SAFETY: The decode below function relies on the correctness of this state
+/// machine.
+#[cfg_attr(rustfmt, rustfmt::skip)]
+const STATES_FORWARD: &'static [u8] = &[
   0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   12, 0, 24, 36, 60, 96, 84, 0, 0, 0, 48, 72,
   0, 12, 0, 0, 0, 0, 0, 12, 0, 12, 0, 0,
@@ -70,15 +78,15 @@ static STATES_FORWARD: &'static [u8] = &[
 /// ["maximal subpart" strategy](http://www.unicode.org/review/pr-121.html).
 ///
 /// This iterator is created by the
-/// [`chars`](struct.BStr.html#method.chars) method on
-/// [`BStr`](struct.BStr.html).
+/// [`chars`](trait.ByteSlice.html#method.chars) method provided by the
+/// [`ByteSlice`](trait.ByteSlice.html) extension trait for `&[u8]`.
 #[derive(Clone, Debug)]
 pub struct Chars<'a> {
-    bs: &'a BStr,
+    bs: &'a [u8],
 }
 
 impl<'a> Chars<'a> {
-    pub(crate) fn new(bs: &'a BStr) -> Chars<'a> {
+    pub(crate) fn new(bs: &'a [u8]) -> Chars<'a> {
         Chars { bs }
     }
 
@@ -90,19 +98,19 @@ impl<'a> Chars<'a> {
     /// # Examples
     ///
     /// ```
-    /// use bstr::BStr;
+    /// use bstr::ByteSlice;
     ///
-    /// let mut chars = BStr::new("abc").chars();
+    /// let mut chars = b"abc".chars();
     ///
-    /// assert_eq!("abc", chars.as_bstr());
+    /// assert_eq!(b"abc", chars.as_bytes());
     /// chars.next();
-    /// assert_eq!("bc", chars.as_bstr());
+    /// assert_eq!(b"bc", chars.as_bytes());
     /// chars.next();
     /// chars.next();
-    /// assert_eq!("", chars.as_bstr());
+    /// assert_eq!(b"", chars.as_bytes());
     /// ```
     #[inline]
-    pub fn as_bstr(&self) -> &'a BStr {
+    pub fn as_bytes(&self) -> &'a [u8] {
         self.bs
     }
 }
@@ -112,7 +120,7 @@ impl<'a> Iterator for Chars<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<char> {
-        let (ch, size) = decode_lossy(self.bs.as_bytes());
+        let (ch, size) = decode_lossy(self.bs);
         if size == 0 {
             return None;
         }
@@ -124,11 +132,11 @@ impl<'a> Iterator for Chars<'a> {
 impl<'a> DoubleEndedIterator for Chars<'a> {
     #[inline]
     fn next_back(&mut self) -> Option<char> {
-        let (ch, size) = decode_last_lossy(self.bs.as_bytes());
+        let (ch, size) = decode_last_lossy(self.bs);
         if size == 0 {
             return None;
         }
-        self.bs = &self.bs[..self.bs.len()-size];
+        self.bs = &self.bs[..self.bs.len() - size];
         Some(ch)
     }
 }
@@ -149,17 +157,17 @@ impl<'a> DoubleEndedIterator for Chars<'a> {
 /// substitute anywhere from 1 to 3 invalid bytes (inclusive).
 ///
 /// This iterator is created by the
-/// [`char_indices`](struct.BStr.html#method.char_indices) method on
-/// [`BStr`](struct.BStr.html).
+/// [`char_indices`](trait.ByteSlice.html#method.char_indices) method provided
+/// by the [`ByteSlice`](trait.ByteSlice.html) extension trait for `&[u8]`.
 #[derive(Clone, Debug)]
 pub struct CharIndices<'a> {
-    bs: &'a BStr,
+    bs: &'a [u8],
     forward_index: usize,
     reverse_index: usize,
 }
 
 impl<'a> CharIndices<'a> {
-    pub(crate) fn new(bs: &'a BStr) -> CharIndices<'a> {
+    pub(crate) fn new(bs: &'a [u8]) -> CharIndices<'a> {
         CharIndices { bs: bs, forward_index: 0, reverse_index: bs.len() }
     }
 
@@ -171,19 +179,19 @@ impl<'a> CharIndices<'a> {
     /// # Examples
     ///
     /// ```
-    /// use bstr::B;
+    /// use bstr::ByteSlice;
     ///
-    /// let mut it = B("abc").char_indices();
+    /// let mut it = b"abc".char_indices();
     ///
-    /// assert_eq!("abc", it.as_bstr());
+    /// assert_eq!(b"abc", it.as_bytes());
     /// it.next();
-    /// assert_eq!("bc", it.as_bstr());
+    /// assert_eq!(b"bc", it.as_bytes());
     /// it.next();
     /// it.next();
-    /// assert_eq!("", it.as_bstr());
+    /// assert_eq!(b"", it.as_bytes());
     /// ```
     #[inline]
-    pub fn as_bstr(&self) -> &'a BStr {
+    pub fn as_bytes(&self) -> &'a [u8] {
         self.bs
     }
 }
@@ -194,7 +202,7 @@ impl<'a> Iterator for CharIndices<'a> {
     #[inline]
     fn next(&mut self) -> Option<(usize, usize, char)> {
         let index = self.forward_index;
-        let (ch, size) = decode_lossy(self.bs.as_bytes());
+        let (ch, size) = decode_lossy(self.bs);
         if size == 0 {
             return None;
         }
@@ -207,21 +215,126 @@ impl<'a> Iterator for CharIndices<'a> {
 impl<'a> DoubleEndedIterator for CharIndices<'a> {
     #[inline]
     fn next_back(&mut self) -> Option<(usize, usize, char)> {
-        let (ch, size) = decode_last_lossy(self.bs.as_bytes());
+        let (ch, size) = decode_last_lossy(self.bs);
         if size == 0 {
             return None;
         }
-        self.bs = &self.bs[..self.bs.len()-size];
+        self.bs = &self.bs[..self.bs.len() - size];
         self.reverse_index -= size;
         Some((self.reverse_index, self.reverse_index + size, ch))
     }
 }
 
+/// An iterator over chunks of valid UTF-8 in a byte slice.
+///
+/// See [`utf8_chunks`](trait.ByteSlice.html#method.utf8_chunks).
+#[derive(Clone, Debug)]
+pub struct Utf8Chunks<'a> {
+    pub(super) bytes: &'a [u8],
+}
+
+/// A chunk of valid UTF-8, possibly followed by invalid UTF-8 bytes.
+///
+/// This is yielded by the
+/// [`Utf8Chunks`](struct.Utf8Chunks.html)
+/// iterator, which can be created via the
+/// [`ByteSlice::utf8_chunks`](trait.ByteSlice.html#method.utf8_chunks)
+/// method.
+///
+/// The `'a` lifetime parameter corresponds to the lifetime of the bytes that
+/// are being iterated over.
+pub struct Utf8Chunk<'a> {
+    /// A valid UTF-8 piece, at the start, end, or between invalid UTF-8 bytes.
+    ///
+    /// This is empty between adjacent invalid UTF-8 byte sequences.
+    valid: &'a str,
+    /// A sequence of invalid UTF-8 bytes.
+    ///
+    /// Can only be empty in the last chunk.
+    ///
+    /// Should be replaced by a single unicode replacement character, if not
+    /// empty.
+    invalid: &'a BStr,
+}
+
+impl<'a> Utf8Chunk<'a> {
+    /// Returns the (possibly empty) valid UTF-8 bytes in this chunk.
+    ///
+    /// This may be empty if there are consecutive sequences of invalid UTF-8
+    /// bytes.
+    #[inline]
+    pub fn valid(&self) -> &'a str {
+        self.valid
+    }
+
+    /// Returns the (possibly empty) invalid UTF-8 bytes in this chunk that
+    /// immediately follow the valid UTF-8 bytes in this chunk.
+    ///
+    /// This is only empty when this chunk corresponds to the last chunk in
+    /// the original bytes.
+    ///
+    /// The maximum length of this slice is 3. That is, invalid UTF-8 byte
+    /// sequences greater than 1 always correspond to a valid _prefix_ of
+    /// a valid UTF-8 encoded codepoint. This corresponds to the "substitution
+    /// of maximal subparts" strategy that is described in more detail in the
+    /// docs for the
+    /// [`ByteSlice::to_str_lossy`](trait.ByteSlice.html#method.to_str_lossy)
+    /// method.
+    #[inline]
+    pub fn invalid(&self) -> &'a [u8] {
+        self.invalid.as_bytes()
+    }
+}
+
+impl<'a> Iterator for Utf8Chunks<'a> {
+    type Item = Utf8Chunk<'a>;
+
+    #[inline]
+    fn next(&mut self) -> Option<Utf8Chunk<'a>> {
+        if self.bytes.is_empty() {
+            return None;
+        }
+        match validate(self.bytes) {
+            Ok(()) => {
+                let valid = self.bytes;
+                self.bytes = &[];
+                Some(Utf8Chunk {
+                    // SAFETY: This is safe because of the guarantees provided
+                    // by utf8::validate.
+                    valid: unsafe { str::from_utf8_unchecked(valid) },
+                    invalid: [].as_bstr(),
+                })
+            }
+            Err(e) => {
+                let (valid, rest) = self.bytes.split_at(e.valid_up_to());
+                // SAFETY: This is safe because of the guarantees provided by
+                // utf8::validate.
+                let valid = unsafe { str::from_utf8_unchecked(valid) };
+                let (invalid, rest) =
+                    rest.split_at(e.error_len().unwrap_or(rest.len()));
+                self.bytes = rest;
+                Some(Utf8Chunk { valid, invalid: invalid.as_bstr() })
+            }
+        }
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        if self.bytes.is_empty() {
+            (0, Some(0))
+        } else {
+            (1, Some(self.bytes.len()))
+        }
+    }
+}
+
+impl<'a> ::core::iter::FusedIterator for Utf8Chunks<'a> {}
+
 /// An error that occurs when UTF-8 decoding fails.
 ///
 /// This error occurs when attempting to convert a non-UTF-8 byte
 /// string to a Rust string that must be valid UTF-8. For example,
-/// [`to_str`](struct.BStr.html#method.to_str) is one such method.
+/// [`to_str`](trait.ByteSlice.html#method.to_str) is one such method.
 ///
 /// # Example
 ///
@@ -229,7 +342,7 @@ impl<'a> DoubleEndedIterator for CharIndices<'a> {
 /// but ends with a sequence that is a possible prefix of valid UTF-8.
 ///
 /// ```
-/// use bstr::B;
+/// use bstr::{B, ByteSlice};
 ///
 /// let s = B(b"foobar\xF1\x80\x80");
 /// let err = s.to_str().unwrap_err();
@@ -241,9 +354,9 @@ impl<'a> DoubleEndedIterator for CharIndices<'a> {
 /// invalid UTF-8.
 ///
 /// ```
-/// use bstr::B;
+/// use bstr::ByteSlice;
 ///
-/// let s = B(b"foobar\xF1\x80\x80quux");
+/// let s = b"foobar\xF1\x80\x80quux";
 /// let err = s.to_str().unwrap_err();
 /// assert_eq!(err.valid_up_to(), 6);
 /// // The error length reports the maximum number of bytes that correspond to
@@ -253,14 +366,14 @@ impl<'a> DoubleEndedIterator for CharIndices<'a> {
 /// // In contrast to the above which contains a single invalid prefix,
 /// // consider the case of multiple individal bytes that are never valid
 /// // prefixes. Note how the value of error_len changes!
-/// let s = B(b"foobar\xFF\xFFquux");
+/// let s = b"foobar\xFF\xFFquux";
 /// let err = s.to_str().unwrap_err();
 /// assert_eq!(err.valid_up_to(), 6);
 /// assert_eq!(err.error_len(), Some(1));
 ///
 /// // The fact that it's an invalid prefix does not change error_len even
 /// // when it immediately precedes the end of the string.
-/// let s = B(b"foobar\xFF");
+/// let s = b"foobar\xFF";
 /// let err = s.to_str().unwrap_err();
 /// assert_eq!(err.valid_up_to(), 6);
 /// assert_eq!(err.error_len(), Some(1));
@@ -281,9 +394,9 @@ impl Utf8Error {
     /// possibly empty prefix that is guaranteed to be valid UTF-8:
     ///
     /// ```
-    /// use bstr::B;
+    /// use bstr::ByteSlice;
     ///
-    /// let s = B(b"foobar\xF1\x80\x80quux");
+    /// let s = b"foobar\xF1\x80\x80quux";
     /// let err = s.to_str().unwrap_err();
     ///
     /// // This is guaranteed to never panic.
@@ -312,7 +425,9 @@ impl Utf8Error {
 
 #[cfg(feature = "std")]
 impl error::Error for Utf8Error {
-    fn description(&self) -> &str { "invalid UTF-8" }
+    fn description(&self) -> &str {
+        "invalid UTF-8"
+    }
 }
 
 impl fmt::Display for Utf8Error {
@@ -324,7 +439,7 @@ impl fmt::Display for Utf8Error {
 /// Returns OK if and only if the given slice is completely valid UTF-8.
 ///
 /// If the slice isn't valid UTF-8, then an error is returned that explains
-/// the first location at which invalid UTF-89 was detected.
+/// the first location at which invalid UTF-8 was detected.
 pub fn validate(slice: &[u8]) -> Result<(), Utf8Error> {
     // The fast path for validating UTF-8. It steps through a UTF-8 automaton
     // and uses a SIMD accelerated ASCII fast path on x86_64. If an error is
@@ -341,7 +456,7 @@ pub fn validate(slice: &[u8]) -> Result<(), Utf8Error> {
             // to validate as much ASCII as possible very quickly.
             if state == ACCEPT
                 && b <= 0x7F
-                && slice.get(i+1).map_or(false, |&b| b <= 0x7F)
+                && slice.get(i + 1).map_or(false, |&b| b <= 0x7F)
             {
                 i += ascii::first_non_ascii_byte(&slice[i..]);
                 continue;
@@ -370,7 +485,7 @@ pub fn validate(slice: &[u8]) -> Result<(), Utf8Error> {
         // code unit sequence. To do this, we simply locate the last leading
         // byte that occurs before rejected_at.
         let mut backup = rejected_at.saturating_sub(1);
-        while backup > 0 && !is_leading_utf8_byte(slice[backup]) {
+        while backup > 0 && !is_leading_or_invalid_utf8_byte(slice[backup]) {
             backup -= 1;
         }
         let upto = cmp::min(slice.len(), rejected_at.saturating_add(1));
@@ -455,9 +570,9 @@ pub fn validate(slice: &[u8]) -> Result<(), Utf8Error> {
 /// codepoint:
 ///
 /// ```
-/// use bstr::decode_utf8;
+/// use bstr::{B, decode_utf8};
 ///
-/// let mut bytes = &b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61"[..];
+/// let mut bytes = B(b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61");
 /// let mut chars = vec![];
 /// while !bytes.is_empty() {
 ///     let (ch, size) = decode_utf8(bytes);
@@ -529,9 +644,9 @@ pub fn decode<B: AsRef<[u8]>>(slice: B) -> (Option<char>, usize) {
 /// codepoint:
 ///
 /// ```ignore
-/// use bstr::decode_utf8_lossy;
+/// use bstr::{B, decode_utf8_lossy};
 ///
-/// let mut bytes = &b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61"[..];
+/// let mut bytes = B(b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61");
 /// let mut chars = vec![];
 /// while !bytes.is_empty() {
 ///     let (ch, size) = decode_utf8_lossy(bytes);
@@ -582,9 +697,9 @@ pub fn decode_lossy<B: AsRef<[u8]>>(slice: B) -> (char, usize) {
 /// replacement codepoint:
 ///
 /// ```
-/// use bstr::decode_last_utf8;
+/// use bstr::{B, decode_last_utf8};
 ///
-/// let mut bytes = &b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61"[..];
+/// let mut bytes = B(b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61");
 /// let mut chars = vec![];
 /// while !bytes.is_empty() {
 ///     let (ch, size) = decode_last_utf8(bytes);
@@ -604,7 +719,7 @@ pub fn decode_last<B: AsRef<[u8]>>(slice: B) -> (Option<char>, usize) {
     }
     let mut start = slice.len() - 1;
     let limit = slice.len().saturating_sub(4);
-    while start > limit && !is_leading_utf8_byte(slice[start]) {
+    while start > limit && !is_leading_or_invalid_utf8_byte(slice[start]) {
         start -= 1;
     }
     let (ch, size) = decode(&slice[start..]);
@@ -655,7 +770,7 @@ pub fn decode_last<B: AsRef<[u8]>>(slice: B) -> (Option<char>, usize) {
 /// ```ignore
 /// use bstr::decode_last_utf8_lossy;
 ///
-/// let mut bytes = &b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61"[..];
+/// let mut bytes = B(b"\xE2\x98\x83\xFF\xF0\x9D\x9E\x83\xE2\x98\x61");
 /// let mut chars = vec![];
 /// while !bytes.is_empty() {
 ///     let (ch, size) = decode_last_utf8_lossy(bytes);
@@ -672,6 +787,8 @@ pub fn decode_last_lossy<B: AsRef<[u8]>>(slice: B) -> (char, usize) {
     }
 }
 
+/// SAFETY: The decode function relies on state being equal to ACCEPT only if
+/// cp is a valid Unicode scalar value.
 #[inline]
 pub fn decode_step(state: &mut usize, cp: &mut u32, b: u8) {
     let class = CLASSES[b as usize];
@@ -683,10 +800,29 @@ pub fn decode_step(state: &mut usize, cp: &mut u32, b: u8) {
     *state = STATES_FORWARD[*state + class as usize] as usize;
 }
 
-fn is_leading_utf8_byte(b: u8) -> bool {
+/// Returns true if and only if the given byte is either a valid leading UTF-8
+/// byte, or is otherwise an invalid byte that can never appear anywhere in a
+/// valid UTF-8 sequence.
+fn is_leading_or_invalid_utf8_byte(b: u8) -> bool {
     // In the ASCII case, the most significant bit is never set. The leading
     // byte of a 2/3/4-byte sequence always has the top two most significant
-    // bigs set.
+    // bits set. For bytes that can never appear anywhere in valid UTF-8, this
+    // also returns true, since every such byte has its two most significant
+    // bits set:
+    //
+    //     \xC0 :: 11000000
+    //     \xC1 :: 11000001
+    //     \xF5 :: 11110101
+    //     \xF6 :: 11110110
+    //     \xF7 :: 11110111
+    //     \xF8 :: 11111000
+    //     \xF9 :: 11111001
+    //     \xFA :: 11111010
+    //     \xFB :: 11111011
+    //     \xFC :: 11111100
+    //     \xFD :: 11111101
+    //     \xFE :: 11111110
+    //     \xFF :: 11111111
     (b & 0b1100_0000) != 0b1000_0000
 }
 
@@ -694,7 +830,7 @@ fn is_leading_utf8_byte(b: u8) -> bool {
 mod tests {
     use std::char;
 
-    use bstr::B;
+    use ext_slice::{ByteSlice, B};
     use tests::LOSSY_TESTS;
     use utf8::{self, Utf8Error};
 
@@ -724,15 +860,15 @@ mod tests {
         assert_eq!(Ok(()), utf8::validate(b"abc"));
         assert_eq!(Ok(()), utf8::validate(b"a\xE2\x98\x83a"));
         assert_eq!(Ok(()), utf8::validate(b"a\xF0\x9D\x9C\xB7a"));
-        assert_eq!(Ok(()), utf8::validate(
-            b"\xE2\x98\x83\xF0\x9D\x9C\xB7",
-        ));
-        assert_eq!(Ok(()), utf8::validate(
-            b"a\xE2\x98\x83a\xF0\x9D\x9C\xB7a",
-        ));
-        assert_eq!(Ok(()), utf8::validate(
-            b"\xEF\xBF\xBD\xE2\x98\x83\xEF\xBF\xBD",
-        ));
+        assert_eq!(Ok(()), utf8::validate(b"\xE2\x98\x83\xF0\x9D\x9C\xB7",));
+        assert_eq!(
+            Ok(()),
+            utf8::validate(b"a\xE2\x98\x83a\xF0\x9D\x9C\xB7a",)
+        );
+        assert_eq!(
+            Ok(()),
+            utf8::validate(b"\xEF\xBF\xBD\xE2\x98\x83\xEF\xBF\xBD",)
+        );
     }
 
     #[test]
@@ -760,39 +896,45 @@ mod tests {
         // overlong sequences, but that we get valid_up_to correct.
         assert_eq!(Err(utf8e2(0, 1)), utf8::validate(b"\xF0\x82\x82\xAC"));
         assert_eq!(Err(utf8e2(1, 1)), utf8::validate(b"a\xF0\x82\x82\xAC"));
-        assert_eq!(Err(utf8e2(3, 1)), utf8::validate(
-            b"\xE2\x98\x83\xF0\x82\x82\xAC",
-        ));
+        assert_eq!(
+            Err(utf8e2(3, 1)),
+            utf8::validate(b"\xE2\x98\x83\xF0\x82\x82\xAC",)
+        );
 
         // Check that encoding a surrogate codepoint using the UTF-8 scheme
         // fails validation.
         assert_eq!(Err(utf8e2(0, 1)), utf8::validate(b"\xED\xA0\x80"));
         assert_eq!(Err(utf8e2(1, 1)), utf8::validate(b"a\xED\xA0\x80"));
-        assert_eq!(Err(utf8e2(3, 1)), utf8::validate(
-            b"\xE2\x98\x83\xED\xA0\x80",
-        ));
+        assert_eq!(
+            Err(utf8e2(3, 1)),
+            utf8::validate(b"\xE2\x98\x83\xED\xA0\x80",)
+        );
 
         // Check that an incomplete 2-byte sequence fails.
         assert_eq!(Err(utf8e2(0, 1)), utf8::validate(b"\xCEa"));
         assert_eq!(Err(utf8e2(1, 1)), utf8::validate(b"a\xCEa"));
-        assert_eq!(Err(utf8e2(3, 1)), utf8::validate(
-            b"\xE2\x98\x83\xCE\xE2\x98\x83",
-        ));
+        assert_eq!(
+            Err(utf8e2(3, 1)),
+            utf8::validate(b"\xE2\x98\x83\xCE\xE2\x98\x83",)
+        );
         // Check that an incomplete 3-byte sequence fails.
         assert_eq!(Err(utf8e2(0, 2)), utf8::validate(b"\xE2\x98a"));
         assert_eq!(Err(utf8e2(1, 2)), utf8::validate(b"a\xE2\x98a"));
-        assert_eq!(Err(utf8e2(3, 2)), utf8::validate(
-            b"\xE2\x98\x83\xE2\x98\xE2\x98\x83",
-        ));
+        assert_eq!(
+            Err(utf8e2(3, 2)),
+            utf8::validate(b"\xE2\x98\x83\xE2\x98\xE2\x98\x83",)
+        );
         // Check that an incomplete 4-byte sequence fails.
         assert_eq!(Err(utf8e2(0, 3)), utf8::validate(b"\xF0\x9D\x9Ca"));
         assert_eq!(Err(utf8e2(1, 3)), utf8::validate(b"a\xF0\x9D\x9Ca"));
-        assert_eq!(Err(utf8e2(4, 3)), utf8::validate(
-            b"\xF0\x9D\x9C\xB1\xF0\x9D\x9C\xE2\x98\x83",
-        ));
-        assert_eq!(Err(utf8e2(6, 3)), utf8::validate(
-            b"foobar\xF1\x80\x80quux",
-        ));
+        assert_eq!(
+            Err(utf8e2(4, 3)),
+            utf8::validate(b"\xF0\x9D\x9C\xB1\xF0\x9D\x9C\xE2\x98\x83",)
+        );
+        assert_eq!(
+            Err(utf8e2(6, 3)),
+            utf8::validate(b"foobar\xF1\x80\x80quux",)
+        );
 
         // Check that an incomplete (EOF) 2-byte sequence fails.
         assert_eq!(Err(utf8e(0)), utf8::validate(b"\xCE"));
@@ -805,15 +947,17 @@ mod tests {
         // Check that an incomplete (EOF) 4-byte sequence fails.
         assert_eq!(Err(utf8e(0)), utf8::validate(b"\xF0\x9D\x9C"));
         assert_eq!(Err(utf8e(1)), utf8::validate(b"a\xF0\x9D\x9C"));
-        assert_eq!(Err(utf8e(4)), utf8::validate(
-            b"\xF0\x9D\x9C\xB1\xF0\x9D\x9C",
-        ));
+        assert_eq!(
+            Err(utf8e(4)),
+            utf8::validate(b"\xF0\x9D\x9C\xB1\xF0\x9D\x9C",)
+        );
 
         // Test that we errors correct even after long valid sequences. This
         // checks that our "backup" logic for detecting errors is correct.
-        assert_eq!(Err(utf8e2(8, 1)), utf8::validate(
-            b"\xe2\x98\x83\xce\xb2\xe3\x83\x84\xFF",
-        ));
+        assert_eq!(
+            Err(utf8e2(8, 1)),
+            utf8::validate(b"\xe2\x98\x83\xce\xb2\xe3\x83\x84\xFF",)
+        );
     }
 
     #[test]
@@ -931,7 +1075,7 @@ mod tests {
             let mut chars = vec![];
             while !s.is_empty() {
                 let (ch, size) = utf8::decode_last(s.as_bytes());
-                s = &s[..s.len()-size];
+                s = &s[..s.len() - size];
                 chars.push(ch.unwrap());
             }
             chars
@@ -1076,15 +1220,15 @@ mod tests {
             let got: String = B(input).chars().collect();
             assert_eq!(
                 expected, got,
-                "chars(ith: {:?}, given: {:?})", i, input,
+                "chars(ith: {:?}, given: {:?})",
+                i, input,
             );
-            let got: String = B(input)
-                .char_indices()
-                .map(|(_, _, ch)| ch)
-                .collect();
+            let got: String =
+                B(input).char_indices().map(|(_, _, ch)| ch).collect();
             assert_eq!(
                 expected, got,
-                "char_indices(ith: {:?}, given: {:?})", i, input,
+                "char_indices(ith: {:?}, given: {:?})",
+                i, input,
             );
 
             let expected: String = expected.chars().rev().collect();
@@ -1092,16 +1236,15 @@ mod tests {
             let got: String = B(input).chars().rev().collect();
             assert_eq!(
                 expected, got,
-                "chars.rev(ith: {:?}, given: {:?})", i, input,
+                "chars.rev(ith: {:?}, given: {:?})",
+                i, input,
             );
-            let got: String = B(input)
-                .char_indices()
-                .rev()
-                .map(|(_, _, ch)| ch)
-                .collect();
+            let got: String =
+                B(input).char_indices().rev().map(|(_, _, ch)| ch).collect();
             assert_eq!(
                 expected, got,
-                "char_indices.rev(ith: {:?}, given: {:?})", i, input,
+                "char_indices.rev(ith: {:?}, given: {:?})",
+                i, input,
             );
         }
     }

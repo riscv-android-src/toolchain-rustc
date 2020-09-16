@@ -17,11 +17,12 @@ use crate::core::dependency::DepKind;
 use crate::core::manifest::{ManifestMetadata, TargetSourcePath, Warnings};
 use crate::core::profiles::Strip;
 use crate::core::resolver::ResolveBehavior;
-use crate::core::{Dependency, InternedString, Manifest, PackageId, Summary, Target};
+use crate::core::{Dependency, Manifest, PackageId, Summary, Target};
 use crate::core::{Edition, EitherManifest, Feature, Features, VirtualManifest, Workspace};
 use crate::core::{GitReference, PackageIdSpec, SourceId, WorkspaceConfig, WorkspaceRootConfig};
 use crate::sources::{CRATES_IO_INDEX, CRATES_IO_REGISTRY};
 use crate::util::errors::{CargoResult, CargoResultExt, ManifestError};
+use crate::util::interning::InternedString;
 use crate::util::{self, paths, validate_package_name, Config, IntoUrl};
 
 mod targets;
@@ -81,7 +82,7 @@ fn do_read_manifest(
         add_unused(manifest.warnings_mut());
         if manifest.targets().iter().all(|t| t.is_custom_build()) {
             bail!(
-                "no targets specified in the manifest\n  \
+                "no targets specified in the manifest\n\
                  either src/lib.rs, src/main.rs, a [lib] section, or \
                  [[bin]] section must be present"
             )
@@ -163,7 +164,7 @@ and this will become a hard error in the future.",
     }
 
     let first_error = anyhow::Error::from(first_error);
-    Err(first_error.context("could not parse input as TOML").into())
+    Err(first_error.context("could not parse input as TOML"))
 }
 
 type TomlLibTarget = TomlTarget;
@@ -808,7 +809,7 @@ pub struct TomlProject {
     description: Option<String>,
     homepage: Option<String>,
     documentation: Option<String>,
-    readme: Option<String>,
+    readme: Option<StringOrBool>,
     keywords: Option<Vec<String>>,
     categories: Option<Vec<String>>,
     license: Option<String>,
@@ -825,6 +826,7 @@ pub struct TomlWorkspace {
     #[serde(rename = "default-members")]
     default_members: Option<Vec<String>>,
     exclude: Option<Vec<String>>,
+    metadata: Option<toml::Value>,
     resolver: Option<String>,
 }
 
@@ -1208,11 +1210,12 @@ impl TomlManifest {
             project.links.as_deref(),
             project.namespaced_features.unwrap_or(false),
         )?;
+
         let metadata = ManifestMetadata {
             description: project.description.clone(),
             homepage: project.homepage.clone(),
             documentation: project.documentation.clone(),
-            readme: project.readme.clone(),
+            readme: readme_for_project(package_root, project),
             authors: project.authors.clone().unwrap_or_default(),
             license: project.license.clone(),
             license_file: project.license_file.clone(),
@@ -1229,6 +1232,7 @@ impl TomlManifest {
                 &config.members,
                 &config.default_members,
                 &config.exclude,
+                &config.metadata,
             )),
             (None, root) => WorkspaceConfig::Member {
                 root: root.cloned(),
@@ -1413,6 +1417,7 @@ impl TomlManifest {
                 &config.members,
                 &config.default_members,
                 &config.exclude,
+                &config.metadata,
             )),
             None => {
                 bail!("virtual manifests must be configured with [workspace]");
@@ -1521,6 +1526,32 @@ impl TomlManifest {
     pub fn has_profiles(&self) -> bool {
         self.profile.is_some()
     }
+}
+
+/// Returns the name of the README file for a `TomlProject`.
+fn readme_for_project(package_root: &Path, project: &TomlProject) -> Option<String> {
+    match &project.readme {
+        None => default_readme_from_package_root(package_root),
+        Some(value) => match value {
+            StringOrBool::Bool(false) => None,
+            StringOrBool::Bool(true) => Some("README.md".to_string()),
+            StringOrBool::String(v) => Some(v.clone()),
+        },
+    }
+}
+
+const DEFAULT_README_FILES: [&str; 3] = ["README.md", "README.txt", "README"];
+
+/// Checks if a file with any of the default README file names exists in the package root.
+/// If so, returns a `String` representing that name.
+fn default_readme_from_package_root(package_root: &Path) -> Option<String> {
+    for &readme_filename in DEFAULT_README_FILES.iter() {
+        if package_root.join(readme_filename).is_file() {
+            return Some(readme_filename.to_string());
+        }
+    }
+
+    None
 }
 
 /// Checks a list of build targets, and ensures the target names are unique within a vector.
@@ -1661,6 +1692,17 @@ impl DetailedTomlDependency {
                     .or_else(|| self.rev.clone().map(GitReference::Rev))
                     .unwrap_or_else(|| GitReference::Branch("master".to_string()));
                 let loc = git.into_url()?;
+
+                if let Some(fragment) = loc.fragment() {
+                    let msg = format!(
+                        "URL fragment `#{}` in git URL is ignored for dependency ({}). \
+                        If you were trying to specify a specific git revision, \
+                        use `rev = \"{}\"` in the dependency declaration.",
+                        fragment, name_in_toml, fragment
+                    );
+                    cx.warnings.push(msg)
+                }
+
                 SourceId::for_git(&loc, reference)?
             }
             (None, Some(path), _, _) => {
@@ -1756,9 +1798,9 @@ struct TomlTarget {
     doc: Option<bool>,
     plugin: Option<bool>,
     #[serde(rename = "proc-macro")]
-    proc_macro: Option<bool>,
+    proc_macro_raw: Option<bool>,
     #[serde(rename = "proc_macro")]
-    proc_macro2: Option<bool>,
+    proc_macro_raw2: Option<bool>,
     harness: Option<bool>,
     #[serde(rename = "required-features")]
     required_features: Option<Vec<String>>,
@@ -1813,7 +1855,7 @@ impl TomlTarget {
     }
 
     fn proc_macro(&self) -> Option<bool> {
-        self.proc_macro.or(self.proc_macro2).or_else(|| {
+        self.proc_macro_raw.or(self.proc_macro_raw2).or_else(|| {
             if let Some(types) = self.crate_types() {
                 if types.contains(&"proc-macro".to_string()) {
                     return Some(true);

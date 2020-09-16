@@ -107,7 +107,9 @@ def imm_com8 : Operand<i8> {
 
 def ioaddr_XFORM : SDNodeXForm<imm,
 [{
-  return CurDAG->getTargetConstant(uint8_t(N->getZExtValue()) - 0x20, SDLoc(N), MVT::i8);
+  uint8_t offset = Subtarget->getIORegisterOffset();
+  return CurDAG->getTargetConstant(uint8_t(N->getZExtValue()) - offset,
+                                   SDLoc(N), MVT::i8);
 }]>;
 
 def iobitpos8_XFORM : SDNodeXForm<imm,
@@ -124,20 +126,23 @@ def iobitposn8_XFORM : SDNodeXForm<imm,
 
 def ioaddr8 : PatLeaf<(imm),
 [{
-  uint64_t val = N->getZExtValue();
-  return val >= 0x20 && val < 0x60;
+  uint8_t offset = Subtarget->getIORegisterOffset();
+  uint64_t val = N->getZExtValue() - offset;
+  return val >= 0x0 && val < 0x40;
 }], ioaddr_XFORM>;
 
 def lowioaddr8 : PatLeaf<(imm),
 [{
-  uint64_t val = N->getZExtValue();
-  return val >= 0x20 && val < 0x40;
+  uint8_t offset = Subtarget->getIORegisterOffset();
+  uint64_t val = N->getZExtValue() - offset;
+  return val >= 0x0 && val < 0x20;
 }], ioaddr_XFORM>;
 
 def ioaddr16 : PatLeaf<(imm),
 [{
-  uint64_t val = N->getZExtValue();
-  return val >= 0x20 && val < 0x5f;
+  uint8_t offset = Subtarget->getIORegisterOffset();
+  uint64_t val = N->getZExtValue() - offset;
+  return val >= 0x0 && val < 0x3f;
 }], ioaddr_XFORM>;
 
 def iobitpos8 : PatLeaf<(imm),
@@ -555,7 +560,7 @@ Defs = [R1, R0, SREG] in
 
     def MULSRdRr : FMUL2RdRr<0,
                              (outs),
-                             (ins GPR8:$lhs, GPR8:$rhs),
+                             (ins LD8:$lhs, LD8:$rhs),
                              "muls\t$lhs, $rhs",
                              []>,
                    Requires<[SupportsMultiplication]>;
@@ -563,28 +568,28 @@ Defs = [R1, R0, SREG] in
 
   def MULSURdRr : FMUL2RdRr<1,
                             (outs),
-                            (ins GPR8:$lhs, GPR8:$rhs),
+                            (ins LD8lo:$lhs, LD8lo:$rhs),
                             "mulsu\t$lhs, $rhs",
                             []>,
                   Requires<[SupportsMultiplication]>;
 
   def FMUL : FFMULRdRr<0b01,
                        (outs),
-                       (ins GPR8:$lhs, GPR8:$rhs),
+                       (ins LD8lo:$lhs, LD8lo:$rhs),
                        "fmul\t$lhs, $rhs",
                        []>,
              Requires<[SupportsMultiplication]>;
 
   def FMULS : FFMULRdRr<0b10,
                         (outs),
-                        (ins GPR8:$lhs, GPR8:$rhs),
+                        (ins LD8lo:$lhs, LD8lo:$rhs),
                         "fmuls\t$lhs, $rhs",
                         []>,
               Requires<[SupportsMultiplication]>;
 
   def FMULSU : FFMULRdRr<0b11,
                          (outs),
-                         (ins GPR8:$lhs, GPR8:$rhs),
+                         (ins LD8lo:$lhs, LD8lo:$rhs),
                          "fmulsu\t$lhs, $rhs",
                          []>,
                Requires<[SupportsMultiplication]>;
@@ -2042,8 +2047,6 @@ def : Pat<(add i16:$src1, imm:$src2),
           (SUBIWRdK i16:$src1, (imm16_neg_XFORM imm:$src2))>;
 def : Pat<(addc i16:$src1, imm:$src2),
           (SUBIWRdK i16:$src1, (imm16_neg_XFORM imm:$src2))>;
-def : Pat<(adde i16:$src1, imm:$src2),
-          (SBCIWRdK i16:$src1, (imm16_neg_XFORM imm:$src2))>;
 
 def : Pat<(add i8:$src1, imm:$src2),
           (SUBIRdK i8:$src1, (imm8_neg_XFORM imm:$src2))>;

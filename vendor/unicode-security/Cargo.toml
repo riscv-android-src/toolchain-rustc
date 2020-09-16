@@ -13,12 +13,12 @@
 [package]
 edition = "2018"
 name = "unicode-security"
-version = "0.0.3"
+version = "0.0.5"
 authors = ["Charles Lew <crlf0710@gmail.com>", "Manish Goregaokar <manishsmail@gmail.com>"]
 exclude = ["target/*", "Cargo.lock"]
 description = "Detect possible security problems with Unicode usage\naccording to Unicode Technical Standard #39 rules.\n"
 homepage = "https://github.com/unicode-rs/unicode-security"
-documentation = "https://unicode-rs.github.io/unicode-security"
+documentation = "https://docs.rs/unicode-security"
 readme = "README.md"
 keywords = ["text", "security", "unicode"]
 license = "MIT/Apache-2.0"
@@ -42,7 +42,7 @@ version = "0.1.12"
 default-features = false
 
 [dependencies.unicode-script]
-version = "0.4.0"
+version = "0.5.1"
 default-features = false
 
 [features]

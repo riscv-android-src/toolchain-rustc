@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.4.0
+
+- upgrade `parking_lot` to `0.10` (note that this bumps MSRV with `parking_lot` feature enabled to `1.36.0`).
+- add `OnceCell::take`.
+- upgrade crossbeam utils (private dependency) to `0.7`.
+
+## 1.3.1
+
+- remove unnecessary `F: fmt::Debug` bound from `impl fmt::Debug for Lazy<T, F>`.
+
+## 1.3.0
+
+- `Lazy<T>` now implements `DerefMut`.
+- update implementation according to the latest changes in `std`.
+
+## 1.2.0
+
+- add `sync::OnceCell::get_unchecked`.
+
 ## 1.1.0
 
 - implement `Default` for `Lazy`: it creates an empty `Lazy<T>` which is initialized with `T::default` on first access.

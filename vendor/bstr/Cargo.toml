@@ -12,9 +12,9 @@
 
 [package]
 name = "bstr"
-version = "0.1.3"
+version = "0.2.13"
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
-exclude = ["/ci/*", "/.travis.yml", "/appveyor.yml"]
+exclude = ["/.github"]
 description = "A string type that is not required to be valid UTF-8."
 homepage = "https://github.com/BurntSushi/bstr"
 documentation = "https://docs.rs/bstr"

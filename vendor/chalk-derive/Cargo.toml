@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "chalk-derive"
-version = "0.10.0"
+version = "0.15.0"
 authors = ["Rust Compiler Team", "Chalk developers"]
 description = "A helper crate for use by chalk crates for `derive` macros."
 readme = "README.md"
@@ -24,14 +24,14 @@ repository = "https://github.com/rust-lang/chalk"
 [lib]
 proc-macro = true
 [dependencies.proc-macro2]
-version = "1.0.3"
+version = "1.0"
 
 [dependencies.quote]
-version = "1.0.2"
+version = "1.0"
 
 [dependencies.syn]
-version = "1.0.5"
+version = "1.0"
 features = ["full"]
 
 [dependencies.synstructure]
-version = "0.12.1"
+version = "0.12"

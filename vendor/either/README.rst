@@ -25,11 +25,25 @@ __ https://docs.rs/either/
 How to use with cargo::
 
     [dependencies]
-    either = "1.4"
+    either = "1.5"
 
 
 Recent Changes
 --------------
+
+- 1.5.3
+
+  - Add new method ``.map()`` for ``Either<T, T>`` by @nvzqz (#40).
+
+- 1.5.2
+
+  - Add new methods ``.left_or()``,  ``.left_or_default()``,  ``.left_or_else()``,
+    and equivalents on the right, by @DCjanus (#36)
+
+- 1.5.1
+
+  - Add ``AsRef`` and ``AsMut`` implementations for common unsized types:
+    ``str``, ``[T]``, ``CStr``, ``OsStr``, and ``Path``, by @mexus (#29)
 
 - 1.5.0
 

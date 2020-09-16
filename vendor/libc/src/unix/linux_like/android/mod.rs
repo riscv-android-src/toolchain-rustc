@@ -1116,6 +1116,11 @@ pub const RLIMIT_FSIZE: ::c_int = 1;
 pub const RLIMIT_DATA: ::c_int = 2;
 pub const RLIMIT_STACK: ::c_int = 3;
 pub const RLIMIT_CORE: ::c_int = 4;
+pub const RLIMIT_RSS: ::c_int = 5;
+pub const RLIMIT_NPROC: ::c_int = 6;
+pub const RLIMIT_NOFILE: ::c_int = 7;
+pub const RLIMIT_MEMLOCK: ::c_int = 8;
+pub const RLIMIT_AS: ::c_int = 9;
 pub const RLIMIT_LOCKS: ::c_int = 10;
 pub const RLIMIT_SIGPENDING: ::c_int = 11;
 pub const RLIMIT_MSGQUEUE: ::c_int = 12;
@@ -1155,6 +1160,8 @@ pub const TIOCMBIC: ::c_int = 0x5417;
 pub const TIOCMSET: ::c_int = 0x5418;
 pub const FIONREAD: ::c_int = 0x541B;
 pub const TIOCCONS: ::c_int = 0x541D;
+pub const TIOCSBRK: ::c_int = 0x5427;
+pub const TIOCCBRK: ::c_int = 0x5428;
 
 pub const ST_RDONLY: ::c_ulong = 1;
 pub const ST_NOSUID: ::c_ulong = 2;
@@ -2136,6 +2143,10 @@ pub const EPIPE: ::c_int = 32;
 pub const EDOM: ::c_int = 33;
 pub const ERANGE: ::c_int = 34;
 pub const EWOULDBLOCK: ::c_int = EAGAIN;
+
+pub const PRIO_PROCESS: ::c_int = 0;
+pub const PRIO_PGRP: ::c_int = 1;
+pub const PRIO_USER: ::c_int = 2;
 
 f! {
     pub fn CMSG_NXTHDR(mhdr: *const msghdr,

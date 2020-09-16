@@ -101,10 +101,9 @@ impl<'cx, 'tcx> TypeFolder<'tcx> for QueryNormalizer<'cx, 'tcx> {
 
         let ty = ty.super_fold_with(self);
         match ty.kind {
-            ty::Opaque(def_id, substs) if !substs.has_escaping_bound_vars() => {
-                // (*)
+            ty::Opaque(def_id, substs) => {
                 // Only normalize `impl Trait` after type-checking, usually in codegen.
-                match self.param_env.reveal {
+                match self.param_env.reveal() {
                     Reveal::UserFacing => ty,
 
                     Reveal::All => {
@@ -140,12 +139,11 @@ impl<'cx, 'tcx> TypeFolder<'tcx> for QueryNormalizer<'cx, 'tcx> {
             }
 
             ty::Projection(ref data) if !data.has_escaping_bound_vars() => {
-                // (*)
-                // (*) This is kind of hacky -- we need to be able to
+                // This is kind of hacky -- we need to be able to
                 // handle normalization within binders because
                 // otherwise we wind up a need to normalize when doing
                 // trait matching (since you can have a trait
-                // obligation like `for<'a> T::B : Fn(&'a int)`), but
+                // obligation like `for<'a> T::B: Fn(&'a i32)`), but
                 // we can't normalize with bound regions in scope. So
                 // far now we just ignore binders but only normalize
                 // if all bound regions are gone (and then we still

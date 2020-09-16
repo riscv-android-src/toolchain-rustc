@@ -289,7 +289,7 @@ impl BacktraceSymbol {
     ///
     /// This function requires the `std` feature of the `backtrace` crate to be
     /// enabled, and the `std` feature is enabled by default.
-    pub fn name(&self) -> Option<SymbolName> {
+    pub fn name(&self) -> Option<SymbolName<'_>> {
         self.name.as_ref().map(|s| SymbolName::new(s))
     }
 
@@ -325,7 +325,7 @@ impl BacktraceSymbol {
 }
 
 impl fmt::Debug for Backtrace {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let full = fmt.alternate();
         let (frames, style) = if full {
             (&self.frames[..], PrintFmt::Full)
@@ -338,17 +338,18 @@ impl fmt::Debug for Backtrace {
         // short format, because if it's full we presumably want to print
         // everything.
         let cwd = std::env::current_dir();
-        let mut print_path = move |fmt: &mut fmt::Formatter, path: crate::BytesOrWideString| {
-            let path = path.into_path_buf();
-            if !full {
-                if let Ok(cwd) = &cwd {
-                    if let Ok(suffix) = path.strip_prefix(cwd) {
-                        return fmt::Display::fmt(&suffix.display(), fmt);
+        let mut print_path =
+            move |fmt: &mut fmt::Formatter<'_>, path: crate::BytesOrWideString<'_>| {
+                let path = path.into_path_buf();
+                if !full {
+                    if let Ok(cwd) = &cwd {
+                        if let Ok(suffix) = path.strip_prefix(cwd) {
+                            return fmt::Display::fmt(&suffix.display(), fmt);
+                        }
                     }
                 }
-            }
-            fmt::Display::fmt(&path.display(), fmt)
-        };
+                fmt::Display::fmt(&path.display(), fmt)
+            };
 
         let mut f = BacktraceFmt::new(fmt, style, &mut print_path);
         f.add_context()?;
@@ -367,7 +368,7 @@ impl Default for Backtrace {
 }
 
 impl fmt::Debug for BacktraceFrame {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("BacktraceFrame")
             .field("ip", &self.ip())
             .field("symbol_address", &self.symbol_address())
@@ -376,7 +377,7 @@ impl fmt::Debug for BacktraceFrame {
 }
 
 impl fmt::Debug for BacktraceSymbol {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt.debug_struct("BacktraceSymbol")
             .field("name", &self.name())
             .field("addr", &self.addr())

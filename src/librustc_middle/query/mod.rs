@@ -15,11 +15,11 @@ use rustc_query_system::query::QueryDescription;
 use rustc_span::symbol::Symbol;
 use std::borrow::Cow;
 
-fn describe_as_module(def_id: DefId, tcx: TyCtxt<'_>) -> String {
+fn describe_as_module(def_id: LocalDefId, tcx: TyCtxt<'_>) -> String {
     if def_id.is_top_level_module() {
         "top-level module".to_string()
     } else {
-        format!("module `{}`", tcx.def_path_str(def_id))
+        format!("module `{}`", tcx.def_path_str(def_id.to_def_id()))
     }
 }
 
@@ -133,6 +133,23 @@ rustc_queries! {
             cache_on_disk_if { key.is_local() }
         }
 
+        /// Returns the list of predicates that can be used for
+        /// `SelectionCandidate::ProjectionCandidate` and
+        /// `ProjectionTyCandidate::TraitDef`.
+        /// Specifically this is the bounds (equivalent to) those
+        /// written on the trait's type definition, or those
+        /// after the `impl` keyword
+        ///
+        /// type X: Bound + 'lt
+        ///         ^^^^^^^^^^^
+        /// impl Debug + Display
+        ///      ^^^^^^^^^^^^^^^
+        ///
+        /// `key` is the `DefId` of the associated type or opaque type.
+        query projection_predicates(key: DefId) -> &'tcx ty::List<ty::Predicate<'tcx>> {
+            desc { |tcx| "finding projection predicates for `{}`", tcx.def_path_str(key) }
+        }
+
         query native_libraries(_: CrateNum) -> Lrc<Vec<NativeLib>> {
             desc { "looking up the native libraries of a linked crate" }
         }
@@ -190,6 +207,12 @@ rustc_queries! {
             no_hash
         }
 
+        query mir_drops_elaborated_and_const_checked(key: LocalDefId) -> Steal<mir::Body<'tcx>> {
+            storage(ArenaCacheSelector<'tcx>)
+            no_hash
+            desc { |tcx| "elaborating drops for `{}`", tcx.def_path_str(key.to_def_id()) }
+        }
+
         query mir_validated(key: LocalDefId) ->
             (
                 Steal<mir::Body<'tcx>>,
@@ -204,6 +227,14 @@ rustc_queries! {
         /// for codegen. This is also the only query that can fetch non-local MIR, at present.
         query optimized_mir(key: DefId) -> mir::Body<'tcx> {
             desc { |tcx| "optimizing MIR for `{}`", tcx.def_path_str(key) }
+            storage(ArenaCacheSelector<'tcx>)
+            cache_on_disk_if { key.is_local() }
+        }
+
+        /// Returns coverage summary info for a function, after executing the `InstrumentCoverage`
+        /// MIR pass (assuming the -Zinstrument-coverage option is enabled).
+        query coverageinfo(key: DefId) -> mir::CoverageInfo {
+            desc { |tcx| "retrieving coverage info from MIR for `{}`", tcx.def_path_str(key) }
             storage(ArenaCacheSelector<'tcx>)
             cache_on_disk_if { key.is_local() }
         }
@@ -444,49 +475,49 @@ rustc_queries! {
 
     Other {
         query lint_mod(key: LocalDefId) -> () {
-            desc { |tcx| "linting {}", describe_as_module(key.to_def_id(), tcx) }
+            desc { |tcx| "linting {}", describe_as_module(key, tcx) }
         }
 
         /// Checks the attributes in the module.
-        query check_mod_attrs(key: DefId) -> () {
+        query check_mod_attrs(key: LocalDefId) -> () {
             desc { |tcx| "checking attributes in {}", describe_as_module(key, tcx) }
         }
 
-        query check_mod_unstable_api_usage(key: DefId) -> () {
+        query check_mod_unstable_api_usage(key: LocalDefId) -> () {
             desc { |tcx| "checking for unstable API usage in {}", describe_as_module(key, tcx) }
         }
 
         /// Checks the const bodies in the module for illegal operations (e.g. `if` or `loop`).
-        query check_mod_const_bodies(key: DefId) -> () {
+        query check_mod_const_bodies(key: LocalDefId) -> () {
             desc { |tcx| "checking consts in {}", describe_as_module(key, tcx) }
         }
 
         /// Checks the loops in the module.
-        query check_mod_loops(key: DefId) -> () {
+        query check_mod_loops(key: LocalDefId) -> () {
             desc { |tcx| "checking loops in {}", describe_as_module(key, tcx) }
         }
 
-        query check_mod_item_types(key: DefId) -> () {
+        query check_mod_item_types(key: LocalDefId) -> () {
             desc { |tcx| "checking item types in {}", describe_as_module(key, tcx) }
         }
 
         query check_mod_privacy(key: LocalDefId) -> () {
-            desc { |tcx| "checking privacy in {}", describe_as_module(key.to_def_id(), tcx) }
+            desc { |tcx| "checking privacy in {}", describe_as_module(key, tcx) }
         }
 
-        query check_mod_intrinsics(key: DefId) -> () {
+        query check_mod_intrinsics(key: LocalDefId) -> () {
             desc { |tcx| "checking intrinsics in {}", describe_as_module(key, tcx) }
         }
 
-        query check_mod_liveness(key: DefId) -> () {
+        query check_mod_liveness(key: LocalDefId) -> () {
             desc { |tcx| "checking liveness of variables in {}", describe_as_module(key, tcx) }
         }
 
-        query check_mod_impl_wf(key: DefId) -> () {
+        query check_mod_impl_wf(key: LocalDefId) -> () {
             desc { |tcx| "checking that impls are well-formed in {}", describe_as_module(key, tcx) }
         }
 
-        query collect_mod_item_types(key: DefId) -> () {
+        query collect_mod_item_types(key: LocalDefId) -> () {
             desc { |tcx| "collecting item types in {}", describe_as_module(key, tcx) }
         }
 
@@ -520,7 +551,7 @@ rustc_queries! {
     }
 
     Other {
-        query used_trait_imports(key: LocalDefId) -> &'tcx DefIdSet {
+        query used_trait_imports(key: LocalDefId) -> &'tcx FxHashSet<LocalDefId> {
             desc { |tcx| "used_trait_imports `{}`", tcx.def_path_str(key.to_def_id()) }
             cache_on_disk_if { true }
         }
@@ -700,7 +731,7 @@ rustc_queries! {
     }
 
     Other {
-        query fn_arg_names(def_id: DefId) -> &'tcx [Symbol] {
+        query fn_arg_names(def_id: DefId) -> &'tcx [rustc_span::symbol::Ident] {
             desc { |tcx| "looking up function parameter names for `{}`", tcx.def_path_str(def_id) }
         }
         /// Gets the rendered value of the specified constant or associated constant.
@@ -735,7 +766,7 @@ rustc_queries! {
     Codegen {
         query codegen_fulfill_obligation(
             key: (ty::ParamEnv<'tcx>, ty::PolyTraitRef<'tcx>)
-        ) -> Result<Vtable<'tcx, ()>, ErrorReported> {
+        ) -> Result<ImplSource<'tcx, ()>, ErrorReported> {
             cache_on_disk_if { true }
             desc { |tcx|
                 "checking if `{}` fulfills its obligations",
@@ -787,6 +818,17 @@ rustc_queries! {
         /// Query backing `TyS::needs_drop`.
         query needs_drop_raw(env: ty::ParamEnvAnd<'tcx, Ty<'tcx>>) -> bool {
             desc { "computing whether `{}` needs drop", env.value }
+        }
+
+        /// Query backing `TyS::is_structural_eq_shallow`.
+        ///
+        /// This is only correct for ADTs. Call `is_structural_eq_shallow` to handle all types
+        /// correctly.
+        query has_structural_eq_impls(ty: Ty<'tcx>) -> bool {
+            desc {
+                "computing whether `{:?}` implements `PartialStructuralEq` and `StructuralEq`",
+                ty
+            }
         }
 
         /// A list of types where the ADT requires drop if and only if any of
@@ -865,8 +907,8 @@ rustc_queries! {
     }
 
     Other {
-        query module_exports(def_id: DefId) -> Option<&'tcx [Export<hir::HirId>]> {
-            desc { |tcx| "looking up items exported by `{}`", tcx.def_path_str(def_id) }
+        query module_exports(def_id: LocalDefId) -> Option<&'tcx [Export<LocalDefId>]> {
+            desc { |tcx| "looking up items exported by `{}`", tcx.def_path_str(def_id.to_def_id()) }
             eval_always
         }
     }
@@ -1001,6 +1043,10 @@ rustc_queries! {
         query extra_filename(_: CrateNum) -> String {
             eval_always
             desc { "looking up the extra filename for a crate" }
+        }
+        query crate_extern_paths(_: CrateNum) -> Vec<PathBuf> {
+            eval_always
+            desc { "looking up the paths for extern crates" }
         }
     }
 
@@ -1367,10 +1413,10 @@ rustc_queries! {
     }
 
     Other {
-        query target_features_whitelist(_: CrateNum) -> FxHashMap<String, Option<Symbol>> {
+        query supported_target_features(_: CrateNum) -> FxHashMap<String, Option<Symbol>> {
             storage(ArenaCacheSelector<'tcx>)
             eval_always
-            desc { "looking up the whitelist of target features" }
+            desc { "looking up supported target features" }
         }
 
         // Get an estimate of the size of an InstanceDef based on its MIR for CGU partitioning.

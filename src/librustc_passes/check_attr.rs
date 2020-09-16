@@ -12,7 +12,7 @@ use rustc_ast::ast::{Attribute, NestedMetaItem};
 use rustc_ast::attr;
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::LocalDefId;
 use rustc_hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc_hir::{self, HirId, Item, ItemKind, TraitItem};
 use rustc_hir::{MethodKind, Target};
@@ -21,7 +21,10 @@ use rustc_session::parse::feature_err;
 use rustc_span::symbol::sym;
 use rustc_span::Span;
 
-fn target_from_impl_item<'tcx>(tcx: TyCtxt<'tcx>, impl_item: &hir::ImplItem<'_>) -> Target {
+pub(crate) fn target_from_impl_item<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    impl_item: &hir::ImplItem<'_>,
+) -> Target {
     match impl_item.kind {
         hir::ImplItemKind::Const(..) => Target::AssocConst,
         hir::ImplItemKind::Fn(..) => {
@@ -37,7 +40,7 @@ fn target_from_impl_item<'tcx>(tcx: TyCtxt<'tcx>, impl_item: &hir::ImplItem<'_>)
                 Target::Method(MethodKind::Inherent)
             }
         }
-        hir::ImplItemKind::TyAlias(..) | hir::ImplItemKind::OpaqueTy(..) => Target::AssocTy,
+        hir::ImplItemKind::TyAlias(..) => Target::AssocTy,
     }
 }
 
@@ -289,6 +292,8 @@ impl CheckAttrVisitor<'tcx> {
                 | sym::u32
                 | sym::i64
                 | sym::u64
+                | sym::i128
+                | sym::u128
                 | sym::isize
                 | sym::usize => {
                     int_reprs += 1;
@@ -461,11 +466,11 @@ fn is_c_like_enum(item: &Item<'_>) -> bool {
     }
 }
 
-fn check_mod_attrs(tcx: TyCtxt<'_>, module_def_id: DefId) {
+fn check_mod_attrs(tcx: TyCtxt<'_>, module_def_id: LocalDefId) {
     tcx.hir()
         .visit_item_likes_in_module(module_def_id, &mut CheckAttrVisitor { tcx }.as_deep_visitor());
 }
 
-pub(crate) fn provide(providers: &mut Providers<'_>) {
+pub(crate) fn provide(providers: &mut Providers) {
     *providers = Providers { check_mod_attrs, ..*providers };
 }

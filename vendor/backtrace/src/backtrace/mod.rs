@@ -90,6 +90,14 @@ impl Frame {
         self.inner.ip()
     }
 
+    /// Returns the current stack pointer of this frame.
+    ///
+    /// In the case that a backend cannot recover the stack pointer for this
+    /// frame, a null pointer is returned.
+    pub fn sp(&self) -> *mut c_void {
+        self.inner.sp()
+    }
+
     /// Returns the starting symbol address of the frame of this function.
     ///
     /// This will attempt to rewind the instruction pointer returned by `ip` to
@@ -104,7 +112,7 @@ impl Frame {
 }
 
 impl fmt::Debug for Frame {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Frame")
             .field("ip", &self.ip())
             .field("symbol_address", &self.symbol_address())
@@ -119,7 +127,6 @@ cfg_if::cfg_if! {
                 unix,
                 not(target_os = "emscripten"),
                 not(all(target_os = "ios", target_arch = "arm")),
-                feature = "libunwind",
             ),
             all(
                 target_env = "sgx",
@@ -130,17 +137,7 @@ cfg_if::cfg_if! {
         mod libunwind;
         use self::libunwind::trace as trace_imp;
         pub(crate) use self::libunwind::Frame as FrameImp;
-    } else if #[cfg(
-        all(
-            unix,
-            not(target_os = "emscripten"),
-            feature = "unix-backtrace",
-        )
-    )] {
-        mod unix_backtrace;
-        use self::unix_backtrace::trace as trace_imp;
-        pub(crate) use self::unix_backtrace::Frame as FrameImp;
-    } else if #[cfg(all(windows, feature = "dbghelp", not(target_vendor = "uwp")))] {
+    } else if #[cfg(all(windows, not(target_vendor = "uwp")))] {
         mod dbghelp;
         use self::dbghelp::trace as trace_imp;
         pub(crate) use self::dbghelp::Frame as FrameImp;

@@ -22,52 +22,6 @@
 # include <Shlwapi.h>
 #endif
 
-void git_strarray_free(git_strarray *array)
-{
-	size_t i;
-
-	if (array == NULL)
-		return;
-
-	for (i = 0; i < array->count; ++i)
-		git__free(array->strings[i]);
-
-	git__free(array->strings);
-
-	memset(array, 0, sizeof(*array));
-}
-
-int git_strarray_copy(git_strarray *tgt, const git_strarray *src)
-{
-	size_t i;
-
-	assert(tgt && src);
-
-	memset(tgt, 0, sizeof(*tgt));
-
-	if (!src->count)
-		return 0;
-
-	tgt->strings = git__calloc(src->count, sizeof(char *));
-	GIT_ERROR_CHECK_ALLOC(tgt->strings);
-
-	for (i = 0; i < src->count; ++i) {
-		if (!src->strings[i])
-			continue;
-
-		tgt->strings[tgt->count] = git__strdup(src->strings[i]);
-		if (!tgt->strings[tgt->count]) {
-			git_strarray_free(tgt);
-			memset(tgt, 0, sizeof(*tgt));
-			return -1;
-		}
-
-		tgt->count++;
-	}
-
-	return 0;
-}
-
 int git__strntol64(int64_t *result, const char *nptr, size_t nptr_len, const char **endptr, int base)
 {
 	const char *p;
@@ -424,35 +378,48 @@ void git__hexdump(const char *buffer, size_t len)
 	last_line = (len % LINE_WIDTH);
 
 	for (i = 0; i < line_count; ++i) {
-		line = buffer + (i * LINE_WIDTH);
-		for (j = 0; j < LINE_WIDTH; ++j, ++line)
-			printf("%02X ", (unsigned char)*line & 0xFF);
+		printf("%08" PRIxZ "  ", (i * LINE_WIDTH));
 
-		printf("| ");
+		line = buffer + (i * LINE_WIDTH);
+		for (j = 0; j < LINE_WIDTH; ++j, ++line) {
+			printf("%02x ", (unsigned char)*line & 0xFF);
+
+			if (j == (LINE_WIDTH / 2))
+				printf(" ");
+		}
+
+		printf(" |");
 
 		line = buffer + (i * LINE_WIDTH);
 		for (j = 0; j < LINE_WIDTH; ++j, ++line)
 			printf("%c", (*line >= 32 && *line <= 126) ? *line : '.');
 
-		printf("\n");
+		printf("|\n");
 	}
 
 	if (last_line > 0) {
+		printf("%08" PRIxZ "  ", (line_count * LINE_WIDTH));
 
 		line = buffer + (line_count * LINE_WIDTH);
-		for (j = 0; j < last_line; ++j, ++line)
-			printf("%02X ", (unsigned char)*line & 0xFF);
+		for (j = 0; j < last_line; ++j, ++line) {
+			printf("%02x ", (unsigned char)*line & 0xFF);
 
+			if (j == (LINE_WIDTH / 2))
+				printf(" ");
+		}
+
+		if (j < (LINE_WIDTH / 2))
+			printf(" ");
 		for (j = 0; j < (LINE_WIDTH - last_line); ++j)
-			printf("	");
+			printf("   ");
 
-		printf("| ");
+		printf(" |");
 
 		line = buffer + (line_count * LINE_WIDTH);
 		for (j = 0; j < last_line; ++j, ++line)
 			printf("%c", (*line >= 32 && *line <= 126) ? *line : '.');
 
-		printf("\n");
+		printf("|\n");
 	}
 
 	printf("\n");

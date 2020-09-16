@@ -8,10 +8,14 @@
 //! The adler32 code has been translated (as accurately as I could manage) from
 //! the zlib implementation.
 
+#![forbid(unsafe_code)]
+#![no_std]
+
+#[cfg(feature = "std")]
+extern crate std;
+
 #[cfg(test)]
 extern crate rand;
-
-use std::io;
 
 // adler32 algorithm and implementation taken from zlib; http://www.zlib.net/
 // It was translated into Rust as accurately as I could manage
@@ -51,7 +55,7 @@ const NMAX: usize = 5552;
 
 #[inline(always)]
 fn do1(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
-    *adler += buf[0] as u32;
+    *adler += u32::from(buf[0]);
     *sum2 += *adler;
 }
 
@@ -84,9 +88,16 @@ fn do16(adler: &mut u32, sum2: &mut u32, buf: &[u8]) {
 /// Calling remove() will update the hash to the value it would have if that
 /// past byte had never been fed to the algorithm. This allows you to get the
 /// hash of a rolling window very efficiently.
+#[derive(Clone)]
 pub struct RollingAdler32 {
     a: u32,
     b: u32,
+}
+
+impl Default for RollingAdler32 {
+    fn default() -> RollingAdler32 {
+        RollingAdler32::new()
+    }
 }
 
 impl RollingAdler32 {
@@ -99,7 +110,7 @@ impl RollingAdler32 {
     pub fn from_value(adler32: u32) -> RollingAdler32 {
         let a = adler32 & 0xFFFF;
         let b = adler32 >> 16;
-        RollingAdler32 { a: a, b: b }
+        RollingAdler32 { a, b }
     }
 
     /// Convenience function initializing a context from the hash of a buffer.
@@ -116,16 +127,16 @@ impl RollingAdler32 {
 
     /// Removes the given `byte` that was fed to the algorithm `size` bytes ago.
     pub fn remove(&mut self, size: usize, byte: u8) {
-        let byte = byte as u32;
+        let byte = u32::from(byte);
         self.a = (self.a + BASE - byte) % BASE;
         self.b = ((self.b + BASE - 1)
-                      .wrapping_add(BASE.wrapping_sub(size as u32)
-                                        .wrapping_mul(byte))) % BASE;
+            .wrapping_add(BASE.wrapping_sub(size as u32).wrapping_mul(byte)))
+            % BASE;
     }
 
     /// Feeds a new `byte` to the algorithm to update the hash.
     pub fn update(&mut self, byte: u8) {
-        let byte = byte as u32;
+        let byte = u32::from(byte);
         self.a = (self.a + byte) % BASE;
         self.b = (self.b + self.a) % BASE;
     }
@@ -142,8 +153,8 @@ impl RollingAdler32 {
 
         // in case short lengths are provided, keep it somewhat fast
         if len < 16 {
-            for pos in 0..len {
-                self.a += buffer[pos] as u32;
+            for byte in buffer.iter().take(len) {
+                self.a += u32::from(*byte);
                 self.b += self.a;
             }
             if self.a >= BASE {
@@ -168,13 +179,14 @@ impl RollingAdler32 {
         }
 
         // do remaining bytes (less than NMAX, still just one modulo)
-        if pos < len { // avoid modulos if none remaining
+        if pos < len {
+            // avoid modulos if none remaining
             while len - pos >= 16 {
                 do16(&mut self.a, &mut self.b, &buffer[pos..pos + 16]);
                 pos += 16;
             }
             while len - pos > 0 {
-                self.a += buffer[pos] as u32;
+                self.a += u32::from(buffer[pos]);
                 self.b += self.a;
                 pos += 1;
             }
@@ -185,31 +197,33 @@ impl RollingAdler32 {
 }
 
 /// Consume a Read object and returns the Adler32 hash.
-pub fn adler32<R: io::Read>(mut reader: R) -> io::Result<u32> {
+#[cfg(feature = "std")]
+pub fn adler32<R: std::io::Read>(mut reader: R) -> std::io::Result<u32> {
     let mut hash = RollingAdler32::new();
     let mut buffer = [0u8; NMAX];
-    let mut read = try!(reader.read(&mut buffer));
+    let mut read = reader.read(&mut buffer)?;
     while read > 0 {
         hash.update_buffer(&buffer[..read]);
-        read = try!(reader.read(&mut buffer));
+        read = reader.read(&mut buffer)?;
     }
     Ok(hash.hash())
 }
 
 #[cfg(test)]
 mod test {
-    use rand;
     use rand::Rng;
     use std::io;
+    use std::prelude::v1::*;
+    use std::vec;
 
-    use super::{BASE, adler32, RollingAdler32};
+    use super::{adler32, RollingAdler32, BASE};
 
     fn adler32_slow<R: io::Read>(reader: R) -> io::Result<u32> {
         let mut a: u32 = 1;
         let mut b: u32 = 0;
 
         for byte in reader.bytes() {
-            let byte = try!(byte) as u32;
+            let byte = byte? as u32;
             a = (a + byte) % BASE;
             b = (b + a) % BASE;
         }
@@ -232,11 +246,17 @@ mod test {
         do_test(0x024d0127, b"abc");
         do_test(0x29750586, b"message digest");
         do_test(0x90860b20, b"abcdefghijklmnopqrstuvwxyz");
-        do_test(0x8adb150c, b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
+        do_test(
+            0x8adb150c,
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                               abcdefghijklmnopqrstuvwxyz\
-                              0123456789");
-        do_test(0x97b61069, b"1234567890123456789012345678901234567890\
-                              1234567890123456789012345678901234567890");
+                              0123456789",
+        );
+        do_test(
+            0x97b61069,
+            b"1234567890123456789012345678901234567890\
+                              1234567890123456789012345678901234567890",
+        );
         do_test(0xD6251498, &[255; 64000]);
     }
 
@@ -244,8 +264,12 @@ mod test {
     fn compare() {
         let mut rng = rand::thread_rng();
         let mut data = vec![0u8; 5589];
-        for size in [0, 1, 3, 4, 5, 31, 32, 33, 67,
-                     5550, 5552, 5553, 5568, 5584, 5589].iter().cloned() {
+        for size in [
+            0, 1, 3, 4, 5, 31, 32, 33, 67, 5550, 5552, 5553, 5568, 5584, 5589,
+        ]
+        .iter()
+        .cloned()
+        {
             rng.fill_bytes(&mut data[..size]);
             let r1 = io::Cursor::new(&data[..size]);
             let r2 = r1.clone();
@@ -282,7 +306,7 @@ mod test {
         let w = 65536;
         assert!(w as u32 > BASE);
 
-        let mut bytes = vec![0; w*3];
+        let mut bytes = vec![0; w * 3];
         for (i, b) in bytes.iter_mut().enumerate() {
             *b = i as u8;
         }

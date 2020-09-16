@@ -432,7 +432,9 @@ fn assert_all_clean(build_dir: &Path) {
     }) {
         let entry = entry.unwrap();
         let path = entry.path();
-        if let ".rustc_info.json" | ".cargo-lock" = path.file_name().unwrap().to_str().unwrap() {
+        if let ".rustc_info.json" | ".cargo-lock" | "CACHEDIR.TAG" =
+            path.file_name().unwrap().to_str().unwrap()
+        {
             continue;
         }
         if path.is_symlink() || path.is_file() {
@@ -480,4 +482,56 @@ fn clean_spec_multiple() {
     if let Some(e) = walker.next() {
         panic!("{:?} was not cleaned", e.path());
     }
+}
+
+#[cargo_test]
+fn clean_spec_reserved() {
+    // Clean when a target (like a test) has a reserved name. In this case,
+    // make sure `clean -p` doesn't delete the reserved directory `build` when
+    // there is a test named `build`.
+    Package::new("bar", "1.0.0")
+        .file("src/lib.rs", "")
+        .file("build.rs", "fn main() {}")
+        .publish();
+
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [dependencies]
+                bar = "1.0"
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("tests/build.rs", "")
+        .build();
+
+    p.cargo("build --all-targets").run();
+    assert!(p.target_debug_dir().join("build").is_dir());
+    let build_test = p.glob("target/debug/deps/build-*").next().unwrap().unwrap();
+    assert!(build_test.exists());
+    // Tests are never "uplifted".
+    assert!(p.glob("target/debug/build-*").next().is_none());
+
+    p.cargo("clean -p foo").run();
+    // Should not delete this.
+    assert!(p.target_debug_dir().join("build").is_dir());
+
+    // This should not rebuild bar.
+    p.cargo("build -v --all-targets")
+        .with_stderr(
+            "\
+[FRESH] bar v1.0.0
+[COMPILING] foo v0.1.0 [..]
+[RUNNING] `rustc [..]
+[RUNNING] `rustc [..]
+[RUNNING] `rustc [..]
+[FINISHED] [..]
+",
+        )
+        .run();
 }

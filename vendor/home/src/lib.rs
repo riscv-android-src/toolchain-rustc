@@ -21,13 +21,14 @@
 //! `rustup_home`, which are the canonical way to determine the
 //! location that Cargo and rustup store their data.
 //!
-//! See [rust-lang/rust#43321].
+//! See also this [discussion].
 //!
-//! [rust-lang/rust#43321]: https://github.com/rust-lang/rust/issues/43321
+//! [discussion]: https://github.com/rust-lang/rust/pull/46799#issuecomment-361156935
 
-#![doc(html_root_url = "https://docs.rs/home/0.5.1")]
+#![doc(html_root_url = "https://docs.rs/home/0.5.3")]
 #![deny(rust_2018_idioms)]
 
+#[cfg(windows)]
 mod windows;
 
 use std::env;
@@ -50,7 +51,7 @@ use std::path::{Path, PathBuf};
 /// [`GetUserProfileDirectory`][msdn] is used to return the
 /// appropriate path.
 ///
-/// [msdn]: https://msdn.microsoft.com/en-us/library/windows/desktop/bb762280(v=vs.85).aspx
+/// [msdn]: https://docs.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-getuserprofiledirectoryw
 ///
 /// # Examples
 ///
@@ -105,16 +106,10 @@ pub fn cargo_home() -> io::Result<PathBuf> {
     cargo_home_with_cwd(&cwd)
 }
 
+/// Returns the storage directory used by Cargo within `cwd`.
+/// For more details, see [`cargo_home`](fn.cargo_home.html).
 pub fn cargo_home_with_cwd(cwd: &Path) -> io::Result<PathBuf> {
-    let cargo_home_env = match env::var_os("CARGO_HOME") {
-        Some(p) => match p.as_os_str().to_str() {
-            Some(q) if !q.trim().is_empty() => Some(p),
-            _ => None,
-        },
-        _ => None,
-    };
-
-    match cargo_home_env {
+    match env::var_os("CARGO_HOME").filter(|h| !h.is_empty()) {
         Some(home) => {
             let home = PathBuf::from(home);
             if home.is_absolute() {
@@ -123,7 +118,7 @@ pub fn cargo_home_with_cwd(cwd: &Path) -> io::Result<PathBuf> {
                 Ok(cwd.join(&home))
             }
         }
-        None => home_dir()
+        _ => home_dir()
             .map(|p| p.join(".cargo"))
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "could not find cargo home dir")),
     }
@@ -143,11 +138,6 @@ pub fn cargo_home_with_cwd(cwd: &Path) -> io::Result<PathBuf> {
 /// - The `.rustup` directory in the user's home directory, as reported
 ///   by the `home_dir` function.
 ///
-/// As a matter of backwards compatibility, this function _may_ return
-/// the `.multirust` directory in the user's home directory, only if
-/// it determines that the user is running an old version of rustup
-/// where that is necessary.
-///
 /// # Errors
 ///
 /// This function fails if it fails to retrieve the current directory,
@@ -166,8 +156,10 @@ pub fn rustup_home() -> io::Result<PathBuf> {
     rustup_home_with_cwd(&cwd)
 }
 
+/// Returns the storage directory used by rustup within `cwd`.
+/// For more details, see [`rustup_home`](fn.rustup_home.html).
 pub fn rustup_home_with_cwd(cwd: &Path) -> io::Result<PathBuf> {
-    match env::var_os("RUSTUP_HOME") {
+    match env::var_os("RUSTUP_HOME").filter(|h| !h.is_empty()) {
         Some(home) => {
             let home = PathBuf::from(home);
             if home.is_absolute() {
@@ -176,7 +168,7 @@ pub fn rustup_home_with_cwd(cwd: &Path) -> io::Result<PathBuf> {
                 Ok(cwd.join(&home))
             }
         }
-        None => home_dir()
+        _ => home_dir()
             .map(|d| d.join(".rustup"))
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "could not find rustup home dir")),
     }

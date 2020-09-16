@@ -1,14 +1,17 @@
+
+pub mod foreign_items;
+pub mod intrinsics;
+pub mod posix;
+pub mod windows;
+
 pub mod dlsym;
 pub mod env;
-pub mod foreign_items;
-pub mod fs;
-pub mod intrinsics;
 pub mod os_str;
 pub mod panic;
-pub mod sync;
-pub mod thread;
 pub mod time;
 pub mod tls;
+
+// End module management, begin local code
 
 use std::convert::TryFrom;
 
@@ -47,14 +50,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // foreign function
             // Any needed call to `goto_block` will be performed by `emulate_foreign_item`.
             return this.emulate_foreign_item(instance.def_id(), args, ret, unwind);
-        }
-
-        // Better error message for panics on Windows.
-        let def_id = instance.def_id();
-        if Some(def_id) == this.tcx.lang_items().begin_panic_fn() ||
-            Some(def_id) == this.tcx.lang_items().panic_impl()
-        {
-            this.check_panic_supported()?;
         }
 
         // Otherwise, load the MIR.

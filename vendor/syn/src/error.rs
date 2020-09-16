@@ -1,4 +1,3 @@
-use std;
 use std::fmt::{self, Debug, Display};
 use std::iter::FromIterator;
 use std::slice;
@@ -32,8 +31,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// conversion to `compile_error!` automatically.
 ///
 /// ```
-/// extern crate proc_macro;
-///
+/// # extern crate proc_macro;
+/// #
 /// use proc_macro::TokenStream;
 /// use syn::{parse_macro_input, AttributeArgs, ItemFn};
 ///
@@ -250,6 +249,17 @@ pub fn new_at<T: Display>(scope: Span, cursor: Cursor, message: T) -> Error {
     }
 }
 
+#[cfg(all(feature = "parsing", any(feature = "full", feature = "derive")))]
+pub fn new2<T: Display>(start: Span, end: Span, message: T) -> Error {
+    Error {
+        messages: vec![ErrorMessage {
+            start_span: ThreadBound::new(start),
+            end_span: ThreadBound::new(end),
+            message: message.to_string(),
+        }],
+    }
+}
+
 impl Debug for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         if self.messages.len() == 1 {
@@ -353,5 +363,13 @@ impl<'a> Iterator for Iter<'a> {
         Some(Error {
             messages: vec![self.messages.next()?.clone()],
         })
+    }
+}
+
+impl Extend<Error> for Error {
+    fn extend<T: IntoIterator<Item = Error>>(&mut self, iter: T) {
+        for err in iter {
+            self.combine(err);
+        }
     }
 }

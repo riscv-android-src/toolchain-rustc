@@ -1,3 +1,5 @@
+//! Upcasts, to avoid writing out wrapper types.
+
 use crate::*;
 use std::marker::PhantomData;
 
@@ -38,6 +40,7 @@ use std::marker::PhantomData;
 /// This split setup allows us to write `foo.cast::<T>()` to mean
 /// "cast to T".
 pub trait Cast: Sized {
+    /// Cast a value to type `U` using `CastTo`.
     fn cast<U>(self, interner: &U::Interner) -> U
     where
         Self: CastTo<U>,
@@ -54,6 +57,7 @@ impl<T> Cast for T {}
 /// functions that take (e.g.) an `impl CastTo<Goal<_>>` or something
 /// like that.
 pub trait CastTo<T: HasInterner>: Sized {
+    /// Cast a value to type `T`.
     fn cast_to(self, interner: &T::Interner) -> T;
 }
 
@@ -76,13 +80,14 @@ macro_rules! reflexive_impl {
 
 reflexive_impl!(for(I: Interner) TyData<I>);
 reflexive_impl!(for(I: Interner) LifetimeData<I>);
+reflexive_impl!(for(I: Interner) ConstData<I>);
 reflexive_impl!(for(I: Interner) TraitRef<I>);
 reflexive_impl!(for(I: Interner) DomainGoal<I>);
 reflexive_impl!(for(I: Interner) Goal<I>);
 reflexive_impl!(for(I: Interner) WhereClause<I>);
 reflexive_impl!(for(I: Interner) ProgramClause<I>);
 reflexive_impl!(for(I: Interner) QuantifiedWhereClause<I>);
-reflexive_impl!(for(I: Interner) ParameterKinds<I>);
+reflexive_impl!(for(I: Interner) VariableKinds<I>);
 reflexive_impl!(for(I: Interner) CanonicalVarKinds<I>);
 
 impl<I: Interner> CastTo<WhereClause<I>> for TraitRef<I> {
@@ -94,6 +99,12 @@ impl<I: Interner> CastTo<WhereClause<I>> for TraitRef<I> {
 impl<I: Interner> CastTo<WhereClause<I>> for AliasEq<I> {
     fn cast_to(self, _interner: &I) -> WhereClause<I> {
         WhereClause::AliasEq(self)
+    }
+}
+
+impl<I: Interner> CastTo<WhereClause<I>> for LifetimeOutlives<I> {
+    fn cast_to(self, _interner: &I) -> WhereClause<I> {
+        WhereClause::LifetimeOutlives(self)
     }
 }
 
@@ -162,20 +173,26 @@ impl<I: Interner> CastTo<TyData<I>> for AliasTy<I> {
     }
 }
 
-impl<I: Interner> CastTo<Parameter<I>> for Ty<I> {
-    fn cast_to(self, interner: &I) -> Parameter<I> {
-        Parameter::new(interner, ParameterKind::Ty(self))
+impl<I: Interner> CastTo<GenericArg<I>> for Ty<I> {
+    fn cast_to(self, interner: &I) -> GenericArg<I> {
+        GenericArg::new(interner, GenericArgData::Ty(self))
     }
 }
 
-impl<I: Interner> CastTo<Parameter<I>> for Lifetime<I> {
-    fn cast_to(self, interner: &I) -> Parameter<I> {
-        Parameter::new(interner, ParameterKind::Lifetime(self))
+impl<I: Interner> CastTo<GenericArg<I>> for Lifetime<I> {
+    fn cast_to(self, interner: &I) -> GenericArg<I> {
+        GenericArg::new(interner, GenericArgData::Lifetime(self))
     }
 }
 
-impl<I: Interner> CastTo<Parameter<I>> for Parameter<I> {
-    fn cast_to(self, _interner: &I) -> Parameter<I> {
+impl<I: Interner> CastTo<GenericArg<I>> for Const<I> {
+    fn cast_to(self, interner: &I) -> GenericArg<I> {
+        GenericArg::new(interner, GenericArgData::Const(self))
+    }
+}
+
+impl<I: Interner> CastTo<GenericArg<I>> for GenericArg<I> {
+    fn cast_to(self, _interner: &I) -> GenericArg<I> {
         self
     }
 }
@@ -186,12 +203,14 @@ where
     I: Interner,
 {
     fn cast_to(self, interner: &I) -> ProgramClause<I> {
-        ProgramClauseData::Implies(ProgramClauseImplication {
+        let implication = ProgramClauseImplication {
             consequence: self.cast(interner),
             conditions: Goals::new(interner),
             priority: ClausePriority::High,
-        })
-        .intern(interner)
+        };
+
+        ProgramClauseData(Binders::empty(interner, implication.shifted_in(interner)))
+            .intern(interner)
     }
 }
 
@@ -201,24 +220,12 @@ where
     T: HasInterner<Interner = I> + CastTo<DomainGoal<I>>,
 {
     fn cast_to(self, interner: &I) -> ProgramClause<I> {
-        ProgramClauseData::ForAll(self.map(|bound| ProgramClauseImplication {
+        ProgramClauseData(self.map(|bound| ProgramClauseImplication {
             consequence: bound.cast(interner),
             conditions: Goals::new(interner),
             priority: ClausePriority::High,
         }))
         .intern(interner)
-    }
-}
-
-impl<I: Interner> CastTo<ProgramClause<I>> for ProgramClauseImplication<I> {
-    fn cast_to(self, interner: &I) -> ProgramClause<I> {
-        ProgramClauseData::Implies(self).intern(interner)
-    }
-}
-
-impl<I: Interner> CastTo<ProgramClause<I>> for Binders<ProgramClauseImplication<I>> {
-    fn cast_to(self, interner: &I) -> ProgramClause<I> {
-        ProgramClauseData::ForAll(self).intern(interner)
     }
 }
 
@@ -294,12 +301,30 @@ where
     }
 }
 
-impl<I> CastTo<TypeName<I>> for StructId<I>
+impl<I> CastTo<TypeName<I>> for AdtId<I>
 where
     I: Interner,
 {
     fn cast_to(self, _interner: &I) -> TypeName<I> {
-        TypeName::Struct(self)
+        TypeName::Adt(self)
+    }
+}
+
+impl<I> CastTo<TypeName<I>> for FnDefId<I>
+where
+    I: Interner,
+{
+    fn cast_to(self, _interner: &I) -> TypeName<I> {
+        TypeName::FnDef(self)
+    }
+}
+
+impl<I> CastTo<TypeName<I>> for OpaqueTyId<I>
+where
+    I: Interner,
+{
+    fn cast_to(self, _interner: &I) -> TypeName<I> {
+        TypeName::OpaqueType(self)
     }
 }
 
@@ -312,6 +337,7 @@ where
     }
 }
 
+/// An iterator that casts each element to some other type.
 pub struct Casted<'i, IT, U: HasInterner> {
     interner: &'i U::Interner,
     iterator: IT,
@@ -337,6 +363,7 @@ where
 /// An iterator adapter that casts each element we are iterating over
 /// to some other type.
 pub trait Caster: Iterator + Sized {
+    /// Cast each element in this iterator.
     fn casted<U>(self, interner: &U::Interner) -> Casted<'_, Self, U>
     where
         Self::Item: CastTo<U>,

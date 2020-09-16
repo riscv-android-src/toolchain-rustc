@@ -42,6 +42,10 @@ impl Frame {
         self.addr_pc().Offset as *mut _
     }
 
+    pub fn sp(&self) -> *mut c_void {
+        self.addr_stack().Offset as *mut _
+    }
+
     pub fn symbol_address(&self) -> *mut c_void {
         self.ip()
     }
@@ -67,6 +71,13 @@ impl Frame {
         }
     }
 
+    fn addr_stack(&self) -> &ADDRESS64 {
+        match self {
+            Frame::New(new) => &new.AddrStack,
+            Frame::Old(old) => &old.AddrStack,
+        }
+    }
+
     fn addr_stack_mut(&mut self) -> &mut ADDRESS64 {
         match self {
             Frame::New(new) => &mut new.AddrStack,
@@ -79,7 +90,7 @@ impl Frame {
 struct MyContext(CONTEXT);
 
 #[inline(always)]
-pub unsafe fn trace(cb: &mut FnMut(&super::Frame) -> bool) {
+pub unsafe fn trace(cb: &mut dyn FnMut(&super::Frame) -> bool) {
     // Allocate necessary structures for doing the stack walk
     let process = GetCurrentProcess();
     let thread = GetCurrentThread();

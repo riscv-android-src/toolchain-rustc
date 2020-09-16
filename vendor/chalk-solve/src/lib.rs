@@ -1,13 +1,15 @@
 #![deny(rust_2018_idioms)]
 
+use crate::rust_ir::*;
 use chalk_ir::interner::Interner;
+
 use chalk_ir::*;
-use chalk_rust_ir::*;
 use std::fmt::Debug;
 use std::sync::Arc;
 
+#[cfg(test)]
 #[macro_use]
-extern crate chalk_macros;
+mod test_macros;
 
 pub mod clauses;
 pub mod coherence;
@@ -15,7 +17,10 @@ mod coinductive_goal;
 pub mod ext;
 pub mod goal_builder;
 mod infer;
+pub mod logging;
+#[cfg(feature = "recursive-solver")]
 pub mod recursive;
+pub mod rust_ir;
 mod solve;
 pub mod split;
 pub mod wf;
@@ -32,7 +37,12 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     fn trait_datum(&self, trait_id: TraitId<I>) -> Arc<TraitDatum<I>>;
 
     /// Returns the datum for the impl with the given id.
-    fn struct_datum(&self, struct_id: StructId<I>) -> Arc<StructDatum<I>>;
+    fn adt_datum(&self, adt_id: AdtId<I>) -> Arc<AdtDatum<I>>;
+
+    /// Returns the representation for the ADT definition with the given id.
+    fn adt_repr(&self, id: AdtId<I>) -> AdtRepr;
+
+    fn fn_def_datum(&self, fn_def_id: FnDefId<I>) -> Arc<FnDefDatum<I>>;
 
     /// Returns the datum for the impl with the given id.
     fn impl_datum(&self, impl_id: ImplId<I>) -> Arc<ImplDatum<I>>;
@@ -43,6 +53,9 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     /// Returns the `OpaqueTyDatum` with the given id.
     fn opaque_ty_data(&self, id: OpaqueTyId<I>) -> Arc<OpaqueTyDatum<I>>;
 
+    /// Returns the "hidden type" corresponding with the opaque type.
+    fn hidden_opaque_type(&self, id: OpaqueTyId<I>) -> Ty<I>;
+
     /// Returns a list of potentially relevant impls for a given
     /// trait-id; we also supply the type parameters that we are
     /// trying to match (if known: these parameters may contain
@@ -52,7 +65,8 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     /// apply. The parameters are provided as a "hint" to help the
     /// implementor do less work, but can be completely ignored if
     /// desired.
-    fn impls_for_trait(&self, trait_id: TraitId<I>, parameters: &[Parameter<I>]) -> Vec<ImplId<I>>;
+    fn impls_for_trait(&self, trait_id: TraitId<I>, parameters: &[GenericArg<I>])
+        -> Vec<ImplId<I>>;
 
     /// Returns the impls that require coherence checking. This is not the
     /// full set of impls that exist:
@@ -63,12 +77,12 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     fn local_impls_to_coherence_check(&self, trait_id: TraitId<I>) -> Vec<ImplId<I>>;
 
     /// Returns true if there is an explicit impl of the auto trait
-    /// `auto_trait_id` for the struct `struct_id`. This is part of
+    /// `auto_trait_id` for the ADT `adt_id`. This is part of
     /// the auto trait handling -- if there is no explicit impl given
     /// by the user for the struct, then we provide default impls
     /// based on the field types (otherwise, we rely on the impls the
     /// user gave).
-    fn impl_provided_for(&self, auto_trait_id: TraitId<I>, struct_id: StructId<I>) -> bool;
+    fn impl_provided_for(&self, auto_trait_id: TraitId<I>, adt_id: AdtId<I>) -> bool;
 
     /// A stop-gap solution to force an impl for a given well-known trait.
     /// Useful when the logic for a given trait is absent or incomplete.
@@ -89,6 +103,42 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     fn program_clauses_for_env(&self, environment: &Environment<I>) -> ProgramClauses<I>;
 
     fn interner(&self) -> &I;
+
+    /// Check if a trait is object safe
+    fn is_object_safe(&self, trait_id: TraitId<I>) -> bool;
+
+    /// Gets the `ClosureKind` for a given closure and substitution.
+    fn closure_kind(&self, closure_id: ClosureId<I>, substs: &Substitution<I>) -> ClosureKind;
+
+    /// Gets the inputs and output for a given closure id and substitution. We
+    /// pass both the `ClosureId` and it's `Substituion` to give implementors
+    /// the freedom to store associated data in the substitution (like rustc) or
+    /// separately (like chalk-integration).
+    fn closure_inputs_and_output(
+        &self,
+        closure_id: ClosureId<I>,
+        substs: &Substitution<I>,
+    ) -> Binders<FnDefInputsAndOutputDatum<I>>;
+
+    /// Gets the upvars as a `Ty` for a given closure id and substitution. There
+    /// are no restrictions on the type of upvars.
+    fn closure_upvars(&self, closure_id: ClosureId<I>, substs: &Substitution<I>) -> Binders<Ty<I>>;
+
+    /// Gets the substitution for the closure when used as a function.
+    /// For example, for the following (not-quite-)rust code:
+    /// ```ignore
+    /// let foo = |a: &mut u32| { a += 1; };
+    /// let c: &'a u32 = &0;
+    /// foo(c);
+    /// ```
+    ///
+    /// This would return a `Substitution` of `[&'a]`. This could either be
+    /// substituted into the inputs and output, or into the upvars.
+    fn closure_fn_substitution(
+        &self,
+        closure_id: ClosureId<I>,
+        substs: &Substitution<I>,
+    ) -> Substitution<I>;
 }
 
 pub use clauses::program_clauses_for_env;
@@ -97,3 +147,15 @@ pub use solve::Guidance;
 pub use solve::Solution;
 pub use solve::Solver;
 pub use solve::SolverChoice;
+pub use solve::SubstitutionResult;
+
+#[macro_use]
+mod debug_macros {
+    #[macro_export]
+    macro_rules! debug_span {
+        ($($t: tt)*) => {
+            let __span = tracing::debug_span!($($t)*);
+            let __span = __span.enter();
+        };
+    }
+}

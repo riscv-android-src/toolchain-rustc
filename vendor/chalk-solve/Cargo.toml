@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "chalk-solve"
-version = "0.10.0"
+version = "0.15.0"
 authors = ["Rust Compiler Team", "Chalk developers"]
 description = "Combines the chalk-engine with chalk-ir"
 readme = "README.md"
@@ -21,28 +21,36 @@ keywords = ["compiler", "traits", "prolog"]
 license = "Apache-2.0/MIT"
 repository = "https://github.com/rust-lang/chalk"
 [dependencies.chalk-derive]
-version = "0.10.0"
+version = "=0.15.0"
 
 [dependencies.chalk-engine]
-version = "0.10.0"
+version = "=0.15.0"
+optional = true
 
 [dependencies.chalk-ir]
-version = "0.10.0"
-
-[dependencies.chalk-macros]
-version = "0.10.0"
-
-[dependencies.chalk-rust-ir]
-version = "0.10.0"
+version = "=0.15.0"
 
 [dependencies.ena]
-version = "0.13.0"
+version = "0.14.0"
 
 [dependencies.itertools]
 version = "0.9.0"
 
 [dependencies.petgraph]
-version = "0.4.13"
+version = "0.5.0"
 
 [dependencies.rustc-hash]
 version = "1.0.0"
+
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.tracing-subscriber]
+version = "0.2"
+
+[dev-dependencies]
+
+[features]
+default = ["slg-solver", "recursive-solver"]
+recursive-solver = []
+slg-solver = ["chalk-engine"]

@@ -1,17 +1,16 @@
-use std::io::{self, Write};
+use std::io;
 
-use byteorder::{WriteBytesExt, LittleEndian};
-
-use error::Result;
-use raw::{
-    VERSION, EMPTY_ADDRESS, NONE_ADDRESS,
-    CompiledAddr, FstType, Output, Transition,
+use crate::bytes;
+use crate::error::Result;
+use crate::raw::counting_writer::CountingWriter;
+use crate::raw::error::Error;
+use crate::raw::registry::{Registry, RegistryEntry};
+use crate::raw::{
+    CompiledAddr, Fst, FstType, Output, Transition, EMPTY_ADDRESS,
+    NONE_ADDRESS, VERSION,
 };
-use raw::counting_writer::CountingWriter;
-use raw::error::Error;
-use raw::registry::{Registry, RegistryEntry};
 // use raw::registry_minimal::{Registry, RegistryEntry};
-use stream::{IntoStreamer, Streamer};
+use crate::stream::{IntoStreamer, Streamer};
 
 /// A builder for creating a finite state transducer.
 ///
@@ -55,7 +54,7 @@ pub struct Builder<W> {
     ///
     /// A finished node is one that has been compiled and written to `wtr`.
     /// After this point, the node is considered immutable and will never
-    /// Achange.
+    /// change.
     registry: Registry,
     /// The last word added.
     ///
@@ -99,8 +98,15 @@ struct LastTransition {
 
 impl Builder<Vec<u8>> {
     /// Create a builder that builds an fst in memory.
-    pub fn memory() -> Self {
+    #[inline]
+    pub fn memory() -> Builder<Vec<u8>> {
         Builder::new(Vec::with_capacity(10 * (1 << 10))).unwrap()
+    }
+
+    /// Finishes construction of the FST and returns it.
+    #[inline]
+    pub fn into_fst(self) -> Fst<Vec<u8>> {
+        self.into_inner().and_then(Fst::new).unwrap()
     }
 }
 
@@ -118,11 +124,11 @@ impl<W: io::Write> Builder<W> {
         // Don't allow any nodes to have address 0-7. We use these to encode
         // the API version. We also use addresses `0` and `1` as special
         // sentinel values, so they should never correspond to a real node.
-        wtr.write_u64::<LittleEndian>(VERSION)?;
+        bytes::io_write_u64_le(VERSION, &mut wtr)?;
         // Similarly for 8-15 for the fst type.
-        wtr.write_u64::<LittleEndian>(ty)?;
+        bytes::io_write_u64_le(ty, &mut wtr)?;
         Ok(Builder {
-            wtr: wtr,
+            wtr,
             unfinished: UnfinishedNodes::new(),
             registry: Registry::new(10_000, 2),
             last: None,
@@ -133,7 +139,9 @@ impl<W: io::Write> Builder<W> {
 
     /// Adds a byte string to this FST with a zero output value.
     pub fn add<B>(&mut self, bs: B) -> Result<()>
-            where B: AsRef<[u8]> {
+    where
+        B: AsRef<[u8]>,
+    {
         self.check_last_key(bs.as_ref(), false)?;
         self.insert_output(bs, None)
     }
@@ -148,7 +156,9 @@ impl<W: io::Write> Builder<W> {
     /// added, then an error is returned. Similarly, if there was a problem
     /// writing to the underlying writer, an error is returned.
     pub fn insert<B>(&mut self, bs: B, val: u64) -> Result<()>
-            where B: AsRef<[u8]> {
+    where
+        B: AsRef<[u8]>,
+    {
         self.check_last_key(bs.as_ref(), true)?;
         self.insert_output(bs, Some(Output::new(val)))
     }
@@ -162,7 +172,10 @@ impl<W: io::Write> Builder<W> {
     /// added, then an error is returned. Similarly, if there was a problem
     /// writing to the underlying writer, an error is returned.
     pub fn extend_iter<T, I>(&mut self, iter: I) -> Result<()>
-            where T: AsRef<[u8]>, I: IntoIterator<Item=(T, Output)> {
+    where
+        T: AsRef<[u8]>,
+        I: IntoIterator<Item = (T, Output)>,
+    {
         for (key, out) in iter {
             self.insert(key, out.value())?;
         }
@@ -178,8 +191,10 @@ impl<W: io::Write> Builder<W> {
     /// added, then an error is returned. Similarly, if there was a problem
     /// writing to the underlying writer, an error is returned.
     pub fn extend_stream<'f, I, S>(&mut self, stream: I) -> Result<()>
-            where I: for<'a> IntoStreamer<'a, Into=S, Item=(&'a [u8], Output)>,
-                  S: 'f + for<'a> Streamer<'a, Item=(&'a [u8], Output)> {
+    where
+        I: for<'a> IntoStreamer<'a, Into = S, Item = (&'a [u8], Output)>,
+        S: 'f + for<'a> Streamer<'a, Item = (&'a [u8], Output)>,
+    {
         let mut stream = stream.into_stream();
         while let Some((key, out)) = stream.next() {
             self.insert(key, out.value())?;
@@ -201,14 +216,20 @@ impl<W: io::Write> Builder<W> {
         self.compile_from(0)?;
         let root_node = self.unfinished.pop_root();
         let root_addr = self.compile(&root_node)?;
-        self.wtr.write_u64::<LittleEndian>(self.len as u64)?;
-        self.wtr.write_u64::<LittleEndian>(root_addr as u64)?;
-        self.wtr.flush()?;
-        Ok(self.wtr.into_inner())
+        bytes::io_write_u64_le(self.len as u64, &mut self.wtr)?;
+        bytes::io_write_u64_le(root_addr as u64, &mut self.wtr)?;
+
+        let sum = self.wtr.masked_checksum();
+        let mut wtr = self.wtr.into_inner();
+        bytes::io_write_u32_le(sum, &mut wtr)?;
+        wtr.flush()?;
+        Ok(wtr)
     }
 
     fn insert_output<B>(&mut self, bs: B, out: Option<Output>) -> Result<()>
-            where B: AsRef<[u8]> {
+    where
+        B: AsRef<[u8]>,
+    {
         let bs = bs.as_ref();
         if bs.is_empty() {
             self.len = 1; // must be first key, so length is always 1
@@ -239,12 +260,11 @@ impl<W: io::Write> Builder<W> {
     fn compile_from(&mut self, istate: usize) -> Result<()> {
         let mut addr = NONE_ADDRESS;
         while istate + 1 < self.unfinished.len() {
-            let node =
-                if addr == NONE_ADDRESS {
-                    self.unfinished.pop_empty()
-                } else {
-                    self.unfinished.pop_freeze(addr)
-                };
+            let node = if addr == NONE_ADDRESS {
+                self.unfinished.pop_empty()
+            } else {
+                self.unfinished.pop_freeze(addr)
+            };
             addr = self.compile(&node)?;
             assert!(addr != NONE_ADDRESS);
         }
@@ -255,7 +275,8 @@ impl<W: io::Write> Builder<W> {
     fn compile(&mut self, node: &BuilderNode) -> Result<CompiledAddr> {
         if node.is_final
             && node.trans.is_empty()
-            && node.final_output.is_zero() {
+            && node.final_output.is_zero()
+        {
             return Ok(EMPTY_ADDRESS);
         }
         let entry = self.registry.entry(&node);
@@ -280,7 +301,8 @@ impl<W: io::Write> Builder<W> {
                 return Err(Error::OutOfOrder {
                     previous: last.to_vec(),
                     got: bs.to_vec(),
-                }.into());
+                }
+                .into());
             }
             last.clear();
             for &b in bs {
@@ -316,7 +338,7 @@ impl UnfinishedNodes {
 
     fn push_empty(&mut self, is_final: bool) {
         self.stack.push(BuilderNodeUnfinished {
-            node: BuilderNode { is_final: is_final, ..BuilderNode::default() },
+            node: BuilderNode { is_final, ..BuilderNode::default() },
             last: None,
         });
     }
@@ -355,7 +377,7 @@ impl UnfinishedNodes {
         }
         let last = self.stack.len().checked_sub(1).unwrap();
         assert!(self.stack[last].last.is_none());
-        self.stack[last].last = Some(LastTransition { inp: bs[0], out: out });
+        self.stack[last].last = Some(LastTransition { inp: bs[0], out });
         for &b in &bs[1..] {
             self.stack.push(BuilderNodeUnfinished {
                 node: BuilderNode::default(),
@@ -366,13 +388,12 @@ impl UnfinishedNodes {
     }
 
     fn find_common_prefix(&mut self, bs: &[u8]) -> usize {
-        bs
-        .iter()
-        .zip(&self.stack)
-        .take_while(|&(&b, ref node)| {
-            node.last.as_ref().map(|t| t.inp == b).unwrap_or(false)
-        })
-        .count()
+        bs.iter()
+            .zip(&self.stack)
+            .take_while(|&(&b, ref node)| {
+                node.last.as_ref().map(|t| t.inp == b).unwrap_or(false)
+            })
+            .count()
     }
 
     fn find_common_prefix_and_set_output(
@@ -407,7 +428,7 @@ impl BuilderNodeUnfinished {
             self.node.trans.push(Transition {
                 inp: trans.inp,
                 out: trans.out,
-                addr: addr,
+                addr,
             });
         }
     }
@@ -426,7 +447,7 @@ impl BuilderNodeUnfinished {
 }
 
 impl Clone for BuilderNode {
-    fn clone(&self) -> Self {
+    fn clone(&self) -> BuilderNode {
         BuilderNode {
             is_final: self.is_final,
             final_output: self.final_output,
@@ -434,7 +455,7 @@ impl Clone for BuilderNode {
         }
     }
 
-    fn clone_from(&mut self, source: &Self) {
+    fn clone_from(&mut self, source: &BuilderNode) {
         self.is_final = source.is_final;
         self.final_output = source.final_output;
         self.trans.clear();
@@ -443,7 +464,7 @@ impl Clone for BuilderNode {
 }
 
 impl Default for BuilderNode {
-    fn default() -> Self {
+    fn default() -> BuilderNode {
         BuilderNode {
             is_final: false,
             final_output: Output::zero(),

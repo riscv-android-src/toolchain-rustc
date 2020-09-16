@@ -196,6 +196,9 @@ Miri adds its own set of `-Z` flags:
   is popped from a borrow stack (which is where the tag becomes invalid and any
   future use of it will error).  This helps you in finding out why UB is
   happening and where in your code would be a good place to look for it.
+* `-Zmiri-track-call-id=<id>` shows a backtrace when the given call id is
+  assigned to a stack frame.  This helps in debugging UB related to Stacked
+  Borrows "protectors".
 
 [alignment-false-positives]: https://github.com/rust-lang/miri/issues/1074
 
@@ -295,6 +298,7 @@ Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows 
 * [`ryu` using raw pointers outside their valid memory area](https://github.com/dtolnay/ryu/issues/24)
 * [ink! creating overlapping mutable references](https://github.com/rust-lang/miri/issues/1364)
 * [TiKV creating overlapping mutable reference and raw pointer](https://github.com/tikv/tikv/pull/7709)
+* [Windows `Env` iterator creating `*const T` from `&T` to read memory outside of `T`](https://github.com/rust-lang/rust/pull/70479)
 
 ## License
 

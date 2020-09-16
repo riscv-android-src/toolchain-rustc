@@ -92,30 +92,61 @@ use std::fmt;
 #[derive(Copy, PartialEq, Eq, Clone, PartialOrd, Ord)]
 pub struct UnixReady(Ready);
 
-const ERROR: usize = 0b000100;
-const HUP: usize   = 0b001000;
+const ERROR: usize = 0b00_0100;
+const HUP: usize   = 0b00_1000;
 
 #[cfg(any(target_os = "dragonfly",
     target_os = "freebsd", target_os = "ios", target_os = "macos"))]
-const AIO: usize   = 0b010000;
+const AIO: usize   = 0b01_0000;
 
 #[cfg(not(any(target_os = "dragonfly",
     target_os = "freebsd", target_os = "ios", target_os = "macos")))]
-const AIO: usize   = 0b000000;
+const AIO: usize   = 0b00_0000;
 
 #[cfg(any(target_os = "freebsd"))]
-const LIO: usize   = 0b100000;
+const LIO: usize   = 0b10_0000;
 
 #[cfg(not(any(target_os = "freebsd")))]
-const LIO: usize   = 0b000000;
+const LIO: usize   = 0b00_0000;
 
+#[cfg(any(
+    target_os = "android",
+    target_os = "illumos",
+    target_os = "linux",
+    target_os = "solaris"
+))]
+const PRI: usize = 0b100_0000;
 
-#[cfg(any(target_os = "linux", target_os = "android", target_os = "solaris"))]
-const PRI: usize = ::libc::EPOLLPRI as usize;
-
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "illumos",
+    target_os = "linux",
+    target_os = "solaris"
+)))]
+const PRI: usize = 0;
 
 // Export to support `Ready::all`
-pub const READY_ALL: usize = ERROR | HUP | AIO | LIO;
+pub const READY_ALL: usize = ERROR | HUP | AIO | LIO | PRI;
+
+#[test]
+fn test_ready_all() {
+    let readable = Ready::readable().as_usize();
+    let writable = Ready::writable().as_usize();
+
+    assert_eq!(
+        READY_ALL | readable | writable,
+        ERROR + HUP + AIO + LIO + PRI + readable + writable
+    );
+
+    // Issue #896.
+    #[cfg(any(
+        target_os = "android",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "solaris"
+    ))]
+    assert!(!Ready::from(UnixReady::priority()).is_writable());
+}
 
 impl UnixReady {
     /// Returns a `Ready` representing AIO completion readiness
@@ -182,7 +213,8 @@ impl UnixReady {
     /// **Note that only readable and writable readiness is guaranteed to be
     /// supported on all platforms**. This means that `hup` readiness
     /// should be treated as a hint. For more details, see [readiness] in the
-    /// poll documentation.
+    /// poll documentation. It is also unclear if HUP readiness will remain in 0.7. See
+    /// [here][issue-941].
     ///
     /// See [`Poll`] for more documentation on polling.
     ///
@@ -198,6 +230,7 @@ impl UnixReady {
     ///
     /// [`Poll`]: ../struct.Poll.html
     /// [readiness]: ../struct.Poll.html#readiness-operations
+    /// [issue-941]: https://github.com/tokio-rs/mio/issues/941
     #[inline]
     pub fn hup() -> UnixReady {
         UnixReady(ready_from_usize(HUP))
@@ -240,8 +273,12 @@ impl UnixReady {
     ///
     /// [`Poll`]: struct.Poll.html
     #[inline]
-    #[cfg(any(target_os = "linux",
-        target_os = "android", target_os = "solaris"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "solaris"
+    ))]
     pub fn priority() -> UnixReady {
         UnixReady(ready_from_usize(PRI))
     }
@@ -367,8 +404,12 @@ impl UnixReady {
     ///
     /// [`Poll`]: struct.Poll.html
     #[inline]
-    #[cfg(any(target_os = "linux",
-        target_os = "android", target_os = "solaris"))]
+    #[cfg(any(
+        target_os = "android",
+        target_os = "illumos",
+        target_os = "linux",
+        target_os = "solaris"
+    ))]
     pub fn is_priority(&self) -> bool {
         self.contains(ready_from_usize(PRI))
     }
@@ -458,8 +499,12 @@ impl fmt::Debug for UnixReady {
             (UnixReady::hup(), "Hup"),
             #[allow(deprecated)]
             (UnixReady::aio(), "Aio"),
-            #[cfg(any(target_os = "linux",
-                target_os = "android", target_os = "solaris"))]
+            #[cfg(any(
+                target_os = "android",
+                target_os = "illumos",
+                target_os = "linux",
+                target_os = "solaris"
+            ))]
             (UnixReady::priority(), "Priority"),
         ];
 

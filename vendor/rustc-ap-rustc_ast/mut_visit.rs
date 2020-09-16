@@ -786,7 +786,7 @@ pub fn noop_visit_generics<T: MutVisitor>(generics: &mut Generics, vis: &mut T) 
 }
 
 pub fn noop_visit_where_clause<T: MutVisitor>(wc: &mut WhereClause, vis: &mut T) {
-    let WhereClause { predicates, span } = wc;
+    let WhereClause { has_where_token: _, predicates, span } = wc;
     visit_vec(predicates, |predicate| vis.visit_where_predicate(predicate));
     vis.visit_span(span);
 }
@@ -1095,7 +1095,10 @@ pub fn noop_visit_anon_const<T: MutVisitor>(AnonConst { id, value }: &mut AnonCo
     vis.visit_expr(value);
 }
 
-pub fn noop_visit_expr<T: MutVisitor>(Expr { kind, id, span, attrs }: &mut Expr, vis: &mut T) {
+pub fn noop_visit_expr<T: MutVisitor>(
+    Expr { kind, id, span, attrs, tokens: _ }: &mut Expr,
+    vis: &mut T,
+) {
     match kind {
         ExprKind::Box(expr) => vis.visit_expr(expr),
         ExprKind::Array(exprs) => visit_exprs(exprs, vis),
@@ -1204,6 +1207,27 @@ pub fn noop_visit_expr<T: MutVisitor>(Expr { kind, id, span, attrs }: &mut Expr,
         }
         ExprKind::Ret(expr) => {
             visit_opt(expr, |expr| vis.visit_expr(expr));
+        }
+        ExprKind::InlineAsm(asm) => {
+            for (op, _) in &mut asm.operands {
+                match op {
+                    InlineAsmOperand::In { expr, .. }
+                    | InlineAsmOperand::InOut { expr, .. }
+                    | InlineAsmOperand::Const { expr, .. }
+                    | InlineAsmOperand::Sym { expr, .. } => vis.visit_expr(expr),
+                    InlineAsmOperand::Out { expr, .. } => {
+                        if let Some(expr) = expr {
+                            vis.visit_expr(expr);
+                        }
+                    }
+                    InlineAsmOperand::SplitInOut { in_expr, out_expr, .. } => {
+                        vis.visit_expr(in_expr);
+                        if let Some(out_expr) = out_expr {
+                            vis.visit_expr(out_expr);
+                        }
+                    }
+                }
+            }
         }
         ExprKind::LlvmInlineAsm(asm) => {
             let LlvmInlineAsm {

@@ -84,7 +84,7 @@ pub struct PendingPredicateObligation<'tcx> {
 
 // `PendingPredicateObligation` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert_size!(PendingPredicateObligation<'_>, 112);
+static_assert_size!(PendingPredicateObligation<'_>, 64);
 
 impl<'a, 'tcx> FulfillmentContext<'tcx> {
     /// Creates a new fulfillment context.
@@ -321,7 +321,7 @@ impl<'a, 'b, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'tcx> {
             ty::PredicateKind::Trait(ref data, _) => {
                 let trait_obligation = obligation.with(*data);
 
-                if data.is_global() {
+                if obligation.predicate.is_global() {
                     // no type variables present, can use evaluation for better caching.
                     // FIXME: consider caching errors too.
                     if infcx.predicate_must_hold_considering_regions(&obligation) {
@@ -334,12 +334,12 @@ impl<'a, 'b, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'tcx> {
                 }
 
                 match self.selcx.select(&trait_obligation) {
-                    Ok(Some(vtable)) => {
+                    Ok(Some(impl_source)) => {
                         debug!(
                             "selecting trait `{:?}` at depth {} yielded Ok(Some)",
                             data, obligation.recursion_depth
                         );
-                        ProcessResult::Changed(mk_pending(vtable.nested_obligations()))
+                        ProcessResult::Changed(mk_pending(impl_source.nested_obligations()))
                     }
                     Ok(None) => {
                         debug!(
@@ -426,14 +426,20 @@ impl<'a, 'b, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'tcx> {
 
             ty::PredicateKind::Projection(ref data) => {
                 let project_obligation = obligation.with(*data);
+                let tcx = self.selcx.tcx();
                 match project::poly_project_and_unify_type(self.selcx, &project_obligation) {
-                    Ok(None) => {
-                        let tcx = self.selcx.tcx();
-                        pending_obligation.stalled_on =
-                            trait_ref_infer_vars(self.selcx, data.to_poly_trait_ref(tcx));
+                    Ok(Ok(Some(os))) => ProcessResult::Changed(mk_pending(os)),
+                    Ok(Ok(None)) => {
+                        pending_obligation.stalled_on = trait_ref_infer_vars(
+                            self.selcx,
+                            project_obligation.predicate.to_poly_trait_ref(tcx),
+                        );
                         ProcessResult::Unchanged
                     }
-                    Ok(Some(os)) => ProcessResult::Changed(mk_pending(os)),
+                    // Let the caller handle the recursion
+                    Ok(Err(project::InProgress)) => ProcessResult::Changed(mk_pending(vec![
+                        pending_obligation.obligation.clone(),
+                    ])),
                     Err(e) => ProcessResult::Error(CodeProjectionError(e)),
                 }
             }
@@ -459,17 +465,17 @@ impl<'a, 'b, 'tcx> ObligationProcessor for FulfillProcessor<'a, 'b, 'tcx> {
                 }
             }
 
-            &ty::PredicateKind::WellFormed(ty) => {
+            &ty::PredicateKind::WellFormed(arg) => {
                 match wf::obligations(
                     self.selcx.infcx(),
                     obligation.param_env,
                     obligation.cause.body_id,
-                    ty,
+                    arg,
                     obligation.cause.span,
                 ) {
                     None => {
                         pending_obligation.stalled_on =
-                            vec![TyOrConstInferVar::maybe_from_ty(ty).unwrap()];
+                            vec![TyOrConstInferVar::maybe_from_generic_arg(arg).unwrap()];
                         ProcessResult::Unchanged
                     }
                     Some(os) => ProcessResult::Changed(mk_pending(os)),

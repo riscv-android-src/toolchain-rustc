@@ -5,12 +5,11 @@
 //! The more interesting impls of `Visit` remain in the `visit` module.
 
 use crate::{
-    AssocTypeId, ClausePriority, DebruijnIndex, FloatTy, Goals, ImplId, IntTy, Interner,
-    OpaqueTyId, Parameter, ParameterKind, PlaceholderIndex, ProgramClause, ProgramClauseData,
-    ProgramClauses, QuantifiedWhereClauses, QuantifierKind, Scalar, StructId, Substitution,
-    SuperVisit, TraitId, UintTy, UniverseIndex, Visit, VisitResult, Visitor,
+    AdtId, AssocTypeId, ClausePriority, ClosureId, DebruijnIndex, FloatTy, FnDefId, GenericArg,
+    Goals, ImplId, IntTy, Interner, Mutability, OpaqueTyId, PlaceholderIndex, ProgramClause,
+    ProgramClauses, QuantifiedWhereClauses, QuantifierKind, Scalar, Substitution, SuperVisit,
+    TraitId, UintTy, UniverseIndex, Visit, VisitResult, Visitor,
 };
-use chalk_engine::{context::Context, ExClause, FlounderedSubgoal, Literal};
 use std::{marker::PhantomData, sync::Arc};
 
 /// Convenience function to visit all the items in the iterator it.
@@ -138,7 +137,7 @@ impl<T: Visit<I>, I: Interner> Visit<I> for Option<T> {
     }
 }
 
-impl<I: Interner> Visit<I> for Parameter<I> {
+impl<I: Interner> Visit<I> for GenericArg<I> {
     fn visit_with<'i, R: VisitResult>(
         &self,
         visitor: &mut dyn Visitor<'i, I, Result = R>,
@@ -180,6 +179,7 @@ impl<I: Interner> Visit<I> for Goals<I> {
     }
 }
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! const_visit {
     ($t:ty) => {
@@ -198,20 +198,21 @@ macro_rules! const_visit {
     };
 }
 
-const_visit!(UniverseIndex);
+const_visit!(bool);
 const_visit!(usize);
+const_visit!(UniverseIndex);
 const_visit!(PlaceholderIndex);
 const_visit!(QuantifierKind);
 const_visit!(DebruijnIndex);
-const_visit!(chalk_engine::TableIndex);
-const_visit!(chalk_engine::TimeStamp);
 const_visit!(ClausePriority);
 const_visit!(());
 const_visit!(Scalar);
 const_visit!(UintTy);
 const_visit!(IntTy);
 const_visit!(FloatTy);
+const_visit!(Mutability);
 
+#[doc(hidden)]
 #[macro_export]
 macro_rules! id_visit {
     ($t:ident) => {
@@ -231,10 +232,12 @@ macro_rules! id_visit {
 }
 
 id_visit!(ImplId);
-id_visit!(StructId);
+id_visit!(AdtId);
 id_visit!(TraitId);
 id_visit!(OpaqueTyId);
 id_visit!(AssocTypeId);
+id_visit!(FnDefId);
+id_visit!(ClosureId);
 
 impl<I: Interner> SuperVisit<I> for ProgramClause<I> {
     fn super_visit_with<'i, R: VisitResult>(
@@ -247,10 +250,7 @@ impl<I: Interner> SuperVisit<I> for ProgramClause<I> {
     {
         let interner = visitor.interner();
 
-        match self.data(interner) {
-            ProgramClauseData::Implies(pci) => pci.visit_with(visitor, outer_binder),
-            ProgramClauseData::ForAll(pci) => pci.visit_with(visitor, outer_binder),
-        }
+        self.data(interner).0.visit_with(visitor, outer_binder)
     }
 }
 
@@ -294,109 +294,5 @@ impl<I: Interner> Visit<I> for PhantomData<I> {
         I: 'i,
     {
         R::new()
-    }
-}
-
-impl<I: Interner, T, L> Visit<I> for ParameterKind<T, L>
-where
-    T: Visit<I>,
-    L: Visit<I>,
-{
-    fn visit_with<'i, R: VisitResult>(
-        &self,
-        visitor: &mut dyn Visitor<'i, I, Result = R>,
-        outer_binder: DebruijnIndex,
-    ) -> R
-    where
-        I: 'i,
-    {
-        match self {
-            ParameterKind::Ty(a) => a.visit_with(visitor, outer_binder),
-            ParameterKind::Lifetime(a) => a.visit_with(visitor, outer_binder),
-        }
-    }
-}
-
-impl<C: Context, I: Interner> Visit<I> for ExClause<C>
-where
-    C: Context,
-    C::Substitution: Visit<I>,
-    C::RegionConstraint: Visit<I>,
-    C::CanonicalConstrainedSubst: Visit<I>,
-    C::GoalInEnvironment: Visit<I>,
-{
-    fn visit_with<'i, R: VisitResult>(
-        &self,
-        visitor: &mut dyn Visitor<'i, I, Result = R>,
-        outer_binder: DebruijnIndex,
-    ) -> R
-    where
-        I: 'i,
-    {
-        let ExClause {
-            subst,
-            ambiguous: _,
-            constraints,
-            subgoals,
-            delayed_subgoals,
-            answer_time,
-            floundered_subgoals,
-        } = self;
-
-        R::new()
-            .and_then(|| subst.visit_with(visitor, outer_binder))
-            .and_then(|| constraints.visit_with(visitor, outer_binder))
-            .and_then(|| constraints.visit_with(visitor, outer_binder))
-            .and_then(|| subgoals.visit_with(visitor, outer_binder))
-            .and_then(|| delayed_subgoals.visit_with(visitor, outer_binder))
-            .and_then(|| answer_time.visit_with(visitor, outer_binder))
-            .and_then(|| floundered_subgoals.visit_with(visitor, outer_binder))
-    }
-}
-
-impl<C: Context, I: Interner> Visit<I> for FlounderedSubgoal<C>
-where
-    C: Context,
-    C::Substitution: Visit<I>,
-    C::RegionConstraint: Visit<I>,
-    C::CanonicalConstrainedSubst: Visit<I>,
-    C::GoalInEnvironment: Visit<I>,
-{
-    fn visit_with<'i, R: VisitResult>(
-        &self,
-        visitor: &mut dyn Visitor<'i, I, Result = R>,
-        outer_binder: DebruijnIndex,
-    ) -> R
-    where
-        I: 'i,
-    {
-        let FlounderedSubgoal {
-            floundered_literal,
-            floundered_time,
-        } = self;
-
-        R::new()
-            .and_then(|| floundered_literal.visit_with(visitor, outer_binder))
-            .and_then(|| floundered_time.visit_with(visitor, outer_binder))
-    }
-}
-
-impl<C: Context, I: Interner> Visit<I> for Literal<C>
-where
-    C: Context,
-    C::GoalInEnvironment: Visit<I>,
-{
-    fn visit_with<'i, R: VisitResult>(
-        &self,
-        visitor: &mut dyn Visitor<'i, I, Result = R>,
-        outer_binder: DebruijnIndex,
-    ) -> R
-    where
-        I: 'i,
-    {
-        match self {
-            Literal::Positive(goal) => goal.visit_with(visitor, outer_binder),
-            Literal::Negative(goal) => goal.visit_with(visitor, outer_binder),
-        }
     }
 }

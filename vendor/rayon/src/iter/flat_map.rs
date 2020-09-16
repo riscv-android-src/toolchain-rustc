@@ -22,7 +22,7 @@ impl<I: ParallelIterator + Debug, F> Debug for FlatMap<I, F> {
 }
 
 impl<I: ParallelIterator, F> FlatMap<I, F> {
-    /// Create a new `FlatMap` iterator.
+    /// Creates a new `FlatMap` iterator.
     pub(super) fn new(base: I, map_op: F) -> Self {
         FlatMap { base, map_op }
     }
@@ -51,7 +51,7 @@ where
 /// ////////////////////////////////////////////////////////////////////////
 /// Consumer implementation
 
-struct FlatMapConsumer<'f, C, F: 'f> {
+struct FlatMapConsumer<'f, C, F> {
     base: C,
     map_op: &'f F,
 }
@@ -109,7 +109,7 @@ where
     }
 }
 
-struct FlatMapFolder<'f, C, F: 'f, R> {
+struct FlatMapFolder<'f, C, F, R> {
     base: C,
     map_op: &'f F,
     previous: Option<R>,

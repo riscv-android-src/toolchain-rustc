@@ -1,7 +1,9 @@
 use super::*;
 
+use serde::{de::DeserializeOwned, Serialize};
+
 pub trait Notification {
-    type Params;
+    type Params: DeserializeOwned + Serialize;
     const METHOD: &'static str;
 }
 
@@ -23,6 +25,9 @@ macro_rules! lsp_notification {
     ("window/logMessage") => {
         $crate::notification::LogMessage
     };
+    ("window/workDoneProgress/cancel") => {
+        $crate::notification::WorkDoneProgressCancel
+    };
 
     ("telemetry/event") => {
         $crate::notification::TelemetryEvent
@@ -36,9 +41,6 @@ macro_rules! lsp_notification {
     };
     ("textDocument/willSave") => {
         $crate::notification::WillSaveTextDocument
-    };
-    ("textDocument/willSaveWaitUntil") => {
-        $crate::notification::WillSaveWaitUntil
     };
     ("textDocument/didSave") => {
         $crate::notification::DidSaveTextDocument
@@ -59,10 +61,12 @@ macro_rules! lsp_notification {
     ("workspace/didChangeWorkspaceFolders") => {
         $crate::notification::DidChangeWorkspaceFolders
     };
-
-    // Requires #[cfg(feature = "proposed")]
-    ("window/progress") => {
+    ("$/progress") => {
         $crate::notification::Progress
+    };
+    // Requires #[cfg(feature = "proposed")]
+    ("textDocument/semanticHighlighting") => {
+        $crate::notification::SemanticHighlighting
     };
 }
 
@@ -92,11 +96,9 @@ impl Notification for Initialized {
     const METHOD: &'static str = "initialized";
 }
 
-/**
- * A notification to ask the server to exit its process.
- * The server should exit with success code 0 if the shutdown request has been received before;
- * otherwise with error code 1.
- */
+/// A notification to ask the server to exit its process.
+/// The server should exit with success code 0 if the shutdown request has been received before;
+/// otherwise with error code 1.
 #[derive(Debug)]
 pub enum Exit {}
 
@@ -105,10 +107,8 @@ impl Notification for Exit {
     const METHOD: &'static str = "exit";
 }
 
-/**
- * The show message notification is sent from a server to a client to ask the client to display a particular message
- * in the user interface.
- */
+/// The show message notification is sent from a server to a client to ask the client to display a particular message
+/// in the user interface.
 #[derive(Debug)]
 pub enum ShowMessage {}
 
@@ -117,9 +117,7 @@ impl Notification for ShowMessage {
     const METHOD: &'static str = "window/showMessage";
 }
 
-/**
- * The log message notification is sent from the server to the client to ask the client to log a particular message.
- */
+/// The log message notification is sent from the server to the client to ask the client to log a particular message.
 #[derive(Debug)]
 pub enum LogMessage {}
 
@@ -128,9 +126,7 @@ impl Notification for LogMessage {
     const METHOD: &'static str = "window/logMessage";
 }
 
-/**
- * The telemetry notification is sent from the server to the client to ask the client to log a telemetry event.
- */
+/// The telemetry notification is sent from the server to the client to ask the client to log a telemetry event.
 #[derive(Debug)]
 pub enum TelemetryEvent {}
 
@@ -139,9 +135,7 @@ impl Notification for TelemetryEvent {
     const METHOD: &'static str = "telemetry/event";
 }
 
-/**
- * A notification sent from the client to the server to signal the change of configuration settings.
- */
+/// A notification sent from the client to the server to signal the change of configuration settings.
 #[derive(Debug)]
 pub enum DidChangeConfiguration {}
 
@@ -150,11 +144,9 @@ impl Notification for DidChangeConfiguration {
     const METHOD: &'static str = "workspace/didChangeConfiguration";
 }
 
-/**
- * The document open notification is sent from the client to the server to signal newly opened text documents.
- * The document's truth is now managed by the client and the server must not try to read the document's truth
- * using the document's uri.
- */
+/// The document open notification is sent from the client to the server to signal newly opened text documents.
+/// The document's truth is now managed by the client and the server must not try to read the document's truth
+/// using the document's uri.
 #[derive(Debug)]
 pub enum DidOpenTextDocument {}
 
@@ -163,10 +155,8 @@ impl Notification for DidOpenTextDocument {
     const METHOD: &'static str = "textDocument/didOpen";
 }
 
-/**
- * The document change notification is sent from the client to the server to signal changes to a text document.
- * In 2.0 the shape of the params has changed to include proper version numbers and language ids.
- */
+/// The document change notification is sent from the client to the server to signal changes to a text document.
+/// In 2.0 the shape of the params has changed to include proper version numbers and language ids.
 #[derive(Debug)]
 pub enum DidChangeTextDocument {}
 
@@ -185,24 +175,9 @@ impl Notification for WillSaveTextDocument {
     const METHOD: &'static str = "textDocument/willSave";
 }
 
-/// The document will save request is sent from the client to the server before the document is
-/// actually saved. The request can return an array of TextEdits which will be applied to the text
-/// document before it is saved. Please note that clients might drop results if computing the text
-/// edits took too long or if a server constantly fails on this request. This is done to keep the
-/// save fast and reliable.
-#[derive(Debug)]
-pub enum WillSaveWaitUntil {}
-
-impl Notification for WillSaveWaitUntil {
-    type Params = WillSaveTextDocumentParams;
-    const METHOD: &'static str = "textDocument/willSaveWaitUntil";
-}
-
-/**
- * The document close notification is sent from the client to the server when the document got closed in the client.
- * The document's truth now exists where the document's uri points to (e.g. if the document's uri is a file uri
- * the truth now exists on disk).
- */
+/// The document close notification is sent from the client to the server when the document got closed in the client.
+/// The document's truth now exists where the document's uri points to (e.g. if the document's uri is a file uri
+/// the truth now exists on disk).
 #[derive(Debug)]
 pub enum DidCloseTextDocument {}
 
@@ -211,9 +186,7 @@ impl Notification for DidCloseTextDocument {
     const METHOD: &'static str = "textDocument/didClose";
 }
 
-/**
- * The document save notification is sent from the client to the server when the document was saved in the client.
- */
+/// The document save notification is sent from the client to the server when the document was saved in the client.
 #[derive(Debug)]
 pub enum DidSaveTextDocument {}
 
@@ -222,10 +195,8 @@ impl Notification for DidSaveTextDocument {
     const METHOD: &'static str = "textDocument/didSave";
 }
 
-/**
- * The watched files notification is sent from the client to the server when the client detects changes to files
- * watched by the language client.
- */
+/// The watched files notification is sent from the client to the server when the client detects changes to files
+/// watched by the language client.
 #[derive(Debug)]
 pub enum DidChangeWatchedFiles {}
 
@@ -234,10 +205,8 @@ impl Notification for DidChangeWatchedFiles {
     const METHOD: &'static str = "workspace/didChangeWatchedFiles";
 }
 
-/**
- * The workspace/didChangeWorkspaceFolders notification is sent from the client to the server to inform the server
- * about workspace folder configuration changes
- */
+/// The workspace/didChangeWorkspaceFolders notification is sent from the client to the server to inform the server
+/// about workspace folder configuration changes
 #[derive(Debug)]
 pub enum DidChangeWorkspaceFolders {}
 
@@ -246,9 +215,7 @@ impl Notification for DidChangeWorkspaceFolders {
     const METHOD: &'static str = "workspace/didChangeWorkspaceFolders";
 }
 
-/**
- * Diagnostics notification are sent from the server to the client to signal results of validation runs.
- */
+/// Diagnostics notification are sent from the server to the client to signal results of validation runs.
 #[derive(Debug)]
 pub enum PublishDiagnostics {}
 
@@ -257,16 +224,35 @@ impl Notification for PublishDiagnostics {
     const METHOD: &'static str = "textDocument/publishDiagnostics";
 }
 
-#[cfg(feature = "proposed")]
 /// The progress notification is sent from the server to the client to ask
 /// the client to indicate progress.
 #[derive(Debug)]
 pub enum Progress {}
 
-#[cfg(feature = "proposed")]
 impl Notification for Progress {
     type Params = ProgressParams;
-    const METHOD: &'static str = "window/progress";
+    const METHOD: &'static str = "$/progress";
+}
+
+/// The `window/workDoneProgress/cancel` notification is sent from the client
+/// to the server to cancel a progress initiated on the server side using the `window/workDoneProgress/create`.
+#[derive(Debug)]
+pub enum WorkDoneProgressCancel {}
+
+impl Notification for WorkDoneProgressCancel {
+    type Params = WorkDoneProgressCancelParams;
+    const METHOD: &'static str = "window/workDoneProgress/cancel";
+}
+
+#[cfg(feature = "proposed")]
+/// Diagnostics notification are sent from the server to the client to signal results of validation runs.
+#[derive(Debug)]
+pub enum SemanticHighlighting {}
+
+#[cfg(feature = "proposed")]
+impl Notification for SemanticHighlighting {
+    type Params = SemanticHighlightingParams;
+    const METHOD: &'static str = "textDocument/semanticHighlighting";
 }
 
 #[cfg(test)]
@@ -292,23 +278,27 @@ mod test {
     #[test]
     fn check_macro_definitions() {
         check_macro!("$/cancelRequest");
+        check_macro!("$/progress");
         check_macro!("initialized");
         check_macro!("exit");
         check_macro!("window/showMessage");
         check_macro!("window/logMessage");
+        check_macro!("window/workDoneProgress/cancel");
         check_macro!("telemetry/event");
         check_macro!("textDocument/didOpen");
         check_macro!("textDocument/didChange");
         check_macro!("textDocument/willSave");
-        check_macro!("textDocument/willSaveWaitUntil");
         check_macro!("textDocument/didSave");
         check_macro!("textDocument/didClose");
         check_macro!("textDocument/publishDiagnostics");
         check_macro!("workspace/didChangeConfiguration");
         check_macro!("workspace/didChangeWatchedFiles");
         check_macro!("workspace/didChangeWorkspaceFolders");
+    }
 
-        #[cfg(feature = "proposed")]
-        check_macro!("window/progress");
+    #[test]
+    #[cfg(feature = "proposed")]
+    fn check_proposed_macro_definitions() {
+        check_macro!("textDocument/semanticHighlighting");
     }
 }

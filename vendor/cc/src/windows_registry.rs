@@ -347,6 +347,7 @@ mod impl_ {
         };
 
         let mut tool = MsvcTool::new(tool_path);
+        tool.path.push(bin_path.clone());
         tool.path.push(host_dylib_path);
         tool.libs.push(lib_path);
         tool.include.push(include_path);
@@ -375,6 +376,9 @@ mod impl_ {
         let host = match host_arch() {
             X86 => "X86",
             X86_64 => "X64",
+            // There is no natively hosted compiler on ARM64.
+            // Instead, use the x86 toolchain under emulation (there is no x64 emulation).
+            AARCH64 => "X86",
             _ => return None,
         };
         let target = lib_subdir(target)?;
@@ -421,8 +425,15 @@ mod impl_ {
         let sub = lib_subdir(target)?;
         let (ucrt, ucrt_version) = get_ucrt_dir()?;
 
+        let host = match host_arch() {
+            X86 => "x86",
+            X86_64 => "x64",
+            AARCH64 => "arm64",
+            _ => return None,
+        };
+
         tool.path
-            .push(ucrt.join("bin").join(&ucrt_version).join(sub));
+            .push(ucrt.join("bin").join(&ucrt_version).join(host));
 
         let ucrt_include = ucrt.join("include").join(&ucrt_version);
         tool.include.push(ucrt_include.join("ucrt"));
@@ -431,7 +442,7 @@ mod impl_ {
         tool.libs.push(ucrt_lib.join("ucrt").join(sub));
 
         if let Some((sdk, version)) = get_sdk10_dir() {
-            tool.path.push(sdk.join("bin").join(sub));
+            tool.path.push(sdk.join("bin").join(host));
             let sdk_lib = sdk.join("lib").join(&version);
             tool.libs.push(sdk_lib.join("um").join(sub));
             let sdk_include = sdk.join("include").join(&version);
@@ -440,7 +451,7 @@ mod impl_ {
             tool.include.push(sdk_include.join("winrt"));
             tool.include.push(sdk_include.join("shared"));
         } else if let Some(sdk) = get_sdk81_dir() {
-            tool.path.push(sdk.join("bin").join(sub));
+            tool.path.push(sdk.join("bin").join(host));
             let sdk_lib = sdk.join("lib").join("winv6.3");
             tool.libs.push(sdk_lib.join("um").join(sub));
             let sdk_include = sdk.join("include");
@@ -607,8 +618,10 @@ mod impl_ {
 
     const PROCESSOR_ARCHITECTURE_INTEL: u16 = 0;
     const PROCESSOR_ARCHITECTURE_AMD64: u16 = 9;
+    const PROCESSOR_ARCHITECTURE_ARM64: u16 = 12;
     const X86: u16 = PROCESSOR_ARCHITECTURE_INTEL;
     const X86_64: u16 = PROCESSOR_ARCHITECTURE_AMD64;
+    const AARCH64: u16 = PROCESSOR_ARCHITECTURE_ARM64;
 
     // When choosing the tool to use, we have to choose the one which matches
     // the target architecture. Otherwise we end up in situations where someone

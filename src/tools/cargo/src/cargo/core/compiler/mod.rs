@@ -13,6 +13,7 @@ mod layout;
 mod links;
 mod lto;
 mod output_depinfo;
+pub mod rustdoc;
 pub mod standard_lib;
 mod timings;
 mod unit;
@@ -42,13 +43,15 @@ pub use self::job::Freshness;
 use self::job::{Job, Work};
 use self::job_queue::{JobQueue, JobState};
 pub(crate) use self::layout::Layout;
+pub use self::lto::Lto;
 use self::output_depinfo::output_depinfo;
 use self::unit_graph::UnitDep;
 pub use crate::core::compiler::unit::{Unit, UnitInterner};
 use crate::core::manifest::TargetSourcePath;
 use crate::core::profiles::{PanicStrategy, Profile, Strip};
-use crate::core::{Edition, Feature, InternedString, PackageId, Target};
+use crate::core::{Edition, Feature, PackageId, Target};
 use crate::util::errors::{self, CargoResult, CargoResultExt, ProcessError, VerboseError};
+use crate::util::interning::InternedString;
 use crate::util::machine_message::Message;
 use crate::util::{self, machine_message, ProcessBuilder};
 use crate::util::{internal, join_paths, paths, profile};
@@ -68,7 +71,7 @@ pub trait Executor: Send + Sync + 'static {
     /// this package.
     fn exec(
         &self,
-        cmd: ProcessBuilder,
+        cmd: &ProcessBuilder,
         id: PackageId,
         target: &Target,
         mode: CompileMode,
@@ -91,7 +94,7 @@ pub struct DefaultExecutor;
 impl Executor for DefaultExecutor {
     fn exec(
         &self,
-        cmd: ProcessBuilder,
+        cmd: &ProcessBuilder,
         _id: PackageId,
         _target: &Target,
         _mode: CompileMode,
@@ -279,7 +282,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
             state.build_plan(buildkey, rustc.clone(), outputs.clone());
         } else {
             exec.exec(
-                rustc,
+                &rustc,
                 package_id,
                 &target,
                 mode,
@@ -297,6 +300,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
                 &cwd,
                 &pkg_root,
                 &target_dir,
+                &rustc,
                 // Do not track source files in the fingerprint for registry dependencies.
                 is_local,
             )
@@ -570,6 +574,7 @@ fn rustdoc(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Work> {
     }
 
     build_deps_args(&mut rustdoc, cx, unit)?;
+    rustdoc::add_root_urls(cx, unit, &mut rustdoc)?;
 
     rustdoc.args(bcx.rustdocflags_args(unit));
 
@@ -785,7 +790,10 @@ fn build_base_args(
         lto::Lto::Run(Some(s)) => {
             cmd.arg("-C").arg(format!("lto={}", s));
         }
-        lto::Lto::EmbedBitcode => {} // this is rustc's default
+        lto::Lto::Off => {
+            cmd.arg("-C").arg("lto=off");
+        }
+        lto::Lto::ObjectAndBitcode => {} // this is rustc's default
         lto::Lto::OnlyBitcode => {
             // Note that this compiler flag, like the one below, is just an
             // optimization in terms of build time. If we don't pass it then
@@ -802,7 +810,7 @@ fn build_base_args(
                 cmd.arg("-Clinker-plugin-lto");
             }
         }
-        lto::Lto::None => {
+        lto::Lto::OnlyObject => {
             if cx
                 .bcx
                 .target_data
