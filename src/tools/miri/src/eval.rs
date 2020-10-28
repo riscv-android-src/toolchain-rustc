@@ -5,12 +5,23 @@ use std::ffi::OsStr;
 
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use log::info;
 
 use rustc_hir::def_id::DefId;
 use rustc_middle::ty::{self, layout::LayoutCx, TyCtxt};
 use rustc_target::abi::LayoutOf;
 
 use crate::*;
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum AlignmentCheck {
+    /// Do not check alignment.
+    None,
+    /// Check alignment "symbolically", i.e., using only the requested alignment for an allocation and not its real base address.
+    Symbolic,
+    /// Check alignment on the actual physical integer address.
+    Int,
+}
 
 /// Configuration needed to spawn a Miri instance.
 #[derive(Clone)]
@@ -19,8 +30,8 @@ pub struct MiriConfig {
     pub validate: bool,
     /// Determines if Stacked Borrows is enabled.
     pub stacked_borrows: bool,
-    /// Determines if alignment checking is enabled.
-    pub check_alignment: bool,
+    /// Controls alignment checking.
+    pub check_alignment: AlignmentCheck,
     /// Determines if communication with the host environment is enabled.
     pub communicate: bool,
     /// Determines if memory leaks should be ignored.
@@ -44,7 +55,7 @@ impl Default for MiriConfig {
         MiriConfig {
             validate: true,
             stacked_borrows: true,
-            check_alignment: true,
+            check_alignment: AlignmentCheck::Int,
             communicate: false,
             ignore_leaks: false,
             excluded_env_vars: vec![],
@@ -195,8 +206,8 @@ pub fn create_ecx<'mir, 'tcx: 'mir>(
 /// Returns `Some(return_code)` if program executed completed.
 /// Returns `None` if an evaluation error occured.
 pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) -> Option<i64> {
-    // FIXME: on Windows, we ignore leaks (https://github.com/rust-lang/miri/issues/1302).
-    let ignore_leaks = config.ignore_leaks || tcx.sess.target.target.target_os == "windows";
+    // Copy setting before we move `config`.
+    let ignore_leaks = config.ignore_leaks;
 
     let (mut ecx, ret_place) = match create_ecx(tcx, main_id, config) {
         Ok(v) => v,
@@ -210,6 +221,7 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
     let res: InterpResult<'_, i64> = (|| {
         // Main loop.
         loop {
+            let info = ecx.preprocess_diagnostics();
             match ecx.schedule()? {
                 SchedulingAction::ExecuteStep => {
                     assert!(ecx.step()?, "a terminated thread was scheduled for execution");
@@ -230,9 +242,9 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
                     break;
                 }
             }
-            ecx.process_diagnostics();
+            ecx.process_diagnostics(info);
         }
-        let return_code = ecx.read_scalar(ret_place.into())?.not_undef()?.to_machine_isize(&ecx)?;
+        let return_code = ecx.read_scalar(ret_place.into())?.check_init()?.to_machine_isize(&ecx)?;
         Ok(return_code)
     })();
 
@@ -243,7 +255,8 @@ pub fn eval_main<'tcx>(tcx: TyCtxt<'tcx>, main_id: DefId, config: MiriConfig) ->
     match res {
         Ok(return_code) => {
             if !ignore_leaks {
-                let leaks = ecx.memory.leak_report();
+                info!("Additonal static roots: {:?}", ecx.machine.static_roots);
+                let leaks = ecx.memory.leak_report(&ecx.machine.static_roots);
                 if leaks != 0 {
                     tcx.sess.err("the evaluated program leaked memory");
                     // Ignore the provided return code - let the reported error

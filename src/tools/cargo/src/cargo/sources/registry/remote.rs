@@ -22,8 +22,8 @@ use std::str;
 
 fn make_crate_prefix(name: &str) -> String {
     match name.len() {
-        1 => format!("1"),
-        2 => format!("2"),
+        1 => String::from("1"),
+        2 => String::from("2"),
         3 => format!("3/{}", &name[..1]),
         _ => format!("{}/{}", &name[0..2], &name[2..4]),
     }
@@ -49,7 +49,7 @@ impl<'cfg> RemoteRegistry<'cfg> {
             source_id,
             config,
             // TODO: we should probably make this configurable
-            index_git_ref: GitReference::Branch("master".to_string()),
+            index_git_ref: GitReference::DefaultBranch,
             tree: RefCell::new(None),
             repo: LazyCell::new(),
             head: Cell::new(None),
@@ -102,7 +102,7 @@ impl<'cfg> RemoteRegistry<'cfg> {
     fn head(&self) -> CargoResult<git2::Oid> {
         if self.head.get().is_none() {
             let repo = self.repo()?;
-            let oid = self.index_git_ref.resolve(repo)?;
+            let oid = self.index_git_ref.resolve(repo, None)?;
             self.head.set(Some(oid));
         }
         Ok(self.head.get().unwrap())

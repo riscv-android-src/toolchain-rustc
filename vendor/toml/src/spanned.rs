@@ -1,14 +1,13 @@
 use serde::{de, ser};
+use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
-#[doc(hidden)]
-pub const NAME: &'static str = "$__toml_private_Spanned";
-#[doc(hidden)]
-pub const START: &'static str = "$__toml_private_start";
-#[doc(hidden)]
-pub const END: &'static str = "$__toml_private_end";
-#[doc(hidden)]
-pub const VALUE: &'static str = "$__toml_private_value";
+pub(crate) const NAME: &str = "$__toml_private_Spanned";
+pub(crate) const START: &str = "$__toml_private_start";
+pub(crate) const END: &str = "$__toml_private_end";
+pub(crate) const VALUE: &str = "$__toml_private_value";
 
 /// A spanned value, indicating the range at which it is defined in the source.
 ///
@@ -32,7 +31,7 @@ pub const VALUE: &'static str = "$__toml_private_value";
 ///     assert_eq!(u.s.into_inner(), String::from("value"));
 /// }
 /// ```
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct Spanned<T> {
     /// The start range.
     start: usize,
@@ -69,8 +68,40 @@ impl<T> Spanned<T> {
     }
 
     /// Returns a mutable reference to the contained value.
-    pub fn get_mut(&self) -> &T {
-        &self.value
+    pub fn get_mut(&mut self) -> &mut T {
+        &mut self.value
+    }
+}
+
+impl Borrow<str> for Spanned<String> {
+    fn borrow(&self) -> &str {
+        &self.get_ref()
+    }
+}
+
+impl<T: PartialEq> PartialEq for Spanned<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.value.eq(&other.value)
+    }
+}
+
+impl<T: Eq> Eq for Spanned<T> {}
+
+impl<T: Hash> Hash for Spanned<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.value.hash(state);
+    }
+}
+
+impl<T: PartialOrd> PartialOrd for Spanned<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        self.value.partial_cmp(&other.value)
+    }
+}
+
+impl<T: Ord> Ord for Spanned<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.value.cmp(&other.value)
     }
 }
 
@@ -116,17 +147,13 @@ where
 
                 let value: T = visitor.next_value()?;
 
-                Ok(Spanned {
-                    start: start,
-                    end: end,
-                    value: value,
-                })
+                Ok(Spanned { start, end, value })
             }
         }
 
         let visitor = SpannedVisitor(::std::marker::PhantomData);
 
-        static FIELDS: [&'static str; 3] = [START, END, VALUE];
+        static FIELDS: [&str; 3] = [START, END, VALUE];
         deserializer.deserialize_struct(NAME, &FIELDS, visitor)
     }
 }

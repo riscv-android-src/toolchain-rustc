@@ -160,6 +160,7 @@ pub trait BuilderMethods<'a, 'tcx>:
     fn sext(&mut self, val: Self::Value, dest_ty: Self::Type) -> Self::Value;
     fn fptoui_sat(&mut self, val: Self::Value, dest_ty: Self::Type) -> Option<Self::Value>;
     fn fptosi_sat(&mut self, val: Self::Value, dest_ty: Self::Type) -> Option<Self::Value>;
+    fn fptosui_may_trap(&self, val: Self::Value, dest_ty: Self::Type) -> bool;
     fn fptoui(&mut self, val: Self::Value, dest_ty: Self::Type) -> Self::Value;
     fn fptosi(&mut self, val: Self::Value, dest_ty: Self::Type) -> Self::Value;
     fn uitofp(&mut self, val: Self::Value, dest_ty: Self::Type) -> Self::Value;
@@ -270,7 +271,7 @@ pub trait BuilderMethods<'a, 'tcx>:
         hash: Self::Value,
         num_counters: Self::Value,
         index: Self::Value,
-    ) -> Self::Value;
+    );
 
     fn call(
         &mut self,

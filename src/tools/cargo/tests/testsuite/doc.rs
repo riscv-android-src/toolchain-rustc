@@ -1236,7 +1236,7 @@ fn doc_private_ws() {
 }
 
 const BAD_INTRA_LINK_LIB: &str = r#"
-#![deny(intra_doc_link_resolution_failure)]
+#![deny(broken_intra_doc_links)]
 
 /// [bad_link]
 pub fn foo() {}
@@ -1287,11 +1287,7 @@ fn doc_cap_lints() {
     p.root().join("target").rm_rf();
 
     p.cargo("doc -vv")
-        .with_stderr_contains(
-            "\
-[WARNING] `[bad_link]` cannot be resolved[..]
-",
-        )
+        .with_stderr_contains("[WARNING] [..]`bad_link`[..]")
         .run();
 }
 
@@ -1334,7 +1330,7 @@ fn short_message_format() {
     let p = project().file("src/lib.rs", BAD_INTRA_LINK_LIB).build();
     p.cargo("doc --message-format=short")
         .with_status(101)
-        .with_stderr_contains("src/lib.rs:4:6: error: `[bad_link]` cannot be resolved[..]")
+        .with_stderr_contains("src/lib.rs:4:6: error: [..]`bad_link`[..]")
         .run();
 }
 
@@ -1483,10 +1479,6 @@ fn bin_private_items_deps() {
 
 #[cargo_test]
 fn crate_versions() {
-    // Testing flag that will reach stable on 1.44
-    if !is_nightly() {
-        return;
-    }
     let p = project()
         .file(
             "Cargo.toml",
@@ -1500,8 +1492,14 @@ fn crate_versions() {
         .file("src/lib.rs", "")
         .build();
 
-    p.cargo("-Z crate-versions doc")
-        .masquerade_as_nightly_cargo()
+    p.cargo("doc -v")
+        .with_stderr(
+            "\
+[DOCUMENTING] foo v1.2.4 [..]
+[RUNNING] `rustdoc --crate-type lib --crate-name foo src/lib.rs [..]--crate-version 1.2.4`
+[FINISHED] [..]
+",
+        )
         .run();
 
     let output_path = p.root().join("target/doc/foo/index.html");
@@ -1512,10 +1510,6 @@ fn crate_versions() {
 
 #[cargo_test]
 fn crate_versions_flag_is_overridden() {
-    // Testing flag that will reach stable on 1.44
-    if !is_nightly() {
-        return;
-    }
     let p = project()
         .file(
             "Cargo.toml",
@@ -1538,16 +1532,13 @@ fn crate_versions_flag_is_overridden() {
         assert!(html.contains("Version 2.0.3"));
     };
 
-    p.cargo("-Z crate-versions doc")
-        .masquerade_as_nightly_cargo()
+    p.cargo("doc")
         .env("RUSTDOCFLAGS", "--crate-version 2.0.3")
         .run();
     asserts(output_documentation());
 
     p.build_dir().rm_rf();
 
-    p.cargo("-Z crate-versions rustdoc -- --crate-version 2.0.3")
-        .masquerade_as_nightly_cargo()
-        .run();
+    p.cargo("rustdoc -- --crate-version 2.0.3").run();
     asserts(output_documentation());
 }

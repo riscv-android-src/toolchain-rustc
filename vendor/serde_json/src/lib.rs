@@ -300,7 +300,7 @@
 //! [macro]: https://docs.serde.rs/serde_json/macro.json.html
 //! [`serde-json-core`]: https://japaric.github.io/serde-json-core/serde_json_core/
 
-#![doc(html_root_url = "https://docs.rs/serde_json/1.0.56")]
+#![doc(html_root_url = "https://docs.rs/serde_json/1.0.57")]
 #![deny(clippy::all, clippy::pedantic)]
 // Ignored clippy lints
 #![allow(
@@ -309,6 +309,7 @@
     clippy::doc_markdown,
     clippy::excessive_precision,
     clippy::float_cmp,
+    clippy::match_like_matches_macro,
     clippy::match_single_binding,
     clippy::needless_doctest_main,
     clippy::transmute_ptr_to_ptr,

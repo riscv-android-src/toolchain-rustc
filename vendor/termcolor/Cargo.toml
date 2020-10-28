@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "termcolor"
-version = "1.0.4"
+version = "1.1.0"
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
 exclude = ["/.travis.yml", "/appveyor.yml", "/ci/**"]
 description = "A simple cross platform library for writing colored text to a terminal.\n"
@@ -26,5 +27,7 @@ repository = "https://github.com/BurntSushi/termcolor"
 [lib]
 name = "termcolor"
 bench = false
-[target."cfg(windows)".dependencies.wincolor]
-version = "1"
+[dev-dependencies.doc-comment]
+version = "0.3"
+[target."cfg(windows)".dependencies.winapi-util]
+version = "0.1.3"

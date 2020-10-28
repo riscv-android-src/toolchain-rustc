@@ -4,6 +4,9 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::path::PathBuf;
 
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+use rustc_hir::def_id::DefId;
+use rustc_middle::middle::privacy::AccessLevels;
 use rustc_session::config::{self, parse_crate_types_from_list, parse_externs, CrateType};
 use rustc_session::config::{
     build_codegen_options, build_debugging_options, get_cmd_lint_options, host_triple,
@@ -20,6 +23,7 @@ use crate::core::new_handler;
 use crate::externalfiles::ExternalHtml;
 use crate::html;
 use crate::html::markdown::IdMap;
+use crate::html::render::StylePath;
 use crate::html::static_files;
 use crate::opts;
 use crate::passes::{self, Condition, DefaultPassOption};
@@ -207,7 +211,7 @@ pub struct RenderOptions {
     pub sort_modules_alphabetically: bool,
     /// List of themes to extend the docs with. Original argument name is included to assist in
     /// displaying errors if it fails a theme check.
-    pub themes: Vec<PathBuf>,
+    pub themes: Vec<StylePath>,
     /// If present, CSS file that contains rules to add to the default CSS.
     pub extension_css: Option<PathBuf>,
     /// A map of crate names to the URL to use instead of querying the crate's `html_root_url`.
@@ -246,6 +250,20 @@ pub struct RenderOptions {
     pub document_private: bool,
     /// Document items that have `doc(hidden)`.
     pub document_hidden: bool,
+}
+
+/// Temporary storage for data obtained during `RustdocVisitor::clean()`.
+/// Later on moved into `CACHE_KEY`.
+#[derive(Default, Clone)]
+pub struct RenderInfo {
+    pub inlined: FxHashSet<DefId>,
+    pub external_paths: crate::core::ExternalPaths,
+    pub exact_paths: FxHashMap<DefId, Vec<String>>,
+    pub access_levels: AccessLevels<DefId>,
+    pub deref_trait_did: Option<DefId>,
+    pub deref_mut_trait_did: Option<DefId>,
+    pub owned_box_did: Option<DefId>,
+    pub output_format: Option<OutputFormat>,
 }
 
 impl Options {
@@ -410,7 +428,7 @@ impl Options {
                     ))
                     .emit();
                 }
-                themes.push(theme_file);
+                themes.push(StylePath { path: theme_file, disabled: true });
             }
         }
 
@@ -490,7 +508,7 @@ impl Options {
         let output_format = match matches.opt_str("output-format") {
             Some(s) => match OutputFormat::try_from(s.as_str()) {
                 Ok(o) => {
-                    if o.is_json() && !show_coverage {
+                    if o.is_json() && !(show_coverage || nightly_options::is_nightly_build()) {
                         diag.struct_err("json output format isn't supported for doc generation")
                             .emit();
                         return Err(1);
@@ -608,7 +626,9 @@ fn check_deprecated_options(matches: &getopts::Matches, diag: &rustc_errors::Han
 
     for flag in deprecated_flags.iter() {
         if matches.opt_present(flag) {
-            if *flag == "output-format" && matches.opt_present("show-coverage") {
+            if *flag == "output-format"
+                && (matches.opt_present("show-coverage") || nightly_options::is_nightly_build())
+            {
                 continue;
             }
             let mut err =

@@ -538,14 +538,26 @@ impl<'cfg> Workspace<'cfg> {
             None
         };
 
-        for path in members_paths {
+        for path in &members_paths {
             self.find_path_deps(&path.join("Cargo.toml"), &root_manifest_path, false)?;
         }
 
         if let Some(default) = default_members_paths {
             for path in default {
-                let manifest_path = paths::normalize_path(&path.join("Cargo.toml"));
+                let normalized_path = paths::normalize_path(&path);
+                let manifest_path = normalized_path.join("Cargo.toml");
                 if !self.members.contains(&manifest_path) {
+                    // default-members are allowed to be excluded, but they
+                    // still must be referred to by the original (unfiltered)
+                    // members list. Note that we aren't testing against the
+                    // manifest path, both because `members_paths` doesn't
+                    // include `/Cargo.toml`, and because excluded paths may not
+                    // be crates.
+                    let exclude = members_paths.contains(&normalized_path)
+                        && workspace_config.is_excluded(&normalized_path);
+                    if exclude {
+                        continue;
+                    }
                     anyhow::bail!(
                         "package `{}` is listed in workspace’s default-members \
                          but is not a member.",
@@ -873,11 +885,7 @@ impl<'cfg> Workspace<'cfg> {
                 MaybePackage::Package(ref p) => p.clone(),
                 MaybePackage::Virtual(_) => continue,
             };
-            let mut src = PathSource::new(
-                pkg.manifest_path(),
-                pkg.package_id().source_id(),
-                self.config,
-            );
+            let mut src = PathSource::new(pkg.root(), pkg.package_id().source_id(), self.config);
             src.preload_with(pkg);
             registry.add_preloaded(Box::new(src));
         }
@@ -1198,7 +1206,16 @@ impl WorkspaceRootConfig {
             if expanded_paths.is_empty() {
                 expanded_list.push(pathbuf);
             } else {
-                expanded_list.extend(expanded_paths);
+                // Some OS can create system support files anywhere.
+                // (e.g. macOS creates `.DS_Store` file if you visit a directory using Finder.)
+                // Such files can be reported as a member path unexpectedly.
+                // Check and filter out non-directory paths to prevent pushing such accidental unwanted path
+                // as a member.
+                for expanded_path in expanded_paths {
+                    if expanded_path.is_dir() {
+                        expanded_list.push(expanded_path);
+                    }
+                }
             }
         }
 

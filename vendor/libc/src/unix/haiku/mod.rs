@@ -38,6 +38,20 @@ impl ::Clone for timezone {
     }
 }
 
+impl siginfo_t {
+    pub unsafe fn si_addr(&self) -> *mut ::c_void {
+        self.si_addr
+    }
+
+    pub unsafe fn si_pid(&self) -> ::pid_t {
+        self.si_pid
+    }
+
+    pub unsafe fn si_uid(&self) -> ::uid_t {
+        self.si_uid
+    }
+}
+
 s! {
     pub struct in_addr {
         pub s_addr: ::in_addr_t,
@@ -962,6 +976,10 @@ pub const _SC_TIMER_MAX: ::c_int = 57;
 pub const _SC_TIMERS: ::c_int = 58;
 pub const _SC_CPUTIME: ::c_int = 59;
 pub const _SC_THREAD_CPUTIME: ::c_int = 60;
+pub const _SC_HOST_NAME_MAX: ::c_int = 61;
+pub const _SC_REGEXP: ::c_int = 62;
+pub const _SC_SYMLOOP_MAX: ::c_int = 63;
+pub const _SC_SHELL: ::c_int = 64;
 
 pub const PTHREAD_STACK_MIN: ::size_t = 8192;
 

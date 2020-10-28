@@ -1,3 +1,75 @@
+# 0.4.7
+
+* Rename the `unstable-weak` to `weak` feature. The support is now available on
+  1.45 (currently in beta).
+
+# 0.4.6
+
+* Adjust to `Weak::as_ptr` from std (the weak pointer support, relying on
+  unstable features).
+* Support running on miri (without some optimizations), so dependencies may run
+  miri tests.
+* Little optimization when waiting out the contention on write operations.
+
+# 0.4.5
+
+* Added `Guard::from_inner`.
+
+# 0.4.4
+
+* Top-level docs rewrite (less rambling, hopefully more readable).
+
+# 0.4.3
+
+* Fix the `Display` implementation on `Guard` to correctly delegate to the
+  underlying `Display` implementation.
+
+# 0.4.2
+
+* The Access functionality ‒ ability to pass a handle to subpart of held data to
+  somewhere with the ability to update itself.
+* Mapped cache can take `FnMut` as well as `Fn`.
+
+# 0.4.1
+
+* Mapped caches ‒ to allow giving access to parts of config only.
+
+# 0.4.0
+
+* Support for Weak pointers.
+* RefCnt implemented for Rc.
+* Breaking: Big API cleanups.
+  - Peek is gone.
+  - Terminology of getting the data unified to `load`.
+  - There's only one kind of `Guard` now.
+  - Guard derefs to the `Arc`/`Option<Arc>` or similar.
+  - `Cache` got moved to top level of the crate.
+  - Several now unneeded semi-internal traits and trait methods got removed.
+* Splitting benchmarks into a separate sub-crate.
+* Minor documentation improvements.
+
+# 0.3.11
+
+* Prevention against UB due to dropping Guards and overflowing the guard
+  counter (aborting instead, such problem is very degenerate anyway and wouldn't
+  work in the first place).
+
+# 0.3.10
+
+* Tweak slot allocation to take smaller performance hit if some leases are held.
+* Increase the number of lease slots per thread to 8.
+* Added a cache for faster access by keeping an already loaded instance around.
+
+# 0.3.9
+
+* Fix Send/Sync for Guard and Lease (they were broken in the safe but
+  uncomfortable direction ‒ not implementing them even if they could).
+
+# 0.3.8
+
+* `Lease<Option<_>>::unwrap()`, `expect()` and `into_option()` for convenient
+  use.
+
 # 0.3.7
 
 * Use the correct `#[deprecated]` syntax.

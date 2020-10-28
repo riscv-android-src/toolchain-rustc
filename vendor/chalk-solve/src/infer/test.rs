@@ -3,29 +3,7 @@
 use super::unify::UnificationResult;
 use super::*;
 use chalk_integration::interner::ChalkIr;
-
-#[test]
-fn infer() {
-    let interner = &ChalkIr;
-    let mut table: InferenceTable<ChalkIr> = InferenceTable::new();
-    let environment0 = Environment::new(interner);
-    let a = table.new_variable(U0).to_ty(interner);
-    let b = table.new_variable(U0).to_ty(interner);
-    table
-        .unify(interner, &environment0, &a, &ty!(apply (item 0) (expr b)))
-        .unwrap();
-    assert_eq!(
-        table.normalize_deep(interner, &a),
-        ty!(apply (item 0) (expr b))
-    );
-    table
-        .unify(interner, &environment0, &b, &ty!(apply (item 1)))
-        .unwrap();
-    assert_eq!(
-        table.normalize_deep(interner, &a),
-        ty!(apply (item 0) (apply (item 1)))
-    );
-}
+use chalk_integration::{arg, lifetime, ty, ty_name};
 
 #[test]
 fn universe_error() {
@@ -181,7 +159,7 @@ fn quantify_simple() {
             .quantified,
         Canonical {
             value: ty!(apply (item 0) (bound 0) (bound 1) (bound 2)),
-            binders: CanonicalVarKinds::from(
+            binders: CanonicalVarKinds::from_iter(
                 interner,
                 vec![
                     CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U2),
@@ -222,7 +200,7 @@ fn quantify_bound() {
             .quantified,
         Canonical {
             value: ty!(apply (item 0) (apply (item 1) (bound 0) (bound 1)) (bound 2) (bound 0) (bound 1)),
-            binders: CanonicalVarKinds::from(
+            binders: CanonicalVarKinds::from_iter(
                 interner,
                 vec![
                     CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U1),
@@ -266,7 +244,7 @@ fn quantify_ty_under_binder() {
             .quantified,
         Canonical {
             value: ty!(function 3 (apply (item 0) (bound 1) (bound 1 0) (bound 1 0) (lifetime (bound 1 1)))),
-            binders: CanonicalVarKinds::from(
+            binders: CanonicalVarKinds::from_iter(
                 interner,
                 vec![
                     CanonicalVarKind::new(VariableKind::Ty(TyKind::General), U0),
@@ -301,17 +279,14 @@ fn lifetime_constraint_indirect() {
     // we will replace `'!1` with a new variable `'?2` and introduce a
     // (likely unsatisfiable) constraint relating them.
     let t_c = ty!(infer 0);
-    let goals = table
-        .unify(interner, &environment0, &t_c, &t_b)
-        .unwrap()
-        .goals;
+    let UnificationResult { goals } = table.unify(interner, &environment0, &t_c, &t_b).unwrap();
     assert_eq!(goals.len(), 2);
     assert_eq!(
         format!("{:?}", goals[0]),
-        "InEnvironment { environment: Env([]), goal: AddRegionConstraint(\'!1_0: \'?2) }",
+        "InEnvironment { environment: Env([]), goal: \'?2: \'!1_0 }",
     );
     assert_eq!(
         format!("{:?}", goals[1]),
-        "InEnvironment { environment: Env([]), goal: AddRegionConstraint(\'?2: \'!1_0) }",
+        "InEnvironment { environment: Env([]), goal: \'!1_0: \'?2 }",
     );
 }

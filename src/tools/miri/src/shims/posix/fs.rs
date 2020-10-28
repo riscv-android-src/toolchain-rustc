@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::convert::{TryFrom, TryInto};
 use std::fs::{read_dir, remove_dir, remove_file, rename, DirBuilder, File, FileType, OpenOptions, ReadDir};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -9,6 +9,7 @@ use log::trace;
 
 use rustc_data_structures::fx::FxHashMap;
 use rustc_target::abi::{Align, LayoutOf, Size};
+use rustc_middle::ty;
 
 use crate::*;
 use stacked_borrows::Tag;
@@ -21,15 +22,126 @@ struct FileHandle {
     writable: bool,
 }
 
-#[derive(Debug, Default)]
-pub struct FileHandler {
-    handles: BTreeMap<i32, FileHandle>,
+trait FileDescriptor : std::fmt::Debug {
+    fn as_file_handle<'tcx>(&self) -> InterpResult<'tcx, &FileHandle>;
+
+    fn read<'tcx>(&mut self, communicate_allowed: bool, bytes: &mut [u8]) -> InterpResult<'tcx, io::Result<usize>>;
+    fn write<'tcx>(&mut self, communicate_allowed: bool, bytes: &[u8]) -> InterpResult<'tcx, io::Result<usize>>;
+    fn seek<'tcx>(&mut self, communicate_allowed: bool, offset: SeekFrom) -> InterpResult<'tcx, io::Result<u64>>;
 }
+
+impl FileDescriptor for FileHandle {
+    fn as_file_handle<'tcx>(&self) -> InterpResult<'tcx, &FileHandle> {
+        Ok(&self)
+    }
+
+    fn read<'tcx>(&mut self, communicate_allowed: bool, bytes: &mut [u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        assert!(communicate_allowed, "isolation should have prevented even opening a file");
+        Ok(self.file.read(bytes))
+    }
+
+    fn write<'tcx>(&mut self, communicate_allowed: bool, bytes: &[u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        assert!(communicate_allowed, "isolation should have prevented even opening a file");
+        Ok(self.file.write(bytes))
+    }
+
+    fn seek<'tcx>(&mut self, communicate_allowed: bool, offset: SeekFrom) -> InterpResult<'tcx, io::Result<u64>> {
+        assert!(communicate_allowed, "isolation should have prevented even opening a file");
+        Ok(self.file.seek(offset))
+    }
+}
+
+impl FileDescriptor for io::Stdin {
+    fn as_file_handle<'tcx>(&self) -> InterpResult<'tcx, &FileHandle> {
+        throw_unsup_format!("stdin cannot be used as FileHandle");
+    }
+
+    fn read<'tcx>(&mut self, communicate_allowed: bool, bytes: &mut [u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        if !communicate_allowed {
+            // We want isolation mode to be deterministic, so we have to disallow all reads, even stdin.
+            helpers::isolation_error("read")?;
+        }
+        Ok(Read::read(self, bytes))
+    }
+
+    fn write<'tcx>(&mut self, _communicate_allowed: bool, _bytes: &[u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        throw_unsup_format!("cannot write to stdin");
+    }
+
+    fn seek<'tcx>(&mut self, _communicate_allowed: bool, _offset: SeekFrom) -> InterpResult<'tcx, io::Result<u64>> {
+        throw_unsup_format!("cannot seek on stdin");
+    }
+}
+
+impl FileDescriptor for io::Stdout {
+    fn as_file_handle<'tcx>(&self) -> InterpResult<'tcx, &FileHandle> {
+        throw_unsup_format!("stdout cannot be used as FileHandle");
+    }
+
+    fn read<'tcx>(&mut self, _communicate_allowed: bool, _bytes: &mut [u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        throw_unsup_format!("cannot read from stdout");
+    }
+
+    fn write<'tcx>(&mut self, _communicate_allowed: bool, bytes: &[u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        // We allow writing to stderr even with isolation enabled.
+        let result = Write::write(self, bytes);
+        // Stdout is buffered, flush to make sure it appears on the
+        // screen.  This is the write() syscall of the interpreted
+        // program, we want it to correspond to a write() syscall on
+        // the host -- there is no good in adding extra buffering
+        // here.
+        io::stdout().flush().unwrap();
+
+        Ok(result)
+    }
+
+    fn seek<'tcx>(&mut self, _communicate_allowed: bool, _offset: SeekFrom) -> InterpResult<'tcx, io::Result<u64>> {
+        throw_unsup_format!("cannot seek on stdout");
+    }
+}
+
+impl FileDescriptor for io::Stderr {
+    fn as_file_handle<'tcx>(&self) -> InterpResult<'tcx, &FileHandle> {
+        throw_unsup_format!("stderr cannot be used as FileHandle");
+    }
+
+    fn read<'tcx>(&mut self, _communicate_allowed: bool, _bytes: &mut [u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        throw_unsup_format!("cannot read from stderr");
+    }
+
+    fn write<'tcx>(&mut self, _communicate_allowed: bool, bytes: &[u8]) -> InterpResult<'tcx, io::Result<usize>> {
+        // We allow writing to stderr even with isolation enabled.
+        // No need to flush, stderr is not buffered.
+        Ok(Write::write(self, bytes))
+    }
+
+    fn seek<'tcx>(&mut self, _communicate_allowed: bool, _offset: SeekFrom) -> InterpResult<'tcx, io::Result<u64>> {
+        throw_unsup_format!("cannot seek on stderr");
+    }
+}
+
+#[derive(Debug)]
+pub struct FileHandler {
+    handles: BTreeMap<i32, Box<dyn FileDescriptor>>,
+}
+
+impl<'tcx> Default for FileHandler {
+    fn default() -> Self {
+        let mut handles: BTreeMap<_, Box<dyn FileDescriptor>> = BTreeMap::new();
+        handles.insert(0i32, Box::new(io::stdin()));
+        handles.insert(1i32, Box::new(io::stdout()));
+        handles.insert(2i32, Box::new(io::stderr()));
+        FileHandler {
+            handles
+        }
+    }
+}
+
 
 // fd numbers 0, 1, and 2 are reserved for stdin, stdout, and stderr
 const MIN_NORMAL_FILE_FD: i32 = 3;
 
-impl FileHandler {
+impl<'tcx> FileHandler {
     fn insert_fd(&mut self, file_handle: FileHandle) -> i32 {
         self.insert_fd_with_min_fd(file_handle, 0)
     }
@@ -61,7 +173,7 @@ impl FileHandler {
             self.handles.last_key_value().map(|(fd, _)| fd.checked_add(1).unwrap()).unwrap_or(min_fd)
         });
 
-        self.handles.insert(new_fd, file_handle).unwrap_none();
+        self.handles.insert(new_fd, Box::new(file_handle)).unwrap_none();
         new_fd
     }
 }
@@ -80,7 +192,7 @@ trait EvalContextExtPrivate<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, '
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        let path_scalar = this.read_scalar(path_op)?.not_undef()?;
+        let path_scalar = this.read_scalar(path_op)?.check_init()?;
         let path = this.read_path_from_c_str(path_scalar)?.into_owned();
 
         let metadata = match FileMetadata::from_path(this, &path, follow_symlink)? {
@@ -333,7 +445,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             throw_unsup_format!("unsupported flags {:#x}", flag & !mirror);
         }
 
-        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
         let fd = options.open(&path).map(|file| {
             let fh = &mut this.machine.file_handler;
@@ -382,7 +494,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
             let fh = &mut this.machine.file_handler;
             let (file_result, writable) = match fh.handles.get(&fd) {
-                Some(FileHandle { file, writable }) => (file.try_clone(), *writable),
+                Some(file_descriptor) => {
+                    // FIXME: Support "dup" for all FDs(stdin, etc)
+                    let FileHandle { file, writable } = file_descriptor.as_file_handle()?;
+                    (file.try_clone(), *writable)
+                },
                 None => return this.handle_not_found(),
             };
             let fd_result = file_result.map(|duplicated| {
@@ -393,8 +509,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             && cmd == this.eval_libc_i32("F_FULLFSYNC")?
         {
             let &[_, _] = check_arg_count(args)?;
-            if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.get(&fd) {
-                let io_result = maybe_sync_file(file, *writable, File::sync_all);
+            if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
+                // FIXME: Support fullfsync for all FDs
+                let FileHandle { file, writable } = file_descriptor.as_file_handle()?;
+                let io_result = maybe_sync_file(&file, *writable, File::sync_all);
                 this.try_unwrap_io_result(io_result)
             } else {
                 this.handle_not_found()
@@ -411,9 +529,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
 
-        if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.remove(&fd) {
+        if let Some(file_descriptor) = this.machine.file_handler.handles.remove(&fd) {
+            // FIXME: Support `close` for all FDs(stdin, etc)
+            let FileHandle { file, writable } = file_descriptor.as_file_handle()?;
             // We sync the file if it was opened in a mode different than read-only.
-            if writable {
+            if *writable {
                 // `File::sync_all` does the checks that are done when closing a file. We do this to
                 // to handle possible errors correctly.
                 let result = this.try_unwrap_io_result(file.sync_all().map(|_| 0i32));
@@ -443,8 +563,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i64> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("read")?;
-        assert!(fd >= 3);
+        // Isolation check is done via `FileDescriptor` trait.
 
         trace!("Reading from FD {}, size {}", fd, count);
 
@@ -459,18 +578,16 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // host's and target's `isize`. This saves us from having to handle overflows later.
         let count = count.min(this.machine_isize_max() as u64).min(isize::MAX as u64);
 
-        if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
-            trace!("read: FD mapped to {:?}", file);
-            // This can never fail because `count` was capped to be smaller than
-            // `isize::MAX`.
-            let count = isize::try_from(count).unwrap();
+        if let Some(file_descriptor) = this.machine.file_handler.handles.get_mut(&fd) {
+            trace!("read: FD mapped to {:?}", file_descriptor);
             // We want to read at most `count` bytes. We are sure that `count` is not negative
             // because it was a target's `usize`. Also we are sure that its smaller than
             // `usize::MAX` because it is a host's `isize`.
             let mut bytes = vec![0; count as usize];
-            let result = file
-                .read(&mut bytes)
-                // `File::read` never returns a value larger than `count`, so this cannot fail.
+            // `File::read` never returns a value larger than `count`,
+            // so this cannot fail.
+            let result = file_descriptor
+                .read(this.machine.communicate, &mut bytes)?
                 .map(|c| i64::try_from(c).unwrap());
 
             match result {
@@ -498,8 +615,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i64> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("write")?;
-        assert!(fd >= 3);
+        // Isolation check is done via `FileDescriptor` trait.
 
         // Check that the *entire* buffer is actually valid memory.
         this.memory.check_ptr_access(
@@ -512,9 +628,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         // host's and target's `isize`. This saves us from having to handle overflows later.
         let count = count.min(this.machine_isize_max() as u64).min(isize::MAX as u64);
 
-        if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
+        if let Some(file_descriptor) = this.machine.file_handler.handles.get_mut(&fd) {
             let bytes = this.memory.read_bytes(buf, Size::from_bytes(count))?;
-            let result = file.write(&bytes).map(|c| i64::try_from(c).unwrap());
+            let result = file_descriptor
+                .write(this.machine.communicate, &bytes)?
+                .map(|c| i64::try_from(c).unwrap());
             this.try_unwrap_io_result(result)
         } else {
             this.handle_not_found()
@@ -529,7 +647,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i64> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("lseek64")?;
+        // Isolation check is done via `FileDescriptor` trait.
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         let offset = this.read_scalar(offset_op)?.to_i64()?;
@@ -547,8 +665,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             return Ok(-1);
         };
 
-        if let Some(FileHandle { file, writable: _ }) = this.machine.file_handler.handles.get_mut(&fd) {
-            let result = file.seek(seek_from).map(|offset| i64::try_from(offset).unwrap());
+        if let Some(file_descriptor) = this.machine.file_handler.handles.get_mut(&fd) {
+            let result = file_descriptor
+                .seek(this.machine.communicate, seek_from)?
+                .map(|offset| i64::try_from(offset).unwrap());
             this.try_unwrap_io_result(result)
         } else {
             this.handle_not_found()
@@ -560,7 +680,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("unlink")?;
 
-        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
         let result = remove_file(path).map(|_| 0);
         this.try_unwrap_io_result(result)
@@ -590,8 +710,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("symlink")?;
 
-        let target = this.read_path_from_c_str(this.read_scalar(target_op)?.not_undef()?)?;
-        let linkpath = this.read_path_from_c_str(this.read_scalar(linkpath_op)?.not_undef()?)?;
+        let target = this.read_path_from_c_str(this.read_scalar(target_op)?.check_init()?)?;
+        let linkpath = this.read_path_from_c_str(this.read_scalar(linkpath_op)?.check_init()?)?;
 
         let result = create_link(&target, &linkpath).map(|_| 0);
         this.try_unwrap_io_result(result)
@@ -653,8 +773,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.assert_target_os("linux", "statx");
         this.check_no_isolation("statx")?;
 
-        let statxbuf_scalar = this.read_scalar(statxbuf_op)?.not_undef()?;
-        let pathname_scalar = this.read_scalar(pathname_op)?.not_undef()?;
+        let statxbuf_scalar = this.read_scalar(statxbuf_op)?.check_init()?;
+        let pathname_scalar = this.read_scalar(pathname_op)?.check_init()?;
 
         // If the statxbuf or pathname pointers are null, the function fails with `EFAULT`.
         if this.is_null(statxbuf_scalar)? || this.is_null(pathname_scalar)? {
@@ -673,7 +793,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             // function and `resolve_path` is returning the latter.
             let statx_ty = this
                 .resolve_path(&["libc", "unix", "linux_like", "linux", "gnu", "statx"])
-                .monomorphic_ty(*this.tcx);
+                .ty(*this.tcx, ty::ParamEnv::reveal_all());
             let statxbuf_ty = this.tcx.mk_mut_ptr(statx_ty);
             let statxbuf_layout = this.layout_of(statxbuf_ty)?;
             let statxbuf_imm = ImmTy::from_scalar(statxbuf_scalar, statxbuf_layout);
@@ -812,8 +932,8 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("rename")?;
 
-        let oldpath_scalar = this.read_scalar(oldpath_op)?.not_undef()?;
-        let newpath_scalar = this.read_scalar(newpath_op)?.not_undef()?;
+        let oldpath_scalar = this.read_scalar(oldpath_op)?.check_init()?;
+        let newpath_scalar = this.read_scalar(newpath_op)?.check_init()?;
 
         if this.is_null(oldpath_scalar)? || this.is_null(newpath_scalar)? {
             let efault = this.eval_libc("EFAULT")?;
@@ -840,12 +960,12 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         #[cfg_attr(not(unix), allow(unused_variables))]
         let mode = if this.tcx.sess.target.target.target_os == "macos" {
-            u32::from(this.read_scalar(mode_op)?.not_undef()?.to_u16()?)
+            u32::from(this.read_scalar(mode_op)?.check_init()?.to_u16()?)
         } else {
             this.read_scalar(mode_op)?.to_u32()?
         };
 
-        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
         #[cfg_attr(not(unix), allow(unused_mut))]
         let mut builder = DirBuilder::new();
@@ -871,7 +991,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("rmdir")?;
 
-        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.not_undef()?)?;
+        let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
         let result = remove_dir(path).map(|_| 0i32);
 
@@ -883,7 +1003,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         this.check_no_isolation("opendir")?;
 
-        let name = this.read_path_from_c_str(this.read_scalar(name_op)?.not_undef()?)?;
+        let name = this.read_path_from_c_str(this.read_scalar(name_op)?.check_init()?)?;
 
         let result = read_dir(name);
 
@@ -1105,7 +1225,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         let length = this.read_scalar(length_op)?.to_i64()?;
-        if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.get_mut(&fd) {
+        if let Some(file_descriptor) = this.machine.file_handler.handles.get_mut(&fd) {
+            // FIXME: Support ftruncate64 for all FDs
+            let FileHandle { file, writable } = file_descriptor.as_file_handle()?;
             if *writable {
                 if let Ok(length) = length.try_into() {
                     let result = file.set_len(length);
@@ -1137,8 +1259,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.check_no_isolation("fsync")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
-        if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.get(&fd) {
-            let io_result = maybe_sync_file(file, *writable, File::sync_all);
+        if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
+            // FIXME: Support fsync for all FDs
+            let FileHandle { file, writable } = file_descriptor.as_file_handle()?;
+            let io_result = maybe_sync_file(&file, *writable, File::sync_all);
             this.try_unwrap_io_result(io_result)
         } else {
             this.handle_not_found()
@@ -1151,8 +1275,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.check_no_isolation("fdatasync")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
-        if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.get(&fd) {
-            let io_result = maybe_sync_file(file, *writable, File::sync_data);
+        if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
+            // FIXME: Support fdatasync for all FDs
+            let FileHandle { file, writable } = file_descriptor.as_file_handle()?;
+            let io_result = maybe_sync_file(&file, *writable, File::sync_data);
             this.try_unwrap_io_result(io_result)
         } else {
             this.handle_not_found()
@@ -1189,8 +1315,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             return Ok(-1);
         }
 
-        if let Some(FileHandle { file, writable }) = this.machine.file_handler.handles.get(&fd) {
-            let io_result = maybe_sync_file(file, *writable, File::sync_data);
+        if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
+            // FIXME: Support sync_data_range for all FDs
+            let FileHandle { file, writable } = file_descriptor.as_file_handle()?;
+            let io_result = maybe_sync_file(&file, *writable, File::sync_data);
             this.try_unwrap_io_result(io_result)
         } else {
             this.handle_not_found()
@@ -1241,7 +1369,7 @@ impl FileMetadata {
     ) -> InterpResult<'tcx, Option<FileMetadata>> {
         let option = ecx.machine.file_handler.handles.get(&fd);
         let file = match option {
-            Some(FileHandle { file, writable: _ }) => file,
+            Some(file_descriptor) => &file_descriptor.as_file_handle()?.file,
             None => return ecx.handle_not_found().map(|_: i32| None),
         };
         let metadata = file.metadata();

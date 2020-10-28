@@ -1,3 +1,5 @@
+#![allow(clippy::inconsistent_digit_grouping)]
+
 extern crate autocfg;
 extern crate cc;
 #[cfg(feature = "vendored")]
@@ -13,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 mod cfgs;
 
-#[cfg_attr(feature = "vendored", path = "find_vendored.rs")]
-#[cfg_attr(not(feature = "vendored"), path = "find_normal.rs")]
-mod find;
+mod find_normal;
+#[cfg(feature = "vendored")]
+mod find_vendored;
 
 enum Version {
     Openssl11x,
@@ -41,12 +43,24 @@ fn env(name: &str) -> Option<OsString> {
     env_inner(&prefixed).or_else(|| env_inner(name))
 }
 
+fn find_openssl(target: &str) -> (PathBuf, PathBuf) {
+    #[cfg(feature = "vendored")]
+    {
+        // vendor if the feature is present, unless
+        // OPENSSL_NO_VENDOR exists and isn't `0`
+        if env("OPENSSL_NO_VENDOR").map_or(true, |s| s == "0") {
+            return find_vendored::get_openssl(target);
+        }
+    }
+    find_normal::get_openssl(target)
+}
+
 fn main() {
     check_rustc_versions();
 
     let target = env::var("TARGET").unwrap();
 
-    let (lib_dir, include_dir) = find::get_openssl(&target);
+    let (lib_dir, include_dir) = find_openssl(&target);
 
     if !Path::new(&lib_dir).exists() {
         panic!(
@@ -67,14 +81,14 @@ fn main() {
     );
     println!("cargo:include={}", include_dir.to_string_lossy());
 
-    let version = validate_headers(&[include_dir.clone().into()]);
+    let version = validate_headers(&[include_dir]);
 
     let libs_env = env("OPENSSL_LIBS");
     let libs = match libs_env.as_ref().and_then(|s| s.to_str()) {
-        Some(ref v) => v.split(":").collect(),
+        Some(ref v) => v.split(':').collect(),
         None => match version {
             Version::Openssl10x if target.contains("windows") => vec!["ssleay32", "libeay32"],
-            Version::Openssl11x if target.contains("windows") => vec!["libssl", "libcrypto"],
+            Version::Openssl11x if target.contains("windows-msvc") => vec!["libssl", "libcrypto"],
             _ => vec!["ssl", "crypto"],
         },
     };
@@ -204,6 +218,9 @@ See rust-openssl README for more information:
             (3, 0, 0) => ('3', '0', '0'),
             (3, 0, 1) => ('3', '0', '1'),
             (3, 0, _) => ('3', '0', 'x'),
+            (3, 1, 0) => ('3', '1', '0'),
+            (3, 1, _) => ('3', '1', 'x'),
+            (3, 2, 0) => ('3', '2', '0'),
             _ => version_error(),
         };
 
@@ -244,7 +261,7 @@ fn version_error() -> ! {
         "
 
 This crate is only compatible with OpenSSL 1.0.1 through 1.1.1, or LibreSSL 2.5
-through 3.0.x, but a different version of OpenSSL was found. The build is now aborting
+through 3.2.0, but a different version of OpenSSL was found. The build is now aborting
 due to this version mismatch.
 
 "

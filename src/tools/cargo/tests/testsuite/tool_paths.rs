@@ -1,7 +1,6 @@
 //! Tests for configuration values that point to programs.
 
-use cargo_test_support::rustc_host;
-use cargo_test_support::{basic_lib_manifest, project};
+use cargo_test_support::{basic_lib_manifest, no_such_file_err_msg, project, rustc_host};
 
 #[cargo_test]
 fn pathless_tools() {
@@ -274,7 +273,47 @@ fn custom_runner_env() {
     p.cargo("run")
         .env(&key, "nonexistent-runner --foo")
         .with_status(101)
-        .with_stderr_contains("[RUNNING] `nonexistent-runner --foo target/debug/foo[EXE]`")
+        .with_stderr(&format!(
+            "\
+[COMPILING] foo [..]
+[FINISHED] dev [..]
+[RUNNING] `nonexistent-runner --foo target/debug/foo[EXE]`
+[ERROR] could not execute process `nonexistent-runner --foo target/debug/foo[EXE]` (never executed)
+
+Caused by:
+  {}
+",
+            no_such_file_err_msg()
+        ))
+        .run();
+}
+
+#[cargo_test]
+fn custom_runner_env_overrides_config() {
+    let target = rustc_host();
+    let p = project()
+        .file("src/main.rs", "fn main() {}")
+        .file(
+            ".cargo/config.toml",
+            &format!(
+                r#"
+        [target.{}]
+        runner = "should-not-run -r"
+    "#,
+                target
+            ),
+        )
+        .build();
+
+    let key = format!(
+        "CARGO_TARGET_{}_RUNNER",
+        target.to_uppercase().replace('-', "_")
+    );
+
+    p.cargo("run")
+        .env(&key, "should-run --foo")
+        .with_status(101)
+        .with_stderr_contains("[RUNNING] `should-run --foo target/debug/foo[EXE]`")
         .run();
 }
 

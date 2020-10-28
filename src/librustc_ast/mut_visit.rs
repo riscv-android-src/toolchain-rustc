@@ -363,9 +363,10 @@ pub fn visit_bounds<T: MutVisitor>(bounds: &mut GenericBounds, vis: &mut T) {
 }
 
 // No `noop_` prefix because there isn't a corresponding method in `MutVisitor`.
-pub fn visit_fn_sig<T: MutVisitor>(FnSig { header, decl }: &mut FnSig, vis: &mut T) {
+pub fn visit_fn_sig<T: MutVisitor>(FnSig { header, decl, span }: &mut FnSig, vis: &mut T) {
     vis.visit_fn_header(header);
     vis.visit_fn_decl(decl);
+    vis.visit_span(span);
 }
 
 // No `noop_` prefix because there isn't a corresponding method in `MutVisitor`.
@@ -582,7 +583,7 @@ pub fn noop_visit_attribute<T: MutVisitor>(attr: &mut Attribute, vis: &mut T) {
             vis.visit_path(path);
             visit_mac_args(args, vis);
         }
-        AttrKind::DocComment(_) => {}
+        AttrKind::DocComment(..) => {}
     }
     vis.visit_span(span);
 }
@@ -1053,7 +1054,7 @@ pub fn noop_flat_map_foreign_item<T: MutVisitor>(
 }
 
 pub fn noop_visit_pat<T: MutVisitor>(pat: &mut P<Pat>, vis: &mut T) {
-    let Pat { id, kind, span } = pat.deref_mut();
+    let Pat { id, kind, span, tokens: _ } = pat.deref_mut();
     vis.visit_id(id);
     match kind {
         PatKind::Wild | PatKind::Rest => {}

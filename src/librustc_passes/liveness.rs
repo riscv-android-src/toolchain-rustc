@@ -84,7 +84,7 @@
 use self::LiveNodeKind::*;
 use self::VarKind::*;
 
-use rustc_ast::ast::InlineAsmOptions;
+use rustc_ast::InlineAsmOptions;
 use rustc_data_structures::fx::FxIndexMap;
 use rustc_errors::Applicability;
 use rustc_hir as hir;
@@ -355,7 +355,7 @@ fn visit_fn<'tcx>(
     if let FnKind::Method(..) = fk {
         let parent = ir.tcx.hir().get_parent_item(id);
         if let Some(Node::Item(i)) = ir.tcx.hir().find(parent) {
-            if i.attrs.iter().any(|a| a.check_name(sym::automatically_derived)) {
+            if i.attrs.iter().any(|a| ir.tcx.sess.check_name(a, sym::automatically_derived)) {
                 return;
             }
         }
@@ -526,7 +526,8 @@ fn visit_expr<'tcx>(ir: &mut IrMaps<'tcx>, expr: &'tcx Expr<'tcx>) {
         | hir::ExprKind::Yield(..)
         | hir::ExprKind::Type(..)
         | hir::ExprKind::Err
-        | hir::ExprKind::Path(hir::QPath::TypeRelative(..)) => {
+        | hir::ExprKind::Path(hir::QPath::TypeRelative(..))
+        | hir::ExprKind::Path(hir::QPath::LangItem(..)) => {
             intravisit::walk_expr(ir, expr);
         }
     }
@@ -650,7 +651,7 @@ const ACC_USE: u32 = 4;
 
 struct Liveness<'a, 'tcx> {
     ir: &'a mut IrMaps<'tcx>,
-    tables: &'a ty::TypeckTables<'tcx>,
+    typeck_results: &'a ty::TypeckResults<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
     s: Specials,
     successors: Vec<LiveNode>,
@@ -670,7 +671,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             exit_ln: ir.add_live_node(ExitNode),
         };
 
-        let tables = ir.tcx.typeck_tables_of(def_id);
+        let typeck_results = ir.tcx.typeck(def_id);
         let param_env = ir.tcx.param_env(def_id);
 
         let num_live_nodes = ir.num_live_nodes;
@@ -678,7 +679,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
 
         Liveness {
             ir,
-            tables,
+            typeck_results,
             param_env,
             s: specials,
             successors: vec![invalid_node(); num_live_nodes],
@@ -939,7 +940,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                     var_path: ty::UpvarPath { hir_id: var_hir_id },
                     closure_expr_id: self.ir.body_owner,
                 };
-                match self.tables.upvar_capture(upvar_id) {
+                match self.typeck_results.upvar_capture(upvar_id) {
                     ty::UpvarCapture::ByRef(_) => {
                         let var = self.variable(var_hir_id, upvar.span);
                         self.acc(self.s.exit_ln, var, ACC_READ | ACC_USE);
@@ -956,7 +957,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
             FnKind::Closure(..) => {}
         }
 
-        let ty = self.tables.node_type(id);
+        let ty = self.typeck_results.node_type(id);
         match ty.kind {
             ty::Closure(_def_id, substs) => match substs.as_closure().kind() {
                 ty::ClosureKind::Fn => {}
@@ -1151,7 +1152,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
 
             hir::ExprKind::AssignOp(_, ref l, ref r) => {
                 // an overloaded assign op is like a method call
-                if self.tables.is_method_call(expr) {
+                if self.typeck_results.is_method_call(expr) {
                     let succ = self.propagate_through_expr(&l, succ);
                     self.propagate_through_expr(&r, succ)
                 } else {
@@ -1178,7 +1179,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 let m = self.ir.tcx.parent_module(expr.hir_id).to_def_id();
                 let succ = if self.ir.tcx.is_ty_uninhabited_from(
                     m,
-                    self.tables.expr_ty(expr),
+                    self.typeck_results.expr_ty(expr),
                     self.param_env,
                 ) {
                     self.s.exit_ln
@@ -1193,7 +1194,7 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
                 let m = self.ir.tcx.parent_module(expr.hir_id).to_def_id();
                 let succ = if self.ir.tcx.is_ty_uninhabited_from(
                     m,
-                    self.tables.expr_ty(expr),
+                    self.typeck_results.expr_ty(expr),
                     self.param_env,
                 ) {
                     self.s.exit_ln
@@ -1310,7 +1311,8 @@ impl<'a, 'tcx> Liveness<'a, 'tcx> {
 
             hir::ExprKind::Lit(..)
             | hir::ExprKind::Err
-            | hir::ExprKind::Path(hir::QPath::TypeRelative(..)) => succ,
+            | hir::ExprKind::Path(hir::QPath::TypeRelative(..))
+            | hir::ExprKind::Path(hir::QPath::LangItem(..)) => succ,
 
             // Note that labels have been resolved, so we don't need to look
             // at the label ident
@@ -1497,7 +1499,7 @@ fn check_expr<'tcx>(this: &mut Liveness<'_, 'tcx>, expr: &'tcx Expr<'tcx>) {
         }
 
         hir::ExprKind::AssignOp(_, ref l, _) => {
-            if !this.tables.is_method_call(expr) {
+            if !this.typeck_results.is_method_call(expr) {
                 this.check_place(&l);
             }
         }
@@ -1607,7 +1609,7 @@ impl<'tcx> Liveness<'_, 'tcx> {
                 var_path: ty::UpvarPath { hir_id: var_hir_id },
                 closure_expr_id: self.ir.body_owner,
             };
-            match self.tables.upvar_capture(upvar_id) {
+            match self.typeck_results.upvar_capture(upvar_id) {
                 ty::UpvarCapture::ByValue => {}
                 ty::UpvarCapture::ByRef(..) => continue,
             };

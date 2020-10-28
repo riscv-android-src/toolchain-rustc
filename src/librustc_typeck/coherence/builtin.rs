@@ -4,9 +4,7 @@
 use rustc_errors::struct_span_err;
 use rustc_hir as hir;
 use rustc_hir::def_id::{DefId, LocalDefId};
-use rustc_hir::lang_items::{
-    CoerceUnsizedTraitLangItem, DispatchFromDynTraitLangItem, UnsizeTraitLangItem,
-};
+use rustc_hir::lang_items::LangItem;
 use rustc_hir::ItemKind;
 use rustc_infer::infer;
 use rustc_infer::infer::outlives::env::OutlivesEnvironment;
@@ -54,7 +52,7 @@ fn visit_implementation_of_drop(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
         return;
     }
 
-    let impl_hir_id = tcx.hir().as_local_hir_id(impl_did);
+    let impl_hir_id = tcx.hir().local_def_id_to_hir_id(impl_did);
     let sp = match tcx.hir().expect_item(impl_hir_id).kind {
         ItemKind::Impl { self_ty, .. } => self_ty.span,
         _ => bug!("expected Drop impl item"),
@@ -73,7 +71,7 @@ fn visit_implementation_of_drop(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
 fn visit_implementation_of_copy(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
     debug!("visit_implementation_of_copy: impl_did={:?}", impl_did);
 
-    let impl_hir_id = tcx.hir().as_local_hir_id(impl_did);
+    let impl_hir_id = tcx.hir().local_def_id_to_hir_id(impl_did);
 
     let self_type = tcx.type_of(impl_did);
     debug!("visit_implementation_of_copy: self_type={:?} (bound)", self_type);
@@ -146,10 +144,10 @@ fn visit_implementation_of_coerce_unsized(tcx: TyCtxt<'tcx>, impl_did: LocalDefI
 fn visit_implementation_of_dispatch_from_dyn(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
     debug!("visit_implementation_of_dispatch_from_dyn: impl_did={:?}", impl_did);
 
-    let impl_hir_id = tcx.hir().as_local_hir_id(impl_did);
+    let impl_hir_id = tcx.hir().local_def_id_to_hir_id(impl_did);
     let span = tcx.hir().span(impl_hir_id);
 
-    let dispatch_from_dyn_trait = tcx.require_lang_item(DispatchFromDynTraitLangItem, Some(span));
+    let dispatch_from_dyn_trait = tcx.require_lang_item(LangItem::DispatchFromDyn, Some(span));
 
     let source = tcx.type_of(impl_did);
     assert!(!source.has_escaping_bound_vars());
@@ -315,12 +313,12 @@ pub fn coerce_unsized_info(tcx: TyCtxt<'tcx>, impl_did: DefId) -> CoerceUnsizedI
     debug!("compute_coerce_unsized_info(impl_did={:?})", impl_did);
 
     // this provider should only get invoked for local def-ids
-    let impl_hir_id = tcx.hir().as_local_hir_id(impl_did.expect_local());
+    let impl_hir_id = tcx.hir().local_def_id_to_hir_id(impl_did.expect_local());
     let span = tcx.hir().span(impl_hir_id);
 
-    let coerce_unsized_trait = tcx.require_lang_item(CoerceUnsizedTraitLangItem, Some(span));
+    let coerce_unsized_trait = tcx.require_lang_item(LangItem::CoerceUnsized, Some(span));
 
-    let unsize_trait = tcx.lang_items().require(UnsizeTraitLangItem).unwrap_or_else(|err| {
+    let unsize_trait = tcx.lang_items().require(LangItem::Unsize).unwrap_or_else(|err| {
         tcx.sess.fatal(&format!("`CoerceUnsized` implementation {}", err));
     });
 

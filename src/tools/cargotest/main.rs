@@ -11,7 +11,7 @@ struct Test {
     packages: &'static [&'static str],
 }
 
-const TEST_REPOS: &'static [Test] = &[
+const TEST_REPOS: &[Test] = &[
     Test {
         name: "iron",
         repo: "https://github.com/iron/iron",
@@ -60,9 +60,9 @@ const TEST_REPOS: &'static [Test] = &[
 
 fn main() {
     let args = env::args().collect::<Vec<_>>();
-    let ref cargo = args[1];
+    let cargo = &args[1];
     let out_dir = Path::new(&args[2]);
-    let ref cargo = Path::new(cargo);
+    let cargo = &Path::new(cargo);
 
     for test in TEST_REPOS.iter().rev() {
         test_repo(cargo, out_dir, test);
@@ -84,7 +84,7 @@ fn clone_repo(test: &Test, out_dir: &Path) -> PathBuf {
     let out_dir = out_dir.join(test.name);
 
     if !out_dir.join(".git").is_dir() {
-        let status = Command::new("git").arg("init").arg(&out_dir).status().expect("");
+        let status = Command::new("git").arg("init").arg(&out_dir).status().unwrap();
         assert!(status.success());
     }
 
@@ -99,7 +99,7 @@ fn clone_repo(test: &Test, out_dir: &Path) -> PathBuf {
                 .arg(&format!("--depth={}", depth))
                 .current_dir(&out_dir)
                 .status()
-                .expect("");
+                .unwrap();
             assert!(status.success());
         }
 
@@ -109,7 +109,7 @@ fn clone_repo(test: &Test, out_dir: &Path) -> PathBuf {
             .arg("--hard")
             .current_dir(&out_dir)
             .status()
-            .expect("");
+            .unwrap();
 
         if status.success() {
             found = true;
@@ -140,7 +140,7 @@ fn run_cargo_test(cargo_path: &Path, crate_path: &Path, packages: &[&str]) -> bo
         .env("RUSTFLAGS", "--cap-lints warn")
         .current_dir(crate_path)
         .status()
-        .expect("");
+        .unwrap();
 
     status.success()
 }

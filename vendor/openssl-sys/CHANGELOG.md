@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+## [v0.9.58] - 2020-06-05
+
+### Added
+
+* Added `SSL_set_mtu`.
+* Added support for LibreSSL 3.2.0.
+* Added `PEM_read_bio_EC_PUBKEY`, `PEM_write_bio_EC_PUBKEY`, `d2i_EC_PUBKEY`, and `i2d_EC_PUBKEY`.
+* Added `EVP_PKEY_encrypt_init`, `EVP_PKEY_encrypt`, `EVP_PKEY_decrypt_init`, `EVP_PKEY_decrypt`,
+    `EVP_PKEY_get_raw_public_key`, `EVP_PKEY_new_raw_public_key`, `EVP_PKEY_get_raw_private_key`,
+    and `EVP_PKEY_new_raw_private_key`.
+* Added `OBJ_sn2nid`.
+
+## [v0.9.57] - 2020-05-24
+
+### Added
+
+* Added support for LibreSSL 3.1.x.
+
+## [v0.9.56] - 2020-05-07
+
+### Fixed
+
+* Fixed vendored builds on windows-gnu targets.
+
+### Added
+
+* Added support for LibreSSL 3.0.0.
+
+## [v0.9.55] - 2020-04-07
+
+### Fixed
+
+* Fixed windows-msvc library names when using OpenSSL from vcpkg.
+
+### Added
+
+* If the `OPENSSL_NO_VENDOR` environment variable is set, vendoring will not be used even if enabled.
+* Added `SSL_CTX_get_verify_mode` and `SSL_get_verify_mode`.
+* Added `SSL_is_init_finished`.
+* Added `SSL_CTX_set_cert_store`.
+* Added `TLS_server_method` and `TLS_client_method`.
+* Added `X509_STORE_get0_objects`.
+* Added `X509_OBJECT_free`, `X509_OBJECT_get_type`, and `X509_OBJECT_get0_X509`.
+
 ## [v0.9.54] - 2020-01-29
 
 ### Added
@@ -101,7 +145,11 @@
 * Added `X509_verify` and `X509_REQ_verify`.
 * Added `EVP_MD_type` and `EVP_GROUP_get_curve_name`.
 
-[Unreleased]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.53...master
+[Unreleased]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.57...master
+[v0.9.57]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.56...openssl-sys-v0.9.57
+[v0.9.56]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.55...openssl-sys-v0.9.56
+[v0.9.55]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.54...openssl-sys-v0.9.55
+[v0.9.54]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.53...openssl-sys-v0.9.54
 [v0.9.53]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.52...openssl-sys-v0.9.53
 [v0.9.52]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.51...openssl-sys-v0.9.52
 [v0.9.51]: https://github.com/sfackler/rust-openssl/compare/openssl-sys-v0.9.50...openssl-sys-v0.9.51

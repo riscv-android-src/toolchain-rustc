@@ -1,5 +1,6 @@
 use serde_json::value::Value as Json;
 
+use super::block_util::create_block;
 use crate::block::{BlockContext, BlockParams};
 use crate::context::Context;
 use crate::error::RenderError;
@@ -10,6 +11,55 @@ use crate::registry::Registry;
 use crate::render::{Helper, RenderContext, Renderable};
 use crate::util::copy_on_push_vec;
 
+fn update_block_context<'reg>(
+    block: &mut BlockContext<'reg>,
+    base_path: Option<&Vec<String>>,
+    relative_path: String,
+    is_first: bool,
+    value: &Json,
+) {
+    if let Some(ref p) = base_path {
+        if is_first {
+            *block.base_path_mut() = copy_on_push_vec(p, relative_path);
+        } else if let Some(ptr) = block.base_path_mut().last_mut() {
+            *ptr = relative_path;
+        }
+    } else {
+        block.set_base_value(value.clone());
+    }
+}
+
+fn set_block_param<'reg: 'rc, 'rc>(
+    block: &mut BlockContext<'reg>,
+    h: &Helper<'reg, 'rc>,
+    base_path: Option<&Vec<String>>,
+    k: &Json,
+    v: &Json,
+) -> Result<(), RenderError> {
+    if let Some(bp_val) = h.block_param() {
+        let mut params = BlockParams::new();
+        if base_path.is_some() {
+            params.add_path(bp_val, Vec::with_capacity(0))?;
+        } else {
+            params.add_value(bp_val, v.clone())?;
+        }
+
+        block.set_block_params(params);
+    } else if let Some((bp_val, bp_key)) = h.block_param_pair() {
+        let mut params = BlockParams::new();
+        if base_path.is_some() {
+            params.add_path(bp_val, Vec::with_capacity(0))?;
+        } else {
+            params.add_value(bp_val, v.clone())?;
+        }
+        params.add_value(bp_key, k.clone())?;
+
+        block.set_block_params(params);
+    }
+
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub struct EachHelper;
 
@@ -17,7 +67,7 @@ impl HelperDef for EachHelper {
     fn call<'reg: 'rc, 'rc>(
         &self,
         h: &Helper<'reg, 'rc>,
-        r: &'reg Registry,
+        r: &'reg Registry<'reg>,
         ctx: &'rc Context,
         rc: &mut RenderContext<'reg, 'rc>,
         out: &mut dyn Output,
@@ -29,116 +79,74 @@ impl HelperDef for EachHelper {
         let template = h.template();
 
         match template {
-            Some(t) => {
-                let mut block_context = BlockContext::new();
+            Some(t) => match (value.value().is_truthy(false), value.value()) {
+                (true, &Json::Array(ref list)) => {
+                    let block_context = create_block(&value)?;
+                    rc.push_block(block_context);
 
-                if let Some(path) = value.context_path() {
-                    *block_context.base_path_mut() = path.to_vec();
-                    // TODO: disable base value support for now.
-                    // block_context.set_base_value(value.value());
+                    let len = list.len();
+
+                    let array_path = value.context_path();
+
+                    for (i, v) in list.iter().enumerate().take(len) {
+                        if let Some(ref mut block) = rc.block_mut() {
+                            let is_first = i == 0usize;
+                            let is_last = i == len - 1;
+
+                            let index = to_json(i);
+                            block.set_local_var("@first".to_string(), to_json(is_first));
+                            block.set_local_var("@last".to_string(), to_json(is_last));
+                            block.set_local_var("@index".to_string(), index.clone());
+
+                            update_block_context(block, array_path, i.to_string(), is_first, &v);
+                            set_block_param(block, h, array_path, &index, &v)?;
+                        }
+
+                        t.render(r, ctx, rc, out)?;
+                    }
+
+                    rc.pop_block();
+                    Ok(())
                 }
+                (true, &Json::Object(ref obj)) => {
+                    let block_context = create_block(&value)?;
+                    rc.push_block(block_context);
 
-                rc.push_block(block_context);
+                    let mut is_first = true;
+                    let obj_path = value.context_path();
 
-                let rendered = match (value.value().is_truthy(false), value.value()) {
-                    (true, &Json::Array(ref list)) => {
-                        let len = list.len();
+                    for (k, v) in obj.iter() {
+                        if let Some(ref mut block) = rc.block_mut() {
+                            let key = to_json(k);
 
-                        let array_path = value.context_path();
+                            block.set_local_var("@first".to_string(), to_json(is_first));
+                            block.set_local_var("@key".to_string(), key.clone());
 
-                        for (i, _) in list.iter().enumerate().take(len) {
-                            if let Some(ref mut block) = rc.block_mut() {
-                                let is_first = i == 0usize;
-                                let is_last = i == len - 1;
-
-                                block.set_local_var("@first".to_string(), to_json(is_first));
-                                block.set_local_var("@last".to_string(), to_json(is_last));
-                                block.set_local_var("@index".to_string(), to_json(i));
-                                if let Some(ref p) = array_path {
-                                    if is_first {
-                                        *block.base_path_mut() = copy_on_push_vec(p, i.to_string());
-                                    } else if let Some(ptr) = block.base_path_mut().last_mut() {
-                                        *ptr = i.to_string();
-                                    }
-                                }
-
-                                // TODO: base value
-
-                                if let Some(bp_val) = h.block_param() {
-                                    let mut params = BlockParams::new();
-                                    params.add_path(bp_val, Vec::with_capacity(0))?;
-
-                                    block.set_block_params(params);
-                                } else if let Some((bp_val, bp_index)) = h.block_param_pair() {
-                                    let mut params = BlockParams::new();
-                                    params.add_path(bp_val, Vec::with_capacity(0))?;
-                                    params.add_value(bp_index, to_json(i))?;
-
-                                    block.set_block_params(params);
-                                }
-                            }
-
-                            t.render(r, ctx, rc, out)?;
+                            update_block_context(block, obj_path, k.to_string(), is_first, &v);
+                            set_block_param(block, h, obj_path, &key, &v)?;
                         }
 
-                        Ok(())
-                    }
-                    (true, &Json::Object(ref obj)) => {
-                        let mut is_first = true;
-                        let obj_path = value.context_path();
+                        t.render(r, ctx, rc, out)?;
 
-                        for (k, _) in obj.iter() {
-                            if let Some(ref mut block) = rc.block_mut() {
-                                block.set_local_var("@first".to_string(), to_json(is_first));
-                                block.set_local_var("@key".to_string(), to_json(k));
-
-                                if let Some(ref p) = obj_path {
-                                    if is_first {
-                                        *block.base_path_mut() = copy_on_push_vec(p, k.clone());
-                                    } else if let Some(ptr) = block.base_path_mut().last_mut() {
-                                        *ptr = k.clone();
-                                    }
-                                }
-
-                                // TODO
-
-                                if let Some(bp_val) = h.block_param() {
-                                    let mut params = BlockParams::new();
-                                    params.add_path(bp_val, Vec::with_capacity(0))?;
-
-                                    block.set_block_params(params);
-                                } else if let Some((bp_val, bp_key)) = h.block_param_pair() {
-                                    let mut params = BlockParams::new();
-                                    params.add_path(bp_val, Vec::with_capacity(0))?;
-                                    params.add_value(bp_key, to_json(&k))?;
-
-                                    block.set_block_params(params);
-                                }
-                            }
-
-                            t.render(r, ctx, rc, out)?;
-
-                            if is_first {
-                                is_first = false;
-                            }
+                        if is_first {
+                            is_first = false;
                         }
-                        Ok(())
                     }
-                    (false, _) => {
-                        if let Some(else_template) = h.inverse() {
-                            else_template.render(r, ctx, rc, out)?;
-                        }
-                        Ok(())
-                    }
-                    _ => Err(RenderError::new(format!(
-                        "Param type is not iterable: {:?}",
-                        value.value()
-                    ))),
-                };
 
-                rc.pop_block();
-                rendered
-            }
+                    rc.pop_block();
+                    Ok(())
+                }
+                (false, _) => {
+                    if let Some(else_template) = h.inverse() {
+                        else_template.render(r, ctx, rc, out)?;
+                    }
+                    Ok(())
+                }
+                _ => Err(RenderError::new(format!(
+                    "Param type is not iterable: {:?}",
+                    value.value()
+                ))),
+            },
             None => Ok(()),
         }
     }
@@ -408,5 +416,67 @@ mod test {
         let r0 = handlebars.render("t0", &data).ok().unwrap();
 
         assert_eq!("1234 good", r0);
+    }
+
+    #[test]
+    fn test_else_context() {
+        let reg = Registry::new();
+        let template = "{{#each list}}A{{else}}{{foo}}{{/each}}";
+        let input = json!({"list": [], "foo": "bar"});
+        let rendered = reg.render_template(template, &input).unwrap();
+        assert_eq!("bar", rendered);
+    }
+
+    #[test]
+    fn test_block_context_leak() {
+        let reg = Registry::new();
+        let template = "{{#each list}}{{#each inner}}{{this}}{{/each}}{{foo}}{{/each}}";
+        let input = json!({"list": [{"inner": [], "foo": 1}, {"inner": [], "foo": 2}]});
+        let rendered = reg.render_template(template, &input).unwrap();
+        assert_eq!("12", rendered);
+    }
+
+    #[test]
+    fn test_derived_array_as_block_params() {
+        handlebars_helper!(range: |x: u64| (0..x).collect::<Vec<u64>>());
+        let mut reg = Registry::new();
+        reg.register_helper("range", Box::new(range));
+        let template = "{{#each (range 3) as |i|}}{{i}}{{/each}}";
+        let input = json!(0);
+        let rendered = reg.render_template(template, &input).unwrap();
+        assert_eq!("012", rendered);
+    }
+
+    #[test]
+    fn test_derived_object_as_block_params() {
+        handlebars_helper!(point: |x: u64, y: u64| json!({"x":x, "y":y}));
+        let mut reg = Registry::new();
+        reg.register_helper("point", Box::new(point));
+        let template = "{{#each (point 0 1) as |i|}}{{i}}{{/each}}";
+        let input = json!(0);
+        let rendered = reg.render_template(template, &input).unwrap();
+        assert_eq!("01", rendered);
+    }
+
+    #[test]
+    fn test_derived_array_without_block_param() {
+        handlebars_helper!(range: |x: u64| (0..x).collect::<Vec<u64>>());
+        let mut reg = Registry::new();
+        reg.register_helper("range", Box::new(range));
+        let template = "{{#each (range 3)}}{{this}}{{/each}}";
+        let input = json!(0);
+        let rendered = reg.render_template(template, &input).unwrap();
+        assert_eq!("012", rendered);
+    }
+
+    #[test]
+    fn test_derived_object_without_block_params() {
+        handlebars_helper!(point: |x: u64, y: u64| json!({"x":x, "y":y}));
+        let mut reg = Registry::new();
+        reg.register_helper("point", Box::new(point));
+        let template = "{{#each (point 0 1)}}{{this}}{{/each}}";
+        let input = json!(0);
+        let rendered = reg.render_template(template, &input).unwrap();
+        assert_eq!("01", rendered);
     }
 }

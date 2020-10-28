@@ -1,21 +1,23 @@
 //! Project loading & configuration updates
 use std::{mem, sync::Arc};
 
-use crossbeam_channel::unbounded;
+use base_db::{CrateGraph, SourceRoot, VfsPath};
 use flycheck::FlycheckHandle;
-use ra_db::{CrateGraph, SourceRoot, VfsPath};
-use ra_ide::AnalysisChange;
-use ra_project_model::{PackageRoot, ProcMacroClient, ProjectWorkspace};
-use vfs::{file_set::FileSetConfig, AbsPath};
+use ide::AnalysisChange;
+use project_model::{ProcMacroClient, ProjectWorkspace};
+use vfs::{file_set::FileSetConfig, AbsPath, AbsPathBuf, ChangeKind};
 
 use crate::{
     config::{Config, FilesWatcher, LinkedProject},
-    global_state::{GlobalState, Handle},
+    global_state::{GlobalState, Status},
+    lsp_ext,
     main_loop::Task,
 };
+use lsp_ext::StatusParams;
 
 impl GlobalState {
     pub(crate) fn update_configuration(&mut self, config: Config) {
+        let _p = profile::span("GlobalState::update_configuration");
         let old_config = mem::replace(&mut self.config, config);
         if self.config.lru_capacity != old_config.lru_capacity {
             self.analysis_host.update_lru_capacity(old_config.lru_capacity);
@@ -24,6 +26,69 @@ impl GlobalState {
             self.fetch_workspaces()
         } else if self.config.flycheck != old_config.flycheck {
             self.reload_flycheck();
+        }
+    }
+    pub(crate) fn maybe_refresh(&mut self, changes: &[(AbsPathBuf, ChangeKind)]) {
+        if !changes.iter().any(|(path, kind)| is_interesting(path, *kind)) {
+            return;
+        }
+        match self.status {
+            Status::Loading | Status::NeedsReload => return,
+            Status::Ready | Status::Invalid => (),
+        }
+        if self.config.cargo_autoreload {
+            self.fetch_workspaces();
+        } else {
+            self.transition(Status::NeedsReload);
+        }
+
+        fn is_interesting(path: &AbsPath, change_kind: ChangeKind) -> bool {
+            const IMPLICIT_TARGET_FILES: &[&str] = &["build.rs", "src/main.rs", "src/lib.rs"];
+            const IMPLICIT_TARGET_DIRS: &[&str] = &["src/bin", "examples", "tests", "benches"];
+
+            if path.ends_with("Cargo.toml") || path.ends_with("Cargo.lock") {
+                return true;
+            }
+            if change_kind == ChangeKind::Modify {
+                return false;
+            }
+            if path.extension().unwrap_or_default() != "rs" {
+                return false;
+            }
+            if IMPLICIT_TARGET_FILES.iter().any(|it| path.ends_with(it)) {
+                return true;
+            }
+            let parent = match path.parent() {
+                Some(it) => it,
+                None => return false,
+            };
+            if IMPLICIT_TARGET_DIRS.iter().any(|it| parent.ends_with(it)) {
+                return true;
+            }
+            if path.ends_with("main.rs") {
+                let grand_parent = match parent.parent() {
+                    Some(it) => it,
+                    None => return false,
+                };
+                if IMPLICIT_TARGET_DIRS.iter().any(|it| grand_parent.ends_with(it)) {
+                    return true;
+                }
+            }
+            false
+        }
+    }
+    pub(crate) fn transition(&mut self, new_status: Status) {
+        self.status = new_status;
+        if self.config.client_caps.status_notification {
+            let lsp_status = match new_status {
+                Status::Loading => lsp_ext::Status::Loading,
+                Status::Ready => lsp_ext::Status::Ready,
+                Status::Invalid => lsp_ext::Status::Invalid,
+                Status::NeedsReload => lsp_ext::Status::NeedsReload,
+            };
+            self.send_notification::<lsp_ext::StatusNotification>(StatusParams {
+                status: lsp_status,
+            });
         }
     }
     pub(crate) fn fetch_workspaces(&mut self) {
@@ -36,14 +101,14 @@ impl GlobalState {
                     .iter()
                     .map(|project| match project {
                         LinkedProject::ProjectManifest(manifest) => {
-                            ra_project_model::ProjectWorkspace::load(
+                            project_model::ProjectWorkspace::load(
                                 manifest.clone(),
                                 &cargo_config,
                                 with_sysroot,
                             )
                         }
                         LinkedProject::InlineJsonProject(it) => {
-                            Ok(ra_project_model::ProjectWorkspace::Json { project: it.clone() })
+                            Ok(project_model::ProjectWorkspace::Json { project: it.clone() })
                         }
                     })
                     .collect::<Vec<_>>();
@@ -52,28 +117,44 @@ impl GlobalState {
         });
     }
     pub(crate) fn switch_workspaces(&mut self, workspaces: Vec<anyhow::Result<ProjectWorkspace>>) {
+        let _p = profile::span("GlobalState::switch_workspaces");
         log::info!("reloading projects: {:?}", self.config.linked_projects);
+
+        let mut has_errors = false;
         let workspaces = workspaces
             .into_iter()
             .filter_map(|res| {
                 res.map_err(|err| {
+                    has_errors = true;
                     log::error!("failed to load workspace: {:#}", err);
-                    self.show_message(
-                        lsp_types::MessageType::Error,
-                        format!("rust-analyzer failed to load workspace: {:#}", err),
-                    );
+                    if self.workspaces.is_empty() {
+                        self.show_message(
+                            lsp_types::MessageType::Error,
+                            format!("rust-analyzer failed to load workspace: {:#}", err),
+                        );
+                    }
                 })
                 .ok()
             })
             .collect::<Vec<_>>();
+
+        if &*self.workspaces == &workspaces {
+            return;
+        }
+
+        if !self.workspaces.is_empty() && has_errors {
+            return;
+        }
 
         if let FilesWatcher::Client = self.config.files.watcher {
             let registration_options = lsp_types::DidChangeWatchedFilesRegistrationOptions {
                 watchers: workspaces
                     .iter()
                     .flat_map(ProjectWorkspace::to_roots)
-                    .filter(PackageRoot::is_member)
-                    .map(|root| format!("{}/**/*.rs", root.path().display()))
+                    .filter(|it| it.is_member)
+                    .flat_map(|root| {
+                        root.include.into_iter().map(|it| format!("{}/**/*.rs", it.display()))
+                    })
                     .map(|glob_pattern| lsp_types::FileSystemWatcher { glob_pattern, kind: None })
                     .collect(),
             };
@@ -98,7 +179,7 @@ impl GlobalState {
                 Ok(it) => it,
                 Err(err) => {
                     log::error!(
-                        "Failed to run ra_proc_macro_srv from path {}, error: {:?}",
+                        "Failed to run proc_macro_srv from path {}, error: {:?}",
                         path.display(),
                         err
                     );
@@ -106,6 +187,7 @@ impl GlobalState {
                 }
             },
         };
+
         let watch = match self.config.files.watcher {
             FilesWatcher::Client => vec![],
             FilesWatcher::Notify => project_folders.watch,
@@ -152,21 +234,20 @@ impl GlobalState {
             }
         };
 
-        // FIXME: Figure out the multi-workspace situation
-        self.flycheck = self.workspaces.iter().find_map(move |w| match w {
-            ProjectWorkspace::Cargo { cargo, .. } => {
-                let (sender, receiver) = unbounded();
-                let sender = Box::new(move |msg| sender.send(msg).unwrap());
+        let sender = self.flycheck_sender.clone();
+        let sender = Box::new(move |msg| sender.send(msg).unwrap());
+        self.flycheck = self
+            .workspaces
+            .iter()
+            // FIXME: Figure out the multi-workspace situation
+            .find_map(|w| match w {
+                ProjectWorkspace::Cargo { cargo, sysroot: _ } => Some(cargo),
+                ProjectWorkspace::Json { .. } => None,
+            })
+            .map(move |cargo| {
                 let cargo_project_root = cargo.workspace_root().to_path_buf();
-                let handle =
-                    FlycheckHandle::spawn(sender, config.clone(), cargo_project_root.into());
-                Some(Handle { handle, receiver })
-            }
-            ProjectWorkspace::Json { .. } => {
-                log::warn!("Cargo check watching only supported for cargo workspaces, disabling");
-                None
-            }
-        })
+                FlycheckHandle::spawn(sender, config, cargo_project_root.into())
+            })
     }
 }
 
@@ -184,31 +265,23 @@ impl ProjectFolders {
         let mut local_filesets = vec![];
 
         for root in workspaces.iter().flat_map(|it| it.to_roots()) {
-            let path = root.path().to_owned();
+            let file_set_roots: Vec<VfsPath> =
+                root.include.iter().cloned().map(VfsPath::from).collect();
 
-            let mut file_set_roots: Vec<VfsPath> = vec![];
-
-            let entry = if root.is_member() {
-                vfs::loader::Entry::local_cargo_package(path.to_path_buf())
-            } else {
-                vfs::loader::Entry::cargo_package_dependency(path.to_path_buf())
+            let entry = {
+                let mut dirs = vfs::loader::Directories::default();
+                dirs.extensions.push("rs".into());
+                dirs.include.extend(root.include);
+                dirs.exclude.extend(root.exclude);
+                vfs::loader::Entry::Directories(dirs)
             };
+
+            if root.is_member {
+                res.watch.push(res.load.len());
+            }
             res.load.push(entry);
-            if root.is_member() {
-                res.watch.push(res.load.len() - 1);
-            }
 
-            if let Some(out_dir) = root.out_dir() {
-                let out_dir = out_dir.to_path_buf();
-                res.load.push(vfs::loader::Entry::rs_files_recursively(out_dir.clone()));
-                if root.is_member() {
-                    res.watch.push(res.load.len() - 1);
-                }
-                file_set_roots.push(out_dir.into());
-            }
-            file_set_roots.push(path.to_path_buf().into());
-
-            if root.is_member() {
+            if root.is_member {
                 local_filesets.push(fsc.len());
             }
             fsc.add_file_set(file_set_roots)
@@ -229,6 +302,7 @@ pub(crate) struct SourceRootConfig {
 
 impl SourceRootConfig {
     pub(crate) fn partition(&self, vfs: &vfs::Vfs) -> Vec<SourceRoot> {
+        let _p = profile::span("SourceRootConfig::partition");
         self.fsc
             .partition(vfs)
             .into_iter()

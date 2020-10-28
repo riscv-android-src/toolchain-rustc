@@ -1,6 +1,6 @@
 [package]
 name = "cargo"
-version = "0.47.0"
+version = "0.48.0"
 edition = "2018"
 authors = ["Yehuda Katz <wycats@gmail.com>",
            "Carl Lerche <me@carllerche.com>",
@@ -59,7 +59,7 @@ shell-escape = "0.1.4"
 strip-ansi-escapes = "0.1.0"
 tar = { version = "0.4.26", default-features = false }
 tempfile = "3.0"
-termcolor = "1.0"
+termcolor = "1.1"
 toml = "0.5.3"
 unicode-xid = "0.2.0"
 url = "2.0"
@@ -79,7 +79,7 @@ core-foundation = { version = "0.9.0", features = ["mac_os_10_7_support"] }
 
 [target.'cfg(windows)'.dependencies]
 miow = "0.3.1"
-fwdansi = "1"
+fwdansi = "1.1.0"
 
 [target.'cfg(windows)'.dependencies.winapi]
 version = "0.3"
@@ -105,6 +105,10 @@ features = [
 [dev-dependencies]
 cargo-test-macro = { path = "crates/cargo-test-macro", version = "0.1.0" }
 cargo-test-support = { path = "crates/cargo-test-support", version = "0.1.0" }
+
+[build-dependencies]
+flate2 = { version = "1.0.3", default-features = false, features = ["zlib"] }
+tar = { version = "0.4.26", default-features = false }
 
 [[bin]]
 name = "cargo"

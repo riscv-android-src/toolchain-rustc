@@ -16,15 +16,16 @@ use crate::check::Needs;
 use crate::check::TupleArgumentsFlag::DontTupleArguments;
 use crate::type_error_struct;
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_errors::ErrorReported;
 use rustc_errors::{pluralize, struct_span_err, Applicability, DiagnosticBuilder, DiagnosticId};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, DefKind, Res};
 use rustc_hir::def_id::DefId;
-use rustc_hir::lang_items;
+use rustc_hir::lang_items::LangItem;
 use rustc_hir::{ExprKind, QPath};
 use rustc_infer::infer;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
@@ -68,7 +69,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // coercions from ! to `expected`.
         if ty.is_never() {
             assert!(
-                !self.tables.borrow().adjustments().contains_key(expr.hir_id),
+                !self.typeck_results.borrow().adjustments().contains_key(expr.hir_id),
                 "expression with never type wound up being adjusted"
             );
             let adj_ty = self.next_diverging_ty_var(TypeVariableOrigin {
@@ -177,7 +178,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let old_diverges = self.diverges.replace(Diverges::Maybe);
         let old_has_errors = self.has_errors.replace(false);
 
-        let ty = self.check_expr_kind(expr, expected);
+        let ty = ensure_sufficient_stack(|| self.check_expr_kind(expr, expected));
 
         // Warn for non-block expressions with diverging children.
         match expr.kind {
@@ -234,6 +235,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             ExprKind::Unary(unop, ref oprnd) => self.check_expr_unary(unop, oprnd, expected, expr),
             ExprKind::AddrOf(kind, mutbl, ref oprnd) => {
                 self.check_expr_addr_of(kind, mutbl, oprnd, expected, expr)
+            }
+            ExprKind::Path(QPath::LangItem(lang_item, _)) => {
+                self.check_lang_item_path(lang_item, expr)
             }
             ExprKind::Path(ref qpath) => self.check_expr_path(qpath, expr),
             ExprKind::InlineAsm(asm) => self.check_expr_asm(asm),
@@ -430,7 +434,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             // This is maybe too permissive, since it allows
             // `let u = &raw const Box::new((1,)).0`, which creates an
             // immediately dangling raw pointer.
-            self.tables.borrow().adjustments().get(base.hir_id).map_or(false, |x| {
+            self.typeck_results.borrow().adjustments().get(base.hir_id).map_or(false, |x| {
                 x.iter().any(|adj| if let Adjust::Deref(_) = adj.kind { true } else { false })
             })
         });
@@ -444,6 +448,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             .span_label(oprnd.span, "temporary value")
             .emit();
         }
+    }
+
+    fn check_lang_item_path(
+        &self,
+        lang_item: hir::LangItem,
+        expr: &'tcx hir::Expr<'tcx>,
+    ) -> Ty<'tcx> {
+        self.resolve_lang_item_path(lang_item, expr.span, expr.hir_id).1
     }
 
     fn check_expr_path(&self, qpath: &hir::QPath<'_>, expr: &'tcx hir::Expr<'tcx>) -> Ty<'tcx> {
@@ -487,7 +499,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     self.require_type_is_sized_deferred(
                         input,
                         expr.span,
-                        traits::SizedArgumentType,
+                        traits::SizedArgumentType(None),
                     );
                 }
             }
@@ -509,7 +521,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         // We always require that the type provided as the value for
         // a type parameter outlives the moment of instantiation.
-        let substs = self.tables.borrow().node_substs(expr.hir_id);
+        let substs = self.typeck_results.borrow().node_substs(expr.hir_id);
         self.add_wf_bounds(substs, expr);
 
         ty
@@ -914,8 +926,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // Try alternative arbitrary self types that could fulfill this call.
                 // FIXME: probe for all types that *could* be arbitrary self-types, not
                 // just this list.
-                try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, lang_items::OwnedBoxLangItem));
-                try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, lang_items::PinTypeLangItem));
+                try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, LangItem::OwnedBox));
+                try_alt_rcvr(&mut err, self.tcx.mk_lang_item(rcvr_t, LangItem::Pin));
                 try_alt_rcvr(&mut err, self.tcx.mk_diagnostic_item(rcvr_t, sym::Arc));
                 try_alt_rcvr(&mut err, self.tcx.mk_diagnostic_item(rcvr_t, sym::Rc));
             }
@@ -1076,11 +1088,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             return self.tcx.ty_error();
         };
 
-        let path_span = match *qpath {
-            QPath::Resolved(_, ref path) => path.span,
-            QPath::TypeRelative(ref qself, _) => qself.span,
-        };
-
         // Prohibit struct expressions when non-exhaustive flag is set.
         let adt = adt_ty.ty_adt_def().expect("`check_struct_path` returned non-ADT type");
         if !adt.did.is_local() && variant.is_field_list_non_exhaustive() {
@@ -1098,7 +1105,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             adt_ty,
             expected,
             expr.hir_id,
-            path_span,
+            qpath.span(),
             variant,
             fields,
             base_expr.is_none(),
@@ -1123,7 +1130,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                             })
                             .collect();
 
-                        self.tables
+                        self.typeck_results
                             .borrow_mut()
                             .fru_field_types_mut()
                             .insert(expr.hir_id, fru_field_types);
@@ -1336,7 +1343,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // prevent all specified fields from being suggested
                 let skip_fields = skip_fields.iter().map(|ref x| x.ident.name);
                 if let Some(field_name) =
-                    Self::suggest_field_name(variant, &field.ident.as_str(), skip_fields.collect())
+                    Self::suggest_field_name(variant, field.ident.name, skip_fields.collect())
                 {
                     err.span_suggestion(
                         field.ident.span,
@@ -1377,7 +1384,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     // Return an hint about the closest match in field names
     fn suggest_field_name(
         variant: &'tcx ty::VariantDef,
-        field: &str,
+        field: Symbol,
         skip: Vec<Symbol>,
     ) -> Option<Symbol> {
         let names = variant.fields.iter().filter_map(|field| {
@@ -1605,7 +1612,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         }
         let param_def_id = generic_param.def_id;
         let param_hir_id = match param_def_id.as_local() {
-            Some(x) => self.tcx.hir().as_local_hir_id(x),
+            Some(x) => self.tcx.hir().local_def_id_to_hir_id(x),
             None => return,
         };
         let param_span = self.tcx.hir().span(param_hir_id);
@@ -1621,7 +1628,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         field: Ident,
     ) {
         if let Some(suggested_field_name) =
-            Self::suggest_field_name(def.non_enum_variant(), &field.as_str(), vec![])
+            Self::suggest_field_name(def.non_enum_variant(), field.name, vec![])
         {
             err.span_suggestion(
                 field.span,

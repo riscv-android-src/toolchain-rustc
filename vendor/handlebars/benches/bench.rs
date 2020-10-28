@@ -2,38 +2,53 @@
 extern crate criterion;
 #[macro_use]
 extern crate serde_derive;
-extern crate cpuprofiler;
 
 use std::collections::BTreeMap;
-use std::fs::create_dir_all;
+use std::fs::{create_dir_all, File};
+use std::io::Write;
 use std::path::Path;
 
-use cpuprofiler::PROFILER;
 use criterion::profiler::Profiler;
 use criterion::Criterion;
-use handlebars::{to_json, Handlebars, Template};
+use handlebars::{to_json, Context, Handlebars, Template};
+use pprof::protos::Message;
+use pprof::ProfilerGuard;
 use serde_json::value::Value as Json;
 
-struct CpuProfiler;
+#[derive(Default)]
+struct CpuProfiler<'a> {
+    guard: Option<ProfilerGuard<'a>>,
+}
 
-impl Profiler for CpuProfiler {
-    fn start_profiling(&mut self, benchmark_id: &str, benchmark_dir: &Path) {
+impl<'a> Profiler for CpuProfiler<'a> {
+    fn start_profiling(&mut self, _benchmark_id: &str, benchmark_dir: &Path) {
         create_dir_all(&benchmark_dir).unwrap();
-        let result = benchmark_dir.join(format!("{}.profile", benchmark_id));
-        PROFILER
-            .lock()
-            .unwrap()
-            .start(result.to_str().unwrap())
-            .unwrap();
+
+        let guard = ProfilerGuard::new(100).unwrap();
+        self.guard = Some(guard);
     }
 
-    fn stop_profiling(&mut self, _benchmark_id: &str, _benchmark_dir: &Path) {
-        PROFILER.lock().unwrap().stop().unwrap();
+    fn stop_profiling(&mut self, benchmark_id: &str, benchmark_dir: &Path) {
+        if let Ok(ref report) = self.guard.as_ref().unwrap().report().build() {
+            let fg_file_name = benchmark_dir.join(format!("{}.svg", benchmark_id));
+            let fg_file = File::create(fg_file_name).unwrap();
+            report.flamegraph(fg_file).unwrap();
+
+            let pb_file_name = benchmark_dir.join(format!("{}.pb", benchmark_id));
+            let mut pb_file = File::create(pb_file_name).unwrap();
+            let profile = report.pprof().unwrap();
+
+            let mut content = Vec::new();
+            profile.encode(&mut content).unwrap();
+            pb_file.write_all(&content).unwrap();
+        };
+
+        self.guard = None;
     }
 }
 
 fn profiled() -> Criterion {
-    Criterion::default().with_profiler(CpuProfiler)
+    Criterion::default().with_profiler(CpuProfiler::default())
 }
 
 #[derive(Serialize)]
@@ -107,9 +122,9 @@ fn render_template(c: &mut Criterion) {
         .ok()
         .expect("Invalid template format");
 
-    let data = make_data();
+    let ctx = Context::wraps(make_data()).unwrap();
     c.bench_function("render_template", move |b| {
-        b.iter(|| handlebars.render("table", &data).ok().unwrap())
+        b.iter(|| handlebars.render_with_context("table", &ctx).ok().unwrap())
     });
 }
 
@@ -132,7 +147,32 @@ fn large_loop_helper(c: &mut Criterion) {
         .collect();
     let rows = RowWrapper { real, dummy };
 
+    let ctx = Context::wraps(&rows).unwrap();
     c.bench_function("large_loop_helper", move |b| {
+        b.iter(|| handlebars.render_with_context("test", &ctx).ok().unwrap())
+    });
+}
+
+fn large_loop_helper_with_context_creation(c: &mut Criterion) {
+    let mut handlebars = Handlebars::new();
+    handlebars
+        .register_template_string("test", "BEFORE\n{{#each real}}{{this.v}}{{/each}}AFTER")
+        .ok()
+        .expect("Invalid template format");
+
+    let real: Vec<DataWrapper> = (1..1000)
+        .map(|i| DataWrapper {
+            v: format!("n={}", i),
+        })
+        .collect();
+    let dummy: Vec<DataWrapper> = (1..1000)
+        .map(|i| DataWrapper {
+            v: format!("n={}", i),
+        })
+        .collect();
+    let rows = RowWrapper { real, dummy };
+
+    c.bench_function("large_loop_helper_with_context_creation", move |b| {
         b.iter(|| handlebars.render("test", &rows).ok().unwrap())
     });
 }
@@ -159,14 +199,16 @@ fn large_nested_loop(c: &mut Criterion) {
 
     let rows = NestedRowWrapper { parent };
 
+    let ctx = Context::wraps(&rows).unwrap();
     c.bench_function("large_nested_loop", move |b| {
-        b.iter(|| handlebars.render("test", &rows).ok().unwrap())
+        b.iter(|| handlebars.render_with_context("test", &ctx).ok().unwrap())
     });
 }
 
 criterion_group!(
     name = benches;
     config = profiled();
-    targets = parse_template, render_template, large_loop_helper, large_nested_loop
+    targets = parse_template, render_template, large_loop_helper, large_loop_helper_with_context_creation,
+              large_nested_loop
 );
 criterion_main!(benches);

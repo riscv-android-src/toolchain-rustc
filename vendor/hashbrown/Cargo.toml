@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "hashbrown"
-version = "0.6.2"
+version = "0.8.2"
 authors = ["Amanieu d'Antras <amanieu@gmail.com>"]
 build = "build.rs"
 exclude = [".travis.yml", "bors.toml", "/ci/*"]
@@ -26,8 +26,9 @@ repository = "https://github.com/rust-lang/hashbrown"
 [package.metadata.docs.rs]
 features = ["nightly", "rayon", "serde", "raw"]
 [dependencies.ahash]
-version = "0.2.11"
+version = "0.3.2"
 optional = true
+default-features = false
 
 [dependencies.alloc]
 version = "1.0.0"
@@ -58,20 +59,22 @@ version = "0.3.1"
 version = "1.2"
 
 [dev-dependencies.rand]
-version = "0.5.1"
+version = "0.7.3"
+features = ["small_rng"]
 
 [dev-dependencies.rayon]
 version = "1.0"
 
 [dev-dependencies.rustc-hash]
-version = "1.0"
+version = "=1.0"
 
 [dev-dependencies.serde_test]
 version = "1.0"
 [build-dependencies.autocfg]
-version = "0.1.4"
+version = "1"
 
 [features]
+ahash-compile-time-rng = ["ahash/compile-time-rng"]
 default = ["ahash", "inline-more"]
 inline-more = []
 nightly = []

@@ -1,4 +1,4 @@
-//! cargo_check provides the functionality needed to run `cargo check` or
+//! Flycheck provides the functionality needed to run `cargo check` or
 //! another compatible command (f.x. clippy) in a background thread and provide
 //! LSP diagnostics based on the output of the command.
 
@@ -14,14 +14,17 @@ use std::{
 use crossbeam_channel::{never, select, unbounded, Receiver, Sender};
 
 pub use cargo_metadata::diagnostic::{
-    Applicability, Diagnostic, DiagnosticLevel, DiagnosticSpan, DiagnosticSpanMacroExpansion,
+    Applicability, Diagnostic, DiagnosticCode, DiagnosticLevel, DiagnosticSpan,
+    DiagnosticSpanMacroExpansion,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FlycheckConfig {
     CargoCommand {
         command: String,
+        target_triple: Option<String>,
         all_targets: bool,
+        no_default_features: bool,
         all_features: bool,
         features: Vec<String>,
         extra_args: Vec<String>,
@@ -144,6 +147,12 @@ impl FlycheckActor {
                     // avoid busy-waiting.
                     let cargo_handle = self.cargo_handle.take().unwrap();
                     let res = cargo_handle.join();
+                    if res.is_err() {
+                        log::error!(
+                            "Flycheck failed to run the following command: {:?}",
+                            self.check_command()
+                        )
+                    }
                     self.send(Message::Progress(Progress::DidFinish(res)));
                 }
                 Event::CheckEvent(Some(message)) => match message {
@@ -177,23 +186,34 @@ impl FlycheckActor {
         let mut cmd = match &self.config {
             FlycheckConfig::CargoCommand {
                 command,
+                target_triple,
+                no_default_features,
                 all_targets,
                 all_features,
                 extra_args,
                 features,
             } => {
-                let mut cmd = Command::new(ra_toolchain::cargo());
+                let mut cmd = Command::new(toolchain::cargo());
                 cmd.arg(command);
                 cmd.args(&["--workspace", "--message-format=json", "--manifest-path"])
                     .arg(self.workspace_root.join("Cargo.toml"));
+
+                if let Some(target) = target_triple {
+                    cmd.args(&["--target", target.as_str()]);
+                }
                 if *all_targets {
                     cmd.arg("--all-targets");
                 }
                 if *all_features {
                     cmd.arg("--all-features");
-                } else if !features.is_empty() {
-                    cmd.arg("--features");
-                    cmd.arg(features.join(" "));
+                } else {
+                    if *no_default_features {
+                        cmd.arg("--no-default-features");
+                    }
+                    if !features.is_empty() {
+                        cmd.arg("--features");
+                        cmd.arg(features.join(" "));
+                    }
                 }
                 cmd.args(extra_args);
                 cmd
@@ -239,7 +259,7 @@ impl CargoHandle {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 format!(
-                    "Cargo watcher failed,the command produced no valid metadata (exit code: {:?})",
+                    "Cargo watcher failed, the command produced no valid metadata (exit code: {:?})",
                     exit_status
                 ),
             ));

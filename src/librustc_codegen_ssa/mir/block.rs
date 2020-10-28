@@ -9,15 +9,16 @@ use crate::meth;
 use crate::traits::*;
 use crate::MemFlags;
 
-use rustc_ast::ast;
-use rustc_hir::lang_items;
+use rustc_ast as ast;
+use rustc_hir::lang_items::LangItem;
 use rustc_index::vec::Idx;
 use rustc_middle::mir;
 use rustc_middle::mir::interpret::{AllocId, ConstValue, Pointer, Scalar};
 use rustc_middle::mir::AssertKind;
 use rustc_middle::ty::layout::{FnAbiExt, HasTyCtxt};
 use rustc_middle::ty::{self, Instance, Ty, TypeFoldable};
-use rustc_span::{source_map::Span, symbol::Symbol};
+use rustc_span::source_map::Span;
+use rustc_span::{sym, Symbol};
 use rustc_target::abi::call::{ArgAbi, FnAbi, PassMode};
 use rustc_target::abi::{self, LayoutOf};
 use rustc_target::spec::abi::Abi;
@@ -419,14 +420,14 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 let index = self.codegen_operand(&mut bx, index).immediate();
                 // It's `fn panic_bounds_check(index: usize, len: usize)`,
                 // and `#[track_caller]` adds an implicit third argument.
-                (lang_items::PanicBoundsCheckFnLangItem, vec![index, len, location])
+                (LangItem::PanicBoundsCheck, vec![index, len, location])
             }
             _ => {
                 let msg_str = Symbol::intern(msg.description());
                 let msg = bx.const_str(msg_str);
                 // It's `pub fn panic(expr: &str)`, with the wide reference being passed
                 // as two arguments, and `#[track_caller]` adds an implicit third argument.
-                (lang_items::PanicFnLangItem, vec![msg.0, msg.1, location])
+                (LangItem::Panic, vec![msg.0, msg.1, location])
             }
         };
 
@@ -445,7 +446,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         &mut self,
         helper: &TerminatorCodegenHelper<'tcx>,
         bx: &mut Bx,
-        intrinsic: Option<&str>,
+        intrinsic: Option<Symbol>,
         instance: Option<Instance<'tcx>>,
         span: Span,
         destination: &Option<(mir::Place<'tcx>, mir::BasicBlock)>,
@@ -461,10 +462,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             UninitValid,
         };
         let panic_intrinsic = intrinsic.and_then(|i| match i {
-            // FIXME: Move to symbols instead of strings.
-            "assert_inhabited" => Some(AssertIntrinsic::Inhabited),
-            "assert_zero_valid" => Some(AssertIntrinsic::ZeroValid),
-            "assert_uninit_valid" => Some(AssertIntrinsic::UninitValid),
+            sym::assert_inhabited => Some(AssertIntrinsic::Inhabited),
+            sym::assert_zero_valid => Some(AssertIntrinsic::ZeroValid),
+            sym::assert_uninit_valid => Some(AssertIntrinsic::UninitValid),
             _ => None,
         });
         if let Some(intrinsic) = panic_intrinsic {
@@ -492,8 +492,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
                 // Obtain the panic entry point.
                 // FIXME: dedup this with `codegen_assert_terminator` above.
-                let def_id =
-                    common::langcall(bx.tcx(), Some(span), "", lang_items::PanicFnLangItem);
+                let def_id = common::langcall(bx.tcx(), Some(span), "", LangItem::Panic);
                 let instance = ty::Instance::mono(bx.tcx(), def_id);
                 let fn_abi = FnAbi::of_instance(bx, instance, &[]);
                 let llfn = bx.get_fn_addr(instance);
@@ -543,7 +542,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 Some(
                     ty::Instance::resolve(bx.tcx(), ty::ParamEnv::reveal_all(), def_id, substs)
                         .unwrap()
-                        .unwrap(),
+                        .unwrap()
+                        .polymorphize(bx.tcx()),
                 ),
                 None,
             ),
@@ -568,10 +568,9 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         // Handle intrinsics old codegen wants Expr's for, ourselves.
         let intrinsic = match def {
-            Some(ty::InstanceDef::Intrinsic(def_id)) => Some(bx.tcx().item_name(def_id).as_str()),
+            Some(ty::InstanceDef::Intrinsic(def_id)) => Some(bx.tcx().item_name(def_id)),
             _ => None,
         };
-        let intrinsic = intrinsic.as_ref().map(|s| &s[..]);
 
         let extra_args = &args[sig.inputs().skip_binder().len()..];
         let extra_args = extra_args
@@ -587,7 +586,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             None => FnAbi::of_fn_ptr(&bx, sig, &extra_args),
         };
 
-        if intrinsic == Some("transmute") {
+        if intrinsic == Some(sym::transmute) {
             if let Some(destination_ref) = destination.as_ref() {
                 let &(dest, target) = destination_ref;
                 self.codegen_transmute(&mut bx, &args[0], dest);
@@ -604,11 +603,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 bx.unreachable();
             }
             return;
-        }
-
-        // For normal codegen, this Miri-specific intrinsic should never occur.
-        if intrinsic == Some("miri_start_panic") {
-            bug!("`miri_start_panic` should never end up in compiled code");
         }
 
         if self.codegen_panic_intrinsic(
@@ -635,7 +629,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             ReturnDest::Nothing
         };
 
-        if intrinsic == Some("caller_location") {
+        if intrinsic == Some(sym::caller_location) {
             if let Some((_, target)) = destination.as_ref() {
                 let location = self.get_caller_location(&mut bx, fn_span);
 
@@ -650,19 +644,8 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             return;
         }
 
-        if intrinsic.is_some() && intrinsic != Some("drop_in_place") {
+        if intrinsic.is_some() && intrinsic != Some(sym::drop_in_place) {
             let intrinsic = intrinsic.unwrap();
-
-            // `is_codegen_intrinsic()` allows the backend implementation to perform compile-time
-            // operations before converting the `args` to backend values.
-            if !bx.is_codegen_intrinsic(intrinsic, &args, self.instance) {
-                // If the intrinsic call was fully addressed by the `is_codegen_intrinsic()` call
-                // (as a compile-time operation), return immediately. This avoids the need to
-                // convert the arguments, the call to `codegen_intrinsic_call()`, and the return
-                // value handling.
-                return;
-            }
-
             let dest = match ret_dest {
                 _ if fn_abi.ret.is_indirect() => llargs[0],
                 ReturnDest::Nothing => {
@@ -682,7 +665,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     // third argument must be constant. This is
                     // checked by const-qualification, which also
                     // promotes any complex rvalues to constants.
-                    if i == 2 && intrinsic.starts_with("simd_shuffle") {
+                    if i == 2 && intrinsic.as_str().starts_with("simd_shuffle") {
                         if let mir::Operand::Constant(constant) = arg {
                             let c = self.eval_mir_constant(constant);
                             let (llval, ty) = self.simd_shuffle_indices(
@@ -707,7 +690,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 &args,
                 dest,
                 terminator.source_info.span,
-                self.instance,
             );
 
             if let ReturnDest::IndirectOperand(dst, _) = ret_dest {
@@ -888,7 +870,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                                 let ptr = Pointer::new(AllocId(0), offset);
                                 alloc
                                     .read_scalar(&bx, ptr, size)
-                                    .and_then(|s| s.not_undef())
+                                    .and_then(|s| s.check_init())
                                     .unwrap_or_else(|e| {
                                         bx.tcx().sess.span_err(
                                             span,

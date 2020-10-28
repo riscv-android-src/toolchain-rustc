@@ -2,6 +2,78 @@
 
 ## [Unreleased]
 
+## [v0.10.30] - 2020-06-25
+
+### Fixed
+
+* `DsaRef::private_key_to_pem` can no longer be called without a private key.
+
+### Changed
+
+* Improved the `Debug` implementations of many types.
+
+### Added
+
+* Added `is_empty` implementations for `Asn1StringRef` and `Asn1BitStringRef`.
+* Added `EcPointRef::{to_pem, to_dir}` and `EcKeyRef::{public_key_from_pem, public_key_from_der}`.
+* Added `Default` implementations for many types.
+* Added `Debug` implementations for many types.
+* Added `SslRef::set_mtu`.
+* Added `Cipher::{aes_128_ocb, aes_192_ocb, aes_256_ocb}`.
+
+### Deprecated
+
+* Deprecated `SslStreamBuilder::set_dtls_mtu_size` in favor of `SslRef::set_mtu`.
+
+## [v0.10.29] - 2020-04-07
+
+### Fixed
+
+* Fixed a memory leak in `X509Builder::append_extension`.
+
+### Added
+
+* Added `SslConnector::into_context` and `SslConnector::context`.
+* Added `SslAcceptor::into_context` and `SslAcceptor::context`.
+* Added `SslMethod::tls_client` and `SslMethod::tls_server`.
+* Added `SslContextBuilder::set_cert_store`.
+* Added `SslContextRef::verify_mode` and `SslRef::verify_mode`.
+* Added `SslRef::is_init_finished`.
+* Added `X509Object`.
+* Added `X509StoreRef::objects`.
+
+## [v0.10.28] - 2020-02-04
+
+### Fixed
+
+* Fixed the mutability of `Signer::sign_oneshot` and `Verifier::verify_oneshot`. This is unfortunately a breaking
+    change, but a necessary soundness fix.
+
+## [v0.10.27] - 2020-01-29
+
+### Added
+
+* Added `MessageDigest::null`.
+* Added `PKey::private_key_from_pkcs8`.
+* Added `SslOptions::NO_RENEGOTIATION`.
+* Added `SslStreamBuilder::set_dtls_mtu_size`.
+
+## [v0.10.26] - 2019-11-22
+
+### Fixed
+
+* Fixed improper handling of the IV buffer in `envelope::{Seal, Unseal}`.
+
+### Added
+
+* Added `Asn1TimeRef::{diff, compare}`.
+* Added `Asn1Time::from_unix`.
+* Added `PartialEq` and `PartialOrd` implementations for `Asn1Time` and `Asn1TimeRef`.
+* Added `base64::{encode_block, decode_block}`.
+* Added `EcGroupRef::order_bits`.
+* Added `Clone` implementations for `Sha1`, `Sha224`, `Sha256`, `Sha384`, and `Sha512`.
+* Added `SslContextBuilder::{set_sigalgs_list, set_groups_list}`.
+
 ## [v0.10.25] - 2019-10-02
 
 ### Fixed
@@ -398,7 +470,13 @@
 
 Look at the [release tags] for information about older releases.
 
-[Unreleased]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.24...master
+[Unreleased]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.30...master
+[v0.10.30]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.29...openssl-v0.10.30
+[v0.10.29]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.28...openssl-v0.10.29
+[v0.10.28]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.27...openssl-v0.10.28
+[v0.10.27]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.26...openssl-v0.10.27
+[v0.10.26]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.25...openssl-v0.10.26
+[v0.10.25]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.24...openssl-v0.10.25
 [v0.10.24]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.23...openssl-v0.10.24
 [v0.10.23]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.22...openssl-v0.10.23
 [v0.10.22]: https://github.com/sfackler/rust-openssl/compare/openssl-v0.10.21...openssl-v0.10.22

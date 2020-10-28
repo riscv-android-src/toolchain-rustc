@@ -43,23 +43,23 @@
 
 #![warn(missing_docs)]
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 extern crate commoncrypto;
 extern crate hex;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
 extern crate openssl;
 #[cfg(target_os = "windows")]
 extern crate winapi;
 
 use std::io::Write;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "ios"))]
 #[path = "imp/commoncrypto.rs"]
 mod imp;
 #[cfg(target_os = "windows")]
 #[path = "imp/cryptoapi.rs"]
 mod imp;
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "ios", target_os = "windows")))]
 #[path = "imp/openssl.rs"]
 mod imp;
 
@@ -68,7 +68,7 @@ mod test;
 pub use imp::Hasher;
 
 /// Available cryptographic hash functions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Algorithm {
     /// Popular message digest algorithm, only available for backwards compatibility purposes.
     MD5,

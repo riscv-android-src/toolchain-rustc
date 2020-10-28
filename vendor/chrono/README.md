@@ -32,7 +32,7 @@ which Chrono builds upon and should acknowledge:
 * Luis de Bethencourt's [rust-datetime](https://github.com/luisbg/rust-datetime)
 
 Any significant changes to Chrono are documented in
-the [`CHANGELOG.md`](https://github.com/chronotope/chrono/blob/master/CHANGELOG.md) file.
+the [`CHANGELOG.md`](https://github.com/chronotope/chrono/blob/main/CHANGELOG.md) file.
 
 
 ## Usage
@@ -44,26 +44,34 @@ Put this in your `Cargo.toml`:
 chrono = "0.4"
 ```
 
-Or, if you want [Serde](https://github.com/serde-rs/serde) include the
-feature like this:
+### Features
 
-```toml
-[dependencies]
-chrono = { version = "0.4", features = ["serde"] }
-```
+Chrono supports various runtime environments and operating systems, and has
+several features that may be enabled or disabled.
 
-Then put this in your crate root:
+Default features:
 
-```rust
-extern crate chrono;
-```
+- `alloc`: Enable features that depend on allocation (primarily string formatting)
+- `std`: Enables functionality that depends on the standard library. This
+  is a superset of `alloc` and adds interoperation with standard library types
+  and traits.
+- `clock`: enables reading the system time (`now`), independent of whether
+  `std::time::SystemTime` is present, depends on having a libc.
 
-Avoid using `use chrono::*;` as Chrono exports several modules other than types.
-If you prefer the glob imports, use the following instead:
+Optional features:
 
-```rust
-use chrono::prelude::*;
-```
+- `wasmbind`: Enable integration with [wasm-bindgen][] and its `js-sys` project
+- [`serde`][]: Enable serialization/deserialization via serde.
+- `unstable-locales`: Enable localization. This adds various methods with a
+  `_localized` suffix. The implementation and API may change or even be
+  removed in a patch release. Feedback welcome.
+
+[`serde`]: https://github.com/serde-rs/serde
+[wasm-bindgen]: https://github.com/rustwasm/wasm-bindgen
+
+See the [cargo docs][] for examples of specifying features.
+
+[cargo docs]: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#choosing-features
 
 ## Overview
 
@@ -220,12 +228,23 @@ Chrono also provides [`to_rfc2822`](https://docs.rs/chrono/0.4/chrono/struct.Dat
 [`to_rfc3339`](https://docs.rs/chrono/0.4/chrono/struct.DateTime.html#method.to_rfc3339) methods
 for well-known formats.
 
+Chrono now also provides date formatting in almost any language without the
+help of an additional C library. This functionality is under the feature
+`unstable-locales`:
+
+```text
+chrono { version = "0.4", features = ["unstable-locales"]
+```
+
+The `unstable-locales` feature requires and implies at least the `alloc` feature.
+
 ```rust
 use chrono::prelude::*;
 
 let dt = Utc.ymd(2014, 11, 28).and_hms(12, 0, 9);
 assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2014-11-28 12:00:09");
 assert_eq!(dt.format("%a %b %e %T %Y").to_string(), "Fri Nov 28 12:00:09 2014");
+assert_eq!(dt.format_localized("%A %e %B %Y, %T", Locale::fr_BE).to_string(), "vendredi 28 novembre 2014, 12:00:09");
 assert_eq!(dt.format("%a %b %e %T %Y").to_string(), dt.format("%c").to_string());
 
 assert_eq!(dt.to_string(), "2014-11-28 12:00:09 UTC");

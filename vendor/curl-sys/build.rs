@@ -47,6 +47,17 @@ fn main() {
             .status();
     }
 
+    if target.contains("apple") {
+        // On (older) OSX we need to link against the clang runtime,
+        // which is hidden in some non-default path.
+        //
+        // More details at https://github.com/alexcrichton/curl-rust/issues/279.
+        if let Some(path) = macos_link_search_path() {
+            println!("cargo:rustc-link-lib=clang_rt.osx");
+            println!("cargo:rustc-link-search={}", path);
+        }
+    }
+
     let dst = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let include = dst.join("include");
     let build = dst.join("build");
@@ -105,7 +116,6 @@ fn main() {
         .define("BUILDING_LIBCURL", None)
         .define("CURL_DISABLE_CRYPTO_AUTH", None)
         .define("CURL_DISABLE_DICT", None)
-        .define("CURL_DISABLE_FTP", None)
         .define("CURL_DISABLE_GOPHER", None)
         .define("CURL_DISABLE_IMAP", None)
         .define("CURL_DISABLE_LDAP", None)
@@ -137,6 +147,7 @@ fn main() {
         .file("curl/lib/curl_threads.c")
         .file("curl/lib/dotdot.c")
         .file("curl/lib/doh.c")
+        .file("curl/lib/dynbuf.c")
         .file("curl/lib/easy.c")
         .file("curl/lib/escape.c")
         .file("curl/lib/file.c")
@@ -165,6 +176,7 @@ fn main() {
         .file("curl/lib/parsedate.c")
         .file("curl/lib/progress.c")
         .file("curl/lib/rand.c")
+        .file("curl/lib/rename.c")
         .file("curl/lib/select.c")
         .file("curl/lib/sendf.c")
         .file("curl/lib/setopt.c")
@@ -184,12 +196,23 @@ fn main() {
         .file("curl/lib/url.c")
         .file("curl/lib/urlapi.c")
         .file("curl/lib/version.c")
+        .file("curl/lib/vtls/keylog.c")
         .file("curl/lib/vtls/vtls.c")
         .file("curl/lib/warnless.c")
         .file("curl/lib/wildcard.c")
         .define("HAVE_GETADDRINFO", None)
         .define("HAVE_GETPEERNAME", None)
+        .define("HAVE_GETSOCKNAME", None)
         .warnings(false);
+
+    if cfg!(feature = "protocol-ftp") {
+        cfg.file("curl/lib/curl_fnmatch.c")
+            .file("curl/lib/ftp.c")
+            .file("curl/lib/ftplistparser.c")
+            .file("curl/lib/pingpong.c");
+    } else {
+        cfg.define("CURL_DISABLE_FTP", None);
+    }
 
     if cfg!(feature = "http2") {
         cfg.define("USE_NGHTTP2", None)
@@ -211,6 +234,11 @@ fn main() {
         cfg.define("USE_SPNEGO", None)
             .file("curl/lib/http_negotiate.c")
             .file("curl/lib/vauth/vauth.c");
+    }
+
+    if !windows {
+        cfg.define("USE_UNIX_SOCKETS", None)
+            .define("HAVE_SYS_UN_H", None);
     }
 
     // Configure TLS backend. Since Cargo does not support mutually exclusive
@@ -263,7 +291,8 @@ fn main() {
             .define("USE_THREADS_WIN32", None)
             .define("HAVE_IOCTLSOCKET_FIONBIO", None)
             .define("USE_WINSOCK", None)
-            .file("curl/lib/system_win32.c");
+            .file("curl/lib/system_win32.c")
+            .file("curl/lib/curl_multibyte.c");
 
         if cfg!(feature = "spnego") {
             cfg.file("curl/lib/vauth/spnego_sspi.c");
@@ -479,4 +508,28 @@ fn curl_config_reports_http2() -> bool {
     }
 
     return true;
+}
+
+fn macos_link_search_path() -> Option<String> {
+    let output = Command::new("clang")
+        .arg("--print-search-dirs")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        println!(
+            "failed to run 'clang --print-search-dirs', continuing without a link search path"
+        );
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if line.contains("libraries: =") {
+            let path = line.split('=').skip(1).next()?;
+            return Some(format!("{}/lib/darwin", path));
+        }
+    }
+
+    println!("failed to determine link search path, continuing without it");
+    None
 }

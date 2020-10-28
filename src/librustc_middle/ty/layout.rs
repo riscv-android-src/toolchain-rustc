@@ -4,11 +4,11 @@ use crate::mir::{GeneratorLayout, GeneratorSavedLocal};
 use crate::ty::subst::Subst;
 use crate::ty::{self, subst::SubstsRef, ReprOptions, Ty, TyCtxt, TypeFoldable};
 
-use rustc_ast::ast::{self, IntTy, UintTy};
+use rustc_ast::{self as ast, IntTy, UintTy};
 use rustc_attr as attr;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir as hir;
-use rustc_hir::lang_items::{GeneratorStateLangItem, PinTypeLangItem};
+use rustc_hir::lang_items::LangItem;
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_session::{DataTypeKind, FieldInfo, SizeKind, VariantInfo};
@@ -165,7 +165,7 @@ pub const FAT_PTR_ADDR: usize = 0;
 /// - For a slice, this is the length.
 pub const FAT_PTR_EXTRA: usize = 1;
 
-#[derive(Copy, Clone, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, TyEncodable, TyDecodable)]
 pub enum LayoutError<'tcx> {
     Unknown(Ty<'tcx>),
     SizeOverflow(Ty<'tcx>),
@@ -774,12 +774,12 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     (present_variants.next(), present_variants.next())
                 };
                 let present_first = match present_first {
-                    present_first @ Some(_) => present_first,
+                    Some(present_first) => present_first,
                     // Uninhabited because it has no variants, or only absent ones.
                     None if def.is_enum() => return tcx.layout_raw(param_env.and(tcx.types.never)),
                     // If it's a struct, still compute a layout so that we can still compute the
                     // field offsets.
-                    None => Some(VariantIdx::new(0)),
+                    None => VariantIdx::new(0),
                 };
 
                 let is_struct = !def.is_enum() ||
@@ -791,7 +791,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     // Struct, or univariant enum equivalent to a struct.
                     // (Typechecking will reject discriminant-sizing attrs.)
 
-                    let v = present_first.unwrap();
+                    let v = present_first;
                     let kind = if def.is_enum() || variants[v].is_empty() {
                         StructKind::AlwaysSized
                     } else {
@@ -875,6 +875,8 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     .variants
                     .iter_enumerated()
                     .all(|(i, v)| v.discr == ty::VariantDiscr::Relative(i.as_u32()));
+
+                let mut niche_filling_layout = None;
 
                 // Niche-filling enum optimization.
                 if !def.repr.inhibit_enum_layout_opt() && no_explicit_discriminants {
@@ -972,7 +974,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                             let largest_niche =
                                 Niche::from_scalar(dl, offset, niche_scalar.clone());
 
-                            return Ok(tcx.intern_layout(Layout {
+                            niche_filling_layout = Some(Layout {
                                 variants: Variants::Multiple {
                                     tag: niche_scalar,
                                     tag_encoding: TagEncoding::Niche {
@@ -991,7 +993,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                                 largest_niche,
                                 size,
                                 align,
-                            }));
+                            });
                         }
                     }
                 }
@@ -1214,7 +1216,7 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
 
                 let largest_niche = Niche::from_scalar(dl, Size::ZERO, tag.clone());
 
-                tcx.intern_layout(Layout {
+                let tagged_layout = Layout {
                     variants: Variants::Multiple {
                         tag,
                         tag_encoding: TagEncoding::Direct,
@@ -1229,7 +1231,23 @@ impl<'tcx> LayoutCx<'tcx, TyCtxt<'tcx>> {
                     abi,
                     align,
                     size,
-                })
+                };
+
+                let best_layout = match (tagged_layout, niche_filling_layout) {
+                    (tagged_layout, Some(niche_filling_layout)) => {
+                        // Pick the smaller layout; otherwise,
+                        // pick the layout with the larger niche; otherwise,
+                        // pick tagged as it has simpler codegen.
+                        cmp::min_by_key(tagged_layout, niche_filling_layout, |layout| {
+                            let niche_size =
+                                layout.largest_niche.as_ref().map_or(0, |n| n.available(dl));
+                            (layout.size, cmp::Reverse(niche_size))
+                        })
+                    }
+                    (tagged_layout, None) => tagged_layout,
+                };
+
+                tcx.intern_layout(best_layout)
             }
 
             // Types with no meaningful known layout.
@@ -1903,7 +1921,7 @@ impl<'tcx> LayoutOf for LayoutCx<'tcx, TyCtxt<'tcx>> {
     /// Computes the layout of a type. Note that this implicitly
     /// executes in "reveal all" mode.
     fn layout_of(&self, ty: Ty<'tcx>) -> Self::TyAndLayout {
-        let param_env = self.param_env.with_reveal_all();
+        let param_env = self.param_env.with_reveal_all_normalized(self.tcx);
         let ty = self.tcx.normalize_erasing_regions(param_env, ty);
         let layout = self.tcx.layout_raw(param_env.and(ty))?;
         let layout = TyAndLayout { ty, layout };
@@ -1927,7 +1945,7 @@ impl LayoutOf for LayoutCx<'tcx, ty::query::TyCtxtAt<'tcx>> {
     /// Computes the layout of a type. Note that this implicitly
     /// executes in "reveal all" mode.
     fn layout_of(&self, ty: Ty<'tcx>) -> Self::TyAndLayout {
-        let param_env = self.param_env.with_reveal_all();
+        let param_env = self.param_env.with_reveal_all_normalized(*self.tcx);
         let ty = self.tcx.normalize_erasing_regions(param_env, ty);
         let layout = self.tcx.layout_raw(param_env.and(ty))?;
         let layout = TyAndLayout { ty, layout };
@@ -2148,16 +2166,31 @@ where
     }
 
     fn pointee_info_at(this: TyAndLayout<'tcx>, cx: &C, offset: Size) -> Option<PointeeInfo> {
-        match this.ty.kind {
+        let addr_space_of_ty = |ty: Ty<'tcx>| {
+            if ty.is_fn() { cx.data_layout().instruction_address_space } else { AddressSpace::DATA }
+        };
+
+        let pointee_info = match this.ty.kind {
             ty::RawPtr(mt) if offset.bytes() == 0 => {
                 cx.layout_of(mt.ty).to_result().ok().map(|layout| PointeeInfo {
                     size: layout.size,
                     align: layout.align.abi,
                     safe: None,
+                    address_space: addr_space_of_ty(mt.ty),
                 })
             }
-
+            ty::FnPtr(fn_sig) if offset.bytes() == 0 => {
+                cx.layout_of(cx.tcx().mk_fn_ptr(fn_sig)).to_result().ok().map(|layout| {
+                    PointeeInfo {
+                        size: layout.size,
+                        align: layout.align.abi,
+                        safe: None,
+                        address_space: cx.data_layout().instruction_address_space,
+                    }
+                })
+            }
             ty::Ref(_, ty, mt) if offset.bytes() == 0 => {
+                let address_space = addr_space_of_ty(ty);
                 let tcx = cx.tcx();
                 let is_freeze = ty.is_freeze(tcx.at(DUMMY_SP), cx.param_env());
                 let kind = match mt {
@@ -2192,6 +2225,7 @@ where
                     size: layout.size,
                     align: layout.align.abi,
                     safe: Some(kind),
+                    address_space,
                 })
             }
 
@@ -2236,7 +2270,9 @@ where
                             result = field.to_result().ok().and_then(|field| {
                                 if ptr_end <= field_start + field.size {
                                     // We found the right field, look inside it.
-                                    field.pointee_info_at(cx, offset - field_start)
+                                    let field_info =
+                                        field.pointee_info_at(cx, offset - field_start);
+                                    field_info
                                 } else {
                                     None
                                 }
@@ -2259,7 +2295,14 @@ where
 
                 result
             }
-        }
+        };
+
+        debug!(
+            "pointee_info_at (offset={:?}, type kind: {:?}) => {:?}",
+            offset, this.ty.kind, pointee_info
+        );
+
+        pointee_info
     }
 }
 
@@ -2281,12 +2324,22 @@ impl<'tcx> ty::Instance<'tcx> {
     // or should go through `FnAbi` instead, to avoid losing any
     // adjustments `FnAbi::of_instance` might be performing.
     fn fn_sig_for_fn_abi(&self, tcx: TyCtxt<'tcx>) -> ty::PolyFnSig<'tcx> {
-        let ty = self.monomorphic_ty(tcx);
+        // FIXME(davidtwco,eddyb): A `ParamEnv` should be passed through to this function.
+        let ty = self.ty(tcx, ty::ParamEnv::reveal_all());
         match ty.kind {
-            ty::FnDef(..) |
-            // Shims currently have type FnPtr. Not sure this should remain.
-            ty::FnPtr(_) => {
-                let mut sig = ty.fn_sig(tcx);
+            ty::FnDef(..) => {
+                // HACK(davidtwco,eddyb): This is a workaround for polymorphization considering
+                // parameters unused if they show up in the signature, but not in the `mir::Body`
+                // (i.e. due to being inside a projection that got normalized, see
+                // `src/test/ui/polymorphization/normalized_sig_types.rs`), and codegen not keeping
+                // track of a polymorphization `ParamEnv` to allow normalizing later.
+                let mut sig = match ty.kind {
+                    ty::FnDef(def_id, substs) => tcx
+                        .normalize_erasing_regions(tcx.param_env(def_id), tcx.fn_sig(def_id))
+                        .subst(tcx, substs),
+                    _ => unreachable!(),
+                };
+
                 if let ty::InstanceDef::VtableShim(..) = self.def {
                     // Modify `fn(self, ...)` to `fn(self: *mut Self, ...)`.
                     sig = sig.map_bound(|mut sig| {
@@ -2302,13 +2355,15 @@ impl<'tcx> ty::Instance<'tcx> {
                 let sig = substs.as_closure().sig();
 
                 let env_ty = tcx.closure_env_ty(def_id, substs).unwrap();
-                sig.map_bound(|sig| tcx.mk_fn_sig(
-                    iter::once(env_ty.skip_binder()).chain(sig.inputs().iter().cloned()),
-                    sig.output(),
-                    sig.c_variadic,
-                    sig.unsafety,
-                    sig.abi
-                ))
+                sig.map_bound(|sig| {
+                    tcx.mk_fn_sig(
+                        iter::once(env_ty.skip_binder()).chain(sig.inputs().iter().cloned()),
+                        sig.output(),
+                        sig.c_variadic,
+                        sig.unsafety,
+                        sig.abi,
+                    )
+                })
             }
             ty::Generator(_, substs, _) => {
                 let sig = substs.as_generator().poly_sig();
@@ -2316,18 +2371,16 @@ impl<'tcx> ty::Instance<'tcx> {
                 let env_region = ty::ReLateBound(ty::INNERMOST, ty::BrEnv);
                 let env_ty = tcx.mk_mut_ref(tcx.mk_region(env_region), ty);
 
-                let pin_did = tcx.require_lang_item(PinTypeLangItem, None);
+                let pin_did = tcx.require_lang_item(LangItem::Pin, None);
                 let pin_adt_ref = tcx.adt_def(pin_did);
                 let pin_substs = tcx.intern_substs(&[env_ty.into()]);
                 let env_ty = tcx.mk_adt(pin_adt_ref, pin_substs);
 
                 sig.map_bound(|sig| {
-                    let state_did = tcx.require_lang_item(GeneratorStateLangItem, None);
+                    let state_did = tcx.require_lang_item(LangItem::GeneratorState, None);
                     let state_adt_ref = tcx.adt_def(state_did);
-                    let state_substs = tcx.intern_substs(&[
-                        sig.yield_ty.into(),
-                        sig.return_ty.into(),
-                    ]);
+                    let state_substs =
+                        tcx.intern_substs(&[sig.yield_ty.into(), sig.return_ty.into()]);
                     let ret_ty = tcx.mk_adt(state_adt_ref, state_substs);
 
                     tcx.mk_fn_sig(
@@ -2335,11 +2388,11 @@ impl<'tcx> ty::Instance<'tcx> {
                         &ret_ty,
                         false,
                         hir::Unsafety::Normal,
-                        rustc_target::spec::abi::Abi::Rust
+                        rustc_target::spec::abi::Abi::Rust,
                     )
                 })
             }
-            _ => bug!("unexpected type {:?} in Instance::fn_sig", ty)
+            _ => bug!("unexpected type {:?} in Instance::fn_sig", ty),
         }
     }
 }

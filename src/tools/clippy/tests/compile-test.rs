@@ -3,7 +3,7 @@
 use compiletest_rs as compiletest;
 use compiletest_rs::common::Mode as TestMode;
 
-use std::env::{self, set_var};
+use std::env::{self, set_var, var};
 use std::ffi::OsStr;
 use std::fs;
 use std::io;
@@ -12,19 +12,11 @@ use std::path::{Path, PathBuf};
 mod cargo;
 
 fn host_lib() -> PathBuf {
-    if let Some(path) = option_env!("HOST_LIBS") {
-        PathBuf::from(path)
-    } else {
-        cargo::CARGO_TARGET_DIR.join(env!("PROFILE"))
-    }
+    option_env!("HOST_LIBS").map_or(cargo::CARGO_TARGET_DIR.join(env!("PROFILE")), PathBuf::from)
 }
 
 fn clippy_driver_path() -> PathBuf {
-    if let Some(path) = option_env!("CLIPPY_DRIVER_PATH") {
-        PathBuf::from(path)
-    } else {
-        cargo::TARGET_LIB.join("clippy-driver")
-    }
+    option_env!("CLIPPY_DRIVER_PATH").map_or(cargo::TARGET_LIB.join("clippy-driver"), PathBuf::from)
 }
 
 // When we'll want to use `extern crate ..` for a dependency that is used
@@ -144,7 +136,9 @@ fn run_ui_toml(config: &mut compiletest::Config) {
 
     let tests = compiletest::make_tests(&config);
 
+    let manifest_dir = var("CARGO_MANIFEST_DIR").unwrap_or_default();
     let res = run_tests(&config, tests);
+    set_var("CARGO_MANIFEST_DIR", &manifest_dir);
     match res {
         Ok(true) => {},
         Ok(false) => panic!("Some tests failed"),
@@ -155,9 +149,6 @@ fn run_ui_toml(config: &mut compiletest::Config) {
 }
 
 fn run_ui_cargo(config: &mut compiletest::Config) {
-    if cargo::is_rustc_test_suite() {
-        return;
-    }
     fn run_tests(
         config: &compiletest::Config,
         filter: &Option<String>,
@@ -223,6 +214,10 @@ fn run_ui_cargo(config: &mut compiletest::Config) {
             }
         }
         Ok(result)
+    }
+
+    if cargo::is_rustc_test_suite() {
+        return;
     }
 
     config.mode = TestMode::Ui;

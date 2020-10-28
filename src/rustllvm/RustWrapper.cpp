@@ -366,7 +366,6 @@ LLVMRustBuildAtomicCmpXchg(LLVMBuilderRef B, LLVMValueRef Target,
 }
 
 enum class LLVMRustSynchronizationScope {
-  Other,
   SingleThread,
   CrossThread,
 };
@@ -389,7 +388,6 @@ LLVMRustBuildAtomicFence(LLVMBuilderRef B, LLVMAtomicOrdering Order,
 }
 
 enum class LLVMRustAsmDialect {
-  Other,
   Att,
   Intel,
 };
@@ -1395,7 +1393,7 @@ extern "C" LLVMValueRef LLVMRustBuildCall(LLVMBuilderRef B, LLVMValueRef Fn,
       FTy, Callee, makeArrayRef(unwrap(Args), NumArgs), Bundles));
 }
 
-extern "C" LLVMValueRef LLVMRustGetInstrprofIncrementIntrinsic(LLVMModuleRef M) {
+extern "C" LLVMValueRef LLVMRustGetInstrProfIncrementIntrinsic(LLVMModuleRef M) {
   return wrap(llvm::Intrinsic::getDeclaration(unwrap(M),
               (llvm::Intrinsic::ID)llvm::Intrinsic::instrprof_increment));
 }

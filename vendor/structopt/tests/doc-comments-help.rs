@@ -6,25 +6,25 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+mod utils;
+
 use structopt::StructOpt;
+use utils::*;
 
 #[test]
-fn commets_intead_of_actual_help() {
+fn doc_comments() {
     /// Lorem ipsum
     #[derive(StructOpt, PartialEq, Debug)]
     struct LoremIpsum {
         /// Fooify a bar
         /// and a baz
-        #[structopt(short = "f", long = "foo")]
+        #[structopt(short, long)]
         foo: bool,
     }
 
-    let mut output = Vec::new();
-    LoremIpsum::clap().write_long_help(&mut output).unwrap();
-    let output = String::from_utf8(output).unwrap();
-
-    assert!(output.contains("Lorem ipsum"));
-    assert!(output.contains("Fooify a bar and a baz"));
+    let help = get_long_help::<LoremIpsum>();
+    assert!(help.contains("Lorem ipsum"));
+    assert!(help.contains("Fooify a bar and a baz"));
 }
 
 #[test]
@@ -34,21 +34,14 @@ fn help_is_better_than_comments() {
     #[structopt(name = "lorem-ipsum", about = "Dolor sit amet")]
     struct LoremIpsum {
         /// Fooify a bar
-        #[structopt(
-            short = "f",
-            long = "foo",
-            help = "DO NOT PASS A BAR UNDER ANY CIRCUMSTANCES"
-        )]
+        #[structopt(short, long, help = "DO NOT PASS A BAR UNDER ANY CIRCUMSTANCES")]
         foo: bool,
     }
 
-    let mut output = Vec::new();
-    LoremIpsum::clap().write_long_help(&mut output).unwrap();
-    let output = String::from_utf8(output).unwrap();
-
-    assert!(output.contains("Dolor sit amet"));
-    assert!(!output.contains("Lorem ipsum"));
-    assert!(output.contains("DO NOT PASS A BAR"));
+    let help = get_long_help::<LoremIpsum>();
+    assert!(help.contains("Dolor sit amet"));
+    assert!(!help.contains("Lorem ipsum"));
+    assert!(help.contains("DO NOT PASS A BAR"));
 }
 
 #[test]
@@ -60,52 +53,40 @@ fn empty_line_in_doc_comment_is_double_linefeed() {
     #[structopt(name = "lorem-ipsum", no_version)]
     struct LoremIpsum {}
 
-    let mut output = Vec::new();
-    LoremIpsum::clap().write_long_help(&mut output).unwrap();
-    let output = String::from_utf8(output).unwrap();
-
-    println!("{}", output);
-    assert!(output.starts_with("lorem-ipsum \nFoo.\n\nBar\n\nUSAGE:"));
+    let help = get_long_help::<LoremIpsum>();
+    assert!(help.starts_with("lorem-ipsum \nFoo.\n\nBar\n\nUSAGE:"));
 }
 
 #[test]
-fn splits_flag_doc_comment_between_short_and_long() {
+fn field_long_doc_comment_both_help_long_help() {
     /// Lorem ipsumclap
     #[derive(StructOpt, PartialEq, Debug)]
     #[structopt(name = "lorem-ipsum", about = "Dolor sit amet")]
     struct LoremIpsum {
-        /// DO NOT PASS A BAR UNDER ANY CIRCUMSTANCES.
+        /// Dot is removed from multiline comments.
         ///
-        /// Or something else
-        #[structopt(long = "foo")]
+        /// Long help
+        #[structopt(long)]
         foo: bool,
+
+        /// Dot is removed from one short comment.
+        #[structopt(long)]
+        bar: bool,
     }
 
-    let mut app = LoremIpsum::clap();
+    let short_help = get_help::<LoremIpsum>();
+    let long_help = get_long_help::<LoremIpsum>();
 
-    let short_help = {
-        let mut buffer = Vec::new();
-        app.write_help(&mut buffer).ok();
-
-        String::from_utf8(buffer).unwrap()
-    };
-
-    let long_help = {
-        let mut buffer = Vec::new();
-        app.write_long_help(&mut buffer).ok();
-
-        String::from_utf8(buffer).unwrap()
-    };
-
-    assert!(short_help.contains("CIRCUMSTANCES"));
-    assert!(!short_help.contains("CIRCUMSTANCES."));
-    assert!(!short_help.contains("Or something else"));
-    assert!(long_help.contains("DO NOT PASS A BAR UNDER ANY CIRCUMSTANCES"));
-    assert!(long_help.contains("Or something else"));
+    assert!(short_help.contains("Dot is removed from one short comment"));
+    assert!(!short_help.contains("Dot is removed from one short comment."));
+    assert!(short_help.contains("Dot is removed from multiline comments"));
+    assert!(!short_help.contains("Dot is removed from multiline comments."));
+    assert!(long_help.contains("Long help"));
+    assert!(!short_help.contains("Long help"));
 }
 
 #[test]
-fn splits_subcommand_doc_comment_between_short_and_long() {
+fn top_long_doc_comment_both_help_long_help() {
     /// Lorem ipsumclap
     #[derive(StructOpt, Debug)]
     #[structopt(name = "lorem-ipsum", about = "Dolor sit amet")]
@@ -119,29 +100,86 @@ fn splits_subcommand_doc_comment_between_short_and_long() {
         /// DO NOT PASS A BAR UNDER ANY CIRCUMSTANCES
         ///
         /// Or something else
-        #[structopt(name = "foo")]
         Foo {
             #[structopt(help = "foo")]
             bars: Vec<String>,
         },
     }
 
-    let app = LoremIpsum::clap();
-
-    let short_help = {
-        let mut buffer = Vec::new();
-        app.write_help(&mut buffer).ok();
-
-        String::from_utf8(buffer).unwrap()
-    };
-
-    let long_help = {
-        app.get_matches_from_safe(vec!["test", "foo", "--help"])
-            .expect_err("")
-            .message
-    };
+    let short_help = get_help::<LoremIpsum>();
+    let long_help = get_subcommand_long_help::<LoremIpsum>("foo");
 
     assert!(!short_help.contains("Or something else"));
     assert!(long_help.contains("DO NOT PASS A BAR UNDER ANY CIRCUMSTANCES"));
     assert!(long_help.contains("Or something else"));
+}
+
+#[test]
+fn verbatim_doc_comment() {
+    /// DANCE!
+    ///
+    ///                    ()
+    ///                    |
+    ///               (   ()   )
+    ///     ) ________    //  )
+    ///  ()  |\       \  //
+    /// ( \\__ \ ______\//
+    ///    \__) |       |
+    ///      |  |       |
+    ///       \ |       |
+    ///        \|_______|
+    ///        //    \\
+    ///       ((     ||
+    ///        \\    ||
+    ///      ( ()    ||
+    ///       (      () ) )
+    #[derive(StructOpt, Debug)]
+    #[structopt(verbatim_doc_comment)]
+    struct SeeFigure1 {
+        #[structopt(long)]
+        foo: bool,
+    }
+
+    let help = get_long_help::<SeeFigure1>();
+    let sample = r#"
+                   ()
+                   |
+              (   ()   )
+    ) ________    //  )
+ ()  |\       \  //
+( \\__ \ ______\//
+   \__) |       |
+     |  |       |
+      \ |       |
+       \|_______|
+       //    \\
+      ((     ||
+       \\    ||
+     ( ()    ||
+      (      () ) )"#;
+
+    assert!(help.contains(sample))
+}
+
+#[test]
+fn verbatim_doc_comment_field() {
+    #[derive(StructOpt, Debug)]
+    struct App {
+        /// This help ends in a period.
+        #[structopt(long, verbatim_doc_comment)]
+        foo: bool,
+        /// This help does not end in a period.
+        #[structopt(long)]
+        bar: bool,
+    }
+
+    let help = get_long_help::<App>();
+    let sample = r#"
+        --bar        
+            This help does not end in a period
+
+        --foo        
+            This help ends in a period."#;
+
+    assert!(help.contains(sample))
 }

@@ -33,11 +33,15 @@ s! {
         pub ai_protocol: ::c_int,
         pub ai_addrlen: socklen_t,
 
+        #[cfg(not(all(libc_cfg_target_vendor, target_arch = "powerpc",
+              target_vendor = "nintendo")))]
         #[cfg(target_arch = "xtensa")]
         pub ai_addr: *mut sockaddr,
 
         pub ai_canonname: *mut ::c_char,
 
+        #[cfg(not(all(libc_cfg_target_vendor, target_arch = "powerpc",
+              target_vendor = "nintendo")))]
         #[cfg(not(target_arch = "xtensa"))]
         pub ai_addr: *mut sockaddr,
 
@@ -416,7 +420,6 @@ pub const PF_INET6: ::c_int = 23;
 
 pub const AF_UNSPEC: ::c_int = 0;
 pub const AF_INET: ::c_int = 2;
-pub const AF_INET6: ::c_int = 23;
 
 pub const CLOCK_REALTIME: ::clockid_t = 1;
 pub const CLOCK_MONOTONIC: ::clockid_t = 4;
@@ -424,14 +427,6 @@ pub const CLOCK_BOOTTIME: ::clockid_t = 4;
 
 pub const SOCK_STREAM: ::c_int = 1;
 pub const SOCK_DGRAM: ::c_int = 2;
-
-pub const MSG_OOB: ::c_int = 1;
-pub const MSG_PEEK: ::c_int = 2;
-pub const MSG_DONTWAIT: ::c_int = 4;
-pub const MSG_DONTROUTE: ::c_int = 0;
-pub const MSG_WAITALL: ::c_int = 0;
-pub const MSG_MORE: ::c_int = 0;
-pub const MSG_NOSIGNAL: ::c_int = 0;
 
 pub const SHUT_RD: ::c_int = 0;
 pub const SHUT_WR: ::c_int = 1;
@@ -607,6 +602,8 @@ extern "C" {
     pub fn rand() -> ::c_int;
     pub fn srand(seed: ::c_uint);
 
+    #[cfg(not(all(libc_cfg_target_vendor, target_arch = "powerpc",
+          target_vendor = "nintendo")))]
     pub fn bind(fd: ::c_int, addr: *const sockaddr, len: socklen_t)
         -> ::c_int;
     pub fn clock_settime(
@@ -623,6 +620,8 @@ extern "C" {
     ) -> ::c_int;
     pub fn closesocket(sockfd: ::c_int) -> ::c_int;
     pub fn ioctl(fd: ::c_int, request: ::c_ulong, ...) -> ::c_int;
+    #[cfg(not(all(libc_cfg_target_vendor, target_arch = "powerpc",
+          target_vendor = "nintendo")))]
     pub fn recvfrom(
         fd: ::c_int,
         buf: *mut ::c_void,
@@ -631,6 +630,8 @@ extern "C" {
         addr: *mut sockaddr,
         addr_len: *mut socklen_t,
     ) -> isize;
+    #[cfg(not(all(libc_cfg_target_vendor, target_arch = "powerpc",
+          target_vendor = "nintendo")))]
     pub fn getnameinfo(
         sa: *const sockaddr,
         salen: socklen_t,
@@ -709,6 +710,9 @@ cfg_if! {
     } else if #[cfg(target_arch = "xtensa")] {
         mod xtensa;
         pub use self::xtensa::*;
+    } else if #[cfg(target_arch = "powerpc")] {
+        mod powerpc;
+        pub use self::powerpc::*;
     } else {
         // Only tested on ARM so far. Other platforms might have different
         // definitions for types and constants.

@@ -95,6 +95,14 @@ Versioning](https://semver.org/), so make sure you follow some basic rules:
   traits, fields, types, functions, methods or anything else.
 * Use version numbers with three numeric parts such as 1.0.0 rather than 1.0.
 
+See the [Resolver] chapter for more information on how Cargo uses versions to
+resolve dependencies, and for guidelines on setting your own version. See the
+[Semver compatibility] chapter for more details on exactly what constitutes a
+breaking change.
+
+[Resolver]: resolver.md
+[Semver compatibility]: semver.md
+
 <a id="the-authors-field-optional"></a>
 #### The `authors` field
 
@@ -218,8 +226,8 @@ the user must comply with both licenses simultaneously. The `WITH` operator
 indicates a license with a special exception. Some examples:
 
 * `MIT OR Apache-2.0`
-* `LGPL-2.1 AND MIT AND BSD-2-Clause`
-* `GPL-2.0+ WITH Bison-exception-2.2`
+* `LGPL-2.1-only AND MIT AND BSD-2-Clause`
+* `GPL-2.0-or-later WITH Bison-exception-2.2`
 
 If a package is using a nonstandard license, then the `license-file` field may
 be specified in lieu of the `license` field.
@@ -405,6 +413,9 @@ allowed to be published to.
 # ...
 publish = ["some-registry-name"]
 ```
+
+If publish array contains a single registry, `cargo publish` command will use
+it when `--registry` flag is not specified.
 
 <a id="the-metadata-table-optional"></a>
 #### The `metadata` table

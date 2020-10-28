@@ -1,4 +1,6 @@
-use std::error::Error as _;
+#![deny(clippy::all, clippy::pedantic)]
+
+use std::error::Error as StdError;
 use std::io;
 use thiserror::Error;
 
@@ -16,6 +18,13 @@ pub struct ExplicitSource {
     io: io::Error,
 }
 
+#[derive(Error, Debug)]
+#[error("boxed source")]
+pub struct BoxedSource {
+    #[source]
+    source: Box<dyn StdError + Send + 'static>,
+}
+
 #[test]
 fn test_implicit_source() {
     let io = io::Error::new(io::ErrorKind::Other, "oh no!");
@@ -30,5 +39,12 @@ fn test_explicit_source() {
         source: String::new(),
         io,
     };
+    error.source().unwrap().downcast_ref::<io::Error>().unwrap();
+}
+
+#[test]
+fn test_boxed_source() {
+    let source = Box::new(io::Error::new(io::ErrorKind::Other, "oh no!"));
+    let error = BoxedSource { source };
     error.source().unwrap().downcast_ref::<io::Error>().unwrap();
 }

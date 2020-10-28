@@ -1,17 +1,18 @@
 //! The compiler code necessary to implement the `#[derive]` extensions.
 
-use rustc_ast::ast::{self, ItemKind, MetaItem};
+use rustc_ast as ast;
 use rustc_ast::ptr::P;
+use rustc_ast::{ItemKind, MetaItem};
 use rustc_expand::base::{Annotatable, ExpandResult, ExtCtxt, MultiItemModifier};
 use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
 
 macro path_local($x:ident) {
-    generic::ty::Path::new_local(stringify!($x))
+    generic::ty::Path::new_local(sym::$x)
 }
 
-macro pathvec_std($cx:expr, $($rest:ident)::+) {{
-    vec![ $( stringify!($rest) ),+ ]
+macro pathvec_std($($rest:ident)::+) {{
+    vec![ $( sym::$rest ),+ ]
 }}
 
 macro path_std($($x:tt)*) {
@@ -62,11 +63,11 @@ impl MultiItemModifier for BuiltinDerive {
 fn call_intrinsic(
     cx: &ExtCtxt<'_>,
     span: Span,
-    intrinsic: &str,
+    intrinsic: Symbol,
     args: Vec<P<ast::Expr>>,
 ) -> P<ast::Expr> {
     let span = cx.with_def_site_ctxt(span);
-    let path = cx.std_path(&[sym::intrinsics, Symbol::intern(intrinsic)]);
+    let path = cx.std_path(&[sym::intrinsics, intrinsic]);
     let call = cx.expr_call_global(span, path, args);
 
     cx.expr_block(P(ast::Block {
@@ -84,7 +85,7 @@ fn inject_impl_of_structural_trait(
     cx: &mut ExtCtxt<'_>,
     span: Span,
     item: &Annotatable,
-    structural_path: generic::ty::Path<'_>,
+    structural_path: generic::ty::Path,
     push: &mut dyn FnMut(Annotatable),
 ) {
     let item = match *item {

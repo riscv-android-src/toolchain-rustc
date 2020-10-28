@@ -61,7 +61,7 @@ impl<Tag> MemPlaceMeta<Tag> {
 pub struct MemPlace<Tag = ()> {
     /// A place may have an integral pointer for ZSTs, and since it might
     /// be turned back into a reference before ever being dereferenced.
-    /// However, it may never be undef.
+    /// However, it may never be uninit.
     pub ptr: Scalar<Tag>,
     pub align: Align,
     /// Metadata for unsized places. Interpretation is up to the type.
@@ -292,9 +292,9 @@ where
             val.layout.ty.builtin_deref(true).expect("`ref_to_mplace` called on non-ptr type").ty;
         let layout = self.layout_of(pointee_type)?;
         let (ptr, meta) = match *val {
-            Immediate::Scalar(ptr) => (ptr.not_undef()?, MemPlaceMeta::None),
+            Immediate::Scalar(ptr) => (ptr.check_init()?, MemPlaceMeta::None),
             Immediate::ScalarPair(ptr, meta) => {
-                (ptr.not_undef()?, MemPlaceMeta::Meta(meta.not_undef()?))
+                (ptr.check_init()?, MemPlaceMeta::Meta(meta.check_init()?))
             }
         };
 
@@ -541,7 +541,7 @@ where
                 let n = self.access_local(self.frame(), local, Some(layout))?;
                 let n = self.read_scalar(n)?;
                 let n = u64::try_from(
-                    self.force_bits(n.not_undef()?, self.tcx.data_layout.pointer_size)?,
+                    self.force_bits(n.check_init()?, self.tcx.data_layout.pointer_size)?,
                 )
                 .unwrap();
                 self.mplace_index(base, n)?
@@ -648,7 +648,7 @@ where
             place_ty = self.place_projection(place_ty, &elem)?
         }
 
-        self.dump_place(place_ty.place);
+        trace!("{:?}", self.dump_place(place_ty.place));
         // Sanity-check the type we ended up with.
         debug_assert!(mir_assign_valid_types(
             *self.tcx,
@@ -729,7 +729,7 @@ where
                         "Size mismatch when writing bits"
                     )
                 }
-                Immediate::Scalar(ScalarMaybeUninit::Uninit) => {} // undef can have any size
+                Immediate::Scalar(ScalarMaybeUninit::Uninit) => {} // uninit can have any size
                 Immediate::ScalarPair(_, _) => {
                     // FIXME: Can we check anything here?
                 }
@@ -922,7 +922,7 @@ where
             // FIXME: This should be an assert instead of an error, but if we transmute within an
             // array length computation, `typeck` may not have yet been run and errored out. In fact
             // most likey we *are* running `typeck` right now. Investigate whether we can bail out
-            // on `typeck_tables().has_errors` at all const eval entry points.
+            // on `typeck_results().has_errors` at all const eval entry points.
             debug!("Size mismatch when transmuting!\nsrc: {:#?}\ndest: {:#?}", src, dest);
             self.tcx.sess.delay_span_bug(
                 self.cur_span(),
@@ -1126,7 +1126,7 @@ where
     ) -> InterpResult<'tcx, MPlaceTy<'tcx, M::PointerTag>> {
         // This must be an allocation in `tcx`
         let _ = self.tcx.global_alloc(raw.alloc_id);
-        let ptr = self.tag_global_base_pointer(Pointer::from(raw.alloc_id));
+        let ptr = self.global_base_pointer(Pointer::from(raw.alloc_id))?;
         let layout = self.layout_of(raw.ty)?;
         Ok(MPlaceTy::from_aligned_ptr(ptr, layout))
     }

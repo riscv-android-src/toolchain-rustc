@@ -1,5 +1,5 @@
 use super::{Diagnostic, PackageId, Target};
-use serde_json;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{self, BufRead, Lines, Read};
 use std::path::PathBuf;

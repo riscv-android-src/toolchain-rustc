@@ -54,13 +54,13 @@ async function tryActivate(context: vscode.ExtensionContext) {
     const serverPath = await bootstrap(config, state).catch(err => {
         let message = "bootstrap error. ";
 
-        if (err.code === "EBUSY" || err.code === "ETXTBSY") {
+        if (err.code === "EBUSY" || err.code === "ETXTBSY" || err.code === "EPERM") {
             message += "Other vscode windows might be using rust-analyzer, ";
             message += "you should close them and reload this window to retry. ";
         }
 
-        message += 'Open "Help > Toggle Developer Tools > Console" to see the logs ';
-        message += '(enable verbose logs with "rust-analyzer.trace.extension")';
+        message += 'See the logs in "OUTPUT > Rust Analyzer Client" (should open automatically). ';
+        message += 'To enable verbose logs use { "rust-analyzer.trace.extension": true }';
 
         log.error("Bootstrap error", err);
         throw new Error(message);
@@ -96,6 +96,7 @@ async function tryActivate(context: vscode.ExtensionContext) {
     });
 
     ctx.registerCommand('analyzerStatus', commands.analyzerStatus);
+    ctx.registerCommand('memoryUsage', commands.memoryUsage);
     ctx.registerCommand('reloadWorkspace', commands.reloadWorkspace);
     ctx.registerCommand('matchingBrace', commands.matchingBrace);
     ctx.registerCommand('joinLines', commands.joinLines);
@@ -214,7 +215,7 @@ async function bootstrapServer(config: Config, state: PersistentState): Promise<
         );
     }
 
-    log.debug("Using server binary at", path);
+    log.info("Using server binary at", path);
 
     if (!isValidExecutable(path)) {
         throw new Error(`Failed to execute ${path} --version`);
@@ -273,13 +274,13 @@ async function getServer(config: Config, state: PersistentState): Promise<string
     };
     if (config.package.releaseTag === null) return "rust-analyzer";
 
-    let binaryName: string | undefined = undefined;
+    let platform: string | undefined;
     if (process.arch === "x64" || process.arch === "ia32") {
-        if (process.platform === "linux") binaryName = "rust-analyzer-linux";
-        if (process.platform === "darwin") binaryName = "rust-analyzer-mac";
-        if (process.platform === "win32") binaryName = "rust-analyzer-windows.exe";
+        if (process.platform === "linux") platform = "linux";
+        if (process.platform === "darwin") platform = "mac";
+        if (process.platform === "win32") platform = "windows";
     }
-    if (binaryName === undefined) {
+    if (platform === undefined) {
         vscode.window.showErrorMessage(
             "Unfortunately we don't ship binaries for your platform yet. " +
             "You need to manually clone rust-analyzer repository and " +
@@ -290,8 +291,8 @@ async function getServer(config: Config, state: PersistentState): Promise<string
         );
         return undefined;
     }
-
-    const dest = path.join(config.globalStoragePath, binaryName);
+    const ext = platform === "windows" ? ".exe" : "";
+    const dest = path.join(config.globalStoragePath, `rust-analyzer-${platform}${ext}`);
     const exists = await fs.stat(dest).then(() => true, () => false);
     if (!exists) {
         await state.updateServerVersion(undefined);
@@ -308,7 +309,7 @@ async function getServer(config: Config, state: PersistentState): Promise<string
     }
 
     const release = await fetchRelease(config.package.releaseTag);
-    const artifact = release.assets.find(artifact => artifact.name === binaryName);
+    const artifact = release.assets.find(artifact => artifact.name === `rust-analyzer-${platform}.gz`);
     assert(!!artifact, `Bad release: ${JSON.stringify(release)}`);
 
     // Unlinking the exe file before moving new one on its place should prevent ETXTBSY error.
@@ -320,6 +321,7 @@ async function getServer(config: Config, state: PersistentState): Promise<string
         url: artifact.browser_download_url,
         dest,
         progressTitle: "Downloading rust-analyzer server",
+        gunzip: true,
         mode: 0o755
     });
 

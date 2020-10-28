@@ -4,25 +4,25 @@ use super::{FollowedByType, Parser, PathStyle};
 
 use crate::maybe_whole;
 
-use rustc_ast::ast::{self, AttrStyle, AttrVec, Attribute, DUMMY_NODE_ID};
-use rustc_ast::ast::{AssocItem, AssocItemKind, ForeignItemKind, Item, ItemKind, Mod};
-use rustc_ast::ast::{Async, Const, Defaultness, IsAuto, Mutability, Unsafe, UseTree, UseTreeKind};
-use rustc_ast::ast::{BindingMode, Block, FnDecl, FnSig, Param, SelfKind};
-use rustc_ast::ast::{EnumDef, Generics, StructField, TraitRef, Ty, TyKind, Variant, VariantData};
-use rustc_ast::ast::{FnHeader, ForeignItem, Path, PathSegment, Visibility, VisibilityKind};
-use rustc_ast::ast::{MacArgs, MacCall, MacDelimiter};
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, TokenKind};
 use rustc_ast::tokenstream::{DelimSpan, TokenStream, TokenTree};
+use rustc_ast::{self as ast, AttrStyle, AttrVec, Attribute, DUMMY_NODE_ID};
+use rustc_ast::{AssocItem, AssocItemKind, ForeignItemKind, Item, ItemKind, Mod};
+use rustc_ast::{Async, Const, Defaultness, IsAuto, Mutability, Unsafe, UseTree, UseTreeKind};
+use rustc_ast::{BindingMode, Block, FnDecl, FnSig, Param, SelfKind};
+use rustc_ast::{EnumDef, Generics, StructField, TraitRef, Ty, TyKind, Variant, VariantData};
+use rustc_ast::{FnHeader, ForeignItem, Path, PathSegment, Visibility, VisibilityKind};
+use rustc_ast::{MacArgs, MacCall, MacDelimiter};
 use rustc_ast_pretty::pprust;
 use rustc_errors::{struct_span_err, Applicability, PResult, StashKey};
 use rustc_span::edition::Edition;
 use rustc_span::source_map::{self, Span};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 
-use log::debug;
 use std::convert::TryFrom;
 use std::mem;
+use tracing::debug;
 
 impl<'a> Parser<'a> {
     /// Parses a source module as a crate. This is the main entry point for the parser.
@@ -227,7 +227,7 @@ impl<'a> Parser<'a> {
             (Ident::invalid(), ItemKind::Use(P(tree)))
         } else if self.check_fn_front_matter() {
             // FUNCTION ITEM
-            let (ident, sig, generics, body) = self.parse_fn(attrs, req_name)?;
+            let (ident, sig, generics, body) = self.parse_fn(attrs, req_name, lo)?;
             (ident, ItemKind::Fn(def(), sig, generics, body))
         } else if self.eat_keyword(kw::Extern) {
             if self.eat_keyword(kw::Crate) {
@@ -610,7 +610,7 @@ impl<'a> Parser<'a> {
 
     /// Recover on a doc comment before `}`.
     fn recover_doc_comment_before_brace(&mut self) -> bool {
-        if let token::DocComment(_) = self.token.kind {
+        if let token::DocComment(..) = self.token.kind {
             if self.look_ahead(1, |tok| tok == &token::CloseDelim(token::Brace)) {
                 struct_span_err!(
                     self.diagnostic(),
@@ -1231,7 +1231,7 @@ impl<'a> Parser<'a> {
                 self.bump();
             }
             token::CloseDelim(token::Brace) => {}
-            token::DocComment(_) => {
+            token::DocComment(..) => {
                 let previous_span = self.prev_token.span;
                 let mut err = self.span_fatal_err(self.token.span, Error::UselessDocComment);
                 self.bump(); // consume the doc comment
@@ -1313,7 +1313,7 @@ impl<'a> Parser<'a> {
         vis: Visibility,
         attrs: Vec<Attribute>,
     ) -> PResult<'a, StructField> {
-        let name = self.parse_ident()?;
+        let name = self.parse_ident_common(false)?;
         self.expect(&token::Colon)?;
         let ty = self.parse_ty()?;
         Ok(StructField {
@@ -1492,21 +1492,31 @@ impl<'a> Parser<'a> {
         &mut self,
         attrs: &mut Vec<Attribute>,
         req_name: ReqName,
+        sig_lo: Span,
     ) -> PResult<'a, (Ident, FnSig, Generics, Option<P<Block>>)> {
         let header = self.parse_fn_front_matter()?; // `const ... fn`
         let ident = self.parse_ident()?; // `foo`
         let mut generics = self.parse_generics()?; // `<'a, T, ...>`
         let decl = self.parse_fn_decl(req_name, AllowPlus::Yes)?; // `(p: u8, ...)`
         generics.where_clause = self.parse_where_clause()?; // `where T: Ord`
-        let body = self.parse_fn_body(attrs)?; // `;` or `{ ... }`.
-        Ok((ident, FnSig { header, decl }, generics, body))
+
+        let mut sig_hi = self.prev_token.span;
+        let body = self.parse_fn_body(attrs, &mut sig_hi)?; // `;` or `{ ... }`.
+        let fn_sig_span = sig_lo.to(sig_hi);
+        Ok((ident, FnSig { header, decl, span: fn_sig_span }, generics, body))
     }
 
     /// Parse the "body" of a function.
     /// This can either be `;` when there's no body,
     /// or e.g. a block when the function is a provided one.
-    fn parse_fn_body(&mut self, attrs: &mut Vec<Attribute>) -> PResult<'a, Option<P<Block>>> {
+    fn parse_fn_body(
+        &mut self,
+        attrs: &mut Vec<Attribute>,
+        sig_hi: &mut Span,
+    ) -> PResult<'a, Option<P<Block>>> {
         let (inner_attrs, body) = if self.check(&token::Semi) {
+            // Include the trailing semicolon in the span of the signature
+            *sig_hi = self.token.span;
             self.bump(); // `;`
             (Vec::new(), None)
         } else if self.check(&token::OpenDelim(token::Brace)) || self.token.is_whole_block() {

@@ -40,7 +40,7 @@ impl<I: Interner> CoherenceSolver<'_, I> {
                     (true, false) => record_specialization(l_id, r_id),
                     (false, true) => record_specialization(r_id, l_id),
                     (_, _) => {
-                        Err(CoherenceError::OverlappingImpls(self.trait_id))?;
+                        return Err(CoherenceError::OverlappingImpls(self.trait_id));
                     }
                 }
             }
@@ -93,13 +93,13 @@ impl<I: Interner> CoherenceSolver<'_, I> {
         let lhs_params = lhs_bound
             .trait_ref
             .substitution
-            .parameters(interner)
+            .as_slice(interner)
             .iter()
             .cloned();
         let rhs_params = rhs_bound
             .trait_ref
             .substitution
-            .parameters(interner)
+            .as_slice(interner)
             .iter()
             .map(|param| param.shifted_in(interner));
 
@@ -130,10 +130,8 @@ impl<I: Interner> CoherenceSolver<'_, I> {
             .negate(interner);
 
         let canonical_goal = &goal.into_closed_goal(interner);
-        let solution = self
-            .solver_choice
-            .into_solver()
-            .solve(self.db, canonical_goal);
+        let mut fresh_solver = (self.solver_builder)();
+        let solution = fresh_solver.solve(self.db, canonical_goal);
         let result = match solution {
             // Goal was proven with a unique solution, so no impl was found that causes these two
             // to overlap
@@ -223,14 +221,14 @@ impl<I: Interner> CoherenceSolver<'_, I> {
                             // T0 = U0, ..., Tm = Um
                             let params_goals = more_special_trait_ref
                                 .substitution
-                                .parameters(interner)
+                                .as_slice(interner)
                                 .iter()
                                 .cloned()
                                 .zip(
                                     less_special_impl
                                         .trait_ref
                                         .substitution
-                                        .parameters(interner)
+                                        .as_slice(interner)
                                         .iter()
                                         .cloned(),
                                 )
@@ -252,11 +250,8 @@ impl<I: Interner> CoherenceSolver<'_, I> {
         );
 
         let canonical_goal = &goal.into_closed_goal(interner);
-        let result = match self
-            .solver_choice
-            .into_solver()
-            .solve(self.db, canonical_goal)
-        {
+        let mut fresh_solver = (self.solver_builder)();
+        let result = match fresh_solver.solve(self.db, canonical_goal) {
             Some(sol) => sol.is_unique(),
             None => false,
         };

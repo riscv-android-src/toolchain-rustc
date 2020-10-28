@@ -4,6 +4,9 @@
 // compile-flags: -Z span-debug
 // edition:2018
 
+#![no_std] // Don't load unnecessary hygiene information from std
+extern crate std;
+
 extern crate nested_macro_rules;
 extern crate test_macros;
 

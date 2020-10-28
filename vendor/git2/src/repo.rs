@@ -14,8 +14,10 @@ use crate::diff::{
 use crate::oid_array::OidArray;
 use crate::stash::{stash_cb, StashApplyOptions, StashCbData};
 use crate::string_array::StringArray;
+use crate::tagforeach::{tag_foreach_cb, TagForeachCB, TagForeachData};
 use crate::util::{self, path_to_repo_path, Binding};
 use crate::CherrypickOptions;
+use crate::RevertOptions;
 use crate::{
     init, raw, AttrCheckFlags, Buf, Error, Object, Remote, RepositoryOpenFlags, RepositoryState,
     Revspec, StashFlags,
@@ -1053,6 +1055,14 @@ impl Repository {
         }
     }
 
+    /// Override the object database for this repository
+    pub fn set_odb(&self, odb: &Odb<'_>) -> Result<(), Error> {
+        unsafe {
+            try_call!(raw::git_repository_set_odb(self.raw(), odb.raw()));
+        }
+        Ok(())
+    }
+
     /// Create a new branch pointing at a target commit
     ///
     /// A new direct reference will be created pointing to this target commit.
@@ -1728,6 +1738,26 @@ impl Repository {
             }
             Ok(Binding::from_raw(arr))
         }
+    }
+
+    /// iterate over all tags calling `cb` on each.
+    /// the callback is provided the tag id and name
+    pub fn tag_foreach<T>(&self, cb: T) -> Result<(), Error>
+    where
+        T: FnMut(Oid, &[u8]) -> bool,
+    {
+        let mut data = TagForeachData {
+            cb: Box::new(cb) as TagForeachCB<'_>,
+        };
+
+        unsafe {
+            raw::git_tag_foreach(
+                self.raw,
+                Some(tag_foreach_cb),
+                (&mut data) as *mut _ as *mut _,
+            );
+        }
+        Ok(())
     }
 
     /// Updates files in the index and the working tree to match the content of
@@ -2511,11 +2541,22 @@ impl Repository {
         message: &str,
         flags: Option<StashFlags>,
     ) -> Result<Oid, Error> {
+        self.stash_save2(stasher, Some(message), flags)
+    }
+
+    /// Save the local modifications to a new stash.
+    /// unlike `stash_save` it allows to pass a null `message`
+    pub fn stash_save2(
+        &mut self,
+        stasher: &Signature<'_>,
+        message: Option<&str>,
+        flags: Option<StashFlags>,
+    ) -> Result<Oid, Error> {
         unsafe {
             let mut raw_oid = raw::git_oid {
                 id: [0; raw::GIT_OID_RAWSZ],
             };
-            let message = CString::new(message)?;
+            let message = crate::opt_cstr(message)?;
             let flags = flags.unwrap_or_else(StashFlags::empty);
             try_call!(raw::git_stash_save(
                 &mut raw_oid,
@@ -2657,6 +2698,16 @@ impl Repository {
         }
     }
 
+    /// Find the remote name of a remote-tracking branch
+    pub fn branch_remote_name(&self, refname: &str) -> Result<Buf, Error> {
+        let refname = CString::new(refname)?;
+        unsafe {
+            let buf = Buf::new();
+            try_call!(raw::git_branch_remote_name(buf.raw(), self.raw, refname));
+            Ok(buf)
+        }
+    }
+
     /// Retrieves the name of the reference supporting the remote tracking branch,
     /// given the name of a local branch reference.
     pub fn branch_upstream_name(&self, refname: &str) -> Result<Buf, Error> {
@@ -2698,6 +2749,46 @@ impl Repository {
             ));
 
             Ok(())
+        }
+    }
+
+    /// Reverts the given commit, producing changes in the index and working directory.
+    pub fn revert(
+        &self,
+        commit: &Commit<'_>,
+        options: Option<&mut RevertOptions<'_>>,
+    ) -> Result<(), Error> {
+        let raw_opts = options.map(|o| o.raw());
+        let ptr_raw_opts = match raw_opts.as_ref() {
+            Some(v) => v,
+            None => 0 as *const _,
+        };
+        unsafe {
+            try_call!(raw::git_revert(self.raw(), commit.raw(), ptr_raw_opts));
+            Ok(())
+        }
+    }
+
+    /// Reverts the given commit against the given "our" commit,
+    /// producing an index that reflects the result of the revert.
+    pub fn revert_commit(
+        &self,
+        revert_commit: &Commit<'_>,
+        our_commit: &Commit<'_>,
+        mainline: u32,
+        options: Option<&MergeOptions>,
+    ) -> Result<Index, Error> {
+        let mut ret = ptr::null_mut();
+        unsafe {
+            try_call!(raw::git_revert_commit(
+                &mut ret,
+                self.raw(),
+                revert_commit.raw(),
+                our_commit.raw(),
+                mainline,
+                options.map(|o| o.raw())
+            ));
+            Ok(Binding::from_raw(ret))
         }
     }
 }
@@ -3438,5 +3529,36 @@ mod tests {
         assert_eq!(commit4.parent(0).unwrap().id(), commit1.id());
         assert!(!p1.exists());
         assert!(p2.exists());
+    }
+
+    #[test]
+    fn smoke_revert() {
+        let (_td, repo) = crate::test::repo_init();
+        let foo_file = Path::new(repo.workdir().unwrap()).join("foo");
+        assert!(!foo_file.exists());
+
+        let (oid1, _id) = crate::test::commit(&repo);
+        let commit1 = repo.find_commit(oid1).unwrap();
+        t!(repo.reset(commit1.as_object(), ResetType::Hard, None));
+        assert!(foo_file.exists());
+
+        repo.revert(&commit1, None).unwrap();
+        let id = repo.index().unwrap().write_tree().unwrap();
+        let tree2 = repo.find_tree(id).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "commit 1", &tree2, &[&commit1])
+            .unwrap();
+        // reverting once removes `foo` file
+        assert!(!foo_file.exists());
+
+        let oid2 = repo.head().unwrap().target().unwrap();
+        let commit2 = repo.find_commit(oid2).unwrap();
+        repo.revert(&commit2, None).unwrap();
+        let id = repo.index().unwrap().write_tree().unwrap();
+        let tree3 = repo.find_tree(id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "commit 2", &tree3, &[&commit2])
+            .unwrap();
+        // reverting twice restores `foo` file
+        assert!(foo_file.exists());
     }
 }

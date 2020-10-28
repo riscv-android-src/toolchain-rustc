@@ -20,9 +20,9 @@ class MCSymbolWasm : public MCSymbol {
   bool IsComdat = false;
   mutable bool IsUsedInInitArray = false;
   mutable bool IsUsedInGOT = false;
-  Optional<std::string> ImportModule;
-  Optional<std::string> ImportName;
-  Optional<std::string> ExportName;
+  Optional<StringRef> ImportModule;
+  Optional<StringRef> ImportName;
+  Optional<StringRef> ExportName;
   wasm::WasmSignature *Signature = nullptr;
   Optional<wasm::WasmGlobalType> GlobalType;
   Optional<wasm::WasmEventType> EventType;
@@ -32,8 +32,6 @@ class MCSymbolWasm : public MCSymbol {
   const MCExpr *SymbolSize = nullptr;
 
 public:
-  // Use a module name of "env" for now, for compatibility with existing tools.
-  // This is temporary, and may change, as the ABI is not yet stable.
   MCSymbolWasm(const StringMapEntry<bool> *Name, bool isTemporary)
       : MCSymbol(SymbolKindWasm, Name, isTemporary) {}
   static bool classof(const MCSymbol *S) { return S->isWasm(); }
@@ -72,25 +70,28 @@ public:
   bool isComdat() const { return IsComdat; }
   void setComdat(bool isComdat) { IsComdat = isComdat; }
 
-  const StringRef getImportModule() const {
-      if (ImportModule.hasValue()) {
-          return ImportModule.getValue();
-      }
-      return "env";
+  bool hasImportModule() const { return ImportModule.hasValue(); }
+  StringRef getImportModule() const {
+    if (ImportModule.hasValue())
+      return ImportModule.getValue();
+    // Use a default module name of "env" for now, for compatibility with
+    // existing tools.
+    // TODO(sbc): Find a way to specify a default value in the object format
+    // without picking a hardcoded value like this.
+    return "env";
   }
   void setImportModule(StringRef Name) { ImportModule = Name; }
 
   bool hasImportName() const { return ImportName.hasValue(); }
-  const StringRef getImportName() const {
-      if (ImportName.hasValue()) {
-          return ImportName.getValue();
-      }
-      return getName();
+  StringRef getImportName() const {
+    if (ImportName.hasValue())
+      return ImportName.getValue();
+    return getName();
   }
   void setImportName(StringRef Name) { ImportName = Name; }
 
   bool hasExportName() const { return ExportName.hasValue(); }
-  const StringRef getExportName() const { return ExportName.getValue(); }
+  StringRef getExportName() const { return ExportName.getValue(); }
   void setExportName(StringRef Name) { ExportName = Name; }
 
   void setUsedInGOT() const { IsUsedInGOT = true; }

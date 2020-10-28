@@ -1,7 +1,7 @@
 //! The `Visitor` responsible for actually checking a `mir::Body` for invalid operations.
 
 use rustc_errors::struct_span_err;
-use rustc_hir::{self as hir, lang_items};
+use rustc_hir::{self as hir, LangItem};
 use rustc_hir::{def_id::DefId, HirId};
 use rustc_infer::infer::TyCtxtInferExt;
 use rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
@@ -215,7 +215,7 @@ impl Validator<'mir, 'tcx> {
             && !tcx.is_thread_local_static(def_id.to_def_id());
 
         if should_check_for_sync {
-            let hir_id = tcx.hir().as_local_hir_id(def_id);
+            let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
             check_return_ty_is_sync(tcx, &body, hir_id);
         }
     }
@@ -485,6 +485,7 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
             | StatementKind::StorageDead(_)
             | StatementKind::Retag { .. }
             | StatementKind::AscribeUserType(..)
+            | StatementKind::Coverage(..)
             | StatementKind::Nop => {}
         }
     }
@@ -520,8 +521,8 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
                     let instance = Instance::resolve(self.tcx, self.param_env, def_id, substs);
                     debug!("Resolving ({:?}) -> {:?}", def_id, instance);
                     if let Ok(Some(func)) = instance {
-                        if let InstanceDef::Item(def_id) = func.def {
-                            if is_const_fn(self.tcx, def_id) {
+                        if let InstanceDef::Item(def) = func.def {
+                            if is_const_fn(self.tcx, def.did) {
                                 return;
                             }
                         }
@@ -617,7 +618,7 @@ fn check_return_ty_is_sync(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, hir_id: HirId) 
     tcx.infer_ctxt().enter(|infcx| {
         let cause = traits::ObligationCause::new(body.span, hir_id, traits::SharedStatic);
         let mut fulfillment_cx = traits::FulfillmentContext::new();
-        let sync_def_id = tcx.require_lang_item(lang_items::SyncTraitLangItem, Some(body.span));
+        let sync_def_id = tcx.require_lang_item(LangItem::Sync, Some(body.span));
         fulfillment_cx.register_bound(&infcx, ty::ParamEnv::empty(), ty, sync_def_id, cause);
         if let Err(err) = fulfillment_cx.select_all_or_error(&infcx) {
             infcx.report_fulfillment_errors(&err, None, false);

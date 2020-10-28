@@ -103,7 +103,8 @@ CoveredBySubRegs = 1 in
   def R5R4   : AVRReg<4,  "r5:r4",   [R4, R5]>,   DwarfRegNum<[4]>;
   def R3R2   : AVRReg<2,  "r3:r2",   [R2, R3]>,   DwarfRegNum<[2]>;
   def R1R0   : AVRReg<0,  "r1:r0",   [R0, R1]>,   DwarfRegNum<[0]>;
-  // Pseudo registers for unaligned i32
+
+  // Pseudo registers for unaligned i16
   def R26R25 : AVRReg<25, "r26:r25", [R25, R26]>, DwarfRegNum<[25]>;
   def R24R23 : AVRReg<23, "r24:r23", [R23, R24]>, DwarfRegNum<[23]>;
   def R22R21 : AVRReg<21, "r22:r21", [R21, R22]>, DwarfRegNum<[21]>;

@@ -14,7 +14,7 @@ type McfResult = Result<(), (Span, Cow<'static, str>)>;
 pub fn is_min_const_fn(tcx: TyCtxt<'tcx>, def_id: DefId, body: &'a Body<'tcx>) -> McfResult {
     // Prevent const trait methods from being annotated as `stable`.
     if tcx.features().staged_api {
-        let hir_id = tcx.hir().as_local_hir_id(def_id.expect_local());
+        let hir_id = tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
         if crate::const_eval::is_parent_const_impl_raw(tcx, hir_id) {
             return Err((body.span, "trait methods cannot be stable const fn".into()));
         }
@@ -24,27 +24,27 @@ pub fn is_min_const_fn(tcx: TyCtxt<'tcx>, def_id: DefId, body: &'a Body<'tcx>) -
     loop {
         let predicates = tcx.predicates_of(current);
         for (predicate, _) in predicates.predicates {
-            match predicate.kind() {
-                ty::PredicateKind::RegionOutlives(_)
-                | ty::PredicateKind::TypeOutlives(_)
-                | ty::PredicateKind::WellFormed(_)
-                | ty::PredicateKind::Projection(_)
-                | ty::PredicateKind::ConstEvaluatable(..)
-                | ty::PredicateKind::ConstEquate(..) => continue,
-                ty::PredicateKind::ObjectSafe(_) => {
+            match predicate.skip_binders() {
+                ty::PredicateAtom::RegionOutlives(_)
+                | ty::PredicateAtom::TypeOutlives(_)
+                | ty::PredicateAtom::WellFormed(_)
+                | ty::PredicateAtom::Projection(_)
+                | ty::PredicateAtom::ConstEvaluatable(..)
+                | ty::PredicateAtom::ConstEquate(..) => continue,
+                ty::PredicateAtom::ObjectSafe(_) => {
                     bug!("object safe predicate on function: {:#?}", predicate)
                 }
-                ty::PredicateKind::ClosureKind(..) => {
+                ty::PredicateAtom::ClosureKind(..) => {
                     bug!("closure kind predicate on function: {:#?}", predicate)
                 }
-                ty::PredicateKind::Subtype(_) => {
+                ty::PredicateAtom::Subtype(_) => {
                     bug!("subtype predicate on function: {:#?}", predicate)
                 }
-                &ty::PredicateKind::Trait(pred, constness) => {
+                ty::PredicateAtom::Trait(pred, constness) => {
                     if Some(pred.def_id()) == tcx.lang_items().sized_trait() {
                         continue;
                     }
-                    match pred.skip_binder().self_ty().kind {
+                    match pred.self_ty().kind {
                         ty::Param(ref p) => {
                             // Allow `T: ?const Trait`
                             if constness == hir::Constness::NotConst
@@ -273,6 +273,7 @@ fn check_statement(
         | StatementKind::StorageDead(_)
         | StatementKind::Retag { .. }
         | StatementKind::AscribeUserType(..)
+        | StatementKind::Coverage(..)
         | StatementKind::Nop => Ok(()),
     }
 }
@@ -342,7 +343,7 @@ fn feature_allowed(tcx: TyCtxt<'tcx>, def_id: DefId, feature_gate: Symbol) -> bo
 
     // However, we cannot allow stable `const fn`s to use unstable features without an explicit
     // opt-in via `allow_internal_unstable`.
-    attr::allow_internal_unstable(&tcx.get_attrs(def_id), &tcx.sess.diagnostic())
+    attr::allow_internal_unstable(&tcx.sess, &tcx.get_attrs(def_id))
         .map_or(false, |mut features| features.any(|name| name == feature_gate))
 }
 
@@ -362,7 +363,7 @@ pub fn lib_feature_allowed(tcx: TyCtxt<'tcx>, def_id: DefId, feature_gate: Symbo
 
     // However, we cannot allow stable `const fn`s to use unstable features without an explicit
     // opt-in via `allow_internal_unstable`.
-    attr::allow_internal_unstable(&tcx.get_attrs(def_id), &tcx.sess.diagnostic())
+    attr::allow_internal_unstable(&tcx.sess, &tcx.get_attrs(def_id))
         .map_or(false, |mut features| features.any(|name| name == feature_gate))
 }
 

@@ -28,7 +28,7 @@
 //! [pulldown-cmark]: https://github.com/google/pulldown-cmark "CommonMark parser"
 
 use html5ever::interface::Attribute;
-use html5ever::rcdom::{Handle, NodeData, RcDom};
+use markup5ever_rcdom::{Handle, NodeData, RcDom, SerializableHandle};
 use html5ever::serialize::{serialize, SerializeOpts};
 use html5ever::tree_builder::{NodeOrText, TreeSink};
 use html5ever::{driver as html, local_name, namespace_url, ns, QualName};
@@ -270,6 +270,7 @@ pub struct Builder<'a> {
     clean_content_tags: HashSet<&'a str>,
     tag_attributes: HashMap<&'a str, HashSet<&'a str>>,
     tag_attribute_values: HashMap<&'a str, HashMap<&'a str, HashSet<&'a str>>>,
+    set_tag_attribute_values: HashMap<&'a str, HashMap<&'a str, &'a str>>,
     generic_attributes: HashSet<&'a str>,
     url_schemes: HashSet<&'a str>,
     url_relative: UrlRelative,
@@ -278,6 +279,7 @@ pub struct Builder<'a> {
     allowed_classes: HashMap<&'a str, HashSet<&'a str>>,
     strip_comments: bool,
     id_prefix: Option<&'a str>,
+    generic_attribute_prefixes: Option<HashSet<&'a str>>,
 }
 
 impl<'a> Default for Builder<'a> {
@@ -353,6 +355,7 @@ impl<'a> Default for Builder<'a> {
             ],
         ];
         let tag_attribute_values = hashmap![];
+        let set_tag_attribute_values = hashmap![];
         let url_schemes = hashset![
             "bitcoin",
             "ftp",
@@ -387,6 +390,7 @@ impl<'a> Default for Builder<'a> {
             clean_content_tags,
             tag_attributes,
             tag_attribute_values,
+            set_tag_attribute_values,
             generic_attributes,
             url_schemes,
             url_relative: UrlRelative::PassThrough,
@@ -395,6 +399,7 @@ impl<'a> Default for Builder<'a> {
             allowed_classes,
             strip_comments: true,
             id_prefix: None,
+            generic_attribute_prefixes: None,
         }
     }
 }
@@ -837,6 +842,229 @@ impl<'a> Builder<'a> {
         &self,
     ) -> HashMap<&'a str, HashMap<&'a str, HashSet<&'a str>>> {
         self.tag_attribute_values.clone()
+    }
+
+    /// Sets the values of HTML attributes that are to be set on specific tags.
+    ///
+    /// The value is structured as a map from tag names to a map from attribute names to an
+    /// attribute value.
+    ///
+    /// If a tag is not itself whitelisted, adding entries to this map will do nothing.
+    ///
+    /// # Examples
+    ///
+    ///     use ammonia::Builder;
+    ///     use maplit::{hashmap, hashset};
+    ///
+    ///     # fn main() {
+    ///     let tags = hashset!["my-tag"];
+    ///     let set_tag_attribute_values = hashmap![
+    ///         "my-tag" => hashmap![
+    ///             "my-attr" => "val",
+    ///         ],
+    ///     ];
+    ///     let a = Builder::new().tags(tags).set_tag_attribute_values(set_tag_attribute_values)
+    ///         .clean("<my-tag>")
+    ///         .to_string();
+    ///     assert_eq!(a, "<my-tag my-attr=\"val\"></my-tag>");
+    ///     # }
+    ///
+    /// # Defaults
+    ///
+    /// None.
+    pub fn set_tag_attribute_values(
+        &mut self,
+        value: HashMap<&'a str, HashMap<&'a str, &'a str>>,
+    ) -> &mut Self {
+        self.set_tag_attribute_values = value;
+        self
+    }
+
+
+    /// Add an attribute value to set on a specific element.
+    ///
+    /// # Examples
+    ///
+    ///     let a = ammonia::Builder::default()
+    ///         .add_tags(&["my-tag"])
+    ///         .set_tag_attribute_value("my-tag", "my-attr", "val")
+    ///         .clean("<my-tag>test</my-tag> <span>mess</span>").to_string();
+    ///     assert_eq!("<my-tag my-attr=\"val\">test</my-tag> <span>mess</span>", a);
+    pub fn set_tag_attribute_value<
+        T: 'a + ?Sized + Borrow<str>,
+        A: 'a + ?Sized + Borrow<str>,
+        V: 'a + ?Sized + Borrow<str>,
+    >(
+        &mut self,
+        tag: &'a T,
+        attribute: &'a A,
+        value: &'a V,
+    ) -> &mut Self {
+        self.set_tag_attribute_values
+            .entry(tag.borrow())
+            .or_insert_with(HashMap::new)
+            .insert(attribute.borrow(), value.borrow());
+        self
+    }
+
+    /// Remove existing tag-specific attribute values to be set.
+    ///
+    /// Does nothing if the attribute is already gone.
+    ///
+    /// # Examples
+    ///
+    ///     let a = ammonia::Builder::default()
+    ///         // this does nothing, since no value is set for this tag attribute yet
+    ///         .rm_set_tag_attribute_value("a", "target")
+    ///         .set_tag_attribute_value("a", "target", "_blank")
+    ///         .rm_set_tag_attribute_value("a", "target")
+    ///         .clean("<a href=\"/\"></a>").to_string();
+    ///     assert_eq!("<a href=\"/\" rel=\"noopener noreferrer\"></a>", a);
+    pub fn rm_set_tag_attribute_value<
+        T: 'a + ?Sized + Borrow<str>,
+        A: 'a + ?Sized + Borrow<str>,
+    >(
+        &mut self,
+        tag: &'a T,
+        attribute: &'a A,
+    ) -> &mut Self {
+        if let Some(attributes) = self.set_tag_attribute_values.get_mut(tag.borrow()) {
+            attributes.remove(attribute.borrow());
+        }
+        self
+    }
+
+    /// Returns the value that will be set for the attribute on the element, if any.
+    ///
+    /// # Examples
+    ///
+    ///     let mut b = ammonia::Builder::default();
+    ///     b.set_tag_attribute_value("a", "target", "_blank");
+    ///     let value = b.get_set_tag_attribute_value("a", "target");
+    ///     assert_eq!(value, Some("_blank"));
+    pub fn get_set_tag_attribute_value<
+        T: 'a + ?Sized + Borrow<str>,
+        A: 'a + ?Sized + Borrow<str>,
+    >(
+        &self,
+        tag: &'a T,
+        attribute: &'a A,
+    ) -> Option<&'a str> {
+        self.set_tag_attribute_values
+            .get(tag.borrow())
+            .and_then(|map| map.get(attribute.borrow()))
+            .copied()
+    }
+
+    /// Returns a copy of the set of tag-specific attribute values to be set.
+    ///
+    /// # Examples
+    ///
+    ///     use maplit::{hashmap, hashset};
+    ///
+    ///     let attribute_values = hashmap![
+    ///         "my-attr-1" => "foo",
+    ///         "my-attr-2" => "bar",
+    ///     ];
+    ///     let set_tag_attribute_values = hashmap![
+    ///         "my-tag" => attribute_values,
+    ///     ];
+    ///
+    ///     let mut b = ammonia::Builder::default();
+    ///     b.set_tag_attribute_values(Clone::clone(&set_tag_attribute_values));
+    ///     assert_eq!(set_tag_attribute_values, b.clone_set_tag_attribute_values());
+    pub fn clone_set_tag_attribute_values(
+        &self,
+    ) -> HashMap<&'a str, HashMap<&'a str, &'a str>> {
+        self.set_tag_attribute_values.clone()
+    }
+
+    /// Sets the prefix of attributes that are allowed on any tag.
+    ///
+    /// # Examples
+    ///
+    ///     use ammonia::Builder;
+    ///     use maplit::hashset;
+    ///
+    ///     # fn main() {
+    ///     let prefixes = hashset!["data-"];
+    ///     let a = Builder::new()
+    ///         .generic_attribute_prefixes(prefixes)
+    ///         .clean("<b data-val=1>")
+    ///         .to_string();
+    ///     assert_eq!(a, "<b data-val=\"1\"></b>");
+    ///     # }
+    ///
+    /// # Defaults
+    ///
+    /// ```notest
+    /// lang, title
+    /// ```
+    pub fn generic_attribute_prefixes(&mut self, value: HashSet<&'a str>) -> &mut Self {
+        self.generic_attribute_prefixes = Some(value);
+        self
+    }
+
+    /// Add additional whitelisted attribute prefix without overwriting old ones.
+    ///
+    /// # Examples
+    ///
+    ///     let a = ammonia::Builder::default()
+    ///         .add_generic_attribute_prefixes(&["my-"])
+    ///         .clean("<span my-attr>mess</span>").to_string();
+    ///     assert_eq!("<span my-attr=\"\">mess</span>", a);
+    pub fn add_generic_attribute_prefixes<T: 'a + ?Sized + Borrow<str>, I: IntoIter<Item = &'a T>>(
+        &mut self,
+        it: I,
+    ) -> &mut Self {
+        self.generic_attribute_prefixes
+            .get_or_insert_with(HashSet::new)
+            .extend(it.into_iter().map(Borrow::borrow));
+        self
+    }
+
+    /// Remove already-whitelisted attribute prefixes.
+    ///
+    /// Does nothing if the attribute prefix is already gone.
+    ///
+    /// # Examples
+    ///
+    ///     let a = ammonia::Builder::default()
+    ///         .add_generic_attribute_prefixes(&["data-", "code-"])
+    ///         .rm_generic_attribute_prefixes(&["data-"])
+    ///         .clean("<span code-test=\"foo\" data-test=\"cool\"></span>").to_string();
+    ///     assert_eq!("<span code-test=\"foo\"></span>", a);
+    pub fn rm_generic_attribute_prefixes<'b, T: 'b + ?Sized + Borrow<str>, I: IntoIter<Item = &'b T>>(
+        &mut self,
+        it: I,
+    ) -> &mut Self {
+        if let Some(true) =
+            self.generic_attribute_prefixes
+            .as_mut()
+            .map(|prefixes| {
+                for i in it {
+                    let _ = prefixes.remove(i.borrow());
+                }
+                prefixes.is_empty()
+            }) {
+            self.generic_attribute_prefixes = None;
+        }
+        self
+    }
+
+    /// Returns a copy of the set of whitelisted attribute prefixes.
+    ///
+    /// # Examples
+    ///
+    ///     use maplit::hashset;
+    ///
+    ///     let generic_attribute_prefixes = hashset!["my-prfx-1-", "my-prfx-2-"];
+    ///
+    ///     let mut b = ammonia::Builder::default();
+    ///     b.generic_attribute_prefixes(Clone::clone(&generic_attribute_prefixes));
+    ///     assert_eq!(Some(generic_attribute_prefixes), b.clone_generic_attribute_prefixes());
+    pub fn clone_generic_attribute_prefixes(&self) -> Option<HashSet<&'a str>> {
+        self.generic_attribute_prefixes.clone()
     }
 
     /// Sets the attributes that are allowed on any tag.
@@ -1533,6 +1761,12 @@ impl<'a> Builder<'a> {
                     let attr_filter = |attr: &html5ever::Attribute| {
                         let whitelisted = self.generic_attributes.contains(&*attr.name.local)
                             || self
+                                .generic_attribute_prefixes
+                                .as_ref()
+                                .map(|prefixes| {
+                                    prefixes.iter().any(|&p| attr.name.local.starts_with(p))
+                                }) == Some(true)
+                            || self
                                 .tag_attributes
                                 .get(&*name.local)
                                 .map(|ta| ta.contains(&*attr.name.local))
@@ -1595,6 +1829,27 @@ impl<'a> Builder<'a> {
             ..
         } = child.data
         {
+            if let Some(set_attrs) = self.set_tag_attribute_values.get(&*name.local) {
+                let mut attrs = attrs.borrow_mut();
+                for (&set_name, &set_value) in set_attrs {
+                    // set the value of the attribute if the attribute is already present
+                    if let Some(attr) = attrs
+                        .iter_mut()
+                        .find(|attr| &*attr.name.local == set_name)
+                    {
+                        if &*attr.value != set_value {
+                            attr.value = set_value.into();
+                        }
+                    } else {
+                        // otherwise, add the attribute
+                        let attr = Attribute {
+                            name: QualName::new(None, ns!(), set_name.into()),
+                            value: set_value.into(),
+                        };
+                        attrs.push(attr);
+                    }
+                }
+            }
             if let Some(ref link_rel) = *link_rel {
                 if &*name.local == "a" {
                     attrs.borrow_mut().push(Attribute {
@@ -1904,7 +2159,8 @@ impl Document {
     pub fn to_string(&self) -> String {
         let opts = Self::serialize_opts();
         let mut ret_val = Vec::new();
-        serialize(&mut ret_val, &self.0.document.children.borrow()[0], opts)
+        let inner: SerializableHandle = self.0.document.children.borrow()[0].clone().into();
+        serialize(&mut ret_val, &inner, opts)
             .expect("Writing to a string shouldn't fail (expect on OOM)");
         String::from_utf8(ret_val).expect("html5ever only supports UTF8")
     }
@@ -1939,7 +2195,8 @@ impl Document {
         W: io::Write,
     {
         let opts = Self::serialize_opts();
-        serialize(writer, &self.0.document.children.borrow()[0], opts)
+        let inner: SerializableHandle = self.0.document.children.borrow()[0].clone().into();
+        serialize(writer, &inner, opts)
     }
 
     /// Exposes the `Document` instance as an [`html5ever::rcdom::Handle`][h].
@@ -2437,6 +2694,43 @@ mod test {
         assert_eq!(result.to_string(), "<input type=\"CHECKBOX\" name=\"foo\">",);
     }
     #[test]
+    fn set_tag_attribute_values() {
+        let fragment = "<a href=\"https://example.com/\">Link</a>";
+        let result = Builder::new()
+            .link_rel(None)
+            .add_tag_attributes("a", &["target"])
+            .set_tag_attribute_value("a", "target", "_blank")
+            .clean(fragment);
+        assert_eq!(
+            result.to_string(),
+            "<a href=\"https://example.com/\" target=\"_blank\">Link</a>",
+        );
+    }
+    #[test]
+    fn update_existing_set_tag_attribute_values() {
+        let fragment = "<a target=\"bad\" href=\"https://example.com/\">Link</a>";
+        let result = Builder::new()
+            .link_rel(None)
+            .add_tag_attributes("a", &["target"])
+            .set_tag_attribute_value("a", "target", "_blank")
+            .clean(fragment);
+        assert_eq!(
+            result.to_string(),
+            "<a target=\"_blank\" href=\"https://example.com/\">Link</a>",
+        );
+    }
+    #[test]
+    fn unwhitelisted_set_tag_attribute_values() {
+        let fragment = "<span>hi</span><my-elem>";
+        let result = Builder::new()
+            .set_tag_attribute_value("my-elem", "my-attr", "val")
+            .clean(fragment);
+        assert_eq!(
+            result.to_string(),
+            "<span>hi</span>",
+        );
+    }
+    #[test]
     fn remove_entity_link() {
         let fragment = "<a href=\"&#x6A&#x61&#x76&#x61&#x73&#x63&#x72&#x69&#x70&#x74&#x3A&#x61\
                         &#x6C&#x65&#x72&#x74&#x28&#x27&#x58&#x53&#x53&#x27&#x29\">Click me!</a>";
@@ -2651,5 +2945,53 @@ mod test {
             clean_text("<this> is <a test function"),
             "&lt;this&gt;&#32;is&#32;&lt;a&#32;test&#32;function"
         );
+    }
+
+    #[test]
+    fn generic_attribute_prefixes() {
+        let prefix_data = ["data-"];
+        let prefix_code = ["code-"];
+        let mut b = Builder::new();
+        let mut hs: HashSet<&'_ str> = HashSet::new();
+        hs.insert("data-");
+        assert_eq!(b.generic_attribute_prefixes.is_none(), true);
+        b.generic_attribute_prefixes(hs);
+        assert_eq!(b.generic_attribute_prefixes.is_some(), true);
+        assert_eq!(b.generic_attribute_prefixes.as_ref().unwrap().len(), 1);
+        b.add_generic_attribute_prefixes(&prefix_data);
+        assert_eq!(b.generic_attribute_prefixes.as_ref().unwrap().len(), 1);
+        b.add_generic_attribute_prefixes(&prefix_code);
+        assert_eq!(b.generic_attribute_prefixes.as_ref().unwrap().len(), 2);
+        b.rm_generic_attribute_prefixes(&prefix_code);
+        assert_eq!(b.generic_attribute_prefixes.as_ref().unwrap().len(), 1);
+        b.rm_generic_attribute_prefixes(&prefix_code);
+        assert_eq!(b.generic_attribute_prefixes.as_ref().unwrap().len(), 1);
+        b.rm_generic_attribute_prefixes(&prefix_data);
+        assert_eq!(b.generic_attribute_prefixes.is_none(), true);
+    }
+
+    #[test]
+    fn generic_attribute_prefixes_clean() {
+        let fragment = r#"<a data-1 data-2 code-1 code-2><a>Hello!</a></a>"#;
+        let result_cleaned = String::from(
+            Builder::new()
+                .add_tag_attributes("a", &["data-1"])
+                .clean(fragment),
+        );
+        assert_eq!(result_cleaned, r#"<a data-1="" rel="noopener noreferrer"></a><a rel="noopener noreferrer">Hello!</a>"#);
+        let result_allowed = String::from(
+            Builder::new()
+                .add_tag_attributes("a", &["data-1"])
+                .add_generic_attribute_prefixes(&["data-"])
+                .clean(fragment),
+        );
+        assert_eq!(result_allowed, r#"<a data-1="" data-2="" rel="noopener noreferrer"></a><a rel="noopener noreferrer">Hello!</a>"#);
+        let result_allowed = String::from(
+            Builder::new()
+                .add_tag_attributes("a", &["data-1", "code-1"])
+                .add_generic_attribute_prefixes(&["data-", "code-"])
+                .clean(fragment),
+        );
+        assert_eq!(result_allowed, r#"<a data-1="" data-2="" code-1="" code-2="" rel="noopener noreferrer"></a><a rel="noopener noreferrer">Hello!</a>"#);
     }
 }

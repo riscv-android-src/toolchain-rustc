@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "cargo_metadata"
-version = "0.10.0"
+version = "0.11.1"
 authors = ["Oliver Schneider <git-spam-no-reply9815368754983@oli-obk.de>"]
 description = "structured access to the output of `cargo metadata`"
 readme = "README.md"
@@ -22,14 +23,12 @@ repository = "https://github.com/oli-obk/cargo_metadata"
 other_field = "foo"
 some_field = true
 [dependencies.semver]
-version = "0.9"
+version = "0.10"
 features = ["serde"]
 
 [dependencies.serde]
 version = "1.0.79"
-
-[dependencies.serde_derive]
-version = "1.0.107"
+features = ["derive"]
 
 [dependencies.serde_json]
 version = "1.0.1"

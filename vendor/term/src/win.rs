@@ -1,4 +1,4 @@
-// Copyright 2013-2015 The Rust Project Developers. See the COPYRIGHT
+// Copyright 2013-2019 The Rust Project Developers. See the COPYRIGHT
 // file at the top-level directory of this distribution and at
 // http://rust-lang.org/COPYRIGHT.
 //
@@ -13,14 +13,14 @@
 // FIXME (#13400): this is only a tiny fraction of the Windows console api
 
 use crate::color;
-use std::io;
-use std::io::prelude::*;
-use std::ops::Deref;
-use std::ptr;
 use crate::Attr;
 use crate::Error;
 use crate::Result;
 use crate::Terminal;
+use std::io;
+use std::io::prelude::*;
+use std::ops::Deref;
+use std::ptr;
 
 use winapi::shared::minwindef::{DWORD, WORD};
 use winapi::um::consoleapi::{GetConsoleMode, SetConsoleMode};

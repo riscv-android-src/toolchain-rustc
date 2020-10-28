@@ -6,15 +6,14 @@ use rustc_hir::{GenericParamKind, ImplItemKind, TraitItemKind};
 use rustc_infer::infer::{self, InferOk, TyCtxtInferExt};
 use rustc_middle::ty;
 use rustc_middle::ty::error::{ExpectedFound, TypeError};
-use rustc_middle::ty::subst::{InternalSubsts, Subst, SubstsRef};
+use rustc_middle::ty::subst::{InternalSubsts, Subst};
 use rustc_middle::ty::util::ExplicitSelf;
-use rustc_middle::ty::{GenericParamDefKind, ToPredicate, TyCtxt, WithConstness};
+use rustc_middle::ty::{GenericParamDefKind, ToPredicate, TyCtxt};
 use rustc_span::Span;
 use rustc_trait_selection::traits::error_reporting::InferCtxtExt;
 use rustc_trait_selection::traits::{self, ObligationCause, ObligationCauseCode, Reveal};
 
 use super::{potentially_plural_count, FnCtxt, Inherited};
-use std::iter;
 
 /// Checks that a method from an impl conforms to the signature of
 /// the same method as declared in the trait.
@@ -78,7 +77,7 @@ fn compare_predicate_entailment<'tcx>(
     // This node-id should be used for the `body_id` field on each
     // `ObligationCause` (and the `FnCtxt`). This is what
     // `regionck_item` expects.
-    let impl_m_hir_id = tcx.hir().as_local_hir_id(impl_m.def_id.expect_local());
+    let impl_m_hir_id = tcx.hir().local_def_id_to_hir_id(impl_m.def_id.expect_local());
 
     // We sometimes modify the span further down.
     let mut cause = ObligationCause::new(
@@ -402,7 +401,7 @@ fn extract_spans_for_error_reporting<'a, 'tcx>(
     trait_sig: ty::FnSig<'tcx>,
 ) -> (Span, Option<Span>) {
     let tcx = infcx.tcx;
-    let impl_m_hir_id = tcx.hir().as_local_hir_id(impl_m.def_id.expect_local());
+    let impl_m_hir_id = tcx.hir().local_def_id_to_hir_id(impl_m.def_id.expect_local());
     let (impl_m_output, impl_m_iter) = match tcx.hir().expect_impl_item(impl_m_hir_id).kind {
         ImplItemKind::Fn(ref impl_m_sig, _) => {
             (&impl_m_sig.decl.output, impl_m_sig.decl.inputs.iter())
@@ -413,7 +412,7 @@ fn extract_spans_for_error_reporting<'a, 'tcx>(
     match *terr {
         TypeError::Mutability => {
             if let Some(def_id) = trait_m.def_id.as_local() {
-                let trait_m_hir_id = tcx.hir().as_local_hir_id(def_id);
+                let trait_m_hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
                 let trait_m_iter = match tcx.hir().expect_trait_item(trait_m_hir_id).kind {
                     TraitItemKind::Fn(ref trait_m_sig, _) => trait_m_sig.decl.inputs.iter(),
                     _ => bug!("{:?} is not a TraitItemKind::Fn", trait_m),
@@ -441,7 +440,7 @@ fn extract_spans_for_error_reporting<'a, 'tcx>(
         }
         TypeError::Sorts(ExpectedFound { .. }) => {
             if let Some(def_id) = trait_m.def_id.as_local() {
-                let trait_m_hir_id = tcx.hir().as_local_hir_id(def_id);
+                let trait_m_hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
                 let (trait_m_output, trait_m_iter) =
                     match tcx.hir().expect_trait_item(trait_m_hir_id).kind {
                         TraitItemKind::Fn(ref trait_m_sig, _) => {
@@ -590,7 +589,7 @@ fn compare_number_of_generics<'tcx>(
             err_occurred = true;
 
             let (trait_spans, impl_trait_spans) = if let Some(def_id) = trait_.def_id.as_local() {
-                let trait_hir_id = tcx.hir().as_local_hir_id(def_id);
+                let trait_hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
                 let trait_item = tcx.hir().expect_trait_item(trait_hir_id);
                 if trait_item.generics.params.is_empty() {
                     (Some(vec![trait_item.generics.span]), vec![])
@@ -615,7 +614,7 @@ fn compare_number_of_generics<'tcx>(
                 (trait_span.map(|s| vec![s]), vec![])
             };
 
-            let impl_hir_id = tcx.hir().as_local_hir_id(impl_.def_id.expect_local());
+            let impl_hir_id = tcx.hir().local_def_id_to_hir_id(impl_.def_id.expect_local());
             let impl_item = tcx.hir().expect_impl_item(impl_hir_id);
             let impl_item_impl_trait_spans: Vec<Span> = impl_item
                 .generics
@@ -707,7 +706,7 @@ fn compare_number_of_method_arguments<'tcx>(
     let impl_number_args = impl_m_fty.inputs().skip_binder().len();
     if trait_number_args != impl_number_args {
         let trait_span = if let Some(def_id) = trait_m.def_id.as_local() {
-            let trait_id = tcx.hir().as_local_hir_id(def_id);
+            let trait_id = tcx.hir().local_def_id_to_hir_id(def_id);
             match tcx.hir().expect_trait_item(trait_id).kind {
                 TraitItemKind::Fn(ref trait_m_sig, _) => {
                     let pos = if trait_number_args > 0 { trait_number_args - 1 } else { 0 };
@@ -730,7 +729,7 @@ fn compare_number_of_method_arguments<'tcx>(
         } else {
             trait_item_span
         };
-        let impl_m_hir_id = tcx.hir().as_local_hir_id(impl_m.def_id.expect_local());
+        let impl_m_hir_id = tcx.hir().local_def_id_to_hir_id(impl_m.def_id.expect_local());
         let impl_span = match tcx.hir().expect_impl_item(impl_m_hir_id).kind {
             ImplItemKind::Fn(ref impl_m_sig, _) => {
                 let pos = if impl_number_args > 0 { impl_number_args - 1 } else { 0 };
@@ -812,7 +811,7 @@ fn compare_synthetic_generics<'tcx>(
         impl_m_type_params.zip(trait_m_type_params)
     {
         if impl_synthetic != trait_synthetic {
-            let impl_hir_id = tcx.hir().as_local_hir_id(impl_def_id.expect_local());
+            let impl_hir_id = tcx.hir().local_def_id_to_hir_id(impl_def_id.expect_local());
             let impl_span = tcx.hir().span(impl_hir_id);
             let trait_span = tcx.def_span(trait_def_id);
             let mut err = struct_span_err!(
@@ -833,10 +832,10 @@ fn compare_synthetic_generics<'tcx>(
                         // FIXME: this is obviously suboptimal since the name can already be used
                         // as another generic argument
                         let new_name = tcx.sess.source_map().span_to_snippet(trait_span).ok()?;
-                        let trait_m = tcx.hir().as_local_hir_id(trait_m.def_id.as_local()?);
+                        let trait_m = tcx.hir().local_def_id_to_hir_id(trait_m.def_id.as_local()?);
                         let trait_m = tcx.hir().trait_item(hir::TraitItemId { hir_id: trait_m });
 
-                        let impl_m = tcx.hir().as_local_hir_id(impl_m.def_id.as_local()?);
+                        let impl_m = tcx.hir().local_def_id_to_hir_id(impl_m.def_id.as_local()?);
                         let impl_m = tcx.hir().impl_item(hir::ImplItemId { hir_id: impl_m });
 
                         // in case there are no generics, take the spot between the function name
@@ -870,7 +869,7 @@ fn compare_synthetic_generics<'tcx>(
                 (None, Some(hir::SyntheticTyParamKind::ImplTrait)) => {
                     err.span_label(impl_span, "expected `impl Trait`, found generic parameter");
                     (|| {
-                        let impl_m = tcx.hir().as_local_hir_id(impl_m.def_id.as_local()?);
+                        let impl_m = tcx.hir().local_def_id_to_hir_id(impl_m.def_id.as_local()?);
                         let impl_m = tcx.hir().impl_item(hir::ImplItemId { hir_id: impl_m });
                         let input_tys = match impl_m.kind {
                             hir::ImplItemKind::Fn(ref sig, _) => sig.decl.inputs,
@@ -963,7 +962,7 @@ crate fn compare_const_impl<'tcx>(
 
         // Create a parameter environment that represents the implementation's
         // method.
-        let impl_c_hir_id = tcx.hir().as_local_hir_id(impl_c.def_id.expect_local());
+        let impl_c_hir_id = tcx.hir().local_def_id_to_hir_id(impl_c.def_id.expect_local());
 
         // Compute placeholder form of impl and trait const tys.
         let impl_ty = tcx.type_of(impl_c.def_id);
@@ -1012,7 +1011,7 @@ crate fn compare_const_impl<'tcx>(
             );
 
             let trait_c_hir_id =
-                trait_c.def_id.as_local().map(|def_id| tcx.hir().as_local_hir_id(def_id));
+                trait_c.def_id.as_local().map(|def_id| tcx.hir().local_def_id_to_hir_id(def_id));
             let trait_c_span = trait_c_hir_id.map(|trait_c_hir_id| {
                 // Add a label to the Span containing just the type of the const
                 match tcx.hir().expect_trait_item(trait_c_hir_id).kind {
@@ -1102,7 +1101,7 @@ fn compare_type_predicate_entailment<'tcx>(
     // This `HirId` should be used for the `body_id` field on each
     // `ObligationCause` (and the `FnCtxt`). This is what
     // `regionck_item` expects.
-    let impl_ty_hir_id = tcx.hir().as_local_hir_id(impl_ty.def_id.expect_local());
+    let impl_ty_hir_id = tcx.hir().local_def_id_to_hir_id(impl_ty.def_id.expect_local());
     let cause = ObligationCause::new(
         impl_ty_span,
         impl_ty_hir_id,
@@ -1196,8 +1195,6 @@ fn compare_projection_bounds<'tcx>(
         return Ok(());
     }
 
-    let param_env = tcx.param_env(impl_ty.def_id);
-
     // Given
     //
     // impl<A, B> Foo<u32> for (A, B) {
@@ -1212,20 +1209,30 @@ fn compare_projection_bounds<'tcx>(
         impl_ty_substs.rebase_onto(tcx, impl_ty.container.id(), impl_trait_ref.substs);
     let impl_ty_value = tcx.type_of(impl_ty.def_id);
 
-    // Map the predicate from the trait to the corresponding one for the impl.
-    // For example:
+    let param_env = tcx.param_env(impl_ty.def_id);
+
+    // When checking something like
     //
-    // trait X<A> { type Y<'a>: PartialEq<A> } impl X for T { type Y<'a> = &'a S; }
-    // impl<'x> X<&'x u32> for () { type Y<'c> = &'c u32; }
+    // trait X { type Y: PartialEq<<Self as X>::Y> }
+    // impl X for T { default type Y = S; }
     //
-    // For the `for<'a> <<Self as X<A>>::Y<'a>: PartialEq<A>` bound, this
-    // function would translate and partially normalize
-    // `[<Self as X<A>>::Y<'a>, A]` to `[&'a u32, &'x u32]`.
-    let translate_predicate_substs = move |predicate_substs: SubstsRef<'tcx>| {
-        tcx.mk_substs(
-            iter::once(impl_ty_value.into())
-                .chain(predicate_substs[1..].iter().map(|s| s.subst(tcx, rebased_substs))),
-        )
+    // We will have to prove the bound S: PartialEq<<T as X>::Y>. In this case
+    // we want <T as X>::Y to normalize to S. This is valid because we are
+    // checking the default value specifically here. Add this equality to the
+    // ParamEnv for normalization specifically.
+    let normalize_param_env = {
+        let mut predicates = param_env.caller_bounds().iter().collect::<Vec<_>>();
+        predicates.push(
+            ty::Binder::dummy(ty::ProjectionPredicate {
+                projection_ty: ty::ProjectionTy {
+                    item_def_id: trait_ty.def_id,
+                    substs: rebased_substs,
+                },
+                ty: impl_ty_value,
+            })
+            .to_predicate(tcx),
+        );
+        ty::ParamEnv::new(tcx.intern_predicates(&predicates), Reveal::UserFacing, None)
     };
 
     tcx.infer_ctxt().enter(move |infcx| {
@@ -1233,7 +1240,7 @@ fn compare_projection_bounds<'tcx>(
         let infcx = &inh.infcx;
         let mut selcx = traits::SelectionContext::new(&infcx);
 
-        let impl_ty_hir_id = tcx.hir().as_local_hir_id(impl_ty.def_id.expect_local());
+        let impl_ty_hir_id = tcx.hir().local_def_id_to_hir_id(impl_ty.def_id.expect_local());
         let normalize_cause = traits::ObligationCause::misc(impl_ty_span, impl_ty_hir_id);
         let cause = ObligationCause::new(
             impl_ty_span,
@@ -1242,46 +1249,18 @@ fn compare_projection_bounds<'tcx>(
         );
 
         let predicates = tcx.projection_predicates(trait_ty.def_id);
-
         debug!("compare_projection_bounds: projection_predicates={:?}", predicates);
 
         for predicate in predicates {
-            let concrete_ty_predicate = match predicate.kind() {
-                ty::PredicateKind::Trait(poly_tr, c) => poly_tr
-                    .map_bound(|tr| {
-                        let trait_substs = translate_predicate_substs(tr.trait_ref.substs);
-                        ty::TraitRef { def_id: tr.def_id(), substs: trait_substs }
-                    })
-                    .with_constness(*c)
-                    .to_predicate(tcx),
-                ty::PredicateKind::Projection(poly_projection) => poly_projection
-                    .map_bound(|projection| {
-                        let projection_substs =
-                            translate_predicate_substs(projection.projection_ty.substs);
-                        ty::ProjectionPredicate {
-                            projection_ty: ty::ProjectionTy {
-                                substs: projection_substs,
-                                item_def_id: projection.projection_ty.item_def_id,
-                            },
-                            ty: projection.ty.subst(tcx, rebased_substs),
-                        }
-                    })
-                    .to_predicate(tcx),
-                ty::PredicateKind::TypeOutlives(poly_outlives) => poly_outlives
-                    .map_bound(|outlives| {
-                        ty::OutlivesPredicate(impl_ty_value, outlives.1.subst(tcx, rebased_substs))
-                    })
-                    .to_predicate(tcx),
-                _ => bug!("unexepected projection predicate kind: `{:?}`", predicate),
-            };
+            let concrete_ty_predicate = predicate.subst(tcx, rebased_substs);
+            debug!("compare_projection_bounds: concrete predicate = {:?}", concrete_ty_predicate);
 
             let traits::Normalized { value: normalized_predicate, obligations } = traits::normalize(
                 &mut selcx,
-                param_env,
+                normalize_param_env,
                 normalize_cause.clone(),
                 &concrete_ty_predicate,
             );
-
             debug!("compare_projection_bounds: normalized predicate = {:?}", normalized_predicate);
 
             inh.register_predicates(obligations);

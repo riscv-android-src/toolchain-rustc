@@ -2870,6 +2870,8 @@ inline bool Registers_mips_o32::validFloatRegister(int regNum) const {
 #if defined(__mips_hard_float) && __mips_fpr == 64
   if (regNum >= UNW_MIPS_F0 && regNum <= UNW_MIPS_F31)
     return true;
+#else
+  (void)regNum;
 #endif
   return false;
 }
@@ -2879,6 +2881,7 @@ inline double Registers_mips_o32::getFloatRegister(int regNum) const {
   assert(validFloatRegister(regNum));
   return _floats[regNum - UNW_MIPS_F0];
 #else
+  (void)regNum;
   _LIBUNWIND_ABORT("mips_o32 float support not implemented");
 #endif
 }
@@ -2889,6 +2892,8 @@ inline void Registers_mips_o32::setFloatRegister(int regNum,
   assert(validFloatRegister(regNum));
   _floats[regNum - UNW_MIPS_F0] = value;
 #else
+  (void)regNum;
+  (void)value;
   _LIBUNWIND_ABORT("mips_o32 float support not implemented");
 #endif
 }
@@ -3160,6 +3165,8 @@ inline bool Registers_mips_newabi::validFloatRegister(int regNum) const {
 #ifdef __mips_hard_float
   if (regNum >= UNW_MIPS_F0 && regNum <= UNW_MIPS_F31)
     return true;
+#else
+  (void)regNum;
 #endif
   return false;
 }
@@ -3169,6 +3176,7 @@ inline double Registers_mips_newabi::getFloatRegister(int regNum) const {
   assert(validFloatRegister(regNum));
   return _floats[regNum - UNW_MIPS_F0];
 #else
+  (void)regNum;
   _LIBUNWIND_ABORT("mips_newabi float support not implemented");
 #endif
 }
@@ -3179,6 +3187,8 @@ inline void Registers_mips_newabi::setFloatRegister(int regNum,
   assert(validFloatRegister(regNum));
   _floats[regNum - UNW_MIPS_F0] = value;
 #else
+  (void)regNum;
+  (void)value;
   _LIBUNWIND_ABORT("mips_newabi float support not implemented");
 #endif
 }
@@ -3724,11 +3734,11 @@ public:
 
   uint64_t  getSP() const         { return _registers[2]; }
   void      setSP(uint64_t value) { _registers[2] = value; }
-  uint64_t  getIP() const         { return _registers[1]; }
-  void      setIP(uint64_t value) { _registers[1] = value; }
+  uint64_t  getIP() const         { return _registers[0]; }
+  void      setIP(uint64_t value) { _registers[0] = value; }
 
 private:
-
+  // _registers[0] holds the pc
   uint64_t _registers[32];
   double   _floats[32];
 };
@@ -3763,7 +3773,7 @@ inline bool Registers_riscv::validRegister(int regNum) const {
 
 inline uint64_t Registers_riscv::getRegister(int regNum) const {
   if (regNum == UNW_REG_IP)
-    return _registers[1];
+    return _registers[0];
   if (regNum == UNW_REG_SP)
     return _registers[2];
   if (regNum == UNW_RISCV_X0)
@@ -3775,7 +3785,7 @@ inline uint64_t Registers_riscv::getRegister(int regNum) const {
 
 inline void Registers_riscv::setRegister(int regNum, uint64_t value) {
   if (regNum == UNW_REG_IP)
-    _registers[1] = value;
+    _registers[0] = value;
   else if (regNum == UNW_REG_SP)
     _registers[2] = value;
   else if (regNum == UNW_RISCV_X0)
@@ -3939,6 +3949,7 @@ inline double Registers_riscv::getFloatRegister(int regNum) const {
   assert(validFloatRegister(regNum));
   return _floats[regNum - UNW_RISCV_F0];
 #else
+  (void)regNum;
   _LIBUNWIND_ABORT("libunwind not built with float support");
 #endif
 }
@@ -3948,6 +3959,8 @@ inline void Registers_riscv::setFloatRegister(int regNum, double value) {
   assert(validFloatRegister(regNum));
   _floats[regNum - UNW_RISCV_F0] = value;
 #else
+  (void)regNum;
+  (void)value;
   _LIBUNWIND_ABORT("libunwind not built with float support");
 #endif
 }

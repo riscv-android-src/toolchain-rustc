@@ -13,19 +13,18 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_index"
-version = "664.0.0"
+version = "671.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_index` in the rust-lang/rust repository from commit 3ddf48053e83f4949d00dcaf6eb8d9e28fc6bb95 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_index` in the rust-lang/rust repository from commit 1454bbd4fdac9b7272b93fe82860613dccc0afad The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
 [lib]
 path = "lib.rs"
 doctest = false
-[dependencies.rustc_serialize]
-version = "664.0.0"
-package = "rustc-ap-rustc_serialize"
+[dependencies.arrayvec]
+version = "0.5.1"
 
-[dependencies.smallvec]
-version = "1.0"
-features = ["union", "may_dangle"]
+[dependencies.rustc_serialize]
+version = "671.0.0"
+package = "rustc-ap-rustc_serialize"

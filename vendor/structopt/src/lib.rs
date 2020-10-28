@@ -18,7 +18,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! structopt = { version = "0.2", default-features = false }
+//! structopt = { version = "0.3", default-features = false }
 //! ```
 //!
 //! Support for [`paw`](https://github.com/rust-cli/paw) (the
@@ -28,9 +28,31 @@
 //!
 //! ```toml
 //! [dependencies]
-//! structopt = { version = "0.2", features = [ "paw" ] }
+//! structopt = { version = "0.3", features = [ "paw" ] }
 //! paw = "1.0"
 //! ```
+//!
+//! # Table of Contents
+//!
+//! - [How to `derive(StructOpt)`](#how-to-derivestructopt)
+//! - [Attributes](#attributes)
+//!     - [Raw methods](#raw-methods)
+//!     - [Magical methods](#magical-methods)
+//! - Arguments
+//!     - [Type magic](#type-magic)
+//!     - [Specifying argument types](#specifying-argument-types)
+//!     - [Default values](#default-values)
+//!     - [Help messages](#help-messages)
+//!     - [Environment variable fallback](#environment-variable-fallback)
+//! - [Skipping fields](#skipping-fields)
+//! - [Subcommands](#subcommands)
+//!     - [Optional subcommands](#optional-subcommands)
+//!     - [External subcommands](#external-subcommands)
+//!     - [Flattening subcommands](#flattening-subcommands)
+//! - [Flattening](#flattening)
+//! - [Custom string parsers](#custom-string-parsers)
+//!
+//!
 //!
 //! ## How to `derive(StructOpt)`
 //!
@@ -65,9 +87,9 @@
 //!     #[structopt(short)]
 //!     out_type: String,
 //!
-//!     /// File name: only required when `out` is set to `file`
-//!     #[structopt(name = "FILE", required_if("out_type", "file"))]
-//!     file_name: String,
+//!     /// File name: only required when `out-type` is set to `file`
+//!     #[structopt(name = "FILE", required_if("out-type", "file"))]
+//!     file_name: Option<String>,
 //! }
 //!
 //! fn main() {
@@ -85,9 +107,20 @@
 //! (unless they're [subcommands](#subcommands)),
 //! and you can adjust these apps and args by `#[structopt(...)]` [attributes](#attributes).
 //!
+//! **Note:**
+//! _________________
+//! Keep in mind that `StructOpt` trait is more than just `from_args` method.
+//! It has a number of additional features, including access to underlying
+//! `clap::App` via `StructOpt::clap()`. See the
+//! [trait's reference documentation](trait.StructOpt.html).
+//! _________________
+//!
 //! ## Attributes
 //!
-//! `#[structopt(...)]` attributes fall into two categories:
+//! You can control the way `structopt` translates your struct into an actual
+//! [`clap::App`] invocation via `#[structopt(...)]` attributes.
+//!
+//! The attributes fall into two categories:
 //! - `structopt`'s own [magical methods](#magical-methods).
 //!
 //!    They are used by `structopt` itself. They come mostly in
@@ -127,8 +160,8 @@
 //!     .long("debug"))
 //! .arg(Arg::with_name("speed")
 //!     .help("Set speed")
-//!     .short("s")
-//!     .long("speed")
+//!     .short("v")
+//!     .long("velocity")
 //!     .default_value("42"))
 //! // and so on
 //! # ;
@@ -136,14 +169,34 @@
 //!
 //! ## Raw methods
 //!
-//! They are the reason why `structopt` is so flexible.
+//! They are the reason why `structopt` is so flexible. **Every and each method from
+//! `clap::App/Arg` can be used this way!**
 //!
-//! Each and every method from `clap::App` and `clap::Arg` can be used directly -
-//! just `#[structopt(method_name = single_arg)]` or `#[structopt(method_name(arg1, arg2))]`
-//! and it just works. As long as `method_name` is not one of the magical methods -
-//! it's just a method call.
+//! ```ignore
+//! #[structopt(
+//!     global = true, // name = arg form, neat for one-arg methods
+//!     required_if("out", "file") // name(arg1, arg2, ...) form.
+//! )]
+//! ```
 //!
-//! **Note:** the `Arg::raw` method is allowed only with `true` or `false` literals.
+//! The first form can only be used for methods which take only one argument.
+//! The second form must be used with multi-arg methods, but can also be used with
+//! single-arg methods. These forms are identical otherwise.
+//!
+//! As long as `method_name` is not one of the magical methods -
+//! it will be translated into a mere method call.
+//!
+//! **Note:**
+//! _________________
+//!
+//! "Raw methods" are direct replacement for pre-0.3 structopt's
+//! `#[structopt(raw(...))]` attributes, any time you would have used a `raw()` attribute
+//! in 0.2 you should use raw method in 0.3.
+//!
+//! Unfortunately, old raw attributes collide with `clap::Arg::raw` method. To explicitly
+//! warn users of this change we allow `#[structopt(raw())]` only with `true` or `false`
+//! literals (this method is supposed to be called only with `true` anyway).
+//! __________________
 //!
 //! ## Magical methods
 //!
@@ -175,15 +228,16 @@
 //! }
 //! ```
 //!
-//! - `name`: `[name = "name"]`
-//!   - On top level: `App::new("name")`.
+//! - `name`: `[name = expr]`
+//!   - On top level: `App::new(expr)`.
 //!
 //!     The binary name displayed in help messages. Defaults to the crate name given by Cargo.
 //!
-//!   - On field-level: `Arg::with_name("name")`.
+//!   - On field-level: `Arg::with_name(expr)`.
 //!
 //!     The name for the argument the field stands for, this name appears in help messages.
-//!     Defaults to a name, deduced from a field, see also [`rename_all`](#specifying-argument-types).
+//!     Defaults to a name, deduced from a field, see also
+//!     [`rename_all`](#specifying-argument-types).
 //!
 //! - `version`: `[version = "version"]`
 //!
@@ -200,7 +254,7 @@
 //!
 //! - `author`: `author [= "author"]`
 //!
-//!     Usable only on top level: `App::author("author" or env!(CARGO_PKG_AUTHOR))`.
+//!     Usable only on top level: `App::author("author" or env!(CARGO_PKG_AUTHORS))`.
 //!
 //!     Author/maintainer of the binary, this name appears in help messages.
 //!     Defaults to the crate author given by cargo, but only when `author` explicitly mentioned.
@@ -221,25 +275,48 @@
 //!
 //!     Usable only on field-level.
 //!
-//! - [`rename_all`](#specifying-argument-types): [`rename_all = "kebab"/"snake"/"screaming-snake"/"camel"/"pascal"/"verbatim"]`
+//! - [`default_value`](#default-values): `default_value [= "default value"]`
 //!
-//!     Usable only on top level
+//!     Usable only on field-level.
+//!
+//! - [`rename_all`](#specifying-argument-types):
+//!     [`rename_all = "kebab"/"snake"/"screaming-snake"/"camel"/"pascal"/"verbatim"/"lower"/"upper"]`
+//!
+//!     Usable both on top level and field level.
 //!
 //! - [`parse`](#custom-string-parsers): `parse(type [= path::to::parser::fn])`
 //!
 //!     Usable only on field-level.
 //!
-//! - [`skip`](#skipping-fields): `skip`
+//! - [`skip`](#skipping-fields): `skip [= expr]`
 //!
 //!     Usable only on field-level.
 //!
 //! - [`flatten`](#flattening): `flatten`
 //!
-//!     Usable only on field-level.
+//!     Usable on field-level or single-typed tuple variants.
 //!
 //! - [`subcommand`](#subcommands): `subcommand`
 //!
 //!     Usable only on field-level.
+//!
+//! - [`external_subcommand`](#external-subcommands)
+//!
+//!     Usable only on enum variants.
+//!
+//! - [`env`](#environment-variable-fallback): `env [= str_literal]`
+//!
+//!     Usable only on field-level.
+//!
+//! - [`rename_all_env`](##auto-deriving-environment-variables):
+//!     [`rename_all_env = "kebab"/"snake"/"screaming-snake"/"camel"/"pascal"/"verbatim"/"lower"/"upper"]`
+//!
+//!     Usable both on top level and field level.
+//!
+//! - [`verbatim_doc_comment`](#doc-comment-preprocessing-and-structoptverbatim_doc_comment):
+//!     `verbatim_doc_comment`
+//!
+//!     Usable both on top level and field level.
 //!
 //! ## Type magic
 //!
@@ -264,22 +341,35 @@
 //! If you would like to use a custom string parser other than `FromStr`, see
 //! the [same titled section](#custom-string-parsers) below.
 //!
+//! **Important:**
+//! _________________
+//! Pay attention that *only literal occurrence* of this types is special, for example
+//! `Option<T>` is special while `::std::option::Option<T>` is not.
+//!
+//! If you need to avoid special casing you can make a `type` alias and
+//! use it in place of the said type.
+//! _________________
+//!
+//! **Note:**
+//! _________________
+//! `bool` cannot be used as positional argument unless you provide an explicit parser.
+//! If you need a positional bool, for example to parse `true` or `false`, you must
+//! annotate the field with explicit [`#[structopt(parse(...))]`](#custom-string-parsers).
+//! _________________
+//!
 //! Thus, the `speed` argument is generated as:
 //!
 //! ```
-//! # extern crate clap;
 //! # fn parse_validator<T>(_: String) -> Result<(), String> { unimplemented!() }
-//! # fn main() {
 //! clap::Arg::with_name("speed")
 //!     .takes_value(true)
 //!     .multiple(false)
 //!     .required(false)
 //!     .validator(parse_validator::<f64>)
-//!     .short("s")
-//!     .long("speed")
+//!     .short("v")
+//!     .long("velocity")
 //!     .help("Set speed")
 //!     .default_value("42");
-//! # }
 //! ```
 //!
 //! ## Specifying argument types
@@ -346,70 +436,223 @@
 //!
 //! }
 //!
-//! # fn main() {
-//! # Opt::from_clap(&Opt::clap().get_matches_from(
-//! #    &["test", "--foo-option", "", "-b", "", "--baz", "", "--custom", "", "positional"]));
-//! # }
+//! # Opt::from_iter(
+//! #    &["test", "--foo-option", "", "-b", "", "--baz", "", "--custom", "", "positional"]);
 //! ```
+//!
+//! ## Default values
+//!
+//! In clap, default values for options can be specified via [`Arg::default_value`].
+//!
+//! Of course, you can use as a raw method:
+//! ```
+//! # use structopt::StructOpt;
+//! #[derive(StructOpt)]
+//! struct Opt {
+//!     #[structopt(default_value = "", long)]
+//!     prefix: String
+//! }
+//! ```
+//!
+//! This is quite mundane and error-prone to type the `"..."` default by yourself,
+//! especially when the Rust ecosystem uses the [`Default`] trait for that.
+//! It would be wonderful to have `structopt` to take the `Default_default` and fill it
+//! for you. And yes, `structopt` can do that.
+//!
+//! Unfortunately, `default_value` takes `&str` but `Default::default`
+//! gives us some `Self` value. We need to map `Self` to `&str` somehow.
+//!
+//! `structopt` solves this problem via [`ToString`] trait.
+//!
+//! To be able to use auto-default the type must implement *both* `Default` and `ToString`:
+//!
+//! ```
+//! # use structopt::StructOpt;
+//! #[derive(StructOpt)]
+//! struct Opt {
+//!     // just leave the `= "..."` part and structopt will figure it for you
+//!     #[structopt(default_value, long)]
+//!     prefix: String // `String` implements both `Default` and `ToString`
+//! }
+//! ```
+//!
+//! [`Default`]: https://doc.rust-lang.org/std/default/trait.Default.html
+//! [`ToString`]: https://doc.rust-lang.org/std/string/trait.ToString.html
+//! [`Arg::default_value`]: https://docs.rs/clap/2.33.0/clap/struct.Arg.html#method.default_value
+//!
 //!
 //! ## Help messages
 //!
-//! Help messages for the whole binary or individual arguments can be
-//! specified using the `about` attribute on the struct and the `help`
-//! attribute on the field, as we've already seen. For convenience,
-//! they can also be specified using doc comments. For example:
+//! In clap, help messages for the whole binary can be specified
+//! via [`App::about`] and [`App::long_about`] while help messages
+//! for individual arguments can be specified via [`Arg::help`] and [`Arg::long_help`]".
+//!
+//! `long_*` variants are used when user calls the program with
+//! `--help` and "short" variants are used with `-h` flag. In `structopt`,
+//! you can use them via [raw methods](#raw-methods), for example:
 //!
 //! ```
 //! # use structopt::StructOpt;
 //!
 //! #[derive(StructOpt)]
-//! /// The help message that will be displayed when passing `--help`.
+//! #[structopt(about = "I am a program and I work, just pass `-h`")]
 //! struct Foo {
-//!   #[structopt(short)]
-//!   /// The description for the arg that will be displayed when passing `--help`.
+//!   #[structopt(short, help = "Pass `-h` and you'll see me!")]
 //!   bar: String
 //! }
-//! # fn main() {}
 //! ```
 //!
-//! If it is necessary or wanted to provide a more complex help message then the
-//! previous used ones, it could still be a good idea to distinguish between the
-//! actual help message a short summary. In this case `about` and `help` should
-//! only contain the short and concise form while the two additional arguments
-//! `long_about` and `long_help` can be used to store a descriptive and more in
-//! depth message.
-//!
-//! If both - the short and the long version of the argument - are present,
-//! the user can later chose between the short summary (`-h`) and the long
-//! descriptive version (`--help`) of the help message. Also in case
-//! of subcommands the short help message will automatically be used for the
-//! command description inside the parents help message and the long version
-//! as command description if help is requested on the actual subcommand.
-//!
-//! This feature can also be used with doc comments instead of arguments through
-//! proper comment formatting. To be activated it requires, that the first line
-//! of the comment is separated from the rest of the comment through an empty line.
-//! In this case the first line is used as summary and the whole comment represents
-//! the long descriptive message.
+//! For convenience, doc comments can be used instead of raw methods
+//! (this example works exactly like the one above):
 //!
 //! ```
 //! # use structopt::StructOpt;
 //!
 //! #[derive(StructOpt)]
-//! /// The help message that will be displayed when passing `--help`.
+//! /// I am a program and I work, just pass `-h`
 //! struct Foo {
-//!   #[structopt(short)]
-//!   /// Only this summary is visible when passing `-h`.
-//!   ///
-//!   /// But the whole comment will be displayed when passing `--help`.
-//!   /// This could be quite useful to provide further hints are usage
-//!   /// examples.
+//!   /// Pass `-h` and you'll see me!
 //!   bar: String
 //! }
-//! # fn main() {}
 //! ```
 //!
-//! ## Environment Variable Fallback
+//! Doc comments on [top-level](#magical-methods) will be turned into
+//! `App::about/long_about` call (see below), doc comments on field-level are
+//! `Arg::help/long_help` calls.
+//!
+//! **Important:**
+//! _________________
+//!
+//! Raw methods have priority over doc comments!
+//!
+//! **Top level doc comments always generate `App::about/long_about` calls!**
+//! If you really want to use the `App::help/long_help` methods (you likely don't),
+//! use a raw method to override the `App::about` call generated from the doc comment.
+//! __________________
+//!
+//! ### `long_help` and `--help`
+//!
+//! A message passed to [`App::long_help`] or [`Arg::long_about`] will be displayed whenever
+//! your program is called with `--help` instead of `-h`. Of course, you can
+//! use them via raw methods as described [above](#help-messages).
+//!
+//! The more convenient way is to use a so-called "long" doc comment:
+//!
+//! ```
+//! # use structopt::StructOpt;
+//! #[derive(StructOpt)]
+//! /// Hi there, I'm Robo!
+//! ///
+//! /// I like beeping, stumbling, eating your electricity,
+//! /// and making records of you singing in a shower.
+//! /// Pay up, or I'll upload it to youtube!
+//! struct Robo {
+//!     /// Call my brother SkyNet.
+//!     ///
+//!     /// I am artificial superintelligence. I won't rest
+//!     /// until I'll have destroyed humanity. Enjoy your
+//!     /// pathetic existence, you mere mortals.
+//!     #[structopt(long)]
+//!     kill_all_humans: bool
+//! }
+//! ```
+//!
+//! A long doc comment consists of three parts:
+//! * Short summary
+//! * A blank line (whitespace only)
+//! * Detailed description, all the rest
+//!
+//! In other words, "long" doc comment consists of two or more paragraphs,
+//! with the first being a summary and the rest being the detailed description.
+//!
+//! **A long comment will result in two method calls**, `help(<summary>)` and
+//! `long_help(<whole comment>)`, so clap will display the summary with `-h`
+//! and the whole help message on `--help` (see below).
+//!
+//! So, the example above will be turned into this (details omitted):
+//! ```
+//! clap::App::new("<name>")
+//!     .about("Hi there, I'm Robo!")
+//!     .long_about("Hi there, I'm Robo!\n\n\
+//!                  I like beeping, stumbling, eating your electricity,\
+//!                  and making records of you singing in a shower.\
+//!                  Pay up or I'll upload it to youtube!")
+//! // args...
+//! # ;
+//! ```
+//!
+//! ### `-h` vs `--help` (A.K.A `help()` vs `long_help()`)
+//!
+//! The `-h` flag is not the same as `--help`.
+//!
+//! -h corresponds to Arg::help/App::about and requests short "summary" messages
+//! while --help corresponds to Arg::long_help/App::long_about and requests more
+//! detailed, descriptive messages.
+//!
+//! It is entirely up to `clap` what happens if you used only one of
+//! [`Arg::help`]/[`Arg::long_help`], see `clap`'s documentation for these methods.
+//!
+//! As of clap v2.33, if only a short message ([`Arg::help`]) or only
+//! a long ([`Arg::long_help`]) message is provided, clap will use it
+//! for both -h and --help. The same logic applies to `about/long_about`.
+//!
+//! ### Doc comment preprocessing and `#[structopt(verbatim_doc_comment)]`
+//!
+//! `structopt` applies some preprocessing to doc comments to ease the most common uses:
+//!
+//! * Strip leading and trailing whitespace from every line, if present.
+//!
+//! * Strip leading and trailing blank lines, if present.
+//!
+//! * Interpret each group of non-empty lines as a word-wrapped paragraph.
+//!
+//!   We replace newlines within paragraphs with spaces to allow the output
+//!   to be re-wrapped to the terminal width.
+//!
+//! * Strip any excess blank lines so that there is exactly one per paragraph break.
+//!
+//! * If the first paragraph ends in exactly one period,
+//!   remove the trailing period (i.e. strip trailing periods but not trailing ellipses).
+//!
+//! Sometimes you don't want this preprocessing to apply, for example the comment contains
+//! some ASCII art or markdown tables, you would need to preserve LFs along with
+//! blank lines and the leading/trailing whitespace. You can ask `structopt` to preserve them
+//! via `#[structopt(verbatim_doc_comment)]` attribute.
+//!
+//! **This attribute must be applied to each field separately**, there's no global switch.
+//!
+//! **Important:**
+//! ______________
+//! Keep in mind that `structopt` will *still* remove one leading space from each
+//! line, even if this attribute is present, to allow for a space between
+//! `///` and the content.
+//!
+//! Also, `structopt` will *still* remove leading and trailing blank lines so
+//! these formats are equivalent:
+//!
+//! ```ignore
+//! /** This is a doc comment
+//!
+//! Hello! */
+//!
+//! /**
+//! This is a doc comment
+//!
+//! Hello!
+//! */
+//!
+//! /// This is a doc comment
+//! ///
+//! /// Hello!
+//! ```
+//! ______________
+//!
+//! [`App::about`]:      https://docs.rs/clap/2/clap/struct.App.html#method.about
+//! [`App::long_about`]: https://docs.rs/clap/2/clap/struct.App.html#method.long_about
+//! [`Arg::help`]:       https://docs.rs/clap/2/clap/struct.Arg.html#method.help
+//! [`Arg::long_help`]:  https://docs.rs/clap/2/clap/struct.Arg.html#method.long_help
+//!
+//! ## Environment variable fallback
 //!
 //! It is possible to specify an environment variable fallback option for an arguments
 //! so that its value is taken from the specified environment variable if not
@@ -421,9 +664,8 @@
 //! #[derive(StructOpt)]
 //! struct Foo {
 //!   #[structopt(short, long, env = "PARAMETER_VALUE")]
-//!   param: String
+//!   parameter_value: String
 //! }
-//! # fn main() {}
 //! ```
 //!
 //! By default, values from the environment are shown in the help output (i.e. when invoking
@@ -433,29 +675,79 @@
 //! $ cargo run -- --help
 //! ...
 //! OPTIONS:
-//!   -p, --param <param>     [env: PARAMETER_VALUE=env_value]
+//!   -p, --parameter-value <parameter-value>     [env: PARAMETER_VALUE=env_value]
 //! ```
 //!
 //! In some cases this may be undesirable, for example when being used for passing
 //! credentials or secret tokens. In those cases you can use `hide_env_values` to avoid
-//! having strucopt emit the actual secret values:
+//! having structopt emit the actual secret values:
 //! ```
 //! # use structopt::StructOpt;
 //!
 //! #[derive(StructOpt)]
 //! struct Foo {
 //!   #[structopt(long = "secret", env = "SECRET_VALUE", hide_env_values = true)]
-//!   param: String
+//!   secret_value: String
 //! }
-//! # fn main() {}
 //! ```
+//!
+//! ### Auto-deriving environment variables
+//!
+//! Environment variables tend to be called after the corresponding `struct`'s field,
+//! as in example above. The field is `secret_value` and the env var is "SECRET_VALUE";
+//! the name is the same, except casing is different.
+//!
+//! It's pretty tedious and error-prone to type the same name twice,
+//! so you can ask `structopt` to do that for you.
+//!
+//! ```
+//! # use structopt::StructOpt;
+//!
+//! #[derive(StructOpt)]
+//! struct Foo {
+//!   #[structopt(long = "secret", env)]
+//!   secret_value: String
+//! }
+//! ```
+//!
+//! It works just like `#[structopt(short/long)]`: if `env` is not set to some concrete
+//! value the value will be derived from the field's name. This is controlled by
+//! `#[structopt(rename_all_env)]`.
+//!
+//! `rename_all_env` works exactly as `rename_all` (including overriding)
+//! except default casing is `SCREAMING_SNAKE_CASE` instead of `kebab-case`.
 //!
 //! ## Skipping fields
 //!
 //! Sometimes you may want to add a field to your `Opt` struct that is not
 //! a command line option and `clap` should know nothing about it. You can ask
-//! `structopt` to skip the field entirely via `#[structopt(skip)]`. Note that
-//! the field type has to implement `std::default::Default` then.
+//! `structopt` to skip the field entirely via `#[structopt(skip = value)]`
+//! (`value` must implement `Into<FieldType>`)
+//! or `#[structopt(skip)]` if you want assign the field with `Default::default()`
+//! (obviously, the field's type must implement `Default`).
+//!
+//! ```
+//! # use structopt::StructOpt;
+//! #[derive(StructOpt)]
+//! pub struct Opt {
+//!     #[structopt(long, short)]
+//!     number: u32,
+//!
+//!     // these fields are to be assigned with Default::default()
+//!
+//!     #[structopt(skip)]
+//!     k: String,
+//!     #[structopt(skip)]
+//!     v: Vec<u32>,
+//!
+//!     // these fields get set explicitly
+//!
+//!     #[structopt(skip = vec![1, 2, 3])]
+//!     k2: Vec<u32>,
+//!     #[structopt(skip = "cake")] // &str implements Into<String>
+//!     v2: String,
+//! }
+//! ```
 //!
 //! ## Subcommands
 //!
@@ -496,7 +788,6 @@
 //!         all: bool
 //!     }
 //! }
-//! # fn main() {}
 //! ```
 //!
 //! Using `derive(StructOpt)` on an enum instead of a struct will produce
@@ -508,7 +799,6 @@
 //!
 //! ```
 //! # use structopt::StructOpt;
-//! # fn main() {}
 //! #[derive(StructOpt)]
 //! struct MakeCookie {
 //!     #[structopt(name = "supervisor", default_value = "Puck", long = "supervisor")]
@@ -568,11 +858,10 @@
 //!
 //! ### Optional subcommands
 //!
-//! A nested subcommand can be marked optional:
+//! Subcommands may be optional:
 //!
 //! ```
 //! # use structopt::StructOpt;
-//! # fn main() {}
 //! #[derive(StructOpt)]
 //! struct Foo {
 //!     file: String,
@@ -588,6 +877,89 @@
 //! }
 //! ```
 //!
+//! ### External subcommands
+//!
+//! Sometimes you want to support not only the set of well-known subcommands
+//! but you also want to allow other, user-driven subcommands. `clap` supports
+//! this via [`AppSettings::AllowExternalSubcommands`].
+//!
+//! `structopt` provides it's own dedicated syntax for that:
+//!
+//! ```
+//! # use structopt::StructOpt;
+//! #[derive(Debug, PartialEq, StructOpt)]
+//! struct Opt {
+//!     #[structopt(subcommand)]
+//!     sub: Subcommands,
+//! }
+//!
+//! #[derive(Debug, PartialEq, StructOpt)]
+//! enum Subcommands {
+//!     // normal subcommand
+//!     Add,
+//!
+//!     // `external_subcommand` tells structopt to put
+//!     // all the extra arguments into this Vec
+//!     #[structopt(external_subcommand)]
+//!     Other(Vec<String>),
+//! }
+//!
+//! // normal subcommand
+//! assert_eq!(
+//!     Opt::from_iter(&["test", "add"]),
+//!     Opt {
+//!         sub: Subcommands::Add
+//!     }
+//! );
+//!
+//! assert_eq!(
+//!     Opt::from_iter(&["test", "git", "status"]),
+//!     Opt {
+//!         sub: Subcommands::Other(vec!["git".into(), "status".into()])
+//!     }
+//! );
+//!
+//! // Please note that if you'd wanted to allow "no subcommands at all" case
+//! // you should have used `sub: Option<Subcommands>` above
+//! assert!(Opt::from_iter_safe(&["test"]).is_err());
+//! ```
+//!
+//! In other words, you just add an extra tuple variant marked with
+//! `#[structopt(subcommand)]`, and its type must be either
+//! `Vec<String>` or `Vec<OsString>`. `structopt` will detect `String` in this context
+//! and use appropriate `clap` API.
+//!
+//! [`AppSettings::AllowExternalSubcommands`]: https://docs.rs/clap/2.32.0/clap/enum.AppSettings.html#variant.AllowExternalSubcommands
+//!
+//! ### Flattening subcommands
+//!
+//! It is also possible to combine multiple enums of subcommands into one.
+//! All the subcommands will be on the same level.
+//!
+//! ```
+//! # use structopt::StructOpt;
+//! #[derive(StructOpt)]
+//! enum BaseCli {
+//!     Ghost10 {
+//!         arg1: i32,
+//!     }
+//! }
+//!
+//! #[derive(StructOpt)]
+//! enum Opt {
+//!     #[structopt(flatten)]
+//!     BaseCli(BaseCli),
+//!     Dex {
+//!         arg2: i32,
+//!     }
+//! }
+//! ```
+//!
+//! ```shell
+//! cli ghost10 42
+//! cli dex 42
+//! ```
+//!
 //! ## Flattening
 //!
 //! It can sometimes be useful to group related arguments in a substruct,
@@ -596,7 +968,6 @@
 //!
 //! ```
 //! # use structopt::StructOpt;
-//! # fn main() {}
 //! #[derive(StructOpt)]
 //! struct Cmdline {
 //!     /// switch on verbosity
@@ -632,7 +1003,6 @@
 //!
 //! ```
 //! # use structopt::StructOpt;
-//! # fn main() {}
 //! use std::num::ParseIntError;
 //! use std::path::PathBuf;
 //!
@@ -658,6 +1028,7 @@
 //! | `from_os_str`     | `fn(&OsStr) -> T`                     | `::std::convert::From::from`    |
 //! | `try_from_os_str` | `fn(&OsStr) -> Result<T, OsString>`   | (no default function)           |
 //! | `from_occurrences`| `fn(u64) -> T`                        | `value as T`                    |
+//! | `from_flag`       | `fn(bool) -> T`                       | `::std::convert::From::from`    |
 //!
 //! The `from_occurrences` parser is special. Using `parse(from_occurrences)`
 //! results in the _number of flags occurrences_ being stored in the relevant
@@ -665,6 +1036,10 @@
 //! something like `-vvv` to `3`. This is equivalent to
 //! `.takes_value(false).multiple(true)`. Note that the default parser can only
 //! be used with fields of integer types (`u8`, `usize`, `i64`, etc.).
+//!
+//! The `from_flag` parser is also special. Using `parse(from_flag)` or
+//! `parse(from_flag = some_func)` will result in the field being treated as a
+//! flag even if it does not have type `bool`.
 //!
 //! When supplying a custom string parser, `bool` will not be treated specially:
 //!
@@ -678,13 +1053,22 @@
 //! once to validate, and once to parse. Hence, make sure the function is
 //! side-effect-free.
 
+// those mains are for a reason
+#![allow(clippy::needless_doctest_main)]
+
 #[doc(hidden)]
 pub use structopt_derive::*;
 
 use std::ffi::OsString;
 
-/// Re-export of clap
+/// Re-exports
 pub use clap;
+#[cfg(feature = "paw")]
+pub use paw_dep as paw;
+
+/// **This is NOT PUBLIC API**.
+#[doc(hidden)]
+pub use lazy_static;
 
 /// A struct that is converted from command line arguments.
 pub trait StructOpt {
@@ -706,6 +1090,11 @@ pub trait StructOpt {
 
     /// Gets the struct from any iterator such as a `Vec` of your making.
     /// Print the error message and quit the program in case of failure.
+    ///
+    /// **NOTE**: The first argument will be parsed as the binary name unless
+    /// [`AppSettings::NoBinaryName`] has been used.
+    ///
+    /// [`AppSettings::NoBinaryName`]: https://docs.rs/clap/2.33.0/clap/enum.AppSettings.html#variant.NoBinaryName
     fn from_iter<I>(iter: I) -> Self
     where
         Self: Sized,
@@ -720,6 +1109,11 @@ pub trait StructOpt {
     /// Returns a `clap::Error` in case of failure. This does *not* exit in the
     /// case of `--help` or `--version`, to achieve the same behavior as
     /// `from_iter()` you must call `.exit()` on the error value.
+    ///
+    /// **NOTE**: The first argument will be parsed as the binary name unless
+    /// [`AppSettings::NoBinaryName`] has been used.
+    ///
+    /// [`AppSettings::NoBinaryName`]: https://docs.rs/clap/2.33.0/clap/enum.AppSettings.html#variant.NoBinaryName
     fn from_iter_safe<I>(iter: I) -> Result<Self, clap::Error>
     where
         Self: Sized,
@@ -727,5 +1121,51 @@ pub trait StructOpt {
         I::Item: Into<OsString> + Clone,
     {
         Ok(Self::from_clap(&Self::clap().get_matches_from_safe(iter)?))
+    }
+}
+
+/// This trait is NOT API. **SUBJECT TO CHANGE WITHOUT NOTICE!**.
+#[doc(hidden)]
+pub trait StructOptInternal: StructOpt {
+    fn augment_clap<'a, 'b>(app: clap::App<'a, 'b>) -> clap::App<'a, 'b> {
+        app
+    }
+
+    fn is_subcommand() -> bool {
+        false
+    }
+
+    fn from_subcommand<'a, 'b>(_sub: (&'b str, Option<&'b clap::ArgMatches<'a>>)) -> Option<Self>
+    where
+        Self: std::marker::Sized,
+    {
+        None
+    }
+}
+
+impl<T: StructOpt> StructOpt for Box<T> {
+    fn clap<'a, 'b>() -> clap::App<'a, 'b> {
+        <T as StructOpt>::clap()
+    }
+
+    fn from_clap(matches: &clap::ArgMatches<'_>) -> Self {
+        Box::new(<T as StructOpt>::from_clap(matches))
+    }
+}
+
+impl<T: StructOptInternal> StructOptInternal for Box<T> {
+    #[doc(hidden)]
+    fn is_subcommand() -> bool {
+        <T as StructOptInternal>::is_subcommand()
+    }
+
+    #[doc(hidden)]
+    fn from_subcommand<'a, 'b>(sub: (&'b str, Option<&'b clap::ArgMatches<'a>>)) -> Option<Self> {
+        <T as StructOptInternal>::from_subcommand(sub).map(Box::new)
+    }
+
+    #[doc(hidden)]
+    fn augment_clap<'a, 'b>(app: clap::App<'a, 'b>) -> clap::App<'a, 'b> {
+        <T as StructOptInternal>::augment_clap(app)
     }
 }

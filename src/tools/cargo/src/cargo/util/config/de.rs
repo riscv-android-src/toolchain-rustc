@@ -4,6 +4,7 @@ use crate::util::config::value;
 use crate::util::config::{Config, ConfigError, ConfigKey};
 use crate::util::config::{ConfigValue as CV, Definition, Value};
 use serde::{de, de::IntoDeserializer};
+use std::collections::HashSet;
 use std::vec;
 
 /// Serde deserializer used to convert config values to a target type using
@@ -56,6 +57,7 @@ impl<'de, 'config> de::Deserializer<'de> for Deserializer<'config> {
             (None, Some(_)) => true,
             _ => false,
         };
+
         if use_env {
             // Future note: If you ever need to deserialize a non-self describing
             // map type, this should implement a starts_with check (similar to how
@@ -186,13 +188,17 @@ impl<'de, 'config> de::Deserializer<'de> for Deserializer<'config> {
     where
         V: de::Visitor<'de>,
     {
-        if name == "StringList" {
-            let vals = self.config.get_list_or_string(&self.key)?;
-            let vals: Vec<String> = vals.into_iter().map(|vd| vd.0).collect();
-            visitor.visit_newtype_struct(vals.into_deserializer())
+        let merge = if name == "StringList" {
+            true
+        } else if name == "UnmergedStringList" {
+            false
         } else {
-            visitor.visit_newtype_struct(self)
-        }
+            return visitor.visit_newtype_struct(self);
+        };
+
+        let vals = self.config.get_list_or_string(&self.key, merge)?;
+        let vals: Vec<String> = vals.into_iter().map(|vd| vd.0).collect();
+        visitor.visit_newtype_struct(vals.into_deserializer())
     }
 
     fn deserialize_enum<V>(
@@ -269,37 +275,54 @@ impl<'config> ConfigMapAccess<'config> {
 
     fn new_struct(
         de: Deserializer<'config>,
-        fields: &'static [&'static str],
+        given_fields: &'static [&'static str],
     ) -> Result<ConfigMapAccess<'config>, ConfigError> {
-        let fields: Vec<KeyKind> = fields
-            .iter()
-            .map(|field| KeyKind::Normal(field.to_string()))
-            .collect();
+        let table = de.config.get_table(&de.key)?;
 
         // Assume that if we're deserializing a struct it exhaustively lists all
         // possible fields on this key that we're *supposed* to use, so take
         // this opportunity to warn about any keys that aren't recognized as
         // fields and warn about them.
-        if let Some(mut v) = de.config.get_table(&de.key)? {
-            for (t_key, value) in v.val.drain() {
-                if fields.iter().any(|k| match k {
-                    KeyKind::Normal(s) => s == &t_key,
-                    KeyKind::CaseSensitive(s) => s == &t_key,
-                }) {
-                    continue;
-                }
+        if let Some(v) = table.as_ref() {
+            let unused_keys = v
+                .val
+                .iter()
+                .filter(|(k, _v)| !given_fields.iter().any(|gk| gk == k));
+            for (unused_key, unused_value) in unused_keys {
                 de.config.shell().warn(format!(
                     "unused config key `{}.{}` in `{}`",
                     de.key,
-                    t_key,
-                    value.definition()
+                    unused_key,
+                    unused_value.definition()
                 ))?;
+            }
+        }
+
+        let mut fields = HashSet::new();
+
+        // If the caller is interested in a field which we can provide from
+        // the environment, get it from there.
+        for field in given_fields {
+            let mut field_key = de.key.clone();
+            field_key.push(field);
+            for env_key in de.config.env.keys() {
+                if env_key.starts_with(field_key.as_env_key()) {
+                    fields.insert(KeyKind::Normal(field.to_string()));
+                }
+            }
+        }
+
+        // Add everything from the config table we're interested in that we
+        // haven't already provided via an environment variable
+        if let Some(v) = table {
+            for key in v.val.keys() {
+                fields.insert(KeyKind::Normal(key.clone()));
             }
         }
 
         Ok(ConfigMapAccess {
             de,
-            fields,
+            fields: fields.into_iter().collect(),
             field_index: 0,
         })
     }

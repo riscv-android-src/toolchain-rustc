@@ -34,14 +34,16 @@ use super::{InferCtxt, MiscVariable, TypeTrace};
 
 use crate::traits::{Obligation, PredicateObligations};
 
-use rustc_ast::ast;
+use rustc_ast as ast;
+use rustc_data_structures::mini_map::MiniMap;
 use rustc_hir::def_id::DefId;
+use rustc_middle::traits::ObligationCause;
 use rustc_middle::ty::error::TypeError;
 use rustc_middle::ty::relate::{self, Relate, RelateResult, TypeRelation};
 use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::{self, InferConst, ToPredicate, Ty, TyCtxt, TypeFoldable};
 use rustc_middle::ty::{IntType, UintType};
-use rustc_span::{Span, DUMMY_SP};
+use rustc_span::DUMMY_SP;
 
 #[derive(Clone)]
 pub struct CombineFields<'infcx, 'tcx> {
@@ -165,7 +167,7 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
                 return self.unify_const_variable(!a_is_expected, vid, a);
             }
             (ty::ConstKind::Unevaluated(..), _) if self.tcx.lazy_normalization() => {
-                // FIXME(#59490): Need to remove the leak check to accomodate
+                // FIXME(#59490): Need to remove the leak check to accommodate
                 // escaping bound variables here.
                 if !a.has_escaping_bound_vars() && !b.has_escaping_bound_vars() {
                     relation.const_equate_obligation(a, b);
@@ -173,7 +175,7 @@ impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
                 return Ok(b);
             }
             (_, ty::ConstKind::Unevaluated(..)) if self.tcx.lazy_normalization() => {
-                // FIXME(#59490): Need to remove the leak check to accomodate
+                // FIXME(#59490): Need to remove the leak check to accommodate
                 // escaping bound variables here.
                 if !a.has_escaping_bound_vars() && !b.has_escaping_bound_vars() {
                     relation.const_equate_obligation(a, b);
@@ -307,7 +309,7 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
             self.obligations.push(Obligation::new(
                 self.trace.cause.clone(),
                 self.param_env,
-                ty::PredicateKind::WellFormed(b_ty.into()).to_predicate(self.infcx.tcx),
+                ty::PredicateAtom::WellFormed(b_ty.into()).to_predicate(self.infcx.tcx),
             ));
         }
 
@@ -367,16 +369,18 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
         };
 
         debug!("generalize: for_universe = {:?}", for_universe);
+        debug!("generalize: trace = {:?}", self.trace);
 
         let mut generalize = Generalizer {
             infcx: self.infcx,
-            span: self.trace.cause.span,
+            cause: &self.trace.cause,
             for_vid_sub_root: self.infcx.inner.borrow_mut().type_variables().sub_root_var(for_vid),
             for_universe,
             ambient_variance,
             needs_wf: false,
             root_ty: ty,
             param_env: self.param_env,
+            cache: MiniMap::new(),
         };
 
         let ty = match generalize.relate(ty, ty) {
@@ -398,9 +402,9 @@ impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
         b: &'tcx ty::Const<'tcx>,
     ) {
         let predicate = if a_is_expected {
-            ty::PredicateKind::ConstEquate(a, b)
+            ty::PredicateAtom::ConstEquate(a, b)
         } else {
-            ty::PredicateKind::ConstEquate(b, a)
+            ty::PredicateAtom::ConstEquate(b, a)
         };
         self.obligations.push(Obligation::new(
             self.trace.cause.clone(),
@@ -414,7 +418,7 @@ struct Generalizer<'cx, 'tcx> {
     infcx: &'cx InferCtxt<'cx, 'tcx>,
 
     /// The span, used when creating new type variables and things.
-    span: Span,
+    cause: &'cx ObligationCause<'tcx>,
 
     /// The vid of the type variable that is in the process of being
     /// instantiated; if we find this within the type we are folding,
@@ -436,6 +440,8 @@ struct Generalizer<'cx, 'tcx> {
     root_ty: Ty<'tcx>,
 
     param_env: ty::ParamEnv<'tcx>,
+
+    cache: MiniMap<Ty<'tcx>, RelateResult<'tcx, Ty<'tcx>>>,
 }
 
 /// Result from a generalization operation. This includes
@@ -533,13 +539,16 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
     fn tys(&mut self, t: Ty<'tcx>, t2: Ty<'tcx>) -> RelateResult<'tcx, Ty<'tcx>> {
         assert_eq!(t, t2); // we are abusing TypeRelation here; both LHS and RHS ought to be ==
 
+        if let Some(result) = self.cache.get(&t) {
+            return result.clone();
+        }
         debug!("generalize: t={:?}", t);
 
         // Check to see whether the type we are generalizing references
         // any other type variable related to `vid` via
         // subtyping. This is basically our "occurs check", preventing
         // us from creating infinitely sized types.
-        match t.kind {
+        let result = match t.kind {
             ty::Infer(ty::TyVar(vid)) => {
                 let vid = self.infcx.inner.borrow_mut().type_variables().root_var(vid);
                 let sub_vid = self.infcx.inner.borrow_mut().type_variables().sub_root_var(vid);
@@ -596,7 +605,10 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
                 Ok(t)
             }
             _ => relate::super_relate_tys(self, t, t),
-        }
+        };
+
+        self.cache.insert(t, result.clone());
+        return result;
     }
 
     fn regions(
@@ -639,7 +651,7 @@ impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
 
         // FIXME: This is non-ideal because we don't give a
         // very descriptive origin for this region variable.
-        Ok(self.infcx.next_region_var_in_universe(MiscVariable(self.span), self.for_universe))
+        Ok(self.infcx.next_region_var_in_universe(MiscVariable(self.cause.span), self.for_universe))
     }
 
     fn consts(

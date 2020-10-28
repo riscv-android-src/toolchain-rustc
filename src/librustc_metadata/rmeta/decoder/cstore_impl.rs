@@ -4,13 +4,11 @@ use crate::link_args;
 use crate::native_libs;
 use crate::rmeta::{self, encoder};
 
-use rustc_ast::ast;
-use rustc_ast::attr;
+use rustc_ast as ast;
 use rustc_ast::expand::allocator::AllocatorKind;
 use rustc_data_structures::svh::Svh;
 use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, CRATE_DEF_INDEX, LOCAL_CRATE};
-use rustc_hir::definitions::DefPathTable;
 use rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
 use rustc_middle::hir::exports::Export;
 use rustc_middle::middle::cstore::{CrateSource, CrateStore, EncodedMetadata};
@@ -21,9 +19,10 @@ use rustc_middle::ty::{self, TyCtxt};
 use rustc_session::utils::NativeLibKind;
 use rustc_session::{CrateDisambiguator, Session};
 use rustc_span::source_map::{self, Span, Spanned};
-use rustc_span::symbol::{Ident, Symbol};
+use rustc_span::symbol::Symbol;
 
 use rustc_data_structures::sync::Lrc;
+use rustc_span::ExpnId;
 use smallvec::SmallVec;
 use std::any::Any;
 
@@ -36,7 +35,7 @@ macro_rules! provide {
                 def_id_arg: ty::query::query_keys::$name<$lt>,
             ) -> ty::query::query_values::$name<$lt> {
                 let _prof_timer =
-                    $tcx.prof.generic_activity("metadata_decode_entry");
+                    $tcx.prof.generic_activity(concat!("metadata_decode_entry_", stringify!($name)));
 
                 #[allow(unused_variables)]
                 let ($def_id, $other) = def_id_arg.into_args();
@@ -111,8 +110,9 @@ provide! { <'tcx> tcx, def_id, other, cdata,
             bug!("coerce_unsized_info: `{:?}` is missing its info", def_id);
         })
     }
-    optimized_mir => { cdata.get_optimized_mir(tcx, def_id.index) }
-    promoted_mir => { cdata.get_promoted_mir(tcx, def_id.index) }
+    optimized_mir => { tcx.arena.alloc(cdata.get_optimized_mir(tcx, def_id.index)) }
+    promoted_mir => { tcx.arena.alloc(cdata.get_promoted_mir(tcx, def_id.index)) }
+    unused_generic_params => { cdata.get_unused_generic_params(def_id.index) }
     mir_const_qualif => { cdata.mir_const_qualif(def_id.index) }
     fn_sig => { cdata.fn_sig(def_id.index, tcx) }
     inherent_impls => { cdata.get_inherent_implementations_for_type(tcx, def_id.index) }
@@ -135,10 +135,6 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     item_attrs => { tcx.arena.alloc_from_iter(
         cdata.get_item_attrs(def_id.index, tcx.sess).into_iter()
     ) }
-    // FIXME(#38501) We've skipped a `read` on the `hir_owner_nodes` of
-    // a `fn` when encoding, so the dep-tracking wouldn't work.
-    // This is only used by rustdoc anyway, which shouldn't have
-    // incremental recompilation ever enabled.
     fn_arg_names => { cdata.get_fn_param_names(tcx, def_id.index) }
     rendered_const => { cdata.get_rendered_const(def_id.index) }
     impl_parent => { cdata.get_parent_impl(def_id.index) }
@@ -413,16 +409,10 @@ impl CStore {
         // Mark the attrs as used
         let attrs = data.get_item_attrs(id.index, sess);
         for attr in attrs.iter() {
-            attr::mark_used(attr);
+            sess.mark_attr_used(attr);
         }
 
-        let ident = data
-            .def_key(id.index)
-            .disambiguated_data
-            .data
-            .get_opt_name()
-            .map(Ident::with_dummy_span) // FIXME: cross-crate hygiene
-            .expect("no name in load_macro");
+        let ident = data.item_ident(id.index, sess);
 
         LoadedMacro::MacroDef(
             ast::Item {
@@ -452,6 +442,10 @@ impl CStore {
 
     pub fn item_generics_num_lifetimes(&self, def_id: DefId, sess: &Session) -> usize {
         self.get_crate_data(def_id.krate).get_generics(def_id.index, sess).own_counts().lifetimes
+    }
+
+    pub fn module_expansion_untracked(&self, def_id: DefId, sess: &Session) -> ExpnId {
+        self.get_crate_data(def_id.krate).module_expansion(def_id.index, sess)
     }
 }
 
@@ -491,8 +485,12 @@ impl CrateStore for CStore {
         self.get_crate_data(def.krate).def_path_hash(def.index)
     }
 
-    fn def_path_table(&self, cnum: CrateNum) -> &DefPathTable {
-        &self.get_crate_data(cnum).cdata.def_path_table
+    fn all_def_path_hashes_and_def_ids(&self, cnum: CrateNum) -> Vec<(DefPathHash, DefId)> {
+        self.get_crate_data(cnum).all_def_path_hashes_and_def_ids()
+    }
+
+    fn num_def_ids(&self, cnum: CrateNum) -> usize {
+        self.get_crate_data(cnum).num_def_ids()
     }
 
     fn crates_untracked(&self) -> Vec<CrateNum> {

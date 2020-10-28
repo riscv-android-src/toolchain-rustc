@@ -12,11 +12,10 @@ indexmap
 .. |docs| image:: https://docs.rs/indexmap/badge.svg
 .. _docs: https://docs.rs/indexmap
 
-.. |rustc| image:: https://img.shields.io/badge/rust-1.18%2B-orange.svg
-.. _rustc: https://img.shields.io/badge/rust-1.18%2B-orange.svg
+.. |rustc| image:: https://img.shields.io/badge/rust-1.32%2B-orange.svg
+.. _rustc: https://img.shields.io/badge/rust-1.32%2B-orange.svg
 
-A safe, pure-Rust hash table which preserves (in a limited sense) insertion
-order.
+A pure-Rust hash table which preserves (in a limited sense) insertion order.
 
 This crate implements compact map and set data-structures,
 where the iteration order of the keys is independent from their hash or
@@ -39,16 +38,7 @@ was indexmap, a hash table that has following properties:
 - Fast to iterate.
 - Indexed in compact space.
 - Preserves insertion order **as long** as you don't call ``.remove()``.
-- Uses robin hood hashing just like Rust's libstd ``HashMap`` used to do
-  (before std switched to hashbrown).
-
-  - It's the usual backwards shift deletion, but only on the index vector, so
-    it's cheaper because it's moving less memory around.
-
-Does not implement (Yet)
-------------------------
-
-- ``.reserve()`` exists but does not have a complete implementation
+- Uses hashbrown for the inner table, just like Rust's libstd ``HashMap`` does.
 
 Performance
 -----------
@@ -56,15 +46,14 @@ Performance
 ``IndexMap`` derives a couple of performance facts directly from how it is constructed,
 which is roughly:
 
-  Two vectors, the first, sparse, with hashes and key-value indices, and the
-  second, dense, the key-value pairs.
+  A raw hash table of key-value indices, and a vector of key-value pairs.
 
 - Iteration is very fast since it is on the dense key-values.
-- Removal is fast since it moves memory areas only in the first vector,
-  and uses a single swap in the second vector.
-- Lookup is fast-ish because the hashes and indices are densely stored.
-  Lookup also is slow-ish since hashes and key-value pairs are stored in
-  separate places. (Visible when cpu caches size is limiting.)
+- Removal is fast since it moves memory areas only in the table,
+  and uses a single swap in the vector.
+- Lookup is fast-ish because the initial 7-bit hash lookup uses SIMD, and indices are
+  densely stored. Lookup also is slow-ish since the actual key-value pairs are stored
+  separately. (Visible when cpu caches size is limiting.)
 
 - In practice, ``IndexMap`` has been tested out as the hashmap in rustc in PR45282_ and
   the performance was roughly on par across the whole workload. 
@@ -74,17 +63,39 @@ which is roughly:
 .. _PR45282: https://github.com/rust-lang/rust/pull/45282
 
 
-- Idea for more cache efficient lookup (This was implemented in 0.1.2).
-
-  Current ``indices: Vec<Pos>``. ``Pos`` is interpreted as ``(u32, u32)`` more
-  or less when ``.raw_capacity()`` fits in 32 bits. ``Pos`` then stores both the lower
-  half of the hash and the entry index.
-  This means that the hash values in ``Bucket`` don't need to be accessed
-  while scanning for an entry.
-
-
 Recent Changes
 ==============
+
+- 1.5.1
+
+  - Values can now be indexed by their ``usize`` position by @cuviper in PR 132_.
+
+  - Some of the generic bounds have been relaxed to match ``std`` by @cuviper in PR 141_.
+
+  - ``drain`` now accepts any ``R: RangeBounds<usize>`` by @cuviper in PR 142_.
+
+.. _132: https://github.com/bluss/indexmap/pull/132
+.. _141: https://github.com/bluss/indexmap/pull/141
+.. _142: https://github.com/bluss/indexmap/pull/142
+
+- 1.5.0
+
+  - **MSRV**: Rust 1.32 or later is now required.
+
+  - The inner hash table is now based on ``hashbrown`` by @cuviper in PR 131_.
+    This also completes the method ``reserve`` and adds ``shrink_to_fit``.
+
+  - Add new methods ``get_key_value``, ``remove_entry``, ``swap_remove_entry``,
+    and ``shift_remove_entry``, by @cuviper in PR 136_
+
+  - ``Clone::clone_from`` reuses allocations by @cuviper in PR 125_
+
+  - Add new method ``reverse`` by @linclelinkpart5 in PR 128_
+
+.. _125: https://github.com/bluss/indexmap/pull/125
+.. _128: https://github.com/bluss/indexmap/pull/128
+.. _131: https://github.com/bluss/indexmap/pull/131
+.. _136: https://github.com/bluss/indexmap/pull/136
 
 - 1.4.0
 

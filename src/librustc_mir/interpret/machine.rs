@@ -122,6 +122,10 @@ pub trait Machine<'mir, 'tcx>: Sized {
     /// Whether memory accesses should be alignment-checked.
     fn enforce_alignment(memory_extra: &Self::MemoryExtra) -> bool;
 
+    /// Whether, when checking alignment, we should `force_int` and thus support
+    /// custom alignment logic based on whatever the integer address happens to be.
+    fn force_int_for_alignment_check(memory_extra: &Self::MemoryExtra) -> bool;
+
     /// Whether to enforce the validity invariant
     fn enforce_validity(ecx: &InterpCx<'mir, 'tcx, Self>) -> bool;
 
@@ -238,44 +242,29 @@ pub trait Machine<'mir, 'tcx>: Sized {
         Ok(())
     }
 
-    /// Called for *every* memory access to determine the real ID of the given allocation.
-    /// This provides a way for the machine to "redirect" certain allocations as it sees fit.
-    ///
-    /// This is used by Miri to redirect extern statics to real allocations.
-    ///
-    /// This function must be idempotent.
-    #[inline]
-    fn canonical_alloc_id(_mem: &Memory<'mir, 'tcx, Self>, id: AllocId) -> AllocId {
-        id
+    /// Return the `AllocId` for the given thread-local static in the current thread.
+    fn thread_local_static_alloc_id(
+        _ecx: &mut InterpCx<'mir, 'tcx, Self>,
+        def_id: DefId,
+    ) -> InterpResult<'tcx, AllocId> {
+        throw_unsup!(ThreadLocalStatic(def_id))
     }
 
-    /// Called when converting a `ty::Const` to an operand (in
-    /// `eval_const_to_op`).
-    ///
-    /// Miri uses this callback for creating per thread allocations for thread
-    /// locals. In Rust, one way of creating a thread local is by marking a
-    /// static with `#[thread_local]`. On supported platforms this gets
-    /// translated to a LLVM thread local for which LLVM automatically ensures
-    /// that each thread gets its own copy. Since LLVM automatically handles
-    /// thread locals, the Rust compiler just treats thread local statics as
-    /// regular statics even though accessing a thread local static should be an
-    /// effectful computation that depends on the current thread. The long term
-    /// plan is to change MIR to make accesses to thread locals explicit
-    /// (https://github.com/rust-lang/rust/issues/70685). While the issue 70685
-    /// is not fixed, our current workaround in Miri is to use this function to
-    /// make per-thread copies of thread locals. Please note that we cannot make
-    /// these copies in `canonical_alloc_id` because that is too late: for
-    /// example, if one created a pointer in thread `t1` to a thread local and
-    /// sent it to another thread `t2`, resolving the access in
-    /// `canonical_alloc_id` would result in pointer pointing to `t2`'s thread
-    /// local and not `t1` as it should.
-    #[inline]
-    fn adjust_global_const(
-        _ecx: &InterpCx<'mir, 'tcx, Self>,
-        val: mir::interpret::ConstValue<'tcx>,
-    ) -> InterpResult<'tcx, mir::interpret::ConstValue<'tcx>> {
-        Ok(val)
+    /// Return the `AllocId` backing the given `extern static`.
+    fn extern_static_alloc_id(
+        mem: &Memory<'mir, 'tcx, Self>,
+        def_id: DefId,
+    ) -> InterpResult<'tcx, AllocId> {
+        // Use the `AllocId` associated with the `DefId`. Any actual *access* will fail.
+        Ok(mem.tcx.create_static_alloc(def_id))
     }
+
+    /// Return the "base" tag for the given *global* allocation: the one that is used for direct
+    /// accesses to this static/const/fn allocation. If `id` is not a global allocation,
+    /// this will return an unusable tag (i.e., accesses will be UB)!
+    ///
+    /// Called on the id returned by `thread_local_static_alloc_id` and `extern_static_alloc_id`, if needed.
+    fn tag_global_base_pointer(memory_extra: &Self::MemoryExtra, id: AllocId) -> Self::PointerTag;
 
     /// Called to initialize the "extra" state of an allocation and make the pointers
     /// it contains (in relocations) tagged.  The way we construct allocations is
@@ -308,13 +297,6 @@ pub trait Machine<'mir, 'tcx>: Sized {
     ) -> InterpResult<'tcx> {
         Ok(())
     }
-
-    /// Return the "base" tag for the given *global* allocation: the one that is used for direct
-    /// accesses to this static/const/fn allocation. If `id` is not a global allocation,
-    /// this will return an unusable tag (i.e., accesses will be UB)!
-    ///
-    /// Expects `id` to be already canonical, if needed.
-    fn tag_global_base_pointer(memory_extra: &Self::MemoryExtra, id: AllocId) -> Self::PointerTag;
 
     /// Executes a retagging operation
     #[inline]
@@ -375,13 +357,6 @@ pub trait Machine<'mir, 'tcx>: Sized {
         _mem: &Memory<'mir, 'tcx, Self>,
         _ptr: Pointer<Self::PointerTag>,
     ) -> InterpResult<'tcx, u64>;
-
-    fn thread_local_alloc_id(
-        _ecx: &mut InterpCx<'mir, 'tcx, Self>,
-        did: DefId,
-    ) -> InterpResult<'tcx, AllocId> {
-        throw_unsup!(ThreadLocalStatic(did))
-    }
 }
 
 // A lot of the flexibility above is just needed for `Miri`, but all "compile-time" machines
@@ -401,6 +376,12 @@ pub macro compile_time_machine(<$mir: lifetime, $tcx: lifetime>) {
     fn enforce_alignment(_memory_extra: &Self::MemoryExtra) -> bool {
         // We do not check for alignment to avoid having to carry an `Align`
         // in `ConstValue::ByRef`.
+        false
+    }
+
+    #[inline(always)]
+    fn force_int_for_alignment_check(_memory_extra: &Self::MemoryExtra) -> bool {
+        // We do not support `force_int`.
         false
     }
 
@@ -437,13 +418,5 @@ pub macro compile_time_machine(<$mir: lifetime, $tcx: lifetime>) {
         _id: AllocId,
     ) -> Self::PointerTag {
         ()
-    }
-
-    #[inline(always)]
-    fn init_frame_extra(
-        _ecx: &mut InterpCx<$mir, $tcx, Self>,
-        frame: Frame<$mir, $tcx>,
-    ) -> InterpResult<$tcx, Frame<$mir, $tcx>> {
-        Ok(frame)
     }
 }

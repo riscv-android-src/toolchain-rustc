@@ -1,8 +1,5 @@
-#![cfg_attr(feature = "benchmarks", feature(test))]
-#![cfg_attr(not(feature = "std"), no_std)]
-
 // Copyright (c) 2013-2014 The Rust Project Developers.
-// Copyright (c) 2015-2018 The rust-hex Developers.
+// Copyright (c) 2015-2020 The rust-hex Developers.
 //
 // Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
 // http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
@@ -11,28 +8,40 @@
 // except according to those terms.
 //! Encoding and decoding hex strings.
 //!
-//! For most cases, you can simply use the `decode()`, `encode()` and
-//! `encode_upper()` functions. If you need a bit more control, use the traits
-//! `ToHex` and `FromHex` instead.
+//! For most cases, you can simply use the [`decode`], [`encode`] and
+//! [`encode_upper`] functions. If you need a bit more control, use the traits
+//! [`ToHex`] and [`FromHex`] instead.
 //!
 //! # Example
 //!
 //! ```
-//! extern crate hex;
+//! let hex_string = hex::encode("Hello world!");
 //!
-//! fn main() {
-//!     let hex_string = hex::encode("Hello world!");
-//!     println!("{}", hex_string); // Prints '48656c6c6f20776f726c6421'
-//! }
+//! println!("{}", hex_string); // Prints "48656c6c6f20776f726c6421"
+//!
+//! # assert_eq!(hex_string, "48656c6c6f20776f726c6421");
 //! ```
+
+#![doc(html_root_url = "https://docs.rs/hex/0.4.2")]
+#![cfg_attr(not(feature = "std"), no_std)]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(clippy::unreadable_literal)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 #[cfg(not(feature = "std"))]
 use alloc::{string::String, vec::Vec};
 
-use core::fmt;
 use core::iter;
+
+mod error;
+pub use crate::error::FromHexError;
+
+#[cfg(feature = "serde")]
+#[cfg_attr(docsrs, doc(cfg(feature = "serde")))]
+pub mod serde;
+#[cfg(feature = "serde")]
+pub use crate::serde::{deserialize, serialize, serialize_upper};
 
 /// Encoding values as hex string.
 ///
@@ -45,9 +54,10 @@ use core::iter;
 /// use hex::ToHex;
 ///
 /// println!("{}", "Hello world!".encode_hex::<String>());
+/// # assert_eq!("Hello world!".encode_hex::<String>(), "48656c6c6f20776f726c6421".to_string());
 /// ```
 ///
-/// *Note*: instead of using this trait, you might want to use `encode()`.
+/// *Note*: instead of using this trait, you might want to use [`encode()`].
 pub trait ToHex {
     /// Encode the hex strict representing `self` into the result.. Lower case
     /// letters are used (e.g. `f9b4ca`)
@@ -83,13 +93,11 @@ impl<'a> Iterator for BytesToHexChars<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         match self.next.take() {
             Some(current) => Some(current),
-            None => {
-                self.inner.next().map(|byte| {
-                    let current = self.table[(byte >> 4) as usize] as char;
-                    self.next = Some(self.table[(byte & 0xf) as usize] as char);
-                    current
-                })
-            }
+            None => self.inner.next().map(|byte| {
+                let current = self.table[(byte >> 4) as usize] as char;
+                self.next = Some(self.table[(byte & 0xf) as usize] as char);
+                current
+            }),
         }
     }
 
@@ -109,9 +117,7 @@ impl<'a> iter::ExactSizeIterator for BytesToHexChars<'a> {
     }
 }
 
-fn encode_to_iter<T: iter::FromIterator<char>>(table: &'static [u8; 16],
-                                               source: &[u8]) -> T
-{
+fn encode_to_iter<T: iter::FromIterator<char>>(table: &'static [u8; 16], source: &[u8]) -> T {
     BytesToHexChars::new(source, table).collect()
 }
 
@@ -122,51 +128,6 @@ impl<T: AsRef<[u8]>> ToHex for T {
 
     fn encode_hex_upper<U: iter::FromIterator<char>>(&self) -> U {
         encode_to_iter(HEX_CHARS_UPPER, self.as_ref())
-    }
-}
-
-/// The error type for decoding a hex string into `Vec<u8>` or `[u8; N]`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum FromHexError {
-    /// An invalid character was found. Valid ones are: `0...9`, `a...f`
-    /// or `A...F`.
-    InvalidHexCharacter {
-        c: char,
-        index: usize,
-    },
-
-    /// A hex string's length needs to be even, as two digits correspond to
-    /// one byte.
-    OddLength,
-
-    /// If the hex string is decoded into a fixed sized container, such as an
-    /// array, the hex string's length * 2 has to match the container's
-    /// length.
-    InvalidStringLength,
-}
-
-#[cfg(feature = "std")]
-impl std::error::Error for FromHexError {
-    fn description(&self) -> &str {
-        match *self {
-            FromHexError::InvalidHexCharacter { .. } => "invalid character",
-            FromHexError::OddLength => "odd number of digits",
-            FromHexError::InvalidStringLength => "invalid string length",
-
-        }
-    }
-}
-
-impl fmt::Display for FromHexError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            FromHexError::InvalidHexCharacter { c, index } =>
-                write!(f, "Invalid character '{}' at position {}", c, index),
-            FromHexError::OddLength =>
-                write!(f, "Odd number of digits"),
-            FromHexError::InvalidStringLength =>
-                write!(f, "Invalid string length"),
-        }
     }
 }
 
@@ -206,12 +167,10 @@ fn val(c: u8, idx: usize) -> Result<u8, FromHexError> {
         b'A'..=b'F' => Ok(c - b'A' + 10),
         b'a'..=b'f' => Ok(c - b'a' + 10),
         b'0'..=b'9' => Ok(c - b'0'),
-        _ => {
-            Err(FromHexError::InvalidHexCharacter {
-                c: c as char,
-                index: idx,
-            })
-        }
+        _ => Err(FromHexError::InvalidHexCharacter {
+            c: c as char,
+            index: idx,
+        }),
     }
 }
 
@@ -224,9 +183,10 @@ impl FromHex for Vec<u8> {
             return Err(FromHexError::OddLength);
         }
 
-        hex.chunks(2).enumerate().map(|(i, pair)| {
-            Ok(val(pair[0], 2 * i)? << 4 | val(pair[1], 2 * i + 1)?)
-        }).collect()
+        hex.chunks(2)
+            .enumerate()
+            .map(|(i, pair)| Ok(val(pair[0], 2 * i)? << 4 | val(pair[1], 2 * i + 1)?))
+            .collect()
     }
 }
 
@@ -307,6 +267,7 @@ pub fn encode_upper<T: AsRef<[u8]>>(data: T) -> String {
 /// even be mixed (e.g. `f9b4ca`, `F9B4CA` and `f9B4Ca` are all valid strings).
 ///
 /// # Example
+///
 /// ```
 /// assert_eq!(
 ///     hex::decode("48656c6c6f20776f726c6421"),
@@ -326,6 +287,7 @@ pub fn decode<T: AsRef<[u8]>>(data: T) -> Result<Vec<u8>, FromHexError> {
 /// even be mixed (e.g. `f9b4ca`, `F9B4CA` and `f9B4Ca` are all valid strings).
 ///
 /// # Example
+///
 /// ```
 /// let mut bytes = [0u8; 4];
 /// assert_eq!(hex::decode_to_slice("6b697769", &mut bytes as &mut [u8]), Ok(()));
@@ -342,8 +304,56 @@ pub fn decode_to_slice<T: AsRef<[u8]>>(data: T, out: &mut [u8]) -> Result<(), Fr
     }
 
     for (i, byte) in out.iter_mut().enumerate() {
-        *byte = val(data[2 * i], 2 * i)? << 4
-            | val(data[2 * i + 1], 2 * i + 1)?;
+        *byte = val(data[2 * i], 2 * i)? << 4 | val(data[2 * i + 1], 2 * i + 1)?;
+    }
+
+    Ok(())
+}
+
+// generates an iterator like this
+// (0, 1)
+// (2, 3)
+// (4, 5)
+// (6, 7)
+// ...
+fn generate_iter(len: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..len).step_by(2).zip((0..len).skip(1).step_by(2))
+}
+
+// the inverse of `val`.
+fn byte2hex(byte: u8, table: &[u8; 16]) -> (u8, u8) {
+    let high = table[((byte & 0xf0) >> 4) as usize];
+    let low = table[(byte & 0x0f) as usize];
+
+    (high, low)
+}
+
+/// Encodes some bytes into a mutable slice of bytes.
+///
+/// The output buffer, has to be able to hold at least `input.len() * 2` bytes,
+/// otherwise this function will return an error.
+///
+/// # Example
+///
+/// ```
+/// # use hex::FromHexError;
+/// # fn main() -> Result<(), FromHexError> {
+/// let mut bytes = [0u8; 4 * 2];
+///
+/// hex::encode_to_slice(b"kiwi", &mut bytes)?;
+/// assert_eq!(&bytes, b"6b697769");
+/// # Ok(())
+/// # }
+/// ```
+pub fn encode_to_slice<T: AsRef<[u8]>>(input: T, output: &mut [u8]) -> Result<(), FromHexError> {
+    if input.as_ref().len() * 2 != output.len() {
+        return Err(FromHexError::InvalidStringLength);
+    }
+
+    for (byte, (i, j)) in input.as_ref().iter().zip(generate_iter(input.as_ref().len() * 2)) {
+        let (high, low) = byte2hex(*byte, HEX_CHARS_LOWER);
+        output[i] = high;
+        output[j] = low;
     }
 
     Ok(())
@@ -352,6 +362,51 @@ pub fn decode_to_slice<T: AsRef<[u8]>>(data: T, out: &mut [u8]) -> Result<(), Fr
 #[cfg(test)]
 mod test {
     use super::*;
+    #[cfg(not(feature = "std"))]
+    use alloc::string::ToString;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_gen_iter() {
+        let mut result = Vec::new();
+        result.push((0, 1));
+        result.push((2, 3));
+
+        assert_eq!(generate_iter(5).collect::<Vec<_>>(), result);
+    }
+
+    #[test]
+    fn test_encode_to_slice() {
+        let mut output_1 = [0; 4 * 2];
+        encode_to_slice(b"kiwi", &mut output_1).unwrap();
+        assert_eq!(&output_1, b"6b697769");
+
+        let mut output_2 = [0; 5 * 2];
+        encode_to_slice(b"kiwis", &mut output_2).unwrap();
+        assert_eq!(&output_2, b"6b69776973");
+
+        let mut output_3 = [0; 100];
+
+        assert_eq!(
+            encode_to_slice(b"kiwis", &mut output_3),
+            Err(FromHexError::InvalidStringLength)
+        );
+    }
+
+    #[test]
+    fn test_decode_to_slice() {
+        let mut output_1 = [0; 4];
+        decode_to_slice(b"6b697769", &mut output_1).unwrap();
+        assert_eq!(&output_1, b"kiwi");
+
+        let mut output_2 = [0; 5];
+        decode_to_slice(b"6b69776973", &mut output_2).unwrap();
+        assert_eq!(&output_2, b"kiwis");
+
+        let mut output_3 = [0; 4];
+
+        assert_eq!(decode_to_slice(b"6", &mut output_3), Err(FromHexError::OddLength));
+    }
 
     #[test]
     fn test_encode() {
@@ -365,48 +420,27 @@ mod test {
 
     #[test]
     pub fn test_from_hex_okay_str() {
-        assert_eq!(
-            Vec::from_hex("666f6f626172").unwrap(),
-            b"foobar"
-        );
-        assert_eq!(
-            Vec::from_hex("666F6F626172").unwrap(),
-            b"foobar"
-        );
+        assert_eq!(Vec::from_hex("666f6f626172").unwrap(), b"foobar");
+        assert_eq!(Vec::from_hex("666F6F626172").unwrap(), b"foobar");
     }
 
     #[test]
     pub fn test_from_hex_okay_bytes() {
-        assert_eq!(
-            Vec::from_hex(b"666f6f626172").unwrap(),
-            b"foobar"
-        );
-        assert_eq!(
-            Vec::from_hex(b"666F6F626172").unwrap(),
-            b"foobar"
-        );
+        assert_eq!(Vec::from_hex(b"666f6f626172").unwrap(), b"foobar");
+        assert_eq!(Vec::from_hex(b"666F6F626172").unwrap(), b"foobar");
     }
 
     #[test]
     pub fn test_invalid_length() {
-        assert_eq!(
-            Vec::from_hex("1").unwrap_err(),
-            FromHexError::OddLength
-        );
-        assert_eq!(
-            Vec::from_hex("666f6f6261721").unwrap_err(),
-            FromHexError::OddLength
-        );
+        assert_eq!(Vec::from_hex("1").unwrap_err(), FromHexError::OddLength);
+        assert_eq!(Vec::from_hex("666f6f6261721").unwrap_err(), FromHexError::OddLength);
     }
 
     #[test]
     pub fn test_invalid_char() {
         assert_eq!(
             Vec::from_hex("66ag").unwrap_err(),
-            FromHexError::InvalidHexCharacter {
-                c: 'g',
-                index: 3
-            }
+            FromHexError::InvalidHexCharacter { c: 'g', index: 3 }
         );
     }
 
@@ -419,10 +453,7 @@ mod test {
     pub fn test_from_hex_whitespace() {
         assert_eq!(
             Vec::from_hex("666f 6f62617").unwrap_err(),
-            FromHexError::InvalidHexCharacter {
-                c: ' ',
-                index: 4
-            }
+            FromHexError::InvalidHexCharacter { c: ' ', index: 4 }
         );
     }
 
@@ -438,24 +469,17 @@ mod test {
             Err(FromHexError::InvalidStringLength)
         );
     }
-}
 
+    #[test]
+    fn test_to_hex() {
+        assert_eq!(
+            [0x66, 0x6f, 0x6f, 0x62, 0x61, 0x72].encode_hex::<String>(),
+            "666f6f626172".to_string(),
+        );
 
-#[cfg(all(feature = "benchmarks", test))]
-mod bench {
-    extern crate test;
-    use self::test::Bencher;
-
-    use super::*;
-
-    const MY_OWN_SOURCE: &[u8] = include_bytes!("lib.rs");
-
-    #[bench]
-    fn a_bench(b: &mut Bencher) {
-        b.bytes = MY_OWN_SOURCE.len() as u64;
-
-        b.iter(|| {
-            encode(MY_OWN_SOURCE)
-        });
+        assert_eq!(
+            [0x66, 0x6f, 0x6f, 0x62, 0x61, 0x72].encode_hex_upper::<String>(),
+            "666F6F626172".to_string(),
+        );
     }
 }

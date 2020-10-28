@@ -10,6 +10,11 @@ pub fn main(config: &mut Config) -> CliResult {
     // CAUTION: Be careful with using `config` until it is configured below.
     // In general, try to avoid loading config values unless necessary (like
     // the [alias] table).
+
+    if commands::help::handle_embedded_help(config) {
+        return Ok(());
+    }
+
     let args = match cli().get_matches_safe() {
         Ok(args) => args,
         Err(e) => {
@@ -36,7 +41,7 @@ Available unstable (nightly-only) flags:
     -Z unstable-options -- Allow the usage of unstable options
     -Z timings          -- Display concurrency information
     -Z doctest-xcompile -- Compile and run doctests for non-host target using runner config
-    -Z crate-versions   -- Add crate versions to generated docs
+    -Z terminal-width   -- Provide a terminal width to rustc for error truncation
 
 Run with 'cargo -Z [FLAG] [SUBCOMMAND]'"
         );

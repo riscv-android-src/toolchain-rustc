@@ -17,6 +17,7 @@ fn main() {
     // The system copy of libssh2 is not used by default because it
     // can lead to having two copies of libssl loaded at once.
     // See https://github.com/alexcrichton/ssh2-rs/pull/88
+    println!("cargo:rerun-if-env-changed=LIBSSH2_SYS_USE_PKG_CONFIG");
     if env::var("LIBSSH2_SYS_USE_PKG_CONFIG").is_ok() {
         if let Ok(lib) = pkg_config::find_library("libssh2") {
             for path in &lib.include_paths {
@@ -120,10 +121,12 @@ fn main() {
     cfg.define("LIBSSH2_DH_GEX_NEW", None);
 
     cfg.define("LIBSSH2_HAVE_ZLIB", None);
+    println!("cargo:rerun-if-env-changed=DEP_Z_INCLUDE");
     if let Some(path) = env::var_os("DEP_Z_INCLUDE") {
         cfg.include(path);
     }
 
+    println!("cargo:rerun-if-env-changed=DEP_OPENSSL_INCLUDE");
     if let Some(path) = env::var_os("DEP_OPENSSL_INCLUDE") {
         if let Some(path) = env::split_paths(&path).next() {
             if let Some(path) = path.to_str() {
@@ -181,9 +184,16 @@ fn try_vcpkg() -> bool {
         .map(|_| {
             // found libssh2 which depends on openssl and zlib
             vcpkg::Config::new()
-                .lib_name("libeay32")
-                .lib_name("ssleay32")
+                .lib_name("libssl")
+                .lib_name("libcrypto")
                 .probe("openssl")
+                .or_else(|_| {
+                    // openssl 1.1 was not found, try openssl 1.0
+                    vcpkg::Config::new()
+                        .lib_name("libeay32")
+                        .lib_name("ssleay32")
+                        .probe("openssl")
+                })
                 .expect(
                     "configured libssh2 from vcpkg but could not \
                      find openssl libraries that it depends on",

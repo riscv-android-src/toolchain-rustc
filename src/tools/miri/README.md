@@ -94,9 +94,9 @@ Linux program, you can do `cargo miri run --target x86_64-unknown-linux-gnu`.
 This is particularly useful if you are using Windows, as the Linux target is
 much better supported than Windows targets.
 
-When compiling code via `cargo miri`, the `miri` config flag is set.  You can
-use this to ignore test cases that fail under Miri because they do things Miri
-does not support:
+When compiling code via `cargo miri`, the `cfg(miri)` config flag is set.  You
+can use this to ignore test cases that fail under Miri because they do things
+Miri does not support:
 
 ```rust
 #[test]
@@ -165,9 +165,8 @@ up the sysroot.  If you are using `miri` (the Miri driver) directly, see the
 
 Miri adds its own set of `-Z` flags:
 
-* `-Zmiri-disable-alignment-check` disables checking pointer alignment. This is
-  useful to avoid [false positives][alignment-false-positives]. However, setting
-  this flag means Miri could miss bugs in your program.
+* `-Zmiri-disable-alignment-check` disables checking pointer alignment, so you
+  can focus on other failures.
 * `-Zmiri-disable-stacked-borrows` disables checking the experimental
   [Stacked Borrows] aliasing rules.  This can make Miri run faster, but it also
   means no aliasing violations will be detected.
@@ -189,6 +188,18 @@ Miri adds its own set of `-Z` flags:
   entropy.  The default seed is 0.  **NOTE**: This entropy is not good enough
   for cryptographic use!  Do not generate secret keys in Miri or perform other
   kinds of cryptographic operations that rely on proper random numbers.
+* `-Zmiri-symbolic-alignment-check` makes the alignment check more strict.  By
+  default, alignment is checked by casting the pointer to an integer, and making
+  sure that is a multiple of the alignment.  This can lead to cases where a
+  program passes the alignment check by pure chance, because things "happened to
+  be" sufficiently aligned -- there is no UB in this execution but there would
+  be UB in others.  To avoid such cases, the symbolic alignment check only takes
+  into account the requested alignment of the relevant allocation, and the
+  offset into that allocation.  This avoids missing such bugs, but it also
+  incurs some false positives when the code does manual integer arithmetic to
+  ensure alignment.  (The standard library `align_to` method works fine in both
+  modes; under symbolic alignment it only fills the middle slice when the
+  allocation guarantees sufficient alignment.)
 * `-Zmiri-track-alloc-id=<id>` shows a backtrace when the given allocation is
   being allocated or freed.  This helps in debugging memory leaks and
   use after free bugs.
@@ -199,8 +210,6 @@ Miri adds its own set of `-Z` flags:
 * `-Zmiri-track-call-id=<id>` shows a backtrace when the given call id is
   assigned to a stack frame.  This helps in debugging UB related to Stacked
   Borrows "protectors".
-
-[alignment-false-positives]: https://github.com/rust-lang/miri/issues/1074
 
 Some native rustc `-Z` flags are also very relevant for Miri:
 
@@ -232,6 +241,29 @@ different Miri binaries, and as such worth documenting:
 * `MIRI_BE_RUSTC` when set to any value tells the Miri driver to actually not
   interpret the code but compile it like rustc would. This is useful to be sure
   that the compiled `rlib`s are compatible with Miri.
+
+## Miri `extern` functions
+
+Miri provides some `extern` functions that programs can import to access
+Miri-specific functionality:
+
+```rust
+#[cfg(miri)]
+extern "Rust" {
+    /// Miri-provided extern function to mark the block `ptr` points to as a "root"
+    /// for some static memory. This memory and everything reachable by it is not
+    /// considered leaking even if it still exists when the program terminates.
+    ///
+    /// `ptr` has to point to the beginning of an allocated block.
+    fn miri_static_root(ptr: *const u8);
+
+    /// Miri-provided extern function to begin unwinding with the given payload.
+    ///
+    /// This is internal and unstable and should not be used; we give it here
+    /// just to be complete.
+    fn miri_start_panic(payload: *mut u8) -> !;
+}
+```
 
 ## Contributing and getting help
 

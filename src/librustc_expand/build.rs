@@ -1,8 +1,8 @@
 use crate::base::ExtCtxt;
 
-use rustc_ast::ast::{self, AttrVec, BlockCheckMode, Expr, PatKind, UnOp};
 use rustc_ast::attr;
 use rustc_ast::ptr::P;
+use rustc_ast::{self as ast, AttrVec, BlockCheckMode, Expr, PatKind, UnOp};
 use rustc_span::source_map::{respan, Spanned};
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 
@@ -368,7 +368,7 @@ impl<'a> ExtCtxt<'a> {
         let err = self.std_path(&[sym::result, sym::Result, sym::Err]);
         let err_path = self.path_global(sp, err);
 
-        let binding_variable = self.ident_of("__try_var", sp);
+        let binding_variable = Ident::new(sym::__try_var, sp);
         let binding_pat = self.pat_ident(sp, binding_variable);
         let binding_expr = self.expr_ident(sp, binding_variable);
 
@@ -392,7 +392,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn pat(&self, span: Span, kind: PatKind) -> P<ast::Pat> {
-        P(ast::Pat { id: ast::DUMMY_NODE_ID, kind, span })
+        P(ast::Pat { id: ast::DUMMY_NODE_ID, kind, span, tokens: None })
     }
     pub fn pat_wild(&self, span: Span) -> P<ast::Pat> {
         self.pat(span, PatKind::Wild)

@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -11,10 +11,10 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "string_cache"
-version = "0.7.3"
+version = "0.8.0"
 authors = ["The Servo Project Developers"]
-build = "build.rs"
 description = "A string interning library for Rust, developed as part of the Servo project."
 documentation = "https://docs.rs/string_cache/"
 license = "MIT / Apache-2.0"
@@ -22,6 +22,10 @@ repository = "https://github.com/servo/string-cache"
 
 [lib]
 name = "string_cache"
+
+[[test]]
+name = "small-stack"
+harness = false
 [dependencies.lazy_static]
 version = "1"
 
@@ -29,21 +33,10 @@ version = "1"
 version = "1.0"
 
 [dependencies.phf_shared]
-version = "0.7.4"
+version = "0.8"
 
 [dependencies.precomputed-hash]
 version = "0.1"
 
 [dependencies.serde]
 version = "1"
-
-[dependencies.string_cache_shared]
-version = "0.3"
-[dev-dependencies.rand]
-version = "0.4"
-[build-dependencies.string_cache_codegen]
-version = "0.4"
-
-[features]
-log-events = []
-unstable = []

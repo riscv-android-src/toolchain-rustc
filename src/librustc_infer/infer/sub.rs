@@ -68,7 +68,7 @@ impl TypeRelation<'tcx> for Sub<'combine, 'infcx, 'tcx> {
         match variance {
             ty::Invariant => self.fields.equate(self.a_is_expected).relate(a, b),
             ty::Covariant => self.relate(a, b),
-            ty::Bivariant => Ok(a.clone()),
+            ty::Bivariant => Ok(a),
             ty::Contravariant => self.with_expected_switched(|this| this.relate(b, a)),
         }
     }
@@ -100,11 +100,11 @@ impl TypeRelation<'tcx> for Sub<'combine, 'infcx, 'tcx> {
                 self.fields.obligations.push(Obligation::new(
                     self.fields.trace.cause.clone(),
                     self.fields.param_env,
-                    ty::PredicateKind::Subtype(ty::Binder::dummy(ty::SubtypePredicate {
+                    ty::PredicateAtom::Subtype(ty::SubtypePredicate {
                         a_is_expected: self.a_is_expected,
                         a,
                         b,
-                    }))
+                    })
                     .to_predicate(self.tcx()),
                 ));
 

@@ -1,51 +1,41 @@
 use std::iter::FromIterator;
 
-use proc_macro_error::{span_error, ResultExt};
+use proc_macro_error::{abort, ResultExt};
+use quote::ToTokens;
 use syn::{
     self, parenthesized,
-    parse::{Parse, ParseStream},
-    parse2,
+    parse::{Parse, ParseBuffer, ParseStream},
     punctuated::Punctuated,
-    spanned::Spanned,
     Attribute, Expr, ExprLit, Ident, Lit, LitBool, LitStr, Token,
 };
-
-pub struct StructOptAttributes {
-    pub paren_token: syn::token::Paren,
-    pub attrs: Punctuated<StructOptAttr, Token![,]>,
-}
-
-impl Parse for StructOptAttributes {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let content;
-
-        Ok(StructOptAttributes {
-            paren_token: parenthesized!(content in input),
-            attrs: content.parse_terminated(StructOptAttr::parse)?,
-        })
-    }
-}
 
 pub enum StructOptAttr {
     // single-identifier attributes
     Short(Ident),
     Long(Ident),
+    Env(Ident),
     Flatten(Ident),
     Subcommand(Ident),
-    Skip(Ident),
+    ExternalSubcommand(Ident),
     NoVersion(Ident),
+    VerbatimDocComment(Ident),
 
     // ident [= "string literal"]
     About(Ident, Option<LitStr>),
     Author(Ident, Option<LitStr>),
+    DefaultValue(Ident, Option<LitStr>),
 
     // ident = "string literal"
     Version(Ident, LitStr),
+    RenameAllEnv(Ident, LitStr),
     RenameAll(Ident, LitStr),
     NameLitStr(Ident, LitStr),
 
     // parse(parser_kind [= parser_func])
     Parse(Ident, ParserSpec),
+
+    // ident [= arbitrary_expr]
+    Skip(Ident, Option<Expr>),
 
     // ident = arbitrary_expr
     NameExpr(Ident, Expr),
@@ -71,12 +61,19 @@ impl Parse for StructOptAttr {
 
                 let check_empty_lit = |s| {
                     if lit_str.is_empty() {
-                        span_error!(lit.span(), "`#[structopt({} = \"\") is deprecated in structopt 0.3, now it's default behavior", s);
+                        abort!(
+                            lit,
+                            "`#[structopt({} = \"\")]` is deprecated in structopt 0.3, \
+                             now it's default behavior",
+                            s
+                        );
                     }
                 };
 
-                match &*name_str.to_string() {
+                match &*name_str {
                     "rename_all" => Ok(RenameAll(name, lit)),
+                    "rename_all_env" => Ok(RenameAllEnv(name, lit)),
+                    "default_value" => Ok(DefaultValue(name, Some(lit))),
 
                     "version" => {
                         check_empty_lit("version");
@@ -93,13 +90,29 @@ impl Parse for StructOptAttr {
                         Ok(About(name, Some(lit)))
                     }
 
+                    "skip" => {
+                        let expr = ExprLit {
+                            attrs: vec![],
+                            lit: Lit::Str(lit),
+                        };
+                        let expr = Expr::Lit(expr);
+                        Ok(Skip(name, Some(expr)))
+                    }
+
                     _ => Ok(NameLitStr(name, lit)),
                 }
             } else {
                 match input.parse::<Expr>() {
-                    Ok(expr) => Ok(NameExpr(name, expr)),
-                    Err(_) => span_error! {
-                        assign_token.span(),
+                    Ok(expr) => {
+                        if name_str == "skip" {
+                            Ok(Skip(name, Some(expr)))
+                        } else {
+                            Ok(NameExpr(name, expr))
+                        }
+                    }
+
+                    Err(_) => abort! {
+                        assign_token,
                         "expected `string literal` or `expression` after `=`"
                     },
                 }
@@ -117,25 +130,34 @@ impl Parse for StructOptAttr {
                     if parser_specs.len() == 1 {
                         Ok(Parse(name, parser_specs[0].clone()))
                     } else {
-                        span_error!(name.span(), "parse must have exactly one argument")
+                        abort!(name, "`parse` must have exactly one argument")
                     }
                 }
 
-                "raw" => {
-                    match nested.parse::<LitBool>() {
-                        Ok(bool_token) => {
-                            let expr = ExprLit { attrs: vec![], lit: Lit::Bool(bool_token) };
-                            let expr = Expr::Lit(expr);
-                            Ok(MethodCall(name, vec![expr]))
-                        }
-
-                        Err(_) => span_error!(name.span(),
-                            "`#[structopt(raw(...))` attributes are deprecated in structopt 0.3, only `raw(true)` and `raw(false)` are allowed")
+                "raw" => match nested.parse::<LitBool>() {
+                    Ok(bool_token) => {
+                        let expr = ExprLit {
+                            attrs: vec![],
+                            lit: Lit::Bool(bool_token),
+                        };
+                        let expr = Expr::Lit(expr);
+                        Ok(MethodCall(name, vec![expr]))
                     }
-                }
+
+                    Err(_) => {
+                        abort!(name,
+                            "`#[structopt(raw(...))` attributes are removed in structopt 0.3, \
+                            they are replaced with raw methods";
+                            help = "if you meant to call `clap::Arg::raw()` method \
+                                you should use bool literal, like `raw(true)` or `raw(false)`";
+                            note = raw_method_suggestion(nested);
+                        );
+                    }
+                },
 
                 _ => {
-                    let method_args: Punctuated<_, Token![,]> = nested.parse_terminated(Expr::parse)?;
+                    let method_args: Punctuated<_, Token![,]> =
+                        nested.parse_terminated(Expr::parse)?;
                     Ok(MethodCall(name, Vec::from_iter(method_args)))
                 }
             }
@@ -144,20 +166,27 @@ impl Parse for StructOptAttr {
             match name_str.as_ref() {
                 "long" => Ok(Long(name)),
                 "short" => Ok(Short(name)),
+                "env" => Ok(Env(name)),
                 "flatten" => Ok(Flatten(name)),
                 "subcommand" => Ok(Subcommand(name)),
-                "skip" => Ok(Skip(name)),
+                "external_subcommand" => Ok(ExternalSubcommand(name)),
                 "no_version" => Ok(NoVersion(name)),
+                "verbatim_doc_comment" => Ok(VerbatimDocComment(name)),
 
+                "default_value" => Ok(DefaultValue(name, None)),
                 "about" => (Ok(About(name, None))),
                 "author" => (Ok(Author(name, None))),
 
-                "version" => {
-                    span_error!(name.span(),
-                    "#[structopt(version)] is invalid attribute, structopt 0.3 inherits version from Cargo.toml by default, no attribute needed")
-                },
+                "skip" => Ok(Skip(name, None)),
 
-                _ => span_error!(name.span(), "unexpected attribute: {}", name_str),
+                "version" => abort!(
+                    name,
+                    "#[structopt(version)] is invalid attribute, \
+                     structopt 0.3 inherits version from Cargo.toml by default, \
+                     no attribute needed"
+                ),
+
+                _ => abort!(name, "unexpected attribute: {}", name_str),
             }
         }
     }
@@ -188,24 +217,56 @@ impl Parse for ParserSpec {
     }
 }
 
+fn raw_method_suggestion(ts: ParseBuffer) -> String {
+    let do_parse = move || -> Result<(Ident, Punctuated<Expr, Token![,]>), syn::Error> {
+        let name = ts.parse()?;
+        let _eq: Token![=] = ts.parse()?;
+        let val: LitStr = ts.parse()?;
+        let exprs = val.parse_with(Punctuated::<Expr, Token![,]>::parse_terminated)?;
+        Ok((name, exprs))
+    };
+
+    fn to_string<T: ToTokens>(val: &T) -> String {
+        val.to_token_stream()
+            .to_string()
+            .replace(" ", "")
+            .replace(",", ", ")
+    }
+
+    if let Ok((name, exprs)) = do_parse() {
+        let suggestion = if exprs.len() == 1 {
+            let val = to_string(&exprs[0]);
+            format!(" = {}", val)
+        } else {
+            let val = exprs
+                .into_iter()
+                .map(|expr| to_string(&expr))
+                .collect::<Vec<_>>()
+                .join(", ");
+
+            format!("({})", val)
+        };
+
+        format!(
+            "if you need to call `clap::Arg/App::{}` method you \
+             can do it like this: #[structopt({}{})]",
+            name, name, suggestion
+        )
+    } else {
+        "if you need to call some method from `clap::Arg/App` \
+         you should use raw method, see \
+         https://docs.rs/structopt/0.3/structopt/#raw-methods"
+            .into()
+    }
+}
+
 pub fn parse_structopt_attributes(all_attrs: &[Attribute]) -> Vec<StructOptAttr> {
     all_attrs
         .iter()
         .filter(|attr| attr.path.is_ident("structopt"))
         .flat_map(|attr| {
-            let attrs: StructOptAttributes = parse2(attr.tokens.clone())
-                .map_err(|e| match &*e.to_string() {
-                    // this error message is misleading and points to Span::call_site()
-                    // so we patch it with something meaningful
-                    "unexpected end of input, expected parentheses" => {
-                        let span = attr.path.span();
-                        let patch_msg = "expected parentheses after `structopt`";
-                        syn::Error::new(span, patch_msg)
-                    }
-                    _ => e,
-                })
-                .unwrap_or_exit();
-            attrs.attrs
+            attr.parse_args_with(Punctuated::<StructOptAttr, Token![,]>::parse_terminated)
+                .unwrap_or_abort()
         })
         .collect()
 }

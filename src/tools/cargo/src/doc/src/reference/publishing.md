@@ -10,7 +10,7 @@ limit to the number of versions which can be published, however.
 
 ### Before your first publish
 
-First thing’s first, you’ll need an account on [crates.io] to acquire
+First things first, you’ll need an account on [crates.io] to acquire
 an API token. To do so, [visit the home page][crates.io] and log in via a GitHub
 account (required for now). After this, visit your [Account
 Settings](https://crates.io/me) page and run the [`cargo login`] command
@@ -22,7 +22,7 @@ $ cargo login abcdefghijklmnopqrstuvwxyz012345
 
 This command will inform Cargo of your API token and store it locally in your
 `~/.cargo/credentials.toml`. Note that this token is a **secret** and should not be
-shared with anyone else. If it leaks for any reason, you should regenerate it
+shared with anyone else. If it leaks for any reason, you should revoke it
 immediately.
 
 ### Before publishing a new crate

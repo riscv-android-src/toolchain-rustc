@@ -1,3 +1,154 @@
+# v0.3.16 (2020-08-05)
+
+* Added [the new example](https://github.com/TeXitoi/structopt/blob/master/examples/required_if.rs).
+* Allow `#[structopt(flatten)]` fields to have doc comments. The comments are ignored.
+* The `paw` crate is now being reexported when `paw` feature is enabled,
+  see [`#407`](https://github.com/TeXitoi/structopt/issues/407).
+
+# v0.3.15 (2020-06-16)
+
+* Minor documentation improvements.
+* Fixed [a latent bug](https://github.com/TeXitoi/structopt/pull/398),
+  courtesy of [@Aaron1011](https://github.com/Aaron1011).
+
+# v0.3.14 (2020-04-22)
+
+* Minor documentation improvements.
+
+# v0.3.13 (2020-04-9)
+
+* Bump `proc-macro-error` to `1.0`.
+
+# v0.3.12 (2020-03-18)
+
+* Fixed [bug in `external_subcommand`](https://github.com/TeXitoi/structopt/issues/359).
+
+# v0.3.11 (2020-03-01)
+
+* `syn`'s "full" feature is now explicitly enabled. It must have been, but hasn't.
+
+# v0.3.10 (2020-03-01) - YANKED
+
+* Fixed the breakage due to a required `syn` feature was not enabled.
+
+# v0.3.9 (2020-02-01) - YANKED
+
+* `clippy` warnings triggered by generated code shall not annoy you anymore!
+  Except for those from `clippy::correctness`, these lints are useful even
+  for auto generated code.
+* Improved error messages.
+
+# v0.3.8 (2020-1-19) - YANKED
+
+* You don't have to apply `#[no_version]` to every `enum` variant anymore.
+  Just annotate the `enum` and the setting will be propagated down
+  ([#242](https://github.com/TeXitoi/structopt/issues/242)).
+* [Auto-default](https://docs.rs/structopt/0.3/structopt/#default-values).
+* [External subcommands](https://docs.rs/structopt/0.3/structopt/#external-subcommands).
+* [Flattening subcommands](https://docs.rs/structopt/0.3.8/structopt/#flattening-subcommands).
+
+# v0.3.7 (2019-12-28)
+
+Nothing's new. Just re-release of `v0.3.6` due to
+[the mess with versioning](https://github.com/TeXitoi/structopt/issues/315#issuecomment-568502792).
+
+You may notice that `structopt-derive` was bumped to `v0.4.0`, that's OK, it's not a breaking change.
+`structopt` will pull the right version in on its on.
+
+# v0.3.6 (2019-12-22) - YANKED
+
+This is unusually big patch release. It contains a number of bugfixes and
+new features, some of them may theoretically be considered breaking. We did our best
+to avoid any problems on user's side but, if it wasn't good enough, please
+[file an issue ASAP](https://github.com/TeXitoi/structopt/issues).
+
+## Bugfixes
+
+* `structopt` used to treat `::path::to::type::Vec<T>` as `Vec<T>`
+  special type. [This was considered erroneous](https://github.com/TeXitoi/structopt/pull/287).
+  (same for `Option<T>` and `bool`). Now only exact `Vec<T>` match is a special type.
+
+* `#[structopt(version = expr)]` where `expr` is not a string literal used to get
+  overridden by auto generated `.version()` call,
+  [incorrectly](https://github.com/TeXitoi/structopt/issues/283). Now it doesn't.
+
+* Fixed bug with top-level `App::*` calls on multiple `struct`s, see
+  [#289](https://github.com/TeXitoi/structopt/issues/265).
+
+* Positional `bool` args with no explicit `#[structopt(parse(...))]` annotation are
+  now prohibited. This couldn't work well anyway, see
+  [this example](https://github.com/TeXitoi/structopt/blob/master/examples/true_or_false.rs)
+  for details.
+
+* Now we've instituted strict priority between doc comments, about, help, and the like.
+  See [the documentation](https://docs.rs/structopt/0.3/structopt/#help-messages).
+
+  **HUGE THANKS to [`@ssokolow`](https://github.com/ssokolow)** for tidying up our documentation,
+  teaching me English and explaining why our doc used to suck. I promise I'll make the rest
+  of the doc up to your standards... sometime later!
+
+## New features
+
+* Implement `StructOpt` for `Box<impl StructOpt>` so from now on you can use `Box<T>`
+  with `flatten` and `subcommand` ([#304](https://github.com/TeXitoi/structopt/issues/304)).
+
+  ```rust
+  enum Command {
+      #[structopt(name = "version")]
+      PrintVersion,
+
+      #[structopt(name = "second")]
+      DoSomething {
+          #[structopt(flatten)]
+          config: Box<DoSomethingConfig>,
+      },
+
+      #[structopt(name = "first")]
+      DoSomethingElse {
+          #[structopt(flatten)]
+          config: Box<DoSomethingElseConfig>,
+      }
+  }
+  ```
+
+* Introduced `#[structopt(verbatim_doc_comment)]` attribute that keeps line breaks in
+  doc comments, see
+  [the documentation](https://docs.rs/structopt/0.3/structopt/#doc-comment-preprocessing-and-structoptverbatim_doc_comment).
+
+* Introduced `#[structopt(rename_all_env)]` and `#[structopt(env)]` magical methods
+  so you can derive env var's name from field's name. See
+  [the documentation](https://docs.rs/structopt/0.3/structopt/#auto-deriving-environment-variables).
+
+## Improvements
+
+* Now we have nice README for our examples,
+  [check it out](https://github.com/TeXitoi/structopt/tree/master/examples)!
+
+* Some error messages were improved and clarified, thanks for all people involved!
+
+
+# v0.3.5 (2019-11-22)
+
+* `try_from_str` functions are now called with a `&str` instead of a `&String` ([#282](https://github.com/TeXitoi/structopt/pull/282))
+
+# v0.3.4 (2019-11-08)
+
+* `rename_all` does not apply to fields that were annotated with explicit
+  `short/long/name = "..."` anymore ([#265](https://github.com/TeXitoi/structopt/issues/265))
+* Now raw idents are handled correctly ([#269](https://github.com/TeXitoi/structopt/issues/269))
+* Some documentation improvements and clarification.
+
+# v0.3.3 (2019-10-10)
+
+* Add `from_flag` custom parser to create flags from non-bool types.
+  Fixes [#185](https://github.com/TeXitoi/structopt/issues/185)
+
+# v0.3.2 (2019-09-18)
+
+* `structopt` does not replace `:` with `, ` inside "author" strings while inside `<...>`.
+  Fixes [#156](https://github.com/TeXitoi/structopt/issues/156)
+* Introduced [`#[structopt(skip = expr)]` syntax](https://docs.rs/structopt/0.3.2/structopt/#skipping-fields).
+
 # v0.3.1 (2019-09-06)
 
 * Fix error messages ([#241](https://github.com/TeXitoi/structopt/issues/241))

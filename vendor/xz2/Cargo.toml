@@ -12,7 +12,7 @@
 
 [package]
 name = "xz2"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 description = "Rust bindings to liblzma providing Read/Write streams as well as low-level\nin-memory encoding/decoding.\n"
 homepage = "https://github.com/alexcrichton/xz2-rs"
@@ -27,16 +27,16 @@ version = "0.1"
 optional = true
 
 [dependencies.lzma-sys]
-version = "0.1"
+version = "0.1.11"
 
 [dependencies.tokio-io]
 version = "0.1"
 optional = true
 [dev-dependencies.quickcheck]
-version = "0.6"
+version = "0.7"
 
 [dev-dependencies.rand]
-version = "0.4"
+version = "0.5"
 
 [dev-dependencies.tokio-core]
 version = "0.1"

@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_lexer"
-version = "666.0.0"
+version = "673.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_lexer` in the rust-lang/rust repository from commit 3b1c08c68ccc2c222f84384c836b5e167e2bc241 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_lexer` in the rust-lang/rust repository from commit a9025c571e81ea9adad4dbee0614f1ca37338328 The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 

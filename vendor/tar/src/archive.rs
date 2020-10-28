@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::cmp;
+use std::fs;
 use std::io;
 use std::io::prelude::*;
 use std::marker;
@@ -33,7 +34,7 @@ pub struct Entries<'a, R: 'a + Read> {
 }
 
 struct EntriesFields<'a> {
-    archive: &'a Archive<Read + 'a>,
+    archive: &'a Archive<dyn Read + 'a>,
     next: u64,
     done: bool,
     raw: bool,
@@ -66,7 +67,7 @@ impl<R: Read> Archive<R> {
     /// iterator returns), then the contents read for each entry may be
     /// corrupted.
     pub fn entries(&mut self) -> io::Result<Entries<R>> {
-        let me: &mut Archive<Read> = self;
+        let me: &mut Archive<dyn Read> = self;
         me._entries().map(|fields| Entries {
             fields: fields,
             _ignored: marker::PhantomData,
@@ -93,7 +94,7 @@ impl<R: Read> Archive<R> {
     /// ar.unpack("foo").unwrap();
     /// ```
     pub fn unpack<P: AsRef<Path>>(&mut self, dst: P) -> io::Result<()> {
-        let me: &mut Archive<Read> = self;
+        let me: &mut Archive<dyn Read> = self;
         me._unpack(dst.as_ref())
     }
 
@@ -134,7 +135,7 @@ impl<R: Read> Archive<R> {
     }
 }
 
-impl<'a> Archive<Read + 'a> {
+impl<'a> Archive<dyn Read + 'a> {
     fn _entries(&mut self) -> io::Result<EntriesFields> {
         if self.inner.pos.get() != 0 {
             return Err(other(
@@ -151,6 +152,18 @@ impl<'a> Archive<Read + 'a> {
     }
 
     fn _unpack(&mut self, dst: &Path) -> io::Result<()> {
+        if dst.symlink_metadata().is_err() {
+            fs::create_dir_all(&dst)
+                .map_err(|e| TarError::new(&format!("failed to create `{}`", dst.display()), e))?;
+        }
+
+        // Canonicalizing the dst directory will prepend the path with '\\?\'
+        // on windows which will allow windows APIs to treat the path as an
+        // extended-length path with a 32,767 character limit. Otherwise all
+        // unpacked paths over 260 characters will fail on creation with a
+        // NotFound exception.
+        let dst = &dst.canonicalize().unwrap_or(dst.to_path_buf());
+
         for entry in self._entries()? {
             let mut file = entry.map_err(|e| TarError::new("failed to iterate over archive", e))?;
             file.unpack_in(dst)?;
@@ -176,7 +189,7 @@ impl<'a, R: Read> Entries<'a, R> {
     /// Indicates whether this iterator will return raw entries or not.
     ///
     /// If the raw list of entries are returned, then no preprocessing happens
-    /// on account of this library, for example taking into accout GNU long name
+    /// on account of this library, for example taking into account GNU long name
     /// or long link archive members. Raw iteration is disabled by default.
     pub fn raw(self, raw: bool) -> Entries<'a, R> {
         Entries {
@@ -287,7 +300,10 @@ impl<'a> EntriesFields<'a> {
                 None => return Ok(None),
             };
 
-            if entry.header().as_gnu().is_some() && entry.header().entry_type().is_gnu_longname() {
+            let is_recognized_header =
+                entry.header().as_gnu().is_some() || entry.header().as_ustar().is_some();
+
+            if is_recognized_header && entry.header().entry_type().is_gnu_longname() {
                 if gnu_longname.is_some() {
                     return Err(other(
                         "two long name entries describing \
@@ -298,7 +314,7 @@ impl<'a> EntriesFields<'a> {
                 continue;
             }
 
-            if entry.header().as_gnu().is_some() && entry.header().entry_type().is_gnu_longlink() {
+            if is_recognized_header && entry.header().entry_type().is_gnu_longlink() {
                 if gnu_longlink.is_some() {
                     return Err(other(
                         "two long name entries describing \
@@ -309,9 +325,7 @@ impl<'a> EntriesFields<'a> {
                 continue;
             }
 
-            if entry.header().as_ustar().is_some()
-                && entry.header().entry_type().is_pax_local_extensions()
-            {
+            if is_recognized_header && entry.header().entry_type().is_pax_local_extensions() {
                 if pax_extensions.is_some() {
                     return Err(other(
                         "two pax extensions entries describing \

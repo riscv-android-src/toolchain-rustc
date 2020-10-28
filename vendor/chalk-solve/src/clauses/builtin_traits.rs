@@ -1,5 +1,5 @@
 use super::{builder::ClauseBuilder, generalize};
-use crate::{Interner, RustIrDatabase, TraitRef, WellKnownTrait};
+use crate::{CanonicalVarKinds, Interner, RustIrDatabase, TraitRef, WellKnownTrait};
 use chalk_ir::{Floundered, Substitution, Ty};
 
 mod clone;
@@ -15,6 +15,7 @@ pub fn add_builtin_program_clauses<I: Interner>(
     builder: &mut ClauseBuilder<'_, I>,
     well_known: WellKnownTrait,
     trait_ref: &TraitRef<I>,
+    binders: &CanonicalVarKinds<I>,
 ) -> Result<(), Floundered> {
     // If `trait_ref` contains bound vars, we want to universally quantify them.
     // `Generalize` collects them for us.
@@ -23,17 +24,17 @@ pub fn add_builtin_program_clauses<I: Interner>(
     builder.push_binders(&generalized, |builder, trait_ref| {
         let self_ty = trait_ref.self_type_parameter(db.interner());
         let ty = self_ty.data(db.interner());
-        if let Some(force_impl) = db.force_impl_for(well_known, ty) {
-            if force_impl {
-                builder.push_fact(trait_ref.clone());
-            }
-            return Ok(());
-        }
 
         match well_known {
-            WellKnownTrait::Sized => sized::add_sized_program_clauses(db, builder, &trait_ref, ty),
-            WellKnownTrait::Copy => copy::add_copy_program_clauses(db, builder, &trait_ref, ty),
-            WellKnownTrait::Clone => clone::add_clone_program_clauses(db, builder, &trait_ref, ty),
+            WellKnownTrait::Sized => {
+                sized::add_sized_program_clauses(db, builder, &trait_ref, ty, binders)
+            }
+            WellKnownTrait::Copy => {
+                copy::add_copy_program_clauses(db, builder, &trait_ref, ty, binders)
+            }
+            WellKnownTrait::Clone => {
+                clone::add_clone_program_clauses(db, builder, &trait_ref, ty, binders)
+            }
             WellKnownTrait::FnOnce | WellKnownTrait::FnMut | WellKnownTrait::Fn => {
                 fn_family::add_fn_trait_program_clauses(db, builder, well_known, self_ty)?
             }

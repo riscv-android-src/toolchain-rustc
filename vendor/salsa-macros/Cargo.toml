@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "salsa-macros"
-version = "0.14.1"
+version = "0.15.2"
 authors = ["Salsa developers"]
 description = "Procedural macros for the salsa crate"
 readme = "README.md"

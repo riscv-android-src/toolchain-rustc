@@ -10,8 +10,6 @@ Rust MIR: a lowered representation of Rust.
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(const_fn)]
-#![cfg_attr(bootstrap, feature(const_if_match))]
-#![cfg_attr(bootstrap, feature(const_loop))]
 #![feature(const_panic)]
 #![feature(crate_visibility_modifier)]
 #![feature(decl_macro)]
@@ -24,7 +22,6 @@ Rust MIR: a lowered representation of Rust.
 #![feature(try_blocks)]
 #![feature(associated_type_bounds)]
 #![feature(associated_type_defaults)]
-#![feature(range_is_empty)]
 #![feature(stmt_expr_attributes)]
 #![feature(trait_alias)]
 #![feature(option_expect_none)]
@@ -32,7 +29,7 @@ Rust MIR: a lowered representation of Rust.
 #![recursion_limit = "256"]
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
 #[macro_use]
 extern crate rustc_middle;
 
@@ -53,6 +50,7 @@ pub fn provide(providers: &mut Providers) {
     shim::provide(providers);
     transform::provide(providers);
     monomorphize::partitioning::provide(providers);
+    monomorphize::polymorphize::provide(providers);
     providers.const_eval_validated = const_eval::const_eval_validated_provider;
     providers.const_eval_raw = const_eval::const_eval_raw_provider;
     providers.const_caller_location = const_eval::const_caller_location;

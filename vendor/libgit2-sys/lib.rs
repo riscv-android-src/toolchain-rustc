@@ -24,6 +24,7 @@ pub const GIT_ODB_BACKEND_VERSION: c_uint = 1;
 pub const GIT_REFDB_BACKEND_VERSION: c_uint = 1;
 pub const GIT_CHERRYPICK_OPTIONS_VERSION: c_uint = 1;
 pub const GIT_APPLY_OPTIONS_VERSION: c_uint = 1;
+pub const GIT_REVERT_OPTIONS_VERSION: c_uint = 1;
 
 macro_rules! git_enum {
     (pub enum $name:ident { $($variants:tt)* }) => {
@@ -1746,6 +1747,8 @@ pub struct git_cherrypick_options {
     pub checkout_opts: git_checkout_options,
 }
 
+pub type git_revert_options = git_cherrypick_options;
+
 pub type git_apply_delta_cb =
     Option<extern "C" fn(delta: *const git_diff_delta, payload: *mut c_void) -> c_int>;
 
@@ -2046,6 +2049,7 @@ extern "C" {
         remote: *mut git_remote,
         callbacks: *const git_remote_callbacks,
     ) -> c_int;
+    pub fn git_remote_default_branch(out: *mut git_buf, remote: *mut git_remote) -> c_int;
 
     // refspec
     pub fn git_refspec_direction(spec: *const git_refspec) -> git_direction;
@@ -2055,6 +2059,16 @@ extern "C" {
     pub fn git_refspec_src_matches(spec: *const git_refspec, refname: *const c_char) -> c_int;
     pub fn git_refspec_force(spec: *const git_refspec) -> c_int;
     pub fn git_refspec_string(spec: *const git_refspec) -> *const c_char;
+    pub fn git_refspec_transform(
+        out: *mut git_buf,
+        spec: *const git_refspec,
+        name: *const c_char,
+    ) -> c_int;
+    pub fn git_refspec_rtransform(
+        out: *mut git_buf,
+        spec: *const git_refspec,
+        name: *const c_char,
+    ) -> c_int;
 
     // strarray
     pub fn git_strarray_free(array: *mut git_strarray);
@@ -2577,6 +2591,11 @@ extern "C" {
         force: c_int,
     ) -> c_int;
     pub fn git_branch_name(out: *mut *const c_char, branch: *const git_reference) -> c_int;
+    pub fn git_branch_remote_name(
+        out: *mut git_buf,
+        repo: *mut git_repository,
+        refname: *const c_char,
+    ) -> c_int;
     pub fn git_branch_next(
         out: *mut *mut git_reference,
         out_type: *mut git_branch_t,
@@ -2781,6 +2800,12 @@ extern "C" {
     ) -> c_int;
     pub fn git_config_snapshot(out: *mut *mut git_config, config: *mut git_config) -> c_int;
     pub fn git_config_entry_free(entry: *mut git_config_entry);
+    pub fn git_config_multivar_iterator_new(
+        out: *mut *mut git_config_iterator,
+        cfg: *const git_config,
+        name: *const c_char,
+        regexp: *const c_char,
+    ) -> c_int;
 
     // attr
     pub fn git_attr_get(
@@ -3678,6 +3703,22 @@ extern "C" {
         diff: *mut git_diff,
         location: git_apply_location_t,
         options: *const git_apply_options,
+    ) -> c_int;
+
+    // revert
+    pub fn git_revert_options_init(opts: *mut git_revert_options, version: c_uint) -> c_int;
+    pub fn git_revert_commit(
+        out: *mut *mut git_index,
+        repo: *mut git_repository,
+        revert_commit: *mut git_commit,
+        our_commit: *mut git_commit,
+        mainline: c_uint,
+        merge_options: *const git_merge_options,
+    ) -> c_int;
+    pub fn git_revert(
+        repo: *mut git_repository,
+        commit: *mut git_commit,
+        given_opts: *const git_revert_options,
     ) -> c_int;
 }
 

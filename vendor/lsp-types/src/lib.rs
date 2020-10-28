@@ -26,6 +26,11 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 
 pub use url::Url;
 
+use std::borrow::Cow;
+
+#[cfg(feature = "proposed")]
+use std::convert::TryFrom;
+
 use std::collections::HashMap;
 
 #[cfg(feature = "proposed")]
@@ -36,9 +41,6 @@ use serde_json::Value;
 
 #[cfg(feature = "proposed")]
 use serde::ser::SerializeSeq;
-
-#[cfg(feature = "proposed")]
-use std::{borrow::Cow, convert::TryFrom};
 
 pub mod notification;
 pub mod request;
@@ -937,7 +939,7 @@ pub struct SymbolKindCapability {
 
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SymbolCapability {
+pub struct WorkspaceSymbolClientCapabilities {
     /// This capability supports dynamic registration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dynamic_registration: Option<bool>,
@@ -945,6 +947,19 @@ pub struct SymbolCapability {
     /// Specific capabilities for the `SymbolKind` in the `workspace/symbol` request.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub symbol_kind: Option<SymbolKindCapability>,
+
+    /// The client supports tags on `SymbolInformation`.
+    /// Clients supporting tags have to handle unknown tags gracefully.
+    ///
+    /// @since 3.16.0
+    ///
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "TagSupport::deserialize_compat"
+    )]
+    #[cfg(feature = "proposed")]
+    pub tag_support: Option<TagSupport<SymbolTag>>,
 }
 
 /// Workspace specific client capabilities.
@@ -970,7 +985,7 @@ pub struct WorkspaceClientCapabilities {
 
     /// Capabilities specific to the `workspace/symbol` request.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub symbol: Option<SymbolCapability>,
+    pub symbol: Option<WorkspaceSymbolClientCapabilities>,
 
     /// Capabilities specific to the `workspace/executeCommand` request.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1226,7 +1241,7 @@ pub struct TextDocumentClientCapabilities {
 
     /// Capabilities specific to the `textDocument/documentSymbol`
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub document_symbol: Option<DocumentSymbolCapability>,
+    pub document_symbol: Option<DocumentSymbolClientCapabilities>,
     /// Capabilities specific to the `textDocument/formatting`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub formatting: Option<GenericCapability>,
@@ -1386,6 +1401,24 @@ pub struct CompletionOptions {
     pub work_done_progress_options: WorkDoneProgressOptions,
 }
 
+/// Hover options.
+#[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoverOptions {
+    #[serde(flatten)]
+    pub work_done_progress_options: WorkDoneProgressOptions,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoverRegistrationOptions {
+    #[serde(flatten)]
+    pub text_document_registration_options: TextDocumentRegistrationOptions,
+
+    #[serde(flatten)]
+    pub hover_options: HoverOptions,
+}
+
 /// Signature help options.
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1500,6 +1533,25 @@ pub struct SaveOptions {
     pub include_text: Option<bool>,
 }
 
+#[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum TextDocumentSyncSaveOptions {
+    Supported(bool),
+    SaveOptions(SaveOptions),
+}
+
+impl From<SaveOptions> for TextDocumentSyncSaveOptions {
+    fn from(from: SaveOptions) -> Self {
+        Self::SaveOptions(from)
+    }
+}
+
+impl From<bool> for TextDocumentSyncSaveOptions {
+    fn from(from: bool) -> Self {
+        Self::Supported(from)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextDocumentSyncOptions {
@@ -1522,7 +1574,7 @@ pub struct TextDocumentSyncOptions {
 
     /// Save notifications are sent to the server.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub save: Option<SaveOptions>,
+    pub save: Option<TextDocumentSyncSaveOptions>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -1532,6 +1584,18 @@ pub enum TextDocumentSyncCapability {
     Options(TextDocumentSyncOptions),
 }
 
+impl From<TextDocumentSyncOptions> for TextDocumentSyncCapability {
+    fn from(from: TextDocumentSyncOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<TextDocumentSyncKind> for TextDocumentSyncCapability {
+    fn from(from: TextDocumentSyncKind) -> Self {
+        Self::Kind(from)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum ImplementationProviderCapability {
@@ -1539,11 +1603,54 @@ pub enum ImplementationProviderCapability {
     Options(StaticTextDocumentRegistrationOptions),
 }
 
+impl From<StaticTextDocumentRegistrationOptions> for ImplementationProviderCapability {
+    fn from(from: StaticTextDocumentRegistrationOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<bool> for ImplementationProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum TypeDefinitionProviderCapability {
     Simple(bool),
     Options(StaticTextDocumentRegistrationOptions),
+}
+
+impl From<StaticTextDocumentRegistrationOptions> for TypeDefinitionProviderCapability {
+    fn from(from: StaticTextDocumentRegistrationOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<bool> for TypeDefinitionProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum HoverProviderCapability {
+    Simple(bool),
+    Options(HoverOptions),
+}
+
+impl From<HoverOptions> for HoverProviderCapability {
+    fn from(from: HoverOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<bool> for HoverProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -1554,11 +1661,41 @@ pub enum ColorProviderCapability {
     Options(StaticTextDocumentColorProviderOptions),
 }
 
+impl From<ColorProviderOptions> for ColorProviderCapability {
+    fn from(from: ColorProviderOptions) -> Self {
+        Self::ColorProvider(from)
+    }
+}
+
+impl From<StaticTextDocumentColorProviderOptions> for ColorProviderCapability {
+    fn from(from: StaticTextDocumentColorProviderOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<bool> for ColorProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum CodeActionProviderCapability {
     Simple(bool),
     Options(CodeActionOptions),
+}
+
+impl From<CodeActionOptions> for CodeActionProviderCapability {
+    fn from(from: CodeActionOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<bool> for CodeActionProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
@@ -1610,7 +1747,7 @@ pub struct ServerCapabilities {
 
     /// The server provides hover support.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub hover_provider: Option<bool>,
+    pub hover_provider: Option<HoverProviderCapability>,
 
     /// The server provides completion support.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1956,6 +2093,17 @@ pub struct DidCloseTextDocumentParams {
 pub struct DidSaveTextDocumentParams {
     /// The document that was saved.
     pub text_document: TextDocumentIdentifier,
+}
+
+#[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TextDocumentSaveRegistrationOptions {
+    /// The client is supposed to include the content on save.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_text: Option<bool>,
+
+    #[serde(flatten)]
+    pub text_document_registration_options: TextDocumentRegistrationOptions,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -2532,7 +2680,7 @@ pub enum DocumentHighlightKind {
 
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DocumentSymbolCapability {
+pub struct DocumentSymbolClientCapabilities {
     /// This capability supports dynamic registration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dynamic_registration: Option<bool>,
@@ -2544,6 +2692,19 @@ pub struct DocumentSymbolCapability {
     /// The client support hierarchical document symbols.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hierarchical_document_symbol_support: Option<bool>,
+
+    /// The client supports tags on `SymbolInformation`. Tags are supported on
+    /// `DocumentSymbol` if `hierarchicalDocumentSymbolSupport` is set to true.
+    /// Clients supporting tags have to handle unknown tags gracefully.
+    ///
+    /// @since 3.16.0
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "TagSupport::deserialize_compat"
+    )]
+    #[cfg(feature = "proposed")]
+    pub tag_support: Option<TagSupport<SymbolTag>>,
 }
 
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
@@ -2593,8 +2754,14 @@ pub struct DocumentSymbol {
     pub detail: Option<String>,
     /// The kind of this symbol.
     pub kind: SymbolKind,
+    /// Tags for this completion item.
+    ///  since 3.16.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "proposed")]
+    pub tags: Option<Vec<SymbolTag>>,
     /// Indicates if this symbol is deprecated.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[deprecated(note = "Use tags instead")]
     pub deprecated: Option<bool>,
     /// The range enclosing this symbol not including leading/trailing whitespace but everything else
     /// like comments. This information is typically used to determine if the the clients cursor is
@@ -2619,8 +2786,15 @@ pub struct SymbolInformation {
     /// The kind of this symbol.
     pub kind: SymbolKind,
 
+    /// Tags for this completion item.
+    ///  since 3.16.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg(feature = "proposed")]
+    pub tags: Option<Vec<SymbolTag>>,
+
     /// Indicates if this symbol is deprecated.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[deprecated(note = "Use tags instead")]
     pub deprecated: Option<bool>,
 
     /// The location of this symbol.
@@ -2755,17 +2929,18 @@ impl From<CodeAction> for CodeActionOrCommand {
     }
 }
 
-/// A set of predefined code action kinds
-pub mod code_action_kind {
+#[derive(Debug, Eq, PartialEq, Hash, PartialOrd, Clone, Deserialize, Serialize)]
+pub struct CodeActionKind(Cow<'static, str>);
 
+impl CodeActionKind {
     /// Empty kind.
-    pub const EMPTY: &str = "";
+    pub const EMPTY: CodeActionKind = CodeActionKind::new("");
 
     /// Base kind for quickfix actions: 'quickfix'
-    pub const QUICKFIX: &str = "quickfix";
+    pub const QUICKFIX: CodeActionKind = CodeActionKind::new("quickfix");
 
     /// Base kind for refactoring actions: 'refactor'
-    pub const REFACTOR: &str = "refactor";
+    pub const REFACTOR: CodeActionKind = CodeActionKind::new("refactor");
 
     /// Base kind for refactoring extraction actions: 'refactor.extract'
     ///
@@ -2776,7 +2951,7 @@ pub mod code_action_kind {
     /// - Extract variable
     /// - Extract interface from class
     /// - ...
-    pub const REFACTOR_EXTRACT: &str = "refactor.extract";
+    pub const REFACTOR_EXTRACT: CodeActionKind = CodeActionKind::new("refactor.extract");
 
     /// Base kind for refactoring inline actions: 'refactor.inline'
     ///
@@ -2786,7 +2961,7 @@ pub mod code_action_kind {
     /// - Inline variable
     /// - Inline constant
     /// - ...
-    pub const REFACTOR_INLINE: &str = "refactor.inline";
+    pub const REFACTOR_INLINE: CodeActionKind = CodeActionKind::new("refactor.inline");
 
     /// Base kind for refactoring rewrite actions: 'refactor.rewrite'
     ///
@@ -2798,18 +2973,40 @@ pub mod code_action_kind {
     /// - Make method static
     /// - Move method to base class
     /// - ...
-    pub const REFACTOR_REWRITE: &str = "refactor.rewrite";
+    pub const REFACTOR_REWRITE: CodeActionKind = CodeActionKind::new("refactor.rewrite");
 
     /// Base kind for source actions: `source`
     ///
     /// Source code actions apply to the entire file.
-    pub const SOURCE: &str = "source";
+    pub const SOURCE: CodeActionKind = CodeActionKind::new("source");
 
     /// Base kind for an organize imports source action: `source.organizeImports`
-    pub const SOURCE_ORGANIZE_IMPORTS: &str = "source.organizeImports";
+    pub const SOURCE_ORGANIZE_IMPORTS: CodeActionKind =
+        CodeActionKind::new("source.organizeImports");
+
+    pub const fn new(tag: &'static str) -> Self {
+        CodeActionKind(Cow::Borrowed(tag))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for CodeActionKind {
+    fn from(from: String) -> Self {
+        CodeActionKind(Cow::from(from))
+    }
+}
+
+impl From<&'static str> for CodeActionKind {
+    fn from(from: &'static str) -> Self {
+        CodeActionKind::new(from)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodeAction {
     /// A short, human-readable, title for this code action.
     pub title: String,
@@ -2817,7 +3014,7 @@ pub struct CodeAction {
     /// The kind of the code action.
     /// Used to filter code actions.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
+    pub kind: Option<CodeActionKind>,
 
     /// The diagnostics that this code action resolves.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2853,7 +3050,7 @@ pub struct CodeActionContext {
     /// Actions not of this kind are filtered out by the client before being shown. So servers
     /// can omit computing them.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub only: Option<Vec<String>>,
+    pub only: Option<Vec<CodeActionKind>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -2864,7 +3061,7 @@ pub struct CodeActionOptions {
     /// The list of kinds may be generic, such as `CodeActionKind.Refactor`, or the server
     /// may list out every specific kind they provide.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub code_action_kinds: Option<Vec<String>>,
+    pub code_action_kinds: Option<Vec<CodeActionKind>>,
 
     #[serde(flatten)]
     pub work_done_progress_options: WorkDoneProgressOptions,
@@ -2923,7 +3120,8 @@ pub struct DocumentLink {
     /// The range this link applies to.
     pub range: Range,
     /// The uri this link points to.
-    pub target: Url,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<Url>,
 
     /// The tooltip text when you hover over this link.
     ///
@@ -2932,6 +3130,11 @@ pub struct DocumentLink {
     /// user settings, and localization.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tooltip: Option<String>,
+
+    /// A data entry field that is preserved on a document link between a DocumentLinkRequest
+    /// and a DocumentLinkResolveRequest.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
 }
 
 #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
@@ -3049,6 +3252,18 @@ pub struct RenameParams {
 pub enum RenameProviderCapability {
     Simple(bool),
     Options(RenameOptions),
+}
+
+impl From<RenameOptions> for RenameProviderCapability {
+    fn from(from: RenameOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<bool> for RenameProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -3187,6 +3402,24 @@ pub enum FoldingRangeProviderCapability {
     Options(StaticTextDocumentColorProviderOptions),
 }
 
+impl From<StaticTextDocumentColorProviderOptions> for FoldingRangeProviderCapability {
+    fn from(from: StaticTextDocumentColorProviderOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<FoldingProviderOptions> for FoldingRangeProviderCapability {
+    fn from(from: FoldingProviderOptions) -> Self {
+        Self::FoldingProvider(from)
+    }
+}
+
+impl From<bool> for FoldingRangeProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 pub struct FoldingProviderOptions {}
 
@@ -3257,6 +3490,24 @@ pub enum SelectionRangeProviderCapability {
     RegistrationOptions(SelectionRangeRegistrationOptions),
 }
 
+impl From<SelectionRangeRegistrationOptions> for SelectionRangeProviderCapability {
+    fn from(from: SelectionRangeRegistrationOptions) -> Self {
+        Self::RegistrationOptions(from)
+    }
+}
+
+impl From<SelectionRangeOptions> for SelectionRangeProviderCapability {
+    fn from(from: SelectionRangeOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+impl From<bool> for SelectionRangeProviderCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
+}
+
 /// A parameter literal used in selection range requests.
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3319,16 +3570,17 @@ pub enum MarkupKind {
 /// See <https://help.github.com/articles/creating-and-highlighting-code-blocks/#syntax-highlighting>
 ///
 /// Here is an example how such a string can be constructed using JavaScript / TypeScript:
-/// ```ts
-/// let markdown: MarkdownContent = {
-///  kind: MarkupKind.Markdown,
+/// ```ignore
+/// let markdown: MarkupContent = {
+///     kind: MarkupKind::Markdown,
 ///     value: [
-///             '# Header',
-///             'Some text',
-///             '```typescript',
-///             'someCode();',
-///             '```'
-///     ].join('\n')
+///         "# Header",
+///         "Some text",
+///         "```typescript",
+///         "someCode();",
+///         "```"
+///     ]
+///     .join("\n"),
 /// };
 /// ```
 ///
@@ -3858,7 +4110,7 @@ pub struct SemanticTokensEdit {
 #[cfg(feature = "proposed")]
 pub enum SemanticTokensEditResult {
     Tokens(SemanticTokens),
-    TokensEdits(SemanticTokensEdit),
+    TokensEdits(SemanticTokensEdits),
     PartialTokens(SemanticTokensPartialResult),
     PartialTokensEdit(SemanticTokensEditsPartialResult),
 }
@@ -3871,8 +4123,8 @@ impl From<SemanticTokens> for SemanticTokensEditResult {
 }
 
 #[cfg(feature = "proposed")]
-impl From<SemanticTokensEdit> for SemanticTokensEditResult {
-    fn from(from: SemanticTokensEdit) -> Self {
+impl From<SemanticTokensEdits> for SemanticTokensEditResult {
+    fn from(from: SemanticTokensEdits) -> Self {
         SemanticTokensEditResult::TokensEdits(from)
     }
 }
@@ -4098,6 +4350,20 @@ pub struct CallHierarchyOptions {
 pub enum CallHierarchyServerCapability {
     Simple(bool),
     Options(CallHierarchyOptions),
+}
+
+#[cfg(feature = "proposed")]
+impl From<CallHierarchyOptions> for CallHierarchyServerCapability {
+    fn from(from: CallHierarchyOptions) -> Self {
+        Self::Options(from)
+    }
+}
+
+#[cfg(feature = "proposed")]
+impl From<bool> for CallHierarchyServerCapability {
+    fn from(from: bool) -> Self {
+        Self::Simple(from)
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Deserialize, Serialize)]
@@ -4342,7 +4608,7 @@ mod tests {
                 }),
                 CodeActionOrCommand::CodeAction(CodeAction {
                     title: "title".to_string(),
-                    kind: Some(code_action_kind::QUICKFIX.to_owned()),
+                    kind: Some(CodeActionKind::QUICKFIX),
                     command: None,
                     diagnostics: None,
                     edit: None,

@@ -17,11 +17,18 @@
 //! used. On other platforms, the `xdg-open` script is used. The system `xdg-open` is not used;
 //! instead a version is embedded within this library.
 
-#[cfg(target_os = "windows")]
-extern crate winapi;
+#![warn(
+    rust_2018_idioms,
+    deprecated_in_future,
+    macro_use_extern_crate,
+    missing_debug_implementations,
+    unused_labels,
+    unused_qualifications,
+    clippy::cast_possible_truncation
+)]
 
 #[cfg(target_os = "windows")]
-use windows::open_sys;
+use crate::windows::open_sys;
 
 use std::{
     error::Error,
@@ -54,7 +61,7 @@ pub enum OpenError {
 }
 
 impl Display for OpenError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             OpenError::Io(_) => {
                 write!(f, "IO error")?;

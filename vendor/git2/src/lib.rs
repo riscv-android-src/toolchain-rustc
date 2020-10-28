@@ -97,6 +97,7 @@ pub use crate::index::{
     Index, IndexConflict, IndexConflicts, IndexEntries, IndexEntry, IndexMatchedPath,
 };
 pub use crate::indexer::{IndexerProgress, Progress};
+pub use crate::mempack::Mempack;
 pub use crate::merge::{AnnotatedCommit, MergeOptions};
 pub use crate::message::{message_prettify, DEFAULT_COMMENT_CHAR};
 pub use crate::note::{Note, Notes};
@@ -118,6 +119,7 @@ pub use crate::remote::{
 pub use crate::remote_callbacks::{Credentials, RemoteCallbacks};
 pub use crate::remote_callbacks::{TransportMessage, UpdateTips};
 pub use crate::repo::{Repository, RepositoryInitOptions};
+pub use crate::revert::RevertOptions;
 pub use crate::revspec::Revspec;
 pub use crate::revwalk::Revwalk;
 pub use crate::signature::Signature;
@@ -142,6 +144,12 @@ macro_rules! is_bit_set {
 
 /// An enumeration of possible errors that can happen when working with a git
 /// repository.
+// Note: We omit a few native error codes, as they are unlikely to be propagated
+// to the library user. Currently:
+//
+// * GIT_EPASSTHROUGH
+// * GIT_ITEROVER
+// * GIT_RETRY
 #[derive(PartialEq, Eq, Clone, Debug, Copy)]
 pub enum ErrorCode {
     /// Generic error
@@ -186,8 +194,16 @@ pub enum ErrorCode {
     Invalid,
     /// Uncommitted changes in index prevented operation
     Uncommitted,
-    /// Operation was not valid for a directory,
+    /// Operation was not valid for a directory
     Directory,
+    /// A merge conflict exists and cannot continue
+    MergeConflict,
+    /// Hashsum mismatch in object
+    HashsumMismatch,
+    /// Unsaved changes in the index would be overwritten
+    IndexDirty,
+    /// Patch application failed
+    ApplyFail,
 }
 
 /// An enumeration of possible categories of things that can have
@@ -639,6 +655,7 @@ mod diff;
 mod error;
 mod index;
 mod indexer;
+mod mempack;
 mod merge;
 mod message;
 mod note;
@@ -656,6 +673,7 @@ mod refspec;
 mod remote;
 mod remote_callbacks;
 mod repo;
+mod revert;
 mod revspec;
 mod revwalk;
 mod signature;
@@ -663,6 +681,7 @@ mod stash;
 mod status;
 mod submodule;
 mod tag;
+mod tagforeach;
 mod time;
 mod tree;
 mod treebuilder;

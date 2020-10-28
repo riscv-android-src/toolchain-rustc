@@ -12,8 +12,8 @@
 
 [package]
 name = "unicode-width"
-version = "0.1.6"
-authors = ["kwantam <kwantam@gmail.com>"]
+version = "0.1.8"
+authors = ["kwantam <kwantam@gmail.com>", "Manish Goregaokar <manishsmail@gmail.com>"]
 exclude = ["target/*", "Cargo.lock"]
 description = "Determine displayed width of `char` and `str` types\naccording to Unicode Standard Annex #11 rules.\n"
 homepage = "https://github.com/unicode-rs/unicode-width"

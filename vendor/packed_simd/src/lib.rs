@@ -126,8 +126,8 @@
 //! mask is `true`, and the elements of `b` otherwise.
 //!
 //! The example constructs a mask with the first two lanes set to `true` and
-//! the last two lanes set to `false`. This selects the first two lanes of `a
-//! + 1` and the last two lanes of `a`, producing a vector where the first two
+//! the last two lanes set to `false`. This selects the first two lanes of `a +
+//! 1` and the last two lanes of `a`, producing a vector where the first two
 //! lanes have been incremented by `1`.
 //!
 //! > note: mask `select` can be used on vector types that have the same number
@@ -222,7 +222,10 @@
         clippy::cast_possible_truncation,
         clippy::cast_lossless,
         clippy::cast_possible_wrap,
-        clippy::cast_precision_loss
+        clippy::cast_precision_loss,
+        // This lint is currently broken for generic code
+        // See https://github.com/rust-lang/rust-clippy/issues/3410
+        clippy::use_self
     )
 )]
 #![cfg_attr(
@@ -235,10 +238,9 @@
 use cfg_if::cfg_if;
 
 cfg_if! {
-    if #[cfg(all(target_arch = "arm", target_feature = "v7", target_feature = "neon",
-                 feature = "coresimd"))] {
+    if #[cfg(feature = "core_arch")] {
         #[allow(unused_imports)]
-        use coresimd::arch;
+        use core_arch as arch;
     } else {
         #[allow(unused_imports)]
         use core::arch;
@@ -257,7 +259,6 @@ use core::{
 
 #[macro_use]
 mod testing;
-
 #[macro_use]
 mod api;
 mod codegen;

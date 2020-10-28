@@ -3,13 +3,13 @@ use crate::utils::differing_macro_contexts;
 use rustc_ast::ast::InlineAsmTemplatePiece;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_hir::{
-    BinOpKind, Block, BlockCheckMode, BodyId, BorrowKind, CaptureBy, Expr, ExprKind, Field, FnRetTy, GenericArg,
-    GenericArgs, Guard, InlineAsmOperand, Lifetime, LifetimeName, ParamName, Pat, PatKind, Path, PathSegment, QPath,
-    Stmt, StmtKind, Ty, TyKind, TypeBinding,
+    BinOpKind, Block, BlockCheckMode, BodyId, BorrowKind, CaptureBy, Expr, ExprKind, Field, FieldPat,
+    FnRetTy, GenericArg, GenericArgs, Guard, InlineAsmOperand, Lifetime, LifetimeName, ParamName,
+    Pat, PatKind, Path, PathSegment, QPath, Stmt, StmtKind, Ty, TyKind, TypeBinding,
 };
 use rustc_lint::LateContext;
 use rustc_middle::ich::StableHashingContextProvider;
-use rustc_middle::ty::TypeckTables;
+use rustc_middle::ty::TypeckResults;
 use rustc_span::Symbol;
 use std::hash::Hash;
 
@@ -22,7 +22,7 @@ use std::hash::Hash;
 pub struct SpanlessEq<'a, 'tcx> {
     /// Context used to evaluate constant expressions.
     cx: &'a LateContext<'tcx>,
-    maybe_typeck_tables: Option<&'tcx TypeckTables<'tcx>>,
+    maybe_typeck_results: Option<&'tcx TypeckResults<'tcx>>,
     /// If is true, never consider as equal expressions containing function
     /// calls.
     ignore_fn: bool,
@@ -32,7 +32,7 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
     pub fn new(cx: &'a LateContext<'tcx>) -> Self {
         Self {
             cx,
-            maybe_typeck_tables: cx.maybe_typeck_tables(),
+            maybe_typeck_results: cx.maybe_typeck_results(),
             ignore_fn: false,
         }
     }
@@ -71,10 +71,10 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
             return false;
         }
 
-        if let Some(tables) = self.maybe_typeck_tables {
+        if let Some(typeck_results) = self.maybe_typeck_results {
             if let (Some(l), Some(r)) = (
-                constant_simple(self.cx, tables, left),
-                constant_simple(self.cx, tables, right),
+                constant_simple(self.cx, typeck_results, left),
+                constant_simple(self.cx, typeck_results, right),
             ) {
                 if l == r {
                     return true;
@@ -137,9 +137,9 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
                 !self.ignore_fn && self.eq_path_segment(l_path, r_path) && self.eq_exprs(l_args, r_args)
             },
             (&ExprKind::Repeat(ref le, ref ll_id), &ExprKind::Repeat(ref re, ref rl_id)) => {
-                let mut celcx = constant_context(self.cx, self.cx.tcx.body_tables(ll_id.body));
+                let mut celcx = constant_context(self.cx, self.cx.tcx.typeck_body(ll_id.body));
                 let ll = celcx.expr(&self.cx.tcx.hir().body(ll_id.body).value);
-                let mut celcx = constant_context(self.cx, self.cx.tcx.body_tables(rl_id.body));
+                let mut celcx = constant_context(self.cx, self.cx.tcx.typeck_body(rl_id.body));
                 let rl = celcx.expr(&self.cx.tcx.hir().body(rl_id.body).value);
 
                 self.eq_expr(le, re) && ll == rl
@@ -185,10 +185,20 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
         left.name == right.name
     }
 
+    pub fn eq_fieldpat(&mut self, left: &FieldPat<'_>, right: &FieldPat<'_>) -> bool {
+        match (&left, &right) {
+            (FieldPat { ident: li, pat: lp, .. }, FieldPat { ident: ri, pat: rp, .. }) =>
+                li.name.as_str() == ri.name.as_str() && self.eq_pat(lp, rp),
+        }
+    }
+
     /// Checks whether two patterns are the same.
     pub fn eq_pat(&mut self, left: &Pat<'_>, right: &Pat<'_>) -> bool {
         match (&left.kind, &right.kind) {
             (&PatKind::Box(ref l), &PatKind::Box(ref r)) => self.eq_pat(l, r),
+            (&PatKind::Struct(ref lp, ref la, ..), &PatKind::Struct(ref rp, ref ra, ..)) => {
+                self.eq_qpath(lp, rp) && over(la, ra, |l, r| self.eq_fieldpat(l, r))
+            },
             (&PatKind::TupleStruct(ref lp, ref la, ls), &PatKind::TupleStruct(ref rp, ref ra, rs)) => {
                 self.eq_qpath(lp, rp) && over(la, ra, |l, r| self.eq_pat(l, r)) && ls == rs
             },
@@ -223,6 +233,8 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
             (&QPath::TypeRelative(ref lty, ref lseg), &QPath::TypeRelative(ref rty, ref rseg)) => {
                 self.eq_ty(lty, rty) && self.eq_path_segment(lseg, rseg)
             },
+            (&QPath::LangItem(llang_item, _), &QPath::LangItem(rlang_item, _)) =>
+                llang_item == rlang_item,
             _ => false,
         }
     }
@@ -272,18 +284,18 @@ impl<'a, 'tcx> SpanlessEq<'a, 'tcx> {
         match (left, right) {
             (&TyKind::Slice(ref l_vec), &TyKind::Slice(ref r_vec)) => self.eq_ty(l_vec, r_vec),
             (&TyKind::Array(ref lt, ref ll_id), &TyKind::Array(ref rt, ref rl_id)) => {
-                let old_maybe_typeck_tables = self.maybe_typeck_tables;
+                let old_maybe_typeck_results = self.maybe_typeck_results;
 
-                let mut celcx = constant_context(self.cx, self.cx.tcx.body_tables(ll_id.body));
-                self.maybe_typeck_tables = Some(self.cx.tcx.body_tables(ll_id.body));
+                let mut celcx = constant_context(self.cx, self.cx.tcx.typeck_body(ll_id.body));
+                self.maybe_typeck_results = Some(self.cx.tcx.typeck_body(ll_id.body));
                 let ll = celcx.expr(&self.cx.tcx.hir().body(ll_id.body).value);
 
-                let mut celcx = constant_context(self.cx, self.cx.tcx.body_tables(rl_id.body));
-                self.maybe_typeck_tables = Some(self.cx.tcx.body_tables(rl_id.body));
+                let mut celcx = constant_context(self.cx, self.cx.tcx.typeck_body(rl_id.body));
+                self.maybe_typeck_results = Some(self.cx.tcx.typeck_body(rl_id.body));
                 let rl = celcx.expr(&self.cx.tcx.hir().body(rl_id.body).value);
 
                 let eq_ty = self.eq_ty(lt, rt);
-                self.maybe_typeck_tables = old_maybe_typeck_tables;
+                self.maybe_typeck_results = old_maybe_typeck_results;
                 eq_ty && ll == rl
             },
             (&TyKind::Ptr(ref l_mut), &TyKind::Ptr(ref r_mut)) => {
@@ -348,7 +360,7 @@ pub fn over<X>(left: &[X], right: &[X], mut eq_fn: impl FnMut(&X, &X) -> bool) -
 pub struct SpanlessHash<'a, 'tcx> {
     /// Context used to evaluate constant expressions.
     cx: &'a LateContext<'tcx>,
-    maybe_typeck_tables: Option<&'tcx TypeckTables<'tcx>>,
+    maybe_typeck_results: Option<&'tcx TypeckResults<'tcx>>,
     s: StableHasher,
 }
 
@@ -356,7 +368,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
     pub fn new(cx: &'a LateContext<'tcx>) -> Self {
         Self {
             cx,
-            maybe_typeck_tables: cx.maybe_typeck_tables(),
+            maybe_typeck_results: cx.maybe_typeck_results(),
             s: StableHasher::new(),
         }
     }
@@ -386,8 +398,8 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
     #[allow(clippy::many_single_char_names, clippy::too_many_lines)]
     pub fn hash_expr(&mut self, e: &Expr<'_>) {
         let simple_const = self
-            .maybe_typeck_tables
-            .and_then(|tables| constant_simple(self.cx, tables, e));
+            .maybe_typeck_results
+            .and_then(|typeck_results| constant_simple(self.cx, typeck_results, e));
 
         // const hashing may result in the same hash as some unrelated node, so add a sort of
         // discriminant depending on which path we're choosing next
@@ -458,7 +470,7 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                     CaptureBy::Ref => 1,
                 }
                 .hash(&mut self.s);
-                // closures inherit TypeckTables
+                // closures inherit TypeckResults
                 self.hash_expr(&self.cx.tcx.hir().body(eid).value);
             },
             ExprKind::Field(ref e, ref f) => {
@@ -601,8 +613,11 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
             QPath::TypeRelative(_, ref path) => {
                 self.hash_name(path.ident.name);
             },
+            QPath::LangItem(lang_item, ..) => {
+                lang_item.hash_stable(&mut self.cx.tcx.get_stable_hashing_context(), &mut self.s);
+            }
         }
-        // self.maybe_typeck_tables.unwrap().qpath_res(p, id).hash(&mut self.s);
+        // self.maybe_typeck_results.unwrap().qpath_res(p, id).hash(&mut self.s);
     }
 
     pub fn hash_path(&mut self, p: &Path<'_>) {
@@ -703,21 +718,19 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
                     }
                     for segment in path.segments {
                         segment.ident.name.hash(&mut self.s);
+                        self.hash_generic_args(segment.generic_args().args);
                     }
                 },
                 QPath::TypeRelative(ref ty, ref segment) => {
                     self.hash_ty(ty);
                     segment.ident.name.hash(&mut self.s);
                 },
+                QPath::LangItem(lang_item, ..) => {
+                    lang_item.hash(&mut self.s);
+                }
             },
             TyKind::OpaqueDef(_, arg_list) => {
-                for arg in *arg_list {
-                    match arg {
-                        GenericArg::Lifetime(ref l) => self.hash_lifetime(l),
-                        GenericArg::Type(ref ty) => self.hash_ty(&ty),
-                        GenericArg::Const(ref ca) => self.hash_body(ca.value.body),
-                    }
-                }
+                self.hash_generic_args(arg_list);
             },
             TyKind::TraitObject(_, lifetime) => {
                 self.hash_lifetime(lifetime);
@@ -730,9 +743,19 @@ impl<'a, 'tcx> SpanlessHash<'a, 'tcx> {
     }
 
     pub fn hash_body(&mut self, body_id: BodyId) {
-        // swap out TypeckTables when hashing a body
-        let old_maybe_typeck_tables = self.maybe_typeck_tables.replace(self.cx.tcx.body_tables(body_id));
+        // swap out TypeckResults when hashing a body
+        let old_maybe_typeck_results = self.maybe_typeck_results.replace(self.cx.tcx.typeck_body(body_id));
         self.hash_expr(&self.cx.tcx.hir().body(body_id).value);
-        self.maybe_typeck_tables = old_maybe_typeck_tables;
+        self.maybe_typeck_results = old_maybe_typeck_results;
+    }
+
+    fn hash_generic_args(&mut self, arg_list: &[GenericArg<'_>]) {
+        for arg in arg_list {
+            match arg {
+                GenericArg::Lifetime(ref l) => self.hash_lifetime(l),
+                GenericArg::Type(ref ty) => self.hash_ty(&ty),
+                GenericArg::Const(ref ca) => self.hash_body(ca.value.body),
+            }
+        }
     }
 }

@@ -1275,12 +1275,18 @@ struct EHABISectionIterator {
   _Self operator+(size_t a) { _Self out = *this; out._i += a; return out; }
   _Self operator-(size_t a) { assert(_i >= a); _Self out = *this; out._i -= a; return out; }
 
-  size_t operator-(const _Self& other) { return _i - other._i; }
+  size_t operator-(const _Self& other) const { return _i - other._i; }
 
   bool operator==(const _Self& other) const {
     assert(_addressSpace == other._addressSpace);
     assert(_sects == other._sects);
     return _i == other._i;
+  }
+
+  bool operator!=(const _Self& other) const {
+    assert(_addressSpace == other._addressSpace);
+    assert(_sects == other._sects);
+    return _i != other._i;
   }
 
   typename A::pint_t operator*() const { return functionAddress(); }
@@ -1853,6 +1859,12 @@ void UnwindCursor<A, R>::setInfoBasedOnIPRegister(bool isReturnAddress) {
   // This matches the behaviour of _Unwind_GetIP on arm.
   pc &= (pint_t)~0x1;
 #endif
+
+  // Exit early if at the top of the stack.
+  if (pc == 0) {
+    _unwindInfoMissing = true;
+    return;
+  }
 
   // If the last line of a function is a "throw" the compiler sometimes
   // emits no instructions after the call to __cxa_throw.  This means

@@ -1,6 +1,6 @@
 //! Implementation of the LSP for rust-analyzer.
 //!
-//! This crate takes Rust-specific analysis results from ra_ide and translates
+//! This crate takes Rust-specific analysis results from ide and translates
 //! into LSP types.
 //!
 //! It also is the root of all state. `world` module defines the bulk of the
@@ -33,6 +33,7 @@ mod line_endings;
 mod request_metrics;
 mod lsp_utils;
 mod thread_pool;
+mod document;
 pub mod lsp_ext;
 pub mod config;
 
@@ -40,7 +41,9 @@ use serde::de::DeserializeOwned;
 
 pub type Result<T, E = Box<dyn std::error::Error + Send + Sync>> = std::result::Result<T, E>;
 pub use crate::{caps::server_capabilities, main_loop::main_loop};
+use ide::AnalysisHost;
 use std::fmt;
+use vfs::Vfs;
 
 pub fn from_json<T: DeserializeOwned>(what: &'static str, json: serde_json::Value) -> Result<T> {
     let res = T::deserialize(&json)
@@ -67,3 +70,22 @@ impl fmt::Display for LspError {
 }
 
 impl std::error::Error for LspError {}
+
+fn print_memory_usage(mut host: AnalysisHost, vfs: Vfs) {
+    let mut mem = host.per_query_memory_usage();
+
+    let before = profile::memory_usage();
+    drop(vfs);
+    let vfs = before.allocated - profile::memory_usage().allocated;
+    mem.push(("VFS".into(), vfs));
+
+    let before = profile::memory_usage();
+    drop(host);
+    mem.push(("Unaccounted".into(), before.allocated - profile::memory_usage().allocated));
+
+    mem.push(("Remaining".into(), profile::memory_usage().allocated));
+
+    for (name, bytes) in mem {
+        eprintln!("{:>8} {}", bytes, name);
+    }
+}

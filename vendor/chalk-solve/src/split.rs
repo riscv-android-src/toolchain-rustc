@@ -27,12 +27,10 @@ pub trait Split<I: Interner>: RustIrDatabase<I> {
             associated_ty_id,
             ref substitution,
         } = *projection;
-        let parameters = substitution.parameters(interner);
+        let parameters = substitution.as_slice(interner);
         let associated_ty_data = &self.associated_ty_data(associated_ty_id);
-        let trait_datum = &self.trait_datum(associated_ty_data.trait_id);
-        let trait_num_params = trait_datum.binders.len(interner);
-        let split_point = parameters.len() - trait_num_params;
-        let (other_params, trait_params) = parameters.split_at(split_point);
+        let (trait_params, other_params) =
+            self.split_associated_ty_parameters(parameters, &**associated_ty_data);
         (associated_ty_data.clone(), trait_params, other_params)
     }
 
@@ -55,7 +53,7 @@ pub trait Split<I: Interner>: RustIrDatabase<I> {
         let (associated_ty_data, trait_params, _) = self.split_projection(&projection);
         TraitRef {
             trait_id: associated_ty_data.trait_id,
-            substitution: Substitution::from(interner, trait_params),
+            substitution: Substitution::from_iter(interner, trait_params),
         }
     }
 
@@ -137,14 +135,14 @@ pub trait Split<I: Interner>: RustIrDatabase<I> {
             self.split_associated_ty_value_parameters(&parameters, associated_ty_value);
         let trait_ref = {
             let opaque_ty_ref = impl_datum.binders.map_ref(|b| &b.trait_ref);
-            debug!("opaque_ty_ref: {:?}", opaque_ty_ref);
+            debug!(?opaque_ty_ref);
             opaque_ty_ref.substitute(interner, impl_parameters)
         };
 
         // Create the parameters for the projection -- in our example
         // above, this would be `['!a, Box<!T>]`, corresponding to
         // `<Box<!T> as Foo>::Item<'!a>`
-        let projection_substitution = Substitution::from(
+        let projection_substitution = Substitution::from_iter(
             interner,
             atv_parameters
                 .iter()
@@ -157,11 +155,44 @@ pub trait Split<I: Interner>: RustIrDatabase<I> {
             substitution: projection_substitution,
         };
 
-        debug!("impl_parameters: {:?}", impl_parameters);
-        debug!("trait_ref: {:?}", trait_ref);
-        debug!("projection: {:?}", projection);
+        debug!(?impl_parameters, ?trait_ref, ?projection);
 
         (impl_parameters, projection)
+    }
+
+    /// Given the full set of parameters (or binders) for an
+    /// associated type datum (the one appearing in a trait), splits
+    /// them into the parameters for the *trait* and those for the
+    /// *associated type*.
+    ///
+    /// # Example
+    ///
+    /// ```ignore (example)
+    /// trait Foo<T> {
+    ///     type Assoc<'a>;   
+    /// }
+    /// ```
+    ///
+    /// in this example, the full set of parameters would be `['x,
+    /// Y]`, where `'x` is the value for `'a` and `Y` is the value for
+    /// `T`.
+    ///
+    /// # Returns
+    ///
+    /// Returns the tuple of:
+    ///
+    /// * the parameters for the impl (`[Y]`, in our example)
+    /// * the parameters for the associated type value (`['a]`, in our example)
+    fn split_associated_ty_parameters<'p, P>(
+        &self,
+        parameters: &'p [P],
+        associated_ty_datum: &AssociatedTyDatum<I>,
+    ) -> (&'p [P], &'p [P]) {
+        let trait_datum = &self.trait_datum(associated_ty_datum.trait_id);
+        let trait_num_params = trait_datum.binders.len(self.interner());
+        let split_point = parameters.len() - trait_num_params;
+        let (other_params, trait_params) = parameters.split_at(split_point);
+        (trait_params, other_params)
     }
 }
 

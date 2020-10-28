@@ -114,7 +114,7 @@ impl<'tcx> LateLintPass<'tcx> for DeepCodeInspector {
         }
         match stmt.kind {
             hir::StmtKind::Local(ref local) => {
-                println!("local variable of type {}", cx.tables().node_type(local.hir_id));
+                println!("local variable of type {}", cx.typeck_results().node_type(local.hir_id));
                 println!("pattern:");
                 print_pat(cx, &local.pat, 0);
                 if let Some(ref e) = local.init {
@@ -144,8 +144,12 @@ fn has_attr(sess: &Session, attrs: &[Attribute]) -> bool {
 fn print_expr(cx: &LateContext<'_>, expr: &hir::Expr<'_>, indent: usize) {
     let ind = "  ".repeat(indent);
     println!("{}+", ind);
-    println!("{}ty: {}", ind, cx.tables().expr_ty(expr));
-    println!("{}adjustments: {:?}", ind, cx.tables().adjustments().get(expr.hir_id));
+    println!("{}ty: {}", ind, cx.typeck_results().expr_ty(expr));
+    println!(
+        "{}adjustments: {:?}",
+        ind,
+        cx.typeck_results().adjustments().get(expr.hir_id)
+    );
     match expr.kind {
         hir::ExprKind::Box(ref e) => {
             println!("{}Box", ind);
@@ -261,6 +265,9 @@ fn print_expr(cx: &LateContext<'_>, expr: &hir::Expr<'_>, indent: usize) {
         hir::ExprKind::Path(hir::QPath::TypeRelative(ref ty, ref seg)) => {
             println!("{}Relative Path, {:?}", ind, ty);
             println!("{}seg: {:?}", ind, seg);
+        },
+        hir::ExprKind::Path(hir::QPath::LangItem(lang_item, ..)) => {
+            println!("{}Lang Item Path, {:?}", ind, lang_item.name());
         },
         hir::ExprKind::AddrOf(kind, ref muta, ref e) => {
             println!("{}AddrOf", ind);
@@ -483,6 +490,9 @@ fn print_pat(cx: &LateContext<'_>, pat: &hir::Pat<'_>, indent: usize) {
         hir::PatKind::Path(hir::QPath::TypeRelative(ref ty, ref seg)) => {
             println!("{}Relative Path, {:?}", ind, ty);
             println!("{}seg: {:?}", ind, seg);
+        },
+        hir::PatKind::Path(hir::QPath::LangItem(lang_item, ..)) => {
+            println!("{}Lang Item Path, {:?}", ind, lang_item.name());
         },
         hir::PatKind::Tuple(pats, opt_dots_position) => {
             println!("{}Tuple", ind);

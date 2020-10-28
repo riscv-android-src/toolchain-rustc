@@ -57,16 +57,17 @@ use crate::transform::no_landing_pads::no_landing_pads;
 use crate::transform::simplify;
 use crate::transform::{MirPass, MirSource};
 use crate::util::dump_mir;
+use crate::util::expand_aggregate;
 use crate::util::storage;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
-use rustc_hir::lang_items::{GeneratorStateLangItem, PinTypeLangItem};
+use rustc_hir::lang_items::LangItem;
 use rustc_index::bit_set::{BitMatrix, BitSet};
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_middle::mir::visit::{MutVisitor, PlaceContext, Visitor};
 use rustc_middle::mir::*;
-use rustc_middle::ty::subst::SubstsRef;
+use rustc_middle::ty::subst::{Subst, SubstsRef};
 use rustc_middle::ty::GeneratorSubsts;
 use rustc_middle::ty::{self, AdtDef, Ty, TyCtxt};
 use rustc_target::abi::VariantIdx;
@@ -236,10 +237,28 @@ struct TransformVisitor<'tcx> {
 }
 
 impl TransformVisitor<'tcx> {
-    // Make a GeneratorState rvalue
-    fn make_state(&self, idx: VariantIdx, val: Operand<'tcx>) -> Rvalue<'tcx> {
-        let adt = AggregateKind::Adt(self.state_adt_ref, idx, self.state_substs, None, None);
-        Rvalue::Aggregate(box adt, vec![val])
+    // Make a GeneratorState variant assignment. `core::ops::GeneratorState` only has single
+    // element tuple variants, so we can just write to the downcasted first field and then set the
+    // discriminant to the appropriate variant.
+    fn make_state(
+        &self,
+        idx: VariantIdx,
+        val: Operand<'tcx>,
+        source_info: SourceInfo,
+    ) -> impl Iterator<Item = Statement<'tcx>> {
+        let kind = AggregateKind::Adt(self.state_adt_ref, idx, self.state_substs, None, None);
+        assert_eq!(self.state_adt_ref.variants[idx].fields.len(), 1);
+        let ty = self
+            .tcx
+            .type_of(self.state_adt_ref.variants[idx].fields[0].did)
+            .subst(self.tcx, self.state_substs);
+        expand_aggregate(
+            Place::return_place(),
+            std::iter::once((val, ty)),
+            kind,
+            source_info,
+            self.tcx,
+        )
     }
 
     // Create a Place referencing a generator struct field
@@ -325,13 +344,7 @@ impl MutVisitor<'tcx> for TransformVisitor<'tcx> {
         if let Some((state_idx, resume, v, drop)) = ret_val {
             let source_info = data.terminator().source_info;
             // We must assign the value first in case it gets declared dead below
-            data.statements.push(Statement {
-                source_info,
-                kind: StatementKind::Assign(box (
-                    Place::return_place(),
-                    self.make_state(state_idx, v),
-                )),
-            });
+            data.statements.extend(self.make_state(state_idx, v, source_info));
             let state = if let Some((resume, resume_arg)) = resume {
                 // Yield
                 let state = 3 + self.suspension_points.len();
@@ -382,7 +395,7 @@ fn make_generator_state_argument_indirect<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Bo
 fn make_generator_state_argument_pinned<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
     let ref_gen_ty = body.local_decls.raw[1].ty;
 
-    let pin_did = tcx.require_lang_item(PinTypeLangItem, Some(body.span));
+    let pin_did = tcx.require_lang_item(LangItem::Pin, Some(body.span));
     let pin_adt_ref = tcx.adt_def(pin_did);
     let substs = tcx.intern_substs(&[ref_gen_ty.into()]);
     let pin_ref_gen_ty = tcx.mk_adt(pin_adt_ref, substs);
@@ -624,9 +637,7 @@ fn compute_storage_conflicts(
         local_conflicts: BitMatrix::from_row_n(&ineligible_locals, body.local_decls.len()),
     };
 
-    // Visit only reachable basic blocks. The exact order is not important.
-    let reachable_blocks = traversal::preorder(body).map(|(bb, _)| bb);
-    requires_storage.visit_with(body, reachable_blocks, &mut visitor);
+    requires_storage.visit_reachable_with(body, &mut visitor);
 
     let local_conflicts = visitor.local_conflicts;
 
@@ -1259,7 +1270,7 @@ impl<'tcx> MirPass<'tcx> for StateTransform {
         };
 
         // Compute GeneratorState<yield_ty, return_ty>
-        let state_did = tcx.require_lang_item(GeneratorStateLangItem, None);
+        let state_did = tcx.require_lang_item(LangItem::GeneratorState, None);
         let state_adt_ref = tcx.adt_def(state_did);
         let state_substs = tcx.intern_substs(&[yield_ty.into(), body.return_ty().into()]);
         let ret_ty = tcx.mk_adt(state_adt_ref, state_substs);
@@ -1445,6 +1456,7 @@ impl Visitor<'tcx> for EnsureGeneratorFieldAssignmentsNeverAlias<'_> {
             | StatementKind::StorageDead(_)
             | StatementKind::Retag(..)
             | StatementKind::AscribeUserType(..)
+            | StatementKind::Coverage(..)
             | StatementKind::Nop => {}
         }
     }

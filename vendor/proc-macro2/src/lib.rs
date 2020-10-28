@@ -78,7 +78,7 @@
 //! a different thread.
 
 // Proc-macro2 types in rustdoc of other crates get linked to here.
-#![doc(html_root_url = "https://docs.rs/proc-macro2/1.0.18")]
+#![doc(html_root_url = "https://docs.rs/proc-macro2/1.0.19")]
 #![cfg_attr(any(proc_macro_span, super_unstable), feature(proc_macro_span))]
 #![cfg_attr(super_unstable, feature(proc_macro_raw_ident, proc_macro_def_site))]
 #![allow(clippy::needless_doctest_main)]
@@ -370,7 +370,6 @@ impl Span {
     /// of the macro. This is the same hygiene behavior as `macro_rules`.
     ///
     /// This function requires Rust 1.45 or later.
-    #[cfg(procmacro2_semver_exempt)]
     #[cfg(hygiene)]
     pub fn mixed_site() -> Span {
         Span::_new(imp::Span::mixed_site())
@@ -386,14 +385,12 @@ impl Span {
 
     /// Creates a new span with the same line/column information as `self` but
     /// that resolves symbols as though it were at `other`.
-    #[cfg(procmacro2_semver_exempt)]
     pub fn resolved_at(&self, other: Span) -> Span {
         Span::_new(self.inner.resolved_at(other.inner))
     }
 
     /// Creates a new span with the same name resolution behavior as `self` but
     /// with the line/column information of `other`.
-    #[cfg(procmacro2_semver_exempt)]
     pub fn located_at(&self, other: Span) -> Span {
         Span::_new(self.inner.located_at(other.inner))
     }

@@ -11,7 +11,6 @@ use std::fmt;
 use log::trace;
 use rand::rngs::StdRng;
 
-use rustc_ast::attr;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_middle::{
     mir,
@@ -64,7 +63,10 @@ pub enum MiriMemoryKind {
     Global,
     /// Memory for extern statics.
     /// This memory may leak.
-    ExternGlobal,
+    ExternStatic,
+    /// Memory for thread-local statics.
+    /// This memory may leak.
+    Tls,
 }
 
 impl Into<MemoryKind<MiriMemoryKind>> for MiriMemoryKind {
@@ -80,7 +82,7 @@ impl MayLeak for MiriMemoryKind {
         use self::MiriMemoryKind::*;
         match self {
             Rust | C | WinHeap | Env => false,
-            Machine | Global | ExternGlobal => true,
+            Machine | Global | ExternStatic | Tls => true,
         }
     }
 }
@@ -94,8 +96,9 @@ impl fmt::Display for MiriMemoryKind {
             WinHeap => write!(f, "Windows heap"),
             Machine => write!(f, "machine-managed memory"),
             Env => write!(f, "environment variable"),
-            Global => write!(f, "global"),
-            ExternGlobal => write!(f, "extern global"),
+            Global => write!(f, "global (static or const)"),
+            ExternStatic => write!(f, "extern static"),
+            Tls =>  write!(f, "thread-local static"),
         }
     }
 }
@@ -125,7 +128,7 @@ pub struct MemoryExtra {
     tracked_alloc_id: Option<AllocId>,
 
     /// Controls whether alignment of memory accesses is being checked.
-    check_alignment: bool,
+    pub(crate) check_alignment: AlignmentCheck,
 }
 
 impl MemoryExtra {
@@ -135,7 +138,7 @@ impl MemoryExtra {
         tracked_pointer_tag: Option<PtrId>,
         tracked_call_id: Option<CallId>,
         tracked_alloc_id: Option<AllocId>,
-        check_alignment: bool,
+        check_alignment: AlignmentCheck,
     ) -> Self {
         let stacked_borrows = if stacked_borrows {
             Some(Rc::new(RefCell::new(stacked_borrows::GlobalState::new(tracked_pointer_tag, tracked_call_id))))
@@ -175,7 +178,7 @@ impl MemoryExtra {
                 // "__cxa_thread_atexit_impl"
                 // This should be all-zero, pointer-sized.
                 let layout = this.machine.layouts.usize;
-                let place = this.allocate(layout, MiriMemoryKind::ExternGlobal.into());
+                let place = this.allocate(layout, MiriMemoryKind::ExternStatic.into());
                 this.write_scalar(Scalar::from_machine_usize(0, this), place.into())?;
                 Self::add_extern_static(this, "__cxa_thread_atexit_impl", place.ptr);
                 // "environ"
@@ -185,7 +188,7 @@ impl MemoryExtra {
                 // "_tls_used"
                 // This is some obscure hack that is part of the Windows TLS story. It's a `u8`.
                 let layout = this.machine.layouts.u8;
-                let place = this.allocate(layout, MiriMemoryKind::ExternGlobal.into());
+                let place = this.allocate(layout, MiriMemoryKind::ExternStatic.into());
                 this.write_scalar(Scalar::from_u8(0), place.into())?;
                 Self::add_extern_static(this, "_tls_used", place.ptr);
             }
@@ -262,6 +265,9 @@ pub struct Evaluator<'mir, 'tcx> {
 
     /// Precomputed `TyLayout`s for primitive data types that are commonly used inside Miri.
     pub(crate) layouts: PrimitiveLayouts<'tcx>,
+
+    /// Allocations that are considered roots of static memory (that may leak).
+    pub(crate) static_roots: Vec<AllocId>,
 }
 
 impl<'mir, 'tcx> Evaluator<'mir, 'tcx> {
@@ -289,6 +295,7 @@ impl<'mir, 'tcx> Evaluator<'mir, 'tcx> {
             time_anchor: Instant::now(),
             layouts,
             threads: ThreadManager::default(),
+            static_roots: Vec::new(),
         }
     }
 }
@@ -329,7 +336,12 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
 
     #[inline(always)]
     fn enforce_alignment(memory_extra: &MemoryExtra) -> bool {
-        memory_extra.check_alignment
+        memory_extra.check_alignment != AlignmentCheck::None
+    }
+
+    #[inline(always)]
+    fn force_int_for_alignment_check(memory_extra: &Self::MemoryExtra) -> bool {
+        memory_extra.check_alignment == AlignmentCheck::Int
     }
 
     #[inline(always)]
@@ -422,44 +434,26 @@ impl<'mir, 'tcx> Machine<'mir, 'tcx> for Evaluator<'mir, 'tcx> {
         Ok(())
     }
 
-    fn thread_local_alloc_id(
+    fn thread_local_static_alloc_id(
         ecx: &mut InterpCx<'mir, 'tcx, Self>,
         def_id: DefId,
     ) -> InterpResult<'tcx, AllocId> {
         ecx.get_or_create_thread_local_alloc_id(def_id)
     }
 
-    fn adjust_global_const(
-        ecx: &InterpCx<'mir, 'tcx, Self>,
-        mut val: mir::interpret::ConstValue<'tcx>,
-    ) -> InterpResult<'tcx, mir::interpret::ConstValue<'tcx>> {
-        // FIXME: Remove this, do The Right Thing in `thread_local_alloc_id` instead.
-        ecx.remap_thread_local_alloc_ids(&mut val)?;
-        Ok(val)
-    }
-
-    fn canonical_alloc_id(mem: &Memory<'mir, 'tcx, Self>, id: AllocId) -> AllocId {
-        let tcx = mem.tcx;
-        // Figure out if this is an extern static, and if yes, which one.
-        let def_id = match tcx.get_global_alloc(id) {
-            Some(GlobalAlloc::Static(def_id)) if tcx.is_foreign_item(def_id) => def_id,
-            _ => {
-                // No need to canonicalize anything.
-                return id;
-            }
-        };
-        let attrs = tcx.get_attrs(def_id);
-        let link_name = match attr::first_attr_value_str_by_name(&attrs, sym::link_name) {
+    fn extern_static_alloc_id(
+        memory: &Memory<'mir, 'tcx, Self>,
+        def_id: DefId,
+    ) -> InterpResult<'tcx, AllocId> {
+        let attrs = memory.tcx.get_attrs(def_id);
+        let link_name = match memory.tcx.sess.first_attr_value_str_by_name(&attrs, sym::link_name) {
             Some(name) => name,
-            None => tcx.item_name(def_id),
+            None => memory.tcx.item_name(def_id),
         };
-        // Check if we know this one.
-        if let Some(canonical_id) = mem.extra.extern_statics.get(&link_name) {
-            trace!("canonical_alloc_id: {:?} ({}) -> {:?}", id, link_name, canonical_id);
-            *canonical_id
+        if let Some(&id) = memory.extra.extern_statics.get(&link_name) {
+            Ok(id)
         } else {
-            // Return original id; `Memory::get_static_alloc` will throw an error.
-            id
+            throw_unsup_format!("`extern` static {:?} is not supported by Miri", def_id)
         }
     }
 

@@ -12,7 +12,7 @@ use structopt::StructOpt;
 fn unique_flag() {
     #[derive(StructOpt, PartialEq, Debug)]
     struct Opt {
-        #[structopt(short = "a", long = "alice")]
+        #[structopt(short, long)]
         alice: bool,
     }
 
@@ -44,9 +44,9 @@ fn unique_flag() {
 fn multiple_flag() {
     #[derive(StructOpt, PartialEq, Debug)]
     struct Opt {
-        #[structopt(short = "a", long = "alice", parse(from_occurrences))]
+        #[structopt(short, long, parse(from_occurrences))]
         alice: u64,
-        #[structopt(short = "b", long = "bob", parse(from_occurrences))]
+        #[structopt(short, long, parse(from_occurrences))]
         bob: u8,
     }
 
@@ -76,13 +76,44 @@ fn multiple_flag() {
         .is_err());
 }
 
+fn parse_from_flag(b: bool) -> std::sync::atomic::AtomicBool {
+    std::sync::atomic::AtomicBool::new(b)
+}
+
+#[test]
+fn non_bool_flags() {
+    #[derive(StructOpt, Debug)]
+    struct Opt {
+        #[structopt(short, long, parse(from_flag = parse_from_flag))]
+        alice: std::sync::atomic::AtomicBool,
+        #[structopt(short, long, parse(from_flag))]
+        bob: std::sync::atomic::AtomicBool,
+    }
+
+    let falsey = Opt::from_clap(&Opt::clap().get_matches_from(&["test"]));
+    assert!(!falsey.alice.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!falsey.bob.load(std::sync::atomic::Ordering::Relaxed));
+
+    let alice = Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-a"]));
+    assert!(alice.alice.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!alice.bob.load(std::sync::atomic::Ordering::Relaxed));
+
+    let bob = Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-b"]));
+    assert!(!bob.alice.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(bob.bob.load(std::sync::atomic::Ordering::Relaxed));
+
+    let both = Opt::from_clap(&Opt::clap().get_matches_from(&["test", "-b", "-a"]));
+    assert!(both.alice.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(both.bob.load(std::sync::atomic::Ordering::Relaxed));
+}
+
 #[test]
 fn combined_flags() {
     #[derive(StructOpt, PartialEq, Debug)]
     struct Opt {
-        #[structopt(short = "a", long = "alice")]
+        #[structopt(short, long)]
         alice: bool,
-        #[structopt(short = "b", long = "bob", parse(from_occurrences))]
+        #[structopt(short, long, parse(from_occurrences))]
         bob: u64,
     }
 

@@ -1,7 +1,13 @@
 #![doc(html_root_url = "https://docs.rs/tokio-tcp/0.1.3")]
-#![deny(missing_docs, warnings, missing_debug_implementations)]
+#![deny(missing_docs, missing_debug_implementations)]
 
 //! TCP bindings for `tokio`.
+//!
+//! > **Note:** This crate is **deprecated in tokio 0.2.x** and has been moved
+//! > into [`tokio::tcp`] behind the `tcp` [feature flag].
+//!
+//! [`tokio::tcp`]: https://docs.rs/tokio/latest/tokio/tcp/index.html
+//! [feature flag]: https://docs.rs/tokio/latest/tokio/index.html#feature-flags
 //!
 //! This module contains the TCP networking types, similar to the standard
 //! library, which can be used to implement networking protocols.
@@ -36,5 +42,5 @@ mod stream;
 
 pub use self::incoming::Incoming;
 pub use self::listener::TcpListener;
-pub use self::stream::TcpStream;
 pub use self::stream::ConnectFuture;
+pub use self::stream::TcpStream;

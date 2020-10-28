@@ -8,13 +8,12 @@
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
 #![feature(or_patterns)]
-#![cfg_attr(bootstrap, feature(track_caller))]
 #![recursion_limit = "256"]
 
 #[macro_use]
 extern crate rustc_middle;
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 use rustc_middle::ty::query::Providers;
 

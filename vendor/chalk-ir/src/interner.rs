@@ -1,5 +1,4 @@
 //! Encapsulates the concrete representation of core types such as types and goals.
-
 use crate::AdtId;
 use crate::AliasTy;
 use crate::ApplicationTy;
@@ -7,12 +6,15 @@ use crate::AssocTypeId;
 use crate::CanonicalVarKind;
 use crate::CanonicalVarKinds;
 use crate::ClosureId;
+use crate::Constraint;
+use crate::Constraints;
 use crate::FnDefId;
 use crate::GenericArg;
 use crate::GenericArgData;
 use crate::Goal;
 use crate::GoalData;
 use crate::Goals;
+use crate::InEnvironment;
 use crate::Lifetime;
 use crate::LifetimeData;
 use crate::OpaqueTy;
@@ -165,6 +167,14 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
     /// to its underlying data via `canonical_var_kinds_data`.
     type InternedCanonicalVarKinds: Debug + Clone + Eq + Hash;
 
+    /// "Interned" representation of a list of region constraints.
+    /// In normal user code, `Self::InternedConstraints` is not referenced.
+    /// Instead, we refer to `Constraints<Self>`, which wraps this type.
+    ///
+    /// An `InternedConstraints` is created by `intern_constraints`
+    /// and can be converted back to its underlying data via `constraints_data`.
+    type InternedConstraints: Debug + Clone + Eq + Hash;
+
     /// The core "id" type used for trait-ids and the like.
     type DefId: Debug + Copy + Eq + Ord + Hash;
 
@@ -185,7 +195,8 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
     }
 
     /// Prints the debug representation of a type-kind-id.
-    /// Returns `None` to fallback to the default debug output.
+    /// Returns `None` to fallback to the default debug output (e.g.,
+    /// if no info about current program is available from TLS).
     #[allow(unused_variables)]
     fn debug_trait_id(
         trait_id: TraitId<Self>,
@@ -409,6 +420,16 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
         None
     }
 
+    /// Prints the debug representation of a Constraints.
+    /// Returns `None` to fallback to the default debug output.
+    #[allow(unused_variables)]
+    fn debug_constraints(
+        clauses: &Constraints<Self>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> Option<fmt::Result> {
+        None
+    }
+
     /// Create an "interned" type from `ty`. This is not normally
     /// invoked directly; instead, you invoke `TyData::intern` (which
     /// will ultimately call this method).
@@ -505,7 +526,7 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
 
     /// Create an "interned" program clauses from `data`. This is not
     /// normally invoked directly; instead, you invoke
-    /// `ProgramClauses::from` (which will ultimately call this
+    /// `ProgramClauses::from_iter` (which will ultimately call this
     /// method).
     fn intern_program_clauses<E>(
         &self,
@@ -520,7 +541,7 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
 
     /// Create an "interned" quantified where clauses from `data`. This is not
     /// normally invoked directly; instead, you invoke
-    /// `QuantifiedWhereClauses::from` (which will ultimately call this
+    /// `QuantifiedWhereClauses::from_iter` (which will ultimately call this
     /// method).
     fn intern_quantified_where_clauses<E>(
         &self,
@@ -536,7 +557,7 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
 
     /// Create an "interned" parameter kinds from `data`. This is not
     /// normally invoked directly; instead, you invoke
-    /// `VariableKinds::from` (which will ultimately call this
+    /// `VariableKinds::from_iter` (which will ultimately call this
     /// method).
     fn intern_generic_arg_kinds<E>(
         &self,
@@ -552,7 +573,7 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
 
     /// Create "interned" variable kinds with universe index from `data`. This is not
     /// normally invoked directly; instead, you invoke
-    /// `CanonicalVarKinds::from` (which will ultimately call this
+    /// `CanonicalVarKinds::from_iter` (which will ultimately call this
     /// method).
     fn intern_canonical_var_kinds<E>(
         &self,
@@ -565,6 +586,22 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
         &self,
         canonical_var_kinds: &'a Self::InternedCanonicalVarKinds,
     ) -> &'a [CanonicalVarKind<Self>];
+
+    /// Create "interned" constraints from `data`. This is not
+    /// normally invoked dirctly; instead, you invoke
+    /// `Constraints::from_iter` (which will ultimately call this
+    /// method).
+    fn intern_constraints<E>(
+        &self,
+        data: impl IntoIterator<Item = Result<InEnvironment<Constraint<Self>>, E>>,
+    ) -> Result<Self::InternedConstraints, E>;
+
+    /// Lookup the slice of `Constraint` that was interned to
+    /// create a `Constraints`.
+    fn constraints_data<'a>(
+        &self,
+        constraints: &'a Self::InternedConstraints,
+    ) -> &'a [InEnvironment<Constraint<Self>>];
 }
 
 /// "Target" interner, used to specify the interner of the folded value.
@@ -596,6 +633,9 @@ pub trait TargetInterner<I: Interner>: Interner {
         &self,
         const_evaluated: &I::InternedConcreteConst,
     ) -> Self::InternedConcreteConst;
+
+    /// Transfer function ABI to the target interner.
+    fn transfer_abi(abi: I::FnAbi) -> Self::FnAbi;
 }
 
 impl<I: Interner> TargetInterner<I> for I {
@@ -624,6 +664,10 @@ impl<I: Interner> TargetInterner<I> for I {
         const_evaluated: &I::InternedConcreteConst,
     ) -> Self::InternedConcreteConst {
         const_evaluated.clone()
+    }
+
+    fn transfer_abi(abi: I::FnAbi) -> Self::FnAbi {
+        abi
     }
 }
 

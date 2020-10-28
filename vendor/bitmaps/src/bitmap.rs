@@ -2,12 +2,14 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::fmt::{Debug, Error, Formatter};
-use std::ops::*;
+use core::ops::*;
 
 use typenum::*;
 
 use crate::types::{BitOps, Bits};
+
+#[cfg(feature = "std")]
+use std::fmt::{Debug, Error, Formatter};
 
 /// A compact array of bits.
 ///
@@ -42,8 +44,9 @@ impl<Size: Bits> PartialEq for Bitmap<Size> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<Size: Bits> Debug for Bitmap<Size> {
-    fn fmt(&self, f: &mut Formatter) -> Result<(), Error> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), Error> {
         write!(f, "{}", Size::Store::to_hex(&self.data))
     }
 }
@@ -272,18 +275,14 @@ impl Into<[u128; 8]> for Bitmap<U1024> {
 /// # Examples
 ///
 /// ```rust
-/// # #[macro_use] extern crate bitmaps;
-/// # extern crate typenum;
 /// # use bitmaps::Bitmap;
 /// # use typenum::U10;
-/// # fn main() {
 /// let mut bitmap: Bitmap<U10> = Bitmap::new();
 /// bitmap.set(3, true);
 /// bitmap.set(5, true);
 /// bitmap.set(8, true);
 /// let true_indices: Vec<usize> = bitmap.into_iter().collect();
 /// assert_eq!(vec![3, 5, 8], true_indices);
-/// # }
 /// ```
 pub struct Iter<'a, Size: Bits> {
     index: usize,
@@ -308,12 +307,13 @@ impl<'a, Size: Bits> Iterator for Iter<'a, Size> {
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[allow(clippy::cast_ptr_alignment)]
 mod x86_arch {
     use super::*;
     #[cfg(target_arch = "x86")]
-    use std::arch::x86::*;
+    use core::arch::x86::*;
     #[cfg(target_arch = "x86_64")]
-    use std::arch::x86_64::*;
+    use core::arch::x86_64::*;
 
     impl Bitmap<U128> {
         #[target_feature(enable = "sse2")]
@@ -410,7 +410,7 @@ mod x86_arch {
     impl From<__m128i> for Bitmap<U128> {
         fn from(data: __m128i) -> Self {
             Self {
-                data: unsafe { std::mem::transmute(data) },
+                data: unsafe { core::mem::transmute(data) },
             }
         }
     }
@@ -418,7 +418,7 @@ mod x86_arch {
     impl From<__m256i> for Bitmap<U256> {
         fn from(data: __m256i) -> Self {
             Self {
-                data: unsafe { std::mem::transmute(data) },
+                data: unsafe { core::mem::transmute(data) },
             }
         }
     }

@@ -1,6 +1,7 @@
 # salsa
 
-[![Build Status](https://travis-ci.org/salsa-rs/salsa.svg?branch=master)](https://travis-ci.org/salsa-rs/salsa)
+[![Test](https://github.com/salsa-rs/salsa/workflows/Test/badge.svg)](https://github.com/salsa-rs/salsa/actions?query=workflow%3ATest)
+[![Book](https://github.com/salsa-rs/salsa/workflows/Book/badge.svg)](https://github.com/salsa-rs/salsa/actions?query=workflow%3ABook)
 [![Released API docs](https://docs.rs/salsa/badge.svg)](https://docs.rs/salsa)
 [![Crates.io](https://img.shields.io/crates/v/salsa.svg)](https://crates.io/crates/salsa)
 
@@ -36,7 +37,7 @@ varieties:
 
 To learn more about Salsa, try one of the following:
 
-- read the [heavily commented `hello_world` example](examples/hello_world/main.rs);
+- read the [heavily commented `hello_world` example](https://github.com/salsa-rs/salsa/blob/master/examples/hello_world/main.rs);
 - check out the [Salsa book](https://salsa-rs.github.io/salsa);
 - watch one of our [videos](https://salsa-rs.github.io/salsa/videos.html).
 

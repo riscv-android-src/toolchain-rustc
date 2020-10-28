@@ -1,6 +1,10 @@
 //! Defines the pipeline which processes text for inclusion in the index. Most users do not need
 //! to use this module directly.
 
+#[cfg(feature = "zh")]
+use jieba_rs::Jieba;
+#[cfg(feature = "ja")]
+use lindera::tokenizer::Tokenizer;
 use serde::ser::{Serialize, SerializeSeq, Serializer};
 
 /// Splits a text string into a vector of individual tokens.
@@ -8,6 +12,30 @@ pub fn tokenize(text: &str) -> Vec<String> {
     text.split(|c: char| c.is_whitespace() || c == '-')
         .filter(|s| !s.is_empty())
         .map(|s| s.trim().to_lowercase())
+        .collect()
+}
+
+#[cfg(feature = "zh")]
+pub fn tokenize_chinese(text: &str) -> Vec<String> {
+    let jieba = Jieba::new();
+
+    jieba
+        .cut_for_search(text.as_ref(), false)
+        .iter()
+        .map(|s| (*s).into())
+        .collect()
+}
+
+#[cfg(feature = "ja")]
+pub fn tokenize_japanese(text: &str) -> Vec<String> {
+    let mut tokenizer = Tokenizer::new("decompose", "");
+    tokenizer
+        .tokenize(text)
+        .into_iter()
+        .filter_map(|tok| match tok.detail.get(0).map(|d| d.as_str()) {
+            Some("助詞") | Some("助動詞") | Some("記号") | Some("UNK") => None,
+            _ => Some(tok.text.to_string()),
+        })
         .collect()
 }
 

@@ -1,3 +1,5 @@
+#ifndef __LIBSSH2_OPENSSL_H
+#define __LIBSSH2_OPENSSL_H
 /* Copyright (C) 2009, 2010 Simon Josefsson
  * Copyright (C) 2006, 2007 The Written Word, Inc.  All rights reserved.
  *
@@ -322,26 +324,11 @@ libssh2_curve_type;
 #endif /* LIBSSH2_ECDSA */
 
 #if LIBSSH2_ED25519
+#define libssh2_ed25519_ctx EVP_PKEY
+#define libssh2_x25519_ctx EVP_PKEY
 
-typedef struct {
-    EVP_PKEY *public_key;
-    EVP_PKEY *private_key;
-} libssh2_curve25519_keys;
-
-#define libssh2_ed25519_ctx libssh2_curve25519_keys
-#define libssh2_x25519_ctx libssh2_curve25519_keys
-
-#define _libssh2_ed25519_new_ctx() calloc(1, sizeof(libssh2_ed25519_ctx))
-#define _libssh2_ed25519_free(ctx) do { \
- if(ctx) { \
-  if(ctx->public_key) EVP_PKEY_free(ctx->public_key); \
-  if(ctx->private_key) EVP_PKEY_free(ctx->private_key); \
-  free(ctx); \
- } \
-} while(0)
-
-#define _libssh2_x25519_free(ctx) _libssh2_ed25519_free(ctx)
-
+#define _libssh2_ed25519_free(ctx) EVP_PKEY_free(ctx)
+#define _libssh2_x25519_free(ctx) EVP_PKEY_free(ctx)
 #endif /* ED25519 */
 
 #define _libssh2_cipher_type(name) const EVP_CIPHER *(*name)(void)
@@ -407,3 +394,5 @@ extern void _libssh2_dh_dtor(_libssh2_dh_ctx *dhctx);
 const EVP_CIPHER *_libssh2_EVP_aes_128_ctr(void);
 const EVP_CIPHER *_libssh2_EVP_aes_192_ctr(void);
 const EVP_CIPHER *_libssh2_EVP_aes_256_ctr(void);
+
+#endif /* __LIBSSH2_OPENSSL_H */

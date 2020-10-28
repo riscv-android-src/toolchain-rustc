@@ -1,6 +1,5 @@
 // ignore-tidy-filelength
-
-pub use self::fold::{TypeFoldable, TypeVisitor};
+pub use self::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 pub use self::AssocItemContainer::*;
 pub use self::BorrowKind::*;
 pub use self::IntVarValue::*;
@@ -18,7 +17,7 @@ use crate::traits::{self, Reveal};
 use crate::ty;
 use crate::ty::subst::{GenericArg, InternalSubsts, Subst, SubstsRef};
 use crate::ty::util::{Discr, IntTypeExt};
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_attr as attr;
 use rustc_data_structures::captures::Captures;
 use rustc_data_structures::fingerprint::Fingerprint;
@@ -28,11 +27,12 @@ use rustc_data_structures::fx::FxIndexMap;
 use rustc_data_structures::sorted_map::SortedIndexMultiMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::sync::{self, par_iter, ParallelIterator};
+use rustc_data_structures::tagged_ptr::CopyTaggedPtr;
 use rustc_errors::ErrorReported;
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, CtorOf, DefKind, Namespace, Res};
 use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, LocalDefId, CRATE_DEF_INDEX};
-use rustc_hir::lang_items::{FnMutTraitLangItem, FnOnceTraitLangItem, FnTraitLangItem};
+use rustc_hir::lang_items::LangItem;
 use rustc_hir::{Constness, Node};
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_macros::HashStable;
@@ -47,9 +47,9 @@ use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
 use std::ops::Range;
 use std::ptr;
+use std::str;
 
 pub use self::sty::BoundRegion::*;
 pub use self::sty::InferTy::*;
@@ -60,9 +60,10 @@ pub use self::sty::{Binder, BoundTy, BoundTyKind, BoundVar, DebruijnIndex, INNER
 pub use self::sty::{BoundRegion, EarlyBoundRegion, FreeRegion, Region};
 pub use self::sty::{CanonicalPolyFnSig, FnSig, GenSig, PolyFnSig, PolyGenSig};
 pub use self::sty::{ClosureSubsts, GeneratorSubsts, TypeAndMut, UpvarSubsts};
-pub use self::sty::{Const, ConstKind, ExistentialProjection, PolyExistentialProjection};
+pub use self::sty::{ClosureSubstsParts, GeneratorSubstsParts};
 pub use self::sty::{ConstVid, FloatVid, IntVid, RegionVid, TyVid};
-pub use self::sty::{ExistentialPredicate, InferConst, InferTy, ParamConst, ParamTy, ProjectionTy};
+pub use self::sty::{ExistentialPredicate, InferTy, ParamConst, ParamTy, ProjectionTy};
+pub use self::sty::{ExistentialProjection, PolyExistentialProjection};
 pub use self::sty::{ExistentialTraitRef, PolyExistentialTraitRef};
 pub use self::sty::{PolyTraitRef, TraitRef, TyKind};
 pub use crate::ty::diagnostics::*;
@@ -72,11 +73,11 @@ pub use self::binding::BindingMode::*;
 
 pub use self::context::{tls, FreeRegionInfo, TyCtxt};
 pub use self::context::{
-    CanonicalUserType, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations, ResolvedOpaqueTy,
-    UserType, UserTypeAnnotationIndex,
+    CanonicalUserType, CanonicalUserTypeAnnotation, CanonicalUserTypeAnnotations,
+    DelaySpanBugEmitted, ResolvedOpaqueTy, UserType, UserTypeAnnotationIndex,
 };
 pub use self::context::{
-    CtxtInterners, GeneratorInteriorTypeCause, GlobalCtxt, Lift, TypeckTables,
+    CtxtInterners, GeneratorInteriorTypeCause, GlobalCtxt, Lift, TypeckResults,
 };
 
 pub use self::instance::{Instance, InstanceDef};
@@ -87,14 +88,13 @@ pub use self::trait_def::TraitDef;
 
 pub use self::query::queries;
 
-pub use self::consts::ConstInt;
+pub use self::consts::{Const, ConstInt, ConstKind, InferConst};
 
+pub mod _match;
 pub mod adjustment;
 pub mod binding;
 pub mod cast;
-#[macro_use]
 pub mod codec;
-pub mod _match;
 mod erase_regions;
 pub mod error;
 pub mod fast_reject;
@@ -136,7 +136,7 @@ pub struct ResolverOutputs {
     pub extern_prelude: FxHashMap<Symbol, bool>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, HashStable, Hash)]
 pub enum AssocItemContainer {
     TraitContainer(DefId),
     ImplContainer(DefId),
@@ -171,7 +171,7 @@ pub struct ImplHeader<'tcx> {
     pub predicates: Vec<Predicate<'tcx>>,
 }
 
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, PartialEq, TyEncodable, TyDecodable, HashStable)]
 pub enum ImplPolarity {
     /// `impl Trait for Type`
     Positive,
@@ -184,7 +184,7 @@ pub enum ImplPolarity {
     Reservation,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, HashStable)]
+#[derive(Copy, Clone, Debug, PartialEq, HashStable, Eq, Hash)]
 pub struct AssocItem {
     pub def_id: DefId,
     #[stable_hasher(project(name))]
@@ -199,7 +199,7 @@ pub struct AssocItem {
     pub fn_has_self_parameter: bool,
 }
 
-#[derive(Copy, Clone, PartialEq, Debug, HashStable)]
+#[derive(Copy, Clone, PartialEq, Debug, HashStable, Eq, Hash)]
 pub enum AssocKind {
     Const,
     Fn,
@@ -316,7 +316,7 @@ impl<'tcx> AssociatedItems<'tcx> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Copy, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Debug, PartialEq, Eq, Copy, Hash, TyEncodable, TyDecodable, HashStable)]
 pub enum Visibility {
     /// Visible everywhere (including in other crates).
     Public,
@@ -403,7 +403,7 @@ impl Visibility {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, RustcDecodable, RustcEncodable, HashStable)]
+#[derive(Copy, Clone, PartialEq, TyDecodable, TyEncodable, HashStable)]
 pub enum Variance {
     Covariant,     // T<A> <: T<B> iff A <: B -- e.g., function return type
     Invariant,     // T<A> <: T<B> iff B == A -- e.g., type of mutable cell
@@ -652,13 +652,9 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for TyS<'tcx> {
 #[rustc_diagnostic_item = "Ty"]
 pub type Ty<'tcx> = &'tcx TyS<'tcx>;
 
-impl<'tcx> rustc_serialize::UseSpecializedEncodable for Ty<'tcx> {}
-impl<'tcx> rustc_serialize::UseSpecializedDecodable for Ty<'tcx> {}
-impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx List<Ty<'tcx>> {}
-
 pub type CanonicalTy<'tcx> = Canonical<'tcx, Ty<'tcx>>;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
 pub struct UpvarPath {
     pub hir_id: hir::HirId,
 }
@@ -666,13 +662,13 @@ pub struct UpvarPath {
 /// Upvars do not get their own `NodeId`. Instead, we use the pair of
 /// the original var ID (that is, the root variable that is referenced
 /// by the upvar) and the ID of the closure expression.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
 pub struct UpvarId {
     pub var_path: UpvarPath,
     pub closure_expr_id: LocalDefId,
 }
 
-#[derive(Clone, PartialEq, Debug, RustcEncodable, RustcDecodable, Copy, HashStable)]
+#[derive(Clone, PartialEq, Debug, TyEncodable, TyDecodable, Copy, HashStable)]
 pub enum BorrowKind {
     /// Data must be immutable and is aliasable.
     ImmBorrow,
@@ -720,7 +716,7 @@ pub enum BorrowKind {
 
 /// Information describing the capture of an upvar. This is computed
 /// during `typeck`, specifically by `regionck`.
-#[derive(PartialEq, Clone, Debug, Copy, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(PartialEq, Clone, Debug, Copy, TyEncodable, TyDecodable, HashStable)]
 pub enum UpvarCapture<'tcx> {
     /// Upvar is captured by value. This is always true when the
     /// closure is labeled `move`, but can also be true in other cases
@@ -731,7 +727,7 @@ pub enum UpvarCapture<'tcx> {
     ByRef(UpvarBorrow<'tcx>),
 }
 
-#[derive(PartialEq, Clone, Copy, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(PartialEq, Clone, Copy, TyEncodable, TyDecodable, HashStable)]
 pub struct UpvarBorrow<'tcx> {
     /// The kind of borrow: by-ref upvars have access to shared
     /// immutable borrows, which are not part of the normal language
@@ -766,7 +762,7 @@ impl ty::EarlyBoundRegion {
     }
 }
 
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub enum GenericParamDefKind {
     Lifetime,
     Type {
@@ -787,7 +783,7 @@ impl GenericParamDefKind {
     }
 }
 
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct GenericParamDef {
     pub name: Symbol,
     pub def_id: DefId,
@@ -831,7 +827,7 @@ pub struct GenericParamCount {
 ///
 /// The ordering of parameters is the same as in `Subst` (excluding child generics):
 /// `Self` (optionally), `Lifetime` params..., `Type` params...
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct Generics {
     pub parent: Option<DefId>,
     pub parent_count: usize,
@@ -890,6 +886,7 @@ impl<'tcx> Generics {
         false
     }
 
+    /// Returns the `GenericParamDef` with the given index.
     pub fn param_at(&'tcx self, param_index: usize, tcx: TyCtxt<'tcx>) -> &'tcx GenericParamDef {
         if let Some(index) = param_index.checked_sub(self.parent_count) {
             &self.params[index]
@@ -899,6 +896,7 @@ impl<'tcx> Generics {
         }
     }
 
+    /// Returns the `GenericParamDef` associated with this `EarlyBoundRegion`.
     pub fn region_param(
         &'tcx self,
         param: &EarlyBoundRegion,
@@ -920,7 +918,7 @@ impl<'tcx> Generics {
         }
     }
 
-    /// Returns the `ConstParameterDef` associated with this `ParamConst`.
+    /// Returns the `GenericParamDef` associated with this `ParamConst`.
     pub fn const_param(&'tcx self, param: &ParamConst, tcx: TyCtxt<'tcx>) -> &GenericParamDef {
         let param = self.param_at(param.index as usize, tcx);
         match param.kind {
@@ -931,7 +929,7 @@ impl<'tcx> Generics {
 }
 
 /// Bounds on generics.
-#[derive(Copy, Clone, Default, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, Default, Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct GenericPredicates<'tcx> {
     pub parent: Option<DefId>,
     pub predicates: &'tcx [(Predicate<'tcx>, Span)],
@@ -1016,15 +1014,12 @@ crate struct PredicateInner<'tcx> {
 }
 
 #[cfg(target_arch = "x86_64")]
-static_assert_size!(PredicateInner<'_>, 40);
+static_assert_size!(PredicateInner<'_>, 48);
 
 #[derive(Clone, Copy, Lift)]
 pub struct Predicate<'tcx> {
     inner: &'tcx PredicateInner<'tcx>,
 }
-
-impl rustc_serialize::UseSpecializedEncodable for Predicate<'_> {}
-impl rustc_serialize::UseSpecializedDecodable for Predicate<'_> {}
 
 impl<'tcx> PartialEq for Predicate<'tcx> {
     fn eq(&self, other: &Self) -> bool {
@@ -1046,6 +1041,44 @@ impl<'tcx> Predicate<'tcx> {
     pub fn kind(self) -> &'tcx PredicateKind<'tcx> {
         &self.inner.kind
     }
+
+    /// Returns the inner `PredicateAtom`.
+    ///
+    /// The returned atom may contain unbound variables bound to binders skipped in this method.
+    /// It is safe to reapply binders to the given atom.
+    ///
+    /// Note that this method panics in case this predicate has unbound variables.
+    pub fn skip_binders(self) -> PredicateAtom<'tcx> {
+        match self.kind() {
+            &PredicateKind::ForAll(binder) => binder.skip_binder(),
+            &PredicateKind::Atom(atom) => {
+                debug_assert!(!atom.has_escaping_bound_vars());
+                atom
+            }
+        }
+    }
+
+    /// Returns the inner `PredicateAtom`.
+    ///
+    /// Note that this method does not check if the predicate has unbound variables.
+    ///
+    /// Rebinding the returned atom can causes the previously bound variables
+    /// to end up at the wrong binding level.
+    pub fn skip_binders_unchecked(self) -> PredicateAtom<'tcx> {
+        match self.kind() {
+            &PredicateKind::ForAll(binder) => binder.skip_binder(),
+            &PredicateKind::Atom(atom) => atom,
+        }
+    }
+
+    /// Allows using a `Binder<PredicateAtom<'tcx>>` even if the given predicate previously
+    /// contained unbound variables by shifting these variables outwards.
+    pub fn bound_atom(self, tcx: TyCtxt<'tcx>) -> Binder<PredicateAtom<'tcx>> {
+        match self.kind() {
+            &PredicateKind::ForAll(binder) => binder,
+            &PredicateKind::Atom(atom) => Binder::wrap_nonbinding(tcx, atom),
+        }
+    }
 }
 
 impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for Predicate<'tcx> {
@@ -1063,9 +1096,17 @@ impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for Predicate<'tcx> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub enum PredicateKind<'tcx> {
+    /// `for<'a>: ...`
+    ForAll(Binder<PredicateAtom<'tcx>>),
+    Atom(PredicateAtom<'tcx>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable)]
+#[derive(HashStable, TypeFoldable)]
+pub enum PredicateAtom<'tcx> {
     /// Corresponds to `where Foo: Bar<A, B, C>`. `Foo` here would be
     /// the `Self` type of the trait reference and `A`, `B`, and `C`
     /// would be the type parameters.
@@ -1073,17 +1114,17 @@ pub enum PredicateKind<'tcx> {
     /// A trait predicate will have `Constness::Const` if it originates
     /// from a bound on a `const fn` without the `?const` opt-out (e.g.,
     /// `const fn foobar<Foo: Bar>() {}`).
-    Trait(PolyTraitPredicate<'tcx>, Constness),
+    Trait(TraitPredicate<'tcx>, Constness),
 
     /// `where 'a: 'b`
-    RegionOutlives(PolyRegionOutlivesPredicate<'tcx>),
+    RegionOutlives(RegionOutlivesPredicate<'tcx>),
 
     /// `where T: 'a`
-    TypeOutlives(PolyTypeOutlivesPredicate<'tcx>),
+    TypeOutlives(TypeOutlivesPredicate<'tcx>),
 
     /// `where <T as TraitRef>::Name == X`, approximately.
     /// See the `ProjectionPredicate` struct for details.
-    Projection(PolyProjectionPredicate<'tcx>),
+    Projection(ProjectionPredicate<'tcx>),
 
     /// No syntax: `T` well-formed.
     WellFormed(GenericArg<'tcx>),
@@ -1097,13 +1138,29 @@ pub enum PredicateKind<'tcx> {
     ClosureKind(DefId, SubstsRef<'tcx>, ClosureKind),
 
     /// `T1 <: T2`
-    Subtype(PolySubtypePredicate<'tcx>),
+    Subtype(SubtypePredicate<'tcx>),
 
     /// Constant initializer must evaluate successfully.
-    ConstEvaluatable(DefId, SubstsRef<'tcx>),
+    ConstEvaluatable(ty::WithOptConstParam<DefId>, SubstsRef<'tcx>),
 
     /// Constants must be equal. The first component is the const that is expected.
     ConstEquate(&'tcx Const<'tcx>, &'tcx Const<'tcx>),
+}
+
+impl<'tcx> PredicateAtom<'tcx> {
+    /// Wraps `self` with the given qualifier if this predicate has any unbound variables.
+    pub fn potentially_quantified(
+        self,
+        tcx: TyCtxt<'tcx>,
+        qualifier: impl FnOnce(Binder<PredicateAtom<'tcx>>) -> PredicateKind<'tcx>,
+    ) -> Predicate<'tcx> {
+        if self.has_escaping_bound_vars() {
+            qualifier(Binder::bind(self))
+        } else {
+            PredicateKind::Atom(self)
+        }
+        .to_predicate(tcx)
+    }
 }
 
 /// The crate outlives map is computed during typeck and contains the
@@ -1117,7 +1174,7 @@ pub struct CratePredicatesMap<'tcx> {
     /// For each struct with outlive bounds, maps to a vector of the
     /// predicate of its outlive bounds. If an item has no outlives
     /// bounds, it will have no entry.
-    pub predicates: FxHashMap<DefId, &'tcx [(ty::Predicate<'tcx>, Span)]>,
+    pub predicates: FxHashMap<DefId, &'tcx [(Predicate<'tcx>, Span)]>,
 }
 
 impl<'tcx> Predicate<'tcx> {
@@ -1130,7 +1187,7 @@ impl<'tcx> Predicate<'tcx> {
         self,
         tcx: TyCtxt<'tcx>,
         trait_ref: &ty::PolyTraitRef<'tcx>,
-    ) -> ty::Predicate<'tcx> {
+    ) -> Predicate<'tcx> {
         // The interaction between HRTB and supertraits is not entirely
         // obvious. Let me walk you (and myself) through an example.
         //
@@ -1190,43 +1247,14 @@ impl<'tcx> Predicate<'tcx> {
         // substitution code expects equal binding levels in the values
         // from the substitution and the value being substituted into, and
         // this trick achieves that).
-
-        let substs = &trait_ref.skip_binder().substs;
-        let kind = self.kind();
-        let new = match kind {
-            &PredicateKind::Trait(ref binder, constness) => {
-                PredicateKind::Trait(binder.map_bound(|data| data.subst(tcx, substs)), constness)
-            }
-            PredicateKind::Subtype(binder) => {
-                PredicateKind::Subtype(binder.map_bound(|data| data.subst(tcx, substs)))
-            }
-            PredicateKind::RegionOutlives(binder) => {
-                PredicateKind::RegionOutlives(binder.map_bound(|data| data.subst(tcx, substs)))
-            }
-            PredicateKind::TypeOutlives(binder) => {
-                PredicateKind::TypeOutlives(binder.map_bound(|data| data.subst(tcx, substs)))
-            }
-            PredicateKind::Projection(binder) => {
-                PredicateKind::Projection(binder.map_bound(|data| data.subst(tcx, substs)))
-            }
-            &PredicateKind::WellFormed(data) => PredicateKind::WellFormed(data.subst(tcx, substs)),
-            &PredicateKind::ObjectSafe(trait_def_id) => PredicateKind::ObjectSafe(trait_def_id),
-            &PredicateKind::ClosureKind(closure_def_id, closure_substs, kind) => {
-                PredicateKind::ClosureKind(closure_def_id, closure_substs.subst(tcx, substs), kind)
-            }
-            &PredicateKind::ConstEvaluatable(def_id, const_substs) => {
-                PredicateKind::ConstEvaluatable(def_id, const_substs.subst(tcx, substs))
-            }
-            PredicateKind::ConstEquate(c1, c2) => {
-                PredicateKind::ConstEquate(c1.subst(tcx, substs), c2.subst(tcx, substs))
-            }
-        };
-
-        if new != *kind { new.to_predicate(tcx) } else { self }
+        let substs = trait_ref.skip_binder().substs;
+        let pred = self.skip_binders();
+        let new = pred.subst(tcx, substs);
+        if new != pred { new.potentially_quantified(tcx, PredicateKind::ForAll) } else { self }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct TraitPredicate<'tcx> {
     pub trait_ref: TraitRef<'tcx>,
@@ -1251,7 +1279,7 @@ impl<'tcx> PolyTraitPredicate<'tcx> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct OutlivesPredicate<A, B>(pub A, pub B); // `A: B`
 pub type PolyOutlivesPredicate<A, B> = ty::Binder<OutlivesPredicate<A, B>>;
@@ -1260,7 +1288,7 @@ pub type TypeOutlivesPredicate<'tcx> = OutlivesPredicate<Ty<'tcx>, ty::Region<'t
 pub type PolyRegionOutlivesPredicate<'tcx> = ty::Binder<RegionOutlivesPredicate<'tcx>>;
 pub type PolyTypeOutlivesPredicate<'tcx> = ty::Binder<TypeOutlivesPredicate<'tcx>>;
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct SubtypePredicate<'tcx> {
     pub a_is_expected: bool,
@@ -1281,7 +1309,7 @@ pub type PolySubtypePredicate<'tcx> = ty::Binder<SubtypePredicate<'tcx>>;
 /// equality between arbitrary types. Processing an instance of
 /// Form #2 eventually yields one of these `ProjectionPredicate`
 /// instances to normalize the LHS.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct ProjectionPredicate<'tcx> {
     pub projection_ty: ProjectionTy<'tcx>,
@@ -1347,86 +1375,87 @@ impl ToPredicate<'tcx> for PredicateKind<'tcx> {
     }
 }
 
-impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<TraitRef<'tcx>> {
+impl ToPredicate<'tcx> for PredicateAtom<'tcx> {
+    #[inline(always)]
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        ty::PredicateKind::Trait(
-            ty::Binder::dummy(ty::TraitPredicate { trait_ref: self.value }),
-            self.constness,
-        )
-        .to_predicate(tcx)
+        debug_assert!(!self.has_escaping_bound_vars(), "escaping bound vars for {:?}", self);
+        tcx.mk_predicate(PredicateKind::Atom(self))
     }
 }
 
-impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<&TraitRef<'tcx>> {
+impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<TraitRef<'tcx>> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        ty::PredicateKind::Trait(
-            ty::Binder::dummy(ty::TraitPredicate { trait_ref: *self.value }),
-            self.constness,
-        )
-        .to_predicate(tcx)
+        PredicateAtom::Trait(ty::TraitPredicate { trait_ref: self.value }, self.constness)
+            .to_predicate(tcx)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<PolyTraitRef<'tcx>> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        ty::PredicateKind::Trait(self.value.to_poly_trait_predicate(), self.constness)
-            .to_predicate(tcx)
+        ConstnessAnd {
+            value: self.value.map_bound(|trait_ref| ty::TraitPredicate { trait_ref }),
+            constness: self.constness,
+        }
+        .to_predicate(tcx)
     }
 }
 
-impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<&PolyTraitRef<'tcx>> {
+impl<'tcx> ToPredicate<'tcx> for ConstnessAnd<PolyTraitPredicate<'tcx>> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        ty::PredicateKind::Trait(self.value.to_poly_trait_predicate(), self.constness)
-            .to_predicate(tcx)
+        PredicateAtom::Trait(self.value.skip_binder(), self.constness)
+            .potentially_quantified(tcx, PredicateKind::ForAll)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyRegionOutlivesPredicate<'tcx> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        PredicateKind::RegionOutlives(self).to_predicate(tcx)
+        PredicateAtom::RegionOutlives(self.skip_binder())
+            .potentially_quantified(tcx, PredicateKind::ForAll)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyTypeOutlivesPredicate<'tcx> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        PredicateKind::TypeOutlives(self).to_predicate(tcx)
+        PredicateAtom::TypeOutlives(self.skip_binder())
+            .potentially_quantified(tcx, PredicateKind::ForAll)
     }
 }
 
 impl<'tcx> ToPredicate<'tcx> for PolyProjectionPredicate<'tcx> {
     fn to_predicate(self, tcx: TyCtxt<'tcx>) -> Predicate<'tcx> {
-        PredicateKind::Projection(self).to_predicate(tcx)
+        PredicateAtom::Projection(self.skip_binder())
+            .potentially_quantified(tcx, PredicateKind::ForAll)
     }
 }
 
 impl<'tcx> Predicate<'tcx> {
     pub fn to_opt_poly_trait_ref(self) -> Option<PolyTraitRef<'tcx>> {
-        match self.kind() {
-            &PredicateKind::Trait(ref t, _) => Some(t.to_poly_trait_ref()),
-            PredicateKind::Projection(..)
-            | PredicateKind::Subtype(..)
-            | PredicateKind::RegionOutlives(..)
-            | PredicateKind::WellFormed(..)
-            | PredicateKind::ObjectSafe(..)
-            | PredicateKind::ClosureKind(..)
-            | PredicateKind::TypeOutlives(..)
-            | PredicateKind::ConstEvaluatable(..)
-            | PredicateKind::ConstEquate(..) => None,
+        match self.skip_binders() {
+            PredicateAtom::Trait(t, _) => Some(ty::Binder::bind(t.trait_ref)),
+            PredicateAtom::Projection(..)
+            | PredicateAtom::Subtype(..)
+            | PredicateAtom::RegionOutlives(..)
+            | PredicateAtom::WellFormed(..)
+            | PredicateAtom::ObjectSafe(..)
+            | PredicateAtom::ClosureKind(..)
+            | PredicateAtom::TypeOutlives(..)
+            | PredicateAtom::ConstEvaluatable(..)
+            | PredicateAtom::ConstEquate(..) => None,
         }
     }
 
     pub fn to_opt_type_outlives(self) -> Option<PolyTypeOutlivesPredicate<'tcx>> {
-        match self.kind() {
-            &PredicateKind::TypeOutlives(data) => Some(data),
-            PredicateKind::Trait(..)
-            | PredicateKind::Projection(..)
-            | PredicateKind::Subtype(..)
-            | PredicateKind::RegionOutlives(..)
-            | PredicateKind::WellFormed(..)
-            | PredicateKind::ObjectSafe(..)
-            | PredicateKind::ClosureKind(..)
-            | PredicateKind::ConstEvaluatable(..)
-            | PredicateKind::ConstEquate(..) => None,
+        match self.skip_binders() {
+            PredicateAtom::TypeOutlives(data) => Some(ty::Binder::bind(data)),
+            PredicateAtom::Trait(..)
+            | PredicateAtom::Projection(..)
+            | PredicateAtom::Subtype(..)
+            | PredicateAtom::RegionOutlives(..)
+            | PredicateAtom::WellFormed(..)
+            | PredicateAtom::ObjectSafe(..)
+            | PredicateAtom::ClosureKind(..)
+            | PredicateAtom::ConstEvaluatable(..)
+            | PredicateAtom::ConstEquate(..) => None,
         }
     }
 }
@@ -1549,7 +1578,7 @@ impl UniverseIndex {
 /// basically a name -- distinct bound regions within the same
 /// universe are just two regions with an unknown relationship to one
 /// another.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, PartialOrd, Ord)]
 pub struct Placeholder<T> {
     pub universe: UniverseIndex,
     pub name: T,
@@ -1571,42 +1600,156 @@ pub type PlaceholderType = Placeholder<BoundVar>;
 
 pub type PlaceholderConst = Placeholder<BoundVar>;
 
+/// A `DefId` which is potentially bundled with its corresponding generic parameter
+/// in case `did` is a const argument.
+///
+/// This is used to prevent cycle errors during typeck
+/// as `type_of(const_arg)` depends on `typeck(owning_body)`
+/// which once again requires the type of its generic arguments.
+///
+/// Luckily we only need to deal with const arguments once we
+/// know their corresponding parameters. We (ab)use this by
+/// calling `type_of(param_did)` for these arguments.
+///
+/// ```rust
+/// #![feature(const_generics)]
+///
+/// struct A;
+/// impl A {
+///     fn foo<const N: usize>(&self) -> usize { N }
+/// }
+/// struct B;
+/// impl B {
+///     fn foo<const N: u8>(&self) -> usize { 42 }
+/// }
+///
+/// fn main() {
+///     let a = A;
+///     a.foo::<7>();
+/// }
+/// ```
+#[derive(Copy, Clone, Debug, TypeFoldable, Lift, TyEncodable, TyDecodable)]
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Hash, HashStable)]
+pub struct WithOptConstParam<T> {
+    pub did: T,
+    /// The `DefId` of the corresponding generic paramter in case `did` is
+    /// a const argument.
+    ///
+    /// Note that even if `did` is a const argument, this may still be `None`.
+    /// All queries taking `WithOptConstParam` start by calling `tcx.opt_const_param_of(def.did)`
+    /// to potentially update `param_did` in case it `None`.
+    pub const_param_did: Option<DefId>,
+}
+
+impl<T> WithOptConstParam<T> {
+    /// Creates a new `WithOptConstParam` setting `const_param_did` to `None`.
+    #[inline(always)]
+    pub fn unknown(did: T) -> WithOptConstParam<T> {
+        WithOptConstParam { did, const_param_did: None }
+    }
+}
+
+impl WithOptConstParam<LocalDefId> {
+    /// Returns `Some((did, param_did))` if `def_id` is a const argument,
+    /// `None` otherwise.
+    #[inline(always)]
+    pub fn try_lookup(did: LocalDefId, tcx: TyCtxt<'_>) -> Option<(LocalDefId, DefId)> {
+        tcx.opt_const_param_of(did).map(|param_did| (did, param_did))
+    }
+
+    /// In case `self` is unknown but `self.did` is a const argument, this returns
+    /// a `WithOptConstParam` with the correct `const_param_did`.
+    #[inline(always)]
+    pub fn try_upgrade(self, tcx: TyCtxt<'_>) -> Option<WithOptConstParam<LocalDefId>> {
+        if self.const_param_did.is_none() {
+            if let const_param_did @ Some(_) = tcx.opt_const_param_of(self.did) {
+                return Some(WithOptConstParam { did: self.did, const_param_did });
+            }
+        }
+
+        None
+    }
+
+    pub fn to_global(self) -> WithOptConstParam<DefId> {
+        WithOptConstParam { did: self.did.to_def_id(), const_param_did: self.const_param_did }
+    }
+
+    pub fn def_id_for_type_of(self) -> DefId {
+        if let Some(did) = self.const_param_did { did } else { self.did.to_def_id() }
+    }
+}
+
+impl WithOptConstParam<DefId> {
+    pub fn as_local(self) -> Option<WithOptConstParam<LocalDefId>> {
+        self.did
+            .as_local()
+            .map(|did| WithOptConstParam { did, const_param_did: self.const_param_did })
+    }
+
+    pub fn as_const_arg(self) -> Option<(LocalDefId, DefId)> {
+        if let Some(param_did) = self.const_param_did {
+            if let Some(did) = self.did.as_local() {
+                return Some((did, param_did));
+            }
+        }
+
+        None
+    }
+
+    pub fn expect_local(self) -> WithOptConstParam<LocalDefId> {
+        self.as_local().unwrap()
+    }
+
+    pub fn is_local(self) -> bool {
+        self.did.is_local()
+    }
+
+    pub fn def_id_for_type_of(self) -> DefId {
+        self.const_param_did.unwrap_or(self.did)
+    }
+}
+
 /// When type checking, we use the `ParamEnv` to track
 /// details about the set of where-clauses that are in scope at this
 /// particular point.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Hash, PartialEq, Eq)]
 pub struct ParamEnv<'tcx> {
-    // We pack the caller_bounds List pointer and a Reveal enum into this usize.
-    // Specifically, the low bit represents Reveal, with 0 meaning `UserFacing`
-    // and 1 meaning `All`. The rest is the pointer.
-    //
-    // This relies on the List<ty::Predicate<'tcx>> type having at least 2-byte
-    // alignment. Lists start with a usize and are repr(C) so this should be
-    // fine; there is a debug_assert in the constructor as well.
-    //
-    // Note that the choice of 0 for UserFacing is intentional -- since it is the
-    // first variant in Reveal this means that joining the pointer is a simple `or`.
-    packed_data: usize,
-
-    /// `Obligation`s that the caller must satisfy. This is basically
-    /// the set of bounds on the in-scope type parameters, translated
+    /// This packs both caller bounds and the reveal enum into one pointer.
+    ///
+    /// Caller bounds are `Obligation`s that the caller must satisfy. This is
+    /// basically the set of bounds on the in-scope type parameters, translated
     /// into `Obligation`s, and elaborated and normalized.
     ///
-    /// Note: This is packed into the `packed_data` usize above, use the
-    /// `caller_bounds()` method to access it.
-    caller_bounds: PhantomData<&'tcx List<ty::Predicate<'tcx>>>,
-
+    /// Use the `caller_bounds()` method to access.
+    ///
     /// Typically, this is `Reveal::UserFacing`, but during codegen we
     /// want `Reveal::All`.
     ///
-    /// Note: This is packed into the caller_bounds usize above, use the reveal()
-    /// method to access it.
-    reveal: PhantomData<traits::Reveal>,
+    /// Note: This is packed, use the reveal() method to access it.
+    packed: CopyTaggedPtr<&'tcx List<Predicate<'tcx>>, traits::Reveal, true>,
 
     /// If this `ParamEnv` comes from a call to `tcx.param_env(def_id)`,
     /// register that `def_id` (useful for transitioning to the chalk trait
     /// solver).
     pub def_id: Option<DefId>,
+}
+
+unsafe impl rustc_data_structures::tagged_ptr::Tag for traits::Reveal {
+    const BITS: usize = 1;
+    fn into_usize(self) -> usize {
+        match self {
+            traits::Reveal::UserFacing => 0,
+            traits::Reveal::All => 1,
+        }
+    }
+    unsafe fn from_usize(ptr: usize) -> Self {
+        match ptr {
+            0 => traits::Reveal::UserFacing,
+            1 => traits::Reveal::All,
+            _ => std::hint::unreachable_unchecked(),
+        }
+    }
 }
 
 impl<'tcx> fmt::Debug for ParamEnv<'tcx> {
@@ -1618,24 +1761,6 @@ impl<'tcx> fmt::Debug for ParamEnv<'tcx> {
             .finish()
     }
 }
-
-impl<'tcx> Hash for ParamEnv<'tcx> {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        // List hashes as the raw pointer, so we can skip splitting into the
-        // pointer and the enum.
-        self.packed_data.hash(state);
-        self.def_id.hash(state);
-    }
-}
-
-impl<'tcx> PartialEq for ParamEnv<'tcx> {
-    fn eq(&self, other: &Self) -> bool {
-        self.caller_bounds() == other.caller_bounds()
-            && self.reveal() == other.reveal()
-            && self.def_id == other.def_id
-    }
-}
-impl<'tcx> Eq for ParamEnv<'tcx> {}
 
 impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ParamEnv<'tcx> {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
@@ -1672,14 +1797,13 @@ impl<'tcx> ParamEnv<'tcx> {
     }
 
     #[inline]
-    pub fn caller_bounds(self) -> &'tcx List<ty::Predicate<'tcx>> {
-        // mask out bottom bit
-        unsafe { &*((self.packed_data & (!1)) as *const _) }
+    pub fn caller_bounds(self) -> &'tcx List<Predicate<'tcx>> {
+        self.packed.pointer()
     }
 
     #[inline]
     pub fn reveal(self) -> traits::Reveal {
-        if self.packed_data & 1 == 0 { traits::Reveal::UserFacing } else { traits::Reveal::All }
+        self.packed.tag()
     }
 
     /// Construct a trait environment with no where-clauses in scope
@@ -1697,28 +1821,15 @@ impl<'tcx> ParamEnv<'tcx> {
     /// Construct a trait environment with the given set of predicates.
     #[inline]
     pub fn new(
-        caller_bounds: &'tcx List<ty::Predicate<'tcx>>,
+        caller_bounds: &'tcx List<Predicate<'tcx>>,
         reveal: Reveal,
         def_id: Option<DefId>,
     ) -> Self {
-        let packed_data = caller_bounds as *const _ as usize;
-        // Check that we can pack the reveal data into the pointer.
-        debug_assert!(packed_data & 1 == 0);
-        ty::ParamEnv {
-            packed_data: packed_data
-                | match reveal {
-                    Reveal::UserFacing => 0,
-                    Reveal::All => 1,
-                },
-            caller_bounds: PhantomData,
-            reveal: PhantomData,
-            def_id,
-        }
+        ty::ParamEnv { packed: CopyTaggedPtr::new(caller_bounds, reveal), def_id }
     }
 
     pub fn with_user_facing(mut self) -> Self {
-        // clear bottom bit
-        self.packed_data &= !1;
+        self.packed.set_tag(Reveal::UserFacing);
         self
     }
 
@@ -1728,9 +1839,15 @@ impl<'tcx> ParamEnv<'tcx> {
     /// the desired behavior during codegen and certain other special
     /// contexts; normally though we want to use `Reveal::UserFacing`,
     /// which is the default.
-    pub fn with_reveal_all(mut self) -> Self {
-        self.packed_data |= 1;
-        self
+    /// All opaque types in the caller_bounds of the `ParamEnv`
+    /// will be normalized to their underlying types.
+    /// See PR #65989 and issue #65918 for more details
+    pub fn with_reveal_all_normalized(self, tcx: TyCtxt<'tcx>) -> Self {
+        if self.packed.tag() == traits::Reveal::All {
+            return self;
+        }
+
+        ParamEnv::new(tcx.normalize_opaque_types(self.caller_bounds()), Reveal::All, self.def_id)
     }
 
     /// Returns this same environment but with no caller bounds.
@@ -1900,7 +2017,6 @@ impl<'tcx> VariantDef {
     /// If someone speeds up attribute loading to not be a performance concern, they can
     /// remove this hack and use the constructor `DefId` everywhere.
     pub fn new(
-        tcx: TyCtxt<'tcx>,
         ident: Ident,
         variant_did: Option<DefId>,
         ctor_def_id: Option<DefId>,
@@ -1910,6 +2026,7 @@ impl<'tcx> VariantDef {
         adt_kind: AdtKind,
         parent_did: DefId,
         recovered: bool,
+        is_field_list_non_exhaustive: bool,
     ) -> Self {
         debug!(
             "VariantDef::new(ident = {:?}, variant_did = {:?}, ctor_def_id = {:?}, discr = {:?},
@@ -1918,14 +2035,8 @@ impl<'tcx> VariantDef {
         );
 
         let mut flags = VariantFlags::NO_VARIANT_FLAGS;
-        if adt_kind == AdtKind::Struct && tcx.has_attr(parent_did, sym::non_exhaustive) {
-            debug!("found non-exhaustive field list for {:?}", parent_did);
-            flags = flags | VariantFlags::IS_FIELD_LIST_NON_EXHAUSTIVE;
-        } else if let Some(variant_did) = variant_did {
-            if tcx.has_attr(variant_did, sym::non_exhaustive) {
-                debug!("found non-exhaustive field list for {:?}", variant_did);
-                flags = flags | VariantFlags::IS_FIELD_LIST_NON_EXHAUSTIVE;
-            }
+        if is_field_list_non_exhaustive {
+            flags |= VariantFlags::IS_FIELD_LIST_NON_EXHAUSTIVE;
         }
 
         VariantDef {
@@ -1960,7 +2071,7 @@ impl<'tcx> VariantDef {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, TyEncodable, TyDecodable, HashStable)]
 pub enum VariantDiscr {
     /// Explicit value for this variant, i.e., `X = 123`.
     /// The `DefId` corresponds to the embedded constant.
@@ -2032,13 +2143,11 @@ impl Hash for AdtDef {
     }
 }
 
-impl<'tcx> rustc_serialize::UseSpecializedEncodable for &'tcx AdtDef {
-    fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
+impl<S: Encoder> Encodable<S> for AdtDef {
+    fn encode(&self, s: &mut S) -> Result<(), S::Error> {
         self.did.encode(s)
     }
 }
-
-impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx AdtDef {}
 
 impl<'a> HashStable<StableHashingContext<'a>> for AdtDef {
     fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
@@ -2083,7 +2192,7 @@ impl Into<DataTypeKind> for AdtKind {
 }
 
 bitflags! {
-    #[derive(RustcEncodable, RustcDecodable, Default, HashStable)]
+    #[derive(TyEncodable, TyDecodable, Default, HashStable)]
     pub struct ReprFlags: u8 {
         const IS_C               = 1 << 0;
         const IS_SIMD            = 1 << 1;
@@ -2100,7 +2209,7 @@ bitflags! {
 }
 
 /// Represents the repr options provided by the user,
-#[derive(Copy, Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable, Default, HashStable)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, TyEncodable, TyDecodable, Default, HashStable)]
 pub struct ReprOptions {
     pub int: Option<attr::IntType>,
     pub align: Option<Align>,
@@ -2115,7 +2224,7 @@ impl ReprOptions {
         let mut max_align: Option<Align> = None;
         let mut min_pack: Option<Align> = None;
         for attr in tcx.get_attrs(did).iter() {
-            for r in attr::find_repr_attrs(&tcx.sess.parse_sess, attr) {
+            for r in attr::find_repr_attrs(&tcx.sess, attr) {
                 flags.insert(match r {
                     attr::ReprC => ReprFlags::IS_C,
                     attr::ReprPacked(pack) => {
@@ -2232,7 +2341,7 @@ impl<'tcx> AdtDef {
         }
 
         let attrs = tcx.get_attrs(did);
-        if attr::contains_name(&attrs, sym::fundamental) {
+        if tcx.sess.contains_name(&attrs, sym::fundamental) {
             flags |= AdtFlags::IS_FUNDAMENTAL;
         }
         if Some(did) == tcx.lang_items().phantom_data() {
@@ -2544,7 +2653,7 @@ impl<'tcx> FieldDef {
 ///
 /// You can get the environment type of a closure using
 /// `tcx.closure_env_ty()`.
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub enum ClosureKind {
     // Warning: Ordering is significant here! The ordering is chosen
@@ -2561,9 +2670,9 @@ impl<'tcx> ClosureKind {
 
     pub fn trait_did(&self, tcx: TyCtxt<'tcx>) -> DefId {
         match *self {
-            ClosureKind::Fn => tcx.require_lang_item(FnTraitLangItem, None),
-            ClosureKind::FnMut => tcx.require_lang_item(FnMutTraitLangItem, None),
-            ClosureKind::FnOnce => tcx.require_lang_item(FnOnceTraitLangItem, None),
+            ClosureKind::Fn => tcx.require_lang_item(LangItem::Fn, None),
+            ClosureKind::FnMut => tcx.require_lang_item(LangItem::FnMut, None),
+            ClosureKind::FnOnce => tcx.require_lang_item(LangItem::FnOnce, None),
         }
     }
 
@@ -2670,8 +2779,8 @@ pub enum ImplOverlapKind {
 }
 
 impl<'tcx> TyCtxt<'tcx> {
-    pub fn body_tables(self, body: hir::BodyId) -> &'tcx TypeckTables<'tcx> {
-        self.typeck_tables_of(self.hir().body_owner_def_id(body))
+    pub fn typeck_body(self, body: hir::BodyId) -> &'tcx TypeckResults<'tcx> {
+        self.typeck(self.hir().body_owner_def_id(body))
     }
 
     /// Returns an iterator of the `DefId`s for all body-owners in this
@@ -2699,12 +2808,12 @@ impl<'tcx> TyCtxt<'tcx> {
     pub fn opt_item_name(self, def_id: DefId) -> Option<Ident> {
         def_id
             .as_local()
-            .and_then(|def_id| self.hir().get(self.hir().as_local_hir_id(def_id)).ident())
+            .and_then(|def_id| self.hir().get(self.hir().local_def_id_to_hir_id(def_id)).ident())
     }
 
     pub fn opt_associated_item(self, def_id: DefId) -> Option<&'tcx AssocItem> {
         let is_associated_item = if let Some(def_id) = def_id.as_local() {
-            match self.hir().get(self.hir().as_local_hir_id(def_id)) {
+            match self.hir().get(self.hir().local_def_id_to_hir_id(def_id)) {
                 Node::TraitItem(_) | Node::ImplItem(_) => true,
                 _ => false,
             }
@@ -2718,8 +2827,8 @@ impl<'tcx> TyCtxt<'tcx> {
         is_associated_item.then(|| self.associated_item(def_id))
     }
 
-    pub fn field_index(self, hir_id: hir::HirId, tables: &TypeckTables<'_>) -> usize {
-        tables.field_indices().get(hir_id).cloned().expect("no index for a field")
+    pub fn field_index(self, hir_id: hir::HirId, typeck_results: &TypeckResults<'_>) -> usize {
+        typeck_results.field_indices().get(hir_id).cloned().expect("no index for a field")
     }
 
     pub fn find_field_index(self, ident: Ident, variant: &VariantDef) -> Option<usize> {
@@ -2842,7 +2951,13 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Returns the possibly-auto-generated MIR of a `(DefId, Subst)` pair.
     pub fn instance_mir(self, instance: ty::InstanceDef<'tcx>) -> &'tcx Body<'tcx> {
         match instance {
-            ty::InstanceDef::Item(did) => self.optimized_mir(did),
+            ty::InstanceDef::Item(def) => {
+                if let Some((did, param_did)) = def.as_const_arg() {
+                    self.optimized_mir_of_const_arg((did, param_did))
+                } else {
+                    self.optimized_mir(def.did)
+                }
+            }
             ty::InstanceDef::VtableShim(..)
             | ty::InstanceDef::ReifyShim(..)
             | ty::InstanceDef::Intrinsic(..)
@@ -2857,7 +2972,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// Gets the attributes of a definition.
     pub fn get_attrs(self, did: DefId) -> Attributes<'tcx> {
         if let Some(did) = did.as_local() {
-            self.hir().attrs(self.hir().as_local_hir_id(did))
+            self.hir().attrs(self.hir().local_def_id_to_hir_id(did))
         } else {
             self.item_attrs(did)
         }
@@ -2865,7 +2980,7 @@ impl<'tcx> TyCtxt<'tcx> {
 
     /// Determines whether an item is annotated with an attribute.
     pub fn has_attr(self, did: DefId, attr: Symbol) -> bool {
-        attr::contains_name(&self.get_attrs(did), attr)
+        self.sess.contains_name(&self.get_attrs(did), attr)
     }
 
     /// Returns `true` if this is an `auto trait`.
@@ -2896,7 +3011,7 @@ impl<'tcx> TyCtxt<'tcx> {
     /// with the name of the crate containing the impl.
     pub fn span_of_impl(self, impl_did: DefId) -> Result<Span, Symbol> {
         if let Some(impl_did) = impl_did.as_local() {
-            let hir_id = self.hir().as_local_hir_id(impl_did);
+            let hir_id = self.hir().local_def_id_to_hir_id(impl_did);
             Ok(self.hir().span(hir_id))
         } else {
             Err(self.crate_name(impl_did.krate))
@@ -2957,7 +3072,7 @@ pub struct AdtSizedConstraint<'tcx>(pub &'tcx [Ty<'tcx>]);
 /// Yields the parent function's `DefId` if `def_id` is an `impl Trait` definition.
 pub fn is_impl_trait_defn(tcx: TyCtxt<'_>, def_id: DefId) -> Option<DefId> {
     if let Some(def_id) = def_id.as_local() {
-        if let Node::Item(item) = tcx.hir().get(tcx.hir().as_local_hir_id(def_id)) {
+        if let Node::Item(item) = tcx.hir().get(tcx.hir().local_def_id_to_hir_id(def_id)) {
             if let hir::ItemKind::OpaqueTy(ref opaque_ty) = item.kind {
                 return opaque_ty.impl_trait_fn;
             }
@@ -2970,6 +3085,7 @@ pub fn provide(providers: &mut ty::query::Providers) {
     context::provide(providers);
     erase_regions::provide(providers);
     layout::provide(providers);
+    util::provide(providers);
     super::util::bug::provide(providers);
     *providers = ty::query::Providers {
         trait_impls_of: trait_def::trait_impls_of_provider,
@@ -2988,39 +3104,27 @@ pub struct CrateInherentImpls {
     pub inherent_impls: DefIdMap<Vec<DefId>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable)]
-pub struct SymbolName {
-    // FIXME: we don't rely on interning or equality here - better have
-    // this be a `&'tcx str`.
-    pub name: Symbol,
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, HashStable)]
+pub struct SymbolName<'tcx> {
+    /// `&str` gives a consistent ordering, which ensures reproducible builds.
+    pub name: &'tcx str,
 }
 
-impl SymbolName {
-    pub fn new(name: &str) -> SymbolName {
-        SymbolName { name: Symbol::intern(name) }
+impl<'tcx> SymbolName<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>, name: &str) -> SymbolName<'tcx> {
+        SymbolName {
+            name: unsafe { str::from_utf8_unchecked(tcx.arena.alloc_slice(name.as_bytes())) },
+        }
     }
 }
 
-impl PartialOrd for SymbolName {
-    fn partial_cmp(&self, other: &SymbolName) -> Option<Ordering> {
-        self.name.as_str().partial_cmp(&other.name.as_str())
-    }
-}
-
-/// Ordering must use the chars to ensure reproducible builds.
-impl Ord for SymbolName {
-    fn cmp(&self, other: &SymbolName) -> Ordering {
-        self.name.as_str().cmp(&other.name.as_str())
-    }
-}
-
-impl fmt::Display for SymbolName {
+impl<'tcx> fmt::Display for SymbolName<'tcx> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.name, fmt)
     }
 }
 
-impl fmt::Debug for SymbolName {
+impl<'tcx> fmt::Debug for SymbolName<'tcx> {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.name, fmt)
     }

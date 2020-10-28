@@ -12,7 +12,7 @@
 
 [package]
 name = "openssl-sys"
-version = "0.9.54"
+version = "0.9.58"
 authors = ["Alex Crichton <alex@alexcrichton.com>", "Steven Fackler <sfackler@gmail.com>"]
 build = "build/main.rs"
 links = "openssl"
@@ -41,4 +41,4 @@ version = "0.3.9"
 [features]
 vendored = ["openssl-src"]
 [target."cfg(target_env = \"msvc\")".build-dependencies.vcpkg]
-version = "0.2"
+version = "0.2.8"

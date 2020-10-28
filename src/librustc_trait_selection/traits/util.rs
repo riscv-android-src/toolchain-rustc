@@ -53,14 +53,18 @@ impl<'tcx> TraitAliasExpansionInfo<'tcx> {
                 diag.span_label(*sp, format!("referenced here ({})", use_desc));
             }
         }
-        diag.span_label(
-            self.bottom().1,
-            format!("trait alias used in trait object type ({})", use_desc),
-        );
+        if self.top().1 != self.bottom().1 {
+            // When the trait object is in a return type these two spans match, we don't want
+            // redundant labels.
+            diag.span_label(
+                self.bottom().1,
+                format!("trait alias used in trait object type ({})", use_desc),
+            );
+        }
     }
 
-    pub fn trait_ref(&self) -> &ty::PolyTraitRef<'tcx> {
-        &self.top().0
+    pub fn trait_ref(&self) -> ty::PolyTraitRef<'tcx> {
+        self.top().0
     }
 
     pub fn top(&self) -> &(ty::PolyTraitRef<'tcx>, Span) {
@@ -109,7 +113,7 @@ impl<'tcx> TraitAliasExpander<'tcx> {
 
         // Don't recurse if this trait alias is already on the stack for the DFS search.
         let anon_pred = anonymize_predicate(tcx, pred);
-        if item.path.iter().rev().skip(1).any(|(tr, _)| {
+        if item.path.iter().rev().skip(1).any(|&(tr, _)| {
             anonymize_predicate(tcx, tr.without_const().to_predicate(tcx)) == anon_pred
         }) {
             return false;

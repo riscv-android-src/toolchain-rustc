@@ -21,12 +21,12 @@ array_literal = { "[" ~ literal? ~ ("," ~ literal)* ~ "]" }
 object_literal = { "{" ~ (string_literal ~ ":" ~ literal)?
                    ~ ("," ~ string_literal ~ ":" ~ literal)* ~ "}" }
 
-symbol_char = _{'a'..'z'|'A'..'Z'|ASCII_DIGIT|"-"|"_"|'\u{80}'..'\u{7ff}'|'\u{800}'..'\u{ffff}'|'\u{10000}'..'\u{10ffff}'}
-partial_symbol_char = _{'a'..'z'|'A'..'Z'|ASCII_DIGIT|"-"|"_"|'\u{80}'..'\u{7ff}'|'\u{800}'..'\u{ffff}'|'\u{10000}'..'\u{10ffff}'|"/"}
+symbol_char = _{'a'..'z'|'A'..'Z'|ASCII_DIGIT|"-"|"_"|"$"|'\u{80}'..'\u{7ff}'|'\u{800}'..'\u{ffff}'|'\u{10000}'..'\u{10ffff}'}
+partial_symbol_char = _{'a'..'z'|'A'..'Z'|ASCII_DIGIT|"-"|"_"|'\u{80}'..'\u{7ff}'|'\u{800}'..'\u{ffff}'|'\u{10000}'..'\u{10ffff}'|"/"|"."}
 path_char = _{ "/" }
 
 identifier = @{ symbol_char+ }
-partial_identifier = @{ partial_symbol_char+ }
+partial_identifier = @{ partial_symbol_char+ | ("[" ~ ANY+ ~ "]") | ("'" ~ (!"'" ~ ("\\'" | ANY))+ ~ "'") }
 reference = ${ path_inline }
 
 name = _{ subexpression | reference }
@@ -35,7 +35,7 @@ param = { !(keywords ~ !symbol_char) ~ (literal | reference | subexpression) }
 hash = { identifier ~ "=" ~ param }
 block_param = { "as" ~ "|" ~ identifier ~ identifier? ~ "|"}
 exp_line = _{ identifier ~ (hash|param)* ~ block_param?}
-partial_exp_line = _{ (partial_identifier ~ (hash|param)+) | name }
+partial_exp_line = _{ ((partial_identifier|name) ~ (hash|param)*) }
 
 subexpression = { "(" ~ ((identifier ~ (hash|param)+) | reference)  ~ ")" }
 
@@ -45,8 +45,11 @@ pro_whitespace_omitter = { "~" }
 expression = { !invert_tag ~ "{{" ~ pre_whitespace_omitter? ~
               ((identifier ~ (hash|param)+) | name )
               ~ pro_whitespace_omitter? ~ "}}" }
-html_expression = { "{{{" ~ pre_whitespace_omitter? ~ name ~
-pro_whitespace_omitter? ~ "}}}" }
+html_expression_triple_bracket = _{ "{{{" ~ pre_whitespace_omitter? ~ name ~
+                                    pro_whitespace_omitter? ~ "}}}" }
+amp_expression = _{ "{{" ~ pre_whitespace_omitter? ~ "&" ~ name ~
+                       pro_whitespace_omitter? ~ "}}" }
+html_expression = { html_expression_triple_bracket | amp_expression }
 
 decorator_expression = { "{{" ~ pre_whitespace_omitter? ~ "*" ~ exp_line ~
 pro_whitespace_omitter? ~ "}}" }
@@ -71,7 +74,7 @@ decorator_block = _{ decorator_block_start ~ template ~
 
 partial_block_start = { "{{" ~ pre_whitespace_omitter? ~ "#" ~ ">"
                         ~ partial_exp_line ~ pro_whitespace_omitter? ~ "}}" }
-partial_block_end = { "{{" ~ pre_whitespace_omitter? ~ "/" ~ identifier ~
+partial_block_end = { "{{" ~ pre_whitespace_omitter? ~ "/" ~ partial_identifier ~
                       pro_whitespace_omitter? ~ "}}" }
 partial_block = _{ partial_block_start ~ template ~ partial_block_end }
 

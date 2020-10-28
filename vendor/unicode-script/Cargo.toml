@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "unicode-script"
-version = "0.5.1"
+version = "0.5.2"
 authors = ["Manish Goregaokar <manishsmail@gmail.com>"]
 exclude = ["target/*", "Cargo.lock", "scripts/tmp", "*.txt"]
 description = "This crate exposes the Unicode `Script` and `Script_Extension` properties from [UAX #24](http://www.unicode.org/reports/tr24/)\n"

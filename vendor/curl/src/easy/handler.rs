@@ -383,6 +383,7 @@ struct Inner<H> {
     handle: *mut curl_sys::CURL,
     header_list: Option<List>,
     resolve_list: Option<List>,
+    connect_to_list: Option<List>,
     form: Option<Form>,
     error_buf: RefCell<Vec<u8>>,
     handler: H,
@@ -460,6 +461,17 @@ pub enum HttpVersion {
     /// Please use HTTP 2 without HTTP/1.1 Upgrade
     /// (Added in CURL 7.49.0)
     V2PriorKnowledge = curl_sys::CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE as isize,
+
+    /// Setting this value will make libcurl attempt to use HTTP/3 directly to
+    /// server given in the URL. Note that this cannot gracefully downgrade to
+    /// earlier HTTP version if the server doesn't support HTTP/3.
+    ///
+    /// For more reliably upgrading to HTTP/3, set the preferred version to
+    /// something lower and let the server announce its HTTP/3 support via
+    /// Alt-Svc:.
+    ///
+    /// (Added in CURL 7.66.0)
+    V3 = curl_sys::CURL_HTTP_VERSION_3 as isize,
 
     /// Hidden variant to indicate that this enum should not be matched on, it
     /// may grow over time.
@@ -614,6 +626,7 @@ impl<H: Handler> Easy2<H> {
                     handle: handle,
                     header_list: None,
                     resolve_list: None,
+                    connect_to_list: None,
                     form: None,
                     error_buf: RefCell::new(vec![0; curl_sys::CURL_ERROR_SIZE]),
                     handler: handler,
@@ -780,16 +793,43 @@ impl<H> Easy2<H> {
         self.setopt_long(curl_sys::CURLOPT_WILDCARDMATCH, m as c_long)
     }
 
-    /// Provides the unix domain socket which this handle will work with.
+    /// Provides the Unix domain socket which this handle will work with.
     ///
-    /// The string provided must be unix domain socket -encoded with the format:
+    /// The string provided must be a path to a Unix domain socket encoded with
+    /// the format:
     ///
     /// ```text
     /// /path/file.sock
     /// ```
+    ///
+    /// By default this option is not set and corresponds to
+    /// [`CURLOPT_UNIX_SOCKET_PATH`](https://curl.haxx.se/libcurl/c/CURLOPT_UNIX_SOCKET_PATH.html).
     pub fn unix_socket(&mut self, unix_domain_socket: &str) -> Result<(), Error> {
         let socket = CString::new(unix_domain_socket)?;
         self.setopt_str(curl_sys::CURLOPT_UNIX_SOCKET_PATH, &socket)
+    }
+
+    /// Provides the Unix domain socket which this handle will work with.
+    ///
+    /// The string provided must be a path to a Unix domain socket encoded with
+    /// the format:
+    ///
+    /// ```text
+    /// /path/file.sock
+    /// ```
+    ///
+    /// This function is an alternative to [`Easy2::unix_socket`] that supports
+    /// non-UTF-8 paths and also supports disabling Unix sockets by setting the
+    /// option to `None`.
+    ///
+    /// By default this option is not set and corresponds to
+    /// [`CURLOPT_UNIX_SOCKET_PATH`](https://curl.haxx.se/libcurl/c/CURLOPT_UNIX_SOCKET_PATH.html).
+    pub fn unix_socket_path<P: AsRef<Path>>(&mut self, path: Option<P>) -> Result<(), Error> {
+        if let Some(path) = path {
+            self.setopt_path(curl_sys::CURLOPT_UNIX_SOCKET_PATH, path.as_ref())
+        } else {
+            self.setopt_ptr(curl_sys::CURLOPT_UNIX_SOCKET_PATH, 0 as _)
+        }
     }
 
     // =========================================================================
@@ -847,6 +887,24 @@ impl<H> Easy2<H> {
         self.setopt_long(curl_sys::CURLOPT_PORT, port as c_long)
     }
 
+    /// Connect to a specific host and port.
+    ///
+    /// Each single string should be written using the format
+    /// `HOST:PORT:CONNECT-TO-HOST:CONNECT-TO-PORT` where `HOST` is the host of
+    /// the request, `PORT` is the port of the request, `CONNECT-TO-HOST` is the
+    /// host name to connect to, and `CONNECT-TO-PORT` is the port to connect
+    /// to.
+    ///
+    /// The first string that matches the request's host and port is used.
+    ///
+    /// By default, this option is empty and corresponds to
+    /// [`CURLOPT_CONNECT_TO`](https://curl.haxx.se/libcurl/c/CURLOPT_CONNECT_TO.html).
+    pub fn connect_to(&mut self, list: List) -> Result<(), Error> {
+        let ptr = list::raw(&list);
+        self.inner.connect_to_list = Some(list);
+        self.setopt_ptr(curl_sys::CURLOPT_CONNECT_TO, ptr as *const _)
+    }
+
     // /// Indicates whether sequences of `/../` and `/./` will be squashed or not.
     // ///
     // /// By default this option is `false` and corresponds to
@@ -868,6 +926,46 @@ impl<H> Easy2<H> {
     /// protocol is used) and corresponds to `CURLOPT_PROXYPORT`.
     pub fn proxy_port(&mut self, port: u16) -> Result<(), Error> {
         self.setopt_long(curl_sys::CURLOPT_PROXYPORT, port as c_long)
+    }
+
+    /// Set CA certificate to verify peer against for proxy.
+    ///
+    /// By default this value is not set and corresponds to
+    /// `CURLOPT_PROXY_CAINFO`.
+    pub fn proxy_cainfo(&mut self, cainfo: &str) -> Result<(), Error> {
+        let cainfo = CString::new(cainfo)?;
+        self.setopt_str(curl_sys::CURLOPT_PROXY_CAINFO, &cainfo)
+    }
+
+    /// Specify a directory holding CA certificates for proxy.
+    ///
+    /// The specified directory should hold multiple CA certificates to verify
+    /// the HTTPS proxy with. If libcurl is built against OpenSSL, the
+    /// certificate directory must be prepared using the OpenSSL `c_rehash`
+    /// utility.
+    ///
+    /// By default this value is not set and corresponds to
+    /// `CURLOPT_PROXY_CAPATH`.
+    pub fn proxy_capath<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
+        self.setopt_path(curl_sys::CURLOPT_PROXY_CAPATH, path.as_ref())
+    }
+
+    /// Set client certificate for proxy.
+    ///
+    /// By default this value is not set and corresponds to
+    /// `CURLOPT_PROXY_SSLCERT`.
+    pub fn proxy_sslcert(&mut self, sslcert: &str) -> Result<(), Error> {
+        let sslcert = CString::new(sslcert)?;
+        self.setopt_str(curl_sys::CURLOPT_PROXY_SSLCERT, &sslcert)
+    }
+
+    /// Set private key for HTTPS proxy.
+    ///
+    /// By default this value is not set and corresponds to
+    /// `CURLOPT_PROXY_SSLKEY`.
+    pub fn proxy_sslkey(&mut self, sslkey: &str) -> Result<(), Error> {
+        let sslkey = CString::new(sslkey)?;
+        self.setopt_str(curl_sys::CURLOPT_PROXY_SSLKEY, &sslkey)
     }
 
     /// Indicates the type of proxy being used.

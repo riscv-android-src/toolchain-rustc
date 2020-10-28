@@ -47,8 +47,8 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         }
 
         let loc = match self.frame().loc {
-            Some(loc) => loc,
-            None => {
+            Ok(loc) => loc,
+            Err(_) => {
                 // We are unwinding and this fn has no cleanup code.
                 // Just go on unwinding.
                 trace!("unwinding: skipping frame");
@@ -74,7 +74,9 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         Ok(true)
     }
 
-    fn statement(&mut self, stmt: &mir::Statement<'tcx>) -> InterpResult<'tcx> {
+    /// Runs the interpretation logic for the given `mir::Statement` at the current frame and
+    /// statement counter. This also moves the statement counter forward.
+    crate fn statement(&mut self, stmt: &mir::Statement<'tcx>) -> InterpResult<'tcx> {
         info!("{:?}", stmt);
 
         use rustc_middle::mir::StatementKind::*;
@@ -116,6 +118,19 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             // Statements we do not track.
             AscribeUserType(..) => {}
 
+            // Currently, Miri discards Coverage statements. Coverage statements are only injected
+            // via an optional compile time MIR pass and have no side effects. Since Coverage
+            // statements don't exist at the source level, it is safe for Miri to ignore them, even
+            // for undefined behavior (UB) checks.
+            //
+            // A coverage counter inside a const expression (for example, a counter injected in a
+            // const function) is discarded when the const is evaluated at compile time. Whether
+            // this should change, and/or how to implement a const eval counter, is a subject of the
+            // following issue:
+            //
+            // FIXME(#73156): Handle source code coverage in const eval
+            Coverage(..) => {}
+
             // Defined to do nothing. These are added by optimization passes, to avoid changing the
             // size of MIR constantly.
             Nop => {}
@@ -141,8 +156,8 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         use rustc_middle::mir::Rvalue::*;
         match *rvalue {
             ThreadLocalRef(did) => {
-                let id = M::thread_local_alloc_id(self, did)?;
-                let val = Scalar::Ptr(self.tag_global_base_pointer(id.into()));
+                let id = M::thread_local_static_alloc_id(self, did)?;
+                let val = self.global_base_pointer(id.into())?;
                 self.write_scalar(val, dest)?;
             }
 
@@ -271,7 +286,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             }
         }
 
-        self.dump_place(*dest);
+        trace!("{:?}", self.dump_place(*dest));
 
         Ok(())
     }
@@ -281,7 +296,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
         self.eval_terminator(terminator)?;
         if !self.stack().is_empty() {
-            if let Some(loc) = self.frame().loc {
+            if let Ok(loc) = self.frame().loc {
                 info!("// executing {:?}", loc.block);
             }
         }

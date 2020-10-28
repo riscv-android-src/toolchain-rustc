@@ -39,7 +39,7 @@ pub struct Config {
 }
 
 bitflags! {
-    #[derive(Default, RustcEncodable, RustcDecodable)]
+    #[derive(Default, Encodable, Decodable)]
     pub struct SanitizerSet: u8 {
         const ADDRESS = 1 << 0;
         const LEAK    = 1 << 1;
@@ -103,7 +103,7 @@ pub enum Strip {
     Symbols,
 }
 
-/// The different settings that the `-Z control-flow-guard` flag can have.
+/// The different settings that the `-C control-flow-guard` flag can have.
 #[derive(Clone, Copy, PartialEq, Hash, Debug)]
 pub enum CFGuard {
     /// Do not emit Control Flow Guard metadata or checks.
@@ -194,7 +194,8 @@ impl SwitchWithOptPath {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Encodable, Decodable)]
 pub enum SymbolManglingVersion {
     Legacy,
     V0,
@@ -209,7 +210,8 @@ pub enum DebugInfo {
     Full,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[derive(Encodable, Decodable)]
 pub enum OutputType {
     Bitcode,
     Assembly,
@@ -672,7 +674,7 @@ pub enum EntryFnType {
 
 impl_stable_hash_via_hash!(EntryFnType);
 
-#[derive(Copy, PartialEq, PartialOrd, Clone, Ord, Eq, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, PartialEq, PartialOrd, Clone, Ord, Eq, Hash, Debug, Encodable, Decodable)]
 pub enum CrateType {
     Executable,
     Dylib,
@@ -717,18 +719,20 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
     let mut ret = FxHashSet::default();
     ret.reserve(6); // the minimum number of insertions
     // Target bindings.
-    ret.insert((Symbol::intern("target_os"), Some(Symbol::intern(os))));
+    ret.insert((sym::target_os, Some(Symbol::intern(os))));
     if let Some(ref fam) = sess.target.target.options.target_family {
-        ret.insert((Symbol::intern("target_family"), Some(Symbol::intern(fam))));
-        if fam == "windows" || fam == "unix" {
-            ret.insert((Symbol::intern(fam), None));
+        ret.insert((sym::target_family, Some(Symbol::intern(fam))));
+        if fam == "windows" {
+            ret.insert((sym::windows, None));
+        } else if fam == "unix" {
+            ret.insert((sym::unix, None));
         }
     }
-    ret.insert((Symbol::intern("target_arch"), Some(Symbol::intern(arch))));
-    ret.insert((Symbol::intern("target_endian"), Some(Symbol::intern(end))));
-    ret.insert((Symbol::intern("target_pointer_width"), Some(Symbol::intern(wordsz))));
-    ret.insert((Symbol::intern("target_env"), Some(Symbol::intern(env))));
-    ret.insert((Symbol::intern("target_vendor"), Some(Symbol::intern(vendor))));
+    ret.insert((sym::target_arch, Some(Symbol::intern(arch))));
+    ret.insert((sym::target_endian, Some(Symbol::intern(end))));
+    ret.insert((sym::target_pointer_width, Some(Symbol::intern(wordsz))));
+    ret.insert((sym::target_env, Some(Symbol::intern(env))));
+    ret.insert((sym::target_vendor, Some(Symbol::intern(vendor))));
     if sess.target.target.options.has_elf_tls {
         ret.insert((sym::target_thread_local, None));
     }
@@ -754,7 +758,7 @@ pub fn default_configuration(sess: &Session) -> CrateConfig {
     }
 
     if sess.opts.debug_assertions {
-        ret.insert((Symbol::intern("debug_assertions"), None));
+        ret.insert((sym::debug_assertions, None));
     }
     if sess.opts.crate_types.contains(&CrateType::ProcMacro) {
         ret.insert((sym::proc_macro, None));
@@ -1705,6 +1709,31 @@ pub fn build_session_options(matches: &getopts::Matches) -> Options {
         );
     }
 
+    if debugging_opts.instrument_coverage {
+        if cg.profile_generate.enabled() || cg.profile_use.is_some() {
+            early_error(
+                error_format,
+                "option `-Z instrument-coverage` is not compatible with either `-C profile-use` \
+                or `-C profile-generate`",
+            );
+        }
+
+        // `-Z instrument-coverage` implies:
+        //   * `-Z symbol-mangling-version=v0` - to ensure consistent and reversible name mangling.
+        //     Note, LLVM coverage tools can analyze coverage over multiple runs, including some
+        //     changes to source code; so mangled names must be consistent across compilations.
+        //   * `-C link-dead-code` - so unexecuted code is still counted as zero, rather than be
+        //     optimized out. Note that instrumenting dead code can be explicitly disabled with:
+        //         `-Z instrument-coverage -C link-dead-code=no`.
+        debugging_opts.symbol_mangling_version = SymbolManglingVersion::V0;
+        if cg.link_dead_code == None {
+            // FIXME(richkadel): Investigate if the `instrument-coverage` implementation can
+            // inject ["zero counters"](https://llvm.org/docs/CoverageMappingFormat.html#counter)
+            // in the coverage map when "dead code" is removed, rather than forcing `link-dead-code`.
+            cg.link_dead_code = Some(true);
+        }
+    }
+
     if !cg.embed_bitcode {
         match cg.lto {
             LtoCli::No | LtoCli::Unspecified => {}
@@ -1849,7 +1878,7 @@ fn parse_pretty(
                 }
             }
         };
-        log::debug!("got unpretty option: {:?}", first);
+        tracing::debug!("got unpretty option: {:?}", first);
         first
     }
 }

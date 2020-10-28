@@ -156,7 +156,7 @@ fn test_expressions(edition: Edition, exprs: Vec<syn::Expr>) -> (usize, usize) {
     let mut passed = 0;
     let mut failed = 0;
 
-    rustc_ast::with_globals(edition, || {
+    rustc_ast::with_session_globals(edition, || {
         for expr in exprs {
             let raw = quote!(#expr).to_string();
 
@@ -349,6 +349,17 @@ fn syn_brackets(syn_expr: syn::Expr) -> syn::Expr {
                 // Don't wrap const generic arg as that's invalid syntax.
                 GenericArgument::Const(a) => GenericArgument::Const(fold_expr(self, a)),
                 _ => fold_generic_argument(self, arg),
+            }
+        }
+
+        fn fold_generic_method_argument(
+            &mut self,
+            arg: GenericMethodArgument,
+        ) -> GenericMethodArgument {
+            match arg {
+                // Don't wrap const generic arg as that's invalid syntax.
+                GenericMethodArgument::Const(a) => GenericMethodArgument::Const(fold_expr(self, a)),
+                _ => fold_generic_method_argument(self, arg),
             }
         }
 

@@ -1,5 +1,7 @@
 use rustc_middle::mir;
 
+use log::trace;
+
 use crate::*;
 use helpers::check_arg_count;
 
@@ -35,14 +37,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         match dlsym {
             Dlsym::getentropy => {
                 let &[ptr, len] = check_arg_count(args)?;
-                let ptr = this.read_scalar(ptr)?.not_undef()?;
+                let ptr = this.read_scalar(ptr)?.check_init()?;
                 let len = this.read_scalar(len)?.to_machine_usize(this)?;
                 this.gen_random(ptr, len)?;
                 this.write_null(dest)?;
             }
         }
 
-        this.dump_place(*dest);
+        trace!("{:?}", this.dump_place(*dest));
         this.go_to_block(ret);
         Ok(())
     }

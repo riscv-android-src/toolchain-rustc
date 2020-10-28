@@ -5,23 +5,24 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crossbeam_channel::{never, select, Receiver};
+use base_db::VfsPath;
+use crossbeam_channel::{select, Receiver};
+use ide::{Canceled, FileId};
 use lsp_server::{Connection, Notification, Request, Response};
 use lsp_types::notification::Notification as _;
-use ra_db::VfsPath;
-use ra_ide::{Canceled, FileId};
-use ra_prof::profile;
 
 use crate::{
     config::Config,
     dispatch::{NotificationDispatcher, RequestDispatcher},
+    document::DocumentData,
     from_proto,
     global_state::{file_id_to_url, url_to_file_id, GlobalState, Status},
     handlers, lsp_ext,
     lsp_utils::{apply_document_changes, is_canceled, notification_is, Progress},
     Result,
 };
-use ra_project_model::ProjectWorkspace;
+use project_model::ProjectWorkspace;
+use vfs::ChangeKind;
 
 pub fn main_loop(config: Config, connection: Connection) -> Result<()> {
     log::info!("initial config: {:#?}", config);
@@ -45,7 +46,7 @@ pub fn main_loop(config: Config, connection: Connection) -> Result<()> {
         SetThreadPriority(thread, thread_priority_above_normal);
     }
 
-    GlobalState::new(connection.sender.clone(), config).run(connection.receiver)
+    GlobalState::new(connection.sender, config).run(connection.receiver)
 }
 
 enum Event {
@@ -96,22 +97,6 @@ impl fmt::Debug for Event {
 }
 
 impl GlobalState {
-    fn next_event(&self, inbox: &Receiver<lsp_server::Message>) -> Option<Event> {
-        select! {
-            recv(inbox) -> msg =>
-                msg.ok().map(Event::Lsp),
-
-            recv(self.task_pool.receiver) -> task =>
-                Some(Event::Task(task.unwrap())),
-
-            recv(self.loader.receiver) -> task =>
-                Some(Event::Vfs(task.unwrap())),
-
-            recv(self.flycheck.as_ref().map_or(&never(), |it| &it.receiver)) -> task =>
-                Some(Event::Flycheck(task.unwrap())),
-        }
-    }
-
     fn run(mut self, inbox: Receiver<lsp_server::Message>) -> Result<()> {
         if self.config.linked_projects.is_empty() && self.config.notifications.cargo_toml_not_found
         {
@@ -121,29 +106,33 @@ impl GlobalState {
             );
         };
 
-        let registration_options = lsp_types::TextDocumentRegistrationOptions {
-            document_selector: Some(vec![
-                lsp_types::DocumentFilter {
-                    language: None,
-                    scheme: None,
-                    pattern: Some("**/*.rs".into()),
-                },
-                lsp_types::DocumentFilter {
-                    language: None,
-                    scheme: None,
-                    pattern: Some("**/Cargo.toml".into()),
-                },
-                lsp_types::DocumentFilter {
-                    language: None,
-                    scheme: None,
-                    pattern: Some("**/Cargo.lock".into()),
-                },
-            ]),
+        let save_registration_options = lsp_types::TextDocumentSaveRegistrationOptions {
+            include_text: Some(false),
+            text_document_registration_options: lsp_types::TextDocumentRegistrationOptions {
+                document_selector: Some(vec![
+                    lsp_types::DocumentFilter {
+                        language: None,
+                        scheme: None,
+                        pattern: Some("**/*.rs".into()),
+                    },
+                    lsp_types::DocumentFilter {
+                        language: None,
+                        scheme: None,
+                        pattern: Some("**/Cargo.toml".into()),
+                    },
+                    lsp_types::DocumentFilter {
+                        language: None,
+                        scheme: None,
+                        pattern: Some("**/Cargo.lock".into()),
+                    },
+                ]),
+            },
         };
+
         let registration = lsp_types::Registration {
             id: "textDocument/didSave".to_string(),
             method: "textDocument/didSave".to_string(),
-            register_options: Some(serde_json::to_value(registration_options).unwrap()),
+            register_options: Some(serde_json::to_value(save_registration_options).unwrap()),
         };
         self.send_request::<lsp_types::request::RegisterCapability>(
             lsp_types::RegistrationParams { registrations: vec![registration] },
@@ -164,10 +153,26 @@ impl GlobalState {
         Err("client exited without proper shutdown sequence")?
     }
 
+    fn next_event(&self, inbox: &Receiver<lsp_server::Message>) -> Option<Event> {
+        select! {
+            recv(inbox) -> msg =>
+                msg.ok().map(Event::Lsp),
+
+            recv(self.task_pool.receiver) -> task =>
+                Some(Event::Task(task.unwrap())),
+
+            recv(self.loader.receiver) -> task =>
+                Some(Event::Vfs(task.unwrap())),
+
+            recv(self.flycheck_receiver) -> task =>
+                Some(Event::Flycheck(task.unwrap())),
+        }
+    }
+
     fn handle_event(&mut self, event: Event) -> Result<()> {
         let loop_start = Instant::now();
         // NOTE: don't count blocking select! call as a loop-turn time
-        let _p = profile("GlobalState::handle_event");
+        let _p = profile::span("GlobalState::handle_event");
 
         log::info!("handle_event({:?})", event);
         let queue_count = self.task_pool.handle.len();
@@ -197,48 +202,58 @@ impl GlobalState {
                 }
                 self.analysis_host.maybe_collect_garbage();
             }
-            Event::Vfs(task) => match task {
-                vfs::loader::Message::Loaded { files } => {
-                    let vfs = &mut self.vfs.write().0;
-                    for (path, contents) in files {
-                        let path = VfsPath::from(path);
-                        if !self.mem_docs.contains(&path) {
-                            vfs.set_file_contents(path, contents)
+            Event::Vfs(mut task) => {
+                let _p = profile::span("GlobalState::handle_event/vfs");
+                loop {
+                    match task {
+                        vfs::loader::Message::Loaded { files } => {
+                            let vfs = &mut self.vfs.write().0;
+                            for (path, contents) in files {
+                                let path = VfsPath::from(path);
+                                if !self.mem_docs.contains_key(&path) {
+                                    vfs.set_file_contents(path, contents)
+                                }
+                            }
+                        }
+                        vfs::loader::Message::Progress { n_total, n_done } => {
+                            if n_total == 0 {
+                                self.transition(Status::Invalid);
+                            } else {
+                                let state = if n_done == 0 {
+                                    self.transition(Status::Loading);
+                                    Progress::Begin
+                                } else if n_done < n_total {
+                                    Progress::Report
+                                } else {
+                                    assert_eq!(n_done, n_total);
+                                    self.transition(Status::Ready);
+                                    Progress::End
+                                };
+                                self.report_progress(
+                                    "roots scanned",
+                                    state,
+                                    Some(format!("{}/{}", n_done, n_total)),
+                                    Some(Progress::percentage(n_done, n_total)),
+                                )
+                            }
                         }
                     }
-                }
-                vfs::loader::Message::Progress { n_total, n_done } => {
-                    if n_total == 0 {
-                        self.transition(Status::Invalid);
-                    } else {
-                        let state = if n_done == 0 {
-                            self.transition(Status::Loading);
-                            Progress::Begin
-                        } else if n_done < n_total {
-                            Progress::Report
-                        } else {
-                            assert_eq!(n_done, n_total);
-                            self.transition(Status::Ready);
-                            Progress::End
-                        };
-                        self.report_progress(
-                            "roots scanned",
-                            state,
-                            Some(format!("{}/{}", n_done, n_total)),
-                            Some(Progress::percentage(n_done, n_total)),
-                        )
+                    // Coalesce many VFS event into a single loop turn
+                    task = match self.loader.receiver.try_recv() {
+                        Ok(task) => task,
+                        Err(_) => break,
                     }
                 }
-            },
+            }
             Event::Flycheck(task) => match task {
                 flycheck::Message::AddDiagnostic { workspace_root, diagnostic } => {
                     let diagnostics = crate::diagnostics::to_proto::map_rust_diagnostic_to_lsp(
-                        &self.config.diagnostics,
+                        &self.config.diagnostics_map,
                         &diagnostic,
                         &workspace_root,
                     );
                     for diag in diagnostics {
-                        match url_to_file_id(&self.vfs.read().0, &diag.location.uri) {
+                        match url_to_file_id(&self.vfs.read().0, &diag.url) {
                             Ok(file_id) => self.diagnostics.add_check_diagnostic(
                                 file_id,
                                 diag.diagnostic,
@@ -277,14 +292,14 @@ impl GlobalState {
         let state_changed = self.process_changes();
         if prev_status == Status::Loading && self.status == Status::Ready {
             if let Some(flycheck) = &self.flycheck {
-                flycheck.handle.update();
+                flycheck.update();
             }
         }
 
         if self.status == Status::Ready && (state_changed || prev_status == Status::Loading) {
             let subscriptions = self
                 .mem_docs
-                .iter()
+                .keys()
                 .map(|path| self.vfs.read().0.file_id(&path).unwrap())
                 .collect::<Vec<_>>();
 
@@ -295,8 +310,12 @@ impl GlobalState {
             for file_id in diagnostic_changes {
                 let url = file_id_to_url(&self.vfs.read().0, file_id);
                 let diagnostics = self.diagnostics.diagnostics_for(file_id).cloned().collect();
+                let version = from_proto::vfs_path(&url)
+                    .map(|path| self.mem_docs.get(&path)?.version)
+                    .unwrap_or_default();
+
                 self.send_notification::<lsp_types::notification::PublishDiagnostics>(
-                    lsp_types::PublishDiagnosticsParams { uri: url, diagnostics, version: None },
+                    lsp_types::PublishDiagnosticsParams { uri: url, diagnostics, version },
                 );
             }
         }
@@ -314,33 +333,44 @@ impl GlobalState {
         Ok(())
     }
 
-    fn transition(&mut self, new_status: Status) {
-        self.status = Status::Ready;
-        if self.config.client_caps.status_notification {
-            let lsp_status = match new_status {
-                Status::Loading => lsp_ext::Status::Loading,
-                Status::Ready => lsp_ext::Status::Ready,
-                Status::Invalid => lsp_ext::Status::Invalid,
-                Status::NeedsReload => lsp_ext::Status::NeedsReload,
-            };
-            self.send_notification::<lsp_ext::StatusNotification>(lsp_status);
-        }
-    }
-
     fn on_request(&mut self, request_received: Instant, req: Request) -> Result<()> {
         self.register_request(&req, request_received);
+
+        if self.shutdown_requested {
+            self.respond(Response::new_err(
+                req.id,
+                lsp_server::ErrorCode::InvalidRequest as i32,
+                "Shutdown already requested.".to_owned(),
+            ));
+
+            return Ok(());
+        }
+
+        if self.status == Status::Loading && req.method != "shutdown" {
+            self.respond(lsp_server::Response::new_err(
+                req.id,
+                // FIXME: i32 should impl From<ErrorCode> (from() guarantees lossless conversion)
+                lsp_server::ErrorCode::ContentModified as i32,
+                "Rust Analyzer is still loading...".to_owned(),
+            ));
+            return Ok(());
+        }
 
         RequestDispatcher { req: Some(req), global_state: self }
             .on_sync::<lsp_ext::ReloadWorkspace>(|s, ()| Ok(s.fetch_workspaces()))?
             .on_sync::<lsp_ext::JoinLines>(|s, p| handlers::handle_join_lines(s.snapshot(), p))?
             .on_sync::<lsp_ext::OnEnter>(|s, p| handlers::handle_on_enter(s.snapshot(), p))?
-            .on_sync::<lsp_types::request::Shutdown>(|_, ()| Ok(()))?
+            .on_sync::<lsp_types::request::Shutdown>(|s, ()| {
+                s.shutdown_requested = true;
+                Ok(())
+            })?
             .on_sync::<lsp_types::request::SelectionRangeRequest>(|s, p| {
                 handlers::handle_selection_range(s.snapshot(), p)
             })?
             .on_sync::<lsp_ext::MatchingBrace>(|s, p| {
                 handlers::handle_matching_brace(s.snapshot(), p)
             })?
+            .on_sync::<lsp_ext::MemoryUsage>(|s, p| handlers::handle_memory_usage(s, p))?
             .on::<lsp_ext::AnalyzerStatus>(handlers::handle_analyzer_status)?
             .on::<lsp_ext::SyntaxTree>(handlers::handle_syntax_tree)?
             .on::<lsp_ext::ExpandMacro>(handlers::handle_expand_macro)?
@@ -378,6 +408,9 @@ impl GlobalState {
                 handlers::handle_call_hierarchy_outgoing,
             )?
             .on::<lsp_types::request::SemanticTokensRequest>(handlers::handle_semantic_tokens)?
+            .on::<lsp_types::request::SemanticTokensEditsRequest>(
+                handlers::handle_semantic_tokens_edits,
+            )?
             .on::<lsp_types::request::SemanticTokensRangeRequest>(
                 handlers::handle_semantic_tokens_range,
             )?
@@ -397,7 +430,11 @@ impl GlobalState {
             })?
             .on::<lsp_types::notification::DidOpenTextDocument>(|this, params| {
                 if let Ok(path) = from_proto::vfs_path(&params.text_document.uri) {
-                    if !this.mem_docs.insert(path.clone()) {
+                    if this
+                        .mem_docs
+                        .insert(path.clone(), DocumentData::new(params.text_document.version))
+                        .is_some()
+                    {
                         log::error!("duplicate DidOpenTextDocument: {}", path)
                     }
                     this.vfs
@@ -409,42 +446,53 @@ impl GlobalState {
             })?
             .on::<lsp_types::notification::DidChangeTextDocument>(|this, params| {
                 if let Ok(path) = from_proto::vfs_path(&params.text_document.uri) {
-                    assert!(this.mem_docs.contains(&path));
+                    let doc = this.mem_docs.get_mut(&path).unwrap();
                     let vfs = &mut this.vfs.write().0;
                     let file_id = vfs.file_id(&path).unwrap();
                     let mut text = String::from_utf8(vfs.file_contents(file_id).to_vec()).unwrap();
                     apply_document_changes(&mut text, params.content_changes);
-                    vfs.set_file_contents(path, Some(text.into_bytes()))
+
+                    // The version passed in DidChangeTextDocument is the version after all edits are applied
+                    // so we should apply it before the vfs is notified.
+                    doc.version = params.text_document.version;
+
+                    vfs.set_file_contents(path.clone(), Some(text.into_bytes()));
                 }
                 Ok(())
             })?
             .on::<lsp_types::notification::DidCloseTextDocument>(|this, params| {
+                let mut version = None;
                 if let Ok(path) = from_proto::vfs_path(&params.text_document.uri) {
-                    if !this.mem_docs.remove(&path) {
-                        log::error!("orphan DidCloseTextDocument: {}", path)
+                    match this.mem_docs.remove(&path) {
+                        Some(doc) => version = doc.version,
+                        None => log::error!("orphan DidCloseTextDocument: {}", path),
                     }
+
+                    this.semantic_tokens_cache.lock().remove(&params.text_document.uri);
+
                     if let Some(path) = path.as_path() {
                         this.loader.handle.invalidate(path.to_path_buf());
                     }
                 }
+
+                // Clear the diagnostics for the previously known version of the file.
+                // This prevents stale "cargo check" diagnostics if the file is
+                // closed, "cargo check" is run and then the file is reopened.
                 this.send_notification::<lsp_types::notification::PublishDiagnostics>(
                     lsp_types::PublishDiagnosticsParams {
                         uri: params.text_document.uri,
                         diagnostics: Vec::new(),
-                        version: None,
+                        version,
                     },
                 );
                 Ok(())
             })?
             .on::<lsp_types::notification::DidSaveTextDocument>(|this, params| {
                 if let Some(flycheck) = &this.flycheck {
-                    flycheck.handle.update();
+                    flycheck.update();
                 }
-                let uri = params.text_document.uri.as_str();
-                if uri.ends_with("Cargo.toml") || uri.ends_with("Cargo.lock") {
-                    if matches!(this.status, Status::Ready | Status::Invalid) {
-                        this.transition(Status::NeedsReload);
-                    }
+                if let Ok(abs_path) = from_proto::abs_path(&params.text_document.uri) {
+                    this.maybe_refresh(&[(abs_path, ChangeKind::Modify)]);
                 }
                 Ok(())
             })?
@@ -466,10 +514,12 @@ impl GlobalState {
                             (Some(err), _) => {
                                 log::error!("failed to fetch the server settings: {:?}", err)
                             }
-                            (None, Some(configs)) => {
-                                if let Some(new_config) = configs.get(0) {
+                            (None, Some(mut configs)) => {
+                                if let Some(json) = configs.get_mut(0) {
+                                    // Note that json can be null according to the spec if the client can't
+                                    // provide a configuration. This is handled in Config::update below.
                                     let mut config = this.config.clone();
-                                    config.update(&new_config);
+                                    config.update(json.take());
                                     this.update_configuration(config);
                                 }
                             }

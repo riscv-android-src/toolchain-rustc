@@ -32,10 +32,10 @@ use super::FnCtxt;
 
 use crate::hir::def_id::DefId;
 use crate::type_error_struct;
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder, ErrorReported};
 use rustc_hir as hir;
-use rustc_hir::lang_items;
+use rustc_hir::lang_items::LangItem;
 use rustc_middle::ty::adjustment::AllowTwoPhase;
 use rustc_middle::ty::cast::{CastKind, CastTy};
 use rustc_middle::ty::error::TypeError;
@@ -147,7 +147,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 }
 
 #[derive(Copy, Clone)]
-enum CastError {
+pub enum CastError {
     ErrorReported,
 
     CastToBool,
@@ -566,7 +566,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
                 Ok(()) => {
                     self.trivial_cast_lint(fcx);
                     debug!(" -> CoercionCast");
-                    fcx.tables.borrow_mut().set_coercion_cast(self.expr.hir_id.local_id);
+                    fcx.typeck_results.borrow_mut().set_coercion_cast(self.expr.hir_id.local_id);
                 }
                 Err(ty::error::TypeError::ObjectUnsafeCoercion(did)) => {
                     self.report_object_unsafe_cast(&fcx, did);
@@ -593,7 +593,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
     /// Checks a cast, and report an error if one exists. In some cases, this
     /// can return Ok and create type errors in the fcx rather than returning
     /// directly. coercion-cast is handled in check instead of here.
-    fn do_check(&self, fcx: &FnCtxt<'a, 'tcx>) -> Result<CastKind, CastError> {
+    pub fn do_check(&self, fcx: &FnCtxt<'a, 'tcx>) -> Result<CastKind, CastError> {
         use rustc_middle::ty::cast::CastTy::*;
         use rustc_middle::ty::cast::IntTy::*;
 
@@ -838,7 +838,7 @@ impl<'a, 'tcx> CastCheck<'tcx> {
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     fn type_is_known_to_be_sized_modulo_regions(&self, ty: Ty<'tcx>, span: Span) -> bool {
-        let lang_item = self.tcx.require_lang_item(lang_items::SizedTraitLangItem, None);
+        let lang_item = self.tcx.require_lang_item(LangItem::Sized, None);
         traits::type_known_to_meet_bound_modulo_regions(self, self.param_env, ty, lang_item, span)
     }
 }

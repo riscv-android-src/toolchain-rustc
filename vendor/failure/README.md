@@ -1,5 +1,11 @@
 # failure - a new error management story
 
+**Notice**: `failure` is deprecated. If you liked `failure`'s API, consider using:
+- [Anyhow](https://github.com/dtolnay/anyhow) is a good replacement for `failure::Error`.
+- [thiserror](https://github.com/dtolnay/thiserror) is a good, near drop-in replacement for `#[derive(Fail)]`.
+
+---
+
 [![Build Status](https://travis-ci.org/rust-lang-nursery/failure.svg?branch=master)](https://travis-ci.org/rust-lang-nursery/failure)
 [![Latest Version](https://img.shields.io/crates/v/failure.svg)](https://crates.io/crates/failure)
 [![docs](https://docs.rs/failure/badge.svg)](https://docs.rs/failure)
@@ -100,8 +106,8 @@ pub fn read_toolchains(path: PathBuf) -> Result<Toolchains, Error>
 ## Requirements
 
 Both failure and failure_derive are intended to compile on all stable versions
-of Rust newer than 1.18.0, as well as the latest beta and the latest nightly.
-If either crate fails to compile on any version newer than 1.18.0, please open
+of Rust newer than 1.31.0, as well as the latest beta and the latest nightly.
+If either crate fails to compile on any version newer than 1.31.0, please open
 an issue.
 
 failure is **no_std** compatible, though some aspects of it (primarily the

@@ -1,7 +1,7 @@
 //! The Rust AST Visitor. Extracts useful information and massages it into a form
 //! usable for `clean`.
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
@@ -165,11 +165,11 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
     ) {
         debug!("visiting fn");
         let macro_kind = item.attrs.iter().find_map(|a| {
-            if a.check_name(sym::proc_macro) {
+            if a.has_name(sym::proc_macro) {
                 Some(MacroKind::Bang)
-            } else if a.check_name(sym::proc_macro_derive) {
+            } else if a.has_name(sym::proc_macro_derive) {
                 Some(MacroKind::Derive)
-            } else if a.check_name(sym::proc_macro_attribute) {
+            } else if a.has_name(sym::proc_macro_attribute) {
                 Some(MacroKind::Attr)
             } else {
                 None
@@ -189,7 +189,7 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
 
                 let mut helpers = Vec::new();
                 for mi in item.attrs.lists(sym::proc_macro_derive) {
-                    if !mi.check_name(sym::attributes) {
+                    if !mi.has_name(sym::attributes) {
                         continue;
                     }
 
@@ -303,31 +303,27 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
         if !res_did.is_local() && !is_no_inline {
             let attrs = clean::inline::load_attrs(self.cx, res_did);
             let self_is_hidden = attrs.lists(sym::doc).has_word(sym::hidden);
-            match res {
-                Res::Def(
-                    DefKind::Trait
-                    | DefKind::Struct
-                    | DefKind::Union
-                    | DefKind::Enum
-                    | DefKind::ForeignTy
-                    | DefKind::TyAlias,
-                    did,
-                ) if !self_is_hidden => {
-                    self.cx.renderinfo.get_mut().access_levels.map.insert(did, AccessLevel::Public);
-                }
-                Res::Def(DefKind::Mod, did) => {
-                    if !self_is_hidden {
-                        crate::visit_lib::LibEmbargoVisitor::new(self.cx).visit_mod(did);
+            if !self_is_hidden {
+                if let Res::Def(kind, did) = res {
+                    if kind == DefKind::Mod {
+                        crate::visit_lib::LibEmbargoVisitor::new(self.cx).visit_mod(did)
+                    } else {
+                        // All items need to be handled here in case someone wishes to link
+                        // to them with intra-doc links
+                        self.cx
+                            .renderinfo
+                            .get_mut()
+                            .access_levels
+                            .map
+                            .insert(did, AccessLevel::Public);
                     }
                 }
-                _ => {}
             }
-
             return false;
         }
 
         let res_hir_id = match res_did.as_local() {
-            Some(n) => tcx.hir().as_local_hir_id(n),
+            Some(n) => tcx.hir().local_def_id_to_hir_id(n),
             None => return false,
         };
 
@@ -423,8 +419,8 @@ impl<'a, 'tcx> RustdocVisitor<'a, 'tcx> {
                 // anything as it will probably be stripped anyway.
                 if item.vis.node.is_pub() && self.inside_public_path {
                     let please_inline = item.attrs.iter().any(|item| match item.meta_item_list() {
-                        Some(ref list) if item.check_name(sym::doc) => {
-                            list.iter().any(|i| i.check_name(sym::inline))
+                        Some(ref list) if item.has_name(sym::doc) => {
+                            list.iter().any(|i| i.has_name(sym::inline))
                         }
                         _ => false,
                     });

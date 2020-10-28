@@ -161,7 +161,7 @@ flavor_mappings! {
     ((LinkerFlavor::Lld(LldFlavor::Link)), "lld-link"),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable, HashStable_Generic)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Encodable, Decodable, HashStable_Generic)]
 pub enum PanicStrategy {
     Unwind,
     Abort,
@@ -185,7 +185,7 @@ impl ToJson for PanicStrategy {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Encodable, Decodable)]
 pub enum RelroLevel {
     Full,
     Partial,
@@ -229,7 +229,7 @@ impl ToJson for RelroLevel {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash, Encodable, Decodable)]
 pub enum MergeFunctions {
     Disabled,
     Trampolines,
@@ -677,6 +677,7 @@ supported_targets! {
     ("powerpc64-wrs-vxworks", powerpc64_wrs_vxworks),
 
     ("mipsel-sony-psp", mipsel_sony_psp),
+    ("thumbv4t-none-eabi", thumbv4t_none_eabi),
 }
 
 /// Everything `rustc` knows about how to compile for a specific target.
@@ -939,9 +940,6 @@ pub struct TargetOptions {
     /// for this target unconditionally.
     pub no_builtins: bool,
 
-    /// The codegen backend to use for this target, typically "llvm"
-    pub codegen_backend: String,
-
     /// The default visibility for symbols in this target should be "hidden"
     /// rather than "default"
     pub default_hidden_visibility: bool,
@@ -1074,7 +1072,6 @@ impl Default for TargetOptions {
             requires_lto: false,
             singlethread: false,
             no_builtins: false,
-            codegen_backend: "llvm".to_string(),
             default_hidden_visibility: false,
             emit_debug_gdb_scripts: true,
             requires_uwtable: false,
@@ -1468,7 +1465,6 @@ impl Target {
         key!(requires_lto, bool);
         key!(singlethread, bool);
         key!(no_builtins, bool);
-        key!(codegen_backend);
         key!(default_hidden_visibility, bool);
         key!(emit_debug_gdb_scripts, bool);
         key!(requires_uwtable, bool);
@@ -1707,7 +1703,6 @@ impl ToJson for Target {
         target_option_val!(requires_lto);
         target_option_val!(singlethread);
         target_option_val!(no_builtins);
-        target_option_val!(codegen_backend);
         target_option_val!(default_hidden_visibility);
         target_option_val!(emit_debug_gdb_scripts);
         target_option_val!(requires_uwtable);
@@ -1739,7 +1734,7 @@ impl ToJson for Target {
 }
 
 /// Either a target triple string or a path to a JSON file.
-#[derive(PartialEq, Clone, Debug, Hash, RustcEncodable, RustcDecodable)]
+#[derive(PartialEq, Clone, Debug, Hash, Encodable, Decodable)]
 pub enum TargetTriple {
     TargetTriple(String),
     TargetPath(PathBuf),

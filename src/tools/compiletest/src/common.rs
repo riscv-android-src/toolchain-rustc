@@ -169,7 +169,7 @@ impl fmt::Display for Debugger {
 }
 
 /// Configuration for compiletest
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// `true` to to overwrite stderr/stdout files instead of complaining about changes in output.
     pub bless: bool,
@@ -185,6 +185,9 @@ pub struct Config {
 
     /// The rustdoc executable.
     pub rustdoc_path: Option<PathBuf>,
+
+    /// The rust-demangler executable.
+    pub rust_demangler_path: Option<PathBuf>,
 
     /// The Python executable to use for LLDB.
     pub lldb_python: String,
@@ -268,13 +271,13 @@ pub struct Config {
     pub gdb_native_rust: bool,
 
     /// Version of LLDB
-    pub lldb_version: Option<String>,
+    pub lldb_version: Option<u32>,
 
     /// Whether LLDB has native rust support
     pub lldb_native_rust: bool,
 
     /// Version of LLVM
-    pub llvm_version: Option<String>,
+    pub llvm_version: Option<u32>,
 
     /// Is LLVM a system LLVM
     pub system_llvm: bool,

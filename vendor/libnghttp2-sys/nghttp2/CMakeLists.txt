@@ -24,13 +24,13 @@
 
 cmake_minimum_required(VERSION 3.0)
 # XXX using 1.8.90 instead of 1.9.0-DEV
-project(nghttp2 VERSION 1.39.90)
+project(nghttp2 VERSION 1.41.0)
 
 # See versioning rule:
 #  http://www.gnu.org/software/libtool/manual/html_node/Updating-version-info.html
-set(LT_CURRENT  31)
-set(LT_REVISION 4)
-set(LT_AGE      17)
+set(LT_CURRENT  34)
+set(LT_REVISION 0)
+set(LT_AGE      20)
 
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake" ${CMAKE_MODULE_PATH})
 include(Version)
@@ -385,6 +385,15 @@ else()
     -Wall
     -Wformat-security
   )
+endif()
+
+if(ENABLE_STATIC_CRT)
+  foreach(lang C CXX)
+    foreach(suffix "" _DEBUG _MINSIZEREL _RELEASE _RELWITHDEBINFO)
+      set(var "CMAKE_${lang}_FLAGS${suffix}")
+      string(REPLACE "/MD" "/MT" ${var} "${${var}}")
+    endforeach()
+  endforeach()
 endif()
 
 if(ENABLE_DEBUG)

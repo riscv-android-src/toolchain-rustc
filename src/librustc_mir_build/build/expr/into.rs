@@ -2,9 +2,10 @@
 
 use crate::build::expr::category::{Category, RvalueFunc};
 use crate::build::{BlockAnd, BlockAndExtension, BlockFrame, Builder};
-use crate::hair::*;
-use rustc_ast::ast::InlineAsmOptions;
+use crate::thir::*;
+use rustc_ast::InlineAsmOptions;
 use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::stack::ensure_sufficient_stack;
 use rustc_hir as hir;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, CanonicalUserTypeAnnotation};
@@ -43,7 +44,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let block_and = match expr.kind {
             ExprKind::Scope { region_scope, lint_level, value } => {
                 let region_scope = (region_scope, source_info);
-                this.in_scope(region_scope, lint_level, |this| this.into(destination, block, value))
+                ensure_sufficient_stack(|| {
+                    this.in_scope(region_scope, lint_level, |this| {
+                        this.into(destination, block, value)
+                    })
+                })
             }
             ExprKind::Block { body: ast_block } => {
                 this.ast_block(destination, block, ast_block, source_info)
@@ -188,10 +193,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     let ptr_ty = ptr.ty;
                     // Create an *internal* temp for the pointer, so that unsafety
                     // checking won't complain about the raw pointer assignment.
-                    let ptr_temp = this.local_decls.push(LocalDecl::with_source_info(
-                        ptr_ty,
-                        source_info,
-                    ).internal());
+                    let ptr_temp = this
+                        .local_decls
+                        .push(LocalDecl::with_source_info(ptr_ty, source_info).internal());
                     let ptr_temp = Place::from(ptr_temp);
                     let block = unpack!(this.into(ptr_temp, block, ptr));
                     this.into(this.hir.tcx().mk_place_deref(ptr_temp), block, val)
@@ -224,7 +228,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                 Some((destination, success))
                             },
                             from_hir_call,
-                            fn_span
+                            fn_span,
                         },
                     );
                     success.unit()
@@ -316,23 +320,23 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 block.unit()
             }
             ExprKind::InlineAsm { template, operands, options, line_spans } => {
-                use crate::hair;
+                use crate::thir;
                 use rustc_middle::mir;
                 let operands = operands
                     .into_iter()
                     .map(|op| match op {
-                        hair::InlineAsmOperand::In { reg, expr } => mir::InlineAsmOperand::In {
+                        thir::InlineAsmOperand::In { reg, expr } => mir::InlineAsmOperand::In {
                             reg,
                             value: unpack!(block = this.as_local_operand(block, expr)),
                         },
-                        hair::InlineAsmOperand::Out { reg, late, expr } => {
+                        thir::InlineAsmOperand::Out { reg, late, expr } => {
                             mir::InlineAsmOperand::Out {
                                 reg,
                                 late,
                                 place: expr.map(|expr| unpack!(block = this.as_place(block, expr))),
                             }
                         }
-                        hair::InlineAsmOperand::InOut { reg, late, expr } => {
+                        thir::InlineAsmOperand::InOut { reg, late, expr } => {
                             let place = unpack!(block = this.as_place(block, expr));
                             mir::InlineAsmOperand::InOut {
                                 reg,
@@ -342,7 +346,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                 out_place: Some(place),
                             }
                         }
-                        hair::InlineAsmOperand::SplitInOut { reg, late, in_expr, out_expr } => {
+                        thir::InlineAsmOperand::SplitInOut { reg, late, in_expr, out_expr } => {
                             mir::InlineAsmOperand::InOut {
                                 reg,
                                 late,
@@ -352,13 +356,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                                 }),
                             }
                         }
-                        hair::InlineAsmOperand::Const { expr } => mir::InlineAsmOperand::Const {
+                        thir::InlineAsmOperand::Const { expr } => mir::InlineAsmOperand::Const {
                             value: unpack!(block = this.as_local_operand(block, expr)),
                         },
-                        hair::InlineAsmOperand::SymFn { expr } => {
+                        thir::InlineAsmOperand::SymFn { expr } => {
                             mir::InlineAsmOperand::SymFn { value: box this.as_constant(expr) }
                         }
-                        hair::InlineAsmOperand::SymStatic { def_id } => {
+                        thir::InlineAsmOperand::SymStatic { def_id } => {
                             mir::InlineAsmOperand::SymStatic { def_id }
                         }
                     })
@@ -387,12 +391,15 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // These cases don't actually need a destination
             ExprKind::Assign { .. }
             | ExprKind::AssignOp { .. }
-            | ExprKind::Continue { .. }
-            | ExprKind::Break { .. }
-            | ExprKind::LlvmInlineAsm { .. }
-            | ExprKind::Return { .. } => {
+            | ExprKind::LlvmInlineAsm { .. } => {
                 unpack!(block = this.stmt_expr(block, expr, None));
                 this.cfg.push_assign_unit(block, source_info, destination, this.hir.tcx());
+                block.unit()
+            }
+
+            ExprKind::Continue { .. } | ExprKind::Break { .. } | ExprKind::Return { .. } => {
+                unpack!(block = this.stmt_expr(block, expr, None));
+                // No assign, as these have type `!`.
                 block.unit()
             }
 

@@ -20,7 +20,7 @@
 //! * Luis de Bethencourt's [rust-datetime](https://github.com/luisbg/rust-datetime)
 //!
 //! Any significant changes to Chrono are documented in
-//! the [`CHANGELOG.md`](https://github.com/chronotope/chrono/blob/master/CHANGELOG.md) file.
+//! the [`CHANGELOG.md`](https://github.com/chronotope/chrono/blob/main/CHANGELOG.md) file.
 //!
 //! ## Usage
 //!
@@ -31,26 +31,34 @@
 //! chrono = "0.4"
 //! ```
 //!
-//! Or, if you want [Serde](https://github.com/serde-rs/serde) include the
-//! feature like this:
+//! ### Features
 //!
-//! ```toml
-//! [dependencies]
-//! chrono = { version = "0.4", features = ["serde"] }
-//! ```
+//! Chrono supports various runtime environments and operating systems, and has
+//! several features that may be enabled or disabled.
 //!
-//! Then put this in your crate root:
+//! Default features:
 //!
-//! ```rust
-//! extern crate chrono;
-//! ```
+//! - `alloc`: Enable features that depend on allocation (primarily string formatting)
+//! - `std`: Enables functionality that depends on the standard library. This
+//!   is a superset of `alloc` and adds interoperation with standard library types
+//!   and traits.
+//! - `clock`: enables reading the system time (`now`), independent of whether
+//!   `std::time::SystemTime` is present, depends on having a libc.
 //!
-//! Avoid using `use chrono::*;` as Chrono exports several modules other than types.
-//! If you prefer the glob imports, use the following instead:
+//! Optional features:
 //!
-//! ```rust
-//! use chrono::prelude::*;
-//! ```
+//! - `wasmbind`: Enable integration with [wasm-bindgen][] and its `js-sys` project
+//! - [`serde`][]: Enable serialization/deserialization via serde.
+//! - `unstable-locales`: Enable localization. This adds various methods with a
+//!   `_localized` suffix. The implementation and API may change or even be
+//!   removed in a patch release. Feedback welcome.
+//!
+//! [`serde`]: https://github.com/serde-rs/serde
+//! [wasm-bindgen]: https://github.com/rustwasm/wasm-bindgen
+//!
+//! See the [cargo docs][] for examples of specifying features.
+//!
+//! [cargo docs]: https://doc.rust-lang.org/cargo/reference/specifying-dependencies.html#choosing-features
 //!
 //! ## Overview
 //!
@@ -212,12 +220,23 @@
 //! [`to_rfc3339`](./struct.DateTime.html#method.to_rfc3339) methods
 //! for well-known formats.
 //!
+//! Chrono now also provides date formatting in almost any language without the
+//! help of an additional C library. This functionality is under the feature
+//! `unstable-locales`:
+//!
+//! ```text
+//! chrono { version = "0.4", features = ["unstable-locales"]
+//! ```
+//!
+//! The `unstable-locales` feature requires and implies at least the `alloc` feature.
+//!
 //! ```rust
 //! use chrono::prelude::*;
 //!
 //! let dt = Utc.ymd(2014, 11, 28).and_hms(12, 0, 9);
 //! assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2014-11-28 12:00:09");
 //! assert_eq!(dt.format("%a %b %e %T %Y").to_string(), "Fri Nov 28 12:00:09 2014");
+//! assert_eq!(dt.format_localized("%A %e %B %Y, %T", Locale::fr_BE).to_string(), "vendredi 28 novembre 2014, 12:00:09");
 //! assert_eq!(dt.format("%a %b %e %T %Y").to_string(), dt.format("%c").to_string());
 //!
 //! assert_eq!(dt.to_string(), "2014-11-28 12:00:09 UTC");
@@ -435,6 +454,8 @@ extern crate serde as serdelib;
 extern crate doc_comment;
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi"), feature = "wasmbind"))]
 extern crate js_sys;
+#[cfg(feature = "unstable-locales")]
+extern crate pure_rust_locales;
 #[cfg(feature = "bench")]
 extern crate test;
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi"), feature = "wasmbind"))]
@@ -450,7 +471,10 @@ pub use oldtime::Duration;
 pub use date::{Date, MAX_DATE, MIN_DATE};
 #[cfg(feature = "rustc-serialize")]
 pub use datetime::rustc_serialize::TsSeconds;
-pub use datetime::{DateTime, SecondsFormat};
+pub use datetime::{DateTime, SecondsFormat, MAX_DATETIME, MIN_DATETIME};
+/// L10n locales.
+#[cfg(feature = "unstable-locales")]
+pub use format::Locale;
 pub use format::{ParseError, ParseResult};
 #[doc(no_inline)]
 pub use naive::{IsoWeek, NaiveDate, NaiveDateTime, NaiveTime};
@@ -459,7 +483,7 @@ pub use naive::{IsoWeek, NaiveDate, NaiveDateTime, NaiveTime};
 pub use offset::Local;
 #[doc(no_inline)]
 pub use offset::{FixedOffset, LocalResult, Offset, TimeZone, Utc};
-pub use round::SubsecRound;
+pub use round::{DurationRound, RoundingError, SubsecRound};
 
 /// A convenience module appropriate for glob imports (`use chrono::prelude::*;`).
 pub mod prelude {
@@ -468,12 +492,15 @@ pub mod prelude {
     #[cfg(feature = "clock")]
     #[doc(no_inline)]
     pub use Local;
+    #[cfg(feature = "unstable-locales")]
+    #[doc(no_inline)]
+    pub use Locale;
     #[doc(no_inline)]
     pub use SubsecRound;
     #[doc(no_inline)]
     pub use {DateTime, SecondsFormat};
     #[doc(no_inline)]
-    pub use {Datelike, Timelike, Weekday};
+    pub use {Datelike, Month, Timelike, Weekday};
     #[doc(no_inline)]
     pub use {FixedOffset, Utc};
     #[doc(no_inline)]
@@ -511,7 +538,7 @@ pub mod naive {
     #[cfg(feature = "rustc-serialize")]
     #[allow(deprecated)]
     pub use self::datetime::rustc_serialize::TsSeconds;
-    pub use self::datetime::NaiveDateTime;
+    pub use self::datetime::{NaiveDateTime, MAX_DATETIME, MIN_DATETIME};
     pub use self::isoweek::IsoWeek;
     pub use self::time::NaiveTime;
 
@@ -892,6 +919,311 @@ mod weekday_serde {
     }
 }
 
+/// The month of the year.
+///
+/// This enum is just a convenience implementation.
+/// The month in dates created by DateLike objects does not return this enum.
+///
+/// It is possible to convert from a date to a month independently
+/// ```
+/// # extern crate num_traits;
+/// use num_traits::FromPrimitive;
+/// use chrono::prelude::*;
+/// let date = Utc.ymd(2019, 10, 28).and_hms(9, 10, 11);
+/// // `2019-10-28T09:10:11Z`
+/// let month = Month::from_u32(date.month());
+/// assert_eq!(month, Some(Month::October))
+/// ```
+/// Or from a Month to an integer usable by dates
+/// ```
+/// # use chrono::prelude::*;
+/// let month = Month::January;
+/// let dt = Utc.ymd(2019, month.number_from_month(), 28).and_hms(9, 10, 11);
+/// assert_eq!((dt.year(), dt.month(), dt.day()), (2019, 1, 28));
+/// ```
+/// Allows mapping from and to month, from 1-January to 12-December.
+/// Can be Serialized/Deserialized with serde
+// Actual implementation is zero-indexed, API intended as 1-indexed for more intuitive behavior.
+#[derive(PartialEq, Eq, Copy, Clone, Debug, Hash)]
+#[cfg_attr(feature = "rustc-serialize", derive(RustcEncodable, RustcDecodable))]
+pub enum Month {
+    /// January
+    January = 0,
+    /// February
+    February = 1,
+    /// March
+    March = 2,
+    /// April
+    April = 3,
+    /// May
+    May = 4,
+    /// June
+    June = 5,
+    /// July
+    July = 6,
+    /// August
+    August = 7,
+    /// September
+    September = 8,
+    /// October
+    October = 9,
+    /// November
+    November = 10,
+    /// December
+    December = 11,
+}
+
+impl Month {
+    /// The next month.
+    ///
+    /// `m`:        | `January`  | `February` | `...` | `December`
+    /// ----------- | ---------  | ---------- | --- | ---------
+    /// `m.succ()`: | `February` | `March`    | `...` | `January`
+    #[inline]
+    pub fn succ(&self) -> Month {
+        match *self {
+            Month::January => Month::February,
+            Month::February => Month::March,
+            Month::March => Month::April,
+            Month::April => Month::May,
+            Month::May => Month::June,
+            Month::June => Month::July,
+            Month::July => Month::August,
+            Month::August => Month::September,
+            Month::September => Month::October,
+            Month::October => Month::November,
+            Month::November => Month::December,
+            Month::December => Month::January,
+        }
+    }
+
+    /// The previous month.
+    ///
+    /// `m`:        | `January`  | `February` | `...` | `December`
+    /// ----------- | ---------  | ---------- | --- | ---------
+    /// `m.succ()`: | `December` | `January`  | `...` | `November`
+    #[inline]
+    pub fn pred(&self) -> Month {
+        match *self {
+            Month::January => Month::December,
+            Month::February => Month::January,
+            Month::March => Month::February,
+            Month::April => Month::March,
+            Month::May => Month::April,
+            Month::June => Month::May,
+            Month::July => Month::June,
+            Month::August => Month::July,
+            Month::September => Month::August,
+            Month::October => Month::September,
+            Month::November => Month::October,
+            Month::December => Month::November,
+        }
+    }
+
+    /// Returns a month-of-year number starting from January = 1.
+    ///
+    /// `m`:                     | `January` | `February` | `...` | `December`
+    /// -------------------------| --------- | ---------- | --- | -----
+    /// `m.number_from_month()`: | 1         | 2          | `...` | 12
+    #[inline]
+    pub fn number_from_month(&self) -> u32 {
+        match *self {
+            Month::January => 1,
+            Month::February => 2,
+            Month::March => 3,
+            Month::April => 4,
+            Month::May => 5,
+            Month::June => 6,
+            Month::July => 7,
+            Month::August => 8,
+            Month::September => 9,
+            Month::October => 10,
+            Month::November => 11,
+            Month::December => 12,
+        }
+    }
+
+    /// Get the name of the month
+    ///
+    /// ```
+    /// use chrono::Month;
+    ///
+    /// assert_eq!(Month::January.name(), "January")
+    /// ```
+    pub fn name(&self) -> &'static str {
+        match *self {
+            Month::January => "January",
+            Month::February => "February",
+            Month::March => "March",
+            Month::April => "April",
+            Month::May => "May",
+            Month::June => "June",
+            Month::July => "July",
+            Month::August => "August",
+            Month::September => "September",
+            Month::October => "October",
+            Month::November => "November",
+            Month::December => "December",
+        }
+    }
+}
+
+impl num_traits::FromPrimitive for Month {
+    /// Returns an Option<Month> from a i64, assuming a 1-index, January = 1.
+    ///
+    /// `Month::from_i64(n: i64)`: | `1`                  | `2`                   | ... | `12`
+    /// ---------------------------| -------------------- | --------------------- | ... | -----
+    /// ``:                        | Some(Month::January) | Some(Month::February) | ... | Some(Month::December)
+
+    #[inline]
+    fn from_u64(n: u64) -> Option<Month> {
+        Self::from_u32(n as u32)
+    }
+
+    #[inline]
+    fn from_i64(n: i64) -> Option<Month> {
+        Self::from_u32(n as u32)
+    }
+
+    #[inline]
+    fn from_u32(n: u32) -> Option<Month> {
+        match n {
+            1 => Some(Month::January),
+            2 => Some(Month::February),
+            3 => Some(Month::March),
+            4 => Some(Month::April),
+            5 => Some(Month::May),
+            6 => Some(Month::June),
+            7 => Some(Month::July),
+            8 => Some(Month::August),
+            9 => Some(Month::September),
+            10 => Some(Month::October),
+            11 => Some(Month::November),
+            12 => Some(Month::December),
+            _ => None,
+        }
+    }
+}
+
+/// An error resulting from reading `<Month>` value with `FromStr`.
+#[derive(Clone, PartialEq)]
+pub struct ParseMonthError {
+    _dummy: (),
+}
+
+impl fmt::Debug for ParseMonthError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "ParseMonthError {{ .. }}")
+    }
+}
+
+#[cfg(feature = "serde")]
+mod month_serde {
+    use super::Month;
+    use serdelib::{de, ser};
+
+    use core::fmt;
+
+    impl ser::Serialize for Month {
+        fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: ser::Serializer,
+        {
+            serializer.collect_str(self.name())
+        }
+    }
+
+    struct MonthVisitor;
+
+    impl<'de> de::Visitor<'de> for MonthVisitor {
+        type Value = Month;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "Month")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            value.parse().map_err(|_| E::custom("short (3-letter) or full month names expected"))
+        }
+    }
+
+    impl<'de> de::Deserialize<'de> for Month {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: de::Deserializer<'de>,
+        {
+            deserializer.deserialize_str(MonthVisitor)
+        }
+    }
+
+    #[cfg(test)]
+    extern crate serde_json;
+
+    #[test]
+    fn test_serde_serialize() {
+        use self::serde_json::to_string;
+        use Month::*;
+
+        let cases: Vec<(Month, &str)> = vec![
+            (January, "\"January\""),
+            (February, "\"February\""),
+            (March, "\"March\""),
+            (April, "\"April\""),
+            (May, "\"May\""),
+            (June, "\"June\""),
+            (July, "\"July\""),
+            (August, "\"August\""),
+            (September, "\"September\""),
+            (October, "\"October\""),
+            (November, "\"November\""),
+            (December, "\"December\""),
+        ];
+
+        for (month, expected_str) in cases {
+            let string = to_string(&month).unwrap();
+            assert_eq!(string, expected_str);
+        }
+    }
+
+    #[test]
+    fn test_serde_deserialize() {
+        use self::serde_json::from_str;
+        use Month::*;
+
+        let cases: Vec<(&str, Month)> = vec![
+            ("\"january\"", January),
+            ("\"jan\"", January),
+            ("\"FeB\"", February),
+            ("\"MAR\"", March),
+            ("\"mar\"", March),
+            ("\"april\"", April),
+            ("\"may\"", May),
+            ("\"june\"", June),
+            ("\"JULY\"", July),
+            ("\"august\"", August),
+            ("\"september\"", September),
+            ("\"October\"", October),
+            ("\"November\"", November),
+            ("\"DECEmbEr\"", December),
+        ];
+
+        for (string, expected_month) in cases {
+            let month = from_str::<Month>(string).unwrap();
+            assert_eq!(month, expected_month);
+        }
+
+        let errors: Vec<&str> =
+            vec!["\"not a month\"", "\"ja\"", "\"Dece\"", "Dec", "\"Augustin\""];
+
+        for string in errors {
+            from_str::<Month>(string).unwrap_err();
+        }
+    }
+}
+
 /// The common set of methods for date component.
 pub trait Datelike: Sized {
     /// Returns the year number in the [calendar date](./naive/struct.NaiveDate.html#calendar-date).
@@ -1072,30 +1404,56 @@ pub trait Timelike: Sized {
 #[cfg(test)]
 extern crate num_iter;
 
-#[test]
-fn test_readme_doomsday() {
-    use num_iter::range_inclusive;
+mod test {
+    #[allow(unused_imports)]
+    use super::*;
 
-    for y in range_inclusive(naive::MIN_DATE.year(), naive::MAX_DATE.year()) {
-        // even months
-        let d4 = NaiveDate::from_ymd(y, 4, 4);
-        let d6 = NaiveDate::from_ymd(y, 6, 6);
-        let d8 = NaiveDate::from_ymd(y, 8, 8);
-        let d10 = NaiveDate::from_ymd(y, 10, 10);
-        let d12 = NaiveDate::from_ymd(y, 12, 12);
+    #[test]
+    fn test_readme_doomsday() {
+        use num_iter::range_inclusive;
 
-        // nine to five, seven-eleven
-        let d59 = NaiveDate::from_ymd(y, 5, 9);
-        let d95 = NaiveDate::from_ymd(y, 9, 5);
-        let d711 = NaiveDate::from_ymd(y, 7, 11);
-        let d117 = NaiveDate::from_ymd(y, 11, 7);
+        for y in range_inclusive(naive::MIN_DATE.year(), naive::MAX_DATE.year()) {
+            // even months
+            let d4 = NaiveDate::from_ymd(y, 4, 4);
+            let d6 = NaiveDate::from_ymd(y, 6, 6);
+            let d8 = NaiveDate::from_ymd(y, 8, 8);
+            let d10 = NaiveDate::from_ymd(y, 10, 10);
+            let d12 = NaiveDate::from_ymd(y, 12, 12);
 
-        // "March 0"
-        let d30 = NaiveDate::from_ymd(y, 3, 1).pred();
+            // nine to five, seven-eleven
+            let d59 = NaiveDate::from_ymd(y, 5, 9);
+            let d95 = NaiveDate::from_ymd(y, 9, 5);
+            let d711 = NaiveDate::from_ymd(y, 7, 11);
+            let d117 = NaiveDate::from_ymd(y, 11, 7);
 
-        let weekday = d30.weekday();
-        let other_dates = [d4, d6, d8, d10, d12, d59, d95, d711, d117];
-        assert!(other_dates.iter().all(|d| d.weekday() == weekday));
+            // "March 0"
+            let d30 = NaiveDate::from_ymd(y, 3, 1).pred();
+
+            let weekday = d30.weekday();
+            let other_dates = [d4, d6, d8, d10, d12, d59, d95, d711, d117];
+            assert!(other_dates.iter().all(|d| d.weekday() == weekday));
+        }
+    }
+
+    #[test]
+    fn test_month_enum_primitive_parse() {
+        use num_traits::FromPrimitive;
+
+        let jan_opt = Month::from_u32(1);
+        let feb_opt = Month::from_u64(2);
+        let dec_opt = Month::from_i64(12);
+        let no_month = Month::from_u32(13);
+        assert_eq!(jan_opt, Some(Month::January));
+        assert_eq!(feb_opt, Some(Month::February));
+        assert_eq!(dec_opt, Some(Month::December));
+        assert_eq!(no_month, None);
+
+        let date = Utc.ymd(2019, 10, 28).and_hms(9, 10, 11);
+        assert_eq!(Month::from_u32(date.month()), Some(Month::October));
+
+        let month = Month::January;
+        let dt = Utc.ymd(2019, month.number_from_month(), 28).and_hms(9, 10, 11);
+        assert_eq!((dt.year(), dt.month(), dt.day()), (2019, 1, 28));
     }
 }
 
@@ -1149,4 +1507,12 @@ fn test_num_days_from_ce_against_alternative_impl() {
         let mid_year = jan1_year + Duration::days(133);
         assert_eq!(mid_year.num_days_from_ce(), num_days_from_ce(&mid_year), "on {:?}", mid_year);
     }
+}
+
+#[test]
+fn test_month_enum_succ_pred() {
+    assert_eq!(Month::January.succ(), Month::February);
+    assert_eq!(Month::December.succ(), Month::January);
+    assert_eq!(Month::January.pred(), Month::December);
+    assert_eq!(Month::February.pred(), Month::January);
 }

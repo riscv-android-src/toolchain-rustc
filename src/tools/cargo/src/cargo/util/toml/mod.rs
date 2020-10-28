@@ -394,7 +394,7 @@ impl<'de> de::Deserialize<'de> for U32OrBool {
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(default, rename_all = "kebab-case")]
 pub struct TomlProfile {
     pub opt_level: Option<TomlOptLevel>,
     pub lto: Option<StringOrBool>,
@@ -1690,7 +1690,7 @@ impl DetailedTomlDependency {
                     .map(GitReference::Branch)
                     .or_else(|| self.tag.clone().map(GitReference::Tag))
                     .or_else(|| self.rev.clone().map(GitReference::Rev))
-                    .unwrap_or_else(|| GitReference::Branch("master".to_string()));
+                    .unwrap_or_else(|| GitReference::DefaultBranch);
                 let loc = git.into_url()?;
 
                 if let Some(fragment) = loc.fragment() {

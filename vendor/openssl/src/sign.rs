@@ -123,6 +123,7 @@ impl<'a> Drop for Signer<'a> {
     }
 }
 
+#[allow(clippy::len_without_is_empty)]
 impl<'a> Signer<'a> {
     /// Creates a new `Signer`.
     ///
@@ -154,7 +155,7 @@ impl<'a> Signer<'a> {
         Self::new_intern(None, pkey)
     }
 
-    pub fn new_intern<T>(
+    fn new_intern<T>(
         type_: Option<MessageDigest>,
         pkey: &'a PKeyRef<T>,
     ) -> Result<Signer<'a>, ErrorStack>
@@ -305,7 +306,7 @@ impl<'a> Signer<'a> {
                 ptr::null_mut(),
                 &mut len,
                 ptr::null(),
-                0
+                0,
             ))?;
             Ok(len)
         }
@@ -342,7 +343,7 @@ impl<'a> Signer<'a> {
         Ok(buf)
     }
 
-    /// Signs the data in data_buf and writes the siganture into the buffer sig_buf, returning the
+    /// Signs the data in data_buf and writes the signature into the buffer sig_buf, returning the
     /// number of bytes written.
     ///
     /// For PureEdDSA (Ed25519 and Ed448 keys) this is the only way to sign data.
@@ -354,16 +355,20 @@ impl<'a> Signer<'a> {
     ///
     /// [`EVP_DigestSign`]: https://www.openssl.org/docs/man1.1.1/man3/EVP_DigestSign.html
     #[cfg(ossl111)]
-    pub fn sign_oneshot(&self, sig_buf: &mut [u8], data_buf: &[u8]) -> Result<usize, ErrorStack> {
+    pub fn sign_oneshot(
+        &mut self,
+        sig_buf: &mut [u8],
+        data_buf: &[u8],
+    ) -> Result<usize, ErrorStack> {
         unsafe {
             let mut sig_len = sig_buf.len();
             cvt(ffi::EVP_DigestSign(
-                    self.md_ctx,
-                    sig_buf.as_mut_ptr() as *mut _,
-                    &mut sig_len,
-                    data_buf.as_ptr() as *const _,
-                    data_buf.len()
-                    ))?;
+                self.md_ctx,
+                sig_buf.as_mut_ptr() as *mut _,
+                &mut sig_len,
+                data_buf.as_ptr() as *const _,
+                data_buf.len(),
+            ))?;
             Ok(sig_len)
         }
     }
@@ -372,7 +377,7 @@ impl<'a> Signer<'a> {
     ///
     /// This is a simple convenience wrapper over `len` and `sign_oneshot`.
     #[cfg(ossl111)]
-    pub fn sign_oneshot_to_vec(&self, data_buf: &[u8]) -> Result<Vec<u8>, ErrorStack> {
+    pub fn sign_oneshot_to_vec(&mut self, data_buf: &[u8]) -> Result<Vec<u8>, ErrorStack> {
         let mut sig_buf = vec![0; self.len()?];
         let len = self.sign_oneshot(&mut sig_buf, data_buf)?;
         // The advertised length is not always equal to the real length for things like DSA
@@ -436,13 +441,15 @@ impl<'a> Verifier<'a> {
     /// [`EVP_DigestVerifyInit`]: https://www.openssl.org/docs/manmaster/man3/EVP_DigestVerifyInit.html
     pub fn new_without_digest<T>(pkey: &'a PKeyRef<T>) -> Result<Verifier<'a>, ErrorStack>
     where
-        T: HasPublic
+        T: HasPublic,
     {
         Verifier::new_intern(None, pkey)
     }
 
-
-    fn new_intern<T>(type_: Option<MessageDigest>, pkey: &'a PKeyRef<T>) -> Result<Verifier<'a>, ErrorStack>
+    fn new_intern<T>(
+        type_: Option<MessageDigest>,
+        pkey: &'a PKeyRef<T>,
+    ) -> Result<Verifier<'a>, ErrorStack>
     where
         T: HasPublic,
     {
@@ -582,7 +589,7 @@ impl<'a> Verifier<'a> {
     ///
     /// [`EVP_DigestVerify`]: https://www.openssl.org/docs/man1.1.1/man3/EVP_DigestVerify.html
     #[cfg(ossl111)]
-    pub fn verify_oneshot(&self, signature: &[u8], buf: &[u8]) -> Result<bool, ErrorStack> {
+    pub fn verify_oneshot(&mut self, signature: &[u8], buf: &[u8]) -> Result<bool, ErrorStack> {
         unsafe {
             let r = ffi::EVP_DigestVerify(
                 self.md_ctx,
@@ -590,13 +597,13 @@ impl<'a> Verifier<'a> {
                 signature.len(),
                 buf.as_ptr() as *const _,
                 buf.len(),
-                );
+            );
             match r {
                 1 => Ok(true),
                 0 => {
                     ErrorStack::get();
                     Ok(false)
-                },
+                }
                 _ => Err(ErrorStack::get()),
             }
         }
@@ -639,12 +646,12 @@ mod test {
     use rsa::{Padding, Rsa};
     use sign::{RsaPssSaltlen, Signer, Verifier};
 
-    const INPUT: &'static str =
+    const INPUT: &str =
         "65794a68624763694f694a53557a49314e694a392e65794a7063334d694f694a71623255694c41304b49434a6c\
          654841694f6a457a4d4441344d546b7a4f44417344516f67496d6830644841364c79396c654746746347786c4c\
          6d4e76625339706331397962323930496a7030636e566c6651";
 
-    const SIGNATURE: &'static str =
+    const SIGNATURE: &str =
         "702e218943e88fd11eb5d82dbf7845f34106ae1b81fff7731116add1717d83656d420afd3c96eedd73a2663e51\
          66687b000b87226e0187ed1073f945e582adfcef16d85a798ee8c66ddb3db8975b17d09402beedd5d9d9700710\
          8db28160d5f8040ca7445762b81fbe7ff9d92e0ae76f24f25b33bbe6f44ae61eb1040acb20044d3ef9128ed401\
@@ -829,10 +836,10 @@ mod test {
     fn eddsa() {
         let key = PKey::generate_ed25519().unwrap();
 
-        let signer = Signer::new_without_digest(&key).unwrap();
+        let mut signer = Signer::new_without_digest(&key).unwrap();
         let signature = signer.sign_oneshot_to_vec(b"hello world").unwrap();
 
-        let verifier = Verifier::new_without_digest(&key).unwrap();
+        let mut verifier = Verifier::new_without_digest(&key).unwrap();
         assert!(verifier.verify_oneshot(&signature, b"hello world").unwrap());
     }
 

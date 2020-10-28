@@ -201,13 +201,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // Gather up expressions we want to munge.
         let mut exprs = vec![expr];
 
-        loop {
-            match exprs.last().unwrap().kind {
-                hir::ExprKind::Field(ref expr, _)
-                | hir::ExprKind::Index(ref expr, _)
-                | hir::ExprKind::Unary(hir::UnOp::UnDeref, ref expr) => exprs.push(&expr),
-                _ => break,
-            }
+        while let hir::ExprKind::Field(ref expr, _)
+        | hir::ExprKind::Index(ref expr, _)
+        | hir::ExprKind::Unary(hir::UnOp::UnDeref, ref expr) = exprs.last().unwrap().kind
+        {
+            exprs.push(&expr);
         }
 
         debug!("convert_place_derefs_to_mutable: exprs={:?}", exprs);
@@ -222,9 +220,9 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             let mut source = self.node_ty(expr.hir_id);
             // Do not mutate adjustments in place, but rather take them,
             // and replace them after mutating them, to avoid having the
-            // tables borrowed during (`deref_mut`) method resolution.
+            // typeck results borrowed during (`deref_mut`) method resolution.
             let previous_adjustments =
-                self.tables.borrow_mut().adjustments_mut().remove(expr.hir_id);
+                self.typeck_results.borrow_mut().adjustments_mut().remove(expr.hir_id);
             if let Some(mut adjustments) = previous_adjustments {
                 for adjustment in &mut adjustments {
                     if let Adjust::Deref(Some(ref mut deref)) = adjustment.kind {
@@ -242,7 +240,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     }
                     source = adjustment.target;
                 }
-                self.tables.borrow_mut().adjustments_mut().insert(expr.hir_id, adjustments);
+                self.typeck_results.borrow_mut().adjustments_mut().insert(expr.hir_id, adjustments);
             }
 
             match expr.kind {
@@ -264,14 +262,14 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         base_expr: &hir::Expr<'_>,
     ) {
         debug!("convert_place_op_to_mutable({:?}, {:?}, {:?})", op, expr, base_expr);
-        if !self.tables.borrow().is_method_call(expr) {
+        if !self.typeck_results.borrow().is_method_call(expr) {
             debug!("convert_place_op_to_mutable - builtin, nothing to do");
             return;
         }
 
         // Need to deref because overloaded place ops take self by-reference.
         let base_ty = self
-            .tables
+            .typeck_results
             .borrow()
             .expr_ty_adjusted(base_expr)
             .builtin_deref(false)
@@ -289,7 +287,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 // We also could not use `expr_ty_adjusted` of index_expr because reborrowing
                 // during coercions can also cause type of index_expr to differ from `T`,
                 // which can potentially cause regionck failure (#74933).
-                Some(self.tables.borrow().node_substs(expr.hir_id).type_at(1))
+                Some(self.typeck_results.borrow().node_substs(expr.hir_id).type_at(1))
             }
         };
         let arg_tys = match arg_ty {
@@ -317,7 +315,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // region and mutability.
         let base_expr_ty = self.node_ty(base_expr.hir_id);
         if let Some(adjustments) =
-            self.tables.borrow_mut().adjustments_mut().get_mut(base_expr.hir_id)
+            self.typeck_results.borrow_mut().adjustments_mut().get_mut(base_expr.hir_id)
         {
             let mut source = base_expr_ty;
             for adjustment in &mut adjustments[..] {

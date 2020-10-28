@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "ucd-parse"
-version = "0.1.4"
+version = "0.1.8"
 authors = ["Andrew Gallant <jamslam@gmail.com>"]
 description = "A library for parsing data files in the Unicode character database.\n"
 homepage = "https://github.com/BurntSushi/ucd-generate"
@@ -26,3 +27,5 @@ version = "1"
 
 [dependencies.regex]
 version = "1"
+features = ["std", "unicode"]
+default-features = false

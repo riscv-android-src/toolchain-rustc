@@ -68,7 +68,7 @@
 //! [`exit`](struct.Usercalls.html#method.exit) usercall, is the TCS state
 //! destroyed. This is depicted in the following diagram.
 //!
-//! ![Enclave execution lifecycle](../../../fortanix-sgx-abi/images/enclave-execution-lifecycle.png)
+//! ![Enclave execution lifecycle](https://edp.fortanix.com/img/docs/enclave-execution-lifecycle.png)
 //!
 //! Enclaves may also perform *asynchronous usercalls*. This is detailed in the
 //! [`async`](async/index.html) module. Most usercalls can be submitted either
@@ -77,6 +77,9 @@
 #![no_std]
 #![cfg_attr(feature = "rustc-dep-of-std", feature(staged_api))]
 #![cfg_attr(feature = "rustc-dep-of-std", unstable(feature = "sgx_platform", issue = "56975"))]
+#![doc(html_logo_url = "https://edp.fortanix.com/img/docs/edp-logo.svg",
+       html_favicon_url = "https://edp.fortanix.com/favicon.ico",
+       html_root_url = "https://edp.fortanix.com/docs/api/")]
 
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicUsize;
@@ -156,7 +159,7 @@ pub mod entry {
         /// The enclave must keep track of whether it expects another thread to
         /// be launched, e.g. by keeping track of how many times it called
         /// [`launch_thread`]. If a TCS with this entry point is entered even
-        /// though the enclavce didn't request it, the enclave must panic.
+        /// though the enclave didn't request it, the enclave must panic.
         ///
         /// [`launch_thread`]: ../../struct.Usercalls.html#method.launch_thread
         pub fn thread_entry() { unimplemented!() }
@@ -166,10 +169,13 @@ pub mod entry {
 /// An arbitrary-sized buffer of bytes in userspace, allocated by userspace.
 ///
 /// This type is used when userspace may return arbitrary-sized data from a
-/// usercall. When reading from the buffer, the enclave must ensure the entire
-/// buffer is in the user memory range. Once the enclave is done with the
-/// buffer, it should deallocate the buffer buffer by calling
+/// usercall. When reading from the buffer, if `len` is not `0`, the enclave
+/// must ensure the entire buffer is in the user memory range. Once the enclave
+/// is done with the buffer, it should deallocate the buffer buffer by calling
 /// [`free`]`(data, len, 1)`.
+///
+/// If `len` is `0`, the enclave should ignore `data`. It should not call
+/// `free`.
 ///
 /// [`free`]: ./struct.Usercalls.html#method.launch_thread
 #[repr(C)]
@@ -297,7 +303,9 @@ impl Usercalls {
     /// `buf` must point to a buffer in userspace with a size of at least
     /// `len`. On a succesful return, the number of bytes written is returned.
     /// The enclave must check that the returned length is no more than `len`.
-    /// If `len` is `0` or end of stream is reached, `0` may be returned.
+    /// If `len` is `0`, this call should block until the stream is ready for
+    /// reading. If `len` is `0` or end of stream is reached, `0` may be
+    /// returned.
     ///
     /// The enclave may mix calls to [`read`](#method.read) and
     /// [`read_alloc`](#method.read_alloc).
@@ -324,7 +332,8 @@ impl Usercalls {
     /// `buf` must point to a buffer in userspace with a size of at least
     /// `len`. On a succesful return, the number of bytes written is returned.
     /// The enclave must check that the returned length is no more than `len`.
-    /// If `len` is `0` or the stream is closed, `0` may be returned.
+    /// If `len` is `0`, this call should block until the stream is ready for
+    /// writing. If `len` is `0` or the stream is closed, `0` may be returned.
     pub fn write(fd: Fd, buf: *const u8, len: usize) -> (Result, usize) { unimplemented!() }
 
     /// Flush stream `fd`, ensuring that all intermediately buffered contents
@@ -562,6 +571,8 @@ impl Usercalls {
     /// `align`. If succesful, a pointer to this memory will be returned. The
     /// enclave must check the pointer is correctly aligned and that the entire
     /// range of memory pointed to is outside the enclave.
+    ///
+    /// It is an error to call this function with `size` equal to `0`.
     pub fn alloc(size: usize, alignment: usize) -> (Result, *mut u8) { unimplemented!() }
 
     /// Free user memory.
@@ -570,6 +581,8 @@ impl Usercalls {
     /// `ptr` must have previously been returned by a usercall. The `size` and
     /// `alignment` specified must exactly match what was allocated. This
     /// function must be called exactly once for each user memory buffer.
+    ///
+    /// Calling this function with `size` equal to `0` is a no-op.
     pub fn free(ptr: *mut u8, size: usize, alignment: usize) { unimplemented!() }
 }
 

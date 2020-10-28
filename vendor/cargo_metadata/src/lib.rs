@@ -78,12 +78,6 @@
 //! let output = command.wait().expect("Couldn't get cargo's exit status");
 //! ```
 
-extern crate semver;
-extern crate serde;
-#[macro_use]
-extern crate serde_derive;
-extern crate serde_json;
-
 use std::collections::HashMap;
 use std::env;
 use std::fmt;
@@ -91,16 +85,17 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::str::from_utf8;
 
-use semver::Version;
+pub use semver::Version;
 
 pub use dependency::{Dependency, DependencyKind};
 use diagnostic::Diagnostic;
 pub use errors::{Error, Result};
-pub use messages::{
-    Artifact, ArtifactProfile, BuildFinished, BuildScript, CompilerMessage, Message, MessageIter
-};
 #[allow(deprecated)]
 pub use messages::parse_messages;
+pub use messages::{
+    Artifact, ArtifactProfile, BuildFinished, BuildScript, CompilerMessage, Message, MessageIter,
+};
+use serde::{Deserialize, Serialize};
 
 mod dependency;
 pub mod diagnostic;
@@ -284,10 +279,8 @@ pub struct Package {
     /// This contents can be serialized to a struct using serde:
     ///
     /// ```rust
-    /// #[macro_use]
-    /// extern crate serde_json;
-    /// #[macro_use]
-    /// extern crate serde_derive;
+    /// use serde::Deserialize;
+    /// use serde_json::json;
     ///
     /// #[derive(Debug, Deserialize)]
     /// struct SomePackageMetadata {
@@ -322,9 +315,12 @@ pub struct Package {
 impl Package {
     /// Full path to the license file if one is present in the manifest
     pub fn license_file(&self) -> Option<PathBuf> {
-        self.license_file
-            .as_ref()
-            .map(|file| self.manifest_path.parent().unwrap_or(&self.manifest_path).join(file))
+        self.license_file.as_ref().map(|file| {
+            self.manifest_path
+                .parent()
+                .unwrap_or(&self.manifest_path)
+                .join(file)
+        })
     }
 
     /// Full path to the readme file if one is present in the manifest
@@ -415,7 +411,12 @@ pub struct MetadataCommand {
     manifest_path: Option<PathBuf>,
     current_dir: Option<PathBuf>,
     no_deps: bool,
-    features: Option<CargoOpt>,
+    /// Collections of `CargoOpt::SomeFeatures(..)`
+    features: Vec<String>,
+    /// Latched `CargoOpt::AllFeatures`
+    all_features: bool,
+    /// Latched `CargoOpt::NoDefaultFeatures`
+    no_default_features: bool,
     other_options: Vec<String>,
 }
 
@@ -448,8 +449,61 @@ impl MetadataCommand {
         self
     }
     /// Which features to include.
+    ///
+    /// Call this multiple times to specify advanced feature configurations:
+    ///
+    /// ```no_run
+    /// # use cargo_metadata::{CargoOpt, MetadataCommand};
+    /// MetadataCommand::new()
+    ///     .features(CargoOpt::NoDefaultFeatures)
+    ///     .features(CargoOpt::SomeFeatures(vec!["feat1".into(), "feat2".into()]))
+    ///     .features(CargoOpt::SomeFeatures(vec!["feat3".into()]))
+    ///     // ...
+    ///     # ;
+    /// ```
+    ///
+    /// # Panics
+    ///
+    /// `cargo metadata` rejects multiple `--no-default-features` flags. Similarly, the `features()`
+    /// method panics when specifiying multiple `CargoOpt::NoDefaultFeatures`:
+    ///
+    /// ```should_panic
+    /// # use cargo_metadata::{CargoOpt, MetadataCommand};
+    /// MetadataCommand::new()
+    ///     .features(CargoOpt::NoDefaultFeatures)
+    ///     .features(CargoOpt::NoDefaultFeatures) // <-- panic!
+    ///     // ...
+    ///     # ;
+    /// ```
+    ///
+    /// The method also panics for multiple `CargoOpt::AllFeatures` arguments:
+    ///
+    /// ```should_panic
+    /// # use cargo_metadata::{CargoOpt, MetadataCommand};
+    /// MetadataCommand::new()
+    ///     .features(CargoOpt::AllFeatures)
+    ///     .features(CargoOpt::AllFeatures) // <-- panic!
+    ///     // ...
+    ///     # ;
+    /// ```
     pub fn features(&mut self, features: CargoOpt) -> &mut MetadataCommand {
-        self.features = Some(features);
+        match features {
+            CargoOpt::SomeFeatures(features) => self.features.extend(features),
+            CargoOpt::NoDefaultFeatures => {
+                assert!(
+                    !self.no_default_features,
+                    "Do not supply CargoOpt::NoDefaultFeatures more than once!"
+                );
+                self.no_default_features = true;
+            }
+            CargoOpt::AllFeatures => {
+                assert!(
+                    !self.all_features,
+                    "Do not supply CargoOpt::AllFeatures more than once!"
+                );
+                self.all_features = true;
+            }
+        }
         self
     }
     /// Arbitrary command line flags to pass to `cargo`.  These will be added
@@ -465,7 +519,7 @@ impl MetadataCommand {
         let cargo = self
             .cargo_path
             .clone()
-            .or_else(|| env::var("CARGO").map(|s| PathBuf::from(s)).ok())
+            .or_else(|| env::var("CARGO").map(PathBuf::from).ok())
             .unwrap_or_else(|| PathBuf::from("cargo"));
         let mut cmd = Command::new(cargo);
         cmd.args(&["metadata", "--format-version", "1"]);
@@ -478,12 +532,14 @@ impl MetadataCommand {
             cmd.current_dir(path);
         }
 
-        if let Some(features) = &self.features {
-            match features {
-                CargoOpt::AllFeatures => cmd.arg("--all-features"),
-                CargoOpt::NoDefaultFeatures => cmd.arg("--no-default-features"),
-                CargoOpt::SomeFeatures(ftrs) => cmd.arg("--features").arg(ftrs.join(",")),
-            };
+        if !self.features.is_empty() {
+            cmd.arg("--features").arg(self.features.join(","));
+        }
+        if self.all_features {
+            cmd.arg("--all-features");
+        }
+        if self.no_default_features {
+            cmd.arg("--no-default-features");
         }
 
         if let Some(manifest_path) = &self.manifest_path {
@@ -496,7 +552,7 @@ impl MetadataCommand {
 
     /// Parses `cargo metadata` output.  `data` must have been
     /// produced by a command built with `cargo_command`.
-    pub fn parse<T : AsRef<str>>(data : T) -> Result<Metadata> {
+    pub fn parse<T: AsRef<str>>(data: T) -> Result<Metadata> {
         let meta = serde_json::from_str(data.as_ref())?;
         Ok(meta)
     }

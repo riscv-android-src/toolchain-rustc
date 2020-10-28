@@ -1,7 +1,7 @@
 use crate::consts::{constant_context, Constant};
 use crate::utils::{match_qpath, paths, span_lint};
 use if_chain::if_chain;
-use rustc_ast::ast::LitKind;
+use rustc_ast::LitKind;
 use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
@@ -44,7 +44,7 @@ impl<'tcx> LateLintPass<'tcx> for TransmutingNull {
             then {
 
                 // Catching transmute over constants that resolve to `null`.
-                let mut const_eval_context = constant_context(cx, cx.tables());
+                let mut const_eval_context = constant_context(cx, cx.typeck_results());
                 if_chain! {
                     if let ExprKind::Path(ref _qpath) = args[0].kind;
                     let x = const_eval_context.expr(&args[0]);

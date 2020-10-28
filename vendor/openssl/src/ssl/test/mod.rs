@@ -31,7 +31,7 @@ use ssl::{ClientHelloResponse, ExtensionContext};
 use ssl::{
     Error, HandshakeError, MidHandshakeSslStream, ShutdownResult, ShutdownState, Ssl, SslAcceptor,
     SslAcceptorBuilder, SslConnector, SslContext, SslContextBuilder, SslFiletype, SslMethod,
-    SslOptions, SslSessionCacheMode, SslStream, SslVerifyMode, StatusType,
+    SslOptions, SslSessionCacheMode, SslStream, SslStreamBuilder, SslVerifyMode, StatusType,
 };
 #[cfg(ossl102)]
 use x509::store::X509StoreBuilder;
@@ -41,9 +41,9 @@ use x509::{X509Name, X509StoreContext, X509VerifyResult, X509};
 
 mod server;
 
-static ROOT_CERT: &'static [u8] = include_bytes!("../../../test/root-ca.pem");
-static CERT: &'static [u8] = include_bytes!("../../../test/cert.pem");
-static KEY: &'static [u8] = include_bytes!("../../../test/key.pem");
+static ROOT_CERT: &[u8] = include_bytes!("../../../test/root-ca.pem");
+static CERT: &[u8] = include_bytes!("../../../test/cert.pem");
+static KEY: &[u8] = include_bytes!("../../../test/key.pem");
 
 #[test]
 fn verify_untrusted() {
@@ -321,7 +321,8 @@ fn test_connect_with_srtp_ctx() {
             .unwrap();
         ctx.set_private_key_file(&Path::new("test/key.pem"), SslFiletype::PEM)
             .unwrap();
-        let ssl = Ssl::new(&ctx.build()).unwrap();
+        let mut ssl = Ssl::new(&ctx.build()).unwrap();
+        ssl.set_mtu(1500).unwrap();
         let mut stream = ssl.accept(stream).unwrap();
 
         let mut buf = [0; 60];
@@ -339,7 +340,8 @@ fn test_connect_with_srtp_ctx() {
     let mut ctx = SslContext::builder(SslMethod::dtls()).unwrap();
     ctx.set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32")
         .unwrap();
-    let ssl = Ssl::new(&ctx.build()).unwrap();
+    let mut ssl = Ssl::new(&ctx.build()).unwrap();
+    ssl.set_mtu(1500).unwrap();
     let mut stream = ssl.connect(stream).unwrap();
 
     let mut buf = [1; 60];
@@ -381,7 +383,7 @@ fn test_connect_with_srtp_ssl() {
             .unwrap();
         let mut profilenames = String::new();
         for profile in ssl.srtp_profiles().unwrap() {
-            if profilenames.len() > 0 {
+            if !profilenames.is_empty() {
                 profilenames.push(':');
             }
             profilenames += profile.name();
@@ -390,6 +392,7 @@ fn test_connect_with_srtp_ssl() {
             "SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32",
             profilenames
         );
+        ssl.set_mtu(1500).unwrap();
         let mut stream = ssl.accept(stream).unwrap();
 
         let mut buf = [0; 60];
@@ -408,6 +411,7 @@ fn test_connect_with_srtp_ssl() {
     let mut ssl = Ssl::new(&ctx.build()).unwrap();
     ssl.set_tlsext_use_srtp("SRTP_AES128_CM_SHA1_80:SRTP_AES128_CM_SHA1_32")
         .unwrap();
+    ssl.set_mtu(1500).unwrap();
     let mut stream = ssl.connect(stream).unwrap();
 
     let mut buf = [1; 60];
@@ -595,13 +599,17 @@ fn refcount_ssl_context() {
 
 #[test]
 #[cfg_attr(libressl250, ignore)]
+#[cfg_attr(target_os = "windows", ignore)]
 #[cfg_attr(all(target_os = "macos", feature = "vendored"), ignore)]
 fn default_verify_paths() {
     let mut ctx = SslContext::builder(SslMethod::tls()).unwrap();
     ctx.set_default_verify_paths().unwrap();
     ctx.set_verify(SslVerifyMode::PEER);
     let ctx = ctx.build();
-    let s = TcpStream::connect("google.com:443").unwrap();
+    let s = match TcpStream::connect("google.com:443") {
+        Ok(s) => s,
+        Err(_) => return,
+    };
     let mut ssl = Ssl::new(&ctx).unwrap();
     ssl.set_hostname("google.com").unwrap();
     let mut socket = ssl.connect(s).unwrap();
@@ -1299,7 +1307,7 @@ fn stateless() {
 #[cfg(not(osslconf = "OPENSSL_NO_PSK"))]
 #[test]
 fn psk_ciphers() {
-    const CIPHER: &'static str = "PSK-AES128-CBC-SHA";
+    const CIPHER: &str = "PSK-AES128-CBC-SHA";
     const PSK: &[u8] = b"thisisaverysecurekey";
     const CLIENT_IDENT: &[u8] = b"thisisaclient";
     static CLIENT_CALLED: AtomicBool = AtomicBool::new(false);

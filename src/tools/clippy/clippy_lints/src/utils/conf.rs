@@ -13,7 +13,7 @@ use std::{env, fmt, fs, io};
 /// Gets the configuration file from arguments.
 pub fn file_from_args(args: &[NestedMetaItem]) -> Result<Option<PathBuf>, (&'static str, Span)> {
     for arg in args.iter().filter_map(NestedMetaItem::meta_item) {
-        if arg.check_name(sym!(conf_file)) {
+        if arg.has_name(sym!(conf_file)) {
             return match arg.kind {
                 MetaItemKind::Word | MetaItemKind::List(_) => Err(("`conf_file` must be a named value", arg.span)),
                 MetaItemKind::NameValue(ref value) => {
@@ -156,6 +156,8 @@ define_Conf! {
     (array_size_threshold, "array_size_threshold": u64, 512_000),
     /// Lint: VEC_BOX. The size of the boxed type in bytes, where boxing in a `Vec` is allowed
     (vec_box_size_threshold, "vec_box_size_threshold": u64, 4096),
+    /// Lint: TYPE_REPETITION_IN_BOUNDS. The maximum number of bounds a trait can have to be linted
+    (max_trait_bounds, "max_trait_bounds": u64, 3),
     /// Lint: STRUCT_EXCESSIVE_BOOLS. The maximum number of bools a struct can have
     (max_struct_bools, "max_struct_bools": u64, 3),
     /// Lint: FN_PARAMS_EXCESSIVE_BOOLS. The maximum number of bools function parameters can have

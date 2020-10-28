@@ -9,15 +9,15 @@ mod platform {
     use futures::{Future, Stream};
     use tokio_signal::unix::{Signal, SIGHUP};
 
-    pub fn main() -> Result<(), Box<::std::error::Error>> {
+    pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // on Unix, we can listen to whatever signal we want, in this case: SIGHUP
         let stream = Signal::new(SIGHUP).flatten_stream();
 
         println!("Waiting for SIGHUPS (Ctrl+C to quit)");
         println!(
             "  TIP: use `pkill -sighup sighup-example` from a second terminal \
-         to send a SIGHUP to all processes named 'sighup-example' \
-         (i.e. this binary)"
+             to send a SIGHUP to all processes named 'sighup-example' \
+             (i.e. this binary)"
         );
 
         // for_each is a powerful primitive provided by the Futures crate
@@ -26,8 +26,8 @@ mod platform {
         let future = stream.for_each(|the_signal| {
             println!(
                 "*Got signal {:#x}* I should probably reload my config \
-             or something",
-             the_signal
+                 or something",
+                the_signal
             );
             Ok(())
         });
@@ -38,14 +38,15 @@ mod platform {
         ::tokio::runtime::current_thread::block_on_all(future)?;
         Ok(())
     }
-
 }
 
 #[cfg(not(unix))]
 mod platform {
-    pub fn main() -> Result<(), Box<::std::error::Error>> {Ok(())}
+    pub fn main() -> Result<(), Box<::std::error::Error>> {
+        Ok(())
+    }
 }
 
-fn main() -> Result<(), Box<std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     platform::main()
 }

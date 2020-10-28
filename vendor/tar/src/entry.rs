@@ -44,7 +44,7 @@ pub struct EntryFields<'a> {
 
 pub enum EntryIo<'a> {
     Pad(io::Take<io::Repeat>),
-    Data(io::Take<&'a ArchiveInner<Read + 'a>>),
+    Data(io::Take<&'a ArchiveInner<dyn Read + 'a>>),
 }
 
 /// When unpacking items the unpacked thing is returned to allow custom
@@ -62,7 +62,7 @@ pub enum Unpacked {
 impl<'a, R: Read> Entry<'a, R> {
     /// Returns the path name for this entry.
     ///
-    /// This method may fail if the pathname is not valid unicode and this is
+    /// This method may fail if the pathname is not valid Unicode and this is
     /// called on a Windows platform.
     ///
     /// Note that this function will convert any `\` characters to directory
@@ -88,7 +88,7 @@ impl<'a, R: Read> Entry<'a, R> {
 
     /// Returns the link name for this entry, if any is found.
     ///
-    /// This method may fail if the pathname is not valid unicode and this is
+    /// This method may fail if the pathname is not valid Unicode and this is
     /// called on a Windows platform. `Ok(None)` being returned, however,
     /// indicates that the link name was not present.
     ///
@@ -136,7 +136,7 @@ impl<'a, R: Read> Entry<'a, R> {
 
     /// Returns access to the header of this entry in the archive.
     ///
-    /// This provides access to the the metadata for this entry in the archive.
+    /// This provides access to the metadata for this entry in the archive.
     pub fn header(&self) -> &Header {
         &self.fields.header
     }
@@ -509,7 +509,7 @@ impl<'a> EntryFields<'a> {
                 ::std::os::windows::fs::symlink_file(src, dst)
             }
 
-            #[cfg(any(unix, target_os = "redox"))]
+            #[cfg(unix)]
             fn symlink(src: &Path, dst: &Path) -> io::Result<()> {
                 ::std::os::unix::fs::symlink(src, dst)
             }
@@ -623,7 +623,7 @@ impl<'a> EntryFields<'a> {
             })
         }
 
-        #[cfg(any(unix, target_os = "redox"))]
+        #[cfg(unix)]
         fn _set_perms(
             dst: &Path,
             f: Option<&mut std::fs::File>,
@@ -717,12 +717,7 @@ impl<'a> EntryFields<'a> {
         }
         // Windows does not completely support posix xattrs
         // https://en.wikipedia.org/wiki/Extended_file_attributes#Windows_NT
-        #[cfg(any(
-            windows,
-            target_os = "redox",
-            not(feature = "xattr"),
-            target_arch = "wasm32"
-        ))]
+        #[cfg(any(windows, not(feature = "xattr"), target_arch = "wasm32"))]
         fn set_xattrs(_: &mut EntryFields, _: &Path) -> io::Result<()> {
             Ok(())
         }

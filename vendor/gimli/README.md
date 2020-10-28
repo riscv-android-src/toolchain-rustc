@@ -2,7 +2,7 @@
 
 [![](http://meritbadge.herokuapp.com/gimli) ![](https://img.shields.io/crates/d/gimli.svg)](https://crates.io/crates/gimli)
 [![](https://docs.rs/gimli/badge.svg)](https://docs.rs/gimli/)
-[![Build Status](https://travis-ci.org/gimli-rs/gimli.svg?branch=master)](https://travis-ci.org/gimli-rs/gimli)
+[![Build Status](https://github.com/gimli-rs/gimli/workflows/Rust/badge.svg)](https://github.com/gimli-rs/gimli/actions)
 [![Coverage Status](https://coveralls.io/repos/github/gimli-rs/gimli/badge.svg?branch=master)](https://coveralls.io/github/gimli-rs/gimli?branch=master)
 
 `gimli` is a blazing fast library for consuming the
@@ -30,7 +30,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-gimli = "0.21.0"
+gimli = "0.22.0"
 ```
 
 The minimum supported Rust version is 1.38.0.

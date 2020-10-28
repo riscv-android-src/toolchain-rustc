@@ -13,7 +13,7 @@
 //! DumpVisitor walks the AST and processes it, and Dumper is used for
 //! recording the output.
 
-use rustc_ast::ast::{self};
+use rustc_ast as ast;
 use rustc_ast::{token, walk_list};
 use rustc_data_structures::fx::FxHashSet;
 use rustc_hir as hir;
@@ -45,7 +45,7 @@ use rls_data::{
     RefKind, Relation, RelationKind, SpanData,
 };
 
-use log::{debug, error};
+use tracing::{debug, error};
 
 macro_rules! down_cast_data {
     ($id:ident, $kind:ident, $sp:expr) => {
@@ -104,20 +104,20 @@ impl<'tcx> DumpVisitor<'tcx> {
         self.dumper.analysis()
     }
 
-    fn nest_tables<F>(&mut self, item_def_id: LocalDefId, f: F)
+    fn nest_typeck_results<F>(&mut self, item_def_id: LocalDefId, f: F)
     where
         F: FnOnce(&mut Self),
     {
-        let tables = if self.tcx.has_typeck_tables(item_def_id) {
-            Some(self.tcx.typeck_tables_of(item_def_id))
+        let typeck_results = if self.tcx.has_typeck_results(item_def_id) {
+            Some(self.tcx.typeck(item_def_id))
         } else {
             None
         };
 
-        let old_maybe_typeck_tables = self.save_ctxt.maybe_typeck_tables;
-        self.save_ctxt.maybe_typeck_tables = tables;
+        let old_maybe_typeck_results = self.save_ctxt.maybe_typeck_results;
+        self.save_ctxt.maybe_typeck_results = typeck_results;
         f(self);
-        self.save_ctxt.maybe_typeck_tables = old_maybe_typeck_tables;
+        self.save_ctxt.maybe_typeck_results = old_maybe_typeck_results;
     }
 
     fn span_from_span(&self, span: Span) -> SpanData {
@@ -226,7 +226,7 @@ impl<'tcx> DumpVisitor<'tcx> {
             collector.visit_pat(&arg.pat);
 
             for (hir_id, ident, ..) in collector.collected_idents {
-                let typ = match self.save_ctxt.tables().node_type_opt(hir_id) {
+                let typ = match self.save_ctxt.typeck_results().node_type_opt(hir_id) {
                     Some(s) => s.to_string(),
                     None => continue,
                 };
@@ -269,7 +269,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         debug!("process_method: {}:{}", hir_id, ident);
 
         let map = &self.tcx.hir();
-        self.nest_tables(map.local_def_id(hir_id), |v| {
+        self.nest_typeck_results(map.local_def_id(hir_id), |v| {
             if let Some(mut method_data) = v.save_ctxt.get_method_data(hir_id, ident, span) {
                 if let Some(body) = body {
                     v.process_formals(map.body(body).params, &method_data.qualname);
@@ -363,7 +363,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         body: hir::BodyId,
     ) {
         let map = &self.tcx.hir();
-        self.nest_tables(map.local_def_id(item.hir_id), |v| {
+        self.nest_typeck_results(map.local_def_id(item.hir_id), |v| {
             let body = map.body(body);
             if let Some(fn_data) = v.save_ctxt.get_item_data(item) {
                 down_cast_data!(fn_data, DefData, item.span);
@@ -391,7 +391,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         typ: &'tcx hir::Ty<'tcx>,
         expr: &'tcx hir::Expr<'tcx>,
     ) {
-        self.nest_tables(self.tcx.hir().local_def_id(item.hir_id), |v| {
+        self.nest_typeck_results(self.tcx.hir().local_def_id(item.hir_id), |v| {
             if let Some(var_data) = v.save_ctxt.get_item_data(item) {
                 down_cast_data!(var_data, DefData, item.span);
                 v.dumper.dump_def(&access_from!(v.save_ctxt, item, item.hir_id), var_data);
@@ -438,7 +438,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         }
 
         // walk type and init value
-        self.nest_tables(self.tcx.hir().local_def_id(hir_id), |v| {
+        self.nest_typeck_results(self.tcx.hir().local_def_id(hir_id), |v| {
             v.visit_ty(typ);
             if let Some(expr) = expr {
                 v.visit_expr(expr);
@@ -508,7 +508,7 @@ impl<'tcx> DumpVisitor<'tcx> {
             );
         }
 
-        self.nest_tables(self.tcx.hir().local_def_id(item.hir_id), |v| {
+        self.nest_typeck_results(self.tcx.hir().local_def_id(item.hir_id), |v| {
             for field in def.fields() {
                 v.process_struct_field_def(field, item.hir_id);
                 v.visit_ty(&field.ty);
@@ -641,7 +641,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         }
 
         let map = &self.tcx.hir();
-        self.nest_tables(map.local_def_id(item.hir_id), |v| {
+        self.nest_typeck_results(map.local_def_id(item.hir_id), |v| {
             v.visit_ty(&typ);
             if let &Some(ref trait_ref) = trait_ref {
                 v.process_path(trait_ref.hir_ref_id, &hir::QPath::Resolved(None, &trait_ref.path));
@@ -702,14 +702,18 @@ impl<'tcx> DumpVisitor<'tcx> {
 
         // super-traits
         for super_bound in trait_refs.iter() {
-            let trait_ref = match *super_bound {
-                hir::GenericBound::Trait(ref trait_ref, _) => trait_ref,
+            let (def_id, sub_span) = match *super_bound {
+                hir::GenericBound::Trait(ref trait_ref, _) => (
+                    self.lookup_def_id(trait_ref.trait_ref.hir_ref_id),
+                    trait_ref.trait_ref.path.segments.last().unwrap().ident.span,
+                ),
+                hir::GenericBound::LangItemTrait(lang_item, span, _, _) => {
+                    (Some(self.tcx.require_lang_item(lang_item, Some(span))), span)
+                }
                 hir::GenericBound::Outlives(..) => continue,
             };
 
-            let trait_ref = &trait_ref.trait_ref;
-            if let Some(id) = self.lookup_def_id(trait_ref.hir_ref_id) {
-                let sub_span = trait_ref.path.segments.last().unwrap().ident.span;
+            if let Some(id) = def_id {
                 if !self.span.filter_generated(sub_span) {
                     let span = self.span_from_span(sub_span);
                     self.dumper.dump_ref(Ref {
@@ -762,11 +766,7 @@ impl<'tcx> DumpVisitor<'tcx> {
     }
 
     fn process_path(&mut self, id: hir::HirId, path: &hir::QPath<'tcx>) {
-        let span = match path {
-            hir::QPath::Resolved(_, path) => path.span,
-            hir::QPath::TypeRelative(_, segment) => segment.ident.span,
-        };
-        if self.span.filter_generated(span) {
+        if self.span.filter_generated(path.span()) {
             return;
         }
         self.dump_path_ref(id, path);
@@ -783,6 +783,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                 self.visit_ty(ty);
                 std::slice::from_ref(*segment)
             }
+            hir::QPath::LangItem(..) => return,
         };
         for seg in segments {
             if let Some(ref generic_args) = seg.args {
@@ -859,7 +860,7 @@ impl<'tcx> DumpVisitor<'tcx> {
         match p.kind {
             hir::PatKind::Struct(ref _path, fields, _) => {
                 // FIXME do something with _path?
-                let adt = match self.save_ctxt.tables().node_type_opt(p.hir_id) {
+                let adt = match self.save_ctxt.typeck_results().node_type_opt(p.hir_id) {
                     Some(ty) if ty.ty_adt_def().is_some() => ty.ty_adt_def().unwrap(),
                     _ => {
                         intravisit::walk_pat(self, p);
@@ -900,7 +901,7 @@ impl<'tcx> DumpVisitor<'tcx> {
                 Res::Local(hir_id) => {
                     let typ = self
                         .save_ctxt
-                        .tables()
+                        .typeck_results()
                         .node_type_opt(hir_id)
                         .map(|t| t.to_string())
                         .unwrap_or_default();
@@ -1355,10 +1356,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx> {
                 }
 
                 if let Some(id) = self.lookup_def_id(t.hir_id) {
-                    let sub_span = match path {
-                        hir::QPath::Resolved(_, path) => path.segments.last().unwrap().ident.span,
-                        hir::QPath::TypeRelative(_, segment) => segment.ident.span,
-                    };
+                    let sub_span = path.last_segment_span();
                     let span = self.span_from_span(sub_span);
                     self.dumper.dump_ref(Ref {
                         kind: RefKind::Type,
@@ -1375,13 +1373,15 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx> {
             hir::TyKind::Array(ref ty, ref anon_const) => {
                 self.visit_ty(ty);
                 let map = self.tcx.hir();
-                self.nest_tables(self.tcx.hir().local_def_id(anon_const.hir_id), |v| {
+                self.nest_typeck_results(self.tcx.hir().local_def_id(anon_const.hir_id), |v| {
                     v.visit_expr(&map.body(anon_const.body).value)
                 });
             }
             hir::TyKind::OpaqueDef(item_id, _) => {
                 let item = self.tcx.hir().item(item_id.id);
-                self.nest_tables(self.tcx.hir().local_def_id(item_id.id), |v| v.visit_item(item));
+                self.nest_typeck_results(self.tcx.hir().local_def_id(item_id.id), |v| {
+                    v.visit_item(item)
+                });
             }
             _ => intravisit::walk_ty(self, t),
         }
@@ -1393,7 +1393,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx> {
         match ex.kind {
             hir::ExprKind::Struct(ref path, ref fields, ref base) => {
                 let hir_expr = self.save_ctxt.tcx.hir().expect_expr(ex.hir_id);
-                let adt = match self.save_ctxt.tables().expr_ty_opt(&hir_expr) {
+                let adt = match self.save_ctxt.typeck_results().expr_ty_opt(&hir_expr) {
                     Some(ty) if ty.ty_adt_def().is_some() => ty.ty_adt_def().unwrap(),
                     _ => {
                         intravisit::walk_expr(self, ex);
@@ -1430,7 +1430,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx> {
 
                 // walk the body
                 let map = self.tcx.hir();
-                self.nest_tables(self.tcx.hir().local_def_id(ex.hir_id), |v| {
+                self.nest_typeck_results(self.tcx.hir().local_def_id(ex.hir_id), |v| {
                     let body = map.body(body);
                     v.process_formals(body.params, &id);
                     v.visit_expr(&body.value)
@@ -1439,7 +1439,7 @@ impl<'tcx> Visitor<'tcx> for DumpVisitor<'tcx> {
             hir::ExprKind::Repeat(ref expr, ref anon_const) => {
                 self.visit_expr(expr);
                 let map = self.tcx.hir();
-                self.nest_tables(self.tcx.hir().local_def_id(anon_const.hir_id), |v| {
+                self.nest_typeck_results(self.tcx.hir().local_def_id(anon_const.hir_id), |v| {
                     v.visit_expr(&map.body(anon_const.body).value)
                 });
             }

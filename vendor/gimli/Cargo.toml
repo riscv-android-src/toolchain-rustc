@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "gimli"
-version = "0.21.0"
+version = "0.22.0"
 authors = ["Nick Fitzgerald <fitzgen@gmail.com>", "Philip Craig <philipjcraig@gmail.com>"]
 exclude = ["/ci/*", "/releases/*", "/.travis.yml"]
 description = "A library for reading and writing the DWARF debugging format."
@@ -42,6 +42,20 @@ required-features = ["read", "std"]
 [[example]]
 name = "dwarf-validate"
 required-features = ["read", "std"]
+[dependencies.alloc]
+version = "1.0.0"
+optional = true
+package = "rustc-std-workspace-alloc"
+
+[dependencies.compiler_builtins]
+version = "0.1.2"
+optional = true
+
+[dependencies.core]
+version = "1.0.0"
+optional = true
+package = "rustc-std-workspace-core"
+
 [dependencies.fallible-iterator]
 version = "0.2.0"
 optional = true
@@ -68,7 +82,7 @@ version = "0.7"
 version = "1"
 
 [dev-dependencies.object]
-version = "0.19"
+version = "0.20"
 
 [dev-dependencies.rayon]
 version = "1.0"
@@ -86,6 +100,7 @@ version = "2"
 default = ["read", "write", "std", "fallible-iterator", "endian-reader"]
 endian-reader = ["stable_deref_trait"]
 read = []
+rustc-dep-of-std = ["core", "alloc", "compiler_builtins"]
 std = ["fallible-iterator/std", "stable_deref_trait/std"]
 write = ["indexmap"]
 [badges.coveralls]

@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "crossbeam-channel"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["The Crossbeam Project Developers"]
 description = "Multi-producer multi-consumer channels for message passing"
 homepage = "https://github.com/crossbeam-rs/crossbeam/tree/master/crossbeam-channel"
@@ -20,18 +21,24 @@ documentation = "https://docs.rs/crossbeam-channel"
 readme = "README.md"
 keywords = ["channel", "mpmc", "select", "golang", "message"]
 categories = ["algorithms", "concurrency", "data-structures"]
-license = "MIT/Apache-2.0 AND BSD-2-Clause"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/crossbeam-rs/crossbeam"
+[dependencies.cfg-if]
+version = "0.1.10"
+
 [dependencies.crossbeam-utils]
 version = "0.7"
-
-[dependencies.maybe-uninit]
-version = "2.0.0"
+optional = true
+default-features = false
 [dev-dependencies.num_cpus]
-version = "1.10.0"
+version = "1.13.0"
 
 [dev-dependencies.rand]
-version = "0.6"
+version = "0.7.3"
 
 [dev-dependencies.signal-hook]
-version = "0.1.5"
+version = "0.1.15"
+
+[features]
+default = ["std"]
+std = ["crossbeam-utils/std"]

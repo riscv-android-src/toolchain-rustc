@@ -6,25 +6,27 @@
 // option. This file may not be copied, modified, or distributed
 // except according to those terms.
 
+mod utils;
+
 use structopt::StructOpt;
+use utils::*;
 
 #[derive(StructOpt, PartialEq, Debug)]
 enum Opt {
-    #[structopt(name = "fetch", about = "Fetch stuff from GitHub.")]
+    /// Fetch stuff from GitHub
     Fetch {
-        #[structopt(long = "all")]
+        #[structopt(long)]
         all: bool,
-        #[structopt(short = "f", long = "force")]
+        #[structopt(short, long)]
         /// Overwrite local branches.
         force: bool,
         repo: String,
     },
 
-    #[structopt(name = "add")]
     Add {
-        #[structopt(short = "i", long = "interactive")]
+        #[structopt(short, long)]
         interactive: bool,
-        #[structopt(short = "v", long = "verbose")]
+        #[structopt(short, long)]
         verbose: bool,
     },
 }
@@ -81,7 +83,6 @@ fn test_no_parse() {
 
 #[derive(StructOpt, PartialEq, Debug)]
 enum Opt2 {
-    #[structopt(name = "do-something")]
     DoSomething { arg: String },
 }
 
@@ -99,11 +100,8 @@ fn test_hyphenated_subcommands() {
 
 #[derive(StructOpt, PartialEq, Debug)]
 enum Opt3 {
-    #[structopt(name = "add")]
     Add,
-    #[structopt(name = "init")]
     Init,
-    #[structopt(name = "fetch")]
     Fetch,
 }
 
@@ -135,13 +133,11 @@ struct Fetch {
 }
 #[derive(StructOpt, PartialEq, Debug)]
 enum Opt4 {
-    /// Not shown
-    #[structopt(name = "add", about = "Add a file")]
+    // Not shown
+    /// Add a file
     Add(Add),
-    #[structopt(name = "init")]
     Init,
     /// download history from remote
-    #[structopt(name = "fetch")]
     Fetch(Fetch),
 }
 
@@ -164,9 +160,7 @@ fn test_tuple_commands() {
         Opt4::from_clap(&Opt4::clap().get_matches_from(&["test", "fetch", "origin"]))
     );
 
-    let mut output = Vec::new();
-    Opt4::clap().write_long_help(&mut output).unwrap();
-    let output = String::from_utf8(output).unwrap();
+    let output = get_long_help::<Opt4>();
 
     assert!(output.contains("download history from remote"));
     assert!(output.contains("Add a file"));
@@ -177,15 +171,12 @@ fn test_tuple_commands() {
 fn enum_in_enum_subsubcommand() {
     #[derive(StructOpt, Debug, PartialEq)]
     pub enum Opt {
-        #[structopt(name = "daemon")]
         Daemon(DaemonCommand),
     }
 
     #[derive(StructOpt, Debug, PartialEq)]
     pub enum DaemonCommand {
-        #[structopt(name = "start")]
         Start,
-        #[structopt(name = "stop")]
         Stop,
     }
 
@@ -219,4 +210,94 @@ fn flatten_enum() {
             sub_cmd: SubCmd::Foo
         }
     );
+}
+
+#[test]
+fn external_subcommand() {
+    #[derive(Debug, PartialEq, StructOpt)]
+    struct Opt {
+        #[structopt(subcommand)]
+        sub: Subcommands,
+    }
+
+    #[derive(Debug, PartialEq, StructOpt)]
+    enum Subcommands {
+        Add,
+        Remove,
+        #[structopt(external_subcommand)]
+        Other(Vec<String>),
+    }
+
+    assert_eq!(
+        Opt::from_iter(&["test", "add"]),
+        Opt {
+            sub: Subcommands::Add
+        }
+    );
+
+    assert_eq!(
+        Opt::from_iter(&["test", "remove"]),
+        Opt {
+            sub: Subcommands::Remove
+        }
+    );
+
+    assert_eq!(
+        Opt::from_iter(&["test", "git", "status"]),
+        Opt {
+            sub: Subcommands::Other(vec!["git".into(), "status".into()])
+        }
+    );
+
+    assert!(Opt::from_iter_safe(&["test"]).is_err());
+}
+
+#[test]
+fn external_subcommand_os_string() {
+    use std::ffi::OsString;
+
+    #[derive(Debug, PartialEq, StructOpt)]
+    struct Opt {
+        #[structopt(subcommand)]
+        sub: Subcommands,
+    }
+
+    #[derive(Debug, PartialEq, StructOpt)]
+    enum Subcommands {
+        #[structopt(external_subcommand)]
+        Other(Vec<OsString>),
+    }
+
+    assert_eq!(
+        Opt::from_iter(&["test", "git", "status"]),
+        Opt {
+            sub: Subcommands::Other(vec!["git".into(), "status".into()])
+        }
+    );
+
+    assert!(Opt::from_iter_safe(&["test"]).is_err());
+}
+
+#[test]
+fn external_subcommand_optional() {
+    #[derive(Debug, PartialEq, StructOpt)]
+    struct Opt {
+        #[structopt(subcommand)]
+        sub: Option<Subcommands>,
+    }
+
+    #[derive(Debug, PartialEq, StructOpt)]
+    enum Subcommands {
+        #[structopt(external_subcommand)]
+        Other(Vec<String>),
+    }
+
+    assert_eq!(
+        Opt::from_iter(&["test", "git", "status"]),
+        Opt {
+            sub: Some(Subcommands::Other(vec!["git".into(), "status".into()]))
+        }
+    );
+
+    assert_eq!(Opt::from_iter(&["test"]), Opt { sub: None });
 }

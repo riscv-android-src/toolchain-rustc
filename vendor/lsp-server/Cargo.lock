@@ -118,7 +118,7 @@ dependencies = [
 
 [[package]]
 name = "lsp-server"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "crossbeam-channel",
  "flexi_logger",

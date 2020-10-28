@@ -35,6 +35,21 @@ pub struct List<T> {
     opaque: OpaqueListContents,
 }
 
+unsafe impl<'a, T: 'a> rustc_data_structures::tagged_ptr::Pointer for &'a List<T> {
+    const BITS: usize = std::mem::align_of::<usize>().trailing_zeros() as usize;
+    fn into_usize(self) -> usize {
+        self as *const List<T> as usize
+    }
+    unsafe fn from_usize(ptr: usize) -> Self {
+        &*(ptr as *const List<T>)
+    }
+    unsafe fn with_ref<R, F: FnOnce(&Self) -> R>(ptr: usize, f: F) -> R {
+        // Self: Copy so this is fine
+        let ptr = Self::from_usize(ptr);
+        f(&ptr)
+    }
+}
+
 unsafe impl<T: Sync> Sync for List<T> {}
 
 impl<T: Copy> List<T> {
@@ -76,9 +91,16 @@ impl<T: fmt::Debug> fmt::Debug for List<T> {
     }
 }
 
-impl<T: Encodable> Encodable for List<T> {
+impl<S: Encoder, T: Encodable<S>> Encodable<S> for List<T> {
     #[inline]
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
+    fn encode(&self, s: &mut S) -> Result<(), S::Error> {
+        (**self).encode(s)
+    }
+}
+
+impl<S: Encoder, T: Encodable<S>> Encodable<S> for &List<T> {
+    #[inline]
+    fn encode(&self, s: &mut S) -> Result<(), S::Error> {
         (**self).encode(s)
     }
 }

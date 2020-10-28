@@ -2,7 +2,7 @@
 # It is not intended for manual editing.
 [[package]]
 name = "ctor"
-version = "0.1.13"
+version = "0.1.15"
 dependencies = [
  "libc-print",
  "quote",
@@ -11,42 +11,42 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.67"
+version = "0.2.71"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb147597cdf94ed43ab7a9038716637d2d1bf2bc571da995d0028dec06bd3018"
+checksum = "9457b06509d27052635f90d6466700c65095fdf75409b3fbdd903e988b886f49"
 
 [[package]]
 name = "libc-print"
-version = "0.1.11"
+version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b5e70723516a4b73dff55b5dc3b963a08e287917cbb13387afd1f5e02a204ea"
+checksum = "51d69922a3a7e3e1d03ec46cf18da2cdf5d6d2eef5d781c57075a52584f95b32"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.8"
+version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3acb317c6ff86a4e579dfa00fc5e6cca91ecbb4e7eb2df0468805b674eb88548"
+checksum = "beae6331a816b1f65d04c45b078fd8e6c93e8071771f41b8163255bbd8d7c8fa"
 dependencies = [
  "unicode-xid",
 ]
 
 [[package]]
 name = "quote"
-version = "1.0.2"
+version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "053a8c8bcc71fcce321828dc897a98ab9760bef03a4fc36693c231e5b3216cfe"
+checksum = "aa563d17ecb180e500da1cfd2b028310ac758de548efdd203e18f283af693f37"
 dependencies = [
  "proc-macro2",
 ]
 
 [[package]]
 name = "syn"
-version = "1.0.15"
+version = "1.0.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a0294dc449adc58bb6592fff1a23d3e5e6e235afc6a0ffca2657d19e7bbffe5"
+checksum = "93a56fabc59dce20fe48b6c832cc249c713e7ed88fa28b0ee0a3bfcaae5fe4e2"
 dependencies = [
  "proc-macro2",
  "quote",

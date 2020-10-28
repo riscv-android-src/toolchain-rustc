@@ -10,9 +10,10 @@ use std::slice;
 use std::sync::Arc;
 use winapi::shared::minwindef as winapi;
 use winapi::shared::{ntdef, sspi, winerror};
-use winapi::um::{self, wincrypt};
+use winapi::um::{self, schannel, wincrypt};
 
 use crate::{INIT_REQUESTS, ACCEPT_REQUESTS, Inner, secbuf, secbuf_desc};
+use crate::alpn_list::AlpnList;
 use crate::cert_chain::{CertChain, CertChainContext};
 use crate::cert_store::{CertAdd, CertStore};
 use crate::cert_context::CertContext;
@@ -36,6 +37,7 @@ pub struct Builder {
     accept_invalid_hostnames: bool,
     verify_callback: Option<Arc<dyn Fn(CertValidationResult) -> io::Result<()> + Sync + Send>>,
     cert_store: Option<CertStore>,
+    requested_application_protocols: Option<Vec<Vec<u8>>>,
 }
 
 impl Default for Builder {
@@ -46,6 +48,7 @@ impl Default for Builder {
             accept_invalid_hostnames: false,
             verify_callback: None,
             cert_store: None,
+            requested_application_protocols: None,
         }
     }
 }
@@ -108,6 +111,13 @@ impl Builder {
         self
     }
 
+    /// Requests one of a set of application protocols using alpn
+    pub fn request_application_protocols(&mut self, alpns: &[&[u8]]) -> &mut Builder {
+        self.requested_application_protocols =
+            Some(alpns.iter().map(|bytes| bytes.to_vec()).collect::<Vec<_>>());
+        self
+    }
+
     /// Initialize a new TLS session where the stream provided will be
     /// connecting to a remote TLS server.
     ///
@@ -158,7 +168,8 @@ impl Builder {
         };
         let (ctxt, buf) = match SecurityContext::initialize(&mut cred,
                                                             server,
-                                                            domain) {
+                                                            domain,
+                                                            &self.requested_application_protocols) {
             Ok(pair) => pair,
             Err(e) => return Err(HandshakeError::Failure(e)),
         };
@@ -185,6 +196,7 @@ impl Builder {
             enc_in: Cursor::new(Vec::new()),
             out_buf: Cursor::new(buf.map(|b| b.to_owned()).unwrap_or(Vec::new())),
             last_write_len: 0,
+            requested_application_protocols: self.requested_application_protocols.clone(),
         };
 
         MidHandshakeTlsStream {
@@ -226,6 +238,7 @@ pub struct TlsStream<S> {
     out_buf: Cursor<Vec<u8>>,
     /// the (unencrypted) length of the last write call used to track writes
     last_write_len: usize,
+    requested_application_protocols: Option<Vec<Vec<u8>>>,
 }
 
 /// ensures that a TlsStream is always Sync/Send
@@ -278,14 +291,7 @@ impl CertValidationResult {
 }
 
 impl<S: fmt::Debug + Any> Error for HandshakeError<S> {
-    fn description(&self) -> &str {
-        match *self {
-            HandshakeError::Failure(_) => "failed to perform handshake",
-            HandshakeError::Interrupted(_) => "interrupted performing handshake",
-        }
-    }
-
-    fn cause(&self) -> Option<&dyn Error> {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
             HandshakeError::Failure(ref e) => Some(e),
             HandshakeError::Interrupted(_) => None,
@@ -295,7 +301,11 @@ impl<S: fmt::Debug + Any> Error for HandshakeError<S> {
 
 impl<S: fmt::Debug + Any> fmt::Display for HandshakeError<S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(self.description())?;
+        let desc = match *self {
+            HandshakeError::Failure(_) => "failed to perform handshake",
+            HandshakeError::Interrupted(_) => "interrupted performing handshake",
+        };
+        write!(f, "{}", desc)?;
         if let Some(e) = self.source() {
            write!(f, ": {}", e)?;
         }
@@ -355,6 +365,23 @@ impl<S> TlsStream<S>
         self.context.remote_cert()
     }
 
+    /// Returns the negotiated application protocol for this tls stream, if one exists
+    pub fn negotiated_application_protocol(&self) -> io::Result<Option<Vec<u8>>> {
+        let client_proto = self.context.application_protocol()?;
+        if client_proto.ProtoNegoStatus != sspi::SecApplicationProtocolNegotiationStatus_Success
+            || client_proto.ProtoNegoExt != sspi::SecApplicationProtocolNegotiationExt_ALPN
+        {
+            return Ok(None);
+        }
+        Ok(Some(client_proto.ProtocolId[..client_proto.ProtocolIdSize as usize].to_vec()))
+    }
+
+    /// Returns whether or not the session was resumed.
+    pub fn session_resumed(&self) -> io::Result<bool> {
+        let session_info = self.context.session_info()?;
+        Ok(session_info.dwFlags & schannel::SSL_SESSION_RECONNECT > 0)
+    }
+
     /// Returns a reference to the buffer of pending data.
     ///
     /// Like `BufRead::fill_buf` except that it will return an empty slice
@@ -400,10 +427,16 @@ impl<S> TlsStream<S>
     fn step_initialize(&mut self) -> io::Result<()> {
         unsafe {
             let pos = self.enc_in.position() as usize;
-            let mut inbufs = [secbuf(sspi::SECBUFFER_TOKEN,
-                                     Some(&mut self.enc_in.get_mut()[..pos])),
-                              secbuf(sspi::SECBUFFER_EMPTY, None)];
-            let mut inbuf_desc = secbuf_desc(&mut inbufs);
+            let mut inbufs = vec![secbuf(sspi::SECBUFFER_TOKEN,
+                                         Some(&mut self.enc_in.get_mut()[..pos])),
+                                  secbuf(sspi::SECBUFFER_EMPTY, None)];
+            // Make sure `AlpnList` is kept alive for the duration of this function.
+            let mut alpns = self.requested_application_protocols.as_ref().map(|alpn| AlpnList::new(&alpn));
+            if let Some(ref mut alpns) = alpns {
+                inbufs.push(secbuf(sspi::SECBUFFER_APPLICATION_PROTOCOLS,
+                                   Some(&mut alpns[..])));
+            };
+            let mut inbuf_desc = secbuf_desc(&mut inbufs[..]);
 
             let mut outbufs = [secbuf(sspi::SECBUFFER_TOKEN, None),
                                secbuf(sspi::SECBUFFER_ALERT, None),
@@ -418,7 +451,7 @@ impl<S> TlsStream<S>
                 } else {
                     self.context.get_mut()
                 };
-                sspi::AcceptSecurityContext(self.cred.get_mut(),
+                sspi::AcceptSecurityContext(&mut self.cred.as_inner(),
                                             ptr,
                                             &mut inbuf_desc,
                                             ACCEPT_REQUESTS,
@@ -433,7 +466,7 @@ impl<S> TlsStream<S>
                     _ => ptr::null_mut(),
                 };
 
-                sspi::InitializeSecurityContextW(self.cred.get_mut(),
+                sspi::InitializeSecurityContextW(&mut self.cred.as_inner(),
                                                  self.context.get_mut(),
                                                  domain,
                                                  INIT_REQUESTS,

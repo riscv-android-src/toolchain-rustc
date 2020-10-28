@@ -12,10 +12,10 @@
 
 [package]
 name = "yaml-merge-keys"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Ben Boeckel <ben.boeckel@kitware.com>"]
 description = "Implementation of the YAML merge key extension.\n\nhttp://yaml.org/type/merge.html\n"
-documentation = "https://docs.rs/yaml-merge-keys/~0.3"
+documentation = "https://docs.rs/yaml-merge-keys/~0.4"
 readme = "README.md"
 keywords = ["yaml"]
 license = "MIT/Apache-2.0"

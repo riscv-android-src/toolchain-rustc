@@ -13,9 +13,8 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::hir::map::Map;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Span;
-use rustc_span::symbol::kw;
+use rustc_span::symbol::{kw, Symbol};
 
-use crate::reexport::Name;
 use crate::utils::{in_macro, last_path_segment, span_lint, trait_ref_of_method};
 
 declare_clippy_lint! {
@@ -113,7 +112,7 @@ impl<'tcx> LateLintPass<'tcx> for Lifetimes {
 enum RefLt {
     Unnamed,
     Static,
-    Named(Name),
+    Named(Symbol),
 }
 
 fn check_fn_inner<'tcx>(
@@ -129,10 +128,10 @@ fn check_fn_inner<'tcx>(
     }
 
     let mut bounds_lts = Vec::new();
-    let types = generics.params.iter().filter(|param| match param.kind {
-        GenericParamKind::Type { .. } => true,
-        _ => false,
-    });
+    let types = generics
+        .params
+        .iter()
+        .filter(|param| matches!(param.kind, GenericParamKind::Type { .. }));
     for typ in types {
         for bound in typ.bounds {
             let mut visitor = RefVisitor::new(cx);
@@ -337,10 +336,10 @@ impl<'a, 'tcx> RefVisitor<'a, 'tcx> {
     fn collect_anonymous_lifetimes(&mut self, qpath: &QPath<'_>, ty: &Ty<'_>) {
         if let Some(ref last_path_segment) = last_path_segment(qpath).args {
             if !last_path_segment.parenthesized
-                && !last_path_segment.args.iter().any(|arg| match arg {
-                    GenericArg::Lifetime(_) => true,
-                    _ => false,
-                })
+                && !last_path_segment
+                    .args
+                    .iter()
+                    .any(|arg| matches!(arg, GenericArg::Lifetime(_)))
             {
                 let hir_id = ty.hir_id;
                 match self.cx.qpath_res(qpath, hir_id) {
@@ -456,7 +455,7 @@ fn has_where_lifetimes<'tcx>(cx: &LateContext<'tcx>, where_clause: &'tcx WhereCl
 }
 
 struct LifetimeChecker {
-    map: FxHashMap<Name, Span>,
+    map: FxHashMap<Symbol, Span>,
 }
 
 impl<'tcx> Visitor<'tcx> for LifetimeChecker {

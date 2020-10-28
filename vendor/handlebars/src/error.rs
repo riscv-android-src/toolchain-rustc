@@ -1,11 +1,15 @@
 use std::error::Error;
 use std::fmt;
 use std::io::Error as IOError;
+use std::num::ParseIntError;
 use std::string::FromUtf8Error;
 
 use serde_json::error::Error as SerdeError;
 #[cfg(feature = "dir_source")]
 use walkdir::Error as WalkdirError;
+
+#[cfg(feature = "script_helper")]
+use rhai::{EvalAltResult, ParseError};
 
 /// Error when rendering data on template.
 #[derive(Debug)]
@@ -18,7 +22,7 @@ pub struct RenderError {
 }
 
 impl fmt::Display for RenderError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match (self.line_no, self.column_no) {
             (Some(line), Some(col)) => write!(
                 f,
@@ -43,19 +47,32 @@ impl Error for RenderError {
 
 impl From<IOError> for RenderError {
     fn from(e: IOError) -> RenderError {
-        RenderError::with(e)
+        RenderError::from_error("Error on output generation.", e)
     }
 }
 
 impl From<SerdeError> for RenderError {
     fn from(e: SerdeError) -> RenderError {
-        RenderError::with(e)
+        RenderError::from_error("Error when accessing JSON data.", e)
     }
 }
 
 impl From<FromUtf8Error> for RenderError {
     fn from(e: FromUtf8Error) -> RenderError {
-        RenderError::with(e)
+        RenderError::from_error("Error on bytes generation.", e)
+    }
+}
+
+impl From<ParseIntError> for RenderError {
+    fn from(e: ParseIntError) -> RenderError {
+        RenderError::from_error("Error on accessing array/vector with string index.", e)
+    }
+}
+
+#[cfg(feature = "script_helper")]
+impl From<Box<EvalAltResult>> for RenderError {
+    fn from(e: Box<EvalAltResult>) -> RenderError {
+        RenderError::from_error("Error on converting data to Rhai dynamic.", e)
     }
 }
 
@@ -78,11 +95,22 @@ impl RenderError {
         RenderError::new(&msg)
     }
 
+    #[deprecated]
     pub fn with<E>(cause: E) -> RenderError
     where
         E: Error + Send + Sync + 'static,
     {
         let mut e = RenderError::new(cause.to_string());
+        e.cause = Some(Box::new(cause));
+
+        e
+    }
+
+    pub fn from_error<E>(error_kind: &str, cause: E) -> RenderError
+    where
+        E: Error + Send + Sync + 'static,
+    {
+        let mut e = RenderError::new(format!("{}: {}", error_kind, cause.to_string()));
         e.cause = Some(Box::new(cause));
 
         e
@@ -176,7 +204,7 @@ fn template_segment(template_str: &str, line: usize, col: usize) -> String {
 }
 
 impl fmt::Display for TemplateError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         match (self.line_no, self.column_no, &self.segment) {
             (Some(line), Some(col), &Some(ref seg)) => writeln!(
                 f,
@@ -201,11 +229,11 @@ quick_error! {
     pub enum TemplateFileError {
         TemplateError(err: TemplateError) {
             from()
-            cause(err)
+            source(err)
             display("{}", err)
         }
         IOError(err: IOError, name: String) {
-            cause(err)
+            source(err)
             display("Template \"{}\": {}", name, err)
         }
     }
@@ -228,16 +256,16 @@ quick_error! {
     pub enum TemplateRenderError {
         TemplateError(err: TemplateError) {
             from()
-            cause(err)
+            source(err)
             display("{}", err)
         }
         RenderError(err: RenderError) {
             from()
-            cause(err)
+            source(err)
             display("{}", err)
         }
         IOError(err: IOError, name: String) {
-            cause(err)
+            source(err)
             display("Template \"{}\": {}", name, err)
         }
     }
@@ -249,6 +277,21 @@ impl TemplateRenderError {
             Some(&e)
         } else {
             None
+        }
+    }
+}
+
+#[cfg(feature = "script_helper")]
+quick_error! {
+    #[derive(Debug)]
+    pub enum ScriptError {
+        IOError(err: IOError) {
+            from()
+            source(err)
+        }
+        ParseError(err: ParseError) {
+            from()
+            source(err)
         }
     }
 }

@@ -2,7 +2,7 @@ use crate::ich;
 use crate::middle::cstore::CrateStore;
 use crate::ty::{fast_reject, TyCtxt};
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::sync::Lrc;
@@ -14,6 +14,7 @@ use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::Symbol;
 use rustc_span::{BytePos, CachingSourceMapView, SourceFile};
 
+use rustc_span::def_id::{CrateNum, CRATE_DEF_INDEX};
 use smallvec::SmallVec;
 use std::cmp::Ord;
 
@@ -227,6 +228,12 @@ impl<'a> HashStable<StableHashingContext<'a>> for ast::NodeId {
 impl<'a> rustc_span::HashStableContext for StableHashingContext<'a> {
     fn hash_spans(&self) -> bool {
         self.hash_spans
+    }
+
+    #[inline]
+    fn hash_crate_num(&mut self, cnum: CrateNum, hasher: &mut StableHasher) {
+        let hcx = self;
+        hcx.def_path_hash(DefId { krate: cnum, index: CRATE_DEF_INDEX }).hash_stable(hcx, hasher);
     }
 
     #[inline]

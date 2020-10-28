@@ -7,6 +7,16 @@ see a list of flags available.
 `-Z unstable-options` is a generic flag for enabling other unstable
 command-line flags. Options requiring this will be called out below.
 
+Anything which can be configured with a Z flag can also be set in the cargo
+config file (`.cargo/config.toml`) in the `unstable` table. For example:
+
+```toml
+[unstable]
+mtime-on-use = 'yes'
+multitarget = 'yes'
+timings = 'yes'
+```
+
 Some unstable features will require you to specify the `cargo-features` key in
 `Cargo.toml`.
 
@@ -348,6 +358,15 @@ something doesn't quite work the way you'd like it to, feel free to check out
 the [issue tracker](https://github.com/rust-lang/wg-cargo-std-aware/issues) of
 the tracking repository, and if it's not there please file a new issue!
 
+### build-std-features
+* Tracking Repository: https://github.com/rust-lang/wg-cargo-std-aware
+
+This flag is a sibling to the `-Zbuild-std` feature flag. This will configure
+the features enabled for the standard library itself when building the standard
+library. The default enabled features, at this time, are `backtrace` and
+`panic_unwind`. This flag expects a comma-separated list and, if provided, will
+override the default list of features enabled.
+
 ### timings
 * Tracking Issue: [#7405](https://github.com/rust-lang/cargo/issues/7405)
 
@@ -627,13 +646,6 @@ resolver = "2"
 The `resolver` field is ignored in dependencies, only the top-level project or
 workspace can control the new behavior.
 
-### crate-versions
-* Tracking Issue: [#7907](https://github.com/rust-lang/cargo/issues/7907)
-
-The `-Z crate-versions` flag will make `cargo doc` include appropriate crate versions for the current crate and all of its dependencies (unless `--no-deps` was provided) in the compiled documentation.
-
-You can find an example screenshot for the cargo itself in the tracking issue.
-
 ### unit-graph
 * Tracking Issue: [#8002](https://github.com/rust-lang/cargo/issues/8002)
 
@@ -682,6 +694,7 @@ The following is a description of the JSON structure:
         "name": "my-package",
         "src_path": "/path/to/my-package/src/lib.rs",
         "edition": "2018",
+        "test": true,
         "doctest": true
       },
       /* The profile settings for this unit.
@@ -826,3 +839,37 @@ sysroot. If you are using rustup, this documentation can be installed with
 The default value is `"remote"`.
 
 The value may also take a URL for a custom location.
+
+### terminal-width
+This feature provides a new flag, `-Z terminal-width`, which is used to pass
+a terminal width to `rustc` so that error messages containing long lines
+can be intelligently truncated.
+
+For example, passing `-Z terminal-width=20` (an arbitrarily low value) might
+produce the following error:
+
+```text
+error[E0308]: mismatched types
+  --> src/main.rs:2:17
+  |
+2 | ..._: () = 42;
+  |       --   ^^ expected `()`, found integer
+  |       |
+  |       expected due to this
+
+error: aborting due to previous error
+```
+
+In contrast, without `-Z terminal-width`, the error would look as shown below:
+
+```text
+error[E0308]: mismatched types
+ --> src/main.rs:2:17
+  |
+2 |     let _: () = 42;
+  |            --   ^^ expected `()`, found integer
+  |            |
+  |            expected due to this
+
+error: aborting due to previous error
+```

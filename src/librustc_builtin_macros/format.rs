@@ -1,7 +1,7 @@
 use ArgumentType::*;
 use Position::*;
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::ptr::P;
 use rustc_ast::token;
 use rustc_ast::tokenstream::TokenStream;
@@ -149,7 +149,7 @@ fn parse_args<'a>(
                 return Err(err);
             } else {
                 // ...after that delegate to `expect` to also include the other expected tokens.
-                return Err(p.expect(&token::Comma).err().unwrap());
+                let _ = p.expect(&token::Comma)?;
             }
         }
         first = false;
@@ -359,24 +359,18 @@ impl<'a, 'b> Context<'a, 'b> {
             // for `println!("{7:7$}", 1);`
             refs.sort();
             refs.dedup();
-            let (arg_list, mut sp) = if refs.len() == 1 {
-                let spans: Vec<_> = spans.into_iter().filter_map(|sp| sp.copied()).collect();
-                (
-                    format!("argument {}", refs[0]),
-                    if spans.is_empty() {
-                        MultiSpan::from_span(self.fmtsp)
-                    } else {
-                        MultiSpan::from_spans(spans)
-                    },
-                )
+            let spans: Vec<_> = spans.into_iter().filter_map(|sp| sp.copied()).collect();
+            let sp = if self.arg_spans.is_empty() || spans.is_empty() {
+                MultiSpan::from_span(self.fmtsp)
             } else {
-                let pos = MultiSpan::from_spans(spans.into_iter().map(|s| *s.unwrap()).collect());
-                let reg = refs.pop().unwrap();
-                (format!("arguments {head} and {tail}", head = refs.join(", "), tail = reg,), pos)
+                MultiSpan::from_spans(spans)
             };
-            if self.arg_spans.is_empty() {
-                sp = MultiSpan::from_span(self.fmtsp);
-            }
+            let arg_list = if refs.len() == 1 {
+                format!("argument {}", refs[0])
+            } else {
+                let reg = refs.pop().unwrap();
+                format!("arguments {head} and {tail}", head = refs.join(", "), tail = reg)
+            };
 
             e = self.ecx.struct_span_err(
                 sp,
@@ -578,31 +572,31 @@ impl<'a, 'b> Context<'a, 'b> {
         self.count_args_index_offset = sofar;
     }
 
-    fn rtpath(ecx: &ExtCtxt<'_>, s: &str) -> Vec<Ident> {
-        ecx.std_path(&[sym::fmt, sym::rt, sym::v1, Symbol::intern(s)])
+    fn rtpath(ecx: &ExtCtxt<'_>, s: Symbol) -> Vec<Ident> {
+        ecx.std_path(&[sym::fmt, sym::rt, sym::v1, s])
     }
 
     fn build_count(&self, c: parse::Count) -> P<ast::Expr> {
         let sp = self.macsp;
         let count = |c, arg| {
-            let mut path = Context::rtpath(self.ecx, "Count");
-            path.push(self.ecx.ident_of(c, sp));
+            let mut path = Context::rtpath(self.ecx, sym::Count);
+            path.push(Ident::new(c, sp));
             match arg {
                 Some(arg) => self.ecx.expr_call_global(sp, path, vec![arg]),
                 None => self.ecx.expr_path(self.ecx.path_global(sp, path)),
             }
         };
         match c {
-            parse::CountIs(i) => count("Is", Some(self.ecx.expr_usize(sp, i))),
+            parse::CountIs(i) => count(sym::Is, Some(self.ecx.expr_usize(sp, i))),
             parse::CountIsParam(i) => {
                 // This needs mapping too, as `i` is referring to a macro
                 // argument. If `i` is not found in `count_positions` then
                 // the error had already been emitted elsewhere.
                 let i = self.count_positions.get(&i).cloned().unwrap_or(0)
                     + self.count_args_index_offset;
-                count("Param", Some(self.ecx.expr_usize(sp, i)))
+                count(sym::Param, Some(self.ecx.expr_usize(sp, i)))
             }
-            parse::CountImplied => count("Implied", None),
+            parse::CountImplied => count(sym::Implied, None),
             // should never be the case, names are already resolved
             parse::CountIsName(_) => panic!("should never happen"),
         }
@@ -690,40 +684,40 @@ impl<'a, 'b> Context<'a, 'b> {
                 // Build the format
                 let fill = self.ecx.expr_lit(sp, ast::LitKind::Char(fill));
                 let align = |name| {
-                    let mut p = Context::rtpath(self.ecx, "Alignment");
-                    p.push(self.ecx.ident_of(name, sp));
+                    let mut p = Context::rtpath(self.ecx, sym::Alignment);
+                    p.push(Ident::new(name, sp));
                     self.ecx.path_global(sp, p)
                 };
                 let align = match arg.format.align {
-                    parse::AlignLeft => align("Left"),
-                    parse::AlignRight => align("Right"),
-                    parse::AlignCenter => align("Center"),
-                    parse::AlignUnknown => align("Unknown"),
+                    parse::AlignLeft => align(sym::Left),
+                    parse::AlignRight => align(sym::Right),
+                    parse::AlignCenter => align(sym::Center),
+                    parse::AlignUnknown => align(sym::Unknown),
                 };
                 let align = self.ecx.expr_path(align);
                 let flags = self.ecx.expr_u32(sp, arg.format.flags);
                 let prec = self.build_count(arg.format.precision);
                 let width = self.build_count(arg.format.width);
-                let path = self.ecx.path_global(sp, Context::rtpath(self.ecx, "FormatSpec"));
+                let path = self.ecx.path_global(sp, Context::rtpath(self.ecx, sym::FormatSpec));
                 let fmt = self.ecx.expr_struct(
                     sp,
                     path,
                     vec![
-                        self.ecx.field_imm(sp, self.ecx.ident_of("fill", sp), fill),
-                        self.ecx.field_imm(sp, self.ecx.ident_of("align", sp), align),
-                        self.ecx.field_imm(sp, self.ecx.ident_of("flags", sp), flags),
-                        self.ecx.field_imm(sp, self.ecx.ident_of("precision", sp), prec),
-                        self.ecx.field_imm(sp, self.ecx.ident_of("width", sp), width),
+                        self.ecx.field_imm(sp, Ident::new(sym::fill, sp), fill),
+                        self.ecx.field_imm(sp, Ident::new(sym::align, sp), align),
+                        self.ecx.field_imm(sp, Ident::new(sym::flags, sp), flags),
+                        self.ecx.field_imm(sp, Ident::new(sym::precision, sp), prec),
+                        self.ecx.field_imm(sp, Ident::new(sym::width, sp), width),
                     ],
                 );
 
-                let path = self.ecx.path_global(sp, Context::rtpath(self.ecx, "Argument"));
+                let path = self.ecx.path_global(sp, Context::rtpath(self.ecx, sym::Argument));
                 Some(self.ecx.expr_struct(
                     sp,
                     path,
                     vec![
-                        self.ecx.field_imm(sp, self.ecx.ident_of("position", sp), pos),
-                        self.ecx.field_imm(sp, self.ecx.ident_of("format", sp), fmt),
+                        self.ecx.field_imm(sp, Ident::new(sym::position, sp), pos),
+                        self.ecx.field_imm(sp, Ident::new(sym::format, sp), fmt),
                     ],
                 ))
             }
@@ -740,7 +734,7 @@ impl<'a, 'b> Context<'a, 'b> {
         let mut heads = Vec::with_capacity(self.args.len());
 
         let names_pos: Vec<_> = (0..self.args.len())
-            .map(|i| self.ecx.ident_of(&format!("arg{}", i), self.macsp))
+            .map(|i| Ident::from_str_and_span(&format!("arg{}", i), self.macsp))
             .collect();
 
         // First, build up the static array which will become our precompiled
@@ -1067,10 +1061,9 @@ pub fn expand_preparsed_format_args(
         let args_unused = errs_len;
 
         let mut diag = {
-            if errs_len == 1 {
-                let (sp, msg) = errs.into_iter().next().unwrap();
-                let mut diag = cx.ecx.struct_span_err(sp, msg);
-                diag.span_label(sp, msg);
+            if let [(sp, msg)] = &errs[..] {
+                let mut diag = cx.ecx.struct_span_err(*sp, *msg);
+                diag.span_label(*sp, *msg);
                 diag
             } else {
                 let mut diag = cx.ecx.struct_span_err(

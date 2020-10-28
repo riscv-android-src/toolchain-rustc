@@ -1,9 +1,8 @@
 use std::cmp::Reverse;
 use std::ptr;
 
-use log::debug;
-use rustc_ast::ast::{self, Path};
 use rustc_ast::util::lev_distance::find_best_match_for_name;
+use rustc_ast::{self as ast, Path};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
@@ -16,8 +15,9 @@ use rustc_middle::ty::{self, DefIdTree};
 use rustc_session::Session;
 use rustc_span::hygiene::MacroKind;
 use rustc_span::source_map::SourceMap;
-use rustc_span::symbol::{kw, Ident, Symbol};
+use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{BytePos, MultiSpan, Span};
+use tracing::debug;
 
 use crate::imports::{Import, ImportKind, ImportResolver};
 use crate::path_names_to_string;
@@ -442,6 +442,47 @@ impl<'a> Resolver<'a> {
                 );
                 err
             }
+            ResolutionError::ParamInTyOfConstParam(name) => {
+                let mut err = struct_span_err!(
+                    self.session,
+                    span,
+                    E0770,
+                    "the type of const parameters must not depend on other generic parameters"
+                );
+                err.span_label(
+                    span,
+                    format!("the type must not depend on the parameter `{}`", name),
+                );
+                err
+            }
+            ResolutionError::ParamInAnonConstInTyDefault(name) => {
+                let mut err = self.session.struct_span_err(
+                    span,
+                    "constant values inside of type parameter defaults must not depend on generic parameters",
+                );
+                err.span_label(
+                    span,
+                    format!("the anonymous constant must not depend on the parameter `{}`", name),
+                );
+                err
+            }
+            ResolutionError::ParamInNonTrivialAnonConst(name) => {
+                let mut err = self.session.struct_span_err(
+                    span,
+                    "generic parameters must not be used inside of non trivial constant values",
+                );
+                err.span_label(
+                    span,
+                    &format!(
+                        "non-trivial anonymous constants must not depend on the parameter `{}`",
+                        name
+                    ),
+                );
+                err.help(
+                    &format!("it is currently only allowed to use either `{0}` or `{{ {0} }}` as generic constants", name)
+                );
+                err
+            }
             ResolutionError::SelfInTyParamDefault => {
                 let mut err = struct_span_err!(
                     self.session,
@@ -674,7 +715,7 @@ impl<'a> Resolver<'a> {
 
         match find_best_match_for_name(
             suggestions.iter().map(|suggestion| &suggestion.candidate),
-            &ident.as_str(),
+            ident.name,
             None,
         ) {
             Some(found) if found != ident.name => {
@@ -846,9 +887,7 @@ impl<'a> Resolver<'a> {
                     // otherwise cause duplicate suggestions.
                     continue;
                 }
-                if let Some(crate_id) =
-                    self.crate_loader.maybe_process_path_extern(ident.name, ident.span)
-                {
+                if let Some(crate_id) = self.crate_loader.maybe_process_path_extern(ident.name) {
                     let crate_root =
                         self.get_module(DefId { krate: crate_id, index: CRATE_DEF_INDEX });
                     suggestions.extend(self.lookup_import_candidates_from_module(
@@ -882,8 +921,7 @@ impl<'a> Resolver<'a> {
         );
         self.add_typo_suggestion(err, suggestion, ident.span);
 
-        if macro_kind == MacroKind::Derive && (ident.as_str() == "Send" || ident.as_str() == "Sync")
-        {
+        if macro_kind == MacroKind::Derive && (ident.name == sym::Send || ident.name == sym::Sync) {
             let msg = format!("unsafe traits like `{}` should be implemented explicitly", ident);
             err.span_note(ident.span, &msg);
         }
@@ -904,6 +942,45 @@ impl<'a> Resolver<'a> {
             Some(suggestion) if suggestion.candidate == kw::Underscore => return false,
             Some(suggestion) => suggestion,
         };
+        let def_span = suggestion.res.opt_def_id().and_then(|def_id| match def_id.krate {
+            LOCAL_CRATE => self.opt_span(def_id),
+            _ => Some(
+                self.session
+                    .source_map()
+                    .guess_head_span(self.cstore().get_span_untracked(def_id, self.session)),
+            ),
+        });
+        if let Some(def_span) = def_span {
+            if span.overlaps(def_span) {
+                // Don't suggest typo suggestion for itself like in the followoing:
+                // error[E0423]: expected function, tuple struct or tuple variant, found struct `X`
+                //   --> $DIR/issue-64792-bad-unicode-ctor.rs:3:14
+                //    |
+                // LL | struct X {}
+                //    | ----------- `X` defined here
+                // LL |
+                // LL | const Y: X = X("ö");
+                //    | -------------^^^^^^- similarly named constant `Y` defined here
+                //    |
+                // help: use struct literal syntax instead
+                //    |
+                // LL | const Y: X = X {};
+                //    |              ^^^^
+                // help: a constant with a similar name exists
+                //    |
+                // LL | const Y: X = Y("ö");
+                //    |              ^
+                return false;
+            }
+            err.span_label(
+                self.session.source_map().guess_head_span(def_span),
+                &format!(
+                    "similarly named {} `{}` defined here",
+                    suggestion.res.descr(),
+                    suggestion.candidate.as_str(),
+                ),
+            );
+        }
         let msg = format!(
             "{} {} with a similar name exists",
             suggestion.res.article(),
@@ -915,24 +992,6 @@ impl<'a> Resolver<'a> {
             suggestion.candidate.to_string(),
             Applicability::MaybeIncorrect,
         );
-        let def_span = suggestion.res.opt_def_id().and_then(|def_id| match def_id.krate {
-            LOCAL_CRATE => self.opt_span(def_id),
-            _ => Some(
-                self.session
-                    .source_map()
-                    .guess_head_span(self.cstore().get_span_untracked(def_id, self.session)),
-            ),
-        });
-        if let Some(span) = def_span {
-            err.span_label(
-                self.session.source_map().guess_head_span(span),
-                &format!(
-                    "similarly named {} `{}` defined here",
-                    suggestion.res.descr(),
-                    suggestion.candidate.as_str(),
-                ),
-            );
-        }
         true
     }
 
@@ -1054,10 +1113,9 @@ impl<'a> Resolver<'a> {
         ) = binding.kind
         {
             let def_id = (&*self).parent(ctor_def_id).expect("no parent for a constructor");
-            if let Some(fields) = self.field_names.get(&def_id) {
-                let first_field = fields.first().expect("empty field list in the map");
-                return Some(fields.iter().fold(first_field.span, |acc, field| acc.to(field.span)));
-            }
+            let fields = self.field_names.get(&def_id)?;
+            let first_field = fields.first()?; // Handle `struct Foo()`
+            return Some(fields.iter().fold(first_field.span, |acc, field| acc.to(field.span)));
         }
         None
     }

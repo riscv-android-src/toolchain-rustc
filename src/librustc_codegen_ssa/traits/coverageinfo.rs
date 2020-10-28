@@ -1,5 +1,5 @@
 use super::BackendTypes;
-use crate::coverageinfo::CounterOp;
+use rustc_middle::mir::coverage::*;
 use rustc_middle::ty::Instance;
 
 pub trait CoverageInfoMethods: BackendTypes {
@@ -7,29 +7,25 @@ pub trait CoverageInfoMethods: BackendTypes {
 }
 
 pub trait CoverageInfoBuilderMethods<'tcx>: BackendTypes {
+    fn create_pgo_func_name_var(&self, instance: Instance<'tcx>) -> Self::Value;
+
     fn add_counter_region(
         &mut self,
         instance: Instance<'tcx>,
-        index: u32,
-        start_byte_pos: u32,
-        end_byte_pos: u32,
+        function_source_hash: u64,
+        id: CounterValueReference,
+        region: CodeRegion,
     );
 
     fn add_counter_expression_region(
         &mut self,
         instance: Instance<'tcx>,
-        index: u32,
-        lhs: u32,
-        op: CounterOp,
-        rhs: u32,
-        start_byte_pos: u32,
-        end_byte_pos: u32,
+        id: InjectedExpressionIndex,
+        lhs: ExpressionOperandId,
+        op: Op,
+        rhs: ExpressionOperandId,
+        region: CodeRegion,
     );
 
-    fn add_unreachable_region(
-        &mut self,
-        instance: Instance<'tcx>,
-        start_byte_pos: u32,
-        end_byte_pos: u32,
-    );
+    fn add_unreachable_region(&mut self, instance: Instance<'tcx>, region: CodeRegion);
 }

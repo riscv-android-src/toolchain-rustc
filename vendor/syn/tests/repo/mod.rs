@@ -8,7 +8,7 @@ use std::path::Path;
 use tar::Archive;
 use walkdir::DirEntry;
 
-const REVISION: &str = "46e85b4328fe18492894093c1092dfe509df4370";
+const REVISION: &str = "81e754c359c471f91263813c46c67955071716a7";
 
 #[rustfmt::skip]
 static EXCLUDE: &[&str] = &[
@@ -25,6 +25,7 @@ static EXCLUDE: &[&str] = &[
     "test/ui/include-single-expr-helper-1.rs",
     "test/ui/issues/auxiliary/issue-21146-inc.rs",
     "test/ui/json-bom-plus-crlf-multifile-aux.rs",
+    "test/ui/lint/expansion-time-include.rs",
     "test/ui/macros/auxiliary/macro-comma-support.rs",
     "test/ui/macros/auxiliary/macro-include-items-expr.rs",
 ];
@@ -42,8 +43,13 @@ pub fn base_dir_filter(entry: &DirEntry) -> bool {
     if cfg!(windows) {
         path_string = path_string.replace('\\', "/").into();
     }
-    assert!(path_string.starts_with("tests/rust/src/"));
-    let path = &path_string["tests/rust/src/".len()..];
+    let path = if let Some(path) = path_string.strip_prefix("tests/rust/src/") {
+        path
+    } else if let Some(path) = path_string.strip_prefix("tests/rust/library/") {
+        path
+    } else {
+        panic!("unexpected path in Rust dist: {}", path_string);
+    };
 
     // TODO assert that parsing fails on the parse-fail cases
     if path.starts_with("test/parse-fail")

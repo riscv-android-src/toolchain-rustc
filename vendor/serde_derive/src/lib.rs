@@ -13,13 +13,14 @@
 //!
 //! [https://serde.rs/derive.html]: https://serde.rs/derive.html
 
-#![doc(html_root_url = "https://docs.rs/serde_derive/1.0.114")]
+#![doc(html_root_url = "https://docs.rs/serde_derive/1.0.115")]
 #![allow(unknown_lints, bare_trait_objects)]
 #![deny(clippy::all, clippy::pedantic)]
 // Ignored clippy lints
 #![allow(
     clippy::cognitive_complexity,
     clippy::enum_variant_names,
+    clippy::match_like_matches_macro,
     clippy::needless_pass_by_value,
     clippy::too_many_arguments,
     clippy::trivially_copy_pass_by_ref,
@@ -40,6 +41,7 @@
     clippy::match_same_arms,
     clippy::module_name_repetitions,
     clippy::must_use_candidate,
+    clippy::option_if_let_else,
     clippy::similar_names,
     clippy::single_match_else,
     clippy::struct_excessive_bools,
@@ -48,8 +50,6 @@
     clippy::use_self,
     clippy::wildcard_imports
 )]
-// The `quote!` macro requires deep recursion.
-#![recursion_limit = "512"]
 
 #[macro_use]
 extern crate quote;

@@ -6,24 +6,20 @@ use self::InferTy::*;
 use self::TyKind::*;
 
 use crate::infer::canonical::Canonical;
-use crate::mir::interpret::ConstValue;
-use crate::mir::interpret::{LitToConstInput, Scalar};
-use crate::mir::Promoted;
 use crate::ty::subst::{GenericArg, InternalSubsts, Subst, SubstsRef};
 use crate::ty::{
     self, AdtDef, DefIdTree, Discr, Ty, TyCtxt, TypeFlags, TypeFoldable, WithConstness,
 };
-use crate::ty::{List, ParamEnv, ParamEnvAnd, TyS};
+use crate::ty::{DelaySpanBugEmitted, List, ParamEnv, TyS};
 use polonius_engine::Atom;
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_data_structures::captures::Captures;
-use rustc_errors::ErrorReported;
 use rustc_hir as hir;
-use rustc_hir::def_id::{DefId, LocalDefId};
+use rustc_hir::def_id::DefId;
 use rustc_index::vec::Idx;
 use rustc_macros::HashStable;
 use rustc_span::symbol::{kw, Ident, Symbol};
-use rustc_target::abi::{Size, VariantIdx};
+use rustc_target::abi::VariantIdx;
 use rustc_target::spec::abi;
 use std::borrow::Cow;
 use std::cmp::Ordering;
@@ -31,14 +27,14 @@ use std::marker::PhantomData;
 use std::ops::Range;
 use ty::util::IntTypeExt;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable, Lift)]
 pub struct TypeAndMut<'tcx> {
     pub ty: Ty<'tcx>,
     pub mutbl: hir::Mutability,
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, RustcEncodable, RustcDecodable, Copy)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, TyEncodable, TyDecodable, Copy)]
 #[derive(HashStable)]
 /// A "free" region `fr` can be interpreted as "some region
 /// at least as big as the scope `fr.scope`".
@@ -47,7 +43,7 @@ pub struct FreeRegion {
     pub bound_region: BoundRegion,
 }
 
-#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, RustcEncodable, RustcDecodable, Copy)]
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord, Hash, TyEncodable, TyDecodable, Copy)]
 #[derive(HashStable)]
 pub enum BoundRegion {
     /// An anonymous region parameter for a given fn (&T)
@@ -86,7 +82,7 @@ impl BoundRegion {
 
 /// N.B., if you change this, you'll probably want to change the corresponding
 /// AST structure in `librustc_ast/ast.rs` as well.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable, Debug)]
 #[derive(HashStable)]
 #[rustc_diagnostic_item = "TyKind"]
 pub enum TyKind<'tcx> {
@@ -189,7 +185,7 @@ pub enum TyKind<'tcx> {
     /// After typeck, the concrete type can be found in the `types` map.
     Opaque(DefId, SubstsRef<'tcx>),
 
-    /// A type parameter; for example, `T` in `fn f<T>(x: T) {}
+    /// A type parameter; for example, `T` in `fn f<T>(x: T) {}`.
     Param(ParamTy),
 
     /// Bound type variable, used only when preparing a trait query.
@@ -206,11 +202,15 @@ pub enum TyKind<'tcx> {
     Error(DelaySpanBugEmitted),
 }
 
-/// A type that is not publicly constructable. This prevents people from making `TyKind::Error`
-/// except through `tcx.err*()`.
-#[derive(Copy, Clone, Debug, Eq, Hash, PartialEq, PartialOrd, Ord)]
-#[derive(RustcEncodable, RustcDecodable, HashStable)]
-pub struct DelaySpanBugEmitted(pub(super) ());
+impl TyKind<'tcx> {
+    #[inline]
+    pub fn is_primitive(&self) -> bool {
+        match self {
+            Bool | Char | Int(_) | Uint(_) | Float(_) => true,
+            _ => false,
+        }
+    }
+}
 
 // `TyKind` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
@@ -319,22 +319,43 @@ pub struct ClosureSubsts<'tcx> {
     pub substs: SubstsRef<'tcx>,
 }
 
-/// Struct returned by `split()`. Note that these are subslices of the
-/// parent slice and not canonical substs themselves.
-struct SplitClosureSubsts<'tcx> {
-    closure_kind_ty: GenericArg<'tcx>,
-    closure_sig_as_fn_ptr_ty: GenericArg<'tcx>,
-    tupled_upvars_ty: GenericArg<'tcx>,
+/// Struct returned by `split()`.
+pub struct ClosureSubstsParts<'tcx, T> {
+    pub parent_substs: &'tcx [GenericArg<'tcx>],
+    pub closure_kind_ty: T,
+    pub closure_sig_as_fn_ptr_ty: T,
+    pub tupled_upvars_ty: T,
 }
 
 impl<'tcx> ClosureSubsts<'tcx> {
-    /// Divides the closure substs into their respective
-    /// components. Single source of truth with respect to the
-    /// ordering.
-    fn split(self) -> SplitClosureSubsts<'tcx> {
+    /// Construct `ClosureSubsts` from `ClosureSubstsParts`, containing `Substs`
+    /// for the closure parent, alongside additional closure-specific components.
+    pub fn new(
+        tcx: TyCtxt<'tcx>,
+        parts: ClosureSubstsParts<'tcx, Ty<'tcx>>,
+    ) -> ClosureSubsts<'tcx> {
+        ClosureSubsts {
+            substs: tcx.mk_substs(
+                parts.parent_substs.iter().copied().chain(
+                    [parts.closure_kind_ty, parts.closure_sig_as_fn_ptr_ty, parts.tupled_upvars_ty]
+                        .iter()
+                        .map(|&ty| ty.into()),
+                ),
+            ),
+        }
+    }
+
+    /// Divides the closure substs into their respective components.
+    /// The ordering assumed here must match that used by `ClosureSubsts::new` above.
+    fn split(self) -> ClosureSubstsParts<'tcx, GenericArg<'tcx>> {
         match self.substs[..] {
-            [.., closure_kind_ty, closure_sig_as_fn_ptr_ty, tupled_upvars_ty] => {
-                SplitClosureSubsts { closure_kind_ty, closure_sig_as_fn_ptr_ty, tupled_upvars_ty }
+            [ref parent_substs @ .., closure_kind_ty, closure_sig_as_fn_ptr_ty, tupled_upvars_ty] => {
+                ClosureSubstsParts {
+                    parent_substs,
+                    closure_kind_ty,
+                    closure_sig_as_fn_ptr_ty,
+                    tupled_upvars_ty,
+                }
             }
             _ => bug!("closure substs missing synthetics"),
         }
@@ -349,9 +370,20 @@ impl<'tcx> ClosureSubsts<'tcx> {
         self.substs.len() >= 3 && matches!(self.split().tupled_upvars_ty.expect_ty().kind, Tuple(_))
     }
 
+    /// Returns the substitutions of the closure's parent.
+    pub fn parent_substs(self) -> &'tcx [GenericArg<'tcx>] {
+        self.split().parent_substs
+    }
+
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        self.split().tupled_upvars_ty.expect_ty().tuple_fields()
+        self.tupled_upvars_ty().tuple_fields()
+    }
+
+    /// Returns the tuple type representing the upvars for this closure.
+    #[inline]
+    pub fn tupled_upvars_ty(self) -> Ty<'tcx> {
+        self.split().tupled_upvars_ty.expect_ty()
     }
 
     /// Returns the closure kind for this closure; may return a type
@@ -395,19 +427,52 @@ pub struct GeneratorSubsts<'tcx> {
     pub substs: SubstsRef<'tcx>,
 }
 
-struct SplitGeneratorSubsts<'tcx> {
-    resume_ty: GenericArg<'tcx>,
-    yield_ty: GenericArg<'tcx>,
-    return_ty: GenericArg<'tcx>,
-    witness: GenericArg<'tcx>,
-    tupled_upvars_ty: GenericArg<'tcx>,
+pub struct GeneratorSubstsParts<'tcx, T> {
+    pub parent_substs: &'tcx [GenericArg<'tcx>],
+    pub resume_ty: T,
+    pub yield_ty: T,
+    pub return_ty: T,
+    pub witness: T,
+    pub tupled_upvars_ty: T,
 }
 
 impl<'tcx> GeneratorSubsts<'tcx> {
-    fn split(self) -> SplitGeneratorSubsts<'tcx> {
+    /// Construct `GeneratorSubsts` from `GeneratorSubstsParts`, containing `Substs`
+    /// for the generator parent, alongside additional generator-specific components.
+    pub fn new(
+        tcx: TyCtxt<'tcx>,
+        parts: GeneratorSubstsParts<'tcx, Ty<'tcx>>,
+    ) -> GeneratorSubsts<'tcx> {
+        GeneratorSubsts {
+            substs: tcx.mk_substs(
+                parts.parent_substs.iter().copied().chain(
+                    [
+                        parts.resume_ty,
+                        parts.yield_ty,
+                        parts.return_ty,
+                        parts.witness,
+                        parts.tupled_upvars_ty,
+                    ]
+                    .iter()
+                    .map(|&ty| ty.into()),
+                ),
+            ),
+        }
+    }
+
+    /// Divides the generator substs into their respective components.
+    /// The ordering assumed here must match that used by `GeneratorSubsts::new` above.
+    fn split(self) -> GeneratorSubstsParts<'tcx, GenericArg<'tcx>> {
         match self.substs[..] {
-            [.., resume_ty, yield_ty, return_ty, witness, tupled_upvars_ty] => {
-                SplitGeneratorSubsts { resume_ty, yield_ty, return_ty, witness, tupled_upvars_ty }
+            [ref parent_substs @ .., resume_ty, yield_ty, return_ty, witness, tupled_upvars_ty] => {
+                GeneratorSubstsParts {
+                    parent_substs,
+                    resume_ty,
+                    yield_ty,
+                    return_ty,
+                    witness,
+                    tupled_upvars_ty,
+                }
             }
             _ => bug!("generator substs missing synthetics"),
         }
@@ -422,6 +487,11 @@ impl<'tcx> GeneratorSubsts<'tcx> {
         self.substs.len() >= 5 && matches!(self.split().tupled_upvars_ty.expect_ty().kind, Tuple(_))
     }
 
+    /// Returns the substitutions of the generator's parent.
+    pub fn parent_substs(self) -> &'tcx [GenericArg<'tcx>] {
+        self.split().parent_substs
+    }
+
     /// This describes the types that can be contained in a generator.
     /// It will be a type variable initially and unified in the last stages of typeck of a body.
     /// It contains a tuple of all the types that could end up on a generator frame.
@@ -433,7 +503,13 @@ impl<'tcx> GeneratorSubsts<'tcx> {
 
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        self.split().tupled_upvars_ty.expect_ty().tuple_fields()
+        self.tupled_upvars_ty().tuple_fields()
+    }
+
+    /// Returns the tuple type representing the upvars for this generator.
+    #[inline]
+    pub fn tupled_upvars_ty(self) -> Ty<'tcx> {
+        self.split().tupled_upvars_ty.expect_ty()
     }
 
     /// Returns the type representing the resume type of the generator.
@@ -580,7 +656,7 @@ impl<'tcx> UpvarSubsts<'tcx> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Debug, Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub enum ExistentialPredicate<'tcx> {
     /// E.g., `Iterator`.
@@ -620,8 +696,7 @@ impl<'tcx> Binder<ExistentialPredicate<'tcx>> {
                 Binder(tr).with_self_ty(tcx, self_ty).without_const().to_predicate(tcx)
             }
             ExistentialPredicate::Projection(p) => {
-                ty::PredicateKind::Projection(Binder(p.with_self_ty(tcx, self_ty)))
-                    .to_predicate(tcx)
+                Binder(p.with_self_ty(tcx, self_ty)).to_predicate(tcx)
             }
             ExistentialPredicate::AutoTrait(did) => {
                 let trait_ref =
@@ -631,8 +706,6 @@ impl<'tcx> Binder<ExistentialPredicate<'tcx>> {
         }
     }
 }
-
-impl<'tcx> rustc_serialize::UseSpecializedDecodable for &'tcx List<ExistentialPredicate<'tcx>> {}
 
 impl<'tcx> List<ExistentialPredicate<'tcx>> {
     /// Returns the "principal `DefId`" of this set of existential predicates.
@@ -729,7 +802,7 @@ impl<'tcx> Binder<&'tcx List<ExistentialPredicate<'tcx>>> {
 ///
 /// Trait references also appear in object types like `Foo<U>`, but in
 /// that case the `Self` parameter is absent from the substitutions.
-#[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct TraitRef<'tcx> {
     pub def_id: DefId,
@@ -787,7 +860,7 @@ impl<'tcx> PolyTraitRef<'tcx> {
 ///
 /// The substitutions don't include the erased `Self`, only trait
 /// type and lifetime parameters (`[X, Y]` and `['a, 'b]` above).
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct ExistentialTraitRef<'tcx> {
     pub def_id: DefId,
@@ -843,7 +916,7 @@ impl<'tcx> PolyExistentialTraitRef<'tcx> {
 /// erase, or otherwise "discharge" these bound vars, we change the
 /// type from `Binder<T>` to just `T` (see
 /// e.g., `liberate_late_bound_regions`).
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 pub struct Binder<T>(T);
 
 impl<T> Binder<T> {
@@ -862,6 +935,22 @@ impl<T> Binder<T> {
     /// Wraps `value` in a binder, binding higher-ranked vars (if any).
     pub fn bind(value: T) -> Binder<T> {
         Binder(value)
+    }
+
+    /// Wraps `value` in a binder without actually binding any currently
+    /// unbound variables.
+    ///
+    /// Note that this will shift all debrujin indices of escaping bound variables
+    /// by 1 to avoid accidential captures.
+    pub fn wrap_nonbinding(tcx: TyCtxt<'tcx>, value: T) -> Binder<T>
+    where
+        T: TypeFoldable<'tcx>,
+    {
+        if value.has_escaping_bound_vars() {
+            Binder::bind(super::fold::shift_vars(tcx, &value, 1))
+        } else {
+            Binder::dummy(value)
+        }
     }
 
     /// Skips the binder and returns the "bound" value. This is a
@@ -948,9 +1037,18 @@ impl<T> Binder<T> {
     }
 }
 
+impl<T> Binder<Option<T>> {
+    pub fn transpose(self) -> Option<Binder<T>> {
+        match self.0 {
+            Some(v) => Some(Binder(v)),
+            None => None,
+        }
+    }
+}
+
 /// Represents the projection of an associated type. In explicit UFCS
 /// form this would be written `<T as Trait<..>>::N`.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct ProjectionTy<'tcx> {
     /// The parameters of the associated item.
@@ -1020,7 +1118,7 @@ impl<'tcx> PolyGenSig<'tcx> {
 /// - `inputs`: is the list of arguments and their modes.
 /// - `output`: is the return type.
 /// - `c_variadic`: indicates whether this is a C-variadic function.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct FnSig<'tcx> {
     pub inputs_and_output: &'tcx List<Ty<'tcx>>,
@@ -1081,7 +1179,7 @@ impl<'tcx> PolyFnSig<'tcx> {
 
 pub type CanonicalPolyFnSig<'tcx> = Canonical<'tcx, Binder<FnSig<'tcx>>>;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub struct ParamTy {
     pub index: u32,
@@ -1106,7 +1204,7 @@ impl<'tcx> ParamTy {
     }
 }
 
-#[derive(Copy, Clone, Hash, RustcEncodable, RustcDecodable, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Copy, Clone, Hash, TyEncodable, TyDecodable, Eq, PartialEq, Ord, PartialOrd)]
 #[derive(HashStable)]
 pub struct ParamConst {
     pub index: u32,
@@ -1122,7 +1220,7 @@ impl<'tcx> ParamConst {
         ParamConst::new(def.index, def.name)
     }
 
-    pub fn to_const(self, tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> &'tcx Const<'tcx> {
+    pub fn to_const(self, tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> &'tcx ty::Const<'tcx> {
         tcx.mk_const_param(self.index, self.name, ty)
     }
 }
@@ -1166,7 +1264,7 @@ rustc_index::newtype_index! {
     /// De Bruijn index of 0, because the innermost binder in that location
     /// is the outer fn.
     ///
-    /// [dbi]: http://en.wikipedia.org/wiki/De_Bruijn_index
+    /// [dbi]: https://en.wikipedia.org/wiki/De_Bruijn_index
     #[derive(HashStable)]
     pub struct DebruijnIndex {
         DEBUG_FORMAT = "DebruijnIndex({})",
@@ -1279,7 +1377,7 @@ pub type Region<'tcx> = &'tcx RegionKind;
 /// [1]: http://smallcultfollowing.com/babysteps/blog/2013/10/29/intermingled-parameter-lists/
 /// [2]: http://smallcultfollowing.com/babysteps/blog/2013/11/04/intermingled-parameter-lists/
 /// [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/traits/hrtb.html
-#[derive(Clone, PartialEq, Eq, Hash, Copy, RustcEncodable, RustcDecodable, PartialOrd, Ord)]
+#[derive(Clone, PartialEq, Eq, Hash, Copy, TyEncodable, TyDecodable, PartialOrd, Ord)]
 pub enum RegionKind {
     /// Region bound in a type or fn declaration which will be
     /// substituted 'early' -- that is, at the same time when type
@@ -1317,32 +1415,30 @@ pub enum RegionKind {
     ReErased,
 }
 
-impl<'tcx> rustc_serialize::UseSpecializedDecodable for Region<'tcx> {}
-
-#[derive(Copy, Clone, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, Debug, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, TyEncodable, TyDecodable, Debug, PartialOrd, Ord)]
 pub struct EarlyBoundRegion {
     pub def_id: DefId,
     pub index: u32,
     pub name: Symbol,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct TyVid {
     pub index: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct ConstVid<'tcx> {
     pub index: u32,
     pub phantom: PhantomData<&'tcx ()>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct IntVid {
     pub index: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 pub struct FloatVid {
     pub index: u32,
 }
@@ -1359,7 +1455,7 @@ impl Atom for RegionVid {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub enum InferTy {
     TyVar(TyVid),
@@ -1378,14 +1474,14 @@ rustc_index::newtype_index! {
     pub struct BoundVar { .. }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub struct BoundTy {
     pub var: BoundVar,
     pub kind: BoundTyKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable)]
 pub enum BoundTyKind {
     Anon,
@@ -1399,7 +1495,7 @@ impl From<BoundVar> for BoundTy {
 }
 
 /// A `ProjectionPredicate` for an `ExistentialTraitRef`.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, TyEncodable, TyDecodable)]
 #[derive(HashStable, TypeFoldable)]
 pub struct ExistentialProjection<'tcx> {
     pub item_def_id: DefId,
@@ -1710,10 +1806,7 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_primitive(&self) -> bool {
-        match self.kind {
-            Bool | Char | Int(_) | Uint(_) | Float(_) => true,
-            _ => false,
-        }
+        self.kind.is_primitive()
     }
 
     #[inline]
@@ -2192,271 +2285,4 @@ impl<'tcx> TyS<'tcx> {
     pub fn is_zst(&'tcx self, tcx: TyCtxt<'tcx>, did: DefId) -> bool {
         tcx.layout_of(tcx.param_env(did).and(self)).map(|layout| layout.is_zst()).unwrap_or(false)
     }
-}
-
-/// Typed constant value.
-#[derive(Copy, Clone, Debug, Hash, RustcEncodable, RustcDecodable, Eq, PartialEq, Ord, PartialOrd)]
-#[derive(HashStable)]
-pub struct Const<'tcx> {
-    pub ty: Ty<'tcx>,
-
-    pub val: ConstKind<'tcx>,
-}
-
-#[cfg(target_arch = "x86_64")]
-static_assert_size!(Const<'_>, 48);
-
-impl<'tcx> Const<'tcx> {
-    /// Literals and const generic parameters are eagerly converted to a constant, everything else
-    /// becomes `Unevaluated`.
-    pub fn from_anon_const(tcx: TyCtxt<'tcx>, def_id: LocalDefId) -> &'tcx Self {
-        debug!("Const::from_anon_const(id={:?})", def_id);
-
-        let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
-
-        let body_id = match tcx.hir().get(hir_id) {
-            hir::Node::AnonConst(ac) => ac.body,
-            _ => span_bug!(
-                tcx.def_span(def_id.to_def_id()),
-                "from_anon_const can only process anonymous constants"
-            ),
-        };
-
-        let expr = &tcx.hir().body(body_id).value;
-
-        let ty = tcx.type_of(def_id.to_def_id());
-
-        let lit_input = match expr.kind {
-            hir::ExprKind::Lit(ref lit) => Some(LitToConstInput { lit: &lit.node, ty, neg: false }),
-            hir::ExprKind::Unary(hir::UnOp::UnNeg, ref expr) => match expr.kind {
-                hir::ExprKind::Lit(ref lit) => {
-                    Some(LitToConstInput { lit: &lit.node, ty, neg: true })
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(lit_input) = lit_input {
-            // If an error occurred, ignore that it's a literal and leave reporting the error up to
-            // mir.
-            if let Ok(c) = tcx.at(expr.span).lit_to_const(lit_input) {
-                return c;
-            } else {
-                tcx.sess.delay_span_bug(expr.span, "Const::from_anon_const: couldn't lit_to_const");
-            }
-        }
-
-        // Unwrap a block, so that e.g. `{ P }` is recognised as a parameter. Const arguments
-        // currently have to be wrapped in curly brackets, so it's necessary to special-case.
-        let expr = match &expr.kind {
-            hir::ExprKind::Block(block, _) if block.stmts.is_empty() && block.expr.is_some() => {
-                block.expr.as_ref().unwrap()
-            }
-            _ => expr,
-        };
-
-        use hir::{def::DefKind::ConstParam, def::Res, ExprKind, Path, QPath};
-        let val = match expr.kind {
-            ExprKind::Path(QPath::Resolved(_, &Path { res: Res::Def(ConstParam, def_id), .. })) => {
-                // Find the name and index of the const parameter by indexing the generics of
-                // the parent item and construct a `ParamConst`.
-                let hir_id = tcx.hir().as_local_hir_id(def_id.expect_local());
-                let item_id = tcx.hir().get_parent_node(hir_id);
-                let item_def_id = tcx.hir().local_def_id(item_id);
-                let generics = tcx.generics_of(item_def_id.to_def_id());
-                let index =
-                    generics.param_def_id_to_index[&tcx.hir().local_def_id(hir_id).to_def_id()];
-                let name = tcx.hir().name(hir_id);
-                ty::ConstKind::Param(ty::ParamConst::new(index, name))
-            }
-            _ => ty::ConstKind::Unevaluated(
-                def_id.to_def_id(),
-                InternalSubsts::identity_for_item(tcx, def_id.to_def_id()),
-                None,
-            ),
-        };
-
-        tcx.mk_const(ty::Const { val, ty })
-    }
-
-    #[inline]
-    /// Interns the given value as a constant.
-    pub fn from_value(tcx: TyCtxt<'tcx>, val: ConstValue<'tcx>, ty: Ty<'tcx>) -> &'tcx Self {
-        tcx.mk_const(Self { val: ConstKind::Value(val), ty })
-    }
-
-    #[inline]
-    /// Interns the given scalar as a constant.
-    pub fn from_scalar(tcx: TyCtxt<'tcx>, val: Scalar, ty: Ty<'tcx>) -> &'tcx Self {
-        Self::from_value(tcx, ConstValue::Scalar(val), ty)
-    }
-
-    #[inline]
-    /// Creates a constant with the given integer value and interns it.
-    pub fn from_bits(tcx: TyCtxt<'tcx>, bits: u128, ty: ParamEnvAnd<'tcx, Ty<'tcx>>) -> &'tcx Self {
-        let size = tcx
-            .layout_of(ty)
-            .unwrap_or_else(|e| panic!("could not compute layout for {:?}: {:?}", ty, e))
-            .size;
-        Self::from_scalar(tcx, Scalar::from_uint(bits, size), ty.value)
-    }
-
-    #[inline]
-    /// Creates an interned zst constant.
-    pub fn zero_sized(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>) -> &'tcx Self {
-        Self::from_scalar(tcx, Scalar::zst(), ty)
-    }
-
-    #[inline]
-    /// Creates an interned bool constant.
-    pub fn from_bool(tcx: TyCtxt<'tcx>, v: bool) -> &'tcx Self {
-        Self::from_bits(tcx, v as u128, ParamEnv::empty().and(tcx.types.bool))
-    }
-
-    #[inline]
-    /// Creates an interned usize constant.
-    pub fn from_usize(tcx: TyCtxt<'tcx>, n: u64) -> &'tcx Self {
-        Self::from_bits(tcx, n as u128, ParamEnv::empty().and(tcx.types.usize))
-    }
-
-    #[inline]
-    /// Attempts to evaluate the given constant to bits. Can fail to evaluate in the presence of
-    /// generics (or erroneous code) or if the value can't be represented as bits (e.g. because it
-    /// contains const generic parameters or pointers).
-    pub fn try_eval_bits(
-        &self,
-        tcx: TyCtxt<'tcx>,
-        param_env: ParamEnv<'tcx>,
-        ty: Ty<'tcx>,
-    ) -> Option<u128> {
-        assert_eq!(self.ty, ty);
-        let size = tcx.layout_of(param_env.with_reveal_all().and(ty)).ok()?.size;
-        // if `ty` does not depend on generic parameters, use an empty param_env
-        self.eval(tcx, param_env).val.try_to_bits(size)
-    }
-
-    #[inline]
-    /// Tries to evaluate the constant if it is `Unevaluated`. If that doesn't succeed, return the
-    /// unevaluated constant.
-    pub fn eval(&self, tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>) -> &Const<'tcx> {
-        if let ConstKind::Unevaluated(did, substs, promoted) = self.val {
-            use crate::mir::interpret::ErrorHandled;
-
-            let param_env_and_substs = param_env.with_reveal_all().and(substs);
-
-            // HACK(eddyb) this erases lifetimes even though `const_eval_resolve`
-            // also does later, but we want to do it before checking for
-            // inference variables.
-            let param_env_and_substs = tcx.erase_regions(&param_env_and_substs);
-
-            // HACK(eddyb) when the query key would contain inference variables,
-            // attempt using identity substs and `ParamEnv` instead, that will succeed
-            // when the expression doesn't depend on any parameters.
-            // FIXME(eddyb, skinny121) pass `InferCtxt` into here when it's available, so that
-            // we can call `infcx.const_eval_resolve` which handles inference variables.
-            let param_env_and_substs = if param_env_and_substs.needs_infer() {
-                tcx.param_env(did).and(InternalSubsts::identity_for_item(tcx, did))
-            } else {
-                param_env_and_substs
-            };
-
-            // FIXME(eddyb) maybe the `const_eval_*` methods should take
-            // `ty::ParamEnvAnd<SubstsRef>` instead of having them separate.
-            let (param_env, substs) = param_env_and_substs.into_parts();
-            // try to resolve e.g. associated constants to their definition on an impl, and then
-            // evaluate the const.
-            match tcx.const_eval_resolve(param_env, did, substs, promoted, None) {
-                // NOTE(eddyb) `val` contains no lifetimes/types/consts,
-                // and we use the original type, so nothing from `substs`
-                // (which may be identity substs, see above),
-                // can leak through `val` into the const we return.
-                Ok(val) => Const::from_value(tcx, val, self.ty),
-                Err(ErrorHandled::TooGeneric | ErrorHandled::Linted) => self,
-                Err(ErrorHandled::Reported(ErrorReported)) => tcx.const_error(self.ty),
-            }
-        } else {
-            self
-        }
-    }
-
-    #[inline]
-    pub fn try_eval_bool(&self, tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>) -> Option<bool> {
-        self.try_eval_bits(tcx, param_env, tcx.types.bool).and_then(|v| match v {
-            0 => Some(false),
-            1 => Some(true),
-            _ => None,
-        })
-    }
-
-    #[inline]
-    pub fn try_eval_usize(&self, tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>) -> Option<u64> {
-        self.try_eval_bits(tcx, param_env, tcx.types.usize).map(|v| v as u64)
-    }
-
-    #[inline]
-    /// Panics if the value cannot be evaluated or doesn't contain a valid integer of the given type.
-    pub fn eval_bits(&self, tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>, ty: Ty<'tcx>) -> u128 {
-        self.try_eval_bits(tcx, param_env, ty)
-            .unwrap_or_else(|| bug!("expected bits of {:#?}, got {:#?}", ty, self))
-    }
-
-    #[inline]
-    /// Panics if the value cannot be evaluated or doesn't contain a valid `usize`.
-    pub fn eval_usize(&self, tcx: TyCtxt<'tcx>, param_env: ParamEnv<'tcx>) -> u64 {
-        self.eval_bits(tcx, param_env, tcx.types.usize) as u64
-    }
-}
-
-/// Represents a constant in Rust.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
-#[derive(HashStable)]
-pub enum ConstKind<'tcx> {
-    /// A const generic parameter.
-    Param(ParamConst),
-
-    /// Infer the value of the const.
-    Infer(InferConst<'tcx>),
-
-    /// Bound const variable, used only when preparing a trait query.
-    Bound(DebruijnIndex, BoundVar),
-
-    /// A placeholder const - universally quantified higher-ranked const.
-    Placeholder(ty::PlaceholderConst),
-
-    /// Used in the HIR by using `Unevaluated` everywhere and later normalizing to one of the other
-    /// variants when the code is monomorphic enough for that.
-    Unevaluated(DefId, SubstsRef<'tcx>, Option<Promoted>),
-
-    /// Used to hold computed value.
-    Value(ConstValue<'tcx>),
-
-    /// A placeholder for a const which could not be computed; this is
-    /// propagated to avoid useless error messages.
-    Error(DelaySpanBugEmitted),
-}
-
-#[cfg(target_arch = "x86_64")]
-static_assert_size!(ConstKind<'_>, 40);
-
-impl<'tcx> ConstKind<'tcx> {
-    #[inline]
-    pub fn try_to_scalar(&self) -> Option<Scalar> {
-        if let ConstKind::Value(val) = self { val.try_to_scalar() } else { None }
-    }
-
-    #[inline]
-    pub fn try_to_bits(&self, size: Size) -> Option<u128> {
-        if let ConstKind::Value(val) = self { val.try_to_bits(size) } else { None }
-    }
-}
-
-/// An inference variable for a const, for use in const generics.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
-#[derive(HashStable)]
-pub enum InferConst<'tcx> {
-    /// Infer the value of the const.
-    Var(ConstVid<'tcx>),
-    /// A fresh const variable. See `infer::freshen` for more details.
-    Fresh(u32),
 }

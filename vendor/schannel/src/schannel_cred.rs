@@ -5,6 +5,7 @@ use winapi::um::{self, wincrypt};
 use std::io;
 use std::mem;
 use std::ptr;
+use std::sync::Arc;
 
 use crate::Inner;
 use crate::cert_context::CertContext;
@@ -52,9 +53,8 @@ pub enum Algorithm {
     DssSign = wincrypt::CALG_DSS_SIGN,
     /// Elliptic curve Diffie-Hellman key exchange algorithm.
     Ecdh = wincrypt::CALG_ECDH,
-    // https://github.com/retep998/wincrypt-rs/issues/287
-    // /// Ephemeral elliptic curve Diffie-Hellman key exchange algorithm.
-    // EcdhEphem = wincrypt::CALG_ECDH_EPHEM,
+    /// Ephemeral elliptic curve Diffie-Hellman key exchange algorithm.
+    EcdhEphem = wincrypt::CALG_ECDH_EPHEM,
     /// Elliptic curve digital signature algorithm.
     Ecdsa = wincrypt::CALG_ECDSA,
     /// One way function hashing algorithm.
@@ -222,7 +222,7 @@ impl Builder {
                                                   ptr::null_mut(),
                                                   &mut handle,
                                                   ptr::null_mut()) {
-                winerror::SEC_E_OK => Ok(SchannelCred(handle)),
+                winerror::SEC_E_OK => Ok(SchannelCred::from_inner(handle)),
                 err => Err(io::Error::from_raw_os_error(err as i32)),
             }
         }
@@ -230,9 +230,12 @@ impl Builder {
 }
 
 /// An SChannel credential.
-pub struct SchannelCred(sspi::CredHandle);
+#[derive(Clone)]
+pub struct SchannelCred(Arc<RawCredHandle>);
 
-impl Drop for SchannelCred {
+struct RawCredHandle(sspi::CredHandle);
+
+impl Drop for RawCredHandle {
     fn drop(&mut self) {
         unsafe {
             sspi::FreeCredentialsHandle(&mut self.0);
@@ -240,23 +243,17 @@ impl Drop for SchannelCred {
     }
 }
 
-impl Inner<sspi::CredHandle> for SchannelCred {
-    unsafe fn from_inner(inner: sspi::CredHandle) -> SchannelCred {
-        SchannelCred(inner)
-    }
-
-    fn as_inner(&self) -> sspi::CredHandle {
-        self.0
-    }
-
-    fn get_mut(&mut self) -> &mut sspi::CredHandle {
-        &mut self.0
-    }
-}
-
 impl SchannelCred {
     /// Returns a builder.
     pub fn builder() -> Builder {
         Builder::new()
+    }
+
+    unsafe fn from_inner(inner: sspi::CredHandle) -> SchannelCred {
+        SchannelCred(Arc::new(RawCredHandle(inner)))
+    }
+
+    pub(crate) fn as_inner(&self) -> sspi::CredHandle {
+        self.0.as_ref().0
     }
 }

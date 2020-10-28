@@ -9,14 +9,14 @@ pub type DecoratorResult = Result<(), RenderError>;
 
 /// Decorator Definition
 ///
-/// Implement this trait to define your own decorators or decorators. Currently
-/// decorator shares same definition with helper.
+/// Implement this trait to define your own decorators. Currently decorator
+/// shares same definition with helper.
 ///
 /// In handlebars, it is recommended to use decorator to change context data and update helper
 /// definition.
 /// ## Updating context data
 ///
-/// In decorator, you can change some context data your are about to render.
+/// In decorator, you can change some context data you are about to render.
 ///
 /// ```
 /// use handlebars::*;
@@ -56,34 +56,32 @@ pub type DecoratorResult = Result<(), RenderError>;
 /// }
 /// ```
 ///
-pub trait DecoratorDef: Send + Sync {
+pub trait DecoratorDef {
     fn call<'reg: 'rc, 'rc>(
         &'reg self,
         d: &Decorator<'reg, 'rc>,
-        r: &'reg Registry,
+        r: &'reg Registry<'reg>,
         ctx: &'rc Context,
         rc: &mut RenderContext<'reg, 'rc>,
     ) -> DecoratorResult;
 }
 
-/// implement DecoratorDef for bare function so we can use function as decorator
+/// Implement DecoratorDef for bare function so we can use function as decorator
 impl<
-        F: Send
-            + Sync
-            + for<'reg, 'rc> Fn(
-                &Decorator<'reg, 'rc>,
-                &'reg Registry,
-                &'rc Context,
-                &mut RenderContext,
-            ) -> DecoratorResult,
+        F: for<'reg, 'rc> Fn(
+            &Decorator<'reg, 'rc>,
+            &'reg Registry<'reg>,
+            &'rc Context,
+            &mut RenderContext<'reg, 'rc>,
+        ) -> DecoratorResult,
     > DecoratorDef for F
 {
     fn call<'reg: 'rc, 'rc>(
         &'reg self,
         d: &Decorator<'reg, 'rc>,
-        reg: &'reg Registry,
+        reg: &'reg Registry<'reg>,
         ctx: &'rc Context,
-        rc: &mut RenderContext,
+        rc: &mut RenderContext<'reg, 'rc>,
     ) -> DecoratorResult {
         (*self)(d, reg, ctx, rc)
     }
@@ -116,10 +114,10 @@ mod test {
         handlebars.register_decorator(
             "foo",
             Box::new(
-                |_: &Decorator,
-                 _: &Registry,
+                |_: &Decorator<'_, '_>,
+                 _: &Registry<'_>,
                  _: &Context,
-                 _: &mut RenderContext|
+                 _: &mut RenderContext<'_, '_>|
                  -> Result<(), RenderError> { Ok(()) },
             ),
         );
@@ -141,10 +139,10 @@ mod test {
         handlebars.register_decorator(
             "foo",
             Box::new(
-                |_: &Decorator,
-                 _: &Registry,
+                |_: &Decorator<'_, '_>,
+                 _: &Registry<'_>,
                  ctx: &Context,
-                 rc: &mut RenderContext|
+                 rc: &mut RenderContext<'_, '_>|
                  -> Result<(), RenderError> {
                     // modify json object
                     let mut new_ctx = ctx.clone();
@@ -169,10 +167,10 @@ mod test {
         handlebars.register_decorator(
             "bar",
             Box::new(
-                |d: &Decorator,
-                 _: &Registry,
+                |d: &Decorator<'_, '_>,
+                 _: &Registry<'_>,
                  _: &Context,
-                 rc: &mut RenderContext|
+                 rc: &mut RenderContext<'_, '_>|
                  -> Result<(), RenderError> {
                     // modify value
                     let v = d
@@ -226,10 +224,10 @@ mod test {
         handlebars.register_helper(
             "distance",
             Box::new(
-                |h: &Helper,
-                 _: &Registry,
+                |h: &Helper<'_, '_>,
+                 _: &Registry<'_>,
                  _: &Context,
-                 _: &mut RenderContext,
+                 _: &mut RenderContext<'_, '_>,
                  out: &mut dyn Output|
                  -> Result<(), RenderError> {
                     let s = format!(
@@ -247,10 +245,10 @@ mod test {
         handlebars.register_decorator(
             "foo",
             Box::new(
-                |d: &Decorator,
-                 _: &Registry,
+                |d: &Decorator<'_, '_>,
+                 _: &Registry<'_>,
                  _: &Context,
-                 rc: &mut RenderContext|
+                 rc: &mut RenderContext<'_, '_>|
                  -> Result<(), RenderError> {
                     let new_unit = d
                         .param(0)
@@ -258,10 +256,10 @@ mod test {
                         .and_then(|v| as_string(v.value()))
                         .unwrap_or("")
                         .to_owned();
-                    let new_helper = move |h: &Helper,
-                                           _: &Registry,
+                    let new_helper = move |h: &Helper<'_, '_>,
+                                           _: &Registry<'_>,
                                            _: &Context,
-                                           _: &mut RenderContext,
+                                           _: &mut RenderContext<'_, '_>,
                                            out: &mut dyn Output|
                           -> Result<(), RenderError> {
                         let s = format!(
@@ -284,10 +282,10 @@ mod test {
         handlebars.register_decorator(
             "bar",
             Box::new(
-                |_: &Decorator,
-                 _: &Registry,
+                |_: &Decorator<'_, '_>,
+                 _: &Registry<'_>,
                  _: &Context,
-                 rc: &mut RenderContext|
+                 rc: &mut RenderContext<'_, '_>|
                  -> Result<(), RenderError> {
                     rc.unregister_local_helper("distance");
                     Ok(())

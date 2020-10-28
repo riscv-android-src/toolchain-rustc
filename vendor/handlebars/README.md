@@ -5,7 +5,7 @@ handlebars-rust
 in Rust and for Rust.
 
 Handlebars-rust is the template engine that renders the official Rust website
-[rust-lang.org](https://www.rust-lang.org) and [its
+[rust-lang.org](https://www.rust-lang.org), [its
 book](https://doc.rust-lang.org/book/).
 
 [![Build Status](https://travis-ci.org/sunng87/handlebars-rust.svg?branch=master)](https://travis-ci.org/sunng87/handlebars-rust)
@@ -38,6 +38,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // register template using given name
     reg.register_template_string("tpl_1", "Good afternoon, {{name}}")?;
     println!("{}", reg.render("tpl_1", &json!({"name": "foo"}))?);
+    Ok(())
 }
 ```
 
@@ -119,7 +120,7 @@ This library doesn't attempt to use some macro magic to allow you to
 write your template within your rust code. I admit that it's fun to do
 that but it doesn't fit real-world use cases.
 
-#### Limited but essential control structure built-in
+#### Limited but essential control structures built-in
 
 Only essential control directives `if` and `each` are built-in. This
 prevents you from putting too much application logic into your template.
@@ -145,6 +146,11 @@ And using it in your template:
 {{hex 16}}
 ```
 
+With `script_helper` feature flag enabled, you can also create helpers
+using [rhai](https://github.com/jonathandturner/rhai) script, just like JavaScript
+for handlebars-js. This feature was in early stage. Its API was limited at the
+moment, and can change in future.
+
 #### Template inheritance
 
 Every time I look into a templating system, I will investigate its
@@ -162,7 +168,9 @@ You can find a real example of template inheritance in
 
 Handlebars 3.0 can be used in WebAssembly projects.
 
-## Handlebars for Web Frameworks
+## Related Projects
+
+### Web frameworks
 
 * Iron: [handlebars-iron](https://github.com/sunng87/handlebars-iron)
 * Rocket: [rocket/contrib](https://api.rocket.rs/v0.4/rocket_contrib/templates/index.html)
@@ -171,11 +179,21 @@ Handlebars 3.0 can be used in WebAssembly projects.
 * Tower-web: [Built-in](https://github.com/carllerche/tower-web)
 * Actix: [handlebars
   example](https://github.com/actix/examples/blob/master/template_handlebars/src/main.rs)
+* Tide: [tide-handlebars](https://github.com/No9/tide-handlebars)
 
-## Using handlebars-rust?
+### Adopters
 
-Add your project to our
-[adopters](https://github.com/sunng87/handlebars-rust/wiki/adopters).
+The
+[adopters](https://github.com/sunng87/handlebars-rust/wiki/Adopters)
+page lists projects that uses handlebars for part of their
+functionalities.
+
+### Extensions
+
+The
+[extensions](https://github.com/sunng87/handlebars-rust/wiki/Extensions)
+page has libraries that provide additional helpers, decorators and
+outputs to handlebars-rust, and you can use in your own projects.
 
 ## License
 

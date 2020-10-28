@@ -1,13 +1,13 @@
+use crate::debug_span;
 use chalk_ir::fold::{Fold, Folder};
 use chalk_ir::interner::{HasInterner, Interner};
 use chalk_ir::visit::{Visit, Visitor};
 use chalk_ir::*;
-use tracing::debug;
 
 use super::InferenceTable;
 
 impl<I: Interner> InferenceTable<I> {
-    pub(crate) fn u_canonicalize<T>(
+    pub fn u_canonicalize<T>(
         &mut self,
         interner: &I,
         value0: &Canonical<T>,
@@ -16,7 +16,7 @@ impl<I: Interner> InferenceTable<I> {
         T: HasInterner<Interner = I> + Fold<I> + Visit<I>,
         T::Result: HasInterner<Interner = I>,
     {
-        debug!("u_canonicalize({:#?})", value0);
+        debug_span!("u_canonicalize", "{:#?}", value0);
 
         // First, find all the universes that appear in `value`.
         let mut universes = UniverseMap::new();
@@ -46,7 +46,7 @@ impl<I: Interner> InferenceTable<I> {
                 DebruijnIndex::INNERMOST,
             )
             .unwrap();
-        let binders = CanonicalVarKinds::from(
+        let binders = CanonicalVarKinds::from_iter(
             interner,
             value0
                 .binders
@@ -68,15 +68,15 @@ impl<I: Interner> InferenceTable<I> {
 }
 
 #[derive(Debug)]
-pub(crate) struct UCanonicalized<T: HasInterner> {
+pub struct UCanonicalized<T: HasInterner> {
     /// The canonicalized result.
-    pub(crate) quantified: UCanonical<T>,
+    pub quantified: UCanonical<T>,
 
     /// A map between the universes in `quantified` and the original universes
-    pub(crate) universes: UniverseMap,
+    pub universes: UniverseMap,
 }
 
-pub(crate) trait UniverseMapExt {
+pub trait UniverseMapExt {
     fn add(&mut self, universe: UniverseIndex);
     fn map_universe_to_canonical(&self, universe: UniverseIndex) -> Option<UniverseIndex>;
     fn map_universe_from_canonical(&self, universe: UniverseIndex) -> UniverseIndex;
@@ -169,8 +169,7 @@ impl UniverseMapExt for UniverseMap {
         T::Result: HasInterner<Interner = I>,
         I: Interner,
     {
-        debug!("map_from_canonical(value={:?})", canonical_value);
-        debug!("map_from_canonical: universes = {:?}", self.universes);
+        debug_span!("map_from_canonical", ?canonical_value, universes = ?self.universes);
 
         let binders = canonical_value
             .binders
@@ -189,7 +188,7 @@ impl UniverseMapExt for UniverseMap {
             .unwrap();
 
         Canonical {
-            binders: CanonicalVarKinds::from(interner, binders),
+            binders: CanonicalVarKinds::from_iter(interner, binders),
             value,
         }
     }

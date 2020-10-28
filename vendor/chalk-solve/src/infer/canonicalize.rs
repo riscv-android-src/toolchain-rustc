@@ -1,3 +1,4 @@
+use crate::debug_span;
 use chalk_ir::fold::shift::Shift;
 use chalk_ir::fold::{Fold, Folder};
 use chalk_ir::interner::{HasInterner, Interner};
@@ -26,12 +27,12 @@ impl<I: Interner> InferenceTable<I> {
     ///
     /// A substitution mapping from the free variables to their re-bound form is
     /// also returned.
-    pub(crate) fn canonicalize<T>(&mut self, interner: &I, value: &T) -> Canonicalized<T::Result>
+    pub fn canonicalize<T>(&mut self, interner: &I, value: &T) -> Canonicalized<T::Result>
     where
         T: Fold<I>,
         T::Result: HasInterner<Interner = I>,
     {
-        debug!("canonicalize({:#?})", value);
+        debug_span!("canonicalize", "{:#?}", value);
         let mut q = Canonicalizer {
             table: self,
             free_vars: Vec::new(),
@@ -54,12 +55,12 @@ impl<I: Interner> InferenceTable<I> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Canonicalized<T: HasInterner> {
+pub struct Canonicalized<T: HasInterner> {
     /// The canonicalized result.
-    pub(crate) quantified: Canonical<T>,
+    pub quantified: Canonical<T>,
 
     /// The free existential variables, along with the universes they inhabit.
-    pub(crate) free_vars: Vec<ParameterEnaVariable<T::Interner>>,
+    pub free_vars: Vec<ParameterEnaVariable<T::Interner>>,
 
     /// The maximum universe of any universally quantified variables
     /// encountered.
@@ -81,7 +82,7 @@ impl<'q, I: Interner> Canonicalizer<'q, I> {
             interner,
             ..
         } = self;
-        CanonicalVarKinds::from(
+        CanonicalVarKinds::from_iter(
             interner,
             free_vars
                 .into_iter()
@@ -174,7 +175,7 @@ where
                     ParameterEnaVariable::new(VariableKind::Ty(kind), self.table.unify.find(var));
 
                 let bound_var = BoundVar::new(DebruijnIndex::INNERMOST, self.add(free_var));
-                debug!("not yet unified: position={:?}", bound_var);
+                debug!(position=?bound_var, "not yet unified");
                 Ok(TyData::BoundVar(bound_var.shifted_in_from(outer_binder)).intern(interner))
             }
         }
@@ -198,7 +199,7 @@ where
                 let free_var =
                     ParameterEnaVariable::new(VariableKind::Lifetime, self.table.unify.find(var));
                 let bound_var = BoundVar::new(DebruijnIndex::INNERMOST, self.add(free_var));
-                debug!("not yet unified: position={:?}", bound_var);
+                debug!(position=?bound_var, "not yet unified");
                 Ok(
                     LifetimeData::BoundVar(bound_var.shifted_in_from(outer_binder))
                         .intern(interner),
@@ -228,7 +229,7 @@ where
                     self.table.unify.find(var),
                 );
                 let bound_var = BoundVar::new(DebruijnIndex::INNERMOST, self.add(free_var));
-                debug!("not yet unified: position={:?}", bound_var);
+                debug!(position = ?bound_var, "not yet unified");
                 Ok(bound_var
                     .shifted_in_from(outer_binder)
                     .to_const(interner, ty.clone()))

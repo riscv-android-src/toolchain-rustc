@@ -1,5 +1,6 @@
 //! Code-generation utilities
 
+crate mod bit_manip;
 crate mod llvm;
 crate mod math;
 crate mod reductions;

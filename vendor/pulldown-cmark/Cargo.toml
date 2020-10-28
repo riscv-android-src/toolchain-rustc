@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "pulldown-cmark"
-version = "0.7.1"
+version = "0.7.2"
 authors = ["Raph Levien <raph.levien@gmail.com>", "Marcus Klaas de Vries <mail@marcusklaas.nl>"]
 build = "build.rs"
 exclude = ["/third_party/**/*", "/tools/**/*", "/specs/**/*", "/fuzzer/**/*", "/azure-pipelines.yml"]

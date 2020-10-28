@@ -1,19 +1,26 @@
-//! `compile_error!` does not interrupt compilation right away. This means
+//! Facility to emit dummy implementations (or whatever) in case
+//! an error happen.
+//!
+//! `compile_error!` does not abort a compilation right away. This means
 //! `rustc` doesn't just show you the error and abort, it carries on the
-//! compilation process, looking for other errors to report.
+//! compilation process looking for other errors to report.
 //!
 //! Let's consider an example:
 //!
 //! ```rust,ignore
+//! use proc_macro::TokenStream;
+//! use proc_macro_error::*;
+//!
 //! trait MyTrait {
 //!     fn do_thing();
 //! }
 //!
 //! // this proc macro is supposed to generate MyTrait impl
 //! #[proc_macro_derive(MyTrait)]
+//! #[proc_macro_error]
 //! fn example(input: TokenStream) -> TokenStream {
 //!     // somewhere deep inside
-//!     span_error!(span, "something's wrong");
+//!     abort!(span, "something's wrong");
 //!
 //!     // this implementation will be generated if no error happened
 //!     quote! {
@@ -38,21 +45,22 @@
 //! The problem is: the generated token stream contains only `compile_error!`
 //! invocation, the impl was not generated. That means user will see two compilation
 //! errors:
+//!
 //! ```text
-//! error: set_dummy test
+//! error: something's wrong
 //!  --> $DIR/probe.rs:9:10
 //!   |
 //! 9 |#[proc_macro_derive(MyTrait)]
 //!   |                    ^^^^^^^
 //!
-//! error[E0277]: the trait bound `Foo: Default` is not satisfied
-//!
-//!   --> $DIR/probe.rs:14:10
-//!
-//!    |
-//! 98 |     #[derive(MyTrait)]
-//!    |              ^^^^^^^ the trait `Default` is not implemented for `Foo`
-//!
+//! error[E0599]: no function or associated item named `do_thing` found for type `Foo` in the current scope
+//!  --> src\main.rs:3:10
+//!   |
+//! 1 | struct Foo;
+//!   | ----------- function or associated item `do_thing` not found for this
+//! 2 | fn main() {
+//! 3 |     Foo::do_thing(); // second BOOM!
+//!   |          ^^^^^^^^ function or associated item not found in `Foo`
 //! ```
 //!
 //! But the second error is meaningless! We definitely need to fix this.
@@ -61,24 +69,29 @@
 //! omit `impl MyTrait for #name` and fill functions bodies with `unimplemented!()`.
 //!
 //! This is how you do it:
+//!
 //! ```rust,ignore
+//! use proc_macro::TokenStream;
+//! use proc_macro_error::*;
+//!
 //!  trait MyTrait {
 //!      fn do_thing();
 //!  }
 //!
 //!  // this proc macro is supposed to generate MyTrait impl
 //!  #[proc_macro_derive(MyTrait)]
+//!  #[proc_macro_error]
 //!  fn example(input: TokenStream) -> TokenStream {
 //!      // first of all - we set a dummy impl which will be appended to
 //!      // `compile_error!` invocations in case a trigger does happen
-//!      proc_macro_error::set_dummy(Some(quote! {
+//!      set_dummy(quote! {
 //!          impl MyTrait for #name {
 //!              fn do_thing() { unimplemented!() }
 //!          }
-//!      }));
+//!      });
 //!
 //!      // somewhere deep inside
-//!      span_error!(span, "something's wrong");
+//!      abort!(span, "something's wrong");
 //!
 //!      // this implementation will be generated if no error happened
 //!      quote! {
@@ -103,26 +116,35 @@
 use proc_macro2::TokenStream;
 use std::cell::RefCell;
 
-thread_local! {
-    pub(crate) static DUMMY_IMPL: RefCell<Option<TokenStream>> = RefCell::new(None);
-}
+use crate::check_correctness;
 
-pub(crate) fn take_dummy() -> Option<TokenStream> {
-    DUMMY_IMPL.with(|dummy| dummy.replace(None))
+thread_local! {
+    static DUMMY_IMPL: RefCell<Option<TokenStream>> = RefCell::new(None);
 }
 
 /// Sets dummy token stream which will be appended to `compile_error!(msg);...`
-/// invocations, should a trigger happen. Returns an old dummy, if set.
+/// invocations in case you'll emit any errors.
 ///
-/// # Warning:
-/// If you do `set_dummy(Some(ts))` you **must** do `set_dummy(None)`
-/// before macro execution completes (`filer_macro_errors!` will do that for you)!
-/// Otherwise `rustc` will fail with creepy
-/// ```text
-/// thread 'rustc' panicked at 'use-after-free in `proc_macro` handle', src\libcore\option.rs:1166:5
-/// note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace.
-/// error: proc-macro derive panicked
-/// ```
-pub fn set_dummy(dummy: Option<TokenStream>) -> Option<TokenStream> {
-    DUMMY_IMPL.with(|old_dummy| old_dummy.replace(dummy))
+/// See [guide](../index.html#guide).
+pub fn set_dummy(dummy: TokenStream) -> Option<TokenStream> {
+    check_correctness();
+    DUMMY_IMPL.with(|old_dummy| old_dummy.replace(Some(dummy)))
+}
+
+/// Same as [`set_dummy`] but, instead of resetting, appends tokens to the
+/// existing dummy (if any). Behaves as `set_dummy` if no dummy is present.
+pub fn append_dummy(dummy: TokenStream) {
+    check_correctness();
+    DUMMY_IMPL.with(|old_dummy| {
+        let mut cell = old_dummy.borrow_mut();
+        if let Some(ts) = cell.as_mut() {
+            ts.extend(dummy);
+        } else {
+            *cell = Some(dummy);
+        }
+    });
+}
+
+pub(crate) fn cleanup() -> Option<TokenStream> {
+    DUMMY_IMPL.with(|old_dummy| old_dummy.replace(None))
 }

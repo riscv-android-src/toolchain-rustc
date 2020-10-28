@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,8 +12,8 @@
 
 [package]
 name = "strum_macros"
-version = "0.11.0"
-authors = ["Peter Glotfelty <peglotfe@microsoft.com>"]
+version = "0.18.0"
+authors = ["Peter Glotfelty <peter.glotfelty@microsoft.com>"]
 description = "Helpful macros for working with enums and strings"
 homepage = "https://github.com/Peternator7/strum"
 documentation = "https://docs.rs/strum"
@@ -29,11 +29,25 @@ proc-macro = true
 version = "0.3"
 
 [dependencies.proc-macro2]
-version = "0.4"
+version = "1.0"
 
 [dependencies.quote]
-version = "0.6"
+version = "1.0"
 
 [dependencies.syn]
-version = "0.15"
+version = "1.0"
 features = ["parsing", "extra-traits"]
+
+[features]
+verbose-asrefstr-name = []
+verbose-asstaticstr-name = []
+verbose-display-name = []
+verbose-enumcount-name = []
+verbose-enumdiscriminants-name = []
+verbose-enumiter-name = []
+verbose-enummessage-name = []
+verbose-enumproperty-name = []
+verbose-enumstring-name = []
+verbose-intostaticstr-name = []
+verbose-tostring-name = []
+verbose-variant-names = []

@@ -11,15 +11,16 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "tokio-process"
-version = "0.2.4"
-authors = ["Alex Crichton <alex@alexcrichton.com>", "Ivan Petkov <ivanppetkov@gmail.com>"]
+version = "0.2.5"
+authors = ["Tokio Contributors <team@tokio.rs>"]
 description = "An implementation of an asynchronous process management backed futures.\n"
-homepage = "https://github.com/alexcrichton/tokio-process"
-documentation = "https://docs.rs/tokio-process"
+homepage = "https://github.com/tokio-rs/tokio"
+documentation = "https://docs.rs/tokio-process/0.2.5/tokio_process"
 categories = ["asynchronous"]
-license = "MIT/Apache-2.0"
-repository = "https://github.com/alexcrichton/tokio-process"
+license = "MIT"
+repository = "https://github.com/tokio-rs/tokio"
 [dependencies.futures]
 version = "0.1.11"
 
@@ -61,11 +62,3 @@ version = "0.1"
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3"
 features = ["handleapi", "winerror", "minwindef", "processthreadsapi", "synchapi", "threadpoollegacyapiset", "winbase", "winnt"]
-[badges.appveyor]
-repository = "alexcrichton/tokio-process"
-
-[badges.codecov]
-repository = "alexcrichton/tokio-process"
-
-[badges.travis-ci]
-repository = "alexcrichton/tokio-process"

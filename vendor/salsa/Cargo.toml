@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "salsa"
-version = "0.14.3"
+version = "0.15.2"
 authors = ["Salsa developers"]
 description = "A generic framework for on-demand, incrementalized computation (experimental)"
 readme = "README.md"
@@ -32,19 +32,17 @@ version = "0.4"
 [dependencies.log]
 version = "0.4.5"
 
+[dependencies.oorandom]
+version = "11"
+
 [dependencies.parking_lot]
 version = "0.11.0"
-
-[dependencies.rand]
-version = "0.7"
-features = ["small_rng"]
-default-features = false
 
 [dependencies.rustc-hash]
 version = "1.0"
 
 [dependencies.salsa-macros]
-version = "0.14.1"
+version = "0.15.0"
 
 [dependencies.smallvec]
 version = "1.0.0"

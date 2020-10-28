@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 
-use common::{UcdFile, UcdFileByCodepoint, Codepoint, CodepointIter};
-use error::Error;
+use crate::common::{Codepoint, CodepointIter, UcdFile, UcdFileByCodepoint};
+use crate::error::Error;
 
 /// A single row in the `CaseFolding.txt` file.
 ///
@@ -49,7 +50,8 @@ impl FromStr for CaseFold {
                 \s*(?P<status>[^\s;]+)\s*;
                 \s*(?P<mapping>[^;]+)\s*;
                 "
-            ).unwrap();
+            )
+            .unwrap();
         };
 
         let caps = match PARTS.captures(line.trim()) {
@@ -63,7 +65,7 @@ impl FromStr for CaseFold {
         Ok(CaseFold {
             codepoint: caps["codepoint"].parse()?,
             status: caps["status"].parse()?,
-            mapping: mapping,
+            mapping,
         })
     }
 }
@@ -107,8 +109,11 @@ impl FromStr for CaseStatus {
             "F" => Ok(CaseStatus::Full),
             "S" => Ok(CaseStatus::Simple),
             "T" => Ok(CaseStatus::Special),
-            _ => err!("unrecognized case status: '{}' \
-                       (must be one of C, F, S or T)", s),
+            _ => err!(
+                "unrecognized case status: '{}' \
+                 (must be one of C, F, S or T)",
+                s
+            ),
         }
     }
 }
@@ -119,7 +124,8 @@ mod tests {
 
     #[test]
     fn parse_common() {
-        let line = "0150; C; 0151; # LATIN CAPITAL LETTER O WITH DOUBLE ACUTE\n";
+        let line =
+            "0150; C; 0151; # LATIN CAPITAL LETTER O WITH DOUBLE ACUTE\n";
         let row: CaseFold = line.parse().unwrap();
         assert_eq!(row.codepoint, 0x0150);
         assert_eq!(row.status, CaseStatus::Common);

@@ -13,12 +13,12 @@
 [package]
 edition = "2018"
 name = "tinyvec"
-version = "0.3.3"
+version = "0.3.4"
 authors = ["Lokathor <zefria@gmail.com>"]
 description = "Just, really the littlest Vec you could need. So smol."
 keywords = ["vec", "no_std", "no-std", "smol"]
 categories = ["data-structures", "no-std"]
-license = "Zlib"
+license = "Zlib OR Apache-2.0 OR MIT"
 repository = "https://github.com/Lokathor/tinyvec"
 [package.metadata.docs.rs]
 all-features = true

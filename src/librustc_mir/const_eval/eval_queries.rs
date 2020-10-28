@@ -1,13 +1,14 @@
-use super::{error_to_const_error, CompileTimeEvalContext, CompileTimeInterpreter, MemoryExtra};
+use super::{CompileTimeEvalContext, CompileTimeInterpreter, ConstEvalErr, MemoryExtra};
 use crate::interpret::eval_nullary_intrinsic;
 use crate::interpret::{
     intern_const_alloc_recursive, Allocation, ConstValue, GlobalId, Immediate, InternKind,
     InterpCx, InterpResult, MPlaceTy, MemoryKind, OpTy, RawConst, RefTracking, Scalar,
     ScalarMaybeUninit, StackPopCleanup,
 };
+
 use rustc_hir::def::DefKind;
 use rustc_middle::mir;
-use rustc_middle::mir::interpret::{ConstEvalErr, ErrorHandled};
+use rustc_middle::mir::interpret::ErrorHandled;
 use rustc_middle::traits::Reveal;
 use rustc_middle::ty::{self, subst::Subst, TyCtxt};
 use rustc_span::source_map::Span;
@@ -56,6 +57,12 @@ fn eval_body_using_ecx<'mir, 'tcx>(
     ecx.run()?;
 
     // Intern the result
+    // FIXME: since the DefId of a promoted is the DefId of its owner, this
+    // means that promoteds in statics are actually interned like statics!
+    // However, this is also currently crucial because we promote mutable
+    // non-empty slices in statics to extend their lifetime, and this
+    // ensures that they are put into a mutable allocation.
+    // For other kinds of promoteds in statics (like array initializers), this is rather silly.
     let intern_kind = match tcx.static_mutability(cid.instance.def_id()) {
         Some(m) => InternKind::Static(m),
         None if cid.promoted.is_some() => InternKind::Promoted,
@@ -154,7 +161,7 @@ pub(super) fn op_to_const<'tcx>(
                 ScalarMaybeUninit::Uninit => to_const_value(op.assert_mem_place(ecx)),
             },
             Immediate::ScalarPair(a, b) => {
-                let (data, start) = match a.not_undef().unwrap() {
+                let (data, start) = match a.check_init().unwrap() {
                     Scalar::Ptr(ptr) => {
                         (ecx.tcx.global_alloc(ptr.alloc_id).unwrap_memory(), ptr.offset.bytes())
                     }
@@ -213,7 +220,7 @@ fn validate_and_turn_into_const<'tcx>(
     })();
 
     val.map_err(|error| {
-        let err = error_to_const_error(&ecx, error, None);
+        let err = ConstEvalErr::new(&ecx, error, None);
         err.struct_error(ecx.tcx, "it is undefined behavior to use this value", |mut diag| {
             diag.note(note_on_undefined_behavior_error());
             diag.emit();
@@ -240,7 +247,7 @@ pub fn const_eval_validated_provider<'tcx>(
     // We call `const_eval` for zero arg intrinsics, too, in order to cache their value.
     // Catch such calls and evaluate them instead of trying to load a constant's MIR.
     if let ty::InstanceDef::Intrinsic(def_id) = key.value.instance.def {
-        let ty = key.value.instance.ty_env(tcx, key.param_env);
+        let ty = key.value.instance.ty(tcx, key.param_env);
         let substs = match ty.kind {
             ty::FnDef(_, substs) => substs,
             _ => bug!("intrinsic with type {:?}", ty),
@@ -288,21 +295,21 @@ pub fn const_eval_raw_provider<'tcx>(
     }
 
     let cid = key.value;
-    let def_id = cid.instance.def.def_id();
+    let def = cid.instance.def.with_opt_param();
 
-    if let Some(def_id) = def_id.as_local() {
-        if tcx.has_typeck_tables(def_id) {
-            if let Some(error_reported) = tcx.typeck_tables_of(def_id).tainted_by_errors {
+    if let Some(def) = def.as_local() {
+        if tcx.has_typeck_results(def.did) {
+            if let Some(error_reported) = tcx.typeck_opt_const_arg(def).tainted_by_errors {
                 return Err(ErrorHandled::Reported(error_reported));
             }
         }
     }
 
-    let is_static = tcx.is_static(def_id);
+    let is_static = tcx.is_static(def.did);
 
     let mut ecx = InterpCx::new(
         tcx,
-        tcx.def_span(cid.instance.def_id()),
+        tcx.def_span(def.did),
         key.param_env,
         CompileTimeInterpreter::new(tcx.sess.const_eval_limit()),
         MemoryExtra { can_access_statics: is_static },
@@ -312,7 +319,7 @@ pub fn const_eval_raw_provider<'tcx>(
     res.and_then(|body| eval_body_using_ecx(&mut ecx, cid, &body))
         .map(|place| RawConst { alloc_id: place.ptr.assert_ptr().alloc_id, ty: place.layout.ty })
         .map_err(|error| {
-            let err = error_to_const_error(&ecx, error, None);
+            let err = ConstEvalErr::new(&ecx, error, None);
             // errors in statics are always emitted as fatal errors
             if is_static {
                 // Ensure that if the above error was either `TooGeneric` or `Reported`
@@ -334,9 +341,9 @@ pub fn const_eval_raw_provider<'tcx>(
                 }
 
                 v
-            } else if let Some(def_id) = def_id.as_local() {
+            } else if let Some(def) = def.as_local() {
                 // constant defined in this crate, we can figure out a lint level!
-                match tcx.def_kind(def_id.to_def_id()) {
+                match tcx.def_kind(def.did.to_def_id()) {
                     // constants never produce a hard error at the definition site. Anything else is
                     // a backwards compatibility hazard (and will break old versions of winapi for
                     // sure)
@@ -346,9 +353,9 @@ pub fn const_eval_raw_provider<'tcx>(
                     // validation thus preventing such a hard error from being a backwards
                     // compatibility hazard
                     DefKind::Const | DefKind::AssocConst => {
-                        let hir_id = tcx.hir().as_local_hir_id(def_id);
+                        let hir_id = tcx.hir().local_def_id_to_hir_id(def.did);
                         err.report_as_lint(
-                            tcx.at(tcx.def_span(def_id)),
+                            tcx.at(tcx.def_span(def.did)),
                             "any use of this value will cause an error",
                             hir_id,
                             Some(err.span),
@@ -359,7 +366,7 @@ pub fn const_eval_raw_provider<'tcx>(
                     // deny-by-default lint
                     _ => {
                         if let Some(p) = cid.promoted {
-                            let span = tcx.promoted_mir(def_id)[p].span;
+                            let span = tcx.promoted_mir_of_opt_const_arg(def.to_global())[p].span;
                             if let err_inval!(ReferencedConstant) = err.error {
                                 err.report_as_error(
                                     tcx.at(span),
@@ -369,7 +376,7 @@ pub fn const_eval_raw_provider<'tcx>(
                                 err.report_as_lint(
                                     tcx.at(span),
                                     "reaching this expression at runtime will panic or abort",
-                                    tcx.hir().as_local_hir_id(def_id),
+                                    tcx.hir().local_def_id_to_hir_id(def.did),
                                     Some(err.span),
                                 )
                             }

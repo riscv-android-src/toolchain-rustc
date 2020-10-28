@@ -8,7 +8,7 @@ use rustc_middle::ty::subst::{GenericArg, GenericArgKind};
 use rustc_middle::ty::{self, Instance, Ty, TyCtxt, TypeFoldable};
 use rustc_middle::util::common::record_time;
 
-use log::debug;
+use tracing::debug;
 
 use std::fmt::{self, Write};
 use std::mem::{self, discriminant};
@@ -116,7 +116,6 @@ fn get_symbol_hash<'tcx>(
 
         // also include any type parameters (for generic items)
         assert!(!substs.has_erasable_regions());
-        assert!(!substs.needs_subst());
         substs.hash_stable(&mut hcx, &mut hasher);
 
         if let Some(instantiating_crate) = instantiating_crate {
@@ -137,7 +136,7 @@ fn get_symbol_hash<'tcx>(
 }
 
 // Follow C++ namespace-mangling style, see
-// http://en.wikipedia.org/wiki/Name_mangling for more info.
+// https://en.wikipedia.org/wiki/Name_mangling for more info.
 //
 // It turns out that on macOS you can actually have arbitrary symbols in
 // function names (at least when given to LLVM), but this is not possible

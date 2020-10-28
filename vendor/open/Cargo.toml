@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -11,11 +11,13 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "open"
-version = "1.2.1"
+version = "1.4.0"
 authors = ["Sebastian Thiel <byronimo@gmail.com>"]
+include = ["src/**/*.rs", "Cargo.toml", "*.md"]
 description = "Open a path or URL using the program configured on the system"
-documentation = "http://byron.github.io/open-rs"
+readme = "README.md"
 keywords = ["open", "xdg-open", "start", "launch"]
 license = "MIT"
 repository = "https://github.com/Byron/open-rs"
@@ -24,3 +26,6 @@ repository = "https://github.com/Byron/open-rs"
 name = "open"
 test = false
 doc = false
+[target."cfg(windows)".dependencies.winapi]
+version = "0.3"
+features = ["shellapi"]

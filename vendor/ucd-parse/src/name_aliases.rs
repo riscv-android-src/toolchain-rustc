@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 
-use common::{UcdFile, UcdFileByCodepoint, Codepoint, CodepointIter};
-use error::Error;
+use crate::common::{Codepoint, CodepointIter, UcdFile, UcdFileByCodepoint};
+use crate::error::Error;
 
 /// A single row in the `NameAliases.txt` file.
 ///
@@ -46,7 +47,8 @@ impl FromStr for NameAlias {
                 \s*
                 (?P<label>\S+)
                 "
-            ).unwrap();
+            )
+            .unwrap();
         };
 
         let caps = match PARTS.captures(line.trim()) {

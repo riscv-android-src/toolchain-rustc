@@ -465,7 +465,7 @@ int _libssh2_transport_read(LIBSSH2_SESSION * session)
              * or less (including length, padding length, payload,
              * padding, and MAC.)."
              */
-            if(total_num > LIBSSH2_PACKET_MAXPAYLOAD) {
+            if(total_num > LIBSSH2_PACKET_MAXPAYLOAD || total_num == 0) {
                 return LIBSSH2_ERROR_OUT_OF_BOUNDARY;
             }
 
@@ -765,7 +765,7 @@ int _libssh2_transport_send(LIBSSH2_SESSION *session,
         ((session->state & LIBSSH2_STATE_AUTHENTICATED) ||
          session->local.comp->use_in_auth);
 
-    if(encrypted && compressed) {
+    if(encrypted && compressed && session->local.comp_abstract) {
         /* the idea here is that these function must fail if the output gets
            larger than what fits in the assigned buffer so thus they don't
            check the input size as we don't know how much it compresses */

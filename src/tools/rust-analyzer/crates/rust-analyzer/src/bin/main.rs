@@ -3,62 +3,40 @@
 //! Based on cli flags, either spawns an LSP server, or runs a batch analysis
 mod args;
 
-use std::convert::TryFrom;
+use std::{convert::TryFrom, process};
 
 use lsp_server::Connection;
+use project_model::ProjectManifest;
 use rust_analyzer::{
     cli,
     config::{Config, LinkedProject},
     from_json, Result,
 };
+use vfs::AbsPathBuf;
 
-use ra_db::AbsPathBuf;
-use ra_project_model::ProjectManifest;
+#[cfg(all(feature = "mimalloc"))]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use crate::args::HelpPrinted;
+fn main() {
+    if let Err(err) = try_main() {
+        eprintln!("{}", err);
+        process::exit(101);
+    }
+}
 
-fn main() -> Result<()> {
+fn try_main() -> Result<()> {
     setup_logging()?;
-    let args = match args::Args::parse()? {
-        Ok(it) => it,
-        Err(HelpPrinted) => return Ok(()),
-    };
+    let args = args::Args::parse()?;
     match args.command {
         args::Command::RunServer => run_server()?,
-        args::Command::ProcMacro => ra_proc_macro_srv::cli::run()?,
+        args::Command::ProcMacro => proc_macro_srv::cli::run()?,
 
         args::Command::Parse { no_dump } => cli::parse(no_dump)?,
         args::Command::Symbols => cli::symbols()?,
         args::Command::Highlight { rainbow } => cli::highlight(rainbow)?,
-        args::Command::Stats {
-            randomize,
-            parallel,
-            memory_usage,
-            only,
-            with_deps,
-            path,
-            load_output_dirs,
-            with_proc_macro,
-        } => cli::analysis_stats(
-            args.verbosity,
-            memory_usage,
-            path.as_ref(),
-            only.as_ref().map(String::as_ref),
-            with_deps,
-            randomize,
-            parallel,
-            load_output_dirs,
-            with_proc_macro,
-        )?,
-        args::Command::Bench { path, what, load_output_dirs, with_proc_macro } => {
-            cli::analysis_bench(
-                args.verbosity,
-                path.as_ref(),
-                what,
-                load_output_dirs,
-                with_proc_macro,
-            )?
-        }
+        args::Command::AnalysisStats(cmd) => cmd.run(args.verbosity)?,
+        args::Command::Bench(cmd) => cmd.run(args.verbosity)?,
         args::Command::Diagnostics { path, load_output_dirs, with_proc_macro, all } => {
             cli::diagnostics(path.as_ref(), load_output_dirs, with_proc_macro, all)?
         }
@@ -69,6 +47,7 @@ fn main() -> Result<()> {
             cli::search_for_patterns(patterns, debug_snippet)?;
         }
         args::Command::Version => println!("rust-analyzer {}", env!("REV")),
+        args::Command::Help => {}
     }
     Ok(())
 }
@@ -76,7 +55,7 @@ fn main() -> Result<()> {
 fn setup_logging() -> Result<()> {
     std::env::set_var("RUST_BACKTRACE", "short");
     env_logger::try_init_from_env("RA_LOG")?;
-    ra_prof::init();
+    profile::init();
     Ok(())
 }
 
@@ -121,8 +100,8 @@ fn run_server() -> Result<()> {
         };
 
         let mut config = Config::new(root_path);
-        if let Some(value) = &initialize_params.initialization_options {
-            config.update(value);
+        if let Some(json) = initialize_params.initialization_options {
+            config.update(json);
         }
         config.update_caps(&initialize_params.capabilities);
 

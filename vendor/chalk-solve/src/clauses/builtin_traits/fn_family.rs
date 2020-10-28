@@ -4,8 +4,8 @@ use crate::rust_ir::{ClosureKind, FnDefInputsAndOutputDatum, WellKnownTrait};
 use crate::{Interner, RustIrDatabase, TraitRef};
 use chalk_ir::cast::Cast;
 use chalk_ir::{
-    AliasTy, ApplicationTy, Binders, Floundered, Normalize, ProjectionTy, Substitution, TraitId,
-    Ty, TyData, TypeName, VariableKinds,
+    AliasTy, ApplicationTy, Binders, Floundered, Normalize, ProjectionTy, Safety, Substitution,
+    TraitId, Ty, TyData, TypeName, VariableKinds,
 };
 
 fn push_clauses<I: Interner>(
@@ -24,7 +24,7 @@ fn push_clauses<I: Interner>(
     })
     .intern(interner);
     let substitution =
-        Substitution::from(interner, &[self_ty.cast(interner), tupled.cast(interner)]);
+        Substitution::from_iter(interner, &[self_ty.cast(interner), tupled.cast(interner)]);
     builder.push_fact(TraitRef {
         trait_id,
         substitution: substitution.clone(),
@@ -68,7 +68,7 @@ fn push_clauses_for_apply<I: Interner>(
             .iter()
             .cloned()
             .map(|ty| ty.cast(interner));
-        let arg_sub = Substitution::from(interner, arg_sub);
+        let arg_sub = Substitution::from_iter(interner, arg_sub);
         let output_ty = inputs_and_output.return_type;
 
         push_clauses(
@@ -99,17 +99,19 @@ pub fn add_fn_trait_program_clauses<I: Interner>(
         TyData::Apply(apply) => match apply.name {
             TypeName::FnDef(fn_def_id) => {
                 let fn_def_datum = builder.db.fn_def_datum(fn_def_id);
-                let bound = fn_def_datum
-                    .binders
-                    .substitute(builder.interner(), &apply.substitution);
-                push_clauses_for_apply(
-                    db,
-                    builder,
-                    well_known,
-                    trait_id,
-                    self_ty,
-                    &bound.inputs_and_output,
-                );
+                if fn_def_datum.safety == Safety::Safe && !fn_def_datum.variadic {
+                    let bound = fn_def_datum
+                        .binders
+                        .substitute(builder.interner(), &apply.substitution);
+                    push_clauses_for_apply(
+                        db,
+                        builder,
+                        well_known,
+                        trait_id,
+                        self_ty,
+                        &bound.inputs_and_output,
+                    );
+                }
                 Ok(())
             }
             TypeName::Closure(closure_id) => {
@@ -138,15 +140,15 @@ pub fn add_fn_trait_program_clauses<I: Interner>(
             }
             _ => Ok(()),
         },
-        TyData::Function(fn_val) => {
+        TyData::Function(fn_val) if fn_val.safety == Safety::Safe && !fn_val.variadic => {
             let (binders, orig_sub) = fn_val.into_binders_and_value(interner);
-            let bound_ref = Binders::new(VariableKinds::from(interner, binders), orig_sub);
+            let bound_ref = Binders::new(VariableKinds::from_iter(interner, binders), orig_sub);
             builder.push_binders(&bound_ref, |builder, orig_sub| {
                 // The last parameter represents the function return type
                 let (arg_sub, fn_output_ty) = orig_sub
-                    .parameters(interner)
+                    .as_slice(interner)
                     .split_at(orig_sub.len(interner) - 1);
-                let arg_sub = Substitution::from(interner, arg_sub);
+                let arg_sub = Substitution::from_iter(interner, arg_sub);
                 let output_ty = fn_output_ty[0].assert_ty_ref(interner).clone();
 
                 push_clauses(

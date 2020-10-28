@@ -335,7 +335,7 @@ spanless_eq_enum!(ForeignItemKind; Static(0 1 2) Fn(0 1 2 3) TyAlias(0 1 2 3) Ma
 spanless_eq_enum!(GenericArg; Lifetime(0) Type(0) Const(0));
 spanless_eq_enum!(GenericArgs; AngleBracketed(0) Parenthesized(0));
 spanless_eq_enum!(GenericBound; Trait(0 1) Outlives(0));
-spanless_eq_enum!(GenericParamKind; Lifetime Type(default) Const(ty));
+spanless_eq_enum!(GenericParamKind; Lifetime Type(default) Const(ty kw_span));
 spanless_eq_enum!(ImplPolarity; Positive Negative(0));
 spanless_eq_enum!(InlineAsmRegOrRegClass; Reg(0) RegClass(0));
 spanless_eq_enum!(InlineAsmTemplatePiece; String(0) Placeholder(operand_idx modifier span));
@@ -442,8 +442,8 @@ fn expand_tts(tts: &TokenStream) -> Vec<TokenTree> {
                 continue;
             }
         };
-        let contents = comments::strip_doc_comment_decoration(&c.as_str());
-        let style = comments::doc_comment_style(&c.as_str());
+        let contents = comments::strip_doc_comment_decoration(c);
+        let style = comments::doc_comment_style(c);
         tokens.push(TokenTree::token(TokenKind::Pound, DUMMY_SP));
         if style == AttrStyle::Inner {
             tokens.push(TokenTree::token(TokenKind::Not, DUMMY_SP));

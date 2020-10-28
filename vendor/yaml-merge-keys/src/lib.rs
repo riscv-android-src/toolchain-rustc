@@ -9,6 +9,66 @@
 //! The YAML Merge Key extension is not supported by the core YAML crate, but can be implemented
 //! after parsing. This crate transforms a parsed YAML document and merges dictionaries together.
 //!
+//! # Usage
+//!
+//! This crate provides a function which implements the [YAML Merge Key extension]. Given a YAML
+//! document from `yaml-rust` (or `serde_yaml` with the `serde_yaml` feature), it will return
+//! a YAML document with the merge keys removed and merged into their owning dictionaries.
+//!
+//! ```rust
+//! # extern crate yaml_rust;
+//! # extern crate yaml_merge_keys;
+//! # #[cfg(feature = "serde_yaml")]
+//! # extern crate serde_yaml;
+//! use yaml_rust::YamlLoader;
+//! use yaml_merge_keys::merge_keys;
+//!
+//! // YAML document contents.
+//! let raw = "\
+//! ref: &ref
+//!     merged_key: merged
+//!     added_key: merged
+//! dict:
+//!     <<: *ref
+//!     top_key: given
+//!     merged_key: given
+//! ";
+//! let merged = "\
+//! ref:
+//!     merged_key: merged
+//!     added_key: merged
+//! dict:
+//!     top_key: given
+//!     merged_key: given
+//!     added_key: merged
+//! ";
+//!
+//! // Parse the YAML documents.
+//! let raw_yaml = YamlLoader::load_from_str(raw).unwrap().remove(0);
+//! let merged_yaml = YamlLoader::load_from_str(merged).unwrap().remove(0);
+//!
+//! // Merge the keys.
+//! let merged_keys = merge_keys(raw_yaml).unwrap();
+//!
+//! // The keys have been merged.
+//! assert_eq!(merged_keys, merged_yaml);
+//!
+//! // Using `serde_yaml` is also supported with the feature.
+//! #[cfg(feature = "serde_yaml")]
+//! {
+//!     use yaml_merge_keys::merge_keys_serde;
+//!
+//!     let raw_yaml = serde_yaml::from_str(raw).unwrap();
+//!     let merged_yaml: serde_yaml::Value = serde_yaml::from_str(merged).unwrap();
+//!
+//!     let merged_keys = merge_keys_serde(raw_yaml).unwrap();
+//!
+//!     assert_eq!(merged_keys, merged_yaml);
+//! }
+//! ```
+//!
+//! [YAML Merge Key extension]: http://yaml.org/type/merge.html
+//!
 //! # Example
 //!
 //! ```yaml
@@ -67,3 +127,5 @@ pub use serde::merge_keys_serde;
 
 #[cfg(test)]
 mod test;
+#[cfg(all(test, feature = "serde_yaml"))]
+mod test_serde;

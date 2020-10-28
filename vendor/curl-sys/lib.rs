@@ -576,6 +576,11 @@ pub const CURLOPT_SSL_OPTIONS: CURLoption = CURLOPTTYPE_LONG + 216;
 // pub const CURLOPT_LOGIN_OPTIONS: CURLoption = CURLOPTTYPE_OBJECTPOINT + 224;
 pub const CURLOPT_UNIX_SOCKET_PATH: CURLoption = CURLOPTTYPE_OBJECTPOINT + 231;
 pub const CURLOPT_PIPEWAIT: CURLoption = CURLOPTTYPE_LONG + 237;
+pub const CURLOPT_CONNECT_TO: CURLoption = CURLOPTTYPE_OBJECTPOINT + 243;
+pub const CURLOPT_PROXY_CAINFO: CURLoption = CURLOPTTYPE_OBJECTPOINT + 246;
+pub const CURLOPT_PROXY_CAPATH: CURLoption = CURLOPTTYPE_OBJECTPOINT + 247;
+pub const CURLOPT_PROXY_SSLCERT: CURLoption = CURLOPTTYPE_OBJECTPOINT + 254;
+pub const CURLOPT_PROXY_SSLKEY: CURLoption = CURLOPTTYPE_OBJECTPOINT + 256;
 
 pub const CURL_IPRESOLVE_WHATEVER: c_int = 0;
 pub const CURL_IPRESOLVE_V4: c_int = 1;
@@ -602,6 +607,9 @@ pub const CURL_HTTP_VERSION_2TLS: c_int = 4;
 /// Please use HTTP 2 without HTTP/1.1 Upgrade
 /// (Added in CURL 7.49.0)
 pub const CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE: c_int = 5;
+/// Makes use of explicit HTTP/3 without fallback.
+/// (Added in CURL 7.66.0)
+pub const CURL_HTTP_VERSION_3: c_int = 30;
 
 // Note that the type here is wrong, it's just intended to just be an enum.
 pub const CURL_SSLVERSION_DEFAULT: CURLoption = 0;
@@ -799,7 +807,8 @@ pub const CURLVERSION_THIRD: CURLversion = 2;
 pub const CURLVERSION_FOURTH: CURLversion = 3;
 pub const CURLVERSION_FIFTH: CURLversion = 4;
 pub const CURLVERSION_SIXTH: CURLversion = 5;
-pub const CURLVERSION_NOW: CURLversion = CURLVERSION_SIXTH;
+pub const CURLVERSION_SEVENTH: CURLversion = 6;
+pub const CURLVERSION_NOW: CURLversion = CURLVERSION_SEVENTH;
 
 #[repr(C)]
 pub struct curl_version_info_data {
@@ -822,6 +831,8 @@ pub struct curl_version_info_data {
     pub nghttp2_ver_num: c_uint,
     pub nghttp2_version: *const c_char,
     pub quic_version: *const c_char,
+    pub cainfo: *const c_char,
+    pub capath: *const c_char,
 }
 
 pub const CURL_VERSION_IPV6: c_int = 1 << 0;
@@ -842,6 +853,8 @@ pub const CURL_VERSION_TLSAUTH_SRP: c_int = 1 << 14;
 pub const CURL_VERSION_NTLM_WB: c_int = 1 << 15;
 pub const CURL_VERSION_HTTP2: c_int = 1 << 16;
 pub const CURL_VERSION_UNIX_SOCKETS: c_int = 1 << 19;
+pub const CURL_VERSION_BROTLI: c_int = 1 << 23;
+pub const CURL_VERSION_HTTP3: c_int = 1 << 25;
 
 pub const CURLPAUSE_RECV: c_int = 1 << 0;
 pub const CURLPAUSE_RECV_CONT: c_int = 0;

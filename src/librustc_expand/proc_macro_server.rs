@@ -1,9 +1,8 @@
 use crate::base::ExtCtxt;
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_ast::token;
 use rustc_ast::tokenstream::{self, DelimSpan, IsJoint::*, TokenStream, TreeAndJoint};
-use rustc_ast::util::comments;
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::Diagnostic;
@@ -148,11 +147,9 @@ impl FromInternal<(TreeAndJoint, &'_ ParseSess, &'_ mut Vec<Self>)>
                 tt!(Punct::new('\'', true))
             }
             Literal(lit) => tt!(Literal { lit }),
-            DocComment(c) => {
-                let style = comments::doc_comment_style(&c.as_str());
-                let stripped = comments::strip_doc_comment_decoration(&c.as_str());
+            DocComment(_, attr_style, data) => {
                 let mut escaped = String::new();
-                for ch in stripped.chars() {
+                for ch in data.as_str().chars() {
                     escaped.extend(ch.escape_debug());
                 }
                 let stream = vec![
@@ -169,20 +166,26 @@ impl FromInternal<(TreeAndJoint, &'_ ParseSess, &'_ mut Vec<Self>)>
                     span: DelimSpan::from_single(span),
                     flatten: false,
                 }));
-                if style == ast::AttrStyle::Inner {
+                if attr_style == ast::AttrStyle::Inner {
                     stack.push(tt!(Punct::new('!', false)));
                 }
                 tt!(Punct::new('#', false))
             }
 
             Interpolated(nt) => {
-                let stream = nt_to_tokenstream(&nt, sess, span);
-                TokenTree::Group(Group {
-                    delimiter: Delimiter::None,
-                    stream,
-                    span: DelimSpan::from_single(span),
-                    flatten: nt.pretty_printing_compatibility_hack(),
-                })
+                if let Some((name, is_raw)) =
+                    nt.ident_name_compatibility_hack(span, sess.source_map())
+                {
+                    TokenTree::Ident(Ident::new(sess, name.name, is_raw, name.span))
+                } else {
+                    let stream = nt_to_tokenstream(&nt, sess, span);
+                    TokenTree::Group(Group {
+                        delimiter: Delimiter::None,
+                        stream,
+                        span: DelimSpan::from_single(span),
+                        flatten: nt.pretty_printing_compatibility_hack(),
+                    })
+                }
             }
 
             OpenDelim(..) | CloseDelim(..) => unreachable!(),
@@ -274,6 +277,8 @@ impl ToInternal<rustc_errors::Level> for Level {
     }
 }
 
+pub struct FreeFunctions;
+
 #[derive(Clone)]
 pub struct TokenStreamIter {
     cursor: tokenstream::Cursor,
@@ -320,18 +325,10 @@ pub struct Ident {
 }
 
 impl Ident {
-    fn is_valid(string: &str) -> bool {
-        let mut chars = string.chars();
-        if let Some(start) = chars.next() {
-            rustc_lexer::is_id_start(start) && chars.all(rustc_lexer::is_id_continue)
-        } else {
-            false
-        }
-    }
     fn new(sess: &ParseSess, sym: Symbol, is_raw: bool, span: Span) -> Ident {
         let sym = nfc_normalize(&sym.as_str());
         let string = sym.as_str();
-        if !Self::is_valid(&string) {
+        if !rustc_lexer::is_ident(&string) {
             panic!("`{:?}` is not a valid identifier", string)
         }
         if is_raw && !sym.can_be_raw() {
@@ -365,7 +362,7 @@ impl<'a> Rustc<'a> {
     pub fn new(cx: &'a ExtCtxt<'_>) -> Self {
         let expn_data = cx.current_expansion.id.expn_data();
         Rustc {
-            sess: cx.parse_sess,
+            sess: &cx.sess.parse_sess,
             def_site: cx.with_def_site_ctxt(expn_data.def_site),
             call_site: cx.with_call_site_ctxt(expn_data.call_site),
             mixed_site: cx.with_mixed_site_ctxt(expn_data.call_site),
@@ -379,6 +376,7 @@ impl<'a> Rustc<'a> {
 }
 
 impl server::Types for Rustc<'_> {
+    type FreeFunctions = FreeFunctions;
     type TokenStream = TokenStream;
     type TokenStreamBuilder = tokenstream::TokenStreamBuilder;
     type TokenStreamIter = TokenStreamIter;
@@ -390,6 +388,12 @@ impl server::Types for Rustc<'_> {
     type MultiSpan = Vec<Span>;
     type Diagnostic = Diagnostic;
     type Span = Span;
+}
+
+impl server::FreeFunctions for Rustc<'_> {
+    fn track_env_var(&mut self, var: &str, value: Option<&str>) {
+        self.sess.env_depinfo.borrow_mut().insert((Symbol::intern(var), value.map(Symbol::intern)));
+    }
 }
 
 impl server::TokenStream for Rustc<'_> {

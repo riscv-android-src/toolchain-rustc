@@ -15,27 +15,28 @@ use core::hash;
 use core::marker::PhantomData;
 use core::mem;
 use core::ptr;
-use core::slice;
 
 /// An implementation of SipHash 1-3.
 ///
-/// See: https://131002.net/siphash/
+/// See: <https://131002.net/siphash/>
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SipHasher13 {
     hasher: Hasher<Sip13Rounds>,
 }
 
 /// An implementation of SipHash 2-4.
 ///
-/// See: https://131002.net/siphash/
+/// See: <https://131002.net/siphash/>
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SipHasher24 {
     hasher: Hasher<Sip24Rounds>,
 }
 
 /// An implementation of SipHash 2-4.
 ///
-/// See: https://131002.net/siphash/
+/// See: <https://131002.net/siphash/>
 ///
 /// SipHash is a general-purpose hashing function: it runs at a good
 /// speed (competitive with Spooky and City) and permits strong _keyed_
@@ -46,20 +47,23 @@ pub struct SipHasher24 {
 /// it is not intended for cryptographic purposes. As such, all
 /// cryptographic uses of this implementation are _strongly discouraged_.
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SipHasher(SipHasher24);
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct Hasher<S: Sip> {
     k0: u64,
     k1: u64,
     length: usize, // how many bytes we've processed
-    state: State, // hash State
-    tail: u64, // unprocessed bytes le
-    ntail: usize, // how many bytes in tail are valid
+    state: State,  // hash State
+    tail: u64,     // unprocessed bytes le
+    ntail: usize,  // how many bytes in tail are valid
     _marker: PhantomData<S>,
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 struct State {
     // v0, v2 and v1, v3 show up in pairs in the algorithm,
     // and simd implementations of SipHash will use vectors
@@ -72,38 +76,48 @@ struct State {
 }
 
 macro_rules! compress {
-    ($state:expr) => ({
+    ($state:expr) => {{
         compress!($state.v0, $state.v1, $state.v2, $state.v3)
-    });
-    ($v0:expr, $v1:expr, $v2:expr, $v3:expr) =>
-    ({
-        $v0 = $v0.wrapping_add($v1); $v1 = $v1.rotate_left(13); $v1 ^= $v0;
+    }};
+    ($v0:expr, $v1:expr, $v2:expr, $v3:expr) => {{
+        $v0 = $v0.wrapping_add($v1);
+        $v1 = $v1.rotate_left(13);
+        $v1 ^= $v0;
         $v0 = $v0.rotate_left(32);
-        $v2 = $v2.wrapping_add($v3); $v3 = $v3.rotate_left(16); $v3 ^= $v2;
-        $v0 = $v0.wrapping_add($v3); $v3 = $v3.rotate_left(21); $v3 ^= $v0;
-        $v2 = $v2.wrapping_add($v1); $v1 = $v1.rotate_left(17); $v1 ^= $v2;
+        $v2 = $v2.wrapping_add($v3);
+        $v3 = $v3.rotate_left(16);
+        $v3 ^= $v2;
+        $v0 = $v0.wrapping_add($v3);
+        $v3 = $v3.rotate_left(21);
+        $v3 ^= $v0;
+        $v2 = $v2.wrapping_add($v1);
+        $v1 = $v1.rotate_left(17);
+        $v1 ^= $v2;
         $v2 = $v2.rotate_left(32);
-    });
+    }};
 }
 
-/// Load an integer of the desired type from a byte stream, in LE order. Uses
+/// Loads an integer of the desired type from a byte stream, in LE order. Uses
 /// `copy_nonoverlapping` to let the compiler generate the most efficient way
 /// to load it from a possibly unaligned address.
 ///
 /// Unsafe because: unchecked indexing at `i..i+size_of(int_ty)`
 macro_rules! load_int_le {
-    ($buf:expr, $i:expr, $int_ty:ident) =>
-    ({
-       debug_assert!($i + mem::size_of::<$int_ty>() <= $buf.len());
-       let mut data = 0 as $int_ty;
-       ptr::copy_nonoverlapping($buf.get_unchecked($i),
-                                &mut data as *mut _ as *mut u8,
-                                mem::size_of::<$int_ty>());
-       data.to_le()
-    });
+    ($buf:expr, $i:expr, $int_ty:ident) => {{
+        debug_assert!($i + mem::size_of::<$int_ty>() <= $buf.len());
+        let mut data = 0 as $int_ty;
+        ptr::copy_nonoverlapping(
+            $buf.get_unchecked($i),
+            &mut data as *mut _ as *mut u8,
+            mem::size_of::<$int_ty>(),
+        );
+        data.to_le()
+    }};
 }
 
-/// Load an u64 using up to 7 bytes of a byte slice.
+/// Loads a u64 using up to 7 bytes of a byte slice. It looks clumsy but the
+/// `copy_nonoverlapping` calls that occur (via `load_int_le!`) all have fixed
+/// sizes and avoid calling `memcpy`, which is good for speed.
 ///
 /// Unsafe because: unchecked indexing at start..start+len
 #[inline]
@@ -156,7 +170,9 @@ impl SipHasher13 {
     /// Creates a `SipHasher13` that is keyed off the provided keys.
     #[inline]
     pub fn new_with_keys(key0: u64, key1: u64) -> SipHasher13 {
-        SipHasher13 { hasher: Hasher::new_with_keys(key0, key1) }
+        SipHasher13 {
+            hasher: Hasher::new_with_keys(key0, key1),
+        }
     }
 
     /// Get the keys used by this hasher
@@ -175,7 +191,9 @@ impl SipHasher24 {
     /// Creates a `SipHasher24` that is keyed off the provided keys.
     #[inline]
     pub fn new_with_keys(key0: u64, key1: u64) -> SipHasher24 {
-        SipHasher24 { hasher: Hasher::new_with_keys(key0, key1) }
+        SipHasher24 {
+            hasher: Hasher::new_with_keys(key0, key1),
+        }
     }
 
     /// Get the keys used by this hasher
@@ -215,35 +233,41 @@ impl<S: Sip> Hasher<S> {
         self.ntail = 0;
     }
 
-    // Specialized write function that is only valid for buffers with len <= 8.
-    // It's used to force inlining of write_u8 and write_usize, those would normally be inlined
-    // except for composite types (that includes slices and str hashing because of delimiter).
-    // Without this extra push the compiler is very reluctant to inline delimiter writes,
-    // degrading performance substantially for the most common use cases.
-    #[inline(always)]
-    fn short_write(&mut self, msg: &[u8]) {
-        debug_assert!(msg.len() <= 8);
-        let length = msg.len();
-        self.length += length;
+    // A specialized write function for values with size <= 8.
+    //
+    // The hashing of multi-byte integers depends on endianness. E.g.:
+    // - little-endian: `write_u32(0xDDCCBBAA)` == `write([0xAA, 0xBB, 0xCC, 0xDD])`
+    // - big-endian:    `write_u32(0xDDCCBBAA)` == `write([0xDD, 0xCC, 0xBB, 0xAA])`
+    //
+    // This function does the right thing for little-endian hardware. On
+    // big-endian hardware `x` must be byte-swapped first to give the right
+    // behaviour. After any byte-swapping, the input must be zero-extended to
+    // 64-bits. The caller is responsible for the byte-swapping and
+    // zero-extension.
+    #[inline]
+    fn short_write<T>(&mut self, _x: T, x: u64) {
+        let size = mem::size_of::<T>();
+        self.length += size;
 
+        // The original number must be zero-extended, not sign-extended.
+        debug_assert!(if size < 8 { x >> (8 * size) == 0 } else { true });
+
+        // The number of bytes needed to fill `self.tail`.
         let needed = 8 - self.ntail;
-        let fill = cmp::min(length, needed);
-        if fill == 8 {
-            self.tail = unsafe { load_int_le!(msg, 0, u64) };
-        } else {
-            self.tail |= unsafe { u8to64_le(msg, 0, fill) } << (8 * self.ntail);
-            if length < needed {
-                self.ntail += length;
-                return;
-            }
+
+        self.tail |= x << (8 * self.ntail);
+        if size < needed {
+            self.ntail += size;
+            return;
         }
+
+        // `self.tail` is full, process it.
         self.state.v3 ^= self.tail;
         S::c_rounds(&mut self.state);
         self.state.v0 ^= self.tail;
 
-        // Buffered tail is now flushed, process new input.
-        self.ntail = length - needed;
-        self.tail = unsafe { u8to64_le(msg, needed, self.ntail) };
+        self.ntail = size - needed;
+        self.tail = if needed < 8 { x >> (8 * needed) } else { 0 };
     }
 }
 
@@ -284,19 +308,24 @@ impl hash::Hasher for SipHasher24 {
 }
 
 impl<S: Sip> hash::Hasher for Hasher<S> {
-    // see short_write comment for explanation
     #[inline]
     fn write_usize(&mut self, i: usize) {
-        let bytes = unsafe {
-            slice::from_raw_parts(&i as *const usize as *const u8, mem::size_of::<usize>())
-        };
-        self.short_write(bytes);
+        self.short_write(i, i.to_le() as u64);
     }
 
-    // see short_write comment for explanation
     #[inline]
     fn write_u8(&mut self, i: u8) {
-        self.short_write(&[i]);
+        self.short_write(i, i as u64);
+    }
+
+    #[inline]
+    fn write_u32(&mut self, i: u32) {
+        self.short_write(i, i.to_le() as u64);
+    }
+
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.short_write(i, i.to_le() as u64);
     }
 
     #[inline]
@@ -366,8 +395,8 @@ impl<S: Sip> Default for Hasher<S> {
 
 #[doc(hidden)]
 trait Sip {
-    fn c_rounds(&mut State);
-    fn d_rounds(&mut State);
+    fn c_rounds(_: &mut State);
+    fn d_rounds(_: &mut State);
 }
 
 #[derive(Debug, Clone, Copy, Default)]

@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 
-use common::UcdFile;
-use error::Error;
+use crate::common::UcdFile;
+use crate::error::Error;
 
 /// A single row in the `PropertyValueAliases.txt` file.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -42,7 +43,8 @@ impl FromStr for PropertyValueAlias {
                 \s*(?P<long>[^\s;]+)\s*
                 (?:;(?P<aliases>.*))?
                 "
-            ).unwrap();
+            )
+            .unwrap();
             static ref PARTS_CCC: Regex = Regex::new(
                 r"(?x)
                 ^
@@ -51,22 +53,28 @@ impl FromStr for PropertyValueAlias {
                 \s*(?P<abbrev>[^\s;]+)\s*;
                 \s*(?P<long>[^\s;]+)
                 "
-            ).unwrap();
-            static ref ALIASES: Regex = Regex::new(
-                r"\s*(?P<alias>[^\s;]+)\s*;?\s*"
-            ).unwrap();
+            )
+            .unwrap();
+            static ref ALIASES: Regex =
+                Regex::new(r"\s*(?P<alias>[^\s;]+)\s*;?\s*").unwrap();
         };
 
         if line.starts_with("ccc;") {
             let caps = match PARTS_CCC.captures(line.trim()) {
                 Some(caps) => caps,
-                None => return err!("invalid PropertyValueAliases (ccc) line"),
+                None => {
+                    return err!("invalid PropertyValueAliases (ccc) line")
+                }
             };
             let n = match caps["num_class"].parse() {
                 Ok(n) => n,
-                Err(err) => return err!(
-                    "failed to parse ccc number '{}': {}",
-                    &caps["num_class"], err),
+                Err(err) => {
+                    return err!(
+                        "failed to parse ccc number '{}': {}",
+                        &caps["num_class"],
+                        err
+                    )
+                }
             };
             let abbrev = caps.name("abbrev").unwrap().as_str();
             let long = caps.name("long").unwrap().as_str();
@@ -99,7 +107,7 @@ impl FromStr for PropertyValueAlias {
             numeric: None,
             abbreviation: caps.name("abbrev").unwrap().as_str().to_string(),
             long: caps.name("long").unwrap().as_str().to_string(),
-            aliases: aliases,
+            aliases,
         })
     }
 }
@@ -154,7 +162,8 @@ mod tests {
 
     #[test]
     fn parse5() {
-        let line = "ccc; 133; CCC133                     ; CCC133 # RESERVED\n";
+        let line =
+            "ccc; 133; CCC133                     ; CCC133 # RESERVED\n";
         let row: PropertyValueAlias = line.parse().unwrap();
         assert_eq!(row.property, "ccc");
         assert_eq!(row.numeric, Some(133));

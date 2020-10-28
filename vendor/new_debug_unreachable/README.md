@@ -19,8 +19,16 @@ new_debug_unreachable = "1.0"
 In your Rust code, the library name is still `debug_unreachable`:
 
 ```rust
-#[macro_use]
-extern crate debug_unreachable;
+use debug_unreachable::debug_unreachable;
+
+fn main() {
+    if 0 > 100 {
+        // Can't happen!
+        unsafe { debug_unreachable!() }
+    } else {
+        println!("Good, 0 <= 100.");
+    }
+}
 ```
 
 ## Author

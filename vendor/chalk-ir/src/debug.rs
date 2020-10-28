@@ -96,6 +96,12 @@ impl<I: Interner> Debug for ProgramClauses<I> {
     }
 }
 
+impl<I: Interner> Debug for Constraints<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        I::debug_constraints(self, fmt).unwrap_or_else(|| write!(fmt, "{:?}", self.interned))
+    }
+}
+
 impl<I: Interner> Debug for ApplicationTy<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         I::debug_application_ty(self, fmt).unwrap_or_else(|| write!(fmt, "ApplicationTy(?)"))
@@ -226,14 +232,21 @@ impl Debug for InferenceVar {
     }
 }
 
-impl<I: Interner> Debug for Fn<I> {
+impl<I: Interner> Debug for FnPointer<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         // FIXME -- we should introduce some names or something here
-        let Fn {
+        let FnPointer {
             num_binders,
             substitution,
+            abi,
+            safety,
+            variadic: _,
         } = self;
-        write!(fmt, "for<{}> {:?}", num_binders, substitution)
+        write!(
+            fmt,
+            "for<{}> {:?} {:?} {:?}",
+            num_binders, safety, abi, substitution
+        )
     }
 }
 
@@ -326,10 +339,7 @@ impl<I: Interner> Debug for GoalData<I> {
             GoalData::Not(ref g) => write!(fmt, "not {{ {:?} }}", g),
             GoalData::EqGoal(ref wc) => write!(fmt, "{:?}", wc),
             GoalData::DomainGoal(ref wc) => write!(fmt, "{:?}", wc),
-            GoalData::AddRegionConstraint(ref a, ref b) => {
-                write!(fmt, "AddRegionConstraint({:?}: {:?})", a, b)
-            }
-            GoalData::CannotProve(()) => write!(fmt, r"¯\_(ツ)_/¯"),
+            GoalData::CannotProve => write!(fmt, r"¯\_(ツ)_/¯"),
         }
     }
 }
@@ -544,7 +554,7 @@ impl<'a, 'me, I: Interner> Debug for SeparatorTraitRefDebug<'a, 'me, I> {
         let parameters = separator_trait_ref
             .trait_ref
             .substitution
-            .parameters(interner);
+            .as_slice(interner);
         write!(
             fmt,
             "{:?}{}{:?}{:?}",
@@ -569,6 +579,12 @@ impl<'me, I: Interner> SeparatorTraitRef<'me, I> {
 impl<I: Interner> Debug for LifetimeOutlives<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         write!(fmt, "{:?}: {:?}", self.a, self.b)
+    }
+}
+
+impl<I: Interner> Debug for TypeOutlives<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
+        write!(fmt, "{:?}: {:?}", self.ty, self.lifetime)
     }
 }
 
@@ -639,7 +655,7 @@ pub struct Angle<'a, T>(pub &'a [T]);
 
 impl<'a, T: Debug> Debug for Angle<'a, T> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        if self.0.len() > 0 {
+        if !self.0.is_empty() {
             write!(fmt, "<")?;
             for (index, elem) in self.0.iter().enumerate() {
                 if index > 0 {
@@ -672,6 +688,7 @@ impl<I: Interner> Debug for WhereClause<I> {
             WhereClause::Implemented(tr) => write!(fmt, "Implemented({:?})", tr.with_colon()),
             WhereClause::AliasEq(a) => write!(fmt, "{:?}", a),
             WhereClause::LifetimeOutlives(l_o) => write!(fmt, "{:?}", l_o),
+            WhereClause::TypeOutlives(t_o) => write!(fmt, "{:?}", t_o),
         }
     }
 }
@@ -707,9 +724,9 @@ impl<I: Interner> Debug for DomainGoal<I> {
             DomainGoal::LocalImplAllowed(tr) => {
                 write!(fmt, "LocalImplAllowed({:?})", tr.with_colon(),)
             }
-            DomainGoal::Compatible(_) => write!(fmt, "Compatible"),
+            DomainGoal::Compatible => write!(fmt, "Compatible"),
             DomainGoal::DownstreamType(n) => write!(fmt, "DownstreamType({:?})", n),
-            DomainGoal::Reveal(_) => write!(fmt, "Reveal"),
+            DomainGoal::Reveal => write!(fmt, "Reveal"),
             DomainGoal::ObjectSafe(n) => write!(fmt, "ObjectSafe({:?})", n),
         }
     }
@@ -835,7 +852,8 @@ impl<I: Interner, T: Debug> Debug for WithKind<I, T> {
 impl<I: Interner> Debug for Constraint<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         match self {
-            Constraint::Outlives(a, b) => write!(fmt, "{:?}: {:?}", a, b),
+            Constraint::LifetimeOutlives(a, b) => write!(fmt, "{:?}: {:?}", a, b),
+            Constraint::TypeOutlives(ty, lifetime) => write!(fmt, "{:?}: {:?}", ty, lifetime),
         }
     }
 }
@@ -856,7 +874,7 @@ impl<I: Interner> Substitution<I> {
     /// Displays the substitution in the form `< P0, .. Pn >`, or (if
     /// the substitution is empty) as an empty string.
     pub fn with_angle(&self, interner: &I) -> Angle<'_, GenericArg<I>> {
-        Angle(self.parameters(interner))
+        Angle(self.as_slice(interner))
     }
 }
 

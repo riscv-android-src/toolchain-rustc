@@ -3,7 +3,9 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use lsp_types::request::Request;
-use lsp_types::{notification::Notification, Position, Range, TextDocumentIdentifier};
+use lsp_types::{
+    notification::Notification, CodeActionKind, Position, Range, TextDocumentIdentifier,
+};
 use serde::{Deserialize, Serialize};
 
 pub enum AnalyzerStatus {}
@@ -12,6 +14,14 @@ impl Request for AnalyzerStatus {
     type Params = ();
     type Result = String;
     const METHOD: &'static str = "rust-analyzer/analyzerStatus";
+}
+
+pub enum MemoryUsage {}
+
+impl Request for MemoryUsage {
+    type Params = ();
+    type Result = String;
+    const METHOD: &'static str = "rust-analyzer/memoryUsage";
 }
 
 pub enum ReloadWorkspace {}
@@ -206,6 +216,14 @@ impl Request for Ssr {
 pub struct SsrParams {
     pub query: String,
     pub parse_only: bool,
+
+    /// File position where SSR was invoked. Paths in `query` will be resolved relative to this
+    /// position.
+    #[serde(flatten)]
+    pub position: lsp_types::TextDocumentPositionParams,
+
+    /// Current selections. Search/replace will be restricted to these if non-empty.
+    pub selections: Vec<lsp_types::Range>,
 }
 
 pub enum StatusNotification {}
@@ -219,8 +237,13 @@ pub enum Status {
     Invalid,
 }
 
+#[derive(Deserialize, Serialize)]
+pub struct StatusParams {
+    pub status: Status,
+}
+
 impl Notification for StatusNotification {
-    type Params = Status;
+    type Params = StatusParams;
     const METHOD: &'static str = "rust-analyzer/status";
 }
 
@@ -233,6 +256,7 @@ impl Request for CodeActionRequest {
 }
 
 #[derive(Debug, PartialEq, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodeAction {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,11 +264,14 @@ pub struct CodeAction {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub command: Option<lsp_types::Command>,
+    pub kind: Option<CodeActionKind>,
+    // We don't handle commands on the client-side
+    // #[serde(skip_serializing_if = "Option::is_none")]
+    // pub command: Option<lsp_types::Command>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit: Option<SnippetWorkspaceEdit>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub is_preferred: Option<bool>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Default, Deserialize, Serialize)]

@@ -4,9 +4,9 @@
 //! The more interesting impls of `Visit` remain in the `visit` module.
 
 use crate::interner::HasInterner;
-use crate::{Binders, Canonical, DebruijnIndex, Fn, Interner, Visit, VisitResult, Visitor};
+use crate::{Binders, Canonical, DebruijnIndex, FnPointer, Interner, Visit, VisitResult, Visitor};
 
-impl<I: Interner> Visit<I> for Fn<I> {
+impl<I: Interner> Visit<I> for FnPointer<I> {
     fn visit_with<'i, R: VisitResult>(
         &self,
         visitor: &mut dyn Visitor<'i, I, Result = R>,
@@ -17,7 +17,7 @@ impl<I: Interner> Visit<I> for Fn<I> {
     {
         let interner = visitor.interner();
         self.substitution
-            .parameters(interner)
+            .as_slice(interner)
             .visit_with(visitor, outer_binder.shifted_in())
     }
 }

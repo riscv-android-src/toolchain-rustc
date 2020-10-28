@@ -19,7 +19,7 @@
 
 #define max_log 256
 
-__attribute__((weak)) struct _IO_FILE *stderr  = (_IO_FILE *)-1;
+__attribute__((weak)) struct _IO_FILE *stderr  = (struct _IO_FILE *)-1;
 
 static int vwrite_err(const char *format, va_list ap)
 {

@@ -5,6 +5,9 @@
 //
 // Tests the pretty-printing behavior of inserting `NoDelim` groups
 
+#![no_std] // Don't load unnecessary hygiene information from std
+extern crate std;
+
 extern crate test_macros;
 use test_macros::print_bang_consume;
 

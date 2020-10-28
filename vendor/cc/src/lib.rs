@@ -120,6 +120,7 @@ pub struct Build {
     warnings: Option<bool>,
     extra_warnings: Option<bool>,
     env_cache: Arc<Mutex<HashMap<String, Option<String>>>>,
+    apple_sdk_root_cache: Arc<Mutex<HashMap<String, OsString>>>,
 }
 
 /// Represents the types of errors that may occur while using cc-rs.
@@ -312,6 +313,7 @@ impl Build {
             extra_warnings: None,
             warnings_into_errors: false,
             env_cache: Arc::new(Mutex::new(HashMap::new())),
+            apple_sdk_root_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -414,7 +416,7 @@ impl Build {
     /// For a convenience method for setting flags conditionally,
     /// see `flag_if_supported()`.
     ///
-    /// It may return error if it's unable to run the compilier with a test file
+    /// It may return error if it's unable to run the compiler with a test file
     /// (e.g. the compiler is missing or a write to the `out_dir` failed).
     ///
     /// Note: Once computed, the result of this call is stored in the
@@ -968,7 +970,7 @@ impl Build {
     /// Run the compiler, generating the file `output`
     ///
     /// The name `output` should be the name of the library.  For backwards compatibility,
-    /// the `output` may start with `lib` and end with `.a`.  The Rust compilier will create
+    /// the `output` may start with `lib` and end with `.a`.  The Rust compiler will create
     /// the assembly with the lib prefix and .a extension.  MSVC will create a file without prefix,
     /// ending with `.lib`.
     ///
@@ -1172,6 +1174,9 @@ impl Build {
             cmd.arg("-c");
         }
         cmd.arg(&obj.src);
+        if cfg!(target_os = "macos") {
+            self.fix_env_for_apple_os(&mut cmd)?;
+        }
 
         run(&mut cmd, &name)?;
         Ok(())
@@ -1425,13 +1430,13 @@ impl Build {
                 // This is an undocumented flag from MSVC but helps with making
                 // builds more reproducible by avoiding putting timestamps into
                 // files.
-                cmd.args.push("-Brepro".into());
+                cmd.push_cc_arg("-Brepro".into());
 
                 if clang_cl {
                     if target.contains("x86_64") {
-                        cmd.args.push("-m64".into());
+                        cmd.push_cc_arg("-m64".into());
                     } else if target.contains("86") {
-                        cmd.args.push("-m32".into());
+                        cmd.push_cc_arg("-m32".into());
                         cmd.push_cc_arg("-arch:IA32".into());
                     } else {
                         cmd.push_cc_arg(format!("--target={}", target).into());
@@ -1463,6 +1468,19 @@ impl Build {
                     cmd.args.push("-mx32".into());
                 } else if target.contains("x86_64") || target.contains("powerpc64") {
                     cmd.args.push("-m64".into());
+                }
+
+                if target.contains("darwin") {
+                    if target.contains("x86_64") {
+                        cmd.args.push("-arch".into());
+                        cmd.args.push("x86_64".into());
+                    } else if target.contains("arm64e") {
+                        cmd.args.push("-arch".into());
+                        cmd.args.push("arm64e".into());
+                    } else if target.contains("aarch64") {
+                        cmd.args.push("-arch".into());
+                        cmd.args.push("arm64".into());
+                    }
                 }
 
                 if self.static_flag.is_none() {
@@ -1687,6 +1705,7 @@ impl Build {
             "ml.exe"
         };
         let mut cmd = windows_registry::find(&target, tool).unwrap_or_else(|| self.cmd(tool));
+        cmd.arg("-nologo"); // undocumented, yet working with armasm[64]
         for directory in self.include_directories.iter() {
             cmd.arg("-I").arg(directory);
         }
@@ -1841,6 +1860,7 @@ impl Build {
         let arch = match arch {
             "arm" | "armv7" | "thumbv7" => ArchSpec::Device("armv7"),
             "armv7s" | "thumbv7s" => ArchSpec::Device("armv7s"),
+            "arm64e" => ArchSpec::Device("arm64e"),
             "arm64" | "aarch64" => ArchSpec::Device("arm64"),
             "i386" | "i686" => ArchSpec::Simulator("-m32"),
             "x86_64" => ArchSpec::Simulator("-m64"),
@@ -1872,27 +1892,9 @@ impl Build {
         };
 
         self.print(&format!("Detecting iOS SDK path for {}", sdk));
-        let sdk_path = self
-            .cmd("xcrun")
-            .arg("--show-sdk-path")
-            .arg("--sdk")
-            .arg(sdk)
-            .stderr(Stdio::inherit())
-            .output()?
-            .stdout;
-
-        let sdk_path = match String::from_utf8(sdk_path) {
-            Ok(p) => p,
-            Err(_) => {
-                return Err(Error::new(
-                    ErrorKind::IOError,
-                    "Unable to determine iOS SDK path.",
-                ));
-            }
-        };
-
+        let sdk_path = self.apple_sdk_root(sdk)?;
         cmd.args.push("-isysroot".into());
-        cmd.args.push(sdk_path.trim().into());
+        cmd.args.push(sdk_path);
         cmd.args.push("-fembed-bitcode".into());
         /*
          * TODO we probably ultimately want the -fembed-bitcode-marker flag
@@ -2277,6 +2279,7 @@ impl Build {
             "thumbv7neon-unknown-linux-gnueabihf" => Some("arm-linux-gnueabihf"),
             "thumbv7neon-unknown-linux-musleabihf" => Some("arm-linux-musleabihf"),
             "armv7-unknown-netbsd-eabihf" => Some("armv7--netbsdelf-eabihf"),
+            "hexagon-unknown-linux-musl" => Some("hexagon-linux-musl"),
             "i586-unknown-linux-musl" => Some("musl"),
             "i686-pc-windows-gnu" => Some("i686-w64-mingw32"),
             "i686-uwp-windows-gnu" => Some("i686-w64-mingw32"),
@@ -2450,6 +2453,63 @@ impl Build {
         if self.cargo_metadata {
             println!("{}", s);
         }
+    }
+
+    fn fix_env_for_apple_os(&self, cmd: &mut Command) -> Result<(), Error> {
+        let target = self.get_target()?;
+        let host = self.get_host()?;
+        if host.contains("apple-darwin") && target.contains("apple-darwin") {
+            // If, for example, `cargo` runs during the build of an XCode project, then `SDKROOT` environment variable
+            // would represent the current target, and this is the problem for us, if we want to compile something
+            // for the host, when host != target.
+            // We can not just remove `SDKROOT`, because, again, for example, XCode add to PATH
+            // /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin
+            // and `cc` from this path can not find system include files, like `pthread.h`, if `SDKROOT`
+            // is not set
+            if let Ok(sdkroot) = env::var("SDKROOT") {
+                if !sdkroot.contains("MacOSX") {
+                    let macos_sdk = self.apple_sdk_root("macosx")?;
+                    cmd.env("SDKROOT", macos_sdk);
+                }
+            }
+            // Additionally, `IPHONEOS_DEPLOYMENT_TARGET` must not be set when using the Xcode linker at
+            // "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ld",
+            // although this is apparently ignored when using the linker at "/usr/bin/ld".
+            cmd.env_remove("IPHONEOS_DEPLOYMENT_TARGET");
+        }
+        Ok(())
+    }
+
+    fn apple_sdk_root(&self, sdk: &str) -> Result<OsString, Error> {
+        let mut cache = self
+            .apple_sdk_root_cache
+            .lock()
+            .expect("apple_sdk_root_cache lock failed");
+        if let Some(ret) = cache.get(sdk) {
+            return Ok(ret.clone());
+        }
+
+        let sdk_path = self
+            .cmd("xcrun")
+            .arg("--show-sdk-path")
+            .arg("--sdk")
+            .arg(sdk)
+            .stderr(Stdio::inherit())
+            .output()?
+            .stdout;
+
+        let sdk_path = match String::from_utf8(sdk_path) {
+            Ok(p) => p,
+            Err(_) => {
+                return Err(Error::new(
+                    ErrorKind::IOError,
+                    "Unable to determine iOS SDK path.",
+                ));
+            }
+        };
+        let ret: OsString = sdk_path.trim().into();
+        cache.insert(sdk.into(), ret.clone());
+        Ok(ret)
     }
 }
 
@@ -2823,9 +2883,33 @@ static NEW_STANDALONE_ANDROID_COMPILERS: [&str; 4] = [
 // So to construct proper command line check if
 // `--target` argument would be passed or not to clang
 fn android_clang_compiler_uses_target_arg_internally(clang_path: &Path) -> bool {
-    NEW_STANDALONE_ANDROID_COMPILERS
-        .iter()
-        .any(|x| Some(x.as_ref()) == clang_path.file_name())
+    if let Some(filename) = clang_path.file_name() {
+        if let Some(filename_str) = filename.to_str() {
+            filename_str.contains("android")
+        } else {
+            false
+        }
+    } else {
+        false
+    }
+}
+
+#[test]
+fn test_android_clang_compiler_uses_target_arg_internally() {
+    for version in 16..21 {
+        assert!(android_clang_compiler_uses_target_arg_internally(
+            &PathBuf::from(format!("armv7a-linux-androideabi{}-clang", version))
+        ));
+        assert!(android_clang_compiler_uses_target_arg_internally(
+            &PathBuf::from(format!("armv7a-linux-androideabi{}-clang++", version))
+        ));
+    }
+    assert!(!android_clang_compiler_uses_target_arg_internally(
+        &PathBuf::from("clang")
+    ));
+    assert!(!android_clang_compiler_uses_target_arg_internally(
+        &PathBuf::from("clang++")
+    ));
 }
 
 fn autodetect_android_compiler(target: &str, host: &str, gnu: &str, clang: &str) -> String {

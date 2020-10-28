@@ -273,7 +273,7 @@ fn test_yaml_spec_examples() {
         ),
     ];
     let merge_multiple_maps = yaml_hash![
-        (merge_key(), Yaml::Array(vec![center.clone(), big.clone()])),
+        (merge_key(), Yaml::Array(vec![center, big.clone()])),
         (Yaml::String("r".into()), Yaml::Integer(10)),
         (
             Yaml::String("label".into()),
@@ -281,10 +281,7 @@ fn test_yaml_spec_examples() {
         ),
     ];
     let overrides = yaml_hash![
-        (
-            merge_key(),
-            Yaml::Array(vec![big.clone(), left.clone(), small.clone()]),
-        ),
+        (merge_key(), Yaml::Array(vec![big, left, small]),),
         (Yaml::String("x".into()), Yaml::Integer(1)),
         (
             Yaml::String("label".into()),
@@ -331,7 +328,7 @@ fn test_invalid_merge_key_array_values() {
     let merge_bool = yaml_hash![(merge_key(), Yaml::Array(vec![Yaml::Boolean(false)]))];
     let merge_string = yaml_hash![(merge_key(), Yaml::Array(vec![Yaml::String("".into())]))];
     let merge_integer = yaml_hash![(merge_key(), Yaml::Array(vec![Yaml::Integer(0)]))];
-    let merge_real = yaml_hash![(merge_key(), Yaml::Array(vec![Yaml::Real("0.02".into())]),)];
+    let merge_real = yaml_hash![(merge_key(), Yaml::Array(vec![Yaml::Real("0.02".into())]))];
 
     assert_is_error!(merge_null, MergeKeyError::InvalidMergeValue);
     assert_is_error!(merge_bool, MergeKeyError::InvalidMergeValue);

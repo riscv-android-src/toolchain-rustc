@@ -74,6 +74,7 @@ impl AesKey {
     /// # Failure
     ///
     /// Returns an error if the key is not 128, 192, or 256 bits.
+    #[allow(deprecated)] // https://github.com/rust-lang/rust/issues/63566
     pub fn new_encrypt(key: &[u8]) -> Result<AesKey, KeyError> {
         unsafe {
             assert!(key.len() <= c_int::max_value() as usize / 8);
@@ -97,6 +98,7 @@ impl AesKey {
     /// # Failure
     ///
     /// Returns an error if the key is not 128, 192, or 256 bits.
+    #[allow(deprecated)] // https://github.com/rust-lang/rust/issues/63566
     pub fn new_decrypt(key: &[u8]) -> Result<AesKey, KeyError> {
         unsafe {
             assert!(key.len() <= c_int::max_value() as usize / 8);
@@ -164,7 +166,7 @@ pub fn aes_ige(in_: &[u8], out: &mut [u8], key: &AesKey, iv: &mut [u8], mode: Mo
 /// * `in_`: The input buffer, storing the key to be wrapped
 ///
 /// Returns the number of bytes written into `out`
-/// 
+///
 /// # Panics
 ///
 /// Panics if either `out` or `in_` do not have sizes that are a multiple of 8, or if
@@ -177,10 +179,11 @@ pub fn wrap_key(
 ) -> Result<usize, KeyError> {
     unsafe {
         assert!(out.len() >= in_.len() + 8); // Ciphertext is 64 bits longer (see 2.2.1)
-        
+
         let written = ffi::AES_wrap_key(
             &key.0 as *const _ as *mut _, // this is safe, the implementation only uses the key as a const pointer.
-            iv.as_ref().map_or(ptr::null(), |iv| iv.as_ptr() as *const _),
+            iv.as_ref()
+                .map_or(ptr::null(), |iv| iv.as_ptr() as *const _),
             out.as_ptr() as *mut _,
             in_.as_ptr() as *const _,
             in_.len() as c_uint,
@@ -201,7 +204,7 @@ pub fn wrap_key(
 /// * `in_`: The input ciphertext
 ///
 /// Returns the number of bytes written into `out`
-/// 
+///
 /// # Panics
 ///
 /// Panics if either `out` or `in_` do not have sizes that are a multiple of 8, or
@@ -217,7 +220,8 @@ pub fn unwrap_key(
 
         let written = ffi::AES_unwrap_key(
             &key.0 as *const _ as *mut _, // this is safe, the implementation only uses the key as a const pointer.
-            iv.as_ref().map_or(ptr::null(), |iv| iv.as_ptr() as *const _),
+            iv.as_ref()
+                .map_or(ptr::null(), |iv| iv.as_ptr() as *const _),
             out.as_ptr() as *mut _,
             in_.as_ptr() as *const _,
             in_.len() as c_uint,
@@ -286,5 +290,4 @@ mod test {
         );
         assert_eq!(&unwrapped[..], &key_data[..]);
     }
-
 }

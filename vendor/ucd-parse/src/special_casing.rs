@@ -1,13 +1,14 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 
-use common::{
-    UcdFile, UcdFileByCodepoint, Codepoint, CodepointIter,
-    parse_codepoint_sequence,
+use crate::common::{
+    parse_codepoint_sequence, Codepoint, CodepointIter, UcdFile,
+    UcdFileByCodepoint,
 };
-use error::Error;
+use crate::error::Error;
 
 /// A single row in the `SpecialCasing.txt` file.
 ///
@@ -55,7 +56,8 @@ impl FromStr for SpecialCaseMapping {
                 \s*(?P<upper>[^;]+)\s*;
                 \s*(?P<conditions>[^;\x23]+)?
                 "
-            ).unwrap();
+            )
+            .unwrap();
         };
 
         let caps = match PARTS.captures(line.trim()) {
@@ -64,14 +66,20 @@ impl FromStr for SpecialCaseMapping {
         };
         let conditions = caps
             .name("conditions")
-            .map(|x| x.as_str().trim().split_whitespace().map(|c| c.to_string()).collect())
+            .map(|x| {
+                x.as_str()
+                    .trim()
+                    .split_whitespace()
+                    .map(|c| c.to_string())
+                    .collect()
+            })
             .unwrap_or(vec![]);
         Ok(SpecialCaseMapping {
             codepoint: caps["codepoint"].parse()?,
             lowercase: parse_codepoint_sequence(&caps["lower"])?,
             titlecase: parse_codepoint_sequence(&caps["title"])?,
             uppercase: parse_codepoint_sequence(&caps["upper"])?,
-            conditions: conditions,
+            conditions,
         })
     }
 }
@@ -92,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_conds()  {
+    fn parse_conds() {
         let line = "0307; ; 0307; 0307; tr After_I; # COMBINING DOT ABOVE\n";
         let row: SpecialCaseMapping = line.parse().unwrap();
         assert_eq!(row.codepoint, 0x0307);

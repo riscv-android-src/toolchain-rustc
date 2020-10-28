@@ -47,8 +47,9 @@
 
 use ffi;
 use foreign_types::{ForeignType, ForeignTypeRef};
-use libc::c_int;
+use libc::{c_int, c_long};
 use std::ffi::CString;
+use std::fmt;
 use std::mem;
 use std::ptr;
 
@@ -58,6 +59,8 @@ use dsa::Dsa;
 use ec::EcKey;
 use error::ErrorStack;
 use rsa::Rsa;
+#[cfg(ossl110)]
+use symm::Cipher;
 use util::{invoke_passwd_cb, CallbackState};
 use {cvt, cvt_p};
 
@@ -75,16 +78,6 @@ pub enum Private {}
 pub struct Id(c_int);
 
 impl Id {
-    /// Creates a `Id` from an integer representation.
-    pub fn from_raw(value: c_int) -> Id {
-        Id(value)
-    }
-
-    /// Returns the integer representation of the `Id`.
-    pub fn as_raw(&self) -> c_int {
-        self.0
-    }
-
     pub const RSA: Id = Id(ffi::EVP_PKEY_RSA);
     pub const HMAC: Id = Id(ffi::EVP_PKEY_HMAC);
     pub const DSA: Id = Id(ffi::EVP_PKEY_DSA);
@@ -95,6 +88,17 @@ impl Id {
     pub const ED25519: Id = Id(ffi::EVP_PKEY_ED25519);
     #[cfg(ossl111)]
     pub const ED448: Id = Id(ffi::EVP_PKEY_ED448);
+
+    /// Creates a `Id` from an integer representation.
+    pub fn from_raw(value: c_int) -> Id {
+        Id(value)
+    }
+
+    /// Returns the integer representation of the `Id`.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub fn as_raw(&self) -> c_int {
+        self.0
+    }
 }
 
 /// A trait indicating that a key has parameters.
@@ -283,6 +287,25 @@ where
     }
 }
 
+impl<T> fmt::Debug for PKey<T> {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        let alg = match self.id() {
+            Id::RSA => "RSA",
+            Id::HMAC => "HMAC",
+            Id::DSA => "DSA",
+            Id::DH => "DH",
+            Id::EC => "EC",
+            #[cfg(ossl111)]
+            Id::ED25519 => "Ed25519",
+            #[cfg(ossl111)]
+            Id::ED448 => "Ed448",
+            _ => "unknown",
+        };
+        fmt.debug_struct("PKey").field("algorithm", &alg).finish()
+        // TODO: Print details for each specific type of key
+    }
+}
+
 impl<T> Clone for PKey<T> {
     fn clone(&self) -> PKey<T> {
         PKeyRef::to_owned(self)
@@ -394,7 +417,8 @@ impl PKey<Private> {
     ///
     /// To compute CMAC values, use the `sign` module.
     #[cfg(ossl110)]
-    pub fn cmac(cipher: &::symm::Cipher, key: &[u8]) -> Result<PKey<Private>, ErrorStack> {
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    pub fn cmac(cipher: &Cipher, key: &[u8]) -> Result<PKey<Private>, ErrorStack> {
         unsafe {
             assert!(key.len() <= c_int::max_value() as usize);
             let kctx = cvt_p(ffi::EVP_PKEY_CTX_new_id(
@@ -524,6 +548,24 @@ impl PKey<Private> {
         ffi::d2i_AutoPrivateKey
     }
 
+    /// Deserializes a DER-formatted PKCS#8 unencrypted private key.
+    ///
+    /// This method is mainly for interoperability reasons. Encrypted keyfiles should be preferred.
+    pub fn private_key_from_pkcs8(der: &[u8]) -> Result<PKey<Private>, ErrorStack> {
+        unsafe {
+            ffi::init();
+            let len = der.len().min(c_long::max_value() as usize) as c_long;
+            let p8inf = cvt_p(ffi::d2i_PKCS8_PRIV_KEY_INFO(
+                ptr::null_mut(),
+                &mut der.as_ptr(),
+                len,
+            ))?;
+            let res = cvt_p(ffi::EVP_PKCS82PKEY(p8inf)).map(|p| PKey::from_ptr(p));
+            ffi::PKCS8_PRIV_KEY_INFO_free(p8inf);
+            res
+        }
+    }
+
     /// Deserializes a DER-formatted PKCS#8 private key, using a callback to retrieve the password
     /// if the key is encrpyted.
     ///
@@ -605,6 +647,7 @@ cfg_if! {
     if #[cfg(any(ossl110, libressl270))] {
         use ffi::EVP_PKEY_up_ref;
     } else {
+        #[allow(bad_style)]
         unsafe extern "C" fn EVP_PKEY_up_ref(pkey: *mut ffi::EVP_PKEY) {
             ffi::CRYPTO_add_lock(
                 &mut (*pkey).references,
@@ -637,6 +680,12 @@ mod tests {
             .unwrap();
         PKey::private_key_from_pem_passphrase(&pem, b"foobar").unwrap();
         assert!(PKey::private_key_from_pem_passphrase(&pem, b"fizzbuzz").is_err());
+    }
+
+    #[test]
+    fn test_unencrypted_pkcs8() {
+        let key = include_bytes!("../test/pkcs8-nocrypt.der");
+        PKey::private_key_from_pkcs8(key).unwrap();
     }
 
     #[test]

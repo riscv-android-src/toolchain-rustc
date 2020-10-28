@@ -30,8 +30,7 @@
 namespace llvm {
 
 AVRFrameLowering::AVRFrameLowering()
-    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align::None(),
-                          -2) {}
+    : TargetFrameLowering(TargetFrameLowering::StackGrowsDown, Align(1), -2) {}
 
 bool AVRFrameLowering::canSimplifyCallFramePseudos(
     const MachineFunction &MF) const {
@@ -53,7 +52,6 @@ bool AVRFrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
 void AVRFrameLowering::emitPrologue(MachineFunction &MF,
                                     MachineBasicBlock &MBB) const {
   MachineBasicBlock::iterator MBBI = MBB.begin();
-  CallingConv::ID CallConv = MF.getFunction().getCallingConv();
   DebugLoc DL = (MBBI != MBB.end()) ? MBBI->getDebugLoc() : DebugLoc();
   const AVRSubtarget &STI = MF.getSubtarget<AVRSubtarget>();
   const AVRInstrInfo &TII = *STI.getInstrInfo();
@@ -220,8 +218,7 @@ bool AVRFrameLowering::hasFP(const MachineFunction &MF) const {
 
 bool AVRFrameLowering::spillCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
-    const std::vector<CalleeSavedInfo> &CSI,
-    const TargetRegisterInfo *TRI) const {
+    ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
   if (CSI.empty()) {
     return false;
   }
@@ -261,8 +258,7 @@ bool AVRFrameLowering::spillCalleeSavedRegisters(
 
 bool AVRFrameLowering::restoreCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
-    std::vector<CalleeSavedInfo> &CSI,
-    const TargetRegisterInfo *TRI) const {
+    MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
   if (CSI.empty()) {
     return false;
   }
@@ -337,7 +333,7 @@ MachineBasicBlock::iterator AVRFrameLowering::eliminateCallFramePseudoInstr(
   // ADJCALLSTACKUP and ADJCALLSTACKDOWN are converted to adiw/subi
   // instructions to read and write the stack pointer in I/O space.
   if (Amount != 0) {
-    assert(getStackAlignment() == 1 && "Unsupported stack alignment");
+    assert(getStackAlign() == Align(1) && "Unsupported stack alignment");
 
     if (Opcode == TII.getCallFrameSetupOpcode()) {
       // Update the stack pointer.
@@ -409,7 +405,7 @@ struct AVRFrameAnalyzer : public MachineFunctionPass {
   static char ID;
   AVRFrameAnalyzer() : MachineFunctionPass(ID) {}
 
-  bool runOnMachineFunction(MachineFunction &MF) {
+  bool runOnMachineFunction(MachineFunction &MF) override {
     const MachineFrameInfo &MFI = MF.getFrameInfo();
     AVRMachineFunctionInfo *FuncInfo = MF.getInfo<AVRMachineFunctionInfo>();
 
@@ -461,7 +457,7 @@ struct AVRFrameAnalyzer : public MachineFunctionPass {
     return false;
   }
 
-  StringRef getPassName() const { return "AVR Frame Analyzer"; }
+  StringRef getPassName() const override { return "AVR Frame Analyzer"; }
 };
 
 char AVRFrameAnalyzer::ID = 0;
@@ -477,7 +473,7 @@ struct AVRDynAllocaSR : public MachineFunctionPass {
   static char ID;
   AVRDynAllocaSR() : MachineFunctionPass(ID) {}
 
-  bool runOnMachineFunction(MachineFunction &MF) {
+  bool runOnMachineFunction(MachineFunction &MF) override {
     // Early exit when there are no variable sized objects in the function.
     if (!MF.getFrameInfo().hasVarSizedObjects()) {
       return false;
@@ -489,7 +485,7 @@ struct AVRDynAllocaSR : public MachineFunctionPass {
     MachineBasicBlock::iterator MBBI = EntryMBB.begin();
     DebugLoc DL = EntryMBB.findDebugLoc(MBBI);
 
-    unsigned SPCopy =
+    Register SPCopy =
         MF.getRegInfo().createVirtualRegister(&AVR::DREGSRegClass);
 
     // Create a copy of SP in function entry before any dynallocas are
@@ -510,7 +506,7 @@ struct AVRDynAllocaSR : public MachineFunctionPass {
     return true;
   }
 
-  StringRef getPassName() const {
+  StringRef getPassName() const override {
     return "AVR dynalloca stack pointer save/restore";
   }
 };

@@ -1,23 +1,17 @@
-extern crate indexmap;
-extern crate itertools;
-#[macro_use]
-extern crate quickcheck;
-extern crate rand;
-
-extern crate fnv;
-
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 use itertools::Itertools;
 
+use quickcheck::quickcheck;
 use quickcheck::Arbitrary;
 use quickcheck::Gen;
+use quickcheck::TestResult;
 
 use rand::Rng;
 
 use fnv::FnvHasher;
 use std::hash::{BuildHasher, BuildHasherDefault};
 type FnvBuilder = BuildHasherDefault<FnvHasher>;
-type OrderMapFnv<K, V> = IndexMap<K, V, FnvBuilder>;
+type IndexMapFnv<K, V> = IndexMap<K, V, FnvBuilder>;
 
 use std::cmp::min;
 use std::collections::HashMap;
@@ -25,6 +19,7 @@ use std::collections::HashSet;
 use std::fmt::Debug;
 use std::hash::Hash;
 use std::iter::FromIterator;
+use std::ops::Bound;
 use std::ops::Deref;
 
 use indexmap::map::Entry as OEntry;
@@ -107,7 +102,7 @@ quickcheck! {
         map.capacity() >= cap
     }
 
-    fn drain(insert: Vec<u8>) -> bool {
+    fn drain_full(insert: Vec<u8>) -> bool {
         let mut map = IndexMap::new();
         for &key in &insert {
             map.insert(key, ());
@@ -118,6 +113,32 @@ quickcheck! {
             map.swap_remove(&key);
         }
         map.is_empty()
+    }
+
+    fn drain_bounds(insert: Vec<u8>, range: (Bound<usize>, Bound<usize>)) -> TestResult {
+        let mut map = IndexMap::new();
+        for &key in &insert {
+            map.insert(key, ());
+        }
+
+        // First see if `Vec::drain` is happy with this range.
+        let result = std::panic::catch_unwind(|| {
+            let mut keys: Vec<u8> = map.keys().cloned().collect();
+            keys.drain(range);
+            keys
+        });
+
+        if let Ok(keys) = result {
+            map.drain(range);
+            // Check that our `drain` matches the same key order.
+            assert!(map.keys().eq(&keys));
+            // Check that hash lookups all work too.
+            assert!(keys.iter().all(|key| map.contains_key(key)));
+            TestResult::passed()
+        } else {
+            // If `Vec::drain` panicked, so should we.
+            TestResult::must_fail(move || { map.drain(range); })
+        }
     }
 
     fn shift_remove(insert: Vec<u8>, remove: Vec<u8>) -> bool {
@@ -142,9 +163,29 @@ quickcheck! {
             elements.iter().all(|k| map.get(k).is_some())
     }
 
+    fn indexing(insert: Vec<u8>) -> bool {
+        let mut map: IndexMap<_, _> = insert.into_iter().map(|x| (x, x)).collect();
+        let set: IndexSet<_> = map.keys().cloned().collect();
+        assert_eq!(map.len(), set.len());
+
+        for (i, &key) in set.iter().enumerate() {
+            assert_eq!(map.get_index(i), Some((&key, &key)));
+            assert_eq!(set.get_index(i), Some(&key));
+            assert_eq!(map[i], key);
+            assert_eq!(set[i], key);
+
+            *map.get_index_mut(i).unwrap().1 >>= 1;
+            map[i] <<= 1;
+        }
+
+        set.iter().enumerate().all(|(i, &key)| {
+            let value = key & !1;
+            map[&key] == value && map[i] == value
+        })
+    }
 }
 
-use Op::*;
+use crate::Op::*;
 #[derive(Copy, Clone, Debug)]
 enum Op<K, V> {
     Add(K, V),
@@ -275,7 +316,7 @@ quickcheck! {
                 ops2.remove(i);
             }
         }
-        let mut map2 = OrderMapFnv::default();
+        let mut map2 = IndexMapFnv::default();
         let mut reference2 = HashMap::new();
         do_ops(&ops2, &mut map2, &mut reference2);
         assert_eq!(map == map2, reference == reference2);
@@ -329,6 +370,59 @@ quickcheck! {
         let mut map: IndexMap<_, _> = IndexMap::from_iter(keyvals.to_vec());
         map.sort_by(|_, v1, _, v2| Ord::cmp(v1, v2));
         assert_sorted_by_key(map, |t| t.1);
+    }
+
+    fn reverse(keyvals: Large<Vec<(i8, i8)>>) -> () {
+        let mut map: IndexMap<_, _> = IndexMap::from_iter(keyvals.to_vec());
+
+        fn generate_answer(input: &Vec<(i8, i8)>) -> Vec<(i8, i8)> {
+            // to mimic what `IndexMap::from_iter` does:
+            // need to get (A) the unique keys in forward order, and (B) the
+            // last value of each of those keys.
+
+            // create (A): an iterable that yields the unique keys in ltr order
+            let mut seen_keys = HashSet::new();
+            let unique_keys_forward = input.iter().filter_map(move |(k, _)| {
+                if seen_keys.contains(k) { None }
+                else { seen_keys.insert(*k); Some(*k) }
+            });
+
+            // create (B): a mapping of keys to the last value seen for that key
+            // this is the same as reversing the input and taking the first
+            // value seen for that key!
+            let mut last_val_per_key = HashMap::new();
+            for &(k, v) in input.iter().rev() {
+                if !last_val_per_key.contains_key(&k) {
+                    last_val_per_key.insert(k, v);
+                }
+            }
+
+            // iterate over the keys in (A) in order, and match each one with
+            // the corresponding last value from (B)
+            let mut ans: Vec<_> = unique_keys_forward
+                .map(|k| (k, *last_val_per_key.get(&k).unwrap()))
+                .collect();
+
+            // finally, since this test is testing `.reverse()`, reverse the
+            // answer in-place
+            ans.reverse();
+
+            ans
+        }
+
+        let answer = generate_answer(&keyvals.0);
+
+        // perform the work
+        map.reverse();
+
+        // check it contains all the values it should
+        for &(key, val) in &answer {
+            assert_eq!(map[&key], val);
+        }
+
+        // check the order
+        let mapv = Vec::from_iter(map);
+        assert_eq!(answer, mapv);
     }
 }
 

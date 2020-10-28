@@ -1,5 +1,13 @@
-#![allow(non_camel_case_types, non_upper_case_globals, non_snake_case)]
-#![allow(dead_code, overflowing_literals, unused_imports)]
+#![allow(
+    clippy::missing_safety_doc,
+    clippy::unreadable_literal,
+    dead_code,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    overflowing_literals,
+    unused_imports
+)]
 #![doc(html_root_url = "https://docs.rs/openssl-sys/0.9")]
 
 extern crate libc;
@@ -103,7 +111,7 @@ pub fn init() {
     use std::io::{self, Write};
     use std::mem;
     use std::process;
-    use std::sync::{Mutex, MutexGuard, Once, ONCE_INIT};
+    use std::sync::{Mutex, MutexGuard, Once};
 
     static mut MUTEXES: *mut Vec<Mutex<()>> = 0 as *mut Vec<Mutex<()>>;
     static mut GUARDS: *mut Vec<Option<MutexGuard<'static, ()>>> =
@@ -147,7 +155,7 @@ pub fn init() {
         }
     }
 
-    static INIT: Once = ONCE_INIT;
+    static INIT: Once = Once::new();
 
     INIT.call_once(|| unsafe {
         SSL_library_init();

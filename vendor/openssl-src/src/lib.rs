@@ -102,17 +102,39 @@ impl Build {
             // Nothing related to zlib please
             .arg("no-comp")
             .arg("no-zlib")
-            .arg("no-zlib-dynamic")
+            .arg("no-zlib-dynamic");
+
+        if cfg!(not(feature = "weak-crypto")) {
+            configure
+                .arg("no-md2")
+                .arg("no-rc5")
+                .arg("no-weak-ssl-ciphers");
+        }
+
+        if cfg!(not(feature = "camellia")) {
+            configure.arg("no-camellia");
+        }
+
+        if cfg!(not(feature = "idea")) {
+            configure.arg("no-idea");
+        }
+
+        if cfg!(not(feature = "seed")) {
+            configure.arg("no-seed");
+        }
+
+        if target.contains("musl") || target.contains("windows") {
             // This actually fails to compile on musl (it needs linux/version.h
-            // right now) but we don't actually need this most of the time. This
-            // is intended for super-configurable backends and whatnot
-            // apparently but the whole point of this script is to produce a
-            // "portable" implementation of OpenSSL, so shouldn't be any harm in
-            // turning this off.
-            .arg("no-engine")
+            // right now) but we don't actually need this most of the time.
+            // API of engine.c ld fail in Windows.
+            configure.arg("no-engine");
+        }
+
+        if target.contains("musl") {
             // MUSL doesn't implement some of the libc functions that the async
             // stuff depends on, and we don't bind to any of that in any case.
-            .arg("no-async");
+            configure.arg("no-async");
+        }
 
         // On Android it looks like not passing no-stdio may cause a build
         // failure (#13), but most other platforms need it for things like
@@ -218,8 +240,12 @@ impl Build {
             // as well.
             if path.ends_with("-gcc") && !target.contains("unknown-linux-musl") {
                 let path = &path[..path.len() - 4];
-                configure.env("RANLIB", format!("{}-ranlib", path));
-                configure.env("AR", format!("{}-ar", path));
+                if env::var_os("RANLIB").is_none() {
+                    configure.env("RANLIB", format!("{}-ranlib", path));
+                }
+                if env::var_os("AR").is_none() {
+                    configure.env("AR", format!("{}-ar", path));
+                }
             }
 
             // Make sure we pass extra flags like `-ffunction-sections` and
@@ -233,13 +259,18 @@ impl Build {
                     continue;
                 }
 
-                // cargo-lipo specifies this but OpenSSL complains
-                if target.contains("apple-ios") {
+                // cc includes an `-arch` flag for Apple platforms, but we've
+                // already selected an arch implicitly via the target above, and
+                // OpenSSL contains about the conflict if both are specified.
+                if target.contains("apple") {
                     if arg == "-arch" {
                         skip_next = true;
                         continue;
                     }
+                }
 
+                // cargo-lipo specifies this but OpenSSL complains
+                if target.contains("apple-ios") {
                     if arg == "-isysroot" {
                         is_isysroot = true;
                         continue;

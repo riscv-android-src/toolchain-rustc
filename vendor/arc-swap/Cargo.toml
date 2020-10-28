@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,7 +12,7 @@
 
 [package]
 name = "arc-swap"
-version = "0.3.7"
+version = "0.4.7"
 authors = ["Michal 'vorner' Vaner <vorner@vorner.cz>"]
 description = "Atomically swappable Arc"
 documentation = "https://docs.rs/arc-swap"
@@ -21,49 +21,32 @@ keywords = ["atomic", "Arc"]
 categories = ["data-structures", "memory-management"]
 license = "Apache-2.0/MIT"
 repository = "https://github.com/vorner/arc-swap"
+[package.metadata.docs.rs]
+all-features = true
 [profile.bench]
 debug = true
 
-[[bench]]
-name = "atomics"
-path = "benches/atomics.rs"
-
-[[bench]]
-name = "background"
-path = "benches/background.rs"
-
-[[bench]]
-name = "int-access"
-path = "benches/int-access.rs"
-harness = false
-
 [dependencies]
-[dev-dependencies.crossbeam]
-version = "~0.5"
-
 [dev-dependencies.crossbeam-utils]
-version = "~0.5"
-
-[dev-dependencies.itertools]
 version = "~0.7"
 
-[dev-dependencies.lazy_static]
-version = "~1"
-
-[dev-dependencies.model]
-version = "~0.0.4"
+[dev-dependencies.itertools]
+version = "~0.9"
 
 [dev-dependencies.num_cpus]
 version = "~1"
 
-[dev-dependencies.parking_lot]
-version = "~0.6"
+[dev-dependencies.once_cell]
+version = "~1"
 
 [dev-dependencies.proptest]
-version = "~0.7"
+version = "~0.9"
 
 [dev-dependencies.version-sync]
-version = "~0.5"
+version = "~0.9"
+
+[features]
+weak = []
 [badges.appveyor]
 repository = "vorner/arc-swap"
 

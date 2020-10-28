@@ -27,10 +27,10 @@
 #![feature(bool_to_option)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![cfg_attr(bootstrap, feature(const_if_match))]
+#![feature(cmp_min_max_by)]
 #![feature(const_fn)]
 #![feature(const_panic)]
-#![cfg_attr(not(bootstrap), feature(const_fn_transmute))]
+#![feature(const_fn_transmute)]
 #![feature(core_intrinsics)]
 #![feature(discriminant_kind)]
 #![feature(drain_filter)]
@@ -40,9 +40,7 @@
 #![feature(nll)]
 #![feature(option_expect_none)]
 #![feature(or_patterns)]
-#![feature(range_is_empty)]
 #![feature(min_specialization)]
-#![cfg_attr(bootstrap, feature(track_caller))]
 #![feature(trusted_len)]
 #![feature(stmt_expr_attributes)]
 #![feature(test)]
@@ -57,13 +55,11 @@
 #[macro_use]
 extern crate bitflags;
 #[macro_use]
-extern crate scoped_tls;
-#[macro_use]
 extern crate rustc_macros;
 #[macro_use]
 extern crate rustc_data_structures;
 #[macro_use]
-extern crate log;
+extern crate tracing;
 #[macro_use]
 extern crate smallvec;
 

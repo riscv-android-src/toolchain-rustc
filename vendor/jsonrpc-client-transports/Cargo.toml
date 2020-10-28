@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "jsonrpc-client-transports"
-version = "14.0.5"
+version = "14.2.1"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "Transport agnostic JSON-RPC 2.0 client implementation."
 homepage = "https://github.com/paritytech/jsonrpc"
@@ -37,13 +37,13 @@ version = "0.3.2"
 optional = true
 
 [dependencies.jsonrpc-core]
-version = "14.0"
+version = "14.2"
 
 [dependencies.jsonrpc-pubsub]
-version = "14.0"
+version = "14.2"
 
 [dependencies.jsonrpc-server-utils]
-version = "14.0"
+version = "14.2"
 optional = true
 
 [dependencies.log]
@@ -77,10 +77,10 @@ version = "1.1"
 version = "0.7"
 
 [dev-dependencies.jsonrpc-http-server]
-version = "14.0"
+version = "14.2"
 
 [dev-dependencies.jsonrpc-ipc-server]
-version = "14.0"
+version = "14.2"
 
 [dev-dependencies.lazy_static]
 version = "1.0"

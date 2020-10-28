@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 
-use common::UcdFile;
-use error::Error;
+use crate::common::UcdFile;
+use crate::error::Error;
 
 /// A single row in the `PropertyAliases.txt` file.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -35,10 +36,10 @@ impl FromStr for PropertyAlias {
                 \s*(?P<long>[^\s;]+)\s*
                 (?:;(?P<aliases>.*))?
                 "
-            ).unwrap();
-            static ref ALIASES: Regex = Regex::new(
-                r"\s*(?P<alias>[^\s;]+)\s*;?\s*"
-            ).unwrap();
+            )
+            .unwrap();
+            static ref ALIASES: Regex =
+                Regex::new(r"\s*(?P<alias>[^\s;]+)\s*;?\s*").unwrap();
         };
 
         let caps = match PARTS.captures(line.trim()) {
@@ -55,7 +56,7 @@ impl FromStr for PropertyAlias {
         Ok(PropertyAlias {
             abbreviation: caps.name("abbrev").unwrap().as_str().to_string(),
             long: caps.name("long").unwrap().as_str().to_string(),
-            aliases: aliases,
+            aliases,
         })
     }
 }
@@ -84,7 +85,8 @@ mod tests {
 
     #[test]
     fn parse3() {
-        let line = "scf                      ; Simple_Case_Folding         ; sfc\n";
+        let line =
+            "scf                      ; Simple_Case_Folding         ; sfc\n";
         let row: PropertyAlias = line.parse().unwrap();
         assert_eq!(row.abbreviation, "scf");
         assert_eq!(row.long, "Simple_Case_Folding");

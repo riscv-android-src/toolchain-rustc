@@ -5,19 +5,18 @@ extern crate tokio_io;
 extern crate tokio_process;
 
 use std::io;
-use std::process::{Stdio, ExitStatus, Command};
+use std::process::{Command, ExitStatus, Stdio};
 
 use futures::future::Future;
 use futures::stream::{self, Stream};
-use tokio_io::io::{read_until, write_all, read_to_end};
-use tokio_process::{CommandExt, Child};
+use tokio_io::io::{read_until, write_all};
+use tokio_process::{Child, CommandExt};
 
 mod support;
 
 fn cat() -> Command {
     let mut cmd = support::cmd("cat");
-    cmd.stdin(Stdio::piped())
-       .stdout(Stdio::piped());
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped());
     cmd
 }
 
@@ -28,10 +27,12 @@ fn feed_cat(mut cat: Child, n: usize) -> Box<Future<Item = ExitStatus, Error = i
     debug!("starting to feed");
     // Produce n lines on the child's stdout.
     let numbers = stream::iter_ok(0..n);
-    let write = numbers.fold(stdin, |stdin, i| {
-        debug!("sending line {} to child", i);
-        write_all(stdin, format!("line {}\n", i).into_bytes()).map(|p| p.0)
-    }).map(|_| ());
+    let write = numbers
+        .fold(stdin, |stdin, i| {
+            debug!("sending line {} to child", i);
+            write_all(stdin, format!("line {}\n", i).into_bytes()).map(|p| p.0)
+        })
+        .map(|_| ());
 
     // Try to read `n + 1` lines, ensuring the last one is empty
     // (i.e. EOF is reached after `n` lines.
@@ -41,15 +42,15 @@ fn feed_cat(mut cat: Child, n: usize) -> Box<Future<Item = ExitStatus, Error = i
         let done = i >= n;
         debug!("starting read from child");
         read_until(reader, b'\n', Vec::new()).and_then(move |(reader, vec)| {
-            debug!("read line {} from child ({} bytes, done: {})",
-                   i, vec.len(), done);
+            debug!(
+                "read line {} from child ({} bytes, done: {})",
+                i,
+                vec.len(),
+                done
+            );
             match (done, vec.len()) {
-                (false, 0) => {
-                    Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"))
-                },
-                (true, n) if n != 0 => {
-                    Err(io::Error::new(io::ErrorKind::Other, "extraneous data"))
-                },
+                (false, 0) => Err(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe")),
+                (true, n) if n != 0 => Err(io::Error::new(io::ErrorKind::Other, "extraneous data")),
                 _ => {
                     let s = std::str::from_utf8(&vec).unwrap();
                     let expected = format!("line {}\n", i);
@@ -83,38 +84,6 @@ fn feed_a_lot() {
     let child = cat().spawn_async().unwrap();
     let status = support::run_with_timeout(feed_cat(child, 10000)).unwrap();
     assert_eq!(status.code(), Some(0));
-}
-
-// FIXME: delete this test once we have a resolution for #51
-// This test's setup is flaky, and setting up a consistent test is nearly
-// impossible: right now we invoke `cat` and immediately kill it, expecting
-// that it didn't write anything, but if there's something wrong with the
-// command itself (e.g. redirection issues, it doesn't actually print anything
-// out, etc.) this test can falsely pass. Attempting a solution which writes
-// some data, *then* kill the child, write more data, and assert that only the
-// first write is echoed back seems like a good approach, however, due to the
-// ordering of context switches or how the kernel buffers data we can get
-// inconsistent results. We can keep this test around for now, but as soon as
-// we have a solution for #51, we may have a better avenue for testing this
-// functionality.
-#[test]
-fn drop_kills() {
-    let mut child = cat().spawn_async().unwrap();
-    let stdin = child.stdin().take().unwrap();
-    let stdout = child.stdout().take().unwrap();
-    drop(child);
-
-    // Ignore all write errors since we expect a broken pipe here
-    let writer = write_all(stdin, b"1234").then(|_| Ok(()));
-    let reader = read_to_end(stdout, Vec::new());
-
-    let (_, output) = support::CurrentThreadRuntime::new()
-        .expect("failed to get rt")
-        .spawn(writer)
-        .block_on(support::with_timeout(reader))
-        .expect("failed to get output");
-
-    assert_eq!(output.len(), 0);
 }
 
 #[test]

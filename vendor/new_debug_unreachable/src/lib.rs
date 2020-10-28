@@ -8,6 +8,21 @@
 
 #[macro_export]
 /// `panic!()` in debug builds, optimization hint in release.
+///
+/// Example:
+///
+/// ```
+/// use debug_unreachable::debug_unreachable;
+///
+/// fn main() {
+///     if 0 > 100 {
+///         // Can't happen!
+///         unsafe { debug_unreachable!() }
+///     } else {
+///         println!("Good, 0 <= 100.");
+///     }
+/// }
+/// ```
 macro_rules! debug_unreachable {
     () => { debug_unreachable!("entered unreachable code") };
     ($e:expr) => {

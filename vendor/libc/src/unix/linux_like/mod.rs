@@ -778,6 +778,7 @@ pub const IP_PKTINFO: ::c_int = 8;
 pub const IP_MTU_DISCOVER: ::c_int = 10;
 pub const IP_RECVTOS: ::c_int = 13;
 pub const IP_RECVERR: ::c_int = 11;
+pub const IP_FREEBIND: ::c_int = 15;
 pub const IP_ADD_MEMBERSHIP: ::c_int = 35;
 pub const IP_DROP_MEMBERSHIP: ::c_int = 36;
 pub const IP_ADD_SOURCE_MEMBERSHIP: ::c_int = 39;
@@ -960,6 +961,17 @@ pub const WEXITED: ::c_int = 0x00000004;
 pub const WCONTINUED: ::c_int = 0x00000008;
 pub const WNOWAIT: ::c_int = 0x01000000;
 
+// Options for personality(2).
+pub const ADDR_NO_RANDOMIZE: ::c_int = 0x0040000;
+pub const MMAP_PAGE_ZERO: ::c_int = 0x0100000;
+pub const ADDR_COMPAT_LAYOUT: ::c_int = 0x0200000;
+pub const READ_IMPLIES_EXEC: ::c_int = 0x0400000;
+pub const ADDR_LIMIT_32BIT: ::c_int = 0x0800000;
+pub const SHORT_INODE: ::c_int = 0x1000000;
+pub const WHOLE_SECONDS: ::c_int = 0x2000000;
+pub const STICKY_TIMEOUTS: ::c_int = 0x4000000;
+pub const ADDR_LIMIT_3GB: ::c_int = 0x8000000;
+
 // Options set using PTRACE_SETOPTIONS.
 pub const PTRACE_O_TRACESYSGOOD: ::c_int = 0x00000001;
 pub const PTRACE_O_TRACEFORK: ::c_int = 0x00000002;
@@ -981,8 +993,6 @@ pub const PTRACE_EVENT_EXEC: ::c_int = 4;
 pub const PTRACE_EVENT_VFORK_DONE: ::c_int = 5;
 pub const PTRACE_EVENT_EXIT: ::c_int = 6;
 pub const PTRACE_EVENT_SECCOMP: ::c_int = 7;
-// PTRACE_EVENT_STOP was added to glibc in 2.26
-// pub const PTRACE_EVENT_STOP: ::c_int = 128;
 
 pub const __WNOTHREAD: ::c_int = 0x20000000;
 pub const __WALL: ::c_int = 0x40000000;
@@ -1017,6 +1027,13 @@ pub const PIPE_BUF: usize = 4096;
 
 pub const SI_LOAD_SHIFT: ::c_uint = 16;
 
+pub const CLD_EXITED: ::c_int = 1;
+pub const CLD_KILLED: ::c_int = 2;
+pub const CLD_DUMPED: ::c_int = 3;
+pub const CLD_TRAPPED: ::c_int = 4;
+pub const CLD_STOPPED: ::c_int = 5;
+pub const CLD_CONTINUED: ::c_int = 6;
+
 pub const SIGEV_SIGNAL: ::c_int = 0;
 pub const SIGEV_NONE: ::c_int = 1;
 pub const SIGEV_THREAD: ::c_int = 2;
@@ -1024,6 +1041,11 @@ pub const SIGEV_THREAD: ::c_int = 2;
 pub const P_ALL: idtype_t = 0;
 pub const P_PID: idtype_t = 1;
 pub const P_PGID: idtype_t = 2;
+cfg_if! {
+    if #[cfg(not(target_os = "emscripten"))] {
+        pub const P_PIDFD: idtype_t = 3;
+    }
+}
 
 pub const UTIME_OMIT: c_long = 1073741822;
 pub const UTIME_NOW: c_long = 1073741823;
@@ -1244,6 +1266,14 @@ f! {
         (status & 0x80) != 0
     }
 
+    pub fn W_EXITCODE(ret: ::c_int, sig: ::c_int) -> ::c_int {
+        (ret << 8) | sig
+    }
+
+    pub fn W_STOPCODE(sig: ::c_int) -> ::c_int {
+        (sig << 8) | 0x7f
+    }
+
     pub fn QCMD(cmd: ::c_int, type_: ::c_int) -> ::c_int {
         (cmd << 8) | (type_ & 0x00ff)
     }
@@ -1314,6 +1344,12 @@ extern "C" {
         fd: ::c_int,
         offset: ::off_t,
         len: ::off_t,
+        advise: ::c_int,
+    ) -> ::c_int;
+    pub fn posix_fadvise64(
+        fd: ::c_int,
+        offset: ::off64_t,
+        len: ::off64_t,
         advise: ::c_int,
     ) -> ::c_int;
     pub fn futimens(fd: ::c_int, times: *const ::timespec) -> ::c_int;

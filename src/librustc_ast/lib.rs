@@ -7,10 +7,9 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/", test(attr(deny(warnings))))]
 #![feature(bool_to_option)]
 #![feature(box_syntax)]
-#![cfg_attr(bootstrap, feature(const_if_match))]
 #![feature(const_fn)] // For the `transmute` in `P::new`
 #![feature(const_panic)]
-#![cfg_attr(not(bootstrap), feature(const_fn_transmute))]
+#![feature(const_fn_transmute)]
 #![feature(crate_visibility_modifier)]
 #![feature(label_break_value)]
 #![feature(nll)]
@@ -19,8 +18,7 @@
 #![feature(unicode_internals)]
 #![recursion_limit = "256"]
 
-// FIXME(#56935): Work around ICEs during cross-compilation.
-#[allow(unused)]
+#[macro_use]
 extern crate rustc_macros;
 
 #[macro_export]
@@ -43,7 +41,6 @@ pub mod util {
 
 pub mod ast;
 pub mod attr;
-pub use attr::{with_default_session_globals, with_session_globals, SESSION_GLOBALS};
 pub mod crate_disambiguator;
 pub mod entry;
 pub mod expand;
@@ -53,6 +50,8 @@ pub mod ptr;
 pub mod token;
 pub mod tokenstream;
 pub mod visit;
+
+pub use self::ast::*;
 
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 

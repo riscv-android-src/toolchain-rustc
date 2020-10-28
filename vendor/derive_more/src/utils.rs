@@ -1,14 +1,29 @@
 #![cfg_attr(not(feature = "default"), allow(dead_code))]
+
+use std::ops::Deref as _;
+
 use proc_macro2::{Span, TokenStream};
 use quote::{quote, ToTokens};
 use syn::{
-    parse::{Error, Result},
-    parse_str,
-    spanned::Spanned,
-    Attribute, Data, DeriveInput, Field, Fields, FieldsNamed, FieldsUnnamed,
-    GenericParam, Generics, Ident, ImplGenerics, Index, Meta, NestedMeta, Type,
-    TypeGenerics, TypeParamBound, Variant, WhereClause,
+    parse_str, punctuated::Punctuated, spanned::Spanned, Attribute, Data, DeriveInput,
+    Error, Field, Fields, FieldsNamed, FieldsUnnamed, GenericParam, Generics, Ident,
+    ImplGenerics, Index, Meta, NestedMeta, Result, Token, Type, TypeGenerics,
+    TypeParamBound, Variant, WhereClause,
 };
+
+#[derive(Default)]
+pub struct DeterministicState {}
+
+impl std::hash::BuildHasher for DeterministicState {
+    type Hasher = std::collections::hash_map::DefaultHasher;
+
+    fn build_hasher(&self) -> Self::Hasher {
+        std::collections::hash_map::DefaultHasher::default()
+    }
+}
+
+pub type HashMap<K, V> = std::collections::HashMap<K, V, DeterministicState>;
+pub type HashSet<K> = std::collections::HashSet<K, DeterministicState>;
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub enum RefType {
@@ -210,7 +225,7 @@ fn panic_one_field(trait_name: &str, trait_attr: &str) -> ! {
     ))
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DeriveType {
     Unnamed,
     Named,
@@ -261,6 +276,10 @@ impl AttrParams {
             field: vec![],
         }
     }
+
+    pub fn ignore_and_forward() -> AttrParams {
+        AttrParams::new(vec!["ignore", "forward"])
+    }
 }
 
 impl<'input> State<'input> {
@@ -270,12 +289,13 @@ impl<'input> State<'input> {
         trait_module: TokenStream,
         trait_attr: String,
     ) -> Result<State<'arg_input>> {
-        State::with_attr_params(
+        State::new_impl(
             input,
             trait_name,
             trait_module,
             trait_attr,
             AttrParams::default(),
+            true,
         )
     }
 
@@ -285,12 +305,13 @@ impl<'input> State<'input> {
         trait_module: TokenStream,
         trait_attr: String,
     ) -> Result<State<'arg_input>> {
-        State::with_attr_params(
+        State::new_impl(
             input,
             trait_name,
             trait_module,
             trait_attr,
             AttrParams::new(vec!["ignore"]),
+            true,
         )
     }
 
@@ -300,12 +321,13 @@ impl<'input> State<'input> {
         trait_module: TokenStream,
         trait_attr: String,
     ) -> Result<State<'arg_input>> {
-        State::with_attr_params(
+        State::new_impl(
             input,
             trait_name,
             trait_module,
             trait_attr,
             AttrParams::new(vec!["ignore", "forward"]),
+            true,
         )
     }
 
@@ -315,12 +337,13 @@ impl<'input> State<'input> {
         trait_module: TokenStream,
         trait_attr: String,
     ) -> Result<State<'arg_input>> {
-        State::with_attr_params(
+        State::new_impl(
             input,
             trait_name,
             trait_module,
             trait_attr,
             AttrParams::new(vec!["ignore", "owned", "ref", "ref_mut"]),
+            true,
         )
     }
 
@@ -330,6 +353,42 @@ impl<'input> State<'input> {
         trait_module: TokenStream,
         trait_attr: String,
         allowed_attr_params: AttrParams,
+    ) -> Result<State<'arg_input>> {
+        State::new_impl(
+            input,
+            trait_name,
+            trait_module,
+            trait_attr,
+            allowed_attr_params,
+            true,
+        )
+    }
+
+    pub fn with_type_bound<'arg_input>(
+        input: &'arg_input DeriveInput,
+        trait_name: &'static str,
+        trait_module: TokenStream,
+        trait_attr: String,
+        allowed_attr_params: AttrParams,
+        add_type_bound: bool,
+    ) -> Result<State<'arg_input>> {
+        Self::new_impl(
+            input,
+            trait_name,
+            trait_module,
+            trait_attr,
+            allowed_attr_params,
+            add_type_bound,
+        )
+    }
+
+    fn new_impl<'arg_input>(
+        input: &'arg_input DeriveInput,
+        trait_name: &'static str,
+        trait_module: TokenStream,
+        trait_attr: String,
+        allowed_attr_params: AttrParams,
+        add_type_bound: bool,
     ) -> Result<State<'arg_input>> {
         let trait_name = trait_name.trim_end_matches("ToInner");
         let trait_ident = Ident::new(trait_name, Span::call_site());
@@ -380,10 +439,28 @@ impl<'input> State<'input> {
             .filter_map(|info| info.enabled.map(|_| info))
             .next();
 
+        // Default to enabled true, except when first attribute has explicit
+        // enabling.
+        //
+        // Except for derive Error.
+        //
+        // The way `else` case works is that if any field have any valid
+        // attribute specified, then all fields without any attributes
+        // specified are filtered out from `State::enabled_fields`.
+        //
+        // However, derive Error *infers* fields and there are cases when
+        // one of the fields may have an attribute specified, but another field
+        // would be inferred. So, for derive Error macro we default enabled
+        // to true unconditionally (i.e., even if some fields have attributes
+        // specified).
+        let default_enabled = if trait_name == "Error" {
+            true
+        } else {
+            first_match.map_or(true, |info| !info.enabled.unwrap())
+        };
+
         let defaults = struct_meta_info.to_full(FullMetaInfo {
-            // Default to enabled true, except when first attribute has explicit
-            // enabling
-            enabled: first_match.map_or(true, |info| !info.enabled.unwrap()),
+            enabled: default_enabled,
             forward: false,
             // Default to owned true, except when first attribute has one of owned,
             // ref or ref_mut
@@ -422,7 +499,12 @@ impl<'input> State<'input> {
         } else {
             Ok(vec![])
         };
-        let generics = add_extra_ty_param_bound(&input.generics, &trait_path);
+
+        let generics = if add_type_bound {
+            add_extra_ty_param_bound(&input.generics, &trait_path)
+        } else {
+            input.generics.clone()
+        };
 
         Ok(State {
             input,
@@ -773,7 +855,7 @@ impl<'input, 'state> SingleFieldData<'input, 'state> {
 fn get_meta_info(
     trait_attr: &str,
     attrs: &[Attribute],
-    allowed_attr_params: &[&'static str],
+    allowed_attr_params: &[&str],
 ) -> Result<MetaInfo> {
     let mut it = attrs
         .iter()
@@ -785,13 +867,8 @@ fn get_meta_info(
                 false
             }
         });
-    let mut info = MetaInfo {
-        enabled: None,
-        forward: None,
-        owned: None,
-        ref_: None,
-        ref_mut: None,
-    };
+
+    let mut info = MetaInfo::default();
 
     let meta = if let Some(meta) = it.next() {
         meta
@@ -811,6 +888,7 @@ fn get_meta_info(
             "Only a single attribute is allowed",
         ));
     }
+
     let list = match meta.clone() {
         Meta::Path(_) => {
             if allowed_attr_params.contains(&"ignore") {
@@ -826,57 +904,88 @@ fn get_meta_info(
             return Err(Error::new(meta.span(), "Attribute format not supported1"));
         }
     };
-    for element in list.nested.into_iter() {
-        let nested_meta = if let NestedMeta::Meta(meta) = element {
-            meta
-        } else {
-            return Err(Error::new(meta.span(), "Attribute format not supported3"));
-        };
-        if let Meta::Path(_) = nested_meta {
-        } else {
-            return Err(Error::new(meta.span(), "Attribute format not supported4"));
-        }
-        let ident = if let Some(ident) =
-            nested_meta.path().segments.first().map(|p| &p.ident)
-        {
-            ident
-        } else {
-            return Err(Error::new(meta.span(), "Attribute format not supported5"));
-        };
 
-        let str_ident: &str = &ident.to_string();
-        if !allowed_attr_params.contains(&str_ident) {
-            return Err(Error::new(
-                ident.span(),
-                format!(
-                    "Attribute parameter not supported. Supported attribute parameters are: {}",
-                    allowed_attr_params.join(", ")
-                ),
-            ));
-        }
+    parse_punctuated_nested_meta(&mut info, &list.nested, allowed_attr_params, true)?;
 
-        match str_ident {
-            "ignore" => {
-                info.enabled = Some(false);
-            }
-            "forward" => {
-                info.forward = Some(true);
-            }
-            "owned" => {
-                info.owned = Some(true);
-            }
-            "ref" => {
-                info.ref_ = Some(true);
-            }
-            "ref_mut" => {
-                info.ref_mut = Some(true);
-            }
+    Ok(info)
+}
+
+fn parse_punctuated_nested_meta(
+    info: &mut MetaInfo,
+    meta: &Punctuated<NestedMeta, Token![,]>,
+    allowed_attr_params: &[&str],
+    value: bool,
+) -> Result<()> {
+    for meta in meta.iter() {
+        let meta = match meta {
+            NestedMeta::Meta(meta) => meta,
             _ => {
-                return Err(Error::new(meta.span(), "Attribute format not supported7"));
+                return Err(Error::new(meta.span(), "Attribute format not supported2"))
+            }
+        };
+
+        match meta {
+            Meta::List(list) if list.path.is_ident("not") => {
+                // `value == true` means we're parsing top-level attributes (i.e., not under "not").
+                // `value == false` means we're parsing attributes under "not" attribute.
+                // Only single top-level "not" attribute allowed, so `value == false` here
+                // means we've found "not(not(...))" attribute, so we return error.
+                if value {
+                    parse_punctuated_nested_meta(
+                        info,
+                        &list.nested,
+                        allowed_attr_params,
+                        false,
+                    )?;
+                } else {
+                    return Err(Error::new(
+                        meta.span(),
+                        "Attribute format not supported3",
+                    ));
+                }
+            }
+
+            Meta::Path(path) => {
+                if !allowed_attr_params.iter().any(|param| path.is_ident(param)) {
+                    return Err(Error::new(
+                        meta.span(),
+                        format!(
+                            "Attribute parameter not supported. Supported attribute parameters are: {}",
+                            allowed_attr_params.join(", "),
+                        ),
+                    ));
+                }
+
+                // not(ignore) does not make much sense
+                if path.is_ident("ignore") && value {
+                    info.enabled = Some(false);
+                } else if path.is_ident("forward") {
+                    info.forward = Some(value);
+                } else if path.is_ident("owned") {
+                    info.owned = Some(value);
+                } else if path.is_ident("ref") {
+                    info.ref_ = Some(value);
+                } else if path.is_ident("ref_mut") {
+                    info.ref_mut = Some(value);
+                } else if path.is_ident("source") {
+                    info.source = Some(value);
+                } else if path.is_ident("backtrace") {
+                    info.backtrace = Some(value);
+                } else {
+                    return Err(Error::new(
+                        meta.span(),
+                        "Attribute format not supported4",
+                    ));
+                };
+            }
+
+            _ => {
+                return Err(Error::new(meta.span(), "Attribute format not supported5"))
             }
         }
     }
-    Ok(info)
+
+    Ok(())
 }
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -896,6 +1005,8 @@ pub struct MetaInfo {
     pub owned: Option<bool>,
     pub ref_: Option<bool>,
     pub ref_mut: Option<bool>,
+    pub source: Option<bool>,
+    pub backtrace: Option<bool>,
 }
 
 impl MetaInfo {
@@ -925,5 +1036,66 @@ impl FullMetaInfo {
             ref_types.push(RefType::Mut);
         }
         ref_types
+    }
+}
+
+pub fn get_if_type_parameter_used_in_type(
+    type_parameters: &HashSet<syn::Ident>,
+    ty: &syn::Type,
+) -> Option<syn::Type> {
+    if is_type_parameter_used_in_type(type_parameters, ty) {
+        match ty {
+            syn::Type::Reference(syn::TypeReference { elem: ty, .. }) => {
+                Some(ty.deref().clone())
+            }
+            ty => Some(ty.clone()),
+        }
+    } else {
+        None
+    }
+}
+
+pub fn is_type_parameter_used_in_type(
+    type_parameters: &HashSet<syn::Ident>,
+    ty: &syn::Type,
+) -> bool {
+    match ty {
+        syn::Type::Path(ty) => {
+            if let Some(qself) = &ty.qself {
+                if is_type_parameter_used_in_type(type_parameters, &qself.ty) {
+                    return true;
+                }
+            }
+
+            if let Some(segment) = ty.path.segments.first() {
+                if type_parameters.contains(&segment.ident) {
+                    return true;
+                }
+            }
+
+            ty.path.segments.iter().any(|segment| {
+                if let syn::PathArguments::AngleBracketed(arguments) =
+                    &segment.arguments
+                {
+                    arguments.args.iter().any(|argument| match argument {
+                        syn::GenericArgument::Type(ty) => {
+                            is_type_parameter_used_in_type(type_parameters, ty)
+                        }
+                        syn::GenericArgument::Constraint(constraint) => {
+                            type_parameters.contains(&constraint.ident)
+                        }
+                        _ => false,
+                    })
+                } else {
+                    false
+                }
+            })
+        }
+
+        syn::Type::Reference(ty) => {
+            is_type_parameter_used_in_type(type_parameters, &ty.elem)
+        }
+
+        _ => false,
     }
 }

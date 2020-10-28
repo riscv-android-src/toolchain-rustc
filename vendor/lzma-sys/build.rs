@@ -1,6 +1,3 @@
-extern crate cc;
-extern crate pkg_config;
-
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -10,9 +7,18 @@ const SKIP_FILENAMES: &[&str] = &["crc32_small", "crc64_small"];
 fn main() {
     let target = env::var("TARGET").unwrap();
 
+    println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-env-changed=LZMA_API_STATIC");
-    let want_static = env::var("LZMA_API_STATIC").is_ok();
-    if !want_static && pkg_config::probe_library("liblzma").is_ok() {
+    let want_static = cfg!(feature = "static") || env::var("LZMA_API_STATIC").is_ok();
+    let msvc = target.contains("msvc");
+
+    // If a static link is desired, we compile from source.
+    // If we're compiling for MSVC, pkg-config runs a risk of picking up MinGW
+    // libraries by accident, so disable it.
+    //
+    // Otherwise check the system to see if it has an lzma library already
+    // installed that we can use.
+    if !want_static && !msvc && pkg_config::probe_library("liblzma").is_ok() {
         return;
     }
 
@@ -54,6 +60,12 @@ fn main() {
 
     if !target.ends_with("msvc") {
         build.flag("-std=c99").flag("-pthread");
+    }
+
+    if let Ok(s) = env::var("CARGO_CFG_TARGET_ENDIAN") {
+        if s == "big" {
+            build.define("WORDS_BIGENDIAN", None);
+        }
     }
 
     build.compile("liblzma.a");

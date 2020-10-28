@@ -761,6 +761,8 @@ LIBSSH2_API int libssh2_channel_setenv_ex(LIBSSH2_CHANNEL *channel,
                               (unsigned int)strlen(varname), (value),   \
                               (unsigned int)strlen(value))
 
+LIBSSH2_API int libssh2_channel_request_auth_agent(LIBSSH2_CHANNEL *channel);
+
 LIBSSH2_API int libssh2_channel_request_pty_ex(LIBSSH2_CHANNEL *channel,
                                                const char *term,
                                                unsigned int term_len,
@@ -987,7 +989,7 @@ libssh2_knownhost_init(LIBSSH2_SESSION *session);
 #define LIBSSH2_KNOWNHOST_KEYENC_RAW      (1<<16)
 #define LIBSSH2_KNOWNHOST_KEYENC_BASE64   (2<<16)
 
-/* type of key (3 bits) */
+/* type of key (4 bits) */
 #define LIBSSH2_KNOWNHOST_KEY_MASK         (15<<18)
 #define LIBSSH2_KNOWNHOST_KEY_SHIFT        18
 #define LIBSSH2_KNOWNHOST_KEY_RSA1         (1<<18)

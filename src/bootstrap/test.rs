@@ -16,6 +16,7 @@ use build_helper::{self, output, t};
 use crate::builder::{Builder, Compiler, Kind, RunConfig, ShouldRun, Step};
 use crate::cache::{Interned, INTERNER};
 use crate::compile;
+use crate::config::TargetSelection;
 use crate::dist;
 use crate::flags::Subcommand;
 use crate::native;
@@ -93,7 +94,7 @@ fn try_run_quiet(builder: &Builder<'_>, cmd: &mut Command) -> bool {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Linkcheck {
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for Linkcheck {
@@ -115,7 +116,7 @@ impl Step for Linkcheck {
         let _time = util::timeit(&builder);
         try_run(
             builder,
-            builder.tool_cmd(Tool::Linkchecker).arg(builder.out.join(host).join("doc")),
+            builder.tool_cmd(Tool::Linkchecker).arg(builder.out.join(host.triple).join("doc")),
         );
     }
 
@@ -132,7 +133,7 @@ impl Step for Linkcheck {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Cargotest {
     stage: u32,
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for Cargotest {
@@ -177,7 +178,7 @@ impl Step for Cargotest {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Cargo {
     stage: u32,
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for Cargo {
@@ -230,7 +231,7 @@ impl Step for Cargo {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Rls {
     stage: u32,
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for Rls {
@@ -281,7 +282,7 @@ impl Step for Rls {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Rustfmt {
     stage: u32,
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for Rustfmt {
@@ -338,7 +339,7 @@ impl Step for Rustfmt {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Miri {
     stage: u32,
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for Miri {
@@ -392,7 +393,7 @@ impl Step for Miri {
             cargo.arg("--").arg("miri").arg("setup");
 
             // Tell `cargo miri setup` where to find the sources.
-            cargo.env("XARGO_RUST_SRC", builder.src.join("src"));
+            cargo.env("XARGO_RUST_SRC", builder.src.join("library"));
             // Tell it where to find Miri.
             cargo.env("MIRI", &miri);
             // Debug things.
@@ -464,7 +465,7 @@ impl Step for Miri {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CompiletestTest {
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for CompiletestTest {
@@ -501,7 +502,7 @@ impl Step for CompiletestTest {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct Clippy {
     stage: u32,
-    host: Interned<String>,
+    host: TargetSelection,
 }
 
 impl Step for Clippy {
@@ -542,8 +543,10 @@ impl Step for Clippy {
         cargo.env("RUSTC_TEST_SUITE", builder.rustc(compiler));
         cargo.env("RUSTC_LIB_PATH", builder.rustc_libdir(compiler));
         let host_libs = builder.stage_out(compiler, Mode::ToolRustc).join(builder.cargo_dir());
-        let target_libs =
-            builder.stage_out(compiler, Mode::ToolRustc).join(&self.host).join(builder.cargo_dir());
+        let target_libs = builder
+            .stage_out(compiler, Mode::ToolRustc)
+            .join(&self.host.triple)
+            .join(builder.cargo_dir());
         cargo.env("HOST_LIBS", host_libs);
         cargo.env("TARGET_LIBS", target_libs);
         // clippy tests need to find the driver
@@ -596,7 +599,6 @@ impl Step for RustdocTheme {
             .env("RUSTDOC_LIBDIR", builder.sysroot_libdir(self.compiler, self.compiler.host))
             .env("CFG_RELEASE_CHANNEL", &builder.config.channel)
             .env("RUSTDOC_REAL", builder.rustdoc(self.compiler))
-            .env("RUSTDOC_CRATE_VERSION", builder.rust_version())
             .env("RUSTC_BOOTSTRAP", "1");
         if let Some(linker) = builder.linker(self.compiler.host, true) {
             cmd.env("RUSTC_TARGET_LINKER", linker);
@@ -607,7 +609,7 @@ impl Step for RustdocTheme {
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct RustdocJSStd {
-    pub target: Interned<String>,
+    pub target: TargetSelection,
 }
 
 impl Step for RustdocJSStd {
@@ -646,8 +648,8 @@ impl Step for RustdocJSStd {
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct RustdocJSNotStd {
-    pub host: Interned<String>,
-    pub target: Interned<String>,
+    pub host: TargetSelection,
+    pub target: TargetSelection,
     pub compiler: Compiler,
 }
 
@@ -683,8 +685,8 @@ impl Step for RustdocJSNotStd {
 
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub struct RustdocUi {
-    pub host: Interned<String>,
-    pub target: Interned<String>,
+    pub host: TargetSelection,
+    pub target: TargetSelection,
     pub compiler: Compiler,
 }
 
@@ -785,8 +787,8 @@ impl Step for ExpandYamlAnchors {
     }
 }
 
-fn testdir(builder: &Builder<'_>, host: Interned<String>) -> PathBuf {
-    builder.out.join(host).join("test")
+fn testdir(builder: &Builder<'_>, host: TargetSelection) -> PathBuf {
+    builder.out.join(host.triple).join("test")
 }
 
 macro_rules! default_test {
@@ -855,7 +857,7 @@ macro_rules! test_definitions {
         #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
         pub struct $name {
             pub compiler: Compiler,
-            pub target: Interned<String>,
+            pub target: TargetSelection,
         }
 
         impl Step for $name {
@@ -943,7 +945,7 @@ default_test!(Assembly { path: "src/test/assembly", mode: "assembly", suite: "as
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 struct Compiletest {
     compiler: Compiler,
-    target: Interned<String>,
+    target: TargetSelection,
     mode: &'static str,
     suite: &'static str,
     path: &'static str,
@@ -1019,12 +1021,16 @@ impl Step for Compiletest {
             cmd.arg("--rustdoc-path").arg(builder.rustdoc(compiler));
         }
 
+        if mode == "run-make" && suite.ends_with("fulldeps") {
+            cmd.arg("--rust-demangler-path").arg(builder.tool_exe(Tool::RustDemangler));
+        }
+
         cmd.arg("--src-base").arg(builder.src.join("src/test").join(suite));
         cmd.arg("--build-base").arg(testdir(builder, compiler.host).join(suite));
         cmd.arg("--stage-id").arg(format!("stage{}-{}", compiler.stage, target));
         cmd.arg("--mode").arg(mode);
-        cmd.arg("--target").arg(target);
-        cmd.arg("--host").arg(&*compiler.host);
+        cmd.arg("--target").arg(target.rustc_target_arg());
+        cmd.arg("--host").arg(&*compiler.host.triple);
         cmd.arg("--llvm-filecheck").arg(builder.llvm_filecheck(builder.config.build));
 
         if builder.config.cmd.bless() {
@@ -1151,13 +1157,19 @@ impl Step for Compiletest {
             cmd.arg("--quiet");
         }
 
+        let mut llvm_components_passed = false;
+        let mut copts_passed = false;
         if builder.config.llvm_enabled() {
             let llvm_config = builder.ensure(native::Llvm { target: builder.config.build });
             if !builder.config.dry_run {
                 let llvm_version = output(Command::new(&llvm_config).arg("--version"));
+                let llvm_components = output(Command::new(&llvm_config).arg("--components"));
                 // Remove trailing newline from llvm-config output.
-                let llvm_version = llvm_version.trim_end();
-                cmd.arg("--llvm-version").arg(llvm_version);
+                cmd.arg("--llvm-version")
+                    .arg(llvm_version.trim())
+                    .arg("--llvm-components")
+                    .arg(llvm_components.trim());
+                llvm_components_passed = true;
             }
             if !builder.is_rust_llvm(target) {
                 cmd.arg("--system-llvm");
@@ -1175,15 +1187,13 @@ impl Step for Compiletest {
             // Only pass correct values for these flags for the `run-make` suite as it
             // requires that a C++ compiler was configured which isn't always the case.
             if !builder.config.dry_run && suite == "run-make-fulldeps" {
-                let llvm_components = output(Command::new(&llvm_config).arg("--components"));
                 cmd.arg("--cc")
                     .arg(builder.cc(target))
                     .arg("--cxx")
                     .arg(builder.cxx(target).unwrap())
                     .arg("--cflags")
-                    .arg(builder.cflags(target, GitRepo::Rustc).join(" "))
-                    .arg("--llvm-components")
-                    .arg(llvm_components.trim());
+                    .arg(builder.cflags(target, GitRepo::Rustc).join(" "));
+                copts_passed = true;
                 if let Some(ar) = builder.ar(target) {
                     cmd.arg("--ar").arg(ar);
                 }
@@ -1213,15 +1223,11 @@ impl Step for Compiletest {
             }
         }
 
-        if suite != "run-make-fulldeps" {
-            cmd.arg("--cc")
-                .arg("")
-                .arg("--cxx")
-                .arg("")
-                .arg("--cflags")
-                .arg("")
-                .arg("--llvm-components")
-                .arg("");
+        if !llvm_components_passed {
+            cmd.arg("--llvm-components").arg("");
+        }
+        if !copts_passed {
+            cmd.arg("--cc").arg("").arg("--cxx").arg("").arg("--cflags").arg("");
         }
 
         if builder.remote_tested(target) {
@@ -1543,7 +1549,7 @@ impl Step for RustcGuide {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CrateLibrustc {
     compiler: Compiler,
-    target: Interned<String>,
+    target: TargetSelection,
     test_kind: TestKind,
     krate: Interned<String>,
 }
@@ -1589,7 +1595,7 @@ impl Step for CrateLibrustc {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CrateNotDefault {
     compiler: Compiler,
-    target: Interned<String>,
+    target: TargetSelection,
     test_kind: TestKind,
     krate: &'static str,
 }
@@ -1638,7 +1644,7 @@ impl Step for CrateNotDefault {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Crate {
     pub compiler: Compiler,
-    pub target: Interned<String>,
+    pub target: TargetSelection,
     pub mode: Mode,
     pub test_kind: TestKind,
     pub krate: Interned<String>,
@@ -1748,19 +1754,24 @@ impl Step for Crate {
             cargo.arg("--quiet");
         }
 
+        if builder.config.cmd.bless() {
+            // Bless `expect!` tests.
+            cargo.env("UPDATE_EXPECT", "1");
+        }
+
         if target.contains("emscripten") {
             cargo.env(
-                format!("CARGO_TARGET_{}_RUNNER", envify(&target)),
+                format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)),
                 builder.config.nodejs.as_ref().expect("nodejs not configured"),
             );
         } else if target.starts_with("wasm32") {
             let node = builder.config.nodejs.as_ref().expect("nodejs not configured");
             let runner =
                 format!("{} {}/src/etc/wasm32-shim.js", node.display(), builder.src.display());
-            cargo.env(format!("CARGO_TARGET_{}_RUNNER", envify(&target)), &runner);
+            cargo.env(format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)), &runner);
         } else if builder.remote_tested(target) {
             cargo.env(
-                format!("CARGO_TARGET_{}_RUNNER", envify(&target)),
+                format!("CARGO_TARGET_{}_RUNNER", envify(&target.triple)),
                 format!("{} run 0", builder.tool_exe(Tool::RemoteTestClient).display()),
             );
         }
@@ -1776,7 +1787,7 @@ impl Step for Crate {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct CrateRustdoc {
-    host: Interned<String>,
+    host: TargetSelection,
     test_kind: TestKind,
 }
 
@@ -1883,7 +1894,7 @@ impl Step for CrateRustdoc {
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct RemoteCopyLibs {
     compiler: Compiler,
-    target: Interned<String>,
+    target: TargetSelection,
 }
 
 impl Step for RemoteCopyLibs {
@@ -1911,7 +1922,7 @@ impl Step for RemoteCopyLibs {
         // Spawn the emulator and wait for it to come online
         let tool = builder.tool_exe(Tool::RemoteTestClient);
         let mut cmd = Command::new(&tool);
-        cmd.arg("spawn-emulator").arg(target).arg(&server).arg(builder.out.join("tmp"));
+        cmd.arg("spawn-emulator").arg(target.triple).arg(&server).arg(builder.out.join("tmp"));
         if let Some(rootfs) = builder.qemu_rootfs(target) {
             cmd.arg(rootfs);
         }
@@ -1966,7 +1977,9 @@ impl Step for Distcheck {
                 .current_dir(&dir),
         );
         builder.run(
-            Command::new(build_helper::make(&builder.config.build)).arg("check").current_dir(&dir),
+            Command::new(build_helper::make(&builder.config.build.triple))
+                .arg("check")
+                .current_dir(&dir),
         );
 
         // Now make sure that rust-src has all of libstd's dependencies
@@ -1982,7 +1995,7 @@ impl Step for Distcheck {
             .current_dir(&dir);
         builder.run(&mut cmd);
 
-        let toml = dir.join("rust-src/lib/rustlib/src/rust/src/libstd/Cargo.toml");
+        let toml = dir.join("rust-src/lib/rustlib/src/rust/library/std/Cargo.toml");
         builder.run(
             Command::new(&builder.initial_cargo)
                 .arg("generate-lockfile")
@@ -2032,5 +2045,49 @@ impl Step for Bootstrap {
 
     fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Bootstrap);
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct TierCheck {
+    pub compiler: Compiler,
+    target: TargetSelection,
+}
+
+impl Step for TierCheck {
+    type Output = ();
+    const DEFAULT: bool = true;
+    const ONLY_HOSTS: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/tools/tier-check")
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        let compiler = run.builder.compiler_for(run.builder.top_stage, run.host, run.host);
+        run.builder.ensure(TierCheck { compiler, target: run.host });
+    }
+
+    /// Tests the Platform Support page in the rustc book.
+    fn run(self, builder: &Builder<'_>) {
+        builder.ensure(compile::Std { compiler: self.compiler, target: self.target });
+        let mut cargo = tool::prepare_tool_cargo(
+            builder,
+            self.compiler,
+            Mode::ToolRustc,
+            self.target,
+            "run",
+            "src/tools/tier-check",
+            SourceType::InTree,
+            &[],
+        );
+        cargo.arg(builder.src.join("src/doc/rustc/src/platform-support.md"));
+        cargo.arg(&builder.rustc(self.compiler));
+        if builder.is_verbose() {
+            cargo.arg("--verbose");
+        }
+
+        builder.info("platform support check");
+        try_run(builder, &mut cargo.into());
     }
 }

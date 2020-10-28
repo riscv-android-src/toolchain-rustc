@@ -137,7 +137,7 @@ Cargo will fetch the `git` repository at this location then look for a
 of a workspace and setting `git` to the repository containing the workspace).
 
 Since we haven’t specified any other information, Cargo assumes that
-we intend to use the latest commit on the `master` branch to build our package.
+we intend to use the latest commit on the main branch to build our package.
 You can combine the `git` key with the `rev`, `tag`, or `branch` keys to
 specify something else. Here's an example of specifying that you want to use
 the latest commit on a branch named `next`:
@@ -146,6 +146,11 @@ the latest commit on a branch named `next`:
 [dependencies]
 rand = { git = "https://github.com/rust-lang-nursery/rand", branch = "next" }
 ```
+
+Once a `git` dependency has been added, Cargo will lock that dependency to the
+latest commit at the time. New commits will not be pulled down automatically
+once the lock is in place. However, they can be pulled down manually with
+`cargo update`.
 
 See [Git Authentication] for help with git authentication for private repos.
 
@@ -445,5 +450,3 @@ log-debug = ['foo/log-debug'] # using 'bar/log-debug' would be an error!
     }
 })();
 </script>
-
-

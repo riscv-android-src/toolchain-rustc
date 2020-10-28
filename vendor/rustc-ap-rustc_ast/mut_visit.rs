@@ -762,7 +762,7 @@ pub fn noop_flat_map_generic_param<T: MutVisitor>(
         GenericParamKind::Type { default } => {
             visit_opt(default, |default| vis.visit_ty(default));
         }
-        GenericParamKind::Const { ty } => {
+        GenericParamKind::Const { ty, kw_span: _ } => {
             vis.visit_ty(ty);
         }
     }
@@ -1111,11 +1111,12 @@ pub fn noop_visit_expr<T: MutVisitor>(
             vis.visit_expr(f);
             visit_exprs(args, vis);
         }
-        ExprKind::MethodCall(PathSegment { ident, id, args }, exprs) => {
+        ExprKind::MethodCall(PathSegment { ident, id, args }, exprs, span) => {
             vis.visit_ident(ident);
             vis.visit_id(id);
             visit_opt(args, |args| vis.visit_generic_args(args));
             visit_exprs(exprs, vis);
+            vis.visit_span(span);
         }
         ExprKind::Binary(_binop, lhs, rhs) => {
             vis.visit_expr(lhs);

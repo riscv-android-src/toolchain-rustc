@@ -37,8 +37,8 @@
 //!   used for IPC within the Servo rendering engine.
 //! - [CBOR], a Concise Binary Object Representation designed for small message
 //!   size without the need for version negotiation.
-//! - [YAML], a popular human-friendly configuration language that ain't markup
-//!   language.
+//! - [YAML], a self-proclaimed human-friendly configuration language that ain't
+//!   markup language.
 //! - [MessagePack], an efficient binary format that resembles a compact JSON.
 //! - [TOML], a minimal configuration format used by [Cargo].
 //! - [Pickle], a format common in the Python world.
@@ -82,7 +82,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 // Serde types in rustdoc of other crates get linked to here.
-#![doc(html_root_url = "https://docs.rs/serde/1.0.114")]
+#![doc(html_root_url = "https://docs.rs/serde/1.0.115")]
 // Support using Serde without the standard library!
 #![cfg_attr(not(feature = "std"), no_std)]
 // Unstable functionality only if the user asks for it. For tracking and
@@ -111,6 +111,7 @@
         // things are often more readable this way
         cast_lossless,
         module_name_repetitions,
+        option_if_let_else,
         single_match_else,
         type_complexity,
         use_self,

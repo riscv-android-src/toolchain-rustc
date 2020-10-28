@@ -81,7 +81,7 @@ impl<T> AsyncReceiver<T> {
 }
 ```
 
-Paths in Rust have three namespaces: type, value, and macro. Items from these namespaces are allowed to overlap. In case of ambiguity, rustdoc will warn about the ambiguity and ask you to disambiguate, which can be done by using a prefix like `struct@`, `enum@`, `type@`, `trait@`, `union@`, `const@`, `static@`, `value@`, `function@`, `mod@`, `fn@`, `module@`, `method@` , `macro@`, or `derive@`:
+Paths in Rust have three namespaces: type, value, and macro. Items from these namespaces are allowed to overlap. In case of ambiguity, rustdoc will warn about the ambiguity and ask you to disambiguate, which can be done by using a prefix like `struct@`, `enum@`, `type@`, `trait@`, `union@`, `const@`, `static@`, `value@`, `function@`, `mod@`, `fn@`, `module@`, `method@`, `prim@`, `primitive@`, `macro@`, or `derive@`:
 
 ```rust
 /// See also: [`Foo`](struct@Foo)
@@ -149,6 +149,27 @@ Book][unstable-doc-cfg] and [its tracking issue][issue-doc-cfg].
 
 [unstable-doc-cfg]: ../unstable-book/language-features/doc-cfg.html
 [issue-doc-cfg]: https://github.com/rust-lang/rust/issues/43781
+
+### Adding your trait to the "Important Traits" dialog
+
+Rustdoc keeps a list of a few traits that are believed to be "fundamental" to a given type when
+implemented on it. These traits are intended to be the primary interface for their types, and are
+often the only thing available to be documented on their types. For this reason, Rustdoc will track
+when a given type implements one of these traits and call special attention to it when a function
+returns one of these types. This is the "Important Traits" dialog, visible as a circle-i button next
+to the function, which, when clicked, shows the dialog.
+
+In the standard library, the traits that qualify for inclusion are `Iterator`, `io::Read`, and
+`io::Write`. However, rather than being implemented as a hard-coded list, these traits have a
+special marker attribute on them: `#[doc(spotlight)]`. This means that you could apply this
+attribute to your own trait to include it in the "Important Traits" dialog in documentation.
+
+The `#[doc(spotlight)]` attribute currently requires the `#![feature(doc_spotlight)]` feature gate.
+For more information, see [its chapter in the Unstable Book][unstable-spotlight] and [its tracking
+issue][issue-spotlight].
+
+[unstable-spotlight]: ../unstable-book/language-features/doc-spotlight.html
+[issue-spotlight]: https://github.com/rust-lang/rust/issues/45040
 
 ### Exclude certain dependencies from documentation
 
@@ -446,3 +467,36 @@ $ rustdoc src/lib.rs -Z unstable-options --runtool valgrind
 ```
 
 Another use case would be to run a test inside an emulator, or through a Virtual Machine.
+
+### `--show-coverage`: get statistics about code documentation coverage
+
+This option allows you to get a nice overview over your code documentation coverage, including both
+doc-comments and code examples in the doc-comments. Example:
+
+```bash
+$ rustdoc src/lib.rs -Z unstable-options --show-coverage
++-------------------------------------+------------+------------+------------+------------+
+| File                                | Documented | Percentage |   Examples | Percentage |
++-------------------------------------+------------+------------+------------+------------+
+| lib.rs                              |          4 |     100.0% |          1 |      25.0% |
++-------------------------------------+------------+------------+------------+------------+
+| Total                               |          4 |     100.0% |          1 |      25.0% |
++-------------------------------------+------------+------------+------------+------------+
+```
+
+You can also use this option with the `--output-format` one:
+
+```bash
+$ rustdoc src/lib.rs -Z unstable-options --show-coverage --output-format json
+{"lib.rs":{"total":4,"with_docs":4,"total_examples":4,"with_examples":1}}
+```
+
+Calculating code examples follows these rules:
+
+1. These items aren't accounted by default:
+  * struct/union field
+  * enum variant
+  * constant
+  * static
+  * typedef
+2. If one of the previously listed items has a code example, then it'll be counted.

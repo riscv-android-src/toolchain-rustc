@@ -13,18 +13,20 @@
 [package]
 edition = "2018"
 name = "proc-macro-error"
-version = "0.2.6"
+version = "1.0.4"
 authors = ["CreepySkeleton <creepy-skeleton@yandex.ru>"]
-description = "Drop-in replacement to panics in proc-macros"
-readme = "../README.md"
+build = "build.rs"
+description = "Almost drop-in replacement to panics in proc-macros"
+readme = "README.md"
 keywords = ["proc-macro", "error", "errors"]
 categories = ["development-tools::procedural-macro-helpers"]
-license = "MIT"
-repository = "https://github.com/CreepySkeleton/proc-macro-error"
-[package.metadata.release]
-no-dev-version = true
-pre-release-commit-message = "v{{version}}"
-tag-name = "v{{version}}"
+license = "MIT OR Apache-2.0"
+repository = "https://gitlab.com/CreepySkeleton/proc-macro-error"
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+[dependencies.proc-macro-error-attr]
+version = "=1.0.4"
+
 [dependencies.proc-macro2]
 version = "1"
 
@@ -33,8 +35,22 @@ version = "1"
 
 [dependencies.syn]
 version = "1"
+optional = true
+default-features = false
+[dev-dependencies.serde_derive]
+version = "=1.0.107"
+
+[dev-dependencies.toml]
+version = "=0.5.2"
+
+[dev-dependencies.trybuild]
+version = "1.0.19"
+features = ["diff"]
+[build-dependencies.version_check]
+version = "0.9"
 
 [features]
-dummy = []
+default = ["syn-error"]
+syn-error = ["syn"]
 [badges.maintenance]
-status = "actively-developed"
+status = "passively-maintained"

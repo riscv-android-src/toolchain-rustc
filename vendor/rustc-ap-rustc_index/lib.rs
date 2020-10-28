@@ -1,5 +1,5 @@
 #![feature(allow_internal_unstable)]
-#![feature(rustc_private, const_if_match)]
+#![feature(rustc_private, bool_to_option)]
 #![feature(const_fn)]
 #![feature(const_panic)]
 #![feature(extend_one)]

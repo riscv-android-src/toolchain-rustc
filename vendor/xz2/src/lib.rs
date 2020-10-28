@@ -43,7 +43,7 @@
 //! time to perform I/O. If I/O streams are flushed before drop, however, then
 //! these operations will be a noop.
 
-#![deny(missing_docs, warnings)]
+#![deny(missing_docs)]
 #![doc(html_root_url = "https://docs.rs/xz2/0.1")]
 
 extern crate lzma_sys;

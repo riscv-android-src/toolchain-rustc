@@ -325,32 +325,57 @@ impl<'a> StringReader<'a> {
         let (lit_kind, mode, prefix_len, postfix_len) = match kind {
             rustc_lexer::LiteralKind::Char { terminated } => {
                 if !terminated {
-                    self.fatal_span_(start, suffix_start, "unterminated character literal").raise()
+                    self.sess
+                        .span_diagnostic
+                        .struct_span_fatal_with_code(
+                            self.mk_sp(start, suffix_start),
+                            "unterminated character literal",
+                            error_code!(E0762),
+                        )
+                        .emit();
+                    FatalError.raise();
                 }
                 (token::Char, Mode::Char, 1, 1) // ' '
             }
             rustc_lexer::LiteralKind::Byte { terminated } => {
                 if !terminated {
-                    self.fatal_span_(start + BytePos(1), suffix_start, "unterminated byte constant")
-                        .raise()
+                    self.sess
+                        .span_diagnostic
+                        .struct_span_fatal_with_code(
+                            self.mk_sp(start + BytePos(1), suffix_start),
+                            "unterminated byte constant",
+                            error_code!(E0763),
+                        )
+                        .emit();
+                    FatalError.raise();
                 }
                 (token::Byte, Mode::Byte, 2, 1) // b' '
             }
             rustc_lexer::LiteralKind::Str { terminated } => {
                 if !terminated {
-                    self.fatal_span_(start, suffix_start, "unterminated double quote string")
-                        .raise()
+                    self.sess
+                        .span_diagnostic
+                        .struct_span_fatal_with_code(
+                            self.mk_sp(start, suffix_start),
+                            "unterminated double quote string",
+                            error_code!(E0765),
+                        )
+                        .emit();
+                    FatalError.raise();
                 }
                 (token::Str, Mode::Str, 1, 1) // " "
             }
             rustc_lexer::LiteralKind::ByteStr { terminated } => {
                 if !terminated {
-                    self.fatal_span_(
-                        start + BytePos(1),
-                        suffix_start,
-                        "unterminated double quote byte string",
-                    )
-                    .raise()
+                    self.sess
+                        .span_diagnostic
+                        .struct_span_fatal_with_code(
+                            self.mk_sp(start + BytePos(1), suffix_start),
+                            "unterminated double quote byte string",
+                            error_code!(E0766),
+                        )
+                        .emit();
+                    FatalError.raise();
                 }
                 (token::ByteStr, Mode::ByteStr, 2, 1) // b" "
             }
@@ -366,7 +391,14 @@ impl<'a> StringReader<'a> {
             }
             rustc_lexer::LiteralKind::Int { base, empty_int } => {
                 return if empty_int {
-                    self.err_span_(start, suffix_start, "no valid digits found for number");
+                    self.sess
+                        .span_diagnostic
+                        .struct_span_err_with_code(
+                            self.mk_sp(start, suffix_start),
+                            "no valid digits found for number",
+                            error_code!(E0768),
+                        )
+                        .emit();
                     (token::Integer, sym::integer(0))
                 } else {
                     self.validate_int_literal(base, start, suffix_start);
@@ -401,7 +433,7 @@ impl<'a> StringReader<'a> {
         let content_end = suffix_start - BytePos(postfix_len);
         let id = self.symbol_from_to(content_start, content_end);
         self.validate_literal_escape(mode, content_start, content_end);
-        return (lit_kind, id);
+        (lit_kind, id)
     }
 
     pub fn pos(&self) -> BytePos {

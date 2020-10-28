@@ -1,5 +1,38 @@
 # Changelog
 
+## mdBook 0.4.2
+[649f355...9278b83](https://github.com/rust-lang/mdBook/compare/649f355...9278b83)
+
+### Changed
+- The "show hidden lines" icon has changed from the "expand" icon to an "eye".
+  [#1281](https://github.com/rust-lang/mdBook/pull/1281)
+- Updated highlight.js. This adds several languages: c, c-like (effectively
+  cpp), csharp (replaces cs), kotlin, less, lua, php-template, plaintext,
+  python-repl, r, scss, typescript.
+  [#1277](https://github.com/rust-lang/mdBook/pull/1277)
+
+### Fixed
+- Fixed SUMMARY links that contained newlines.
+  [#1291](https://github.com/rust-lang/mdBook/pull/1291)
+- Fixed SUMMARY links that contain `%20` spaces.
+  [#1293](https://github.com/rust-lang/mdBook/pull/1293)
+- Fixed favicon so that if only the png or svg is overridden, the other is not
+  automatically included in the `<link>` tag.
+  [#1272](https://github.com/rust-lang/mdBook/pull/1272)
+
+## mdBook 0.4.1
+[d4df7e7...649f355](https://github.com/rust-lang/mdBook/compare/d4df7e7...649f355)
+
+### Changed
+- Removed several outdated dev-dependencies.
+  [#1267](https://github.com/rust-lang/mdBook/pull/1267)
+
+### Fixed
+- Fixed sidebar scrolling if the book includes part titles.
+  [#1265](https://github.com/rust-lang/mdBook/pull/1265)
+- Don't include the default favicon if only one of the PNG or SVG is overridden.
+  [#1266](https://github.com/rust-lang/mdBook/pull/1266)
+
 ## mdBook 0.4.0
 [99ecd4f...d4df7e7](https://github.com/rust-lang/mdBook/compare/99ecd4f...d4df7e7)
 
@@ -17,6 +50,8 @@
   can disable the 404 page generation, or set up your own 404 handling in your
   web server.
   [#1221](https://github.com/rust-lang/mdBook/pull/1221)
+- The `debug` and `output` features have been removed as they were unused.
+  [#1211](https://github.com/rust-lang/mdBook/pull/1211)
 - If you are using customized themes, you may want to consider setting the
   `preferred-dark-theme` config setting, as it now defaults to "navy".
   [#1199](https://github.com/rust-lang/mdBook/pull/1199)
@@ -28,6 +63,9 @@
   the old behavior of ignoring missing renderers, set the `optional` setting
   for that renderer.
   [#1122](https://github.com/rust-lang/mdBook/pull/1122)
+- If you have a custom favicon, you may need to look into adding an SVG
+  version, otherwise the default SVG icon will be displayed.
+  [#1230](https://github.com/rust-lang/mdBook/pull/1230)
 
 ### Added
 - Added a new `[rust]` configuration section to `book.toml`, which allows

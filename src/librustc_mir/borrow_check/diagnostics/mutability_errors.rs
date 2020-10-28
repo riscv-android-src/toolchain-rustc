@@ -492,7 +492,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
         err.span_label(sp, format!("cannot {}", act));
 
         let hir = self.infcx.tcx.hir();
-        let closure_id = hir.as_local_hir_id(self.mir_def_id);
+        let closure_id = hir.local_def_id_to_hir_id(self.mir_def_id);
         let fn_call_id = hir.get_parent_node(closure_id);
         let node = hir.get(fn_call_id);
         let item_id = hir.enclosing_body_owner(fn_call_id);
@@ -507,7 +507,7 @@ impl<'a, 'tcx> MirBorrowckCtxt<'a, 'tcx> {
                 .map(|(pos, _)| pos)
                 .next();
             let def_id = hir.local_def_id(item_id);
-            let tables = self.infcx.tcx.typeck_tables_of(def_id);
+            let tables = self.infcx.tcx.typeck(def_id);
             if let Some(ty::FnDef(def_id, _)) =
                 tables.node_type_opt(func.hir_id).as_ref().map(|ty| &ty.kind)
             {
@@ -691,7 +691,7 @@ fn annotate_struct_field(
         if let ty::Adt(def, _) = ty.kind {
             let field = def.all_fields().nth(field.index())?;
             // Use the HIR types to construct the diagnostic message.
-            let hir_id = tcx.hir().as_local_hir_id(field.did.as_local()?);
+            let hir_id = tcx.hir().local_def_id_to_hir_id(field.did.as_local()?);
             let node = tcx.hir().find(hir_id)?;
             // Now we're dealing with the actual struct that we're going to suggest a change to,
             // we can expect a field that is an immutable reference to a type.

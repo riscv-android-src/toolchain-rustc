@@ -2,13 +2,13 @@
 # It is not intended for manual editing.
 [[package]]
 name = "cc"
-version = "1.0.54"
+version = "1.0.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7bbb73db36c1246e9034e307d0fba23f9a2e251faa47ade70c1bd252220c8311"
+checksum = "f9a06fb2e53271d7c279ec1efea6ab691c35a2ae67ec0d91d7acec0caf13b518"
 
 [[package]]
 name = "psm"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "cc",
 ]

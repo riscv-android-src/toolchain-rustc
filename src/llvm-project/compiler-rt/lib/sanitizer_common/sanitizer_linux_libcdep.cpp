@@ -35,6 +35,10 @@
 #include <sys/resource.h>
 #include <syslog.h>
 
+#if !defined(ElfW)
+#define ElfW(type) Elf_##type
+#endif
+
 #if SANITIZER_FREEBSD
 #include <pthread_np.h>
 #include <osreldate.h>
@@ -690,8 +694,12 @@ u32 GetNumberOfCPUs() {
   }
   internal_close(fd);
   return n_cpus;
-#else
+#elif SANITIZER_SOLARIS
   return sysconf(_SC_NPROCESSORS_ONLN);
+#else
+  cpu_set_t CPUs;
+  CHECK_EQ(sched_getaffinity(0, sizeof(cpu_set_t), &CPUs), 0);
+  return CPU_COUNT(&CPUs);
 #endif
 }
 

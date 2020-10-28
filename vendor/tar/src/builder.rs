@@ -52,7 +52,7 @@ impl<W: Write> Builder<W> {
     /// Gets mutable reference to the underlying object.
     ///
     /// Note that care must be taken while writing to the underlying
-    /// object. But, e.g. `get_mut().flush()` is clamed to be safe and
+    /// object. But, e.g. `get_mut().flush()` is claimed to be safe and
     /// useful in the situations when one needs to be ensured that
     /// tar entry was flushed to the disk.
     pub fn get_mut(&mut self) -> &mut W {
@@ -197,12 +197,14 @@ impl<W: Write> Builder<W> {
     /// This function will open the file specified by `path` and insert the file
     /// into the archive as `name` with appropriate metadata set, returning any
     /// I/O error which occurs while writing. The path name for the file inside
-    /// of this archive will be `name` and `path` is required to be a relative
-    /// path.
+    /// of this archive will be `name` is required to be a relative path.
     ///
     /// Note that this will not attempt to seek the archive to a valid position,
     /// so if the archive is in the middle of a read or some other similar
     /// operation then this may corrupt the archive.
+    ///
+    /// Note if the `path` is a directory. This will just add an entry to the archive,
+    /// rather than contents of the directory.  
     ///
     /// Also note that after all files have been written to an archive the
     /// `finish` function needs to be called to finish writing the archive.
@@ -274,6 +276,9 @@ impl<W: Write> Builder<W> {
     /// Note that this will not attempt to seek the archive to a valid position,
     /// so if the archive is in the middle of a read or some other similar
     /// operation then this may corrupt the archive.
+    ///
+    /// Note this will not add the contents of the directory to the archive.
+    /// See `append_dir_all` for recusively adding the contents of the directory.
     ///
     /// Also note that after all files have been written to an archive the
     /// `finish` function needs to be called to finish writing the archive.
@@ -353,7 +358,7 @@ impl<W: Write> Builder<W> {
     }
 }
 
-fn append(mut dst: &mut Write, header: &Header, mut data: &mut Read) -> io::Result<()> {
+fn append(mut dst: &mut dyn Write, header: &Header, mut data: &mut dyn Read) -> io::Result<()> {
     dst.write_all(header.as_bytes())?;
     let len = io::copy(&mut data, &mut dst)?;
 
@@ -368,7 +373,7 @@ fn append(mut dst: &mut Write, header: &Header, mut data: &mut Read) -> io::Resu
 }
 
 fn append_path_with_name(
-    dst: &mut Write,
+    dst: &mut dyn Write,
     path: &Path,
     name: Option<&Path>,
     mode: HeaderMode,
@@ -410,7 +415,7 @@ fn append_path_with_name(
 }
 
 fn append_file(
-    dst: &mut Write,
+    dst: &mut dyn Write,
     path: &Path,
     file: &mut fs::File,
     mode: HeaderMode,
@@ -419,7 +424,12 @@ fn append_file(
     append_fs(dst, path, &stat, file, mode, None)
 }
 
-fn append_dir(dst: &mut Write, path: &Path, src_path: &Path, mode: HeaderMode) -> io::Result<()> {
+fn append_dir(
+    dst: &mut dyn Write,
+    path: &Path,
+    src_path: &Path,
+    mode: HeaderMode,
+) -> io::Result<()> {
     let stat = fs::metadata(src_path)?;
     append_fs(dst, path, &stat, &mut io::empty(), mode, None)
 }
@@ -439,7 +449,7 @@ fn prepare_header(size: u64, entry_type: u8) -> Header {
     header
 }
 
-fn prepare_header_path(dst: &mut Write, header: &mut Header, path: &Path) -> io::Result<()> {
+fn prepare_header_path(dst: &mut dyn Write, header: &mut Header, path: &Path) -> io::Result<()> {
     // Try to encode the path directly in the header, but if it ends up not
     // working (probably because it's too long) then try to use the GNU-specific
     // long name extension by emitting an entry which indicates that it's the
@@ -464,7 +474,11 @@ fn prepare_header_path(dst: &mut Write, header: &mut Header, path: &Path) -> io:
     Ok(())
 }
 
-fn prepare_header_link(dst: &mut Write, header: &mut Header, link_name: &Path) -> io::Result<()> {
+fn prepare_header_link(
+    dst: &mut dyn Write,
+    header: &mut Header,
+    link_name: &Path,
+) -> io::Result<()> {
     // Same as previous function but for linkname
     if let Err(e) = header.set_link_name(&link_name) {
         let data = path2bytes(&link_name)?;
@@ -479,10 +493,10 @@ fn prepare_header_link(dst: &mut Write, header: &mut Header, link_name: &Path) -
 }
 
 fn append_fs(
-    dst: &mut Write,
+    dst: &mut dyn Write,
     path: &Path,
     meta: &fs::Metadata,
-    read: &mut Read,
+    read: &mut dyn Read,
     mode: HeaderMode,
     link_name: Option<&Path>,
 ) -> io::Result<()> {
@@ -498,7 +512,7 @@ fn append_fs(
 }
 
 fn append_dir_all(
-    dst: &mut Write,
+    dst: &mut dyn Write,
     path: &Path,
     src_path: &Path,
     mode: HeaderMode,

@@ -481,7 +481,7 @@ int htp_hdrs_completecb(llhttp_t *htp) {
 #ifdef HAVE_MRUBY
   const auto &group = dconn_ptr->get_downstream_addr_group();
   if (group) {
-    const auto &dmruby_ctx = group->mruby_ctx;
+    const auto &dmruby_ctx = group->shared_addr->mruby_ctx;
 
     if (dmruby_ctx->run_on_request_proc(downstream) != 0) {
       resp.http_status = 500;
@@ -788,7 +788,10 @@ int HttpsUpstream::downstream_read(DownstreamConnection *dconn) {
   rv = downstream->on_read();
 
   if (rv == SHRPX_ERR_EOF) {
-    return downstream_eof(dconn);
+    if (downstream->get_request_header_sent()) {
+      return downstream_eof(dconn);
+    }
+    return SHRPX_ERR_RETRY;
   }
 
   if (rv == SHRPX_ERR_DCONN_CANCELED) {
@@ -893,7 +896,11 @@ int HttpsUpstream::downstream_error(DownstreamConnection *dconn, int events) {
 
   unsigned int status;
   if (events & Downstream::EVENT_TIMEOUT) {
-    status = 504;
+    if (downstream->get_request_header_sent()) {
+      status = 504;
+    } else {
+      status = 408;
+    }
   } else {
     status = 502;
   }
@@ -1080,7 +1087,7 @@ int HttpsUpstream::on_downstream_header_complete(Downstream *downstream) {
     assert(dconn);
     const auto &group = dconn->get_downstream_addr_group();
     if (group) {
-      const auto &dmruby_ctx = group->mruby_ctx;
+      const auto &dmruby_ctx = group->shared_addr->mruby_ctx;
 
       if (dmruby_ctx->run_on_response_proc(downstream) != 0) {
         error_reply(500);

@@ -6,17 +6,16 @@
 
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(nll)]
-#![cfg_attr(bootstrap, feature(track_caller))]
 #![recursion_limit = "256"]
 
 #[macro_use]
-extern crate log;
+extern crate tracing;
 #[macro_use]
 extern crate lazy_static;
 
 pub extern crate rustc_plugin_impl as plugin;
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_codegen_ssa::{traits::CodegenBackend, CodegenResults};
 use rustc_data_structures::profiling::print_time_passes_entry;
 use rustc_data_structures::sync::SeqCst;
@@ -65,8 +64,8 @@ pub const EXIT_SUCCESS: i32 = 0;
 /// Exit status code used for compilation failures and invalid flags.
 pub const EXIT_FAILURE: i32 = 1;
 
-const BUG_REPORT_URL: &str = "https://github.com/rust-lang/rust/blob/master/CONTRIBUTING.\
-                              md#bug-reports";
+const BUG_REPORT_URL: &str = "https://github.com/rust-lang/rust/issues/new\
+    ?labels=C-bug%2C+I-ICE%2C+T-compiler&template=ice.md";
 
 const ICE_REPORT_COMPILER_FLAGS: &[&str] = &["Z", "C", "crate-type"];
 
@@ -349,8 +348,10 @@ pub fn run_compiler(
             queries.global_ctxt()?;
 
             // Drop AST after creating GlobalCtxt to free memory
-            let _timer = sess.prof.generic_activity("drop_ast");
-            mem::drop(queries.expansion()?.take());
+            {
+                let _timer = sess.prof.generic_activity("drop_ast");
+                mem::drop(queries.expansion()?.take());
+            }
 
             if sess.opts.debugging_opts.no_analysis || sess.opts.debugging_opts.ast_json {
                 return early_exit();
@@ -678,7 +679,7 @@ impl RustcDefaultCalls {
                     let t_outputs = rustc_interface::util::build_output_filenames(
                         input, odir, ofile, attrs, sess,
                     );
-                    let id = rustc_session::output::find_crate_name(Some(sess), attrs, input);
+                    let id = rustc_session::output::find_crate_name(sess, attrs, input);
                     if *req == PrintRequest::CrateName {
                         println!("{}", id);
                         continue;
@@ -698,7 +699,7 @@ impl RustcDefaultCalls {
                         .parse_sess
                         .config
                         .iter()
-                        .filter_map(|&(name, ref value)| {
+                        .filter_map(|&(name, value)| {
                             // Note that crt-static is a specially recognized cfg
                             // directive that's printed out here as part of
                             // rust-lang/rust#37406, but in general the
@@ -707,9 +708,7 @@ impl RustcDefaultCalls {
                             // specifically allowing the crt-static cfg and that's
                             // it, this is intended to get into Cargo and then go
                             // through to build scripts.
-                            let value = value.as_ref().map(|s| s.as_str());
-                            let value = value.as_ref().map(|s| s.as_ref());
-                            if (name != sym::target_feature || value != Some("crt-static"))
+                            if (name != sym::target_feature || value != Some(sym::crt_dash_static))
                                 && !allow_unstable_cfg
                                 && find_gated_cfg(|cfg_sym| cfg_sym == name).is_some()
                             {
@@ -1227,9 +1226,26 @@ pub fn install_ice_hook() {
 }
 
 /// This allows tools to enable rust logging without having to magically match rustc's
-/// log crate version
+/// tracing crate version.
 pub fn init_rustc_env_logger() {
-    env_logger::init_from_env("RUSTC_LOG");
+    init_env_logger("RUSTC_LOG")
+}
+
+/// This allows tools to enable rust logging without having to magically match rustc's
+/// tracing crate version. In contrast to `init_rustc_env_logger` it allows you to choose an env var
+/// other than `RUSTC_LOG`.
+pub fn init_env_logger(env: &str) {
+    // Don't register a dispatcher if there's no filter to print anything
+    match std::env::var(env) {
+        Err(_) => return,
+        Ok(s) if s.is_empty() => return,
+        Ok(_) => {}
+    }
+    let builder = tracing_subscriber::FmtSubscriber::builder();
+
+    let builder = builder.with_env_filter(tracing_subscriber::EnvFilter::from_env(env));
+
+    builder.init()
 }
 
 pub fn main() -> ! {

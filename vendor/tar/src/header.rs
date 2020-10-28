@@ -1,4 +1,4 @@
-#[cfg(any(unix, target_os = "redox"))]
+#[cfg(unix)]
 use std::os::unix::prelude::*;
 #[cfg(windows)]
 use std::os::windows::prelude::*;
@@ -328,7 +328,7 @@ impl Header {
 
     /// Returns the raw path name stored in this header.
     ///
-    /// This method may fail if the pathname is not valid unicode and this is
+    /// This method may fail if the pathname is not valid Unicode and this is
     /// called on a Windows platform.
     ///
     /// Note that this function will convert any `\` characters to directory
@@ -362,7 +362,8 @@ impl Header {
     ///
     /// This function will set the pathname listed in this header, encoding it
     /// in the appropriate format. May fail if the path is too long or if the
-    /// path specified is not unicode and this is a Windows platform.
+    /// path specified is not Unicode and this is a Windows platform. Will
+    /// strip out any "." path component, which signifies the current directory.
     pub fn set_path<P: AsRef<Path>>(&mut self, p: P) -> io::Result<()> {
         self._set_path(p.as_ref())
     }
@@ -381,7 +382,7 @@ impl Header {
 
     /// Returns the link name stored in this header, if any is found.
     ///
-    /// This method may fail if the pathname is not valid unicode and this is
+    /// This method may fail if the pathname is not valid Unicode and this is
     /// called on a Windows platform. `Ok(None)` being returned, however,
     /// indicates that the link name was not present.
     ///
@@ -414,7 +415,8 @@ impl Header {
     ///
     /// This function will set the linkname listed in this header, encoding it
     /// in the appropriate format. May fail if the link name is too long or if
-    /// the path specified is not unicode and this is a Windows platform.
+    /// the path specified is not Unicode and this is a Windows platform. Will
+    /// strip out any "." path component, which signifies the current directory.
     pub fn set_link_name<P: AsRef<Path>>(&mut self, p: P) -> io::Result<()> {
         self._set_link_name(p.as_ref())
     }
@@ -717,7 +719,7 @@ impl Header {
         unimplemented!();
     }
 
-    #[cfg(any(unix, target_os = "redox"))]
+    #[cfg(unix)]
     fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
         match mode {
             HeaderMode::Complete => {
@@ -754,7 +756,6 @@ impl Header {
         // TODO: need to bind more file types
         self.set_entry_type(entry_type(meta.mode()));
 
-        #[cfg(not(target_os = "redox"))]
         fn entry_type(mode: u32) -> EntryType {
             match mode as libc::mode_t & libc::S_IFMT {
                 libc::S_IFREG => EntryType::file(),
@@ -766,22 +767,11 @@ impl Header {
                 _ => EntryType::new(b' '),
             }
         }
-
-        #[cfg(target_os = "redox")]
-        fn entry_type(mode: u32) -> EntryType {
-            use syscall;
-            match mode as u16 & syscall::MODE_TYPE {
-                syscall::MODE_FILE => EntryType::file(),
-                syscall::MODE_SYMLINK => EntryType::symlink(),
-                syscall::MODE_DIR => EntryType::dir(),
-                _ => EntryType::new(b' '),
-            }
-        }
     }
 
     #[cfg(windows)]
     fn fill_platform_from(&mut self, meta: &fs::Metadata, mode: HeaderMode) {
-        // There's no concept of a file mode on windows, so do a best approximation here.
+        // There's no concept of a file mode on Windows, so do a best approximation here.
         match mode {
             HeaderMode::Complete => {
                 self.set_uid(0);
@@ -1305,7 +1295,7 @@ impl GnuSparseHeader {
         octal_from(&self.offset).map_err(|err| {
             io::Error::new(
                 err.kind(),
-                format!("{} when getting offset from sparce header", err),
+                format!("{} when getting offset from sparse header", err),
             )
         })
     }
@@ -1540,7 +1530,7 @@ fn ends_with_slash(p: &Path) -> bool {
     last == Some(b'/' as u16) || last == Some(b'\\' as u16)
 }
 
-#[cfg(any(unix, target_os = "redox"))]
+#[cfg(unix)]
 fn ends_with_slash(p: &Path) -> bool {
     p.as_os_str().as_bytes().ends_with(&[b'/'])
 }
@@ -1550,7 +1540,7 @@ pub fn path2bytes(p: &Path) -> io::Result<Cow<[u8]>> {
     p.as_os_str()
         .to_str()
         .map(|s| s.as_bytes())
-        .ok_or_else(|| other(&format!("path {} was not valid unicode", p.display())))
+        .ok_or_else(|| other(&format!("path {} was not valid Unicode", p.display())))
         .map(|bytes| {
             if bytes.contains(&b'\\') {
                 // Normalize to Unix-style path separators
@@ -1567,44 +1557,43 @@ pub fn path2bytes(p: &Path) -> io::Result<Cow<[u8]>> {
         })
 }
 
-#[cfg(any(unix, target_os = "redox"))]
+#[cfg(unix)]
 /// On unix this will never fail
 pub fn path2bytes(p: &Path) -> io::Result<Cow<[u8]>> {
     Ok(p.as_os_str().as_bytes()).map(Cow::Borrowed)
 }
 
 #[cfg(windows)]
-/// On windows we cannot accept non-unicode bytes because it
+/// On windows we cannot accept non-Unicode bytes because it
 /// is impossible to convert it to UTF-16.
 pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
     return match bytes {
         Cow::Borrowed(bytes) => {
-            let s = r#try!(str::from_utf8(bytes).map_err(|_| not_unicode(bytes)));
+            let s = str::from_utf8(bytes).map_err(|_| not_unicode(bytes))?;
             Ok(Cow::Borrowed(Path::new(s)))
         }
         Cow::Owned(bytes) => {
-            let s =
-                r#try!(String::from_utf8(bytes).map_err(|uerr| not_unicode(&uerr.into_bytes())));
+            let s = String::from_utf8(bytes).map_err(|uerr| not_unicode(&uerr.into_bytes()))?;
             Ok(Cow::Owned(PathBuf::from(s)))
         }
     };
 
     fn not_unicode(v: &[u8]) -> io::Error {
         other(&format!(
-            "only unicode paths are supported on windows: {}",
+            "only Unicode paths are supported on Windows: {}",
             String::from_utf8_lossy(v)
         ))
     }
 }
 
-#[cfg(any(unix, target_os = "redox"))]
+#[cfg(unix)]
 /// On unix this operation can never fail.
 pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
     use std::ffi::{OsStr, OsString};
 
     Ok(match bytes {
-        Cow::Borrowed(bytes) => Cow::Borrowed({ Path::new(OsStr::from_bytes(bytes)) }),
-        Cow::Owned(bytes) => Cow::Owned({ PathBuf::from(OsString::from_vec(bytes)) }),
+        Cow::Borrowed(bytes) => Cow::Borrowed(Path::new(OsStr::from_bytes(bytes))),
+        Cow::Owned(bytes) => Cow::Owned(PathBuf::from(OsString::from_vec(bytes))),
     })
 }
 
@@ -1622,5 +1611,5 @@ pub fn bytes2path(bytes: Cow<[u8]>) -> io::Result<Cow<Path>> {
 
 #[cfg(target_arch = "wasm32")]
 fn invalid_utf8<T>(_: T) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, "Invalid utf8")
+    io::Error::new(io::ErrorKind::InvalidData, "Invalid utf-8")
 }

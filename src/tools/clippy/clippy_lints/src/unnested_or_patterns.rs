@@ -2,7 +2,7 @@
 
 use crate::utils::ast_utils::{eq_field_pat, eq_id, eq_pat, eq_path};
 use crate::utils::{over, span_lint_and_then};
-use rustc_ast::ast::{self, Pat, PatKind, PatKind::*, DUMMY_NODE_ID};
+use rustc_ast::{self as ast, Pat, PatKind, PatKind::*, DUMMY_NODE_ID};
 use rustc_ast::mut_visit::*;
 use rustc_ast::ptr::P;
 use rustc_ast_pretty::pprust;
@@ -72,8 +72,8 @@ impl EarlyLintPass for UnnestedOrPatterns {
 }
 
 fn lint_unnested_or_patterns(cx: &EarlyContext<'_>, pat: &Pat) {
-    if !cx.sess.opts.unstable_features.is_nightly_build() {
-        // User cannot do `#![feature(or_patterns)]`, so bail.
+    if !cx.sess.features_untracked().or_patterns {
+        // Do not suggest nesting the patterns if the feature `or_patterns` is not enabled.
         return;
     }
 
@@ -340,6 +340,7 @@ fn take_pat(from: &mut Pat) -> Pat {
         id: DUMMY_NODE_ID,
         kind: Wild,
         span: DUMMY_SP,
+        tokens: None
     };
     mem::replace(from, dummy)
 }
@@ -400,8 +401,8 @@ fn extend_with_matching(
 
 /// Are the patterns in `ps1` and `ps2` equal save for `ps1[idx]` compared to `ps2[idx]`?
 fn eq_pre_post(ps1: &[P<Pat>], ps2: &[P<Pat>], idx: usize) -> bool {
-    ps1[idx].is_rest() == ps2[idx].is_rest() // Avoid `[x, ..] | [x, 0]` => `[x, .. | 0]`.
-        && ps1.len() == ps2.len()
+    ps1.len() == ps2.len()
+        && ps1[idx].is_rest() == ps2[idx].is_rest() // Avoid `[x, ..] | [x, 0]` => `[x, .. | 0]`.
         && over(&ps1[..idx], &ps2[..idx], |l, r| eq_pat(l, r))
         && over(&ps1[idx + 1..], &ps2[idx + 1..], |l, r| eq_pat(l, r))
 }

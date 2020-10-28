@@ -239,7 +239,7 @@ impl<'tcx> LateLintPass<'tcx> for Functions {
                 return;
             }
             if cx.access_levels.is_exported(item.hir_id)
-                && !is_proc_macro(&item.attrs)
+                && !is_proc_macro(cx.sess(), &item.attrs)
                 && attr_by_name(&item.attrs, "no_mangle").is_none()
             {
                 check_must_use_candidate(
@@ -262,7 +262,7 @@ impl<'tcx> LateLintPass<'tcx> for Functions {
                 let fn_header_span = item.span.with_hi(sig.decl.output.span().hi());
                 check_needless_must_use(cx, &sig.decl, item.hir_id, item.span, fn_header_span, attr);
             } else if cx.access_levels.is_exported(item.hir_id)
-                && !is_proc_macro(&item.attrs)
+                && !is_proc_macro(cx.sess(), &item.attrs)
                 && trait_ref_of_method(cx, item.hir_id).is_none()
             {
                 check_must_use_candidate(
@@ -294,7 +294,8 @@ impl<'tcx> LateLintPass<'tcx> for Functions {
                 let body = cx.tcx.hir().body(eid);
                 Self::check_raw_ptr(cx, sig.header.unsafety, &sig.decl, body, item.hir_id);
 
-                if attr.is_none() && cx.access_levels.is_exported(item.hir_id) && !is_proc_macro(&item.attrs) {
+                if attr.is_none() && cx.access_levels.is_exported(item.hir_id) && !is_proc_macro(cx.sess(), &item.attrs)
+                {
                     check_must_use_candidate(
                         cx,
                         &sig.decl,
@@ -373,7 +374,7 @@ impl<'tcx> Functions {
         }
 
         if line_count > self.max_lines {
-            span_lint(cx, TOO_MANY_LINES, span, "This function has a large number of lines.")
+            span_lint(cx, TOO_MANY_LINES, span, "this function has a large number of lines")
         }
     }
 
@@ -392,11 +393,11 @@ impl<'tcx> Functions {
                 .collect::<FxHashSet<_>>();
 
             if !raw_ptrs.is_empty() {
-                let tables = cx.tcx.body_tables(body.id());
+                let typeck_results = cx.tcx.typeck_body(body.id());
                 let mut v = DerefVisitor {
                     cx,
                     ptrs: raw_ptrs,
-                    tables,
+                    typeck_results,
                 };
 
                 intravisit::walk_expr(&mut v, expr);
@@ -494,13 +495,8 @@ fn is_mutable_pat(cx: &LateContext<'_>, pat: &hir::Pat<'_>, tys: &mut FxHashSet<
         return false; // ignore `_` patterns
     }
     let def_id = pat.hir_id.owner.to_def_id();
-    if cx.tcx.has_typeck_tables(def_id) {
-        is_mutable_ty(
-            cx,
-            &cx.tcx.typeck_tables_of(def_id.expect_local()).pat_ty(pat),
-            pat.span,
-            tys,
-        )
+    if cx.tcx.has_typeck_results(def_id) {
+        is_mutable_ty(cx, &cx.tcx.typeck(def_id.expect_local()).pat_ty(pat), pat.span, tys)
     } else {
         false
     }
@@ -539,7 +535,7 @@ fn raw_ptr_arg(arg: &hir::Param<'_>, ty: &hir::Ty<'_>) -> Option<hir::HirId> {
 struct DerefVisitor<'a, 'tcx> {
     cx: &'a LateContext<'tcx>,
     ptrs: FxHashSet<hir::HirId>,
-    tables: &'a ty::TypeckTables<'tcx>,
+    typeck_results: &'a ty::TypeckResults<'tcx>,
 }
 
 impl<'a, 'tcx> intravisit::Visitor<'tcx> for DerefVisitor<'a, 'tcx> {
@@ -548,7 +544,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for DerefVisitor<'a, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'_>) {
         match expr.kind {
             hir::ExprKind::Call(ref f, args) => {
-                let ty = self.tables.expr_ty(f);
+                let ty = self.typeck_results.expr_ty(f);
 
                 if type_is_unsafe_function(self.cx, ty) {
                     for arg in args {
@@ -557,7 +553,7 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for DerefVisitor<'a, 'tcx> {
                 }
             },
             hir::ExprKind::MethodCall(_, _, args, _) => {
-                let def_id = self.tables.type_dependent_def_id(expr.hir_id).unwrap();
+                let def_id = self.typeck_results.type_dependent_def_id(expr.hir_id).unwrap();
                 let base_type = self.cx.tcx.type_of(def_id);
 
                 if type_is_unsafe_function(self.cx, base_type) {
@@ -614,10 +610,10 @@ impl<'a, 'tcx> intravisit::Visitor<'tcx> for StaticMutVisitor<'a, 'tcx> {
                 let mut tys = FxHashSet::default();
                 for arg in args {
                     let def_id = arg.hir_id.owner.to_def_id();
-                    if self.cx.tcx.has_typeck_tables(def_id)
+                    if self.cx.tcx.has_typeck_results(def_id)
                         && is_mutable_ty(
                             self.cx,
-                            self.cx.tcx.typeck_tables_of(def_id.expect_local()).expr_ty(arg),
+                            self.cx.tcx.typeck(def_id.expect_local()).expr_ty(arg),
                             arg.span,
                             &mut tys,
                         )
@@ -645,13 +641,7 @@ fn is_mutated_static(cx: &LateContext<'_>, e: &hir::Expr<'_>) -> bool {
     use hir::ExprKind::{Field, Index, Path};
 
     match e.kind {
-        Path(ref qpath) => {
-            if let Res::Local(_) = qpath_res(cx, qpath, e.hir_id) {
-                false
-            } else {
-                true
-            }
-        },
+        Path(ref qpath) => !matches!(qpath_res(cx, qpath, e.hir_id), Res::Local(_)),
         Field(ref inner, _) | Index(ref inner, _) => is_mutated_static(cx, inner),
         _ => false,
     }

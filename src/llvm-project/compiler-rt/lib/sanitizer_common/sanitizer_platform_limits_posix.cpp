@@ -110,7 +110,6 @@ typedef struct user_fpregs elf_fpregset_t;
 #endif
 
 #if SANITIZER_LINUX && !SANITIZER_ANDROID
-#include <stdio.h>
 #include <glob.h>
 #include <obstack.h>
 #include <mqueue.h>
@@ -171,15 +170,16 @@ typedef struct user_fpregs elf_fpregset_t;
 namespace __sanitizer {
   unsigned struct_utsname_sz = sizeof(struct utsname);
   unsigned struct_stat_sz = sizeof(struct stat);
-#if !SANITIZER_IOS
+#if !SANITIZER_IOS && !(SANITIZER_MAC && TARGET_CPU_ARM64)
   unsigned struct_stat64_sz = sizeof(struct stat64);
-#endif // !SANITIZER_IOS
+#endif // !SANITIZER_IOS && !(SANITIZER_MAC && TARGET_CPU_ARM64)
   unsigned struct_rusage_sz = sizeof(struct rusage);
   unsigned struct_tm_sz = sizeof(struct tm);
   unsigned struct_passwd_sz = sizeof(struct passwd);
   unsigned struct_group_sz = sizeof(struct group);
   unsigned siginfo_t_sz = sizeof(siginfo_t);
   unsigned struct_sigaction_sz = sizeof(struct sigaction);
+  unsigned struct_stack_t_sz = sizeof(stack_t);
   unsigned struct_itimerval_sz = sizeof(struct itimerval);
   unsigned pthread_t_sz = sizeof(pthread_t);
   unsigned pthread_mutex_t_sz = sizeof(pthread_mutex_t);
@@ -197,9 +197,9 @@ namespace __sanitizer {
   unsigned struct_regex_sz = sizeof(regex_t);
   unsigned struct_regmatch_sz = sizeof(regmatch_t);
 
-#if SANITIZER_MAC && !SANITIZER_IOS
+#if (SANITIZER_MAC && !TARGET_CPU_ARM64) && !SANITIZER_IOS
   unsigned struct_statfs64_sz = sizeof(struct statfs64);
-#endif // SANITIZER_MAC && !SANITIZER_IOS
+#endif // (SANITIZER_MAC && !TARGET_CPU_ARM64) && !SANITIZER_IOS
 
 #if !SANITIZER_ANDROID
   unsigned struct_fstab_sz = sizeof(struct fstab);
@@ -1013,9 +1013,9 @@ CHECK_SIZE_AND_OFFSET(cmsghdr, cmsg_level);
 CHECK_SIZE_AND_OFFSET(cmsghdr, cmsg_type);
 
 #if SANITIZER_LINUX && (__ANDROID_API__ >= 21 || __GLIBC_PREREQ (2, 14))
-// CHECK_TYPE_SIZE(mmsghdr);
-// CHECK_SIZE_AND_OFFSET(mmsghdr, msg_hdr);
-// CHECK_SIZE_AND_OFFSET(mmsghdr, msg_len);
+CHECK_TYPE_SIZE(mmsghdr);
+CHECK_SIZE_AND_OFFSET(mmsghdr, msg_hdr);
+CHECK_SIZE_AND_OFFSET(mmsghdr, msg_len);
 #endif
 
 COMPILER_CHECK(sizeof(__sanitizer_dirent) <= sizeof(dirent));

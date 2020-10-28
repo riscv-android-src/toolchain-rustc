@@ -1,13 +1,14 @@
 //! Values computed by queries that use MIR.
 
-use crate::ty::{self, Ty};
+use crate::mir::{Body, Promoted};
+use crate::ty::{self, Ty, TyCtxt};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync::Lrc;
 use rustc_hir as hir;
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, LocalDefId};
 use rustc_index::bit_set::BitMatrix;
 use rustc_index::vec::IndexVec;
-use rustc_span::{Span, Symbol};
+use rustc_span::Span;
 use rustc_target::abi::VariantIdx;
 use smallvec::SmallVec;
 use std::cell::Cell;
@@ -15,9 +16,9 @@ use std::fmt::{self, Debug};
 
 use super::{Field, SourceInfo};
 
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, PartialEq, TyEncodable, TyDecodable, HashStable)]
 pub enum UnsafetyViolationKind {
-    /// Only permitted in regular `fn`s, prohibitted in `const fn`s.
+    /// Only permitted in regular `fn`s, prohibited in `const fn`s.
     General,
     /// Permitted both in `const fn`s and regular `fn`s.
     GeneralAndConstFn,
@@ -34,16 +35,100 @@ pub enum UnsafetyViolationKind {
     UnsafeFnBorrowPacked,
 }
 
-#[derive(Copy, Clone, PartialEq, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, PartialEq, TyEncodable, TyDecodable, HashStable)]
+pub enum UnsafetyViolationDetails {
+    CallToUnsafeFunction,
+    UseOfInlineAssembly,
+    InitializingTypeWith,
+    CastOfPointerToInt,
+    BorrowOfPackedField,
+    UseOfMutableStatic,
+    UseOfExternStatic,
+    DerefOfRawPointer,
+    AssignToNonCopyUnionField,
+    AccessToUnionField,
+    MutationOfLayoutConstrainedField,
+    BorrowOfLayoutConstrainedField,
+    CallToFunctionWith,
+}
+
+impl UnsafetyViolationDetails {
+    pub fn description_and_note(&self) -> (&'static str, &'static str) {
+        use UnsafetyViolationDetails::*;
+        match self {
+            CallToUnsafeFunction => (
+                "call to unsafe function",
+                "consult the function's documentation for information on how to avoid undefined \
+                 behavior",
+            ),
+            UseOfInlineAssembly => (
+                "use of inline assembly",
+                "inline assembly is entirely unchecked and can cause undefined behavior",
+            ),
+            InitializingTypeWith => (
+                "initializing type with `rustc_layout_scalar_valid_range` attr",
+                "initializing a layout restricted type's field with a value outside the valid \
+                 range is undefined behavior",
+            ),
+            CastOfPointerToInt => {
+                ("cast of pointer to int", "casting pointers to integers in constants")
+            }
+            BorrowOfPackedField => (
+                "borrow of packed field",
+                "fields of packed structs might be misaligned: dereferencing a misaligned pointer \
+                 or even just creating a misaligned reference is undefined behavior",
+            ),
+            UseOfMutableStatic => (
+                "use of mutable static",
+                "mutable statics can be mutated by multiple threads: aliasing violations or data \
+                 races will cause undefined behavior",
+            ),
+            UseOfExternStatic => (
+                "use of extern static",
+                "extern statics are not controlled by the Rust type system: invalid data, \
+                 aliasing violations or data races will cause undefined behavior",
+            ),
+            DerefOfRawPointer => (
+                "dereference of raw pointer",
+                "raw pointers may be NULL, dangling or unaligned; they can violate aliasing rules \
+                 and cause data races: all of these are undefined behavior",
+            ),
+            AssignToNonCopyUnionField => (
+                "assignment to non-`Copy` union field",
+                "the previous content of the field will be dropped, which causes undefined \
+                 behavior if the field was not properly initialized",
+            ),
+            AccessToUnionField => (
+                "access to union field",
+                "the field may not be properly initialized: using uninitialized data will cause \
+                 undefined behavior",
+            ),
+            MutationOfLayoutConstrainedField => (
+                "mutation of layout constrained field",
+                "mutating layout constrained fields cannot statically be checked for valid values",
+            ),
+            BorrowOfLayoutConstrainedField => (
+                "borrow of layout constrained field with interior mutability",
+                "references to fields of layout constrained fields lose the constraints. Coupled \
+                 with interior mutability, the field can be changed to invalid values",
+            ),
+            CallToFunctionWith => (
+                "call to function with `#[target_feature]`",
+                "can only be called if the required target features are available",
+            ),
+        }
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, TyEncodable, TyDecodable, HashStable)]
 pub struct UnsafetyViolation {
     pub source_info: SourceInfo,
     pub lint_root: hir::HirId,
-    pub description: Symbol,
-    pub details: Symbol,
     pub kind: UnsafetyViolationKind,
+    pub details: UnsafetyViolationDetails,
 }
 
-#[derive(Clone, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, TyEncodable, TyDecodable, HashStable)]
 pub struct UnsafetyCheckResult {
     /// Violations that are propagated *upwards* from this function.
     pub violations: Lrc<[UnsafetyViolation]>,
@@ -60,7 +145,7 @@ rustc_index::newtype_index! {
 }
 
 /// The layout of generator state.
-#[derive(Clone, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, TyEncodable, TyDecodable, HashStable, TypeFoldable)]
 pub struct GeneratorLayout<'tcx> {
     /// The type of every local stored inside the generator.
     pub field_tys: IndexVec<GeneratorSavedLocal, Ty<'tcx>>,
@@ -135,10 +220,10 @@ impl Debug for GeneratorLayout<'_> {
     }
 }
 
-#[derive(Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct BorrowCheckResult<'tcx> {
     /// All the opaque types that are restricted to concrete types
-    /// by this function. Unlike the value in `TypeckTables`, this has
+    /// by this function. Unlike the value in `TypeckResults`, this has
     /// unerased regions.
     pub concrete_opaque_types: FxHashMap<DefId, ty::ResolvedOpaqueTy<'tcx>>,
     pub closure_requirements: Option<ClosureRegionRequirements<'tcx>>,
@@ -150,7 +235,7 @@ pub struct BorrowCheckResult<'tcx> {
 /// Each field corresponds to an implementer of the `Qualif` trait in
 /// `librustc_mir/transform/check_consts/qualifs.rs`. See that file for more information on each
 /// `Qualif`.
-#[derive(Clone, Copy, Debug, Default, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Copy, Debug, Default, TyEncodable, TyDecodable, HashStable)]
 pub struct ConstQualifs {
     pub has_mut_interior: bool,
     pub needs_drop: bool,
@@ -206,7 +291,7 @@ pub struct ConstQualifs {
 /// `ReEarlyBound`, `ReFree`). We use these because in a query response we
 /// cannot use `ReVar` (which is what we use internally within the rest of the
 /// NLL code).
-#[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct ClosureRegionRequirements<'tcx> {
     /// The number of external regions defined on the closure. In our
     /// example above, it would be 3 -- one for `'static`, then `'1`
@@ -222,7 +307,7 @@ pub struct ClosureRegionRequirements<'tcx> {
 
 /// Indicates an outlives-constraint between a type or between two
 /// free regions declared on the closure.
-#[derive(Copy, Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub struct ClosureOutlivesRequirement<'tcx> {
     // This region or type ...
     pub subject: ClosureOutlivesSubject<'tcx>,
@@ -243,7 +328,7 @@ pub struct ClosureOutlivesRequirement<'tcx> {
 ///
 /// See also `rustc_mir::borrow_check::constraints`.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
-#[derive(RustcEncodable, RustcDecodable, HashStable)]
+#[derive(TyEncodable, TyDecodable, HashStable)]
 pub enum ConstraintCategory {
     Return(ReturnConstraint),
     Yield,
@@ -280,7 +365,7 @@ pub enum ConstraintCategory {
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, Hash)]
-#[derive(RustcEncodable, RustcDecodable, HashStable)]
+#[derive(TyEncodable, TyDecodable, HashStable)]
 pub enum ReturnConstraint {
     Normal,
     ClosureUpvar(hir::HirId),
@@ -288,7 +373,7 @@ pub enum ReturnConstraint {
 
 /// The subject of a `ClosureOutlivesRequirement` -- that is, the thing
 /// that must outlive some region.
-#[derive(Copy, Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, Debug, TyEncodable, TyDecodable, HashStable)]
 pub enum ClosureOutlivesSubject<'tcx> {
     /// Subject is a type, typically a type parameter, but could also
     /// be a projection. Indicates a requirement like `T: 'a` being
@@ -313,13 +398,46 @@ pub struct DestructuredConst<'tcx> {
 /// Coverage information summarized from a MIR if instrumented for source code coverage (see
 /// compiler option `-Zinstrument-coverage`). This information is generated by the
 /// `InstrumentCoverage` MIR pass and can be retrieved via the `coverageinfo` query.
-#[derive(Clone, RustcEncodable, RustcDecodable, Debug, HashStable)]
+#[derive(Clone, TyEncodable, TyDecodable, Debug, HashStable)]
 pub struct CoverageInfo {
-    /// A hash value that can be used by the consumer of the coverage profile data to detect
-    /// changes to the instrumented source of the associated MIR body (typically, for an
-    /// individual function).
-    pub hash: u64,
-
     /// The total number of coverage region counters added to the MIR `Body`.
     pub num_counters: u32,
+
+    /// The total number of coverage region counter expressions added to the MIR `Body`.
+    pub num_expressions: u32,
+}
+
+impl<'tcx> TyCtxt<'tcx> {
+    pub fn mir_borrowck_opt_const_arg(
+        self,
+        def: ty::WithOptConstParam<LocalDefId>,
+    ) -> &'tcx BorrowCheckResult<'tcx> {
+        if let Some(param_did) = def.const_param_did {
+            self.mir_borrowck_const_arg((def.did, param_did))
+        } else {
+            self.mir_borrowck(def.did)
+        }
+    }
+
+    pub fn mir_const_qualif_opt_const_arg(
+        self,
+        def: ty::WithOptConstParam<LocalDefId>,
+    ) -> ConstQualifs {
+        if let Some(param_did) = def.const_param_did {
+            self.mir_const_qualif_const_arg((def.did, param_did))
+        } else {
+            self.mir_const_qualif(def.did)
+        }
+    }
+
+    pub fn promoted_mir_of_opt_const_arg(
+        self,
+        def: ty::WithOptConstParam<DefId>,
+    ) -> &'tcx IndexVec<Promoted, Body<'tcx>> {
+        if let Some((did, param_did)) = def.as_const_arg() {
+            self.promoted_mir_of_const_arg((did, param_did))
+        } else {
+            self.promoted_mir(def.did)
+        }
+    }
 }

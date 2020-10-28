@@ -1,5 +1,7 @@
 use std::iter;
 
+use log::trace;
+
 use rustc_attr as attr;
 use rustc_ast::ast::FloatTy;
 use rustc_middle::{mir, ty};
@@ -18,7 +20,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         instance: ty::Instance<'tcx>,
         args: &[OpTy<'tcx, Tag>],
         ret: Option<(PlaceTy<'tcx, Tag>, mir::BasicBlock)>,
-        unwind: Option<mir::BasicBlock>,
+        _unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
         let intrinsic_name = this.tcx.item_name(instance.def_id());
@@ -32,14 +34,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             return Ok(());
         }
 
-        // First handle intrinsics without return place.
+        // All supported intrinsics have a return place.
         let intrinsic_name = &*intrinsic_name.as_str();
         let (dest, ret) = match ret {
-            None => match intrinsic_name {
-                "miri_start_panic" => return this.handle_miri_start_panic(args, unwind),
-                "unreachable" => throw_ub!(Unreachable),
-                _ => throw_unsup_format!("unimplemented (diverging) intrinsic: {}", intrinsic_name),
-            },
+            None => throw_unsup_format!("unimplemented (diverging) intrinsic: {}", intrinsic_name),
             Some(p) => p,
         };
 
@@ -72,9 +70,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
                 let size = elem_layout.size.checked_mul(count, this)
                     .ok_or_else(|| err_ub_format!("overflow computing total size of `{}`", intrinsic_name))?;
-                let src = this.read_scalar(src)?.not_undef()?;
+                let src = this.read_scalar(src)?.check_init()?;
                 let src = this.memory.check_ptr_access(src, size, elem_align)?;
-                let dest = this.read_scalar(dest)?.not_undef()?;
+                let dest = this.read_scalar(dest)?.check_init()?;
                 let dest = this.memory.check_ptr_access(dest, size, elem_align)?;
 
                 if let (Some(src), Some(dest)) = (src, dest) {
@@ -109,7 +107,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let ty = instance.substs.type_at(0);
                 let ty_layout = this.layout_of(ty)?;
                 let val_byte = this.read_scalar(val_byte)?.to_u8()?;
-                let ptr = this.read_scalar(ptr)?.not_undef()?;
+                let ptr = this.read_scalar(ptr)?.check_init()?;
                 let count = this.read_scalar(count)?.to_machine_usize(this)?;
                 let byte_count = ty_layout.size.checked_mul(count, this)
                     .ok_or_else(|| err_ub_format!("overflow computing total size of `write_bytes`"))?;
@@ -396,7 +394,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
                 // `binary_op` will bail if either of them is not a scalar.
                 let eq = this.overflowing_binary_op(mir::BinOp::Eq, old, expect_old)?.0;
-                let res = Immediate::ScalarPair(old.to_scalar_or_undef(), eq.into());
+                let res = Immediate::ScalarPair(old.to_scalar_or_uninit(), eq.into());
                 // Return old value.
                 this.write_immediate(res, dest)?;
                 // Update ptr depending on comparison.
@@ -486,28 +484,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 }
             }
 
-            "min_align_of_val" => {
-                let &[mplace] = check_arg_count(args)?;
-                let mplace = this.deref_operand(mplace)?;
-                let (_, align) = this
-                    .size_and_align_of_mplace(mplace)?
-                    .expect("size_of_val called on extern type");
-                this.write_scalar(Scalar::from_machine_usize(align.bytes(), this), dest)?;
-            }
-
-            "size_of_val" => {
-                let &[mplace] = check_arg_count(args)?;
-                let mplace = this.deref_operand(mplace)?;
-                let (size, _) = this
-                    .size_and_align_of_mplace(mplace)?
-                    .expect("size_of_val called on extern type");
-                this.write_scalar(Scalar::from_machine_usize(size.bytes(), this), dest)?;
-            }
-
             // Other
             "assume" => {
                 let &[cond] = check_arg_count(args)?;
-                let cond = this.read_scalar(cond)?.not_undef()?.to_bool()?;
+                let cond = this.read_scalar(cond)?.check_init()?.to_bool()?;
                 if !cond {
                     throw_ub_format!("`assume` intrinsic called with `false`");
                 }
@@ -528,7 +508,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             name => throw_unsup_format!("unimplemented intrinsic: {}", name),
         }
 
-        this.dump_place(*dest);
+        trace!("{:?}", this.dump_place(*dest));
         this.go_to_block(ret);
         Ok(())
     }

@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "pico-args"
-version = "0.3.3"
+version = "0.3.4"
 authors = ["Evgeniy Reizner <razrfalcon@gmail.com>"]
 exclude = ["test-apps/**"]
 description = "An ultra simple CLI arguments parser."
@@ -26,3 +26,4 @@ repository = "https://github.com/RazrFalcon/pico-args"
 [features]
 default = ["eq-separator"]
 eq-separator = []
+short-space-opt = []

@@ -61,6 +61,7 @@
     "activationEvents": [
         "onLanguage:rust",
         "onCommand:rust-analyzer.analyzerStatus",
+        "onCommand:rust-analyzer.memoryUsage",
         "onCommand:rust-analyzer.reloadWorkspace",
         "workspaceContains:**/Cargo.toml"
     ],
@@ -143,6 +144,11 @@
                 "category": "Rust Analyzer"
             },
             {
+                "command": "rust-analyzer.memoryUsage",
+                "title": "Memory Usage (Clears Database)",
+                "category": "Rust Analyzer"
+            },
+            {
                 "command": "rust-analyzer.reloadWorkspace",
                 "title": "Reload workspace",
                 "category": "Rust Analyzer"
@@ -194,11 +200,6 @@
             "type": "object",
             "title": "Rust Analyzer",
             "properties": {
-                "rust-analyzer.diagnostics.enable": {
-                    "type": "boolean",
-                    "default": true,
-                    "markdownDescription": "Whether to show native rust-analyzer diagnostics."
-                },
                 "rust-analyzer.lruCapacity": {
                     "type": [
                         "null",
@@ -230,6 +231,11 @@
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Whether to show `can't find Cargo.toml` error message"
+                },
+                "rust-analyzer.cargo.autoreload": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Automatically refresh project info via `cargo metadata` on Cargo.toml changes"
                 },
                 "rust-analyzer.cargo.noDefaultFeatures": {
                     "type": "boolean",
@@ -316,6 +322,14 @@
                     "type": "boolean",
                     "default": true,
                     "markdownDescription": "Check all targets and tests (will be passed as `--all-targets`)"
+                },
+                "rust-analyzer.checkOnSave.noDefaultFeatures": {
+                    "type": [
+                        "null",
+                        "boolean"
+                    ],
+                    "default": null,
+                    "markdownDescription": "Do not activate the `default` feature"
                 },
                 "rust-analyzer.checkOnSave.allFeatures": {
                     "type": [
@@ -568,6 +582,25 @@
                     "type": "boolean",
                     "default": true
                 },
+                "rust-analyzer.diagnostics.enable": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Whether to show native rust-analyzer diagnostics."
+                },
+                "rust-analyzer.diagnostics.enableExperimental": {
+                    "type": "boolean",
+                    "default": true,
+                    "markdownDescription": "Whether to show experimental rust-analyzer diagnostics that might have more false positives than usual."
+                },
+                "rust-analyzer.diagnostics.disabled": {
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string"
+                    },
+                    "description": "List of rust-analyzer diagnostics to disable",
+                    "default": []
+                },
                 "rust-analyzer.diagnostics.warningsAsInfo": {
                     "type": "array",
                     "uniqueItems": true,
@@ -583,7 +616,7 @@
                     "items": {
                         "type": "string"
                     },
-                    "description": "List of warnings warnings that should be displayed with hint severity.\nThe warnings will be indicated by faded text or three dots in code and will not show up in the problems panel.",
+                    "description": "List of warnings that should be displayed with hint severity.\nThe warnings will be indicated by faded text or three dots in code and will not show up in the problems panel.",
                     "default": []
                 }
             }
@@ -644,24 +677,30 @@
         "problemMatchers": [
             {
                 "name": "rustc",
+                "owner": "rustc",
+                "source": "rustc",
                 "fileLocation": [
-                    "relative",
+                    "autoDetect",
                     "${workspaceRoot}"
                 ],
                 "pattern": "$rustc"
             },
             {
                 "name": "rustc-json",
+                "owner": "rustc",
+                "source": "rustc",
                 "fileLocation": [
-                    "relative",
+                    "autoDetect",
                     "${workspaceRoot}"
                 ],
                 "pattern": "$rustc-json"
             },
             {
                 "name": "rustc-watch",
+                "owner": "rustc",
+                "source": "rustc",
                 "fileLocation": [
-                    "relative",
+                    "autoDetect",
                     "${workspaceRoot}"
                 ],
                 "background": {
@@ -841,6 +880,10 @@
                 },
                 {
                     "command": "rust-analyzer.analyzerStatus",
+                    "when": "inRustProject"
+                },
+                {
+                    "command": "rust-analyzer.memoryUsage",
                     "when": "inRustProject"
                 },
                 {

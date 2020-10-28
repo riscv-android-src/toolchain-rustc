@@ -19,9 +19,11 @@ use std::string::ToString;
 use core::borrow::Borrow;
 #[cfg(any(feature = "alloc", feature = "std", test))]
 use format::DelayedFormat;
+#[cfg(feature = "unstable-locales")]
+use format::Locale;
 use format::{parse, ParseError, ParseResult, Parsed, StrftimeItems};
 use format::{Fixed, Item};
-use naive::{IsoWeek, NaiveDateTime, NaiveTime};
+use naive::{self, IsoWeek, NaiveDateTime, NaiveTime};
 #[cfg(feature = "clock")]
 use offset::Local;
 use offset::{FixedOffset, Offset, TimeZone, Utc};
@@ -69,6 +71,11 @@ pub struct DateTime<Tz: TimeZone> {
     datetime: NaiveDateTime,
     offset: Tz::Offset,
 }
+
+/// The minimum possilbe `DateTime<Utc>`.
+pub const MIN_DATETIME: DateTime<Utc> = DateTime { datetime: naive::MIN_DATETIME, offset: Utc };
+/// The maximum possible `DateTime<Utc>`.
+pub const MAX_DATETIME: DateTime<Utc> = DateTime { datetime: naive::MAX_DATETIME, offset: Utc };
 
 impl<Tz: TimeZone> DateTime<Tz> {
     /// Makes a new `DateTime` with given *UTC* datetime and offset.
@@ -488,6 +495,41 @@ where
     pub fn format<'a>(&self, fmt: &'a str) -> DelayedFormat<StrftimeItems<'a>> {
         self.format_with_items(StrftimeItems::new(fmt))
     }
+
+    /// Formats the combined date and time with the specified formatting items and locale.
+    #[cfg(feature = "unstable-locales")]
+    #[inline]
+    pub fn format_localized_with_items<'a, I, B>(
+        &self,
+        items: I,
+        locale: Locale,
+    ) -> DelayedFormat<I>
+    where
+        I: Iterator<Item = B> + Clone,
+        B: Borrow<Item<'a>>,
+    {
+        let local = self.naive_local();
+        DelayedFormat::new_with_offset_and_locale(
+            Some(local.date()),
+            Some(local.time()),
+            &self.offset,
+            items,
+            locale,
+        )
+    }
+
+    /// Formats the combined date and time with the specified format string and locale.
+    /// See the [`format::strftime` module](./format/strftime/index.html)
+    /// on the supported escape sequences.
+    #[cfg(feature = "unstable-locales")]
+    #[inline]
+    pub fn format_localized<'a>(
+        &self,
+        fmt: &'a str,
+        locale: Locale,
+    ) -> DelayedFormat<StrftimeItems<'a>> {
+        self.format_localized_with_items(StrftimeItems::new_with_locale(fmt, locale), locale)
+    }
 }
 
 impl<Tz: TimeZone> Datelike for DateTime<Tz> {
@@ -753,22 +795,18 @@ impl<Tz: TimeZone> From<DateTime<Tz>> for SystemTime {
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi"), feature = "wasmbind"))]
 impl From<js_sys::Date> for DateTime<Utc> {
     fn from(date: js_sys::Date) -> DateTime<Utc> {
-        let time = date.get_time() as i64;
-        DateTime::<Utc>::from_utc(
-            NaiveDateTime::from_timestamp(time / 1000, ((time % 1000) * 1_000_000) as u32),
-            Utc,
-        )
+        DateTime::<Utc>::from(&date)
     }
 }
 
 #[cfg(all(target_arch = "wasm32", not(target_os = "wasi"), feature = "wasmbind"))]
 impl From<&js_sys::Date> for DateTime<Utc> {
     fn from(date: &js_sys::Date) -> DateTime<Utc> {
-        let time = date.get_time() as i64;
-        DateTime::<Utc>::from_utc(
-            NaiveDateTime::from_timestamp(time / 1000, ((time % 1000) * 1_000_000) as u32),
-            Utc,
-        )
+        let millisecs_since_unix_epoch: u64 = date.get_time() as u64;
+        let secs = millisecs_since_unix_epoch / 1000;
+        let nanos = 1_000_000 * (millisecs_since_unix_epoch % 1000);
+        let naive = NaiveDateTime::from_timestamp(secs as i64, nanos as u32);
+        DateTime::from_utc(naive, Utc)
     }
 }
 

@@ -9,9 +9,9 @@ use crate::{BindingKey, ModuleKind, ResolutionError, Resolver, Segment};
 use crate::{CrateLint, Module, ModuleOrUniformRoot, ParentScope, PerNS, ScopeSet, Weak};
 use crate::{NameBinding, NameBindingKind, PathResult, PrivacyError, ToNameBinding};
 
-use rustc_ast::ast::NodeId;
 use rustc_ast::unwrap_or;
 use rustc_ast::util::lev_distance::find_best_match_for_name;
+use rustc_ast::NodeId;
 use rustc_ast_lowering::ResolverAstLowering;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::ptr_key::PtrKey;
@@ -28,7 +28,7 @@ use rustc_span::hygiene::ExpnId;
 use rustc_span::symbol::{kw, Ident, Symbol};
 use rustc_span::{MultiSpan, Span};
 
-use log::*;
+use tracing::*;
 
 use std::cell::Cell;
 use std::{mem, ptr};
@@ -1034,8 +1034,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
                         let initial_res = source_bindings[ns].get().map(|initial_binding| {
                             all_ns_err = false;
                             if let Some(target_binding) = target_bindings[ns].get() {
-                                // Note that as_str() de-gensyms the Symbol
-                                if target.name.as_str() == "_"
+                                if target.name == kw::Underscore
                                     && initial_binding.is_extern_crate()
                                     && !initial_binding.is_import()
                                 {
@@ -1133,7 +1132,7 @@ impl<'a, 'b> ImportResolver<'a, 'b> {
                 });
 
                 let lev_suggestion =
-                    find_best_match_for_name(names, &ident.as_str(), None).map(|suggestion| {
+                    find_best_match_for_name(names, ident.name, None).map(|suggestion| {
                         (
                             vec![(ident.span, suggestion.to_string())],
                             String::from("a similar name exists in the module"),

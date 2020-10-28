@@ -46,7 +46,6 @@ See the documentation for `WalkBuilder` for many other options.
 
 #![deny(missing_docs)]
 
-extern crate crossbeam_channel as channel;
 extern crate globset;
 #[macro_use]
 extern crate lazy_static;
@@ -65,12 +64,16 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-pub use walk::{DirEntry, Walk, WalkBuilder, WalkParallel, WalkState};
+pub use walk::{
+    DirEntry, ParallelVisitor, ParallelVisitorBuilder, Walk, WalkBuilder,
+    WalkParallel, WalkState,
+};
 
+mod default_types;
 mod dir;
 pub mod gitignore;
-mod pathutil;
 pub mod overrides;
+mod pathutil;
 pub mod types;
 mod walk;
 
@@ -143,20 +146,14 @@ impl Clone for Error {
             Error::WithDepth { depth, ref err } => {
                 Error::WithDepth { depth: depth, err: err.clone() }
             }
-            Error::Loop { ref ancestor, ref child } => {
-                Error::Loop {
-                    ancestor: ancestor.clone(),
-                    child: child.clone()
-                }
-            }
-            Error::Io(ref err) => {
-                match err.raw_os_error() {
-                    Some(e) => Error::Io(io::Error::from_raw_os_error(e)),
-                    None => {
-                        Error::Io(io::Error::new(err.kind(), err.to_string()))
-                    }
-                }
-            }
+            Error::Loop { ref ancestor, ref child } => Error::Loop {
+                ancestor: ancestor.clone(),
+                child: child.clone(),
+            },
+            Error::Io(ref err) => match err.raw_os_error() {
+                Some(e) => Error::Io(io::Error::from_raw_os_error(e)),
+                None => Error::Io(io::Error::new(err.kind(), err.to_string())),
+            },
             Error::Glob { ref glob, ref err } => {
                 Error::Glob { glob: glob.clone(), err: err.clone() }
             }
@@ -219,19 +216,14 @@ impl Error {
 
     /// Turn an error into a tagged error with the given depth.
     fn with_depth(self, depth: usize) -> Error {
-        Error::WithDepth {
-            depth: depth,
-            err: Box::new(self),
-        }
+        Error::WithDepth { depth: depth, err: Box::new(self) }
     }
 
     /// Turn an error into a tagged error with the given file path and line
     /// number. If path is empty, then it is omitted from the error.
     fn tagged<P: AsRef<Path>>(self, path: P, lineno: u64) -> Error {
-        let errline = Error::WithLineNumber {
-            line: lineno,
-            err: Box::new(self),
-        };
+        let errline =
+            Error::WithLineNumber { line: lineno, err: Box::new(self) };
         if path.as_ref().as_os_str().is_empty() {
             return errline;
         }
@@ -253,16 +245,14 @@ impl Error {
         let path = err.path().map(|p| p.to_path_buf());
         let mut ig_err = Error::Io(io::Error::from(err));
         if let Some(path) = path {
-            ig_err = Error::WithPath {
-                path: path,
-                err: Box::new(ig_err),
-            };
+            ig_err = Error::WithPath { path: path, err: Box::new(ig_err) };
         }
         ig_err
     }
 }
 
 impl error::Error for Error {
+    #[allow(deprecated)]
     fn description(&self) -> &str {
         match *self {
             Error::Partial(_) => "partial error",
@@ -293,11 +283,13 @@ impl fmt::Display for Error {
                 write!(f, "{}: {}", path.display(), err)
             }
             Error::WithDepth { ref err, .. } => err.fmt(f),
-            Error::Loop { ref ancestor, ref child } => {
-                write!(f, "File system loop found: \
+            Error::Loop { ref ancestor, ref child } => write!(
+                f,
+                "File system loop found: \
                            {} points to an ancestor {}",
-                          child.display(), ancestor.display())
-            }
+                child.display(),
+                ancestor.display()
+            ),
             Error::Io(ref err) => err.fmt(f),
             Error::Glob { glob: None, ref err } => write!(f, "{}", err),
             Error::Glob { glob: Some(ref glob), ref err } => {
@@ -306,10 +298,11 @@ impl fmt::Display for Error {
             Error::UnrecognizedFileType(ref ty) => {
                 write!(f, "unrecognized file type: {}", ty)
             }
-            Error::InvalidDefinition => {
-                write!(f, "invalid definition (format is type:glob, e.g., \
-                           html:*.html)")
-            }
+            Error::InvalidDefinition => write!(
+                f,
+                "invalid definition (format is type:glob, e.g., \
+                           html:*.html)"
+            ),
         }
     }
 }

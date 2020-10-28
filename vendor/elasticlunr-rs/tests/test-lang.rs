@@ -8,6 +8,10 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
 
 use elasticlunr::pipeline::tokenize;
+#[cfg(feature = "zh")]
+use elasticlunr::pipeline::tokenize_chinese;
+#[cfg(feature = "ja")]
+use elasticlunr::pipeline::tokenize_japanese;
 use elasticlunr::*;
 use strum::IntoEnumIterator;
 
@@ -61,7 +65,14 @@ fn compare_to_fixture(lang: Language) {
     let mut output = BufReader::new(File::open(&output).unwrap()).lines();
 
     let pipeline = lang.make_pipeline();
-    let tokens = pipeline.run(tokenize(&input_str));
+
+    let tokens = match lang {
+        #[cfg(feature = "zh")]
+        Language::Chinese => pipeline.run(tokenize_chinese(&input_str)),
+        #[cfg(feature = "ja")]
+        Language::Japanese => pipeline.run(tokenize_japanese(&input_str)),
+        _ => pipeline.run(tokenize(&input_str)),
+    };
 
     for tok in tokens {
         assert_eq!(

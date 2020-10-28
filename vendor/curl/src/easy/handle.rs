@@ -165,6 +165,11 @@ impl Easy {
         self.inner.unix_socket(unix_domain_socket)
     }
 
+    /// Same as [`Easy2::unix_socket_path`](struct.Easy2.html#method.unix_socket_path)
+    pub fn unix_socket_path<P: AsRef<Path>>(&mut self, path: Option<P>) -> Result<(), Error> {
+        self.inner.unix_socket_path(path)
+    }
+
     // =========================================================================
     // Callback options
 
@@ -553,6 +558,11 @@ impl Easy {
         self.inner.port(port)
     }
 
+    /// Same as [`Easy2::connect_to`](struct.Easy2.html#method.connect_to)
+    pub fn connect_to(&mut self, list: List) -> Result<(), Error> {
+        self.inner.connect_to(list)
+    }
+
     /// Same as [`Easy2::proxy`](struct.Easy2.html#method.proxy)
     pub fn proxy(&mut self, url: &str) -> Result<(), Error> {
         self.inner.proxy(url)
@@ -561,6 +571,26 @@ impl Easy {
     /// Same as [`Easy2::proxy_port`](struct.Easy2.html#method.proxy_port)
     pub fn proxy_port(&mut self, port: u16) -> Result<(), Error> {
         self.inner.proxy_port(port)
+    }
+
+    /// Same as [`Easy2::proxy_cainfo`](struct.Easy2.html#method.proxy_cainfo)
+    pub fn proxy_cainfo(&mut self, cainfo: &str) -> Result<(), Error> {
+        self.inner.proxy_cainfo(cainfo)
+    }
+
+    /// Same as [`Easy2::proxy_capath`](struct.Easy2.html#method.proxy_capath)
+    pub fn proxy_capath<P: AsRef<Path>>(&mut self, path: P) -> Result<(), Error> {
+        self.inner.proxy_capath(path)
+    }
+
+    /// Same as [`Easy2::proxy_sslcert`](struct.Easy2.html#method.proxy_sslcert)
+    pub fn proxy_sslcert(&mut self, sslcert: &str) -> Result<(), Error> {
+        self.inner.proxy_sslcert(sslcert)
+    }
+
+    /// Same as [`Easy2::proxy_sslkey`](struct.Easy2.html#method.proxy_sslkey)
+    pub fn proxy_sslkey(&mut self, sslkey: &str) -> Result<(), Error> {
+        self.inner.proxy_sslkey(sslkey)
     }
 
     /// Same as [`Easy2::proxy_type`](struct.Easy2.html#method.proxy_type)

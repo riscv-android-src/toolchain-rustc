@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -11,15 +11,19 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "mio-named-pipes"
-version = "0.1.6"
-authors = ["Alex Crichton <alex@alexcrichton.com>"]
-description = "Windows named pipe bindings for mio.\n"
-homepage = "https://github.com/alexcrichton/mio-named-pipes"
-documentation = "https://docs.rs/mio-named-pipes/0.1/x86_64-pc-windows-msvc/mio_named_pipes/"
+version = "0.1.7"
+authors = ["Brendan Molloy <brendan@bbqsrc.net>", "Alex Crichton <alex@alexcrichton.com>"]
+description = "Windows named pipe bindings for mio"
+homepage = "https://github.com/bbqsrc/mio-named-pipes"
+documentation = "https://docs.rs/mio-named-pipes/"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-repository = "https://github.com/alexcrichton/mio-named-pipes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/bbqsrc/mio-named-pipes"
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc", "i686-pc-windows-msvc", "x86_64-pc-windows-gnu", "i686-pc-windows-gnu"]
 [dev-dependencies.env_logger]
 version = "0.4"
 default-features = false

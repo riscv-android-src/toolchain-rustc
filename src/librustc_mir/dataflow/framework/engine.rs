@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;
 
-use rustc_ast::ast;
+use rustc_ast as ast;
 use rustc_data_structures::work_queue::WorkQueue;
 use rustc_graphviz as dot;
 use rustc_hir::def_id::DefId;
@@ -50,6 +50,15 @@ where
         vis: &mut impl ResultsVisitor<'mir, 'tcx, FlowState = BitSet<A::Idx>>,
     ) {
         visit_results(body, blocks, self, vis)
+    }
+
+    pub fn visit_reachable_with(
+        &self,
+        body: &'mir mir::Body<'tcx>,
+        vis: &mut impl ResultsVisitor<'mir, 'tcx, FlowState = BitSet<A::Idx>>,
+    ) {
+        let blocks = mir::traversal::reachable(body);
+        visit_results(body, blocks.map(|(bb, _)| bb), self, vis)
     }
 
     pub fn visit_in_rpo_with(
@@ -204,15 +213,6 @@ where
             }
         }
 
-        // Add blocks that are not reachable from START_BLOCK to the work queue. These blocks will
-        // be processed after the ones added above.
-        //
-        // FIXME(ecstaticmorse): Is this actually necessary? In principle, we shouldn't need to
-        // know the dataflow state in unreachable basic blocks.
-        for bb in body.basic_blocks().indices() {
-            dirty_queue.insert(bb);
-        }
-
         let mut state = BitSet::new_empty(bits_per_block);
         while let Some(bb) = dirty_queue.pop() {
             let bb_data = &body[bb];
@@ -335,11 +335,11 @@ impl RustcMirAttrs {
 
         let rustc_mir_attrs = attrs
             .iter()
-            .filter(|attr| attr.check_name(sym::rustc_mir))
+            .filter(|attr| tcx.sess.check_name(attr, sym::rustc_mir))
             .flat_map(|attr| attr.meta_item_list().into_iter().flat_map(|v| v.into_iter()));
 
         for attr in rustc_mir_attrs {
-            let attr_result = if attr.check_name(sym::borrowck_graphviz_postflow) {
+            let attr_result = if attr.has_name(sym::borrowck_graphviz_postflow) {
                 Self::set_field(&mut ret.basename_and_suffix, tcx, &attr, |s| {
                     let path = PathBuf::from(s.to_string());
                     match path.file_name() {
@@ -350,7 +350,7 @@ impl RustcMirAttrs {
                         }
                     }
                 })
-            } else if attr.check_name(sym::borrowck_graphviz_format) {
+            } else if attr.has_name(sym::borrowck_graphviz_format) {
                 Self::set_field(&mut ret.formatter, tcx, &attr, |s| match s {
                     sym::gen_kill | sym::two_phase => Ok(s),
                     _ => {

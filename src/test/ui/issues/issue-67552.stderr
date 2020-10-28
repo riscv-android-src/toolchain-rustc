@@ -1,4 +1,4 @@
-error: reached the recursion limit while instantiating `rec::<&mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut &mut Empty>`
+error: reached the recursion limit while instantiating `rec::<&mut &mut &mut &mut &mut &... &mut &mut &mut &mut &mut Empty>`
   --> $DIR/issue-67552.rs:27:9
    |
 LL |         rec(identity(&mut it))
@@ -10,11 +10,7 @@ note: `rec` defined here
 LL | / fn rec<T>(mut it: T)
 LL | | where
 LL | |     T: Iterator,
-LL | | {
-...  |
-LL | |     }
-LL | | }
-   | |_^
+   | |________________^
 
 error: aborting due to previous error
 

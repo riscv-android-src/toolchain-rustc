@@ -1,4 +1,15 @@
-<a name="v1.2.0"></a>
+## v1.4.0 (2020-03-08)
+
+* add `open::with(path, app)` and `open::with_in_background(…)`
+
+## v1.3.4 (2020-02-11)
+
+* Add LICENSE.md and README.md into the crates.io tarball.
+
+## v1.3.3 (2020-02-01)
+
+* update code and crate to Edition 2018
+
 ## v1.2.0 (2017-01-31)
 
 * **windows**: escape '&' in URLs. On windows, a shell is used to execute the command, which

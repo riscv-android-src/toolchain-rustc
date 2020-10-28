@@ -1,7 +1,7 @@
 //! Used by `rustc` when loading a plugin.
 
 use crate::Registry;
-use rustc_ast::ast::Crate;
+use rustc_ast::Crate;
 use rustc_errors::struct_span_err;
 use rustc_metadata::locator;
 use rustc_middle::middle::cstore::MetadataLoader;
@@ -32,7 +32,7 @@ pub fn load_plugins(
     let mut plugins = Vec::new();
 
     for attr in &krate.attrs {
-        if !attr.check_name(sym::plugin) {
+        if !sess.check_name(attr, sym::plugin) {
             continue;
         }
 
@@ -55,13 +55,11 @@ fn load_plugin(
     metadata_loader: &dyn MetadataLoader,
     ident: Ident,
 ) {
-    let registrar = locator::find_plugin_registrar(sess, metadata_loader, ident.span, ident.name);
-
-    if let Some((lib, disambiguator)) = registrar {
-        let symbol = sess.generate_plugin_registrar_symbol(disambiguator);
-        let fun = dylink_registrar(sess, ident.span, lib, symbol);
-        plugins.push(fun);
-    }
+    let (lib, disambiguator) =
+        locator::find_plugin_registrar(sess, metadata_loader, ident.span, ident.name);
+    let symbol = sess.generate_plugin_registrar_symbol(disambiguator);
+    let fun = dylink_registrar(sess, ident.span, lib, symbol);
+    plugins.push(fun);
 }
 
 // Dynamically link a registrar function into the compiler process.

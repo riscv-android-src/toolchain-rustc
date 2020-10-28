@@ -81,6 +81,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "blacklisted_name",
     },
     Lint {
+        name: "blanket_clippy_restriction_lints",
+        group: "style",
+        desc: "enabling the complete restriction group",
+        deprecation: None,
+        module: "attrs",
+    },
+    Lint {
         name: "blocks_in_if_conditions",
         group: "style",
         desc: "useless or complex blocks that can be eliminated in conditions",
@@ -354,6 +361,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "derive",
     },
     Lint {
+        name: "derive_ord_xor_partial_ord",
+        group: "correctness",
+        desc: "deriving `Ord` but implementing `PartialOrd` explicitly",
+        deprecation: None,
+        module: "derive",
+    },
+    Lint {
         name: "diverging_sub_expression",
         group: "complexity",
         desc: "whether an expression contains a diverging sub expression",
@@ -398,7 +412,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     Lint {
         name: "drop_bounds",
         group: "correctness",
-        desc: "Bounds of the form `T: Drop` are useless",
+        desc: "bounds of the form `T: Drop` are useless",
         deprecation: None,
         module: "drop_bounds",
     },
@@ -1145,6 +1159,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "methods",
     },
     Lint {
+        name: "map_identity",
+        group: "complexity",
+        desc: "using iterator.map(|x| x)",
+        deprecation: None,
+        module: "map_identity",
+    },
+    Lint {
         name: "map_unwrap_or",
         group: "pedantic",
         desc: "using `.map(f).unwrap_or(a)` or `.map(f).unwrap_or_else(func)`, which are more succinctly expressed as `map_or(a, f)` or `map_or_else(a, f)`",
@@ -1162,6 +1183,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         name: "match_bool",
         group: "pedantic",
         desc: "a `match` on a boolean expression instead of an `if..else` block",
+        deprecation: None,
+        module: "matches",
+    },
+    Lint {
+        name: "match_like_matches_macro",
+        group: "style",
+        desc: "a match that could be written with the matches! macro",
         deprecation: None,
         module: "matches",
     },
@@ -1432,6 +1460,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "bytecount",
     },
     Lint {
+        name: "needless_arbitrary_self_type",
+        group: "complexity",
+        desc: "type of `self` parameter is already by default `Self`",
+        deprecation: None,
+        module: "needless_arbitrary_self_type",
+    },
+    Lint {
         name: "needless_bool",
         group: "complexity",
         desc: "if-statements with plain booleans in the then- and else-clause, e.g., `if p { true } else { false }`",
@@ -1607,6 +1642,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "option_env_unwrap",
     },
     Lint {
+        name: "option_if_let_else",
+        group: "pedantic",
+        desc: "reimplementation of Option::map_or",
+        deprecation: None,
+        module: "option_if_let_else",
+    },
+    Lint {
         name: "option_map_or_none",
         group: "style",
         desc: "using `Option.map_or(None, f)`, which is more succinctly expressed as `and_then(f)`",
@@ -1684,6 +1726,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "path_buf_push_overwrite",
     },
     Lint {
+        name: "pattern_type_mismatch",
+        group: "restriction",
+        desc: "type of pattern does not match the expression type",
+        deprecation: None,
+        module: "pattern_type_mismatch",
+    },
+    Lint {
         name: "possible_missing_comma",
         group: "correctness",
         desc: "possible missing comma in array",
@@ -1755,7 +1804,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "range_minus_one",
-        group: "complexity",
+        group: "pedantic",
         desc: "`x..=(y-1)` reads better as `x..y`",
         deprecation: None,
         module: "ranges",
@@ -1800,7 +1849,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         group: "complexity",
         desc: "throwaway closures called in the expression they are defined",
         deprecation: None,
-        module: "misc_early",
+        module: "redundant_closure_call",
     },
     Lint {
         name: "redundant_closure_for_method_calls",
@@ -1828,7 +1877,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         group: "style",
         desc: "use the proper utility function avoiding an `if let`",
         deprecation: None,
-        module: "redundant_pattern_matching",
+        module: "matches",
     },
     Lint {
         name: "redundant_pub_crate",
@@ -1852,11 +1901,11 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "reference",
     },
     Lint {
-        name: "regex_macro",
-        group: "style",
-        desc: "use of `regex!(_)` instead of `Regex::new(_)`",
+        name: "repeat_once",
+        group: "complexity",
+        desc: "using `.repeat(1)` instead of `String.clone()`, `str.to_string()` or `slice.to_vec()` ",
         deprecation: None,
-        module: "regex",
+        module: "repeat_once",
     },
     Lint {
         name: "rest_pat_in_fully_bound_structs",
@@ -1892,6 +1941,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "consecutive `if`s with the same function call",
         deprecation: None,
         module: "copies",
+    },
+    Lint {
+        name: "same_item_push",
+        group: "style",
+        desc: "the same item is pushed inside of a for loop",
+        deprecation: None,
+        module: "loops",
     },
     Lint {
         name: "search_is_some",
@@ -1990,6 +2046,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "slow vector initialization",
         deprecation: None,
         module: "slow_vector_initialization",
+    },
+    Lint {
+        name: "stable_sort_primitive",
+        group: "perf",
+        desc: "use of sort() when sort_unstable() is equivalent",
+        deprecation: None,
+        module: "stable_sort_primitive",
     },
     Lint {
         name: "string_add",
@@ -2132,6 +2195,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "misc",
     },
     Lint {
+        name: "trait_duplication_in_bounds",
+        group: "pedantic",
+        desc: "Check if the same trait bounds are specified twice during a function declaration",
+        deprecation: None,
+        module: "trait_bounds",
+    },
+    Lint {
         name: "transmute_bytes_to_str",
         group: "complexity",
         desc: "transmutes from a `&[u8]` to a `&str`",
@@ -2177,6 +2247,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         name: "transmute_ptr_to_ref",
         group: "complexity",
         desc: "transmutes from a pointer to a reference type",
+        deprecation: None,
+        module: "transmute",
+    },
+    Lint {
+        name: "transmutes_expressible_as_ptr_casts",
+        group: "complexity",
+        desc: "transmutes that could be a pointer cast",
         deprecation: None,
         module: "transmute",
     },
@@ -2256,6 +2333,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "comparing unit values",
         deprecation: None,
         module: "types",
+    },
+    Lint {
+        name: "unit_return_expecting_ord",
+        group: "correctness",
+        desc: "fn arguments of type Fn(...) -> Ord returning the unit type ().",
+        deprecation: None,
+        module: "unit_return_expecting_ord",
     },
     Lint {
         name: "unknown_clippy_lints",

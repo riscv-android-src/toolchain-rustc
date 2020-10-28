@@ -130,6 +130,12 @@ impl Cipher {
         unsafe { Cipher(ffi::EVP_aes_128_ofb()) }
     }
 
+    /// Requires OpenSSL 1.1.0 or newer.
+    #[cfg(ossl110)]
+    pub fn aes_128_ocb() -> Cipher {
+        unsafe { Cipher(ffi::EVP_aes_128_ocb()) }
+    }
+
     pub fn aes_192_ecb() -> Cipher {
         unsafe { Cipher(ffi::EVP_aes_192_ecb()) }
     }
@@ -164,6 +170,12 @@ impl Cipher {
 
     pub fn aes_192_ofb() -> Cipher {
         unsafe { Cipher(ffi::EVP_aes_192_ofb()) }
+    }
+
+    /// Requires OpenSSL 1.1.0 or newer.
+    #[cfg(ossl110)]
+    pub fn aes_192_ocb() -> Cipher {
+        unsafe { Cipher(ffi::EVP_aes_192_ocb()) }
     }
 
     pub fn aes_256_ecb() -> Cipher {
@@ -204,6 +216,12 @@ impl Cipher {
 
     pub fn aes_256_ofb() -> Cipher {
         unsafe { Cipher(ffi::EVP_aes_256_ofb()) }
+    }
+
+    /// Requires OpenSSL 1.1.0 or newer.
+    #[cfg(ossl110)]
+    pub fn aes_256_ocb() -> Cipher {
+        unsafe { Cipher(ffi::EVP_aes_256_ocb()) }
     }
 
     pub fn bf_cbc() -> Cipher {
@@ -258,21 +276,29 @@ impl Cipher {
         unsafe { Cipher(ffi::EVP_chacha20_poly1305()) }
     }
 
+    /// Creates a `Cipher` from a raw pointer to its OpenSSL type.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure the pointer is valid for the `'static` lifetime.
     pub unsafe fn from_ptr(ptr: *const ffi::EVP_CIPHER) -> Cipher {
         Cipher(ptr)
     }
 
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn as_ptr(&self) -> *const ffi::EVP_CIPHER {
         self.0
     }
 
     /// Returns the length of keys used with this cipher.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn key_len(&self) -> usize {
         unsafe { EVP_CIPHER_key_length(self.0) as usize }
     }
 
     /// Returns the length of the IV used with this cipher, or `None` if the
     /// cipher does not use an IV.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn iv_len(&self) -> Option<usize> {
         unsafe {
             let len = EVP_CIPHER_iv_length(self.0) as usize;
@@ -289,14 +315,28 @@ impl Cipher {
     /// # Note
     ///
     /// Stream ciphers such as RC4 have a block size of 1.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
     pub fn block_size(&self) -> usize {
         unsafe { EVP_CIPHER_block_size(self.0) as usize }
     }
 
     /// Determines whether the cipher is using CCM mode
-    fn is_ccm(&self) -> bool {
+    fn is_ccm(self) -> bool {
         // NOTE: OpenSSL returns pointers to static structs, which makes this work as expected
-        *self == Cipher::aes_128_ccm() || *self == Cipher::aes_256_ccm()
+        self == Cipher::aes_128_ccm() || self == Cipher::aes_256_ccm()
+    }
+
+    /// Determines whether the cipher is using OCB mode
+    #[cfg(ossl110)]
+    fn is_ocb(self) -> bool {
+        self == Cipher::aes_128_ocb()
+            || self == Cipher::aes_192_ocb()
+            || self == Cipher::aes_256_ocb()
+    }
+
+    #[cfg(not(ossl110))]
+    const fn is_ocb(self) -> bool {
+        false
     }
 }
 
@@ -390,7 +430,7 @@ impl Crypter {
         unsafe {
             let ctx = cvt_p(ffi::EVP_CIPHER_CTX_new())?;
             let crypter = Crypter {
-                ctx: ctx,
+                ctx,
                 block_size: t.block_size(),
             };
 
@@ -544,7 +584,11 @@ impl Crypter {
     /// Panics if `output.len() > c_int::max_value()`.
     pub fn update(&mut self, input: &[u8], output: &mut [u8]) -> Result<usize, ErrorStack> {
         unsafe {
-            let block_size = if self.block_size > 1 { self.block_size } else { 0 };
+            let block_size = if self.block_size > 1 {
+                self.block_size
+            } else {
+                0
+            };
             assert!(output.len() >= input.len() + block_size);
             assert!(output.len() <= c_int::max_value() as usize);
             let mut outl = output.len() as c_int;
@@ -575,7 +619,9 @@ impl Crypter {
     /// where `block_size` is the block size of the cipher (see `Cipher::block_size`).
     pub fn finalize(&mut self, output: &mut [u8]) -> Result<usize, ErrorStack> {
         unsafe {
-            if self.block_size > 1 { assert!(output.len() >= self.block_size); }
+            if self.block_size > 1 {
+                assert!(output.len() >= self.block_size);
+            }
             let mut outl = cmp::min(output.len(), c_int::max_value() as usize) as c_int;
 
             cvt(ffi::EVP_CipherFinal(
@@ -730,9 +776,12 @@ pub fn encrypt_aead(
     let mut c = Crypter::new(t, Mode::Encrypt, key, iv)?;
     let mut out = vec![0; data.len() + t.block_size()];
 
-    if t.is_ccm() {
+    let is_ccm = t.is_ccm();
+    if is_ccm || t.is_ocb() {
         c.set_tag_len(tag.len())?;
-        c.set_data_len(data.len())?;
+        if is_ccm {
+            c.set_data_len(data.len())?;
+        }
     }
 
     c.aad_update(aad)?;
@@ -758,19 +807,23 @@ pub fn decrypt_aead(
     let mut c = Crypter::new(t, Mode::Decrypt, key, iv)?;
     let mut out = vec![0; data.len() + t.block_size()];
 
-    if t.is_ccm() {
+    let is_ccm = t.is_ccm();
+    if is_ccm || t.is_ocb() {
         c.set_tag(tag)?;
-        c.set_data_len(data.len())?;
+        if is_ccm {
+            c.set_data_len(data.len())?;
+        }
     }
 
     c.aad_update(aad)?;
     let count = c.update(data, &mut out)?;
-    let mut rest = 0;
 
-    if !t.is_ccm() {
+    let rest = if t.is_ccm() {
+        0
+    } else {
         c.set_tag(tag)?;
-        rest = c.finalize(&mut out[count..])?;
-    }
+        c.finalize(&mut out[count..])?
+    };
 
     out.truncate(count + rest);
     Ok(out)
@@ -811,7 +864,8 @@ mod tests {
             super::Mode::Encrypt,
             &key,
             Some(&iv),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(c.update(&[0u8; 15], &mut [0u8; 15]).unwrap(), 15);
         assert_eq!(c.update(&[0u8; 1], &mut [0u8; 1]).unwrap(), 1);
@@ -1373,6 +1427,62 @@ mod tests {
             Cipher::aes_256_ccm(),
             &Vec::from_hex(key).unwrap(),
             Some(&Vec::from_hex(nonce).unwrap()),
+            &Vec::from_hex(aad).unwrap(),
+            &Vec::from_hex(ct).unwrap(),
+            &Vec::from_hex(tag).unwrap(),
+        );
+        assert!(out.is_err());
+    }
+
+    #[test]
+    #[cfg(ossl110)]
+    fn test_aes_128_ocb() {
+        let key = "000102030405060708090a0b0c0d0e0f";
+        let aad = "0001020304050607";
+        let tag = "16dc76a46d47e1ead537209e8a96d14e";
+        let iv = "000102030405060708090a0b";
+        let pt = "0001020304050607";
+        let ct = "92b657130a74b85a";
+
+        let mut actual_tag = [0; 16];
+        let out = encrypt_aead(
+            Cipher::aes_128_ocb(),
+            &Vec::from_hex(key).unwrap(),
+            Some(&Vec::from_hex(iv).unwrap()),
+            &Vec::from_hex(aad).unwrap(),
+            &Vec::from_hex(pt).unwrap(),
+            &mut actual_tag,
+        )
+        .unwrap();
+
+        assert_eq!(ct, hex::encode(out));
+        assert_eq!(tag, hex::encode(actual_tag));
+
+        let out = decrypt_aead(
+            Cipher::aes_128_ocb(),
+            &Vec::from_hex(key).unwrap(),
+            Some(&Vec::from_hex(iv).unwrap()),
+            &Vec::from_hex(aad).unwrap(),
+            &Vec::from_hex(ct).unwrap(),
+            &Vec::from_hex(tag).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(pt, hex::encode(out));
+    }
+
+    #[test]
+    #[cfg(ossl110)]
+    fn test_aes_128_ocb_fail() {
+        let key = "000102030405060708090a0b0c0d0e0f";
+        let aad = "0001020304050607";
+        let tag = "16dc76a46d47e1ead537209e8a96d14e";
+        let iv = "000000000405060708090a0b";
+        let ct = "92b657130a74b85a";
+
+        let out = decrypt_aead(
+            Cipher::aes_128_ocb(),
+            &Vec::from_hex(key).unwrap(),
+            Some(&Vec::from_hex(iv).unwrap()),
             &Vec::from_hex(aad).unwrap(),
             &Vec::from_hex(ct).unwrap(),
             &Vec::from_hex(tag).unwrap(),

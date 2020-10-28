@@ -383,6 +383,8 @@ pub enum Error {
     MissingFileEntryFormatPath,
     /// Expected an attribute value to be a string form.
     ExpectedStringAttributeValue,
+    /// `DW_FORM_implicit_const` used in an invalid context.
+    InvalidImplicitConst,
 }
 
 impl fmt::Display for Error {
@@ -526,6 +528,7 @@ impl Error {
             Error::ExpectedStringAttributeValue => {
                 "Expected an attribute value to be a string form."
             }
+            Error::InvalidImplicitConst => "DW_FORM_implicit_const used in an invalid context.",
         }
     }
 }
@@ -562,6 +565,12 @@ pub trait Section<R>: From<R> {
     /// Returns the ELF section name for this type.
     fn section_name() -> &'static str {
         Self::id().name()
+    }
+
+    /// Returns the ELF section name (if any) for this type when used in a dwo
+    /// file.
+    fn dwo_section_name() -> Option<&'static str> {
+        Self::id().dwo_name()
     }
 
     /// Try to load the section using the given loader function.

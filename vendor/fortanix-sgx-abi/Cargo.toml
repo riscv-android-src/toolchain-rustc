@@ -3,7 +3,7 @@
 # When uploading crates to the registry Cargo will automatically
 # "normalize" Cargo.toml files for maximal compatibility
 # with all versions of Cargo and also rewrite `path` dependencies
-# to registry (e.g. crates.io) dependencies
+# to registry (e.g., crates.io) dependencies
 #
 # If you believe there's an error in this file please file an
 # issue against the rust-lang/cargo repository. If you're
@@ -12,10 +12,11 @@
 
 [package]
 name = "fortanix-sgx-abi"
-version = "0.3.2"
-authors = ["Jethro Beekman <jethro@fortanix.com>"]
+version = "0.3.3"
+authors = ["Fortanix, Inc."]
 description = "An interface for Intel SGX enclaves. This is the interface for the\n`x86_64-fortanix-unknown-sgx` target.\n\nThis is a small yet functional interface suitable for writing larger enclaves. \nIn contrast to other enclave interfaces, this interface is primarly designed \nfor running entire applications in an enclave.\n\nThis crate fully describes the type-level interface complete with \ndocumentation. For implementors, this crate contains all the type definitions\nand a macro with the function definitions.\n"
-documentation = "https://docs.rs/fortanix-sgx-abi/"
+homepage = "https://edp.fortanix.com/"
+documentation = "https://edp.fortanix.com/docs/api/fortanix_sgx_abi/"
 keywords = ["sgx", "enclave"]
 categories = ["os"]
 license = "MPL-2.0"

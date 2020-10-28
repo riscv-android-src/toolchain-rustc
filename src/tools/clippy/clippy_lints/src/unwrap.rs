@@ -114,7 +114,7 @@ fn collect_unwrap_info<'tcx>(
         if_chain! {
             if let ExprKind::MethodCall(method_name, _, args, _) = &expr.kind;
             if let ExprKind::Path(QPath::Resolved(None, path)) = &args[0].kind;
-            let ty = cx.tables().expr_ty(&args[0]);
+            let ty = cx.typeck_results().expr_ty(&args[0]);
             let name = method_name.ident.as_str();
             if is_relevant_option_call(cx, ty, &name) || is_relevant_result_call(cx, ty, &name);
             then {
@@ -181,8 +181,8 @@ impl<'a, 'tcx> Visitor<'tcx> for UnwrappableVariablesVisitor<'a, 'tcx> {
                             self.cx,
                             UNNECESSARY_UNWRAP,
                             expr.span,
-                            &format!("You checked before that `{}()` cannot fail. \
-                            Instead of checking and unwrapping, it's better to use `if let` or `match`.",
+                            &format!("you checked before that `{}()` cannot fail, \
+                            instead of checking and unwrapping, it's better to use `if let` or `match`",
                             method_name.ident.name),
                             |diag| { diag.span_label(unwrappable.check.span, "the check is happening here"); },
                         );
@@ -191,7 +191,7 @@ impl<'a, 'tcx> Visitor<'tcx> for UnwrappableVariablesVisitor<'a, 'tcx> {
                             self.cx,
                             PANICKING_UNWRAP,
                             expr.span,
-                            &format!("This call to `{}()` will always panic.",
+                            &format!("this call to `{}()` will always panic",
                             method_name.ident.name),
                             |diag| { diag.span_label(unwrappable.check.span, "because of this check"); },
                         );

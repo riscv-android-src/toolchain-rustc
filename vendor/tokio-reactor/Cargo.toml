@@ -12,17 +12,17 @@
 
 [package]
 name = "tokio-reactor"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["Carl Lerche <me@carllerche.com>"]
 description = "Event loop that drives Tokio I/O resources.\n"
 homepage = "https://tokio.rs"
-documentation = "https://docs.rs/tokio-reactor/0.1.11/tokio_reactor"
+documentation = "https://docs.rs/tokio-reactor/0.1.12/tokio_reactor"
 readme = "README.md"
 categories = ["asynchronous", "network-programming"]
 license = "MIT"
 repository = "https://github.com/tokio-rs/tokio"
 [dependencies.crossbeam-utils]
-version = "0.6.0"
+version = "0.7.0"
 
 [dependencies.futures]
 version = "0.1.19"

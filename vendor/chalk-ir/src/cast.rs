@@ -87,8 +87,11 @@ reflexive_impl!(for(I: Interner) Goal<I>);
 reflexive_impl!(for(I: Interner) WhereClause<I>);
 reflexive_impl!(for(I: Interner) ProgramClause<I>);
 reflexive_impl!(for(I: Interner) QuantifiedWhereClause<I>);
+reflexive_impl!(for(I: Interner) VariableKind<I>);
 reflexive_impl!(for(I: Interner) VariableKinds<I>);
+reflexive_impl!(for(I: Interner) CanonicalVarKind<I>);
 reflexive_impl!(for(I: Interner) CanonicalVarKinds<I>);
+reflexive_impl!(for(I: Interner) Constraint<I>);
 
 impl<I: Interner> CastTo<WhereClause<I>> for TraitRef<I> {
     fn cast_to(self, _interner: &I) -> WhereClause<I> {
@@ -205,7 +208,8 @@ where
     fn cast_to(self, interner: &I) -> ProgramClause<I> {
         let implication = ProgramClauseImplication {
             consequence: self.cast(interner),
-            conditions: Goals::new(interner),
+            conditions: Goals::empty(interner),
+            constraints: Constraints::empty(interner),
             priority: ClausePriority::High,
         };
 
@@ -222,7 +226,8 @@ where
     fn cast_to(self, interner: &I) -> ProgramClause<I> {
         ProgramClauseData(self.map(|bound| ProgramClauseImplication {
             consequence: bound.cast(interner),
-            conditions: Goals::new(interner),
+            conditions: Goals::empty(interner),
+            constraints: Constraints::empty(interner),
             priority: ClausePriority::High,
         }))
         .intern(interner)

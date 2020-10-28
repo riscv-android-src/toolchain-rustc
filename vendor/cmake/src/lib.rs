@@ -60,6 +60,7 @@ pub struct Config {
     generator: Option<OsString>,
     cflags: OsString,
     cxxflags: OsString,
+    asmflags: OsString,
     defines: Vec<(OsString, OsString)>,
     deps: Vec<String>,
     target: Option<String>,
@@ -75,6 +76,7 @@ pub struct Config {
     no_build_target: bool,
     verbose_cmake: bool,
     verbose_make: bool,
+    pic: Option<bool>,
 }
 
 /// Builds the native library rooted at `path` with the default cmake options.
@@ -106,6 +108,7 @@ impl Config {
             generator: None,
             cflags: OsString::new(),
             cxxflags: OsString::new(),
+            asmflags: OsString::new(),
             defines: Vec::new(),
             deps: Vec::new(),
             profile: None,
@@ -121,7 +124,14 @@ impl Config {
             no_build_target: false,
             verbose_cmake: false,
             verbose_make: false,
+            pic: None,
         }
+    }
+
+    /// Sets flag for PIC. Otherwise use cc::Build platform default
+    pub fn pic(&mut self, explicit_flag: bool) -> &mut Config {
+        self.pic = Some(explicit_flag);
+        self
     }
 
     /// Sets the build-tool generator (`-G`) for this compilation.
@@ -143,6 +153,14 @@ impl Config {
     pub fn cxxflag<P: AsRef<OsStr>>(&mut self, flag: P) -> &mut Config {
         self.cxxflags.push(" ");
         self.cxxflags.push(flag.as_ref());
+        self
+    }
+
+    /// Adds a custom flag to pass down to the ASM compiler, supplementing those
+    /// that this library already passes.
+    pub fn asmflag<P: AsRef<OsStr>>(&mut self, flag: P) -> &mut Config {
+        self.asmflags.push(" ");
+        self.asmflags.push(flag.as_ref());
         self
     }
 
@@ -335,8 +353,13 @@ impl Config {
             c_cfg.static_crt(static_crt);
             cxx_cfg.static_crt(static_crt);
         }
+        if let Some(explicit_flag) = self.pic {
+            c_cfg.pic(explicit_flag);
+            cxx_cfg.pic(explicit_flag);
+        }
         let c_compiler = c_cfg.get_compiler();
         let cxx_compiler = cxx_cfg.get_compiler();
+        let asm_compiler = c_cfg.get_compiler();
 
         let dst = self
             .out_dir
@@ -650,6 +673,7 @@ impl Config {
 
             set_compiler("C", &c_compiler, &self.cflags);
             set_compiler("CXX", &cxx_compiler, &self.cxxflags);
+            set_compiler("ASM", &asm_compiler, &self.asmflags);
         }
 
         if !self.defined("CMAKE_BUILD_TYPE") {

@@ -2,10 +2,14 @@
 
 A common library for linking `libz` to rust programs (also known as zlib).
 
-[![Build Status](https://travis-ci.org/alexcrichton/libz-sys.svg?branch=master)](https://travis-ci.org/alexcrichton/libz-sys)
-[![Build status](https://ci.appveyor.com/api/projects/status/et3ae5mgpbokh9g9?svg=true)](https://ci.appveyor.com/project/alexcrichton/libz-sys)
-
 [Documentation](https://docs.rs/libz-sys)
+
+# High-level API
+
+This crate provides bindings to the raw low-level C API. For a higher-level
+safe API to work with DEFLATE, zlib, or gzip streams, see
+[`flate2`](https://docs.rs/flate2). `flate2` also supports alternative
+implementations, including slower but pure Rust implementations.
 
 # License
 

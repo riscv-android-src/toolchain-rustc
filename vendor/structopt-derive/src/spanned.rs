@@ -1,5 +1,5 @@
 use proc_macro2::{Ident, Span, TokenStream};
-use quote::{quote_spanned, ToTokens};
+use quote::ToTokens;
 use std::ops::{Deref, DerefMut};
 use syn::LitStr;
 
@@ -23,13 +23,7 @@ impl<T> Sp<T> {
     }
 
     pub fn span(&self) -> Span {
-        self.span.clone()
-    }
-}
-
-impl<T: ToString> Sp<T> {
-    pub fn as_ident(&self) -> Ident {
-        Ident::new(&self.to_string(), self.span.clone())
+        self.span
     }
 }
 
@@ -71,9 +65,15 @@ impl<'a> From<Sp<&'a str>> for Sp<String> {
     }
 }
 
+impl<T: PartialEq> PartialEq<T> for Sp<T> {
+    fn eq(&self, other: &T) -> bool {
+        self.val == *other
+    }
+}
+
 impl<T: PartialEq> PartialEq for Sp<T> {
     fn eq(&self, other: &Sp<T>) -> bool {
-        self.val == other.val
+        self.val == **other
     }
 }
 
@@ -85,8 +85,13 @@ impl<T: AsRef<str>> AsRef<str> for Sp<T> {
 
 impl<T: ToTokens> ToTokens for Sp<T> {
     fn to_tokens(&self, stream: &mut TokenStream) {
-        let val = &self.val;
-        let quoted = quote_spanned!(self.span=> #val);
-        stream.extend(quoted);
+        // this is the simplest way out of correct ones to change span on
+        // arbitrary token tree I can come up with
+        let tt = self.val.to_token_stream().into_iter().map(|mut tt| {
+            tt.set_span(self.span);
+            tt
+        });
+
+        stream.extend(tt);
     }
 }

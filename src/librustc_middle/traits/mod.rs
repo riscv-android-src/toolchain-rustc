@@ -30,7 +30,6 @@ pub type ChalkCanonicalGoal<'tcx> = Canonical<'tcx, ChalkEnvironmentAndGoal<'tcx
 
 pub use self::ImplSource::*;
 pub use self::ObligationCauseCode::*;
-pub use self::SelectionError::*;
 
 pub use self::chalk::{
     ChalkEnvironmentAndGoal, ChalkEnvironmentClause, RustInterner as ChalkRustInterner,
@@ -86,7 +85,7 @@ pub enum Reveal {
 ///
 /// We do not want to intern this as there are a lot of obligation causes which
 /// only live for a short period of time.
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, Lift)]
 pub struct ObligationCause<'tcx> {
     /// `None` for `ObligationCause::dummy`, `Some` otherwise.
     data: Option<Rc<ObligationCauseData<'tcx>>>,
@@ -111,7 +110,7 @@ impl Deref for ObligationCause<'tcx> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Lift)]
 pub struct ObligationCauseData<'tcx> {
     pub span: Span,
 
@@ -169,7 +168,14 @@ impl<'tcx> ObligationCause<'tcx> {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Lift)]
+pub struct UnifyReceiverContext<'tcx> {
+    pub assoc_item: ty::AssocItem,
+    pub param_env: ty::ParamEnv<'tcx>,
+    pub substs: SubstsRef<'tcx>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Lift)]
 pub enum ObligationCauseCode<'tcx> {
     /// Not well classified or should be obvious from the span.
     MiscObligation,
@@ -215,7 +221,7 @@ pub enum ObligationCauseCode<'tcx> {
     /// Type of each variable must be `Sized`.
     VariableType(hir::HirId),
     /// Argument type must be `Sized`.
-    SizedArgumentType,
+    SizedArgumentType(Option<Span>),
     /// Return type must be `Sized`.
     SizedReturnType,
     /// Yield type must be `Sized`.
@@ -229,6 +235,7 @@ pub enum ObligationCauseCode<'tcx> {
     /// Types of fields (other than the last, except for packed structs) in a struct must be sized.
     FieldSized {
         adt_kind: AdtKind,
+        span: Span,
         last: bool,
     },
 
@@ -299,6 +306,8 @@ pub enum ObligationCauseCode<'tcx> {
     /// Method receiver
     MethodReceiver,
 
+    UnifyReceiver(Box<UnifyReceiverContext<'tcx>>),
+
     /// `return` with no expression
     ReturnNoExpression,
 
@@ -333,9 +342,10 @@ impl ObligationCauseCode<'_> {
 #[cfg(target_arch = "x86_64")]
 static_assert_size!(ObligationCauseCode<'_>, 32);
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Lift)]
 pub struct MatchExpressionArmCause<'tcx> {
     pub arm_span: Span,
+    pub semi_span: Option<Span>,
     pub source: hir::MatchSource,
     pub prior_arms: Vec<Span>,
     pub last_ty: Ty<'tcx>,
@@ -349,7 +359,7 @@ pub struct IfExpressionCause {
     pub semicolon: Option<Span>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Lift)]
 pub struct DerivedObligationCause<'tcx> {
     /// The trait reference of the parent obligation that led to the
     /// current obligation. Note that only trait obligations lead to
@@ -361,7 +371,7 @@ pub struct DerivedObligationCause<'tcx> {
     pub parent_code: Rc<ObligationCauseCode<'tcx>>,
 }
 
-#[derive(Clone, Debug, TypeFoldable)]
+#[derive(Clone, Debug, TypeFoldable, Lift)]
 pub enum SelectionError<'tcx> {
     Unimplemented,
     OutputTypeParameterMismatch(
@@ -417,7 +427,7 @@ pub type SelectionResult<'tcx, T> = Result<Option<T>, SelectionError<'tcx>>;
 /// ### The type parameter `N`
 ///
 /// See explanation on `ImplSourceUserDefinedData`.
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub enum ImplSource<'tcx, N> {
     /// ImplSource identifying a particular impl.
     ImplSourceUserDefined(ImplSourceUserDefinedData<'tcx, N>),
@@ -548,14 +558,14 @@ impl<'tcx, N> ImplSource<'tcx, N> {
 /// is `Obligation`, as one might expect. During codegen, however, this
 /// is `()`, because codegen only requires a shallow resolution of an
 /// impl, and nested obligations are satisfied later.
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceUserDefinedData<'tcx, N> {
     pub impl_def_id: DefId,
     pub substs: SubstsRef<'tcx>,
     pub nested: Vec<N>,
 }
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceGeneratorData<'tcx, N> {
     pub generator_def_id: DefId,
     pub substs: SubstsRef<'tcx>,
@@ -564,7 +574,7 @@ pub struct ImplSourceGeneratorData<'tcx, N> {
     pub nested: Vec<N>,
 }
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceClosureData<'tcx, N> {
     pub closure_def_id: DefId,
     pub substs: SubstsRef<'tcx>,
@@ -573,18 +583,18 @@ pub struct ImplSourceClosureData<'tcx, N> {
     pub nested: Vec<N>,
 }
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceAutoImplData<N> {
     pub trait_def_id: DefId,
     pub nested: Vec<N>,
 }
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceBuiltinData<N> {
     pub nested: Vec<N>,
 }
 
-#[derive(PartialEq, Eq, Clone, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(PartialEq, Eq, Clone, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceObjectData<'tcx, N> {
     /// `Foo` upcast to the obligation trait. This will be some supertrait of `Foo`.
     pub upcast_trait_ref: ty::PolyTraitRef<'tcx>,
@@ -597,17 +607,17 @@ pub struct ImplSourceObjectData<'tcx, N> {
     pub nested: Vec<N>,
 }
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceFnPointerData<'tcx, N> {
     pub fn_ty: Ty<'tcx>,
     pub nested: Vec<N>,
 }
 
 // FIXME(@lcnr): This should be  refactored and merged with other builtin vtables.
-#[derive(Clone, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, Debug, PartialEq, Eq, TyEncodable, TyDecodable, HashStable)]
 pub struct ImplSourceDiscriminantKindData;
 
-#[derive(Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, HashStable, TypeFoldable)]
+#[derive(Clone, PartialEq, Eq, TyEncodable, TyDecodable, HashStable, TypeFoldable, Lift)]
 pub struct ImplSourceTraitAliasData<'tcx, N> {
     pub alias_def_id: DefId,
     pub substs: SubstsRef<'tcx>,

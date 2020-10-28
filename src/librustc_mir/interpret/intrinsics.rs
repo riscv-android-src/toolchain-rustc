@@ -16,7 +16,9 @@ use rustc_middle::ty::{Ty, TyCtxt};
 use rustc_span::symbol::{sym, Symbol};
 use rustc_target::abi::{Abi, LayoutOf as _, Primitive, Size};
 
-use super::{CheckInAllocMsg, ImmTy, InterpCx, Machine, OpTy, PlaceTy};
+use super::{
+    util::ensure_monomorphic_enough, CheckInAllocMsg, ImmTy, InterpCx, Machine, OpTy, PlaceTy,
+};
 
 mod caller_location;
 mod type_name;
@@ -54,6 +56,7 @@ crate fn eval_nullary_intrinsic<'tcx>(
     let name = tcx.item_name(def_id);
     Ok(match name {
         sym::type_name => {
+            ensure_monomorphic_enough(tcx, tp_ty)?;
             let alloc = type_name::alloc_type_name(tcx, tp_ty);
             ConstValue::Slice { data: alloc, start: 0, end: alloc.len() }
         }
@@ -68,7 +71,10 @@ crate fn eval_nullary_intrinsic<'tcx>(
             };
             ConstValue::from_machine_usize(n, &tcx)
         }
-        sym::type_id => ConstValue::from_u64(tcx.type_id_hash(tp_ty)),
+        sym::type_id => {
+            ensure_monomorphic_enough(tcx, tp_ty)?;
+            ConstValue::from_u64(tcx.type_id_hash(tp_ty))
+        }
         sym::variant_count => {
             if let ty::Adt(ref adt, _) = tp_ty.kind {
                 ConstValue::from_machine_usize(adt.variants.len() as u64, &tcx)
@@ -95,6 +101,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         let (dest, ret) = match ret {
             None => match intrinsic_name {
                 sym::transmute => throw_ub_format!("transmuting to uninhabited type"),
+                sym::unreachable => throw_ub!(Unreachable),
                 sym::abort => M::abort(self)?,
                 // Unsupported diverging intrinsic.
                 _ => return Ok(false),
@@ -109,6 +116,21 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 let span = self.find_closest_untracked_caller_location();
                 let location = self.alloc_caller_location_for_span(span);
                 self.write_scalar(location.ptr, dest)?;
+            }
+
+            sym::min_align_of_val | sym::size_of_val => {
+                let place = self.deref_operand(args[0])?;
+                let (size, align) = self
+                    .size_and_align_of(place.meta, place.layout)?
+                    .ok_or_else(|| err_unsup_format!("`extern type` does not have known layout"))?;
+
+                let result = match intrinsic_name {
+                    sym::min_align_of_val => align.bytes(),
+                    sym::size_of_val => size.bytes(),
+                    _ => bug!(),
+                };
+
+                self.write_scalar(Scalar::from_machine_usize(result, self), dest)?;
             }
 
             sym::min_align_of
@@ -141,7 +163,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
             | sym::bitreverse => {
                 let ty = substs.type_at(0);
                 let layout_of = self.layout_of(ty)?;
-                let val = self.read_scalar(args[0])?.not_undef()?;
+                let val = self.read_scalar(args[0])?.check_init()?;
                 let bits = self.force_bits(val, layout_of.size)?;
                 let kind = match layout_of.abi {
                     Abi::Scalar(ref scalar) => scalar.value,
@@ -272,9 +294,9 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 // rotate_left: (X << (S % BW)) | (X >> ((BW - S) % BW))
                 // rotate_right: (X << ((BW - S) % BW)) | (X >> (S % BW))
                 let layout = self.layout_of(substs.type_at(0))?;
-                let val = self.read_scalar(args[0])?.not_undef()?;
+                let val = self.read_scalar(args[0])?.check_init()?;
                 let val_bits = self.force_bits(val, layout.size)?;
-                let raw_shift = self.read_scalar(args[1])?.not_undef()?;
+                let raw_shift = self.read_scalar(args[1])?.check_init()?;
                 let raw_shift_bits = self.force_bits(raw_shift, layout.size)?;
                 let width_bits = u128::from(layout.size.bits());
                 let shift_bits = raw_shift_bits % width_bits;
@@ -289,7 +311,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.write_scalar(result, dest)?;
             }
             sym::offset => {
-                let ptr = self.read_scalar(args[0])?.not_undef()?;
+                let ptr = self.read_scalar(args[0])?.check_init()?;
                 let offset_count = self.read_scalar(args[1])?.to_machine_isize(self)?;
                 let pointee_ty = substs.type_at(0);
 
@@ -297,7 +319,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.write_scalar(offset_ptr, dest)?;
             }
             sym::arith_offset => {
-                let ptr = self.read_scalar(args[0])?.not_undef()?;
+                let ptr = self.read_scalar(args[0])?.check_init()?;
                 let offset_count = self.read_scalar(args[1])?.to_machine_isize(self)?;
                 let pointee_ty = substs.type_at(0);
 
@@ -307,9 +329,14 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 self.write_scalar(offset_ptr, dest)?;
             }
             sym::ptr_guaranteed_eq | sym::ptr_guaranteed_ne => {
-                // FIXME: return `true` for at least some comparisons where we can reliably
-                // determine the result of runtime (in)equality tests at compile-time.
-                self.write_scalar(Scalar::from_bool(false), dest)?;
+                let a = self.read_immediate(args[0])?.to_scalar()?;
+                let b = self.read_immediate(args[1])?.to_scalar()?;
+                let cmp = if intrinsic_name == sym::ptr_guaranteed_eq {
+                    self.guaranteed_eq(a, b)
+                } else {
+                    self.guaranteed_ne(a, b)
+                };
+                self.write_scalar(Scalar::from_bool(cmp), dest)?;
             }
             sym::ptr_offset_from => {
                 let a = self.read_immediate(args[0])?.to_scalar()?;
@@ -413,17 +440,43 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
                 // These just return their argument
                 self.copy_op(args[0], dest)?;
             }
-            // FIXME(#73156): Handle source code coverage in const eval
-            sym::count_code_region
-            | sym::coverage_counter_add
-            | sym::coverage_counter_subtract
-            | sym::coverage_unreachable => (),
             _ => return Ok(false),
         }
 
-        self.dump_place(*dest);
+        trace!("{:?}", self.dump_place(*dest));
         self.go_to_block(ret);
         Ok(true)
+    }
+
+    fn guaranteed_eq(&mut self, a: Scalar<M::PointerTag>, b: Scalar<M::PointerTag>) -> bool {
+        match (a, b) {
+            // Comparisons between integers are always known.
+            (Scalar::Raw { .. }, Scalar::Raw { .. }) => a == b,
+            // Equality with integers can never be known for sure.
+            (Scalar::Raw { .. }, Scalar::Ptr(_)) | (Scalar::Ptr(_), Scalar::Raw { .. }) => false,
+            // FIXME: return `true` for when both sides are the same pointer, *except* that
+            // some things (like functions and vtables) do not have stable addresses
+            // so we need to be careful around them.
+            (Scalar::Ptr(_), Scalar::Ptr(_)) => false,
+        }
+    }
+
+    fn guaranteed_ne(&mut self, a: Scalar<M::PointerTag>, b: Scalar<M::PointerTag>) -> bool {
+        match (a, b) {
+            // Comparisons between integers are always known.
+            (Scalar::Raw { .. }, Scalar::Raw { .. }) => a != b,
+            // Comparisons of abstract pointers with null pointers are known if the pointer
+            // is in bounds, because if they are in bounds, the pointer can't be null.
+            (Scalar::Raw { data: 0, .. }, Scalar::Ptr(ptr))
+            | (Scalar::Ptr(ptr), Scalar::Raw { data: 0, .. }) => !self.memory.ptr_may_be_null(ptr),
+            // Inequality with integers other than null can never be known for sure.
+            (Scalar::Raw { .. }, Scalar::Ptr(_)) | (Scalar::Ptr(_), Scalar::Raw { .. }) => false,
+            // FIXME: return `true` for at least some comparisons where we can reliably
+            // determine the result of runtime inequality tests at compile-time.
+            // Examples include comparison of addresses in static items, for these we can
+            // give reliable results.
+            (Scalar::Ptr(_), Scalar::Ptr(_)) => false,
+        }
     }
 
     pub fn exact_div(

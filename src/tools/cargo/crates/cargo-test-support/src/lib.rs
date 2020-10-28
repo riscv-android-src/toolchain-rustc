@@ -1223,22 +1223,23 @@ impl Execs {
                 // test suite to pass for now, but we may need to get more fancy
                 // if tests start failing again.
                 a.sort_by_key(|s| s.len());
-                let e = out.lines();
+                let mut failures = Vec::new();
 
-                for e_line in e {
+                for e_line in out.lines() {
                     match a.iter().position(|a_line| lines_match(e_line, a_line)) {
-                        Some(index) => a.remove(index),
-                        None => {
-                            return Err(format!(
-                                "Did not find expected line:\n\
-                                 {}\n\
-                                 Remaining available output:\n\
-                                 {}\n",
-                                e_line,
-                                a.join("\n")
-                            ));
+                        Some(index) => {
+                            a.remove(index);
                         }
-                    };
+                        None => failures.push(e_line),
+                    }
+                }
+                if !failures.is_empty() {
+                    return Err(format!(
+                        "Did not find expected line(s):\n{}\n\
+                         Remaining available output:\n{}\n",
+                        failures.join("\n"),
+                        a.join("\n")
+                    ));
                 }
                 if !a.is_empty() {
                     Err(format!(
@@ -1444,7 +1445,7 @@ fn lines_match_works() {
 /// You can use `[..]` wildcard in strings (useful for OS-dependent things such
 /// as paths). You can use a `"{...}"` string literal as a wildcard for
 /// arbitrary nested JSON (useful for parts of object emitted by other programs
-/// (e.g., rustc) rather than Cargo itself). Arrays are sorted before comparison.
+/// (e.g., rustc) rather than Cargo itself).
 pub fn find_json_mismatch(expected: &Value, actual: &Value) -> Result<(), String> {
     match find_json_mismatch_r(expected, actual) {
         Some((expected_part, actual_part)) => Err(format!(
@@ -1472,26 +1473,10 @@ fn find_json_mismatch_r<'a>(
                 return Some((expected, actual));
             }
 
-            let mut l = l.iter().collect::<Vec<_>>();
-            let mut r = r.iter().collect::<Vec<_>>();
-
-            l.retain(
-                |l| match r.iter().position(|r| find_json_mismatch_r(l, r).is_none()) {
-                    Some(i) => {
-                        r.remove(i);
-                        false
-                    }
-                    None => true,
-                },
-            );
-
-            if !l.is_empty() {
-                assert!(!r.is_empty());
-                Some((l[0], r[0]))
-            } else {
-                assert_eq!(r.len(), 0);
-                None
-            }
+            l.iter()
+                .zip(r.iter())
+                .filter_map(|(l, r)| find_json_mismatch_r(l, r))
+                .next()
         }
         (&Object(ref l), &Object(ref r)) => {
             let same_keys = l.len() == r.len() && l.keys().all(|k| r.contains_key(k));

@@ -46,7 +46,12 @@ impl DeferredTokenStream {
     }
 
     fn evaluate_now(&mut self) {
-        self.stream.extend(self.extra.drain(..));
+        // If-check provides a fast short circuit for the common case of `extra`
+        // being empty, which saves a round trip over the proc macro bridge.
+        // Improves macro expansion time in winrt by 6% in debug mode.
+        if !self.extra.is_empty() {
+            self.stream.extend(self.extra.drain(..));
+        }
     }
 
     fn into_token_stream(mut self) -> proc_macro::TokenStream {
@@ -201,14 +206,15 @@ impl FromIterator<TokenStream> for TokenStream {
 }
 
 impl Extend<TokenTree> for TokenStream {
-    fn extend<I: IntoIterator<Item = TokenTree>>(&mut self, streams: I) {
+    fn extend<I: IntoIterator<Item = TokenTree>>(&mut self, stream: I) {
         match self {
             TokenStream::Compiler(tts) => {
                 // Here is the reason for DeferredTokenStream.
-                tts.extra
-                    .extend(streams.into_iter().map(into_compiler_token));
+                for token in stream {
+                    tts.extra.push(into_compiler_token(token));
+                }
             }
-            TokenStream::Fallback(tts) => tts.extend(streams),
+            TokenStream::Fallback(tts) => tts.extend(stream),
         }
     }
 }
@@ -219,10 +225,10 @@ impl Extend<TokenStream> for TokenStream {
             TokenStream::Compiler(tts) => {
                 tts.evaluate_now();
                 tts.stream
-                    .extend(streams.into_iter().map(|stream| stream.unwrap_nightly()));
+                    .extend(streams.into_iter().map(TokenStream::unwrap_nightly));
             }
             TokenStream::Fallback(tts) => {
-                tts.extend(streams.into_iter().map(|stream| stream.unwrap_stable()));
+                tts.extend(streams.into_iter().map(TokenStream::unwrap_stable));
             }
         }
     }
@@ -376,7 +382,6 @@ impl Span {
         }
     }
 
-    #[cfg(procmacro2_semver_exempt)]
     #[cfg(hygiene)]
     pub fn mixed_site() -> Span {
         if inside_proc_macro() {
@@ -395,7 +400,6 @@ impl Span {
         }
     }
 
-    #[cfg(procmacro2_semver_exempt)]
     pub fn resolved_at(&self, other: Span) -> Span {
         match (self, other) {
             #[cfg(hygiene)]
@@ -410,7 +414,6 @@ impl Span {
         }
     }
 
-    #[cfg(procmacro2_semver_exempt)]
     pub fn located_at(&self, other: Span) -> Span {
         match (self, other) {
             #[cfg(hygiene)]

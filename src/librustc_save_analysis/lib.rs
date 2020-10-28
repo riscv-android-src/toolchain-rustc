@@ -1,7 +1,6 @@
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
 #![feature(nll)]
 #![feature(or_patterns)]
-#![cfg_attr(bootstrap, feature(track_caller))]
 #![recursion_limit = "256"]
 
 mod dump_visitor;
@@ -10,8 +9,8 @@ mod dumper;
 mod span_utils;
 mod sig;
 
-use rustc_ast::ast::{self};
-use rustc_ast::util::comments::strip_doc_comment_decoration;
+use rustc_ast as ast;
+use rustc_ast::util::comments::beautify_doc_string;
 use rustc_ast_pretty::pprust::attribute_to_string;
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind as HirDefKind, Res};
@@ -46,11 +45,11 @@ use rls_data::{
     RefKind, Relation, RelationKind, SpanData,
 };
 
-use log::{debug, error, info};
+use tracing::{debug, error, info};
 
 pub struct SaveContext<'tcx> {
     tcx: TyCtxt<'tcx>,
-    maybe_typeck_tables: Option<&'tcx ty::TypeckTables<'tcx>>,
+    maybe_typeck_results: Option<&'tcx ty::TypeckResults<'tcx>>,
     access_levels: &'tcx AccessLevels,
     span_utils: SpanUtils<'tcx>,
     config: Config,
@@ -65,12 +64,12 @@ pub enum Data {
 }
 
 impl<'tcx> SaveContext<'tcx> {
-    /// Gets the type-checking side-tables for the current body.
+    /// Gets the type-checking results for the current body.
     /// As this will ICE if called outside bodies, only call when working with
     /// `Expr` or `Pat` nodes (they are guaranteed to be found only in bodies).
     #[track_caller]
-    fn tables(&self) -> &'tcx ty::TypeckTables<'tcx> {
-        self.maybe_typeck_tables.expect("`SaveContext::tables` called outside of body")
+    fn typeck_results(&self) -> &'tcx ty::TypeckResults<'tcx> {
+        self.maybe_typeck_results.expect("`SaveContext::typeck_results` called outside of body")
     }
 
     fn span_from_span(&self, span: Span) -> SpanData {
@@ -483,7 +482,7 @@ impl<'tcx> SaveContext<'tcx> {
                     None => {
                         debug!("could not find container for method {} at {:?}", hir_id, span);
                         // This is not necessarily a bug, if there was a compilation error,
-                        // the tables we need might not exist.
+                        // the typeck results we need might not exist.
                         return None;
                     }
                 },
@@ -524,13 +523,13 @@ impl<'tcx> SaveContext<'tcx> {
     }
 
     pub fn get_expr_data(&self, expr: &hir::Expr<'_>) -> Option<Data> {
-        let ty = self.tables().expr_ty_adjusted_opt(expr)?;
+        let ty = self.typeck_results().expr_ty_adjusted_opt(expr)?;
         if matches!(ty.kind, ty::Error(_)) {
             return None;
         }
         match expr.kind {
             hir::ExprKind::Field(ref sub_ex, ident) => {
-                match self.tables().expr_ty_adjusted(&sub_ex).kind {
+                match self.typeck_results().expr_ty_adjusted(&sub_ex).kind {
                     ty::Adt(def, _) if !def.is_enum() => {
                         let variant = &def.non_enum_variant();
                         filter!(self.span_utils, ident.span);
@@ -552,30 +551,24 @@ impl<'tcx> SaveContext<'tcx> {
                     }
                 }
             }
-            hir::ExprKind::Struct(qpath, ..) => {
-                let segment = match qpath {
-                    hir::QPath::Resolved(_, path) => path.segments.last().unwrap(),
-                    hir::QPath::TypeRelative(_, segment) => segment,
-                };
-                match ty.kind {
-                    ty::Adt(def, _) => {
-                        let sub_span = segment.ident.span;
-                        filter!(self.span_utils, sub_span);
-                        let span = self.span_from_span(sub_span);
-                        Some(Data::RefData(Ref {
-                            kind: RefKind::Type,
-                            span,
-                            ref_id: id_from_def_id(def.did),
-                        }))
-                    }
-                    _ => {
-                        debug!("expected adt, found {:?}", ty);
-                        None
-                    }
+            hir::ExprKind::Struct(qpath, ..) => match ty.kind {
+                ty::Adt(def, _) => {
+                    let sub_span = qpath.last_segment_span();
+                    filter!(self.span_utils, sub_span);
+                    let span = self.span_from_span(sub_span);
+                    Some(Data::RefData(Ref {
+                        kind: RefKind::Type,
+                        span,
+                        ref_id: id_from_def_id(def.did),
+                    }))
                 }
-            }
+                _ => {
+                    debug!("expected adt, found {:?}", ty);
+                    None
+                }
+            },
             hir::ExprKind::MethodCall(ref seg, ..) => {
-                let method_id = match self.tables().type_dependent_def_id(expr.hir_id) {
+                let method_id = match self.typeck_results().type_dependent_def_id(expr.hir_id) {
                     Some(id) => id,
                     None => {
                         debug!("could not resolve method id for {:?}", expr);
@@ -624,7 +617,7 @@ impl<'tcx> SaveContext<'tcx> {
             },
 
             Node::Expr(&hir::Expr { kind: hir::ExprKind::Struct(ref qpath, ..), .. }) => {
-                self.tables().qpath_res(qpath, hir_id)
+                self.typeck_results().qpath_res(qpath, hir_id)
             }
 
             Node::Expr(&hir::Expr { kind: hir::ExprKind::Path(ref qpath), .. })
@@ -637,9 +630,9 @@ impl<'tcx> SaveContext<'tcx> {
             })
             | Node::Ty(&hir::Ty { kind: hir::TyKind::Path(ref qpath), .. }) => match qpath {
                 hir::QPath::Resolved(_, path) => path.res,
-                hir::QPath::TypeRelative(..) => self
-                    .maybe_typeck_tables
-                    .map_or(Res::Err, |tables| tables.qpath_res(qpath, hir_id)),
+                hir::QPath::TypeRelative(..) | hir::QPath::LangItem(..) => self
+                    .maybe_typeck_results
+                    .map_or(Res::Err, |typeck_results| typeck_results.qpath_res(qpath, hir_id)),
             },
 
             Node::Binding(&hir::Pat {
@@ -654,6 +647,7 @@ impl<'tcx> SaveContext<'tcx> {
         let segment = match path {
             hir::QPath::Resolved(_, path) => path.segments.last(),
             hir::QPath::TypeRelative(_, segment) => Some(*segment),
+            hir::QPath::LangItem(..) => None,
         };
         segment.and_then(|seg| {
             self.get_path_segment_data(seg).or_else(|| self.get_path_segment_data_with_id(seg, id))
@@ -703,7 +697,7 @@ impl<'tcx> SaveContext<'tcx> {
             Res::Def(HirDefKind::ConstParam, def_id) => {
                 Some(Ref { kind: RefKind::Variable, span, ref_id: id_from_def_id(def_id) })
             }
-            Res::Def(HirDefKind::Ctor(_, ..), def_id) => {
+            Res::Def(HirDefKind::Ctor(..), def_id) => {
                 // This is a reference to a tuple struct or an enum variant where the def_id points
                 // to an invisible constructor function. That is not a very useful
                 // def, so adjust to point to the tuple struct or enum variant itself.
@@ -790,7 +784,7 @@ impl<'tcx> SaveContext<'tcx> {
         let callee = span.source_callee()?;
 
         let mac_name = match callee.kind {
-            ExpnKind::Macro(mac_kind, name) => match mac_kind {
+            ExpnKind::Macro(kind, name) => match kind {
                 MacroKind::Bang => name,
 
                 // Ignore attribute macros, their spans are usually mangled
@@ -823,20 +817,17 @@ impl<'tcx> SaveContext<'tcx> {
 
         for attr in attrs {
             if let Some(val) = attr.doc_str() {
-                if attr.is_doc_comment() {
-                    result.push_str(&strip_doc_comment_decoration(&val.as_str()));
-                } else {
-                    result.push_str(&val.as_str());
-                }
+                // FIXME: Should save-analysis beautify doc strings itself or leave it to users?
+                result.push_str(&beautify_doc_string(val));
                 result.push('\n');
-            } else if attr.check_name(sym::doc) {
+            } else if self.tcx.sess.check_name(attr, sym::doc) {
                 if let Some(meta_list) = attr.meta_item_list() {
                     meta_list
                         .into_iter()
-                        .filter(|it| it.check_name(sym::include))
+                        .filter(|it| it.has_name(sym::include))
                         .filter_map(|it| it.meta_item_list().map(|l| l.to_owned()))
                         .flat_map(|it| it)
-                        .filter(|meta| meta.check_name(sym::contents))
+                        .filter(|meta| meta.has_name(sym::contents))
                         .filter_map(|meta| meta.value_str())
                         .for_each(|val| {
                             result.push_str(&val.as_str());
@@ -1010,7 +1001,7 @@ pub fn process_crate<'l, 'tcx, H: SaveHandler>(
 
         let save_ctxt = SaveContext {
             tcx,
-            maybe_typeck_tables: None,
+            maybe_typeck_results: None,
             access_levels: &access_levels,
             span_utils: SpanUtils::new(&tcx.sess),
             config: find_config(config),

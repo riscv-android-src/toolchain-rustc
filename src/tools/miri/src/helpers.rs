@@ -67,7 +67,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn eval_libc(&mut self, name: &str) -> InterpResult<'tcx, Scalar<Tag>> {
         self.eval_context_mut()
             .eval_path_scalar(&["libc", name])?
-            .not_undef()
+            .check_init()
     }
 
     /// Helper function to get a `libc` constant as an `i32`.
@@ -80,7 +80,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn eval_windows(&mut self, module: &str, name: &str) -> InterpResult<'tcx, Scalar<Tag>> {
         self.eval_context_mut()
             .eval_path_scalar(&["std", "sys", "windows", module, name])?
-            .not_undef()
+            .check_init()
     }
 
     /// Helper function to get a `windows` constant as an `u64`.
@@ -92,14 +92,14 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// Helper function to get the `TyAndLayout` of a `libc` type
     fn libc_ty_layout(&mut self, name: &str) -> InterpResult<'tcx, TyAndLayout<'tcx>> {
         let this = self.eval_context_mut();
-        let ty = this.resolve_path(&["libc", name]).monomorphic_ty(*this.tcx);
+        let ty = this.resolve_path(&["libc", name]).ty(*this.tcx, ty::ParamEnv::reveal_all());
         this.layout_of(ty)
     }
 
     /// Helper function to get the `TyAndLayout` of a `windows` type
     fn windows_ty_layout(&mut self, name: &str) -> InterpResult<'tcx, TyAndLayout<'tcx>> {
         let this = self.eval_context_mut();
-        let ty = this.resolve_path(&["std", "sys", "windows", "c", name]).monomorphic_ty(*this.tcx);
+        let ty = this.resolve_path(&["std", "sys", "windows", "c", name]).ty(*this.tcx, ty::ParamEnv::reveal_all());
         this.layout_of(ty)
     }
 
@@ -376,13 +376,11 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// case.
     fn check_no_isolation(&self, name: &str) -> InterpResult<'tcx> {
         if !self.eval_context_ref().machine.communicate {
-            throw_machine_stop!(TerminationInfo::UnsupportedInIsolation(format!(
-                "`{}` not available when isolation is enabled",
-                name,
-            )))
+            isolation_error(name)?;
         }
         Ok(())
     }
+
     /// Helper function used inside the shims of foreign functions to assert that the target OS
     /// is `target_os`. It panics showing a message with the `name` of the foreign function
     /// if this is not the case.
@@ -407,7 +405,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn get_last_error(&self) -> InterpResult<'tcx, Scalar<Tag>> {
         let this = self.eval_context_ref();
         let errno_place = this.machine.last_error.unwrap();
-        this.read_scalar(errno_place.into())?.not_undef()
+        this.read_scalar(errno_place.into())?.check_init()
     }
 
     /// Sets the last OS error using a `std::io::Error`. This function tries to produce the most
@@ -467,7 +465,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
         }
     }
-    
+
     fn read_scalar_at_offset(
         &self,
         op: OpTy<'tcx, Tag>,
@@ -507,6 +505,13 @@ pub fn check_arg_count<'a, 'tcx, const N: usize>(args: &'a [OpTy<'tcx, Tag>]) ->
         return Ok(ops);
     }
     throw_ub_format!("incorrect number of arguments: got {}, expected {}", args.len(), N)
+}
+
+pub fn isolation_error(name: &str) -> InterpResult<'static> {
+    throw_machine_stop!(TerminationInfo::UnsupportedInIsolation(format!(
+        "`{}` not available when isolation is enabled",
+        name,
+    )))
 }
 
 pub fn immty_from_int_checked<'tcx>(

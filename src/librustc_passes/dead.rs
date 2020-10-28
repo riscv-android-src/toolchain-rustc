@@ -15,7 +15,7 @@ use rustc_middle::middle::privacy;
 use rustc_middle::ty::{self, DefIdTree, TyCtxt};
 use rustc_session::lint;
 
-use rustc_ast::{ast, attr};
+use rustc_ast as ast;
 use rustc_span::symbol::{sym, Symbol};
 
 // Any local node that may call something in its body block should be
@@ -40,7 +40,7 @@ fn should_explore(tcx: TyCtxt<'_>, hir_id: hir::HirId) -> bool {
 struct MarkSymbolVisitor<'tcx> {
     worklist: Vec<hir::HirId>,
     tcx: TyCtxt<'tcx>,
-    maybe_typeck_tables: Option<&'tcx ty::TypeckTables<'tcx>>,
+    maybe_typeck_results: Option<&'tcx ty::TypeckResults<'tcx>>,
     live_symbols: FxHashSet<hir::HirId>,
     repr_has_repr_c: bool,
     in_pat: bool,
@@ -51,17 +51,18 @@ struct MarkSymbolVisitor<'tcx> {
 }
 
 impl<'tcx> MarkSymbolVisitor<'tcx> {
-    /// Gets the type-checking side-tables for the current body.
+    /// Gets the type-checking results for the current body.
     /// As this will ICE if called outside bodies, only call when working with
     /// `Expr` or `Pat` nodes (they are guaranteed to be found only in bodies).
     #[track_caller]
-    fn tables(&self) -> &'tcx ty::TypeckTables<'tcx> {
-        self.maybe_typeck_tables.expect("`MarkSymbolVisitor::tables` called outside of body")
+    fn typeck_results(&self) -> &'tcx ty::TypeckResults<'tcx> {
+        self.maybe_typeck_results
+            .expect("`MarkSymbolVisitor::typeck_results` called outside of body")
     }
 
     fn check_def_id(&mut self, def_id: DefId) {
         if let Some(def_id) = def_id.as_local() {
-            let hir_id = self.tcx.hir().as_local_hir_id(def_id);
+            let hir_id = self.tcx.hir().local_def_id_to_hir_id(def_id);
             if should_explore(self.tcx, hir_id) || self.struct_constructors.contains_key(&hir_id) {
                 self.worklist.push(hir_id);
             }
@@ -71,7 +72,7 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
 
     fn insert_def_id(&mut self, def_id: DefId) {
         if let Some(def_id) = def_id.as_local() {
-            let hir_id = self.tcx.hir().as_local_hir_id(def_id);
+            let hir_id = self.tcx.hir().local_def_id_to_hir_id(def_id);
             debug_assert!(!should_explore(self.tcx, hir_id));
             self.live_symbols.insert(hir_id);
         }
@@ -115,7 +116,7 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
     }
 
     fn lookup_and_handle_method(&mut self, id: hir::HirId) {
-        if let Some(def_id) = self.tables().type_dependent_def_id(id) {
+        if let Some(def_id) = self.typeck_results().type_dependent_def_id(id) {
             self.check_def_id(def_id);
         } else {
             bug!("no type-dependent def for method");
@@ -123,9 +124,9 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
     }
 
     fn handle_field_access(&mut self, lhs: &hir::Expr<'_>, hir_id: hir::HirId) {
-        match self.tables().expr_ty_adjusted(lhs).kind {
+        match self.typeck_results().expr_ty_adjusted(lhs).kind {
             ty::Adt(def, _) => {
-                let index = self.tcx.field_index(hir_id, self.tables());
+                let index = self.tcx.field_index(hir_id, self.typeck_results());
                 self.insert_def_id(def.non_enum_variant().fields[index].did);
             }
             ty::Tuple(..) => {}
@@ -139,7 +140,7 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
         res: Res,
         pats: &[hir::FieldPat<'_>],
     ) {
-        let variant = match self.tables().node_type(lhs.hir_id).kind {
+        let variant = match self.typeck_results().node_type(lhs.hir_id).kind {
             ty::Adt(adt, _) => adt.variant_of_res(res),
             _ => span_bug!(lhs.span, "non-ADT in struct pattern"),
         };
@@ -147,7 +148,7 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
             if let PatKind::Wild = pat.pat.kind {
                 continue;
             }
-            let index = self.tcx.field_index(pat.hir_id, self.tables());
+            let index = self.tcx.field_index(pat.hir_id, self.typeck_results());
             self.insert_def_id(variant.fields[index].did);
         }
     }
@@ -212,7 +213,7 @@ impl<'tcx> MarkSymbolVisitor<'tcx> {
     fn mark_as_used_if_union(&mut self, adt: &ty::AdtDef, fields: &[hir::Field<'_>]) {
         if adt.is_union() && adt.non_enum_variant().fields.len() > 1 && adt.did.is_local() {
             for field in fields {
-                let index = self.tcx.field_index(field.hir_id, self.tables());
+                let index = self.tcx.field_index(field.hir_id, self.typeck_results());
                 self.insert_def_id(adt.non_enum_variant().fields[index].did);
             }
         }
@@ -227,10 +228,11 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
     }
 
     fn visit_nested_body(&mut self, body: hir::BodyId) {
-        let old_maybe_typeck_tables = self.maybe_typeck_tables.replace(self.tcx.body_tables(body));
+        let old_maybe_typeck_results =
+            self.maybe_typeck_results.replace(self.tcx.typeck_body(body));
         let body = self.tcx.hir().body(body);
         self.visit_body(body);
-        self.maybe_typeck_tables = old_maybe_typeck_tables;
+        self.maybe_typeck_results = old_maybe_typeck_results;
     }
 
     fn visit_variant_data(
@@ -255,7 +257,7 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
     fn visit_expr(&mut self, expr: &'tcx hir::Expr<'tcx>) {
         match expr.kind {
             hir::ExprKind::Path(ref qpath @ hir::QPath::TypeRelative(..)) => {
-                let res = self.tables().qpath_res(qpath, expr.hir_id);
+                let res = self.typeck_results().qpath_res(qpath, expr.hir_id);
                 self.handle_res(res);
             }
             hir::ExprKind::MethodCall(..) => {
@@ -265,9 +267,9 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
                 self.handle_field_access(&lhs, expr.hir_id);
             }
             hir::ExprKind::Struct(ref qpath, ref fields, _) => {
-                let res = self.tables().qpath_res(qpath, expr.hir_id);
+                let res = self.typeck_results().qpath_res(qpath, expr.hir_id);
                 self.handle_res(res);
-                if let ty::Adt(ref adt, _) = self.tables().expr_ty(expr).kind {
+                if let ty::Adt(ref adt, _) = self.typeck_results().expr_ty(expr).kind {
                     self.mark_as_used_if_union(adt, fields);
                 }
             }
@@ -290,11 +292,11 @@ impl<'tcx> Visitor<'tcx> for MarkSymbolVisitor<'tcx> {
     fn visit_pat(&mut self, pat: &'tcx hir::Pat<'tcx>) {
         match pat.kind {
             PatKind::Struct(ref path, ref fields, _) => {
-                let res = self.tables().qpath_res(path, pat.hir_id);
+                let res = self.typeck_results().qpath_res(path, pat.hir_id);
                 self.handle_field_pattern_match(pat, res, fields);
             }
             PatKind::Path(ref qpath) => {
-                let res = self.tables().qpath_res(qpath, pat.hir_id);
+                let res = self.typeck_results().qpath_res(qpath, pat.hir_id);
                 self.handle_res(res);
             }
             _ => (),
@@ -329,17 +331,17 @@ fn has_allow_dead_code_or_lang_attr(
     id: hir::HirId,
     attrs: &[ast::Attribute],
 ) -> bool {
-    if attr::contains_name(attrs, sym::lang) {
+    if tcx.sess.contains_name(attrs, sym::lang) {
         return true;
     }
 
     // Stable attribute for #[lang = "panic_impl"]
-    if attr::contains_name(attrs, sym::panic_handler) {
+    if tcx.sess.contains_name(attrs, sym::panic_handler) {
         return true;
     }
 
     // (To be) stable attribute for #[lang = "oom"]
-    if attr::contains_name(attrs, sym::alloc_error_handler) {
+    if tcx.sess.contains_name(attrs, sym::alloc_error_handler) {
         return true;
     }
 
@@ -459,7 +461,7 @@ fn create_and_seed_worklist<'tcx>(
         )
         .chain(
             // Seed entry point
-            tcx.entry_fn(LOCAL_CRATE).map(|(def_id, _)| tcx.hir().as_local_hir_id(def_id)),
+            tcx.entry_fn(LOCAL_CRATE).map(|(def_id, _)| tcx.hir().local_def_id_to_hir_id(def_id)),
         )
         .collect::<Vec<_>>();
 
@@ -480,7 +482,7 @@ fn find_live<'tcx>(
     let mut symbol_visitor = MarkSymbolVisitor {
         worklist,
         tcx,
-        maybe_typeck_tables: None,
+        maybe_typeck_results: None,
         live_symbols: Default::default(),
         repr_has_repr_c: false,
         in_pat: false,
@@ -544,7 +546,7 @@ impl DeadVisitor<'tcx> {
         for &impl_did in inherent_impls.iter() {
             for &item_did in &self.tcx.associated_item_def_ids(impl_did)[..] {
                 if let Some(did) = item_did.as_local() {
-                    let item_hir_id = self.tcx.hir().as_local_hir_id(did);
+                    let item_hir_id = self.tcx.hir().local_def_id_to_hir_id(did);
                     if self.live_symbols.contains(&item_hir_id) {
                         return true;
                     }

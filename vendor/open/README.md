@@ -1,3 +1,4 @@
+[![](http://meritbadge.herokuapp.com/open)](https://crates.io/crates/open)
 [![Build Status](https://travis-ci.org/Byron/open-rs.svg?branch=master)](https://travis-ci.org/Byron/open-rs)
 
 Use this library to open a path or URL using the program configured on the system. It is equivalent to running one of the following:
@@ -16,17 +17,16 @@ $ open <path-or-url> || xdg-open <path-or-url> || gnome-open <path-or-url> || kd
 Add this to your Cargo.toml
 ```toml
 [dependencies]
-open = "*"
+open = "1"
 ```
-
-Add this to your lib ...
-```Rust
-extern crate open;
-```
-
-... and open something using
+…and open something using…
 ```Rust
 open::that("https://rust-lang.org");
+```
+
+…or, open something with an application of your choice
+```Rust
+open::with("https://rust-lang.org", "firefox");
 ```
 
 Follow this link for the [massive API docs](http://byron.github.io/open-rs).

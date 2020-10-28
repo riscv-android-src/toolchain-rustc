@@ -1,7 +1,7 @@
 use crate::{
     field::RecordFields,
     fmt::{format, FormatEvent, FormatFields, MakeWriter},
-    layer::{self, Context},
+    layer::{self, Context, Scope},
     registry::{LookupSpan, SpanRef},
 };
 use format::{FmtSpan, TimingDisplay};
@@ -9,7 +9,7 @@ use std::{any::TypeId, cell::RefCell, fmt, io, marker::PhantomData, ops::Deref, 
 use tracing_core::{
     field,
     span::{Attributes, Id, Record},
-    Event, Subscriber,
+    Event, Metadata, Subscriber,
 };
 
 /// A [`Layer`] that logs formatted representations of `tracing` events.
@@ -131,8 +131,8 @@ where
     /// # use tracing_subscriber::Layer as _;
     /// # let _ = layer.with_subscriber(tracing_subscriber::registry::Registry::default());
     /// ```
-    /// [event formatter]: ../format/trait.FormatEvent.html
-    /// [`FmtContext`]: ../struct.FmtContext.html
+    /// [`FormatEvent`]: ./format/trait.FormatEvent.html
+    /// [`FmtContext`]: ./struct.FmtContext.html
     /// [`Event`]: https://docs.rs/tracing/latest/tracing/struct.Event.html
     pub fn event_format<E2>(self, e: E2) -> Layer<S, N, E2, W>
     where
@@ -290,6 +290,37 @@ where
         }
     }
 
+    /// Sets whether or not the [thread ID] of the current thread is displayed
+    /// when formatting events
+    ///
+    /// [thread ID]: https://doc.rust-lang.org/stable/std/thread/struct.ThreadId.html
+    pub fn with_thread_ids(self, display_thread_ids: bool) -> Layer<S, N, format::Format<L, T>, W> {
+        Layer {
+            fmt_event: self.fmt_event.with_thread_ids(display_thread_ids),
+            fmt_fields: self.fmt_fields,
+            fmt_span: self.fmt_span,
+            make_writer: self.make_writer,
+            _inner: self._inner,
+        }
+    }
+
+    /// Sets whether or not the [name] of the current thread is displayed
+    /// when formatting events
+    ///
+    /// [name]: https://doc.rust-lang.org/stable/std/thread/index.html#naming-threads
+    pub fn with_thread_names(
+        self,
+        display_thread_names: bool,
+    ) -> Layer<S, N, format::Format<L, T>, W> {
+        Layer {
+            fmt_event: self.fmt_event.with_thread_names(display_thread_names),
+            fmt_fields: self.fmt_fields,
+            fmt_span: self.fmt_span,
+            make_writer: self.make_writer,
+            _inner: self._inner,
+        }
+    }
+
     /// Sets the layer being built to use a [less verbose formatter](../fmt/format/struct.Compact.html).
     pub fn compact(self) -> Layer<S, N, format::Format<format::Compact, T>, W>
     where
@@ -345,6 +376,40 @@ impl<S, T, W> Layer<S, format::JsonFields, format::Format<format::Json, T>, W> {
     ) -> Layer<S, format::JsonFields, format::Format<format::Json, T>, W> {
         Layer {
             fmt_event: self.fmt_event.flatten_event(flatten_event),
+            fmt_fields: format::JsonFields::new(),
+            fmt_span: self.fmt_span,
+            make_writer: self.make_writer,
+            _inner: self._inner,
+        }
+    }
+
+    /// Sets whether or not the formatter will include the current span in
+    /// formatted events.
+    ///
+    /// See [`format::Json`](../fmt/format/struct.Json.html)
+    pub fn with_current_span(
+        self,
+        display_current_span: bool,
+    ) -> Layer<S, format::JsonFields, format::Format<format::Json, T>, W> {
+        Layer {
+            fmt_event: self.fmt_event.with_current_span(display_current_span),
+            fmt_fields: format::JsonFields::new(),
+            fmt_span: self.fmt_span,
+            make_writer: self.make_writer,
+            _inner: self._inner,
+        }
+    }
+
+    /// Sets whether or not the formatter will include a list (from root to leaf)
+    /// of all currently entered spans in formatted events.
+    ///
+    /// See [`format::Json`](../fmt/format/struct.Json.html)
+    pub fn with_span_list(
+        self,
+        display_span_list: bool,
+    ) -> Layer<S, format::JsonFields, format::Format<format::Json, T>, W> {
+        Layer {
+            fmt_event: self.fmt_event.with_span_list(display_span_list),
             fmt_fields: format::JsonFields::new(),
             fmt_span: self.fmt_span,
             make_writer: self.make_writer,
@@ -426,7 +491,7 @@ where
 /// formatters are in use, each can store its own formatted representation
 /// without conflicting.
 ///
-/// [extensions]: ../registry/extensions/index.html
+/// [extensions]: ../registry/struct.Extensions.html
 #[derive(Default)]
 pub struct FormattedFields<E> {
     _format_event: PhantomData<fn(E)>,
@@ -707,6 +772,67 @@ where
             f(&span)?;
         }
         Ok(())
+    }
+
+    /// Returns metadata for the span with the given `id`, if it exists.
+    ///
+    /// If this returns `None`, then no span exists for that ID (either it has
+    /// closed or the ID is invalid).
+    #[inline]
+    pub fn metadata(&self, id: &Id) -> Option<&'static Metadata<'static>>
+    where
+        S: for<'lookup> LookupSpan<'lookup>,
+    {
+        self.ctx.metadata(id)
+    }
+
+    /// Returns [stored data] for the span with the given `id`, if it exists.
+    ///
+    /// If this returns `None`, then no span exists for that ID (either it has
+    /// closed or the ID is invalid).
+    ///
+    /// [stored data]: ../registry/struct.SpanRef.html
+    #[inline]
+    pub fn span(&self, id: &Id) -> Option<SpanRef<'_, S>>
+    where
+        S: for<'lookup> LookupSpan<'lookup>,
+    {
+        self.ctx.span(id)
+    }
+
+    /// Returns `true` if an active span exists for the given `Id`.
+    #[inline]
+    pub fn exists(&self, id: &Id) -> bool
+    where
+        S: for<'lookup> LookupSpan<'lookup>,
+    {
+        self.ctx.exists(id)
+    }
+
+    /// Returns [stored data] for the span that the wrapped subscriber considers
+    /// to be the current.
+    ///
+    /// If this returns `None`, then we are not currently within a span.
+    ///
+    /// [stored data]: ../registry/struct.SpanRef.html
+    #[inline]
+    pub fn lookup_current(&self) -> Option<SpanRef<'_, S>>
+    where
+        S: for<'lookup> LookupSpan<'lookup>,
+    {
+        self.ctx.lookup_current()
+    }
+
+    /// Returns an iterator over the [stored data] for all the spans in the
+    /// current context, starting the root of the trace tree and ending with
+    /// the current span.
+    ///
+    /// [stored data]: ../registry/struct.SpanRef.html
+    pub fn scope(&self) -> Scope<'_, S>
+    where
+        S: for<'lookup> LookupSpan<'lookup>,
+    {
+        self.ctx.scope()
     }
 }
 

@@ -1,6 +1,6 @@
 use petgraph::prelude::*;
 
-use crate::solve::SolverChoice;
+use crate::solve::Solver;
 use crate::RustIrDatabase;
 use chalk_ir::interner::Interner;
 use chalk_ir::{self, ImplId, TraitId};
@@ -11,9 +11,9 @@ use std::sync::Arc;
 pub mod orphan;
 mod solve;
 
-pub struct CoherenceSolver<'db, I: Interner> {
-    db: &'db dyn RustIrDatabase<I>,
-    solver_choice: SolverChoice,
+pub struct CoherenceSolver<'a, I: Interner> {
+    db: &'a dyn RustIrDatabase<I>,
+    solver_builder: &'a dyn Fn() -> Box<dyn Solver<I>>,
     trait_id: TraitId<I>,
 }
 
@@ -71,19 +71,19 @@ impl<I: Interner> SpecializationPriorities<I> {
 #[derive(Copy, Clone, Default, PartialOrd, Ord, PartialEq, Eq, Debug)]
 pub struct SpecializationPriority(usize);
 
-impl<'db, I> CoherenceSolver<'db, I>
+impl<'a, I> CoherenceSolver<'a, I>
 where
     I: Interner,
 {
     /// Constructs a new `CoherenceSolver`.
     pub fn new(
-        db: &'db dyn RustIrDatabase<I>,
-        solver_choice: SolverChoice,
+        db: &'a dyn RustIrDatabase<I>,
+        solver_builder: &'a dyn Fn() -> Box<dyn Solver<I>>,
         trait_id: TraitId<I>,
     ) -> Self {
         Self {
             db,
-            solver_choice,
+            solver_builder,
             trait_id,
         }
     }

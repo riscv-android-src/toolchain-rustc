@@ -1,5 +1,40 @@
 # Change Log
 
+## [3.4.0](https://github.com/sunng87/handlebars-rust/compare/3.3.0...3.4.0) - 2020-08-14
+
+* [Added] Debug log that can be turned on by using envlog or other implementation, to trace data resolution during rendering [#369]
+* [Fixed] Derived value as block context base value [#343, #353]
+* [Fixed] Partial name aligned with handlebars.js, added support for `.`, escape `[]` and string `''` name
+* [Changed] HTML escape aligned with handlebars.js, added `=`, `\` and ``` [#366]
+* [Changed] Update rhai to 0.18 [#370]
+* [Fixed] Result of simple helper is now escaped [#373]
+
+## [3.3.0](https://github.com/sunng87/handlebars-rust/compare/3.2.1...3.3.0) - 2020-07-18
+
+* [Added] Added two new APIs to reuse `Context` for rendering [#352]
+* [Changed] Update rhai to 0.17 [#354]
+* [Fixed] Fixed mustache.js html expression support, which is "&" instead of "$"
+
+## [3.2.1](https://github.com/sunng87/handlebars-rust/compare/3.2.0...3.2.1) - 2020-06-28
+
+* [Fixed] block context leak introduced in 3.2.0, #346 [#349]
+
+## [3.2.0](https://github.com/sunng87/handlebars-rust/compare/3.1.0...3.2.0) - 2020-06-28
+
+* [Added] API to register an pre-processed template [#331]
+* [Added] Helper macro now has support for named argument and helepr hash [#338]
+* [Added] Added support for `$` expression that is part of mustache.js [#339]
+* [Changed] Update rhai to 0.15 [#330]
+* [Fixed] else block for `each` [#344]
+
+## [3.1.0](https://github.com/sunng87/handlebars-rust/compare/3.0.1...3.1.0) - 2020-06-01
+
+* [Added] All new rhai script helper
+* [Added] multiple parameter support for log helper
+* [Fixed] helper lookup priority
+* [Changed] `Send` and `Sync` are not required for RenderContext local helper [#319]
+* [Fixed] partial block when using path as name [#321]
+
 ## [3.0.1](https://github.com/sunng87/handlebars-rust/compare/3.0.0...3.0.1) - 2020-01-25
 
 * [Fixed] Slash in partial path causing syntax error  #313

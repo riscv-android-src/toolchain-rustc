@@ -40,17 +40,23 @@ macro_rules! impl_shuffle1_dyn {
                         use crate::arch::x86_64::_mm_shuffle_pi8;
 
                         unsafe {
-                           crate::mem::transmute(_mm_shuffle_pi8(
-                               crate::mem::transmute(self.0),crate::mem::transmute(indices.0))
+                            crate::mem::transmute(
+                                _mm_shuffle_pi8(
+                                    crate::mem::transmute(self.0),
+                                    crate::mem::transmute(indices.0)
+                                )
                             )
                         }
                     }
                 }
-            } else if #[cfg(all(any(
+            } else if #[cfg(all(
+                any(
                     all(target_aarch = "aarch64", target_feature = "neon"),
                     all(target_aarch = "arm", target_feature = "v7",
-                        target_feature = "neon")),
-                feature = "coresimd")
+                        target_feature = "neon")
+                ),
+                any(feature = "core_arch", libcore_neon)
+            )
             )] {
                 impl Shuffle1Dyn for u8x8 {
                     type Indices = Self;
@@ -101,7 +107,7 @@ macro_rules! impl_shuffle1_dyn {
                     }
                 }
             } else if #[cfg(all(target_aarch = "aarch64", target_feature = "neon",
-                                feature = "coresimd"))] {
+                                any(feature = "core_arch", libcore_neon)))] {
                 impl Shuffle1Dyn for u8x16 {
                     type Indices = Self;
                     #[inline]
@@ -120,7 +126,8 @@ macro_rules! impl_shuffle1_dyn {
                     }
                 }
             } else if #[cfg(all(target_aarch = "arm", target_feature = "v7",
-                                target_feature = "neon", feature = "coresimd"))] {
+                                target_feature = "neon",
+                                any(feature = "core_arch", libcore_neon)))] {
                 impl Shuffle1Dyn for u8x16 {
                     type Indices = Self;
                     #[inline]
@@ -138,8 +145,14 @@ macro_rules! impl_shuffle1_dyn {
 
                             let (i0, i1) = U { j: y }.s;
 
-                            let r0 = vtbl2_u8(mem::transmute(x),crate::mem::transmute(i0));
-                            let r1 = vtbl2_u8(mem::transmute(x),crate::mem::transmute(i1));
+                            let r0 = vtbl2_u8(
+                                mem::transmute(x),
+                                crate::mem::transmute(i0)
+                            );
+                            let r1 = vtbl2_u8(
+                                mem::transmute(x),
+                                crate::mem::transmute(i1)
+                            );
 
                             let r = U { s: (r0, r1) }.j;
 
@@ -158,9 +171,12 @@ macro_rules! impl_shuffle1_dyn {
             #[inline]
             fn shuffle1_dyn(self, indices: Self::Indices) -> Self {
                 let indices: u8x8 = (indices * 2).cast();
-                let indices: u8x16 = shuffle!(indices, [0, 0, 1, 1, 2, 2, 3, 3,
-                                                        4, 4, 5, 5, 6, 6, 7, 7]);
-                let v = u8x16::new(0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1);
+                let indices: u8x16 = shuffle!(
+                    indices, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7]
+                );
+                let v = u8x16::new(
+                    0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1
+                );
                 let indices = indices + v;
                 unsafe {
                     let s: u8x16 =crate::mem::transmute(self);
@@ -183,8 +199,11 @@ macro_rules! impl_shuffle1_dyn {
                         use crate::arch::x86_64::{_mm_permutevar_ps};
 
                         unsafe {
-                           crate::mem::transmute(_mm_permutevar_ps(
-                               crate::mem::transmute(self.0),crate::mem::transmute(indices.0))
+                            crate::mem::transmute(
+                                _mm_permutevar_ps(
+                                    crate::mem::transmute(self.0),
+                                    crate::mem::transmute(indices.0)
+                                )
                             )
                         }
                     }
@@ -195,9 +214,13 @@ macro_rules! impl_shuffle1_dyn {
                     #[inline]
                     fn shuffle1_dyn(self, indices: Self::Indices) -> Self {
                         let indices: u8x4 = (indices * 4).cast();
-                        let indices: u8x16 = shuffle!(indices, [0, 0, 0, 0, 1, 1, 1, 1,
-                                                                2, 2, 2, 2, 3, 3, 3, 3]);
-                        let v = u8x16::new(0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3);
+                        let indices: u8x16 = shuffle!(
+                            indices,
+                            [0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
+                        );
+                        let v = u8x16::new(
+                            0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3
+                        );
                         let indices = indices + v;
                         unsafe {
                             let s: u8x16 =crate::mem::transmute(self);
@@ -225,8 +248,11 @@ macro_rules! impl_shuffle1_dyn {
                         // 0b10 => 1:
                         let indices = indices << 1;
                         unsafe {
-                           crate::mem::transmute(_mm_permutevar_pd(
-                               crate::mem::transmute(self),crate::mem::transmute(indices))
+                            crate::mem::transmute(
+                                _mm_permutevar_pd(
+                                    crate::mem::transmute(self),
+                                    crate::mem::transmute(indices)
+                                )
                             )
                         }
                     }
@@ -237,9 +263,13 @@ macro_rules! impl_shuffle1_dyn {
                     #[inline]
                     fn shuffle1_dyn(self, indices: Self::Indices) -> Self {
                         let indices: u8x2 = (indices * 8).cast();
-                        let indices: u8x16 = shuffle!(indices, [0, 0, 0, 0, 0, 0, 0, 0,
-                                                                1, 1, 1, 1, 1, 1, 1, 1]);
-                        let v = u8x16::new(0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7);
+                        let indices: u8x16 = shuffle!(
+                            indices,
+                            [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1]
+                        );
+                        let v = u8x16::new(
+                            0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7
+                        );
                         let indices = indices + v;
                         unsafe {
                             let s: u8x16 =crate::mem::transmute(self);

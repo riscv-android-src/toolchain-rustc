@@ -1039,7 +1039,7 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
                     // }
                     // ```
                     if let Some(def_id) = def_id.as_local() {
-                        let opaque_hir_id = tcx.hir().as_local_hir_id(def_id);
+                        let opaque_hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
                         let parent_def_id = self.parent_def_id;
                         let def_scope_default = || {
                             let opaque_parent_hir_id = tcx.hir().get_parent_item(opaque_hir_id);
@@ -1154,8 +1154,8 @@ impl<'a, 'tcx> Instantiator<'a, 'tcx> {
         debug!("instantiate_opaque_types: ty_var={:?}", ty_var);
 
         for predicate in &bounds.predicates {
-            if let ty::PredicateKind::Projection(projection) = predicate.kind() {
-                if projection.skip_binder().ty.references_error() {
+            if let ty::PredicateAtom::Projection(projection) = predicate.skip_binders() {
+                if projection.ty.references_error() {
                     // No point on adding these obligations since there's a type error involved.
                     return ty_var;
                 }
@@ -1205,7 +1205,7 @@ pub fn may_define_opaque_type(
     def_id: LocalDefId,
     opaque_hir_id: hir::HirId,
 ) -> bool {
-    let mut hir_id = tcx.hir().as_local_hir_id(def_id);
+    let mut hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
 
     // Named opaque types can be defined by any siblings or children of siblings.
     let scope = tcx.hir().get_defining_scope(opaque_hir_id);
@@ -1252,17 +1252,17 @@ crate fn required_region_bounds(
     traits::elaborate_predicates(tcx, predicates)
         .filter_map(|obligation| {
             debug!("required_region_bounds(obligation={:?})", obligation);
-            match obligation.predicate.kind() {
-                ty::PredicateKind::Projection(..)
-                | ty::PredicateKind::Trait(..)
-                | ty::PredicateKind::Subtype(..)
-                | ty::PredicateKind::WellFormed(..)
-                | ty::PredicateKind::ObjectSafe(..)
-                | ty::PredicateKind::ClosureKind(..)
-                | ty::PredicateKind::RegionOutlives(..)
-                | ty::PredicateKind::ConstEvaluatable(..)
-                | ty::PredicateKind::ConstEquate(..) => None,
-                ty::PredicateKind::TypeOutlives(predicate) => {
+            match obligation.predicate.skip_binders() {
+                ty::PredicateAtom::Projection(..)
+                | ty::PredicateAtom::Trait(..)
+                | ty::PredicateAtom::Subtype(..)
+                | ty::PredicateAtom::WellFormed(..)
+                | ty::PredicateAtom::ObjectSafe(..)
+                | ty::PredicateAtom::ClosureKind(..)
+                | ty::PredicateAtom::RegionOutlives(..)
+                | ty::PredicateAtom::ConstEvaluatable(..)
+                | ty::PredicateAtom::ConstEquate(..) => None,
+                ty::PredicateAtom::TypeOutlives(ty::OutlivesPredicate(ref t, ref r)) => {
                     // Search for a bound of the form `erased_self_ty
                     // : 'a`, but be wary of something like `for<'a>
                     // erased_self_ty : 'a` (we interpret a
@@ -1272,7 +1272,6 @@ crate fn required_region_bounds(
                     // it's kind of a moot point since you could never
                     // construct such an object, but this seems
                     // correct even if that code changes).
-                    let ty::OutlivesPredicate(ref t, ref r) = predicate.skip_binder();
                     if t == &erased_self_ty && !r.has_escaping_bound_vars() {
                         Some(*r)
                     } else {

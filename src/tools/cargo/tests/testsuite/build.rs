@@ -1,14 +1,17 @@
 //! Tests for the `cargo build` command.
 
 use cargo::{
-    core::compiler::CompileMode, core::Workspace, ops::CompileOptions,
-    util::paths::dylib_path_envvar, Config,
+    core::compiler::CompileMode,
+    core::{Shell, Workspace},
+    ops::CompileOptions,
+    util::paths::dylib_path_envvar,
+    Config,
 };
 use cargo_test_support::paths::{root, CargoPathExt};
 use cargo_test_support::registry::Package;
 use cargo_test_support::{
-    basic_bin_manifest, basic_lib_manifest, basic_manifest, lines_match, main_file, project,
-    rustc_host, sleep_ms, symlink_supported, t, Execs, ProjectBuilder,
+    basic_bin_manifest, basic_lib_manifest, basic_manifest, is_nightly, lines_match, main_file,
+    paths, project, rustc_host, sleep_ms, symlink_supported, t, Execs, ProjectBuilder,
 };
 use std::env;
 use std::fs;
@@ -427,7 +430,8 @@ fn cargo_compile_api_exposes_artifact_paths() {
         .file("src/bin.rs", "pub fn main() {}")
         .build();
 
-    let config = Config::default().unwrap();
+    let shell = Shell::from_write(Box::new(Vec::new()));
+    let config = Config::new(shell, env::current_dir().unwrap(), paths::home());
     let ws = Workspace::new(&p.root().join("Cargo.toml"), &config).unwrap();
     let compile_options = CompileOptions::new(ws.config(), CompileMode::Build).unwrap();
 
@@ -3142,7 +3146,8 @@ fn compiler_json_error_format() {
             "doctest": false,
             "edition": "2015",
             "name":"build-script-build",
-            "src_path":"[..]build.rs"
+            "src_path":"[..]build.rs",
+            "test": false
         },
         "profile": {
             "debug_assertions": true,
@@ -3166,7 +3171,8 @@ fn compiler_json_error_format() {
             "doctest": true,
             "edition": "2015",
             "name":"bar",
-            "src_path":"[..]lib.rs"
+            "src_path":"[..]lib.rs",
+            "test": true
         },
         "message":"{...}"
     }
@@ -3189,7 +3195,8 @@ fn compiler_json_error_format() {
             "doctest": true,
             "edition": "2015",
             "name":"bar",
-            "src_path":"[..]lib.rs"
+            "src_path":"[..]lib.rs",
+            "test": true
         },
         "filenames":[
             "[..].rlib",
@@ -3217,7 +3224,8 @@ fn compiler_json_error_format() {
             "doctest": false,
             "edition": "2015",
             "name":"foo",
-            "src_path":"[..]main.rs"
+            "src_path":"[..]main.rs",
+            "test": true
         },
         "message":"{...}"
     }
@@ -3231,7 +3239,8 @@ fn compiler_json_error_format() {
             "doctest": false,
             "edition": "2015",
             "name":"foo",
-            "src_path":"[..]main.rs"
+            "src_path":"[..]main.rs",
+            "test": true
         },
         "profile": {
             "debug_assertions": true,
@@ -3299,7 +3308,8 @@ fn message_format_json_forward_stderr() {
             "doctest": false,
             "edition": "2015",
             "name":"foo",
-            "src_path":"[..]"
+            "src_path":"[..]",
+            "test": true
         },
         "message":"{...}"
     }
@@ -3313,7 +3323,8 @@ fn message_format_json_forward_stderr() {
             "doctest": false,
             "edition": "2015",
             "name":"foo",
-            "src_path":"[..]"
+            "src_path":"[..]",
+            "test": true
         },
         "profile":{
             "debug_assertions":false,
@@ -4964,11 +4975,22 @@ fn close_output() {
                     let mut buf = [0];
                     drop(socket.read_exact(&mut buf));
                     let use_stderr = std::env::var("__CARGO_REPRO_STDERR").is_ok();
-                    for i in 0..10000 {
+                    // Emit at least 1MB of data.
+                    // Linux pipes can buffer up to 64KB.
+                    // This test seems to be sensitive to having other threads
+                    // calling fork. My hypothesis is that the stdout/stderr
+                    // file descriptors are duplicated into the child process,
+                    // and during the short window between fork and exec, the
+                    // file descriptor is kept alive long enough for the
+                    // build to finish. It's a half-baked theory, but this
+                    // seems to prevent the spurious errors in CI.
+                    // An alternative solution is to run this test in
+                    // a single-threaded environment.
+                    for i in 0..100000 {
                         if use_stderr {
-                            eprintln!("{}", i);
+                            eprintln!("0123456789{}", i);
                         } else {
-                            println!("{}", i);
+                            println!("0123456789{}", i);
                         }
                     }
                     TokenStream::new()
@@ -5102,4 +5124,63 @@ fn target_directory_backup_exclusion() {
     fs::remove_file(&cachedir_tag).unwrap();
     p.cargo("build").run();
     assert!(!&cachedir_tag.is_file());
+}
+
+#[cargo_test]
+fn simple_terminal_width() {
+    if !is_nightly() {
+        // --terminal-width is unstable
+        return;
+    }
+    let p = project()
+        .file(
+            "src/lib.rs",
+            r#"
+                fn main() {
+                    let _: () = 42;
+                }
+            "#,
+        )
+        .build();
+
+    p.cargo("build -Zterminal-width=20")
+        .masquerade_as_nightly_cargo()
+        .with_status(101)
+        .with_stderr_contains("3 | ..._: () = 42;")
+        .run();
+}
+
+#[cargo_test]
+fn build_script_o0_default() {
+    let p = project()
+        .file("src/lib.rs", "")
+        .file("build.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build -v --release")
+        .with_stderr_does_not_contain("[..]build_script_build[..]opt-level[..]")
+        .run();
+}
+
+#[cargo_test]
+fn build_script_o0_default_even_with_release() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "foo"
+                version = "0.1.0"
+
+                [profile.release]
+                opt-level = 1
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file("build.rs", "fn main() {}")
+        .build();
+
+    p.cargo("build -v --release")
+        .with_stderr_does_not_contain("[..]build_script_build[..]opt-level[..]")
+        .run();
 }

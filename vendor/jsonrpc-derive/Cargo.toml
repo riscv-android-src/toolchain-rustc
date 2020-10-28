@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "jsonrpc-derive"
-version = "14.0.5"
+version = "14.2.1"
 authors = ["Parity Technologies <admin@parity.io>"]
 description = "High level, typed wrapper for `jsonrpc-core`"
 homepage = "https://github.com/paritytech/jsonrpc"
@@ -30,7 +30,7 @@ version = "0.1.4"
 version = "1.0"
 
 [dependencies.quote]
-version = "1.0"
+version = "1.0.6"
 
 [dependencies.syn]
 version = "1.0"
@@ -39,16 +39,16 @@ features = ["full", "extra-traits", "visit", "fold"]
 version = "~0.1.6"
 
 [dev-dependencies.jsonrpc-core]
-version = "14.0"
+version = "14.2"
 
 [dev-dependencies.jsonrpc-core-client]
-version = "14.0"
+version = "14.2"
 
 [dev-dependencies.jsonrpc-pubsub]
-version = "14.0"
+version = "14.2"
 
 [dev-dependencies.jsonrpc-tcp-server]
-version = "14.0"
+version = "14.2"
 
 [dev-dependencies.serde]
 version = "1.0"

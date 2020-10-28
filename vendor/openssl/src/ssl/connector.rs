@@ -4,8 +4,8 @@ use std::ops::{Deref, DerefMut};
 use dh::Dh;
 use error::ErrorStack;
 use ssl::{
-    HandshakeError, Ssl, SslContext, SslContextBuilder, SslMethod, SslMode, SslOptions, SslRef,
-    SslStream, SslVerifyMode,
+    HandshakeError, Ssl, SslContext, SslContextBuilder, SslContextRef, SslMethod, SslMode,
+    SslOptions, SslRef, SslStream, SslVerifyMode,
 };
 use version;
 
@@ -20,6 +20,7 @@ ssbzSibBsu/6iGtCOGEoXJf//////////wIBAg==
 -----END DH PARAMETERS-----
 ";
 
+#[allow(clippy::inconsistent_digit_grouping)]
 fn ctx(method: SslMethod) -> Result<SslContextBuilder, ErrorStack> {
     let mut ctx = SslContextBuilder::new(method)?;
 
@@ -55,7 +56,7 @@ fn ctx(method: SslMethod) -> Result<SslContextBuilder, ErrorStack> {
 ///
 /// OpenSSL's built in hostname verification is used when linking against OpenSSL 1.0.2 or 1.1.0,
 /// and a custom implementation is used when linking against OpenSSL 1.0.1.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SslConnector(SslContext);
 
 impl SslConnector {
@@ -90,6 +91,16 @@ impl SslConnector {
             sni: true,
             verify_hostname: true,
         })
+    }
+
+    /// Consumes the `SslConnector`, returning the inner raw `SslContext`.
+    pub fn into_context(self) -> SslContext {
+        self.0
+    }
+
+    /// Returns a shared reference to the inner raw `SslContext`.
+    pub fn context(&self) -> &SslContextRef {
+        &*self.0
     }
 }
 
@@ -300,6 +311,16 @@ impl SslAcceptor {
     {
         let ssl = Ssl::new(&self.0)?;
         ssl.accept(stream)
+    }
+
+    /// Consumes the `SslAcceptor`, returning the inner raw `SslContext`.
+    pub fn into_context(self) -> SslContext {
+        self.0
+    }
+
+    /// Returns a shared reference to the inner raw `SslContext`.
+    pub fn context(&self) -> &SslContextRef {
+        &*self.0
     }
 }
 

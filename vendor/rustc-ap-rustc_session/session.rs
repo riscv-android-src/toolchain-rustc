@@ -1,7 +1,7 @@
 use crate::cgu_reuse_tracker::CguReuseTracker;
 use crate::code_stats::CodeStats;
 pub use crate::code_stats::{DataTypeKind, FieldInfo, SizeKind, VariantInfo};
-use crate::config::{self, CrateType, OutputType, PrintRequest, Sanitizer, SwitchWithOptPath};
+use crate::config::{self, CrateType, OutputType, PrintRequest, SanitizerSet, SwitchWithOptPath};
 use crate::filesearch;
 use crate::lint;
 use crate::parse::ParseSess;
@@ -441,6 +441,9 @@ impl Session {
     pub fn span_note_without_error<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
         self.diagnostic().span_note_without_error(sp, msg)
     }
+    pub fn struct_note_without_error(&self, msg: &str) -> DiagnosticBuilder<'_> {
+        self.diagnostic().struct_note_without_error(msg)
+    }
 
     pub fn diagnostic(&self) -> &rustc_errors::Handler {
         &self.parse_sess.span_diagnostic
@@ -545,7 +548,7 @@ impl Session {
         self.opts.debugging_opts.asm_comments
     }
     pub fn verify_llvm_ir(&self) -> bool {
-        self.opts.debugging_opts.verify_llvm_ir || cfg!(always_verify_llvm_ir)
+        self.opts.debugging_opts.verify_llvm_ir || option_env!("RUSTC_VERIFY_LLVM_IR").is_some()
     }
     pub fn borrowck_stats(&self) -> bool {
         self.opts.debugging_opts.borrowck_stats
@@ -647,14 +650,9 @@ impl Session {
     }
     pub fn fewer_names(&self) -> bool {
         let more_names = self.opts.output_types.contains_key(&OutputType::LlvmAssembly)
-            || self.opts.output_types.contains_key(&OutputType::Bitcode);
-
-        // Address sanitizer and memory sanitizer use alloca name when reporting an issue.
-        let more_names = match self.opts.debugging_opts.sanitizer {
-            Some(Sanitizer::Address) => true,
-            Some(Sanitizer::Memory) => true,
-            _ => more_names,
-        };
+            || self.opts.output_types.contains_key(&OutputType::Bitcode)
+            // AddressSanitizer and MemorySanitizer use alloca name when reporting an issue.
+            || self.opts.debugging_opts.sanitizer.intersects(SanitizerSet::ADDRESS | SanitizerSet::MEMORY);
 
         self.opts.debugging_opts.fewer_names || !more_names
     }
@@ -1017,12 +1015,10 @@ impl Session {
 
     /// Checks if LLVM lifetime markers should be emitted.
     pub fn emit_lifetime_markers(&self) -> bool {
-        match self.opts.debugging_opts.sanitizer {
-            // AddressSanitizer uses lifetimes to detect use after scope bugs.
-            // MemorySanitizer uses lifetimes to detect use of uninitialized stack variables.
-            Some(Sanitizer::Address | Sanitizer::Memory) => true,
-            _ => self.opts.optimize != config::OptLevel::No,
-        }
+        self.opts.optimize != config::OptLevel::No
+        // AddressSanitizer uses lifetimes to detect use after scope bugs.
+        // MemorySanitizer uses lifetimes to detect use of uninitialized stack variables.
+        || self.opts.debugging_opts.sanitizer.intersects(SanitizerSet::ADDRESS | SanitizerSet::MEMORY)
     }
 }
 
@@ -1065,8 +1061,15 @@ fn default_emitter(
             }
         }
         (config::ErrorOutputType::Json { pretty, json_rendered }, None) => Box::new(
-            JsonEmitter::stderr(Some(registry), source_map, pretty, json_rendered, macro_backtrace)
-                .ui_testing(sopts.debugging_opts.ui_testing),
+            JsonEmitter::stderr(
+                Some(registry),
+                source_map,
+                pretty,
+                json_rendered,
+                sopts.debugging_opts.terminal_width,
+                macro_backtrace,
+            )
+            .ui_testing(sopts.debugging_opts.ui_testing),
         ),
         (config::ErrorOutputType::Json { pretty, json_rendered }, Some(dst)) => Box::new(
             JsonEmitter::new(
@@ -1075,6 +1078,7 @@ fn default_emitter(
                 source_map,
                 pretty,
                 json_rendered,
+                sopts.debugging_opts.terminal_width,
                 macro_backtrace,
             )
             .ui_testing(sopts.debugging_opts.ui_testing),
@@ -1228,7 +1232,7 @@ pub fn build_session(
         }
 
         // Only use this directory if it has a file we can expect to always find.
-        if candidate.join("src/libstd/lib.rs").is_file() { Some(candidate) } else { None }
+        if candidate.join("library/std/src/lib.rs").is_file() { Some(candidate) } else { None }
     };
 
     let asm_arch = if target_cfg.target.options.allow_asm {
@@ -1353,33 +1357,58 @@ fn validate_commandline_args_with_session_available(sess: &Session) {
         );
     }
 
+    // FIXME(richkadel): See `src/test/run-make-fulldeps/instrument-coverage/Makefile`. After
+    // compiling with `-Zinstrument-coverage`, the resulting binary generates a segfault during
+    // the program's exit process (likely while attempting to generate the coverage stats in
+    // the "*.profraw" file). An investigation to resolve the problem on Windows is ongoing,
+    // but until this is resolved, the option is disabled on Windows, and the test is skipped
+    // when targeting `MSVC`.
+    if sess.opts.debugging_opts.instrument_coverage && sess.target.target.options.is_like_msvc {
+        sess.warn(
+            "Rust source-based code coverage instrumentation (with `-Z instrument-coverage`) \
+            is not yet supported on Windows when targeting MSVC. The resulting binaries will \
+            still be instrumented for experimentation purposes, but may not execute correctly.",
+        );
+    }
+
+    const ASAN_SUPPORTED_TARGETS: &[&str] = &[
+        "aarch64-fuchsia",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-apple-darwin",
+        "x86_64-fuchsia",
+        "x86_64-unknown-linux-gnu",
+    ];
+    const LSAN_SUPPORTED_TARGETS: &[&str] =
+        &["aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"];
+    const MSAN_SUPPORTED_TARGETS: &[&str] =
+        &["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"];
+    const TSAN_SUPPORTED_TARGETS: &[&str] =
+        &["aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"];
+
     // Sanitizers can only be used on some tested platforms.
-    if let Some(ref sanitizer) = sess.opts.debugging_opts.sanitizer {
-        const ASAN_SUPPORTED_TARGETS: &[&str] = &[
-            "x86_64-unknown-linux-gnu",
-            "x86_64-apple-darwin",
-            "x86_64-fuchsia",
-            "aarch64-fuchsia",
-        ];
-        const TSAN_SUPPORTED_TARGETS: &[&str] =
-            &["x86_64-unknown-linux-gnu", "x86_64-apple-darwin"];
-        const LSAN_SUPPORTED_TARGETS: &[&str] =
-            &["x86_64-unknown-linux-gnu", "x86_64-apple-darwin"];
-        const MSAN_SUPPORTED_TARGETS: &[&str] = &["x86_64-unknown-linux-gnu"];
-
-        let supported_targets = match *sanitizer {
-            Sanitizer::Address => ASAN_SUPPORTED_TARGETS,
-            Sanitizer::Thread => TSAN_SUPPORTED_TARGETS,
-            Sanitizer::Leak => LSAN_SUPPORTED_TARGETS,
-            Sanitizer::Memory => MSAN_SUPPORTED_TARGETS,
+    for s in sess.opts.debugging_opts.sanitizer {
+        let supported_targets = match s {
+            SanitizerSet::ADDRESS => ASAN_SUPPORTED_TARGETS,
+            SanitizerSet::LEAK => LSAN_SUPPORTED_TARGETS,
+            SanitizerSet::MEMORY => MSAN_SUPPORTED_TARGETS,
+            SanitizerSet::THREAD => TSAN_SUPPORTED_TARGETS,
+            _ => panic!("unrecognized sanitizer {}", s),
         };
-
         if !supported_targets.contains(&&*sess.opts.target_triple.triple()) {
             sess.err(&format!(
-                "{:?}Sanitizer only works with the `{}` target",
-                sanitizer,
-                supported_targets.join("` or `")
+                "`-Zsanitizer={}` only works with targets: {}",
+                s,
+                supported_targets.join(", ")
             ));
+        }
+        let conflicting = sess.opts.debugging_opts.sanitizer - s;
+        if !conflicting.is_empty() {
+            sess.err(&format!(
+                "`-Zsanitizer={}` is incompatible with `-Zsanitizer={}`",
+                s, conflicting,
+            ));
+            // Don't report additional errors.
+            break;
         }
     }
 }
@@ -1409,7 +1438,7 @@ pub fn early_error(output: config::ErrorOutputType, msg: &str) -> ! {
             Box::new(EmitterWriter::stderr(color_config, None, short, false, None, false))
         }
         config::ErrorOutputType::Json { pretty, json_rendered } => {
-            Box::new(JsonEmitter::basic(pretty, json_rendered, false))
+            Box::new(JsonEmitter::basic(pretty, json_rendered, None, false))
         }
     };
     let handler = rustc_errors::Handler::with_emitter(true, None, emitter);
@@ -1424,7 +1453,7 @@ pub fn early_warn(output: config::ErrorOutputType, msg: &str) {
             Box::new(EmitterWriter::stderr(color_config, None, short, false, None, false))
         }
         config::ErrorOutputType::Json { pretty, json_rendered } => {
-            Box::new(JsonEmitter::basic(pretty, json_rendered, false))
+            Box::new(JsonEmitter::basic(pretty, json_rendered, None, false))
         }
     };
     let handler = rustc_errors::Handler::with_emitter(true, None, emitter);

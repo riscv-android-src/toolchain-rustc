@@ -23,7 +23,7 @@ pub struct RawConst<'tcx> {
 
 /// Represents a constant value in Rust. `Scalar` and `Slice` are optimizations for
 /// array length computations, enum discriminants and the pattern matching logic.
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, RustcEncodable, RustcDecodable, Hash)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord, TyEncodable, TyDecodable, Hash)]
 #[derive(HashStable)]
 pub enum ConstValue<'tcx> {
     /// Used only for types with `layout::abi::Scalar` ABI and ZSTs.
@@ -56,8 +56,29 @@ impl<'tcx> ConstValue<'tcx> {
         }
     }
 
+    pub fn try_to_str_slice(&self) -> Option<&'tcx str> {
+        if let ConstValue::Slice { data, start, end } = *self {
+            ::std::str::from_utf8(data.inspect_with_uninit_and_ptr_outside_interpreter(start..end))
+                .ok()
+        } else {
+            None
+        }
+    }
+
     pub fn try_to_bits(&self, size: Size) -> Option<u128> {
         self.try_to_scalar()?.to_bits(size).ok()
+    }
+
+    pub fn try_to_bool(&self) -> Option<bool> {
+        match self.try_to_bits(Size::from_bytes(1))? {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }
+    }
+
+    pub fn try_to_machine_usize(&self, tcx: TyCtxt<'tcx>) -> Option<u64> {
+        Some(self.try_to_bits(tcx.data_layout.pointer_size)? as u64)
     }
 
     pub fn try_to_bits_for_ty(
@@ -66,7 +87,7 @@ impl<'tcx> ConstValue<'tcx> {
         param_env: ParamEnv<'tcx>,
         ty: Ty<'tcx>,
     ) -> Option<u128> {
-        let size = tcx.layout_of(param_env.with_reveal_all().and(ty)).ok()?.size;
+        let size = tcx.layout_of(param_env.with_reveal_all_normalized(tcx).and(ty)).ok()?.size;
         self.try_to_bits(size)
     }
 
@@ -87,7 +108,7 @@ impl<'tcx> ConstValue<'tcx> {
 /// `memory::Allocation`. It is in many ways like a small chunk of a `Allocation`, up to 8 bytes in
 /// size. Like a range of bytes in an `Allocation`, a `Scalar` can either represent the raw bytes
 /// of a simple value or a pointer into another `Allocation`
-#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, RustcEncodable, RustcDecodable, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, Ord, PartialOrd, TyEncodable, TyDecodable, Hash)]
 #[derive(HashStable)]
 pub enum Scalar<Tag = ()> {
     /// The raw bytes of a simple value.
@@ -541,7 +562,7 @@ impl<Tag> From<Pointer<Tag>> for Scalar<Tag> {
     }
 }
 
-#[derive(Clone, Copy, Eq, PartialEq, RustcEncodable, RustcDecodable, HashStable, Hash)]
+#[derive(Clone, Copy, Eq, PartialEq, TyEncodable, TyDecodable, HashStable, Hash)]
 pub enum ScalarMaybeUninit<Tag = ()> {
     Scalar(Scalar<Tag>),
     Uninit,
@@ -594,7 +615,7 @@ impl<'tcx, Tag> ScalarMaybeUninit<Tag> {
     }
 
     #[inline]
-    pub fn not_undef(self) -> InterpResult<'static, Scalar<Tag>> {
+    pub fn check_init(self) -> InterpResult<'static, Scalar<Tag>> {
         match self {
             ScalarMaybeUninit::Scalar(scalar) => Ok(scalar),
             ScalarMaybeUninit::Uninit => throw_ub!(InvalidUninitBytes(None)),
@@ -603,72 +624,72 @@ impl<'tcx, Tag> ScalarMaybeUninit<Tag> {
 
     #[inline(always)]
     pub fn to_bool(self) -> InterpResult<'tcx, bool> {
-        self.not_undef()?.to_bool()
+        self.check_init()?.to_bool()
     }
 
     #[inline(always)]
     pub fn to_char(self) -> InterpResult<'tcx, char> {
-        self.not_undef()?.to_char()
+        self.check_init()?.to_char()
     }
 
     #[inline(always)]
     pub fn to_f32(self) -> InterpResult<'tcx, Single> {
-        self.not_undef()?.to_f32()
+        self.check_init()?.to_f32()
     }
 
     #[inline(always)]
     pub fn to_f64(self) -> InterpResult<'tcx, Double> {
-        self.not_undef()?.to_f64()
+        self.check_init()?.to_f64()
     }
 
     #[inline(always)]
     pub fn to_u8(self) -> InterpResult<'tcx, u8> {
-        self.not_undef()?.to_u8()
+        self.check_init()?.to_u8()
     }
 
     #[inline(always)]
     pub fn to_u16(self) -> InterpResult<'tcx, u16> {
-        self.not_undef()?.to_u16()
+        self.check_init()?.to_u16()
     }
 
     #[inline(always)]
     pub fn to_u32(self) -> InterpResult<'tcx, u32> {
-        self.not_undef()?.to_u32()
+        self.check_init()?.to_u32()
     }
 
     #[inline(always)]
     pub fn to_u64(self) -> InterpResult<'tcx, u64> {
-        self.not_undef()?.to_u64()
+        self.check_init()?.to_u64()
     }
 
     #[inline(always)]
     pub fn to_machine_usize(self, cx: &impl HasDataLayout) -> InterpResult<'tcx, u64> {
-        self.not_undef()?.to_machine_usize(cx)
+        self.check_init()?.to_machine_usize(cx)
     }
 
     #[inline(always)]
     pub fn to_i8(self) -> InterpResult<'tcx, i8> {
-        self.not_undef()?.to_i8()
+        self.check_init()?.to_i8()
     }
 
     #[inline(always)]
     pub fn to_i16(self) -> InterpResult<'tcx, i16> {
-        self.not_undef()?.to_i16()
+        self.check_init()?.to_i16()
     }
 
     #[inline(always)]
     pub fn to_i32(self) -> InterpResult<'tcx, i32> {
-        self.not_undef()?.to_i32()
+        self.check_init()?.to_i32()
     }
 
     #[inline(always)]
     pub fn to_i64(self) -> InterpResult<'tcx, i64> {
-        self.not_undef()?.to_i64()
+        self.check_init()?.to_i64()
     }
 
     #[inline(always)]
     pub fn to_machine_isize(self, cx: &impl HasDataLayout) -> InterpResult<'tcx, i64> {
-        self.not_undef()?.to_machine_isize(cx)
+        self.check_init()?.to_machine_isize(cx)
     }
 }
 

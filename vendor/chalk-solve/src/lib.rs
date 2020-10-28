@@ -1,5 +1,6 @@
 #![deny(rust_2018_idioms)]
 
+use crate::display::sanitize_debug_name;
 use crate::rust_ir::*;
 use chalk_ir::interner::Interner;
 
@@ -7,24 +8,39 @@ use chalk_ir::*;
 use std::fmt::Debug;
 use std::sync::Arc;
 
-#[cfg(test)]
-#[macro_use]
-mod test_macros;
-
 pub mod clauses;
 pub mod coherence;
-mod coinductive_goal;
+pub mod coinductive_goal;
+pub mod display;
 pub mod ext;
 pub mod goal_builder;
-mod infer;
+pub mod infer;
 pub mod logging;
-#[cfg(feature = "recursive-solver")]
-pub mod recursive;
+pub mod logging_db;
 pub mod rust_ir;
-mod solve;
+pub mod solve;
 pub mod split;
 pub mod wf;
 
+/// Trait representing access to a database of rust types.
+///
+/// # `*_name` methods
+///
+/// This trait has a number of `*_name` methods with default implementations.
+/// These are used in the implementation for [`LoggingRustIrDatabase`], so that
+/// when printing `.chalk` files equivalent to the data used, we can use real
+/// names.
+///
+/// The default implementations simply fall back to calling [`Interner`] debug
+/// methods, and printing `"UnknownN"` (where `N` is the demultiplexing integer)
+/// if those methods return `None`.
+///
+/// The [`display::sanitize_debug_name`] utility is used in the default
+/// implementations, and might be useful when providing custom implementations.
+///
+/// [`LoggingRustIrDatabase`]: crate::logging_db::LoggingRustIrDatabase
+/// [`display::sanitize_debug_name`]: crate::display::sanitize_debug_name
+/// [`Interner`]: Interner
 pub trait RustIrDatabase<I: Interner>: Debug {
     /// Returns any "custom program clauses" that do not derive from
     /// Rust IR. Used only in testing the underlying solver.
@@ -36,12 +52,13 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     /// Returns the datum for the definition with the given id.
     fn trait_datum(&self, trait_id: TraitId<I>) -> Arc<TraitDatum<I>>;
 
-    /// Returns the datum for the impl with the given id.
+    /// Returns the datum for the ADT with the given id.
     fn adt_datum(&self, adt_id: AdtId<I>) -> Arc<AdtDatum<I>>;
 
     /// Returns the representation for the ADT definition with the given id.
     fn adt_repr(&self, id: AdtId<I>) -> AdtRepr;
 
+    /// Returns the datum for the fn definition with the given id.
     fn fn_def_datum(&self, fn_def_id: FnDefId<I>) -> Arc<FnDefDatum<I>>;
 
     /// Returns the datum for the impl with the given id.
@@ -65,8 +82,15 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     /// apply. The parameters are provided as a "hint" to help the
     /// implementor do less work, but can be completely ignored if
     /// desired.
-    fn impls_for_trait(&self, trait_id: TraitId<I>, parameters: &[GenericArg<I>])
-        -> Vec<ImplId<I>>;
+    ///
+    /// The `binders` are for the `parameters`; if the recursive solver is used,
+    /// the parameters can contain bound variables referring to these binders.
+    fn impls_for_trait(
+        &self,
+        trait_id: TraitId<I>,
+        parameters: &[GenericArg<I>],
+        binders: &CanonicalVarKinds<I>,
+    ) -> Vec<ImplId<I>>;
 
     /// Returns the impls that require coherence checking. This is not the
     /// full set of impls that exist:
@@ -83,17 +107,6 @@ pub trait RustIrDatabase<I: Interner>: Debug {
     /// based on the field types (otherwise, we rely on the impls the
     /// user gave).
     fn impl_provided_for(&self, auto_trait_id: TraitId<I>, adt_id: AdtId<I>) -> bool;
-
-    /// A stop-gap solution to force an impl for a given well-known trait.
-    /// Useful when the logic for a given trait is absent or incomplete.
-    /// A value of `Some(true)` means that the the clause for the impl will be
-    /// added. A value of `Some(false)` means that the clause for the impl will
-    /// not be added, and fallback logic will not be checked. A value of `None`
-    /// means that the clause will not be added, but fallback logic may add logic.
-    #[allow(unused_variables)]
-    fn force_impl_for(&self, well_known: WellKnownTrait, ty: &TyData<I>) -> Option<bool> {
-        None
-    }
 
     /// Returns id of a trait lang item, if found
     fn well_known_trait_id(&self, well_known_trait: WellKnownTrait) -> Option<TraitId<I>>;
@@ -139,6 +152,36 @@ pub trait RustIrDatabase<I: Interner>: Debug {
         closure_id: ClosureId<I>,
         substs: &Substitution<I>,
     ) -> Substitution<I>;
+
+    /// Retrieves a trait's original name. No uniqueness guarantees, but must
+    /// a valid Rust identifier.
+    fn trait_name(&self, trait_id: TraitId<I>) -> String {
+        sanitize_debug_name(|f| I::debug_trait_id(trait_id, f))
+    }
+
+    /// Retrieves a struct's original name. No uniqueness guarantees, but must
+    /// a valid Rust identifier.
+    fn adt_name(&self, adt_id: AdtId<I>) -> String {
+        sanitize_debug_name(|f| I::debug_adt_id(adt_id, f))
+    }
+
+    /// Retrieves the name of an associated type. No uniqueness guarantees, but must
+    /// a valid Rust identifier.
+    fn assoc_type_name(&self, assoc_ty_id: AssocTypeId<I>) -> String {
+        sanitize_debug_name(|f| I::debug_assoc_type_id(assoc_ty_id, f))
+    }
+
+    /// Retrieves the name of an opaque type. No uniqueness guarantees, but must
+    /// a valid Rust identifier.
+    fn opaque_type_name(&self, opaque_ty_id: OpaqueTyId<I>) -> String {
+        sanitize_debug_name(|f| I::debug_opaque_ty_id(opaque_ty_id, f))
+    }
+
+    /// Retrieves the name of a function definition. No uniqueness guarantees, but must
+    /// a valid Rust identifier.
+    fn fn_def_name(&self, fn_def_id: FnDefId<I>) -> String {
+        sanitize_debug_name(|f| I::debug_fn_def_id(fn_def_id, f))
+    }
 }
 
 pub use clauses::program_clauses_for_env;
@@ -146,7 +189,6 @@ pub use clauses::program_clauses_for_env;
 pub use solve::Guidance;
 pub use solve::Solution;
 pub use solve::Solver;
-pub use solve::SolverChoice;
 pub use solve::SubstitutionResult;
 
 #[macro_use]

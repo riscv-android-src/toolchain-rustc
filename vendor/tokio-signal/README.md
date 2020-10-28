@@ -1,16 +1,14 @@
 # tokio-signal
 
-An implementation of Unix signal handling for Tokio
+Unix signal handling for Tokio.
 
-[![Travis Build Status][travis-badge]][travis-url]
-[![Appveyor Build Status][appveyor-badge]][appveyor-url]
+> **Note:** This crate is **deprecated in tokio 0.2.x** and has been moved into
+> [`tokio::signal`] behind the `signal` [feature flag].
 
-[travis-badge]: https://travis-ci.org/tokio-rs/tokio.svg?branch=master
-[travis-url]: https://travis-ci.org/tokio-rs/tokio
-[appveyor-badge]: https://ci.appveyor.com/api/projects/status/s83yxhy9qeb58va7/branch/master?svg=true
-[appveyor-url]: https://ci.appveyor.com/project/carllerche/tokio/branch/master
+[`tokio::signal`]: https://docs.rs/tokio/latest/tokio/signal/index.html
+[feature flag]: https://docs.rs/tokio/latest/tokio/index.html#feature-flags
 
-[Documentation](https://docs.rs/tokio-signal)
+[Documentation](https://docs.rs/tokio-signal/0.2.8/tokio_signal)
 
 ## Usage
 
@@ -18,7 +16,7 @@ First, add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-tokio-signal = "0.2"
+tokio-signal = "0.2.8"
 ```
 
 Next you can use this in conjunction with the `tokio` and `futures` crates:
@@ -46,10 +44,9 @@ fn main() {
 }
 ```
 
-# License
+## License
 
-This project is licensed the MIT license ([LICENSE](LICENSE) or
-http://opensource.org/licenses/MIT).
+This project is licensed under the [MIT license](./LICENSE).
 
 ### Contribution
 

@@ -46,7 +46,7 @@ pub fn resolve_std<'cfg>(
     let patches = to_patch
         .iter()
         .map(|&name| {
-            let source_path = SourceId::for_path(&src_path.join("src").join("tools").join(name))?;
+            let source_path = SourceId::for_path(&src_path.join("library").join(name))?;
             let dep = Dependency::parse_no_deprecated(name, None, source_path)?;
             Ok(dep)
         })
@@ -55,10 +55,10 @@ pub fn resolve_std<'cfg>(
     let mut patch = HashMap::new();
     patch.insert(crates_io_url, patches);
     let members = vec![
-        String::from("src/libstd"),
-        String::from("src/libcore"),
-        String::from("src/liballoc"),
-        String::from("src/libtest"),
+        String::from("library/std"),
+        String::from("library/core"),
+        String::from("library/alloc"),
+        String::from("library/test"),
     ];
     let ws_config = crate::core::WorkspaceConfig::Root(crate::core::WorkspaceRootConfig::new(
         &src_path,
@@ -85,7 +85,7 @@ pub fn resolve_std<'cfg>(
     // other crates need to alter their features, this should be fine, for
     // now. Perhaps in the future features will be decoupled from the resolver
     // and it will be easier to control feature selection.
-    let current_manifest = src_path.join("src/libtest/Cargo.toml");
+    let current_manifest = src_path.join("library/test/Cargo.toml");
     // TODO: Consider doing something to enforce --locked? Or to prevent the
     // lock file from being written, such as setting ephemeral.
     let mut std_ws = Workspace::new_virtual(src_path, current_manifest, virtual_manifest, config)?;
@@ -99,11 +99,18 @@ pub fn resolve_std<'cfg>(
     spec_pkgs.push("test".to_string());
     let spec = Packages::Packages(spec_pkgs);
     let specs = spec.to_package_id_specs(&std_ws)?;
-    let features = vec!["panic-unwind".to_string(), "backtrace".to_string()];
+    let features = match &config.cli_unstable().build_std_features {
+        Some(list) => list.clone(),
+        None => vec![
+            "panic-unwind".to_string(),
+            "backtrace".to_string(),
+            "default".to_string(),
+        ],
+    };
     // dev_deps setting shouldn't really matter here.
     let opts = ResolveOpts::new(
         /*dev_deps*/ false, &features, /*all_features*/ false,
-        /*uses_default_features*/ true,
+        /*uses_default_features*/ false,
     );
     let resolve = ops::resolve_ws_with_opts(
         &std_ws,

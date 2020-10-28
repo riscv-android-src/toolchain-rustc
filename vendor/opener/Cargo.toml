@@ -11,8 +11,9 @@
 # will likely look very different (and much more reasonable)
 
 [package]
+edition = "2018"
 name = "opener"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Brian Bowman <seeker14491@gmail.com>"]
 description = "Open a file or link using the system default program."
 readme = "../README.md"
@@ -28,6 +29,9 @@ features = ["shellapi"]
 branch = "master"
 repository = "Seeker14491/opener"
 service = "github"
+
+[badges.maintenance]
+status = "passively-maintained"
 
 [badges.travis-ci]
 branch = "master"

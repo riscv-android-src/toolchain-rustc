@@ -1,4 +1,13 @@
+#![doc(html_root_url = "https://docs.rs/tokio-signal/0.2.9")]
+#![deny(missing_docs)]
+
 //! Asynchronous signal handling for Tokio
+//!
+//! > **Note:** This crate is **deprecated in tokio 0.2.x** and has been moved
+//! > into [`tokio::signal`] behind the `signal` [feature flag].
+//!
+//! [`tokio::signal`]: https://docs.rs/tokio/latest/tokio/signal/index.html
+//! [feature flag]: https://docs.rs/tokio/latest/tokio/index.html#feature-flags
 //!
 //! This crate implements asynchronous signal handling for Tokio, an
 //! asynchronous I/O framework in Rust. The primary type exported from this
@@ -67,9 +76,6 @@
 //! # fn main() {}
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/tokio-signal/0.2.7")]
-#![deny(missing_docs)]
-
 extern crate futures;
 extern crate mio;
 extern crate tokio_executor;
@@ -86,9 +92,9 @@ pub mod unix;
 pub mod windows;
 
 /// A future whose error is `io::Error`
-pub type IoFuture<T> = Box<Future<Item = T, Error = io::Error> + Send>;
+pub type IoFuture<T> = Box<dyn Future<Item = T, Error = io::Error> + Send>;
 /// A stream whose error is `io::Error`
-pub type IoStream<T> = Box<Stream<Item = T, Error = io::Error> + Send>;
+pub type IoStream<T> = Box<dyn Stream<Item = T, Error = io::Error> + Send>;
 
 /// Creates a stream which receives "ctrl-c" notifications sent to a process.
 ///
@@ -102,7 +108,7 @@ pub type IoStream<T> = Box<Stream<Item = T, Error = io::Error> + Send>;
 /// read up on the documentation in the `unix` or `windows` module to take a
 /// peek.
 pub fn ctrl_c() -> IoFuture<IoStream<()>> {
-    ctrl_c_handle(&Handle::current())
+    ctrl_c_handle(&Handle::default())
 }
 
 /// Creates a stream which receives "ctrl-c" notifications sent to a process.
@@ -125,7 +131,7 @@ pub fn ctrl_c_handle(handle: &Handle) -> IoFuture<IoStream<()>> {
         let handle = handle.clone();
         Box::new(future::lazy(move || {
             unix::Signal::with_handle(unix::libc::SIGINT, &handle)
-                .map(|x| Box::new(x.map(|_| ())) as Box<Stream<Item = _, Error = _> + Send>)
+                .map(|x| Box::new(x.map(|_| ())) as Box<dyn Stream<Item = _, Error = _> + Send>)
         }))
     }
 

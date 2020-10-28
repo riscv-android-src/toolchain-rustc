@@ -84,7 +84,7 @@ enum MaybeString {
 impl<'a> Tokenizer<'a> {
     pub fn new(input: &'a str) -> Tokenizer<'a> {
         let mut t = Tokenizer {
-            input: input,
+            input,
             chars: CrlfFold {
                 chars: input.char_indices(),
             },
@@ -266,7 +266,7 @@ impl<'a> Tokenizer<'a> {
             .clone()
             .next()
             .map(|i| i.0)
-            .unwrap_or(self.input.len())
+            .unwrap_or_else(|| self.input.len())
     }
 
     pub fn input(&self) -> &'a str {
@@ -349,7 +349,7 @@ impl<'a> Tokenizer<'a> {
                     return Ok(String {
                         src: &self.input[start..self.current()],
                         val: val.into_cow(&self.input[..i]),
-                        multiline: multiline,
+                        multiline,
                     });
                 }
                 Some((i, c)) => new_ch(self, &mut val, multiline, i, c)?,
@@ -415,7 +415,7 @@ impl<'a> Tokenizer<'a> {
                 }
                 Ok(())
             }
-            ch if '\u{20}' <= ch && ch <= '\u{10ffff}' && ch != '\u{7f}' => {
+            ch if ch == '\u{09}' || ('\u{20}' <= ch && ch <= '\u{10ffff}' && ch != '\u{7f}') => {
                 val.push(ch);
                 Ok(())
             }
@@ -463,10 +463,7 @@ impl<'a> Tokenizer<'a> {
             .peek_one()
             .map(|t| t.0)
             .unwrap_or_else(|| self.input.len());
-        Span {
-            start: start,
-            end: end,
-        }
+        Span { start, end }
     }
 
     /// Peek one char without consuming it.
@@ -620,6 +617,8 @@ mod tests {
         t(r#""\U00000000""#, "\0", false);
         t(r#""\U000A0000""#, "\u{A0000}", false);
         t(r#""\\t""#, "\\t", false);
+        t("\"\t\"", "\t", false);
+        t("\"\"\"\n\t\"\"\"", "\t", true);
         t("\"\"\"\\\n\"\"\"", "", true);
         t(
             "\"\"\"\\\n     \t   \t  \\\r\n  \t \n  \t \r\n\"\"\"",
@@ -642,7 +641,7 @@ mod tests {
         err(r#""\U00""#, Error::InvalidHexEscape(5, '"'));
         err(r#""\U00"#, Error::UnterminatedString(0));
         err(r#""\uD800"#, Error::InvalidEscapeValue(2, 0xd800));
-        err(r#""\UFFFFFFFF"#, Error::InvalidEscapeValue(2, 0xffffffff));
+        err(r#""\UFFFFFFFF"#, Error::InvalidEscapeValue(2, 0xffff_ffff));
     }
 
     #[test]

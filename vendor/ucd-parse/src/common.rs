@@ -7,17 +7,18 @@ use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 
-use error::{Error, ErrorKind};
+use crate::error::{Error, ErrorKind};
 
 /// Parse a particular file in the UCD into a sequence of rows.
 ///
 /// The given directory should be the directory to the UCD.
-pub fn parse<P, D>(
-    ucd_dir: P,
-) -> Result<Vec<D>, Error>
-where P: AsRef<Path>, D: UcdFile
+pub fn parse<P, D>(ucd_dir: P) -> Result<Vec<D>, Error>
+where
+    P: AsRef<Path>,
+    D: UcdFile,
 {
     let mut xs = vec![];
     for result in D::from_dir(ucd_dir)? {
@@ -33,7 +34,9 @@ where P: AsRef<Path>, D: UcdFile
 pub fn parse_by_codepoint<P, D>(
     ucd_dir: P,
 ) -> Result<BTreeMap<Codepoint, D>, Error>
-where P: AsRef<Path>, D: UcdFileByCodepoint
+where
+    P: AsRef<Path>,
+    D: UcdFileByCodepoint,
 {
     let mut map = BTreeMap::new();
     for result in D::from_dir(ucd_dir)? {
@@ -56,7 +59,9 @@ where P: AsRef<Path>, D: UcdFileByCodepoint
 pub fn parse_many_by_codepoint<P, D>(
     ucd_dir: P,
 ) -> Result<BTreeMap<Codepoint, Vec<D>>, Error>
-where P: AsRef<Path>, D: UcdFileByCodepoint
+where
+    P: AsRef<Path>,
+    D: UcdFileByCodepoint,
 {
     let mut map = BTreeMap::new();
     for result in D::from_dir(ucd_dir)? {
@@ -68,12 +73,73 @@ where P: AsRef<Path>, D: UcdFileByCodepoint
     Ok(map)
 }
 
+/// Given a path pointing at the root of the `ucd_dir`, attempts to determine
+/// it's unicode version.
+///
+/// This just checks the readme and the very first line of PropList.txt -- in
+/// practice this works for all versions of UCD since 4.1.0.
+pub fn ucd_directory_version<D: ?Sized + AsRef<Path>>(
+    ucd_dir: &D,
+) -> Result<(u64, u64, u64), Error> {
+    // Avoid duplication from generic path parameter.
+    fn ucd_directory_version_inner(
+        ucd_dir: &Path,
+    ) -> Result<(u64, u64, u64), Error> {
+        lazy_static::lazy_static! {
+            static ref VERSION_RX: Regex =
+                Regex::new(r"-([0-9]+).([0-9]+).([0-9]+).txt").unwrap();
+        }
+
+        let proplist = ucd_dir.join("PropList.txt");
+        let contents = first_line(&proplist)?;
+        let caps = match VERSION_RX.captures(&contents) {
+            Some(c) => c,
+            None => {
+                return err!("Failed to find version in line {:?}", contents)
+            }
+        };
+
+        let capture_to_num = |n| {
+            caps.get(n).unwrap().as_str().parse::<u64>().map_err(|e| Error {
+                kind: ErrorKind::Parse(format!(
+                    "Failed to parse version from {:?} in PropList.txt: {}",
+                    contents, e
+                )),
+                line: Some(0),
+                path: Some(proplist.clone()),
+            })
+        };
+        let major = capture_to_num(1)?;
+        let minor = capture_to_num(2)?;
+        let patch = capture_to_num(3)?;
+
+        Ok((major, minor, patch))
+    }
+    ucd_directory_version_inner(ucd_dir.as_ref())
+}
+
+fn first_line(path: &Path) -> Result<String, Error> {
+    let file = std::fs::File::open(path).map_err(|e| Error {
+        kind: ErrorKind::Io(e),
+        line: None,
+        path: Some(path.into()),
+    })?;
+
+    let mut reader = std::io::BufReader::new(file);
+    let mut line_contents = String::new();
+    reader.read_line(&mut line_contents).map_err(|e| Error {
+        kind: ErrorKind::Io(e),
+        line: None,
+        path: Some(path.into()),
+    })?;
+    Ok(line_contents)
+}
+
 /// A helper function for parsing a common record format that associates one
 /// or more codepoints with a string value.
 pub fn parse_codepoint_association<'a>(
     line: &'a str,
-) -> Result<(Codepoints, &'a str), Error>
-{
+) -> Result<(Codepoints, &'a str), Error> {
     lazy_static! {
         static ref PARTS: Regex = Regex::new(
             r"(?x)
@@ -81,7 +147,8 @@ pub fn parse_codepoint_association<'a>(
             \s*(?P<codepoints>[^\s;]+)\s*;
             \s*(?P<property>[^;\x23]+)\s*
             "
-        ).unwrap();
+        )
+        .unwrap();
     };
 
     let caps = match PARTS.captures(line.trim()) {
@@ -90,8 +157,12 @@ pub fn parse_codepoint_association<'a>(
     };
     let property = match caps.name("property") {
         Some(property) => property.as_str().trim(),
-        None => return err!(
-            "could not find property name in PropList line: '{}'", line),
+        None => {
+            return err!(
+                "could not find property name in PropList line: '{}'",
+                line
+            )
+        }
     };
     Ok((caps["codepoints"].parse()?, property))
 }
@@ -123,13 +194,14 @@ pub fn parse_break_test(line: &str) -> Result<(Vec<String>, String), Error> {
             \#(?P<comment>.+)
             $
             "
-        ).unwrap();
-
+        )
+        .unwrap();
         static ref GROUP: Regex = Regex::new(
             r"(?x)
             (?P<codepoint>[0-9A-Fa-f]{4,5})\s(?P<kind>÷|×)
             "
-        ).unwrap();
+        )
+        .unwrap();
     }
 
     let caps = match PARTS.captures(line.trim()) {
@@ -144,9 +216,13 @@ pub fn parse_break_test(line: &str) -> Result<(Vec<String>, String), Error> {
         let cp: Codepoint = cap["codepoint"].parse()?;
         let ch = match cp.scalar() {
             Some(ch) => ch,
-            None => return err!(
-                "invalid codepoint '{:X}' in line: '{}'", cp.value(), line
-            ),
+            None => {
+                return err!(
+                    "invalid codepoint '{:X}' in line: '{}'",
+                    cp.value(),
+                    line
+                )
+            }
         };
         cur.push(ch);
         if &cap["kind"] == "÷" {
@@ -159,7 +235,7 @@ pub fn parse_break_test(line: &str) -> Result<(Vec<String>, String), Error> {
 
 /// Describes a single UCD file.
 pub trait UcdFile:
-    Clone + fmt::Debug + Default + Eq + FromStr<Err=Error> + PartialEq
+    Clone + fmt::Debug + Default + Eq + FromStr<Err = Error> + PartialEq
 {
     /// The file path corresponding to this file, relative to the UCD
     /// directory.
@@ -232,7 +308,7 @@ impl<R: io::Read, D> UcdLineParser<R, D> {
     /// need to provide their own buffering.
     pub(crate) fn new(path: Option<PathBuf>, rdr: R) -> UcdLineParser<R, D> {
         UcdLineParser {
-            path: path,
+            path,
             rdr: io::BufReader::new(rdr),
             line: String::new(),
             line_number: 0,
@@ -241,7 +317,7 @@ impl<R: io::Read, D> UcdLineParser<R, D> {
     }
 }
 
-impl<R: io::Read, D: FromStr<Err=Error>> Iterator for UcdLineParser<R, D> {
+impl<R: io::Read, D: FromStr<Err = Error>> Iterator for UcdLineParser<R, D> {
     type Item = Result<D, Error>;
 
     fn next(&mut self) -> Option<Result<D, Error>> {
@@ -249,11 +325,13 @@ impl<R: io::Read, D: FromStr<Err=Error>> Iterator for UcdLineParser<R, D> {
             self.line_number += 1;
             self.line.clear();
             let n = match self.rdr.read_line(&mut self.line) {
-                Err(err) => return Some(Err(Error {
-                    kind: ErrorKind::Io(err),
-                    line: None,
-                    path: self.path.clone(),
-                })),
+                Err(err) => {
+                    return Some(Err(Error {
+                        kind: ErrorKind::Io(err),
+                        line: None,
+                        path: self.path.clone(),
+                    }))
+                }
                 Ok(n) => n,
             };
             if n == 0 {
@@ -311,7 +389,7 @@ impl FromStr for Codepoints {
 }
 
 impl fmt::Display for Codepoints {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             Codepoints::Single(ref x) => x.fmt(f),
             Codepoints::Range(ref x) => x.fmt(f),
@@ -379,9 +457,9 @@ impl FromStr for CodepointRange {
 
     fn from_str(s: &str) -> Result<CodepointRange, Error> {
         lazy_static! {
-            static ref PARTS: Regex = Regex::new(
-                r"^(?P<start>[A-Z0-9]+)\.\.(?P<end>[A-Z0-9]+)$"
-            ).unwrap();
+            static ref PARTS: Regex =
+                Regex::new(r"^(?P<start>[A-Z0-9]+)\.\.(?P<end>[A-Z0-9]+)$")
+                    .unwrap();
         }
         let caps = match PARTS.captures(s) {
             Some(caps) => caps,
@@ -393,12 +471,12 @@ impl FromStr for CodepointRange {
         let end = caps["end"].parse().or_else(|err| {
             err!("failed to parse '{}' as a codepoint range: {}", s, err)
         })?;
-        Ok(CodepointRange { start: start, end: end })
+        Ok(CodepointRange { start, end })
     }
 }
 
 impl fmt::Display for CodepointRange {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}..{}", self.start, self.end)
     }
 }
@@ -438,12 +516,16 @@ impl Codepoint {
     }
 
     /// Return the underlying `u32` codepoint value.
-    pub fn value(self) -> u32 { self.0 }
+    pub fn value(self) -> u32 {
+        self.0
+    }
 
     /// Attempt to convert this codepoint to a Unicode scalar value.
     ///
     /// If this is a surrogate codepoint, then this returns `None`.
-    pub fn scalar(self) -> Option<char> { char::from_u32(self.0) }
+    pub fn scalar(self) -> Option<char> {
+        char::from_u32(self.0)
+    }
 }
 
 impl IntoIterator for Codepoint {
@@ -452,7 +534,7 @@ impl IntoIterator for Codepoint {
 
     fn into_iter(self) -> CodepointIter {
         let range = CodepointRange { start: self, end: self };
-        CodepointIter { next: self.value(), range: range }
+        CodepointIter { next: self.value(), range }
     }
 }
 
@@ -465,14 +547,16 @@ impl FromStr for Codepoint {
             Err(err) => {
                 return err!(
                     "failed to parse '{}' as a hexadecimal codepoint: {}",
-                    s, err);
+                    s,
+                    err
+                );
             }
         }
     }
 }
 
 impl fmt::Display for Codepoint {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{:04X}", self.0)
     }
 }

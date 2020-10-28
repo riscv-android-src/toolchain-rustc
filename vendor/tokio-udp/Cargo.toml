@@ -12,11 +12,11 @@
 
 [package]
 name = "tokio-udp"
-version = "0.1.5"
+version = "0.1.6"
 authors = ["Carl Lerche <me@carllerche.com>"]
 description = "UDP bindings for tokio.\n"
 homepage = "https://tokio.rs"
-documentation = "https://docs.rs/tokio-udp/0.1.5/tokio_udp"
+documentation = "https://docs.rs/tokio-udp/0.1.6/tokio_udp"
 categories = ["asynchronous"]
 license = "MIT"
 repository = "https://github.com/tokio-rs/tokio"
@@ -41,5 +41,5 @@ version = "0.1.7"
 [dependencies.tokio-reactor]
 version = "0.1.1"
 [dev-dependencies.env_logger]
-version = "0.5"
+version = "0.6"
 default-features = false

@@ -12,7 +12,7 @@
 //! initialization and can otherwise silence errors, if
 //! move analysis runs after promotion on broken MIR.
 
-use rustc_ast::ast::LitKind;
+use rustc_ast::LitKind;
 use rustc_hir as hir;
 use rustc_hir::def_id::DefId;
 use rustc_middle::mir::traversal::ReversePostorder;
@@ -60,16 +60,15 @@ impl<'tcx> MirPass<'tcx> for PromoteTemps<'tcx> {
             return;
         }
 
-        let def_id = src.def_id().expect_local();
+        let def = src.with_opt_param().expect_local();
 
         let mut rpo = traversal::reverse_postorder(body);
-        let ccx = ConstCx::new(tcx, def_id, body);
+        let ccx = ConstCx::new(tcx, def.did, body);
         let (temps, all_candidates) = collect_temps_and_candidates(&ccx, &mut rpo);
 
         let promotable_candidates = validate_candidates(&ccx, &temps, &all_candidates);
 
-        let promoted =
-            promote_candidates(def_id.to_def_id(), body, tcx, temps, promotable_candidates);
+        let promoted = promote_candidates(def.to_global(), body, tcx, temps, promotable_candidates);
         self.promoted_fragments.set(promoted);
     }
 }
@@ -102,7 +101,7 @@ impl TempState {
 /// of a larger candidate.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Candidate {
-    /// Borrow of a constant temporary.
+    /// Borrow of a constant temporary, candidate for lifetime extension.
     Ref(Location),
 
     /// Promotion of the `x` in `[x; 32]`.
@@ -131,7 +130,7 @@ impl Candidate {
 
 fn args_required_const(tcx: TyCtxt<'_>, def_id: DefId) -> Option<Vec<usize>> {
     let attrs = tcx.get_attrs(def_id);
-    let attr = attrs.iter().find(|a| a.check_name(sym::rustc_args_required_const))?;
+    let attr = attrs.iter().find(|a| tcx.sess.check_name(a, sym::rustc_args_required_const))?;
     let mut ret = vec![];
     for meta in attr.meta_item_list()? {
         match meta.literal()?.kind {
@@ -503,9 +502,47 @@ impl<'tcx> Validator<'_, 'tcx> {
     fn validate_place(&self, place: PlaceRef<'tcx>) -> Result<(), Unpromotable> {
         match place {
             PlaceRef { local, projection: [] } => self.validate_local(local),
-            PlaceRef { local: _, projection: [proj_base @ .., elem] } => {
+            PlaceRef { local, projection: [proj_base @ .., elem] } => {
                 match *elem {
-                    ProjectionElem::Deref | ProjectionElem::Downcast(..) => {
+                    ProjectionElem::Deref => {
+                        let mut not_promotable = true;
+                        // This is a special treatment for cases like *&STATIC where STATIC is a
+                        // global static variable.
+                        // This pattern is generated only when global static variables are directly
+                        // accessed and is qualified for promotion safely.
+                        if let TempState::Defined { location, .. } = self.temps[local] {
+                            let def_stmt =
+                                self.body[location.block].statements.get(location.statement_index);
+                            if let Some(Statement {
+                                kind:
+                                    StatementKind::Assign(box (_, Rvalue::Use(Operand::Constant(c)))),
+                                ..
+                            }) = def_stmt
+                            {
+                                if let Some(did) = c.check_static_ptr(self.tcx) {
+                                    if let Some(hir::ConstContext::Static(..)) = self.const_kind {
+                                        // The `is_empty` predicate is introduced to exclude the case
+                                        // where the projection operations are [ .field, * ].
+                                        // The reason is because promotion will be illegal if field
+                                        // accesses precede the dereferencing.
+                                        // Discussion can be found at
+                                        // https://github.com/rust-lang/rust/pull/74945#discussion_r463063247
+                                        // There may be opportunity for generalization, but this needs to be
+                                        // accounted for.
+                                        if proj_base.is_empty()
+                                            && !self.tcx.is_thread_local_static(did)
+                                        {
+                                            not_promotable = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if not_promotable {
+                            return Err(Unpromotable);
+                        }
+                    }
+                    ProjectionElem::Downcast(..) => {
                         return Err(Unpromotable);
                     }
 
@@ -937,7 +974,7 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
 
     fn promote_candidate(
         mut self,
-        def_id: DefId,
+        def: ty::WithOptConstParam<DefId>,
         candidate: Candidate,
         next_promoted_id: usize,
     ) -> Option<Body<'tcx>> {
@@ -955,8 +992,8 @@ impl<'a, 'tcx> Promoter<'a, 'tcx> {
                     literal: tcx.mk_const(ty::Const {
                         ty,
                         val: ty::ConstKind::Unevaluated(
-                            def_id,
-                            InternalSubsts::for_item(tcx, def_id, |param, _| {
+                            def,
+                            InternalSubsts::for_item(tcx, def.did, |param, _| {
                                 if let ty::GenericParamDefKind::Lifetime = param.kind {
                                     tcx.lifetimes.re_erased.into()
                                 } else {
@@ -1100,7 +1137,7 @@ impl<'a, 'tcx> MutVisitor<'tcx> for Promoter<'a, 'tcx> {
 }
 
 pub fn promote_candidates<'tcx>(
-    def_id: DefId,
+    def: ty::WithOptConstParam<DefId>,
     body: &mut Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     mut temps: IndexVec<Local, TempState>,
@@ -1157,7 +1194,7 @@ pub fn promote_candidates<'tcx>(
         };
 
         //FIXME(oli-obk): having a `maybe_push()` method on `IndexVec` might be nice
-        if let Some(promoted) = promoter.promote_candidate(def_id, candidate, promotions.len()) {
+        if let Some(promoted) = promoter.promote_candidate(def, candidate, promotions.len()) {
             promotions.push(promoted);
         }
     }

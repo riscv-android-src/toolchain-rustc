@@ -3,7 +3,7 @@ use self::collector::NodeCollector;
 use crate::hir::{Owner, OwnerNodes};
 use crate::ty::query::Providers;
 use crate::ty::TyCtxt;
-use rustc_ast::ast::{self};
+use rustc_ast as ast;
 use rustc_data_structures::svh::Svh;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{CrateNum, DefId, LocalDefId, CRATE_DEF_INDEX, LOCAL_CRATE};
@@ -171,11 +171,6 @@ impl<'hir> Map<'hir> {
     #[inline]
     pub fn opt_local_def_id(&self, hir_id: HirId) -> Option<LocalDefId> {
         self.tcx.definitions.opt_hir_id_to_local_def_id(hir_id)
-    }
-
-    #[inline]
-    pub fn as_local_hir_id(&self, def_id: LocalDefId) -> HirId {
-        self.tcx.definitions.as_local_hir_id(def_id)
     }
 
     #[inline]
@@ -450,7 +445,7 @@ impl<'hir> Map<'hir> {
     }
 
     pub fn get_module(&self, module: LocalDefId) -> (&'hir Mod<'hir>, Span, HirId) {
-        let hir_id = self.as_local_hir_id(module);
+        let hir_id = self.local_def_id_to_hir_id(module);
         match self.get_entry(hir_id).node {
             Node::Item(&Item { span, kind: ItemKind::Mod(ref m), .. }) => (m, span, hir_id),
             Node::Crate(item) => (&item.module, item.span, hir_id),
@@ -483,7 +478,7 @@ impl<'hir> Map<'hir> {
     }
 
     pub fn get_if_local(&self, id: DefId) -> Option<Node<'hir>> {
-        id.as_local().map(|id| self.get(self.as_local_hir_id(id)))
+        id.as_local().map(|id| self.get(self.local_def_id_to_hir_id(id)))
     }
 
     pub fn get_generics(&self, id: DefId) -> Option<&'hir Generics<'hir>> {
@@ -833,13 +828,24 @@ impl<'hir> Map<'hir> {
         attrs.unwrap_or(&[])
     }
 
+    /// Gets the span of the definition of the specified HIR node.
+    /// This is used by `tcx.get_span`
     pub fn span(&self, hir_id: HirId) -> Span {
         match self.find_entry(hir_id).map(|entry| entry.node) {
             Some(Node::Param(param)) => param.span,
-            Some(Node::Item(item)) => item.span,
+            Some(Node::Item(item)) => match &item.kind {
+                ItemKind::Fn(sig, _, _) => sig.span,
+                _ => item.span,
+            },
             Some(Node::ForeignItem(foreign_item)) => foreign_item.span,
-            Some(Node::TraitItem(trait_method)) => trait_method.span,
-            Some(Node::ImplItem(impl_item)) => impl_item.span,
+            Some(Node::TraitItem(trait_item)) => match &trait_item.kind {
+                TraitItemKind::Fn(sig, _) => sig.span,
+                _ => trait_item.span,
+            },
+            Some(Node::ImplItem(impl_item)) => match &impl_item.kind {
+                ImplItemKind::Fn(sig, _) => sig.span,
+                _ => impl_item.span,
+            },
             Some(Node::Variant(variant)) => variant.span,
             Some(Node::Field(field)) => field.span,
             Some(Node::AnonConst(constant)) => self.body(constant.body).value.span,
@@ -871,8 +877,20 @@ impl<'hir> Map<'hir> {
         }
     }
 
+    /// Like `hir.span()`, but includes the body of function items
+    /// (instead of just the function header)
+    pub fn span_with_body(&self, hir_id: HirId) -> Span {
+        match self.find_entry(hir_id).map(|entry| entry.node) {
+            Some(Node::TraitItem(item)) => item.span,
+            Some(Node::ImplItem(impl_item)) => impl_item.span,
+            Some(Node::Item(item)) => item.span,
+            Some(_) => self.span(hir_id),
+            _ => bug!("hir::map::Map::span_with_body: id not in map: {:?}", hir_id),
+        }
+    }
+
     pub fn span_if_local(&self, id: DefId) -> Option<Span> {
-        id.as_local().map(|id| self.span(self.as_local_hir_id(id)))
+        id.as_local().map(|id| self.span(self.local_def_id_to_hir_id(id)))
     }
 
     pub fn res_span(&self, res: Res) -> Option<Span> {

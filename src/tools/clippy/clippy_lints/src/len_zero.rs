@@ -262,7 +262,7 @@ fn check_len(
 fn has_is_empty(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
     /// Special case ranges until `range_is_empty` is stabilized. See issue 3807.
     fn should_skip_range(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
-        higher::range(cx, expr).map_or(false, |_| {
+        higher::range(expr).map_or(false, |_| {
             !cx.tcx
                 .features()
                 .declared_lib_features
@@ -300,18 +300,14 @@ fn has_is_empty(cx: &LateContext<'_>, expr: &Expr<'_>) -> bool {
         return false;
     }
 
-    let ty = &walk_ptrs_ty(cx.tables().expr_ty(expr));
+    let ty = &walk_ptrs_ty(cx.typeck_results().expr_ty(expr));
     match ty.kind {
-        ty::Dynamic(ref tt, ..) => {
-            if let Some(principal) = tt.principal() {
-                cx.tcx
-                    .associated_items(principal.def_id())
-                    .in_definition_order()
-                    .any(|item| is_is_empty(cx, &item))
-            } else {
-                false
-            }
-        },
+        ty::Dynamic(ref tt, ..) => tt.principal().map_or(false, |principal| {
+            cx.tcx
+                .associated_items(principal.def_id())
+                .in_definition_order()
+                .any(|item| is_is_empty(cx, &item))
+        }),
         ty::Projection(ref proj) => has_is_empty_impl(cx, proj.item_def_id),
         ty::Adt(id, _) => has_is_empty_impl(cx, id.did),
         ty::Array(..) | ty::Slice(..) | ty::Str => true,

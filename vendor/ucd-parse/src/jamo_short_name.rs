@@ -1,10 +1,11 @@
 use std::path::Path;
 use std::str::FromStr;
 
+use lazy_static::lazy_static;
 use regex::Regex;
 
-use common::{UcdFile, UcdFileByCodepoint, Codepoint, CodepointIter};
-use error::Error;
+use crate::common::{Codepoint, CodepointIter, UcdFile, UcdFileByCodepoint};
+use crate::error::Error;
 
 /// A single row in the `Jamo.txt` file.
 ///
@@ -42,7 +43,8 @@ impl FromStr for JamoShortName {
                 \s*
                 (?P<name>[A-Z]*)
                 "
-            ).unwrap();
+            )
+            .unwrap();
         };
 
         let caps = match PARTS.captures(line.trim()) {

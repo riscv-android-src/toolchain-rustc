@@ -1,17 +1,18 @@
 use crate::pp::Breaks::{Consistent, Inconsistent};
 use crate::pp::{self, Breaks};
 
-use rustc_ast::ast::{self, BlockCheckMode, PatKind, RangeEnd, RangeSyntax};
-use rustc_ast::ast::{Attribute, GenericArg, MacArgs};
-use rustc_ast::ast::{GenericBound, SelfKind, TraitBoundModifier};
-use rustc_ast::ast::{InlineAsmOperand, InlineAsmRegOrRegClass};
-use rustc_ast::ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 use rustc_ast::attr;
 use rustc_ast::ptr::P;
-use rustc_ast::token::{self, BinOpToken, DelimToken, Nonterminal, Token, TokenKind};
+use rustc_ast::token::{self, BinOpToken, CommentKind, DelimToken, Nonterminal, Token, TokenKind};
 use rustc_ast::tokenstream::{TokenStream, TokenTree};
+use rustc_ast::util::classify;
+use rustc_ast::util::comments::{gather_comments, Comment, CommentStyle};
 use rustc_ast::util::parser::{self, AssocOp, Fixity};
-use rustc_ast::util::{classify, comments};
+use rustc_ast::{self as ast, BlockCheckMode, PatKind, RangeEnd, RangeSyntax};
+use rustc_ast::{GenericArg, MacArgs};
+use rustc_ast::{GenericBound, SelfKind, TraitBoundModifier};
+use rustc_ast::{InlineAsmOperand, InlineAsmRegOrRegClass};
+use rustc_ast::{InlineAsmOptions, InlineAsmTemplatePiece};
 use rustc_span::edition::Edition;
 use rustc_span::source_map::{SourceMap, Spanned};
 use rustc_span::symbol::{kw, sym, Ident, IdentPrinter, Symbol};
@@ -50,17 +51,17 @@ impl PpAnn for NoAnn {}
 
 pub struct Comments<'a> {
     sm: &'a SourceMap,
-    comments: Vec<comments::Comment>,
+    comments: Vec<Comment>,
     current: usize,
 }
 
 impl<'a> Comments<'a> {
     pub fn new(sm: &'a SourceMap, filename: FileName, input: String) -> Comments<'a> {
-        let comments = comments::gather_comments(sm, filename, input);
+        let comments = gather_comments(sm, filename, input);
         Comments { sm, comments, current: 0 }
     }
 
-    pub fn next(&self) -> Option<comments::Comment> {
+    pub fn next(&self) -> Option<Comment> {
         self.comments.get(self.current).cloned()
     }
 
@@ -68,9 +69,9 @@ impl<'a> Comments<'a> {
         &mut self,
         span: rustc_span::Span,
         next_pos: Option<BytePos>,
-    ) -> Option<comments::Comment> {
+    ) -> Option<Comment> {
         if let Some(cmnt) = self.next() {
-            if cmnt.style != comments::Trailing {
+            if cmnt.style != CommentStyle::Trailing {
                 return None;
             }
             let span_line = self.sm.lookup_char_pos(span.hi());
@@ -152,8 +153,8 @@ pub fn to_string(f: impl FnOnce(&mut State<'_>)) -> String {
 // and also addresses some specific regressions described in #63896 and #73345.
 fn tt_prepend_space(tt: &TokenTree, prev: &TokenTree) -> bool {
     if let TokenTree::Token(token) = prev {
-        if let token::DocComment(s) = token.kind {
-            return !s.as_str().starts_with("//");
+        if let token::DocComment(comment_kind, ..) = token.kind {
+            return comment_kind != CommentKind::Line;
         }
     }
     match tt {
@@ -191,6 +192,19 @@ fn binop_to_string(op: BinOpToken) -> &'static str {
         token::Or => "|",
         token::Shl => "<<",
         token::Shr => ">>",
+    }
+}
+
+fn doc_comment_to_string(
+    comment_kind: CommentKind,
+    attr_style: ast::AttrStyle,
+    data: Symbol,
+) -> String {
+    match (comment_kind, attr_style) {
+        (CommentKind::Line, ast::AttrStyle::Outer) => format!("///{}", data),
+        (CommentKind::Line, ast::AttrStyle::Inner) => format!("//!{}", data),
+        (CommentKind::Block, ast::AttrStyle::Outer) => format!("/**{}*/", data),
+        (CommentKind::Block, ast::AttrStyle::Inner) => format!("/*!{}*/", data),
     }
 }
 
@@ -271,7 +285,9 @@ fn token_kind_to_string_ext(tok: &TokenKind, convert_dollar_crate: Option<Span>)
         token::Lifetime(s) => s.to_string(),
 
         /* Other */
-        token::DocComment(s) => s.to_string(),
+        token::DocComment(comment_kind, attr_style, data) => {
+            doc_comment_to_string(comment_kind, attr_style, data)
+        }
         token::Eof => "<eof>".to_string(),
         token::Whitespace => " ".to_string(),
         token::Comment => "/* */".to_string(),
@@ -447,15 +463,28 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
         }
     }
 
-    fn print_comment(&mut self, cmnt: &comments::Comment) {
+    fn print_comment(&mut self, cmnt: &Comment) {
         match cmnt.style {
-            comments::Mixed => {
-                assert_eq!(cmnt.lines.len(), 1);
-                self.zerobreak();
-                self.word(cmnt.lines[0].clone());
+            CommentStyle::Mixed => {
+                if !self.is_beginning_of_line() {
+                    self.zerobreak();
+                }
+                if let Some((last, lines)) = cmnt.lines.split_last() {
+                    self.ibox(0);
+
+                    for line in lines {
+                        self.word(line.clone());
+                        self.hardbreak()
+                    }
+
+                    self.word(last.clone());
+                    self.space();
+
+                    self.end();
+                }
                 self.zerobreak()
             }
-            comments::Isolated => {
+            CommentStyle::Isolated => {
                 self.hardbreak_if_not_bol();
                 for line in &cmnt.lines {
                     // Don't print empty lines because they will end up as trailing
@@ -466,7 +495,7 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
                     self.hardbreak();
                 }
             }
-            comments::Trailing => {
+            CommentStyle::Trailing => {
                 if !self.is_beginning_of_line() {
                     self.word(" ");
                 }
@@ -484,7 +513,7 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
                     self.end();
                 }
             }
-            comments::BlankLine => {
+            CommentStyle::BlankLine => {
                 // We need to do at least one, possibly two hardbreaks.
                 let twice = match self.last_token() {
                     pp::Token::String(s) => ";" == s,
@@ -503,7 +532,7 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
         }
     }
 
-    fn next_comment(&mut self) -> Option<comments::Comment> {
+    fn next_comment(&mut self) -> Option<Comment> {
         self.comments().as_mut().and_then(|c| c.next())
     }
 
@@ -520,6 +549,10 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
             }
         };
         self.word(st)
+    }
+
+    fn print_symbol(&mut self, sym: Symbol, style: ast::StrStyle) {
+        self.print_string(&sym.as_str(), style);
     }
 
     fn print_inner_attributes(&mut self, attrs: &[ast::Attribute]) {
@@ -582,8 +615,8 @@ pub trait PrintState<'a>: std::ops::Deref<Target = pp::Printer> + std::ops::Dere
                 self.print_attr_item(&item, attr.span);
                 self.word("]");
             }
-            ast::AttrKind::DocComment(comment) => {
-                self.word(comment.to_string());
+            ast::AttrKind::DocComment(comment_kind, data) => {
+                self.word(doc_comment_to_string(comment_kind, attr.style, data));
                 self.hardbreak()
             }
         }
@@ -869,7 +902,7 @@ impl<'a> State<'a> {
         }
     }
 
-    crate fn print_foreign_mod(&mut self, nmod: &ast::ForeignMod, attrs: &[Attribute]) {
+    crate fn print_foreign_mod(&mut self, nmod: &ast::ForeignMod, attrs: &[ast::Attribute]) {
         self.print_inner_attributes(attrs);
         for item in &nmod.items {
             self.print_foreign_item(item);
@@ -1633,7 +1666,7 @@ impl<'a> State<'a> {
         }
     }
 
-    fn print_expr_vec(&mut self, exprs: &[P<ast::Expr>], attrs: &[Attribute]) {
+    fn print_expr_vec(&mut self, exprs: &[P<ast::Expr>], attrs: &[ast::Attribute]) {
         self.ibox(INDENT_UNIT);
         self.s.word("[");
         self.print_inner_attributes_inline(attrs);
@@ -1646,7 +1679,7 @@ impl<'a> State<'a> {
         &mut self,
         element: &ast::Expr,
         count: &ast::AnonConst,
-        attrs: &[Attribute],
+        attrs: &[ast::Attribute],
     ) {
         self.ibox(INDENT_UNIT);
         self.s.word("[");
@@ -1663,7 +1696,7 @@ impl<'a> State<'a> {
         path: &ast::Path,
         fields: &[ast::Field],
         wth: &Option<P<ast::Expr>>,
-        attrs: &[Attribute],
+        attrs: &[ast::Attribute],
     ) {
         self.print_path(path, true, 0);
         self.s.word("{");
@@ -1703,7 +1736,7 @@ impl<'a> State<'a> {
         self.s.word("}");
     }
 
-    fn print_expr_tup(&mut self, exprs: &[P<ast::Expr>], attrs: &[Attribute]) {
+    fn print_expr_tup(&mut self, exprs: &[P<ast::Expr>], attrs: &[ast::Attribute]) {
         self.popen();
         self.print_inner_attributes_inline(attrs);
         self.commasep_exprs(Inconsistent, &exprs[..]);
@@ -2050,7 +2083,7 @@ impl<'a> State<'a> {
                         let print_reg_or_class = |s: &mut Self, r: &InlineAsmRegOrRegClass| match r
                         {
                             InlineAsmRegOrRegClass::Reg(r) => {
-                                s.print_string(&r.as_str(), ast::StrStyle::Cooked)
+                                s.print_symbol(*r, ast::StrStyle::Cooked)
                             }
                             InlineAsmRegOrRegClass::RegClass(r) => s.word(r.to_string()),
                         };
@@ -2144,7 +2177,7 @@ impl<'a> State<'a> {
             ast::ExprKind::LlvmInlineAsm(ref a) => {
                 self.s.word("llvm_asm!");
                 self.popen();
-                self.print_string(&a.asm.as_str(), a.asm_str_style);
+                self.print_symbol(a.asm, a.asm_str_style);
                 self.word_space(":");
 
                 self.commasep(Inconsistent, &a.outputs, |s, out| {
@@ -2164,7 +2197,7 @@ impl<'a> State<'a> {
                 self.word_space(":");
 
                 self.commasep(Inconsistent, &a.inputs, |s, &(co, ref o)| {
-                    s.print_string(&co.as_str(), ast::StrStyle::Cooked);
+                    s.print_symbol(co, ast::StrStyle::Cooked);
                     s.popen();
                     s.print_expr(o);
                     s.pclose();
@@ -2172,8 +2205,8 @@ impl<'a> State<'a> {
                 self.s.space();
                 self.word_space(":");
 
-                self.commasep(Inconsistent, &a.clobbers, |s, co| {
-                    s.print_string(&co.as_str(), ast::StrStyle::Cooked);
+                self.commasep(Inconsistent, &a.clobbers, |s, &co| {
+                    s.print_symbol(co, ast::StrStyle::Cooked);
                 });
 
                 let mut options = vec![];

@@ -12,11 +12,11 @@
 
 [package]
 name = "psm"
-version = "0.1.10"
+version = "0.1.11"
 authors = ["Simonas Kazlauskas <git@kazlauskas.me>"]
 build = "build.rs"
 description = "Portable Stack Manipulation: stack manipulation and introspection routines"
-documentation = "https://docs.rs/psm/0.1.10"
+documentation = "https://docs.rs/psm/0.1.11"
 readme = "README.mkd"
 keywords = ["stack", "no_std"]
 license = "MIT/Apache-2.0"

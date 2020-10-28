@@ -5,7 +5,7 @@ use std::fmt;
 use std::io;
 use std::net::{self, SocketAddr};
 
-use futures::{Poll, Async};
+use futures::{Async, Poll};
 use mio;
 use tokio_reactor::{Handle, PollEvented};
 
@@ -61,7 +61,7 @@ impl TcpListener {
     /// use tokio::net::TcpListener;
     ///
     /// # fn main() -> Result<(), Box<std::error::Error>> {
-    /// let addr = "127.0.0.1:8080".parse::<SocketAddr>()?;
+    /// let addr = "127.0.0.1:0".parse::<SocketAddr>()?;
     /// let listener = TcpListener::bind(&addr)?;
     /// # Ok(())
     /// # }
@@ -109,7 +109,7 @@ impl TcpListener {
     /// use futures::Async;
     ///
     /// # fn main() -> Result<(), Box<std::error::Error>> {
-    /// let addr = "127.0.0.1:8080".parse::<SocketAddr>()?;
+    /// let addr = "127.0.0.1:0".parse::<SocketAddr>()?;
     /// let mut listener = TcpListener::bind(&addr)?;
     /// match listener.poll_accept() {
     ///     Ok(Async::Ready((_socket, addr))) => println!("listener ready to accept: {:?}", addr),
@@ -167,7 +167,7 @@ impl TcpListener {
     /// use futures::Async;
     ///
     /// # fn main() -> Result<(), Box<std::error::Error>> {
-    /// let addr = "127.0.0.1:8080".parse::<SocketAddr>()?;
+    /// let addr = "127.0.0.1:0".parse::<SocketAddr>()?;
     /// let mut listener = TcpListener::bind(&addr)?;
     /// match listener.poll_accept_std() {
     ///     Ok(Async::Ready((_socket, addr))) => println!("listener ready to accept: {:?}", addr),
@@ -230,14 +230,12 @@ impl TcpListener {
     /// use tokio::reactor::Handle;
     ///
     /// # fn main() -> Result<(), Box<std::error::Error>> {
-    /// let std_listener = StdTcpListener::bind("127.0.0.1:8080")?;
+    /// let std_listener = StdTcpListener::bind("127.0.0.1:0")?;
     /// let listener = TcpListener::from_std(std_listener, &Handle::default())?;
     /// # Ok(())
     /// # }
     /// ```
-    pub fn from_std(listener: net::TcpListener, handle: &Handle)
-        -> io::Result<TcpListener>
-    {
+    pub fn from_std(listener: net::TcpListener, handle: &Handle) -> io::Result<TcpListener> {
         let io = mio::net::TcpListener::from_std(listener)?;
         let io = PollEvented::new_with_handle(io, handle)?;
         Ok(TcpListener { io })
@@ -298,7 +296,7 @@ impl TcpListener {
     /// use std::net::SocketAddr;
     ///
     /// # fn main() -> Result<(), Box<std::error::Error>> {
-    /// let addr = "127.0.0.1:8080".parse::<SocketAddr>()?;
+    /// let addr = "127.0.0.1:0".parse::<SocketAddr>()?;
     /// let listener = TcpListener::bind(&addr)?;
     ///
     /// listener.incoming()
@@ -328,7 +326,7 @@ impl TcpListener {
     /// use std::net::SocketAddr;
     ///
     /// # fn main() -> Result<(), Box<std::error::Error>> {
-    /// let addr = "127.0.0.1:8080".parse::<SocketAddr>()?;
+    /// let addr = "127.0.0.1:0".parse::<SocketAddr>()?;
     /// let listener = TcpListener::bind(&addr)?;
     /// listener.set_ttl(100).expect("could not set TTL");
     /// assert_eq!(listener.ttl()?, 100);
@@ -352,7 +350,7 @@ impl TcpListener {
     /// use std::net::SocketAddr;
     ///
     /// # fn main() -> Result<(), Box<std::error::Error>> {
-    /// let addr = "127.0.0.1:8080".parse::<SocketAddr>()?;
+    /// let addr = "127.0.0.1:0".parse::<SocketAddr>()?;
     /// let listener = TcpListener::bind(&addr)?;
     /// listener.set_ttl(100).expect("could not set TTL");
     /// # Ok(())
@@ -371,8 +369,8 @@ impl fmt::Debug for TcpListener {
 
 #[cfg(unix)]
 mod sys {
-    use std::os::unix::prelude::*;
     use super::TcpListener;
+    use std::os::unix::prelude::*;
 
     impl AsRawFd for TcpListener {
         fn as_raw_fd(&self) -> RawFd {
