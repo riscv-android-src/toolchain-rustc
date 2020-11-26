@@ -847,6 +847,8 @@ pub const SS_DISABLE: ::c_int = 2;
 
 pub const PATH_MAX: ::c_int = 4096;
 
+pub const UIO_MAXIOV: ::c_int = 1024;
+
 pub const FD_SETSIZE: usize = 1024;
 
 pub const EPOLLIN: ::c_int = 0x1;
@@ -1233,64 +1235,66 @@ f! {
             *slot = 0;
         }
     }
+}
 
-    pub fn WIFSTOPPED(status: ::c_int) -> bool {
+safe_f! {
+    pub {const} fn WIFSTOPPED(status: ::c_int) -> bool {
         (status & 0xff) == 0x7f
     }
 
-    pub fn WSTOPSIG(status: ::c_int) -> ::c_int {
+    pub {const} fn WSTOPSIG(status: ::c_int) -> ::c_int {
         (status >> 8) & 0xff
     }
 
-    pub fn WIFCONTINUED(status: ::c_int) -> bool {
+    pub {const} fn WIFCONTINUED(status: ::c_int) -> bool {
         status == 0xffff
     }
 
-    pub fn WIFSIGNALED(status: ::c_int) -> bool {
+    pub {const} fn WIFSIGNALED(status: ::c_int) -> bool {
         ((status & 0x7f) + 1) as i8 >= 2
     }
 
-    pub fn WTERMSIG(status: ::c_int) -> ::c_int {
+    pub {const} fn WTERMSIG(status: ::c_int) -> ::c_int {
         status & 0x7f
     }
 
-    pub fn WIFEXITED(status: ::c_int) -> bool {
+    pub {const} fn WIFEXITED(status: ::c_int) -> bool {
         (status & 0x7f) == 0
     }
 
-    pub fn WEXITSTATUS(status: ::c_int) -> ::c_int {
+    pub {const} fn WEXITSTATUS(status: ::c_int) -> ::c_int {
         (status >> 8) & 0xff
     }
 
-    pub fn WCOREDUMP(status: ::c_int) -> bool {
+    pub {const} fn WCOREDUMP(status: ::c_int) -> bool {
         (status & 0x80) != 0
     }
 
-    pub fn W_EXITCODE(ret: ::c_int, sig: ::c_int) -> ::c_int {
+    pub {const} fn W_EXITCODE(ret: ::c_int, sig: ::c_int) -> ::c_int {
         (ret << 8) | sig
     }
 
-    pub fn W_STOPCODE(sig: ::c_int) -> ::c_int {
+    pub {const} fn W_STOPCODE(sig: ::c_int) -> ::c_int {
         (sig << 8) | 0x7f
     }
 
-    pub fn QCMD(cmd: ::c_int, type_: ::c_int) -> ::c_int {
+    pub {const} fn QCMD(cmd: ::c_int, type_: ::c_int) -> ::c_int {
         (cmd << 8) | (type_ & 0x00ff)
     }
 
-    pub fn IPOPT_COPIED(o: u8) -> u8 {
+    pub {const} fn IPOPT_COPIED(o: u8) -> u8 {
         o & IPOPT_COPY
     }
 
-    pub fn IPOPT_CLASS(o: u8) -> u8 {
+    pub {const} fn IPOPT_CLASS(o: u8) -> u8 {
         o & IPOPT_CLASS_MASK
     }
 
-    pub fn IPOPT_NUMBER(o: u8) -> u8 {
+    pub {const} fn IPOPT_NUMBER(o: u8) -> u8 {
         o & IPOPT_NUMBER_MASK
     }
 
-    pub fn IPTOS_ECN(x: u8) -> u8 {
+    pub {const} fn IPTOS_ECN(x: u8) -> u8 {
         x & ::IPTOS_ECN_MASK
     }
 }
@@ -1308,12 +1312,18 @@ extern "C" {
         len: ::size_t,
         vec: *mut ::c_uchar,
     ) -> ::c_int;
+
     pub fn clock_getres(clk_id: ::clockid_t, tp: *mut ::timespec) -> ::c_int;
     pub fn clock_gettime(clk_id: ::clockid_t, tp: *mut ::timespec) -> ::c_int;
     pub fn clock_settime(
         clk_id: ::clockid_t,
         tp: *const ::timespec,
     ) -> ::c_int;
+    pub fn clock_getcpuclockid(
+        pid: ::pid_t,
+        clk_id: *mut ::clockid_t,
+    ) -> ::c_int;
+
     pub fn dirfd(dirp: *mut ::DIR) -> ::c_int;
 
     pub fn pthread_getattr_np(

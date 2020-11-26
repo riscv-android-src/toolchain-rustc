@@ -240,12 +240,12 @@ use crate::{convert, fmt};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub enum Result<T, E> {
     /// Contains the success value
-    #[cfg_attr(not(bootstrap), lang = "Ok")]
+    #[lang = "Ok"]
     #[stable(feature = "rust1", since = "1.0.0")]
     Ok(#[stable(feature = "rust1", since = "1.0.0")] T),
 
     /// Contains the error value
-    #[cfg_attr(not(bootstrap), lang = "Err")]
+    #[lang = "Err"]
     #[stable(feature = "rust1", since = "1.0.0")]
     Err(#[stable(feature = "rust1", since = "1.0.0")] E),
 }
@@ -273,7 +273,7 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.is_ok(), false);
     /// ```
     #[must_use = "if you intended to assert that this is ok, consider `.unwrap()` instead"]
-    #[rustc_const_unstable(feature = "const_result", issue = "67520")]
+    #[rustc_const_stable(feature = "const_result", since = "1.48.0")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn is_ok(&self) -> bool {
@@ -294,7 +294,7 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.is_err(), true);
     /// ```
     #[must_use = "if you intended to assert that this is err, consider `.unwrap_err()` instead"]
-    #[rustc_const_unstable(feature = "const_result", issue = "67520")]
+    #[rustc_const_stable(feature = "const_result", since = "1.48.0")]
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn is_err(&self) -> bool {
@@ -438,7 +438,7 @@ impl<T, E> Result<T, E> {
     /// assert_eq!(x.as_ref(), Err(&"Error"));
     /// ```
     #[inline]
-    #[rustc_const_unstable(feature = "const_result", issue = "67520")]
+    #[rustc_const_stable(feature = "const_result", since = "1.48.0")]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub const fn as_ref(&self) -> Result<&T, &E> {
         match *self {

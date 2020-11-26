@@ -419,6 +419,37 @@ mod c {
             if target_os != "windows" {
                 sources.extend(&[("__multc3", "multc3.c")]);
             }
+
+            if target_env == "musl" {
+                sources.extend(&[
+                    ("__addtf3", "addtf3.c"),
+                    ("__multf3", "multf3.c"),
+                    ("__subtf3", "subtf3.c"),
+                    ("__divtf3", "divtf3.c"),
+                    ("__powitf2", "powitf2.c"),
+                    ("__fe_getround", "fp_mode.c"),
+                    ("__fe_raise_inexact", "fp_mode.c"),
+                ]);
+            }
+        }
+
+        if target_arch == "mips" {
+            sources.extend(&[("__bswapsi2", "bswapsi2.c")]);
+        }
+
+        if target_arch == "mips64" {
+            sources.extend(&[
+                ("__extenddftf2", "extenddftf2.c"),
+                ("__netf2", "comparetf2.c"),
+                ("__addtf3", "addtf3.c"),
+                ("__multf3", "multf3.c"),
+                ("__subtf3", "subtf3.c"),
+                ("__fixtfsi", "fixtfsi.c"),
+                ("__floatsitf", "floatsitf.c"),
+                ("__fixunstfsi", "fixunstfsi.c"),
+                ("__floatunsitf", "floatunsitf.c"),
+                ("__fe_getround", "fp_mode.c"),
+            ]);
         }
 
         // Remove the assembly implementations that won't compile for the target

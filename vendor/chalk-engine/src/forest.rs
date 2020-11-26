@@ -8,7 +8,7 @@ use chalk_ir::interner::Interner;
 use chalk_ir::{Goal, InEnvironment, Substitution, UCanonical};
 use tracing::debug;
 
-pub struct Forest<I: Interner, C: Context<I>> {
+pub(crate) struct Forest<I: Interner, C: Context<I>> {
     pub(crate) tables: Tables<I>,
 
     /// This is a clock which always increases. It is
@@ -76,7 +76,7 @@ impl<'me, I: Interner, C: Context<I>, CO: ContextOps<I, C>> AnswerStream<I>
                 .root_answer(self.context, self.table, self.answer)
             {
                 Ok(answer) => {
-                    debug!("Answer: {:?}", &answer);
+                    debug!(answer = ?(&answer));
                     return AnswerResult::Answer(answer);
                 }
 

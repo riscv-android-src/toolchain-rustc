@@ -168,8 +168,6 @@ pub trait Write {
     /// This method should generally not be invoked manually, but rather through
     /// the [`write!`] macro itself.
     ///
-    /// [`write!`]: ../../std/macro.write.html
-    ///
     /// # Examples
     ///
     /// ```
@@ -2088,7 +2086,7 @@ impl<T: ?Sized> Pointer for *const T {
             f.flags |= 1 << (FlagV1::SignAwareZeroPad as u32);
 
             if f.width.is_none() {
-                f.width = Some(((mem::size_of::<usize>() * 8) / 4) + 2);
+                f.width = Some((usize::BITS / 4) as usize + 2);
             }
         }
         f.flags |= 1 << (FlagV1::Alternate as u32);
@@ -2240,5 +2238,6 @@ impl<T: ?Sized + Debug> Debug for UnsafeCell<T> {
     }
 }
 
-// If you expected tests to be here, look instead at the ui/ifmt.rs test,
+// If you expected tests to be here, look instead at the core/tests/fmt.rs file,
 // it's a lot easier than creating all of the rt::Piece structures here.
+// There are also tests in the alloc crate, for those that need allocations.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::punctuated::Punctuated;
-#[cfg(feature = "extra-traits")]
-use crate::tt::TokenStreamHelper;
+#[cfg(feature = "full")]
+use crate::reserved::Reserved;
 use proc_macro2::{Span, TokenStream};
 #[cfg(feature = "printing")]
 use quote::IdentFragment;
@@ -86,7 +86,7 @@ ast_enum_of_structs! {
     /// A sign that you may not be choosing the right variable names is if you
     /// see names getting repeated in your code, like accessing
     /// `receiver.receiver` or `pat.pat` or `cond.cond`.
-    pub enum Expr #manual_extra_traits {
+    pub enum Expr {
         /// A slice literal expression: `[a, b, c, d]`.
         Array(ExprArray),
 
@@ -720,232 +720,6 @@ ast_struct! {
     }
 }
 
-#[cfg(feature = "extra-traits")]
-impl Eq for Expr {}
-
-#[cfg(feature = "extra-traits")]
-impl PartialEq for Expr {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Expr::Array(this), Expr::Array(other)) => this == other,
-            (Expr::Assign(this), Expr::Assign(other)) => this == other,
-            (Expr::AssignOp(this), Expr::AssignOp(other)) => this == other,
-            (Expr::Async(this), Expr::Async(other)) => this == other,
-            (Expr::Await(this), Expr::Await(other)) => this == other,
-            (Expr::Binary(this), Expr::Binary(other)) => this == other,
-            (Expr::Block(this), Expr::Block(other)) => this == other,
-            (Expr::Box(this), Expr::Box(other)) => this == other,
-            (Expr::Break(this), Expr::Break(other)) => this == other,
-            (Expr::Call(this), Expr::Call(other)) => this == other,
-            (Expr::Cast(this), Expr::Cast(other)) => this == other,
-            (Expr::Closure(this), Expr::Closure(other)) => this == other,
-            (Expr::Continue(this), Expr::Continue(other)) => this == other,
-            (Expr::Field(this), Expr::Field(other)) => this == other,
-            (Expr::ForLoop(this), Expr::ForLoop(other)) => this == other,
-            (Expr::Group(this), Expr::Group(other)) => this == other,
-            (Expr::If(this), Expr::If(other)) => this == other,
-            (Expr::Index(this), Expr::Index(other)) => this == other,
-            (Expr::Let(this), Expr::Let(other)) => this == other,
-            (Expr::Lit(this), Expr::Lit(other)) => this == other,
-            (Expr::Loop(this), Expr::Loop(other)) => this == other,
-            (Expr::Macro(this), Expr::Macro(other)) => this == other,
-            (Expr::Match(this), Expr::Match(other)) => this == other,
-            (Expr::MethodCall(this), Expr::MethodCall(other)) => this == other,
-            (Expr::Paren(this), Expr::Paren(other)) => this == other,
-            (Expr::Path(this), Expr::Path(other)) => this == other,
-            (Expr::Range(this), Expr::Range(other)) => this == other,
-            (Expr::Reference(this), Expr::Reference(other)) => this == other,
-            (Expr::Repeat(this), Expr::Repeat(other)) => this == other,
-            (Expr::Return(this), Expr::Return(other)) => this == other,
-            (Expr::Struct(this), Expr::Struct(other)) => this == other,
-            (Expr::Try(this), Expr::Try(other)) => this == other,
-            (Expr::TryBlock(this), Expr::TryBlock(other)) => this == other,
-            (Expr::Tuple(this), Expr::Tuple(other)) => this == other,
-            (Expr::Type(this), Expr::Type(other)) => this == other,
-            (Expr::Unary(this), Expr::Unary(other)) => this == other,
-            (Expr::Unsafe(this), Expr::Unsafe(other)) => this == other,
-            (Expr::Verbatim(this), Expr::Verbatim(other)) => {
-                TokenStreamHelper(this) == TokenStreamHelper(other)
-            }
-            (Expr::While(this), Expr::While(other)) => this == other,
-            (Expr::Yield(this), Expr::Yield(other)) => this == other,
-            _ => false,
-        }
-    }
-}
-
-#[cfg(feature = "extra-traits")]
-impl Hash for Expr {
-    fn hash<H>(&self, hash: &mut H)
-    where
-        H: Hasher,
-    {
-        match self {
-            Expr::Array(expr) => {
-                hash.write_u8(0);
-                expr.hash(hash);
-            }
-            Expr::Assign(expr) => {
-                hash.write_u8(1);
-                expr.hash(hash);
-            }
-            Expr::AssignOp(expr) => {
-                hash.write_u8(2);
-                expr.hash(hash);
-            }
-            Expr::Async(expr) => {
-                hash.write_u8(3);
-                expr.hash(hash);
-            }
-            Expr::Await(expr) => {
-                hash.write_u8(4);
-                expr.hash(hash);
-            }
-            Expr::Binary(expr) => {
-                hash.write_u8(5);
-                expr.hash(hash);
-            }
-            Expr::Block(expr) => {
-                hash.write_u8(6);
-                expr.hash(hash);
-            }
-            Expr::Box(expr) => {
-                hash.write_u8(7);
-                expr.hash(hash);
-            }
-            Expr::Break(expr) => {
-                hash.write_u8(8);
-                expr.hash(hash);
-            }
-            Expr::Call(expr) => {
-                hash.write_u8(9);
-                expr.hash(hash);
-            }
-            Expr::Cast(expr) => {
-                hash.write_u8(10);
-                expr.hash(hash);
-            }
-            Expr::Closure(expr) => {
-                hash.write_u8(11);
-                expr.hash(hash);
-            }
-            Expr::Continue(expr) => {
-                hash.write_u8(12);
-                expr.hash(hash);
-            }
-            Expr::Field(expr) => {
-                hash.write_u8(13);
-                expr.hash(hash);
-            }
-            Expr::ForLoop(expr) => {
-                hash.write_u8(14);
-                expr.hash(hash);
-            }
-            Expr::Group(expr) => {
-                hash.write_u8(15);
-                expr.hash(hash);
-            }
-            Expr::If(expr) => {
-                hash.write_u8(16);
-                expr.hash(hash);
-            }
-            Expr::Index(expr) => {
-                hash.write_u8(17);
-                expr.hash(hash);
-            }
-            Expr::Let(expr) => {
-                hash.write_u8(18);
-                expr.hash(hash);
-            }
-            Expr::Lit(expr) => {
-                hash.write_u8(19);
-                expr.hash(hash);
-            }
-            Expr::Loop(expr) => {
-                hash.write_u8(20);
-                expr.hash(hash);
-            }
-            Expr::Macro(expr) => {
-                hash.write_u8(21);
-                expr.hash(hash);
-            }
-            Expr::Match(expr) => {
-                hash.write_u8(22);
-                expr.hash(hash);
-            }
-            Expr::MethodCall(expr) => {
-                hash.write_u8(23);
-                expr.hash(hash);
-            }
-            Expr::Paren(expr) => {
-                hash.write_u8(24);
-                expr.hash(hash);
-            }
-            Expr::Path(expr) => {
-                hash.write_u8(25);
-                expr.hash(hash);
-            }
-            Expr::Range(expr) => {
-                hash.write_u8(26);
-                expr.hash(hash);
-            }
-            Expr::Reference(expr) => {
-                hash.write_u8(27);
-                expr.hash(hash);
-            }
-            Expr::Repeat(expr) => {
-                hash.write_u8(28);
-                expr.hash(hash);
-            }
-            Expr::Return(expr) => {
-                hash.write_u8(29);
-                expr.hash(hash);
-            }
-            Expr::Struct(expr) => {
-                hash.write_u8(30);
-                expr.hash(hash);
-            }
-            Expr::Try(expr) => {
-                hash.write_u8(31);
-                expr.hash(hash);
-            }
-            Expr::TryBlock(expr) => {
-                hash.write_u8(32);
-                expr.hash(hash);
-            }
-            Expr::Tuple(expr) => {
-                hash.write_u8(33);
-                expr.hash(hash);
-            }
-            Expr::Type(expr) => {
-                hash.write_u8(34);
-                expr.hash(hash);
-            }
-            Expr::Unary(expr) => {
-                hash.write_u8(35);
-                expr.hash(hash);
-            }
-            Expr::Unsafe(expr) => {
-                hash.write_u8(36);
-                expr.hash(hash);
-            }
-            Expr::Verbatim(expr) => {
-                hash.write_u8(37);
-                TokenStreamHelper(expr).hash(hash);
-            }
-            Expr::While(expr) => {
-                hash.write_u8(38);
-                expr.hash(hash);
-            }
-            Expr::Yield(expr) => {
-                hash.write_u8(39);
-                expr.hash(hash);
-            }
-            Expr::__Nonexhaustive => unreachable!(),
-        }
-    }
-}
-
 impl Expr {
     #[cfg(all(feature = "parsing", feature = "full"))]
     pub(crate) fn replace_attrs(&mut self, new: Vec<Attribute>) -> Vec<Attribute> {
@@ -1001,12 +775,32 @@ ast_enum! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or `"full"`
     /// feature.*
-    #[derive(Eq, PartialEq, Hash)]
-    pub enum Member #manual_extra_traits {
+    pub enum Member {
         /// A named field like `self.x`.
         Named(Ident),
         /// An unnamed field like `self.0`.
         Unnamed(Index),
+    }
+}
+
+impl Eq for Member {}
+
+impl PartialEq for Member {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Member::Named(this), Member::Named(other)) => this == other,
+            (Member::Unnamed(this), Member::Unnamed(other)) => this == other,
+            _ => false,
+        }
+    }
+}
+
+impl Hash for Member {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Member::Named(m) => m.hash(state),
+            Member::Unnamed(m) => m.hash(state),
+        }
     }
 }
 
@@ -1032,7 +826,7 @@ ast_struct! {
     ///
     /// *This type is available only if Syn is built with the `"derive"` or `"full"`
     /// feature.*
-    pub struct Index #manual_extra_traits {
+    pub struct Index {
         pub index: u32,
         pub span: Span,
     }
@@ -1070,14 +864,6 @@ impl IdentFragment for Index {
 
     fn span(&self) -> Option<Span> {
         Some(self.span)
-    }
-}
-
-#[cfg(feature = "full")]
-ast_struct! {
-    #[derive(Default)]
-    pub struct Reserved {
-        _private: (),
     }
 }
 
@@ -1179,7 +965,6 @@ ast_enum! {
     /// Limit types of a range, inclusive or exclusive.
     ///
     /// *This type is available only if Syn is built with the `"full"` feature.*
-    #[cfg_attr(feature = "clone-impls", derive(Copy))]
     pub enum RangeLimits {
         /// Inclusive at the beginning, exclusive at the end.
         HalfOpen(Token![..]),
@@ -1212,6 +997,7 @@ pub(crate) mod parsing {
 
     use crate::parse::{Parse, ParseStream, Result};
     use crate::path;
+    use std::cmp::Ordering;
 
     crate::custom_keyword!(raw);
 
@@ -1220,10 +1006,8 @@ pub(crate) mod parsing {
     //
     // Struct literals are ambiguous in certain positions
     // https://github.com/rust-lang/rfcs/pull/92
-    #[derive(Copy, Clone)]
     pub struct AllowStruct(bool);
 
-    #[derive(Copy, Clone, PartialEq, PartialOrd)]
     enum Precedence {
         Any,
         Assign,
@@ -1361,6 +1145,36 @@ pub(crate) mod parsing {
         #[cfg(feature = "full")]
         pub fn parse_without_eager_brace(input: ParseStream) -> Result<Expr> {
             ambiguous_expr(input, AllowStruct(false))
+        }
+    }
+
+    impl Copy for AllowStruct {}
+
+    impl Clone for AllowStruct {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    impl Copy for Precedence {}
+
+    impl Clone for Precedence {
+        fn clone(&self) -> Self {
+            *self
+        }
+    }
+
+    impl PartialEq for Precedence {
+        fn eq(&self, other: &Self) -> bool {
+            *self as u8 == *other as u8
+        }
+    }
+
+    impl PartialOrd for Precedence {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            let this = *self as u8;
+            let other = *other as u8;
+            Some(this.cmp(&other))
         }
     }
 

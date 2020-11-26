@@ -250,7 +250,7 @@
 //!   dynamic library libproc_macro from rustc toolchain.
 
 // Syn types in rustdoc of other crates get linked to here.
-#![doc(html_root_url = "https://docs.rs/syn/1.0.38")]
+#![doc(html_root_url = "https://docs.rs/syn/1.0.40")]
 #![deny(clippy::all, clippy::pedantic)]
 // Ignored clippy lints.
 #![allow(
@@ -274,7 +274,9 @@
 // Ignored clippy_pedantic lints.
 #![allow(
     clippy::cast_possible_truncation,
+    clippy::default_trait_access,
     clippy::empty_enum,
+    clippy::expl_impl_clone_on_copy,
     clippy::if_not_else,
     clippy::items_after_statements,
     clippy::match_same_arms,
@@ -762,6 +764,22 @@ mod gen {
     #[rustfmt::skip]
     pub mod fold;
 
+    #[cfg(feature = "clone-impls")]
+    #[rustfmt::skip]
+    mod clone;
+
+    #[cfg(feature = "extra-traits")]
+    #[rustfmt::skip]
+    mod eq;
+
+    #[cfg(feature = "extra-traits")]
+    #[rustfmt::skip]
+    mod hash;
+
+    #[cfg(feature = "extra-traits")]
+    #[rustfmt::skip]
+    mod debug;
+
     #[cfg(any(feature = "full", feature = "derive"))]
     #[path = "../gen_helper.rs"]
     mod helper;
@@ -783,6 +801,9 @@ mod lookahead;
 
 #[cfg(feature = "parsing")]
 pub mod parse;
+
+#[cfg(feature = "full")]
+mod reserved;
 
 #[cfg(all(any(feature = "full", feature = "derive"), feature = "parsing"))]
 mod verbatim;

@@ -13,14 +13,29 @@ cargo-locate-project - Print a JSON representation of a Cargo.toml file's locati
 This command will print a JSON object to stdout with the full path to the
 `Cargo.toml` manifest.
 
-See also [cargo-metadata(1)](cargo-metadata.md) which is capable of returning the path to a
-workspace root.
-
 ## OPTIONS
+
+<dl>
+
+<dt class="option-term" id="option-cargo-locate-project---workspace"><a class="option-anchor" href="#option-cargo-locate-project---workspace"></a><code>--workspace</code></dt>
+<dd class="option-desc">Locate the <code>Cargo.toml</code> at the root of the workspace, as opposed to the current
+workspace member.</dd>
+
+
+</dl>
 
 ### Display Options
 
 <dl>
+
+<dt class="option-term" id="option-cargo-locate-project---message-format"><a class="option-anchor" href="#option-cargo-locate-project---message-format"></a><code>--message-format</code> <em>fmt</em></dt>
+<dd class="option-desc">The representation in which to print the project location. Valid values:</p>
+<ul>
+<li><code>json</code> (default): JSON object with the path under the key &quot;root&quot;.</li>
+<li><code>plain</code>: Just the path.</li>
+</ul></dd>
+
+
 <dt class="option-term" id="option-cargo-locate-project--v"><a class="option-anchor" href="#option-cargo-locate-project--v"></a><code>-v</code></dt>
 <dt class="option-term" id="option-cargo-locate-project---verbose"><a class="option-anchor" href="#option-cargo-locate-project---verbose"></a><code>--verbose</code></dt>
 <dd class="option-desc">Use verbose output. May be specified twice for &quot;very verbose&quot; output which
@@ -66,7 +81,7 @@ terminal.</li>
 <dd class="option-desc">If Cargo has been installed with rustup, and the first argument to <code>cargo</code>
 begins with <code>+</code>, it will be interpreted as a rustup toolchain name (such
 as <code>+stable</code> or <code>+nightly</code>).
-See the <a href="https://github.com/rust-lang/rustup/">rustup documentation</a>
+See the <a href="https://rust-lang.github.io/rustup/overrides.html">rustup documentation</a>
 for more information about how toolchain overrides work.</dd>
 
 

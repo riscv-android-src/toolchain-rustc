@@ -234,7 +234,7 @@ pub fn new_handler(
 /// It returns a tuple containing:
 ///  * Vector of tuples of lints' name and their associated "max" level
 ///  * HashMap of lint id with their associated "max" level
-pub fn init_lints<F>(
+pub(crate) fn init_lints<F>(
     mut allowed_lints: Vec<String>,
     lint_opts: Vec<(String, lint::Level)>,
     filter_call: F,
@@ -257,7 +257,7 @@ where
         .filter_map(|lint| {
             // Permit feature-gated lints to avoid feature errors when trying to
             // allow all lints.
-            if lint.name == warnings_lint_name || lint.feature_gate.is_some() {
+            if lint.feature_gate.is_some() || allowed_lints.iter().any(|l| lint.name == l) {
                 None
             } else {
                 filter_call(lint)
@@ -294,7 +294,7 @@ pub fn run_core(
         externs,
         mut cfgs,
         codegen_options,
-        debugging_options,
+        debugging_opts,
         target,
         edition,
         maybe_sysroot,
@@ -328,19 +328,23 @@ pub fn run_core(
     let private_doc_tests = rustc_lint::builtin::PRIVATE_DOC_TESTS.name;
     let no_crate_level_docs = rustc_lint::builtin::MISSING_CRATE_LEVEL_DOCS.name;
     let invalid_codeblock_attributes_name = rustc_lint::builtin::INVALID_CODEBLOCK_ATTRIBUTES.name;
+    let renamed_and_removed_lints = rustc_lint::builtin::RENAMED_AND_REMOVED_LINTS.name;
+    let unknown_lints = rustc_lint::builtin::UNKNOWN_LINTS.name;
 
     // In addition to those specific lints, we also need to allow those given through
     // command line, otherwise they'll get ignored and we don't want that.
-    let allowed_lints = vec![
+    let lints_to_show = vec![
         intra_link_resolution_failure_name.to_owned(),
         missing_docs.to_owned(),
         missing_doc_example.to_owned(),
         private_doc_tests.to_owned(),
         no_crate_level_docs.to_owned(),
         invalid_codeblock_attributes_name.to_owned(),
+        renamed_and_removed_lints.to_owned(),
+        unknown_lints.to_owned(),
     ];
 
-    let (lint_opts, lint_caps) = init_lints(allowed_lints, lint_opts, |lint| {
+    let (lint_opts, lint_caps) = init_lints(lints_to_show, lint_opts, |lint| {
         if lint.name == intra_link_resolution_failure_name
             || lint.name == invalid_codeblock_attributes_name
         {
@@ -358,13 +362,13 @@ pub fn run_core(
         search_paths: libs,
         crate_types,
         lint_opts: if !display_warnings { lint_opts } else { vec![] },
-        lint_cap: Some(lint_cap.unwrap_or_else(|| lint::Forbid)),
+        lint_cap,
         cg: codegen_options,
         externs,
         target_triple: target,
         unstable_features: UnstableFeatures::from_environment(),
         actually_rustdoc: true,
-        debugging_opts: debugging_options,
+        debugging_opts,
         error_format,
         edition,
         describe_lints,
@@ -415,6 +419,7 @@ pub fn run_core(
                 (rustc_interface::DEFAULT_QUERY_PROVIDERS.typeck)(tcx, def_id)
             };
         }),
+        make_codegen_backend: None,
         registry: rustc_driver::diagnostics_registry(),
     };
 
@@ -435,6 +440,7 @@ pub fn run_core(
                 resolver.borrow_mut().access(|resolver| {
                     sess.time("load_extern_crates", || {
                         for extern_name in &extern_names {
+                            debug!("loading extern crate {}", extern_name);
                             resolver
                                 .resolve_str_path_error(
                                     DUMMY_SP,
@@ -556,8 +562,7 @@ fn run_global_ctxt(
     if let Some(ref m) = krate.module {
         if let None | Some("") = m.doc_value() {
             let help = "The following guide may be of use:\n\
-                    https://doc.rust-lang.org/nightly/rustdoc/how-to-write-documentation\
-                    .html";
+                https://doc.rust-lang.org/nightly/rustdoc/how-to-write-documentation.html";
             tcx.struct_lint_node(
                 rustc_lint::builtin::MISSING_CRATE_LEVEL_DOCS,
                 ctxt.as_local_hir_id(m.def_id).unwrap(),
@@ -576,7 +581,7 @@ fn run_global_ctxt(
             .struct_warn(&format!("the `#![doc({})]` attribute is considered deprecated", name));
         msg.warn(
             "see issue #44136 <https://github.com/rust-lang/rust/issues/44136> \
-                for more information",
+             for more information",
         );
 
         if name == "no_default_passes" {
@@ -609,7 +614,7 @@ fn run_global_ctxt(
                     report_deprecated_attr("plugins = \"...\"", diag);
                     eprintln!(
                         "WARNING: `#![doc(plugins = \"...\")]` \
-                            no longer functions; see CVE-2018-1000622"
+                         no longer functions; see CVE-2018-1000622"
                     );
                     continue;
                 }

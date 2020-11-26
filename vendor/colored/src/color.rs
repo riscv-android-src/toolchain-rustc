@@ -1,5 +1,4 @@
-use std::convert::From;
-use std::str::FromStr;
+use std::{borrow::Cow, str::FromStr};
 
 /// The 8 standard colors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,49 +20,52 @@ pub enum Color {
     BrightMagenta,
     BrightCyan,
     BrightWhite,
+    TrueColor { r: u8, g: u8, b: u8 },
 }
 
 #[allow(missing_docs)]
 impl Color {
-    pub fn to_fg_str(&self) -> &str {
+    pub fn to_fg_str(&self) -> Cow<'static, str> {
         match *self {
-            Color::Black => "30",
-            Color::Red => "31",
-            Color::Green => "32",
-            Color::Yellow => "33",
-            Color::Blue => "34",
-            Color::Magenta => "35",
-            Color::Cyan => "36",
-            Color::White => "37",
-            Color::BrightBlack => "90",
-            Color::BrightRed => "91",
-            Color::BrightGreen => "92",
-            Color::BrightYellow => "93",
-            Color::BrightBlue => "94",
-            Color::BrightMagenta => "95",
-            Color::BrightCyan => "96",
-            Color::BrightWhite => "97",
+            Color::Black => "30".into(),
+            Color::Red => "31".into(),
+            Color::Green => "32".into(),
+            Color::Yellow => "33".into(),
+            Color::Blue => "34".into(),
+            Color::Magenta => "35".into(),
+            Color::Cyan => "36".into(),
+            Color::White => "37".into(),
+            Color::BrightBlack => "90".into(),
+            Color::BrightRed => "91".into(),
+            Color::BrightGreen => "92".into(),
+            Color::BrightYellow => "93".into(),
+            Color::BrightBlue => "94".into(),
+            Color::BrightMagenta => "95".into(),
+            Color::BrightCyan => "96".into(),
+            Color::BrightWhite => "97".into(),
+            Color::TrueColor { r, g, b } => format!("38;2;{};{};{}", r, g, b).into(),
         }
     }
 
-    pub fn to_bg_str(&self) -> &str {
+    pub fn to_bg_str(&self) -> Cow<'static, str> {
         match *self {
-            Color::Black => "40",
-            Color::Red => "41",
-            Color::Green => "42",
-            Color::Yellow => "43",
-            Color::Blue => "44",
-            Color::Magenta => "45",
-            Color::Cyan => "46",
-            Color::White => "47",
-            Color::BrightBlack => "100",
-            Color::BrightRed => "101",
-            Color::BrightGreen => "102",
-            Color::BrightYellow => "103",
-            Color::BrightBlue => "104",
-            Color::BrightMagenta => "105",
-            Color::BrightCyan => "106",
-            Color::BrightWhite => "107",
+            Color::Black => "40".into(),
+            Color::Red => "41".into(),
+            Color::Green => "42".into(),
+            Color::Yellow => "43".into(),
+            Color::Blue => "44".into(),
+            Color::Magenta => "45".into(),
+            Color::Cyan => "46".into(),
+            Color::White => "47".into(),
+            Color::BrightBlack => "100".into(),
+            Color::BrightRed => "101".into(),
+            Color::BrightGreen => "102".into(),
+            Color::BrightYellow => "103".into(),
+            Color::BrightBlue => "104".into(),
+            Color::BrightMagenta => "105".into(),
+            Color::BrightCyan => "106".into(),
+            Color::BrightWhite => "107".into(),
+            Color::TrueColor { r, g, b } => format!("48;2;{};{};{}", r, g, b).into(),
         }
     }
 }

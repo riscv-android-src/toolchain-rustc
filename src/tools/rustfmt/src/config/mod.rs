@@ -91,6 +91,8 @@ create_config! {
         "Align enum variants discrims, if their diffs fit within threshold";
     match_arm_blocks: bool, true, false, "Wrap the body of arms in blocks when it does not fit on \
         the same line with the pattern of arms";
+    match_arm_leading_pipes: MatchArmLeadingPipe, MatchArmLeadingPipe::Never, true,
+        "Determines whether leading pipes are emitted on match arms";
     force_multiline_blocks: bool, false, false,
         "Force multiline closure bodies and match arms to be wrapped in a block";
     fn_args_layout: Density, Density::Tall, true,
@@ -490,6 +492,18 @@ mod test {
     }
 
     #[test]
+    fn test_override_existing_license_with_no_license() {
+        if !crate::is_nightly_channel!() {
+            return;
+        }
+        let toml = r#"license_template_path = "tests/license-template/lt.txt""#;
+        let mut config = Config::from_toml(toml, Path::new("")).unwrap();
+        assert!(config.license_template.is_some());
+        config.override_value("license_template_path", "");
+        assert!(config.license_template.is_none());
+    }
+
+    #[test]
     fn test_dump_default_config() {
         let default_config = format!(
             r#"max_width = 100
@@ -528,6 +542,7 @@ overflow_delimited_expr = false
 struct_field_align_threshold = 0
 enum_discrim_align_threshold = 0
 match_arm_blocks = true
+match_arm_leading_pipes = "Never"
 force_multiline_blocks = false
 fn_args_layout = "Tall"
 brace_style = "SameLineWhere"

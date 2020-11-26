@@ -382,10 +382,10 @@ impl<T> RawTable<T> {
     /// leave the data pointer dangling since that bucket is never written to
     /// due to our load factor forcing us to always have at least 1 free bucket.
     #[cfg_attr(feature = "inline-more", inline)]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             // Be careful to cast the entire slice to a raw pointer.
-            ctrl: unsafe { NonNull::new_unchecked(Group::static_empty().as_ptr() as *mut u8) },
+            ctrl: unsafe { NonNull::new_unchecked(Group::static_empty() as *const _ as *mut u8) },
             bucket_mask: 0,
             items: 0,
             growth_left: 0,
@@ -406,7 +406,7 @@ impl<T> RawTable<T> {
         // Avoid `Option::ok_or_else` because it bloats LLVM IR.
         let (layout, ctrl_offset) = match calculate_layout::<T>(buckets) {
             Some(lco) => lco,
-            None => return Err(fallability.capacity_overflow())
+            None => return Err(fallability.capacity_overflow()),
         };
         let ptr = match NonNull::new(alloc(layout)) {
             Some(ptr) => ptr,
@@ -688,7 +688,10 @@ impl<T> RawTable<T> {
                 *self = Self::with_capacity(min_size)
             } else {
                 // Avoid `Result::unwrap_or_else` because it bloats LLVM IR.
-                if self.resize(min_size, hasher, Fallibility::Infallible).is_err() {
+                if self
+                    .resize(min_size, hasher, Fallibility::Infallible)
+                    .is_err()
+                {
                     unsafe { hint::unreachable_unchecked() }
                 }
             }
@@ -701,7 +704,10 @@ impl<T> RawTable<T> {
     pub fn reserve(&mut self, additional: usize, hasher: impl Fn(&T) -> u64) {
         if additional > self.growth_left {
             // Avoid `Result::unwrap_or_else` because it bloats LLVM IR.
-            if self.reserve_rehash(additional, hasher, Fallibility::Infallible).is_err() {
+            if self
+                .reserve_rehash(additional, hasher, Fallibility::Infallible)
+                .is_err()
+            {
                 unsafe { hint::unreachable_unchecked() }
             }
         }
@@ -954,6 +960,33 @@ impl<T> RawTable<T> {
         }
     }
 
+    /// Temporary removes a bucket, applying the given function to the removed
+    /// element and optionally put back the returned value in the same bucket.
+    ///
+    /// Returns `true` if the bucket still contains an element
+    ///
+    /// This does not check if the given bucket is actually occupied.
+    #[cfg_attr(feature = "inline-more", inline)]
+    pub unsafe fn replace_bucket_with<F>(&mut self, bucket: Bucket<T>, f: F) -> bool
+    where
+        F: FnOnce(T) -> Option<T>,
+    {
+        let index = self.bucket_index(&bucket);
+        let old_ctrl = *self.ctrl(index);
+        debug_assert!(is_full(old_ctrl));
+        let old_growth_left = self.growth_left;
+        let item = self.remove(bucket);
+        if let Some(new_item) = f(item) {
+            self.growth_left = old_growth_left;
+            self.set_ctrl(index, old_ctrl);
+            self.items += 1;
+            self.bucket(index).write(new_item);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Searches for an element in the table.
     #[inline]
     pub fn find(&self, hash: u64, mut eq: impl FnMut(&T) -> bool) -> Option<Bucket<T>> {
@@ -1114,7 +1147,7 @@ impl<T: Clone> Clone for RawTable<T> {
                     match Self::new_uninitialized(self.buckets(), Fallibility::Infallible) {
                         Ok(table) => table,
                         Err(_) => hint::unreachable_unchecked(),
-                    }
+                    },
                 );
 
                 new_table.clone_from_spec(self, |new_table| {
@@ -1151,7 +1184,7 @@ impl<T: Clone> Clone for RawTable<T> {
                         match Self::new_uninitialized(source.buckets(), Fallibility::Infallible) {
                             Ok(table) => table,
                             Err(_) => hint::unreachable_unchecked(),
-                        }
+                        },
                     );
                 }
 

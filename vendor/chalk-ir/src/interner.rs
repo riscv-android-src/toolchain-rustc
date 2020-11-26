@@ -9,6 +9,7 @@ use crate::ClosureId;
 use crate::Constraint;
 use crate::Constraints;
 use crate::FnDefId;
+use crate::ForeignDefId;
 use crate::GenericArg;
 use crate::GenericArgData;
 use crate::Goal;
@@ -240,6 +241,16 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
     #[allow(unused_variables)]
     fn debug_closure_id(
         fn_def_id: ClosureId<Self>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> Option<fmt::Result> {
+        None
+    }
+
+    /// Prints the debug representation of a foreign-def-id.
+    /// Returns `None` to fallback to the default debug output.
+    #[allow(unused_variables)]
+    fn debug_foreign_def_id(
+        foreign_def_id: ForeignDefId<Self>,
         fmt: &mut fmt::Formatter<'_>,
     ) -> Option<fmt::Result> {
         None
@@ -710,6 +721,16 @@ impl<A, B, I> HasInterner for (A, B)
 where
     A: HasInterner<Interner = I>,
     B: HasInterner<Interner = I>,
+    I: Interner,
+{
+    type Interner = I;
+}
+
+impl<A, B, C, I> HasInterner for (A, B, C)
+where
+    A: HasInterner<Interner = I>,
+    B: HasInterner<Interner = I>,
+    C: HasInterner<Interner = I>,
     I: Interner,
 {
     type Interner = I;

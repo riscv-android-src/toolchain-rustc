@@ -9,7 +9,6 @@ use hir_def::{
     adt::StructKind,
     adt::VariantData,
     builtin_type::BuiltinType,
-    docs::Documentation,
     expr::{BindingAnnotation, Pat, PatId},
     import_map,
     lang_item::LangItemTarget,
@@ -18,9 +17,9 @@ use hir_def::{
     resolver::{HasResolver, Resolver},
     src::HasSource as _,
     type_ref::{Mutability, TypeRef},
-    AdtId, AssocContainerId, ConstId, DefWithBodyId, EnumId, FunctionId, GenericDefId, HasModule,
-    ImplId, LocalEnumVariantId, LocalFieldId, LocalModuleId, Lookup, ModuleId, StaticId, StructId,
-    TraitId, TypeAliasId, TypeParamId, UnionId,
+    AdtId, AssocContainerId, AttrDefId, ConstId, DefWithBodyId, EnumId, FunctionId, GenericDefId,
+    HasModule, ImplId, LocalEnumVariantId, LocalFieldId, LocalModuleId, Lookup, ModuleId, StaticId,
+    StructId, TraitId, TypeAliasId, TypeParamId, UnionId,
 };
 use hir_expand::{
     diagnostics::DiagnosticSink,
@@ -39,6 +38,7 @@ use syntax::{
     ast::{self, AttrsOwner, NameOwner},
     AstNode, SmolStr,
 };
+use tt::{Ident, Leaf, Literal, TokenTree};
 
 use crate::{
     db::{DefDatabase, HirDatabase},
@@ -122,6 +122,31 @@ impl Crate {
     pub fn all(db: &dyn HirDatabase) -> Vec<Crate> {
         db.crate_graph().iter().map(|id| Crate { id }).collect()
     }
+
+    /// Try to get the root URL of the documentation of a crate.
+    pub fn get_html_root_url(self: &Crate, db: &dyn HirDatabase) -> Option<String> {
+        // Look for #![doc(html_root_url = "...")]
+        let attrs = db.attrs(AttrDefId::ModuleId(self.root_module(db).into()));
+        let doc_attr_q = attrs.by_key("doc");
+
+        if !doc_attr_q.exists() {
+            return None;
+        }
+
+        let doc_url = doc_attr_q.tt_values().map(|tt| {
+            let name = tt.token_trees.iter()
+                .skip_while(|tt| !matches!(tt, TokenTree::Leaf(Leaf::Ident(Ident{text: ref ident, ..})) if ident == "html_root_url"))
+                .skip(2)
+                .next();
+
+            match name {
+                Some(TokenTree::Leaf(Leaf::Literal(Literal{ref text, ..}))) => Some(text),
+                _ => None
+            }
+        }).flat_map(|t| t).next();
+
+        doc_url.map(|s| s.trim_matches('"').trim_end_matches("/").to_owned() + "/")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -171,6 +196,16 @@ impl ModuleDef {
         }
     }
 
+    pub fn canonical_path(&self, db: &dyn HirDatabase) -> Option<String> {
+        let mut segments = Vec::new();
+        segments.push(self.name(db)?.to_string());
+        for m in self.module(db)?.path_to_root(db) {
+            segments.extend(m.name(db).map(|it| it.to_string()))
+        }
+        segments.reverse();
+        Some(segments.join("::"))
+    }
+
     pub fn definition_visibility(&self, db: &dyn HirDatabase) -> Option<Visibility> {
         let module = match self {
             ModuleDef::Module(it) => it.parent(db)?,
@@ -198,7 +233,6 @@ impl ModuleDef {
             ModuleDef::Function(it) => Some(it.name(db)),
             ModuleDef::EnumVariant(it) => Some(it.name(db)),
             ModuleDef::TypeAlias(it) => Some(it.name(db)),
-
             ModuleDef::Module(it) => it.name(db),
             ModuleDef::Const(it) => it.name(db),
             ModuleDef::Static(it) => it.name(db),
@@ -1249,6 +1283,8 @@ impl Type {
     /// Checks that particular type `ty` implements `std::future::Future`.
     /// This function is used in `.await` syntax completion.
     pub fn impls_future(&self, db: &dyn HirDatabase) -> bool {
+        // No special case for the type of async block, since Chalk can figure it out.
+
         let krate = self.krate;
 
         let std_future_trait =
@@ -1566,6 +1602,11 @@ impl Type {
                                 cb(type_.derived(ty.clone()));
                             }
                         }
+                        TypeCtor::OpaqueType(..) => {
+                            if let Some(bounds) = ty.impl_trait_bounds(db) {
+                                walk_bounds(db, &type_.derived(ty.clone()), &bounds, cb);
+                            }
+                        }
                         _ => (),
                     }
 
@@ -1712,55 +1753,6 @@ impl ScopeDef {
         }
 
         items
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum AttrDef {
-    Module(Module),
-    Field(Field),
-    Adt(Adt),
-    Function(Function),
-    EnumVariant(EnumVariant),
-    Static(Static),
-    Const(Const),
-    Trait(Trait),
-    TypeAlias(TypeAlias),
-    MacroDef(MacroDef),
-}
-
-impl_from!(
-    Module,
-    Field,
-    Adt(Struct, Enum, Union),
-    EnumVariant,
-    Static,
-    Const,
-    Function,
-    Trait,
-    TypeAlias,
-    MacroDef
-    for AttrDef
-);
-
-pub trait HasAttrs {
-    fn attrs(self, db: &dyn HirDatabase) -> Attrs;
-}
-
-impl<T: Into<AttrDef>> HasAttrs for T {
-    fn attrs(self, db: &dyn HirDatabase) -> Attrs {
-        let def: AttrDef = self.into();
-        db.attrs(def.into())
-    }
-}
-
-pub trait Docs {
-    fn docs(&self, db: &dyn HirDatabase) -> Option<Documentation>;
-}
-impl<T: Into<AttrDef> + Copy> Docs for T {
-    fn docs(&self, db: &dyn HirDatabase) -> Option<Documentation> {
-        let def: AttrDef = (*self).into();
-        db.documentation(def.into())
     }
 }
 

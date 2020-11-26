@@ -5,8 +5,9 @@ use rustc_ast::ast;
 use rustc_ast::token::{DelimToken, TokenKind};
 use rustc_errors::Diagnostic;
 use rustc_parse::{new_parser_from_file, parser::Parser as RawParser};
-use rustc_span::{symbol::kw, Span};
+use rustc_span::{sym, symbol::kw, Span};
 
+use crate::attr::first_attr_value_str_by_name;
 use crate::syntux::session::ParseSess;
 use crate::{Config, Input};
 
@@ -22,7 +23,6 @@ pub(crate) struct Directory {
 /// A parser for Rust source code.
 pub(crate) struct Parser<'a> {
     parser: RawParser<'a>,
-    sess: &'a ParseSess,
 }
 
 /// A builder for the `Parser`.
@@ -65,25 +65,32 @@ impl<'a> ParserBuilder<'a> {
         let parser = match Self::parser(sess.inner(), input) {
             Ok(p) => p,
             Err(db) => {
-                sess.emit_diagnostics(db);
-                return Err(ParserError::ParserCreationError);
+                if let Some(diagnostics) = db {
+                    sess.emit_diagnostics(diagnostics);
+                    return Err(ParserError::ParserCreationError);
+                }
+                return Err(ParserError::ParsePanicError);
             }
         };
 
-        Ok(Parser { parser, sess })
+        Ok(Parser { parser })
     }
 
     fn parser(
         sess: &'a rustc_session::parse::ParseSess,
         input: Input,
-    ) -> Result<rustc_parse::parser::Parser<'a>, Vec<Diagnostic>> {
+    ) -> Result<rustc_parse::parser::Parser<'a>, Option<Vec<Diagnostic>>> {
         match input {
-            Input::File(ref file) => Ok(new_parser_from_file(sess, file, None)),
+            Input::File(ref file) => catch_unwind(AssertUnwindSafe(move || {
+                new_parser_from_file(sess, file, None)
+            }))
+            .map_err(|_| None),
             Input::Text(text) => rustc_parse::maybe_new_parser_from_source_str(
                 sess,
                 rustc_span::FileName::Custom("stdin".to_owned()),
                 text,
-            ),
+            )
+            .map_err(|db| Some(db)),
         }
     }
 }
@@ -99,7 +106,15 @@ pub(crate) enum ParserError {
 
 impl<'a> Parser<'a> {
     pub(crate) fn submod_path_from_attr(attrs: &[ast::Attribute], path: &Path) -> Option<PathBuf> {
-        rustc_expand::module::submod_path_from_attr(attrs, path)
+        let path_string = first_attr_value_str_by_name(attrs, sym::path)?.as_str();
+        // On windows, the base path might have the form
+        // `\\?\foo\bar` in which case it does not tolerate
+        // mixed `/` and `\` separators, so canonicalize
+        // `/` to `\`.
+        #[cfg(windows)]
+        let path_string = path_string.replace("/", "\\");
+
+        Some(path.join(&*path_string))
     }
 
     pub(crate) fn parse_file_as_module(
@@ -109,11 +124,13 @@ impl<'a> Parser<'a> {
     ) -> Result<(ast::Mod, Vec<ast::Attribute>), ParserError> {
         let result = catch_unwind(AssertUnwindSafe(|| {
             let mut parser = new_parser_from_file(sess.inner(), &path, Some(span));
-            match parser.parse_mod(&TokenKind::Eof) {
+            match parser.parse_mod(&TokenKind::Eof, ast::Unsafe::No) {
                 Ok(result) => Some(result),
                 Err(mut e) => {
-                    e.cancel();
-                    sess.reset_errors();
+                    sess.emit_or_cancel_diagnostic(&mut e);
+                    if sess.can_reset_errors() {
+                        sess.reset_errors();
+                    }
                     None
                 }
             }
@@ -142,32 +159,39 @@ impl<'a> Parser<'a> {
         directory_ownership: Option<DirectoryOwnership>,
         sess: &'a ParseSess,
     ) -> Result<ast::Crate, ParserError> {
+        let krate = Parser::parse_crate_inner(config, input, directory_ownership, sess)?;
+        if !sess.has_errors() {
+            return Ok(krate);
+        }
+
+        if sess.can_reset_errors() {
+            sess.reset_errors();
+            return Ok(krate);
+        }
+
+        Err(ParserError::ParseError)
+    }
+
+    fn parse_crate_inner(
+        config: &'a Config,
+        input: Input,
+        directory_ownership: Option<DirectoryOwnership>,
+        sess: &'a ParseSess,
+    ) -> Result<ast::Crate, ParserError> {
         let mut parser = ParserBuilder::default()
             .config(config)
             .input(input)
             .directory_ownership(directory_ownership)
             .sess(sess)
             .build()?;
-
-        parser.parse_crate_inner()
+        parser.parse_crate_mod()
     }
 
-    fn parse_crate_inner(&mut self) -> Result<ast::Crate, ParserError> {
+    fn parse_crate_mod(&mut self) -> Result<ast::Crate, ParserError> {
         let mut parser = AssertUnwindSafe(&mut self.parser);
 
         match catch_unwind(move || parser.parse_crate_mod()) {
-            Ok(Ok(krate)) => {
-                if !self.sess.has_errors() {
-                    return Ok(krate);
-                }
-
-                if self.sess.can_reset_errors() {
-                    self.sess.reset_errors();
-                    return Ok(krate);
-                }
-
-                Err(ParserError::ParseError)
-            }
+            Ok(Ok(k)) => Ok(k),
             Ok(Err(mut db)) => {
                 db.emit();
                 Err(ParserError::ParseError)

@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "miniz_oxide"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Frommi <daniil.liferenko@gmail.com>", "oyvindln <oyvindln@users.noreply.github.com>"]
 exclude = ["benches/*", "tests/*"]
 description = "DEFLATE compression and decompression library rewritten in Rust based on miniz"
@@ -46,4 +46,5 @@ optional = true
 package = "rustc-std-workspace-core"
 
 [features]
+no_extern_crate_alloc = []
 rustc-dep-of-std = ["core", "alloc", "compiler_builtins", "adler/rustc-dep-of-std"]

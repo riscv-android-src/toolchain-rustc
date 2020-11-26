@@ -19,8 +19,8 @@ use crate::util::{self, path_to_repo_path, Binding};
 use crate::CherrypickOptions;
 use crate::RevertOptions;
 use crate::{
-    init, raw, AttrCheckFlags, Buf, Error, Object, Remote, RepositoryOpenFlags, RepositoryState,
-    Revspec, StashFlags,
+    raw, AttrCheckFlags, Buf, Error, Object, Remote, RepositoryOpenFlags, RepositoryState, Revspec,
+    StashFlags,
 };
 use crate::{
     AnnotatedCommit, MergeAnalysis, MergeOptions, MergePreference, SubmoduleIgnore, SubmoduleStatus,
@@ -65,7 +65,7 @@ impl Repository {
     ///
     /// The path can point to either a normal or bare repository.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Repository, Error> {
-        init();
+        crate::init();
         // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let mut ret = ptr::null_mut();
@@ -79,7 +79,7 @@ impl Repository {
     ///
     /// The path can point to only a bare repository.
     pub fn open_bare<P: AsRef<Path>>(path: P) -> Result<Repository, Error> {
-        init();
+        crate::init();
         // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let mut ret = ptr::null_mut();
@@ -95,7 +95,7 @@ impl Repository {
     /// With `$GIT_DIR` unset, this will search for a repository starting in
     /// the current directory.
     pub fn open_from_env() -> Result<Repository, Error> {
-        init();
+        crate::init();
         let mut ret = ptr::null_mut();
         let flags = raw::GIT_REPOSITORY_OPEN_FROM_ENV;
         unsafe {
@@ -145,7 +145,7 @@ impl Repository {
         O: AsRef<OsStr>,
         I: IntoIterator<Item = O>,
     {
-        init();
+        crate::init();
         // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let ceiling_dirs_os = env::join_paths(ceiling_dirs)?;
@@ -168,7 +168,7 @@ impl Repository {
     /// until it finds a repository.
     pub fn discover<P: AsRef<Path>>(path: P) -> Result<Repository, Error> {
         // TODO: this diverges significantly from the libgit2 API
-        init();
+        crate::init();
         let buf = Buf::new();
         // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
@@ -206,7 +206,7 @@ impl Repository {
         path: P,
         opts: &RepositoryInitOptions,
     ) -> Result<Repository, Error> {
-        init();
+        crate::init();
         // Normal file path OK (does not need Windows conversion).
         let path = path.as_ref().into_c_string()?;
         let mut ret = ptr::null_mut();
@@ -238,7 +238,7 @@ impl Repository {
 
     /// Attempt to wrap an object database as a repository.
     pub fn from_odb(odb: Odb<'_>) -> Result<Repository, Error> {
-        init();
+        crate::init();
         let mut ret = ptr::null_mut();
         unsafe {
             try_call!(raw::git_repository_wrap_odb(&mut ret, odb.raw()));
@@ -1463,7 +1463,7 @@ impl Repository {
 
     /// Lookup a reference to one of the objects in a repository.
     /// `Repository::find_reference` with teeth; give the method your reference in
-    /// human-readable format e.g. 'master' instead of 'refs/heads/master', and it
+    /// human-readable format e.g. 'main' instead of 'refs/heads/main', and it
     /// will do-what-you-mean, returning the `Reference`.
     pub fn resolve_reference_from_short_name(&self, refname: &str) -> Result<Reference<'_>, Error> {
         let refname = CString::new(refname)?;
@@ -2929,9 +2929,9 @@ impl RepositoryInitOptions {
 
     /// The name of the head to point HEAD at.
     ///
-    /// If not configured, this will be treated as `master` and the HEAD ref
-    /// will be set to `refs/heads/master`. If this begins with `refs/` it will
-    /// be used verbatim; otherwise `refs/heads/` will be prefixed
+    /// If not configured, this will be taken from your git configuration.
+    /// If this begins with `refs/` it will be used verbatim;
+    /// otherwise `refs/heads/` will be prefixed
     pub fn initial_head(&mut self, head: &str) -> &mut RepositoryInitOptions {
         self.initial_head = Some(CString::new(head).unwrap());
         self
@@ -3160,11 +3160,11 @@ mod tests {
         let (_td, repo) = crate::test::repo_init();
 
         assert_eq!(repo.reference_has_log("HEAD").unwrap(), true);
-        assert_eq!(repo.reference_has_log("refs/heads/master").unwrap(), true);
+        assert_eq!(repo.reference_has_log("refs/heads/main").unwrap(), true);
         assert_eq!(repo.reference_has_log("NOT_HEAD").unwrap(), false);
-        let master_oid = repo.revparse_single("master").unwrap().id();
+        let main_oid = repo.revparse_single("main").unwrap().id();
         assert!(repo
-            .reference("NOT_HEAD", master_oid, false, "creating a new branch")
+            .reference("NOT_HEAD", main_oid, false, "creating a new branch")
             .is_ok());
         assert_eq!(repo.reference_has_log("NOT_HEAD").unwrap(), false);
         assert!(repo.reference_ensure_log("NOT_HEAD").is_ok());
@@ -3178,7 +3178,7 @@ mod tests {
         assert!(repo.set_head("refs/heads/does-not-exist").is_ok());
         assert!(repo.head().is_err());
 
-        assert!(repo.set_head("refs/heads/master").is_ok());
+        assert!(repo.set_head("refs/heads/main").is_ok());
         assert!(repo.head().is_ok());
 
         assert!(repo.set_head("*").is_err());
@@ -3191,9 +3191,9 @@ mod tests {
         let void_oid = Oid::from_bytes(b"00000000000000000000").unwrap();
         assert!(repo.set_head_detached(void_oid).is_err());
 
-        let master_oid = repo.revparse_single("master").unwrap().id();
-        assert!(repo.set_head_detached(master_oid).is_ok());
-        assert_eq!(repo.head().unwrap().target().unwrap(), master_oid);
+        let main_oid = repo.revparse_single("main").unwrap().id();
+        assert!(repo.set_head_detached(main_oid).is_ok());
+        assert_eq!(repo.head().unwrap().target().unwrap(), main_oid);
     }
 
     /// create the following:
@@ -3425,8 +3425,8 @@ mod tests {
         let (_td, repo) = graph_repo_init();
 
         {
-            let short_refname = "master";
-            let expected_refname = "refs/heads/master";
+            let short_refname = "main";
+            let expected_refname = "refs/heads/main";
             let (obj, reference) = repo.revparse_ext(short_refname).unwrap();
             let expected_obj = repo.revparse_single(expected_refname).unwrap();
             assert_eq!(obj.id(), expected_obj.id());

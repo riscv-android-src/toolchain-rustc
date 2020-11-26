@@ -8,10 +8,6 @@ fn main() {
             println!("cargo:rustc-link-lib=dl");
             println!("cargo:rustc-link-lib=log");
             println!("cargo:rustc-link-lib=gcc");
-        } else if !target.contains("musl") {
-            println!("cargo:rustc-link-lib=dl");
-            println!("cargo:rustc-link-lib=rt");
-            println!("cargo:rustc-link-lib=pthread");
         }
     } else if target.contains("freebsd") {
         println!("cargo:rustc-link-lib=execinfo");
@@ -83,7 +79,7 @@ fn main() {
         // - os=none ("bare metal" targets)
         // - mipsel-sony-psp
         // - nvptx64-nvidia-cuda
-        // - avr-unknown-unknown
+        // - arch=avr
         // - tvos (aarch64-apple-tvos, x86_64-apple-tvos)
         // - uefi (x86_64-unknown-uefi, i686-unknown-uefi)
         // - JSON targets

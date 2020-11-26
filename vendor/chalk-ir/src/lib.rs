@@ -254,6 +254,9 @@ pub enum TypeName<I: Interner> {
     /// A closure.
     Closure(ClosureId<I>),
 
+    /// foreign types
+    Foreign(ForeignDefId<I>),
+
     /// This can be used to represent an error, e.g. during name resolution of a type.
     /// Chalk itself will not produce this, just pass it through when given.
     Error,
@@ -363,6 +366,10 @@ pub struct FnDefId<I: Interner>(pub I::DefId);
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClosureId<I: Interner>(pub I::DefId);
 
+/// Id for foreign types.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ForeignDefId<I: Interner>(pub I::DefId);
+
 impl_debugs!(ImplId, ClauseId);
 
 /// A Rust type. The actual type data is stored in `TyData`.
@@ -467,6 +474,17 @@ impl<I: Interner> Ty<I> {
                 ..
             }) => true,
             _ => false,
+        }
+    }
+
+    /// Returns `Some(adt_id)` if this is an ADT, `None` otherwise
+    pub fn adt_id(&self, interner: &I) -> Option<AdtId<I>> {
+        match self.data(interner) {
+            TyData::Apply(ApplicationTy {
+                name: TypeName::Adt(adt_id),
+                ..
+            }) => Some(*adt_id),
+            _ => None,
         }
     }
 
@@ -865,15 +883,22 @@ impl InferenceVar {
     }
 }
 
+/// A function signature.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, HasInterner, Debug)]
+#[allow(missing_docs)]
+pub struct FnSig<I: Interner> {
+    pub abi: I::FnAbi,
+    pub safety: Safety,
+    pub variadic: bool,
+}
+
 /// for<'a...'z> X -- all binders are instantiated at once,
 /// and we use deBruijn indices within `self.ty`
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
 #[allow(missing_docs)]
 pub struct FnPointer<I: Interner> {
     pub num_binders: usize,
-    pub abi: I::FnAbi,
-    pub safety: Safety,
-    pub variadic: bool,
+    pub sig: FnSig<I>,
     pub substitution: Substitution<I>,
 }
 

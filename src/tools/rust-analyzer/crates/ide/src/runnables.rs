@@ -160,7 +160,7 @@ fn runnable_fn(
             RunnableKind::Test { test_id, attr }
         } else if fn_def.has_atom_attr("bench") {
             RunnableKind::Bench { test_id }
-        } else if has_doc_test(&fn_def) {
+        } else if has_runnable_doc_test(&fn_def) {
             RunnableKind::DocTest { test_id }
         } else {
             return None;
@@ -211,8 +211,30 @@ fn has_test_related_attribute(fn_def: &ast::Fn) -> bool {
         .any(|attribute_text| attribute_text.contains("test"))
 }
 
-fn has_doc_test(fn_def: &ast::Fn) -> bool {
-    fn_def.doc_comment_text().map_or(false, |comment| comment.contains("```"))
+const RUSTDOC_FENCE: &str = "```";
+const RUSTDOC_CODE_BLOCK_ATTRIBUTES_RUNNABLE: &[&str] =
+    &["", "rust", "should_panic", "edition2015", "edition2018"];
+
+fn has_runnable_doc_test(fn_def: &ast::Fn) -> bool {
+    fn_def.doc_comment_text().map_or(false, |comments_text| {
+        let mut in_code_block = false;
+
+        for line in comments_text.lines() {
+            if let Some(header) = line.strip_prefix(RUSTDOC_FENCE) {
+                in_code_block = !in_code_block;
+
+                if in_code_block
+                    && header
+                        .split(',')
+                        .all(|sub| RUSTDOC_CODE_BLOCK_ATTRIBUTES_RUNNABLE.contains(&sub.trim()))
+                {
+                    return true;
+                }
+            }
+        }
+
+        false
+    })
 }
 
 fn runnable_mod(
@@ -416,9 +438,57 @@ fn main() {}
 /// ```
 /// let x = 5;
 /// ```
-fn foo() {}
+fn should_have_runnable() {}
+
+/// ```edition2018
+/// let x = 5;
+/// ```
+fn should_have_runnable_1() {}
+
+/// ```
+/// let z = 55;
+/// ```
+///
+/// ```ignore
+/// let z = 56;
+/// ```
+fn should_have_runnable_2() {}
+
+/// ```no_run
+/// let z = 55;
+/// ```
+fn should_have_no_runnable() {}
+
+/// ```ignore
+/// let z = 55;
+/// ```
+fn should_have_no_runnable_2() {}
+
+/// ```compile_fail
+/// let z = 55;
+/// ```
+fn should_have_no_runnable_3() {}
+
+/// ```text
+/// arbitrary plain text
+/// ```
+fn should_have_no_runnable_4() {}
+
+/// ```text
+/// arbitrary plain text
+/// ```
+///
+/// ```sh
+/// $ shell code
+/// ```
+fn should_have_no_runnable_5() {}
+
+/// ```rust,no_run
+/// let z = 55;
+/// ```
+fn should_have_no_runnable_6() {}
 "#,
-            &[&BIN, &DOCTEST],
+            &[&BIN, &DOCTEST, &DOCTEST, &DOCTEST],
             expect![[r#"
                 [
                     Runnable {
@@ -444,9 +514,9 @@ fn foo() {}
                             file_id: FileId(
                                 1,
                             ),
-                            full_range: 15..57,
+                            full_range: 15..74,
                             focus_range: None,
-                            name: "foo",
+                            name: "should_have_runnable",
                             kind: FN,
                             container_name: None,
                             description: None,
@@ -454,7 +524,47 @@ fn foo() {}
                         },
                         kind: DocTest {
                             test_id: Path(
-                                "foo",
+                                "should_have_runnable",
+                            ),
+                        },
+                        cfg_exprs: [],
+                    },
+                    Runnable {
+                        nav: NavigationTarget {
+                            file_id: FileId(
+                                1,
+                            ),
+                            full_range: 76..148,
+                            focus_range: None,
+                            name: "should_have_runnable_1",
+                            kind: FN,
+                            container_name: None,
+                            description: None,
+                            docs: None,
+                        },
+                        kind: DocTest {
+                            test_id: Path(
+                                "should_have_runnable_1",
+                            ),
+                        },
+                        cfg_exprs: [],
+                    },
+                    Runnable {
+                        nav: NavigationTarget {
+                            file_id: FileId(
+                                1,
+                            ),
+                            full_range: 150..254,
+                            focus_range: None,
+                            name: "should_have_runnable_2",
+                            kind: FN,
+                            container_name: None,
+                            description: None,
+                            docs: None,
+                        },
+                        kind: DocTest {
+                            test_id: Path(
+                                "should_have_runnable_2",
                             ),
                         },
                         cfg_exprs: [],

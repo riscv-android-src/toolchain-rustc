@@ -254,6 +254,8 @@ pub const FIOGETOWN: ::c_ulong = 0x4004667b;
 
 pub const PATH_MAX: ::c_int = 1024;
 
+pub const IOV_MAX: ::c_int = 1024;
+
 pub const SA_ONSTACK: ::c_int = 0x0001;
 pub const SA_SIGINFO: ::c_int = 0x0040;
 pub const SA_RESTART: ::c_int = 0x0002;
@@ -503,6 +505,10 @@ pub const TIOCSBRK: ::c_uint = 0x2000747b;
 pub const PRIO_PROCESS: ::c_int = 0;
 pub const PRIO_PGRP: ::c_int = 1;
 pub const PRIO_USER: ::c_int = 2;
+
+pub const ITIMER_REAL: ::c_int = 0;
+pub const ITIMER_VIRTUAL: ::c_int = 1;
+pub const ITIMER_PROF: ::c_int = 2;
 
 f! {
     pub fn CMSG_FIRSTHDR(mhdr: *const ::msghdr) -> *mut ::cmsghdr {
@@ -847,6 +853,23 @@ extern "C" {
         options: ::c_int,
         rusage: *mut ::rusage,
     ) -> ::pid_t;
+    #[cfg_attr(
+        all(target_os = "macos", target_arch = "x86"),
+        link_name = "getitimer$UNIX2003"
+    )]
+    pub fn getitimer(
+        which: ::c_int,
+        curr_value: *mut ::itimerval
+    ) -> ::c_int;
+    #[cfg_attr(
+        all(target_os = "macos", target_arch = "x86"),
+        link_name = "setitimer$UNIX2003"
+    )]
+    pub fn setitimer(
+        which: ::c_int,
+        new_value: *const ::itimerval,
+        old_value: *mut ::itimerval,
+    ) -> ::c_int;
 
     pub fn regcomp(
         preg: *mut regex_t,

@@ -25,8 +25,7 @@ function run_tests {
   ./miri test --locked
   if ! [ -n "${MIRI_TEST_TARGET+exists}" ]; then
     # Only for host architecture: tests with MIR optimizations
-    # FIXME:only testing level 1 because of <https://github.com/rust-lang/rust/issues/73223>.
-    MIRI_TEST_FLAGS="-Z mir-opt-level=1" ./miri test --locked
+    MIRIFLAGS="-Z mir-opt-level=3" ./miri test --locked
   fi
   # "miri test" has built the sysroot for us, now this should pass without
   # any interactive questions.
@@ -43,9 +42,8 @@ if [ "${TRAVIS_OS_NAME:-}" == linux ]; then
   MIRI_TEST_TARGET=x86_64-apple-darwin run_tests
   MIRI_TEST_TARGET=i686-pc-windows-msvc run_tests
 elif [ "${TRAVIS_OS_NAME:-}" == osx ]; then
-  MIRI_TEST_TARGET=i686-unknown-linux-gnu run_tests
+  MIRI_TEST_TARGET=mips64-unknown-linux-gnuabi64 run_tests # big-endian architecture
   MIRI_TEST_TARGET=x86_64-pc-windows-msvc run_tests
-  MIRI_TEST_TARGET=i686-pc-windows-gnu run_tests
 elif [ "${CI_WINDOWS:-}" == True ]; then
   MIRI_TEST_TARGET=x86_64-unknown-linux-gnu run_tests
   MIRI_TEST_TARGET=x86_64-apple-darwin run_tests

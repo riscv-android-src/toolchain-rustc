@@ -1,8 +1,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rustc_ast::{ast, token::DelimToken, visit};
-use rustc_span::{symbol, BytePos, Pos, Span};
+use rustc_ast::{ast, attr::HasAttrs, token::DelimToken, visit};
+use rustc_span::{symbol, BytePos, Pos, Span, DUMMY_SP};
 
 use crate::attr::*;
 use crate::comment::{rewrite_comment, CodeCharKind, CommentCodeSlices};
@@ -11,11 +11,11 @@ use crate::config::{BraceStyle, Config};
 use crate::coverage::transform_missing_snippet;
 use crate::items::{
     format_impl, format_trait, format_trait_alias, is_mod_decl, is_use_item,
-    rewrite_associated_impl_type, rewrite_associated_type, rewrite_extern_crate,
-    rewrite_opaque_impl_type, rewrite_opaque_type, rewrite_type_alias, FnBraceStyle, FnSig,
-    StaticParts, StructParts,
+    rewrite_associated_impl_type, rewrite_extern_crate, rewrite_opaque_impl_type,
+    rewrite_opaque_type, rewrite_type_alias, FnBraceStyle, FnSig, StaticParts, StructParts,
 };
 use crate::macros::{macro_style, rewrite_macro, rewrite_macro_def, MacroPosition};
+use crate::modules::Module;
 use crate::rewrite::{Rewrite, RewriteContext};
 use crate::shape::{Indent, Shape};
 use crate::skip::{is_skip_attr, SkipContext};
@@ -24,8 +24,8 @@ use crate::spanned::Spanned;
 use crate::stmt::Stmt;
 use crate::syntux::session::ParseSess;
 use crate::utils::{
-    self, contains_skip, count_newlines, depr_skip_annotation, inner_attributes, last_line_width,
-    mk_sp, ptr_vec_to_ref_vec, rewrite_ident, stmt_expr,
+    self, contains_skip, count_newlines, depr_skip_annotation, format_unsafety, inner_attributes,
+    last_line_width, mk_sp, ptr_vec_to_ref_vec, rewrite_ident, starts_with_newline, stmt_expr,
 };
 use crate::{ErrorKind, FormatReport, FormattingError};
 
@@ -117,10 +117,22 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
             self.parse_sess.span_to_debug_info(stmt.span())
         );
 
-        // https://github.com/rust-lang/rust/issues/63679.
-        let is_all_semicolons =
-            |snippet: &str| snippet.chars().all(|c| c.is_whitespace() || c == ';');
-        if is_all_semicolons(&self.snippet(stmt.span())) {
+        if stmt.is_empty() {
+            // If the statement is empty, just skip over it. Before that, make sure any comment
+            // snippet preceding the semicolon is picked up.
+            let snippet = self.snippet(mk_sp(self.last_pos, stmt.span().lo()));
+            let original_starts_with_newline = snippet
+                .find(|c| c != ' ')
+                .map_or(false, |i| starts_with_newline(&snippet[i..]));
+            let snippet = snippet.trim();
+            if !snippet.is_empty() {
+                if original_starts_with_newline {
+                    self.push_str("\n");
+                }
+                self.push_str(&self.block_indent.to_string(self.config));
+                self.push_str(snippet);
+            }
+
             self.last_pos = stmt.span().hi();
             return;
         }
@@ -145,16 +157,15 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                     self.push_rewrite(stmt.span(), rewrite)
                 }
             }
-            ast::StmtKind::MacCall(ref mac) => {
-                let (ref mac, _macro_style, ref attrs) = **mac;
-                if self.visit_attrs(attrs, ast::AttrStyle::Outer) {
+            ast::StmtKind::MacCall(ref mac_stmt) => {
+                if self.visit_attrs(&mac_stmt.attrs, ast::AttrStyle::Outer) {
                     self.push_skipped_with_span(
-                        attrs,
+                        &mac_stmt.attrs,
                         stmt.span(),
                         get_span_without_attrs(stmt.as_ast_node()),
                     );
                 } else {
-                    self.visit_mac(mac, None, MacroPosition::Statement);
+                    self.visit_mac(&mac_stmt.mac, None, MacroPosition::Statement);
                 }
                 self.format_missing(stmt.span().hi());
             }
@@ -544,11 +555,12 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                 ast::ItemKind::TyAlias(_, ref generics, ref generic_bounds, ref ty) => match ty {
                     Some(ty) => {
                         let rewrite = rewrite_type_alias(
+                            item.ident,
+                            Some(&*ty),
+                            generics,
+                            Some(generic_bounds),
                             &self.get_context(),
                             self.block_indent,
-                            item.ident,
-                            &*ty,
-                            generics,
                             &item.vis,
                         );
                         self.push_rewrite(item.span, rewrite);
@@ -603,7 +615,11 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
             }
             ast::AssocItemKind::Fn(defaultness, ref sig, ref generics, Some(ref body)) => {
                 let inner_attrs = inner_attributes(&ti.attrs);
-                let vis = rustc_span::source_map::dummy_spanned(ast::VisibilityKind::Inherited);
+                let vis = ast::Visibility {
+                    kind: ast::VisibilityKind::Inherited,
+                    span: DUMMY_SP,
+                    tokens: None,
+                };
                 let fn_ctxt = visit::FnCtxt::Assoc(visit::AssocCtxt::Trait);
                 self.visit_fn(
                     visit::FnKind::Fn(fn_ctxt, ti.ident, sig, &vis, Some(body)),
@@ -615,13 +631,14 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                 );
             }
             ast::AssocItemKind::TyAlias(_, ref generics, ref generic_bounds, ref type_default) => {
-                let rewrite = rewrite_associated_type(
+                let rewrite = rewrite_type_alias(
                     ti.ident,
                     type_default.as_ref(),
                     generics,
                     Some(generic_bounds),
                     &self.get_context(),
                     self.block_indent,
+                    &ti.vis,
                 );
                 self.push_rewrite(ti.span, rewrite);
             }
@@ -662,6 +679,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                 let rewrite_associated = || {
                     rewrite_associated_impl_type(
                         ii.ident,
+                        &ii.vis,
                         defaultness,
                         ty.as_ref(),
                         &generics,
@@ -810,7 +828,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
     // Returns true if we should skip the following item.
     pub(crate) fn visit_attrs(&mut self, attrs: &[ast::Attribute], style: ast::AttrStyle) -> bool {
         for attr in attrs {
-            if attr.check_name(depr_skip_annotation()) {
+            if attr.has_name(depr_skip_annotation()) {
                 let file_name = self.parse_sess.span_to_filename(attr.span);
                 self.report.append(
                     file_name,
@@ -902,6 +920,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
     ) {
         let vis_str = utils::format_visibility(&self.get_context(), vis);
         self.push_str(&*vis_str);
+        self.push_str(format_unsafety(m.unsafety));
         self.push_str("mod ");
         // Calling `to_owned()` to work around borrow checker.
         let ident_str = rewrite_ident(&self.get_context(), ident).to_owned();
@@ -938,10 +957,14 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
         }
     }
 
-    pub(crate) fn format_separate_mod(&mut self, m: &ast::Mod, end_pos: BytePos) {
+    pub(crate) fn format_separate_mod(&mut self, m: &Module<'_>, end_pos: BytePos) {
         self.block_indent = Indent::empty();
-        self.walk_mod_items(m);
-        self.format_missing_with_indent(end_pos);
+        if self.visit_attrs(m.attrs(), ast::AttrStyle::Inner) {
+            self.push_skipped_with_span(m.attrs(), m.as_ref().inner, m.as_ref().inner);
+        } else {
+            self.walk_mod_items(m.as_ref());
+            self.format_missing_with_indent(end_pos);
+        }
     }
 
     pub(crate) fn skip_empty_lines(&mut self, end_pos: BytePos) {

@@ -13,48 +13,44 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_ast"
-version = "671.0.0"
+version = "686.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_ast` in the rust-lang/rust repository from commit 1454bbd4fdac9b7272b93fe82860613dccc0afad The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_ast` in the rust-lang/rust repository from commit c9b606ed679dd94f3f920ad339c0d2be0952b16c The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
 [lib]
-path = "lib.rs"
 doctest = false
 [dependencies.bitflags]
 version = "1.2.1"
 
-[dependencies.log]
-version = "0.4"
-
 [dependencies.rustc_data_structures]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_data_structures"
 
 [dependencies.rustc_index]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_index"
 
 [dependencies.rustc_lexer]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_lexer"
 
 [dependencies.rustc_macros]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_macros"
 
 [dependencies.rustc_serialize]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_serialize"
 
 [dependencies.rustc_span]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_span"
-
-[dependencies.scoped-tls]
-version = "1.0"
 
 [dependencies.smallvec]
 version = "1.0"
 features = ["union", "may_dangle"]
+
+[dependencies.tracing]
+version = "0.1"

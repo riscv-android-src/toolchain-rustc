@@ -96,7 +96,7 @@ impl Style {
     /// assert_eq!(colored.style().contains(Styles::Italic), true);
     /// assert_eq!(colored.style().contains(Styles::Dimmed), false);
     /// ```
-    pub fn contains(&self, style: Styles) -> bool {
+    pub fn contains(self, style: Styles) -> bool {
         let s = style.to_u8();
         self.0 & s == s
     }
@@ -120,8 +120,8 @@ mod tests {
     use super::*;
 
     mod u8_to_styles_invalid_is_none {
+        use super::super::Styles;
         use super::super::CLEARV;
-        use super::super::{Style, Styles};
 
         #[test]
         fn empty_is_none() {
@@ -174,9 +174,6 @@ mod tests {
     mod styles_combine_complex {
         use super::super::Styles::*;
         use super::super::{Style, Styles};
-        use super::super::{
-            BLINK, BOLD, DIMMED, HIDDEN, ITALIC, REVERSED, STRIKETHROUGH, UNDERLINE,
-        };
 
         fn style_from_multiples(styles: &[Styles]) -> Style {
             let mut res = Style(styles[0].to_u8());
@@ -284,6 +281,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn test_style_contains() {
         let mut style = Style(Styles::Bold.to_u8());
         style.add(Styles::Italic);

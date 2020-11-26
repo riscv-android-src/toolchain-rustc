@@ -13,10 +13,13 @@ use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use rustc_ast::token::{BinOpToken, DelimToken, Token, TokenKind};
-use rustc_ast::tokenstream::{Cursor, TokenStream, TokenTree};
+use rustc_ast::tokenstream::{
+    Cursor, LazyTokenStream, LazyTokenStreamInner, TokenStream, TokenTree,
+};
 use rustc_ast::{ast, ptr};
 use rustc_ast_pretty::pprust;
-use rustc_parse::{new_parser_from_tts, parser::Parser};
+use rustc_parse::parser::Parser;
+use rustc_parse::{stream_to_parser, MACRO_ARGUMENTS};
 use rustc_span::{
     symbol::{self, kw},
     BytePos, Span, Symbol, DUMMY_SP,
@@ -87,6 +90,14 @@ impl Rewrite for MacroArg {
             MacroArg::Keyword(ident, _) => Some(ident.name.to_string()),
         }
     }
+}
+
+fn build_parser<'a>(context: &RewriteContext<'a>, cursor: Cursor) -> Parser<'a> {
+    stream_to_parser(
+        context.parse_sess.inner(),
+        cursor.collect(),
+        MACRO_ARGUMENTS,
+    )
 }
 
 fn parse_macro_arg<'a, 'b: 'a>(parser: &'a mut Parser<'b>) -> Option<MacroArg> {
@@ -290,7 +301,7 @@ fn rewrite_macro_inner(
         }
     }
 
-    let mut parser = new_parser_from_tts(context.parse_sess.inner(), ts.trees().collect());
+    let mut parser = build_parser(context, ts.trees());
     let mut arg_vec = Vec::new();
     let mut vec_with_semi = false;
     let mut trailing_comma = false;
@@ -1178,8 +1189,7 @@ fn next_space(tok: &TokenKind) -> SpaceState {
         | TokenKind::Pound
         | TokenKind::Dollar
         | TokenKind::OpenDelim(_)
-        | TokenKind::CloseDelim(_)
-        | TokenKind::Whitespace => SpaceState::Never,
+        | TokenKind::CloseDelim(_) => SpaceState::Never,
 
         TokenKind::Literal(..) | TokenKind::Ident(..) | TokenKind::Lifetime(_) => SpaceState::Ident,
 
@@ -1197,14 +1207,14 @@ pub(crate) fn convert_try_mac(
     let path = &pprust::path_to_string(&mac.path);
     if path == "try" || path == "r#try" {
         let ts = mac.args.inner_tokens();
-        let mut parser = new_parser_from_tts(context.parse_sess.inner(), ts.trees().collect());
+        let mut parser = build_parser(context, ts.trees());
 
         Some(ast::Expr {
             id: ast::NodeId::root(), // dummy value
             kind: ast::ExprKind::Try(parser.parse_expr().ok()?),
             span: mac.span(), // incorrect span, but shouldn't matter too much
             attrs: ast::AttrVec::new(),
-            tokens: Some(ts),
+            tokens: Some(LazyTokenStream::new(LazyTokenStreamInner::Ready(ts))),
         })
     } else {
         None
@@ -1275,8 +1285,8 @@ impl MacroParser {
             span,
         })) = self.toks.look_ahead(0)
         {
-            self.toks.next();
             hi = span.hi();
+            self.toks.next();
         }
         Some(MacroBranch {
             span: mk_sp(lo, hi),
@@ -1430,7 +1440,7 @@ fn format_lazy_static(
     ts: &TokenStream,
 ) -> Option<String> {
     let mut result = String::with_capacity(1024);
-    let mut parser = new_parser_from_tts(context.parse_sess.inner(), ts.trees().collect());
+    let mut parser = build_parser(context, ts.trees());
     let nested_shape = shape
         .block_indent(context.config.tab_spaces())
         .with_max_width(context.config);

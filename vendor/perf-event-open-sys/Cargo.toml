@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "perf-event-open-sys"
-version = "1.0.0"
+version = "1.0.1"
 authors = ["Jim Blandy <jimb@red-bean.com>"]
 description = "Unsafe, direct bindings for Linux's perf_event_open system call, with associated\ntypes and constants.\n"
 readme = "README.md"

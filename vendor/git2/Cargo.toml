@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "git2"
-version = "0.13.8"
+version = "0.13.12"
 authors = ["Josh Triplett <josh@joshtriplett.org>", "Alex Crichton <alex@alexcrichton.com>"]
 description = "Bindings to libgit2 for interoperating with git repositories. This library is\nboth threadsafe and memory safe and allows both reading and writing git\nrepositories.\n"
 documentation = "https://docs.rs/git2"
@@ -29,7 +29,7 @@ version = "1.1.0"
 version = "0.2"
 
 [dependencies.libgit2-sys]
-version = "0.12.9"
+version = "0.12.14"
 
 [dependencies.log]
 version = "0.4.8"
@@ -55,6 +55,7 @@ ssh = ["libgit2-sys/ssh"]
 ssh_key_from_memory = ["libgit2-sys/ssh_key_from_memory"]
 unstable = []
 vendored-openssl = ["openssl-sys/vendored"]
+zlib-ng-compat = ["libgit2-sys/zlib-ng-compat"]
 [target."cfg(all(unix, not(target_os = \"macos\")))".dependencies.openssl-probe]
 version = "0.1"
 optional = true

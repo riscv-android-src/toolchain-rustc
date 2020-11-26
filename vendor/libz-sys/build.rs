@@ -16,6 +16,12 @@ fn main() {
 
     let host_and_target_contain = |s| host.contains(s) && target.contains(s);
 
+    let want_ng = cfg!(feature = "zlib-ng") && !cfg!(feature = "stock-zlib");
+
+    if want_ng && target != "wasm32-unknown-unknown" {
+        return build_zlib_ng(&target);
+    }
+
     // Don't run pkg-config if we're linking statically (we'll build below) and
     // also don't run pkg-config on macOS/FreeBSD/DragonFly. That'll end up printing
     // `-L /usr/lib` which wreaks havoc with linking to an OpenSSL in /usr/local/lib
@@ -116,7 +122,7 @@ fn build_zlib(cfg: &mut cc::Build, target: &str) {
         cfg.define("_POSIX_SOURCE", None);
         cfg.flag("-fvisibility=hidden");
     }
-    if target.contains("ios") {
+    if target.contains("apple") {
         cfg.define("_C99_SOURCE", None);
     }
     if target.contains("solaris") {
@@ -140,6 +146,36 @@ fn build_zlib(cfg: &mut cc::Build, target: &str) {
 
     println!("cargo:root={}", dst.to_str().unwrap());
     println!("cargo:include={}/include", dst.to_str().unwrap());
+}
+
+#[cfg(not(feature = "zlib-ng"))]
+fn build_zlib_ng(_target: &str) {}
+
+#[cfg(feature = "zlib-ng")]
+fn build_zlib_ng(target: &str) {
+    let install_dir = cmake::Config::new("src/zlib-ng")
+        .define("BUILD_SHARED_LIBS", "OFF")
+        .define("ZLIB_COMPAT", "ON")
+        .define("WITH_GZFILEOP", "ON")
+        .build();
+    let includedir = install_dir.join("include");
+    let libdir = install_dir.join("lib");
+    println!(
+        "cargo:rustc-link-search=native={}",
+        libdir.to_str().unwrap()
+    );
+    let libname = if target.contains("windows") {
+        if target.contains("msvc") && env::var("OPT_LEVEL").unwrap() == "0" {
+            "zlibd"
+        } else {
+            "zlib"
+        }
+    } else {
+        "z"
+    };
+    println!("cargo:rustc-link-lib=static={}", libname);
+    println!("cargo:root={}", install_dir.to_str().unwrap());
+    println!("cargo:include={}", includedir.to_str().unwrap());
 }
 
 #[cfg(not(target_env = "msvc"))]

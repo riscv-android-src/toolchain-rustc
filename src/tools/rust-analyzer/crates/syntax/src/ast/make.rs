@@ -33,6 +33,7 @@ pub fn path_unqualified(segment: ast::PathSegment) -> ast::Path {
 pub fn path_qualified(qual: ast::Path, segment: ast::PathSegment) -> ast::Path {
     path_from_text(&format!("{}::{}", qual, segment))
 }
+// FIXME: make this private
 pub fn path_from_text(text: &str) -> ast::Path {
     ast_from_text(text)
 }
@@ -137,12 +138,11 @@ pub fn expr_prefix(op: SyntaxKind, expr: ast::Expr) -> ast::Expr {
 pub fn expr_call(f: ast::Expr, arg_list: ast::ArgList) -> ast::Expr {
     expr_from_text(&format!("{}{}", f, arg_list))
 }
+pub fn expr_method_call(receiver: ast::Expr, method: &str, arg_list: ast::ArgList) -> ast::Expr {
+    expr_from_text(&format!("{}.{}{}", receiver, method, arg_list))
+}
 fn expr_from_text(text: &str) -> ast::Expr {
     ast_from_text(&format!("const C: () = {};", text))
-}
-
-pub fn try_expr_from_text(text: &str) -> Option<ast::Expr> {
-    try_ast_from_text(&format!("const C: () = {};", text))
 }
 
 pub fn condition(expr: ast::Expr, pattern: Option<ast::Pat>) -> ast::Condition {
@@ -294,6 +294,21 @@ pub fn param_list(pats: impl IntoIterator<Item = ast::Param>) -> ast::ParamList 
     ast_from_text(&format!("fn f({}) {{ }}", args))
 }
 
+pub fn generic_param(name: String, ty: Option<ast::TypeBoundList>) -> ast::GenericParam {
+    let bound = match ty {
+        Some(it) => format!(": {}", it),
+        None => String::new(),
+    };
+    ast_from_text(&format!("fn f<{}{}>() {{ }}", name, bound))
+}
+
+pub fn generic_param_list(
+    pats: impl IntoIterator<Item = ast::GenericParam>,
+) -> ast::GenericParamList {
+    let args = pats.into_iter().join(", ");
+    ast_from_text(&format!("fn f<{}>() {{ }}", args))
+}
+
 pub fn visibility_pub_crate() -> ast::Visibility {
     ast_from_text("pub(crate) struct S")
 }
@@ -329,16 +344,6 @@ fn ast_from_text<N: AstNode>(text: &str) -> N {
     node
 }
 
-fn try_ast_from_text<N: AstNode>(text: &str) -> Option<N> {
-    let parse = SourceFile::parse(text);
-    let node = parse.tree().syntax().descendants().find_map(N::cast)?;
-    let node = node.syntax().clone();
-    let node = unroot(node);
-    let node = N::cast(node).unwrap();
-    assert_eq!(node.syntax().text_range().start(), 0.into());
-    Some(node)
-}
-
 fn unroot(n: SyntaxNode) -> SyntaxNode {
     SyntaxNode::new_root(n.green().clone())
 }
@@ -349,7 +354,7 @@ pub mod tokens {
     use crate::{ast, AstNode, Parse, SourceFile, SyntaxKind::*, SyntaxToken};
 
     pub(super) static SOURCE_FILE: Lazy<Parse<SourceFile>> =
-        Lazy::new(|| SourceFile::parse("const C: <()>::Item = (1 != 1, 2 == 2, !true)\n;"));
+        Lazy::new(|| SourceFile::parse("const C: <()>::Item = (1 != 1, 2 == 2, !true)\n;\n\n"));
 
     pub fn single_space() -> SyntaxToken {
         SOURCE_FILE
@@ -386,6 +391,16 @@ pub mod tokens {
             .descendants_with_tokens()
             .filter_map(|it| it.into_token())
             .find(|it| it.kind() == WHITESPACE && it.text().as_str() == "\n")
+            .unwrap()
+    }
+
+    pub fn blank_line() -> SyntaxToken {
+        SOURCE_FILE
+            .tree()
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|it| it.into_token())
+            .find(|it| it.kind() == WHITESPACE && it.text().as_str() == "\n\n")
             .unwrap()
     }
 

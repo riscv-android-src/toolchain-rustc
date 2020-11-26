@@ -5,8 +5,7 @@
 //! [`join()`]: ../join/join.fn.html
 
 use crate::job::{HeapJob, JobFifo};
-use crate::latch::{CountLatch, Latch};
-use crate::log::Event::*;
+use crate::latch::CountLatch;
 use crate::registry::{in_worker, Registry, WorkerThread};
 use crate::unwind;
 use std::any::Any;
@@ -286,7 +285,7 @@ struct ScopeBase<'scope> {
 /// propagated at that point.
 pub fn scope<'scope, OP, R>(op: OP) -> R
 where
-    OP: for<'s> FnOnce(&'s Scope<'scope>) -> R + 'scope + Send,
+    OP: FnOnce(&Scope<'scope>) -> R + Send,
     R: Send,
 {
     in_worker(|owner_thread, _| {
@@ -377,7 +376,7 @@ where
 /// panics are propagated at that point.
 pub fn scope_fifo<'scope, OP, R>(op: OP) -> R
 where
-    OP: for<'s> FnOnce(&'s ScopeFifo<'scope>) -> R + 'scope + Send,
+    OP: FnOnce(&ScopeFifo<'scope>) -> R + Send,
     R: Send,
 {
     in_worker(|owner_thread, _| {
@@ -580,24 +579,16 @@ impl<'scope> ScopeBase<'scope> {
             .compare_exchange(nil, &mut *err, Ordering::Release, Ordering::Relaxed)
             .is_ok()
         {
-            log!(JobPanickedErrorStored {
-                owner_thread: self.owner_thread_index
-            });
             mem::forget(err); // ownership now transferred into self.panic
-        } else {
-            log!(JobPanickedErrorNotStored {
-                owner_thread: self.owner_thread_index
-            });
         }
 
-        self.job_completed_latch.set();
+        self.job_completed_latch
+            .set_and_tickle_one(&self.registry, self.owner_thread_index);
     }
 
     unsafe fn job_completed_ok(&self) {
-        log!(JobCompletedOk {
-            owner_thread: self.owner_thread_index
-        });
-        self.job_completed_latch.set();
+        self.job_completed_latch
+            .set_and_tickle_one(&self.registry, self.owner_thread_index);
     }
 
     unsafe fn steal_till_jobs_complete(&self, owner_thread: &WorkerThread) {
@@ -609,15 +600,8 @@ impl<'scope> ScopeBase<'scope> {
         // ordering:
         let panic = self.panic.swap(ptr::null_mut(), Ordering::Relaxed);
         if !panic.is_null() {
-            log!(ScopeCompletePanicked {
-                owner_thread: owner_thread.index()
-            });
             let value: Box<Box<dyn Any + Send + 'static>> = mem::transmute(panic);
             unwind::resume_unwinding(*value);
-        } else {
-            log!(ScopeCompleteNoPanic {
-                owner_thread: owner_thread.index()
-            });
         }
     }
 }

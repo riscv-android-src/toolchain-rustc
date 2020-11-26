@@ -12,7 +12,8 @@ use crate::cfg_flag::CfgFlag;
 /// Roots and crates that compose this Rust project.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectJson {
-    pub(crate) crates: Vec<Crate>,
+    pub(crate) sysroot_src: Option<AbsPathBuf>,
+    crates: Vec<Crate>,
 }
 
 /// A crate points to the root module of a crate and lists the dependencies of the crate. This is
@@ -34,6 +35,7 @@ pub struct Crate {
 impl ProjectJson {
     pub fn new(base: &AbsPath, data: ProjectJsonData) -> ProjectJson {
         ProjectJson {
+            sysroot_src: data.sysroot_src.map(|it| base.join(it)),
             crates: data
                 .crates
                 .into_iter()
@@ -43,11 +45,13 @@ impl ProjectJson {
                             && !crate_data.root_module.starts_with("..")
                             || crate_data.root_module.starts_with(base)
                     });
-                    let root_module = base.join(crate_data.root_module);
+                    let root_module = base.join(crate_data.root_module).normalize();
                     let (include, exclude) = match crate_data.source {
                         Some(src) => {
                             let absolutize = |dirs: Vec<PathBuf>| {
-                                dirs.into_iter().map(|it| base.join(it)).collect::<Vec<_>>()
+                                dirs.into_iter()
+                                    .map(|it| base.join(it).normalize())
+                                    .collect::<Vec<_>>()
                             };
                             (absolutize(src.include_dirs), absolutize(src.exclude_dirs))
                         }
@@ -79,10 +83,17 @@ impl ProjectJson {
                 .collect::<Vec<_>>(),
         }
     }
+    pub fn n_crates(&self) -> usize {
+        self.crates.len()
+    }
+    pub fn crates(&self) -> impl Iterator<Item = (CrateId, &Crate)> + '_ {
+        self.crates.iter().enumerate().map(|(idx, krate)| (CrateId(idx as u32), krate))
+    }
 }
 
 #[derive(Deserialize)]
 pub struct ProjectJsonData {
+    sysroot_src: Option<PathBuf>,
     crates: Vec<CrateData>,
 }
 

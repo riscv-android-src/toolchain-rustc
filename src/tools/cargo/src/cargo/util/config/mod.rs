@@ -149,8 +149,10 @@ pub struct Config {
     offline: bool,
     /// A global static IPC control mechanism (used for managing parallel builds)
     jobserver: Option<jobserver::Client>,
-    /// Cli flags of the form "-Z something"
+    /// Cli flags of the form "-Z something" merged with config file values
     unstable_flags: CliUnstable,
+    /// Cli flags of the form "-Z something"
+    unstable_flags_cli: Option<Vec<String>>,
     /// A handle on curl easy mode for http calls
     easy: LazyCell<RefCell<Easy>>,
     /// Cache of the `SourceId` for crates.io
@@ -174,6 +176,7 @@ pub struct Config {
     build_config: LazyCell<CargoBuildConfig>,
     target_cfgs: LazyCell<Vec<(String, TargetCfgConfig)>>,
     doc_extern_map: LazyCell<RustdocExternMap>,
+    progress_config: ProgressConfig,
 }
 
 impl Config {
@@ -231,6 +234,7 @@ impl Config {
                 }
             },
             unstable_flags: CliUnstable::default(),
+            unstable_flags_cli: None,
             easy: LazyCell::new(),
             crates_io_source_id: LazyCell::new(),
             cache_rustc_info,
@@ -244,6 +248,7 @@ impl Config {
             build_config: LazyCell::new(),
             target_cfgs: LazyCell::new(),
             doc_extern_map: LazyCell::new(),
+            progress_config: ProgressConfig::default(),
         }
     }
 
@@ -427,6 +432,7 @@ impl Config {
         let values = self.load_values_from(path.as_ref())?;
         self.values.replace(values);
         self.merge_cli_args()?;
+        self.load_unstable_flags_from_config()?;
         Ok(())
     }
 
@@ -455,8 +461,8 @@ impl Config {
 
     /// Get a configuration value by key.
     ///
-    /// This does NOT look at environment variables, the caller is responsible
-    /// for that.
+    /// This does NOT look at environment variables. See `get_cv_with_env` for
+    /// a variant that supports environment variables.
     fn get_cv(&self, key: &ConfigKey) -> CargoResult<Option<ConfigValue>> {
         log::trace!("get cv {:?}", key);
         let vals = self.values()?;
@@ -703,6 +709,11 @@ impl Config {
         cli_config: &[String],
     ) -> CargoResult<()> {
         self.unstable_flags.parse(unstable_flags)?;
+        if !unstable_flags.is_empty() {
+            // store a copy of the cli flags separately for `load_unstable_flags_from_config`
+            // (we might also need it again for `reload_rooted_at`)
+            self.unstable_flags_cli = Some(unstable_flags.to_vec());
+        }
         if !cli_config.is_empty() {
             self.unstable_flags.fail_if_stable_opt("--config", 6699)?;
             self.cli_config = Some(cli_config.iter().map(|s| s.to_string()).collect());
@@ -711,13 +722,9 @@ impl Config {
         let extra_verbose = verbose >= 2;
         let verbose = verbose != 0;
 
-        #[derive(Deserialize, Default)]
-        struct TermConfig {
-            verbose: Option<bool>,
-            color: Option<String>,
-        }
-
-        // Ignore errors in the configuration files.
+        // Ignore errors in the configuration files. We don't want basic
+        // commands like `cargo version` to error out due to config file
+        // problems.
         let term = self.get::<TermConfig>("term").unwrap_or_default();
 
         let color = color.or_else(|| term.color.as_deref());
@@ -745,6 +752,7 @@ impl Config {
 
         self.shell().set_verbosity(verbosity);
         self.shell().set_color_choice(color)?;
+        self.progress_config = term.progress.unwrap_or_default();
         self.extra_verbose = extra_verbose;
         self.frozen = frozen;
         self.locked = locked;
@@ -756,17 +764,25 @@ impl Config {
                 .unwrap_or(false);
         self.target_dir = cli_target_dir;
 
+        self.load_unstable_flags_from_config()?;
+
+        Ok(())
+    }
+
+    fn load_unstable_flags_from_config(&mut self) -> CargoResult<()> {
         // If nightly features are enabled, allow setting Z-flags from config
         // using the `unstable` table. Ignore that block otherwise.
         if nightly_features_allowed() {
-            if let Some(unstable_flags) = self.get::<Option<CliUnstable>>("unstable")? {
-                self.unstable_flags = unstable_flags;
+            self.unstable_flags = self
+                .get::<Option<CliUnstable>>("unstable")?
+                .unwrap_or_default();
+            if let Some(unstable_flags_cli) = &self.unstable_flags_cli {
+                // NB. It's not ideal to parse these twice, but doing it again here
+                //     allows the CLI to override config files for both enabling
+                //     and disabling, and doing it up top allows CLI Zflags to
+                //     control config parsing behavior.
+                self.unstable_flags.parse(unstable_flags_cli)?;
             }
-            // NB. It's not ideal to parse these twice, but doing it again here
-            //     allows the CLI to override config files for both enabling
-            //     and disabling, and doing it up top allows CLI Zflags to
-            //     control config parsing behavior.
-            self.unstable_flags.parse(unstable_flags)?;
         }
 
         Ok(())
@@ -1173,6 +1189,20 @@ impl Config {
     pub fn build_config(&self) -> CargoResult<&CargoBuildConfig> {
         self.build_config
             .try_borrow_with(|| Ok(self.get::<CargoBuildConfig>("build")?))
+    }
+
+    pub fn progress_config(&self) -> &ProgressConfig {
+        &self.progress_config
+    }
+
+    /// This is used to validate the `term` table has valid syntax.
+    ///
+    /// This is necessary because loading the term settings happens very
+    /// early, and in some situations (like `cargo version`) we don't want to
+    /// fail if there are problems with the config file.
+    pub fn validate_term_config(&self) -> CargoResult<()> {
+        drop(self.get::<TermConfig>("term")?);
+        Ok(())
     }
 
     /// Returns a list of [target.'cfg()'] tables.
@@ -1761,6 +1791,94 @@ pub struct CargoBuildConfig {
     pub out_dir: Option<ConfigRelativePath>,
 }
 
+#[derive(Deserialize, Default)]
+struct TermConfig {
+    verbose: Option<bool>,
+    color: Option<String>,
+    #[serde(default)]
+    #[serde(deserialize_with = "progress_or_string")]
+    progress: Option<ProgressConfig>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ProgressConfig {
+    pub when: ProgressWhen,
+    pub width: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProgressWhen {
+    Auto,
+    Never,
+    Always,
+}
+
+impl Default for ProgressWhen {
+    fn default() -> ProgressWhen {
+        ProgressWhen::Auto
+    }
+}
+
+fn progress_or_string<'de, D>(deserializer: D) -> Result<Option<ProgressConfig>, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    struct ProgressVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for ProgressVisitor {
+        type Value = Option<ProgressConfig>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a string (\"auto\" or \"never\") or a table")
+        }
+
+        fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            match s {
+                "auto" => Ok(Some(ProgressConfig {
+                    when: ProgressWhen::Auto,
+                    width: None,
+                })),
+                "never" => Ok(Some(ProgressConfig {
+                    when: ProgressWhen::Never,
+                    width: None,
+                })),
+                "always" => Err(E::custom("\"always\" progress requires a `width` key")),
+                _ => Err(E::unknown_variant(s, &["auto", "never"])),
+            }
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::de::Deserializer<'de>,
+        {
+            let pc = ProgressConfig::deserialize(deserializer)?;
+            if let ProgressConfig {
+                when: ProgressWhen::Always,
+                width: None,
+            } = pc
+            {
+                return Err(serde::de::Error::custom(
+                    "\"always\" progress requires a `width` key",
+                ));
+            }
+            Ok(Some(pc))
+        }
+    }
+
+    deserializer.deserialize_option(ProgressVisitor)
+}
+
 /// A type to deserialize a list of strings from a toml file.
 ///
 /// Supports deserializing either a whitespace-separated list of arguments in a
@@ -1771,7 +1889,7 @@ pub struct CargoBuildConfig {
 /// a = 'a b c'
 /// b = ['a', 'b', 'c']
 /// ```
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct StringList(Vec<String>);
 
 impl StringList {

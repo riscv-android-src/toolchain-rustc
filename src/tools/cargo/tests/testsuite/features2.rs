@@ -1262,17 +1262,17 @@ fn build_dep_activated() {
             "Cargo.toml",
             &format!(
                 r#"
-            [package]
-            name = "foo"
-            version = "0.1.0"
+                [package]
+                name = "foo"
+                version = "0.1.0"
 
-            # This should never be selected.
-            [target.'{}'.build-dependencies]
-            targetdep = "1.0"
+                # This should never be selected.
+                [target.'{}'.build-dependencies]
+                targetdep = "1.0"
 
-            [target.'{}'.build-dependencies]
-            hostdep = {{version="1.0", features=["feat1"]}}
-            "#,
+                [target.'{}'.build-dependencies]
+                hostdep = {{version="1.0", features=["feat1"]}}
+                "#,
                 alternate(),
                 rustc_host()
             ),
@@ -1747,5 +1747,202 @@ foo v0.1.0 ([..]/foo)
 └── log v0.4.8
 ",
         )
+        .run();
+}
+
+#[cargo_test]
+fn shared_dep_same_but_dependencies() {
+    // Checks for a bug of nondeterminism. This scenario creates a shared
+    // dependency `dep` which needs to be built twice (once as normal, and
+    // once as a build dep). However, in both cases the flags to `dep` are the
+    // same, the only difference is what it links to. The normal dependency
+    // should link to `subdep` with the feature disabled, and the build
+    // dependency should link to it with it enabled. Crucially, the `--target`
+    // flag should not be specified, otherwise Unit.kind would be different
+    // and avoid the collision, and this bug won't manifest.
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bin1", "bin2"]
+            "#,
+        )
+        .file(
+            "bin1/Cargo.toml",
+            r#"
+                [package]
+                name = "bin1"
+                version = "0.1.0"
+
+                [dependencies]
+                dep = { path = "../dep" }
+            "#,
+        )
+        .file("bin1/src/main.rs", "fn main() { dep::feat_func(); }")
+        .file(
+            "bin2/Cargo.toml",
+            r#"
+                [package]
+                name = "bin2"
+                version = "0.1.0"
+
+                [build-dependencies]
+                dep = { path = "../dep" }
+                subdep = { path = "../subdep", features = ["feat"] }
+            "#,
+        )
+        .file("bin2/build.rs", "fn main() { dep::feat_func(); }")
+        .file("bin2/src/main.rs", "fn main() {}")
+        .file(
+            "dep/Cargo.toml",
+            r#"
+                [package]
+                name = "dep"
+                version = "0.1.0"
+
+                [dependencies]
+                subdep = { path = "../subdep" }
+            "#,
+        )
+        .file(
+            "dep/src/lib.rs",
+            "pub fn feat_func() { subdep::feat_func(); }",
+        )
+        .file(
+            "subdep/Cargo.toml",
+            r#"
+                [package]
+                name = "subdep"
+                version = "0.1.0"
+
+                [features]
+                feat = []
+            "#,
+        )
+        .file(
+            "subdep/src/lib.rs",
+            r#"
+                pub fn feat_func() {
+                    #[cfg(feature = "feat")] println!("cargo:warning=feat: enabled");
+                    #[cfg(not(feature = "feat"))] println!("cargo:warning=feat: not enabled");
+                }
+            "#,
+        )
+        .build();
+
+    p.cargo("build --bin bin1 --bin bin2 -Zfeatures=all")
+        .masquerade_as_nightly_cargo()
+        // unordered because bin1 and bin2 build at the same time
+        .with_stderr_unordered(
+            "\
+[COMPILING] subdep [..]
+[COMPILING] dep [..]
+[COMPILING] bin2 [..]
+[COMPILING] bin1 [..]
+warning: feat: enabled
+[FINISHED] [..]
+",
+        )
+        .run();
+    p.process(p.bin("bin1"))
+        .with_stdout("cargo:warning=feat: not enabled")
+        .run();
+
+    // Make sure everything stays cached.
+    p.cargo("build -v --bin bin1 --bin bin2 -Zfeatures=all")
+        .masquerade_as_nightly_cargo()
+        .with_stderr_unordered(
+            "\
+[FRESH] subdep [..]
+[FRESH] dep [..]
+[FRESH] bin1 [..]
+warning: feat: enabled
+[FRESH] bin2 [..]
+[FINISHED] [..]
+",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn test_proc_macro() {
+    // Running `cargo test` on a proc-macro, with a shared dependency that has
+    // different features.
+    //
+    // There was a bug where `shared` was built twice (once with feature "B"
+    // and once without), and both copies linked into the unit test. This
+    // would cause a type failure when used in an intermediate dependency
+    // (the-macro-support).
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [package]
+                name = "runtime"
+                version = "0.1.0"
+                [dependencies]
+                the-macro = { path = "the-macro", features = ['a'] }
+                [build-dependencies]
+                shared = { path = "shared", features = ['b'] }
+            "#,
+        )
+        .file("src/lib.rs", "")
+        .file(
+            "the-macro/Cargo.toml",
+            r#"
+                [package]
+                name = "the-macro"
+                version = "0.1.0"
+                [lib]
+                proc-macro = true
+                test = false
+                [dependencies]
+                the-macro-support = { path = "../the-macro-support" }
+                shared = { path = "../shared" }
+                [dev-dependencies]
+                runtime = { path = ".." }
+                [features]
+                a = []
+            "#,
+        )
+        .file(
+            "the-macro/src/lib.rs",
+            "
+                fn _test() {
+                    the_macro_support::foo(shared::Foo);
+                }
+            ",
+        )
+        .file(
+            "the-macro-support/Cargo.toml",
+            r#"
+                [package]
+                name = "the-macro-support"
+                version = "0.1.0"
+                [dependencies]
+                shared = { path = "../shared" }
+            "#,
+        )
+        .file(
+            "the-macro-support/src/lib.rs",
+            "
+                pub fn foo(_: shared::Foo) {}
+            ",
+        )
+        .file(
+            "shared/Cargo.toml",
+            r#"
+                [package]
+                name = "shared"
+                version = "0.1.0"
+                [features]
+                b = []
+            "#,
+        )
+        .file("shared/src/lib.rs", "pub struct Foo;")
+        .build();
+    p.cargo("test -Zfeatures=all --manifest-path the-macro/Cargo.toml")
+        .masquerade_as_nightly_cargo()
         .run();
 }

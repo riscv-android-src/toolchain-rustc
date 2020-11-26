@@ -48,7 +48,7 @@
 //!   definition.
 //! - [JSON5], A superset of JSON including some productions from ES5.
 //! - [Postcard], a no\_std and embedded-systems friendly compact binary format.
-//! - [URL], the x-www-form-urlencoded format.
+//! - [URL] query strings, in the x-www-form-urlencoded format.
 //! - [Envy], a way to deserialize environment variables into Rust structs.
 //!   *(deserialization only)*
 //! - [Envy Store], a way to deserialize [AWS Parameter Store] parameters into
@@ -59,7 +59,7 @@
 //! - [FlexBuffers], the schemaless cousin of Google's FlatBuffers zero-copy serialization format.
 //!
 //! [JSON]: https://github.com/serde-rs/json
-//! [Bincode]: https://github.com/TyOverby/bincode
+//! [Bincode]: https://github.com/servo/bincode
 //! [CBOR]: https://github.com/pyfisch/cbor
 //! [YAML]: https://github.com/dtolnay/serde-yaml
 //! [MessagePack]: https://github.com/3Hren/msgpack-rust
@@ -70,7 +70,7 @@
 //! [Avro]: https://github.com/flavray/avro-rs
 //! [JSON5]: https://github.com/callum-oakley/json5-rs
 //! [Postcard]: https://github.com/jamesmunns/postcard
-//! [URL]: https://github.com/nox/serde_urlencoded
+//! [URL]: https://docs.rs/serde_qs
 //! [Envy]: https://github.com/softprops/envy
 //! [Envy Store]: https://github.com/softprops/envy-store
 //! [Cargo]: http://doc.crates.io/manifest.html
@@ -82,7 +82,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 // Serde types in rustdoc of other crates get linked to here.
-#![doc(html_root_url = "https://docs.rs/serde/1.0.115")]
+#![doc(html_root_url = "https://docs.rs/serde/1.0.116")]
 // Support using Serde without the standard library!
 #![cfg_attr(not(feature = "std"), no_std)]
 // Unstable functionality only if the user asks for it. For tracking and

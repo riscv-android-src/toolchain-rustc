@@ -13,10 +13,13 @@
 // coherence challenge (e.g., specialization, neg impls, etc) we can
 // reconsider what crate these items belong in.
 
+#[cfg(test)]
+mod tests;
+
 use core::array;
 use core::convert::Infallible;
 
-use crate::alloc::{AllocErr, LayoutErr};
+use crate::alloc::{AllocError, LayoutErr};
 use crate::any::TypeId;
 use crate::backtrace::Backtrace;
 use crate::borrow::Cow;
@@ -33,15 +36,14 @@ use crate::string;
 /// themselves through the [`Display`] and [`Debug`] traits, and may provide
 /// cause chain information:
 ///
-/// The [`source`] method is generally used when errors cross "abstraction
-/// boundaries". If one module must report an error that is caused by an error
-/// from a lower-level module, it can allow access to that error via the
-/// [`source`] method. This makes it possible for the high-level module to
-/// provide its own errors while also revealing some of the implementation for
-/// debugging via [`source`] chains.
+/// [`Error::source()`] is generally used when errors cross
+/// "abstraction boundaries". If one module must report an error that is caused
+/// by an error from a lower-level module, it can allow accessing that error
+/// via [`Error::source()`]. This makes it possible for the high-level
+/// module to provide its own errors while also revealing some of the
+/// implementation for debugging via `source` chains.
 ///
 /// [`Result<T, E>`]: Result
-/// [`source`]: Error::source
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Error: Debug + Display {
     /// The lower-level source of this error, if any.
@@ -385,13 +387,9 @@ impl Error for ! {}
     reason = "the precise API and guarantees it provides may be tweaked.",
     issue = "32838"
 )]
-impl Error for AllocErr {}
+impl Error for AllocError {}
 
-#[unstable(
-    feature = "allocator_api",
-    reason = "the precise API and guarantees it provides may be tweaked.",
-    issue = "32838"
-)]
+#[stable(feature = "alloc_layout", since = "1.28.0")]
 impl Error for LayoutErr {}
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -636,7 +634,7 @@ impl dyn Error {
     }
 
     /// Returns an iterator starting with the current error and continuing with
-    /// recursively calling [`source`].
+    /// recursively calling [`Error::source`].
     ///
     /// If you want to omit the current error and only use its sources,
     /// use `skip(1)`.
@@ -686,8 +684,6 @@ impl dyn Error {
     /// assert!(iter.next().is_none());
     /// assert!(iter.next().is_none());
     /// ```
-    ///
-    /// [`source`]: Error::source
     #[unstable(feature = "error_iter", issue = "58520")]
     #[inline]
     pub fn chain(&self) -> Chain<'_> {
@@ -739,46 +735,5 @@ impl dyn Error + Send + Sync {
             // Reapply the `Send + Sync` marker.
             transmute::<Box<dyn Error>, Box<dyn Error + Send + Sync>>(s)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::Error;
-    use crate::fmt;
-
-    #[derive(Debug, PartialEq)]
-    struct A;
-    #[derive(Debug, PartialEq)]
-    struct B;
-
-    impl fmt::Display for A {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "A")
-        }
-    }
-    impl fmt::Display for B {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            write!(f, "B")
-        }
-    }
-
-    impl Error for A {}
-    impl Error for B {}
-
-    #[test]
-    fn downcasting() {
-        let mut a = A;
-        let a = &mut a as &mut (dyn Error + 'static);
-        assert_eq!(a.downcast_ref::<A>(), Some(&A));
-        assert_eq!(a.downcast_ref::<B>(), None);
-        assert_eq!(a.downcast_mut::<A>(), Some(&mut A));
-        assert_eq!(a.downcast_mut::<B>(), None);
-
-        let a: Box<dyn Error> = Box::new(A);
-        match a.downcast::<B>() {
-            Ok(..) => panic!("expected error"),
-            Err(e) => assert_eq!(*e.downcast::<A>().unwrap(), A),
-        }
     }
 }

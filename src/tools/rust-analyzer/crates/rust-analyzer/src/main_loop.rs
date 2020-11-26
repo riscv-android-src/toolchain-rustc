@@ -10,6 +10,8 @@ use crossbeam_channel::{select, Receiver};
 use ide::{Canceled, FileId};
 use lsp_server::{Connection, Notification, Request, Response};
 use lsp_types::notification::Notification as _;
+use project_model::ProjectWorkspace;
+use vfs::ChangeKind;
 
 use crate::{
     config::Config,
@@ -21,8 +23,6 @@ use crate::{
     lsp_utils::{apply_document_changes, is_canceled, notification_is, Progress},
     Result,
 };
-use project_model::ProjectWorkspace;
-use vfs::ChangeKind;
 
 pub fn main_loop(config: Config, connection: Connection) -> Result<()> {
     log::info!("initial config: {:#?}", config);
@@ -175,9 +175,9 @@ impl GlobalState {
         let _p = profile::span("GlobalState::handle_event");
 
         log::info!("handle_event({:?})", event);
-        let queue_count = self.task_pool.handle.len();
-        if queue_count > 0 {
-            log::info!("queued count = {}", queue_count);
+        let task_queue_len = self.task_pool.handle.len();
+        if task_queue_len > 0 {
+            log::info!("task queue len: {}", task_queue_len);
         }
 
         let prev_status = self.status;
@@ -407,9 +407,11 @@ impl GlobalState {
             .on::<lsp_types::request::CallHierarchyOutgoingCalls>(
                 handlers::handle_call_hierarchy_outgoing,
             )?
-            .on::<lsp_types::request::SemanticTokensRequest>(handlers::handle_semantic_tokens)?
-            .on::<lsp_types::request::SemanticTokensEditsRequest>(
-                handlers::handle_semantic_tokens_edits,
+            .on::<lsp_types::request::SemanticTokensFullRequest>(
+                handlers::handle_semantic_tokens_full,
+            )?
+            .on::<lsp_types::request::SemanticTokensFullDeltaRequest>(
+                handlers::handle_semantic_tokens_full_delta,
             )?
             .on::<lsp_types::request::SemanticTokensRangeRequest>(
                 handlers::handle_semantic_tokens_range,

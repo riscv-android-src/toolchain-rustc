@@ -33,7 +33,7 @@ MAINTAINERS = {
     'rust-by-example': {'steveklabnik', 'marioidival'},
     'embedded-book': {'adamgreig', 'andre-richter', 'jamesmunns', 'therealprof'},
     'edition-guide': {'ehuss', 'steveklabnik'},
-    'rustc-dev-guide': {'mark-i-m', 'spastorino', 'amanjeev', 'JohnTitor'},
+    'rustc-dev-guide': {'spastorino', 'amanjeev', 'JohnTitor'},
 }
 
 LABELS = {
@@ -157,9 +157,6 @@ def issue(
 
         cc @{}, do you think you would have time to do the follow-up work?
         If so, that would be great!
-
-        And nominating for compiler team prioritization.
-
         ''').format(
             relevant_pr_number, tool, status_description,
             REPOS.get(tool), relevant_pr_user
@@ -275,7 +272,12 @@ def update_latest(
         return message
 
 
-def main():
+# Warning: Do not try to add a function containing the body of this try block.
+# There are variables declared within that are implicitly global; it is unknown
+# which ones precisely but at least this is true for `github_token`.
+try:
+    if __name__ != '__main__':
+        exit(0)
     repo = os.environ.get('TOOLSTATE_VALIDATE_MAINTAINERS_REPO')
     if repo:
         github_token = os.environ.get('TOOLSTATE_REPO_ACCESS_TOKEN')
@@ -342,11 +344,6 @@ def main():
         }
     ))
     response.read()
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    except urllib2.HTTPError as e:
-        print("HTTPError: %s\n%s" % (e, e.read()))
-        raise
+except urllib2.HTTPError as e:
+    print("HTTPError: %s\n%s" % (e, e.read()))
+    raise

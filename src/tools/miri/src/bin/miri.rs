@@ -45,6 +45,11 @@ impl rustc_driver::Callbacks for MiriCompilerCalls {
             // Add filename to `miri` arguments.
             config.args.insert(0, compiler.input().filestem().to_string());
 
+            // Adjust working directory for interpretation.
+            if let Some(cwd) = env::var_os("MIRI_CWD") {
+                env::set_current_dir(cwd).unwrap();
+            }
+
             if let Some(return_code) = miri::eval_main(tcx, entry_def_id.to_def_id(), config) {
                 std::process::exit(
                     i32::try_from(return_code).expect("Return value was too large!"),
@@ -152,7 +157,7 @@ fn run_compiler(mut args: Vec<String>, callbacks: &mut (dyn rustc_driver::Callba
 
     // Invoke compiler, and handle return code.
     let exit_code = rustc_driver::catch_with_exit_code(move || {
-        rustc_driver::run_compiler(&args, callbacks, None, None)
+        rustc_driver::run_compiler(&args, callbacks, None, None, None)
     });
     std::process::exit(exit_code)
 }

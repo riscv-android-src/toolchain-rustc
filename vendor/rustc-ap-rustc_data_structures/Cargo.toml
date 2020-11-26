@@ -13,15 +13,18 @@
 [package]
 edition = "2018"
 name = "rustc-ap-rustc_data_structures"
-version = "671.0.0"
+version = "686.0.0"
 authors = ["The Rust Project Developers"]
-description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit 1454bbd4fdac9b7272b93fe82860613dccc0afad The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
+description = "Automatically published version of the package `rustc_data_structures` in the rust-lang/rust repository from commit c9b606ed679dd94f3f920ad339c0d2be0952b16c The publishing script for this crate lives at: https://github.com/alexcrichton/rustc-auto-publish\n            "
 license = "MIT / Apache-2.0"
 repository = "https://github.com/rust-lang/rust"
 
 [lib]
-path = "lib.rs"
 doctest = false
+[dependencies.arrayvec]
+version = "0.5.1"
+default-features = false
+
 [dependencies.bitflags]
 version = "1.2.1"
 
@@ -36,30 +39,20 @@ features = ["nightly"]
 version = "0.14"
 
 [dependencies.indexmap]
-version = "1"
+version = "1.5.1"
 
 [dependencies.jobserver_crate]
 version = "0.1.13"
 package = "jobserver"
 
-[dependencies.lazy_static]
-version = "1"
-
 [dependencies.libc]
 version = "0.2"
 
-[dependencies.log]
-version = "0.4"
-
 [dependencies.measureme]
-version = "0.7.1"
-
-[dependencies.once_cell]
-version = "1"
-features = ["parking_lot"]
+version = "9.0.0"
 
 [dependencies.parking_lot]
-version = "0.10"
+version = "0.11"
 features = ["nightly"]
 
 [dependencies.rayon]
@@ -74,15 +67,19 @@ package = "rustc-rayon-core"
 version = "1.1.0"
 
 [dependencies.rustc_graphviz]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_graphviz"
 
 [dependencies.rustc_index]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_index"
 
+[dependencies.rustc_macros]
+version = "686.0.0"
+package = "rustc-ap-rustc_macros"
+
 [dependencies.rustc_serialize]
-version = "671.0.0"
+version = "686.0.0"
 package = "rustc-ap-rustc_serialize"
 
 [dependencies.smallvec]
@@ -93,7 +90,13 @@ features = ["union", "may_dangle"]
 version = "1.0.0"
 
 [dependencies.stacker]
-version = "0.1.9"
+version = "0.1.12"
+
+[dependencies.tempfile]
+version = "3.0.5"
+
+[dependencies.tracing]
+version = "0.1"
 [target."cfg(windows)".dependencies.winapi]
 version = "0.3"
 features = ["fileapi", "psapi"]

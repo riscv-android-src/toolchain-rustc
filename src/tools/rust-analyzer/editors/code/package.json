@@ -21,7 +21,7 @@
         "Programming Languages"
     ],
     "engines": {
-        "vscode": "^1.44.1"
+        "vscode": "^1.47.1"
     },
     "enableProposedApi": true,
     "scripts": {
@@ -35,27 +35,27 @@
         "test": "node ./out/tests/runTests.js"
     },
     "dependencies": {
-        "node-fetch": "^2.6.0",
-        "vscode-languageclient": "7.0.0-next.1"
+        "node-fetch": "^2.6.1",
+        "vscode-languageclient": "7.0.0-next.9"
     },
     "devDependencies": {
-        "@rollup/plugin-commonjs": "^13.0.0",
-        "@rollup/plugin-node-resolve": "^8.1.0",
-        "@types/glob": "^7.1.2",
+        "@rollup/plugin-commonjs": "^13.0.2",
+        "@rollup/plugin-node-resolve": "^8.4.0",
+        "@types/glob": "^7.1.3",
         "@types/mocha": "^7.0.2",
         "@types/node": "~12.7.0",
         "@types/node-fetch": "^2.5.7",
-        "@types/vscode": "^1.44.1",
-        "@typescript-eslint/eslint-plugin": "^3.4.0",
-        "@typescript-eslint/parser": "^3.4.0",
-        "eslint": "^7.3.1",
+        "@types/vscode": "^1.47.1",
+        "@typescript-eslint/eslint-plugin": "^3.10.1",
+        "@typescript-eslint/parser": "^3.10.1",
+        "eslint": "^7.8.0",
         "glob": "^7.1.6",
-        "mocha": "^8.0.1",
-        "rollup": "^2.18.1",
-        "tslib": "^2.0.0",
-        "typescript": "^3.9.5",
+        "mocha": "^8.1.3",
+        "rollup": "^2.26.9",
+        "tslib": "^2.0.1",
+        "typescript": "^3.9.7",
         "typescript-formatter": "^7.2.2",
-        "vsce": "^1.75.0",
+        "vsce": "^1.79.5",
         "vscode-test": "^1.4.0"
     },
     "activationEvents": [
@@ -349,6 +349,14 @@
                     },
                     "default": null,
                     "description": "List of features to activate. Defaults to `rust-analyzer.cargo.features`."
+                },
+                "rust-analyzer.checkOnSave.target": {
+                    "type": [
+                        "null",
+                        "string"
+                    ],
+                    "default": null,
+                    "description": "Check for a specific target. Defaults to `rust-analyzer.cargo.target`."
                 },
                 "rust-analyzer.cargoRunner": {
                     "type": [
@@ -712,12 +720,75 @@
         ],
         "colors": [
             {
-                "id": "rust_analyzer.inlayHint",
-                "description": "Color for inlay hints",
+                "id": "rust_analyzer.inlayHints.foreground",
+                "description": "Foreground color of inlay hints (is overriden by more specific rust_analyzer.inlayHints.foreground.* configurations)",
                 "defaults": {
                     "dark": "#A0A0A0F0",
                     "light": "#747474",
                     "highContrast": "#BEBEBE"
+                }
+            },
+            {
+                "id": "rust_analyzer.inlayHints.background",
+                "description": "Background color of inlay hints (is overriden by more specific rust_analyzer.inlayHints.background.* configurations)",
+                "defaults": {
+                    "dark": "#11223300",
+                    "light": "#11223300",
+                    "highContrast": "#11223300"
+                }
+            },
+            {
+                "id": "rust_analyzer.inlayHints.foreground.typeHints",
+                "description": "Foreground color of inlay type hints for variables (overrides rust_analyzer.inlayHints.foreground)",
+                "defaults": {
+                    "dark": "rust_analyzer.inlayHints.foreground",
+                    "light": "rust_analyzer.inlayHints.foreground",
+                    "highContrast": "rust_analyzer.inlayHints.foreground"
+                }
+            },
+            {
+                "id": "rust_analyzer.inlayHints.foreground.chainingHints",
+                "description": "Foreground color of inlay type hints for method chains (overrides rust_analyzer.inlayHints.foreground)",
+                "defaults": {
+                    "dark": "rust_analyzer.inlayHints.foreground",
+                    "light": "rust_analyzer.inlayHints.foreground",
+                    "highContrast": "rust_analyzer.inlayHints.foreground"
+                }
+            },
+            {
+                "id": "rust_analyzer.inlayHints.foreground.parameterHints",
+                "description": "Foreground color of function parameter name inlay hints at the call site (overrides rust_analyzer.inlayHints.foreground)",
+                "defaults": {
+                    "dark": "rust_analyzer.inlayHints.foreground",
+                    "light": "rust_analyzer.inlayHints.foreground",
+                    "highContrast": "rust_analyzer.inlayHints.foreground"
+                }
+            },
+            {
+                "id": "rust_analyzer.inlayHints.background.typeHints",
+                "description": "Background color of inlay type hints for variables (overrides rust_analyzer.inlayHints.background)",
+                "defaults": {
+                    "dark": "rust_analyzer.inlayHints.background",
+                    "light": "rust_analyzer.inlayHints.background",
+                    "highContrast": "rust_analyzer.inlayHints.background"
+                }
+            },
+            {
+                "id": "rust_analyzer.inlayHints.background.chainingHints",
+                "description": "Background color of inlay type hints for method chains (overrides rust_analyzer.inlayHints.background)",
+                "defaults": {
+                    "dark": "rust_analyzer.inlayHints.background",
+                    "light": "rust_analyzer.inlayHints.background",
+                    "highContrast": "rust_analyzer.inlayHints.background"
+                }
+            },
+            {
+                "id": "rust_analyzer.inlayHints.background.parameterHints",
+                "description": "Background color of function parameter name inlay hints at the call site (overrides rust_analyzer.inlayHints.background)",
+                "defaults": {
+                    "dark": "rust_analyzer.inlayHints.background",
+                    "light": "rust_analyzer.inlayHints.background",
+                    "highContrast": "rust_analyzer.inlayHints.background"
                 }
             },
             {

@@ -15,27 +15,24 @@
 //! The byte-level encoding of component lists uses the structure of UTF-8 in
 //! order to save space:
 //!
-//! - A valid UTF-8 codepoint never starts with the bits `10` as this bit
-//!   prefix is reserved for bytes in the middle of a UTF-8 codepoint byte
-//!   sequence. We make use of this fact by letting all string ID components
-//!   start with this `10` prefix. Thus when we parse the contents of a value
-//!   we know to stop if the start byte of the next codepoint has this prefix.
+//! - A valid UTF-8 codepoint never starts with the byte `0xFE`. We make use
+//!   of this fact by letting all string ID components start with this `0xFE`
+//!   prefix. Thus when we parse the contents of a value we know to stop if
+//!   we encounter this byte.
 //!
-//! - A valid UTF-8 string cannot contain the `0xFF` byte and since string IDs
-//!   start with `10` as described above, they also cannot start with a `0xFF`
-//!   byte. Thus we can safely use `0xFF` as our component list terminator.
+//! - A valid UTF-8 string cannot contain the `0xFF` byte. Thus we can safely
+//!   use `0xFF` as our component list terminator.
 //!
 //! The sample composite string ["abc", ID(42), "def", TERMINATOR] would thus be
 //! encoded as:
 //!
 //! ```ignore
-//!     ['a', 'b' , 'c', 128, 0, 0, 42, 'd', 'e', 'f', 255]
-//!                      ^^^^^^^^^^^^^                 ^^^
-//!              string ID 42 with 0b10 prefix        terminator (0xFF)
+//!     ['a', 'b' , 'c', 254, 42, 0, 0, 0, 'd', 'e', 'f', 255]
+//!                      ^^^^^^^^^^^^^^^^                 ^^^
+//!                 string ID with 0xFE prefix      terminator (0xFF)
 //! ```
 //!
-//! As you can see string IDs are encoded in big endian format so that highest
-//! order bits show up in the first byte we encounter.
+//! As you can see string IDs are encoded in little endian format.
 //!
 //! ----------------------------------------------------------------------------
 //!
@@ -58,17 +55,17 @@
 //! > [0 .. MAX_VIRTUAL_STRING_ID, METADATA_STRING_ID, .. ]
 //!
 //! From `0` to `MAX_VIRTUAL_STRING_ID` are the allowed values for virtual strings.
-//! After `MAX_VIRTUAL_STRING_ID`, there is one string id (`METADATA_STRING_ID`) which is used
-//! internally by `measureme` to record additional metadata about the profiling session.
-//! After `METADATA_STRING_ID` are all other `StringId` values.
-//!
+//! After `MAX_VIRTUAL_STRING_ID`, there is one string id (`METADATA_STRING_ID`)
+//! which is used internally by `measureme` to record additional metadata about
+//! the profiling session. After `METADATA_STRING_ID` are all other `StringId`
+//! values.
 
 use crate::file_header::{
     write_file_header, FILE_MAGIC_STRINGTABLE_DATA, FILE_MAGIC_STRINGTABLE_INDEX,
 };
-use crate::serialization::{Addr, SerializationSink};
-use byteorder::{BigEndian, ByteOrder, LittleEndian};
-use std::sync::Arc;
+use crate::serialization::Addr;
+use crate::serialization::SerializationSink;
+use std::{error::Error, sync::Arc};
 
 /// A `StringId` is used to identify a string in the `StringTable`. It is
 /// either a regular `StringId`, meaning that it contains the absolute address
@@ -84,7 +81,6 @@ impl StringId {
 
     #[inline]
     pub fn new(id: u32) -> StringId {
-        assert!(id <= MAX_STRING_ID);
         StringId(id)
     }
 
@@ -106,23 +102,20 @@ impl StringId {
 
     #[inline]
     pub fn from_addr(addr: Addr) -> StringId {
-        let id = addr.0 + FIRST_REGULAR_STRING_ID;
+        let id = addr.0.checked_add(FIRST_REGULAR_STRING_ID).unwrap();
         StringId::new(id)
     }
 
     #[inline]
     pub fn to_addr(self) -> Addr {
-        assert!(self.0 >= FIRST_REGULAR_STRING_ID);
-        Addr(self.0 - FIRST_REGULAR_STRING_ID)
+        Addr(self.0.checked_sub(FIRST_REGULAR_STRING_ID).unwrap())
     }
 }
 
 // See module-level documentation for more information on the encoding.
 pub const TERMINATOR: u8 = 0xFF;
-
-// All 1s except for the two highest bits.
-pub const MAX_STRING_ID: u32 = 0x3FFF_FFFF;
-pub const STRING_ID_MASK: u32 = 0x3FFF_FFFF;
+pub const STRING_REF_TAG: u8 = 0xFE;
+pub const STRING_REF_ENCODED_SIZE: usize = 5;
 
 /// The maximum id value a virtual string may be.
 const MAX_USER_VIRTUAL_STRING_ID: u32 = 100_000_000;
@@ -136,9 +129,9 @@ const INVALID_STRING_ID: u32 = METADATA_STRING_ID + 1;
 pub const FIRST_REGULAR_STRING_ID: u32 = INVALID_STRING_ID + 1;
 
 /// Write-only version of the string table
-pub struct StringTableBuilder<S: SerializationSink> {
-    data_sink: Arc<S>,
-    index_sink: Arc<S>,
+pub struct StringTableBuilder {
+    data_sink: Arc<SerializationSink>,
+    index_sink: Arc<SerializationSink>,
 }
 
 /// Anything that implements `SerializableString` can be written to a
@@ -175,7 +168,7 @@ impl<'s> StringComponent<'s> {
     fn serialized_size(&self) -> usize {
         match *self {
             StringComponent::Value(s) => s.len(),
-            StringComponent::Ref(_) => 4,
+            StringComponent::Ref(_) => STRING_REF_ENCODED_SIZE,
         }
     }
 
@@ -187,11 +180,14 @@ impl<'s> StringComponent<'s> {
                 &mut bytes[s.len()..]
             }
             StringComponent::Ref(string_id) => {
-                assert!(string_id.0 == string_id.0 & STRING_ID_MASK);
-                let tagged = string_id.0 | (1u32 << 31);
+                // The code below assumes we use a 5-byte encoding for string
+                // refs, where the first byte is STRING_REF_TAG and the
+                // following 4 bytes are a little-endian u32 string ID value.
+                assert!(STRING_REF_ENCODED_SIZE == 5);
 
-                BigEndian::write_u32(&mut bytes[0..4], tagged);
-                &mut bytes[4..]
+                bytes[0] = STRING_REF_TAG;
+                &mut bytes[1..5].copy_from_slice(&string_id.0.to_le_bytes());
+                &mut bytes[5..]
             }
         }
     }
@@ -251,23 +247,26 @@ impl_serializable_string_for_fixed_size!(14);
 impl_serializable_string_for_fixed_size!(15);
 impl_serializable_string_for_fixed_size!(16);
 
-fn serialize_index_entry<S: SerializationSink>(sink: &S, id: StringId, addr: Addr) {
+fn serialize_index_entry(sink: &SerializationSink, id: StringId, addr: Addr) {
     sink.write_atomic(8, |bytes| {
-        LittleEndian::write_u32(&mut bytes[0..4], id.0);
-        LittleEndian::write_u32(&mut bytes[4..8], addr.0);
+        bytes[0..4].copy_from_slice(&id.0.to_le_bytes());
+        bytes[4..8].copy_from_slice(&addr.0.to_le_bytes());
     });
 }
 
-impl<S: SerializationSink> StringTableBuilder<S> {
-    pub fn new(data_sink: Arc<S>, index_sink: Arc<S>) -> StringTableBuilder<S> {
-        // The first thing in every file we generate must be the file header.
-        write_file_header(&*data_sink, FILE_MAGIC_STRINGTABLE_DATA);
-        write_file_header(&*index_sink, FILE_MAGIC_STRINGTABLE_INDEX);
+impl StringTableBuilder {
+    pub fn new(
+        data_sink: Arc<SerializationSink>,
+        index_sink: Arc<SerializationSink>,
+    ) -> Result<StringTableBuilder, Box<dyn Error + Send + Sync>> {
+        // The first thing in every stream we generate must be the stream header.
+        write_file_header(&mut data_sink.as_std_write(), FILE_MAGIC_STRINGTABLE_DATA)?;
+        write_file_header(&mut index_sink.as_std_write(), FILE_MAGIC_STRINGTABLE_INDEX)?;
 
-        StringTableBuilder {
+        Ok(StringTableBuilder {
             data_sink,
             index_sink,
-        }
+        })
     }
 
     /// Creates a mapping so that `virtual_id` will resolve to the contents of
@@ -286,7 +285,7 @@ impl<S: SerializationSink> StringTableBuilder<S> {
     ) where
         I: Iterator<Item = StringId> + ExactSizeIterator,
     {
-        // TODO: Index data encoding could have special bulk mode that assigns
+        // TODO: Index data encoding could have a special bulk mode that assigns
         //       multiple StringIds to the same addr, so we don't have to repeat
         //       the `concrete_id` over and over.
 

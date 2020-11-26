@@ -1,8 +1,7 @@
 [workspace]
 members = [
   "src/bootstrap",
-  "src/rustc",
-  "src/librustc_codegen_llvm",
+  "compiler/rustc",
   "library/std",
   "library/test",
   "src/tools/cargotest",
@@ -10,6 +9,7 @@ members = [
   "src/tools/compiletest",
   "src/tools/error_index_generator",
   "src/tools/linkchecker",
+  "src/tools/lint-docs",
   "src/tools/rustbook",
   "src/tools/unstable-book-gen",
   "src/tools/tidy",

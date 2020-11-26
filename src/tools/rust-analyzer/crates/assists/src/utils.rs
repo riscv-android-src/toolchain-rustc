@@ -8,7 +8,7 @@ use ide_db::RootDatabase;
 use itertools::Itertools;
 use rustc_hash::FxHashSet;
 use syntax::{
-    ast::{self, make, NameOwner},
+    ast::{self, make, ArgListOwner, NameOwner},
     AstNode, Direction,
     SyntaxKind::*,
     SyntaxNode, TextSize, T,
@@ -16,7 +16,7 @@ use syntax::{
 
 use crate::assist_config::SnippetCap;
 
-pub(crate) use insert_use::{find_insert_use_container, insert_use_statement};
+pub(crate) use insert_use::{insert_use, ImportScope, MergeBehaviour};
 
 pub(crate) fn unwrap_trivial_block(block: ast::BlockExpr) -> ast::Expr {
     extract_trivial_expression(&block)
@@ -179,6 +179,20 @@ fn invert_special_case(expr: &ast::Expr) -> Option<ast::Expr> {
             ast::BinOp::EqualityTest => bin.replace_op(T![!=]).map(|it| it.into()),
             _ => None,
         },
+        ast::Expr::MethodCallExpr(mce) => {
+            let receiver = mce.receiver()?;
+            let method = mce.name_ref()?;
+            let arg_list = mce.arg_list()?;
+
+            let method = match method.text().as_str() {
+                "is_some" => "is_none",
+                "is_none" => "is_some",
+                "is_ok" => "is_err",
+                "is_err" => "is_ok",
+                _ => return None,
+            };
+            Some(make::expr_method_call(receiver, method, arg_list))
+        }
         ast::Expr::PrefixExpr(pe) if pe.op_kind()? == ast::PrefixOp::Not => pe.expr(),
         // FIXME:
         // ast::Expr::Literal(true | false )

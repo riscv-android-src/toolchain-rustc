@@ -161,7 +161,13 @@ fn deps_of_roots(roots: &[Unit], mut state: &mut State<'_, '_>) -> CargoResult<(
         // without, once for `--test`). In particular, the lib included for
         // Doc tests and examples are `Build` mode here.
         let unit_for = if unit.mode.is_any_test() || state.global_mode.is_rustc_test() {
-            UnitFor::new_test(state.config)
+            if unit.target.proc_macro() {
+                // Special-case for proc-macros, which are forced to for-host
+                // since they need to link with the proc_macro crate.
+                UnitFor::new_host_test(state.config)
+            } else {
+                UnitFor::new_test(state.config)
+            }
         } else if unit.target.is_custom_build() {
             // This normally doesn't happen, except `clean` aggressively
             // generates all units.
@@ -612,7 +618,7 @@ fn new_unit_dep_with_profile(
     let features = state.activated_features(pkg.package_id(), features_for);
     let unit = state
         .interner
-        .intern(pkg, target, profile, kind, mode, features, state.is_std);
+        .intern(pkg, target, profile, kind, mode, features, state.is_std, 0);
     Ok(UnitDep {
         unit,
         unit_for,

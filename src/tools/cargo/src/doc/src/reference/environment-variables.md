@@ -103,6 +103,8 @@ supported environment variables are:
 * `CARGO_TARGET_<triple>_RUSTFLAGS` — Extra `rustc` flags for a target, see [`target.<triple>.rustflags`].
 * `CARGO_TERM_VERBOSE` — The default terminal verbosity, see [`term.verbose`].
 * `CARGO_TERM_COLOR` — The default color mode, see [`term.color`].
+* `CARGO_TERM_PROGRESS_WHEN` — The default progress bar showing mode, see [`term.progress.when`].
+* `CARGO_TERM_PROGRESS_WIDTH` — The default progress bar width, see [`term.progress.width`].
 
 [`cargo doc`]: ../commands/cargo-doc.md
 [`cargo install`]: ../commands/cargo-install.md
@@ -158,6 +160,8 @@ supported environment variables are:
 [`target.<triple>.rustflags`]: config.md#targettriplerustflags
 [`term.verbose`]: config.md#termverbose
 [`term.color`]: config.md#termcolor
+[`term.progress.when`]: config.md#termprogresswhen
+[`term.progress.width`]: config.md#termprogresswidth
 
 ### Environment variables Cargo sets for crates
 
@@ -166,7 +170,7 @@ Note that this applies for running binaries with `cargo run` and `cargo test`
 as well. To get the value of any of these variables in a Rust program, do
 this:
 
-```rust
+```rust,ignore
 let version = env!("CARGO_PKG_VERSION");
 ```
 
@@ -235,7 +239,7 @@ Cargo sets several environment variables when build scripts are run. Because the
 are not yet set when the build script is compiled, the above example using `env!` won't work
 and instead you'll need to retrieve the values when the build script is run:
 
-```rust
+```rust,ignore
 use std::env;
 let out_dir = env::var("OUT_DIR").unwrap();
 ```
@@ -249,6 +253,15 @@ let out_dir = env::var("OUT_DIR").unwrap();
                          current working directory of the build script when it
                          starts.
 * `CARGO_MANIFEST_LINKS` — the manifest `links` value.
+* `CARGO_MAKEFLAGS` — Contains parameters needed for Cargo's [jobserver]
+                      implementation to parallelize subprocesses.
+                      Rustc or cargo invocations from build.rs can already
+                      read `CARGO_MAKEFLAGS`, but GNU Make requires the
+                      flags to be specified either directly as arguments,
+                      or through the `MAKEFLAGS` environment variable.
+                      Currently Cargo doesn't set the `MAKEFLAGS` variable,
+                      but it's free for build scripts invoking GNU Make
+                      to set it to the contents of `CARGO_MAKEFLAGS`.
 * `CARGO_FEATURE_<name>` — For each activated feature of the package being
                            built, this environment variable will be present
                            where `<name>` is the name of the feature uppercased
@@ -284,10 +297,9 @@ let out_dir = env::var("OUT_DIR").unwrap();
                that care should be taken when interpreting this environment
                variable. For historical purposes this is still provided but
                recent versions of Cargo, for example, do not need to run `make
-               -j` as it'll automatically happen. Cargo implements its own
-               [jobserver] and will allow build scripts to inherit this
-               information, so programs compatible with GNU make jobservers will
-               already have appropriately configured parallelism.
+               -j`, and instead can set the `MAKEFLAGS` env var to the content
+               of `CARGO_MAKEFLAGS` to activate the use of Cargo's GNU Make
+               compatible [jobserver] for sub-make invocations.
 * `OPT_LEVEL`, `DEBUG` — values of the corresponding variables for the
                          profile currently being built.
 * `PROFILE` — `release` for release builds, `debug` for other builds.

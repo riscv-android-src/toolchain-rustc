@@ -11,8 +11,8 @@ cargo-update - Update dependencies as recorded in the local lock file
 ## DESCRIPTION
 
 This command will update dependencies in the `Cargo.lock` file to the latest
-version. It requires that the `Cargo.lock` file already exists as generated
-by commands such as [cargo-build(1)](cargo-build.md) or [cargo-generate-lockfile(1)](cargo-generate-lockfile.md).
+version. If the `Cargo.lock` file does not exist, it will be created with the
+latest available versions.
 
 ## OPTIONS
 
@@ -124,7 +124,7 @@ offline.</p>
 <dd class="option-desc">If Cargo has been installed with rustup, and the first argument to <code>cargo</code>
 begins with <code>+</code>, it will be interpreted as a rustup toolchain name (such
 as <code>+stable</code> or <code>+nightly</code>).
-See the <a href="https://github.com/rust-lang/rustup/">rustup documentation</a>
+See the <a href="https://rust-lang.github.io/rustup/overrides.html">rustup documentation</a>
 for more information about how toolchain overrides work.</dd>
 
 

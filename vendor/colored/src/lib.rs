@@ -6,6 +6,8 @@
 //!    "this is red".red();
 //!    "this is red on blue".red().on_blue();
 //!    "this is also red on blue".on_blue().red();
+//!    "you can use truecolor values too!".truecolor(0, 255, 136);
+//!    "background truecolor also works :)".on_truecolor(135, 28, 167);
 //!    "you can also make bold comments".bold();
 //!    println!("{} {} {}", "or use".cyan(), "any".italic().yellow(), "string type".cyan());
 //!    "or change advice. This is red".yellow().blue().red();
@@ -38,10 +40,7 @@ mod style;
 
 pub use color::*;
 
-use std::convert::From;
-use std::fmt;
-use std::ops::Deref;
-use std::string::String;
+use std::{borrow::Cow, fmt, ops::Deref};
 
 pub use style::{Style, Styles};
 
@@ -169,6 +168,12 @@ pub trait Colorize {
     {
         self.color(Color::BrightWhite)
     }
+    fn truecolor(self, r: u8, g: u8, b: u8) -> ColoredString
+    where
+        Self: Sized,
+    {
+        self.color(Color::TrueColor { r, g, b })
+    }
     fn color<S: Into<Color>>(self, color: S) -> ColoredString;
     // Background Colors
     fn on_black(self) -> ColoredString
@@ -279,6 +284,12 @@ pub trait Colorize {
     {
         self.on_color(Color::BrightWhite)
     }
+    fn on_truecolor(self, r: u8, g: u8, b: u8) -> ColoredString
+    where
+        Self: Sized,
+    {
+        self.on_color(Color::TrueColor { r, g, b })
+    }
     fn on_color<S: Into<Color>>(self, color: S) -> ColoredString;
     // Styles
     fn clear(self) -> ColoredString;
@@ -308,7 +319,7 @@ impl ColoredString {
     /// assert_eq!(cstr.fgcolor(), None);
     /// ```
     pub fn fgcolor(&self) -> Option<Color> {
-        self.fgcolor.as_ref().map(|x| *x)
+        self.fgcolor.as_ref().copied()
     }
 
     /// Get the current background color applied.
@@ -321,7 +332,7 @@ impl ColoredString {
     /// assert_eq!(cstr.bgcolor(), None);
     /// ```
     pub fn bgcolor(&self) -> Option<Color> {
-        self.bgcolor.as_ref().map(|x| *x)
+        self.bgcolor.as_ref().copied()
     }
 
     /// Get the current [`Style`] which can be check if it contains a [`Styles`].
@@ -347,7 +358,7 @@ impl ColoredString {
     /// assert_eq!(cstr.is_plain(), true);
     /// ```
     pub fn is_plain(&self) -> bool {
-        (self.bgcolor.is_none() && self.fgcolor.is_none() && self.style == style::CLEAR)
+        self.bgcolor.is_none() && self.fgcolor.is_none() && self.style == style::CLEAR
     }
 
     #[cfg(not(feature = "no-color"))]
@@ -378,7 +389,7 @@ impl ColoredString {
                 res.push(';');
             }
 
-            res.push_str(bgcolor.to_bg_str());
+            res.push_str(&bgcolor.to_bg_str());
             has_wrote = true;
         }
 
@@ -387,16 +398,16 @@ impl ColoredString {
                 res.push(';');
             }
 
-            res.push_str(fgcolor.to_fg_str());
+            res.push_str(&fgcolor.to_fg_str());
         }
 
         res.push('m');
         res
     }
 
-    fn escape_inner_reset_sequences(&self) -> String {
+    fn escape_inner_reset_sequences(&self) -> Cow<str> {
         if !self.has_colors() || self.is_plain() {
-            return self.input.clone();
+            return self.input.as_str().into();
         }
 
         // TODO: BoyScoutRule
@@ -407,6 +418,9 @@ impl ColoredString {
             .match_indices(reset)
             .map(|(idx, _)| idx)
             .collect();
+        if matches.is_empty() {
+            return self.input.as_str().into();
+        }
 
         let mut input = self.input.clone();
         input.reserve(matches.len() * style.len());
@@ -422,7 +436,7 @@ impl ColoredString {
             }
         }
 
-        input
+        input.into()
     }
 }
 
@@ -575,7 +589,7 @@ impl fmt::Display for ColoredString {
         let escaped_input = self.escape_inner_reset_sequences();
 
         f.write_str(&self.compute_style())?;
-        <String as fmt::Display>::fmt(&escaped_input, f)?;
+        escaped_input.fmt(f)?;
         f.write_str("\x1B[0m")?;
         Ok(())
     }
@@ -631,6 +645,9 @@ mod tests {
         println!("{}", toto.cyan());
         println!("{}", toto.white());
         println!("{}", toto.white().red().blue().green());
+        println!("{}", toto.truecolor(255, 0, 0));
+        println!("{}", toto.truecolor(255, 255, 0));
+        println!("{}", toto.on_truecolor(0, 80, 80));
         // uncomment to see term output
         // assert!(false)
     }
@@ -640,6 +657,7 @@ mod tests {
         assert_eq!("", "".clear().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_simple_fg_blue() {
         let blue = "\x1B[34m";
@@ -647,6 +665,7 @@ mod tests {
         assert_eq!(blue, "".blue().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_simple_bg_blue() {
         let on_blue = "\x1B[44m";
@@ -654,6 +673,7 @@ mod tests {
         assert_eq!(on_blue, "".on_blue().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_blue_on_blue() {
         let blue_on_blue = "\x1B[44;34m";
@@ -661,6 +681,7 @@ mod tests {
         assert_eq!(blue_on_blue, "".blue().on_blue().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_simple_fg_bright_blue() {
         let blue = "\x1B[94m";
@@ -668,6 +689,7 @@ mod tests {
         assert_eq!(blue, "".bright_blue().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_simple_bg_bright_blue() {
         let on_blue = "\x1B[104m";
@@ -675,6 +697,7 @@ mod tests {
         assert_eq!(on_blue, "".on_bright_blue().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_bright_blue_on_bright_blue() {
         let blue_on_blue = "\x1B[104;94m";
@@ -685,6 +708,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_simple_bold() {
         let bold = "\x1B[1m";
@@ -692,6 +716,7 @@ mod tests {
         assert_eq!(bold, "".bold().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_blue_bold() {
         let blue_bold = "\x1B[1;34m";
@@ -699,6 +724,7 @@ mod tests {
         assert_eq!(blue_bold, "".blue().bold().compute_style());
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn compute_style_blue_bold_on_blue() {
         let blue_bold_on_blue = "\x1B[1;44;34m";
@@ -732,6 +758,7 @@ mod tests {
         assert_eq!(expected, output);
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn escape_reset_sequence_spec_should_replace_inner_reset_sequence_with_current_style() {
         let input = format!("start {} end", String::from("hello world !").red());
@@ -745,6 +772,7 @@ mod tests {
         assert_eq!(expected, output);
     }
 
+    #[cfg_attr(feature = "no-color", ignore)]
     #[test]
     fn escape_reset_sequence_spec_should_replace_multiple_inner_reset_sequences_with_current_style()
     {

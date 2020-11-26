@@ -294,7 +294,7 @@ pub(crate) fn signature_help(
     }
 }
 
-pub(crate) fn inlay_int(line_index: &LineIndex, inlay_hint: InlayHint) -> lsp_ext::InlayHint {
+pub(crate) fn inlay_hint(line_index: &LineIndex, inlay_hint: InlayHint) -> lsp_ext::InlayHint {
     lsp_ext::InlayHint {
         label: inlay_hint.label.to_string(),
         range: range(line_index, inlay_hint.range),
@@ -334,13 +334,13 @@ pub(crate) fn semantic_tokens(
     builder.build()
 }
 
-pub(crate) fn semantic_token_edits(
+pub(crate) fn semantic_token_delta(
     previous: &lsp_types::SemanticTokens,
     current: &lsp_types::SemanticTokens,
-) -> lsp_types::SemanticTokensEdits {
+) -> lsp_types::SemanticTokensDelta {
     let result_id = current.result_id.clone();
     let edits = semantic_tokens::diff_tokens(&previous.data, &current.data);
-    lsp_types::SemanticTokensEdits { result_id, edits }
+    lsp_types::SemanticTokensDelta { result_id, edits }
 }
 
 fn semantic_token_type_and_modifiers(
@@ -369,7 +369,7 @@ fn semantic_token_type_and_modifiers(
             mods |= lsp_types::SemanticTokenModifier::STATIC;
             lsp_types::SemanticTokenType::VARIABLE
         }
-        HighlightTag::EnumVariant => semantic_tokens::ENUM_MEMBER,
+        HighlightTag::EnumVariant => lsp_types::SemanticTokenType::ENUM_MEMBER,
         HighlightTag::Macro => lsp_types::SemanticTokenType::MACRO,
         HighlightTag::ValueParam => lsp_types::SemanticTokenType::PARAMETER,
         HighlightTag::Local => lsp_types::SemanticTokenType::VARIABLE,

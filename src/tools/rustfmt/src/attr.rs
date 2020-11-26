@@ -2,7 +2,7 @@
 
 use rustc_ast::ast;
 use rustc_ast::attr::HasAttrs;
-use rustc_span::{symbol::sym, BytePos, Span, DUMMY_SP};
+use rustc_span::{symbol::sym, BytePos, Span, Symbol, DUMMY_SP};
 
 use self::doc_comment::DocCommentFormatter;
 use crate::comment::{contains_comment, rewrite_doc_comment, CommentStyle};
@@ -18,6 +18,20 @@ use crate::utils::{count_newlines, mk_sp};
 
 mod doc_comment;
 
+pub(crate) fn contains_name(attrs: &[ast::Attribute], name: Symbol) -> bool {
+    attrs.iter().any(|attr| attr.has_name(name))
+}
+
+pub(crate) fn first_attr_value_str_by_name(
+    attrs: &[ast::Attribute],
+    name: Symbol,
+) -> Option<Symbol> {
+    attrs
+        .iter()
+        .find(|attr| attr.has_name(name))
+        .and_then(|attr| attr.value_str())
+}
+
 /// Returns attributes on the given statement.
 pub(crate) fn get_attrs_from_stmt(stmt: &ast::Stmt) -> &[ast::Attribute] {
     stmt.attrs()
@@ -28,10 +42,7 @@ pub(crate) fn get_span_without_attrs(stmt: &ast::Stmt) -> Span {
         ast::StmtKind::Local(ref local) => local.span,
         ast::StmtKind::Item(ref item) => item.span,
         ast::StmtKind::Expr(ref expr) | ast::StmtKind::Semi(ref expr) => expr.span,
-        ast::StmtKind::MacCall(ref mac) => {
-            let (ref mac, _, _) = **mac;
-            mac.span()
-        }
+        ast::StmtKind::MacCall(ref mac_stmt) => mac_stmt.mac.span(),
         ast::StmtKind::Empty => stmt.span,
     }
 }
@@ -49,7 +60,7 @@ pub(crate) fn filter_inline_attrs(
 }
 
 fn is_derive(attr: &ast::Attribute) -> bool {
-    attr.check_name(sym::derive)
+    attr.has_name(sym::derive)
 }
 
 /// Returns the arguments of `#[derive(...)]`.
@@ -327,7 +338,7 @@ impl Rewrite for ast::Attribute {
 
             if let Some(ref meta) = self.meta() {
                 // This attribute is possibly a doc attribute needing normalization to a doc comment
-                if context.config.normalize_doc_attributes() && meta.check_name(sym::doc) {
+                if context.config.normalize_doc_attributes() && meta.has_name(sym::doc) {
                     if let Some(ref literal) = meta.value_str() {
                         let comment_style = match self.style {
                             ast::AttrStyle::Inner => CommentStyle::Doc,

@@ -6,6 +6,7 @@
 #![feature(
     const_fn,
     const_fn_union,
+    const_fn_transmute,
     const_generics,
     custom_inner_attributes,
     link_llvm_intrinsics,
@@ -21,7 +22,6 @@
     stdsimd,
     staged_api,
     doc_cfg,
-    mmx_target_feature,
     tbm_target_feature,
     sse4a_target_feature,
     arm_target_feature,

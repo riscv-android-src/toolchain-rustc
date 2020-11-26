@@ -242,7 +242,7 @@ macro_rules! debug_assert_ne {
 #[macro_export]
 #[stable(feature = "matches_macro", since = "1.42.0")]
 macro_rules! matches {
-    ($expression:expr, $( $pattern:pat )|+ $( if $guard: expr )?) => {
+    ($expression:expr, $( $pattern:pat )|+ $( if $guard: expr )? $(,)?) => {
         match $expression {
             $( $pattern )|+ $( if $guard )? => true,
             _ => false
@@ -333,16 +333,16 @@ macro_rules! r#try {
 /// This macro accepts a format string, a list of arguments, and a 'writer'. Arguments will be
 /// formatted according to the specified format string and the result will be passed to the writer.
 /// The writer may be any value with a `write_fmt` method; generally this comes from an
-/// implementation of either the [`std::fmt::Write`] or the [`std::io::Write`] trait. The macro
-/// returns whatever the `write_fmt` method returns; commonly a [`std::fmt::Result`], or an
+/// implementation of either the [`fmt::Write`] or the [`io::Write`] trait. The macro
+/// returns whatever the `write_fmt` method returns; commonly a [`fmt::Result`], or an
 /// [`io::Result`].
 ///
 /// See [`std::fmt`] for more information on the format string syntax.
 ///
 /// [`std::fmt`]: crate::fmt
-/// [`std::fmt::Write`]: crate::fmt::Write
-/// [`std::io::Write`]: ../std/io/trait.Write.html
-/// [`std::fmt::Result`]: crate::fmt::Result
+/// [`fmt::Write`]: crate::fmt::Write
+/// [`io::Write`]: ../std/io/trait.Write.html
+/// [`fmt::Result`]: crate::fmt::Result
 /// [`io::Result`]: ../std/io/type.Result.html
 ///
 /// # Examples

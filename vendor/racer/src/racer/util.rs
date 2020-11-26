@@ -419,7 +419,7 @@ impl fmt::Display for RustSrcPathError {
                 f,
                 "RUST_SRC_PATH environment variable must be set to \
                  point to the src directory of a rust checkout. \
-                 E.g. \"/home/foouser/src/rust/src\""
+                 E.g. \"/home/foouser/src/rust/library\"  (or  \"/home/foouser/src/rust/src\" in older toolchains)"
             ),
             RustSrcPathError::DoesNotExist(ref path) => write!(
                 f,
@@ -427,7 +427,7 @@ impl fmt::Display for RustSrcPathError {
                  RUST_SRC_PATH variable \"{:?}\". Try using an \
                  absolute fully qualified path and make sure it \
                  points to the src directory of a rust checkout - \
-                 e.g. \"/home/foouser/src/rust/src\".",
+                 e.g. \"/home/foouser/src/rust/library\" (or  \"/home/foouser/src/rust/src\" in older toolchains).",
                 path
             ),
             RustSrcPathError::NotRustSourceTree(ref path) => write!(
@@ -435,7 +435,7 @@ impl fmt::Display for RustSrcPathError {
                 "Unable to find libstd under RUST_SRC_PATH. N.B. \
                  RUST_SRC_PATH variable needs to point to the *src* \
                  directory inside a rust checkout e.g. \
-                 \"/home/foouser/src/rust/src\". \
+                 \"/home/foouser/src/rust/library\" (or  \"/home/foouser/src/rust/src\" in older toolchains). \
                  Current value \"{:?}\"",
                 path
             ),
@@ -451,6 +451,12 @@ fn check_rust_sysroot() -> Option<path::PathBuf> {
     if let Ok(output) = cmd.output() {
         if let Ok(s) = String::from_utf8(output.stdout) {
             let sysroot = path::Path::new(s.trim());
+            // See if the toolchain is sufficiently new, after the libstd
+            // has been internally reorganized
+            let srcpath = sysroot.join("lib/rustlib/src/rust/library");
+            if srcpath.exists() {
+                return Some(srcpath);
+            }
             let srcpath = sysroot.join("lib/rustlib/src/rust/src");
             if srcpath.exists() {
                 return Some(srcpath);
@@ -508,7 +514,7 @@ pub fn get_rust_src_path() -> Result<path::PathBuf, RustSrcPathError> {
         }
     };
 
-    debug!("Nope. Trying rustc --print sysroot and appending lib/rustlib/src/rust/src to that.");
+    debug!("Nope. Trying rustc --print sysroot and appending lib/rustlib/src/rust/{{src, library}} to that.");
 
     if let Some(path) = check_rust_sysroot() {
         return validate_rust_src_path(path);
@@ -531,11 +537,15 @@ pub fn get_rust_src_path() -> Result<path::PathBuf, RustSrcPathError> {
 
 fn validate_rust_src_path(path: path::PathBuf) -> Result<path::PathBuf, RustSrcPathError> {
     if !path.exists() {
-        Err(RustSrcPathError::DoesNotExist(path.to_path_buf()))
-    } else if !path.join("libstd").exists() {
-        Err(RustSrcPathError::NotRustSourceTree(path.join("libstd")))
-    } else {
+        return Err(RustSrcPathError::DoesNotExist(path));
+    }
+    // Historically, the Rust standard library was distributed under "libstd"
+    // but was later renamed to "std" when the library was moved under "library/"
+    // in https://github.com/rust-lang/rust/pull/73265.
+    if path.join("libstd").exists() || path.join("std").join("src").exists() {
         Ok(path)
+    } else {
+        Err(RustSrcPathError::NotRustSourceTree(path.join("libstd")))
     }
 }
 

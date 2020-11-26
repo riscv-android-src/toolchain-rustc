@@ -13,8 +13,8 @@
 //! ```no_run
 //! use expect_test::expect;
 //!
-//! let expected = expect![["5"]];
 //! let actual = 2 + 2;
+//! let expected = expect![["5"]];
 //! expected.assert_eq(&actual.to_string())
 //! ```
 //!
@@ -72,11 +72,11 @@
 //! use expect_test::expect_file;
 //!
 //! let actual = 42;
-//! let expected = expect_file!["the-answer.txt"];
+//! let expected = expect_file!["./the-answer.txt"];
 //! expected.assert_eq(&actual.to_string());
 //! ```
 //!
-//! File path is relative to the root of the Cargo workspace.
+//! File path is relative to the current file.
 //!
 //! # Suggested Workflows
 //!
@@ -105,7 +105,7 @@
 //! Each test's body is a single call to `check`. All the variation in tests
 //! comes from the input data.
 //!
-//! When writing new test, I usually copy-paste and old one, leave the `expect`
+//! When writing a new test, I usually copy-paste an old one, leave the `expect`
 //! blank and use `UPDATE_EXPECT` to fill the value for me:
 //!
 //! ```
@@ -120,6 +120,21 @@
 //! See
 //! https://blog.janestreet.com/using-ascii-waveforms-to-test-hardware-designs/
 //! for a cool example of snapshot testing in the wild!
+//!
+//! # Alternatives
+//!
+//! * [insta](https://crates.io/crates/insta) -- a more feature full snapshot
+//!   testing library.
+//! * [k9](https://crates.io/crates/k9) -- testing library which includes
+//!   support for snapshot testing among other things.
+//!
+//! # Maintenance status
+//!
+//! The main customer of this library is rust-analyzer. The library is expected
+//! to be relatively stable, but, if the need arises, it could be significantly
+//! reworked to fit rust-analyzer better.
+//!
+//! MSRV: latest stable.
 use std::{
     collections::HashMap,
     env, fmt, fs, mem,
@@ -167,16 +182,17 @@ macro_rules! expect {
     [[]] => { $crate::expect![[""]] };
 }
 
-/// Creates an instance of `ExpectFile` from workspace-relative path:
+/// Creates an instance of `ExpectFile` from relative or absolute path:
 ///
 /// ```
 /// # use expect_test::expect_file;
-/// expect_file!["/crates/foo/test_data/bar.html"];
+/// expect_file!["./test_data/bar.html"];
 /// ```
 #[macro_export]
 macro_rules! expect_file {
     [$path:expr] => {$crate::ExpectFile {
-        path: std::path::PathBuf::from($path)
+        path: std::path::PathBuf::from($path),
+        position: file!(),
     }};
 }
 
@@ -194,6 +210,8 @@ pub struct Expect {
 pub struct ExpectFile {
     #[doc(hidden)]
     pub path: PathBuf,
+    #[doc(hidden)]
+    pub position: &'static str,
 }
 
 /// Position of original `expect!` in the source file.
@@ -278,7 +296,8 @@ impl ExpectFile {
         fs::write(self.abs_path(), contents).unwrap()
     }
     fn abs_path(&self) -> PathBuf {
-        WORKSPACE_ROOT.join(&self.path)
+        let dir = Path::new(self.position).parent().unwrap();
+        WORKSPACE_ROOT.join(dir).join(&self.path)
     }
 }
 
@@ -302,7 +321,6 @@ impl Runtime {
         }
         rt.panic(expect.position.to_string(), expected, actual);
     }
-
     fn fail_file(expect: &ExpectFile, expected: &str, actual: &str) {
         let mut rt = RT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         if update_expect() {
@@ -312,7 +330,6 @@ impl Runtime {
         }
         rt.panic(expect.path.display().to_string(), expected, actual);
     }
-
     fn panic(&mut self, position: String, expected: &str, actual: &str) {
         let print_help = !mem::replace(&mut self.help_printed, true);
         let help = if print_help { HELP } else { "" };
@@ -542,5 +559,10 @@ mod tests {
             }
         "#]]
         .assert_debug_eq(&patchwork);
+    }
+
+    #[test]
+    fn test_expect_file() {
+        expect_file!["./lib.rs"].assert_eq(include_str!("./lib.rs"))
     }
 }

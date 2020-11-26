@@ -12,7 +12,7 @@
 
 [package]
 name = "directories"
-version = "2.0.2"
+version = "3.0.1"
 authors = ["Simon Ochsenreither <simon@ochsenreither.de>"]
 description = "A tiny mid-level library that provides platform-specific standard locations of directories for config, cache and other data on Linux, Windows and macOS by leveraging the mechanisms defined by the XDG base/user directory specifications on Linux, the Known Folder API on Windows, and the Standard Directory guidelines on macOS."
 readme = "README.md"
@@ -23,10 +23,7 @@ repository = "https://github.com/soc/directories-rs"
 [[bench]]
 name = "constructors"
 harness = false
-[dependencies.cfg-if]
-version = "0.1"
-
 [dependencies.dirs-sys]
-version = "0.3.4"
+version = "0.3.5"
 [dev-dependencies.bencher]
 version = "0.1.5"

@@ -21,7 +21,7 @@ use core::slice::from_raw_parts_mut;
 use core::sync::atomic;
 use core::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 
-use crate::alloc::{box_free, handle_alloc_error, AllocErr, AllocRef, Global, Layout};
+use crate::alloc::{box_free, handle_alloc_error, AllocError, AllocRef, Global, Layout};
 use crate::borrow::{Cow, ToOwned};
 use crate::boxed::Box;
 use crate::rc::is_dangling;
@@ -111,7 +111,7 @@ macro_rules! acquire {
 ///
 /// # Cloning references
 ///
-/// Creating a new reference from an existing reference counted pointer is done using the
+/// Creating a new reference from an existing reference-counted pointer is done using the
 /// `Clone` trait implemented for [`Arc<T>`][Arc] and [`Weak<T>`][Weak].
 ///
 /// ```
@@ -152,7 +152,7 @@ macro_rules! acquire {
 /// [upgrade]: Weak::upgrade
 /// [`RefCell<T>`]: core::cell::RefCell
 /// [`std::sync`]: ../../std/sync/index.html
-/// [`Arc::clone(&from)`]: #method.clone
+/// [`Arc::clone(&from)`]: Arc::clone
 ///
 /// # Examples
 ///
@@ -201,7 +201,7 @@ macro_rules! acquire {
 /// See the [`rc` documentation][rc_examples] for more examples of reference
 /// counting in general.
 ///
-/// [rc_examples]: ../../std/rc/index.html#examples
+/// [rc_examples]: crate::rc#examples
 #[cfg_attr(not(test), rustc_diagnostic_item = "Arc")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Arc<T: ?Sized> {
@@ -969,7 +969,7 @@ impl<T: ?Sized> Arc<T> {
     /// and must return back a (potentially fat)-pointer for the `ArcInner<T>`.
     unsafe fn allocate_for_layout(
         value_layout: Layout,
-        allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocErr>,
+        allocate: impl FnOnce(Layout) -> Result<NonNull<[u8]>, AllocError>,
         mem_to_arcinner: impl FnOnce(*mut u8) -> *mut ArcInner<T>,
     ) -> *mut ArcInner<T> {
         // Calculate layout using the given value layout.

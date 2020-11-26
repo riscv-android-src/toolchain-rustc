@@ -2,13 +2,13 @@
 # It is not intended for manual editing.
 [[package]]
 name = "cc"
-version = "1.0.52"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3d87b23d6a92cd03af510a5ade527033f6aa6fa92161e2d5863a907d4c5e31d"
+checksum = "7db2f146208d7e0fbee761b09cd65a7f51ccc38705d4e7262dad4d73b12a76b1"
 
 [[package]]
 name = "compiler_builtins"
-version = "0.1.32"
+version = "0.1.35"
 dependencies = [
  "cc",
  "rustc-std-workspace-core",

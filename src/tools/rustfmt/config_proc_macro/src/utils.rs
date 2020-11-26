@@ -24,8 +24,15 @@ pub fn is_unit(v: &syn::Variant) -> bool {
 pub fn debug_with_rustfmt(input: &TokenStream) {
     use std::io::Write;
     use std::process::{Command, Stdio};
+    use std::env;
+    use std::ffi::OsStr;
 
-    let mut child = Command::new("rustfmt")
+    let rustfmt_var = env::var_os("RUSTFMT");
+    let rustfmt = match &rustfmt_var {
+        Some(rustfmt) => rustfmt,
+        None => OsStr::new("rustfmt"),
+    };
+    let mut child = Command::new(rustfmt)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

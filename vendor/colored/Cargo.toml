@@ -12,7 +12,7 @@
 
 [package]
 name = "colored"
-version = "1.9.3"
+version = "2.0.0"
 authors = ["Thomas Wickham <mackwic@gmail.com>"]
 description = "The most simple way to add colors in your terminal"
 homepage = "https://github.com/mackwic/colored"
@@ -21,10 +21,10 @@ keywords = ["color", "string", "term", "ansi_term", "term-painter"]
 license = "MPL-2.0"
 repository = "https://github.com/mackwic/colored"
 [dependencies.atty]
-version = "0.2.11"
+version = "0.2"
 
 [dependencies.lazy_static]
-version = "1.4.0"
+version = "1"
 [dev-dependencies.ansi_term]
 version = "0.12"
 

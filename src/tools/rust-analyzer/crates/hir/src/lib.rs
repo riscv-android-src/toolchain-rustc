@@ -27,15 +27,16 @@ pub mod diagnostics;
 
 mod from_id;
 mod code_model;
-
+mod attrs;
 mod has_source;
 
 pub use crate::{
+    attrs::{HasAttrs, Namespace},
     code_model::{
-        Access, Adt, AsAssocItem, AssocItem, AssocItemContainer, AttrDef, Callable, CallableKind,
-        Const, Crate, CrateDependency, DefWithBody, Docs, Enum, EnumVariant, Field, FieldSource,
-        Function, GenericDef, HasAttrs, HasVisibility, ImplDef, Local, MacroDef, Module, ModuleDef,
-        ScopeDef, Static, Struct, Trait, Type, TypeAlias, TypeParam, Union, VariantDef, Visibility,
+        Access, Adt, AsAssocItem, AssocItem, AssocItemContainer, Callable, CallableKind, Const,
+        Crate, CrateDependency, DefWithBody, Enum, EnumVariant, Field, FieldSource, Function,
+        GenericDef, HasVisibility, ImplDef, Local, MacroDef, Module, ModuleDef, ScopeDef, Static,
+        Struct, Trait, Type, TypeAlias, TypeParam, Union, VariantDef, Visibility,
     },
     has_source::HasSource,
     semantics::{original_range, PathResolution, Semantics, SemanticsScope},
@@ -47,13 +48,14 @@ pub use hir_def::{
     body::scope::ExprScopes,
     builtin_type::BuiltinType,
     docs::Documentation,
+    item_scope::ItemInNs,
     nameres::ModuleSource,
     path::ModPath,
     type_ref::{Mutability, TypeRef},
 };
 pub use hir_expand::{
-    name::Name, HirFileId, InFile, MacroCallId, MacroCallLoc, /* FIXME */ MacroDefId,
-    MacroFile, Origin,
+    name::AsName, name::Name, HirFileId, InFile, MacroCallId, MacroCallLoc,
+    /* FIXME */ MacroDefId, MacroFile, Origin,
 };
 pub use hir_ty::display::HirDisplay;
 

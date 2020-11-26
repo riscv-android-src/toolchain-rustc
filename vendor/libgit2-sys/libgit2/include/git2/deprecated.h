@@ -102,7 +102,11 @@ GIT_EXTERN(int) git_blob_create_fromstream_commit(
 GIT_EXTERN(int) git_blob_create_frombuffer(
 	git_oid *id, git_repository *repo, const void *buffer, size_t len);
 
-/** Deprecated in favor of @see git_blob_filter */
+/** Deprecated in favor of `git_blob_filter`.
+ *
+ * @deprecated Use git_blob_filter
+ * @see git_blob_filter
+ */
 GIT_EXTERN(int) git_blob_filtered_content(
 	git_buf *out,
 	git_blob *blob,
@@ -233,7 +237,7 @@ GIT_EXTERN(void) giterr_clear(void);
 GIT_EXTERN(void) giterr_set_str(int error_class, const char *string);
 
 /**
- * Indicates that an out-of-memory situation occured.  This is an alias
+ * Indicates that an out-of-memory situation occurred.  This is an alias
  * of `git_error_set_oom` and is preserved for backward compatibility.
  *
  * This function is deprecated, but there is no plan to remove this

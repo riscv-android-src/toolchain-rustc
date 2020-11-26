@@ -11,6 +11,7 @@ use self::newline_style::apply_newline_style;
 use crate::comment::{CharClasses, FullCodeCharKind};
 use crate::config::{Config, FileName, Verbosity};
 use crate::issues::BadIssueSeeker;
+use crate::modules::Module;
 use crate::syntux::parser::{DirectoryOwnership, Parser, ParserError};
 use crate::syntux::session::ParseSess;
 use crate::utils::count_newlines;
@@ -29,7 +30,7 @@ impl<'b, T: Write + 'b> Session<'b, T> {
             return Err(ErrorKind::VersionMismatch);
         }
 
-        rustc_ast::with_session_globals(self.config.edition().to_libsyntax_pos_edition(), || {
+        rustc_span::with_session_globals(self.config.edition().to_libsyntax_pos_edition(), || {
             if self.config.disable_all_formatting() {
                 // When the input is from stdin, echo back the input.
                 if let Input::Text(ref buf) = input {
@@ -102,8 +103,7 @@ fn format_project<T: FormatHandler>(
             continue;
         }
         should_emit_verbose(input_is_stdin, config, || println!("Formatting {}", path));
-        let is_root = path == main_file;
-        context.format_file(path, &module, is_root)?;
+        context.format_file(path, &module)?;
     }
     timer = timer.done_formatting();
 
@@ -134,13 +134,8 @@ impl<'a, T: FormatHandler + 'a> FormatContext<'a, T> {
     }
 
     // Formats a single file/module.
-    fn format_file(
-        &mut self,
-        path: FileName,
-        module: &ast::Mod,
-        is_root: bool,
-    ) -> Result<(), ErrorKind> {
-        let snippet_provider = self.parse_session.snippet_provider(module.inner);
+    fn format_file(&mut self, path: FileName, module: &Module<'_>) -> Result<(), ErrorKind> {
+        let snippet_provider = self.parse_session.snippet_provider(module.as_ref().inner);
         let mut visitor = FmtVisitor::from_parse_sess(
             &self.parse_session,
             &self.config,
@@ -149,19 +144,9 @@ impl<'a, T: FormatHandler + 'a> FormatContext<'a, T> {
         );
         visitor.skip_context.update_with_attrs(&self.krate.attrs);
 
-        // Format inner attributes if available.
-        if !self.krate.attrs.is_empty() && is_root {
-            visitor.skip_empty_lines(snippet_provider.end_pos());
-            if visitor.visit_attrs(&self.krate.attrs, ast::AttrStyle::Inner) {
-                visitor.push_rewrite(module.inner, None);
-            } else {
-                visitor.format_separate_mod(module, snippet_provider.end_pos());
-            }
-        } else {
-            visitor.last_pos = snippet_provider.start_pos();
-            visitor.skip_empty_lines(snippet_provider.end_pos());
-            visitor.format_separate_mod(module, snippet_provider.end_pos());
-        };
+        visitor.last_pos = snippet_provider.start_pos();
+        visitor.skip_empty_lines(snippet_provider.end_pos());
+        visitor.format_separate_mod(module, snippet_provider.end_pos());
 
         debug_assert_eq!(
             visitor.line_number,

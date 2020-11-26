@@ -83,11 +83,10 @@ Now you can run your project in Miri:
 The first time you run Miri, it will perform some extra setup and install some
 dependencies.  It will ask you for confirmation before installing anything.
 
-You can pass arguments to Miri after the first `--`, and pass arguments to the
-interpreted program or test suite after the second `--`.  For example, `cargo
-miri run -- -Zmiri-disable-stacked-borrows` runs the program without checking
-the aliasing of references.  To filter the tests being run, use `cargo miri test
--- -- filter`.
+`cargo miri run/test` supports the exact same flags as `cargo run/test`.  You
+can pass arguments to Miri via `MIRIFLAGS`. For example,
+`MIRIFLAGS="-Zmiri-disable-stacked-borrows" cargo miri run` runs the program
+without checking the aliasing of references.
 
 Miri supports cross-execution: if you want to run the program as if it was a
 Linux program, you can do `cargo miri run --target x86_64-unknown-linux-gnu`.
@@ -163,17 +162,21 @@ up the sysroot.  If you are using `miri` (the Miri driver) directly, see the
 ## Miri `-Z` flags and environment variables
 [miri-flags]: #miri--z-flags-and-environment-variables
 
-Miri adds its own set of `-Z` flags:
+Miri adds its own set of `-Z` flags, which are usually set via the `MIRIFLAGS`
+environment variable:
 
 * `-Zmiri-disable-alignment-check` disables checking pointer alignment, so you
-  can focus on other failures.
+  can focus on other failures, but it means Miri can miss bugs in your program.
+  Using this flag is **unsound**.
 * `-Zmiri-disable-stacked-borrows` disables checking the experimental
   [Stacked Borrows] aliasing rules.  This can make Miri run faster, but it also
-  means no aliasing violations will be detected.
+  means no aliasing violations will be detected.  Using this flag is **unsound**
+  (but the affected soundness rules are experimental).
 * `-Zmiri-disable-validation` disables enforcing validity invariants, which are
   enforced by default.  This is mostly useful to focus on other failures (such
-  as out-of-bounds accesses) first.  Setting this flag means Miri will miss bugs
-  in your program.  However, this can also help to make Miri run faster.
+  as out-of-bounds accesses) first.  Setting this flag means Miri can miss bugs
+  in your program.  However, this can also help to make Miri run faster.  Using
+  this flag is **unsound**.
 * `-Zmiri-disable-isolation` disables host isolation.  As a consequence,
   the program has access to host resources such as environment variables, file
   systems, and randomness.
@@ -226,14 +229,14 @@ Moreover, Miri recognizes some environment variables:
 
 * `MIRI_LOG`, `MIRI_BACKTRACE` control logging and backtrace printing during
   Miri executions, also [see above][testing-miri].
+* `MIRIFLAGS` (recognized by `cargo miri` and the test suite) defines extra
+  flags to be passed to Miri.
 * `MIRI_SYSROOT` (recognized by `cargo miri` and the test suite)
   indicates the sysroot to use.  To do the same thing with `miri`
   directly, use the `--sysroot` flag.
 * `MIRI_TEST_TARGET` (recognized by the test suite) indicates which target
   architecture to test against.  `miri` and `cargo miri` accept the `--target`
   flag for the same purpose.
-* `MIRI_TEST_FLAGS` (recognized by the test suite) defines extra flags to be
-  passed to Miri.
 
 The following environment variables are internal, but used to communicate between
 different Miri binaries, and as such worth documenting:
@@ -241,6 +244,12 @@ different Miri binaries, and as such worth documenting:
 * `MIRI_BE_RUSTC` when set to any value tells the Miri driver to actually not
   interpret the code but compile it like rustc would. This is useful to be sure
   that the compiled `rlib`s are compatible with Miri.
+  When set while running `cargo-miri`, it indicates that we are part of a sysroot
+  build (for which some crates need special treatment).
+* `MIRI_CWD` when set to any value tells the Miri driver to change to the given
+  directory after loading all the source files, but before commencing
+  interpretation. This is useful if the interpreted program wants a different
+  working directory at run-time than at build-time.
 
 ## Miri `extern` functions
 
@@ -256,6 +265,34 @@ extern "Rust" {
     ///
     /// `ptr` has to point to the beginning of an allocated block.
     fn miri_static_root(ptr: *const u8);
+
+    /// Miri-provided extern function to obtain a backtrace of the current call stack.
+    /// This returns a boxed slice of pointers - each pointer is an opaque value
+    /// that is only useful when passed to `miri_resolve_frame`
+    /// The `flags` argument must be `0`.
+    fn miri_get_backtrace(flags: u64) -> Box<[*mut ()]>;
+
+    /// Miri-provided extern function to resolve a frame pointer obtained
+    /// from `miri_get_backtrace`. The `flags` argument must be `0`,
+    /// and `MiriFrame` should be declared as follows:
+    ///
+    /// ```rust
+    /// #[repr(C)]
+    /// struct MiriFrame {
+    ///     // The name of the function being executed, encoded in UTF-8
+    ///     name: Box<[u8]>,
+    ///     // The filename of the function being executed, encoded in UTF-8
+    ///     filename: Box<[u8]>,
+    ///     // The line number currently being executed in `filename`, starting from '1'.
+    ///     lineno: u32,
+    ///     // The column number currently being executed in `filename`, starting from '1'.
+    ///     colno: u32,
+    /// }
+    /// ```
+    ///
+    /// The fields must be declared in exactly the same order as they appear in `MiriFrame` above.
+    /// This function can be called on any thread (not just the one which obtained `frame`).
+    fn miri_resolve_frame(frame: *mut (), flags: u64) -> MiriFrame;
 
     /// Miri-provided extern function to begin unwinding with the given payload.
     ///
@@ -317,12 +354,13 @@ Definite bugs found:
 * [TiKV performing an unaligned pointer access](https://github.com/tikv/tikv/issues/7613)
 * [`servo_arc` creating a dangling shared reference](https://github.com/servo/servo/issues/26357)
 * [TiKV constructing out-of-bounds pointers (and overlapping mutable references)](https://github.com/tikv/tikv/pull/7751)
+* [`encoding_rs` doing out-of-bounds pointer arithmetic](https://github.com/hsivonen/encoding_rs/pull/53)
 
 Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows is currently just an experiment):
 
-* [`VecDeque` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/56161)
-* [`BTreeMap` creating mutable references that overlap with shared references](https://github.com/rust-lang/rust/pull/58431)
-* [`LinkedList` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/60072)
+* [`VecDeque::drain` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/56161)
+* [`BTreeMap` iterators creating mutable references that overlap with shared references](https://github.com/rust-lang/rust/pull/58431)
+* [`LinkedList` cursor insertion creating overlapping mutable references](https://github.com/rust-lang/rust/pull/60072)
 * [`Vec::push` invalidating existing references into the vector](https://github.com/rust-lang/rust/issues/60847)
 * [`align_to_mut` violating uniqueness of mutable references](https://github.com/rust-lang/rust/issues/68549)
 * [`sized-chunks` creating aliasing mutable references](https://github.com/bodil/sized-chunks/issues/8)
@@ -331,6 +369,8 @@ Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows 
 * [ink! creating overlapping mutable references](https://github.com/rust-lang/miri/issues/1364)
 * [TiKV creating overlapping mutable reference and raw pointer](https://github.com/tikv/tikv/pull/7709)
 * [Windows `Env` iterator creating `*const T` from `&T` to read memory outside of `T`](https://github.com/rust-lang/rust/pull/70479)
+* [`BTreeMap::iter_mut` creating overlapping mutable references](https://github.com/rust-lang/rust/issues/73915)
+* [`VecDeque::iter_mut` creating overlapping mutable references](https://github.com/rust-lang/rust/issues/74029)
 
 ## License
 

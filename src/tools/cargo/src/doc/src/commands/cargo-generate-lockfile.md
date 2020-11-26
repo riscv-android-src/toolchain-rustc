@@ -11,8 +11,8 @@ cargo-generate-lockfile - Generate the lockfile for a package
 ## DESCRIPTION
 
 This command will create the `Cargo.lock` lockfile for the current package or
-workspace. If the lockfile already exists, it will be rebuilt if there are any
-manifest changes or dependency updates.
+workspace. If the lockfile already exists, it will be rebuilt with the latest
+available version of every package.
 
 See also [cargo-update(1)](cargo-update.md) which is also capable of creating a `Cargo.lock`
 lockfile and has more options for controlling update behavior.
@@ -92,7 +92,7 @@ offline.</p>
 <dd class="option-desc">If Cargo has been installed with rustup, and the first argument to <code>cargo</code>
 begins with <code>+</code>, it will be interpreted as a rustup toolchain name (such
 as <code>+stable</code> or <code>+nightly</code>).
-See the <a href="https://github.com/rust-lang/rustup/">rustup documentation</a>
+See the <a href="https://rust-lang.github.io/rustup/overrides.html">rustup documentation</a>
 for more information about how toolchain overrides work.</dd>
 
 

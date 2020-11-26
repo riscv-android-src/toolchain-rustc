@@ -1778,6 +1778,51 @@ git_enum! {
     }
 }
 
+git_enum! {
+    pub enum git_libgit2_opt_t {
+        GIT_OPT_GET_MWINDOW_SIZE = 0,
+        GIT_OPT_SET_MWINDOW_SIZE,
+        GIT_OPT_GET_MWINDOW_MAPPED_LIMIT,
+        GIT_OPT_SET_MWINDOW_MAPPED_LIMIT,
+        GIT_OPT_GET_SEARCH_PATH,
+        GIT_OPT_SET_SEARCH_PATH,
+        GIT_OPT_SET_CACHE_OBJECT_LIMIT,
+        GIT_OPT_SET_CACHE_MAX_SIZE,
+        GIT_OPT_ENABLE_CACHING,
+        GIT_OPT_GET_CACHED_MEMORY,
+        GIT_OPT_GET_TEMPLATE_PATH,
+        GIT_OPT_SET_TEMPLATE_PATH,
+        GIT_OPT_SET_SSL_CERT_LOCATIONS,
+        GIT_OPT_SET_USER_AGENT,
+        GIT_OPT_ENABLE_STRICT_OBJECT_CREATION,
+        GIT_OPT_ENABLE_STRICT_SYMBOLIC_REF_CREATION,
+        GIT_OPT_SET_SSL_CIPHERS,
+        GIT_OPT_GET_USER_AGENT,
+        GIT_OPT_ENABLE_OFS_DELTA,
+        GIT_OPT_ENABLE_FSYNC_GITDIR,
+        GIT_OPT_GET_WINDOWS_SHAREMODE,
+        GIT_OPT_SET_WINDOWS_SHAREMODE,
+        GIT_OPT_ENABLE_STRICT_HASH_VERIFICATION,
+        GIT_OPT_SET_ALLOCATOR,
+        GIT_OPT_ENABLE_UNSAVED_INDEX_SAFETY,
+        GIT_OPT_GET_PACK_MAX_OBJECTS,
+        GIT_OPT_SET_PACK_MAX_OBJECTS,
+        GIT_OPT_DISABLE_PACK_KEEP_FILE_CHECKS,
+        GIT_OPT_ENABLE_HTTP_EXPECT_CONTINUE,
+        GIT_OPT_GET_MWINDOW_FILE_LIMIT,
+        GIT_OPT_SET_MWINDOW_FILE_LIMIT,
+    }
+}
+
+git_enum! {
+    pub enum git_reference_format_t {
+        GIT_REFERENCE_FORMAT_NORMAL = 0,
+        GIT_REFERENCE_FORMAT_ALLOW_ONELEVEL = 1 << 0,
+        GIT_REFERENCE_FORMAT_REFSPEC_PATTERN = 1 << 1,
+        GIT_REFERENCE_FORMAT_REFSPEC_SHORTHAND = 1 << 2,
+    }
+}
+
 extern "C" {
     // threads
     pub fn git_libgit2_init() -> c_int;
@@ -2242,6 +2287,12 @@ extern "C" {
     ) -> c_int;
     pub fn git_reference_has_log(repo: *mut git_repository, name: *const c_char) -> c_int;
     pub fn git_reference_ensure_log(repo: *mut git_repository, name: *const c_char) -> c_int;
+    pub fn git_reference_normalize_name(
+        buffer_out: *mut c_char,
+        buffer_size: size_t,
+        name: *const c_char,
+        flags: u32,
+    ) -> c_int;
 
     // stash
     pub fn git_stash_save(
@@ -2288,6 +2339,11 @@ extern "C" {
     ) -> c_int;
     pub fn git_submodule_add_to_index(submodule: *mut git_submodule, write_index: c_int) -> c_int;
     pub fn git_submodule_branch(submodule: *mut git_submodule) -> *const c_char;
+    pub fn git_submodule_clone(
+        repo: *mut *mut git_repository,
+        submodule: *mut git_submodule,
+        opts: *const git_submodule_update_options,
+    ) -> c_int;
     pub fn git_submodule_foreach(
         repo: *mut git_repository,
         callback: git_submodule_cb,
@@ -2619,6 +2675,8 @@ extern "C" {
     ) -> c_int;
 
     // index
+    pub fn git_index_version(index: *mut git_index) -> c_uint;
+    pub fn git_index_set_version(index: *mut git_index, version: c_uint) -> c_int;
     pub fn git_index_add(index: *mut git_index, entry: *const git_index_entry) -> c_int;
     pub fn git_index_add_all(
         index: *mut git_index,
@@ -3720,6 +3778,8 @@ extern "C" {
         commit: *mut git_commit,
         given_opts: *const git_revert_options,
     ) -> c_int;
+
+    pub fn git_libgit2_opts(option: c_int, ...) -> c_int;
 }
 
 pub fn init() {

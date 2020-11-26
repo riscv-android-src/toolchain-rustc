@@ -13,22 +13,20 @@
 [package]
 edition = "2018"
 name = "measureme"
-version = "0.7.1"
+version = "9.0.0"
 authors = ["Wesley Wiser <wwiser@gmail.com>", "Michael Woerister <michaelwoerister@posteo>"]
 description = "Support crate for rustc's self-profiling feature"
 homepage = "https://github.com/rust-lang/measureme"
 documentation = "https://docs.rs/measureme"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rust-lang/measureme"
-[dependencies.byteorder]
-version = "1.2.7"
-
 [dependencies.parking_lot]
-version = "0.9"
+version = "0.11.0"
 
 [dependencies.rustc-hash]
 version = "1.0.1"
-[target."cfg(not(target_arch=\"wasm32\"))".dependencies.memmap]
-version = "0.7"
+
+[dependencies.smallvec]
+version = "1.0"
 [badges.travis-ci]
 repository = "rust-lang/measureme"

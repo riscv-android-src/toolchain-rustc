@@ -15,7 +15,8 @@ Check a local package and all of its dependencies for errors. This will
 essentially compile the packages without performing the final step of code
 generation, which is faster than running `cargo build`. The compiler will save
 metadata files to disk so that future runs will reuse them if the source has
-not been modified.
+not been modified. Some diagnostics and errors are only emitted during code
+generation, so they inherently won't be reported with `cargo check`.
 
 ## OPTIONS
 
@@ -299,7 +300,7 @@ offline.</p>
 <dd class="option-desc">If Cargo has been installed with rustup, and the first argument to <code>cargo</code>
 begins with <code>+</code>, it will be interpreted as a rustup toolchain name (such
 as <code>+stable</code> or <code>+nightly</code>).
-See the <a href="https://github.com/rust-lang/rustup/">rustup documentation</a>
+See the <a href="https://rust-lang.github.io/rustup/overrides.html">rustup documentation</a>
 for more information about how toolchain overrides work.</dd>
 
 

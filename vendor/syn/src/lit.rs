@@ -30,7 +30,7 @@ ast_enum_of_structs! {
     //
     // TODO: change syntax-tree-enum link to an intra rustdoc link, currently
     // blocked on https://github.com/rust-lang/rust/issues/62833
-    pub enum Lit #manual_extra_traits {
+    pub enum Lit {
         /// A UTF-8 string literal: `"foo"`.
         Str(LitStr),
 
@@ -61,33 +61,32 @@ ast_enum_of_structs! {
 
 ast_struct! {
     /// A UTF-8 string literal: `"foo"`.
-    pub struct LitStr #manual_extra_traits_debug {
+    pub struct LitStr {
         repr: Box<LitRepr>,
     }
 }
 
 ast_struct! {
     /// A byte string literal: `b"foo"`.
-    pub struct LitByteStr #manual_extra_traits_debug {
+    pub struct LitByteStr {
         repr: Box<LitRepr>,
     }
 }
 
 ast_struct! {
     /// A byte literal: `b'f'`.
-    pub struct LitByte #manual_extra_traits_debug {
+    pub struct LitByte {
         repr: Box<LitRepr>,
     }
 }
 
 ast_struct! {
     /// A character literal: `'a'`.
-    pub struct LitChar #manual_extra_traits_debug {
+    pub struct LitChar {
         repr: Box<LitRepr>,
     }
 }
 
-#[cfg_attr(feature = "clone-impls", derive(Clone))]
 struct LitRepr {
     token: Literal,
     suffix: Box<str>,
@@ -95,12 +94,11 @@ struct LitRepr {
 
 ast_struct! {
     /// An integer literal: `1` or `1u16`.
-    pub struct LitInt #manual_extra_traits_debug {
+    pub struct LitInt {
         repr: Box<LitIntRepr>,
     }
 }
 
-#[cfg_attr(feature = "clone-impls", derive(Clone))]
 struct LitIntRepr {
     token: Literal,
     digits: Box<str>,
@@ -111,12 +109,11 @@ ast_struct! {
     /// A floating point literal: `1f64` or `1.0e10f64`.
     ///
     /// Must be finite. May not be infinte or NaN.
-    pub struct LitFloat #manual_extra_traits_debug {
+    pub struct LitFloat {
         repr: Box<LitFloatRepr>,
     }
 }
 
-#[cfg_attr(feature = "clone-impls", derive(Clone))]
 struct LitFloatRepr {
     token: Literal,
     digits: Box<str>,
@@ -125,72 +122,9 @@ struct LitFloatRepr {
 
 ast_struct! {
     /// A boolean literal: `true` or `false`.
-    pub struct LitBool #manual_extra_traits_debug {
+    pub struct LitBool {
         pub value: bool,
         pub span: Span,
-    }
-}
-
-#[cfg(feature = "extra-traits")]
-impl Eq for Lit {}
-
-#[cfg(feature = "extra-traits")]
-impl PartialEq for Lit {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Lit::Str(this), Lit::Str(other)) => this == other,
-            (Lit::ByteStr(this), Lit::ByteStr(other)) => this == other,
-            (Lit::Byte(this), Lit::Byte(other)) => this == other,
-            (Lit::Char(this), Lit::Char(other)) => this == other,
-            (Lit::Int(this), Lit::Int(other)) => this == other,
-            (Lit::Float(this), Lit::Float(other)) => this == other,
-            (Lit::Bool(this), Lit::Bool(other)) => this == other,
-            (Lit::Verbatim(this), Lit::Verbatim(other)) => this.to_string() == other.to_string(),
-            _ => false,
-        }
-    }
-}
-
-#[cfg(feature = "extra-traits")]
-impl Hash for Lit {
-    fn hash<H>(&self, hash: &mut H)
-    where
-        H: Hasher,
-    {
-        match self {
-            Lit::Str(lit) => {
-                hash.write_u8(0);
-                lit.hash(hash);
-            }
-            Lit::ByteStr(lit) => {
-                hash.write_u8(1);
-                lit.hash(hash);
-            }
-            Lit::Byte(lit) => {
-                hash.write_u8(2);
-                lit.hash(hash);
-            }
-            Lit::Char(lit) => {
-                hash.write_u8(3);
-                lit.hash(hash);
-            }
-            Lit::Int(lit) => {
-                hash.write_u8(4);
-                lit.hash(hash);
-            }
-            Lit::Float(lit) => {
-                hash.write_u8(5);
-                lit.hash(hash);
-            }
-            Lit::Bool(lit) => {
-                hash.write_u8(6);
-                lit.hash(hash);
-            }
-            Lit::Verbatim(lit) => {
-                hash.write_u8(7);
-                lit.to_string().hash(hash);
-            }
-        }
     }
 }
 
@@ -646,15 +580,53 @@ mod debug_impls {
     }
 }
 
+#[cfg(feature = "clone-impls")]
+impl Clone for LitRepr {
+    fn clone(&self) -> Self {
+        LitRepr {
+            token: self.token.clone(),
+            suffix: self.suffix.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "clone-impls")]
+impl Clone for LitIntRepr {
+    fn clone(&self) -> Self {
+        LitIntRepr {
+            token: self.token.clone(),
+            digits: self.digits.clone(),
+            suffix: self.suffix.clone(),
+        }
+    }
+}
+
+#[cfg(feature = "clone-impls")]
+impl Clone for LitFloatRepr {
+    fn clone(&self) -> Self {
+        LitFloatRepr {
+            token: self.token.clone(),
+            digits: self.digits.clone(),
+            suffix: self.suffix.clone(),
+        }
+    }
+}
+
 macro_rules! lit_extra_traits {
-    ($ty:ident, $($field:ident).+) => {
-        #[cfg(feature = "extra-traits")]
-        impl Eq for $ty {}
+    ($ty:ident) => {
+        #[cfg(feature = "clone-impls")]
+        impl Clone for $ty {
+            fn clone(&self) -> Self {
+                $ty {
+                    repr: self.repr.clone(),
+                }
+            }
+        }
 
         #[cfg(feature = "extra-traits")]
         impl PartialEq for $ty {
             fn eq(&self, other: &Self) -> bool {
-                self.$($field).+.to_string() == other.$($field).+.to_string()
+                self.repr.token.to_string() == other.repr.token.to_string()
             }
         }
 
@@ -664,7 +636,7 @@ macro_rules! lit_extra_traits {
             where
                 H: Hasher,
             {
-                self.$($field).+.to_string().hash(state);
+                self.repr.token.to_string().hash(state);
             }
         }
 
@@ -677,13 +649,19 @@ macro_rules! lit_extra_traits {
     };
 }
 
-lit_extra_traits!(LitStr, repr.token);
-lit_extra_traits!(LitByteStr, repr.token);
-lit_extra_traits!(LitByte, repr.token);
-lit_extra_traits!(LitChar, repr.token);
-lit_extra_traits!(LitInt, repr.token);
-lit_extra_traits!(LitFloat, repr.token);
-lit_extra_traits!(LitBool, value);
+lit_extra_traits!(LitStr);
+lit_extra_traits!(LitByteStr);
+lit_extra_traits!(LitByte);
+lit_extra_traits!(LitChar);
+lit_extra_traits!(LitInt);
+lit_extra_traits!(LitFloat);
+
+#[cfg(feature = "parsing")]
+#[doc(hidden)]
+#[allow(non_snake_case)]
+pub fn LitBool(marker: lookahead::TokenMarker) -> LitBool {
+    match marker {}
+}
 
 ast_enum! {
     /// The style of a string literal, either plain quoted or a raw string like
@@ -1453,7 +1431,11 @@ mod value {
                 }
                 b'e' | b'E' => {
                     if has_e {
-                        return None;
+                        if has_exponent {
+                            break;
+                        } else {
+                            return None;
+                        }
                     }
                     has_e = true;
                     bytes[write] = b'e';

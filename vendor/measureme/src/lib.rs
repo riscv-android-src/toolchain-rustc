@@ -13,36 +13,33 @@
 //! To create a [`Profiler`], call the [`Profiler::new()`] function and provide a `Path` with
 //! the directory and file name for the trace files.
 //!
-//! To record an event, call the [`Profiler::record_instant_event()`] method, passing a few arguments:
+//! To record an event, call the [`Profiler::record_instant_event()`] method, passing a few
+//! arguments:
 //!   - `event_kind`: a [`StringId`] which assigns an arbitrary category to the event
 //!   - `event_id`: a [`StringId`] which specifies the name of the event
 //!   - `thread_id`: a `u32` id of the thread which is recording this event
 //!
-//! Alternatively, events can also be recorded via the [`Profiler::start_recording_interval_event()`] method. This
-//! method records a "start" event and returns a `TimingGuard` object that will automatically record
-//! the corresponding "end" event when it is dropped.
+//! Alternatively, events can also be recorded via the
+//! [`Profiler::start_recording_interval_event()`] method. This method records a "start" event and
+//! returns a `TimingGuard` object that will automatically record the corresponding "end" event
+//! when it is dropped.
 //!
 //! To create a [`StringId`], call one of the string allocation methods:
-//!   - [`Profiler::alloc_string()`]: allocates a string and returns the [`StringId`] that refers to it
-//!   - [`Profiler::alloc_string_with_reserved_id()`]: allocates a string using the specified [`StringId`].
-//!     It is up to the caller to make sure the specified [`StringId`] hasn't already been used.
+//!   - [`Profiler::alloc_string()`]: allocates a string and returns the [`StringId`] that refers
+//!     to it
 //!
-//! [`Profiler`]: struct.Profiler.html
-//! [`Profiler::alloc_string()`]: struct.Profiler.html#method.alloc_string
-//! [`Profiler::alloc_string_with_reserved_id()`]: struct.Profiler.html#method.alloc_string_with_reserved_id
-//! [`Profiler::new()`]: struct.Profiler.html#method.new
-//! [`Profiler::record_event()`]: struct.Profiler.html#method.record_event
-//! [`Profiler::start_recording_interval_event()`]: struct.Profiler.html#method.start_recording_interval_event
-//! [`StringId`]: struct.StringId.html
-
-#![deny(warnings)]
+//! [`Profiler`]: Profiler
+//! [`Profiler::alloc_string()`]: Profiler::alloc_string
+//! [`Profiler::alloc_string_with_reserved_id()`]: Profiler::alloc_string_with_reserved_id
+//! [`Profiler::new()`]: Profiler::new
+//! [`Profiler::record_event()`]: Profiler::record_event
+//! [`Profiler::start_recording_interval_event()`]: Profiler::start_recording_interval_event
+//! [`StringId`]: StringId
+#![allow(renamed_and_removed_lints)] // intra_doc_link_resolution_failure is renamed on nightly
+#![deny(warnings, intra_doc_link_resolution_failure)]
 
 pub mod event_id;
 pub mod file_header;
-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-mod file_serialization_sink;
-#[cfg(not(target_arch = "wasm32"))]
-mod mmap_serialization_sink;
 mod profiler;
 mod raw_event;
 mod serialization;
@@ -51,11 +48,9 @@ pub mod stringtable;
 pub mod rustc;
 
 pub use crate::event_id::{EventId, EventIdBuilder};
-#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
-pub use crate::file_serialization_sink::FileSerializationSink;
-#[cfg(not(target_arch = "wasm32"))]
-pub use crate::mmap_serialization_sink::MmapSerializationSink;
-pub use crate::profiler::{Profiler, ProfilerFiles, TimingGuard};
+pub use crate::profiler::{Profiler, TimingGuard};
 pub use crate::raw_event::{RawEvent, MAX_INSTANT_TIMESTAMP, MAX_INTERVAL_TIMESTAMP};
-pub use crate::serialization::{Addr, ByteVecSink, SerializationSink};
+pub use crate::serialization::{
+    split_streams, Addr, PageTag, SerializationSink, SerializationSinkBuilder,
+};
 pub use crate::stringtable::{SerializableString, StringComponent, StringId, StringTableBuilder};

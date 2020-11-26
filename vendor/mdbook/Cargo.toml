@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "mdbook"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["Mathieu David <mathieudavid@mathieudavid.org>", "Michael-F-Bryan <michaelfbryan@gmail.com>", "Matt Ickstadt <mattico8@gmail.com>"]
 exclude = ["/book-example/*"]
 description = "Creates a book from markdown files"

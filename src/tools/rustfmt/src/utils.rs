@@ -38,11 +38,11 @@ pub(crate) fn extra_offset(text: &str, shape: Shape) -> usize {
 }
 
 pub(crate) fn is_same_visibility(a: &Visibility, b: &Visibility) -> bool {
-    match (&a.node, &b.node) {
+    match (&a.kind, &b.kind) {
         (
             VisibilityKind::Restricted { path: p, .. },
             VisibilityKind::Restricted { path: q, .. },
-        ) => pprust::path_to_string(p) == pprust::path_to_string(q),
+        ) => pprust::path_to_string(&p) == pprust::path_to_string(&q),
         (VisibilityKind::Public, VisibilityKind::Public)
         | (VisibilityKind::Inherited, VisibilityKind::Inherited)
         | (
@@ -62,7 +62,7 @@ pub(crate) fn format_visibility(
     context: &RewriteContext<'_>,
     vis: &Visibility,
 ) -> Cow<'static, str> {
-    match vis.node {
+    match vis.kind {
         VisibilityKind::Public => Cow::from("pub "),
         VisibilityKind::Inherited => Cow::from(""),
         VisibilityKind::Crate(CrateSugar::PubCrate) => Cow::from("pub(crate) "),
@@ -256,7 +256,7 @@ fn is_skip(meta_item: &MetaItem) -> bool {
                 || path_str == &*depr_skip_annotation().as_str()
         }
         MetaItemKind::List(ref l) => {
-            meta_item.check_name(sym::cfg_attr) && l.len() == 2 && is_skip_nested(&l[1])
+            meta_item.has_name(sym::cfg_attr) && l.len() == 2 && is_skip_nested(&l[1])
         }
         _ => false,
     }
@@ -461,6 +461,7 @@ pub(crate) fn is_block_expr(context: &RewriteContext<'_>, expr: &ast::Expr, repr
         | ast::ExprKind::While(..)
         | ast::ExprKind::If(..)
         | ast::ExprKind::Block(..)
+        | ast::ExprKind::ConstBlock(..)
         | ast::ExprKind::Async(..)
         | ast::ExprKind::Loop(..)
         | ast::ExprKind::ForLoop(..)

@@ -8,7 +8,6 @@ use rustc_middle::{mir, ty};
 use rustc_middle::ty::layout::IntegerExt;
 use rustc_apfloat::{Float, Round};
 use rustc_target::abi::{Align, Integer, LayoutOf};
-use rustc_span::symbol::sym;
 
 use crate::*;
 use helpers::check_arg_count;
@@ -23,19 +22,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         _unwind: Option<mir::BasicBlock>,
     ) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        let intrinsic_name = this.tcx.item_name(instance.def_id());
-        // We want to overwrite some of the intrinsic implementations that CTFE uses.
-        let prefer_miri_intrinsic = match intrinsic_name {
-            sym::ptr_guaranteed_eq | sym::ptr_guaranteed_ne => true,
-            _ => false,
-        };
 
-        if !prefer_miri_intrinsic && this.emulate_intrinsic(instance, args, ret)? {
+        if this.emulate_intrinsic(instance, args, ret)? {
             return Ok(());
         }
 
         // All supported intrinsics have a return place.
-        let intrinsic_name = &*intrinsic_name.as_str();
+        let intrinsic_name = &*this.tcx.item_name(instance.def_id()).as_str();
         let (dest, ret) = match ret {
             None => throw_unsup_format!("unimplemented (diverging) intrinsic: {}", intrinsic_name),
             Some(p) => p,
@@ -299,7 +292,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 let &[val] = check_arg_count(args)?;
                 let val = this.read_immediate(val)?;
 
-                let res = match val.layout.ty.kind {
+                let res = match val.layout.ty.kind() {
                     ty::Float(FloatTy::F32) => {
                         this.float_to_int_unchecked(val.to_scalar()?.to_f32()?, dest.layout.ty)?
                     }
@@ -485,14 +478,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
 
             // Other
-            "assume" => {
-                let &[cond] = check_arg_count(args)?;
-                let cond = this.read_scalar(cond)?.check_init()?.to_bool()?;
-                if !cond {
-                    throw_ub_format!("`assume` intrinsic called with `false`");
-                }
-            }
-
             "exact_div" => {
                 let &[num, denom] = check_arg_count(args)?;
                 this.exact_div(this.read_immediate(num)?, this.read_immediate(denom)?, dest)?;
@@ -528,10 +513,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let f = f.round_to_integral(Round::TowardZero).value;
 
         // Step 2: Cast the truncated float to the target integer type and see if we lose any information in this step.
-        Ok(match dest_ty.kind {
+        Ok(match dest_ty.kind() {
             // Unsigned
             ty::Uint(t) => {
-                let size = Integer::from_attr(this, attr::IntType::UnsignedInt(t)).size();
+                let size = Integer::from_attr(this, attr::IntType::UnsignedInt(*t)).size();
                 let res = f.to_u128(size.bits_usize());
                 if res.status.is_empty() {
                     // No status flags means there was no further rounding or other loss of precision.
@@ -546,7 +531,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             }
             // Signed
             ty::Int(t) => {
-                let size = Integer::from_attr(this, attr::IntType::SignedInt(t)).size();
+                let size = Integer::from_attr(this, attr::IntType::SignedInt(*t)).size();
                 let res = f.to_i128(size.bits_usize());
                 if res.status.is_empty() {
                     // No status flags means there was no further rounding or other loss of precision.

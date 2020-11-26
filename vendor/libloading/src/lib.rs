@@ -17,7 +17,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! libloading = "0.5"
+//! libloading = "0.6"
 //! ```
 //!
 //! Then inside your project
@@ -36,7 +36,17 @@
 //!
 //! The compiler will ensure that the loaded `function` will not outlive the `Library` it comes
 //! from, preventing a common cause of undefined behaviour and memory safety problems.
-use std::ffi::OsStr;
+#![deny(
+    missing_docs,
+    clippy::all,
+    unreachable_pub,
+    unused,
+)]
+#![cfg_attr(docsrs, deny(broken_intra_doc_links))]
+#![cfg_attr(docsrs, feature(doc_cfg))]
+
+use std::env::consts::{DLL_PREFIX, DLL_SUFFIX};
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::ops;
 use std::marker;
@@ -64,7 +74,7 @@ impl Library {
     /// * Absolute path to the library;
     /// * Relative (to the current working directory) path to the library.
     ///
-    /// ## Thread-safety
+    /// # Thread-safety
     ///
     /// The implementation strives to be as MT-safe as sanely possible, however due to certain
     /// error-handling related resources not always being safe, this library is not MT-safe either.
@@ -77,15 +87,17 @@ impl Library {
     /// [`SetErrorMode`]: https://msdn.microsoft.com/en-us/library/windows/desktop/ms680621(v=vs.85).aspx
     ///
     /// Calling this function from multiple threads is not safe if used in conjunction with
-    /// path-less filename and library search path is modified (`SetDllDirectory` function on
+    /// relative filenames and the library search path is modified (`SetDllDirectory` function on
     /// Windows, `{DY,}LD_LIBRARY_PATH` environment variable on UNIX).
     ///
-    /// ## Platform-specific behaviour
+    /// # Platform-specific behaviour
     ///
     /// When a plain library filename is supplied, locations where library is searched for is
-    /// platform specific and cannot be adjusted in a portable manner.
+    /// platform specific and cannot be adjusted in a portable manner. See documentation for
+    /// the platform specific [`os::unix::Library::new`] and [`os::windows::Library::new`] methods
+    /// for further information on library lookup behaviour.
     ///
-    /// ### Windows
+    /// ## Windows
     ///
     /// If the `filename` specifies a library filename without path and with extension omitted,
     /// `.dll` extension is implicitly added. This behaviour may be suppressed by appending a
@@ -95,17 +107,18 @@ impl Library {
     /// `#[thread_local]` attributes), loading the library will fail on versions prior to Windows
     /// Vista.
     ///
-    /// ## Tips
+    /// # Tips
     ///
     /// Distributing your dynamic libraries under a filename common to all platforms (e.g.
     /// `awesome.module`) allows to avoid code which has to account for platform’s conventional
     /// library filenames.
     ///
-    /// Strive to specify absolute or relative path to your library, unless system-wide libraries
-    /// are being loaded.  Platform-dependent library search locations combined with various quirks
-    /// related to path-less filenames may cause flaky code.
+    /// Strive to specify an absolute or at least a relative path to your library, unless
+    /// system-wide libraries are being loaded. Platform-dependent library search locations
+    /// combined with various quirks related to path-less filenames may cause flakiness in
+    /// programs.
     ///
-    /// ## Examples
+    /// # Examples
     ///
     /// ```no_run
     /// # use ::libloading::Library;
@@ -126,16 +139,16 @@ impl Library {
     /// Symbol is interpreted as-is; no mangling is done. This means that symbols like `x::y` are
     /// most likely invalid.
     ///
-    /// ## Unsafety
+    /// # Safety
     ///
     /// Pointer to a value of arbitrary type is returned. Using a value with wrong type is
     /// undefined.
     ///
-    /// ## Platform-specific behaviour
+    /// # Platform-specific behaviour
     ///
-    /// On Linux and Windows, a TLS variable acts just like any regular global variable. OS X uses
-    /// some sort of lazy initialization scheme, which makes loading TLS variables this way
-    /// impossible. Using a TLS variable loaded this way on OS X is undefined behaviour.
+    /// Implementation of thread local variables is extremely platform specific and uses of these
+    /// variables that work on e.g. Linux may have unintended behaviour on other POSIX systems or
+    /// Windows.
     ///
     /// On POSIX implementations where the `dlerror` function is not confirmed to be MT-safe (such
     /// as FreeBSD), this function will unconditionally return an error the underlying `dlsym` call
@@ -143,7 +156,7 @@ impl Library {
     /// pointer without it being an error. If loading a null pointer is something you care about,
     /// consider using the [`os::unix::Library::get_singlethreaded`] call.
     ///
-    /// ## Examples
+    /// # Examples
     ///
     /// Given a loaded library:
     ///
@@ -232,12 +245,13 @@ pub struct Symbol<'lib, T: 'lib> {
 impl<'lib, T> Symbol<'lib, T> {
     /// Extract the wrapped `os::platform::Symbol`.
     ///
-    /// ## Unsafety
+    /// # Safety
+    ///
     /// Using this function relinquishes all the lifetime guarantees. It is up to programmer to
     /// ensure the resulting `Symbol` is not used past the lifetime of the `Library` this symbol
     /// was loaded from.
     ///
-    /// ## Examples
+    /// # Examples
     ///
     /// ```no_run
     /// # use ::libloading::{Library, Symbol};
@@ -256,12 +270,12 @@ impl<'lib, T> Symbol<'lib, T> {
     /// Note that, in order to create association between the symbol and the library this symbol
     /// came from, this function requires reference to the library provided.
     ///
-    /// ## Unsafety
+    /// # Safety
     ///
     /// It is invalid to provide a reference to any other value other than the library the `sym`
     /// was loaded from. Doing so invalidates any lifetime guarantees.
     ///
-    /// ## Examples
+    /// # Examples
     ///
     /// ```no_run
     /// # use ::libloading::{Library, Symbol};
@@ -283,7 +297,7 @@ impl<'lib, T> Symbol<'lib, T> {
 impl<'lib, T> Symbol<'lib, Option<T>> {
     /// Lift Option out of the symbol.
     ///
-    /// ## Examples
+    /// # Examples
     ///
     /// ```no_run
     /// # use ::libloading::{Library, Symbol};
@@ -326,3 +340,27 @@ impl<'lib, T> fmt::Debug for Symbol<'lib, T> {
 
 unsafe impl<'lib, T: Send> Send for Symbol<'lib, T> {}
 unsafe impl<'lib, T: Sync> Sync for Symbol<'lib, T> {}
+
+/// Converts a library name to a filename generally appropriate for use on the system.
+///
+/// The function will prepend prefixes (such as `lib`) and suffixes (such as `.so`) to the library
+/// `name` to construct the filename.
+///
+/// # Examples
+///
+/// It can be used to load global libraries in a platform independent manner:
+///
+/// ```
+/// use libloading::{Library, library_filename};
+/// // Will attempt to load `libLLVM.so` on Linux, `libLLVM.dylib` on macOS and `LLVM.dll` on
+/// // Windows.
+/// let library = Library::new(library_filename("LLVM"));
+/// ```
+pub fn library_filename<S: AsRef<OsStr>>(name: S) -> OsString {
+    let name = name.as_ref();
+    let mut string = OsString::with_capacity(name.len() + DLL_PREFIX.len() + DLL_SUFFIX.len());
+    string.push(DLL_PREFIX);
+    string.push(name);
+    string.push(DLL_SUFFIX);
+    string
+}
