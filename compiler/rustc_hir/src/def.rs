@@ -206,8 +206,10 @@ pub enum Res<Id = hir::HirId> {
     /// ```rust
     /// impl Foo { fn test() -> [u8; std::mem::size_of::<Self>()] {} }
     /// ```
+    /// We do however allow `Self` in repeat expression even if it is generic to not break code
+    /// which already works on stable while causing the `const_evaluatable_unchecked` future compat lint.
     ///
-    /// FIXME(lazy_normalization_consts): Remove this bodge once this feature is stable.
+    /// FIXME(lazy_normalization_consts): Remove this bodge once that feature is stable.
     SelfTy(Option<DefId> /* trait */, Option<(DefId, bool)> /* impl */),
     ToolMod, // e.g., `rustfmt` in `#[rustfmt::skip]`
 
@@ -341,9 +343,7 @@ impl<T> PerNS<Option<T>> {
 
     /// Returns an iterator over the items which are `Some`.
     pub fn present_items(self) -> impl Iterator<Item = T> {
-        use std::iter::once;
-
-        once(self.type_ns).chain(once(self.value_ns)).chain(once(self.macro_ns)).filter_map(|it| it)
+        IntoIter::new([self.type_ns, self.value_ns, self.macro_ns]).filter_map(|it| it)
     }
 }
 
@@ -483,5 +483,10 @@ impl<Id> Res<Id> {
     /// Always returns `true` if `self` is `Res::Err`
     pub fn matches_ns(&self, ns: Namespace) -> bool {
         self.ns().map_or(true, |actual_ns| actual_ns == ns)
+    }
+
+    /// Returns whether such a resolved path can occur in a tuple struct/variant pattern
+    pub fn expected_in_tuple_struct_pat(&self) -> bool {
+        matches!(self, Res::Def(DefKind::Ctor(_, CtorKind::Fn), _) | Res::SelfCtor(..))
     }
 }

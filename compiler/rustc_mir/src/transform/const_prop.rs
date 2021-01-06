@@ -9,7 +9,6 @@ use rustc_hir::def::DefKind;
 use rustc_hir::HirId;
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::IndexVec;
-use rustc_middle::mir::interpret::{InterpResult, Scalar};
 use rustc_middle::mir::visit::{
     MutVisitor, MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor,
 };
@@ -20,7 +19,9 @@ use rustc_middle::mir::{
 };
 use rustc_middle::ty::layout::{HasTyCtxt, LayoutError, TyAndLayout};
 use rustc_middle::ty::subst::{InternalSubsts, Subst};
-use rustc_middle::ty::{self, ConstInt, ConstKind, Instance, ParamEnv, Ty, TyCtxt, TypeFoldable};
+use rustc_middle::ty::{
+    self, ConstInt, ConstKind, Instance, ParamEnv, ScalarInt, Ty, TyCtxt, TypeFoldable,
+};
 use rustc_session::lint;
 use rustc_span::{def_id::DefId, Span};
 use rustc_target::abi::{HasDataLayout, LayoutOf, Size, TargetDataLayout};
@@ -28,11 +29,11 @@ use rustc_trait_selection::traits;
 
 use crate::const_eval::ConstEvalErr;
 use crate::interpret::{
-    self, compile_time_machine, truncate, AllocId, Allocation, ConstValue, Frame, ImmTy, Immediate,
-    InterpCx, LocalState, LocalValue, MemPlace, Memory, MemoryKind, OpTy, Operand as InterpOperand,
-    PlaceTy, Pointer, ScalarMaybeUninit, StackPopCleanup,
+    self, compile_time_machine, AllocId, Allocation, ConstValue, CtfeValidationMode, Frame, ImmTy,
+    Immediate, InterpCx, InterpResult, LocalState, LocalValue, MemPlace, Memory, MemoryKind, OpTy,
+    Operand as InterpOperand, PlaceTy, Pointer, Scalar, ScalarMaybeUninit, StackPopCleanup,
 };
-use crate::transform::{MirPass, MirSource};
+use crate::transform::MirPass;
 
 /// The maximum number of bytes that we'll allocate space for a local or the return value.
 /// Needed for #66397, because otherwise we eval into large places and that can cause OOM or just
@@ -60,30 +61,31 @@ macro_rules! throw_machine_stop_str {
 pub struct ConstProp;
 
 impl<'tcx> MirPass<'tcx> for ConstProp {
-    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut Body<'tcx>) {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         // will be evaluated by miri and produce its errors there
-        if source.promoted.is_some() {
+        if body.source.promoted.is_some() {
             return;
         }
 
         use rustc_middle::hir::map::blocks::FnLikeNode;
-        let hir_id = tcx.hir().local_def_id_to_hir_id(source.def_id().expect_local());
+        let def_id = body.source.def_id().expect_local();
+        let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
 
         let is_fn_like = FnLikeNode::from_node(tcx.hir().get(hir_id)).is_some();
-        let is_assoc_const = tcx.def_kind(source.def_id()) == DefKind::AssocConst;
+        let is_assoc_const = tcx.def_kind(def_id.to_def_id()) == DefKind::AssocConst;
 
         // Only run const prop on functions, methods, closures and associated constants
         if !is_fn_like && !is_assoc_const {
             // skip anon_const/statics/consts because they'll be evaluated by miri anyway
-            trace!("ConstProp skipped for {:?}", source.def_id());
+            trace!("ConstProp skipped for {:?}", def_id);
             return;
         }
 
-        let is_generator = tcx.type_of(source.def_id()).is_generator();
+        let is_generator = tcx.type_of(def_id.to_def_id()).is_generator();
         // FIXME(welseywiser) const prop doesn't work on generators because of query cycles
         // computing their layout.
         if is_generator {
-            trace!("ConstProp skipped for generator {:?}", source.def_id());
+            trace!("ConstProp skipped for generator {:?}", def_id);
             return;
         }
 
@@ -114,7 +116,7 @@ impl<'tcx> MirPass<'tcx> for ConstProp {
         // the normalization code (leading to cycle errors), since
         // it's usually never invoked in this way.
         let predicates = tcx
-            .predicates_of(source.def_id())
+            .predicates_of(def_id.to_def_id())
             .predicates
             .iter()
             .filter_map(|(p, _)| if p.is_global() { Some(*p) } else { None });
@@ -122,20 +124,21 @@ impl<'tcx> MirPass<'tcx> for ConstProp {
             tcx,
             traits::elaborate_predicates(tcx, predicates).map(|o| o.predicate).collect(),
         ) {
-            trace!("ConstProp skipped for {:?}: found unsatisfiable predicates", source.def_id());
+            trace!("ConstProp skipped for {:?}: found unsatisfiable predicates", def_id);
             return;
         }
 
-        trace!("ConstProp starting for {:?}", source.def_id());
+        trace!("ConstProp starting for {:?}", def_id);
 
         let dummy_body = &Body::new(
+            body.source,
             body.basic_blocks().clone(),
             body.source_scopes.clone(),
             body.local_decls.clone(),
             Default::default(),
             body.arg_count,
             Default::default(),
-            tcx.def_span(source.def_id()),
+            tcx.def_span(def_id),
             body.generator_kind,
         );
 
@@ -143,10 +146,10 @@ impl<'tcx> MirPass<'tcx> for ConstProp {
         // constants, instead of just checking for const-folding succeeding.
         // That would require an uniform one-def no-mutation analysis
         // and RPO (or recursing when needing the value of a local).
-        let mut optimization_finder = ConstPropagator::new(body, dummy_body, tcx, source);
+        let mut optimization_finder = ConstPropagator::new(body, dummy_body, tcx);
         optimization_finder.visit_body(body);
 
-        trace!("ConstProp done for {:?}", source.def_id());
+        trace!("ConstProp done for {:?}", def_id);
     }
 }
 
@@ -311,7 +314,7 @@ struct ConstPropagator<'mir, 'tcx> {
     param_env: ParamEnv<'tcx>,
     // FIXME(eddyb) avoid cloning these two fields more than once,
     // by accessing them through `ecx` instead.
-    source_scopes: IndexVec<SourceScope, SourceScopeData>,
+    source_scopes: IndexVec<SourceScope, SourceScopeData<'tcx>>,
     local_decls: IndexVec<Local, LocalDecl<'tcx>>,
     // Because we have `MutVisitor` we can't obtain the `SourceInfo` from a `Location`. So we store
     // the last known `SourceInfo` here and just keep revisiting it.
@@ -346,9 +349,8 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
         body: &Body<'tcx>,
         dummy_body: &'mir Body<'tcx>,
         tcx: TyCtxt<'tcx>,
-        source: MirSource<'tcx>,
     ) -> ConstPropagator<'mir, 'tcx> {
-        let def_id = source.def_id();
+        let def_id = body.source.def_id();
         let substs = &InternalSubsts::identity_for_item(tcx, def_id);
         let param_env = tcx.param_env_reveal_all_normalized(def_id);
 
@@ -577,8 +579,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                             Some(l) => l.to_const_int(),
                             // Invent a dummy value, the diagnostic ignores it anyway
                             None => ConstInt::new(
-                                1,
-                                left_size,
+                                ScalarInt::try_from_uint(1_u8, left_size).unwrap(),
                                 left_ty.is_signed(),
                                 left_ty.is_ptr_sized_integral(),
                             ),
@@ -744,7 +745,7 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
                             }
                         }
                         BinOp::BitOr => {
-                            if arg_value == truncate(u128::MAX, const_arg.layout.size)
+                            if arg_value == const_arg.layout.size.truncate(u128::MAX)
                                 || (const_arg.layout.ty.is_bool() && arg_value == 1)
                             {
                                 this.ecx.write_immediate(*const_arg, dest)?;
@@ -804,8 +805,9 @@ impl<'mir, 'tcx> ConstPropagator<'mir, 'tcx> {
             value,
             vec![],
             // FIXME: is ref tracking too expensive?
+            // FIXME: what is the point of ref tracking if we do not even check the tracked refs?
             &mut interpret::RefTracking::empty(),
-            /*may_ref_to_static*/ true,
+            CtfeValidationMode::Regular,
         ) {
             trace!("validation error, attempt failed: {:?}", e);
             return;

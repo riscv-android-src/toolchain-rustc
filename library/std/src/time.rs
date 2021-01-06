@@ -100,6 +100,11 @@ pub use core::time::Duration;
 /// [clock_time_get (Monotonic Clock)]: https://nuxi.nl/cloudabi/#clock_time_get
 ///
 /// **Disclaimer:** These system calls might change over time.
+///
+/// > Note: mathematical operations like [`add`] may panic if the underlying
+/// > structure cannot represent the new point in time.
+///
+/// [`add`]: Instant::add
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[stable(feature = "time2", since = "1.8.0")]
 pub struct Instant(time::Instant);
@@ -174,6 +179,11 @@ pub struct Instant(time::Instant);
 /// [GetSystemTimeAsFileTime]: https://docs.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemtimeasfiletime
 ///
 /// **Disclaimer:** These system calls might change over time.
+///
+/// > Note: mathematical operations like [`add`] may panic if the underlying
+/// > structure cannot represent the new point in time.
+///
+/// [`add`]: SystemTime::add
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[stable(feature = "time2", since = "1.8.0")]
 pub struct SystemTime(time::SystemTime);
@@ -312,7 +322,7 @@ impl Instant {
     /// ```
     #[stable(feature = "checked_duration_since", since = "1.39.0")]
     pub fn saturating_duration_since(&self, earlier: Instant) -> Duration {
-        self.checked_duration_since(earlier).unwrap_or(Duration::new(0, 0))
+        self.checked_duration_since(earlier).unwrap_or_default()
     }
 
     /// Returns the amount of time elapsed since this instant was created.

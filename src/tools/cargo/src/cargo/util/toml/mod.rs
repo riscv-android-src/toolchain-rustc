@@ -262,7 +262,7 @@ pub struct TomlManifest {
     build_dependencies: Option<BTreeMap<String, TomlDependency>>,
     #[serde(rename = "build_dependencies")]
     build_dependencies2: Option<BTreeMap<String, TomlDependency>>,
-    features: Option<BTreeMap<String, Vec<String>>>,
+    features: Option<BTreeMap<InternedString, Vec<InternedString>>>,
     target: Option<BTreeMap<String, TomlPlatform>>,
     replace: Option<BTreeMap<String, TomlDependency>>,
     patch: Option<BTreeMap<String, BTreeMap<String, TomlDependency>>>,
@@ -800,8 +800,6 @@ pub struct TomlProject {
     autoexamples: Option<bool>,
     autotests: Option<bool>,
     autobenches: Option<bool>,
-    #[serde(rename = "namespaced-features")]
-    namespaced_features: Option<bool>,
     #[serde(rename = "default-run")]
     default_run: Option<String>,
 
@@ -1190,26 +1188,17 @@ impl TomlManifest {
 
         let exclude = project.exclude.clone().unwrap_or_default();
         let include = project.include.clone().unwrap_or_default();
-        if project.namespaced_features.is_some() {
-            features.require(Feature::namespaced_features())?;
-        }
+        let empty_features = BTreeMap::new();
 
-        let summary_features = me
-            .features
-            .as_ref()
-            .map(|x| {
-                x.iter()
-                    .map(|(k, v)| (k.as_str(), v.iter().collect()))
-                    .collect()
-            })
-            .unwrap_or_else(BTreeMap::new);
         let summary = Summary::new(
+            config,
             pkgid,
             deps,
-            &summary_features,
+            me.features.as_ref().unwrap_or(&empty_features),
             project.links.as_deref(),
-            project.namespaced_features.unwrap_or(false),
         )?;
+        let unstable = config.cli_unstable();
+        summary.unstable_gate(unstable.namespaced_features, unstable.weak_dep_features)?;
 
         let metadata = ManifestMetadata {
             description: project.description.clone(),
@@ -1526,6 +1515,10 @@ impl TomlManifest {
     pub fn has_profiles(&self) -> bool {
         self.profile.is_some()
     }
+
+    pub fn features(&self) -> Option<&BTreeMap<InternedString, Vec<InternedString>>> {
+        self.features.as_ref()
+    }
 }
 
 /// Returns the name of the README file for a `TomlProject`.
@@ -1690,7 +1683,7 @@ impl DetailedTomlDependency {
                     .map(GitReference::Branch)
                     .or_else(|| self.tag.clone().map(GitReference::Tag))
                     .or_else(|| self.rev.clone().map(GitReference::Rev))
-                    .unwrap_or_else(|| GitReference::DefaultBranch);
+                    .unwrap_or(GitReference::DefaultBranch);
                 let loc = git.into_url()?;
 
                 if let Some(fragment) = loc.fragment() {

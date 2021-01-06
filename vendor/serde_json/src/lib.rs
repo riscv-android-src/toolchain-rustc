@@ -300,7 +300,7 @@
 //! [macro]: https://docs.serde.rs/serde_json/macro.json.html
 //! [`serde-json-core`]: https://japaric.github.io/serde-json-core/serde_json_core/
 
-#![doc(html_root_url = "https://docs.rs/serde_json/1.0.57")]
+#![doc(html_root_url = "https://docs.rs/serde_json/1.0.59")]
 #![deny(clippy::all, clippy::pedantic)]
 // Ignored clippy lints
 #![allow(
@@ -329,6 +329,7 @@
     clippy::enum_glob_use,
     clippy::if_not_else,
     clippy::integer_division,
+    clippy::map_err_ignore,
     clippy::match_same_arms,
     clippy::similar_names,
     clippy::unused_self,
@@ -378,6 +379,7 @@ mod lib {
     pub use self::core::hash::{self, Hash};
     pub use self::core::iter::FusedIterator;
     pub use self::core::marker::{self, PhantomData};
+    pub use self::core::ops::{Bound, RangeBounds};
     pub use self::core::result::{self, Result};
     pub use self::core::{borrow, char, cmp, iter, mem, num, ops, slice, str};
 

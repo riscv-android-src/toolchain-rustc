@@ -52,13 +52,16 @@ use std::cell::RefCell;
 use std::cmp::{self, Ordering};
 use std::fmt;
 use std::hash::Hash;
-use std::ops::{Add, Sub};
+use std::ops::{Add, Range, Sub};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use md5::Md5;
 use sha1::Digest;
 use sha1::Sha1;
+use sha2::Sha256;
+
+use tracing::debug;
 
 #[cfg(test)]
 mod tests;
@@ -219,12 +222,6 @@ impl FileName {
             | DocTest(_, _)
             | InlineAsm(_) => false,
         }
-    }
-
-    pub fn quote_expansion_source_code(src: &str) -> FileName {
-        let mut hasher = StableHasher::new();
-        src.hash(&mut hasher);
-        FileName::QuoteExpansion(hasher.finish())
     }
 
     pub fn macro_expansion_source_code(src: &str) -> FileName {
@@ -742,14 +739,14 @@ impl<D: Decoder> Decodable<D> for Span {
 }
 
 /// Calls the provided closure, using the provided `SourceMap` to format
-/// any spans that are debug-printed during the closure'e exectuino.
+/// any spans that are debug-printed during the closure's execution.
 ///
 /// Normally, the global `TyCtxt` is used to retrieve the `SourceMap`
 /// (see `rustc_interface::callbacks::span_debug1). However, some parts
 /// of the compiler (e.g. `rustc_parse`) may debug-print `Span`s before
 /// a `TyCtxt` is available. In this case, we fall back to
 /// the `SourceMap` provided to this function. If that is not available,
-/// we fall back to printing the raw `Span` field values
+/// we fall back to printing the raw `Span` field values.
 pub fn with_source_map<T, F: FnOnce() -> T>(source_map: Lrc<SourceMap>, f: F) -> T {
     SESSION_GLOBALS.with(|session_globals| {
         *session_globals.source_map.borrow_mut() = Some(source_map);
@@ -1038,6 +1035,7 @@ pub struct OffsetOverflowError;
 pub enum SourceFileHashAlgorithm {
     Md5,
     Sha1,
+    Sha256,
 }
 
 impl FromStr for SourceFileHashAlgorithm {
@@ -1047,6 +1045,7 @@ impl FromStr for SourceFileHashAlgorithm {
         match s {
             "md5" => Ok(SourceFileHashAlgorithm::Md5),
             "sha1" => Ok(SourceFileHashAlgorithm::Sha1),
+            "sha256" => Ok(SourceFileHashAlgorithm::Sha256),
             _ => Err(()),
         }
     }
@@ -1059,7 +1058,7 @@ rustc_data_structures::impl_stable_hash_via_hash!(SourceFileHashAlgorithm);
 #[derive(HashStable_Generic, Encodable, Decodable)]
 pub struct SourceFileHash {
     pub kind: SourceFileHashAlgorithm,
-    value: [u8; 20],
+    value: [u8; 32],
 }
 
 impl SourceFileHash {
@@ -1074,6 +1073,9 @@ impl SourceFileHash {
             }
             SourceFileHashAlgorithm::Sha1 => {
                 value.copy_from_slice(&Sha1::digest(data));
+            }
+            SourceFileHashAlgorithm::Sha256 => {
+                value.copy_from_slice(&Sha256::digest(data));
             }
         }
         hash
@@ -1094,6 +1096,7 @@ impl SourceFileHash {
         match self.kind {
             SourceFileHashAlgorithm::Md5 => 16,
             SourceFileHashAlgorithm::Sha1 => 20,
+            SourceFileHashAlgorithm::Sha256 => 32,
         }
     }
 }
@@ -1430,22 +1433,31 @@ impl SourceFile {
         if line_index >= 0 { Some(line_index as usize) } else { None }
     }
 
-    pub fn line_bounds(&self, line_index: usize) -> (BytePos, BytePos) {
-        if self.start_pos == self.end_pos {
-            return (self.start_pos, self.end_pos);
+    pub fn line_bounds(&self, line_index: usize) -> Range<BytePos> {
+        if self.is_empty() {
+            return self.start_pos..self.end_pos;
         }
 
         assert!(line_index < self.lines.len());
         if line_index == (self.lines.len() - 1) {
-            (self.lines[line_index], self.end_pos)
+            self.lines[line_index]..self.end_pos
         } else {
-            (self.lines[line_index], self.lines[line_index + 1])
+            self.lines[line_index]..self.lines[line_index + 1]
         }
     }
 
+    /// Returns whether or not the file contains the given `SourceMap` byte
+    /// position. The position one past the end of the file is considered to be
+    /// contained by the file. This implies that files for which `is_empty`
+    /// returns true still contain one byte position according to this function.
     #[inline]
     pub fn contains(&self, byte_pos: BytePos) -> bool {
         byte_pos >= self.start_pos && byte_pos <= self.end_pos
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.start_pos == self.end_pos
     }
 
     /// Calculates the original byte position relative to the start of the file
@@ -1461,6 +1473,88 @@ impl SourceFile {
         };
 
         BytePos::from_u32(pos.0 - self.start_pos.0 + diff)
+    }
+
+    /// Converts an absolute `BytePos` to a `CharPos` relative to the `SourceFile`.
+    pub fn bytepos_to_file_charpos(&self, bpos: BytePos) -> CharPos {
+        // The number of extra bytes due to multibyte chars in the `SourceFile`.
+        let mut total_extra_bytes = 0;
+
+        for mbc in self.multibyte_chars.iter() {
+            debug!("{}-byte char at {:?}", mbc.bytes, mbc.pos);
+            if mbc.pos < bpos {
+                // Every character is at least one byte, so we only
+                // count the actual extra bytes.
+                total_extra_bytes += mbc.bytes as u32 - 1;
+                // We should never see a byte position in the middle of a
+                // character.
+                assert!(bpos.to_u32() >= mbc.pos.to_u32() + mbc.bytes as u32);
+            } else {
+                break;
+            }
+        }
+
+        assert!(self.start_pos.to_u32() + total_extra_bytes <= bpos.to_u32());
+        CharPos(bpos.to_usize() - self.start_pos.to_usize() - total_extra_bytes as usize)
+    }
+
+    /// Looks up the file's (1-based) line number and (0-based `CharPos`) column offset, for a
+    /// given `BytePos`.
+    pub fn lookup_file_pos(&self, pos: BytePos) -> (usize, CharPos) {
+        let chpos = self.bytepos_to_file_charpos(pos);
+        match self.lookup_line(pos) {
+            Some(a) => {
+                let line = a + 1; // Line numbers start at 1
+                let linebpos = self.lines[a];
+                let linechpos = self.bytepos_to_file_charpos(linebpos);
+                let col = chpos - linechpos;
+                debug!("byte pos {:?} is on the line at byte pos {:?}", pos, linebpos);
+                debug!("char pos {:?} is on the line at char pos {:?}", chpos, linechpos);
+                debug!("byte is on line: {}", line);
+                assert!(chpos >= linechpos);
+                (line, col)
+            }
+            None => (0, chpos),
+        }
+    }
+
+    /// Looks up the file's (1-based) line number, (0-based `CharPos`) column offset, and (0-based)
+    /// column offset when displayed, for a given `BytePos`.
+    pub fn lookup_file_pos_with_col_display(&self, pos: BytePos) -> (usize, CharPos, usize) {
+        let (line, col_or_chpos) = self.lookup_file_pos(pos);
+        if line > 0 {
+            let col = col_or_chpos;
+            let linebpos = self.lines[line - 1];
+            let col_display = {
+                let start_width_idx = self
+                    .non_narrow_chars
+                    .binary_search_by_key(&linebpos, |x| x.pos())
+                    .unwrap_or_else(|x| x);
+                let end_width_idx = self
+                    .non_narrow_chars
+                    .binary_search_by_key(&pos, |x| x.pos())
+                    .unwrap_or_else(|x| x);
+                let special_chars = end_width_idx - start_width_idx;
+                let non_narrow: usize = self.non_narrow_chars[start_width_idx..end_width_idx]
+                    .iter()
+                    .map(|x| x.width())
+                    .sum();
+                col.0 - special_chars + non_narrow
+            };
+            (line, col, col_display)
+        } else {
+            let chpos = col_or_chpos;
+            let col_display = {
+                let end_width_idx = self
+                    .non_narrow_chars
+                    .binary_search_by_key(&pos, |x| x.pos())
+                    .unwrap_or_else(|x| x);
+                let non_narrow: usize =
+                    self.non_narrow_chars[0..end_width_idx].iter().map(|x| x.width()).sum();
+                chpos.0 - end_width_idx + non_narrow
+            };
+            (0, chpos, col_display)
+        }
     }
 }
 
@@ -1480,7 +1574,7 @@ fn normalize_src(src: &mut String, start_pos: BytePos) -> Vec<NormalizedPos> {
 
 /// Removes UTF-8 BOM, if any.
 fn remove_bom(src: &mut String, normalized_pos: &mut Vec<NormalizedPos>) {
-    if src.starts_with("\u{feff}") {
+    if src.starts_with('\u{feff}') {
         src.drain(..3);
         normalized_pos.push(NormalizedPos { pos: BytePos(0), diff: 3 });
     }
@@ -1777,7 +1871,7 @@ where
         }
 
         if *self == DUMMY_SP {
-            std::hash::Hash::hash(&TAG_INVALID_SPAN, hasher);
+            Hash::hash(&TAG_INVALID_SPAN, hasher);
             return;
         }
 
@@ -1788,28 +1882,49 @@ where
         let (file_lo, line_lo, col_lo) = match ctx.byte_pos_to_line_and_col(span.lo) {
             Some(pos) => pos,
             None => {
-                std::hash::Hash::hash(&TAG_INVALID_SPAN, hasher);
+                Hash::hash(&TAG_INVALID_SPAN, hasher);
                 span.ctxt.hash_stable(ctx, hasher);
                 return;
             }
         };
 
         if !file_lo.contains(span.hi) {
-            std::hash::Hash::hash(&TAG_INVALID_SPAN, hasher);
+            Hash::hash(&TAG_INVALID_SPAN, hasher);
             span.ctxt.hash_stable(ctx, hasher);
             return;
         }
 
-        std::hash::Hash::hash(&TAG_VALID_SPAN, hasher);
+        let (_, line_hi, col_hi) = match ctx.byte_pos_to_line_and_col(span.hi) {
+            Some(pos) => pos,
+            None => {
+                Hash::hash(&TAG_INVALID_SPAN, hasher);
+                span.ctxt.hash_stable(ctx, hasher);
+                return;
+            }
+        };
+
+        Hash::hash(&TAG_VALID_SPAN, hasher);
         // We truncate the stable ID hash and line and column numbers. The chances
         // of causing a collision this way should be minimal.
-        std::hash::Hash::hash(&(file_lo.name_hash as u64), hasher);
+        Hash::hash(&(file_lo.name_hash as u64), hasher);
 
-        let col = (col_lo.0 as u64) & 0xFF;
-        let line = ((line_lo as u64) & 0xFF_FF_FF) << 8;
-        let len = ((span.hi - span.lo).0 as u64) << 32;
-        let line_col_len = col | line | len;
-        std::hash::Hash::hash(&line_col_len, hasher);
+        // Hash both the length and the end location (line/column) of a span. If we
+        // hash only the length, for example, then two otherwise equal spans with
+        // different end locations will have the same hash. This can cause a problem
+        // during incremental compilation wherein a previous result for a query that
+        // depends on the end location of a span will be incorrectly reused when the
+        // end location of the span it depends on has changed (see issue #74890). A
+        // similar analysis applies if some query depends specifically on the length
+        // of the span, but we only hash the end location. So hash both.
+
+        let col_lo_trunc = (col_lo.0 as u64) & 0xFF;
+        let line_lo_trunc = ((line_lo as u64) & 0xFF_FF_FF) << 8;
+        let col_hi_trunc = (col_hi.0 as u64) & 0xFF << 32;
+        let line_hi_trunc = ((line_hi as u64) & 0xFF_FF_FF) << 40;
+        let col_line = col_lo_trunc | line_lo_trunc | col_hi_trunc | line_hi_trunc;
+        let len = (span.hi - span.lo).0;
+        Hash::hash(&col_line, hasher);
+        Hash::hash(&len, hasher);
         span.ctxt.hash_stable(ctx, hasher);
     }
 }
@@ -1847,9 +1962,7 @@ impl<CTX: HashStableContext> HashStable<CTX> for ExpnId {
             return;
         }
 
-        TAG_NOT_ROOT.hash_stable(ctx, hasher);
         let index = self.as_u32() as usize;
-
         let res = CACHE.with(|cache| cache.borrow().get(index).copied().flatten());
 
         if let Some(res) = res {
@@ -1858,6 +1971,7 @@ impl<CTX: HashStableContext> HashStable<CTX> for ExpnId {
             let new_len = index + 1;
 
             let mut sub_hasher = StableHasher::new();
+            TAG_NOT_ROOT.hash_stable(ctx, &mut sub_hasher);
             self.expn_data().hash_stable(ctx, &mut sub_hasher);
             let sub_hash: Fingerprint = sub_hasher.finish();
 

@@ -387,7 +387,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     /// if this is not the case.
     fn assert_target_os(&self, target_os: &str, name: &str) {
         assert_eq!(
-            self.eval_context_ref().tcx.sess.target.target.target_os,
+            self.eval_context_ref().tcx.sess.target.os,
             target_os,
             "`{}` is only available on the `{}` target OS",
             name,
@@ -430,9 +430,9 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn set_last_error_from_io_error(&mut self, e: std::io::Error) -> InterpResult<'tcx> {
         use std::io::ErrorKind::*;
         let this = self.eval_context_mut();
-        let target = &this.tcx.sess.target.target;
-        let target_os = &target.target_os;
-        let last_error = if target.options.target_family == Some("unix".to_owned()) {
+        let target = &this.tcx.sess.target;
+        let target_os = &target.os;
+        let last_error = if target.os_family == Some("unix".to_owned()) {
             this.eval_libc(match e.kind() {
                 ConnectionRefused => "ECONNREFUSED",
                 ConnectionReset => "ECONNRESET",
@@ -555,7 +555,7 @@ pub fn check_arg_count<'a, 'tcx, const N: usize>(args: &'a [OpTy<'tcx, Tag>]) ->
 
 pub fn isolation_error(name: &str) -> InterpResult<'static> {
     throw_machine_stop!(TerminationInfo::UnsupportedInIsolation(format!(
-        "`{}` not available when isolation is enabled",
+        "{} not available when isolation is enabled",
         name,
     )))
 }

@@ -26,7 +26,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let mut data = Vec::new();
         for frame in this.active_thread_stack().iter().rev() {
-            data.push((frame.instance, frame.current_span().lo()));
+            let mut span = frame.current_span();
+            // Match the behavior of runtime backtrace spans
+            // by using a non-macro span in our backtrace. See `FunctionCx::debug_loc`.
+            if span.from_expansion() && !tcx.sess.opts.debugging_opts.debug_macros {
+                span = rustc_span::hygiene::walk_chain(span, frame.body.span.ctxt())
+            }
+            data.push((frame.instance, span.lo()));
         }
 
         let ptrs: Vec<_> = data.into_iter().map(|(instance, pos)| {
@@ -75,10 +81,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             throw_unsup_format!("unknown `miri_resolve_frame` flags {}", flags);
         }
 
-        let ptr = match this.read_scalar(ptr)?.check_init()? {
-            Scalar::Ptr(ptr) => ptr,
-            Scalar::Raw { .. } => throw_ub_format!("expected a pointer in `rust_miri_resolve_frame`, found {:?}", ptr)
-        };
+        let ptr = this.force_ptr(this.read_scalar(ptr)?.check_init()?)?;
 
         let fn_instance = if let Some(GlobalAlloc::Function(instance)) = this.tcx.get_global_alloc(ptr.alloc_id) {
             instance
@@ -86,8 +89,18 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             throw_ub_format!("expected function pointer, found {:?}", ptr);
         };
 
-        if dest.layout.layout.fields.count() != 4 {
-            throw_ub_format!("bad declaration of miri_resolve_frame - should return a struct with 4 fields");
+        // Reconstruct the original function pointer,
+        // which we pass to user code.
+        let mut fn_ptr = ptr;
+        fn_ptr.offset = Size::from_bytes(0);
+        let fn_ptr = Scalar::Ptr(fn_ptr);
+
+        let num_fields = dest.layout.layout.fields.count();
+
+        if !(4..=5).contains(&num_fields) {
+            // Always mention 5 fields, since the 4-field struct
+            // is deprecated and slated for removal.
+            throw_ub_format!("bad declaration of miri_resolve_frame - should return a struct with 5 fields");
         }
 
         let pos = BytePos(ptr.offset.bytes().try_into().unwrap());
@@ -116,6 +129,13 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         this.write_immediate(filename_alloc.to_ref(), this.mplace_field(dest, 1)?.into())?;
         this.write_scalar(lineno_alloc, this.mplace_field(dest, 2)?.into())?;
         this.write_scalar(colno_alloc, this.mplace_field(dest, 3)?.into())?;
+
+        // Support a 4-field struct for now - this is deprecated
+        // and slated for removal.
+        if num_fields == 5 {
+            this.write_scalar(fn_ptr, this.mplace_field(dest, 4)?.into())?;
+        }
+
         Ok(())
     }
 }

@@ -12,8 +12,8 @@ use rustc_codegen_ssa::mir::place::PlaceRef;
 use rustc_codegen_ssa::traits::*;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir as hir;
-use rustc_middle::span_bug;
 use rustc_middle::ty::layout::TyAndLayout;
+use rustc_middle::{bug, span_bug};
 use rustc_span::{Pos, Span};
 use rustc_target::abi::*;
 use rustc_target::asm::*;
@@ -60,7 +60,7 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
 
         // Default per-arch clobbers
         // Basically what clang does
-        let arch_clobbers = match &self.sess().target.target.arch[..] {
+        let arch_clobbers = match &self.sess().target.arch[..] {
             "x86" | "x86_64" => vec!["~{dirflag}", "~{fpsr}", "~{flags}"],
             "mips" | "mips64" => vec!["~{$1}"],
             _ => Vec::new(),
@@ -259,7 +259,8 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
                 InlineAsmArch::RiscV32 | InlineAsmArch::RiscV64 => {}
                 InlineAsmArch::Nvptx64 => {}
                 InlineAsmArch::Hexagon => {}
-                InlineAsmArch::Mips => {}
+                InlineAsmArch::Mips | InlineAsmArch::Mips64 => {}
+                InlineAsmArch::SpirV => {}
             }
         }
         if !options.contains(InlineAsmOptions::NOMEM) {
@@ -302,13 +303,11 @@ impl AsmBuilderMethods<'tcx> for Builder<'a, 'll, 'tcx> {
             } else if options.contains(InlineAsmOptions::READONLY) {
                 llvm::Attribute::ReadOnly.apply_callsite(llvm::AttributePlace::Function, result);
             }
+        } else if options.contains(InlineAsmOptions::NOMEM) {
+            llvm::Attribute::InaccessibleMemOnly
+                .apply_callsite(llvm::AttributePlace::Function, result);
         } else {
-            if options.contains(InlineAsmOptions::NOMEM) {
-                llvm::Attribute::InaccessibleMemOnly
-                    .apply_callsite(llvm::AttributePlace::Function, result);
-            } else {
-                // LLVM doesn't have an attribute to represent ReadOnly + SideEffect
-            }
+            // LLVM doesn't have an attribute to represent ReadOnly + SideEffect
         }
 
         // Write results to outputs
@@ -520,6 +519,9 @@ fn reg_to_llvm(reg: InlineAsmRegOrRegClass, layout: Option<&TyAndLayout<'tcx>>) 
             | InlineAsmRegClass::X86(X86InlineAsmRegClass::ymm_reg) => "x",
             InlineAsmRegClass::X86(X86InlineAsmRegClass::zmm_reg) => "v",
             InlineAsmRegClass::X86(X86InlineAsmRegClass::kreg) => "^Yk",
+            InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
+                bug!("LLVM backend does not support SPIR-V")
+            }
         }
         .to_string(),
     }
@@ -582,6 +584,9 @@ fn modifier_to_llvm(
             _ => unreachable!(),
         },
         InlineAsmRegClass::X86(X86InlineAsmRegClass::kreg) => None,
+        InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
+            bug!("LLVM backend does not support SPIR-V")
+        }
     }
 }
 
@@ -621,6 +626,9 @@ fn dummy_output_type(cx: &CodegenCx<'ll, 'tcx>, reg: InlineAsmRegClass) -> &'ll 
         | InlineAsmRegClass::X86(X86InlineAsmRegClass::ymm_reg)
         | InlineAsmRegClass::X86(X86InlineAsmRegClass::zmm_reg) => cx.type_f32(),
         InlineAsmRegClass::X86(X86InlineAsmRegClass::kreg) => cx.type_i16(),
+        InlineAsmRegClass::SpirV(SpirVInlineAsmRegClass::reg) => {
+            bug!("LLVM backend does not support SPIR-V")
+        }
     }
 }
 
@@ -710,6 +718,7 @@ fn llvm_fixup_input(
             // MIPS only supports register-length arithmetics.
             Primitive::Int(Integer::I8 | Integer::I16, _) => bx.zext(value, bx.cx.type_i32()),
             Primitive::F32 => bx.bitcast(value, bx.cx.type_i32()),
+            Primitive::F64 => bx.bitcast(value, bx.cx.type_i64()),
             _ => value,
         },
         _ => value,
@@ -785,6 +794,7 @@ fn llvm_fixup_output(
             Primitive::Int(Integer::I8, _) => bx.trunc(value, bx.cx.type_i8()),
             Primitive::Int(Integer::I16, _) => bx.trunc(value, bx.cx.type_i16()),
             Primitive::F32 => bx.bitcast(value, bx.cx.type_f32()),
+            Primitive::F64 => bx.bitcast(value, bx.cx.type_f64()),
             _ => value,
         },
         _ => value,
@@ -854,6 +864,7 @@ fn llvm_fixup_output_type(
             // MIPS only supports register-length arithmetics.
             Primitive::Int(Integer::I8 | Integer::I16, _) => cx.type_i32(),
             Primitive::F32 => cx.type_i32(),
+            Primitive::F64 => cx.type_i64(),
             _ => layout.llvm_type(cx),
         },
         _ => layout.llvm_type(cx),

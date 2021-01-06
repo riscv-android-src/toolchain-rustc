@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "tracing-serde"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Tokio Contributors <team@tokio.rs>"]
 description = "A compatibility layer for serializing trace data with `serde`\n"
 homepage = "https://tokio.rs"
@@ -26,10 +26,7 @@ version = "1"
 
 [dependencies.tracing-core]
 version = "0.1.2"
-[badges.azure-devops]
-build = "1"
-pipeline = "tokio-rs.tracing"
-project = "tracing/tracing"
-
+[dev-dependencies.serde_json]
+version = "1"
 [badges.maintenance]
 status = "experimental"

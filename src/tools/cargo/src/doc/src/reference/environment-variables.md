@@ -49,6 +49,9 @@ system:
 * `TERM` — If this is set to `dumb`, it disables the progress bar.
 * `BROWSER` — The web browser to execute to open documentation with [`cargo
   doc`]'s' `--open` flag.
+* `RUSTFMT` — Instead of running `rustfmt`,
+  [`cargo fmt`](https://github.com/rust-lang/rustfmt) will execute this specified
+  `rustfmt` instance instead.
 
 #### Configuration environment variables
 
@@ -110,6 +113,7 @@ supported environment variables are:
 [`cargo install`]: ../commands/cargo-install.md
 [`cargo new`]: ../commands/cargo-new.md
 [`cargo rustc`]: ../commands/cargo-rustc.md
+[`cargo rustdoc`]: ../commands/cargo-rustdoc.md
 [config-env]: config.md#environment-variables
 [crates.io]: https://crates.io/
 [incremental compilation]: profiles.md#incremental
@@ -202,6 +206,12 @@ let version = env!("CARGO_PKG_VERSION");
   example, `CARGO_BIN_EXE_my-program` for a binary named `my-program`.
   Binaries are automatically built when the test is built, unless the binary
   has required features that are not enabled.
+* `CARGO_PRIMARY_PACKAGE` — This environment variable will be set if the
+  package being built is primary. Primary packages are the ones the user
+  selected on the command-line, either with `-p` flags or the defaults based
+  on the current directory and the default workspace members. This environment
+  variable will not be set when building dependencies. This is only set when
+  compiling the package (not when running binaries or tests).
 
 [integration test]: cargo-targets.md#integration-tests
 [`env` macro]: ../../std/macro.env.html

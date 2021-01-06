@@ -8,17 +8,12 @@
 //!
 //! **Important:** This target profile **does not** specify a linker script. You just get the default link script when you build a binary for this target. The default link script is very likely wrong, so you should use `-Clink-arg=-Tmy_script.ld` to override that with a correct linker script.
 
-use crate::spec::{LinkerFlavor, Target, TargetOptions, TargetResult};
+use crate::spec::{LinkerFlavor, Target, TargetOptions};
 
-pub fn target() -> TargetResult {
-    Ok(Target {
+pub fn target() -> Target {
+    Target {
         llvm_target: "thumbv4t-none-eabi".to_string(),
-        target_endian: "little".to_string(),
-        target_pointer_width: "32".to_string(),
-        target_c_int_width: "32".to_string(),
-        target_os: "none".to_string(),
-        target_env: "".to_string(),
-        target_vendor: "".to_string(),
+        pointer_width: 32,
         arch: "arm".to_string(),
         /* Data layout args are '-' separated:
          * little endian
@@ -30,8 +25,8 @@ pub fn target() -> TargetResult {
          * All other elements are default
          */
         data_layout: "e-m:e-p:32:32-Fi8-i64:64-v128:64:128-a:0:32-n32-S64".to_string(),
-        linker_flavor: LinkerFlavor::Ld,
         options: TargetOptions {
+            linker_flavor: LinkerFlavor::Ld,
             linker: Some("arm-none-eabi-ld".to_string()),
             linker_is_gnu: true,
 
@@ -55,8 +50,9 @@ pub fn target() -> TargetResult {
 
             // don't have atomic compare-and-swap
             atomic_cas: false,
+            has_thumb_interworking: true,
 
             ..super::thumb_base::opts()
         },
-    })
+    }
 }

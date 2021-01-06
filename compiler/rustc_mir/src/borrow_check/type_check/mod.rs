@@ -73,7 +73,7 @@ macro_rules! span_mirbug {
             $context.last_span,
             &format!(
                 "broken MIR in {:?} ({:?}): {}",
-                $context.mir_def_id,
+                $context.body.source.def_id(),
                 $elem,
                 format_args!($($message)*),
             ),
@@ -113,7 +113,6 @@ mod relate_tys;
 /// - `param_env` -- parameter environment to use for trait solving
 /// - `body` -- MIR body to type-check
 /// - `promoted` -- map of promoted constants within `body`
-/// - `mir_def_id` -- `LocalDefId` from which the MIR is derived
 /// - `universal_regions` -- the universal regions from `body`s function signature
 /// - `location_table` -- MIR location map of `body`
 /// - `borrow_set` -- information about borrows occurring in `body`
@@ -126,7 +125,6 @@ pub(crate) fn type_check<'mir, 'tcx>(
     param_env: ty::ParamEnv<'tcx>,
     body: &Body<'tcx>,
     promoted: &IndexVec<Promoted, Body<'tcx>>,
-    mir_def_id: LocalDefId,
     universal_regions: &Rc<UniversalRegions<'tcx>>,
     location_table: &LocationTable,
     borrow_set: &BorrowSet<'tcx>,
@@ -170,7 +168,6 @@ pub(crate) fn type_check<'mir, 'tcx>(
 
     let opaque_type_values = type_check_internal(
         infcx,
-        mir_def_id,
         param_env,
         body,
         promoted,
@@ -192,7 +189,6 @@ pub(crate) fn type_check<'mir, 'tcx>(
 
 fn type_check_internal<'a, 'tcx, R>(
     infcx: &'a InferCtxt<'a, 'tcx>,
-    mir_def_id: LocalDefId,
     param_env: ty::ParamEnv<'tcx>,
     body: &'a Body<'tcx>,
     promoted: &'a IndexVec<Promoted, Body<'tcx>>,
@@ -205,7 +201,6 @@ fn type_check_internal<'a, 'tcx, R>(
     let mut checker = TypeChecker::new(
         infcx,
         body,
-        mir_def_id,
         param_env,
         region_bound_pairs,
         implicit_region_bound,
@@ -272,7 +267,6 @@ struct TypeVerifier<'a, 'b, 'tcx> {
     body: &'b Body<'tcx>,
     promoted: &'b IndexVec<Promoted, Body<'tcx>>,
     last_span: Span,
-    mir_def_id: LocalDefId,
     errors_reported: bool,
 }
 
@@ -460,14 +454,7 @@ impl<'a, 'b, 'tcx> TypeVerifier<'a, 'b, 'tcx> {
         body: &'b Body<'tcx>,
         promoted: &'b IndexVec<Promoted, Body<'tcx>>,
     ) -> Self {
-        TypeVerifier {
-            body,
-            promoted,
-            mir_def_id: cx.mir_def_id,
-            cx,
-            last_span: body.span,
-            errors_reported: false,
-        }
+        TypeVerifier { body, promoted, cx, last_span: body.span, errors_reported: false }
     }
 
     fn tcx(&self) -> TyCtxt<'tcx> {
@@ -816,7 +803,6 @@ struct TypeChecker<'a, 'tcx> {
     /// User type annotations are shared between the main MIR and the MIR of
     /// all of the promoted items.
     user_type_annotations: &'a CanonicalUserTypeAnnotations<'tcx>,
-    mir_def_id: LocalDefId,
     region_bound_pairs: &'a RegionBoundPairs<'tcx>,
     implicit_region_bound: ty::Region<'tcx>,
     reported_errors: FxHashSet<(Ty<'tcx>, Span)>,
@@ -965,7 +951,6 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
     fn new(
         infcx: &'a InferCtxt<'a, 'tcx>,
         body: &'a Body<'tcx>,
-        mir_def_id: LocalDefId,
         param_env: ty::ParamEnv<'tcx>,
         region_bound_pairs: &'a RegionBoundPairs<'tcx>,
         implicit_region_bound: ty::Region<'tcx>,
@@ -975,7 +960,6 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         let mut checker = Self {
             infcx,
             last_span: DUMMY_SP,
-            mir_def_id,
             body,
             user_type_annotations: &body.user_type_annotations,
             param_env,
@@ -988,6 +972,11 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         };
         checker.check_user_type_annotations();
         checker
+    }
+
+    fn unsized_feature_enabled(&self) -> bool {
+        let features = self.tcx().features();
+        features.unsized_locals || features.unsized_fn_params
     }
 
     /// Equate the inferred type and the annotated type for user type annotations
@@ -1145,7 +1134,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 // the resulting inferend values are stored with the
                 // def-id of the base function.
                 let parent_def_id =
-                    self.tcx().closure_base_def_id(self.mir_def_id.to_def_id()).expect_local();
+                    self.tcx().closure_base_def_id(self.body.source.def_id()).expect_local();
                 return self.eq_opaque_type_and_type(sub, sup, parent_def_id, locations, category);
             } else {
                 return Err(terr);
@@ -1242,7 +1231,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
         let concrete_opaque_types = &tcx.typeck(anon_owner_def_id).concrete_opaque_types;
         let mut opaque_type_values = Vec::new();
 
-        debug!("eq_opaque_type_and_type: mir_def_id={:?}", self.mir_def_id);
+        debug!("eq_opaque_type_and_type: mir_def_id={:?}", body.source.def_id());
         let opaque_type_map = self.fully_perform_op(
             locations,
             category,
@@ -1472,7 +1461,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 }
 
                 self.check_rvalue(body, rv, location);
-                if !self.tcx().features().unsized_locals {
+                if !self.unsized_feature_enabled() {
                     let trait_ref = ty::TraitRef {
                         def_id: tcx.require_lang_item(LangItem::Sized, Some(self.last_span)),
                         substs: tcx.mk_substs_trait(place_ty, &[]),
@@ -1733,9 +1722,9 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                     );
                 }
 
-                // When `#![feature(unsized_locals)]` is not enabled,
+                // When `unsized_fn_params` and `unsized_locals` are both not enabled,
                 // this check is done at `check_local`.
-                if self.tcx().features().unsized_locals {
+                if self.unsized_feature_enabled() {
                     let span = term.source_info.span;
                     self.ensure_place_sized(dest_ty, span);
                 }
@@ -1793,7 +1782,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                 self.assert_iscleanup(body, block_data, target, is_cleanup)
             }
             TerminatorKind::SwitchInt { ref targets, .. } => {
-                for target in targets {
+                for target in targets.all_targets() {
                     self.assert_iscleanup(body, block_data, *target, is_cleanup);
                 }
             }
@@ -1896,9 +1885,9 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
             LocalKind::Var | LocalKind::Temp => {}
         }
 
-        // When `#![feature(unsized_locals)]` is enabled, only function calls
+        // When `unsized_fn_params` or `unsized_locals` is enabled, only function calls
         // and nullary ops are checked in `check_call_dest`.
-        if !self.tcx().features().unsized_locals {
+        if !self.unsized_feature_enabled() {
             let span = local_decl.source_info.span;
             let ty = local_decl.ty;
             self.ensure_place_sized(ty, span);
@@ -2001,12 +1990,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                         let span = body.source_info(location).span;
                         let ty = operand.ty(body, tcx);
                         if !self.infcx.type_is_copy_modulo_regions(self.param_env, ty, span) {
-                            let ccx = ConstCx::new_with_param_env(
-                                tcx,
-                                self.mir_def_id,
-                                body,
-                                self.param_env,
-                            );
+                            let ccx = ConstCx::new_with_param_env(tcx, body, self.param_env);
                             // To determine if `const_in_array_repeat_expressions` feature gate should
                             // be mentioned, need to check if the rvalue is promotable.
                             let should_suggest =
@@ -2015,11 +1999,12 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
                                 );
                             debug!("check_rvalue: should_suggest={:?}", should_suggest);
 
+                            let def_id = body.source.def_id().expect_local();
                             self.infcx.report_selection_error(
                                 &traits::Obligation::new(
                                     ObligationCause::new(
                                         span,
-                                        self.tcx().hir().local_def_id_to_hir_id(self.mir_def_id),
+                                        self.tcx().hir().local_def_id_to_hir_id(def_id),
                                         traits::ObligationCauseCode::RepeatVec(should_suggest),
                                     ),
                                     self.param_env,
@@ -2044,7 +2029,7 @@ impl<'a, 'tcx> TypeChecker<'a, 'tcx> {
 
             Rvalue::NullaryOp(_, ty) => {
                 // Even with unsized locals cannot box an unsized value.
-                if self.tcx().features().unsized_locals {
+                if self.unsized_feature_enabled() {
                     let span = body.source_info(location).span;
                     self.ensure_place_sized(ty, span);
                 }

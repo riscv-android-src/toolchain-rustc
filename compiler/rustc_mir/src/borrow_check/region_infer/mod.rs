@@ -548,9 +548,9 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         &mut self,
         infcx: &InferCtxt<'_, 'tcx>,
         body: &Body<'tcx>,
-        mir_def_id: DefId,
         polonius_output: Option<Rc<PoloniusOutput>>,
     ) -> (Option<ClosureRegionRequirements<'tcx>>, RegionErrors<'tcx>) {
+        let mir_def_id = body.source.def_id();
         self.propagate_constraints(body, infcx.tcx);
 
         let mut errors_buffer = RegionErrors::new();
@@ -582,7 +582,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
             self.check_member_constraints(infcx, &mut errors_buffer);
         }
 
-        let outlives_requirements = outlives_requirements.unwrap_or(vec![]);
+        let outlives_requirements = outlives_requirements.unwrap_or_default();
 
         if outlives_requirements.is_empty() {
             (None, errors_buffer)
@@ -1225,7 +1225,9 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// it. However, it works pretty well in practice. In particular,
     /// this is needed to deal with projection outlives bounds like
     ///
-    ///     <T as Foo<'0>>::Item: '1
+    /// ```ignore (internal compiler representation so lifetime syntax is invalid)
+    /// <T as Foo<'0>>::Item: '1
+    /// ```
     ///
     /// In particular, this routine winds up being important when
     /// there are bounds like `where <T as Foo<'a>>::Item: 'b` in the
@@ -1362,7 +1364,7 @@ impl<'tcx> RegionInferenceContext<'tcx> {
     /// terms that the "longer free region" `'a` outlived the "shorter free region" `'b`.
     ///
     /// More details can be found in this blog post by Niko:
-    /// http://smallcultfollowing.com/babysteps/blog/2019/01/17/polonius-and-region-errors/
+    /// <http://smallcultfollowing.com/babysteps/blog/2019/01/17/polonius-and-region-errors/>
     ///
     /// In the canonical example
     ///

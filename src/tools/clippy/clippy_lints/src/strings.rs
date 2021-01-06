@@ -4,6 +4,7 @@ use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_session::{declare_lint_pass, declare_tool_lint};
 use rustc_span::source_map::Spanned;
+use rustc_span::sym;
 
 use if_chain::if_chain;
 
@@ -69,7 +70,27 @@ declare_clippy_lint! {
     /// **Why is this bad?** Byte string literals (e.g., `b"foo"`) can be used
     /// instead. They are shorter but less discoverable than `as_bytes()`.
     ///
-    /// **Known Problems:** None.
+    /// **Known Problems:**
+    /// `"str".as_bytes()` and the suggested replacement of `b"str"` are not
+    /// equivalent because they have different types. The former is `&[u8]`
+    /// while the latter is `&[u8; 3]`. That means in general they will have a
+    /// different set of methods and different trait implementations.
+    ///
+    /// ```compile_fail
+    /// fn f(v: Vec<u8>) {}
+    ///
+    /// f("...".as_bytes().to_owned()); // works
+    /// f(b"...".to_owned()); // does not work, because arg is [u8; 3] not Vec<u8>
+    ///
+    /// fn g(r: impl std::io::Read) {}
+    ///
+    /// g("...".as_bytes()); // works
+    /// g(b"..."); // does not work
+    /// ```
+    ///
+    /// The actual equivalent of `"str".as_bytes()` with the same type is not
+    /// `b"str"` but `&b"str"[..]`, which is a great deal of punctuation and not
+    /// more readable than a function call.
     ///
     /// **Example:**
     /// ```rust
@@ -80,7 +101,7 @@ declare_clippy_lint! {
     /// let bs = b"a byte string";
     /// ```
     pub STRING_LIT_AS_BYTES,
-    style,
+    nursery,
     "calling `as_bytes` on a string literal instead of using a byte string literal"
 }
 
@@ -134,7 +155,7 @@ impl<'tcx> LateLintPass<'tcx> for StringAdd {
 }
 
 fn is_string(cx: &LateContext<'_>, e: &Expr<'_>) -> bool {
-    is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(e).peel_refs(), sym!(string_type))
+    is_type_diagnostic_item(cx, cx.typeck_results().expr_ty(e).peel_refs(), sym::string_type)
 }
 
 fn is_add(cx: &LateContext<'_>, src: &Expr<'_>, target: &Expr<'_>) -> bool {

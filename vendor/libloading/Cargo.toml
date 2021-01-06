@@ -12,9 +12,8 @@
 
 [package]
 name = "libloading"
-version = "0.6.3"
+version = "0.6.4"
 authors = ["Simonas Kazlauskas <libloading@kazlauskas.me>"]
-build = "build.rs"
 description = "A safer binding to platform’s dynamic library loading utilities"
 documentation = "https://docs.rs/libloading/"
 readme = "README.mkd"

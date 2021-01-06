@@ -2,13 +2,13 @@ error: `#[derive(SessionDiagnostic)]` can only be used on structs
   --> $DIR/session-derive-errors.rs:28:1
    |
 LL | #[error = "E0123"]
-   | ^^^^^^^^^^^^^^^^^^
+   | ^
 
 error: `#[label = ...]` is not a valid SessionDiagnostic struct attribute
   --> $DIR/session-derive-errors.rs:37:1
    |
 LL | #[label = "This is in the wrong place"]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | ^
 
 error: `#[suggestion = ...]` is not a valid SessionDiagnostic field attribute
   --> $DIR/session-derive-errors.rs:44:5
@@ -46,7 +46,7 @@ error: `name` doesn't refer to a field on this type
   --> $DIR/session-derive-errors.rs:102:1
    |
 LL | #[message = "This error has a field, and references {name}"]
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   | ^
 
 error: invalid format string: expected `'}'` but string was terminated
   --> $DIR/session-derive-errors.rs:110:1

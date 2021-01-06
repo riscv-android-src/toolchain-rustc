@@ -120,6 +120,19 @@ where
         self.ws.db().adt_datum(adt_id)
     }
 
+    fn generator_datum(&self, generator_id: GeneratorId<I>) -> Arc<GeneratorDatum<I>> {
+        self.record(generator_id);
+        self.ws.db().borrow().generator_datum(generator_id)
+    }
+
+    fn generator_witness_datum(
+        &self,
+        generator_id: GeneratorId<I>,
+    ) -> Arc<GeneratorWitnessDatum<I>> {
+        self.record(generator_id);
+        self.ws.db().borrow().generator_witness_datum(generator_id)
+    }
+
     fn adt_repr(&self, id: AdtId<I>) -> AdtRepr {
         self.record(id);
         self.ws.db().adt_repr(id)
@@ -166,12 +179,12 @@ where
         self.ws.db().local_impls_to_coherence_check(trait_id)
     }
 
-    fn impl_provided_for(&self, auto_trait_id: TraitId<I>, app_ty: &ApplicationTy<I>) -> bool {
+    fn impl_provided_for(&self, auto_trait_id: TraitId<I>, ty: &TyKind<I>) -> bool {
         self.record(auto_trait_id);
-        if let TypeName::Adt(adt_id) = app_ty.name {
-            self.record(adt_id);
+        if let TyKind::Adt(adt_id, _) = ty {
+            self.record(*adt_id);
         }
-        self.ws.db().impl_provided_for(auto_trait_id, app_ty)
+        self.ws.db().impl_provided_for(auto_trait_id, ty)
     }
 
     fn well_known_trait_id(
@@ -345,6 +358,18 @@ where
         self.db.adt_datum(adt_id)
     }
 
+    fn generator_datum(&self, generator_id: GeneratorId<I>) -> Arc<GeneratorDatum<I>> {
+        self.db.borrow().generator_datum(generator_id)
+    }
+
+    /// Returns the generator witness datum for the generator with the given id.
+    fn generator_witness_datum(
+        &self,
+        generator_id: GeneratorId<I>,
+    ) -> Arc<GeneratorWitnessDatum<I>> {
+        self.db.borrow().generator_witness_datum(generator_id)
+    }
+
     fn adt_repr(&self, id: AdtId<I>) -> AdtRepr {
         self.db.adt_repr(id)
     }
@@ -381,8 +406,8 @@ where
         self.db.local_impls_to_coherence_check(trait_id)
     }
 
-    fn impl_provided_for(&self, auto_trait_id: TraitId<I>, app_ty: &ApplicationTy<I>) -> bool {
-        self.db.impl_provided_for(auto_trait_id, app_ty)
+    fn impl_provided_for(&self, auto_trait_id: TraitId<I>, ty: &TyKind<I>) -> bool {
+        self.db.impl_provided_for(auto_trait_id, ty)
     }
 
     fn well_known_trait_id(
@@ -464,6 +489,7 @@ pub enum RecordedItemId<I: Interner> {
     Impl(ImplId<I>),
     OpaqueTy(OpaqueTyId<I>),
     FnDef(FnDefId<I>),
+    Generator(GeneratorId<I>),
 }
 
 impl<I: Interner> From<AdtId<I>> for RecordedItemId<I> {
@@ -496,6 +522,12 @@ impl<I: Interner> From<FnDefId<I>> for RecordedItemId<I> {
     }
 }
 
+impl<I: Interner> From<GeneratorId<I>> for RecordedItemId<I> {
+    fn from(v: GeneratorId<I>) -> Self {
+        RecordedItemId::Generator(v)
+    }
+}
+
 /// Utility for implementing Ord for RecordedItemId.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 enum OrderedItemId<'a, DefId, AdtId> {
@@ -512,6 +544,7 @@ impl<I: Interner> RecordedItemId<I> {
             RecordedItemId::Trait(TraitId(x))
             | RecordedItemId::Impl(ImplId(x))
             | RecordedItemId::OpaqueTy(OpaqueTyId(x))
+            | RecordedItemId::Generator(GeneratorId(x))
             | RecordedItemId::FnDef(FnDefId(x)) => OrderedItemId::DefId(x),
             RecordedItemId::Adt(AdtId(x)) => OrderedItemId::AdtId(x),
         }

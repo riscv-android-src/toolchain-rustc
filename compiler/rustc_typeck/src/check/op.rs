@@ -2,6 +2,7 @@
 
 use super::method::MethodCallee;
 use super::FnCtxt;
+use rustc_ast as ast;
 use rustc_errors::{self, struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
@@ -13,9 +14,12 @@ use rustc_middle::ty::TyKind::{Adt, Array, Char, FnDef, Never, Ref, Str, Tuple, 
 use rustc_middle::ty::{
     self, suggest_constraining_type_param, Ty, TyCtxt, TypeFoldable, TypeVisitor,
 };
+use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{sym, Ident};
 use rustc_span::Span;
 use rustc_trait_selection::infer::InferCtxtExt;
+
+use std::ops::ControlFlow;
 
 impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Checks a `a <op>= b`
@@ -300,7 +304,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                                 true,
                             ),
                             hir::BinOpKind::Mul => (
-                                format!("cannot multiply `{}` to `{}`", rhs_ty, lhs_ty),
+                                format!("cannot multiply `{}` by `{}`", lhs_ty, rhs_ty),
                                 Some("std::ops::Mul"),
                                 true,
                             ),
@@ -673,6 +677,29 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                     match actual.kind() {
                         Uint(_) if op == hir::UnOp::UnNeg => {
                             err.note("unsigned values cannot be negated");
+
+                            if let hir::ExprKind::Unary(
+                                _,
+                                hir::Expr {
+                                    kind:
+                                        hir::ExprKind::Lit(Spanned {
+                                            node: ast::LitKind::Int(1, _),
+                                            ..
+                                        }),
+                                    ..
+                                },
+                            ) = ex.kind
+                            {
+                                err.span_suggestion(
+                                    ex.span,
+                                    &format!(
+                                        "you may have meant the maximum value of `{}`",
+                                        actual
+                                    ),
+                                    format!("{}::MAX", actual),
+                                    Applicability::MaybeIncorrect,
+                                );
+                            }
                         }
                         Str | Never | Char | Tuple(_) | Array(_, _) => {}
                         Ref(_, ref lty, _) if *lty.kind() == Str => {}
@@ -956,7 +983,7 @@ fn suggest_constraining_param(
 struct TypeParamVisitor<'tcx>(Vec<Ty<'tcx>>);
 
 impl<'tcx> TypeVisitor<'tcx> for TypeParamVisitor<'tcx> {
-    fn visit_ty(&mut self, ty: Ty<'tcx>) -> bool {
+    fn visit_ty(&mut self, ty: Ty<'tcx>) -> ControlFlow<()> {
         if let ty::Param(_) = ty.kind() {
             self.0.push(ty);
         }

@@ -175,7 +175,7 @@ fn cargo_test_quiet_with_harness() {
             "
 running 1 test
 .
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 ",
         )
@@ -1552,7 +1552,7 @@ fn test_filtered_excludes_compiling_examples() {
 running 1 test
 test tests::foo ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 ",
         )
@@ -2834,6 +2834,103 @@ test bar ... ok",
 }
 
 #[cargo_test]
+fn test_all_exclude_not_found() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] pub fn bar() {}")
+        .build();
+
+    p.cargo("test --workspace --exclude baz")
+        .with_stderr_contains("[WARNING] excluded package(s) `baz` not found in workspace [..]")
+        .with_stdout_contains(
+            "running 1 test
+test bar ... ok",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn test_all_exclude_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] pub fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "#[test] pub fn baz() { assert!(false); }")
+        .build();
+
+    p.cargo("test --workspace --exclude '*z'")
+        .with_stdout_contains(
+            "running 1 test
+test bar ... ok",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn test_all_exclude_glob_not_found() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [project]
+                name = "foo"
+                version = "0.1.0"
+
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("src/main.rs", "fn main() {}")
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] pub fn bar() {}")
+        .build();
+
+    p.cargo("test --workspace --exclude '*z'")
+        .with_stderr_contains(
+            "[WARNING] excluded package pattern(s) `*z` not found in workspace [..]",
+        )
+        .with_stdout_contains(
+            "running 1 test
+test bar ... ok",
+        )
+        .run();
+}
+
+#[cargo_test]
+fn test_all_exclude_broken_glob() {
+    let p = project().file("src/main.rs", "fn main() {}").build();
+
+    p.cargo("test --workspace --exclude '[*z'")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] cannot build glob pattern from `[*z`")
+        .run();
+}
+
+#[cargo_test]
 fn test_all_virtual_manifest() {
     let p = project()
         .file(
@@ -2850,8 +2947,8 @@ fn test_all_virtual_manifest() {
         .build();
 
     p.cargo("test --workspace")
-        .with_stdout_contains("test a ... ok")
-        .with_stdout_contains("test b ... ok")
+        .with_stdout_contains("running 1 test\ntest a ... ok")
+        .with_stdout_contains("running 1 test\ntest b ... ok")
         .run();
 }
 
@@ -2872,8 +2969,92 @@ fn test_virtual_manifest_all_implied() {
         .build();
 
     p.cargo("test")
-        .with_stdout_contains("test a ... ok")
-        .with_stdout_contains("test b ... ok")
+        .with_stdout_contains("running 1 test\ntest a ... ok")
+        .with_stdout_contains("running 1 test\ntest b ... ok")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_one_project() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() {}")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "#[test] fn baz() { assert!(false); }")
+        .build();
+
+    p.cargo("test -p bar")
+        .with_stdout_contains("running 1 test\ntest bar ... ok")
+        .with_stdout_does_not_contain("running 1 test\ntest baz ... ok")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar", "baz"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() { assert!(false); }")
+        .file("baz/Cargo.toml", &basic_manifest("baz", "0.1.0"))
+        .file("baz/src/lib.rs", "#[test] fn baz() {}")
+        .build();
+
+    p.cargo("test -p '*z'")
+        .with_stdout_does_not_contain("running 1 test\ntest bar ... ok")
+        .with_stdout_contains("running 1 test\ntest baz ... ok")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_glob_not_found() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() {}")
+        .build();
+
+    p.cargo("test -p bar -p '*z'")
+        .with_status(101)
+        .with_stderr("[ERROR] package pattern(s) `*z` not found in workspace [..]")
+        .run();
+}
+
+#[cargo_test]
+fn test_virtual_manifest_broken_glob() {
+    let p = project()
+        .file(
+            "Cargo.toml",
+            r#"
+                [workspace]
+                members = ["bar"]
+            "#,
+        )
+        .file("bar/Cargo.toml", &basic_manifest("bar", "0.1.0"))
+        .file("bar/src/lib.rs", "#[test] fn bar() {}")
+        .build();
+
+    p.cargo("test -p '[*z'")
+        .with_status(101)
+        .with_stderr_contains("[ERROR] cannot build glob pattern from `[*z`")
         .run();
 }
 
@@ -3543,13 +3724,13 @@ pub fn foo() -> u8 { 1 }
 running 1 test
 test tests::it_works ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 
 running 1 test
 test src/lib.rs - foo (line 1) ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 \n",
         )
         .run();
@@ -3565,7 +3746,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 running 1 test
 test tests::it_works ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 \n",
         )
         .run();
@@ -3582,7 +3763,7 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 running 1 test
 test src/lib.rs - foo (line 1) ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]
 
 ",
         )
@@ -3696,14 +3877,14 @@ fn cargo_test_doctest_xcompile_ignores() {
     #[cfg(not(target_arch = "x86_64"))]
     p.cargo("test")
         .with_stdout_contains(
-            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
     #[cfg(target_arch = "x86_64")]
     p.cargo("test")
         .with_status(101)
         .with_stdout_contains(
-            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out",
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
 
@@ -3711,7 +3892,7 @@ fn cargo_test_doctest_xcompile_ignores() {
     p.cargo("test -Zdoctest-xcompile")
         .masquerade_as_nightly_cargo()
         .with_stdout_contains(
-            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+            "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
 
@@ -3719,7 +3900,7 @@ fn cargo_test_doctest_xcompile_ignores() {
     p.cargo("test -Zdoctest-xcompile")
         .masquerade_as_nightly_cargo()
         .with_stdout_contains(
-            "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out",
+            "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out[..]",
         )
         .run();
 }
@@ -3759,7 +3940,7 @@ fn cargo_test_doctest_xcompile() {
     ))
     .masquerade_as_nightly_cargo()
     .with_stdout_contains(
-        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
     )
     .run();
 }
@@ -3839,7 +4020,7 @@ fn cargo_test_doctest_xcompile_runner() {
     ))
     .masquerade_as_nightly_cargo()
     .with_stdout_contains(
-        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
     )
     .with_stderr_contains("this is a runner")
     .run();
@@ -3883,7 +4064,7 @@ fn cargo_test_doctest_xcompile_no_runner() {
     ))
     .masquerade_as_nightly_cargo()
     .with_stdout_contains(
-        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out[..]",
     )
     .run();
 }

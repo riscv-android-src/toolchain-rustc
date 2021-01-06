@@ -35,8 +35,8 @@ use rustc_trait_selection::traits::error_reporting::report_object_safety_error;
 use rustc_trait_selection::traits::wf::object_region_bounds;
 
 use smallvec::SmallVec;
+use std::array;
 use std::collections::BTreeSet;
-use std::iter;
 use std::slice;
 
 #[derive(Debug)]
@@ -1095,9 +1095,10 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                     obligation.predicate
                 );
 
-                match obligation.predicate.skip_binders() {
+                let bound_predicate = obligation.predicate.bound_atom();
+                match bound_predicate.skip_binder() {
                     ty::PredicateAtom::Trait(pred, _) => {
-                        let pred = ty::Binder::bind(pred);
+                        let pred = bound_predicate.rebind(pred);
                         associated_types.entry(span).or_default().extend(
                             tcx.associated_items(pred.def_id())
                                 .in_definition_order()
@@ -1106,7 +1107,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                         );
                     }
                     ty::PredicateAtom::Projection(pred) => {
-                        let pred = ty::Binder::bind(pred);
+                        let pred = bound_predicate.rebind(pred);
                         // A `Self` within the original bound will be substituted with a
                         // `trait_object_dummy_self`, so check for that.
                         let references_self =
@@ -1346,7 +1347,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
             debug!("one_bound_for_assoc_type: bound2 = {:?}", bound2);
 
             let is_equality = is_equality();
-            let bounds = iter::once(bound).chain(iter::once(bound2)).chain(matching_candidates);
+            let bounds = array::IntoIter::new([bound, bound2]).chain(matching_candidates);
             let mut err = if is_equality.is_some() {
                 // More specific Error Index entry.
                 struct_span_err!(

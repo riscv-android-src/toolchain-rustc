@@ -555,11 +555,10 @@ pub mod parsing {
 #[cfg(feature = "printing")]
 mod printing {
     use super::*;
-
+    use crate::print::TokensOrDefault;
     use proc_macro2::TokenStream;
     use quote::ToTokens;
-
-    use crate::print::TokensOrDefault;
+    use std::cmp;
 
     impl ToTokens for Path {
         fn to_tokens(&self, tokens: &mut TokenStream) {
@@ -709,11 +708,7 @@ mod printing {
             qself.lt_token.to_tokens(tokens);
             qself.ty.to_tokens(tokens);
 
-            let pos = if qself.position > 0 && qself.position >= path.segments.len() {
-                path.segments.len() - 1
-            } else {
-                qself.position
-            };
+            let pos = cmp::min(qself.position, path.segments.len());
             let mut segments = path.segments.pairs();
             if pos > 0 {
                 TokensOrDefault(&qself.as_token).to_tokens(tokens);

@@ -1,6 +1,6 @@
 //! Performs various peephole optimizations.
 
-use crate::transform::{MirPass, MirSource};
+use crate::transform::MirPass;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_hir::Mutability;
 use rustc_index::vec::Idx;
@@ -19,7 +19,7 @@ use std::mem;
 pub struct InstCombine;
 
 impl<'tcx> MirPass<'tcx> for InstCombine {
-    fn run_pass(&self, tcx: TyCtxt<'tcx>, _: MirSource<'tcx>, body: &mut Body<'tcx>) {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         // First, find optimization opportunities. This is done in a pre-pass to keep the MIR
         // read-only so that we can do global analyses on the MIR in the process (e.g.
         // `Place::ty()`).
@@ -137,6 +137,8 @@ impl OptimizationFinder<'b, 'tcx> {
                 _ => None,
             }?;
 
+            let mut dead_locals_seen = vec![];
+
             let stmt_index = location.statement_index;
             // Look behind for statement that assigns the local from a address of operator.
             // 6 is chosen as a heuristic determined by seeing the number of times
@@ -160,6 +162,11 @@ impl OptimizationFinder<'b, 'tcx> {
                                 BorrowKind::Shared,
                                 place_taken_address_of,
                             ) => {
+                                // Make sure that the place has not been marked dead
+                                if dead_locals_seen.contains(&place_taken_address_of.local) {
+                                    return None;
+                                }
+
                                 self.optimizations
                                     .unneeded_deref
                                     .insert(location, *place_taken_address_of);
@@ -178,13 +185,19 @@ impl OptimizationFinder<'b, 'tcx> {
                     // Inline asm can do anything, so bail out of the optimization.
                     rustc_middle::mir::StatementKind::LlvmInlineAsm(_) => return None,
 
+                    // Remember `StorageDead`s, as the local being marked dead could be the
+                    // place RHS we are looking for, in which case we need to abort to avoid UB
+                    // using an uninitialized place
+                    rustc_middle::mir::StatementKind::StorageDead(dead) => {
+                        dead_locals_seen.push(*dead)
+                    }
+
                     // Check that `local_being_deref` is not being used in a mutating way which can cause misoptimization.
                     rustc_middle::mir::StatementKind::Assign(box (_, _))
                     | rustc_middle::mir::StatementKind::Coverage(_)
                     | rustc_middle::mir::StatementKind::Nop
                     | rustc_middle::mir::StatementKind::FakeRead(_, _)
                     | rustc_middle::mir::StatementKind::StorageLive(_)
-                    | rustc_middle::mir::StatementKind::StorageDead(_)
                     | rustc_middle::mir::StatementKind::Retag(_, _)
                     | rustc_middle::mir::StatementKind::AscribeUserType(_, _)
                     | rustc_middle::mir::StatementKind::SetDiscriminant { .. } => {

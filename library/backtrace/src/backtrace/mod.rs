@@ -109,6 +109,11 @@ impl Frame {
     pub fn symbol_address(&self) -> *mut c_void {
         self.inner.symbol_address()
     }
+
+    /// Returns the base address of the module to which the frame belongs.
+    pub fn module_base_address(&self) -> Option<*mut c_void> {
+        self.inner.module_base_address()
+    }
 }
 
 impl fmt::Debug for Frame {
@@ -121,10 +126,12 @@ impl fmt::Debug for Frame {
 }
 
 cfg_if::cfg_if! {
+    // This needs to come first, to ensure that
+    // Miri takes priority over the host platform
     if #[cfg(miri)] {
-        mod noop;
-        use self::noop::trace as trace_imp;
-        pub(crate) use self::noop::Frame as FrameImp;
+        pub(crate) mod miri;
+        use self::miri::trace as trace_imp;
+        pub(crate) use self::miri::Frame as FrameImp;
     } else if #[cfg(
         any(
             all(
@@ -145,6 +152,7 @@ cfg_if::cfg_if! {
         mod dbghelp;
         use self::dbghelp::trace as trace_imp;
         pub(crate) use self::dbghelp::Frame as FrameImp;
+        pub(crate) use self::dbghelp::StackFrame;
     } else {
         mod noop;
         use self::noop::trace as trace_imp;

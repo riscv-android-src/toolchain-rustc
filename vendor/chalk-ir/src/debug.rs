@@ -35,6 +35,13 @@ impl<I: Interner> Debug for ClosureId<I> {
     }
 }
 
+impl<I: Interner> Debug for GeneratorId<I> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> std::fmt::Result {
+        I::debug_generator_id(*self, fmt)
+            .unwrap_or_else(|| write!(fmt, "GeneratorId({:?})", self.0))
+    }
+}
+
 impl<I: Interner> Debug for ForeignDefId<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> std::fmt::Result {
         I::debug_foreign_def_id(*self, fmt)
@@ -109,12 +116,6 @@ impl<I: Interner> Debug for Constraints<I> {
     }
 }
 
-impl<I: Interner> Debug for ApplicationTy<I> {
-    fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        I::debug_application_ty(self, fmt).unwrap_or_else(|| write!(fmt, "ApplicationTy(?)"))
-    }
-}
-
 impl<I: Interner> Debug for SeparatorTraitRef<'_, I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         I::debug_separator_trait_ref(self, fmt)
@@ -175,54 +176,56 @@ impl Debug for UniverseIndex {
     }
 }
 
-impl<I: Interner> Debug for TypeName<I> {
+impl<I: Interner> Debug for TyData<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        match self {
-            TypeName::Adt(id) => write!(fmt, "{:?}", id),
-            TypeName::AssociatedType(assoc_ty) => write!(fmt, "{:?}", assoc_ty),
-            TypeName::Scalar(scalar) => write!(fmt, "{:?}", scalar),
-            TypeName::Str => write!(fmt, "Str"),
-            TypeName::Tuple(arity) => write!(fmt, "{:?}", arity),
-            TypeName::OpaqueType(opaque_ty) => write!(fmt, "!{:?}", opaque_ty),
-            TypeName::Slice => write!(fmt, "{{slice}}"),
-            TypeName::FnDef(fn_def) => write!(fmt, "{:?}", fn_def),
-            TypeName::Ref(mutability) => write!(
-                fmt,
-                "{}",
-                match mutability {
-                    Mutability::Mut => "{{&mut}}",
-                    Mutability::Not => "{{&}}",
-                }
-            ),
-            TypeName::Raw(mutability) => write!(
-                fmt,
-                "{}",
-                match mutability {
-                    Mutability::Mut => "{{*mut}}",
-                    Mutability::Not => "{{*const}}",
-                }
-            ),
-            TypeName::Never => write!(fmt, "Never"),
-            TypeName::Array => write!(fmt, "{{array}}"),
-            TypeName::Closure(id) => write!(fmt, "{{closure:{:?}}}", id),
-            TypeName::Foreign(foreign_ty) => write!(fmt, "{:?}", foreign_ty),
-            TypeName::Error => write!(fmt, "{{error}}"),
-        }
+        self.kind.fmt(fmt)
     }
 }
 
-impl<I: Interner> Debug for TyData<I> {
+impl<I: Interner> Debug for TyKind<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         match self {
-            TyData::BoundVar(db) => write!(fmt, "{:?}", db),
-            TyData::Dyn(clauses) => write!(fmt, "{:?}", clauses),
-            TyData::InferenceVar(var, TyKind::General) => write!(fmt, "{:?}", var),
-            TyData::InferenceVar(var, TyKind::Integer) => write!(fmt, "{:?}i", var),
-            TyData::InferenceVar(var, TyKind::Float) => write!(fmt, "{:?}f", var),
-            TyData::Apply(apply) => write!(fmt, "{:?}", apply),
-            TyData::Alias(alias) => write!(fmt, "{:?}", alias),
-            TyData::Placeholder(index) => write!(fmt, "{:?}", index),
-            TyData::Function(function) => write!(fmt, "{:?}", function),
+            TyKind::BoundVar(db) => write!(fmt, "{:?}", db),
+            TyKind::Dyn(clauses) => write!(fmt, "{:?}", clauses),
+            TyKind::InferenceVar(var, TyVariableKind::General) => write!(fmt, "{:?}", var),
+            TyKind::InferenceVar(var, TyVariableKind::Integer) => write!(fmt, "{:?}i", var),
+            TyKind::InferenceVar(var, TyVariableKind::Float) => write!(fmt, "{:?}f", var),
+            TyKind::Alias(alias) => write!(fmt, "{:?}", alias),
+            TyKind::Placeholder(index) => write!(fmt, "{:?}", index),
+            TyKind::Function(function) => write!(fmt, "{:?}", function),
+            TyKind::Adt(id, substitution) => write!(fmt, "{:?}<{:?}>", id, substitution),
+            TyKind::AssociatedType(assoc_ty, substitution) => {
+                write!(fmt, "{:?}<{:?}>", assoc_ty, substitution)
+            }
+            TyKind::Scalar(scalar) => write!(fmt, "{:?}", scalar),
+            TyKind::Str => write!(fmt, "Str"),
+            TyKind::Tuple(arity, substitution) => write!(fmt, "{:?}<{:?}>", arity, substitution),
+            TyKind::OpaqueType(opaque_ty, substitution) => {
+                write!(fmt, "!{:?}<{:?}>", opaque_ty, substitution)
+            }
+            TyKind::Slice(substitution) => write!(fmt, "{{slice}}<{:?}>", substitution),
+            TyKind::FnDef(fn_def, substitution) => write!(fmt, "{:?}<{:?}>", fn_def, substitution),
+            TyKind::Ref(mutability, lifetime, ty) => match mutability {
+                Mutability::Mut => write!(fmt, "(&{:?} mut {:?})", lifetime, ty),
+                Mutability::Not => write!(fmt, "(&{:?} {:?})", lifetime, ty),
+            },
+            TyKind::Raw(mutability, ty) => match mutability {
+                Mutability::Mut => write!(fmt, "(*mut {:?})", ty),
+                Mutability::Not => write!(fmt, "(*const {:?})", ty),
+            },
+            TyKind::Never => write!(fmt, "Never"),
+            TyKind::Array(ty, const_) => write!(fmt, "[{:?}; {:?}]", ty, const_),
+            TyKind::Closure(id, substitution) => {
+                write!(fmt, "{{closure:{:?}}}<{:?}>", id, substitution)
+            }
+            TyKind::Generator(generator, substitution) => {
+                write!(fmt, "{:?}<{:?}>", generator, substitution)
+            }
+            TyKind::GeneratorWitness(witness, substitution) => {
+                write!(fmt, "{:?}<{:?}>", witness, substitution)
+            }
+            TyKind::Foreign(foreign_ty) => write!(fmt, "{:?}", foreign_ty),
+            TyKind::Error => write!(fmt, "{{error}}"),
         }
     }
 }
@@ -276,6 +279,7 @@ impl<I: Interner> Debug for LifetimeData<I> {
             LifetimeData::BoundVar(db) => write!(fmt, "'{:?}", db),
             LifetimeData::InferenceVar(var) => write!(fmt, "'{:?}", var),
             LifetimeData::Placeholder(index) => write!(fmt, "'{:?}", index),
+            LifetimeData::Static => write!(fmt, "'static"),
             LifetimeData::Phantom(..) => unreachable!(),
         }
     }
@@ -322,9 +326,9 @@ impl<'a, I: Interner> Debug for VariableKindsInnerDebug<'a, I> {
                 write!(fmt, ", ")?;
             }
             match binder {
-                VariableKind::Ty(TyKind::General) => write!(fmt, "type")?,
-                VariableKind::Ty(TyKind::Integer) => write!(fmt, "integer type")?,
-                VariableKind::Ty(TyKind::Float) => write!(fmt, "float type")?,
+                VariableKind::Ty(TyVariableKind::General) => write!(fmt, "type")?,
+                VariableKind::Ty(TyVariableKind::Integer) => write!(fmt, "integer type")?,
+                VariableKind::Ty(TyVariableKind::Float) => write!(fmt, "float type")?,
                 VariableKind::Lifetime => write!(fmt, "lifetime")?,
                 VariableKind::Const(ty) => write!(fmt, "const: {:?}", ty)?,
             }
@@ -451,29 +455,79 @@ impl<I: Interner> ProgramClauseImplication<I> {
 }
 
 /// Helper struct for showing debug output for application types.
-pub struct ApplicationTyDebug<'a, I: Interner> {
-    application_ty: &'a ApplicationTy<I>,
+pub struct TyKindDebug<'a, I: Interner> {
+    ty: &'a TyKind<I>,
     interner: &'a I,
 }
 
-impl<'a, I: Interner> Debug for ApplicationTyDebug<'a, I> {
+impl<'a, I: Interner> Debug for TyKindDebug<'a, I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
-        let ApplicationTyDebug {
-            application_ty,
-            interner,
-        } = self;
-        let ApplicationTy { name, substitution } = application_ty;
-        write!(fmt, "{:?}{:?}", name, substitution.with_angle(interner))
+        let interner = self.interner;
+        match self.ty {
+            TyKind::BoundVar(db) => write!(fmt, "{:?}", db),
+            TyKind::Dyn(clauses) => write!(fmt, "{:?}", clauses),
+            TyKind::InferenceVar(var, TyVariableKind::General) => write!(fmt, "{:?}", var),
+            TyKind::InferenceVar(var, TyVariableKind::Integer) => write!(fmt, "{:?}i", var),
+            TyKind::InferenceVar(var, TyVariableKind::Float) => write!(fmt, "{:?}f", var),
+            TyKind::Alias(alias) => write!(fmt, "{:?}", alias),
+            TyKind::Placeholder(index) => write!(fmt, "{:?}", index),
+            TyKind::Function(function) => write!(fmt, "{:?}", function),
+            TyKind::Adt(id, substitution) => {
+                write!(fmt, "{:?}{:?}", id, substitution.with_angle(interner))
+            }
+            TyKind::AssociatedType(assoc_ty, substitution) => {
+                write!(fmt, "{:?}{:?}", assoc_ty, substitution.with_angle(interner))
+            }
+            TyKind::Scalar(scalar) => write!(fmt, "{:?}", scalar),
+            TyKind::Str => write!(fmt, "Str"),
+            TyKind::Tuple(arity, substitution) => {
+                write!(fmt, "{:?}{:?}", arity, substitution.with_angle(interner))
+            }
+            TyKind::OpaqueType(opaque_ty, substitution) => write!(
+                fmt,
+                "!{:?}{:?}",
+                opaque_ty,
+                substitution.with_angle(interner)
+            ),
+            TyKind::Slice(ty) => write!(fmt, "[{:?}]", ty),
+            TyKind::FnDef(fn_def, substitution) => {
+                write!(fmt, "{:?}{:?}", fn_def, substitution.with_angle(interner))
+            }
+            TyKind::Ref(mutability, lifetime, ty) => match mutability {
+                Mutability::Mut => write!(fmt, "(&{:?} mut {:?})", lifetime, ty),
+                Mutability::Not => write!(fmt, "(&{:?} {:?})", lifetime, ty),
+            },
+            TyKind::Raw(mutability, ty) => match mutability {
+                Mutability::Mut => write!(fmt, "(*mut {:?})", ty),
+                Mutability::Not => write!(fmt, "(*const {:?})", ty),
+            },
+            TyKind::Never => write!(fmt, "Never"),
+            TyKind::Array(ty, const_) => write!(fmt, "[{:?}; {:?}]", ty, const_),
+            TyKind::Closure(id, substitution) => write!(
+                fmt,
+                "{{closure:{:?}}}{:?}",
+                id,
+                substitution.with_angle(interner)
+            ),
+            TyKind::Generator(generator, substitution) => write!(
+                fmt,
+                "{:?}{:?}",
+                generator,
+                substitution.with_angle(interner)
+            ),
+            TyKind::GeneratorWitness(witness, substitution) => {
+                write!(fmt, "{:?}{:?}", witness, substitution.with_angle(interner))
+            }
+            TyKind::Foreign(foreign_ty) => write!(fmt, "{:?}", foreign_ty,),
+            TyKind::Error => write!(fmt, "{{error}}"),
+        }
     }
 }
 
-impl<I: Interner> ApplicationTy<I> {
+impl<I: Interner> TyKind<I> {
     /// Show debug output for the application type.
-    pub fn debug<'a>(&'a self, interner: &'a I) -> ApplicationTyDebug<'a, I> {
-        ApplicationTyDebug {
-            application_ty: self,
-            interner,
-        }
+    pub fn debug<'a>(&'a self, interner: &'a I) -> TyKindDebug<'a, I> {
+        TyKindDebug { ty: self, interner }
     }
 }
 
@@ -847,9 +901,9 @@ impl<I: Interner> Debug for GenericArgData<I> {
 impl<I: Interner> Debug for VariableKind<I> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         match self {
-            VariableKind::Ty(TyKind::General) => write!(fmt, "type"),
-            VariableKind::Ty(TyKind::Integer) => write!(fmt, "integer type"),
-            VariableKind::Ty(TyKind::Float) => write!(fmt, "float type"),
+            VariableKind::Ty(TyVariableKind::General) => write!(fmt, "type"),
+            VariableKind::Ty(TyVariableKind::Integer) => write!(fmt, "integer type"),
+            VariableKind::Ty(TyVariableKind::Float) => write!(fmt, "float type"),
             VariableKind::Lifetime => write!(fmt, "lifetime"),
             VariableKind::Const(ty) => write!(fmt, "const: {:?}", ty),
         }
@@ -860,9 +914,13 @@ impl<I: Interner, T: Debug> Debug for WithKind<I, T> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> Result<(), Error> {
         let value = self.skip_kind();
         match &self.kind {
-            VariableKind::Ty(TyKind::General) => write!(fmt, "{:?} with kind type", value),
-            VariableKind::Ty(TyKind::Integer) => write!(fmt, "{:?} with kind integer type", value),
-            VariableKind::Ty(TyKind::Float) => write!(fmt, "{:?} with kind float type", value),
+            VariableKind::Ty(TyVariableKind::General) => write!(fmt, "{:?} with kind type", value),
+            VariableKind::Ty(TyVariableKind::Integer) => {
+                write!(fmt, "{:?} with kind integer type", value)
+            }
+            VariableKind::Ty(TyVariableKind::Float) => {
+                write!(fmt, "{:?} with kind float type", value)
+            }
             VariableKind::Lifetime => write!(fmt, "{:?} with kind lifetime", value),
             VariableKind::Const(ty) => write!(fmt, "{:?} with kind {:?}", value, ty),
         }

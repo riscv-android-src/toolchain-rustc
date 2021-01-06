@@ -1,6 +1,7 @@
 use self::builder::ClauseBuilder;
 use self::env_elaborator::elaborate_env_clauses;
 use self::program_clauses::ToProgramClauses;
+use crate::goal_builder::GoalBuilder;
 use crate::split::Split;
 use crate::RustIrDatabase;
 use chalk_ir::cast::{Cast, Caster};
@@ -19,17 +20,14 @@ mod generalize;
 pub mod program_clauses;
 
 // yields the types "contained" in `app_ty`
-fn constituent_types<I: Interner>(
-    db: &dyn RustIrDatabase<I>,
-    app_ty: &ApplicationTy<I>,
-) -> Vec<Ty<I>> {
+fn constituent_types<I: Interner>(db: &dyn RustIrDatabase<I>, ty: &TyKind<I>) -> Vec<Ty<I>> {
     let interner = db.interner();
 
-    match app_ty.name {
+    match ty {
         // For non-phantom_data adts we collect its variants/fields
-        TypeName::Adt(adt_id) if !db.adt_datum(adt_id).flags.phantom_data => {
-            let adt_datum = &db.adt_datum(adt_id);
-            let adt_datum_bound = adt_datum.binders.substitute(interner, &app_ty.substitution);
+        TyKind::Adt(adt_id, substitution) if !db.adt_datum(*adt_id).flags.phantom_data => {
+            let adt_datum = &db.adt_datum(*adt_id);
+            let adt_datum_bound = adt_datum.binders.substitute(interner, substitution);
             adt_datum_bound
                 .variants
                 .into_iter()
@@ -37,27 +35,48 @@ fn constituent_types<I: Interner>(
                 .collect()
         }
         // And for `PhantomData<T>`, we pass `T`.
-        TypeName::Adt(_)
-        | TypeName::Array
-        | TypeName::Tuple(_)
-        | TypeName::Slice
-        | TypeName::Raw(_)
-        | TypeName::Ref(_)
-        | TypeName::Scalar(_)
-        | TypeName::Str
-        | TypeName::Never
-        | TypeName::FnDef(_) => app_ty
-            .substitution
+        TyKind::Adt(_, substitution)
+        | TyKind::Tuple(_, substitution)
+        | TyKind::FnDef(_, substitution) => substitution
             .iter(interner)
             .filter_map(|x| x.ty(interner))
             .cloned()
             .collect(),
 
-        TypeName::Closure(_) => panic!("this function should not be called for closures"),
-        TypeName::Foreign(_) => panic!("constituent_types of foreign types are unknown!"),
-        TypeName::Error => Vec::new(),
-        TypeName::OpaqueType(_) => unimplemented!(),
-        TypeName::AssociatedType(_) => unimplemented!(),
+        TyKind::Array(ty, _) | TyKind::Slice(ty) | TyKind::Raw(_, ty) | TyKind::Ref(_, _, ty) => {
+            vec![ty.clone()]
+        }
+
+        TyKind::Str | TyKind::Never | TyKind::Scalar(_) => Vec::new(),
+
+        TyKind::Generator(generator_id, substitution) => {
+            let generator_datum = &db.generator_datum(*generator_id);
+            let generator_datum_bound = generator_datum
+                .input_output
+                .substitute(interner, &substitution);
+
+            let mut tys = generator_datum_bound.upvars;
+            tys.push(
+                TyKind::GeneratorWitness(*generator_id, substitution.clone()).intern(interner),
+            );
+            tys
+        }
+
+        TyKind::Closure(_, _) => panic!("this function should not be called for closures"),
+        TyKind::GeneratorWitness(_, _) => {
+            panic!("this function should not be called for generator witnesses")
+        }
+        TyKind::Function(_) => panic!("this function should not be called for functions"),
+        TyKind::InferenceVar(_, _) | TyKind::BoundVar(_) => {
+            panic!("this function should not be called for inference or bound vars")
+        }
+        TyKind::Placeholder(_) => panic!("this function should not be called for placeholders"),
+        TyKind::Dyn(_) => panic!("this function should not be called for dyn types"),
+        TyKind::Alias(_) => panic!("this function should not be called for alias"),
+        TyKind::Foreign(_) => panic!("constituent_types of foreign types are unknown!"),
+        TyKind::Error => Vec::new(),
+        TyKind::OpaqueType(_, _) => unimplemented!(),
+        TyKind::AssociatedType(_, _) => unimplemented!(),
     }
 }
 
@@ -96,8 +115,8 @@ fn constituent_types<I: Interner>(
 pub fn push_auto_trait_impls<I: Interner>(
     builder: &mut ClauseBuilder<'_, I>,
     auto_trait_id: TraitId<I>,
-    app_ty: &ApplicationTy<I>,
-) {
+    ty: &TyKind<I>,
+) -> Result<(), Floundered> {
     let interner = builder.interner();
 
     // Must be an auto trait.
@@ -109,15 +128,12 @@ pub fn push_auto_trait_impls<I: Interner>(
         1
     );
 
-    // we assume that the builder has no binders so far.
-    assert!(builder.placeholders_in_scope().is_empty());
-
     // If there is a `impl AutoTrait for Foo<..>` or `impl !AutoTrait
     // for Foo<..>`, where `Foo` is the adt we're looking at, then
     // we don't generate our own rules.
-    if builder.db.impl_provided_for(auto_trait_id, app_ty) {
+    if builder.db.impl_provided_for(auto_trait_id, ty) {
         debug!("impl provided");
-        return;
+        return Ok(());
     }
 
     let mk_ref = |ty: Ty<I>| TraitRef {
@@ -125,30 +141,54 @@ pub fn push_auto_trait_impls<I: Interner>(
         substitution: Substitution::from1(interner, ty.cast(interner)),
     };
 
-    let consequence = mk_ref(app_ty.clone().intern(interner));
+    let consequence = mk_ref(ty.clone().intern(interner));
 
-    match app_ty.name {
+    match ty {
+        // function-types implement auto traits unconditionally
+        TyKind::Function(_) => {
+            let auto_trait_ref = TraitRef {
+                trait_id: auto_trait_id,
+                substitution: Substitution::from1(interner, ty.clone().intern(interner)),
+            };
+
+            builder.push_fact(auto_trait_ref);
+            Ok(())
+        }
+        TyKind::InferenceVar(_, _) | TyKind::BoundVar(_) => Err(Floundered),
+
         // auto traits are not implemented for foreign types
-        TypeName::Foreign(_) => return,
+        TyKind::Foreign(_) => Ok(()),
 
         // closures require binders, while the other types do not
-        TypeName::Closure(closure_id) => {
+        TyKind::Closure(closure_id, _) => {
             let binders = builder
                 .db
-                .closure_upvars(closure_id, &Substitution::empty(interner));
+                .closure_upvars(*closure_id, &Substitution::empty(interner));
             builder.push_binders(&binders, |builder, upvar_ty| {
                 let conditions = iter::once(mk_ref(upvar_ty));
                 builder.push_clause(consequence, conditions);
             });
+            Ok(())
         }
+
+        TyKind::GeneratorWitness(generator_id, _) => {
+            push_auto_trait_impls_generator_witness(builder, auto_trait_id, *generator_id);
+            Ok(())
+        }
+
+        // Unimplemented
+        TyKind::OpaqueType(_, _) => Ok(()),
+        TyKind::AssociatedType(_, _) => Ok(()),
+
+        // No auto traits
+        TyKind::Placeholder(_) | TyKind::Dyn(_) | TyKind::Alias(_) => Ok(()),
 
         // app_ty implements AutoTrait if all constituents of app_ty implement AutoTrait
         _ => {
-            let conditions = constituent_types(builder.db, app_ty)
-                .into_iter()
-                .map(mk_ref);
+            let conditions = constituent_types(builder.db, ty).into_iter().map(mk_ref);
 
             builder.push_clause(consequence, conditions);
+            Ok(())
         }
     }
 }
@@ -189,11 +229,8 @@ pub fn push_auto_trait_impls_opaque<I: Interner>(
     let hidden_ty = builder.db.hidden_opaque_type(opaque_id);
     let binders = opaque_ty_datum.bound.clone();
     builder.push_binders(&binders, |builder, _| {
-        let self_ty: Ty<_> = ApplicationTy {
-            name: opaque_id.cast(interner),
-            substitution: builder.substitution_in_scope(),
-        }
-        .intern(interner);
+        let self_ty =
+            TyKind::OpaqueType(opaque_id, builder.substitution_in_scope()).intern(interner);
 
         // trait_ref = `OpaqueType<...>: MyAutoTrait`
         let auto_trait_ref = TraitRef {
@@ -210,6 +247,86 @@ pub fn push_auto_trait_impls_opaque<I: Interner>(
             }),
         );
     });
+}
+
+#[instrument(level = "debug", skip(builder))]
+pub fn push_auto_trait_impls_generator_witness<I: Interner>(
+    builder: &mut ClauseBuilder<'_, I>,
+    auto_trait_id: TraitId<I>,
+    generator_id: GeneratorId<I>,
+) {
+    let witness_datum = builder.db.generator_witness_datum(generator_id);
+    let interner = builder.interner();
+
+    // Must be an auto trait.
+    assert!(builder.db.trait_datum(auto_trait_id).is_auto_trait());
+
+    // Auto traits never have generic parameters of their own (apart from `Self`).
+    assert_eq!(
+        builder.db.trait_datum(auto_trait_id).binders.len(interner),
+        1
+    );
+
+    // Push binders for the generator generic parameters. These can be used by
+    // both upvars and witness types
+    builder.push_binders(&witness_datum.inner_types, |builder, inner_types| {
+        let witness_ty = TyKind::GeneratorWitness(generator_id, builder.substitution_in_scope())
+            .intern(interner);
+
+        // trait_ref = `GeneratorWitness<...>: MyAutoTrait`
+        let auto_trait_ref = TraitRef {
+            trait_id: auto_trait_id,
+            substitution: Substitution::from1(interner, witness_ty),
+        };
+
+        // Create a goal of the form:
+        // forall<L0, L1, ..., LN> {
+        //     WitnessType1<L0, L1, ... LN, P0, P1, ..., PN>: MyAutoTrait,
+        //     ...
+        //     WitnessTypeN<L0, L1, ... LN, P0, P1, ..., PN>: MyAutoTrait,
+        //
+        // }
+        //
+        // where `L0, L1, ...LN` are our existentially bound witness lifetimes,
+        // and `P0, P1, ..., PN` are the normal generator generics.
+        //
+        // We create a 'forall' goal due to the fact that our witness lifetimes
+        // are *existentially* quantified - the precise reigon is erased during
+        // type checking, so we just know that the type takes *some* region
+        // as a parameter. Therefore, we require that the auto trait bound
+        // hold for *all* regions, which guarantees that the bound will
+        // hold for the original lifetime (before it was erased).
+        //
+        // This does not take into account well-formed information from
+        // the witness types. For example, if we have the type
+        // `struct Foo<'a, 'b> { val: &'a &'b u8 }`
+        // then `'b: 'a` must hold for `Foo<'a, 'b>` to be well-formed.
+        // If we have `Foo<'a, 'b>` stored as a witness type, we will
+        // not currently use this information to determine a more precise
+        // relationship between 'a and 'b. In the future, we will likely
+        // do this to avoid incorrectly rejecting correct code.
+        let gb = &mut GoalBuilder::new(builder.db);
+        let witness_goal = gb.forall(
+            &inner_types.types,
+            auto_trait_id,
+            |gb, _subst, types, auto_trait_id| {
+                Goal::new(
+                    gb.interner(),
+                    GoalData::All(Goals::from_iter(
+                        gb.interner(),
+                        types.iter().map(|witness_ty| TraitRef {
+                            trait_id: auto_trait_id,
+                            substitution: Substitution::from1(gb.interner(), witness_ty.clone()),
+                        }),
+                    )),
+                )
+            },
+        );
+
+        // GeneratorWitnessType: AutoTrait :- forall<...> ...
+        // where 'forall<...> ...' is the goal described above.
+        builder.push_clause(auto_trait_ref, std::iter::once(witness_goal));
+    })
 }
 
 /// Given some goal `goal` that must be proven, along with
@@ -273,7 +390,7 @@ fn program_clauses_that_could_match<I: Interner>(
             if trait_datum.is_non_enumerable_trait() || trait_datum.is_auto_trait() {
                 let self_ty = trait_ref.self_type_parameter(interner);
 
-                if let TyData::Alias(AliasTy::Opaque(opaque_ty)) = self_ty.data(interner) {
+                if let TyKind::Alias(AliasTy::Opaque(opaque_ty)) = self_ty.kind(interner) {
                     if trait_datum.is_auto_trait() {
                         push_auto_trait_impls_opaque(builder, trait_id, opaque_ty.opaque_ty_id)
                     }
@@ -299,25 +416,11 @@ fn program_clauses_that_could_match<I: Interner>(
             // the automatic impls for `Foo`.
             let trait_datum = db.trait_datum(trait_id);
             if trait_datum.is_auto_trait() {
-                let ty = trait_ref.self_type_parameter(interner);
-                match ty.data(interner) {
-                    TyData::Apply(apply) => {
-                        push_auto_trait_impls(builder, trait_id, apply);
-                    }
-                    // function-types implement auto traits unconditionally
-                    TyData::Function(_) => {
-                        let auto_trait_ref = TraitRef {
-                            trait_id,
-                            substitution: Substitution::from1(interner, ty.cast(interner)),
-                        };
-
-                        builder.push_fact(auto_trait_ref);
-                    }
-                    TyData::InferenceVar(_, _) | TyData::BoundVar(_) => {
-                        return Err(Floundered);
-                    }
-                    _ => {}
-                }
+                let generalized = generalize::Generalize::apply(db.interner(), trait_ref);
+                builder.push_binders(&generalized, |builder, trait_ref| {
+                    let ty = trait_ref.self_type_parameter(interner);
+                    push_auto_trait_impls(builder, trait_id, &ty.kind(interner))
+                })?;
             }
 
             // If the self type is a `dyn trait` type, generate program-clauses
@@ -332,16 +435,13 @@ fn program_clauses_that_could_match<I: Interner>(
             // totally irrelevant to that goal, because they let us prove other
             // things but not `Clone`.
             let self_ty = trait_ref.self_type_parameter(interner);
-            if let TyData::Dyn(_) = self_ty.data(interner) {
+            if let TyKind::Dyn(_) = self_ty.kind(interner) {
                 dyn_ty::build_dyn_self_ty_clauses(db, builder, self_ty.clone())
             }
 
-            match self_ty.data(interner) {
-                TyData::Apply(ApplicationTy {
-                    name: TypeName::OpaqueType(opaque_ty_id),
-                    ..
-                })
-                | TyData::Alias(AliasTy::Opaque(OpaqueTy { opaque_ty_id, .. })) => {
+            match self_ty.kind(interner) {
+                TyKind::OpaqueType(opaque_ty_id, _)
+                | TyKind::Alias(AliasTy::Opaque(OpaqueTy { opaque_ty_id, .. })) => {
                     db.opaque_ty_data(*opaque_ty_id)
                         .to_program_clauses(builder, environment);
                 }
@@ -349,17 +449,11 @@ fn program_clauses_that_could_match<I: Interner>(
             }
 
             // We don't actually do anything here, but we need to record the types it when logging
-            match self_ty.data(interner) {
-                TyData::Apply(ApplicationTy {
-                    name: TypeName::Adt(adt_id),
-                    ..
-                }) => {
+            match self_ty.kind(interner) {
+                TyKind::Adt(adt_id, _) => {
                     let _ = db.adt_datum(*adt_id);
                 }
-                TyData::Apply(ApplicationTy {
-                    name: TypeName::FnDef(fn_def_id),
-                    ..
-                }) => {
+                TyKind::FnDef(fn_def_id, _) => {
                     let _ = db.fn_def_datum(*fn_def_id);
                 }
                 _ => {}
@@ -377,12 +471,9 @@ fn program_clauses_that_could_match<I: Interner>(
                     .trait_ref_from_projection(proj)
                     .self_type_parameter(interner);
 
-                match trait_self_ty.data(interner) {
-                    TyData::Apply(ApplicationTy {
-                        name: TypeName::OpaqueType(opaque_ty_id),
-                        ..
-                    })
-                    | TyData::Alias(AliasTy::Opaque(OpaqueTy { opaque_ty_id, .. })) => {
+                match trait_self_ty.kind(interner) {
+                    TyKind::OpaqueType(opaque_ty_id, _)
+                    | TyKind::Alias(AliasTy::Opaque(OpaqueTy { opaque_ty_id, .. })) => {
                         db.opaque_ty_data(*opaque_ty_id)
                             .to_program_clauses(builder, environment);
                     }
@@ -392,7 +483,7 @@ fn program_clauses_that_could_match<I: Interner>(
                 // If the self type is a `dyn trait` type, generate program-clauses
                 // for any associated type bindings it contains.
                 // FIXME: see the fixme for the analogous code for Implemented goals.
-                if let TyData::Dyn(_) = trait_self_ty.data(interner) {
+                if let TyKind::Dyn(_) = trait_self_ty.kind(interner) {
                     dyn_ty::build_dyn_self_ty_clauses(db, builder, trait_self_ty.clone())
                 }
 
@@ -628,71 +719,53 @@ fn match_ty<I: Interner>(
     ty: &Ty<I>,
 ) -> Result<(), Floundered> {
     let interner = builder.interner();
-    Ok(match ty.data(interner) {
-        TyData::Apply(application_ty) => match_type_name(builder, environment, application_ty),
-        TyData::Placeholder(_) => {
+    Ok(match ty.kind(interner) {
+        TyKind::Adt(adt_id, _) => builder
+            .db
+            .adt_datum(*adt_id)
+            .to_program_clauses(builder, environment),
+        TyKind::OpaqueType(opaque_ty_id, _) => builder
+            .db
+            .opaque_ty_data(*opaque_ty_id)
+            .to_program_clauses(builder, environment),
+        TyKind::Error => {}
+        TyKind::AssociatedType(type_id, _) => builder
+            .db
+            .associated_ty_data(*type_id)
+            .to_program_clauses(builder, environment),
+        TyKind::FnDef(fn_def_id, _) => builder
+            .db
+            .fn_def_datum(*fn_def_id)
+            .to_program_clauses(builder, environment),
+        TyKind::Tuple(_, _)
+        | TyKind::Scalar(_)
+        | TyKind::Str
+        | TyKind::Slice(_)
+        | TyKind::Raw(_, _)
+        | TyKind::Ref(_, _, _)
+        | TyKind::Array(_, _)
+        | TyKind::Never
+        | TyKind::Closure(_, _)
+        | TyKind::Foreign(_)
+        | TyKind::Generator(_, _)
+        | TyKind::GeneratorWitness(_, _) => builder.push_fact(WellFormed::Ty(ty.clone())),
+        TyKind::Placeholder(_) => {
             builder.push_clause(WellFormed::Ty(ty.clone()), Some(FromEnv::Ty(ty.clone())));
         }
-        TyData::Alias(AliasTy::Projection(proj)) => builder
+        TyKind::Alias(AliasTy::Projection(proj)) => builder
             .db
             .associated_ty_data(proj.associated_ty_id)
             .to_program_clauses(builder, environment),
-        TyData::Alias(AliasTy::Opaque(opaque_ty)) => builder
+        TyKind::Alias(AliasTy::Opaque(opaque_ty)) => builder
             .db
             .opaque_ty_data(opaque_ty.opaque_ty_id)
             .to_program_clauses(builder, environment),
-        TyData::Function(quantified_ty) => {
+        TyKind::Function(_quantified_ty) => {
             builder.push_fact(WellFormed::Ty(ty.clone()));
-            quantified_ty
-                .substitution
-                .iter(interner)
-                .map(|p| p.assert_ty_ref(interner))
-                .map(|ty| match_ty(builder, environment, &ty))
-                .collect::<Result<_, Floundered>>()?;
         }
-        TyData::BoundVar(_) | TyData::InferenceVar(_, _) => return Err(Floundered),
-        TyData::Dyn(_) => {}
+        TyKind::BoundVar(_) | TyKind::InferenceVar(_, _) => return Err(Floundered),
+        TyKind::Dyn(_) => {}
     })
-}
-
-/// Lower a Rust IR application type to logic
-fn match_type_name<I: Interner>(
-    builder: &mut ClauseBuilder<'_, I>,
-    environment: &Environment<I>,
-    application: &ApplicationTy<I>,
-) {
-    let interner = builder.interner();
-    match application.name {
-        TypeName::Adt(adt_id) => builder
-            .db
-            .adt_datum(adt_id)
-            .to_program_clauses(builder, environment),
-        TypeName::OpaqueType(opaque_ty_id) => builder
-            .db
-            .opaque_ty_data(opaque_ty_id)
-            .to_program_clauses(builder, environment),
-        TypeName::Error => {}
-        TypeName::AssociatedType(type_id) => builder
-            .db
-            .associated_ty_data(type_id)
-            .to_program_clauses(builder, environment),
-        TypeName::FnDef(fn_def_id) => builder
-            .db
-            .fn_def_datum(fn_def_id)
-            .to_program_clauses(builder, environment),
-        TypeName::Tuple(_)
-        | TypeName::Scalar(_)
-        | TypeName::Str
-        | TypeName::Slice
-        | TypeName::Raw(_)
-        | TypeName::Ref(_)
-        | TypeName::Array
-        | TypeName::Never
-        | TypeName::Closure(_)
-        | TypeName::Foreign(_) => {
-            builder.push_fact(WellFormed::Ty(application.clone().intern(interner)))
-        }
-    }
 }
 
 fn match_alias_ty<I: Interner>(

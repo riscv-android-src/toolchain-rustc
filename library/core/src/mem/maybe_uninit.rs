@@ -246,6 +246,14 @@ impl<T> MaybeUninit<T> {
     /// Note that dropping a `MaybeUninit<T>` will never call `T`'s drop code.
     /// It is your responsibility to make sure `T` gets dropped if it got initialized.
     ///
+    /// # Example
+    ///
+    /// ```
+    /// use std::mem::MaybeUninit;
+    ///
+    /// let v: MaybeUninit<Vec<u8>> = MaybeUninit::new(vec![42]);
+    /// ```
+    ///
     /// [`assume_init`]: MaybeUninit::assume_init
     #[stable(feature = "maybe_uninit", since = "1.36.0")]
     #[rustc_const_stable(feature = "const_maybe_uninit", since = "1.36.0")]
@@ -259,9 +267,15 @@ impl<T> MaybeUninit<T> {
     /// Note that dropping a `MaybeUninit<T>` will never call `T`'s drop code.
     /// It is your responsibility to make sure `T` gets dropped if it got initialized.
     ///
-    /// See the [type-level documentation][type] for some examples.
+    /// See the [type-level documentation][MaybeUninit] for some examples.
     ///
-    /// [type]: union.MaybeUninit.html
+    /// # Example
+    ///
+    /// ```
+    /// use std::mem::MaybeUninit;
+    ///
+    /// let v: MaybeUninit<String> = MaybeUninit::uninit();
+    /// ```
     #[stable(feature = "maybe_uninit", since = "1.36.0")]
     #[rustc_const_stable(feature = "const_maybe_uninit", since = "1.36.0")]
     #[inline(always)]
@@ -828,13 +842,13 @@ impl<T> MaybeUninit<T> {
     #[unstable(feature = "maybe_uninit_slice", issue = "63569")]
     #[inline(always)]
     pub fn slice_as_ptr(this: &[MaybeUninit<T>]) -> *const T {
-        this as *const [MaybeUninit<T>] as *const T
+        this.as_ptr() as *const T
     }
 
     /// Gets a mutable pointer to the first element of the array.
     #[unstable(feature = "maybe_uninit_slice", issue = "63569")]
     #[inline(always)]
     pub fn slice_as_mut_ptr(this: &mut [MaybeUninit<T>]) -> *mut T {
-        this as *mut [MaybeUninit<T>] as *mut T
+        this.as_mut_ptr() as *mut T
     }
 }

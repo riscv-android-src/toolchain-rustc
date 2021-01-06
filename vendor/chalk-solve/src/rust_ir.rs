@@ -10,7 +10,7 @@ use chalk_ir::{
     visit::{Visit, VisitResult},
     AdtId, AliasEq, AliasTy, AssocTypeId, Binders, DebruijnIndex, FnDefId, GenericArg, ImplId,
     OpaqueTyId, ProjectionTy, QuantifiedWhereClause, Substitution, ToGenericArg, TraitId, TraitRef,
-    Ty, TyData, TypeName, VariableKind, WhereClause, WithKind,
+    Ty, TyKind, VariableKind, WhereClause, WithKind,
 };
 use std::iter;
 
@@ -44,12 +44,9 @@ impl<I: Interner> ImplDatum<I> {
             .skip_binders()
             .trait_ref
             .self_type_parameter(interner)
-            .data(interner)
+            .kind(interner)
         {
-            TyData::Apply(apply) => match apply.name {
-                TypeName::Adt(id) => Some(id),
-                _ => None,
-            },
+            TyKind::Adt(id, _) => Some(*id),
             _ => None,
         }
     }
@@ -96,12 +93,6 @@ pub enum AdtKind {
 }
 
 chalk_ir::const_visit!(AdtKind);
-
-impl<I: Interner> AdtDatum<I> {
-    pub fn name(&self, interner: &I) -> TypeName<I> {
-        self.id.cast(interner)
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Fold, HasInterner, Visit)]
 pub struct AdtDatumBound<I: Interner> {
@@ -556,7 +547,7 @@ impl<I: Interner> AssociatedTyDatum<I> {
         );
 
         // The self type will be `<P0 as Foo<P1..Pn>>::Item<Pn..Pm>` etc
-        let self_ty = TyData::Alias(AliasTy::Projection(ProjectionTy {
+        let self_ty = TyKind::Alias(AliasTy::Projection(ProjectionTy {
             associated_ty_id: self.id,
             substitution,
         }))
@@ -651,6 +642,68 @@ pub struct OpaqueTyDatumBound<I: Interner> {
     /// These are conditions on the generic parameters of the opaque type which must be true
     /// for a reference to the opaque type to be well-formed.
     pub where_clauses: Binders<Vec<QuantifiedWhereClause<I>>>,
+}
+
+/// Represents a generator type.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Fold, HasInterner)]
+pub struct GeneratorDatum<I: Interner> {
+    /// All of the nested types for this generator. The `Binder`
+    /// represents the types and lifetimes that this generator is generic over -
+    /// this behaves in the same way as `AdtDatun.binders`
+    pub input_output: Binders<GeneratorInputOutputDatum<I>>,
+}
+
+/// The nested types for a generator. This always appears inside a `GeneratorDatum`
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Fold, HasInterner)]
+pub struct GeneratorInputOutputDatum<I: Interner> {
+    /// The generator resume type - a value of this type
+    /// is supplied by the caller when resuming the generator.
+    /// Currently, this plays no rule in goal resolution.
+    pub resume_type: Ty<I>,
+    /// The generator yield type - a value of this type
+    /// is supplied by the generator during a yield.
+    /// Currently, this plays no role in goal resolution.
+    pub yield_type: Ty<I>,
+    /// The generator return type - a value of this type
+    /// is supplied by the generator when it returns.
+    /// Currently, this plays no role in goal resolution
+    pub return_type: Ty<I>,
+    /// The upvars stored by the generator. These represent
+    /// types captured from the generator's environment,
+    /// and are stored across all yields. These types (along with the witness types)
+    /// are considered 'constituent types' for the purposes of determining auto trait
+    /// implementations - that its, a generator impls an auto trait A
+    /// iff all of its constituent types implement A.
+    pub upvars: Vec<Ty<I>>,
+}
+
+/// The generator witness data. Each `GeneratorId` has both a `GeneratorDatum`
+/// and a `GeneratorWitnessDatum` - these represent two distinct types in Rust.
+/// `GeneratorWitnessDatum` is logically 'inside' a generator - this only
+/// matters when we treat the witness type as a 'constituent type for the
+/// purposes of determining auto trait implementations.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Fold, HasInterner)]
+pub struct GeneratorWitnessDatum<I: Interner> {
+    /// This binder is identical to the `input_output` binder in `GeneratorWitness` -
+    /// it binds the types and lifetimes that the generator is generic over.
+    /// There is an additional binder inside `GeneratorWitnessExistential`, which
+    /// is treated specially.
+    pub inner_types: Binders<GeneratorWitnessExistential<I>>,
+}
+
+/// The generator witness types, together with existentially bound lifetimes.
+/// Each 'witness type' represents a type stored inside the generator across
+/// a yield. When a generator type is constructed, the precise region relationships
+/// found in the generator body are erased. As a result, we are left with existential
+/// lifetimes - each type is parameterized over *some* lifetimes, but we do not
+/// know their precise values.
+///
+/// Unlike the binder in `GeneratorWitnessDatum`, this `Binder` never gets substituted
+/// via an `Ty`. Instead, we handle this `Binders` specially when determining
+/// auto trait impls. See `push_auto_trait_impls_generator_witness` for more details.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Fold, HasInterner)]
+pub struct GeneratorWitnessExistential<I: Interner> {
+    pub types: Binders<Vec<Ty<I>>>,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]

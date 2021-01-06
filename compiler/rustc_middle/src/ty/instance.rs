@@ -1,6 +1,6 @@
 use crate::middle::codegen_fn_attrs::CodegenFnAttrFlags;
 use crate::ty::print::{FmtPrinter, Printer};
-use crate::ty::subst::InternalSubsts;
+use crate::ty::subst::{InternalSubsts, Subst};
 use crate::ty::{self, SubstsRef, Ty, TyCtxt, TypeFoldable};
 use rustc_errors::ErrorReported;
 use rustc_hir::def::Namespace;
@@ -22,7 +22,8 @@ pub struct Instance<'tcx> {
     pub substs: SubstsRef<'tcx>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, TyEncodable, TyDecodable, HashStable)]
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(TyEncodable, TyDecodable, HashStable, TypeFoldable)]
 pub enum InstanceDef<'tcx> {
     /// A user-defined callable item.
     ///
@@ -183,10 +184,10 @@ impl<'tcx> InstanceDef<'tcx> {
             ty::InstanceDef::DropGlue(_, Some(_)) => return false,
             _ => return true,
         };
-        match tcx.def_key(def_id).disambiguated_data.data {
-            DefPathData::Ctor | DefPathData::ClosureExpr => true,
-            _ => false,
-        }
+        matches!(
+            tcx.def_key(def_id).disambiguated_data.data,
+            DefPathData::Ctor | DefPathData::ClosureExpr
+        )
     }
 
     /// Returns `true` if the machine code for this instance is instantiated in
@@ -257,7 +258,7 @@ impl<'tcx> InstanceDef<'tcx> {
 impl<'tcx> fmt::Display for Instance<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         ty::tls::with(|tcx| {
-            let substs = tcx.lift(&self.substs).expect("could not lift for printing");
+            let substs = tcx.lift(self.substs).expect("could not lift for printing");
             FmtPrinter::new(tcx, &mut *f, Namespace::ValueNS)
                 .print_def_path(self.def_id(), substs)?;
             Ok(())
@@ -290,7 +291,17 @@ impl<'tcx> Instance<'tcx> {
     }
 
     pub fn mono(tcx: TyCtxt<'tcx>, def_id: DefId) -> Instance<'tcx> {
-        Instance::new(def_id, tcx.empty_substs_for_def_id(def_id))
+        let substs = InternalSubsts::for_item(tcx, def_id, |param, _| match param.kind {
+            ty::GenericParamDefKind::Lifetime => tcx.lifetimes.re_erased.into(),
+            ty::GenericParamDefKind::Type { .. } => {
+                bug!("Instance::mono: {:?} has type parameters", def_id)
+            }
+            ty::GenericParamDefKind::Const { .. } => {
+                bug!("Instance::mono: {:?} has const parameters", def_id)
+            }
+        });
+
+        Instance::new(def_id, substs)
     }
 
     #[inline]
@@ -459,8 +470,31 @@ impl<'tcx> Instance<'tcx> {
     /// This function returns `Some(substs)` in the former case and `None` otherwise -- i.e., if
     /// this function returns `None`, then the MIR body does not require substitution during
     /// codegen.
-    pub fn substs_for_mir_body(&self) -> Option<SubstsRef<'tcx>> {
+    fn substs_for_mir_body(&self) -> Option<SubstsRef<'tcx>> {
         if self.def.has_polymorphic_mir_body() { Some(self.substs) } else { None }
+    }
+
+    pub fn subst_mir<T>(&self, tcx: TyCtxt<'tcx>, v: &T) -> T
+    where
+        T: TypeFoldable<'tcx> + Copy,
+    {
+        if let Some(substs) = self.substs_for_mir_body() { v.subst(tcx, substs) } else { *v }
+    }
+
+    pub fn subst_mir_and_normalize_erasing_regions<T>(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
+        v: &T,
+    ) -> T
+    where
+        T: TypeFoldable<'tcx> + Clone,
+    {
+        if let Some(substs) = self.substs_for_mir_body() {
+            tcx.subst_and_normalize_erasing_regions(substs, param_env, v)
+        } else {
+            tcx.normalize_erasing_regions(param_env, v.clone())
+        }
     }
 
     /// Returns a new `Instance` where generic parameters in `instance.substs` are replaced by

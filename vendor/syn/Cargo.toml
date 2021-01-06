@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "syn"
-version = "1.0.40"
+version = "1.0.44"
 authors = ["David Tolnay <dtolnay@gmail.com>"]
 include = ["/benches/**", "/build.rs", "/Cargo.toml", "/LICENSE-APACHE", "/LICENSE-MIT", "/README.md", "/src/**", "/tests/**"]
 description = "Parser for Rust source code"
@@ -38,7 +38,7 @@ required-features = ["full", "parsing"]
 name = "file"
 required-features = ["full", "parsing"]
 [dependencies.proc-macro2]
-version = "1.0.13"
+version = "1.0.23"
 default-features = false
 
 [dependencies.quote]
@@ -55,7 +55,7 @@ version = "1.0"
 version = "1.0"
 
 [dev-dependencies.insta]
-version = "0.16"
+version = "1.0"
 
 [dev-dependencies.rayon]
 version = "1.0"

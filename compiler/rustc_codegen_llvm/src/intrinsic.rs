@@ -334,8 +334,8 @@ impl IntrinsicCallMethods<'tcx> for Builder<'a, 'll, 'tcx> {
         self.call(expect, &[cond, self.const_bool(expected)], None)
     }
 
-    fn sideeffect(&mut self) {
-        if self.tcx.sess.opts.debugging_opts.insert_sideeffect {
+    fn sideeffect(&mut self, unconditional: bool) {
+        if unconditional || self.tcx.sess.opts.debugging_opts.insert_sideeffect {
             let fnname = self.get_intrinsic(&("llvm.sideeffect"));
             self.call(fnname, &[], None);
         }
@@ -367,7 +367,7 @@ fn try_intrinsic(
         bx.store(bx.const_i32(0), dest, ret_align);
     } else if wants_msvc_seh(bx.sess()) {
         codegen_msvc_try(bx, try_func, data, catch_func, dest);
-    } else if bx.sess().target.target.options.is_like_emscripten {
+    } else if bx.sess().target.is_like_emscripten {
         codegen_emcc_try(bx, try_func, data, catch_func, dest);
     } else {
         codegen_gnu_try(bx, try_func, data, catch_func, dest);
@@ -390,7 +390,7 @@ fn codegen_msvc_try(
 ) {
     let llfn = get_rust_try_fn(bx, &mut |mut bx| {
         bx.set_personality_fn(bx.eh_personality());
-        bx.sideeffect();
+        bx.sideeffect(false);
 
         let mut normal = bx.build_sibling_block("normal");
         let mut catchswitch = bx.build_sibling_block("catchswitch");
@@ -553,7 +553,7 @@ fn codegen_gnu_try(
         //      call %catch_func(%data, %ptr)
         //      ret 1
 
-        bx.sideeffect();
+        bx.sideeffect(false);
 
         let mut then = bx.build_sibling_block("then");
         let mut catch = bx.build_sibling_block("catch");
@@ -615,7 +615,7 @@ fn codegen_emcc_try(
         //      call %catch_func(%data, %catch_data)
         //      ret 1
 
-        bx.sideeffect();
+        bx.sideeffect(false);
 
         let mut then = bx.build_sibling_block("then");
         let mut catch = bx.build_sibling_block("catch");
@@ -673,17 +673,9 @@ fn codegen_emcc_try(
 fn gen_fn<'ll, 'tcx>(
     cx: &CodegenCx<'ll, 'tcx>,
     name: &str,
-    inputs: Vec<Ty<'tcx>>,
-    output: Ty<'tcx>,
+    rust_fn_sig: ty::PolyFnSig<'tcx>,
     codegen: &mut dyn FnMut(Builder<'_, 'll, 'tcx>),
 ) -> &'ll Value {
-    let rust_fn_sig = ty::Binder::bind(cx.tcx.mk_fn_sig(
-        inputs.into_iter(),
-        output,
-        false,
-        hir::Unsafety::Unsafe,
-        Abi::Rust,
-    ));
     let fn_abi = FnAbi::of_fn_ptr(cx, rust_fn_sig, &[]);
     let llfn = cx.declare_fn(name, &fn_abi);
     cx.set_frame_pointer_elimination(llfn);
@@ -710,22 +702,31 @@ fn get_rust_try_fn<'ll, 'tcx>(
     // Define the type up front for the signature of the rust_try function.
     let tcx = cx.tcx;
     let i8p = tcx.mk_mut_ptr(tcx.types.i8);
-    let try_fn_ty = tcx.mk_fn_ptr(ty::Binder::bind(tcx.mk_fn_sig(
+    // `unsafe fn(*mut i8) -> ()`
+    let try_fn_ty = tcx.mk_fn_ptr(ty::Binder::dummy(tcx.mk_fn_sig(
         iter::once(i8p),
         tcx.mk_unit(),
         false,
         hir::Unsafety::Unsafe,
         Abi::Rust,
     )));
-    let catch_fn_ty = tcx.mk_fn_ptr(ty::Binder::bind(tcx.mk_fn_sig(
+    // `unsafe fn(*mut i8, *mut i8) -> ()`
+    let catch_fn_ty = tcx.mk_fn_ptr(ty::Binder::dummy(tcx.mk_fn_sig(
         [i8p, i8p].iter().cloned(),
         tcx.mk_unit(),
         false,
         hir::Unsafety::Unsafe,
         Abi::Rust,
     )));
-    let output = tcx.types.i32;
-    let rust_try = gen_fn(cx, "__rust_try", vec![try_fn_ty, i8p, catch_fn_ty], output, codegen);
+    // `unsafe fn(unsafe fn(*mut i8) -> (), *mut i8, unsafe fn(*mut i8, *mut i8) -> ()) -> i32`
+    let rust_fn_sig = ty::Binder::dummy(cx.tcx.mk_fn_sig(
+        vec![try_fn_ty, i8p, catch_fn_ty].into_iter(),
+        tcx.types.i32,
+        false,
+        hir::Unsafety::Unsafe,
+        Abi::Rust,
+    ));
+    let rust_try = gen_fn(cx, "__rust_try", rust_fn_sig, codegen);
     cx.rust_try_fn.set(Some(rust_try));
     rust_try
 }
@@ -793,14 +794,18 @@ fn generic_simd_intrinsic(
         require_simd!(arg_tys[1], "argument");
         let v_len = arg_tys[1].simd_size(tcx);
         require!(
-            m_len == v_len,
+            // Allow masks for vectors with fewer than 8 elements to be
+            // represented with a u8 or i8.
+            m_len == v_len || (m_len == 8 && v_len < 8),
             "mismatched lengths: mask length `{}` != other vector length `{}`",
             m_len,
             v_len
         );
         let i1 = bx.type_i1();
-        let i1xn = bx.type_vector(i1, m_len);
-        let m_i1s = bx.bitcast(args[0].immediate(), i1xn);
+        let im = bx.type_ix(v_len);
+        let i1xn = bx.type_vector(i1, v_len);
+        let m_im = bx.trunc(args[0].immediate(), im);
+        let m_i1s = bx.bitcast(m_im, i1xn);
         return Ok(bx.select(m_i1s, args[1].immediate(), args[2].immediate()));
     }
 
@@ -974,12 +979,14 @@ fn generic_simd_intrinsic(
 
         // Integer vector <i{in_bitwidth} x in_len>:
         let (i_xn, in_elem_bitwidth) = match in_elem.kind() {
-            ty::Int(i) => {
-                (args[0].immediate(), i.bit_width().unwrap_or(bx.data_layout().pointer_size.bits()))
-            }
-            ty::Uint(i) => {
-                (args[0].immediate(), i.bit_width().unwrap_or(bx.data_layout().pointer_size.bits()))
-            }
+            ty::Int(i) => (
+                args[0].immediate(),
+                i.bit_width().unwrap_or_else(|| bx.data_layout().pointer_size.bits()),
+            ),
+            ty::Uint(i) => (
+                args[0].immediate(),
+                i.bit_width().unwrap_or_else(|| bx.data_layout().pointer_size.bits()),
+            ),
             _ => return_error!(
                 "vector argument `{}`'s element type `{}`, expected integer element type",
                 in_ty,
@@ -1718,10 +1725,10 @@ unsupported {} from `{}` with element `{}` of size `{}` to `{}`"#,
 fn int_type_width_signed(ty: Ty<'_>, cx: &CodegenCx<'_, '_>) -> Option<(u64, bool)> {
     match ty.kind() {
         ty::Int(t) => {
-            Some((t.bit_width().unwrap_or(u64::from(cx.tcx.sess.target.ptr_width)), true))
+            Some((t.bit_width().unwrap_or(u64::from(cx.tcx.sess.target.pointer_width)), true))
         }
         ty::Uint(t) => {
-            Some((t.bit_width().unwrap_or(u64::from(cx.tcx.sess.target.ptr_width)), false))
+            Some((t.bit_width().unwrap_or(u64::from(cx.tcx.sess.target.pointer_width)), false))
         }
         _ => None,
     }

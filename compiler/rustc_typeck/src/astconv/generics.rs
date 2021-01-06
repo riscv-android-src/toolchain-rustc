@@ -548,13 +548,18 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
         generics: &ty::Generics,
     ) -> bool {
         let explicit = !seg.infer_args;
-        let impl_trait = generics.params.iter().any(|param| match param.kind {
-            ty::GenericParamDefKind::Type {
-                synthetic: Some(hir::SyntheticTyParamKind::ImplTrait),
-                ..
-            } => true,
-            _ => false,
-        });
+        let impl_trait =
+            generics.params.iter().any(|param| match param.kind {
+                ty::GenericParamDefKind::Type {
+                    synthetic:
+                        Some(
+                            hir::SyntheticTyParamKind::ImplTrait
+                            | hir::SyntheticTyParamKind::FromAttr,
+                        ),
+                    ..
+                } => true,
+                _ => false,
+            });
 
         if explicit && impl_trait {
             let spans = seg
@@ -562,7 +567,7 @@ impl<'o, 'tcx> dyn AstConv<'tcx> + 'o {
                 .args
                 .iter()
                 .filter_map(|arg| match arg {
-                    GenericArg::Type(_) => Some(arg.span()),
+                    GenericArg::Type(_) | GenericArg::Const(_) => Some(arg.span()),
                     _ => None,
                 })
                 .collect::<Vec<_>>();

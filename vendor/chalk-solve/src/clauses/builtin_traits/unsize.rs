@@ -8,9 +8,8 @@ use chalk_ir::{
     cast::Cast,
     interner::HasInterner,
     visit::{visitors::FindAny, SuperVisit, Visit, VisitResult, Visitor},
-    ApplicationTy, Binders, Const, ConstValue, DebruijnIndex, DomainGoal, DynTy, EqGoal, Goal,
-    LifetimeOutlives, QuantifiedWhereClauses, Substitution, TraitId, Ty, TyData, TypeName,
-    TypeOutlives, WhereClause,
+    Binders, Const, ConstValue, DebruijnIndex, DomainGoal, DynTy, EqGoal, Goal, LifetimeOutlives,
+    QuantifiedWhereClauses, Substitution, TraitId, Ty, TyKind, TypeOutlives, WhereClause,
 };
 
 struct UnsizeParameterCollector<'a, I: Interner> {
@@ -29,8 +28,8 @@ impl<'a, I: Interner> Visitor<'a, I> for UnsizeParameterCollector<'a, I> {
     fn visit_ty(&mut self, ty: &Ty<I>, outer_binder: DebruijnIndex) -> Self::Result {
         let interner = self.interner;
 
-        match ty.data(interner) {
-            TyData::BoundVar(bound_var) => {
+        match ty.kind(interner) {
+            TyKind::BoundVar(bound_var) => {
                 // check if bound var refers to the outermost binder
                 if bound_var.debruijn.shifted_in() == outer_binder {
                     self.parameters.insert(bound_var.index);
@@ -84,8 +83,8 @@ impl<'a, 'p, I: Interner> Visitor<'a, I> for ParameterOccurenceCheck<'a, 'p, I> 
     fn visit_ty(&mut self, ty: &Ty<I>, outer_binder: DebruijnIndex) -> Self::Result {
         let interner = self.interner;
 
-        match ty.data(interner) {
-            TyData::BoundVar(bound_var) => {
+        match ty.kind(interner) {
+            TyKind::BoundVar(bound_var) => {
                 if bound_var.debruijn.shifted_in() == outer_binder
                     && self.parameters.contains(&bound_var.index)
                 {
@@ -162,7 +161,7 @@ pub fn add_unsize_program_clauses<I: Interner>(
     db: &dyn RustIrDatabase<I>,
     builder: &mut ClauseBuilder<'_, I>,
     trait_ref: &TraitRef<I>,
-    _ty: &TyData<I>,
+    _ty: &TyKind<I>,
 ) {
     let interner = db.interner();
 
@@ -184,14 +183,14 @@ pub fn add_unsize_program_clauses<I: Interner>(
     // for more info visit `fn assemble_candidates_for_unsizing` and
     // `fn confirm_builtin_unisize_candidate` in rustc.
 
-    match (source_ty.data(interner), target_ty.data(interner)) {
+    match (source_ty.kind(interner), target_ty.kind(interner)) {
         // dyn Trait + AutoX + 'a -> dyn Trait + AutoY + 'b
         (
-            TyData::Dyn(DynTy {
+            TyKind::Dyn(DynTy {
                 bounds: bounds_a,
                 lifetime: lifetime_a,
             }),
-            TyData::Dyn(DynTy {
+            TyKind::Dyn(DynTy {
                 bounds: bounds_b,
                 lifetime: lifetime_b,
             }),
@@ -234,7 +233,7 @@ pub fn add_unsize_program_clauses<I: Interner>(
             //
             // In order for the coercion to be valid, this new type
             // should be equal to target type.
-            let new_source_ty = TyData::Dyn(DynTy {
+            let new_source_ty = TyKind::Dyn(DynTy {
                 bounds: bounds_a.map_ref(|bounds| {
                     QuantifiedWhereClauses::from_iter(
                         interner,
@@ -273,7 +272,7 @@ pub fn add_unsize_program_clauses<I: Interner>(
         }
 
         // T -> dyn Trait + 'a
-        (_, TyData::Dyn(DynTy { bounds, lifetime })) => {
+        (_, TyKind::Dyn(DynTy { bounds, lifetime })) => {
             // Check if all traits in trait object are object safe
             let object_safe_goals = bounds
                 .skip_binders()
@@ -313,38 +312,17 @@ pub fn add_unsize_program_clauses<I: Interner>(
             );
         }
 
-        (
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Array,
-                substitution: array_subst,
-            }),
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Slice,
-                substitution: slice_subst,
-            }),
-        ) => {
-            let array_ty = array_subst.at(interner, 0);
-            let slice_ty = slice_subst.at(interner, 0);
-
+        (TyKind::Array(array_ty, _array_const), TyKind::Slice(slice_ty)) => {
             let eq_goal = EqGoal {
-                a: array_ty.clone(),
-                b: slice_ty.clone(),
+                a: array_ty.clone().cast(interner),
+                b: slice_ty.clone().cast(interner),
             };
 
             builder.push_clause(trait_ref.clone(), iter::once(eq_goal));
         }
 
         // Adt<T> -> Adt<U>
-        (
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Adt(adt_id_a),
-                substitution: substitution_a,
-            }),
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Adt(adt_id_b),
-                substitution: substitution_b,
-            }),
-        ) => {
+        (TyKind::Adt(adt_id_a, substitution_a), TyKind::Adt(adt_id_b, substitution_b)) => {
             if adt_id_a != adt_id_b {
                 return;
             }
@@ -420,12 +398,9 @@ pub fn add_unsize_program_clauses<I: Interner>(
             );
 
             let eq_goal = EqGoal {
-                a: TyData::Apply(ApplicationTy {
-                    name: TypeName::Adt(adt_id),
-                    substitution,
-                })
-                .intern(interner)
-                .cast(interner),
+                a: TyKind::Adt(adt_id, substitution)
+                    .intern(interner)
+                    .cast(interner),
                 b: target_ty.clone().cast(interner),
             }
             .cast(interner);
@@ -451,16 +426,7 @@ pub fn add_unsize_program_clauses<I: Interner>(
         }
 
         // (.., T) -> (.., U)
-        (
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Tuple(arity_a),
-                substitution: substitution_a,
-            }),
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Tuple(arity_b),
-                substitution: substitution_b,
-            }),
-        ) => {
+        (TyKind::Tuple(arity_a, substitution_a), TyKind::Tuple(arity_b, substitution_b)) => {
             if arity_a != arity_b || *arity_a == 0 {
                 return;
             }
@@ -471,16 +437,16 @@ pub fn add_unsize_program_clauses<I: Interner>(
 
             // Check that the source tuple with the target's
             // last element is equal to the target.
-            let new_tuple = ApplicationTy {
-                name: TypeName::Tuple(*arity),
-                substitution: Substitution::from_iter(
+            let new_tuple = TyKind::Tuple(
+                *arity,
+                Substitution::from_iter(
                     interner,
                     substitution_a
                         .iter(interner)
                         .take(arity - 1)
                         .chain(iter::once(tail_ty_b)),
                 ),
-            }
+            )
             .cast(interner)
             .intern(interner);
 

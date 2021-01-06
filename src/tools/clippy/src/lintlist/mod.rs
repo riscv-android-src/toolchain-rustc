@@ -1,15 +1,16 @@
-//! This file is managed by `cargo dev update_lints`. Do not edit.
+//! This file is managed by `cargo dev update_lints`. Do not edit or format this file.
 
-use lazy_static::lazy_static;
+use std::lazy::SyncLazy;
 
 pub mod lint;
 pub use lint::Level;
 pub use lint::Lint;
 pub use lint::LINT_LEVELS;
 
-lazy_static! {
+#[rustfmt::skip]
+pub static ALL_LINTS: SyncLazy<Vec<Lint>> = SyncLazy::new(|| {
 // begin lint list, do not remove this comment, it’s used in `update_lints`
-pub static ref ALL_LINTS: Vec<Lint> = vec![
+vec![
     Lint {
         name: "absurd_extreme_comparisons",
         group: "correctness",
@@ -61,10 +62,17 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "await_holding_lock",
-        group: "pedantic",
+        group: "correctness",
         desc: "Inside an async function, holding a MutexGuard while calling await",
         deprecation: None,
-        module: "await_holding_lock",
+        module: "await_holding_invalid",
+    },
+    Lint {
+        name: "await_holding_refcell_ref",
+        group: "correctness",
+        desc: "Inside an async function, holding a RefCell ref while calling await",
+        deprecation: None,
+        module: "await_holding_invalid",
     },
     Lint {
         name: "bad_bit_mask",
@@ -110,7 +118,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "borrow_interior_mutable_const",
-        group: "correctness",
+        group: "style",
         desc: "referencing `const` with interior mutability",
         deprecation: None,
         module: "non_copy_const",
@@ -291,6 +299,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "comparison_chain",
     },
     Lint {
+        name: "comparison_to_empty",
+        group: "style",
+        desc: "checking `x == \"\"` or `x == []` (or similar) when `.is_empty()` could be used instead",
+        deprecation: None,
+        module: "len_zero",
+    },
+    Lint {
         name: "copy_iterator",
         group: "pedantic",
         desc: "implementing `Iterator` on a `Copy` type",
@@ -334,7 +349,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "declare_interior_mutable_const",
-        group: "correctness",
+        group: "style",
         desc: "declaring `const` with interior mutability",
         deprecation: None,
         module: "non_copy_const",
@@ -344,7 +359,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         group: "pedantic",
         desc: "checks for literal calls to `Default::default()`",
         deprecation: None,
-        module: "default_trait_access",
+        module: "default",
     },
     Lint {
         name: "deprecated_cfg_attr",
@@ -380,6 +395,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "deriving `Ord` but implementing `PartialOrd` explicitly",
         deprecation: None,
         module: "derive",
+    },
+    Lint {
+        name: "disallowed_method",
+        group: "nursery",
+        desc: "use of a disallowed method call",
+        deprecation: None,
+        module: "disallowed_method",
     },
     Lint {
         name: "diverging_sub_expression",
@@ -422,13 +444,6 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "Warn on unnecessary double parentheses",
         deprecation: None,
         module: "double_parens",
-    },
-    Lint {
-        name: "drop_bounds",
-        group: "correctness",
-        desc: "bounds of the form `T: Drop` are useless",
-        deprecation: None,
-        module: "drop_bounds",
     },
     Lint {
         name: "drop_copy",
@@ -613,6 +628,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "fallible_impl_from",
     },
     Lint {
+        name: "field_reassign_with_default",
+        group: "style",
+        desc: "binding initialized with Default should have its fields set in the initializer",
+        deprecation: None,
+        module: "default",
+    },
+    Lint {
         name: "filetype_is_file",
         group: "restriction",
         desc: "`FileType::is_file` is not recommended to test for readable file type",
@@ -737,6 +759,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "calls to `std::mem::forget` with a reference instead of an owned value",
         deprecation: None,
         module: "drop_forget_ref",
+    },
+    Lint {
+        name: "from_iter_instead_of_collect",
+        group: "style",
+        desc: "use `.collect()` instead of `::from_iter()`",
+        deprecation: None,
+        module: "methods",
     },
     Lint {
         name: "future_not_send",
@@ -893,6 +922,20 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "attrs",
     },
     Lint {
+        name: "inline_asm_x86_att_syntax",
+        group: "restriction",
+        desc: "prefer Intel x86 assembly syntax",
+        deprecation: None,
+        module: "asm_syntax",
+    },
+    Lint {
+        name: "inline_asm_x86_intel_syntax",
+        group: "restriction",
+        desc: "prefer AT&T x86 assembly syntax",
+        deprecation: None,
+        module: "asm_syntax",
+    },
+    Lint {
         name: "inline_fn_without_body",
         group: "correctness",
         desc: "use of `#[inline]` on trait methods without bodies",
@@ -947,6 +990,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "a comparison involving an upcast which is always true or false",
         deprecation: None,
         module: "types",
+    },
+    Lint {
+        name: "invisible_characters",
+        group: "correctness",
+        desc: "using an invisible character in a string literal, which is confusing",
+        deprecation: None,
+        module: "unicode",
     },
     Lint {
         name: "items_after_statements",
@@ -1038,6 +1088,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "allocating large arrays on stack may cause stack overflow",
         deprecation: None,
         module: "large_stack_arrays",
+    },
+    Lint {
+        name: "large_types_passed_by_value",
+        group: "pedantic",
+        desc: "functions taking large arguments by value",
+        deprecation: None,
+        module: "pass_by_ref_or_value",
     },
     Lint {
         name: "len_without_is_empty",
@@ -1138,6 +1195,20 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "manual_non_exhaustive",
     },
     Lint {
+        name: "manual_ok_or",
+        group: "pedantic",
+        desc: "finds patterns that can be encoded more concisely with `Option::ok_or`",
+        deprecation: None,
+        module: "manual_ok_or",
+    },
+    Lint {
+        name: "manual_range_contains",
+        group: "style",
+        desc: "manually reimplementing {`Range`, `RangeInclusive`}`::contains`",
+        deprecation: None,
+        module: "ranges",
+    },
+    Lint {
         name: "manual_saturating_arithmetic",
         group: "style",
         desc: "`.chcked_add/sub(x).unwrap_or(MAX/MIN)`",
@@ -1159,6 +1230,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "swap",
     },
     Lint {
+        name: "manual_unwrap_or",
+        group: "complexity",
+        desc: "finds patterns that can be encoded more concisely with `Option::unwrap_or` or `Result::unwrap_or`",
+        deprecation: None,
+        module: "manual_unwrap_or",
+    },
+    Lint {
         name: "many_single_char_names",
         group: "style",
         desc: "too many single character bindings",
@@ -1171,6 +1249,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "using `iterator.map(|x| x.clone())`, or dereferencing closures for `Copy` types",
         deprecation: None,
         module: "map_clone",
+    },
+    Lint {
+        name: "map_collect_result_unit",
+        group: "style",
+        desc: "using `.map(_).collect::<Result<(),_>()`, which can be replaced with `try_for_each`",
+        deprecation: None,
+        module: "methods",
     },
     Lint {
         name: "map_entry",
@@ -1254,7 +1339,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         group: "pedantic",
         desc: "`match` with identical arm bodies",
         deprecation: None,
-        module: "copies",
+        module: "matches",
     },
     Lint {
         name: "match_single_binding",
@@ -1458,6 +1543,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "usage of double-mut refs, e.g., `&mut &mut ...`",
         deprecation: None,
         module: "mut_mut",
+    },
+    Lint {
+        name: "mut_mutex_lock",
+        group: "style",
+        desc: "`&mut Mutex::lock` does unnecessary locking",
+        deprecation: None,
+        module: "mut_mutex_lock",
     },
     Lint {
         name: "mut_range_bound",
@@ -1824,6 +1916,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "ptr",
     },
     Lint {
+        name: "ptr_eq",
+        group: "style",
+        desc: "use `std::ptr::eq` when comparing raw pointers",
+        deprecation: None,
+        module: "ptr_eq",
+    },
+    Lint {
         name: "ptr_offset_with_cast",
         group: "complexity",
         desc: "unneeded pointer offset cast",
@@ -1867,7 +1966,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "rc_buffer",
-        group: "perf",
+        group: "restriction",
         desc: "shared ownership of a buffer type",
         deprecation: None,
         module: "types",
@@ -1950,6 +2049,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "reference",
     },
     Lint {
+        name: "ref_option_ref",
+        group: "pedantic",
+        desc: "use `Option<&T>` instead of `&Option<&T>`",
+        deprecation: None,
+        module: "ref_option_ref",
+    },
+    Lint {
         name: "repeat_once",
         group: "complexity",
         desc: "using `.repeat(1)` instead of `String.clone()`, `str.to_string()` or `slice.to_vec()` ",
@@ -1976,6 +2082,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "using `result.map(f)`, where `f` is a function or closure that returns `()`",
         deprecation: None,
         module: "map_unit_fn",
+    },
+    Lint {
+        name: "result_unit_err",
+        group: "style",
+        desc: "public function returning `Result` with an `Err` type of `()`",
+        deprecation: None,
+        module: "functions",
     },
     Lint {
         name: "reversed_empty_ranges",
@@ -2062,16 +2175,16 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "non_expressive_names",
     },
     Lint {
-        name: "single_char_pattern",
-        group: "perf",
-        desc: "using a single-character str where a char could be used, e.g., `_.split(\"x\")`",
+        name: "single_char_add_str",
+        group: "style",
+        desc: "`push_str()` or `insert_str()` used with a single-character string literal as parameter",
         deprecation: None,
         module: "methods",
     },
     Lint {
-        name: "single_char_push_str",
-        group: "style",
-        desc: "`push_str()` used with a single-character string literal as parameter",
+        name: "single_char_pattern",
+        group: "perf",
+        desc: "using a single-character str where a char could be used, e.g., `_.split(\"x\")`",
         deprecation: None,
         module: "methods",
     },
@@ -2081,6 +2194,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "imports with single component path are redundant",
         deprecation: None,
         module: "single_component_path_imports",
+    },
+    Lint {
+        name: "single_element_loop",
+        group: "complexity",
+        desc: "there is no reason to have a single element loop",
+        deprecation: None,
+        module: "loops",
     },
     Lint {
         name: "single_match",
@@ -2140,7 +2260,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
     },
     Lint {
         name: "string_lit_as_bytes",
-        group: "style",
+        group: "nursery",
         desc: "calling `as_bytes` on a string literal instead of using a byte string literal",
         deprecation: None,
         module: "strings",
@@ -2214,13 +2334,6 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "assignments to temporaries",
         deprecation: None,
         module: "temporary_assignment",
-    },
-    Lint {
-        name: "temporary_cstring_as_ptr",
-        group: "correctness",
-        desc: "getting the inner pointer of a temporary `CString`",
-        deprecation: None,
-        module: "methods",
     },
     Lint {
         name: "to_digit_is_some",
@@ -2346,7 +2459,7 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         group: "pedantic",
         desc: "functions taking small copyable arguments by reference",
         deprecation: None,
-        module: "trivially_copy_pass_by_ref",
+        module: "pass_by_ref_or_value",
     },
     Lint {
         name: "try_err",
@@ -2368,6 +2481,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "Types are repeated unnecessary in trait bounds use `+` instead of using `T: _, T: _`",
         deprecation: None,
         module: "trait_bounds",
+    },
+    Lint {
+        name: "undropped_manually_drops",
+        group: "correctness",
+        desc: "use of safe `std::mem::drop` function to drop a std::mem::ManuallyDrop, which will not drop the inner value",
+        deprecation: None,
+        module: "undropped_manually_drops",
     },
     Lint {
         name: "unicode_not_nfc",
@@ -2557,6 +2677,13 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         desc: "needless unit expression",
         deprecation: None,
         module: "unused_unit",
+    },
+    Lint {
+        name: "unusual_byte_groupings",
+        group: "style",
+        desc: "binary or hex literals that aren\'t grouped by four",
+        deprecation: None,
+        module: "literal_representation",
     },
     Lint {
         name: "unwrap_in_result",
@@ -2790,19 +2917,12 @@ pub static ref ALL_LINTS: Vec<Lint> = vec![
         module: "misc",
     },
     Lint {
-        name: "zero_width_space",
-        group: "correctness",
-        desc: "using a zero-width space in a string literal, which is confusing",
-        deprecation: None,
-        module: "unicode",
-    },
-    Lint {
         name: "zst_offset",
         group: "correctness",
         desc: "Check for offset calculations on raw pointers to zero-sized types",
         deprecation: None,
         module: "methods",
     },
-];
+]
 // end lint list, do not remove this comment, it’s used in `update_lints`
-}
+});

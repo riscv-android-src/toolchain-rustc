@@ -33,6 +33,7 @@ const GATED_CFGS: &[GatedCfg] = &[
     ),
     (sym::sanitize, sym::cfg_sanitize, cfg_fn!(cfg_sanitize)),
     (sym::version, sym::cfg_version, cfg_fn!(cfg_version)),
+    (sym::panic, sym::cfg_panic, cfg_fn!(cfg_panic)),
 ];
 
 /// Find a gated cfg determined by the `pred`icate which is given the cfg's name.
@@ -83,10 +84,7 @@ impl std::fmt::Debug for AttributeGate {
 
 impl AttributeGate {
     fn is_deprecated(&self) -> bool {
-        match *self {
-            Self::Gated(Stability::Deprecated(_, _), ..) => true,
-            _ => false,
-        }
+        matches!(*self, Self::Gated(Stability::Deprecated(_, _), ..))
     }
 }
 
@@ -336,6 +334,8 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
         optimize, AssumedUsed, template!(List: "size|speed"), optimize_attribute,
         experimental!(optimize),
     ),
+    // RFC 2867
+    gated!(instruction_set, AssumedUsed, template!(List: "set"), isa_attribute, experimental!(instruction_set)),
 
     gated!(ffi_returns_twice, AssumedUsed, template!(Word), experimental!(ffi_returns_twice)),
     gated!(ffi_pure, AssumedUsed, template!(Word), experimental!(ffi_pure)),
@@ -376,6 +376,10 @@ pub const BUILTIN_ATTRIBUTES: &[BuiltinAttribute] = &[
     gated!(
         allow_internal_unstable, AssumedUsed, template!(Word, List: "feat1, feat2, ..."),
         "allow_internal_unstable side-steps feature gating and stability checks",
+    ),
+    gated!(
+        rustc_allow_const_fn_unstable, AssumedUsed, template!(Word, List: "feat1, feat2, ..."),
+        "rustc_allow_const_fn_unstable side-steps feature gating and stability checks"
     ),
     gated!(
         allow_internal_unsafe, Normal, template!(Word),
@@ -596,7 +600,7 @@ pub fn is_builtin_attr_name(name: Symbol) -> bool {
     BUILTIN_ATTRIBUTE_MAP.get(&name).is_some()
 }
 
-pub static BUILTIN_ATTRIBUTE_MAP: SyncLazy<FxHashMap<Symbol, &'static BuiltinAttribute>> =
+pub static BUILTIN_ATTRIBUTE_MAP: SyncLazy<FxHashMap<Symbol, &BuiltinAttribute>> =
     SyncLazy::new(|| {
         let mut map = FxHashMap::default();
         for attr in BUILTIN_ATTRIBUTES.iter() {

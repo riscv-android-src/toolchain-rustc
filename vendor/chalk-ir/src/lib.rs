@@ -211,61 +211,6 @@ pub enum Mutability {
     Not,
 }
 
-/// Different kinds of Rust types.
-#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Fold, Visit)]
-pub enum TypeName<I: Interner> {
-    /// Abstract data types, i.e., structs, unions, or enumerations.
-    /// For example, a type like `Vec<T>`.
-    Adt(AdtId<I>),
-
-    /// an associated type like `Iterator::Item`; see `AssociatedType` for details
-    AssociatedType(AssocTypeId<I>),
-
-    /// a scalar type like `bool` or `u32`
-    Scalar(Scalar),
-
-    /// a tuple of the given arity
-    Tuple(usize),
-
-    /// an array type like `[T; N]`
-    Array,
-
-    /// a slice type like `[T]`
-    Slice,
-
-    /// a raw pointer type like `*const T` or `*mut T`
-    Raw(Mutability),
-
-    /// a reference type like `&T` or `&mut T`
-    Ref(Mutability),
-
-    /// a placeholder for opaque types like `impl Trait`
-    OpaqueType(OpaqueTyId<I>),
-
-    /// a function definition
-    FnDef(FnDefId<I>),
-
-    /// the string primitive type
-    Str,
-
-    /// the never type `!`
-    Never,
-
-    /// A closure.
-    Closure(ClosureId<I>),
-
-    /// foreign types
-    Foreign(ForeignDefId<I>),
-
-    /// This can be used to represent an error, e.g. during name resolution of a type.
-    /// Chalk itself will not produce this, just pass it through when given.
-    Error,
-}
-
-impl<I: Interner> HasInterner for TypeName<I> {
-    type Interner = I;
-}
-
 /// An universe index is how a universally quantified parameter is
 /// represented when it's binder is moved into the environment.
 /// An example chain of transformations would be:
@@ -366,23 +311,30 @@ pub struct FnDefId<I: Interner>(pub I::DefId);
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClosureId<I: Interner>(pub I::DefId);
 
+/// Id for Rust generators.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GeneratorId<I: Interner>(pub I::DefId);
+
 /// Id for foreign types.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ForeignDefId<I: Interner>(pub I::DefId);
 
 impl_debugs!(ImplId, ClauseId);
 
-/// A Rust type. The actual type data is stored in `TyData`.
+/// A Rust type. The actual type data is stored in `TyKind`.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
 pub struct Ty<I: Interner> {
     interned: I::InternedType,
 }
 
 impl<I: Interner> Ty<I> {
-    /// Creates a type from `TyData`.
-    pub fn new(interner: &I, data: impl CastTo<TyData<I>>) -> Self {
+    /// Creates a type from `TyKind`.
+    pub fn new(interner: &I, data: impl CastTo<TyKind<I>>) -> Self {
+        let data = TyData {
+            kind: data.cast(interner),
+        };
         Ty {
-            interned: I::intern_ty(interner, data.cast(interner)),
+            interned: I::intern_ty(interner, data),
         }
     }
 
@@ -394,6 +346,11 @@ impl<I: Interner> Ty<I> {
     /// Gets the underlying type data.
     pub fn data(&self, interner: &I) -> &TyData<I> {
         I::ty_data(interner, &self.interned)
+    }
+
+    /// Gets the underlying type kind.
+    pub fn kind(&self, interner: &I) -> &TyKind<I> {
+        &I::ty_data(interner, &self.interned).kind
     }
 
     /// Creates a `FromEnv` constraint using this type.
@@ -411,79 +368,67 @@ impl<I: Interner> Ty<I> {
         self.from_env().cast(interner)
     }
 
-    /// If this is a `TyData::BoundVar(d)`, returns `Some(d)` else `None`.
+    /// If this is a `TyKind::BoundVar(d)`, returns `Some(d)` else `None`.
     pub fn bound_var(&self, interner: &I) -> Option<BoundVar> {
-        if let TyData::BoundVar(bv) = self.data(interner) {
+        if let TyKind::BoundVar(bv) = self.kind(interner) {
             Some(*bv)
         } else {
             None
         }
     }
 
-    /// If this is a `TyData::InferenceVar(d)`, returns `Some(d)` else `None`.
+    /// If this is a `TyKind::InferenceVar(d)`, returns `Some(d)` else `None`.
     pub fn inference_var(&self, interner: &I) -> Option<InferenceVar> {
-        if let TyData::InferenceVar(depth, _) = self.data(interner) {
+        if let TyKind::InferenceVar(depth, _) = self.kind(interner) {
             Some(*depth)
         } else {
             None
         }
     }
 
-    /// Returns true if this is a `BoundVar` or an `InferenceVar` of `TyKind::General`.
+    /// Returns true if this is a `BoundVar` or an `InferenceVar` of `TyVariableKind::General`.
     pub fn is_general_var(&self, interner: &I, binders: &CanonicalVarKinds<I>) -> bool {
-        match self.data(interner) {
-            TyData::BoundVar(bv)
+        match self.kind(interner) {
+            TyKind::BoundVar(bv)
                 if bv.debruijn == DebruijnIndex::INNERMOST
-                    && binders.at(interner, bv.index).kind == VariableKind::Ty(TyKind::General) =>
+                    && binders.at(interner, bv.index).kind
+                        == VariableKind::Ty(TyVariableKind::General) =>
             {
                 true
             }
-            TyData::InferenceVar(_, TyKind::General) => true,
+            TyKind::InferenceVar(_, TyVariableKind::General) => true,
             _ => false,
         }
     }
 
     /// Returns true if this is an `Alias`.
     pub fn is_alias(&self, interner: &I) -> bool {
-        match self.data(interner) {
-            TyData::Alias(..) => true,
+        match self.kind(interner) {
+            TyKind::Alias(..) => true,
             _ => false,
         }
     }
 
     /// Returns true if this is an `IntTy` or `UintTy`.
     pub fn is_integer(&self, interner: &I) -> bool {
-        match self.data(interner) {
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Scalar(Scalar::Int(_)),
-                ..
-            })
-            | TyData::Apply(ApplicationTy {
-                name: TypeName::Scalar(Scalar::Uint(_)),
-                ..
-            }) => true,
+        match self.kind(interner) {
+            TyKind::Scalar(Scalar::Int(_)) | TyKind::Scalar(Scalar::Uint(_)) => true,
             _ => false,
         }
     }
 
     /// Returns true if this is a `FloatTy`.
     pub fn is_float(&self, interner: &I) -> bool {
-        match self.data(interner) {
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Scalar(Scalar::Float(_)),
-                ..
-            }) => true,
+        match self.kind(interner) {
+            TyKind::Scalar(Scalar::Float(_)) => true,
             _ => false,
         }
     }
 
     /// Returns `Some(adt_id)` if this is an ADT, `None` otherwise
     pub fn adt_id(&self, interner: &I) -> Option<AdtId<I>> {
-        match self.data(interner) {
-            TyData::Apply(ApplicationTy {
-                name: TypeName::Adt(adt_id),
-                ..
-            }) => Some(*adt_id),
+        match self.kind(interner) {
+            TyKind::Adt(adt_id, _) => Some(*adt_id),
             _ => None,
         }
     }
@@ -496,15 +441,68 @@ impl<I: Interner> Ty<I> {
     }
 }
 
+/// Contains the data for a Ty
+#[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
+pub struct TyData<I: Interner> {
+    /// The kind
+    pub kind: TyKind<I>,
+}
+
 /// Type data, which holds the actual type information.
 #[derive(Clone, PartialEq, Eq, Hash, HasInterner)]
-pub enum TyData<I: Interner> {
-    /// An "application" type is one that applies the set of type
-    /// arguments to some base type. For example, `Vec<u32>` would be
-    /// "applying" the parameters `[u32]` to the code type `Vec`.
-    /// This type is also used for base types like `u32` (which just apply
-    /// an empty list).
-    Apply(ApplicationTy<I>),
+pub enum TyKind<I: Interner> {
+    /// Abstract data types, i.e., structs, unions, or enumerations.
+    /// For example, a type like `Vec<T>`.
+    Adt(AdtId<I>, Substitution<I>),
+
+    /// an associated type like `Iterator::Item`; see `AssociatedType` for details
+    AssociatedType(AssocTypeId<I>, Substitution<I>),
+
+    /// a scalar type like `bool` or `u32`
+    Scalar(Scalar),
+
+    /// a tuple of the given arity
+    Tuple(usize, Substitution<I>),
+
+    /// an array type like `[T; N]`
+    Array(Ty<I>, Const<I>),
+
+    /// a slice type like `[T]`
+    Slice(Ty<I>),
+
+    /// a raw pointer type like `*const T` or `*mut T`
+    Raw(Mutability, Ty<I>),
+
+    /// a reference type like `&T` or `&mut T`
+    Ref(Mutability, Lifetime<I>, Ty<I>),
+
+    /// a placeholder for opaque types like `impl Trait`
+    OpaqueType(OpaqueTyId<I>, Substitution<I>),
+
+    /// a function definition
+    FnDef(FnDefId<I>, Substitution<I>),
+
+    /// the string primitive type
+    Str,
+
+    /// the never type `!`
+    Never,
+
+    /// A closure.
+    Closure(ClosureId<I>, Substitution<I>),
+
+    /// A generator.
+    Generator(GeneratorId<I>, Substitution<I>),
+
+    /// A generator witness.
+    GeneratorWitness(GeneratorId<I>, Substitution<I>),
+
+    /// foreign types
+    Foreign(ForeignDefId<I>),
+
+    /// This can be used to represent an error, e.g. during name resolution of a type.
+    /// Chalk itself will not produce this, just pass it through when given.
+    Error,
 
     /// instantiated from a universally quantified type, e.g., from
     /// `forall<T> { .. }`. Stands in as a representative of "some
@@ -537,19 +535,21 @@ pub enum TyData<I: Interner> {
     BoundVar(BoundVar),
 
     /// Inference variable defined in the current inference context.
-    InferenceVar(InferenceVar, TyKind),
+    InferenceVar(InferenceVar, TyVariableKind),
 }
 
-impl<I: Interner> Copy for TyData<I>
+impl<I: Interner> Copy for TyKind<I>
 where
     I::InternedLifetime: Copy,
     I::InternedSubstitution: Copy,
     I::InternedVariableKinds: Copy,
     I::InternedQuantifiedWhereClauses: Copy,
+    I::InternedType: Copy,
+    I::InternedConst: Copy,
 {
 }
 
-impl<I: Interner> TyData<I> {
+impl<I: Interner> TyKind<I> {
     /// Casts the type data to a type.
     pub fn intern(self, interner: &I) -> Ty<I> {
         Ty::new(interner, self)
@@ -596,7 +596,7 @@ impl BoundVar {
 
     /// Casts the bound variable to a type.
     pub fn to_ty<I: Interner>(self, interner: &I) -> Ty<I> {
-        TyData::<I>::BoundVar(self).intern(interner)
+        TyKind::<I>::BoundVar(self).intern(interner)
     }
 
     /// Wrap the bound variable in a lifetime.
@@ -864,8 +864,8 @@ impl InferenceVar {
     }
 
     /// Wraps the inference variable in a type.
-    pub fn to_ty<I: Interner>(self, interner: &I, kind: TyKind) -> Ty<I> {
-        TyData::<I>::InferenceVar(self, kind).intern(interner)
+    pub fn to_ty<I: Interner>(self, interner: &I, kind: TyVariableKind) -> Ty<I> {
+        TyKind::<I>::InferenceVar(self, kind).intern(interner)
     }
 
     /// Wraps the inference variable in a lifetime.
@@ -1054,6 +1054,7 @@ impl<I: Interner> Lifetime<I> {
             LifetimeData::BoundVar(_) => true,
             LifetimeData::InferenceVar(_) => false,
             LifetimeData::Placeholder(_) => false,
+            LifetimeData::Static => false,
             LifetimeData::Phantom(..) => unreachable!(),
         }
     }
@@ -1062,12 +1063,14 @@ impl<I: Interner> Lifetime<I> {
 /// Lifetime data, including what kind of lifetime it is and what it points to.
 #[derive(Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, HasInterner)]
 pub enum LifetimeData<I: Interner> {
-    /// See TyData::BoundVar.
+    /// See TyKind::BoundVar.
     BoundVar(BoundVar),
     /// Lifetime whose value is being inferred.
     InferenceVar(InferenceVar),
     /// Lifetime on some yet-unknown placeholder.
     Placeholder(PlaceholderIndex),
+    /// Static lifetime
+    Static,
     /// Lifetime on phantom data.
     Phantom(Void, PhantomData<I>),
 }
@@ -1098,7 +1101,7 @@ impl PlaceholderIndex {
 
     /// Create an interned type.
     pub fn to_ty<I: Interner>(self, interner: &I) -> Ty<I> {
-        TyData::Placeholder(self).intern(interner)
+        TyKind::Placeholder(self).intern(interner)
     }
 
     /// Wrap the placeholder index in a constant.
@@ -1111,43 +1114,6 @@ impl PlaceholderIndex {
     }
 }
 
-/// Normal Rust types, containing the type name and zero or more generic arguments.
-/// For example, in `Vec<u32>` those would be `Vec` and `[u32]` respectively.
-#[derive(Clone, PartialEq, Eq, Hash, Fold, Visit, HasInterner, Zip)]
-pub struct ApplicationTy<I: Interner> {
-    /// The type name.
-    pub name: TypeName<I>,
-    /// The substitution containing the generic arguments.
-    pub substitution: Substitution<I>,
-}
-
-impl<I: Interner> Copy for ApplicationTy<I> where I::InternedSubstitution: Copy {}
-
-impl<I: Interner> ApplicationTy<I> {
-    /// Create an interned type from this application type.
-    pub fn intern(self, interner: &I) -> Ty<I> {
-        Ty::new(interner, self)
-    }
-
-    /// Gets an iterator of all type parameters.
-    pub fn type_parameters<'a>(&'a self, interner: &'a I) -> impl Iterator<Item = Ty<I>> + 'a {
-        self.substitution
-            .iter(interner)
-            .filter_map(move |p| p.ty(interner))
-            .cloned()
-    }
-
-    /// Gets the first type parameter.
-    pub fn first_type_parameter(&self, interner: &I) -> Option<Ty<I>> {
-        self.type_parameters(interner).next()
-    }
-
-    /// Gets the number of type parameters.
-    pub fn len_type_parameters(&self, interner: &I) -> usize {
-        self.type_parameters(interner).count()
-    }
-}
-
 /// Represents some extra knowledge we may have about the type variable.
 /// ```ignore
 /// let x: &[u32];
@@ -1156,11 +1122,11 @@ impl<I: Interner> ApplicationTy<I> {
 /// ```
 /// In this example, `i` is known to be some type of integer. We can infer that
 /// it is `usize` because that is the only integer type that slices have an
-/// `Index` impl for. `i` would have a `TyKind` of `Integer` to guide the
+/// `Index` impl for. `i` would have a `TyVariableKind` of `Integer` to guide the
 /// inference process.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
-pub enum TyKind {
+pub enum TyVariableKind {
     General,
     Integer,
     Float,
@@ -1170,7 +1136,7 @@ pub enum TyKind {
 #[derive(Clone, PartialEq, Eq, Hash)]
 #[allow(missing_docs)]
 pub enum VariableKind<I: Interner> {
-    Ty(TyKind),
+    Ty(TyVariableKind),
     Lifetime,
     Const(Ty<I>),
 }
@@ -1185,7 +1151,7 @@ impl<I: Interner> VariableKind<I> {
     fn to_bound_variable(&self, interner: &I, bound_var: BoundVar) -> GenericArg<I> {
         match self {
             VariableKind::Ty(_) => {
-                GenericArgData::Ty(TyData::BoundVar(bound_var).intern(interner)).intern(interner)
+                GenericArgData::Ty(TyKind::BoundVar(bound_var).intern(interner)).intern(interner)
             }
             VariableKind::Lifetime => {
                 GenericArgData::Lifetime(LifetimeData::BoundVar(bound_var).intern(interner))
@@ -1910,9 +1876,9 @@ impl<T: HasInterner> Binders<T> {
         op: impl FnOnce(Ty<T::Interner>) -> T,
     ) -> Binders<T> {
         // The new variable is at the front and everything afterwards is shifted up by 1
-        let new_var = TyData::BoundVar(BoundVar::new(DebruijnIndex::INNERMOST, 0)).intern(interner);
+        let new_var = TyKind::BoundVar(BoundVar::new(DebruijnIndex::INNERMOST, 0)).intern(interner);
         let value = op(new_var);
-        let binders = VariableKinds::from1(interner, VariableKind::Ty(TyKind::General));
+        let binders = VariableKinds::from1(interner, VariableKind::Ty(TyVariableKind::General));
         Binders { binders, value }
     }
 
@@ -2179,7 +2145,7 @@ impl<T: HasInterner> UCanonical<T> {
                     let bound_var = BoundVar::new(DebruijnIndex::INNERMOST, index);
                     match &pk.kind {
                         VariableKind::Ty(_) => {
-                            GenericArgData::Ty(TyData::BoundVar(bound_var).intern(interner))
+                            GenericArgData::Ty(TyKind::BoundVar(bound_var).intern(interner))
                                 .intern(interner)
                         }
                         VariableKind::Lifetime => GenericArgData::Lifetime(
@@ -2418,8 +2384,8 @@ impl<I: Interner> Substitution<I> {
         self.iter(interner).zip(0..).all(|(generic_arg, index)| {
             let index_db = BoundVar::new(DebruijnIndex::INNERMOST, index);
             match generic_arg.data(interner) {
-                GenericArgData::Ty(ty) => match ty.data(interner) {
-                    TyData::BoundVar(depth) => index_db == *depth,
+                GenericArgData::Ty(ty) => match ty.kind(interner) {
+                    TyKind::BoundVar(depth) => index_db == *depth,
                     _ => false,
                 },
                 GenericArgData::Lifetime(lifetime) => match lifetime.data(interner) {
@@ -2448,6 +2414,13 @@ impl<I: Interner> Substitution<I> {
                 DebruijnIndex::INNERMOST,
             )
             .unwrap()
+    }
+
+    /// Gets an iterator of all type parameters.
+    pub fn type_parameters<'a>(&'a self, interner: &'a I) -> impl Iterator<Item = Ty<I>> + 'a {
+        self.iter(interner)
+            .filter_map(move |p| p.ty(interner))
+            .cloned()
     }
 }
 

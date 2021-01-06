@@ -1,26 +1,23 @@
 use crate::spec::{LinkArgs, LinkerFlavor, LldFlavor, RelocModel};
-use crate::spec::{Target, TargetOptions, TargetResult};
+use crate::spec::{Target, TargetOptions};
 
 // The PSP has custom linker requirements.
 const LINKER_SCRIPT: &str = include_str!("./mipsel_sony_psp_linker_script.ld");
 
-pub fn target() -> TargetResult {
+pub fn target() -> Target {
     let mut pre_link_args = LinkArgs::new();
     pre_link_args.insert(LinkerFlavor::Lld(LldFlavor::Ld), vec!["--emit-relocs".to_string()]);
 
-    Ok(Target {
+    Target {
         llvm_target: "mipsel-sony-psp".to_string(),
-        target_endian: "little".to_string(),
-        target_pointer_width: "32".to_string(),
-        target_c_int_width: "32".to_string(),
+        pointer_width: 32,
         data_layout: "e-m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64".to_string(),
         arch: "mips".to_string(),
-        target_os: "psp".to_string(),
-        target_env: "".to_string(),
-        target_vendor: "sony".to_string(),
-        linker_flavor: LinkerFlavor::Lld(LldFlavor::Ld),
 
         options: TargetOptions {
+            os: "psp".to_string(),
+            vendor: "sony".to_string(),
+            linker_flavor: LinkerFlavor::Lld(LldFlavor::Ld),
             cpu: "mips2".to_string(),
             executables: true,
             linker: Some("rust-lld".to_owned()),
@@ -36,5 +33,5 @@ pub fn target() -> TargetResult {
             link_script: Some(LINKER_SCRIPT.to_string()),
             ..Default::default()
         },
-    })
+    }
 }

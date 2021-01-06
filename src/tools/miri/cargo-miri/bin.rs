@@ -241,7 +241,7 @@ fn setup(subcommand: MiriCommand) {
             show_error(format!("xargo is too old; please upgrade to the latest version"))
         }
         let mut cmd = cargo();
-        cmd.args(&["install", "xargo", "-f"]);
+        cmd.args(&["install", "xargo"]);
         ask_to_run(cmd, ask_user, "install a recent enough xargo");
     }
 
@@ -296,7 +296,7 @@ fn setup(subcommand: MiriCommand) {
 [dependencies.std]
 default_features = false
 # We support unwinding, so enable that panic runtime.
-features = ["panic_unwind"]
+features = ["panic_unwind", "backtrace"]
 
 [dependencies.test]
 "#,
@@ -353,6 +353,9 @@ path = "lib.rs"
     // to the sysroot either.
     command.env_remove("RUSTC_WRAPPER");
     command.env_remove("RUSTFLAGS");
+    // Disable debug assertions in the standard library -- Miri is already slow enough.
+    // But keep the overflow checks, they are cheap.
+    command.env("RUSTFLAGS", "-Cdebug-assertions=off -Coverflow-checks=on");
     // Finally run it!
     if command.status().expect("failed to run xargo").success().not() {
         show_error(format!("failed to run xargo"));
@@ -532,8 +535,7 @@ fn phase_cargo_rustc(args: env::Args) {
     fn is_runnable_crate() -> bool {
         let is_bin = get_arg_flag_value("--crate-type").as_deref().unwrap_or("bin") == "bin";
         let is_test = has_arg_flag("--test");
-        let print = get_arg_flag_value("--print").is_some();
-        (is_bin || is_test) && !print
+        is_bin || is_test
     }
 
     fn out_filename(prefix: &str, suffix: &str) -> PathBuf {
@@ -552,8 +554,21 @@ fn phase_cargo_rustc(args: env::Args) {
 
     let verbose = std::env::var_os("MIRI_VERBOSE").is_some();
     let target_crate = is_target_crate();
+    let print = get_arg_flag_value("--print").is_some(); // whether this is cargo passing `--print` to get some infos
 
-    if target_crate && is_runnable_crate() {
+    // rlib and cdylib are just skipped, we cannot interpret them and do not need them
+    // for the rest of the build either.
+    match get_arg_flag_value("--crate-type").as_deref() {
+        Some("rlib") | Some("cdylib") => {
+            if verbose {
+                eprint!("[cargo-miri rustc] (rlib/cdylib skipped)");
+            }
+            return;
+        }
+        _ => {},
+    }
+
+    if !print && target_crate && is_runnable_crate() {
         // This is the binary or test crate that we want to interpret under Miri.
         // But we cannot run it here, as cargo invoked us as a compiler -- our stdin and stdout are not
         // like we want them.
@@ -577,7 +592,7 @@ fn phase_cargo_rustc(args: env::Args) {
     let mut emit_link_hack = false;
     // Arguments are treated very differently depending on whether this crate is
     // for interpretation by Miri, or for use by a build script / proc macro.
-    if target_crate {
+    if !print && target_crate {
         // Forward arguments, but remove "link" from "--emit" to make this a check-only build.
         let emit_flag = "--emit";
         for arg in args {
@@ -607,7 +622,7 @@ fn phase_cargo_rustc(args: env::Args) {
         cmd.arg("--sysroot");
         cmd.arg(sysroot);
     } else {
-        // For host crates, just forward everything.
+        // For host crates or when we are printing, just forward everything.
         cmd.args(args);
     }
 

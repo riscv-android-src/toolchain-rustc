@@ -191,6 +191,24 @@ fn test_into_from_raw_unsized() {
 }
 
 #[test]
+fn into_from_weak_raw() {
+    let x = Rc::new(box "hello");
+    let y = Rc::downgrade(&x);
+
+    let y_ptr = Weak::into_raw(y);
+    unsafe {
+        assert_eq!(**y_ptr, "hello");
+
+        let y = Weak::from_raw(y_ptr);
+        let y_up = Weak::upgrade(&y).unwrap();
+        assert_eq!(**y_up, "hello");
+        drop(y_up);
+
+        assert_eq!(Rc::try_unwrap(x).map(|x| *x), Ok("hello"));
+    }
+}
+
+#[test]
 fn get_mut() {
     let mut x = Rc::new(3);
     *Rc::get_mut(&mut x).unwrap() = 4;

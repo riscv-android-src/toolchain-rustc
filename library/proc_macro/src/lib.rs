@@ -18,10 +18,11 @@
     test(no_crate_inject, attr(deny(warnings))),
     test(attr(allow(dead_code, deprecated, unused_variables, unused_mut)))
 )]
+#![cfg_attr(not(bootstrap), feature(rustc_allow_const_fn_unstable))]
 #![feature(nll)]
 #![feature(staged_api)]
 #![feature(const_fn)]
-#![cfg_attr(not(bootstrap), feature(const_fn_fn_ptr_basics))]
+#![feature(const_fn_fn_ptr_basics)]
 #![feature(allow_internal_unstable)]
 #![feature(decl_macro)]
 #![feature(extern_types)]
@@ -881,7 +882,7 @@ impl Ident {
     }
 
     /// Returns the span of this `Ident`, encompassing the entire string returned
-    /// by `as_str`.
+    /// by [`to_string`](Self::to_string).
     #[stable(feature = "proc_macro_lib2", since = "1.29.0")]
     pub fn span(&self) -> Span {
         Span(self.0.span())

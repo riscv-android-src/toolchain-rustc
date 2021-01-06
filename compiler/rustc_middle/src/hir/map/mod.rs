@@ -478,7 +478,7 @@ impl<'hir> Map<'hir> {
     }
 
     pub fn get_if_local(&self, id: DefId) -> Option<Node<'hir>> {
-        id.as_local().map(|id| self.get(self.local_def_id_to_hir_id(id)))
+        id.as_local().and_then(|id| self.find(self.local_def_id_to_hir_id(id)))
     }
 
     pub fn get_generics(&self, id: DefId) -> Option<&'hir Generics<'hir>> {
@@ -535,15 +535,15 @@ impl<'hir> Map<'hir> {
             Some(Node::Binding(_)) => (),
             _ => return false,
         }
-        match self.find(self.get_parent_node(id)) {
+        matches!(
+            self.find(self.get_parent_node(id)),
             Some(
                 Node::Item(_)
                 | Node::TraitItem(_)
                 | Node::ImplItem(_)
                 | Node::Expr(Expr { kind: ExprKind::Closure(..), .. }),
-            ) => true,
-            _ => false,
-        }
+            )
+        )
     }
 
     /// Whether the expression pointed at by `hir_id` belongs to a `const` evaluation context.
@@ -554,10 +554,10 @@ impl<'hir> Map<'hir> {
 
     /// Whether `hir_id` corresponds to a `mod` or a crate.
     pub fn is_hir_id_module(&self, hir_id: HirId) -> bool {
-        match self.get_entry(hir_id).node {
-            Node::Item(Item { kind: ItemKind::Mod(_), .. }) | Node::Crate(..) => true,
-            _ => false,
-        }
+        matches!(
+            self.get_entry(hir_id).node,
+            Node::Item(Item { kind: ItemKind::Mod(_), .. }) | Node::Crate(..)
+        )
     }
 
     /// Retrieves the `HirId` for `id`'s enclosing method, unless there's a
@@ -816,7 +816,7 @@ impl<'hir> Map<'hir> {
             Some(Node::Variant(ref v)) => Some(&v.attrs[..]),
             Some(Node::Field(ref f)) => Some(&f.attrs[..]),
             Some(Node::Expr(ref e)) => Some(&*e.attrs),
-            Some(Node::Stmt(ref s)) => Some(s.kind.attrs()),
+            Some(Node::Stmt(ref s)) => Some(s.kind.attrs(|id| self.item(id.id))),
             Some(Node::Arm(ref a)) => Some(&*a.attrs),
             Some(Node::GenericParam(param)) => Some(&param.attrs[..]),
             // Unit/tuple structs/variants take the attributes straight from

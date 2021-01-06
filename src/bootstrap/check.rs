@@ -1,10 +1,12 @@
 //! Implementation of compiling the compiler and standard library, in "check"-based modes.
 
 use crate::builder::{Builder, Kind, RunConfig, ShouldRun, Step};
-use crate::compile::{add_to_sysroot, run_cargo, rustc_cargo, std_cargo};
+use crate::cache::Interned;
+use crate::compile::{add_to_sysroot, run_cargo, rustc_cargo, rustc_cargo_env, std_cargo};
 use crate::config::TargetSelection;
 use crate::tool::{prepare_tool_cargo, SourceType};
-use crate::{Compiler, Mode};
+use crate::INTERNER;
+use crate::{Compiler, Mode, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -12,10 +14,28 @@ pub struct Std {
     pub target: TargetSelection,
 }
 
-fn args(kind: Kind) -> Vec<String> {
-    match kind {
-        Kind::Clippy => vec!["--".to_owned(), "--cap-lints".to_owned(), "warn".to_owned()],
-        _ => Vec::new(),
+/// Returns args for the subcommand itself (not for cargo)
+fn args(builder: &Builder<'_>) -> Vec<String> {
+    fn strings<'a>(arr: &'a [&str]) -> impl Iterator<Item = String> + 'a {
+        arr.iter().copied().map(String::from)
+    }
+
+    if let Subcommand::Clippy { fix, .. } = builder.config.cmd {
+        let mut args = vec![];
+        if fix {
+            #[rustfmt::skip]
+            args.extend(strings(&[
+                "--fix", "-Zunstable-options",
+                // FIXME: currently, `--fix` gives an error while checking tests for libtest,
+                // possibly because libtest is not yet built in the sysroot.
+                // As a workaround, avoid checking tests and benches when passed --fix.
+                "--lib", "--bins", "--examples",
+            ]));
+        }
+        args.extend(strings(&["--", "--cap-lints", "warn"]));
+        args
+    } else {
+        vec![]
     }
 }
 
@@ -57,7 +77,7 @@ impl Step for Std {
         run_cargo(
             builder,
             cargo,
-            args(builder.kind),
+            args(builder),
             &libstd_stamp(builder, compiler, target),
             vec![],
             true,
@@ -74,35 +94,37 @@ impl Step for Std {
         //
         // Currently only the "libtest" tree of crates does this.
 
-        let mut cargo = builder.cargo(
-            compiler,
-            Mode::Std,
-            SourceType::InTree,
-            target,
-            cargo_subcommand(builder.kind),
-        );
-        std_cargo(builder, target, compiler.stage, &mut cargo);
-        cargo.arg("--all-targets");
+        if let Subcommand::Check { all_targets: true, .. } = builder.config.cmd {
+            let mut cargo = builder.cargo(
+                compiler,
+                Mode::Std,
+                SourceType::InTree,
+                target,
+                cargo_subcommand(builder.kind),
+            );
+            std_cargo(builder, target, compiler.stage, &mut cargo);
+            cargo.arg("--all-targets");
 
-        // Explicitly pass -p for all dependencies krates -- this will force cargo
-        // to also check the tests/benches/examples for these crates, rather
-        // than just the leaf crate.
-        for krate in builder.in_tree_crates("test") {
-            cargo.arg("-p").arg(krate.name);
+            // Explicitly pass -p for all dependencies krates -- this will force cargo
+            // to also check the tests/benches/examples for these crates, rather
+            // than just the leaf crate.
+            for krate in builder.in_tree_crates("test", Some(target)) {
+                cargo.arg("-p").arg(krate.name);
+            }
+
+            builder.info(&format!(
+                "Checking std test/bench/example targets ({} -> {})",
+                &compiler.host, target
+            ));
+            run_cargo(
+                builder,
+                cargo,
+                args(builder),
+                &libstd_test_stamp(builder, compiler, target),
+                vec![],
+                true,
+            );
         }
-
-        builder.info(&format!(
-            "Checking std test/bench/example targets ({} -> {})",
-            &compiler.host, target
-        ));
-        run_cargo(
-            builder,
-            cargo,
-            args(builder.kind),
-            &libstd_test_stamp(builder, compiler, target),
-            vec![],
-            true,
-        );
     }
 }
 
@@ -143,12 +165,14 @@ impl Step for Rustc {
             cargo_subcommand(builder.kind),
         );
         rustc_cargo(builder, &mut cargo, target);
-        cargo.arg("--all-targets");
+        if let Subcommand::Check { all_targets: true, .. } = builder.config.cmd {
+            cargo.arg("--all-targets");
+        }
 
         // Explicitly pass -p for all compiler krates -- this will force cargo
         // to also check the tests/benches/examples for these crates, rather
         // than just the leaf crate.
-        for krate in builder.in_tree_crates("rustc-main") {
+        for krate in builder.in_tree_crates("rustc-main", Some(target)) {
             cargo.arg("-p").arg(krate.name);
         }
 
@@ -156,7 +180,7 @@ impl Step for Rustc {
         run_cargo(
             builder,
             cargo,
-            args(builder.kind),
+            args(builder),
             &librustc_stamp(builder, compiler, target),
             vec![],
             true,
@@ -165,6 +189,57 @@ impl Step for Rustc {
         let libdir = builder.sysroot_libdir(compiler, target);
         let hostdir = builder.sysroot_libdir(compiler, compiler.host);
         add_to_sysroot(&builder, &libdir, &hostdir, &librustc_stamp(builder, compiler, target));
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+pub struct CodegenBackend {
+    pub target: TargetSelection,
+    pub backend: Interned<String>,
+}
+
+impl Step for CodegenBackend {
+    type Output = ();
+    const ONLY_HOSTS: bool = true;
+    const DEFAULT: bool = true;
+
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.paths(&["compiler/rustc_codegen_cranelift", "rustc_codegen_cranelift"])
+    }
+
+    fn make_run(run: RunConfig<'_>) {
+        for &backend in &[INTERNER.intern_str("cranelift")] {
+            run.builder.ensure(CodegenBackend { target: run.target, backend });
+        }
+    }
+
+    fn run(self, builder: &Builder<'_>) {
+        let compiler = builder.compiler(0, builder.config.build);
+        let target = self.target;
+        let backend = self.backend;
+
+        builder.ensure(Rustc { target });
+
+        let mut cargo = builder.cargo(
+            compiler,
+            Mode::Codegen,
+            SourceType::Submodule,
+            target,
+            cargo_subcommand(builder.kind),
+        );
+        cargo
+            .arg("--manifest-path")
+            .arg(builder.src.join(format!("compiler/rustc_codegen_{}/Cargo.toml", backend)));
+        rustc_cargo_env(builder, &mut cargo, target);
+
+        run_cargo(
+            builder,
+            cargo,
+            args(builder),
+            &codegen_backend_stamp(builder, compiler, target, backend),
+            vec![],
+            true,
+        );
     }
 }
 
@@ -205,7 +280,9 @@ macro_rules! tool_check_step {
                     &[],
                 );
 
-                cargo.arg("--all-targets");
+                if let Subcommand::Check { all_targets: true, .. } = builder.config.cmd {
+                    cargo.arg("--all-targets");
+                }
 
                 builder.info(&format!(
                     "Checking {} artifacts ({} -> {})",
@@ -216,7 +293,7 @@ macro_rules! tool_check_step {
                 run_cargo(
                     builder,
                     cargo,
-                    args(builder.kind),
+                    args(builder),
                     &stamp(builder, compiler, target),
                     vec![],
                     true,
@@ -271,4 +348,17 @@ fn libstd_test_stamp(
 /// compiler for the specified target.
 fn librustc_stamp(builder: &Builder<'_>, compiler: Compiler, target: TargetSelection) -> PathBuf {
     builder.cargo_out(compiler, Mode::Rustc, target).join(".librustc-check.stamp")
+}
+
+/// Cargo's output path for librustc_codegen_llvm in a given stage, compiled by a particular
+/// compiler for the specified target and backend.
+fn codegen_backend_stamp(
+    builder: &Builder<'_>,
+    compiler: Compiler,
+    target: TargetSelection,
+    backend: Interned<String>,
+) -> PathBuf {
+    builder
+        .cargo_out(compiler, Mode::Codegen, target)
+        .join(format!(".librustc_codegen_{}-check.stamp", backend))
 }

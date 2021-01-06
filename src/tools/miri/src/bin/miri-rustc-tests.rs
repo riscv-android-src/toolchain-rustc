@@ -109,7 +109,7 @@ fn main() {
                 }
             })
             .collect();
-        args.splice(1..1, miri::miri_default_args().iter().map(ToString::to_string));
+        args.splice(1..1, miri::MIRI_DEFAULT_ARGS.iter().map(ToString::to_string));
         // file to process
         args.push(path.display().to_string());
 
@@ -140,13 +140,10 @@ fn main() {
         let buf = BufWriter::default();
         let output = buf.clone();
         let result = std::panic::catch_unwind(|| {
-            let _ = rustc_driver::run_compiler(
-                &args,
-                &mut MiriCompilerCalls { host_target },
-                None,
-                Some(Box::new(buf)),
-                None,
-            );
+            let mut callbacks = MiriCompilerCalls { host_target };
+            let mut run = rustc_driver::RunCompiler::new(&args, &mut callbacks);
+            run.set_emitter(Some(Box::new(buf)));
+            let _ = run.run();
         });
 
         match result {

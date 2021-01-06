@@ -210,6 +210,18 @@ impl TyKind<'tcx> {
             _ => false,
         }
     }
+
+    /// Get the article ("a" or "an") to use with this type.
+    pub fn article(&self) -> &'static str {
+        match self {
+            Int(_) | Float(_) | Array(_, _) => "an",
+            Adt(def, _) if def.is_enum() => "an",
+            // This should never happen, but ICEing and causing the user's code
+            // to not compile felt too harsh.
+            Error(_) => "a",
+            _ => "a",
+        }
+    }
 }
 
 // `TyKind` is used a lot. Make sure it doesn't unintentionally get bigger.
@@ -376,9 +388,19 @@ impl<'tcx> ClosureSubsts<'tcx> {
         self.split().parent_substs
     }
 
+    /// Returns an iterator over the list of types of captured paths by the closure.
+    /// In case there was a type error in figuring out the types of the captured path, an
+    /// empty iterator is returned.
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        self.tupled_upvars_ty().tuple_fields()
+        match self.tupled_upvars_ty().kind() {
+            TyKind::Error(_) => None,
+            TyKind::Tuple(..) => Some(self.tupled_upvars_ty().tuple_fields()),
+            TyKind::Infer(_) => bug!("upvar_tys called before capture types are inferred"),
+            ty => bug!("Unexpected representation of upvar types tuple {:?}", ty),
+        }
+        .into_iter()
+        .flatten()
     }
 
     /// Returns the tuple type representing the upvars for this closure.
@@ -503,9 +525,19 @@ impl<'tcx> GeneratorSubsts<'tcx> {
         self.split().witness.expect_ty()
     }
 
+    /// Returns an iterator over the list of types of captured paths by the generator.
+    /// In case there was a type error in figuring out the types of the captured path, an
+    /// empty iterator is returned.
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        self.tupled_upvars_ty().tuple_fields()
+        match self.tupled_upvars_ty().kind() {
+            TyKind::Error(_) => None,
+            TyKind::Tuple(..) => Some(self.tupled_upvars_ty().tuple_fields()),
+            TyKind::Infer(_) => bug!("upvar_tys called before capture types are inferred"),
+            ty => bug!("Unexpected representation of upvar types tuple {:?}", ty),
+        }
+        .into_iter()
+        .flatten()
     }
 
     /// Returns the tuple type representing the upvars for this generator.
@@ -648,13 +680,32 @@ pub enum UpvarSubsts<'tcx> {
 }
 
 impl<'tcx> UpvarSubsts<'tcx> {
+    /// Returns an iterator over the list of types of captured paths by the closure/generator.
+    /// In case there was a type error in figuring out the types of the captured path, an
+    /// empty iterator is returned.
     #[inline]
     pub fn upvar_tys(self) -> impl Iterator<Item = Ty<'tcx>> + 'tcx {
-        let tupled_upvars_ty = match self {
-            UpvarSubsts::Closure(substs) => substs.as_closure().split().tupled_upvars_ty,
-            UpvarSubsts::Generator(substs) => substs.as_generator().split().tupled_upvars_ty,
+        let tupled_tys = match self {
+            UpvarSubsts::Closure(substs) => substs.as_closure().tupled_upvars_ty(),
+            UpvarSubsts::Generator(substs) => substs.as_generator().tupled_upvars_ty(),
         };
-        tupled_upvars_ty.expect_ty().tuple_fields()
+
+        match tupled_tys.kind() {
+            TyKind::Error(_) => None,
+            TyKind::Tuple(..) => Some(self.tupled_upvars_ty().tuple_fields()),
+            TyKind::Infer(_) => bug!("upvar_tys called before capture types are inferred"),
+            ty => bug!("Unexpected representation of upvar types tuple {:?}", ty),
+        }
+        .into_iter()
+        .flatten()
+    }
+
+    #[inline]
+    pub fn tupled_upvars_ty(self) -> Ty<'tcx> {
+        match self {
+            UpvarSubsts::Closure(substs) => substs.as_closure().tupled_upvars_ty(),
+            UpvarSubsts::Generator(substs) => substs.as_generator().tupled_upvars_ty(),
+        }
     }
 }
 
@@ -695,14 +746,16 @@ impl<'tcx> Binder<ExistentialPredicate<'tcx>> {
         use crate::ty::ToPredicate;
         match self.skip_binder() {
             ExistentialPredicate::Trait(tr) => {
-                Binder(tr).with_self_ty(tcx, self_ty).without_const().to_predicate(tcx)
+                self.rebind(tr).with_self_ty(tcx, self_ty).without_const().to_predicate(tcx)
             }
             ExistentialPredicate::Projection(p) => {
-                Binder(p.with_self_ty(tcx, self_ty)).to_predicate(tcx)
+                self.rebind(p.with_self_ty(tcx, self_ty)).to_predicate(tcx)
             }
             ExistentialPredicate::AutoTrait(did) => {
-                let trait_ref =
-                    Binder(ty::TraitRef { def_id: did, substs: tcx.mk_substs_trait(self_ty, &[]) });
+                let trait_ref = self.rebind(ty::TraitRef {
+                    def_id: did,
+                    substs: tcx.mk_substs_trait(self_ty, &[]),
+                });
                 trait_ref.without_const().to_predicate(tcx)
             }
         }
@@ -767,7 +820,7 @@ impl<'tcx> List<ExistentialPredicate<'tcx>> {
 
 impl<'tcx> Binder<&'tcx List<ExistentialPredicate<'tcx>>> {
     pub fn principal(&self) -> Option<ty::Binder<ExistentialTraitRef<'tcx>>> {
-        self.skip_binder().principal().map(Binder::bind)
+        self.map_bound(|b| b.principal()).transpose()
     }
 
     pub fn principal_def_id(&self) -> Option<DefId> {
@@ -850,8 +903,7 @@ impl<'tcx> PolyTraitRef<'tcx> {
     }
 
     pub fn to_poly_trait_predicate(&self) -> ty::PolyTraitPredicate<'tcx> {
-        // Note that we preserve binding levels
-        Binder(ty::TraitPredicate { trait_ref: self.skip_binder() })
+        self.map_bound(|trait_ref| ty::TraitPredicate { trait_ref })
     }
 }
 
@@ -991,6 +1043,19 @@ impl<T> Binder<T> {
         F: FnOnce(T) -> U,
     {
         Binder(f(self.0))
+    }
+
+    /// Wraps a `value` in a binder, using the same bound variables as the
+    /// current `Binder`. This should not be used if the new value *changes*
+    /// the bound variables. Note: the (old or new) value itself does not
+    /// necessarily need to *name* all the bound variables.
+    ///
+    /// This currently doesn't do anything different than `bind`, because we
+    /// don't actually track bound vars. However, semantically, it is different
+    /// because bound vars aren't allowed to change here, whereas they are
+    /// in `bind`. This may be (debug) asserted in the future.
+    pub fn rebind<U>(&self, value: U) -> Binder<U> {
+        Binder(value)
     }
 
     /// Unwraps and returns the value within, but only if it contains
@@ -1513,6 +1578,9 @@ impl<'tcx> ExistentialProjection<'tcx> {
     /// then this function would return a `exists T. T: Iterator` existential trait
     /// reference.
     pub fn trait_ref(&self, tcx: TyCtxt<'_>) -> ty::ExistentialTraitRef<'tcx> {
+        // FIXME(generic_associated_types): substs is the substs of the
+        // associated type, which should be truncated to get the correct substs
+        // for the trait.
         let def_id = tcx.associated_item(self.item_def_id).container.id();
         ty::ExistentialTraitRef { def_id, substs: self.substs }
     }
@@ -1763,10 +1831,7 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_never(&self) -> bool {
-        match self.kind() {
-            Never => true,
-            _ => false,
-        }
+        matches!(self.kind(), Never)
     }
 
     /// Checks whether a type is definitely uninhabited. This is
@@ -1800,10 +1865,10 @@ impl<'tcx> TyS<'tcx> {
             }
             ty::Array(ty, len) => {
                 match len.try_eval_usize(tcx, ParamEnv::empty()) {
+                    Some(0) | None => false,
                     // If the array is definitely non-empty, it's uninhabited if
                     // the type of its elements is uninhabited.
-                    Some(n) if n != 0 => ty.conservative_is_privately_uninhabited(tcx),
-                    _ => false,
+                    Some(1..) => ty.conservative_is_privately_uninhabited(tcx),
                 }
             }
             ty::Ref(..) => {
@@ -1823,34 +1888,22 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_adt(&self) -> bool {
-        match self.kind() {
-            Adt(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Adt(..))
     }
 
     #[inline]
     pub fn is_ref(&self) -> bool {
-        match self.kind() {
-            Ref(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Ref(..))
     }
 
     #[inline]
     pub fn is_ty_var(&self) -> bool {
-        match self.kind() {
-            Infer(TyVar(_)) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Infer(TyVar(_)))
     }
 
     #[inline]
     pub fn is_ty_infer(&self) -> bool {
-        match self.kind() {
-            Infer(_) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Infer(_))
     }
 
     #[inline]
@@ -1880,20 +1933,14 @@ impl<'tcx> TyS<'tcx> {
     #[inline]
     pub fn is_slice(&self) -> bool {
         match self.kind() {
-            RawPtr(TypeAndMut { ty, .. }) | Ref(_, ty, _) => match ty.kind() {
-                Slice(_) | Str => true,
-                _ => false,
-            },
+            RawPtr(TypeAndMut { ty, .. }) | Ref(_, ty, _) => matches!(ty.kind(), Slice(_) | Str),
             _ => false,
         }
     }
 
     #[inline]
     pub fn is_array(&self) -> bool {
-        match self.kind() {
-            Array(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Array(..))
     }
 
     #[inline]
@@ -1940,27 +1987,21 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_region_ptr(&self) -> bool {
-        match self.kind() {
-            Ref(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Ref(..))
     }
 
     #[inline]
     pub fn is_mutable_ptr(&self) -> bool {
-        match self.kind() {
+        matches!(
+            self.kind(),
             RawPtr(TypeAndMut { mutbl: hir::Mutability::Mut, .. })
-            | Ref(_, _, hir::Mutability::Mut) => true,
-            _ => false,
-        }
+                | Ref(_, _, hir::Mutability::Mut)
+        )
     }
 
     #[inline]
     pub fn is_unsafe_ptr(&self) -> bool {
-        match self.kind() {
-            RawPtr(_) => true,
-            _ => false,
-        }
+        matches!(self.kind(), RawPtr(_))
     }
 
     /// Tests if this is any kind of primitive pointer type (reference, raw pointer, fn pointer).
@@ -1990,35 +2031,22 @@ impl<'tcx> TyS<'tcx> {
     /// contents are abstract to rustc.)
     #[inline]
     pub fn is_scalar(&self) -> bool {
-        match self.kind() {
-            Bool
-            | Char
-            | Int(_)
-            | Float(_)
-            | Uint(_)
+        matches!(
+            self.kind(),
+            Bool | Char | Int(_) | Float(_) | Uint(_) | FnDef(..) | FnPtr(_) | RawPtr(_)
             | Infer(IntVar(_) | FloatVar(_))
-            | FnDef(..)
-            | FnPtr(_)
-            | RawPtr(_) => true,
-            _ => false,
-        }
+        )
     }
 
     /// Returns `true` if this type is a floating point type.
     #[inline]
     pub fn is_floating_point(&self) -> bool {
-        match self.kind() {
-            Float(_) | Infer(FloatVar(_)) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Float(_) | Infer(FloatVar(_)))
     }
 
     #[inline]
     pub fn is_trait(&self) -> bool {
-        match self.kind() {
-            Dynamic(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Dynamic(..))
     }
 
     #[inline]
@@ -2031,52 +2059,32 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_closure(&self) -> bool {
-        match self.kind() {
-            Closure(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Closure(..))
     }
 
     #[inline]
     pub fn is_generator(&self) -> bool {
-        match self.kind() {
-            Generator(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Generator(..))
     }
 
     #[inline]
     pub fn is_integral(&self) -> bool {
-        match self.kind() {
-            Infer(IntVar(_)) | Int(_) | Uint(_) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Infer(IntVar(_)) | Int(_) | Uint(_))
     }
 
     #[inline]
     pub fn is_fresh_ty(&self) -> bool {
-        match self.kind() {
-            Infer(FreshTy(_)) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Infer(FreshTy(_)))
     }
 
     #[inline]
     pub fn is_fresh(&self) -> bool {
-        match self.kind() {
-            Infer(FreshTy(_)) => true,
-            Infer(FreshIntTy(_)) => true,
-            Infer(FreshFloatTy(_)) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Infer(FreshTy(_) | FreshIntTy(_) | FreshFloatTy(_)))
     }
 
     #[inline]
     pub fn is_char(&self) -> bool {
-        match self.kind() {
-            Char => true,
-            _ => false,
-        }
+        matches!(self.kind(), Char)
     }
 
     #[inline]
@@ -2086,34 +2094,22 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_signed(&self) -> bool {
-        match self.kind() {
-            Int(_) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Int(_))
     }
 
     #[inline]
     pub fn is_ptr_sized_integral(&self) -> bool {
-        match self.kind() {
-            Int(ast::IntTy::Isize) | Uint(ast::UintTy::Usize) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Int(ast::IntTy::Isize) | Uint(ast::UintTy::Usize))
     }
 
     #[inline]
     pub fn is_machine(&self) -> bool {
-        match self.kind() {
-            Int(..) | Uint(..) | Float(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Int(..) | Uint(..) | Float(..))
     }
 
     #[inline]
     pub fn has_concrete_skeleton(&self) -> bool {
-        match self.kind() {
-            Param(_) | Infer(_) | Error(_) => false,
-            _ => true,
-        }
+        !matches!(self.kind(), Param(_) | Infer(_) | Error(_))
     }
 
     /// Returns the type and mutability of `*ty`.
@@ -2156,26 +2152,17 @@ impl<'tcx> TyS<'tcx> {
 
     #[inline]
     pub fn is_fn(&self) -> bool {
-        match self.kind() {
-            FnDef(..) | FnPtr(_) => true,
-            _ => false,
-        }
+        matches!(self.kind(), FnDef(..) | FnPtr(_))
     }
 
     #[inline]
     pub fn is_fn_ptr(&self) -> bool {
-        match self.kind() {
-            FnPtr(_) => true,
-            _ => false,
-        }
+        matches!(self.kind(), FnPtr(_))
     }
 
     #[inline]
     pub fn is_impl_trait(&self) -> bool {
-        match self.kind() {
-            Opaque(..) => true,
-            _ => false,
-        }
+        matches!(self.kind(), Opaque(..))
     }
 
     #[inline]

@@ -7,7 +7,7 @@ use chalk_ir::{
     cast::*,
     fold::shift::Shift,
     interner::Interner,
-    visit::{Visit, Visitor},
+    visit::{Visit, VisitResult, Visitor},
     *,
 };
 use tracing::debug;
@@ -101,42 +101,111 @@ impl<'i, I: Interner> Visitor<'i, I> for InputTypeCollector<'i, I> {
             self.types
                 .push(ty.shifted_out_to(interner, outer_binder).unwrap())
         };
-        match ty.data(interner) {
-            TyData::Apply(apply) => {
+        match ty.kind(interner) {
+            TyKind::Adt(id, substitution) => {
                 push_ty();
-                apply.visit_with(self, outer_binder);
+                id.visit_with(self, outer_binder);
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::AssociatedType(assoc_ty, substitution) => {
+                push_ty();
+                assoc_ty.visit_with(self, outer_binder);
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::Scalar(scalar) => {
+                push_ty();
+                scalar.visit_with(self, outer_binder);
+            }
+            TyKind::Str => {
+                push_ty();
+            }
+            TyKind::Tuple(arity, substitution) => {
+                push_ty();
+                arity.visit_with(self, outer_binder);
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::OpaqueType(opaque_ty, substitution) => {
+                push_ty();
+                opaque_ty.visit_with(self, outer_binder);
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::Slice(substitution) => {
+                push_ty();
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::FnDef(fn_def, substitution) => {
+                push_ty();
+                fn_def.visit_with(self, outer_binder);
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::Ref(mutability, lifetime, ty) => {
+                push_ty();
+                mutability.visit_with(self, outer_binder);
+                lifetime.visit_with(self, outer_binder);
+                ty.visit_with(self, outer_binder);
+            }
+            TyKind::Raw(mutability, substitution) => {
+                push_ty();
+                mutability.visit_with(self, outer_binder);
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::Never => {
+                push_ty();
+            }
+            TyKind::Array(ty, const_) => {
+                push_ty();
+                ty.visit_with(self, outer_binder)
+                    .combine(const_.visit_with(self, outer_binder))
+            }
+            TyKind::Closure(_id, substitution) => {
+                push_ty();
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::Generator(_generator, substitution) => {
+                push_ty();
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::GeneratorWitness(_witness, substitution) => {
+                push_ty();
+                substitution.visit_with(self, outer_binder);
+            }
+            TyKind::Foreign(_foreign_ty) => {
+                push_ty();
+            }
+            TyKind::Error => {
+                push_ty();
             }
 
-            TyData::Dyn(clauses) => {
+            TyKind::Dyn(clauses) => {
                 push_ty();
                 clauses.visit_with(self, outer_binder);
             }
 
-            TyData::Alias(AliasTy::Projection(proj)) => {
+            TyKind::Alias(AliasTy::Projection(proj)) => {
                 push_ty();
                 proj.visit_with(self, outer_binder);
             }
 
-            TyData::Alias(AliasTy::Opaque(opaque_ty)) => {
+            TyKind::Alias(AliasTy::Opaque(opaque_ty)) => {
                 push_ty();
                 opaque_ty.visit_with(self, outer_binder);
             }
 
-            TyData::Placeholder(_) => {
+            TyKind::Placeholder(_) => {
                 push_ty();
             }
 
             // Type parameters do not carry any input types (so we can sort of assume they are
             // always WF).
-            TyData::BoundVar(..) => (),
+            TyKind::BoundVar(..) => (),
 
             // Higher-kinded types such as `for<'a> fn(&'a u32)` introduce their own implied
             // bounds, and these bounds will be enforced upon calling such a function. In some
             // sense, well-formedness requirements for the input types of an HKT will be enforced
             // lazily, so no need to include them here.
-            TyData::Function(..) => (),
+            TyKind::Function(..) => (),
 
-            TyData::InferenceVar(..) => {
+            TyKind::InferenceVar(..) => {
                 panic!("unexpected inference variable in wf rules: {:?}", ty)
             }
         }
@@ -630,16 +699,14 @@ impl WfWellKnownConstraints {
             .skip_binders()
             .trait_ref
             .self_type_parameter(interner)
-            .data(interner)
+            .kind(interner)
         {
-            TyData::Apply(ApplicationTy { name, .. }) => match name {
-                TypeName::Scalar(_)
-                | TypeName::Raw(_)
-                | TypeName::Ref(Mutability::Not)
-                | TypeName::Never => return true,
-                TypeName::Adt(_) => (),
-                _ => return false,
-            },
+            TyKind::Scalar(_)
+            | TyKind::Raw(_, _)
+            | TyKind::Ref(Mutability::Not, _, _)
+            | TyKind::Never => return true,
+
+            TyKind::Adt(_, _) => (),
 
             _ => return false,
         };
@@ -650,13 +717,9 @@ impl WfWellKnownConstraints {
                 let interner = gb.interner();
 
                 let ty = trait_ref.self_type_parameter(interner);
-                let ty_data = ty.data(interner);
 
-                let (adt_id, substitution) = match ty_data {
-                    TyData::Apply(ApplicationTy { name, substitution }) => match name {
-                        TypeName::Adt(adt_id) => (*adt_id, substitution),
-                        _ => unreachable!(),
-                    },
+                let (adt_id, substitution) = match ty.kind(interner) {
+                    TyKind::Adt(adt_id, substitution) => (*adt_id, substitution),
 
                     _ => unreachable!(),
                 };
@@ -755,7 +818,6 @@ impl WfWellKnownConstraints {
         let mut gb = GoalBuilder::new(db);
 
         let adt_datum = db.adt_datum(adt_id);
-        let adt_name = adt_datum.name(interner);
 
         let impl_fields = impl_datum
             .binders
@@ -790,16 +852,11 @@ impl WfWellKnownConstraints {
         // forall<StructP1..StructPN> {...}
         let eq_goal = gb.forall(
             &adt_datum.binders,
-            (adt_name, impl_self_ty),
-            |gb, substitution, _, (adt_name, impl_self_ty)| {
+            (adt_id, impl_self_ty),
+            |gb, substitution, _, (adt_id, impl_self_ty)| {
                 let interner = gb.interner();
 
-                let def_adt: Ty<I> = ApplicationTy {
-                    name: adt_name,
-                    substitution,
-                }
-                .cast(interner)
-                .intern(interner);
+                let def_adt = TyKind::Adt(adt_id, substitution).intern(interner);
 
                 // exists<ImplP1...ImplPn> { .. }
                 gb.exists(&impl_self_ty, def_adt, |gb, _, impl_adt, def_adt| {
@@ -890,112 +947,101 @@ impl WfWellKnownConstraints {
             )
         };
 
-        match (source.data(interner), target.data(interner)) {
-            (TyData::Apply(source_app), TyData::Apply(target_app)) => {
-                match (&source_app.name, &target_app.name) {
-                    (TypeName::Ref(s_m), TypeName::Ref(t_m))
-                    | (TypeName::Ref(s_m), TypeName::Raw(t_m))
-                    | (TypeName::Raw(s_m), TypeName::Raw(t_m)) => {
-                        if (*s_m, *t_m) == (Mutability::Not, Mutability::Mut) {
-                            return false;
-                        }
-
-                        let source = source_app.first_type_parameter(interner).unwrap();
-                        let target = target_app.first_type_parameter(interner).unwrap();
-
-                        let unsize_trait_id =
-                            if let Some(id) = db.well_known_trait_id(WellKnownTrait::Unsize) {
-                                id
-                            } else {
-                                return false;
-                            };
-
-                        // Source: Unsize<Target>
-                        let unsize_goal: Goal<I> = TraitRef {
-                            trait_id: unsize_trait_id,
-                            substitution: Substitution::from_iter(
-                                interner,
-                                [source, target].iter().cloned(),
-                            ),
-                        }
-                        .cast(interner);
-
-                        // ImplEnv -> Source: Unsize<Target>
-                        let unsize_goal = place_in_environment(unsize_goal);
-
-                        solver.has_unique_solution(db, &unsize_goal.into_closed_goal(interner))
-                    }
-                    (TypeName::Adt(source_id), TypeName::Adt(target_id)) => {
-                        let adt_datum = db.adt_datum(*source_id);
-
-                        if source_id != target_id || adt_datum.kind != AdtKind::Struct {
-                            return false;
-                        }
-
-                        let fields = adt_datum
-                            .binders
-                            .map_ref(|bound| &bound.variants.last().unwrap().fields);
-
-                        let (source_fields, target_fields) = (
-                            fields.substitute(interner, &source_app.substitution),
-                            fields.substitute(interner, &target_app.substitution),
-                        );
-
-                        // collect fields with unequal ids
-                        let uneq_field_ids: Vec<usize> = (0..source_fields.len())
-                            .filter(|&i| {
-                                // ignore phantom data fields
-                                if let Some(adt_id) = source_fields[i].adt_id(interner) {
-                                    if db.adt_datum(adt_id).flags.phantom_data {
-                                        return false;
-                                    }
-                                }
-
-                                let eq_goal: Goal<I> = EqGoal {
-                                    a: source_fields[i].clone().cast(interner),
-                                    b: target_fields[i].clone().cast(interner),
-                                }
-                                .cast(interner);
-
-                                // ImplEnv -> Source.fields[i] = Target.fields[i]
-                                let eq_goal = place_in_environment(eq_goal);
-
-                                // We are interested in !UNEQUAL! fields
-                                !solver.has_unique_solution(db, &eq_goal.into_closed_goal(interner))
-                            })
-                            .collect();
-
-                        if uneq_field_ids.len() != 1 {
-                            return false;
-                        }
-
-                        let field_id = uneq_field_ids[0];
-
-                        // Source.fields[i]: CoerceUnsized<TargetFields[i]>
-                        let coerce_unsized_goal: Goal<I> = TraitRef {
-                            trait_id: trait_ref.trait_id,
-                            substitution: Substitution::from_iter(
-                                interner,
-                                [
-                                    source_fields[field_id].clone(),
-                                    target_fields[field_id].clone(),
-                                ]
-                                .iter()
-                                .cloned(),
-                            ),
-                        }
-                        .cast(interner);
-
-                        // ImplEnv -> Source.fields[i]: CoerceUnsized<TargetFields[i]>
-                        let coerce_unsized_goal = place_in_environment(coerce_unsized_goal);
-
-                        solver.has_unique_solution(
-                            db,
-                            &coerce_unsized_goal.into_closed_goal(interner),
-                        )
-                    }
-                    _ => false,
+        match (source.kind(interner), target.kind(interner)) {
+            (TyKind::Ref(s_m, _, source), TyKind::Ref(t_m, _, target))
+            | (TyKind::Ref(s_m, _, source), TyKind::Raw(t_m, target))
+            | (TyKind::Raw(s_m, source), TyKind::Raw(t_m, target)) => {
+                if (*s_m, *t_m) == (Mutability::Not, Mutability::Mut) {
+                    return false;
                 }
+
+                let unsize_trait_id =
+                    if let Some(id) = db.well_known_trait_id(WellKnownTrait::Unsize) {
+                        id
+                    } else {
+                        return false;
+                    };
+
+                // Source: Unsize<Target>
+                let unsize_goal: Goal<I> = TraitRef {
+                    trait_id: unsize_trait_id,
+                    substitution: Substitution::from_iter(
+                        interner,
+                        [source.clone(), target.clone()].iter().cloned(),
+                    ),
+                }
+                .cast(interner);
+
+                // ImplEnv -> Source: Unsize<Target>
+                let unsize_goal = place_in_environment(unsize_goal);
+
+                solver.has_unique_solution(db, &unsize_goal.into_closed_goal(interner))
+            }
+            (TyKind::Adt(source_id, subst_a), TyKind::Adt(target_id, subst_b)) => {
+                let adt_datum = db.adt_datum(*source_id);
+
+                if source_id != target_id || adt_datum.kind != AdtKind::Struct {
+                    return false;
+                }
+
+                let fields = adt_datum
+                    .binders
+                    .map_ref(|bound| &bound.variants.last().unwrap().fields);
+
+                let (source_fields, target_fields) = (
+                    fields.substitute(interner, subst_a),
+                    fields.substitute(interner, subst_b),
+                );
+
+                // collect fields with unequal ids
+                let uneq_field_ids: Vec<usize> = (0..source_fields.len())
+                    .filter(|&i| {
+                        // ignore phantom data fields
+                        if let Some(adt_id) = source_fields[i].adt_id(interner) {
+                            if db.adt_datum(adt_id).flags.phantom_data {
+                                return false;
+                            }
+                        }
+
+                        let eq_goal: Goal<I> = EqGoal {
+                            a: source_fields[i].clone().cast(interner),
+                            b: target_fields[i].clone().cast(interner),
+                        }
+                        .cast(interner);
+
+                        // ImplEnv -> Source.fields[i] = Target.fields[i]
+                        let eq_goal = place_in_environment(eq_goal);
+
+                        // We are interested in !UNEQUAL! fields
+                        !solver.has_unique_solution(db, &eq_goal.into_closed_goal(interner))
+                    })
+                    .collect();
+
+                if uneq_field_ids.len() != 1 {
+                    return false;
+                }
+
+                let field_id = uneq_field_ids[0];
+
+                // Source.fields[i]: CoerceUnsized<TargetFields[i]>
+                let coerce_unsized_goal: Goal<I> = TraitRef {
+                    trait_id: trait_ref.trait_id,
+                    substitution: Substitution::from_iter(
+                        interner,
+                        [
+                            source_fields[field_id].clone(),
+                            target_fields[field_id].clone(),
+                        ]
+                        .iter()
+                        .cloned(),
+                    ),
+                }
+                .cast(interner);
+
+                // ImplEnv -> Source.fields[i]: CoerceUnsized<TargetFields[i]>
+                let coerce_unsized_goal = place_in_environment(coerce_unsized_goal);
+
+                solver.has_unique_solution(db, &coerce_unsized_goal.into_closed_goal(interner))
             }
             _ => false,
         }

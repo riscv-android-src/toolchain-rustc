@@ -85,7 +85,7 @@ macro_rules! make_mir_visitor {
             }
 
             fn visit_source_scope_data(&mut self,
-                                           scope_data: & $($mutability)? SourceScopeData) {
+                                           scope_data: & $($mutability)? SourceScopeData<'tcx>) {
                 self.super_source_scope_data(scope_data);
             }
 
@@ -317,16 +317,49 @@ macro_rules! make_mir_visitor {
                 }
             }
 
-            fn super_source_scope_data(&mut self, scope_data: & $($mutability)? SourceScopeData) {
+            fn super_source_scope_data(
+                &mut self,
+                scope_data: & $($mutability)? SourceScopeData<'tcx>,
+            ) {
                 let SourceScopeData {
                     span,
                     parent_scope,
+                    inlined,
+                    inlined_parent_scope,
                     local_data: _,
                 } = scope_data;
 
                 self.visit_span(span);
                 if let Some(parent_scope) = parent_scope {
                     self.visit_source_scope(parent_scope);
+                }
+                if let Some((callee, callsite_span)) = inlined {
+                    let location = START_BLOCK.start_location();
+
+                    self.visit_span(callsite_span);
+
+                    let ty::Instance { def: callee_def, substs: callee_substs } = callee;
+                    match callee_def {
+                        ty::InstanceDef::Item(_def_id) => {}
+
+                        ty::InstanceDef::Intrinsic(_def_id) |
+                        ty::InstanceDef::VtableShim(_def_id) |
+                        ty::InstanceDef::ReifyShim(_def_id) |
+                        ty::InstanceDef::Virtual(_def_id, _) |
+                        ty::InstanceDef::ClosureOnceShim { call_once: _def_id } |
+                        ty::InstanceDef::DropGlue(_def_id, None) => {}
+
+                        ty::InstanceDef::FnPtrShim(_def_id, ty) |
+                        ty::InstanceDef::DropGlue(_def_id, Some(ty)) |
+                        ty::InstanceDef::CloneShim(_def_id, ty) => {
+                            // FIXME(eddyb) use a better `TyContext` here.
+                            self.visit_ty(ty, TyContext::Location(location));
+                        }
+                    }
+                    self.visit_substs(callee_substs, location);
+                }
+                if let Some(inlined_parent_scope) = inlined_parent_scope {
+                    self.visit_source_scope(inlined_parent_scope);
                 }
             }
 
@@ -453,7 +486,6 @@ macro_rules! make_mir_visitor {
                     TerminatorKind::SwitchInt {
                         discr,
                         switch_ty,
-                        values: _,
                         targets: _
                     } => {
                         self.visit_operand(discr, location);
@@ -752,7 +784,7 @@ macro_rules! make_mir_visitor {
             }
 
             fn super_coverage(&mut self,
-                              _kind: & $($mutability)? Coverage,
+                              _coverage: & $($mutability)? Coverage,
                               _location: Location) {
             }
 
@@ -1164,82 +1196,53 @@ pub enum PlaceContext {
 impl PlaceContext {
     /// Returns `true` if this place context represents a drop.
     pub fn is_drop(&self) -> bool {
-        match *self {
-            PlaceContext::MutatingUse(MutatingUseContext::Drop) => true,
-            _ => false,
-        }
+        matches!(self, PlaceContext::MutatingUse(MutatingUseContext::Drop))
     }
 
     /// Returns `true` if this place context represents a borrow.
     pub fn is_borrow(&self) -> bool {
-        match *self {
+        matches!(
+            self,
             PlaceContext::NonMutatingUse(
                 NonMutatingUseContext::SharedBorrow
-                | NonMutatingUseContext::ShallowBorrow
-                | NonMutatingUseContext::UniqueBorrow,
-            )
-            | PlaceContext::MutatingUse(MutatingUseContext::Borrow) => true,
-            _ => false,
-        }
+                    | NonMutatingUseContext::ShallowBorrow
+                    | NonMutatingUseContext::UniqueBorrow
+            ) | PlaceContext::MutatingUse(MutatingUseContext::Borrow)
+        )
     }
 
     /// Returns `true` if this place context represents a storage live or storage dead marker.
     pub fn is_storage_marker(&self) -> bool {
-        match *self {
-            PlaceContext::NonUse(NonUseContext::StorageLive | NonUseContext::StorageDead) => true,
-            _ => false,
-        }
-    }
-
-    /// Returns `true` if this place context represents a storage live marker.
-    pub fn is_storage_live_marker(&self) -> bool {
-        match *self {
-            PlaceContext::NonUse(NonUseContext::StorageLive) => true,
-            _ => false,
-        }
-    }
-
-    /// Returns `true` if this place context represents a storage dead marker.
-    pub fn is_storage_dead_marker(&self) -> bool {
-        match *self {
-            PlaceContext::NonUse(NonUseContext::StorageDead) => true,
-            _ => false,
-        }
+        matches!(
+            self,
+            PlaceContext::NonUse(NonUseContext::StorageLive | NonUseContext::StorageDead)
+        )
     }
 
     /// Returns `true` if this place context represents a use that potentially changes the value.
     pub fn is_mutating_use(&self) -> bool {
-        match *self {
-            PlaceContext::MutatingUse(..) => true,
-            _ => false,
-        }
+        matches!(self, PlaceContext::MutatingUse(..))
     }
 
     /// Returns `true` if this place context represents a use that does not change the value.
     pub fn is_nonmutating_use(&self) -> bool {
-        match *self {
-            PlaceContext::NonMutatingUse(..) => true,
-            _ => false,
-        }
+        matches!(self, PlaceContext::NonMutatingUse(..))
     }
 
     /// Returns `true` if this place context represents a use.
     pub fn is_use(&self) -> bool {
-        match *self {
-            PlaceContext::NonUse(..) => false,
-            _ => true,
-        }
+        !matches!(self, PlaceContext::NonUse(..))
     }
 
     /// Returns `true` if this place context represents an assignment statement.
     pub fn is_place_assignment(&self) -> bool {
-        match *self {
+        matches!(
+            self,
             PlaceContext::MutatingUse(
                 MutatingUseContext::Store
-                | MutatingUseContext::Call
-                | MutatingUseContext::AsmOutput,
-            ) => true,
-            _ => false,
-        }
+                    | MutatingUseContext::Call
+                    | MutatingUseContext::AsmOutput,
+            )
+        )
     }
 }

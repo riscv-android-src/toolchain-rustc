@@ -1,34 +1,30 @@
+use super::super::{node, DeterministicRng};
+use super::Entry::{Occupied, Vacant};
+use super::*;
 use crate::boxed::Box;
-use crate::collections::btree::navigate::Position;
-use crate::collections::btree::node;
-use crate::collections::btree_map::Entry::{Occupied, Vacant};
-use crate::collections::BTreeMap;
 use crate::fmt::Debug;
 use crate::rc::Rc;
-use crate::string::String;
-use crate::string::ToString;
+use crate::string::{String, ToString};
 use crate::vec::Vec;
 use std::convert::TryFrom;
-use std::iter::FromIterator;
+use std::iter::{self, FromIterator};
 use std::mem;
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::super::DeterministicRng;
-
 // Capacity of a tree with a single level,
-// i.e. a tree who's root is a leaf node at height 0.
+// i.e., a tree who's root is a leaf node at height 0.
 const NODE_CAPACITY: usize = node::CAPACITY;
 
 // Minimum number of elements to insert, to guarantee a tree with 2 levels,
-// i.e. a tree who's root is an internal node at height 1, with edges to leaf nodes.
+// i.e., a tree who's root is an internal node at height 1, with edges to leaf nodes.
 // It's not the minimum size: removing an element from such a tree does not always reduce height.
 const MIN_INSERTS_HEIGHT_1: usize = NODE_CAPACITY + 1;
 
 // Minimum number of elements to insert in ascending order, to guarantee a tree with 3 levels,
-// i.e. a tree who's root is an internal node at height 2, with edges to more internal nodes.
+// i.e., a tree who's root is an internal node at height 2, with edges to more internal nodes.
 // It's not the minimum size: removing an element from such a tree does not always reduce height.
 const MIN_INSERTS_HEIGHT_2: usize = 89;
 
@@ -46,20 +42,7 @@ fn test_all_refs<'a, T: 'a>(dummy: &mut T, iter: impl Iterator<Item = &'a mut T>
     }
 }
 
-struct SeriesChecker<T> {
-    previous: Option<T>,
-}
-
-impl<T: Copy + Debug + Ord> SeriesChecker<T> {
-    fn is_ascending(&mut self, next: T) {
-        if let Some(previous) = self.previous {
-            assert!(previous < next, "{:?} >= {:?}", previous, next);
-        }
-        self.previous = Some(next);
-    }
-}
-
-impl<'a, K: 'a, V: 'a> BTreeMap<K, V> {
+impl<K, V> BTreeMap<K, V> {
     /// Panics if the map (or the code navigating it) is corrupted.
     fn check(&self)
     where
@@ -67,47 +50,18 @@ impl<'a, K: 'a, V: 'a> BTreeMap<K, V> {
     {
         if let Some(root) = &self.root {
             let root_node = root.node_as_ref();
-            let mut checker = SeriesChecker { previous: None };
-            let mut internal_length = 0;
-            let mut internal_kv_count = 0;
-            let mut leaf_length = 0;
-            root_node.visit_nodes_in_order(|pos| match pos {
-                Position::Leaf(node) => {
-                    let is_root = root_node.height() == 0;
-                    let min_len = if is_root { 0 } else { node::MIN_LEN };
-                    assert!(node.len() >= min_len, "{} < {}", node.len(), min_len);
 
-                    for idx in 0..node.len() {
-                        let key = *unsafe { node.key_at(idx) };
-                        checker.is_ascending(key);
-                    }
-                    leaf_length += node.len();
-                }
-                Position::Internal(node) => {
-                    let is_root = root_node.height() == node.height();
-                    let min_len = if is_root { 1 } else { node::MIN_LEN };
-                    assert!(node.len() >= min_len, "{} < {}", node.len(), min_len);
+            assert!(root_node.ascend().is_err());
+            root_node.assert_back_pointers();
 
-                    for idx in 0..=node.len() {
-                        let edge = unsafe { node::Handle::new_edge(node, idx) };
-                        assert!(edge.descend().ascend().ok().unwrap() == edge);
-                    }
+            assert_eq!(self.length, root_node.calc_length());
 
-                    internal_length += node.len();
-                }
-                Position::InternalKV(kv) => {
-                    let key = *kv.into_kv().0;
-                    checker.is_ascending(key);
-
-                    internal_kv_count += 1;
-                }
-            });
-            assert_eq!(internal_length, internal_kv_count);
-            assert_eq!(root_node.calc_length(), internal_length + leaf_length);
-            assert_eq!(self.length, internal_length + leaf_length);
+            root_node.assert_min_len(if root_node.height() > 0 { 1 } else { 0 });
         } else {
             assert_eq!(self.length, 0);
         }
+
+        self.assert_ascending();
     }
 
     /// Returns the height of the root, if any.
@@ -120,30 +74,39 @@ impl<'a, K: 'a, V: 'a> BTreeMap<K, V> {
         K: Debug,
     {
         if let Some(root) = self.root.as_ref() {
-            let mut result = String::new();
-            let root_node = root.node_as_ref();
-            root_node.visit_nodes_in_order(|pos| match pos {
-                Position::Leaf(leaf) => {
-                    let depth = root_node.height();
-                    let indent = "  ".repeat(depth);
-                    result += &format!("\n{}", indent);
-                    for idx in 0..leaf.len() {
-                        if idx > 0 {
-                            result += ", ";
-                        }
-                        result += &format!("{:?}", unsafe { leaf.key_at(idx) });
-                    }
-                }
-                Position::Internal(_) => {}
-                Position::InternalKV(kv) => {
-                    let depth = root_node.height() - kv.into_node().height();
-                    let indent = "  ".repeat(depth);
-                    result += &format!("\n{}{:?}", indent, kv.into_kv().0);
-                }
-            });
-            result
+            root.node_as_ref().dump_keys()
         } else {
             String::from("not yet allocated")
+        }
+    }
+
+    /// Asserts that the keys are in strictly ascending order.
+    fn assert_ascending(&self)
+    where
+        K: Copy + Debug + Ord,
+    {
+        let mut num_seen = 0;
+        let mut keys = self.keys();
+        if let Some(mut previous) = keys.next() {
+            num_seen = 1;
+            for next in keys {
+                assert!(previous < next, "{:?} >= {:?}", previous, next);
+                previous = next;
+                num_seen += 1;
+            }
+        }
+        assert_eq!(num_seen, self.len());
+    }
+}
+
+impl<'a, K: 'a, V: 'a> NodeRef<marker::Immut<'a>, K, V, marker::LeafOrInternal> {
+    fn assert_min_len(self, min_len: usize) {
+        assert!(self.len() >= min_len, "{} < {}", self.len(), min_len);
+        if let node::ForceResult::Internal(node) = self.force() {
+            for idx in 0..=node.len() {
+                let edge = unsafe { Handle::new_edge(node, idx) };
+                edge.descend().assert_min_len(MIN_LEN);
+            }
         }
     }
 }
@@ -174,7 +137,6 @@ fn test_levels() {
         let last_key = *map.last_key_value().unwrap().0;
         map.insert(last_key + 1, ());
     }
-    println!("{}", map.dump_keys());
     map.check();
     // Structure:
     // - 1 element in internal root node with 2 children
@@ -376,7 +338,7 @@ fn test_iter_rev() {
 fn do_test_iter_mut_mutation<T>(size: usize)
 where
     T: Copy + Debug + Ord + TryFrom<usize>,
-    <T as std::convert::TryFrom<usize>>::Error: std::fmt::Debug,
+    <T as TryFrom<usize>>::Error: Debug,
 {
     let zero = T::try_from(0).unwrap();
     let mut map: BTreeMap<T, T> = (0..size).map(|i| (T::try_from(i).unwrap(), zero)).collect();
@@ -861,7 +823,7 @@ mod test_drain_filter {
     fn consuming_nothing() {
         let pairs = (0..3).map(|i| (i, i));
         let mut map: BTreeMap<_, _> = pairs.collect();
-        assert!(map.drain_filter(|_, _| false).eq(std::iter::empty()));
+        assert!(map.drain_filter(|_, _| false).eq(iter::empty()));
         map.check();
     }
 
@@ -882,7 +844,7 @@ mod test_drain_filter {
                 *v += 6;
                 false
             })
-            .eq(std::iter::empty())
+            .eq(iter::empty())
         );
         assert!(map.keys().copied().eq(0..3));
         assert!(map.values().copied().eq(6..9));
@@ -1386,44 +1348,65 @@ fn test_clone_from() {
     }
 }
 
-#[test]
 #[allow(dead_code)]
 fn test_variance() {
-    use std::collections::btree_map::{IntoIter, Iter, Keys, Range, Values};
-
     fn map_key<'new>(v: BTreeMap<&'static str, ()>) -> BTreeMap<&'new str, ()> {
         v
     }
     fn map_val<'new>(v: BTreeMap<(), &'static str>) -> BTreeMap<(), &'new str> {
         v
     }
+
     fn iter_key<'a, 'new>(v: Iter<'a, &'static str, ()>) -> Iter<'a, &'new str, ()> {
         v
     }
     fn iter_val<'a, 'new>(v: Iter<'a, (), &'static str>) -> Iter<'a, (), &'new str> {
         v
     }
+
     fn into_iter_key<'new>(v: IntoIter<&'static str, ()>) -> IntoIter<&'new str, ()> {
         v
     }
     fn into_iter_val<'new>(v: IntoIter<(), &'static str>) -> IntoIter<(), &'new str> {
         v
     }
+
+    fn into_keys_key<'new>(v: IntoKeys<&'static str, ()>) -> IntoKeys<&'new str, ()> {
+        v
+    }
+    fn into_keys_val<'new>(v: IntoKeys<(), &'static str>) -> IntoKeys<(), &'new str> {
+        v
+    }
+
+    fn into_values_key<'new>(v: IntoValues<&'static str, ()>) -> IntoValues<&'new str, ()> {
+        v
+    }
+    fn into_values_val<'new>(v: IntoValues<(), &'static str>) -> IntoValues<(), &'new str> {
+        v
+    }
+
     fn range_key<'a, 'new>(v: Range<'a, &'static str, ()>) -> Range<'a, &'new str, ()> {
         v
     }
     fn range_val<'a, 'new>(v: Range<'a, (), &'static str>) -> Range<'a, (), &'new str> {
         v
     }
-    fn keys<'a, 'new>(v: Keys<'a, &'static str, ()>) -> Keys<'a, &'new str, ()> {
+
+    fn keys_key<'a, 'new>(v: Keys<'a, &'static str, ()>) -> Keys<'a, &'new str, ()> {
         v
     }
-    fn vals<'a, 'new>(v: Values<'a, (), &'static str>) -> Values<'a, (), &'new str> {
+    fn keys_val<'a, 'new>(v: Keys<'a, (), &'static str>) -> Keys<'a, (), &'new str> {
+        v
+    }
+
+    fn values_key<'a, 'new>(v: Values<'a, &'static str, ()>) -> Values<'a, &'new str, ()> {
+        v
+    }
+    fn values_val<'a, 'new>(v: Values<'a, (), &'static str>) -> Values<'a, (), &'new str> {
         v
     }
 }
 
-#[test]
 #[allow(dead_code)]
 fn test_sync() {
     fn map<T: Sync>(v: &BTreeMap<T, T>) -> impl Sync + '_ {
@@ -1493,7 +1476,6 @@ fn test_sync() {
     }
 }
 
-#[test]
 #[allow(dead_code)]
 fn test_send() {
     fn map<T: Send>(v: BTreeMap<T, T>) -> impl Send {
@@ -1520,7 +1502,7 @@ fn test_send() {
         v.iter()
     }
 
-    fn iter_mut<T: Send + Sync>(v: &mut BTreeMap<T, T>) -> impl Send + '_ {
+    fn iter_mut<T: Send>(v: &mut BTreeMap<T, T>) -> impl Send + '_ {
         v.iter_mut()
     }
 
@@ -1532,7 +1514,7 @@ fn test_send() {
         v.values()
     }
 
-    fn values_mut<T: Send + Sync>(v: &mut BTreeMap<T, T>) -> impl Send + '_ {
+    fn values_mut<T: Send>(v: &mut BTreeMap<T, T>) -> impl Send + '_ {
         v.values_mut()
     }
 
@@ -1540,7 +1522,7 @@ fn test_send() {
         v.range(..)
     }
 
-    fn range_mut<T: Send + Sync + Ord>(v: &mut BTreeMap<T, T>) -> impl Send + '_ {
+    fn range_mut<T: Send + Ord>(v: &mut BTreeMap<T, T>) -> impl Send + '_ {
         v.range_mut(..)
     }
 
@@ -1561,6 +1543,13 @@ fn test_send() {
             _ => unreachable!(),
         }
     }
+}
+
+#[allow(dead_code)]
+fn test_const() {
+    const MAP: &'static BTreeMap<(), ()> = &BTreeMap::new();
+    const LEN: usize = MAP.len();
+    const IS_EMPTY: bool = MAP.is_empty();
 }
 
 #[test]
@@ -1696,7 +1685,35 @@ create_append_test!(test_append_239, 239);
 #[cfg(not(miri))] // Miri is too slow
 create_append_test!(test_append_1700, 1700);
 
+#[test]
+fn test_append_drop_leak() {
+    static DROPS: AtomicUsize = AtomicUsize::new(0);
+
+    struct D;
+
+    impl Drop for D {
+        fn drop(&mut self) {
+            if DROPS.fetch_add(1, Ordering::SeqCst) == 0 {
+                panic!("panic in `drop`");
+            }
+        }
+    }
+
+    let mut left = BTreeMap::new();
+    let mut right = BTreeMap::new();
+    left.insert(0, D);
+    left.insert(1, D); // first to be dropped during append
+    left.insert(2, D);
+    right.insert(1, D);
+    right.insert(2, D);
+
+    catch_unwind(move || left.append(&mut right)).unwrap_err();
+
+    assert_eq!(DROPS.load(Ordering::SeqCst), 4); // Rust issue #47949 ate one little piggy
+}
+
 fn rand_data(len: usize) -> Vec<(u32, u32)> {
+    assert!(len * 2 <= 70029); // from that point on numbers repeat
     let mut rng = DeterministicRng::new();
     Vec::from_iter((0..len).map(|_| (rng.next(), rng.next())))
 }

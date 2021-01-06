@@ -128,7 +128,7 @@ fn emit_build_output(
     output: &BuildOutput,
     out_dir: &Path,
     package_id: PackageId,
-) {
+) -> CargoResult<()> {
     let library_paths = output
         .library_paths
         .iter()
@@ -144,7 +144,8 @@ fn emit_build_output(
         out_dir,
     }
     .to_json_string();
-    state.stdout(msg);
+    state.stdout(msg)?;
+    Ok(())
 }
 
 fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
@@ -272,7 +273,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
     let output_file = script_run_dir.join("output");
     let err_file = script_run_dir.join("stderr");
     let root_output_file = script_run_dir.join("root-output");
-    let host_target_root = cx.files().host_root().to_path_buf();
+    let host_target_root = cx.files().host_dest().to_path_buf();
     let all = (
         id,
         pkg_name.clone(),
@@ -349,17 +350,17 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
         let output = cmd
             .exec_with_streaming(
                 &mut |stdout| {
-                    if stdout.starts_with(CARGO_WARNING) {
-                        warnings_in_case_of_panic.push(stdout[CARGO_WARNING.len()..].to_owned());
+                    if let Some(warning) = stdout.strip_prefix(CARGO_WARNING) {
+                        warnings_in_case_of_panic.push(warning.to_owned());
                     }
                     if extra_verbose {
-                        state.stdout(format!("{}{}", prefix, stdout));
+                        state.stdout(format!("{}{}", prefix, stdout))?;
                     }
                     Ok(())
                 },
                 &mut |stderr| {
                     if extra_verbose {
-                        state.stderr(format!("{}{}", prefix, stderr));
+                        state.stderr(format!("{}{}", prefix, stderr))?;
                     }
                     Ok(())
                 },
@@ -396,7 +397,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
             BuildOutput::parse(&output.stdout, &pkg_name, &script_out_dir, &script_out_dir)?;
 
         if json_messages {
-            emit_build_output(state, &parsed_output, script_out_dir.as_path(), id);
+            emit_build_output(state, &parsed_output, script_out_dir.as_path(), id)?;
         }
         build_script_outputs
             .lock()
@@ -421,7 +422,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
         };
 
         if json_messages {
-            emit_build_output(state, &output, script_out_dir.as_path(), id);
+            emit_build_output(state, &output, script_out_dir.as_path(), id)?;
         }
 
         build_script_outputs
@@ -432,7 +433,7 @@ fn build_work(cx: &mut Context<'_, '_>, unit: &Unit) -> CargoResult<Job> {
     });
 
     let mut job = if cx.bcx.build_config.build_plan {
-        Job::new(Work::noop(), Freshness::Dirty)
+        Job::new_dirty(Work::noop())
     } else {
         fingerprint::prepare_target(cx, unit, false)?
     };

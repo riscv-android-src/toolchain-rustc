@@ -4,24 +4,27 @@ extern crate winapi;
 extern crate libloading;
 use libloading::{Symbol, Library};
 
-const LIBPATH: &'static str = concat!(env!("OUT_DIR"), "/libtest_helpers.module");
+const LIBPATH: &'static str = "target/libtest_helpers.module";
 
 fn make_helpers() {
     static ONCE: ::std::sync::Once = ::std::sync::Once::new();
     ONCE.call_once(|| {
-        let rustc = option_env!("RUSTC").unwrap_or_else(|| { "rustc".into() });
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| { "rustc".into() });
         let mut cmd = ::std::process::Command::new(rustc);
         cmd
             .arg("src/test_helpers.rs")
             .arg("-o")
-            .arg(LIBPATH)
-            .arg("--target")
-            .arg(env!("LIBLOADING_TEST_TARGET"))
-            .arg("-O");
-
-        cmd
-            .output()
-            .expect("could not compile the test helpers!");
+            .arg(LIBPATH);
+        if let Some(target) = std::env::var_os("TARGET") {
+            cmd.arg("--target").arg(target);
+        } else {
+            eprintln!("WARNING: $TARGET NOT SPECIFIED! BUILDING HELPER MODULE FOR NATIVE TARGET.");
+        }
+        assert!(cmd
+            .status()
+            .expect("could not compile the test helpers!")
+            .success()
+        );
     });
 }
 
@@ -67,7 +70,7 @@ fn test_0_no_0() {
 
 #[test]
 fn wrong_name_fails() {
-    Library::new(concat!(env!("OUT_DIR"), "/libtest_help")).err().unwrap();
+    Library::new("target/this_location_is_definitely_non existent:^~").err().unwrap();
 }
 
 #[test]

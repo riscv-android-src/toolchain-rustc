@@ -8,9 +8,19 @@ use tracing::{
     Level,
 };
 
-const LINE_VERT: &str = "│";
+pub(crate) const LINE_VERT: &str = "│";
 const LINE_HORIZ: &str = "─";
-const LINE_BRANCH: &str = "├";
+pub(crate) const LINE_BRANCH: &str = "├";
+pub(crate) const LINE_CLOSE: &str = "┘";
+pub(crate) const LINE_OPEN: &str = "┐";
+
+pub(crate) enum SpanMode {
+    PreOpen,
+    Open,
+    Close,
+    PostClose,
+    Event,
+}
 
 #[derive(Debug)]
 pub struct Config {
@@ -28,6 +38,12 @@ pub struct Config {
     pub render_thread_names: bool,
     /// Specifies after how many indentation levels we will wrap back around to zero
     pub wraparound: usize,
+    /// Whether to print the current span before activating a new one
+    pub verbose_entry: bool,
+    /// Whether to print the current span before exiting it.
+    pub verbose_exit: bool,
+    /// Whether to print squiggly brackets (`{}`) around the list of fields in a span.
+    pub bracketed_fields: bool,
 }
 
 impl Config {
@@ -64,6 +80,27 @@ impl Config {
         Self { wraparound, ..self }
     }
 
+    pub fn with_verbose_entry(self, verbose_entry: bool) -> Self {
+        Self {
+            verbose_entry,
+            ..self
+        }
+    }
+
+    pub fn with_verbose_exit(self, verbose_exit: bool) -> Self {
+        Self {
+            verbose_exit,
+            ..self
+        }
+    }
+
+    pub fn with_bracketed_fields(self, bracketed_fields: bool) -> Self {
+        Self {
+            bracketed_fields,
+            ..self
+        }
+    }
+
     pub(crate) fn prefix(&self) -> String {
         let mut buf = String::new();
         if self.render_thread_ids {
@@ -97,6 +134,9 @@ impl Default for Config {
             render_thread_ids: false,
             render_thread_names: false,
             wraparound: usize::max_value(),
+            verbose_entry: false,
+            verbose_exit: false,
+            bracketed_fields: false,
         }
     }
 }
@@ -125,7 +165,7 @@ impl Buffers {
         self.indent_buf.clear();
     }
 
-    pub fn indent_current(&mut self, indent: usize, config: &Config) {
+    pub(crate) fn indent_current(&mut self, indent: usize, config: &Config, style: SpanMode) {
         self.current_buf.push('\n');
         indent_block(
             &mut self.current_buf,
@@ -134,6 +174,7 @@ impl Buffers {
             config.indent_amount,
             config.indent_lines,
             &config.prefix(),
+            style,
         );
         self.current_buf.clear();
         self.flush_indent_buf();
@@ -181,7 +222,15 @@ fn indent_block_with_lines(
     indent: usize,
     indent_amount: usize,
     prefix: &str,
+    style: SpanMode,
 ) {
+    let indent = match style {
+        SpanMode::PreOpen => indent.saturating_sub(1),
+        SpanMode::Open => indent.saturating_sub(1),
+        SpanMode::Close => indent,
+        SpanMode::PostClose => indent,
+        SpanMode::Event => indent,
+    };
     let indent_spaces = indent * indent_amount;
     if lines.is_empty() {
         return;
@@ -208,11 +257,68 @@ fn indent_block_with_lines(
 
     // draw branch
     buf.push_str(&s);
-    buf.push_str(LINE_BRANCH);
 
-    // add `indent_amount - 1` horizontal lines before the span/event
-    for _ in 0..(indent_amount - 1) {
-        buf.push_str(LINE_HORIZ);
+    match style {
+        SpanMode::PreOpen => {
+            buf.push_str(LINE_BRANCH);
+            for _ in 1..(indent_amount / 2) {
+                buf.push_str(LINE_HORIZ);
+            }
+            buf.push_str(LINE_OPEN);
+        }
+        SpanMode::Open => {
+            buf.push_str(LINE_VERT);
+            for _ in 1..(indent_amount / 2) {
+                buf.push(' ');
+            }
+            // We don't have the space for fancy rendering at single space indent.
+            if indent_amount > 1 {
+                buf.push('└');
+            }
+            for _ in (indent_amount / 2)..(indent_amount - 1) {
+                buf.push_str(LINE_HORIZ);
+            }
+            // We don't have the space for fancy rendering at single space indent.
+            if indent_amount > 1 {
+                buf.push_str(LINE_OPEN);
+            } else {
+                buf.push_str(LINE_VERT);
+            }
+        }
+        SpanMode::Close => {
+            buf.push_str(LINE_VERT);
+            for _ in 1..(indent_amount / 2) {
+                buf.push(' ');
+            }
+            // We don't have the space for fancy rendering at single space indent.
+            if indent_amount > 1 {
+                buf.push('┌');
+            }
+            for _ in (indent_amount / 2)..(indent_amount - 1) {
+                buf.push_str(LINE_HORIZ);
+            }
+            // We don't have the space for fancy rendering at single space indent.
+            if indent_amount > 1 {
+                buf.push_str(LINE_CLOSE);
+            } else {
+                buf.push_str(LINE_VERT);
+            }
+        }
+        SpanMode::PostClose => {
+            buf.push_str(LINE_BRANCH);
+            for _ in 1..(indent_amount / 2) {
+                buf.push_str(LINE_HORIZ);
+            }
+            buf.push_str(LINE_CLOSE);
+        }
+        SpanMode::Event => {
+            buf.push_str(LINE_BRANCH);
+
+            // add `indent_amount - 1` horizontal lines before the span/event
+            for _ in 0..(indent_amount - 1) {
+                buf.push_str(LINE_HORIZ);
+            }
+        }
     }
     buf.push_str(&lines[0]);
     buf.push('\n');
@@ -242,12 +348,13 @@ fn indent_block(
     indent_amount: usize,
     indent_lines: bool,
     prefix: &str,
+    style: SpanMode,
 ) {
     let lines: Vec<&str> = block.lines().collect();
     let indent_spaces = indent * indent_amount;
     buf.reserve(block.len() + (lines.len() * indent_spaces));
     if indent_lines {
-        indent_block_with_lines(&lines, buf, indent, indent_amount, prefix);
+        indent_block_with_lines(&lines, buf, indent, indent_amount, prefix, style);
     } else {
         let indent_str = String::from(" ").repeat(indent_spaces);
         for line in lines {

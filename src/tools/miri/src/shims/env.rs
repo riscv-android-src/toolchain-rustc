@@ -38,7 +38,7 @@ impl<'tcx> EnvVars<'tcx> {
         ecx: &mut InterpCx<'mir, 'tcx, Evaluator<'mir, 'tcx>>,
         mut excluded_env_vars: Vec<String>,
     ) -> InterpResult<'tcx> {
-        let target_os = ecx.tcx.sess.target.target.target_os.as_str();
+        let target_os = ecx.tcx.sess.target.os.as_str();
         if target_os == "windows" {
             // Temporary hack: Exclude `TERM` var to avoid terminfo trying to open the termcap file.
             // Can be removed once https://github.com/rust-lang/miri/issues/1013 is resolved.
@@ -101,7 +101,7 @@ impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriEvalContext<'mi
 pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx> {
     fn getenv(&mut self, name_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, Scalar<Tag>> {
         let this = self.eval_context_mut();
-        let target_os = &this.tcx.sess.target.target.target_os;
+        let target_os = &this.tcx.sess.target.os;
         assert!(target_os == "linux" || target_os == "macos", "`getenv` is only available for the UNIX target family");
 
         let name_ptr = this.read_scalar(name_op)?.check_init()?;
@@ -185,7 +185,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         value_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, i32> {
         let mut this = self.eval_context_mut();
-        let target_os = &this.tcx.sess.target.target.target_os;
+        let target_os = &this.tcx.sess.target.os;
         assert!(target_os == "linux" || target_os == "macos", "`setenv` is only available for the UNIX target family");
 
         let name_ptr = this.read_scalar(name_op)?.check_init()?;
@@ -258,7 +258,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn unsetenv(&mut self, name_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
-        let target_os = &this.tcx.sess.target.target.target_os;
+        let target_os = &this.tcx.sess.target.os;
         assert!(target_os == "linux" || target_os == "macos", "`unsetenv` is only available for the UNIX target family");
 
         let name_ptr = this.read_scalar(name_op)?.check_init()?;
@@ -290,10 +290,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         size_op: OpTy<'tcx, Tag>,
     ) -> InterpResult<'tcx, Scalar<Tag>> {
         let this = self.eval_context_mut();
-        let target_os = &this.tcx.sess.target.target.target_os;
+        let target_os = &this.tcx.sess.target.os;
         assert!(target_os == "linux" || target_os == "macos", "`getcwd` is only available for the UNIX target family");
 
-        this.check_no_isolation("getcwd")?;
+        this.check_no_isolation("`getcwd`")?;
 
         let buf = this.read_scalar(buf_op)?.check_init()?;
         let size = this.read_scalar(size_op)?.to_machine_usize(&*this.tcx)?;
@@ -320,7 +320,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
         this.assert_target_os("windows", "GetCurrentDirectoryW");
 
-        this.check_no_isolation("GetCurrentDirectoryW")?;
+        this.check_no_isolation("`GetCurrentDirectoryW`")?;
 
         let size = u64::from(this.read_scalar(size_op)?.to_u32()?);
         let buf = this.read_scalar(buf_op)?.check_init()?;
@@ -336,10 +336,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn chdir(&mut self, path_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
-        let target_os = &this.tcx.sess.target.target.target_os;
+        let target_os = &this.tcx.sess.target.os;
         assert!(target_os == "linux" || target_os == "macos", "`getcwd` is only available for the UNIX target family");
 
-        this.check_no_isolation("chdir")?;
+        this.check_no_isolation("`chdir`")?;
 
         let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
@@ -360,7 +360,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
         this.assert_target_os("windows", "SetCurrentDirectoryW");
 
-        this.check_no_isolation("SetCurrentDirectoryW")?;
+        this.check_no_isolation("`SetCurrentDirectoryW`")?;
 
         let path = this.read_path_from_wide_str(this.read_scalar(path_op)?.check_init()?)?;
 

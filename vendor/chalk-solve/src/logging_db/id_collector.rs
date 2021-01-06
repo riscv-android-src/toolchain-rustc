@@ -4,7 +4,7 @@ use chalk_ir::{
     interner::Interner,
     visit::Visitor,
     visit::{SuperVisit, Visit},
-    AliasTy, DebruijnIndex, TyData, TypeName, WhereClause,
+    AliasTy, DebruijnIndex, TyKind, WhereClause,
 };
 use std::collections::BTreeSet;
 
@@ -53,6 +53,7 @@ pub fn collect_unrecorded_ids<'i, I: Interner, DB: RustIrDatabase<I>>(
                     .fn_def_datum(fn_def)
                     .visit_with(&mut collector, DebruijnIndex::INNERMOST);
             }
+            RecordedItemId::Generator(_generator_id) => unimplemented!(),
             RecordedItemId::Trait(trait_id) => {
                 let trait_datum = collector.db.trait_datum(trait_id);
 
@@ -120,15 +121,11 @@ where
         ty: &chalk_ir::Ty<I>,
         outer_binder: chalk_ir::DebruijnIndex,
     ) -> Self::Result {
-        let ty_data = ty.data(self.db.interner());
-        match ty_data {
-            TyData::Apply(apply_ty) => match apply_ty.name {
-                TypeName::Adt(adt) => self.record(adt),
-                TypeName::FnDef(fn_def) => self.record(fn_def),
-                TypeName::OpaqueType(opaque) => self.record(opaque),
-                _ => {}
-            },
-            TyData::Alias(alias) => match alias {
+        match ty.kind(self.db.interner()) {
+            TyKind::Adt(adt, _) => self.record(*adt),
+            TyKind::FnDef(fn_def, _) => self.record(*fn_def),
+            TyKind::OpaqueType(opaque, _) => self.record(*opaque),
+            TyKind::Alias(alias) => match alias {
                 AliasTy::Projection(projection_ty) => {
                     let assoc_ty_datum = self.db.associated_ty_data(projection_ty.associated_ty_id);
                     self.record(assoc_ty_datum.trait_id)
@@ -137,11 +134,12 @@ where
                     self.record(opaque_ty.opaque_ty_id);
                 }
             },
-            TyData::BoundVar(..) => (),
-            TyData::Dyn(..) => (),
-            TyData::Function(..) => (),
-            TyData::InferenceVar(..) => (),
-            TyData::Placeholder(..) => (),
+            TyKind::BoundVar(..) => (),
+            TyKind::Dyn(..) => (),
+            TyKind::Function(..) => (),
+            TyKind::InferenceVar(..) => (),
+            TyKind::Placeholder(..) => (),
+            _ => {}
         }
         ty.super_visit_with(self, outer_binder)
     }

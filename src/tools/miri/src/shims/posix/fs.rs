@@ -4,6 +4,7 @@ use std::fs::{read_dir, remove_dir, remove_file, rename, DirBuilder, File, FileT
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::SystemTime;
+use std::borrow::Cow;
 
 use log::trace;
 
@@ -90,7 +91,7 @@ impl FileDescriptor for io::Stdin {
     fn read<'tcx>(&mut self, communicate_allowed: bool, bytes: &mut [u8]) -> InterpResult<'tcx, io::Result<usize>> {
         if !communicate_allowed {
             // We want isolation mode to be deterministic, so we have to disallow all reads, even stdin.
-            helpers::isolation_error("read")?;
+            helpers::isolation_error("`read` from stdin")?;
         }
         Ok(Read::read(self, bytes))
     }
@@ -417,7 +418,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("open")?;
+        this.check_no_isolation("`open`")?;
 
         let flag = this.read_scalar(flag_op)?.to_i32()?;
 
@@ -510,7 +511,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("fcntl")?;
+        this.check_no_isolation("`fcntl`")?;
 
         if args.len() < 2 {
             throw_ub_format!("incorrect number of arguments for fcntl: got {}, expected at least 2", args.len());
@@ -554,7 +555,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
                 },
                 None => return this.handle_not_found(),
             }
-        } else if this.tcx.sess.target.target.target_os == "macos"
+        } else if this.tcx.sess.target.os == "macos"
             && cmd == this.eval_libc_i32("F_FULLFSYNC")?
         {
             let &[_, _] = check_arg_count(args)?;
@@ -573,8 +574,6 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
     fn close(&mut self, fd_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
-
-        this.check_no_isolation("close")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
 
@@ -709,7 +708,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn unlink(&mut self, path_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("unlink")?;
+        this.check_no_isolation("`unlink`")?;
 
         let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
@@ -739,7 +738,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("symlink")?;
+        this.check_no_isolation("`symlink`")?;
 
         let target = this.read_path_from_c_str(this.read_scalar(target_op)?.check_init()?)?;
         let linkpath = this.read_path_from_c_str(this.read_scalar(linkpath_op)?.check_init()?)?;
@@ -755,7 +754,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
         this.assert_target_os("macos", "stat");
-        this.check_no_isolation("stat")?;
+        this.check_no_isolation("`stat`")?;
         // `stat` always follows symlinks.
         this.macos_stat_or_lstat(true, path_op, buf_op)
     }
@@ -768,7 +767,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
         this.assert_target_os("macos", "lstat");
-        this.check_no_isolation("lstat")?;
+        this.check_no_isolation("`lstat`")?;
         this.macos_stat_or_lstat(false, path_op, buf_op)
     }
 
@@ -780,7 +779,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("macos", "fstat");
-        this.check_no_isolation("fstat")?;
+        this.check_no_isolation("`fstat`")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
 
@@ -802,7 +801,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("linux", "statx");
-        this.check_no_isolation("statx")?;
+        this.check_no_isolation("`statx`")?;
 
         let statxbuf_scalar = this.read_scalar(statxbuf_op)?.check_init()?;
         let pathname_scalar = this.read_scalar(pathname_op)?.check_init()?;
@@ -961,7 +960,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("rename")?;
+        this.check_no_isolation("`rename`")?;
 
         let oldpath_scalar = this.read_scalar(oldpath_op)?.check_init()?;
         let newpath_scalar = this.read_scalar(newpath_op)?.check_init()?;
@@ -987,10 +986,10 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("mkdir")?;
+        this.check_no_isolation("`mkdir`")?;
 
         #[cfg_attr(not(unix), allow(unused_variables))]
-        let mode = if this.tcx.sess.target.target.target_os == "macos" {
+        let mode = if this.tcx.sess.target.os == "macos" {
             u32::from(this.read_scalar(mode_op)?.check_init()?.to_u16()?)
         } else {
             this.read_scalar(mode_op)?.to_u32()?
@@ -1020,7 +1019,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("rmdir")?;
+        this.check_no_isolation("`rmdir`")?;
 
         let path = this.read_path_from_c_str(this.read_scalar(path_op)?.check_init()?)?;
 
@@ -1032,7 +1031,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn opendir(&mut self, name_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, Scalar<Tag>> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("opendir")?;
+        this.check_no_isolation("`opendir`")?;
 
         let name = this.read_path_from_c_str(this.read_scalar(name_op)?.check_init()?)?;
 
@@ -1063,7 +1062,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("linux", "readdir64_r");
-        this.check_no_isolation("readdir64_r")?;
+        this.check_no_isolation("`readdir64_r`")?;
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
@@ -1150,7 +1149,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
         let this = self.eval_context_mut();
 
         this.assert_target_os("macos", "readdir_r");
-        this.check_no_isolation("readdir_r")?;
+        this.check_no_isolation("`readdir_r`")?;
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
@@ -1233,7 +1232,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn closedir(&mut self, dirp_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("closedir")?;
+        this.check_no_isolation("`closedir`")?;
 
         let dirp = this.read_scalar(dirp_op)?.to_machine_usize(this)?;
 
@@ -1252,7 +1251,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("ftruncate64")?;
+        this.check_no_isolation("`ftruncate64`")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         let length = this.read_scalar(length_op)?.to_i64()?;
@@ -1287,7 +1286,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
 
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("fsync")?;
+        this.check_no_isolation("`fsync`")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
@@ -1303,7 +1302,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     fn fdatasync(&mut self, fd_op: OpTy<'tcx, Tag>) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("fdatasync")?;
+        this.check_no_isolation("`fdatasync`")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         if let Some(file_descriptor) = this.machine.file_handler.handles.get(&fd) {
@@ -1325,7 +1324,7 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
     ) -> InterpResult<'tcx, i32> {
         let this = self.eval_context_mut();
 
-        this.check_no_isolation("sync_file_range")?;
+        this.check_no_isolation("`sync_file_range`")?;
 
         let fd = this.read_scalar(fd_op)?.to_i32()?;
         let offset = this.read_scalar(offset_op)?.to_i64()?;
@@ -1353,6 +1352,41 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriEvalContextExt<'mir, 'tcx
             this.try_unwrap_io_result(io_result)
         } else {
             this.handle_not_found()
+        }
+    }
+
+    fn readlink(
+        &mut self,
+        pathname_op: OpTy<'tcx, Tag>,
+        buf_op: OpTy<'tcx, Tag>,
+        bufsize_op: OpTy<'tcx, Tag>
+    ) -> InterpResult<'tcx, i64> {
+        let this = self.eval_context_mut();
+
+        this.check_no_isolation("readlink")?;
+
+        let pathname = this.read_path_from_c_str(this.read_scalar(pathname_op)?.check_init()?)?;
+        let buf = this.read_scalar(buf_op)?.check_init()?;
+        let bufsize = this.read_scalar(bufsize_op)?.to_machine_usize(this)?;
+
+        let result = std::fs::read_link(pathname);
+        match result {
+            Ok(resolved) => {
+                let resolved = this.convert_path_separator(Cow::Borrowed(resolved.as_ref()), crate::shims::os_str::PathConversion::HostToTarget);
+                let mut path_bytes = crate::shims::os_str::os_str_to_bytes(resolved.as_ref())?;
+                let bufsize: usize = bufsize.try_into().unwrap();
+                if path_bytes.len() > bufsize {
+                    path_bytes = &path_bytes[..bufsize]
+                }
+                // 'readlink' truncates the resolved path if
+                // the provided buffer is not large enough.
+                this.memory.write_bytes(buf, path_bytes.iter().copied())?;
+                Ok(path_bytes.len().try_into().unwrap())
+            }
+            Err(e) => {
+                this.set_last_error_from_io_error(e)?;
+                Ok(-1)
+            }
         }
     }
 }

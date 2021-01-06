@@ -1,7 +1,7 @@
 use crate::clauses::builder::ClauseBuilder;
 use crate::rust_ir::*;
 use crate::split::Split;
-use chalk_ir::cast::{Cast, CastTo, Caster};
+use chalk_ir::cast::{Cast, Caster};
 use chalk_ir::interner::Interner;
 use chalk_ir::*;
 use std::iter;
@@ -152,13 +152,8 @@ impl<I: Interner> ToProgramClauses<I> for OpaqueTyDatum<I> {
                 substitution: substitution.clone(),
             });
 
-            let alias_placeholder_ty = Ty::new(
-                interner,
-                ApplicationTy {
-                    name: self.opaque_ty_id.cast(interner),
-                    substitution,
-                },
-            );
+            let alias_placeholder_ty =
+                TyKind::OpaqueType(self.opaque_ty_id, substitution).intern(interner);
 
             // AliasEq(T<..> = HiddenTy) :- Reveal.
             builder.push_clause(
@@ -203,17 +198,6 @@ impl<I: Interner> ToProgramClauses<I> for OpaqueTyDatum<I> {
     }
 }
 
-fn application_ty<I: Interner>(
-    builder: &mut ClauseBuilder<'_, I>,
-    type_name: impl CastTo<TypeName<I>>,
-) -> ApplicationTy<I> {
-    let interner = builder.interner();
-    ApplicationTy {
-        name: type_name.cast(interner),
-        substitution: builder.substitution_in_scope(),
-    }
-}
-
 /// Generates the "well-formed" program clauses for an applicative type
 /// with the name `type_name`. For example, given a struct definition:
 ///
@@ -235,15 +219,13 @@ fn application_ty<I: Interner>(
 /// - where_clauses -- the list of where clauses declared on the type (`T: Eq`, in our example)
 fn well_formed_program_clauses<'a, I, Wc>(
     builder: &'a mut ClauseBuilder<'_, I>,
-    type_name: impl CastTo<TypeName<I>>,
+    ty: Ty<I>,
     where_clauses: Wc,
 ) where
     I: Interner,
     Wc: Iterator<Item = &'a QuantifiedWhereClause<I>>,
 {
     let interner = builder.interner();
-    let appl_ty = application_ty(builder, type_name);
-    let ty = appl_ty.intern(interner);
     builder.push_clause(
         WellFormed::Ty(ty),
         where_clauses
@@ -273,16 +255,15 @@ fn well_formed_program_clauses<'a, I, Wc>(
 /// - type_name -- in our example above, the name `Foo`
 fn fully_visible_program_clauses<I>(
     builder: &mut ClauseBuilder<'_, I>,
-    type_name: impl CastTo<TypeName<I>>,
+    ty: Ty<I>,
+    subst: &Substitution<I>,
 ) where
     I: Interner,
 {
     let interner = builder.interner();
-    let appl_ty = application_ty(builder, type_name);
-    let ty = appl_ty.clone().intern(interner);
     builder.push_clause(
         DomainGoal::IsFullyVisible(ty),
-        appl_ty
+        subst
             .type_parameters(interner)
             .map(|typ| DomainGoal::IsFullyVisible(typ).cast::<Goal<_>>(interner)),
     );
@@ -309,15 +290,13 @@ fn fully_visible_program_clauses<I>(
 /// - where_clauses -- the list of where clauses declared on the type (`T: Eq`, in our example).
 fn implied_bounds_program_clauses<'a, I, Wc>(
     builder: &'a mut ClauseBuilder<'_, I>,
-    type_name: impl CastTo<TypeName<I>>,
+    ty: Ty<I>,
     where_clauses: Wc,
 ) where
     I: Interner,
     Wc: Iterator<Item = &'a QuantifiedWhereClause<I>>,
 {
     let interner = builder.interner();
-    let appl_ty = application_ty(builder, type_name);
-    let ty = appl_ty.intern(interner);
 
     for qwc in where_clauses {
         builder.push_binders(&qwc, |builder, wc| {
@@ -361,18 +340,20 @@ impl<I: Interner> ToProgramClauses<I> for AdtDatum<I> {
     /// ```notrust
     /// #[upstream]
     /// #[fundamental]
-    /// struct Box<T> {}
+    /// struct Box<T, U> {}
     /// ```
     ///
     /// We generate the following clauses:
     ///
     /// ```notrust
-    /// forall<T> { IsLocal(Box<T>) :- IsLocal(T). }
+    /// forall<T, U> { IsLocal(Box<T, U>) :- IsLocal(T). }
+    /// forall<T, U> { IsLocal(Box<T, U>) :- IsLocal(U). }
     ///
-    /// forall<T> { IsUpstream(Box<T>) :- IsUpstream(T). }
+    /// forall<T, U> { IsUpstream(Box<T, U>) :- IsUpstream(T), IsUpstream(U). }
     ///
     /// // Generated for both upstream and local fundamental types
-    /// forall<T> { DownstreamType(Box<T>) :- DownstreamType(T). }
+    /// forall<T, U> { DownstreamType(Box<T, U>) :- DownstreamType(T). }
+    /// forall<T, U> { DownstreamType(Box<T, U>) :- DownstreamType(U). }
     /// ```
     ///
     #[instrument(level = "debug", skip(builder))]
@@ -383,51 +364,21 @@ impl<I: Interner> ToProgramClauses<I> for AdtDatum<I> {
     ) {
         let interner = builder.interner();
         let binders = self.binders.map_ref(|b| &b.where_clauses);
-        let id = self.id;
 
         builder.push_binders(&binders, |builder, where_clauses| {
-            well_formed_program_clauses(builder, id, where_clauses.iter());
+            let self_ty = TyKind::Adt(self.id, builder.substitution_in_scope()).intern(interner);
 
-            implied_bounds_program_clauses(builder, id, where_clauses.iter());
+            well_formed_program_clauses(builder, self_ty.clone(), where_clauses.iter());
 
-            fully_visible_program_clauses(builder, id);
+            implied_bounds_program_clauses(builder, self_ty.clone(), where_clauses.iter());
 
-            let self_appl_ty = application_ty(builder, id);
-            let self_ty = self_appl_ty.clone().intern(interner);
+            fully_visible_program_clauses(
+                builder,
+                self_ty.clone(),
+                &builder.substitution_in_scope(),
+            );
 
-            // Fundamental types often have rules in the form of:
-            //     Goal(FundamentalType<T>) :- Goal(T)
-            // This macro makes creating that kind of clause easy
-            macro_rules! fundamental_rule {
-                ($goal:ident) => {
-                    // Fundamental types must always have at least one
-                    // type parameter for this rule to make any
-                    // sense. We currently do not have have any
-                    // fundamental types with more than one type
-                    // parameter, nor do we know what the behaviour
-                    // for that should be. Thus, we are asserting here
-                    // that there is only a single type parameter
-                    // until the day when someone makes a decision
-                    // about how that should behave.
-                    assert_eq!(
-                        self_appl_ty.len_type_parameters(interner),
-                        1,
-                        "Only fundamental types with a single parameter are supported"
-                    );
-
-                    builder.push_clause(
-                        DomainGoal::$goal(self_ty.clone()),
-                        Some(DomainGoal::$goal(
-                            // This unwrap is safe because we asserted
-                            // above for the presence of a type
-                            // parameter
-                            self_appl_ty.first_type_parameter(interner).unwrap(),
-                        )),
-                    );
-                };
-            }
-
-            // Types that are not marked `#[upstream]` satisfy IsLocal(TypeName)
+            // Types that are not marked `#[upstream]` satisfy IsLocal(Ty)
             if !self.flags.upstream {
                 // `IsLocalTy(Ty)` depends *only* on whether the type
                 // is marked #[upstream] and nothing else
@@ -436,15 +387,39 @@ impl<I: Interner> ToProgramClauses<I> for AdtDatum<I> {
                 // If a type is `#[upstream]`, but is also
                 // `#[fundamental]`, it satisfies IsLocal if and only
                 // if its parameters satisfy IsLocal
-                fundamental_rule!(IsLocal);
-                fundamental_rule!(IsUpstream);
+                for type_param in builder.substitution_in_scope().type_parameters(interner) {
+                    builder.push_clause(
+                        DomainGoal::IsLocal(self_ty.clone()),
+                        Some(DomainGoal::IsLocal(type_param)),
+                    );
+                }
+                builder.push_clause(
+                    DomainGoal::IsUpstream(self_ty.clone()),
+                    builder
+                        .substitution_in_scope()
+                        .type_parameters(interner)
+                        .map(|type_param| DomainGoal::IsUpstream(type_param)),
+                );
             } else {
                 // The type is just upstream and not fundamental
                 builder.push_fact(DomainGoal::IsUpstream(self_ty.clone()));
             }
 
             if self.flags.fundamental {
-                fundamental_rule!(DownstreamType);
+                assert!(
+                    builder
+                        .substitution_in_scope()
+                        .type_parameters(interner)
+                        .count()
+                        >= 1,
+                    "Only fundamental types with type parameters are supported"
+                );
+                for type_param in builder.substitution_in_scope().type_parameters(interner) {
+                    builder.push_clause(
+                        DomainGoal::DownstreamType(self_ty.clone()),
+                        Some(DomainGoal::DownstreamType(type_param)),
+                    );
+                }
             }
         });
     }
@@ -474,15 +449,17 @@ impl<I: Interner> ToProgramClauses<I> for FnDefDatum<I> {
         builder: &mut ClauseBuilder<'_, I>,
         _environment: &Environment<I>,
     ) {
+        let interner = builder.interner();
         let binders = self.binders.map_ref(|b| &b.where_clauses);
-        let id = self.id;
 
         builder.push_binders(&binders, |builder, where_clauses| {
-            well_formed_program_clauses(builder, id, where_clauses.iter());
+            let ty = TyKind::FnDef(self.id, builder.substitution_in_scope()).intern(interner);
 
-            implied_bounds_program_clauses(builder, id, where_clauses.iter());
+            well_formed_program_clauses(builder, ty.clone(), where_clauses.iter());
 
-            fully_visible_program_clauses(builder, id);
+            implied_bounds_program_clauses(builder, ty.clone(), where_clauses.iter());
+
+            fully_visible_program_clauses(builder, ty, &builder.substitution_in_scope());
         });
     }
 }
@@ -818,15 +795,11 @@ impl<I: Interner> ToProgramClauses<I> for AssociatedTyDatum<I> {
 
             // Construct an application from the projection. So if we have `<T as Iterator>::Item`,
             // we would produce `(Iterator::Item)<T>`.
-            let app_ty: Ty<_> = ApplicationTy {
-                name: TypeName::AssociatedType(self.id),
-                substitution,
-            }
-            .intern(interner);
+            let ty = TyKind::AssociatedType(self.id, substitution).intern(interner);
 
             let projection_eq = AliasEq {
                 alias: AliasTy::Projection(projection.clone()),
-                ty: app_ty.clone(),
+                ty: ty.clone(),
             };
 
             // Fallback rule. The solver uses this to move between the projection
@@ -843,7 +816,7 @@ impl<I: Interner> ToProgramClauses<I> for AssociatedTyDatum<I> {
             //        WellFormed((Foo::Assoc)<Self>) :- WellFormed(Self: Foo), WellFormed(WC).
             //    }
             builder.push_clause(
-                WellFormed::Ty(app_ty.clone()),
+                WellFormed::Ty(ty.clone()),
                 iter::once(WellFormed::Trait(trait_ref.clone()).cast::<Goal<_>>(interner)).chain(
                     where_clauses
                         .iter()
@@ -859,7 +832,7 @@ impl<I: Interner> ToProgramClauses<I> for AssociatedTyDatum<I> {
             //    forall<Self> {
             //        FromEnv(Self: Foo) :- FromEnv((Foo::Assoc)<Self>).
             //    }
-            builder.push_clause(FromEnv::Trait(trait_ref.clone()), Some(app_ty.from_env()));
+            builder.push_clause(FromEnv::Trait(trait_ref.clone()), Some(ty.from_env()));
 
             // Reverse rule for where clauses.
             //
@@ -872,7 +845,7 @@ impl<I: Interner> ToProgramClauses<I> for AssociatedTyDatum<I> {
                 builder.push_binders(qwc, |builder, wc| {
                     builder.push_clause(
                         wc.into_from_env_goal(interner),
-                        Some(FromEnv::Ty(app_ty.clone())),
+                        Some(FromEnv::Ty(ty.clone())),
                     );
                 });
             }

@@ -545,6 +545,20 @@ impl<T> RawTable<T> {
         item.drop();
     }
 
+    /// Finds and erases an element from the table, dropping it in place.
+    /// Returns true if an element was found.
+    #[cfg(feature = "raw")]
+    #[cfg_attr(feature = "inline-more", inline)]
+    pub fn erase_entry(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> bool {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        if let Some(bucket) = self.find(hash, eq) {
+            unsafe { self.erase(bucket) };
+            true
+        } else {
+            false
+        }
+    }
+
     /// Removes an element from the table, returning it.
     #[cfg_attr(feature = "inline-more", inline)]
     #[allow(clippy::needless_pass_by_value)]
@@ -552,6 +566,16 @@ impl<T> RawTable<T> {
     pub unsafe fn remove(&mut self, item: Bucket<T>) -> T {
         self.erase_no_drop(&item);
         item.read()
+    }
+
+    /// Finds and removes an element from the table, returning it.
+    #[cfg_attr(feature = "inline-more", inline)]
+    pub fn remove_entry(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<T> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.find(hash, eq) {
+            Some(bucket) => Some(unsafe { self.remove(bucket) }),
+            None => None,
+        }
     }
 
     /// Returns an iterator for a probe sequence on the table.
@@ -910,7 +934,7 @@ impl<T> RawTable<T> {
         }
     }
 
-    /// Inserts a new element into the table.
+    /// Inserts a new element into the table, and returns its raw bucket.
     ///
     /// This does not check if the given element already exists in the table.
     #[cfg_attr(feature = "inline-more", inline)]
@@ -934,6 +958,14 @@ impl<T> RawTable<T> {
             self.items += 1;
             bucket
         }
+    }
+
+    /// Inserts a new element into the table, and returns a mutable reference to it.
+    ///
+    /// This does not check if the given element already exists in the table.
+    #[cfg_attr(feature = "inline-more", inline)]
+    pub fn insert_entry(&mut self, hash: u64, value: T, hasher: impl Fn(&T) -> u64) -> &mut T {
+        unsafe { self.insert(hash, value, hasher).as_mut() }
     }
 
     /// Inserts a new element into the table, without growing the table.
@@ -1001,6 +1033,26 @@ impl<T> RawTable<T> {
         }
     }
 
+    /// Gets a reference to an element in the table.
+    #[inline]
+    pub fn get(&self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&T> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.find(hash, eq) {
+            Some(bucket) => Some(unsafe { bucket.as_ref() }),
+            None => None,
+        }
+    }
+
+    /// Gets a mutable reference to an element in the table.
+    #[inline]
+    pub fn get_mut(&mut self, hash: u64, eq: impl FnMut(&T) -> bool) -> Option<&mut T> {
+        // Avoid `Option::map` because it bloats LLVM IR.
+        match self.find(hash, eq) {
+            Some(bucket) => Some(unsafe { bucket.as_mut() }),
+            None => None,
+        }
+    }
+
     /// Returns the number of elements the map can hold without reallocating.
     ///
     /// This number is a lower bound; the table might be able to hold
@@ -1062,25 +1114,21 @@ impl<T> RawTable<T> {
 
     /// Returns an iterator which removes all elements from the table without
     /// freeing the memory.
-    ///
-    /// It is up to the caller to ensure that the `RawTable` outlives the `RawDrain`.
-    /// Because we cannot make the `next` method unsafe on the `RawDrain`,
-    /// we have to make the `drain` method unsafe.
     #[cfg_attr(feature = "inline-more", inline)]
-    pub unsafe fn drain(&mut self) -> RawDrain<'_, T> {
-        let iter = self.iter();
-        self.drain_iter_from(iter)
+    pub fn drain(&mut self) -> RawDrain<'_, T> {
+        unsafe {
+            let iter = self.iter();
+            self.drain_iter_from(iter)
+        }
     }
 
     /// Returns an iterator which removes all elements from the table without
     /// freeing the memory.
     ///
-    /// It is up to the caller to ensure that the `RawTable` outlives the `RawDrain`.
-    /// Because we cannot make the `next` method unsafe on the `RawDrain`,
-    /// we have to make the `drain` method unsafe.
-    ///
     /// Iteration starts at the provided iterator's current location.
-    /// You must ensure that the iterator covers all items that remain in the table.
+    ///
+    /// It is up to the caller to ensure that the iterator is valid for this
+    /// `RawTable` and covers all items that remain in the table.
     #[cfg_attr(feature = "inline-more", inline)]
     pub unsafe fn drain_iter_from(&mut self, iter: RawIter<T>) -> RawDrain<'_, T> {
         debug_assert_eq!(iter.len(), self.len());
@@ -1094,12 +1142,10 @@ impl<T> RawTable<T> {
 
     /// Returns an iterator which consumes all elements from the table.
     ///
-    /// It is up to the caller to ensure that the `RawTable` outlives the `RawIntoIter`.
-    /// Because we cannot make the `next` method unsafe on the `RawIntoIter`,
-    /// we have to make the `into_iter_from` method unsafe.
-    ///
     /// Iteration starts at the provided iterator's current location.
-    /// You must ensure that the iterator covers all items that remain in the table.
+    ///
+    /// It is up to the caller to ensure that the iterator is valid for this
+    /// `RawTable` and covers all items that remain in the table.
     pub unsafe fn into_iter_from(self, iter: RawIter<T>) -> RawIntoIter<T> {
         debug_assert_eq!(iter.len(), self.len());
 

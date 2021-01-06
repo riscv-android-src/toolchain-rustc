@@ -34,13 +34,20 @@ Specifically they will each satisfy the following requirements:
 
 target | std | host | notes
 -------|-----|------|-------
+`aarch64-unknown-linux-gnu` | ✓ | ✓ | ARM64 Linux (kernel 4.2, glibc 2.17+) [^missing-stack-probes]
 `i686-pc-windows-gnu` | ✓ | ✓ | 32-bit MinGW (Windows 7+)
 `i686-pc-windows-msvc` | ✓ | ✓ | 32-bit MSVC (Windows 7+)
 `i686-unknown-linux-gnu` | ✓ | ✓ | 32-bit Linux (kernel 2.6.32+, glibc 2.11+)
-`x86_64-apple-darwin` | ✓ | ✓ | 64-bit OSX (10.7+, Lion+)
+`x86_64-apple-darwin` | ✓ | ✓ | 64-bit macOS (10.7+, Lion+)
 `x86_64-pc-windows-gnu` | ✓ | ✓ | 64-bit MinGW (Windows 7+)
 `x86_64-pc-windows-msvc` | ✓ | ✓ | 64-bit MSVC (Windows 7+)
 `x86_64-unknown-linux-gnu` | ✓ | ✓ | 64-bit Linux (kernel 2.6.32+, glibc 2.11+)
+
+[^missing-stack-probes]: Stack probes support is missing on
+  `aarch64-unknown-linux-gnu`, but it's planned to be implemented in the near
+  future. The implementation is tracked on [issue #77071][77071].
+
+[77071]: https://github.com/rust-lang/rust/issues/77071
 
 ## Tier 2
 
@@ -57,11 +64,11 @@ Specifically, these platforms are required to have each of the following:
 
 target | std | host | notes
 -------|-----|------|-------
+`aarch64-apple-darwin` | ✓ | ✓ | ARM64 macOS (11.0+, Big Sur+)
 `aarch64-apple-ios` | ✓ |  | ARM64 iOS
 `aarch64-fuchsia` | ✓ |  | ARM64 Fuchsia
 `aarch64-linux-android` | ✓ |  | ARM64 Android
-`aarch64-pc-windows-msvc` | ✓ |  | ARM64 Windows MSVC
-`aarch64-unknown-linux-gnu` | ✓ | ✓ | ARM64 Linux (kernel 4.2, glibc 2.17)
+`aarch64-pc-windows-msvc` | ✓ | ✓ | ARM64 Windows MSVC
 `aarch64-unknown-linux-musl` | ✓ | ✓ | ARM64 Linux with MUSL
 `aarch64-unknown-none` | * |  | Bare ARM64, hardfloat
 `aarch64-unknown-none-softfloat` | * |  | Bare ARM64, softfloat
@@ -87,7 +94,7 @@ target | std | host | notes
 `i586-unknown-linux-gnu` | ✓ |  | 32-bit Linux w/o SSE (kernel 4.4, glibc 2.23)
 `i586-unknown-linux-musl` | ✓ |  | 32-bit Linux w/o SSE, MUSL
 `i686-linux-android` | ✓ |  | 32-bit x86 Android
-`i686-unknown-freebsd` | ✓ | ✓ | 32-bit FreeBSD
+`i686-unknown-freebsd` | ✓ |  | 32-bit FreeBSD
 `i686-unknown-linux-musl` | ✓ |  | 32-bit Linux with MUSL
 `mips-unknown-linux-gnu` | ✓ | ✓ | MIPS Linux (kernel 4.4, glibc 2.23)
 `mips-unknown-linux-musl` | ✓ |  | MIPS Linux with MUSL
@@ -145,7 +152,6 @@ not available.
 
 target | std | host | notes
 -------|-----|------|-------
-`aarch64-apple-darwin` | ? |  | ARM64 macOS
 `aarch64-apple-tvos` | * |  | ARM64 tvOS
 `aarch64-unknown-cloudabi` | ✓ |  | ARM64 CloudABI
 `aarch64-unknown-freebsd` | ✓ | ✓ | ARM64 FreeBSD
@@ -168,7 +174,7 @@ target | std | host | notes
 `avr-unknown-gnu-atmega328` | ✗ |  | AVR. Requires `-Z build-std=core`
 `hexagon-unknown-linux-musl` | ? |  |
 `i386-apple-ios` | ✓ |  | 32-bit x86 iOS
-`i686-apple-darwin` | ✓ | ✓ | 32-bit OSX (10.7+, Lion+)
+`i686-apple-darwin` | ✓ | ✓ | 32-bit macOS (10.7+, Lion+)
 `i686-pc-windows-msvc` | ✓ |  | 32-bit Windows XP support
 `i686-unknown-cloudabi` | ✓ |  | 32-bit CloudABI
 `i686-unknown-uefi` | ? |  | 32-bit UEFI
@@ -180,6 +186,7 @@ target | std | host | notes
 `i686-wrs-vxworks` | ? |  |
 `mips-unknown-linux-uclibc` | ✓ |  | MIPS Linux with uClibc
 `mipsel-unknown-linux-uclibc` | ✓ |  | MIPS (LE) Linux with uClibc
+`mipsel-unknown-none` | * |  | Bare MIPS (LE) softfloat
 `mipsel-sony-psp` | * |  | MIPS (LE) Sony PlayStation Portable (PSP)
 `mipsisa32r6-unknown-linux-gnu` | ? |  |
 `mipsisa32r6el-unknown-linux-gnu` | ? |  |

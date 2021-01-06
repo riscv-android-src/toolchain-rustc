@@ -42,7 +42,7 @@ use rustc_middle::ty::{AdtKind, Visibility};
 use rustc_span::hygiene::DesugaringKind;
 use rustc_span::source_map::Span;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
-use rustc_trait_selection::traits::{self, ObligationCauseCode, SelectionContext};
+use rustc_trait_selection::traits::{self, ObligationCauseCode};
 
 use std::fmt::Display;
 
@@ -286,6 +286,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             }
             ExprKind::DropTemps(ref e) => self.check_expr_with_expectation(e, expected),
             ExprKind::Array(ref args) => self.check_expr_array(args, expected, expr),
+            ExprKind::ConstBlock(ref anon_const) => self.to_const(anon_const).ty,
             ExprKind::Repeat(ref element, ref count) => {
                 self.check_expr_repeat(element, count, expected, expr)
             }
@@ -475,7 +476,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         if let ty::FnDef(..) = ty.kind() {
             let fn_sig = ty.fn_sig(tcx);
-            if !tcx.features().unsized_locals {
+            if !tcx.features().unsized_fn_params {
                 // We want to remove some Sized bounds from std functions,
                 // but don't want to expose the removal to stable Rust.
                 // i.e., we don't want to allow
@@ -626,7 +627,10 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
                 assert!(expr_opt.is_none() || self.tcx.sess.has_errors());
             }
 
-            ctxt.may_break = true;
+            // If we encountered a `break`, then (no surprise) it may be possible to break from the
+            // loop... unless the value being returned from the loop diverges itself, e.g.
+            // `break return 5` or `break loop {}`.
+            ctxt.may_break |= !self.diverges.get().is_always();
 
             // the type of a `break` is always `!`, since it diverges
             tcx.types.never
@@ -714,39 +718,24 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         );
     }
 
-    fn is_destructuring_place_expr(&self, expr: &'tcx hir::Expr<'tcx>) -> bool {
-        match &expr.kind {
-            ExprKind::Array(comps) | ExprKind::Tup(comps) => {
-                comps.iter().all(|e| self.is_destructuring_place_expr(e))
-            }
-            ExprKind::Struct(_path, fields, rest) => {
-                rest.as_ref().map(|e| self.is_destructuring_place_expr(e)).unwrap_or(true)
-                    && fields.iter().all(|f| self.is_destructuring_place_expr(&f.expr))
-            }
-            _ => expr.is_syntactic_place_expr(),
-        }
-    }
-
     pub(crate) fn check_lhs_assignable(
         &self,
         lhs: &'tcx hir::Expr<'tcx>,
         err_code: &'static str,
         expr_span: &Span,
     ) {
-        if !lhs.is_syntactic_place_expr() {
-            // FIXME: Make this use SessionDiagnostic once error codes can be dynamically set.
-            let mut err = self.tcx.sess.struct_span_err_with_code(
-                *expr_span,
-                "invalid left-hand side of assignment",
-                DiagnosticId::Error(err_code.into()),
-            );
-            err.span_label(lhs.span, "cannot assign to this expression");
-            if self.is_destructuring_place_expr(lhs) {
-                err.note("destructuring assignments are not currently supported");
-                err.note("for more information, see https://github.com/rust-lang/rfcs/issues/372");
-            }
-            err.emit();
+        if lhs.is_syntactic_place_expr() {
+            return;
         }
+
+        // FIXME: Make this use SessionDiagnostic once error codes can be dynamically set.
+        let mut err = self.tcx.sess.struct_span_err_with_code(
+            *expr_span,
+            "invalid left-hand side of assignment",
+            DiagnosticId::Error(err_code.into()),
+        );
+        err.span_label(lhs.span, "cannot assign to this expression");
+        err.emit();
     }
 
     /// Type check assignment expression `expr` of form `lhs = rhs`.
@@ -1281,7 +1270,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Report an error for a struct field expression when there are fields which aren't provided.
     ///
-    /// ```ignore (diagnostic)
+    /// ```text
     /// error: missing field `you_can_use_this_field` in initializer of `foo::Foo`
     ///  --> src/main.rs:8:5
     ///   |
@@ -1333,7 +1322,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Report an error for a struct field expression when there are no visible fields.
     ///
-    /// ```ignore (diagnostic)
+    /// ```text
     /// error: cannot construct `Foo` with struct literal syntax due to inaccessible fields
     ///  --> src/main.rs:8:5
     ///   |
@@ -1579,50 +1568,33 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         err: &mut DiagnosticBuilder<'_>,
         field_ident: Ident,
         base: &'tcx hir::Expr<'tcx>,
-        expr: &'tcx hir::Expr<'tcx>,
-        def_id: DefId,
+        ty: Ty<'tcx>,
     ) {
-        let param_env = self.tcx().param_env(def_id);
-        let future_trait = self.tcx.require_lang_item(LangItem::Future, None);
-        // Future::Output
-        let item_def_id =
-            self.tcx.associated_items(future_trait).in_definition_order().next().unwrap().def_id;
-
-        let projection_ty = self.tcx.projection_ty_from_predicates((def_id, item_def_id));
-        debug!("suggest_await_on_field_access: projection_ty={:?}", projection_ty);
-
-        let cause = self.misc(expr.span);
-        let mut selcx = SelectionContext::new(&self.infcx);
-
-        let mut obligations = vec![];
-        if let Some(projection_ty) = projection_ty {
-            let normalized_ty = rustc_trait_selection::traits::normalize_projection_type(
-                &mut selcx,
-                param_env,
-                projection_ty,
-                cause,
-                0,
-                &mut obligations,
-            );
-            debug!(
-                "suggest_await_on_field_access: normalized_ty={:?}, ty_kind={:?}",
-                self.resolve_vars_if_possible(&normalized_ty),
-                normalized_ty.kind(),
-            );
-            if let ty::Adt(def, _) = normalized_ty.kind() {
-                // no field access on enum type
-                if !def.is_enum() {
-                    if def.non_enum_variant().fields.iter().any(|field| field.ident == field_ident)
-                    {
-                        err.span_suggestion_verbose(
-                            base.span.shrink_to_hi(),
-                            "consider awaiting before field access",
-                            ".await".to_string(),
-                            Applicability::MaybeIncorrect,
-                        );
-                    }
+        let output_ty = match self.infcx.get_impl_future_output_ty(ty) {
+            Some(output_ty) => self.resolve_vars_if_possible(&output_ty),
+            _ => return,
+        };
+        let mut add_label = true;
+        if let ty::Adt(def, _) = output_ty.kind() {
+            // no field access on enum type
+            if !def.is_enum() {
+                if def.non_enum_variant().fields.iter().any(|field| field.ident == field_ident) {
+                    add_label = false;
+                    err.span_label(
+                        field_ident.span,
+                        "field not available in `impl Future`, but it is available in its `Output`",
+                    );
+                    err.span_suggestion_verbose(
+                        base.span.shrink_to_hi(),
+                        "consider `await`ing on the `Future` and access the field of its `Output`",
+                        ".await".to_string(),
+                        Applicability::MaybeIncorrect,
+                    );
                 }
             }
+        }
+        if add_label {
+            err.span_label(field_ident.span, &format!("field not found in `{}`", ty));
         }
     }
 
@@ -1652,8 +1624,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             ty::Param(param_ty) => {
                 self.point_at_param_definition(&mut err, param_ty);
             }
-            ty::Opaque(def_id, _) => {
-                self.suggest_await_on_field_access(&mut err, field, base, expr, def_id);
+            ty::Opaque(_, _) => {
+                self.suggest_await_on_field_access(&mut err, field, base, expr_t.peel_refs());
             }
             _ => {}
         }

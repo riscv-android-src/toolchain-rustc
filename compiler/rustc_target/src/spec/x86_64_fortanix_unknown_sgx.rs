@@ -2,7 +2,7 @@ use std::iter;
 
 use super::{LinkerFlavor, LldFlavor, PanicStrategy, Target, TargetOptions};
 
-pub fn target() -> Result<Target, String> {
+pub fn target() -> Target {
     const PRE_LINK_ARGS: &[&str] = &[
         "--as-needed",
         "-z",
@@ -55,6 +55,10 @@ pub fn target() -> Result<Target, String> {
         "TEXT_SIZE",
     ];
     let opts = TargetOptions {
+        os: "unknown".into(),
+        env: "sgx".into(),
+        vendor: "fortanix".into(),
+        linker_flavor: LinkerFlavor::Lld(LldFlavor::Ld),
         dynamic_linking: false,
         executables: true,
         linker_is_gnu: true,
@@ -74,18 +78,12 @@ pub fn target() -> Result<Target, String> {
         relax_elf_relocations: true,
         ..Default::default()
     };
-    Ok(Target {
+    Target {
         llvm_target: "x86_64-elf".into(),
-        target_endian: "little".into(),
-        target_pointer_width: "64".into(),
-        target_c_int_width: "32".into(),
-        target_os: "unknown".into(),
-        target_env: "sgx".into(),
-        target_vendor: "fortanix".into(),
+        pointer_width: 64,
         data_layout: "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
             .into(),
         arch: "x86_64".into(),
-        linker_flavor: LinkerFlavor::Lld(LldFlavor::Ld),
         options: opts,
-    })
+    }
 }

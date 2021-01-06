@@ -1,14 +1,10 @@
-use crate::context;
 use crate::normalize_deep::DeepNormalizer;
 use crate::{ExClause, Literal};
 
 use chalk_derive::HasInterner;
-use chalk_ir::cast::Cast;
 use chalk_ir::cast::Caster;
 use chalk_ir::interner::Interner;
 use chalk_ir::*;
-use chalk_solve::clauses::program_clauses_for_goal;
-use chalk_solve::coinductive_goal::IsCoinductive;
 use chalk_solve::infer::ucanonicalize::UCanonicalized;
 use chalk_solve::infer::unify::UnificationResult;
 use chalk_solve::infer::InferenceTable;
@@ -26,6 +22,18 @@ pub(crate) struct SlgContext<I: Interner> {
     phantom: PhantomData<I>,
 }
 
+impl<I: Interner> SlgContext<I> {
+    pub(crate) fn next_subgoal_index(ex_clause: &ExClause<I>) -> usize {
+        // For now, we always pick the last subgoal in the
+        // list.
+        //
+        // FIXME(rust-lang-nursery/chalk#80) -- we should be more
+        // selective. For example, we don't want to pick a
+        // negative literal that will flounder, and we don't want
+        // to pick things like `?T: Sized` if we can help it.
+        ex_clause.subgoals.len() - 1
+    }
+}
 #[derive(Clone, Debug)]
 pub(crate) struct SlgContextOps<'me, I: Interner> {
     program: &'me dyn RustIrDatabase<I>,
@@ -44,131 +52,6 @@ impl<I: Interner> SlgContextOps<'_, I> {
             max_size,
             expected_answers,
         }
-    }
-}
-
-#[derive(Clone)]
-pub struct TruncatingInferenceTable<I: Interner> {
-    max_size: usize,
-    infer: InferenceTable<I>,
-}
-
-impl<I: Interner> context::Context<I> for SlgContext<I> {
-    type InferenceTable = TruncatingInferenceTable<I>;
-
-    // Used by: logic
-    fn next_subgoal_index(ex_clause: &ExClause<I>) -> usize {
-        // For now, we always pick the last subgoal in the
-        // list.
-        //
-        // FIXME(rust-lang-nursery/chalk#80) -- we should be more
-        // selective. For example, we don't want to pick a
-        // negative literal that will flounder, and we don't want
-        // to pick things like `?T: Sized` if we can help it.
-        ex_clause.subgoals.len() - 1
-    }
-}
-
-impl<'me, I: Interner> context::ContextOps<I, SlgContext<I>> for SlgContextOps<'me, I> {
-    fn is_coinductive(&self, goal: &UCanonical<InEnvironment<Goal<I>>>) -> bool {
-        goal.is_coinductive(self.program)
-    }
-
-    fn map_goal_from_canonical(
-        &self,
-        map: &UniverseMap,
-        value: &Canonical<InEnvironment<Goal<I>>>,
-    ) -> Canonical<InEnvironment<Goal<I>>> {
-        use chalk_solve::infer::ucanonicalize::UniverseMapExt;
-        map.map_from_canonical(self.program.interner(), value)
-    }
-
-    fn map_subst_from_canonical(
-        &self,
-        map: &UniverseMap,
-        value: &Canonical<AnswerSubst<I>>,
-    ) -> Canonical<AnswerSubst<I>> {
-        use chalk_solve::infer::ucanonicalize::UniverseMapExt;
-        map.map_from_canonical(self.program.interner(), value)
-    }
-
-    fn program_clauses(
-        &self,
-        environment: &Environment<I>,
-        goal: &DomainGoal<I>,
-        _infer: &mut TruncatingInferenceTable<I>,
-    ) -> Result<Vec<ProgramClause<I>>, Floundered> {
-        let clauses: Vec<_> = program_clauses_for_goal(
-            self.program,
-            environment,
-            goal,
-            &CanonicalVarKinds::empty(self.program.interner()),
-        )?;
-
-        Ok(clauses)
-    }
-
-    // Used by: simplify
-    fn add_clauses(&self, env: &Environment<I>, clauses: ProgramClauses<I>) -> Environment<I> {
-        let interner = self.interner();
-        env.add_clauses(interner, clauses.iter(interner).cloned())
-    }
-
-    fn instantiate_ucanonical_goal(
-        &self,
-        arg: &UCanonical<InEnvironment<Goal<I>>>,
-    ) -> (
-        TruncatingInferenceTable<I>,
-        Substitution<I>,
-        Environment<I>,
-        Goal<I>,
-    ) {
-        let (infer, subst, InEnvironment { environment, goal }) =
-            InferenceTable::from_canonical(self.program.interner(), arg.universes, &arg.canonical);
-        let infer_table = TruncatingInferenceTable::new(self.max_size, infer);
-        (infer_table, subst, environment, goal)
-    }
-
-    fn instantiate_ex_clause(
-        &self,
-        num_universes: usize,
-        canonical_ex_clause: &Canonical<ExClause<I>>,
-    ) -> (TruncatingInferenceTable<I>, ExClause<I>) {
-        let (infer, _subst, ex_cluse) = InferenceTable::from_canonical(
-            self.program.interner(),
-            num_universes,
-            canonical_ex_clause,
-        );
-        let infer_table = TruncatingInferenceTable::new(self.max_size, infer);
-        (infer_table, ex_cluse)
-    }
-
-    fn instantiate_answer_subst(
-        &self,
-        num_universes: usize,
-        answer: &Canonical<AnswerSubst<I>>,
-    ) -> (
-        TruncatingInferenceTable<I>,
-        Substitution<I>,
-        Vec<InEnvironment<Constraint<I>>>,
-        Vec<InEnvironment<Goal<I>>>,
-    ) {
-        let (
-            infer,
-            _subst,
-            AnswerSubst {
-                subst,
-                constraints,
-                delayed_subgoals,
-            },
-        ) = InferenceTable::from_canonical(self.program.interner(), num_universes, answer);
-        let infer_table = TruncatingInferenceTable::new(self.max_size, infer);
-        (
-            infer_table,
-            subst,
-            constraints.as_slice(self.interner()).to_vec(),
-            delayed_subgoals,
-        )
     }
 
     fn identity_constrained_subst(
@@ -191,39 +74,142 @@ impl<'me, I: Interner> context::ContextOps<I, SlgContext<I>> for SlgContextOps<'
             .quantified
     }
 
-    fn interner(&self) -> &I {
-        self.program.interner()
+    pub(crate) fn program(&self) -> &dyn RustIrDatabase<I> {
+        self.program
     }
 
-    fn into_goal(&self, domain_goal: DomainGoal<I>) -> Goal<I> {
-        domain_goal.cast(self.program.interner())
-    }
-
-    fn is_trivial_constrained_substitution(
-        &self,
-        constrained_subst: &Canonical<ConstrainedSubst<I>>,
-    ) -> bool {
-        let interner = self.interner();
-        constrained_subst.value.subst.is_identity_subst(interner)
-    }
-
-    fn is_trivial_substitution(
-        &self,
-        u_canon: &UCanonical<InEnvironment<Goal<I>>>,
-        canonical_subst: &Canonical<AnswerSubst<I>>,
-    ) -> bool {
-        let interner = self.interner();
-        u_canon.is_trivial_substitution(interner, canonical_subst)
+    pub(crate) fn max_size(&self) -> usize {
+        self.max_size
     }
 }
 
+/// "Truncation" (called "abstraction" in the papers referenced below)
+/// refers to the act of modifying a goal or answer that has become
+/// too large in order to guarantee termination.
+///
+/// Currently we don't perform truncation (but it might me readded later).
+///
+/// Citations:
+///
+/// - Terminating Evaluation of Logic Programs with Finite Three-Valued Models
+///   - Riguzzi and Swift; ACM Transactions on Computational Logic 2013
+/// - Radial Restraint
+///   - Grosof and Swift; 2013
+pub trait TruncateOps<I: Interner> {
+    /// Check if `subgoal` is too large
+    fn goal_needs_truncation(&mut self, interner: &I, subgoal: &InEnvironment<Goal<I>>) -> bool;
+
+    /// Check if `subst` is too large
+    fn answer_needs_truncation(&mut self, interner: &I, subst: &Substitution<I>) -> bool;
+}
+
+pub trait ResolventOps<I: Interner> {
+    /// Combines the `goal` (instantiated within `infer`) with the
+    /// given program clause to yield the start of a new strand (a
+    /// canonical ex-clause).
+    ///
+    /// The bindings in `infer` are unaffected by this operation.
+    fn resolvent_clause(
+        &mut self,
+        interner: &I,
+        environment: &Environment<I>,
+        goal: &DomainGoal<I>,
+        subst: &Substitution<I>,
+        clause: &ProgramClause<I>,
+    ) -> Fallible<ExClause<I>>;
+
+    fn apply_answer_subst(
+        &mut self,
+        interner: &I,
+        ex_clause: &mut ExClause<I>,
+        selected_goal: &InEnvironment<Goal<I>>,
+        answer_table_goal: &Canonical<InEnvironment<Goal<I>>>,
+        canonical_answer_subst: &Canonical<AnswerSubst<I>>,
+    ) -> Fallible<()>;
+}
+
+/// Methods for unifying and manipulating terms and binders.
+pub trait UnificationOps<I: Interner> {
+    // Used by: simplify
+    fn instantiate_binders_universally(&mut self, interner: &I, arg: &Binders<Goal<I>>) -> Goal<I>;
+
+    // Used by: simplify
+    fn instantiate_binders_existentially(
+        &mut self,
+        interner: &I,
+        arg: &Binders<Goal<I>>,
+    ) -> Goal<I>;
+
+    // Used by: logic (but for debugging only)
+    fn debug_ex_clause<'v>(&mut self, interner: &I, value: &'v ExClause<I>) -> Box<dyn Debug + 'v>;
+
+    // Used by: logic
+    fn fully_canonicalize_goal(
+        &mut self,
+        interner: &I,
+        value: &InEnvironment<Goal<I>>,
+    ) -> (UCanonical<InEnvironment<Goal<I>>>, UniverseMap);
+
+    // Used by: logic
+    fn canonicalize_ex_clause(
+        &mut self,
+        interner: &I,
+        value: &ExClause<I>,
+    ) -> Canonical<ExClause<I>>;
+
+    // Used by: logic
+    fn canonicalize_constrained_subst(
+        &mut self,
+        interner: &I,
+        subst: Substitution<I>,
+        constraints: Vec<InEnvironment<Constraint<I>>>,
+    ) -> Canonical<ConstrainedSubst<I>>;
+
+    // Used by: logic
+    fn canonicalize_answer_subst(
+        &mut self,
+        interner: &I,
+        subst: Substitution<I>,
+        constraints: Vec<InEnvironment<Constraint<I>>>,
+        delayed_subgoals: Vec<InEnvironment<Goal<I>>>,
+    ) -> Canonical<AnswerSubst<I>>;
+
+    // Used by: logic
+    fn invert_goal(
+        &mut self,
+        interner: &I,
+        value: &InEnvironment<Goal<I>>,
+    ) -> Option<InEnvironment<Goal<I>>>;
+
+    /// First unify the parameters, then add the residual subgoals
+    /// as new subgoals of the ex-clause.
+    /// Also add region constraints.
+    ///
+    /// If the parameters fail to unify, then `Error` is returned
+    // Used by: simplify
+    fn unify_generic_args_into_ex_clause(
+        &mut self,
+        interner: &I,
+        environment: &Environment<I>,
+        a: &GenericArg<I>,
+        b: &GenericArg<I>,
+        ex_clause: &mut ExClause<I>,
+    ) -> Fallible<()>;
+}
+
+#[derive(Clone)]
+pub struct TruncatingInferenceTable<I: Interner> {
+    max_size: usize,
+    infer: InferenceTable<I>,
+}
+
 impl<I: Interner> TruncatingInferenceTable<I> {
-    fn new(max_size: usize, infer: InferenceTable<I>) -> Self {
+    pub(crate) fn new(max_size: usize, infer: InferenceTable<I>) -> Self {
         Self { max_size, infer }
     }
 }
 
-impl<I: Interner> context::TruncateOps<I, SlgContext<I>> for TruncatingInferenceTable<I> {
+impl<I: Interner> TruncateOps<I> for TruncatingInferenceTable<I> {
     fn goal_needs_truncation(&mut self, interner: &I, subgoal: &InEnvironment<Goal<I>>) -> bool {
         truncate::needs_truncation(interner, &mut self.infer, self.max_size, &subgoal)
     }
@@ -233,9 +219,7 @@ impl<I: Interner> context::TruncateOps<I, SlgContext<I>> for TruncatingInference
     }
 }
 
-impl<I: Interner> context::InferenceTable<I, SlgContext<I>> for TruncatingInferenceTable<I> {}
-
-impl<I: Interner> context::UnificationOps<I, SlgContext<I>> for TruncatingInferenceTable<I> {
+impl<I: Interner> UnificationOps<I> for TruncatingInferenceTable<I> {
     fn instantiate_binders_universally(&mut self, interner: &I, arg: &Binders<Goal<I>>) -> Goal<I> {
         self.infer.instantiate_binders_universally(interner, arg)
     }
@@ -387,8 +371,8 @@ impl<I: Interner> MayInvalidate<'_, I> {
     /// Returns true if the two types could be unequal.
     fn aggregate_tys(&mut self, new: &Ty<I>, current: &Ty<I>) -> bool {
         let interner = self.interner;
-        match (new.data(interner), current.data(interner)) {
-            (_, TyData::BoundVar(_)) => {
+        match (new.kind(interner), current.kind(interner)) {
+            (_, TyKind::BoundVar(_)) => {
                 // If the aggregate solution already has an inference
                 // variable here, then no matter what type we produce,
                 // the aggregate cannot get 'more generalized' than it
@@ -400,7 +384,7 @@ impl<I: Interner> MayInvalidate<'_, I> {
                 false
             }
 
-            (TyData::BoundVar(_), _) => {
+            (TyKind::BoundVar(_), _) => {
                 // If we see a type variable in the potential future
                 // solution, we have to be conservative. We don't know
                 // what type variable will wind up being! Remember
@@ -414,37 +398,73 @@ impl<I: Interner> MayInvalidate<'_, I> {
                 true
             }
 
-            (TyData::InferenceVar(_, _), _) | (_, TyData::InferenceVar(_, _)) => {
+            (TyKind::InferenceVar(_, _), _) | (_, TyKind::InferenceVar(_, _)) => {
                 panic!(
                     "unexpected free inference variable in may-invalidate: {:?} vs {:?}",
                     new, current,
                 );
             }
 
-            (TyData::Apply(apply1), TyData::Apply(apply2)) => {
-                self.aggregate_application_tys(apply1, apply2)
-            }
-
-            (TyData::Placeholder(p1), TyData::Placeholder(p2)) => {
+            (TyKind::Placeholder(p1), TyKind::Placeholder(p2)) => {
                 self.aggregate_placeholders(p1, p2)
             }
 
             (
-                TyData::Alias(AliasTy::Projection(proj1)),
-                TyData::Alias(AliasTy::Projection(proj2)),
+                TyKind::Alias(AliasTy::Projection(proj1)),
+                TyKind::Alias(AliasTy::Projection(proj2)),
             ) => self.aggregate_projection_tys(proj1, proj2),
 
             (
-                TyData::Alias(AliasTy::Opaque(opaque_ty1)),
-                TyData::Alias(AliasTy::Opaque(opaque_ty2)),
+                TyKind::Alias(AliasTy::Opaque(opaque_ty1)),
+                TyKind::Alias(AliasTy::Opaque(opaque_ty2)),
             ) => self.aggregate_opaque_ty_tys(opaque_ty1, opaque_ty2),
 
-            // For everything else, be conservative here and just say we may invalidate.
-            (TyData::Function(_), _)
-            | (TyData::Dyn(_), _)
-            | (TyData::Apply(_), _)
-            | (TyData::Placeholder(_), _)
-            | (TyData::Alias(_), _) => true,
+            (TyKind::Adt(id_a, substitution_a), TyKind::Adt(id_b, substitution_b)) => {
+                self.aggregate_name_and_substs(id_a, substitution_a, id_b, substitution_b)
+            }
+            (
+                TyKind::AssociatedType(id_a, substitution_a),
+                TyKind::AssociatedType(id_b, substitution_b),
+            ) => self.aggregate_name_and_substs(id_a, substitution_a, id_b, substitution_b),
+            (TyKind::Scalar(scalar_a), TyKind::Scalar(scalar_b)) => scalar_a != scalar_b,
+            (TyKind::Str, TyKind::Str) => false,
+            (TyKind::Tuple(arity_a, substitution_a), TyKind::Tuple(arity_b, substitution_b)) => {
+                self.aggregate_name_and_substs(arity_a, substitution_a, arity_b, substitution_b)
+            }
+            (
+                TyKind::OpaqueType(id_a, substitution_a),
+                TyKind::OpaqueType(id_b, substitution_b),
+            ) => self.aggregate_name_and_substs(id_a, substitution_a, id_b, substitution_b),
+            (TyKind::Slice(ty_a), TyKind::Slice(ty_b)) => self.aggregate_tys(ty_a, ty_b),
+            (TyKind::FnDef(id_a, substitution_a), TyKind::FnDef(id_b, substitution_b)) => {
+                self.aggregate_name_and_substs(id_a, substitution_a, id_b, substitution_b)
+            }
+            (TyKind::Ref(id_a, lifetime_a, ty_a), TyKind::Ref(id_b, lifetime_b, ty_b)) => {
+                id_a != id_b
+                    || self.aggregate_lifetimes(lifetime_a, lifetime_b)
+                    || self.aggregate_tys(ty_a, ty_b)
+            }
+            (TyKind::Raw(id_a, ty_a), TyKind::Raw(id_b, ty_b)) => {
+                id_a != id_b || self.aggregate_tys(ty_a, ty_b)
+            }
+            (TyKind::Never, TyKind::Never) => false,
+            (TyKind::Array(ty_a, const_a), TyKind::Array(ty_b, const_b)) => {
+                self.aggregate_tys(ty_a, ty_b) || self.aggregate_consts(const_a, const_b)
+            }
+            (TyKind::Closure(id_a, substitution_a), TyKind::Closure(id_b, substitution_b)) => {
+                self.aggregate_name_and_substs(id_a, substitution_a, id_b, substitution_b)
+            }
+            (TyKind::Generator(id_a, substitution_a), TyKind::Generator(id_b, substitution_b)) => {
+                self.aggregate_name_and_substs(id_a, substitution_a, id_b, substitution_b)
+            }
+            (
+                TyKind::GeneratorWitness(id_a, substitution_a),
+                TyKind::GeneratorWitness(id_b, substitution_b),
+            ) => self.aggregate_name_and_substs(id_a, substitution_a, id_b, substitution_b),
+            (TyKind::Foreign(id_a), TyKind::Foreign(id_b)) => id_a != id_b,
+            (TyKind::Error, TyKind::Error) => false,
+
+            (_, _) => true,
         }
     }
 
@@ -498,28 +518,6 @@ impl<I: Interner> MayInvalidate<'_, I> {
             // Only variants left are placeholder = concrete, which always fails
             (ConstValue::Placeholder(_), _) | (ConstValue::Concrete(_), _) => true,
         }
-    }
-
-    fn aggregate_application_tys(
-        &mut self,
-        new: &ApplicationTy<I>,
-        current: &ApplicationTy<I>,
-    ) -> bool {
-        let ApplicationTy {
-            name: new_name,
-            substitution: new_substitution,
-        } = new;
-        let ApplicationTy {
-            name: current_name,
-            substitution: current_substitution,
-        } = current;
-
-        self.aggregate_name_and_substs(
-            new_name,
-            new_substitution,
-            current_name,
-            current_substitution,
-        )
     }
 
     fn aggregate_placeholders(

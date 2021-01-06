@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "object"
-version = "0.20.0"
+version = "0.21.1"
 authors = ["Nick Fitzgerald <fitzgen@gmail.com>", "Philip Craig <philipjcraig@gmail.com>"]
 exclude = ["/.coveralls.yml", "/.travis.yml"]
 description = "A unified interface for reading and writing object file formats."
@@ -33,7 +33,7 @@ required-features = ["read", "write"]
 
 [[example]]
 name = "objdump"
-required-features = ["read"]
+required-features = ["read_core"]
 [dependencies.alloc]
 version = "1.0.0"
 optional = true

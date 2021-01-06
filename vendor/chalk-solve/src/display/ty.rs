@@ -1,6 +1,6 @@
 //! Writer logic for types.
 //!
-//! Contains the highly-recursive logic for writing `TyData` and its variants.
+//! Contains the highly-recursive logic for writing `TyKind` and its variants.
 use std::fmt::{Formatter, Result};
 
 use crate::split::Split;
@@ -12,11 +12,93 @@ use super::{
     state::InternalWriterState,
 };
 
-impl<I: Interner> RenderAsRust<I> for TyData<I> {
+impl<I: Interner> RenderAsRust<I> for TyKind<I> {
     fn fmt(&self, s: &InternalWriterState<'_, I>, f: &'_ mut Formatter<'_>) -> Result {
         let interner = s.db().interner();
         match self {
-            TyData::Dyn(dyn_ty) => {
+            TyKind::Adt(sid, substitution) => {
+                write!(f, "{}", sid.display(s))?;
+                let parameters = substitution.as_slice(interner);
+                let parameters = parameters.iter().map(|param| param.display(s));
+                write_joined_non_empty_list!(f, "<{}>", parameters, ", ")
+            }
+            TyKind::AssociatedType(assoc_type_id, substitution) => {
+                // (Iterator::Item)(x)
+                // should be written in Rust as <X as Iterator>::Item
+                let datum = s.db().associated_ty_data(*assoc_type_id);
+                assert!(
+                    substitution
+                        .iter(interner)
+                        .filter_map(move |p| p.ty(interner))
+                        .count()
+                        >= 1,
+                    "AssociatedType should have at least 1 parameter"
+                );
+                write!(
+                    f,
+                    "<{} as {}>::{}",
+                    substitution
+                        .iter(interner)
+                        .filter_map(move |p| p.ty(interner))
+                        .next()
+                        .unwrap()
+                        .display(s),
+                    datum.trait_id.display(s),
+                    datum.id.display(s),
+                )?;
+                let params = substitution.as_slice(interner);
+                write_joined_non_empty_list!(
+                    f,
+                    "<{}>",
+                    params[1..].iter().map(|ty| ty.display(s)),
+                    ","
+                )
+            }
+            TyKind::Scalar(scalar) => write!(f, "{}", scalar.display(s)),
+            TyKind::Tuple(arity, substitution) => {
+                write!(
+                    f,
+                    "({}{})",
+                    substitution
+                        .as_slice(interner)
+                        .iter()
+                        .map(|p| p.display(s))
+                        .format(", "),
+                    if *arity == 1 {
+                        // need trailing single comma
+                        ","
+                    } else {
+                        ""
+                    }
+                )
+            }
+            TyKind::OpaqueType(opaque_ty_id, substitution) => write!(
+                f,
+                "{}",
+                display_type_with_generics(s, *opaque_ty_id, substitution.as_slice(interner))
+            ),
+            TyKind::Raw(mutability, ty) => match mutability {
+                Mutability::Mut => write!(f, "*mut {}", ty.display(s)),
+                Mutability::Not => write!(f, "*const {}", ty.display(s)),
+            },
+            TyKind::Ref(mutability, lifetime, ty) => match mutability {
+                Mutability::Mut => write!(f, "&{} mut {}", lifetime.display(s), ty.display(s)),
+                Mutability::Not => write!(f, "&{} {}", lifetime.display(s), ty.display(s)),
+            },
+            TyKind::Str => write!(f, "str"),
+            TyKind::Slice(ty) => write!(f, "[{}]", ty.display(s)),
+            TyKind::Error => write!(f, "{{error}}"),
+            TyKind::Never => write!(f, "!"),
+
+            // FIXME: write out valid types for these variants
+            TyKind::FnDef(..) => write!(f, "<fn_def>"),
+            TyKind::Closure(..) => write!(f, "<closure>"),
+            TyKind::Foreign(..) => write!(f, "<foreign>"),
+            TyKind::Generator(..) => write!(f, "<generator>"),
+            TyKind::GeneratorWitness(..) => write!(f, "<generator_witness>"),
+
+            TyKind::Array(ty, const_) => write!(f, "[{}; {}]", ty.display(s), const_.display(s),),
+            TyKind::Dyn(dyn_ty) => {
                 // the lifetime needs to be outside of the bounds, so we
                 // introduce a new scope for the bounds
                 {
@@ -34,12 +116,11 @@ impl<I: Interner> RenderAsRust<I> for TyData<I> {
                 write!(f, " + {}", dyn_ty.lifetime.display(s))?;
                 Ok(())
             }
-            TyData::BoundVar(bound_var) => write!(f, "{}", s.display_bound_var(bound_var)),
-            TyData::InferenceVar(_, _) => write!(f, "_"),
-            TyData::Alias(alias_ty) => alias_ty.fmt(s, f),
-            TyData::Apply(apply_ty) => apply_ty.fmt(s, f),
-            TyData::Function(func) => func.fmt(s, f),
-            TyData::Placeholder(_) => write!(f, "<placeholder>"),
+            TyKind::BoundVar(bound_var) => write!(f, "{}", s.display_bound_var(bound_var)),
+            TyKind::InferenceVar(_, _) => write!(f, "_"),
+            TyKind::Alias(alias_ty) => alias_ty.fmt(s, f),
+            TyKind::Function(func) => func.fmt(s, f),
+            TyKind::Placeholder(_) => write!(f, "<placeholder>"),
         }
     }
 }
@@ -116,120 +197,6 @@ impl<I: Interner> RenderAsRust<I> for FnPointer<I> {
     }
 }
 
-impl<I: Interner> RenderAsRust<I> for ApplicationTy<I> {
-    fn fmt(&self, s: &InternalWriterState<'_, I>, f: &'_ mut Formatter<'_>) -> Result {
-        let interner = s.db().interner();
-        match self.name {
-            TypeName::Adt(sid) => {
-                write!(f, "{}", sid.display(s))?;
-                let parameters = self.substitution.as_slice(interner);
-                let parameters = parameters.iter().map(|param| param.display(s));
-                write_joined_non_empty_list!(f, "<{}>", parameters, ", ")?;
-            }
-            TypeName::AssociatedType(assoc_type_id) => {
-                // (Iterator::Item)(x)
-                // should be written in Rust as <X as Iterator>::Item
-                let datum = s.db().associated_ty_data(assoc_type_id);
-                assert!(
-                    self.len_type_parameters(interner) >= 1,
-                    "AssociatedType should have at least 1 parameter"
-                );
-                write!(
-                    f,
-                    "<{} as {}>::{}",
-                    self.first_type_parameter(interner).unwrap().display(s),
-                    datum.trait_id.display(s),
-                    datum.id.display(s),
-                )?;
-                let params = self.substitution.as_slice(interner);
-                write_joined_non_empty_list!(
-                    f,
-                    "<{}>",
-                    params[1..].iter().map(|ty| ty.display(s)),
-                    ","
-                )?;
-            }
-            TypeName::Scalar(scalar) => write!(f, "{}", scalar.display(s))?,
-            TypeName::Tuple(arity) => {
-                write!(
-                    f,
-                    "({}{})",
-                    self.substitution
-                        .as_slice(interner)
-                        .iter()
-                        .map(|p| p.display(s))
-                        .format(", "),
-                    if arity == 1 {
-                        // need trailing single comma
-                        ","
-                    } else {
-                        ""
-                    }
-                )?
-            }
-            TypeName::OpaqueType(opaque_ty_id) => {
-                write!(
-                    f,
-                    "{}",
-                    display_type_with_generics(
-                        s,
-                        opaque_ty_id,
-                        self.substitution.as_slice(interner)
-                    )
-                )?;
-            }
-            TypeName::Raw(raw) => {
-                let mutability = match raw {
-                    Mutability::Mut => "*mut ",
-                    Mutability::Not => "*const ",
-                };
-                write!(
-                    f,
-                    "{}{}",
-                    mutability,
-                    self.first_type_parameter(interner).unwrap().display(s)
-                )?
-            }
-            TypeName::Ref(mutability) => {
-                let mutability = match mutability {
-                    Mutability::Mut => "mut ",
-                    Mutability::Not => "",
-                };
-                write!(
-                    f,
-                    "&{} {}{}",
-                    self.substitution.at(interner, 0).display(s),
-                    mutability,
-                    self.substitution.at(interner, 1).display(s)
-                )?;
-            }
-            TypeName::Str => write!(f, "str")?,
-            TypeName::Slice => {
-                write!(
-                    f,
-                    "[{}]",
-                    self.first_type_parameter(interner).unwrap().display(s)
-                )?;
-            }
-            TypeName::Error => write!(f, "{{error}}")?,
-            TypeName::Never => write!(f, "!")?,
-
-            // FIXME: write out valid types for these variants
-            TypeName::FnDef(_) => write!(f, "<fn_def>")?,
-            TypeName::Closure(..) => write!(f, "<closure>")?,
-            TypeName::Foreign(_) => write!(f, "<foreign>")?,
-
-            TypeName::Array => write!(
-                f,
-                "[{}; {}]",
-                self.first_type_parameter(interner).unwrap().display(s),
-                self.substitution.at(interner, 1).display(s)
-            )?,
-        }
-        Ok(())
-    }
-}
-
 impl<I: Interner> RenderAsRust<I> for Scalar {
     fn fmt(&self, _s: &InternalWriterState<'_, I>, f: &mut Formatter<'_>) -> Result {
         use chalk_ir::{FloatTy::*, IntTy::*, UintTy::*};
@@ -272,6 +239,7 @@ impl<I: Interner> RenderAsRust<I> for LifetimeData<I> {
             LifetimeData::Placeholder(ix) => {
                 write!(f, "'_placeholder_{}_{}", ix.ui.counter, ix.idx)
             }
+            LifetimeData::Static => write!(f, "'static"),
             // Matching the void ensures at compile time that this code is
             // unreachable
             LifetimeData::Phantom(void, _) => match *void {},
@@ -308,8 +276,8 @@ impl<I: Interner> RenderAsRust<I> for GenericArgData<I> {
 
 impl<I: Interner> RenderAsRust<I> for Ty<I> {
     fn fmt(&self, s: &InternalWriterState<'_, I>, f: &'_ mut Formatter<'_>) -> Result {
-        // delegate to TyData
-        self.data(s.db().interner()).fmt(s, f)
+        // delegate to TyKind
+        self.kind(s.db().interner()).fmt(s, f)
     }
 }
 

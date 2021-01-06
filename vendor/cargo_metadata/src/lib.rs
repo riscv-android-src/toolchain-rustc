@@ -120,6 +120,14 @@ impl std::fmt::Display for PackageId {
     }
 }
 
+// Helpers for default metadata fields
+fn is_null(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        _ => false,
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 /// Starting point for metadata returned by `cargo metadata`
 pub struct Metadata {
@@ -133,10 +141,21 @@ pub struct Metadata {
     pub workspace_root: PathBuf,
     /// Build directory
     pub target_directory: PathBuf,
+    /// The workspace-level metadata object. Null if non-existent.
+    #[serde(rename = "metadata", default, skip_serializing_if = "is_null")]
+    pub workspace_metadata: serde_json::Value,
     version: usize,
     #[doc(hidden)]
     #[serde(skip)]
     __do_not_match_exhaustively: (),
+}
+
+impl Metadata {
+    /// Get the root package of this metadata instance.
+    pub fn root_package(&self) -> Option<&Package> {
+        let root = self.resolve.as_ref()?.root.as_ref()?;
+        self.packages.iter().find(|pkg| &pkg.id == root)
+    }
 }
 
 impl<'a> std::ops::Index<&'a PackageId> for Metadata {
@@ -297,7 +316,7 @@ pub struct Package {
     /// }
     ///
     /// ```
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "is_null")]
     pub metadata: serde_json::Value,
     /// The name of a native library the package is linking to.
     pub links: Option<String>,
@@ -352,7 +371,7 @@ impl std::fmt::Display for Source {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq, Hash)]
 /// A single target (lib, bin, example, ...) provided by a crate
 pub struct Target {
     /// Name as given in the `Cargo.toml` or generated from the file name

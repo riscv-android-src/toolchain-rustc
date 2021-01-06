@@ -13,7 +13,7 @@
 # If it does not match the version that is currently running,
 # `x.py` will prompt you to update it and read the changelog.
 # See `src/bootstrap/CHANGELOG.md` for more information.
-changelog-seen = 1
+changelog-seen = 2
 
 # =============================================================================
 # Global Settings
@@ -137,6 +137,9 @@ changelog-seen = 1
 
 # Whether or not to specify `-DLLVM_TEMPORARILY_ALLOW_OLD_TOOLCHAIN=YES`
 #allow-old-toolchain = false
+
+# Whether to include the Polly optimizer.
+#polly = false
 
 # =============================================================================
 # General build configuration options
@@ -370,19 +373,23 @@ changelog-seen = 1
 # binary, otherwise they are omitted.
 #
 # Defaults to rust.debug value
-#debug-assertions = debug
+#debug-assertions = rust.debug (boolean)
 
 # Whether or not debug assertions are enabled for the standard library.
 # Overrides the `debug-assertions` option, if defined.
 #
 # Defaults to rust.debug-assertions value
-#debug-assertions-std = debug-assertions
+#debug-assertions-std = rust.debug-assertions (boolean)
 
 # Whether or not to leave debug! and trace! calls in the rust binary.
 # Overrides the `debug-assertions` option, if defined.
 #
 # Defaults to rust.debug-assertions value
-#debug-logging = debug-assertions
+#
+# If you see a message from `tracing` saying
+# `max_level_info` is enabled and means logging won't be shown,
+# set this value to `true`.
+#debug-logging = rust.debug-assertions (boolean)
 
 # Debuginfo level for most of Rust code, corresponds to the `-C debuginfo=N` option of `rustc`.
 # `0` - no debug info
@@ -474,7 +481,7 @@ changelog-seen = 1
 
 # This is an array of the codegen backends that will be compiled for the rustc
 # that's being compiled. The default is to only build the LLVM codegen backend,
-# and currently the only standard option supported is `"llvm"`
+# and currently the only standard options supported are `"llvm"` and `"cranelift"`.
 #codegen-backends = ["llvm"]
 
 # Indicates whether LLD will be compiled and made available in the sysroot for
@@ -523,7 +530,8 @@ changelog-seen = 1
 #test-compare-mode = false
 
 # Use LLVM libunwind as the implementation for Rust's unwinder.
-#llvm-libunwind = false
+# Accepted values are 'in-tree' (formerly true), 'system' or 'no' (formerly false).
+#llvm-libunwind = 'no'
 
 # Enable Windows Control Flow Guard checks in the standard library.
 # This only applies from stage 1 onwards, and only for Windows targets.
@@ -577,6 +585,15 @@ changelog-seen = 1
 # the NDK for the target lives. This is used to find the C compiler to link and
 # build native code.
 #android-ndk = "/path/to/ndk"
+
+# Build the sanitizer runtimes for this target.
+# This option will override the same option under [build] section.
+#sanitizers = false
+
+# Build the profiler runtime for this target(required when compiling with options that depend
+# on this runtime, such as `-C profile-generate` or `-Z instrument-coverage`).
+# This option will override the same option under [build] section.
+#profiler = false
 
 # Force static or dynamic linkage of the standard library for this target. If
 # this target is a host for rustc, this will also affect the linkage of the

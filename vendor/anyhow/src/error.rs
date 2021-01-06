@@ -80,7 +80,6 @@ impl Error {
         let vtable = &ErrorVTable {
             object_drop: object_drop::<E>,
             object_ref: object_ref::<E>,
-            #[cfg(feature = "std")]
             object_mut: object_mut::<E>,
             object_boxed: object_boxed::<E>,
             object_downcast: object_downcast::<E>,
@@ -144,7 +143,6 @@ impl Error {
         let vtable = &ErrorVTable {
             object_drop: object_drop::<ContextError<C, E>>,
             object_ref: object_ref::<ContextError<C, E>>,
-            #[cfg(feature = "std")]
             object_mut: object_mut::<ContextError<C, E>>,
             object_boxed: object_boxed::<ContextError<C, E>>,
             object_downcast: context_downcast::<C, E>,
@@ -165,7 +163,6 @@ impl Error {
         let vtable = &ErrorVTable {
             object_drop: object_drop::<BoxedError>,
             object_ref: object_ref::<BoxedError>,
-            #[cfg(feature = "std")]
             object_mut: object_mut::<BoxedError>,
             object_boxed: object_boxed::<BoxedError>,
             object_downcast: object_downcast::<Box<dyn StdError + Send + Sync>>,
@@ -196,7 +193,7 @@ impl Error {
             _object: error,
         });
         // Erase the concrete type of E from the compile-time type system. This
-        // is equivalent to the safe unsize coersion from Box<ErrorImpl<E>> to
+        // is equivalent to the safe unsize coercion from Box<ErrorImpl<E>> to
         // Box<ErrorImpl<dyn StdError + Send + Sync + 'static>> except that the
         // result is a thin pointer. The necessary behavior for manipulating the
         // underlying ErrorImpl<E> is preserved in the vtable provided by the
@@ -343,12 +340,7 @@ impl Error {
     /// [`chain()`][Error::chain].
     #[cfg(feature = "std")]
     pub fn root_cause(&self) -> &(dyn StdError + 'static) {
-        let mut chain = self.chain();
-        let mut root_cause = chain.next().unwrap();
-        for cause in chain {
-            root_cause = cause;
-        }
-        root_cause
+        self.chain().last().unwrap()
     }
 
     /// Returns true if `E` is the type held by this error object.
@@ -698,7 +690,7 @@ impl<E> ErrorImpl<E> {
     fn erase(&self) -> &ErrorImpl<()> {
         // Erase the concrete type of E but preserve the vtable in self.vtable
         // for manipulating the resulting thin pointer. This is analogous to an
-        // unsize coersion.
+        // unsize coercion.
         unsafe { &*(self as *const ErrorImpl<E> as *const ErrorImpl<()>) }
     }
 }

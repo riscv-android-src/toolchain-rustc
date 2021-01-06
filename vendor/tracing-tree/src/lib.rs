@@ -2,7 +2,7 @@ pub(crate) mod format;
 
 use ansi_term::{Color, Style};
 use chrono::{DateTime, Local};
-use format::{Buffers, ColorLevel, Config, FmtEvent};
+use format::{Buffers, ColorLevel, Config, FmtEvent, SpanMode};
 use std::{
     fmt::{self, Write as _},
     io,
@@ -149,6 +149,35 @@ where
         }
     }
 
+    /// Whether to print the currently active span's message again before entering a new span.
+    /// This helps if the entry to the current span was quite a while back (and with scrolling
+    /// upwards in logs).
+    pub fn with_verbose_entry(self, verbose_entry: bool) -> Self {
+        Self {
+            config: self.config.with_verbose_entry(verbose_entry),
+            ..self
+        }
+    }
+
+    /// Whether to print the currently active span's message again before dropping it.
+    /// This helps if the entry to the current span was quite a while back (and with scrolling
+    /// upwards in logs).
+    pub fn with_verbose_exit(self, verbose_exit: bool) -> Self {
+        Self {
+            config: self.config.with_verbose_exit(verbose_exit),
+            ..self
+        }
+    }
+
+    /// Whether to print `{}` around the fields when printing a span.
+    /// This can help visually distinguish fields from the rest of the message.
+    pub fn with_bracketed_fields(self, bracketed_fields: bool) -> Self {
+        Self {
+            config: self.config.with_bracketed_fields(bracketed_fields),
+            ..self
+        }
+    }
+
     fn styled(&self, style: Style, text: impl AsRef<str>) -> String {
         if self.config.ansi {
             style.paint(text.as_ref()).to_string()
@@ -157,41 +186,35 @@ where
         }
     }
 
-    fn print_kvs<'a, I, K, V>(
-        &self,
-        buf: &mut impl fmt::Write,
-        kvs: I,
-        leading: &str,
-    ) -> fmt::Result
+    fn print_kvs<'a, I, V>(&self, buf: &mut impl fmt::Write, kvs: I) -> fmt::Result
     where
-        I: IntoIterator<Item = (K, V)>,
-        K: AsRef<str> + 'a,
+        I: IntoIterator<Item = (&'a str, V)>,
         V: fmt::Display + 'a,
     {
         let mut kvs = kvs.into_iter();
         if let Some((k, v)) = kvs.next() {
-            write!(buf, "{}{}={}", leading, k.as_ref(), v)?;
+            if k == "message" {
+                write!(buf, "{}", v)?;
+            } else {
+                write!(buf, "{}={}", k, v)?;
+            }
         }
         for (k, v) in kvs {
-            write!(buf, ", {}={}", k.as_ref(), v)?;
+            write!(buf, ", {}={}", k, v)?;
         }
         Ok(())
     }
-}
 
-impl<S, W> Layer<S> for HierarchicalLayer<W>
-where
-    S: Subscriber + for<'span> LookupSpan<'span> + fmt::Debug,
-    W: MakeWriter + 'static,
-{
-    fn new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<S>) {
-        let data = Data::new(attrs);
-        let span = ctx.span(id).expect("in new_span but span does not exist");
-        span.extensions_mut().insert(data);
-    }
-
-    fn on_enter(&self, id: &tracing::Id, ctx: Context<S>) {
-        let span = ctx.span(&id).expect("in on_enter but span does not exist");
+    fn write_span_info<S: Subscriber + for<'span> LookupSpan<'span> + fmt::Debug>(
+        &self,
+        id: &tracing::Id,
+        ctx: &Context<S>,
+        entering: bool,
+        style: SpanMode,
+    ) {
+        let span = ctx
+            .span(&id)
+            .expect("in on_enter/on_exit but span does not exist");
         let ext = span.extensions();
         let data = ext.get::<Data>().expect("span does not have data");
 
@@ -199,7 +222,12 @@ where
         let bufs = &mut *guard;
         let mut current_buf = &mut bufs.current_buf;
 
-        let indent = ctx.scope().count().saturating_sub(1);
+        let indent = ctx.scope().count();
+        let indent = if entering {
+            indent.saturating_sub(1)
+        } else {
+            indent
+        };
 
         if self.config.targets {
             let target = span.metadata().target();
@@ -217,24 +245,67 @@ where
             name = self.styled(Style::new().fg(Color::Green).bold(), span.metadata().name())
         )
         .unwrap();
-        write!(
-            current_buf,
-            "{}",
-            self.styled(Style::new().fg(Color::Green).bold(), "{") // Style::new().fg(Color::Green).dimmed().paint("{")
-        )
-        .unwrap();
-        self.print_kvs(&mut current_buf, data.kvs.iter().map(|(k, v)| (k, v)), "")
+        if self.config.bracketed_fields {
+            write!(
+                current_buf,
+                "{}",
+                self.styled(Style::new().fg(Color::Green).bold(), "{") // Style::new().fg(Color::Green).dimmed().paint("{")
+            )
             .unwrap();
-        write!(
-            current_buf,
-            "{}",
-            self.styled(Style::new().fg(Color::Green).bold(), "}") // Style::new().dimmed().paint("}")
-        )
-        .unwrap();
+        } else {
+            write!(current_buf, " ").unwrap();
+        }
+        self.print_kvs(&mut current_buf, data.kvs.iter().map(|(k, v)| (*k, v)))
+            .unwrap();
+        if self.config.bracketed_fields {
+            write!(
+                current_buf,
+                "{}",
+                self.styled(Style::new().fg(Color::Green).bold(), "}") // Style::new().dimmed().paint("}")
+            )
+            .unwrap();
+        }
 
-        bufs.indent_current(indent, &self.config);
+        bufs.indent_current(indent, &self.config, style);
         let writer = self.make_writer.make_writer();
         bufs.flush_current_buf(writer)
+    }
+}
+
+impl<S, W> Layer<S> for HierarchicalLayer<W>
+where
+    S: Subscriber + for<'span> LookupSpan<'span> + fmt::Debug,
+    W: MakeWriter + 'static,
+{
+    fn new_span(&self, attrs: &Attributes, id: &Id, ctx: Context<S>) {
+        let data = Data::new(attrs);
+        let span = ctx.span(id).expect("in new_span but span does not exist");
+        span.extensions_mut().insert(data);
+    }
+
+    fn on_enter(&self, id: &tracing::Id, ctx: Context<S>) {
+        let mut iter = ctx.scope();
+        let mut prev = iter.next();
+        let mut cur = iter.next();
+        loop {
+            match (prev, cur) {
+                (Some(span), Some(cur_elem)) => {
+                    if let Some(next) = iter.next() {
+                        prev = Some(cur_elem);
+                        cur = Some(next);
+                    } else {
+                        self.write_span_info(&span.id(), &ctx, false, SpanMode::PreOpen);
+                        break;
+                    }
+                }
+                // Iterator is not sealed, so we need to catch this case.
+                (None, Some(_)) => break,
+                // Just the new span on the stack
+                (Some(_), None) => break,
+                (None, None) => unreachable!("just entered span must exist"),
+            }
+        }
+        self.write_span_info(id, &ctx, false, SpanMode::Open);
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<S>) {
@@ -303,10 +374,19 @@ where
             bufs: &mut bufs,
         };
         event.record(&mut visitor);
-        visitor.bufs.indent_current(indent, &self.config);
+        visitor
+            .bufs
+            .indent_current(indent, &self.config, SpanMode::Event);
         let writer = self.make_writer.make_writer();
         bufs.flush_current_buf(writer)
     }
 
-    fn on_exit(&self, _id: &Id, _ctx: Context<S>) {}
+    fn on_exit(&self, id: &Id, ctx: Context<S>) {
+        if self.config.verbose_exit {
+            self.write_span_info(id, &ctx, false, SpanMode::Close);
+            if let Some(span) = ctx.scope().last() {
+                self.write_span_info(&span.id(), &ctx, false, SpanMode::PostClose);
+            }
+        }
+    }
 }

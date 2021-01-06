@@ -5,7 +5,7 @@
 //! intended to wholesale replace the `libbacktrace.rs` implementation.
 
 use self::gimli::read::EndianSlice;
-use self::gimli::LittleEndian as Endian;
+use self::gimli::NativeEndian as Endian;
 use self::mmap::Mmap;
 use self::stash::Stash;
 use super::BytesOrWideString;
@@ -201,7 +201,12 @@ cfg_if::cfg_if! {
                 }],
             })
         }
-    } else if #[cfg(target_os = "macos")] {
+    } else if #[cfg(any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "watchos",
+    ))] {
         // macOS uses the Mach-O file format and uses DYLD-specific APIs to
         // load a list of native libraries that are part of the appplication.
 
@@ -679,6 +684,13 @@ impl Symbol<'_> {
     pub fn lineno(&self) -> Option<u32> {
         match self {
             Symbol::Frame { location, .. } => location.as_ref()?.line,
+            Symbol::Symtab { .. } => None,
+        }
+    }
+
+    pub fn colno(&self) -> Option<u32> {
+        match self {
+            Symbol::Frame { location, .. } => location.as_ref()?.column,
             Symbol::Symtab { .. } => None,
         }
     }

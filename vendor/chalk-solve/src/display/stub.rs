@@ -2,6 +2,7 @@
 //! queried.
 use std::sync::Arc;
 
+use crate::rust_ir::{GeneratorDatum, GeneratorWitnessDatum};
 use crate::{
     rust_ir::{
         AdtDatumBound, AdtKind, AdtVariantDatum, AssociatedTyDatumBound, FnDefDatumBound,
@@ -10,7 +11,7 @@ use crate::{
     RustIrDatabase,
 };
 use chalk_ir::{
-    interner::Interner, ApplicationTy, Binders, CanonicalVarKinds, TypeName, VariableKinds,
+    interner::Interner, Binders, CanonicalVarKinds, GeneratorId, Substitution, VariableKinds,
 };
 
 #[derive(Debug)]
@@ -125,14 +126,8 @@ impl<I: Interner, DB: RustIrDatabase<I>> RustIrDatabase<I> for StubWrapper<'_, D
     fn hidden_opaque_type(&self, _id: chalk_ir::OpaqueTyId<I>) -> chalk_ir::Ty<I> {
         // Return a unit since the particular hidden type doesn't matter (If it
         // did matter, it would have been recorded)
-        chalk_ir::TyData::Apply(ApplicationTy {
-            name: TypeName::Tuple(0),
-            substitution: chalk_ir::Substitution::from_iter(
-                self.db.interner(),
-                Vec::<chalk_ir::GenericArg<_>>::new(),
-            ),
-        })
-        .intern(self.db.interner())
+        chalk_ir::TyKind::Tuple(0, Substitution::empty(self.db.interner()))
+            .intern(self.db.interner())
     }
 
     fn impls_for_trait(
@@ -156,7 +151,7 @@ impl<I: Interner, DB: RustIrDatabase<I>> RustIrDatabase<I> for StubWrapper<'_, D
     fn impl_provided_for(
         &self,
         _auto_trait_id: chalk_ir::TraitId<I>,
-        _app_ty: &chalk_ir::ApplicationTy<I>,
+        _ty: &chalk_ir::TyKind<I>,
     ) -> bool {
         // We panic here because the returned ids may not be collected,
         // resulting in unresolvable names.
@@ -207,6 +202,17 @@ impl<I: Interner, DB: RustIrDatabase<I>> RustIrDatabase<I> for StubWrapper<'_, D
         _substs: &chalk_ir::Substitution<I>,
     ) -> chalk_ir::Binders<chalk_ir::Ty<I>> {
         unimplemented!("cannot stub closures")
+    }
+
+    fn generator_datum(&self, _generator_id: GeneratorId<I>) -> Arc<GeneratorDatum<I>> {
+        unimplemented!("cannot stub generator")
+    }
+
+    fn generator_witness_datum(
+        &self,
+        _generator_id: GeneratorId<I>,
+    ) -> Arc<GeneratorWitnessDatum<I>> {
+        unimplemented!("cannot stub generator witness")
     }
 
     fn closure_fn_substitution(

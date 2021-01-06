@@ -68,6 +68,11 @@ use tracing_core::{
 /// - If only a level is provided, it will set the maximum level for all `Span`s and `Event`s
 ///   that are not enabled by other filters.
 /// - A directive without a level will enable anything that it matches. This is equivalent to `=trace`.
+/// - When a crate has a dash in its name, the default target for events will be the
+///   crate's module path as it appears in Rust. This means every dash will be replaced
+///   with an underscore.
+/// - A dash in a target will only appear when being specified explicitly:
+///   `tracing::info!(target: "target-name", ...);`
 ///
 /// ## Examples
 ///
@@ -85,11 +90,11 @@ use tracing_core::{
 ///
 /// [`Layer`]: ../layer/trait.Layer.html
 /// [`env_logger`]: https://docs.rs/env_logger/0.7.1/env_logger/#enabling-logging
-/// [`Span`]: ../../tracing_core/span/index.html
-/// [fields]: ../../tracing_core/struct.Field.html
-/// [`Event`]: ../../tracing_core/struct.Event.html
-/// [`level`]: ../../tracing_core/struct.Level.html
-/// [`Metadata`]: ../../tracing_core/struct.Metadata.html
+/// [`Span`]: https://docs.rs/tracing-core/latest/tracing_core/span/index.html
+/// [fields]: https://docs.rs/tracing-core/latest/tracing_core/struct.Field.html
+/// [`Event`]: https://docs.rs/tracing-core/latest/tracing_core/struct.Event.html
+/// [`level`]: https://docs.rs/tracing-core/latest/tracing_core/struct.Level.html
+/// [`Metadata`]: https://docs.rs/tracing-core/latest/tracing_core/struct.Metadata.html
 #[cfg(feature = "env-filter")]
 #[cfg_attr(docsrs, doc(cfg(feature = "env-filter")))]
 #[derive(Debug)]
@@ -189,7 +194,7 @@ impl EnvFilter {
     /// directives, either added using this method or provided when the filter
     /// is constructed.
     ///
-    /// Filters may be created from may be [`LevelFilter`]s, which will
+    /// Filters may be created from [`LevelFilter`] or [`Level`], which will
     /// enable all traces at or below a certain verbosity level, or
     /// parsed from a string specifying a directive.
     ///
@@ -197,14 +202,30 @@ impl EnvFilter {
     /// and events as a previous filter, but sets a different level for those
     /// spans and events, the previous directive is overwritten.
     ///
-    /// [`LevelFilter`]: struct.LevelFilter.html
+    /// [`LevelFilter`]: ../filter/struct.LevelFilter.html
+    /// [`Level`]: https://docs.rs/tracing-core/latest/tracing_core/struct.Level.html
     ///
     /// # Examples
+    ///
+    /// From [`LevelFilter`]:
+    ////
     /// ```rust
     /// use tracing_subscriber::filter::{EnvFilter, LevelFilter};
     /// let mut filter = EnvFilter::from_default_env()
     ///     .add_directive(LevelFilter::INFO.into());
     /// ```
+    ///
+    /// Or from [`Level`]:
+    ///
+    /// ```rust
+    /// # use tracing_subscriber::filter::{EnvFilter, LevelFilter};
+    /// # use tracing::Level;
+    /// let mut filter = EnvFilter::from_default_env()
+    ///     .add_directive(Level::INFO.into());
+    /// ```
+    ////
+    /// Parsed from a string:
+    ////
     /// ```rust
     /// use tracing_subscriber::filter::{EnvFilter, Directive};
     ///
@@ -226,6 +247,96 @@ impl EnvFilter {
     }
 
     fn from_directives(directives: impl IntoIterator<Item = Directive>) -> Self {
+        use tracing::level_filters::STATIC_MAX_LEVEL;
+        use tracing::Level;
+
+        let directives: Vec<_> = directives.into_iter().collect();
+
+        let disabled: Vec<_> = directives
+            .iter()
+            .filter(|directive| directive.level > STATIC_MAX_LEVEL)
+            .collect();
+
+        if !disabled.is_empty() {
+            #[cfg(feature = "ansi_term")]
+            use ansi_term::{Color, Style};
+            // NOTE: We can't use a configured `MakeWriter` because the EnvFilter
+            // has no knowledge of any underlying subscriber or collector, which
+            // may or may not use a `MakeWriter`.
+            let warn = |msg: &str| {
+                #[cfg(not(feature = "ansi_term"))]
+                let msg = format!("warning: {}", msg);
+                #[cfg(feature = "ansi_term")]
+                let msg = {
+                    let bold = Style::new().bold();
+                    let mut warning = Color::Yellow.paint("warning");
+                    warning.style_ref_mut().is_bold = true;
+                    format!("{}{} {}", warning, bold.clone().paint(":"), bold.paint(msg))
+                };
+                eprintln!("{}", msg);
+            };
+            let ctx_prefixed = |prefix: &str, msg: &str| {
+                #[cfg(not(feature = "ansi_term"))]
+                let msg = format!("note: {}", msg);
+                #[cfg(feature = "ansi_term")]
+                let msg = {
+                    let mut equal = Color::Fixed(21).paint("="); // dark blue
+                    equal.style_ref_mut().is_bold = true;
+                    format!(" {} {} {}", equal, Style::new().bold().paint(prefix), msg)
+                };
+                eprintln!("{}", msg);
+            };
+            let ctx_help = |msg| ctx_prefixed("help:", msg);
+            let ctx_note = |msg| ctx_prefixed("note:", msg);
+            let ctx = |msg: &str| {
+                #[cfg(not(feature = "ansi_term"))]
+                let msg = format!("note: {}", msg);
+                #[cfg(feature = "ansi_term")]
+                let msg = {
+                    let mut pipe = Color::Fixed(21).paint("|");
+                    pipe.style_ref_mut().is_bold = true;
+                    format!(" {} {}", pipe, msg)
+                };
+                eprintln!("{}", msg);
+            };
+            warn("some trace filter directives would enable traces that are disabled statically");
+            for directive in disabled {
+                let target = if let Some(target) = &directive.target {
+                    format!("the `{}` target", target)
+                } else {
+                    "all targets".into()
+                };
+                let level = directive
+                    .level
+                    .clone()
+                    .into_level()
+                    .expect("=off would not have enabled any filters");
+                ctx(&format!(
+                    "`{}` would enable the {} level for {}",
+                    directive, level, target
+                ));
+            }
+            ctx_note(&format!("the static max level is `{}`", STATIC_MAX_LEVEL));
+            let help_msg = || {
+                let (feature, filter) = match STATIC_MAX_LEVEL.into_level() {
+                    Some(Level::TRACE) => unreachable!(
+                        "if the max level is trace, no static filtering features are enabled"
+                    ),
+                    Some(Level::DEBUG) => ("max_level_debug", Level::TRACE),
+                    Some(Level::INFO) => ("max_level_info", Level::DEBUG),
+                    Some(Level::WARN) => ("max_level_warn", Level::INFO),
+                    Some(Level::ERROR) => ("max_level_error", Level::WARN),
+                    None => return ("max_level_off", String::new()),
+                };
+                (feature, format!("{} ", filter))
+            };
+            let (feature, earlier_level) = help_msg();
+            ctx_help(&format!(
+                "to enable {}logging, remove the `{}` feature",
+                earlier_level, feature
+            ));
+        }
+
         let (dynamics, mut statics) = Directive::make_tables(directives);
         let has_dynamics = !dynamics.is_empty();
 
@@ -297,6 +408,19 @@ impl<S: Subscriber> Layer<S> for EnvFilter {
         // if not, we can avoid the thread local access + iterating over the
         // spans in the current scope.
         if self.has_dynamics && self.dynamics.max_level >= *level {
+            if metadata.is_span() {
+                // If the metadata is a span, see if we care about its callsite.
+                let enabled_by_cs = self
+                    .by_cs
+                    .read()
+                    .ok()
+                    .map(|by_cs| by_cs.contains_key(&metadata.callsite()))
+                    .unwrap_or(false);
+                if enabled_by_cs {
+                    return true;
+                }
+            }
+
             let enabled_by_scope = SCOPE.with(|scope| {
                 for filter in scope.borrow().iter() {
                     if filter >= level {
@@ -314,9 +438,6 @@ impl<S: Subscriber> Layer<S> for EnvFilter {
         if self.statics.max_level >= *level {
             // Otherwise, fall back to checking if the callsite is
             // statically enabled.
-            // TODO(eliza): we *might* want to check this only if the `log`
-            // feature is enabled, since if this is a `tracing` event with a
-            // real callsite, it would already have been statically enabled...
             return self.statics.enabled(metadata);
         }
 

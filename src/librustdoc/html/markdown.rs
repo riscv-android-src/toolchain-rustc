@@ -43,7 +43,7 @@ use pulldown_cmark::{html, BrokenLink, CodeBlockKind, CowStr, Event, Options, Pa
 #[cfg(test)]
 mod tests;
 
-fn opts() -> Options {
+pub(crate) fn opts() -> Options {
     Options::ENABLE_TABLES | Options::ENABLE_FOOTNOTES | Options::ENABLE_STRIKETHROUGH
 }
 
@@ -1228,6 +1228,7 @@ fn init_id_map() -> FxHashMap<String, usize> {
     map.insert("render-detail".to_owned(), 1);
     map.insert("toggle-all-docs".to_owned(), 1);
     map.insert("all-types".to_owned(), 1);
+    map.insert("default-settings".to_owned(), 1);
     // This is the list of IDs used by rustdoc sections.
     map.insert("fields".to_owned(), 1);
     map.insert("variants".to_owned(), 1);

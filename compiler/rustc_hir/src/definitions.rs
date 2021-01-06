@@ -118,7 +118,7 @@ impl DefKey {
 
         let DisambiguatedDefPathData { ref data, disambiguator } = self.disambiguated_data;
 
-        ::std::mem::discriminant(data).hash(&mut hasher);
+        std::mem::discriminant(data).hash(&mut hasher);
         if let Some(name) = data.get_opt_name() {
             // Get a stable hash by considering the symbol chars rather than
             // the symbol index.
@@ -188,10 +188,6 @@ pub struct DefPath {
 }
 
 impl DefPath {
-    pub fn is_local(&self) -> bool {
-        self.krate == LOCAL_CRATE
-    }
-
     pub fn make<FN>(krate: CrateNum, start_index: DefIndex, mut get_key: FN) -> DefPath
     where
         FN: FnMut(DefIndex) -> DefKey,
@@ -413,7 +409,7 @@ impl Definitions {
     }
 
     pub fn expansion_that_defined(&self, id: LocalDefId) -> ExpnId {
-        self.expansions_that_defined.get(&id).copied().unwrap_or(ExpnId::root())
+        self.expansions_that_defined.get(&id).copied().unwrap_or_else(ExpnId::root)
     }
 
     pub fn parent_module_of_macro_def(&self, expn_id: ExpnId) -> DefId {

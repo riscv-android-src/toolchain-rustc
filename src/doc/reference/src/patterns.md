@@ -284,6 +284,25 @@ Mutable references will set the mode to `ref mut` unless the mode is already `re
 which case it remains `ref`. If the automatically dereferenced value is still a reference,
 it is dereferenced and this process repeats.
 
+Move bindings and reference bindings can be mixed together in the same pattern, doing so will
+result in partial move of the object bound to and the object cannot be used afterwards.
+This applies only if the type cannot be copied.
+
+In the example below, `name` is moved out of `person`, trying to use `person` as a whole or
+`person.name` would result in an error because of *partial move*.
+
+Example:
+
+```rust
+# struct Person {
+#    name: String,
+#    age: u8,
+# }
+# let person = Person{ name: String::from("John"), age: 23 };
+// `name` is moved from person and `age` referenced
+let Person { name, ref age } = person;
+```
+
 ## Wildcard pattern
 
 > **<sup>Syntax</sup>**\
@@ -648,6 +667,16 @@ The form `(..)` with a single [_RestPattern_] is a special form that does not
 require a comma, and matches a tuple of any size.
 
 The tuple pattern is refutable when one of its subpatterns is refutable.
+
+An example of using tuple patterns:
+
+```rust
+let pair = (10, "ten");
+let (a, b) = pair;
+
+assert_eq!(a, 10);
+assert_eq!(b, "ten");
+```
 
 ## Grouped patterns
 

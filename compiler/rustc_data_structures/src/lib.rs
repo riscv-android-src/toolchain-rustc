@@ -28,6 +28,7 @@
 #![feature(const_panic)]
 #![feature(min_const_generics)]
 #![feature(once_cell)]
+#![feature(maybe_uninit_uninit_array)]
 #![allow(rustc::default_hash_types)]
 
 #[macro_use]
@@ -100,8 +101,7 @@ pub mod vec_linked_list;
 pub mod work_queue;
 pub use atomic_ref::AtomicRef;
 pub mod frozen;
-pub mod mini_map;
-pub mod mini_set;
+pub mod sso;
 pub mod tagged_ptr;
 pub mod temp_dir;
 pub mod unhash;

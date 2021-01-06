@@ -219,6 +219,14 @@ impl Symbol {
         self.inner.filename_raw()
     }
 
+    /// Returns the column number for where this symbol is currently executing.
+    ///
+    /// Only gimli currently provides a value here and even then only if `filename`
+    /// returns `Some`, and so it is then consequently subject to similar caveats.
+    pub fn colno(&self) -> Option<u32> {
+        self.inner.colno()
+    }
+
     /// Returns the line number for where this symbol is currently executing.
     ///
     /// This return value is typically `Some` if `filename` returns `Some`, and
@@ -229,8 +237,8 @@ impl Symbol {
 
     /// Returns the file name where this function was defined.
     ///
-    /// This is currently only available when libbacktrace is being used (e.g.
-    /// unix platforms other than OSX) and when a binary is compiled with
+    /// This is currently only available when libbacktrace or gimli is being
+    /// used (e.g. unix platforms other) and when a binary is compiled with
     /// debuginfo. If neither of these conditions is met then this will likely
     /// return `None`.
     ///
@@ -457,10 +465,9 @@ pub fn clear_symbol_cache() {
 
 cfg_if::cfg_if! {
     if #[cfg(miri)] {
-        mod noop;
-        use self::noop::resolve as resolve_imp;
-        use self::noop::Symbol as SymbolImp;
-        #[allow(unused)]
+        mod miri;
+        use self::miri::resolve as resolve_imp;
+        use self::miri::Symbol as SymbolImp;
         unsafe fn clear_symbol_cache_imp() {}
     } else if #[cfg(all(windows, target_env = "msvc", not(target_vendor = "uwp")))] {
         mod dbghelp;
@@ -473,6 +480,7 @@ cfg_if::cfg_if! {
         not(target_os = "fuchsia"),
         not(target_os = "emscripten"),
         not(target_env = "uclibc"),
+        not(target_env = "libnx"),
     ))] {
         mod libbacktrace;
         use self::libbacktrace::resolve as resolve_imp;

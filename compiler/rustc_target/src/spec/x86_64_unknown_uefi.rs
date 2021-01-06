@@ -5,9 +5,9 @@
 // The win64 ABI is used. It differs from the sysv64 ABI, so we must use a windows target with
 // LLVM. "x86_64-unknown-windows" is used to get the minimal subset of windows-specific features.
 
-use crate::spec::{CodeModel, LinkerFlavor, LldFlavor, Target, TargetResult};
+use crate::spec::{CodeModel, Target};
 
-pub fn target() -> TargetResult {
+pub fn target() -> Target {
     let mut base = super::uefi_msvc_base::opts();
     base.cpu = "x86-64".to_string();
     base.max_atomic_width = Some(64);
@@ -28,19 +28,13 @@ pub fn target() -> TargetResult {
     // places no locality-restrictions, so it fits well here.
     base.code_model = Some(CodeModel::Large);
 
-    Ok(Target {
+    Target {
         llvm_target: "x86_64-unknown-windows".to_string(),
-        target_endian: "little".to_string(),
-        target_pointer_width: "64".to_string(),
-        target_c_int_width: "32".to_string(),
+        pointer_width: 64,
         data_layout: "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
             .to_string(),
-        target_os: "uefi".to_string(),
-        target_env: "".to_string(),
-        target_vendor: "unknown".to_string(),
         arch: "x86_64".to_string(),
-        linker_flavor: LinkerFlavor::Lld(LldFlavor::Link),
 
         options: base,
-    })
+    }
 }

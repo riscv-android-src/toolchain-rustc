@@ -3,19 +3,18 @@
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/mir/index.html
 
 use crate::mir::coverage::{CodeRegion, CoverageKind};
-use crate::mir::interpret::{Allocation, ConstValue, GlobalAlloc, Scalar};
+use crate::mir::interpret::{Allocation, GlobalAlloc, Scalar};
 use crate::mir::visit::MirVisitable;
 use crate::ty::adjustment::PointerCast;
 use crate::ty::codec::{TyDecoder, TyEncoder};
 use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
 use crate::ty::print::{FmtPrinter, Printer};
 use crate::ty::subst::{Subst, SubstsRef};
-use crate::ty::{
-    self, AdtDef, CanonicalUserTypeAnnotations, List, Region, Ty, TyCtxt, UserTypeAnnotationIndex,
-};
+use crate::ty::{self, List, Ty, TyCtxt};
+use crate::ty::{AdtDef, InstanceDef, Region, UserTypeAnnotationIndex};
 use rustc_hir as hir;
 use rustc_hir::def::{CtorKind, Namespace};
-use rustc_hir::def_id::DefId;
+use rustc_hir::def_id::{DefId, CRATE_DEF_INDEX};
 use rustc_hir::{self, GeneratorKind};
 use rustc_target::abi::VariantIdx;
 
@@ -29,11 +28,10 @@ use rustc_index::vec::{Idx, IndexVec};
 use rustc_serialize::{Decodable, Encodable};
 use rustc_span::symbol::Symbol;
 use rustc_span::{Span, DUMMY_SP};
-use rustc_target::abi;
 use rustc_target::asm::InlineAsmRegOrRegClass;
 use std::borrow::Cow;
 use std::fmt::{self, Debug, Display, Formatter, Write};
-use std::ops::{Index, IndexMut};
+use std::ops::{ControlFlow, Index, IndexMut};
 use std::slice;
 use std::{iter, mem, option};
 
@@ -112,10 +110,42 @@ impl MirPhase {
     }
 }
 
+/// Where a specific `mir::Body` comes from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(HashStable, TyEncodable, TyDecodable, TypeFoldable)]
+pub struct MirSource<'tcx> {
+    pub instance: InstanceDef<'tcx>,
+
+    /// If `Some`, this is a promoted rvalue within the parent function.
+    pub promoted: Option<Promoted>,
+}
+
+impl<'tcx> MirSource<'tcx> {
+    pub fn item(def_id: DefId) -> Self {
+        MirSource {
+            instance: InstanceDef::Item(ty::WithOptConstParam::unknown(def_id)),
+            promoted: None,
+        }
+    }
+
+    pub fn from_instance(instance: InstanceDef<'tcx>) -> Self {
+        MirSource { instance, promoted: None }
+    }
+
+    pub fn with_opt_param(self) -> ty::WithOptConstParam<DefId> {
+        self.instance.with_opt_param()
+    }
+
+    #[inline]
+    pub fn def_id(&self) -> DefId {
+        self.instance.def_id()
+    }
+}
+
 /// The lowered representation of a single function.
 #[derive(Clone, TyEncodable, TyDecodable, Debug, HashStable, TypeFoldable)]
 pub struct Body<'tcx> {
-    /// A list of basic blocks. References to basic block use a newtyped index type `BasicBlock`
+    /// A list of basic blocks. References to basic block use a newtyped index type [`BasicBlock`]
     /// that indexes into this vector.
     basic_blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>,
 
@@ -126,9 +156,11 @@ pub struct Body<'tcx> {
     /// us to see the difference and forego optimization on the inlined promoted items.
     pub phase: MirPhase,
 
+    pub source: MirSource<'tcx>,
+
     /// A list of source scopes; these are referenced by statements
     /// and used for debuginfo. Indexed by a `SourceScope`.
-    pub source_scopes: IndexVec<SourceScope, SourceScopeData>,
+    pub source_scopes: IndexVec<SourceScope, SourceScopeData<'tcx>>,
 
     /// The yield type of the function, if it is a generator.
     pub yield_ty: Option<Ty<'tcx>>,
@@ -151,7 +183,7 @@ pub struct Body<'tcx> {
     pub local_decls: LocalDecls<'tcx>,
 
     /// User type annotations.
-    pub user_type_annotations: CanonicalUserTypeAnnotations<'tcx>,
+    pub user_type_annotations: ty::CanonicalUserTypeAnnotations<'tcx>,
 
     /// The number of arguments this function takes.
     ///
@@ -177,16 +209,6 @@ pub struct Body<'tcx> {
     /// We hold in this field all the constants we are not able to evaluate yet.
     pub required_consts: Vec<Constant<'tcx>>,
 
-    /// The user may be writing e.g. `&[(SOME_CELL, 42)][i].1` and this would get promoted, because
-    /// we'd statically know that no thing with interior mutability will ever be available to the
-    /// user without some serious unsafe code.  Now this means that our promoted is actually
-    /// `&[(SOME_CELL, 42)]` and the MIR using it will do the `&promoted[i].1` projection because
-    /// the index may be a runtime value. Such a promoted value is illegal because it has reachable
-    /// interior mutability. This flag just makes this situation very obvious where the previous
-    /// implementation without the flag hid this situation silently.
-    /// FIXME(oli-obk): rewrite the promoted during promotion to eliminate the cell components.
-    pub ignore_interior_mut_in_const_validation: bool,
-
     /// Does this body use generic parameters. This is used for the `ConstEvaluatable` check.
     ///
     /// Note that this does not actually mean that this body is not computable right now.
@@ -209,10 +231,11 @@ pub struct Body<'tcx> {
 
 impl<'tcx> Body<'tcx> {
     pub fn new(
+        source: MirSource<'tcx>,
         basic_blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>,
-        source_scopes: IndexVec<SourceScope, SourceScopeData>,
+        source_scopes: IndexVec<SourceScope, SourceScopeData<'tcx>>,
         local_decls: LocalDecls<'tcx>,
-        user_type_annotations: CanonicalUserTypeAnnotations<'tcx>,
+        user_type_annotations: ty::CanonicalUserTypeAnnotations<'tcx>,
         arg_count: usize,
         var_debug_info: Vec<VarDebugInfo<'tcx>>,
         span: Span,
@@ -228,6 +251,7 @@ impl<'tcx> Body<'tcx> {
 
         let mut body = Body {
             phase: MirPhase::Build,
+            source,
             basic_blocks,
             source_scopes,
             yield_ty: None,
@@ -241,7 +265,6 @@ impl<'tcx> Body<'tcx> {
             var_debug_info,
             span,
             required_consts: Vec::new(),
-            ignore_interior_mut_in_const_validation: false,
             is_polymorphic: false,
             predecessor_cache: PredecessorCache::new(),
         };
@@ -257,6 +280,7 @@ impl<'tcx> Body<'tcx> {
     pub fn new_cfg_only(basic_blocks: IndexVec<BasicBlock, BasicBlockData<'tcx>>) -> Self {
         let mut body = Body {
             phase: MirPhase::Build,
+            source: MirSource::item(DefId::local(CRATE_DEF_INDEX)),
             basic_blocks,
             source_scopes: IndexVec::new(),
             yield_ty: None,
@@ -270,7 +294,6 @@ impl<'tcx> Body<'tcx> {
             required_consts: Vec::new(),
             generator_kind: None,
             var_debug_info: Vec::new(),
-            ignore_interior_mut_in_const_validation: false,
             is_polymorphic: false,
             predecessor_cache: PredecessorCache::new(),
         };
@@ -422,17 +445,6 @@ impl<'tcx> Body<'tcx> {
             assert_eq!(idx, stmts.len());
             &block.terminator().source_info
         }
-    }
-
-    /// Checks if `sub` is a sub scope of `sup`
-    pub fn is_sub_scope(&self, mut sub: SourceScope, sup: SourceScope) -> bool {
-        while sub != sup {
-            match self.source_scopes[sub].parent_scope {
-                None => return false,
-                Some(p) => sub = p,
-            }
-        }
-        true
     }
 
     /// Returns the return type; it always return first element from `local_decls` array.
@@ -739,7 +751,7 @@ mod binding_form_impl {
     impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for super::BindingForm<'tcx> {
         fn hash_stable(&self, hcx: &mut StableHashingContext<'a>, hasher: &mut StableHasher) {
             use super::BindingForm::*;
-            ::std::mem::discriminant(self).hash_stable(hcx, hasher);
+            std::mem::discriminant(self).hash_stable(hcx, hasher);
 
             match self {
                 Var(binding) => binding.hash_stable(hcx, hasher),
@@ -777,7 +789,7 @@ pub struct BlockTailInfo {
 /// argument, or the return place.
 #[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable, TypeFoldable)]
 pub struct LocalDecl<'tcx> {
-    /// Whether this is a mutable minding (i.e., `let x` or `let mut x`).
+    /// Whether this is a mutable binding (i.e., `let x` or `let mut x`).
     ///
     /// Temporaries and the return place are always mutable.
     pub mutability: Mutability,
@@ -795,9 +807,6 @@ pub struct LocalDecl<'tcx> {
     /// which type checking knows are live across a suspension point. We need to
     /// flag drop flags to avoid triggering this check as they are introduced
     /// after typeck.
-    ///
-    /// Unsafety checking will also ignore dereferences of these locals,
-    /// so they can be used for raw pointers only used in a desugaring.
     ///
     /// This should be sound because the drop flags are fully algebraic, and
     /// therefore don't affect the OIBIT or outlives properties of the
@@ -935,71 +944,63 @@ impl<'tcx> LocalDecl<'tcx> {
     /// - `let x = ...`,
     /// - or `match ... { C(x) => ... }`
     pub fn can_be_made_mutable(&self) -> bool {
-        match self.local_info {
-            Some(box LocalInfo::User(ClearCrossCrate::Set(BindingForm::Var(VarBindingForm {
-                binding_mode: ty::BindingMode::BindByValue(_),
-                opt_ty_info: _,
-                opt_match_place: _,
-                pat_span: _,
-            })))) => true,
-
-            Some(box LocalInfo::User(ClearCrossCrate::Set(BindingForm::ImplicitSelf(
-                ImplicitSelfKind::Imm,
-            )))) => true,
-
-            _ => false,
-        }
+        matches!(
+            self.local_info,
+            Some(box LocalInfo::User(ClearCrossCrate::Set(
+                BindingForm::Var(VarBindingForm {
+                    binding_mode: ty::BindingMode::BindByValue(_),
+                    opt_ty_info: _,
+                    opt_match_place: _,
+                    pat_span: _,
+                })
+                | BindingForm::ImplicitSelf(ImplicitSelfKind::Imm),
+            )))
+        )
     }
 
     /// Returns `true` if local is definitely not a `ref ident` or
     /// `ref mut ident` binding. (Such bindings cannot be made into
     /// mutable bindings, but the inverse does not necessarily hold).
     pub fn is_nonref_binding(&self) -> bool {
-        match self.local_info {
-            Some(box LocalInfo::User(ClearCrossCrate::Set(BindingForm::Var(VarBindingForm {
-                binding_mode: ty::BindingMode::BindByValue(_),
-                opt_ty_info: _,
-                opt_match_place: _,
-                pat_span: _,
-            })))) => true,
-
-            Some(box LocalInfo::User(ClearCrossCrate::Set(BindingForm::ImplicitSelf(_)))) => true,
-
-            _ => false,
-        }
+        matches!(
+            self.local_info,
+            Some(box LocalInfo::User(ClearCrossCrate::Set(
+                BindingForm::Var(VarBindingForm {
+                    binding_mode: ty::BindingMode::BindByValue(_),
+                    opt_ty_info: _,
+                    opt_match_place: _,
+                    pat_span: _,
+                })
+                | BindingForm::ImplicitSelf(_),
+            )))
+        )
     }
 
     /// Returns `true` if this variable is a named variable or function
     /// parameter declared by the user.
     #[inline]
     pub fn is_user_variable(&self) -> bool {
-        match self.local_info {
-            Some(box LocalInfo::User(_)) => true,
-            _ => false,
-        }
+        matches!(self.local_info, Some(box LocalInfo::User(_)))
     }
 
     /// Returns `true` if this is a reference to a variable bound in a `match`
     /// expression that is used to access said variable for the guard of the
     /// match arm.
     pub fn is_ref_for_guard(&self) -> bool {
-        match self.local_info {
-            Some(box LocalInfo::User(ClearCrossCrate::Set(BindingForm::RefForGuard))) => true,
-            _ => false,
-        }
+        matches!(
+            self.local_info,
+            Some(box LocalInfo::User(ClearCrossCrate::Set(BindingForm::RefForGuard)))
+        )
     }
 
     /// Returns `Some` if this is a reference to a static item that is used to
-    /// access that static
+    /// access that static.
     pub fn is_ref_to_static(&self) -> bool {
-        match self.local_info {
-            Some(box LocalInfo::StaticRef { .. }) => true,
-            _ => false,
-        }
+        matches!(self.local_info, Some(box LocalInfo::StaticRef { .. }))
     }
 
-    /// Returns `Some` if this is a reference to a static item that is used to
-    /// access that static
+    /// Returns `Some` if this is a reference to a thread-local static item that is used to
+    /// access that static.
     pub fn is_ref_to_thread_local(&self) -> bool {
         match self.local_info {
             Some(box LocalInfo::StaticRef { is_thread_local, .. }) => is_thread_local,
@@ -1088,6 +1089,9 @@ rustc_index::newtype_index! {
     /// however there is a MIR pass ([`CriticalCallEdges`]) that removes *critical edges*, which
     /// are edges that go from a multi-successor node to a multi-predecessor node. This pass is
     /// needed because some analyses require that there are no critical edges in the CFG.
+    ///
+    /// Note that this type is just an index into [`Body.basic_blocks`](Body::basic_blocks);
+    /// the actual data that a basic block holds is in [`BasicBlockData`].
     ///
     /// Read more about basic blocks in the [rustc-dev-guide][guide-mir].
     ///
@@ -1581,21 +1585,10 @@ impl Debug for Statement<'_> {
                 write!(fmt, "AscribeUserType({:?}, {:?}, {:?})", place, variance, c_ty)
             }
             Coverage(box ref coverage) => {
-                let rgn = &coverage.code_region;
-                match coverage.kind {
-                    CoverageKind::Counter { id, .. } => {
-                        write!(fmt, "Coverage::Counter({:?}) for {:?}", id.index(), rgn)
-                    }
-                    CoverageKind::Expression { id, lhs, op, rhs } => write!(
-                        fmt,
-                        "Coverage::Expression({:?}) = {} {} {} for {:?}",
-                        id.index(),
-                        lhs.index(),
-                        if op == coverage::Op::Add { "+" } else { "-" },
-                        rhs.index(),
-                        rgn
-                    ),
-                    CoverageKind::Unreachable => write!(fmt, "Coverage::Unreachable for {:?}", rgn),
+                if let Some(rgn) = &coverage.code_region {
+                    write!(fmt, "Coverage::{:?} for {:?}", coverage.kind, rgn)
+                } else {
+                    write!(fmt, "Coverage::{:?}", coverage.kind)
                 }
             }
             Nop => write!(fmt, "nop"),
@@ -1606,7 +1599,7 @@ impl Debug for Statement<'_> {
 #[derive(Clone, Debug, PartialEq, TyEncodable, TyDecodable, HashStable, TypeFoldable)]
 pub struct Coverage {
     pub kind: CoverageKind,
-    pub code_region: CodeRegion,
+    pub code_region: Option<CodeRegion>,
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -1848,10 +1841,20 @@ rustc_index::newtype_index! {
     }
 }
 
-#[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable)]
-pub struct SourceScopeData {
+#[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable, TypeFoldable)]
+pub struct SourceScopeData<'tcx> {
     pub span: Span,
     pub parent_scope: Option<SourceScope>,
+
+    /// Whether this scope is the root of a scope tree of another body,
+    /// inlined into this body by the MIR inliner.
+    /// `ty::Instance` is the callee, and the `Span` is the call site.
+    pub inlined: Option<(ty::Instance<'tcx>, Span)>,
+
+    /// Nearest (transitive) parent scope (if any) which is inlined.
+    /// This is an optimization over walking up `parent_scope`
+    /// until a scope with `inlined: Some(...)` is found.
+    pub inlined_parent_scope: Option<SourceScope>,
 
     /// Crate-local information for this source scope, that can't (and
     /// needn't) be tracked across crates.
@@ -1937,10 +1940,10 @@ impl<'tcx> Operand<'tcx> {
                 .layout_of(param_env_and_ty)
                 .unwrap_or_else(|e| panic!("could not compute layout for {:?}: {:?}", ty, e))
                 .size;
-            let scalar_size = abi::Size::from_bytes(match val {
-                Scalar::Raw { size, .. } => size,
+            let scalar_size = match val {
+                Scalar::Int(int) => int.size(),
                 _ => panic!("Invalid scalar type {:?}", val),
-            });
+            };
             scalar_size == type_size
         });
         Operand::Constant(box Constant {
@@ -1948,45 +1951,6 @@ impl<'tcx> Operand<'tcx> {
             user_ty: None,
             literal: ty::Const::from_scalar(tcx, val, ty),
         })
-    }
-
-    /// Convenience helper to make a `Scalar` from the given `Operand`, assuming that `Operand`
-    /// wraps a constant literal value. Panics if this is not the case.
-    pub fn scalar_from_const(operand: &Operand<'tcx>) -> Scalar {
-        match operand {
-            Operand::Constant(constant) => match constant.literal.val.try_to_scalar() {
-                Some(scalar) => scalar,
-                _ => panic!("{:?}: Scalar value expected", constant.literal.val),
-            },
-            _ => panic!("{:?}: Constant expected", operand),
-        }
-    }
-
-    /// Convenience helper to make a literal-like constant from a given `&str` slice.
-    /// Since this is used to synthesize MIR, assumes `user_ty` is None.
-    pub fn const_from_str(tcx: TyCtxt<'tcx>, val: &str, span: Span) -> Operand<'tcx> {
-        let tcx = tcx;
-        let allocation = Allocation::from_byte_aligned_bytes(val.as_bytes());
-        let allocation = tcx.intern_const_alloc(allocation);
-        let const_val = ConstValue::Slice { data: allocation, start: 0, end: val.len() };
-        let ty = tcx.mk_imm_ref(tcx.lifetimes.re_erased, tcx.types.str_);
-        Operand::Constant(box Constant {
-            span,
-            user_ty: None,
-            literal: ty::Const::from_value(tcx, const_val, ty),
-        })
-    }
-
-    /// Convenience helper to make a `ConstValue` from the given `Operand`, assuming that `Operand`
-    /// wraps a constant value (such as a `&str` slice). Panics if this is not the case.
-    pub fn value_from_const(operand: &Operand<'tcx>) -> ConstValue<'tcx> {
-        match operand {
-            Operand::Constant(constant) => match constant.literal.val.try_to_value() {
-                Some(const_value) => const_value,
-                _ => panic!("{:?}: ConstValue expected", constant.literal.val),
-            },
-            _ => panic!("{:?}: Constant expected", operand),
-        }
     }
 
     pub fn to_copy(&self) -> Self {
@@ -2128,10 +2092,7 @@ pub enum BinOp {
 impl BinOp {
     pub fn is_checkable(self) -> bool {
         use self::BinOp::*;
-        match self {
-            Add | Sub | Mul | Shl | Shr => true,
-            _ => false,
-        }
+        matches!(self, Add | Sub | Mul | Shl | Shr)
     }
 }
 
@@ -2235,7 +2196,7 @@ impl<'tcx> Debug for Rvalue<'tcx> {
 
                         let name = ty::tls::with(|tcx| {
                             let mut name = String::new();
-                            let substs = tcx.lift(&substs).expect("could not lift for printing");
+                            let substs = tcx.lift(substs).expect("could not lift for printing");
                             FmtPrinter::new(tcx, &mut name, Namespace::ValueNS)
                                 .print_def_path(variant_def.def_id, substs)?;
                             Ok(name)
@@ -2258,7 +2219,7 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                         if let Some(def_id) = def_id.as_local() {
                             let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
                             let name = if tcx.sess.opts.debugging_opts.span_free_formats {
-                                let substs = tcx.lift(&substs).unwrap();
+                                let substs = tcx.lift(substs).unwrap();
                                 format!(
                                     "[closure@{}]",
                                     tcx.def_path_str_with_substs(def_id.to_def_id(), substs),
@@ -2386,10 +2347,6 @@ impl<'tcx> UserTypeProjections {
 
     pub fn is_empty(&self) -> bool {
         self.contents.is_empty()
-    }
-
-    pub fn from_projections(projs: impl Iterator<Item = (UserTypeProjection, Span)>) -> Self {
-        UserTypeProjections { contents: projs.collect() }
     }
 
     pub fn projections_and_spans(
@@ -2520,7 +2477,7 @@ impl<'tcx> TypeFoldable<'tcx> for UserTypeProjection {
         UserTypeProjection { base, projs }
     }
 
-    fn super_visit_with<Vs: TypeVisitor<'tcx>>(&self, visitor: &mut Vs) -> bool {
+    fn super_visit_with<Vs: TypeVisitor<'tcx>>(&self, visitor: &mut Vs) -> ControlFlow<()> {
         self.base.visit_with(visitor)
         // Note: there's nothing in `self.proj` to visit.
     }
@@ -2556,7 +2513,7 @@ fn pretty_print_const(
 ) -> fmt::Result {
     use crate::ty::print::PrettyPrinter;
     ty::tls::with(|tcx| {
-        let literal = tcx.lift(&c).unwrap();
+        let literal = tcx.lift(c).unwrap();
         let mut cx = FmtPrinter::new(tcx, fmt, Namespace::ValueNS);
         cx.print_alloc_ids = true;
         cx.pretty_print_const(literal, print_types)?;

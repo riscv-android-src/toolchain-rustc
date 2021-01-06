@@ -43,7 +43,7 @@ error[E0446]: private type `types::Priv` in public interface
   --> $DIR/private-in-public-warn.rs:26:9
    |
 LL |     struct Priv;
-   |     - `types::Priv` declared as private
+   |     ------------ `types::Priv` declared as private
 ...
 LL |         type Alias = Priv;
    |         ^^^^^^^^^^^^^^^^^^ can't leak private type
@@ -97,7 +97,7 @@ error[E0446]: private type `types::Priv` in public interface
   --> $DIR/private-in-public-warn.rs:41:9
    |
 LL |     struct Priv;
-   |     - `types::Priv` declared as private
+   |     ------------ `types::Priv` declared as private
 ...
 LL |         type Alias = Priv;
    |         ^^^^^^^^^^^^^^^^^^ can't leak private type
@@ -130,16 +130,10 @@ LL |     pub trait Tr2<T: PrivTr> {}
    = note: for more information, see issue #34537 <https://github.com/rust-lang/rust/issues/34537>
 
 error: private trait `traits::PrivTr` in public interface (error E0445)
-  --> $DIR/private-in-public-warn.rs:57:5
+  --> $DIR/private-in-public-warn.rs:58:9
    |
-LL | /     pub trait Tr3 {
-LL | |
-LL | |
-LL | |         type Alias: PrivTr;
-LL | |         fn f<T: PrivTr>(arg: T) {}
-LL | |
-LL | |     }
-   | |_____^
+LL |         type Alias: PrivTr;
+   |         ^^^^^^^^^^^^^^^^^^^
    |
    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
    = note: for more information, see issue #34537 <https://github.com/rust-lang/rust/issues/34537>
@@ -256,7 +250,7 @@ error[E0446]: private type `impls::Priv` in public interface
   --> $DIR/private-in-public-warn.rs:135:9
    |
 LL |     struct Priv;
-   |     - `impls::Priv` declared as private
+   |     ------------ `impls::Priv` declared as private
 ...
 LL |         type Alias = Priv;
    |         ^^^^^^^^^^^^^^^^^^ can't leak private type
@@ -274,7 +268,7 @@ error[E0446]: private type `aliases_pub::Priv` in public interface
   --> $DIR/private-in-public-warn.rs:210:9
    |
 LL |     struct Priv;
-   |     - `aliases_pub::Priv` declared as private
+   |     ------------ `aliases_pub::Priv` declared as private
 ...
 LL |         type Check = Priv;
    |         ^^^^^^^^^^^^^^^^^^ can't leak private type
@@ -283,7 +277,7 @@ error[E0446]: private type `aliases_pub::Priv` in public interface
   --> $DIR/private-in-public-warn.rs:213:9
    |
 LL |     struct Priv;
-   |     - `aliases_pub::Priv` declared as private
+   |     ------------ `aliases_pub::Priv` declared as private
 ...
 LL |         type Check = Priv;
    |         ^^^^^^^^^^^^^^^^^^ can't leak private type
@@ -292,7 +286,7 @@ error[E0446]: private type `aliases_pub::Priv` in public interface
   --> $DIR/private-in-public-warn.rs:216:9
    |
 LL |     struct Priv;
-   |     - `aliases_pub::Priv` declared as private
+   |     ------------ `aliases_pub::Priv` declared as private
 ...
 LL |         type Check = Priv;
    |         ^^^^^^^^^^^^^^^^^^ can't leak private type
@@ -301,7 +295,7 @@ error[E0446]: private type `aliases_pub::Priv` in public interface
   --> $DIR/private-in-public-warn.rs:219:9
    |
 LL |     struct Priv;
-   |     - `aliases_pub::Priv` declared as private
+   |     ------------ `aliases_pub::Priv` declared as private
 ...
 LL |         type Check = Priv;
    |         ^^^^^^^^^^^^^^^^^^ can't leak private type

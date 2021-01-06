@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "tracing-subscriber"
-version = "0.2.11"
+version = "0.2.13"
 authors = ["Eliza Weisman <eliza@buoyant.io>", "David Barsky <me@davidbarsky.com>", "Tokio Contributors <team@tokio.rs>"]
 description = "Utilities for implementing and composing `tracing` subscribers.\n"
 homepage = "https://tokio.rs"
@@ -83,8 +83,12 @@ optional = true
 version = "1.0.1"
 optional = true
 
+[dependencies.tracing]
+version = "0.1"
+optional = true
+
 [dependencies.tracing-core]
-version = "0.1.12"
+version = "0.1.17"
 
 [dependencies.tracing-log]
 version = "0.1"
@@ -93,7 +97,7 @@ optional = true
 default-features = false
 
 [dependencies.tracing-serde]
-version = "0.1.1"
+version = "0.1.2"
 optional = true
 [dev-dependencies.criterion]
 version = "0.3"
@@ -125,7 +129,7 @@ version = "0.1"
 [features]
 ansi = ["fmt", "ansi_term"]
 default = ["env-filter", "smallvec", "fmt", "ansi", "chrono", "tracing-log", "json"]
-env-filter = ["matchers", "regex", "lazy_static"]
+env-filter = ["matchers", "regex", "lazy_static", "tracing"]
 fmt = ["registry"]
 json = ["tracing-serde", "serde", "serde_json"]
 registry = ["sharded-slab", "thread_local"]

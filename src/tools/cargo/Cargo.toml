@@ -1,6 +1,6 @@
 [package]
 name = "cargo"
-version = "0.49.0"
+version = "0.50.0"
 edition = "2018"
 authors = ["Yehuda Katz <wycats@gmail.com>",
            "Carl Lerche <me@carllerche.com>",
@@ -23,11 +23,11 @@ atty = "0.2"
 bytesize = "1.0"
 cargo-platform = { path = "crates/cargo-platform", version = "0.1.1" }
 crates-io = { path = "crates/crates-io", version = "0.31.1" }
-crossbeam-utils = "0.7"
+crossbeam-utils = "0.8"
 crypto-hash = "0.3.1"
 curl = { version = "0.4.23", features = ["http2"] }
 curl-sys = "0.4.22"
-env_logger = "0.7.0"
+env_logger = "0.8.1"
 pretty_env_logger = { version = "0.4", optional = true }
 anyhow = "1.0"
 filetime = "0.2.9"
@@ -103,8 +103,8 @@ features = [
 ]
 
 [dev-dependencies]
-cargo-test-macro = { path = "crates/cargo-test-macro", version = "0.1.0" }
-cargo-test-support = { path = "crates/cargo-test-support", version = "0.1.0" }
+cargo-test-macro = { path = "crates/cargo-test-macro" }
+cargo-test-support = { path = "crates/cargo-test-support" }
 
 [build-dependencies]
 flate2 = { version = "1.0.3", default-features = false, features = ["zlib"] }

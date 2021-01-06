@@ -1,7 +1,6 @@
 //! Encapsulates the concrete representation of core types such as types and goals.
 use crate::AdtId;
 use crate::AliasTy;
-use crate::ApplicationTy;
 use crate::AssocTypeId;
 use crate::CanonicalVarKind;
 use crate::CanonicalVarKinds;
@@ -10,6 +9,7 @@ use crate::Constraint;
 use crate::Constraints;
 use crate::FnDefId;
 use crate::ForeignDefId;
+use crate::GeneratorId;
 use crate::GenericArg;
 use crate::GenericArgData;
 use crate::Goal;
@@ -61,7 +61,7 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
     /// `Ty<Self>`, which wraps this type.
     ///
     /// An `InternedType` must be something that can be created from a
-    /// `TyData` (by the [`intern_ty`] method) and then later
+    /// `TyKind` (by the [`intern_ty`] method) and then later
     /// converted back (by the [`ty_data`] method). The interned form
     /// must also introduce indirection, either via a `Box`, `&`, or
     /// other pointer type.
@@ -259,6 +259,21 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
     /// Prints the debug representation of an alias.
     /// Returns `None` to fallback to the default debug output.
     #[allow(unused_variables)]
+    fn debug_generator_id(
+        generator_id: GeneratorId<Self>,
+        fmt: &mut fmt::Formatter<'_>,
+    ) -> Option<fmt::Result> {
+        None
+    }
+
+    /// Prints the debug representation of an alias. To get good
+    /// results, this requires inspecting TLS, and is difficult to
+    /// code without reference to a specific interner (and hence
+    /// fully known types).
+    ///
+    /// Returns `None` to fallback to the default debug output (e.g.,
+    /// if no info about current program is available from TLS).
+    #[allow(unused_variables)]
     fn debug_alias(alias: &AliasTy<Self>, fmt: &mut fmt::Formatter<'_>) -> Option<fmt::Result> {
         None
     }
@@ -391,16 +406,6 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
         None
     }
 
-    /// Prints the debug representation of an ApplicationTy.
-    /// Returns `None` to fallback to the default debug output.
-    #[allow(unused_variables)]
-    fn debug_application_ty(
-        application_ty: &ApplicationTy<Self>,
-        fmt: &mut fmt::Formatter<'_>,
-    ) -> Option<fmt::Result> {
-        None
-    }
-
     /// Prints the debug representation of a Substitution.
     /// Returns `None` to fallback to the default debug output.
     #[allow(unused_variables)]
@@ -442,11 +447,11 @@ pub trait Interner: Debug + Copy + Eq + Ord + Hash {
     }
 
     /// Create an "interned" type from `ty`. This is not normally
-    /// invoked directly; instead, you invoke `TyData::intern` (which
+    /// invoked directly; instead, you invoke `TyKind::intern` (which
     /// will ultimately call this method).
     fn intern_ty(&self, ty: TyData<Self>) -> Self::InternedType;
 
-    /// Lookup the `TyData` from an interned type.
+    /// Lookup the `TyKind` from an interned type.
     fn ty_data<'a>(&self, ty: &'a Self::InternedType) -> &'a TyData<Self>;
 
     /// Create an "interned" lifetime from `lifetime`. This is not

@@ -4,9 +4,7 @@ use crate::clauses::builtin_traits::needs_impl_for_tys;
 use crate::clauses::ClauseBuilder;
 use crate::rust_ir::AdtKind;
 use crate::{Interner, RustIrDatabase, TraitRef};
-use chalk_ir::{
-    AdtId, ApplicationTy, CanonicalVarKinds, Substitution, TyData, TyKind, TypeName, VariableKind,
-};
+use chalk_ir::{AdtId, CanonicalVarKinds, Substitution, TyKind, TyVariableKind, VariableKind};
 
 fn push_adt_sized_conditions<I: Interner>(
     db: &dyn RustIrDatabase<I>,
@@ -70,50 +68,49 @@ pub fn add_sized_program_clauses<I: Interner>(
     db: &dyn RustIrDatabase<I>,
     builder: &mut ClauseBuilder<'_, I>,
     trait_ref: &TraitRef<I>,
-    ty: &TyData<I>,
+    ty: &TyKind<I>,
     binders: &CanonicalVarKinds<I>,
 ) {
     match ty {
-        TyData::Apply(ApplicationTy { name, substitution }) => match name {
-            TypeName::Adt(adt_id) => {
-                push_adt_sized_conditions(db, builder, trait_ref, *adt_id, substitution)
-            }
-            TypeName::Tuple(arity) => {
-                push_tuple_sized_conditions(db, builder, trait_ref, *arity, substitution)
-            }
-            TypeName::Array
-            | TypeName::Never
-            | TypeName::Closure(_)
-            | TypeName::FnDef(_)
-            | TypeName::Scalar(_)
-            | TypeName::Raw(_)
-            | TypeName::Ref(_) => builder.push_fact(trait_ref.clone()),
+        TyKind::Adt(adt_id, substitution) => {
+            push_adt_sized_conditions(db, builder, trait_ref, *adt_id, substitution)
+        }
+        TyKind::Tuple(arity, substitution) => {
+            push_tuple_sized_conditions(db, builder, trait_ref, *arity, substitution)
+        }
+        TyKind::Array(_, _)
+        | TyKind::Never
+        | TyKind::Closure(_, _)
+        | TyKind::FnDef(_, _)
+        | TyKind::Scalar(_)
+        | TyKind::Raw(_, _)
+        | TyKind::Generator(_, _)
+        | TyKind::GeneratorWitness(_, _)
+        | TyKind::Ref(_, _, _) => builder.push_fact(trait_ref.clone()),
 
-            TypeName::AssociatedType(_)
-            | TypeName::Slice
-            | TypeName::OpaqueType(_)
-            | TypeName::Str
-            | TypeName::Foreign(_)
-            | TypeName::Error => {}
-        },
+        TyKind::AssociatedType(_, _)
+        | TyKind::Slice(_)
+        | TyKind::OpaqueType(_, _)
+        | TyKind::Str
+        | TyKind::Foreign(_)
+        | TyKind::Error => {}
 
-        TyData::Function(_)
-        | TyData::InferenceVar(_, TyKind::Float)
-        | TyData::InferenceVar(_, TyKind::Integer) => builder.push_fact(trait_ref.clone()),
+        TyKind::Function(_)
+        | TyKind::InferenceVar(_, TyVariableKind::Float)
+        | TyKind::InferenceVar(_, TyVariableKind::Integer) => builder.push_fact(trait_ref.clone()),
 
-        TyData::BoundVar(bound_var) => {
+        TyKind::BoundVar(bound_var) => {
             let var_kind = &binders.at(db.interner(), bound_var.index).kind;
             match var_kind {
-                VariableKind::Ty(TyKind::Integer) | VariableKind::Ty(TyKind::Float) => {
-                    builder.push_fact(trait_ref.clone())
-                }
+                VariableKind::Ty(TyVariableKind::Integer)
+                | VariableKind::Ty(TyVariableKind::Float) => builder.push_fact(trait_ref.clone()),
                 VariableKind::Ty(_) | VariableKind::Const(_) | VariableKind::Lifetime => {}
             }
         }
 
-        TyData::InferenceVar(_, TyKind::General)
-        | TyData::Placeholder(_)
-        | TyData::Dyn(_)
-        | TyData::Alias(_) => {}
+        TyKind::InferenceVar(_, TyVariableKind::General)
+        | TyKind::Placeholder(_)
+        | TyKind::Dyn(_)
+        | TyKind::Alias(_) => {}
     }
 }

@@ -93,7 +93,7 @@ Feature     | Implicitly Enables | Description
 `sse`       |          | [SSE] — Streaming <abbr title="Single Instruction Multiple Data">SIMD</abbr> Extensions
 `sse2`      | `sse`    | [SSE2] — Streaming SIMD Extensions 2
 `sse3`      | `sse2`   | [SSE3] — Streaming SIMD Extensions 3
-`sse4.1`    | `sse3`   | [SSE4.1] — Streaming SIMD Extensions 4.1
+`sse4.1`    | `ssse3`  | [SSE4.1] — Streaming SIMD Extensions 4.1
 `sse4.2`    | `sse4.1` | [SSE4.2] — Streaming SIMD Extensions 4.2
 `ssse3`     | `sse3`   | [SSSE3] — Supplemental Streaming SIMD Extensions 3
 `xsave`     |          | [`xsave`] — Save processor extended states
@@ -157,9 +157,9 @@ otherwise undefined behavior results.
 
 ### Behavior
 
-Applying the attribute to a function `f` allows code within `f` to get a hint of the [`Location`] of 
-the "topmost" tracked call that led to `f`'s invocation. At the point of observation, an 
-implementation behaves as if it walks up the stack from `f`'s frame to find the nearest frame of an 
+Applying the attribute to a function `f` allows code within `f` to get a hint of the [`Location`] of
+the "topmost" tracked call that led to `f`'s invocation. At the point of observation, an
+implementation behaves as if it walks up the stack from `f`'s frame to find the nearest frame of an
 *unattributed* function `outer`, and it returns the [`Location`] of the tracked call in `outer`.
 
 ```rust
@@ -190,7 +190,7 @@ fn calls_f() {
 ```
 
 When `f` is called by another attributed function `g` which is in turn called by `calls_g`, code in
-both `f` and `g` observes `g`'s callsite within `calls_g`: 
+both `f` and `g` observes `g`'s callsite within `calls_g`:
 
 ```rust
 # #[track_caller]

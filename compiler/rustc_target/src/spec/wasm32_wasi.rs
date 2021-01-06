@@ -7,7 +7,7 @@
 //! intended to empower WebAssembly binaries with native capabilities such as
 //! filesystem access, network access, etc.
 //!
-//! You can see more about the proposal at https://wasi.dev
+//! You can see more about the proposal at <https://wasi.dev>.
 //!
 //! The Rust target definition here is interesting in a few ways. We want to
 //! serve two use cases here with this target:
@@ -75,9 +75,12 @@
 use super::wasm32_base;
 use super::{crt_objects, LinkerFlavor, LldFlavor, Target};
 
-pub fn target() -> Result<Target, String> {
+pub fn target() -> Target {
     let mut options = wasm32_base::options();
 
+    options.os = "wasi".to_string();
+    options.vendor = String::new();
+    options.linker_flavor = LinkerFlavor::Lld(LldFlavor::Wasm);
     options
         .pre_link_args
         .entry(LinkerFlavor::Gcc)
@@ -104,17 +107,11 @@ pub fn target() -> Result<Target, String> {
     // `args::args()` makes the WASI API calls itself.
     options.main_needs_argc_argv = false;
 
-    Ok(Target {
+    Target {
         llvm_target: "wasm32-wasi".to_string(),
-        target_endian: "little".to_string(),
-        target_pointer_width: "32".to_string(),
-        target_c_int_width: "32".to_string(),
-        target_os: "wasi".to_string(),
-        target_env: String::new(),
-        target_vendor: String::new(),
+        pointer_width: 32,
         data_layout: "e-m:e-p:32:32-i64:64-n32:64-S128".to_string(),
         arch: "wasm32".to_string(),
-        linker_flavor: LinkerFlavor::Lld(LldFlavor::Wasm),
         options,
-    })
+    }
 }

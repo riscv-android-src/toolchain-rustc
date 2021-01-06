@@ -130,9 +130,9 @@ fn compile<'cfg>(
         custom_build::prepare(cx, unit)?
     } else if unit.mode.is_doc_test() {
         // We run these targets later, so this is just a no-op for now.
-        Job::new(Work::noop(), Freshness::Fresh)
+        Job::new_fresh()
     } else if build_plan {
-        Job::new(rustc(cx, unit, &exec.clone())?, Freshness::Dirty)
+        Job::new_dirty(rustc(cx, unit, &exec.clone())?)
     } else {
         let force = exec.force_rebuild(unit) || force_rebuild;
         let mut job = fingerprint::prepare_target(cx, unit, force)?;
@@ -217,7 +217,7 @@ fn rustc(cx: &mut Context<'_, '_>, unit: &Unit, exec: &Arc<dyn Executor>) -> Car
     exec.init(cx, unit);
     let exec = exec.clone();
 
-    let root_output = cx.files().host_root().to_path_buf();
+    let root_output = cx.files().host_dest().to_path_buf();
     let target_dir = cx.bcx.ws.target_dir().into_path_unlocked();
     let pkg_root = unit.pkg.root().to_path_buf();
     let cwd = rustc
@@ -448,7 +448,7 @@ fn link_targets(cx: &mut Context<'_, '_>, unit: &Unit, fresh: bool) -> CargoResu
                 fresh,
             }
             .to_json_string();
-            state.stdout(msg);
+            state.stdout(msg)?;
         }
         Ok(())
     }))
@@ -530,6 +530,11 @@ fn prepare_rustc(
     let mut base = cx
         .compilation
         .rustc_process(unit, is_primary, is_workspace)?;
+
+    if is_primary {
+        base.env("CARGO_PRIMARY_PACKAGE", "1");
+    }
+
     if cx.bcx.config.cli_unstable().jobserver_per_rustc {
         let client = cx.new_jobserver()?;
         base.inherit_jobserver(&client);
@@ -1029,7 +1034,7 @@ pub fn extern_args(
             if unit
                 .pkg
                 .manifest()
-                .features()
+                .unstable_features()
                 .require(Feature::public_dependency())
                 .is_ok()
                 && !dep.public
@@ -1134,7 +1139,7 @@ fn on_stdout_line(
     _package_id: PackageId,
     _target: &Target,
 ) -> CargoResult<()> {
-    state.stdout(line.to_string());
+    state.stdout(line.to_string())?;
     Ok(())
 }
 
@@ -1172,7 +1177,7 @@ fn on_stderr_line_inner(
     // something like that), so skip over everything that doesn't look like a
     // JSON message.
     if !line.starts_with('{') {
-        state.stderr(line.to_string());
+        state.stderr(line.to_string())?;
         return Ok(true);
     }
 
@@ -1184,7 +1189,7 @@ fn on_stderr_line_inner(
         // to stderr.
         Err(e) => {
             debug!("failed to parse json: {:?}", e);
-            state.stderr(line.to_string());
+            state.stderr(line.to_string())?;
             return Ok(true);
         }
     };
@@ -1220,7 +1225,7 @@ fn on_stderr_line_inner(
                         .map(|v| String::from_utf8(v).expect("utf8"))
                         .expect("strip should never fail")
                 };
-                state.stderr(rendered);
+                state.stderr(rendered)?;
                 return Ok(true);
             }
         }
@@ -1311,7 +1316,7 @@ fn on_stderr_line_inner(
     // Switch json lines from rustc/rustdoc that appear on stderr to stdout
     // instead. We want the stdout of Cargo to always be machine parseable as
     // stderr has our colorized human-readable messages.
-    state.stdout(msg);
+    state.stdout(msg)?;
     Ok(true)
 }
 

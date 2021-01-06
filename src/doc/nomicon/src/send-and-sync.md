@@ -6,7 +6,7 @@ synchronization to manage this access, they are absolutely not thread-safe. Rust
 captures this through the `Send` and `Sync` traits.
 
 * A type is Send if it is safe to send it to another thread.
-* A type is Sync if it is safe to share between threads (`&T` is Send).
+* A type is Sync if it is safe to share between threads (T is Sync if and only if `&T` is Send).
 
 Send and Sync are fundamental to Rust's concurrency story. As such, a
 substantial amount of special tooling exists to make them work right. First and
@@ -65,7 +65,7 @@ impl !Sync for SpecialThreadToken {}
 
 Note that *in and of itself* it is impossible to incorrectly derive Send and
 Sync. Only types that are ascribed special meaning by other unsafe code can
-possible cause trouble by being incorrectly Send or Sync.
+possibly cause trouble by being incorrectly Send or Sync.
 
 Most uses of raw pointers should be encapsulated behind a sufficient abstraction
 that Send and Sync can be derived. For instance all of Rust's standard

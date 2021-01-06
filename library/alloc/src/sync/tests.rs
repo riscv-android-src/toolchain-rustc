@@ -141,6 +141,24 @@ fn test_into_from_raw_unsized() {
 }
 
 #[test]
+fn into_from_weak_raw() {
+    let x = Arc::new(box "hello");
+    let y = Arc::downgrade(&x);
+
+    let y_ptr = Weak::into_raw(y);
+    unsafe {
+        assert_eq!(**y_ptr, "hello");
+
+        let y = Weak::from_raw(y_ptr);
+        let y_up = Weak::upgrade(&y).unwrap();
+        assert_eq!(**y_up, "hello");
+        drop(y_up);
+
+        assert_eq!(Arc::try_unwrap(x).map(|x| *x), Ok("hello"));
+    }
+}
+
+#[test]
 fn test_cowarc_clone_make_mut() {
     let mut cow0 = Arc::new(75);
     let mut cow1 = cow0.clone();

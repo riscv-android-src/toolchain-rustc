@@ -474,31 +474,19 @@ impl<'a, Ty> ArgAbi<'a, Ty> {
     }
 
     pub fn is_indirect(&self) -> bool {
-        match self.mode {
-            PassMode::Indirect(..) => true,
-            _ => false,
-        }
+        matches!(self.mode, PassMode::Indirect(..))
     }
 
     pub fn is_sized_indirect(&self) -> bool {
-        match self.mode {
-            PassMode::Indirect(_, None) => true,
-            _ => false,
-        }
+        matches!(self.mode, PassMode::Indirect(_, None))
     }
 
     pub fn is_unsized_indirect(&self) -> bool {
-        match self.mode {
-            PassMode::Indirect(_, Some(_)) => true,
-            _ => false,
-        }
+        matches!(self.mode, PassMode::Indirect(_, Some(_)))
     }
 
     pub fn is_ignore(&self) -> bool {
-        match self.mode {
-            PassMode::Ignore => true,
-            _ => false,
-        }
+        matches!(self.mode, PassMode::Ignore)
     }
 }
 
@@ -574,7 +562,7 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             "x86_64" => {
                 if abi == spec::abi::Abi::SysV64 {
                     x86_64::compute_abi_info(cx, self);
-                } else if abi == spec::abi::Abi::Win64 || cx.target_spec().options.is_like_windows {
+                } else if abi == spec::abi::Abi::Win64 || cx.target_spec().is_like_windows {
                     x86_win64::compute_abi_info(self);
                 } else {
                     x86_64::compute_abi_info(cx, self);
@@ -596,7 +584,7 @@ impl<'a, Ty> FnAbi<'a, Ty> {
             "nvptx64" => nvptx64::compute_abi_info(self),
             "hexagon" => hexagon::compute_abi_info(self),
             "riscv32" | "riscv64" => riscv::compute_abi_info(cx, self),
-            "wasm32" if cx.target_spec().target_os != "emscripten" => {
+            "wasm32" if cx.target_spec().os != "emscripten" => {
                 wasm32_bindgen_compat::compute_abi_info(self)
             }
             "wasm32" | "asmjs" => wasm32::compute_abi_info(cx, self),
@@ -608,17 +596,5 @@ impl<'a, Ty> FnAbi<'a, Ty> {
         }
 
         Ok(())
-    }
-}
-
-/// Returns the maximum size of return values to be passed by value in the Rust ABI.
-///
-/// Return values beyond this size will use an implicit out-pointer instead.
-pub fn max_ret_by_val<C: HasTargetSpec + HasDataLayout>(spec: &C) -> Size {
-    match spec.target_spec().arch.as_str() {
-        // System-V will pass return values up to 128 bits in RAX/RDX.
-        "x86_64" => Size::from_bits(128),
-
-        _ => spec.data_layout().pointer_size,
     }
 }

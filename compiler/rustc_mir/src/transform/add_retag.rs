@@ -4,7 +4,7 @@
 //! of MIR building, and only after this pass we think of the program has having the
 //! normal MIR semantics.
 
-use crate::transform::{MirPass, MirSource};
+use crate::transform::MirPass;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 
@@ -58,13 +58,13 @@ fn may_be_reference(ty: Ty<'tcx>) -> bool {
 }
 
 impl<'tcx> MirPass<'tcx> for AddRetag {
-    fn run_pass(&self, tcx: TyCtxt<'tcx>, src: MirSource<'tcx>, body: &mut Body<'tcx>) {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         if !tcx.sess.opts.debugging_opts.mir_emit_retag {
             return;
         }
 
         // We need an `AllCallEdges` pass before we can do any work.
-        super::add_call_guards::AllCallEdges.run_pass(tcx, src, body);
+        super::add_call_guards::AllCallEdges.run_pass(tcx, body);
 
         let (span, arg_count) = (body.span, body.arg_count);
         let (basic_blocks, local_decls) = body.basic_blocks_and_local_decls_mut();
@@ -72,6 +72,19 @@ impl<'tcx> MirPass<'tcx> for AddRetag {
             // FIXME: Instead of giving up for unstable places, we should introduce
             // a temporary and retag on that.
             is_stable(place.as_ref()) && may_be_reference(place.ty(&*local_decls, tcx).ty)
+        };
+        let place_base_raw = |place: &Place<'tcx>| {
+            // If this is a `Deref`, get the type of what we are deref'ing.
+            let deref_base =
+                place.projection.iter().rposition(|p| matches!(p, ProjectionElem::Deref));
+            if let Some(deref_base) = deref_base {
+                let base_proj = &place.projection[..deref_base];
+                let ty = Place::ty_from(place.local, base_proj, &*local_decls, tcx).ty;
+                ty.is_unsafe_ptr()
+            } else {
+                // Not a deref, and thus not raw.
+                false
+            }
         };
 
         // PART 1
@@ -136,13 +149,14 @@ impl<'tcx> MirPass<'tcx> for AddRetag {
             // iterate backwards using indices.
             for i in (0..block_data.statements.len()).rev() {
                 let (retag_kind, place) = match block_data.statements[i].kind {
-                    // Retag-as-raw after escaping to a raw pointer.
-                    StatementKind::Assign(box (place, Rvalue::AddressOf(..))) => {
-                        (RetagKind::Raw, place)
+                    // Retag-as-raw after escaping to a raw pointer, if the referent
+                    // is not already a raw pointer.
+                    StatementKind::Assign(box (lplace, Rvalue::AddressOf(_, ref rplace)))
+                        if !place_base_raw(rplace) =>
+                    {
+                        (RetagKind::Raw, lplace)
                     }
-                    // Assignments of reference or ptr type are the ones where we may have
-                    // to update tags.  This includes `x = &[mut] ...` and hence
-                    // we also retag after taking a reference!
+                    // Retag after assignments of reference type.
                     StatementKind::Assign(box (ref place, ref rvalue)) if needs_retag(place) => {
                         let kind = match rvalue {
                             Rvalue::Ref(_, borrow_kind, _)

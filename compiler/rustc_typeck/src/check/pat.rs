@@ -149,6 +149,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ///
     /// Outside of this module, `check_pat_top` should always be used.
     /// Conversely, inside this module, `check_pat_top` should never be used.
+    #[instrument(skip(self, ti))]
     fn check_pat(
         &self,
         pat: &'tcx Pat<'tcx>,
@@ -156,8 +157,6 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         def_bm: BindingMode,
         ti: TopInfo<'tcx>,
     ) {
-        debug!("check_pat(pat={:?},expected={:?},def_bm={:?})", pat, expected, def_bm);
-
         let path_res = match &pat.kind {
             PatKind::Path(qpath) => Some(self.resolve_ty_and_res_ufcs(qpath, pat.hir_id, pat.span)),
             _ => None,
@@ -270,6 +269,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     ///
     /// When the pattern is a path pattern, `opt_path_res` must be `Some(res)`.
     fn calc_adjust_mode(&self, pat: &'tcx Pat<'tcx>, opt_path_res: Option<Res>) -> AdjustMode {
+        // When we perform destructuring assignment, we disable default match bindings, which are
+        // unintuitive in this context.
+        if !pat.default_binding_modes {
+            return AdjustMode::Reset;
+        }
         match &pat.kind {
             // Type checking these product-like types successfully always require
             // that the expected type be of those types and not reference types.
@@ -393,6 +397,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             if let ty::Ref(_, inner_ty, _) = expected.kind() {
                 if matches!(inner_ty.kind(), ty::Slice(_)) {
                     let tcx = self.tcx;
+                    trace!(?lt.hir_id.local_id, "polymorphic byte string lit");
+                    self.typeck_results
+                        .borrow_mut()
+                        .treat_byte_string_as_slice
+                        .insert(lt.hir_id.local_id);
                     pat_ty = tcx.mk_imm_ref(tcx.lifetimes.re_static, tcx.mk_slice(tcx.types.u8));
                 }
             }
@@ -1381,7 +1390,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Returns a diagnostic reporting a struct pattern which is missing an `..` due to
     /// inaccessible fields.
     ///
-    /// ```ignore (diagnostic)
+    /// ```text
     /// error: pattern requires `..` due to inaccessible fields
     ///   --> src/main.rs:10:9
     ///    |
@@ -1431,7 +1440,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
     /// Returns a diagnostic reporting a struct pattern which does not mention some fields.
     ///
-    /// ```ignore (diagnostic)
+    /// ```text
     /// error[E0027]: pattern does not mention field `you_cant_use_this_field`
     ///   --> src/main.rs:15:9
     ///    |
@@ -1500,7 +1509,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         err.span_suggestion(
             sp,
             &format!(
-                "if you don't care about {} missing field{}, you can explicitely ignore {}",
+                "if you don't care about {} missing field{}, you can explicitly ignore {}",
                 if len == 1 { "this" } else { "these" },
                 if len == 1 { "" } else { "s" },
                 if len == 1 { "it" } else { "them" },

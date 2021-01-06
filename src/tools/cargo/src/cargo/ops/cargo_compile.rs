@@ -24,7 +24,6 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::{Hash, Hasher};
-use std::iter::FromIterator;
 use std::sync::Arc;
 
 use crate::core::compiler::standard_lib;
@@ -41,7 +40,10 @@ use crate::core::{PackageId, PackageIdSpec, TargetKind, Workspace};
 use crate::ops;
 use crate::ops::resolve::WorkspaceResolve;
 use crate::util::config::Config;
+use crate::util::restricted_names::is_glob_pattern;
 use crate::util::{closest_msg, profile, CargoResult, StableHasher};
+
+use anyhow::Context as _;
 
 /// Contains information about how a package should be compiled.
 ///
@@ -116,6 +118,7 @@ impl Packages {
         })
     }
 
+    /// Converts selected packages from a workspace to `PackageIdSpec`s.
     pub fn to_package_id_specs(&self, ws: &Workspace<'_>) -> CargoResult<Vec<PackageIdSpec>> {
         let specs = match self {
             Packages::All => ws
@@ -124,33 +127,40 @@ impl Packages {
                 .map(PackageIdSpec::from_package_id)
                 .collect(),
             Packages::OptOut(opt_out) => {
-                let mut opt_out = BTreeSet::from_iter(opt_out.iter().cloned());
-                let packages = ws
+                let (mut patterns, mut names) = opt_patterns_and_names(opt_out)?;
+                let specs = ws
                     .members()
-                    .filter(|pkg| !opt_out.remove(pkg.name().as_str()))
+                    .filter(|pkg| {
+                        !names.remove(pkg.name().as_str()) && !match_patterns(pkg, &mut patterns)
+                    })
                     .map(Package::package_id)
                     .map(PackageIdSpec::from_package_id)
                     .collect();
-                if !opt_out.is_empty() {
-                    ws.config().shell().warn(format!(
-                        "excluded package(s) {} not found in workspace `{}`",
-                        opt_out
-                            .iter()
-                            .map(|x| x.as_ref())
-                            .collect::<Vec<_>>()
-                            .join(", "),
-                        ws.root().display(),
-                    ))?;
-                }
-                packages
+                let warn = |e| ws.config().shell().warn(e);
+                emit_package_not_found(ws, names, true).or_else(warn)?;
+                emit_pattern_not_found(ws, patterns, true).or_else(warn)?;
+                specs
             }
             Packages::Packages(packages) if packages.is_empty() => {
                 vec![PackageIdSpec::from_package_id(ws.current()?.package_id())]
             }
-            Packages::Packages(packages) => packages
-                .iter()
-                .map(|p| PackageIdSpec::parse(p))
-                .collect::<CargoResult<Vec<_>>>()?,
+            Packages::Packages(opt_in) => {
+                let (mut patterns, packages) = opt_patterns_and_names(opt_in)?;
+                let mut specs = packages
+                    .iter()
+                    .map(|p| PackageIdSpec::parse(p))
+                    .collect::<CargoResult<Vec<_>>>()?;
+                if !patterns.is_empty() {
+                    let matched_pkgs = ws
+                        .members()
+                        .filter(|pkg| match_patterns(pkg, &mut patterns))
+                        .map(Package::package_id)
+                        .map(PackageIdSpec::from_package_id);
+                    specs.extend(matched_pkgs);
+                }
+                emit_pattern_not_found(ws, patterns, false)?;
+                specs
+            }
             Packages::Default => ws
                 .default_members()
                 .map(Package::package_id)
@@ -170,27 +180,35 @@ impl Packages {
         Ok(specs)
     }
 
+    /// Gets a list of selected packages from a workspace.
     pub fn get_packages<'ws>(&self, ws: &'ws Workspace<'_>) -> CargoResult<Vec<&'ws Package>> {
         let packages: Vec<_> = match self {
             Packages::Default => ws.default_members().collect(),
             Packages::All => ws.members().collect(),
-            Packages::OptOut(opt_out) => ws
-                .members()
-                .filter(|pkg| !opt_out.iter().any(|name| pkg.name().as_str() == name))
-                .collect(),
-            Packages::Packages(packages) => packages
-                .iter()
-                .map(|name| {
-                    ws.members()
-                        .find(|pkg| pkg.name().as_str() == name)
-                        .ok_or_else(|| {
-                            anyhow::format_err!(
-                                "package `{}` is not a member of the workspace",
-                                name
-                            )
-                        })
-                })
-                .collect::<CargoResult<Vec<_>>>()?,
+            Packages::OptOut(opt_out) => {
+                let (mut patterns, mut names) = opt_patterns_and_names(opt_out)?;
+                let packages = ws
+                    .members()
+                    .filter(|pkg| {
+                        !names.remove(pkg.name().as_str()) && !match_patterns(pkg, &mut patterns)
+                    })
+                    .collect();
+                emit_package_not_found(ws, names, true)?;
+                emit_pattern_not_found(ws, patterns, true)?;
+                packages
+            }
+            Packages::Packages(opt_in) => {
+                let (mut patterns, mut names) = opt_patterns_and_names(opt_in)?;
+                let packages = ws
+                    .members()
+                    .filter(|pkg| {
+                        names.remove(pkg.name().as_str()) || match_patterns(pkg, &mut patterns)
+                    })
+                    .collect();
+                emit_package_not_found(ws, names, false)?;
+                emit_pattern_not_found(ws, patterns, false)?;
+                packages
+            }
         };
         Ok(packages)
     }
@@ -406,7 +424,7 @@ pub fn create_bcx<'a, 'cfg>(
         ws.profiles(),
         config,
         build_config.requested_profile,
-        ws.features(),
+        ws.unstable_features(),
     )?;
     profiles.validate_packages(
         ws.profiles(),
@@ -577,6 +595,13 @@ impl FilterRule {
             FilterRule::Just(ref targets) => Some(targets.clone()),
         }
     }
+
+    pub(crate) fn contains_glob_patterns(&self) -> bool {
+        match self {
+            FilterRule::All => false,
+            FilterRule::Just(targets) => targets.iter().any(is_glob_pattern),
+        }
+    }
 }
 
 impl CompileFilter {
@@ -704,6 +729,24 @@ impl CompileFilter {
         match *self {
             CompileFilter::Default { .. } => false,
             CompileFilter::Only { .. } => true,
+        }
+    }
+
+    pub(crate) fn contains_glob_patterns(&self) -> bool {
+        match self {
+            CompileFilter::Default { .. } => false,
+            CompileFilter::Only {
+                bins,
+                examples,
+                tests,
+                benches,
+                ..
+            } => {
+                bins.contains_glob_patterns()
+                    || examples.contains_glob_patterns()
+                    || tests.contains_glob_patterns()
+                    || benches.contains_glob_patterns()
+            }
         }
     }
 }
@@ -963,8 +1006,9 @@ fn generate_targets(
     {
         let unavailable_features = match target.required_features() {
             Some(rf) => {
-                warn_on_missing_features(
+                validate_required_features(
                     workspace_resolve,
+                    target.name(),
                     rf,
                     pkg.summary(),
                     &mut config.shell(),
@@ -999,8 +1043,13 @@ fn generate_targets(
     Ok(units.into_iter().collect())
 }
 
-fn warn_on_missing_features(
+/// Warns if a target's required-features references a feature that doesn't exist.
+///
+/// This is a warning because historically this was not validated, and it
+/// would cause too much breakage to make it an error.
+fn validate_required_features(
     resolve: &Option<Resolve>,
+    target_name: &str,
     required_features: &[String],
     summary: &Summary,
     shell: &mut Shell,
@@ -1011,47 +1060,67 @@ fn warn_on_missing_features(
     };
 
     for feature in required_features {
-        match FeatureValue::new(feature.into(), summary) {
-            // No need to do anything here, since the feature must exist to be parsed as such
-            FeatureValue::Feature(_) => {}
-            // Possibly mislabeled feature that was not found
-            FeatureValue::Crate(krate) => {
-                if !summary
-                    .dependencies()
-                    .iter()
-                    .any(|dep| dep.name_in_toml() == krate && dep.is_optional())
-                {
+        let fv = FeatureValue::new(feature.into());
+        match &fv {
+            FeatureValue::Feature(f) => {
+                if !summary.features().contains_key(f) {
                     shell.warn(format!(
-                        "feature `{}` is not present in [features] section.",
-                        krate
+                        "invalid feature `{}` in required-features of target `{}`: \
+                        `{}` is not present in [features] section",
+                        fv, target_name, fv
                     ))?;
                 }
             }
+            FeatureValue::Dep { .. }
+            | FeatureValue::DepFeature {
+                dep_prefix: true, ..
+            } => {
+                anyhow::bail!(
+                    "invalid feature `{}` in required-features of target `{}`: \
+                    `dep:` prefixed feature values are not allowed in required-features",
+                    fv,
+                    target_name
+                );
+            }
+            FeatureValue::DepFeature { weak: true, .. } => {
+                anyhow::bail!(
+                    "invalid feature `{}` in required-features of target `{}`: \
+                    optional dependency with `?` is not allowed in required-features",
+                    fv,
+                    target_name
+                );
+            }
             // Handling of dependent_crate/dependent_crate_feature syntax
-            FeatureValue::CrateFeature(krate, feature) => {
+            FeatureValue::DepFeature {
+                dep_name,
+                dep_feature,
+                dep_prefix: false,
+                weak: false,
+            } => {
                 match resolve
                     .deps(summary.package_id())
-                    .find(|(_dep_id, deps)| deps.iter().any(|dep| dep.name_in_toml() == krate))
+                    .find(|(_dep_id, deps)| deps.iter().any(|dep| dep.name_in_toml() == *dep_name))
                 {
                     Some((dep_id, _deps)) => {
                         let dep_summary = resolve.summary(dep_id);
-                        if !dep_summary.features().contains_key(&feature)
+                        if !dep_summary.features().contains_key(dep_feature)
                             && !dep_summary
                                 .dependencies()
                                 .iter()
-                                .any(|dep| dep.name_in_toml() == feature && dep.is_optional())
+                                .any(|dep| dep.name_in_toml() == *dep_feature && dep.is_optional())
                         {
                             shell.warn(format!(
-                                "feature `{}` does not exist in package `{}`.",
-                                feature, dep_id
+                                "invalid feature `{}` in required-features of target `{}`: \
+                                feature `{}` does not exist in package `{}`",
+                                fv, target_name, dep_feature, dep_id
                             ))?;
                         }
                     }
                     None => {
                         shell.warn(format!(
-                            "dependency `{}` specified in required-features as `{}/{}` \
-                             does not exist.",
-                            krate, krate, feature
+                            "invalid feature `{}` in required-features of target `{}`: \
+                            dependency `{}` does not exist",
+                            fv, target_name, dep_name
                         ))?;
                     }
                 }
@@ -1163,8 +1232,16 @@ fn find_named_targets<'a>(
     is_expected_kind: fn(&Target) -> bool,
     mode: CompileMode,
 ) -> CargoResult<Vec<Proposal<'a>>> {
-    let filter = |t: &Target| t.name() == target_name && is_expected_kind(t);
-    let proposals = filter_targets(packages, filter, true, mode);
+    let is_glob = is_glob_pattern(target_name);
+    let proposals = if is_glob {
+        let pattern = build_glob(target_name)?;
+        let filter = |t: &Target| is_expected_kind(t) && pattern.matches(t.name());
+        filter_targets(packages, filter, true, mode)
+    } else {
+        let filter = |t: &Target| t.name() == target_name && is_expected_kind(t);
+        filter_targets(packages, filter, true, mode)
+    };
+
     if proposals.is_empty() {
         let targets = packages.iter().flat_map(|pkg| {
             pkg.targets()
@@ -1173,8 +1250,9 @@ fn find_named_targets<'a>(
         });
         let suggestion = closest_msg(target_name, targets, |t| t.name());
         anyhow::bail!(
-            "no {} target named `{}`{}",
+            "no {} target {} `{}`{}",
             target_desc,
+            if is_glob { "matches pattern" } else { "named" },
             target_name,
             suggestion
         );
@@ -1290,4 +1368,87 @@ fn traverse_and_share(
     assert!(memo.insert(unit.clone(), new_unit.clone()).is_none());
     new_graph.entry(new_unit.clone()).or_insert(new_deps);
     new_unit
+}
+
+/// Build `glob::Pattern` with informative context.
+fn build_glob(pat: &str) -> CargoResult<glob::Pattern> {
+    glob::Pattern::new(pat).with_context(|| format!("cannot build glob pattern from `{}`", pat))
+}
+
+/// Emits "package not found" error.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn emit_package_not_found(
+    ws: &Workspace<'_>,
+    opt_names: BTreeSet<&str>,
+    opt_out: bool,
+) -> CargoResult<()> {
+    if !opt_names.is_empty() {
+        anyhow::bail!(
+            "{}package(s) `{}` not found in workspace `{}`",
+            if opt_out { "excluded " } else { "" },
+            opt_names.into_iter().collect::<Vec<_>>().join(", "),
+            ws.root().display(),
+        )
+    }
+    Ok(())
+}
+
+/// Emits "glob pattern not found" error.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn emit_pattern_not_found(
+    ws: &Workspace<'_>,
+    opt_patterns: Vec<(glob::Pattern, bool)>,
+    opt_out: bool,
+) -> CargoResult<()> {
+    let not_matched = opt_patterns
+        .iter()
+        .filter(|(_, matched)| !*matched)
+        .map(|(pat, _)| pat.as_str())
+        .collect::<Vec<_>>();
+    if !not_matched.is_empty() {
+        anyhow::bail!(
+            "{}package pattern(s) `{}` not found in workspace `{}`",
+            if opt_out { "excluded " } else { "" },
+            not_matched.join(", "),
+            ws.root().display(),
+        )
+    }
+    Ok(())
+}
+
+/// Checks whether a package matches any of a list of glob patterns generated
+/// from `opt_patterns_and_names`.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn match_patterns(pkg: &Package, patterns: &mut Vec<(glob::Pattern, bool)>) -> bool {
+    patterns.iter_mut().any(|(m, matched)| {
+        let is_matched = m.matches(pkg.name().as_str());
+        *matched |= is_matched;
+        is_matched
+    })
+}
+
+/// Given a list opt-in or opt-out package selection strings, generates two
+/// collections that represent glob patterns and package names respectively.
+///
+/// > This function should be used only in package selection processes such like
+/// `Packages::to_package_id_specs` and `Packages::get_packages`.
+fn opt_patterns_and_names(
+    opt: &[String],
+) -> CargoResult<(Vec<(glob::Pattern, bool)>, BTreeSet<&str>)> {
+    let mut opt_patterns = Vec::new();
+    let mut opt_names = BTreeSet::new();
+    for x in opt.iter() {
+        if is_glob_pattern(x) {
+            opt_patterns.push((build_glob(x)?, false));
+        } else {
+            opt_names.insert(String::as_str(x));
+        }
+    }
+    Ok((opt_patterns, opt_names))
 }

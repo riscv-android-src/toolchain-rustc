@@ -81,18 +81,15 @@ impl<'t, I: Interner> Unifier<'t, I> {
 
         debug_span!("unify_ty_ty", ?a, ?b);
 
-        match (a.data(interner), b.data(interner)) {
+        match (a.kind(interner), b.kind(interner)) {
             // Unifying two inference variables: unify them in the underlying
             // ena table.
-            (
-                &TyData::InferenceVar(var1, kind1),
-                &TyData::InferenceVar(var2, kind2),
-            ) => {
+            (&TyKind::InferenceVar(var1, kind1), &TyKind::InferenceVar(var2, kind2)) => {
                 if kind1 == kind2 {
                     self.unify_var_var(var1, var2)
-                } else if kind1 == TyKind::General {
+                } else if kind1 == TyVariableKind::General {
                     self.unify_general_var_specific_ty(var1, b.clone())
-                } else if kind2 == TyKind::General {
+                } else if kind2 == TyVariableKind::General {
                     self.unify_general_var_specific_ty(var2, a.clone())
                 } else {
                     debug!(
@@ -103,32 +100,8 @@ impl<'t, I: Interner> Unifier<'t, I> {
                 }
             }
 
-            // Unifying an inference variable with a non-inference variable.
-            (&TyData::InferenceVar(var, kind), ty_data @ &TyData::Apply(_))
-            | (&TyData::InferenceVar(var, kind), ty_data @ &TyData::Placeholder(_))
-            | (&TyData::InferenceVar(var, kind), ty_data @ &TyData::Dyn(_))
-            | (&TyData::InferenceVar(var, kind), ty_data @ &TyData::Function(_))
-            // The reflexive matches
-            | (ty_data @ &TyData::Apply(_), &TyData::InferenceVar(var, kind))
-            | (ty_data @ &TyData::Placeholder(_), &TyData::InferenceVar(var, kind))
-            | (ty_data @ &TyData::Dyn(_), &TyData::InferenceVar(var, kind))
-            | (ty_data @ &TyData::Function(_), &TyData::InferenceVar(var, kind))
-            => {
-                let ty = ty_data.clone().intern(interner);
-
-                match (kind, ty.is_integer(interner), ty.is_float(interner)) {
-                    // General inference variables can unify with any type
-                    (TyKind::General, _, _)
-                    // Integer inference variables can only unify with integer types
-                    | (TyKind::Integer, true, _)
-                    // Float inference variables can only unify with float types
-                    | (TyKind::Float, _, true) => self.unify_var_ty(var, &ty),
-                    _ => Err(NoSolution),
-                }
-            }
-
             // Unifying `forall<X> { T }` with some other forall type `forall<X> { U }`
-            (&TyData::Function(ref fn1), &TyData::Function(ref fn2)) => {
+            (&TyKind::Function(ref fn1), &TyKind::Function(ref fn2)) => {
                 if fn1.sig == fn2.sig {
                     self.unify_binders(fn1, fn2)
                 } else {
@@ -136,54 +109,116 @@ impl<'t, I: Interner> Unifier<'t, I> {
                 }
             }
 
-            // This would correspond to unifying a `fn` type with a non-fn
-            // type in Rust; error.
-            (&TyData::Function(_), &TyData::Apply(_))
-            | (&TyData::Function(_), &TyData::Dyn(_))
-            | (&TyData::Function(_), &TyData::Placeholder(_))
-            | (&TyData::Apply(_), &TyData::Function(_))
-            | (&TyData::Placeholder(_), &TyData::Function(_))
-            | (&TyData::Dyn(_), &TyData::Function(_)) => Err(NoSolution),
-
-            (&TyData::Placeholder(ref p1), &TyData::Placeholder(ref p2)) => {
+            (&TyKind::Placeholder(ref p1), &TyKind::Placeholder(ref p2)) => {
                 Zip::zip_with(self, p1, p2)
             }
 
-            (&TyData::Apply(ref apply1), &TyData::Apply(ref apply2)) => {
-                Zip::zip_with(self, apply1, apply2)
-            }
-
-            // Cannot unify (e.g.) some struct type `Foo` and a placeholder like `T`
-            (&TyData::Apply(_), &TyData::Placeholder(_))
-            | (&TyData::Placeholder(_), &TyData::Apply(_)) => Err(NoSolution),
-
-            // Cannot unify `dyn Trait` with things like structs or placeholders
-            (&TyData::Placeholder(_), &TyData::Dyn(_))
-            | (&TyData::Dyn(_), &TyData::Placeholder(_))
-            | (&TyData::Apply(_), &TyData::Dyn(_))
-            | (&TyData::Dyn(_), &TyData::Apply(_)) => Err(NoSolution),
-
             // Unifying two dyn is possible if they have the same bounds.
-            (&TyData::Dyn(ref qwc1), &TyData::Dyn(ref qwc2)) => Zip::zip_with(self, qwc1, qwc2),
+            (&TyKind::Dyn(ref qwc1), &TyKind::Dyn(ref qwc2)) => Zip::zip_with(self, qwc1, qwc2),
 
-            // Unifying an alias type with some other type `U`.
-            (&TyData::Apply(_), &TyData::Alias(ref alias))
-            | (&TyData::Placeholder(_), &TyData::Alias(ref alias))
-            | (&TyData::Function(_), &TyData::Alias(ref alias))
-            | (&TyData::InferenceVar(_, _), &TyData::Alias(ref alias))
-            | (&TyData::Dyn(_), &TyData::Alias(ref alias)) => self.unify_alias_ty(alias, a),
-
-            (&TyData::Alias(ref alias), &TyData::Alias(_))
-            | (&TyData::Alias(ref alias), &TyData::Apply(_))
-            | (&TyData::Alias(ref alias), &TyData::Placeholder(_))
-            | (&TyData::Alias(ref alias), &TyData::Function(_))
-            | (&TyData::Alias(ref alias), &TyData::InferenceVar(_, _))
-            | (&TyData::Alias(ref alias), &TyData::Dyn(_)) => self.unify_alias_ty(alias, b),
-
-            (TyData::BoundVar(_), _) | (_, TyData::BoundVar(_)) => panic!(
+            (TyKind::BoundVar(_), _) | (_, TyKind::BoundVar(_)) => panic!(
                 "unification encountered bound variable: a={:?} b={:?}",
                 a, b
             ),
+
+            // Unifying an alias type with some other type `U`.
+            (_, &TyKind::Alias(ref alias)) => self.unify_alias_ty(alias, a),
+            (&TyKind::Alias(ref alias), _) => self.unify_alias_ty(alias, b),
+
+            // Unifying an inference variable with a non-inference variable.
+            (&TyKind::InferenceVar(var, kind), ty_data @ _)
+            | (ty_data @ _, &TyKind::InferenceVar(var, kind)) => {
+                let ty = ty_data.clone().intern(interner);
+
+                match (kind, ty.is_integer(interner), ty.is_float(interner)) {
+                    // General inference variables can unify with any type
+                    (TyVariableKind::General, _, _)
+                    // Integer inference variables can only unify with integer types
+                    | (TyVariableKind::Integer, true, _)
+                    // Float inference variables can only unify with float types
+                    | (TyVariableKind::Float, _, true) => self.unify_var_ty(var, &ty),
+                    _ => Err(NoSolution),
+                }
+            }
+
+            // This would correspond to unifying a `fn` type with a non-fn
+            // type in Rust; error.
+            (&TyKind::Function(_), _) | (_, &TyKind::Function(_)) => Err(NoSolution),
+
+            // Cannot unify (e.g.) some struct type `Foo` and a placeholder like `T`
+            (_, &TyKind::Placeholder(_)) | (&TyKind::Placeholder(_), _) => Err(NoSolution),
+
+            // Cannot unify `dyn Trait` with things like structs or placeholders
+            (_, &TyKind::Dyn(_)) | (&TyKind::Dyn(_), _) => Err(NoSolution),
+
+            (TyKind::Adt(id_a, substitution_a), TyKind::Adt(id_b, substitution_b)) => {
+                Zip::zip_with(self, id_a, id_b)?;
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (
+                TyKind::AssociatedType(assoc_ty_a, substitution_a),
+                TyKind::AssociatedType(assoc_ty_b, substitution_b),
+            ) => {
+                Zip::zip_with(self, assoc_ty_a, assoc_ty_b)?;
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (TyKind::Scalar(scalar_a), TyKind::Scalar(scalar_b)) => {
+                Zip::zip_with(self, scalar_a, scalar_b)
+            }
+            (TyKind::Str, TyKind::Str) => Ok(()),
+            (TyKind::Tuple(_arity_a, substitution_a), TyKind::Tuple(_arity_b, substitution_b)) => {
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (
+                TyKind::OpaqueType(opaque_ty_a, substitution_a),
+                TyKind::OpaqueType(opaque_ty_b, substitution_b),
+            ) => {
+                Zip::zip_with(self, opaque_ty_a, opaque_ty_b)?;
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (TyKind::Slice(substitution_a), TyKind::Slice(substitution_b)) => {
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (TyKind::FnDef(fn_def_a, substitution_a), TyKind::FnDef(fn_def_b, substitution_b)) => {
+                Zip::zip_with(self, fn_def_a, fn_def_b)?;
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (
+                TyKind::Ref(mutability_a, lifetime_a, ty_a),
+                TyKind::Ref(mutability_b, lifetime_b, ty_b),
+            ) => {
+                Zip::zip_with(self, mutability_a, mutability_b)?;
+                Zip::zip_with(self, lifetime_a, lifetime_b)?;
+                Zip::zip_with(self, ty_a, ty_b)
+            }
+            (TyKind::Raw(mutability_a, ty_a), TyKind::Raw(mutability_b, ty_b)) => {
+                Zip::zip_with(self, mutability_a, mutability_b)?;
+                Zip::zip_with(self, ty_a, ty_b)
+            }
+            (TyKind::Never, TyKind::Never) => Ok(()),
+            (TyKind::Array(ty_a, const_a), TyKind::Array(ty_b, const_b)) => {
+                Zip::zip_with(self, ty_a, ty_b)?;
+                Zip::zip_with(self, const_a, const_b)
+            }
+            (TyKind::Closure(id_a, substitution_a), TyKind::Closure(id_b, substitution_b)) => {
+                Zip::zip_with(self, id_a, id_b)?;
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (TyKind::Generator(id_a, substitution_a), TyKind::Generator(id_b, substitution_b)) => {
+                Zip::zip_with(self, id_a, id_b)?;
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (
+                TyKind::GeneratorWitness(id_a, substitution_a),
+                TyKind::GeneratorWitness(id_b, substitution_b),
+            ) => {
+                Zip::zip_with(self, id_a, id_b)?;
+                Zip::zip_with(self, substitution_a, substitution_b)
+            }
+            (TyKind::Foreign(id_a), TyKind::Foreign(id_b)) => Zip::zip_with(self, id_a, id_b),
+            (TyKind::Error, TyKind::Error) => Ok(()),
+
+            (_, _) => Err(NoSolution),
         }
     }
 
@@ -200,8 +235,8 @@ impl<'t, I: Interner> Unifier<'t, I> {
     }
 
     /// Unify a general inference variable with a specific inference variable
-    /// (type kind is not `General`). For example, unify a `TyKind::General`
-    /// inference variable with a `TyKind::Integer` variable, resulting in the
+    /// (type kind is not `General`). For example, unify a `TyVariableKind::General`
+    /// inference variable with a `TyVariableKind::Integer` variable, resulting in the
     /// general inference variable narrowing to an integer variable.
 
     #[instrument(level = "debug", skip(self))]
@@ -333,7 +368,19 @@ impl<'t, I: Interner> Unifier<'t, I> {
                 self.unify_lifetime_var(a, b, b_var, a, a_idx.ui)
             }
 
-            (&LifetimeData::Placeholder(_), &LifetimeData::Placeholder(_)) => {
+            (&LifetimeData::InferenceVar(a_var), &LifetimeData::Static) => {
+                self.unify_lifetime_var(a, b, a_var, b, UniverseIndex::root())
+            }
+
+            (&LifetimeData::Static, &LifetimeData::InferenceVar(b_var)) => {
+                self.unify_lifetime_var(a, b, b_var, a, UniverseIndex::root())
+            }
+
+            (&LifetimeData::Static, &LifetimeData::Static) => Ok(()),
+
+            (&LifetimeData::Static, &LifetimeData::Placeholder(_))
+            | (&LifetimeData::Placeholder(_), &LifetimeData::Static)
+            | (&LifetimeData::Placeholder(_), &LifetimeData::Placeholder(_)) => {
                 if a != b {
                     Ok(self.push_lifetime_eq_goals(a.clone(), b.clone()))
                 } else {
@@ -618,7 +665,7 @@ where
     fn fold_inference_ty(
         &mut self,
         var: InferenceVar,
-        kind: TyKind,
+        kind: TyVariableKind,
         _outer_binder: DebruijnIndex,
     ) -> Fallible<Ty<I>> {
         let interner = self.interner();

@@ -1,8 +1,7 @@
 extern crate cc;
 
 use std::env;
-use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -158,6 +157,7 @@ impl Build {
         }
 
         let os = match target {
+            "aarch64-apple-darwin" => "darwin64-arm64-cc",
             // Note that this, and all other android targets, aren't using the
             // `android64-aarch64` (or equivalent) builtin target. That
             // apparently has a crazy amount of build logic in OpenSSL 1.1.1
@@ -179,6 +179,8 @@ impl Build {
             "armv7-unknown-linux-gnueabihf" => "linux-armv4",
             "armv7-unknown-linux-musleabihf" => "linux-armv4",
             "asmjs-unknown-emscripten" => "gcc",
+            "i586-unknown-linux-gnu" => "linux-elf",
+            "i586-unknown-linux-musl" => "linux-elf",
             "i686-apple-darwin" => "darwin-i386-cc",
             "i686-linux-android" => "linux-elf",
             "i686-pc-windows-gnu" => "mingw",
@@ -195,6 +197,7 @@ impl Build {
             "powerpc-unknown-linux-gnu" => "linux-ppc",
             "powerpc64-unknown-freebsd" => "BSD-generic64",
             "powerpc64-unknown-linux-gnu" => "linux-ppc64",
+            "powerpc64le-unknown-freebsd" => "BSD-generic64",
             "powerpc64le-unknown-linux-gnu" => "linux-ppc64le",
             "riscv64gc-unknown-linux-gnu" => "linux-generic64",
             "s390x-unknown-linux-gnu" => "linux64-s390x",
@@ -447,24 +450,59 @@ fn cp_r(src: &Path, dst: &Path) {
 }
 
 fn apply_patches(target: &str, inner: &Path) {
+    apply_patches_musl(target, inner);
+    apply_patches_aarch64_apple_darwin(target, inner);
+}
+
+fn apply_patches_musl(target: &str, inner: &Path) {
     if !target.contains("musl") {
         return;
     }
 
     // Undo part of https://github.com/openssl/openssl/commit/c352bd07ed2ff872876534c950a6968d75ef121e on MUSL
     // since it doesn't have asm/unistd.h
-    let mut buf = String::new();
     let path = inner.join("crypto/rand/rand_unix.c");
-    File::open(&path).unwrap().read_to_string(&mut buf).unwrap();
+    let buf = fs::read_to_string(&path).unwrap();
 
     let buf = buf
         .replace("asm/unistd.h", "sys/syscall.h")
         .replace("__NR_getrandom", "SYS_getrandom");
 
-    File::create(&path)
-        .unwrap()
-        .write_all(buf.as_bytes())
-        .unwrap();
+    fs::write(path, buf).unwrap();
+}
+
+fn apply_patches_aarch64_apple_darwin(target: &str, inner: &Path) {
+    if target != "aarch64-apple-darwin" {
+        return;
+    }
+
+    // Apply build system changes to allow configuring and building
+    // for Apple's ARM64 platform.
+    // https://github.com/openssl/openssl/pull/12369
+
+    let path = inner.join("Configurations/10-main.conf");
+    let mut buf = fs::read_to_string(&path).unwrap();
+
+    assert!(
+        !buf.contains("darwin64-arm64-cc"),
+        "{} already contains instructions for aarch64-apple-darwin",
+        path.display(),
+    );
+
+    const PATCH: &str = r#"
+    "darwin64-arm64-cc" => {
+        inherit_from     => [ "darwin-common", asm("aarch64_asm") ],
+        CFLAGS           => add("-Wall"),
+        cflags           => add("-arch arm64"),
+        lib_cppflags     => add("-DL_ENDIAN"),
+        bn_ops           => "SIXTY_FOUR_BIT_LONG",
+        perlasm_scheme   => "ios64",
+    },"#;
+
+    let x86_64_stanza = buf.find(r#"    "darwin64-x86_64-cc""#).unwrap();
+    buf.insert_str(x86_64_stanza, PATCH);
+
+    fs::write(path, buf).unwrap();
 }
 
 fn sanitize_sh(path: &Path) -> String {

@@ -313,27 +313,6 @@ impl<'a, 'tcx> TyDecoder<'tcx> for DecodeContext<'a, 'tcx> {
         Ok(ty)
     }
 
-    fn cached_predicate_for_shorthand<F>(
-        &mut self,
-        shorthand: usize,
-        or_insert_with: F,
-    ) -> Result<ty::Predicate<'tcx>, Self::Error>
-    where
-        F: FnOnce(&mut Self) -> Result<ty::Predicate<'tcx>, Self::Error>,
-    {
-        let tcx = self.tcx();
-
-        let key = ty::CReaderCacheKey { cnum: self.cdata().cnum, pos: shorthand };
-
-        if let Some(&pred) = tcx.pred_rcache.borrow().get(&key) {
-            return Ok(pred);
-        }
-
-        let pred = or_insert_with(self)?;
-        tcx.pred_rcache.borrow_mut().insert(key, pred);
-        Ok(pred)
-    }
-
     fn with_position<F, R>(&mut self, pos: usize, f: F) -> R
     where
         F: FnOnce(&mut Self) -> R,
@@ -877,7 +856,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                 .tables
                 .children
                 .get(self, index)
-                .unwrap_or(Lazy::empty())
+                .unwrap_or_else(Lazy::empty)
                 .decode(self)
                 .map(|index| ty::FieldDef {
                     did: self.local_def_id(index),
@@ -909,7 +888,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                 .tables
                 .children
                 .get(self, item_id)
-                .unwrap_or(Lazy::empty())
+                .unwrap_or_else(Lazy::empty)
                 .decode(self)
                 .map(|index| self.get_variant(&self.kind(index), index, did, tcx.sess))
                 .collect()
@@ -937,7 +916,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             .tables
             .inferred_outlives
             .get(self, item_id)
-            .map(|predicates| predicates.decode((self, tcx)))
+            .map(|predicates| tcx.arena.alloc_from_iter(predicates.decode((self, tcx))))
             .unwrap_or_default()
     }
 
@@ -947,6 +926,19 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         tcx: TyCtxt<'tcx>,
     ) -> ty::GenericPredicates<'tcx> {
         self.root.tables.super_predicates.get(self, item_id).unwrap().decode((self, tcx))
+    }
+
+    fn get_explicit_item_bounds(
+        &self,
+        item_id: DefIndex,
+        tcx: TyCtxt<'tcx>,
+    ) -> &'tcx [(ty::Predicate<'tcx>, Span)] {
+        self.root
+            .tables
+            .explicit_item_bounds
+            .get(self, item_id)
+            .map(|bounds| tcx.arena.alloc_from_iter(bounds.decode((self, tcx))))
+            .unwrap_or_default()
     }
 
     fn get_generics(&self, item_id: DefIndex, sess: &Session) -> ty::Generics {
@@ -1009,6 +1001,10 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
 
     fn get_impl_trait(&self, id: DefIndex, tcx: TyCtxt<'tcx>) -> Option<ty::TraitRef<'tcx>> {
         self.root.tables.impl_trait_ref.get(self, id).map(|tr| tr.decode((self, tcx)))
+    }
+
+    fn get_expn_that_defined(&self, id: DefIndex, sess: &Session) -> ExpnId {
+        self.root.tables.expn_that_defined.get(self, id).unwrap().decode((self, sess))
     }
 
     /// Iterates over all the stability attributes in the given crate.
@@ -1079,7 +1075,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
 
         // Iterate over all children.
         let macros_only = self.dep_kind.lock().macros_only();
-        let children = self.root.tables.children.get(self, id).unwrap_or(Lazy::empty());
+        let children = self.root.tables.children.get(self, id).unwrap_or_else(Lazy::empty);
         for child_index in children.decode((self, sess)) {
             if macros_only {
                 continue;
@@ -1102,7 +1098,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                             .tables
                             .children
                             .get(self, child_index)
-                            .unwrap_or(Lazy::empty());
+                            .unwrap_or_else(Lazy::empty);
                         for child_index in child_children.decode((self, sess)) {
                             let kind = self.def_kind(child_index);
                             callback(Export {
@@ -1288,7 +1284,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
     }
 
     fn get_item_variances(&self, id: DefIndex) -> Vec<ty::Variance> {
-        self.root.tables.variances.get(self, id).unwrap_or(Lazy::empty()).decode(self).collect()
+        self.root.tables.variances.get(self, id).unwrap_or_else(Lazy::empty).decode(self).collect()
     }
 
     fn get_ctor_kind(&self, node_id: DefIndex) -> CtorKind {
@@ -1327,7 +1323,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             .tables
             .attributes
             .get(self, item_id)
-            .unwrap_or(Lazy::empty())
+            .unwrap_or_else(Lazy::empty)
             .decode((self, sess))
             .collect::<Vec<_>>()
     }
@@ -1337,7 +1333,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
             .tables
             .children
             .get(self, id)
-            .unwrap_or(Lazy::empty())
+            .unwrap_or_else(Lazy::empty)
             .decode(self)
             .map(|index| respan(self.get_span(index, sess), self.item_ident(index, sess).name))
             .collect()
@@ -1353,7 +1349,7 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
                 .tables
                 .inherent_impls
                 .get(self, id)
-                .unwrap_or(Lazy::empty())
+                .unwrap_or_else(Lazy::empty)
                 .decode(self)
                 .map(|index| self.local_def_id(index)),
         )
@@ -1418,12 +1414,14 @@ impl<'a, 'tcx> CrateMetadataRef<'a> {
         }
     }
 
-    fn get_foreign_modules(&self, tcx: TyCtxt<'tcx>) -> &'tcx [ForeignModule] {
+    fn get_foreign_modules(&self, tcx: TyCtxt<'tcx>) -> Lrc<FxHashMap<DefId, ForeignModule>> {
         if self.root.is_proc_macro_crate() {
             // Proc macro crates do not have any *target* foreign modules.
-            &[]
+            Lrc::new(FxHashMap::default())
         } else {
-            tcx.arena.alloc_from_iter(self.root.foreign_modules.decode((self, tcx.sess)))
+            let modules: FxHashMap<DefId, ForeignModule> =
+                self.root.foreign_modules.decode((self, tcx.sess)).map(|m| (m.def_id, m)).collect();
+            Lrc::new(modules)
         }
     }
 

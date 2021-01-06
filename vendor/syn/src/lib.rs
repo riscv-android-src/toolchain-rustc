@@ -250,7 +250,7 @@
 //!   dynamic library libproc_macro from rustc toolchain.
 
 // Syn types in rustdoc of other crates get linked to here.
-#![doc(html_root_url = "https://docs.rs/syn/1.0.40")]
+#![doc(html_root_url = "https://docs.rs/syn/1.0.44")]
 #![deny(clippy::all, clippy::pedantic)]
 // Ignored clippy lints.
 #![allow(
@@ -261,6 +261,7 @@
     clippy::inherent_to_string,
     clippy::large_enum_variant,
     clippy::manual_non_exhaustive,
+    clippy::manual_strip,
     clippy::match_like_matches_macro,
     clippy::match_on_vec_items,
     clippy::needless_doctest_main,

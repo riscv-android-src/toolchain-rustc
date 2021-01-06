@@ -153,11 +153,11 @@ fn run_compiler(mut args: Vec<String>, callbacks: &mut (dyn rustc_driver::Callba
 
     // Some options have different defaults in Miri than in plain rustc; apply those by making
     // them the first arguments after the binary name (but later arguments can overwrite them).
-    args.splice(1..1, miri::miri_default_args().iter().map(ToString::to_string));
+    args.splice(1..1, miri::MIRI_DEFAULT_ARGS.iter().map(ToString::to_string));
 
     // Invoke compiler, and handle return code.
     let exit_code = rustc_driver::catch_with_exit_code(move || {
-        rustc_driver::run_compiler(&args, callbacks, None, None, None)
+        rustc_driver::RunCompiler::new(&args, callbacks).run()
     });
     std::process::exit(exit_code)
 }
@@ -207,6 +207,9 @@ fn main() {
                 "-Zmiri-ignore-leaks" => {
                     miri_config.ignore_leaks = true;
                 }
+                "-Zmiri-track-raw-pointers" => {
+                    miri_config.track_raw = true;
+                }
                 "--" => {
                     after_dashdash = true;
                 }
@@ -221,7 +224,7 @@ fn main() {
                             ),
                             FromHexError::OddLength =>
                                 panic!("-Zmiri-seed should have an even number of digits"),
-                            err => panic!("Unknown error decoding -Zmiri-seed as hex: {:?}", err),
+                            err => panic!("unknown error decoding -Zmiri-seed as hex: {:?}", err),
                         });
                     if seed_raw.len() > 8 {
                         panic!(format!(

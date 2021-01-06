@@ -10,9 +10,8 @@
 
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use build_helper::{output, t};
 
@@ -503,6 +502,19 @@ impl Step for Rustc {
                     }
                 }
             }
+
+            // Copy over the codegen backends
+            let backends_src = builder.sysroot_codegen_backends(compiler);
+            let backends_rel = backends_src
+                .strip_prefix(&src)
+                .unwrap()
+                .strip_prefix(builder.sysroot_libdir_relative(compiler))
+                .unwrap();
+            // Don't use custom libdir here because ^lib/ will be resolved again with installer
+            let backends_dst = image.join("lib").join(&backends_rel);
+
+            t!(fs::create_dir_all(&backends_dst));
+            builder.cp_r(&backends_src, &backends_dst);
 
             // Copy libLLVM.so to the lib dir as well, if needed. While not
             // technically needed by rustc itself it's needed by lots of other
@@ -1115,6 +1127,7 @@ impl Step for PlainSourceTarball {
             cmd.arg("vendor")
                 .arg("--sync")
                 .arg(builder.src.join("./src/tools/rust-analyzer/Cargo.toml"))
+                .arg(builder.src.join("./compiler/rustc_codegen_cranelift/Cargo.toml"))
                 .current_dir(&plain_dst_src);
             builder.run(&mut cmd);
         }
@@ -1301,7 +1314,13 @@ impl Step for Rls {
         let rls = builder
             .ensure(tool::Rls { compiler, target, extra_features: Vec::new() })
             .or_else(|| {
-                missing_tool("RLS", builder.build.config.missing_tools);
+                // We ignore failure on aarch64 Windows because RLS currently
+                // fails to build, due to winapi 0.2 not supporting aarch64.
+                missing_tool(
+                    "RLS",
+                    builder.build.config.missing_tools
+                        || (target.triple.contains("aarch64") && target.triple.contains("windows")),
+                );
                 None
             })?;
 
@@ -1575,13 +1594,13 @@ impl Step for Miri {
         let miri = builder
             .ensure(tool::Miri { compiler, target, extra_features: Vec::new() })
             .or_else(|| {
-                missing_tool("miri", true);
+                missing_tool("miri", builder.build.config.missing_tools);
                 None
             })?;
         let cargomiri = builder
             .ensure(tool::CargoMiri { compiler, target, extra_features: Vec::new() })
             .or_else(|| {
-                missing_tool("cargo miri", true);
+                missing_tool("cargo miri", builder.build.config.missing_tools);
                 None
             })?;
 
@@ -2309,61 +2328,6 @@ fn add_env(builder: &Builder<'_>, cmd: &mut Command, target: TargetSelection) {
     }
 }
 
-#[derive(Debug, PartialOrd, Ord, Copy, Clone, Hash, PartialEq, Eq)]
-pub struct HashSign;
-
-impl Step for HashSign {
-    type Output = ();
-    const ONLY_HOSTS: bool = true;
-
-    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
-        run.path("hash-and-sign")
-    }
-
-    fn make_run(run: RunConfig<'_>) {
-        run.builder.ensure(HashSign);
-    }
-
-    fn run(self, builder: &Builder<'_>) {
-        // This gets called by `promote-release`
-        // (https://github.com/rust-lang/rust-central-station/tree/master/promote-release).
-        let mut cmd = builder.tool_cmd(Tool::BuildManifest);
-        if builder.config.dry_run {
-            return;
-        }
-        let sign = builder.config.dist_sign_folder.as_ref().unwrap_or_else(|| {
-            panic!("\n\nfailed to specify `dist.sign-folder` in `config.toml`\n\n")
-        });
-        let addr = builder.config.dist_upload_addr.as_ref().unwrap_or_else(|| {
-            panic!("\n\nfailed to specify `dist.upload-addr` in `config.toml`\n\n")
-        });
-        let pass = if env::var("BUILD_MANIFEST_DISABLE_SIGNING").is_err() {
-            let file = builder.config.dist_gpg_password_file.as_ref().unwrap_or_else(|| {
-                panic!("\n\nfailed to specify `dist.gpg-password-file` in `config.toml`\n\n")
-            });
-            t!(fs::read_to_string(&file))
-        } else {
-            String::new()
-        };
-
-        let today = output(Command::new("date").arg("+%Y-%m-%d"));
-
-        cmd.arg(sign);
-        cmd.arg(distdir(builder));
-        cmd.arg(today.trim());
-        cmd.arg(addr);
-        cmd.arg(&builder.config.channel);
-        cmd.env("BUILD_MANIFEST_LEGACY", "1");
-
-        builder.create_dir(&distdir(builder));
-
-        let mut child = t!(cmd.stdin(Stdio::piped()).spawn());
-        t!(child.stdin.take().unwrap().write_all(pass.as_bytes()));
-        let status = t!(child.wait());
-        assert!(status.success());
-    }
-}
-
 /// Maybe add libLLVM.so to the given destination lib-dir. It will only have
 /// been built if LLVM tools are linked dynamically.
 ///
@@ -2557,8 +2521,15 @@ impl Step for RustDev {
         let dst_bindir = image.join("bin");
         t!(fs::create_dir_all(&dst_bindir));
 
-        let exe = builder.llvm_out(target).join("bin").join(exe("llvm-config", target));
-        builder.install(&exe, &dst_bindir, 0o755);
+        let src_bindir = builder.llvm_out(target).join("bin");
+        let install_bin =
+            |name| builder.install(&src_bindir.join(exe(name, target)), &dst_bindir, 0o755);
+        install_bin("llvm-config");
+        install_bin("llvm-ar");
+        install_bin("llvm-objdump");
+        install_bin("llvm-profdata");
+        install_bin("llvm-bcanalyzer");
+        install_bin("llvm-cov");
         builder.install(&builder.llvm_filecheck(target), &dst_bindir, 0o755);
 
         // Copy the include directory as well; needed mostly to build

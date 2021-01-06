@@ -50,7 +50,7 @@ impl Qualifs<'mir, 'tcx> {
         location: Location,
     ) -> bool {
         let indirectly_mutable = self.indirectly_mutable.get_or_insert_with(|| {
-            let ConstCx { tcx, body, def_id, param_env, .. } = *ccx;
+            let ConstCx { tcx, body, param_env, .. } = *ccx;
 
             // We can use `unsound_ignore_borrow_on_drop` here because custom drop impls are not
             // allowed in a const.
@@ -59,7 +59,7 @@ impl Qualifs<'mir, 'tcx> {
             // without breaking stable code?
             MaybeMutBorrowedLocals::mut_borrows_only(tcx, &body, param_env)
                 .unsound_ignore_borrow_on_drop()
-                .into_engine(tcx, &body, def_id.to_def_id())
+                .into_engine(tcx, &body)
                 .pass_name("const_qualification")
                 .iterate_to_fixpoint()
                 .into_results_cursor(&body)
@@ -84,10 +84,10 @@ impl Qualifs<'mir, 'tcx> {
         }
 
         let needs_drop = self.needs_drop.get_or_insert_with(|| {
-            let ConstCx { tcx, body, def_id, .. } = *ccx;
+            let ConstCx { tcx, body, .. } = *ccx;
 
             FlowSensitiveAnalysis::new(NeedsDrop, ccx)
-                .into_engine(tcx, &body, def_id.to_def_id())
+                .into_engine(tcx, &body)
                 .iterate_to_fixpoint()
                 .into_results_cursor(&body)
         });
@@ -111,10 +111,10 @@ impl Qualifs<'mir, 'tcx> {
         }
 
         let has_mut_interior = self.has_mut_interior.get_or_insert_with(|| {
-            let ConstCx { tcx, body, def_id, .. } = *ccx;
+            let ConstCx { tcx, body, .. } = *ccx;
 
             FlowSensitiveAnalysis::new(HasMutInterior, ccx)
-                .into_engine(tcx, &body, def_id.to_def_id())
+                .into_engine(tcx, &body)
                 .iterate_to_fixpoint()
                 .into_results_cursor(&body)
         });
@@ -157,7 +157,7 @@ impl Qualifs<'mir, 'tcx> {
 
             hir::ConstContext::Const | hir::ConstContext::Static(_) => {
                 let mut cursor = FlowSensitiveAnalysis::new(CustomEq, ccx)
-                    .into_engine(ccx.tcx, &ccx.body, ccx.def_id.to_def_id())
+                    .into_engine(ccx.tcx, &ccx.body)
                     .iterate_to_fixpoint()
                     .into_results_cursor(&ccx.body);
 
@@ -205,7 +205,8 @@ impl Validator<'mir, 'tcx> {
     }
 
     pub fn check_body(&mut self) {
-        let ConstCx { tcx, body, def_id, .. } = *self.ccx;
+        let ConstCx { tcx, body, .. } = *self.ccx;
+        let def_id = self.ccx.def_id();
 
         // `async` functions cannot be `const fn`. This is checked during AST lowering, so there's
         // no need to emit duplicate errors here.
@@ -219,7 +220,7 @@ impl Validator<'mir, 'tcx> {
             // Prevent const trait methods from being annotated as `stable`.
             // FIXME: Do this as part of stability checking.
             if self.is_const_stable_const_fn() {
-                let hir_id = tcx.hir().local_def_id_to_hir_id(self.def_id);
+                let hir_id = tcx.hir().local_def_id_to_hir_id(def_id);
                 if crate::const_eval::is_parent_const_impl_raw(tcx, hir_id) {
                     struct_span_err!(
                         self.ccx.tcx.sess,
@@ -291,7 +292,11 @@ impl Validator<'mir, 'tcx> {
 
             Status::Unstable(gate) if self.tcx.features().enabled(gate) => {
                 let unstable_in_stable = self.ccx.is_const_stable_const_fn()
-                    && !super::allow_internal_unstable(self.tcx, self.def_id.to_def_id(), gate);
+                    && !super::rustc_allow_const_fn_unstable(
+                        self.tcx,
+                        self.def_id().to_def_id(),
+                        gate,
+                    );
                 if unstable_in_stable {
                     emit_unstable_in_stable_error(self.ccx, span, gate);
                 }
@@ -367,9 +372,9 @@ impl Validator<'mir, 'tcx> {
     }
 
     fn check_item_predicates(&mut self) {
-        let ConstCx { tcx, def_id, .. } = *self.ccx;
+        let ConstCx { tcx, .. } = *self.ccx;
 
-        let mut current = def_id.to_def_id();
+        let mut current = self.def_id().to_def_id();
         loop {
             let predicates = tcx.predicates_of(current);
             for (predicate, _) in predicates.predicates {
@@ -434,11 +439,13 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
     fn visit_basic_block_data(&mut self, bb: BasicBlock, block: &BasicBlockData<'tcx>) {
         trace!("visit_basic_block_data: bb={:?} is_cleanup={:?}", bb, block.is_cleanup);
 
-        // Just as the old checker did, we skip const-checking basic blocks on the unwind path.
-        // These blocks often drop locals that would otherwise be returned from the function.
+        // We don't const-check basic blocks on the cleanup path since we never unwind during
+        // const-eval: a panic causes an immediate compile error. In other words, cleanup blocks
+        // are unreachable during const-eval.
         //
-        // FIXME: This shouldn't be unsound since a panic at compile time will cause a compiler
-        // error anyway, but maybe we should do more here?
+        // We can't be more conservative (e.g., by const-checking cleanup blocks anyways) because
+        // locals that would never be dropped during normal execution are sometimes dropped during
+        // unwinding, which means backwards-incompatible live-drop errors.
         if block.is_cleanup {
             return;
         }
@@ -522,14 +529,16 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
 
                 if !is_allowed {
                     if let BorrowKind::Mut { .. } = kind {
-                        self.check_op(ops::MutBorrow);
+                        self.check_op(ops::MutBorrow(hir::BorrowKind::Ref));
                     } else {
                         self.check_op(ops::CellBorrow);
                     }
                 }
             }
 
-            Rvalue::AddressOf(Mutability::Mut, _) => self.check_op(ops::MutAddressOf),
+            Rvalue::AddressOf(Mutability::Mut, _) => {
+                self.check_op(ops::MutBorrow(hir::BorrowKind::Raw))
+            }
 
             Rvalue::Ref(_, BorrowKind::Shared | BorrowKind::Shallow, ref place)
             | Rvalue::AddressOf(Mutability::Not, ref place) => {
@@ -734,8 +743,8 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
 
         match &terminator.kind {
             TerminatorKind::Call { func, .. } => {
-                let ConstCx { tcx, body, def_id: caller, param_env, .. } = *self.ccx;
-                let caller = caller.to_def_id();
+                let ConstCx { tcx, body, param_env, .. } = *self.ccx;
+                let caller = self.def_id().to_def_id();
 
                 let fn_ty = func.ty(body, tcx);
 
@@ -802,7 +811,7 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
                     }
 
                     // Calling an unstable function *always* requires that the corresponding gate
-                    // be enabled, even if the function has `#[allow_internal_unstable(the_gate)]`.
+                    // be enabled, even if the function has `#[rustc_allow_const_fn_unstable(the_gate)]`.
                     if !tcx.features().declared_lib_features.iter().any(|&(sym, _)| sym == gate) {
                         self.check_op(ops::FnCallUnstable(callee, Some(gate)));
                         return;
@@ -816,7 +825,7 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
 
                     // Otherwise, we are something const-stable calling a const-unstable fn.
 
-                    if super::allow_internal_unstable(tcx, caller, gate) {
+                    if super::rustc_allow_const_fn_unstable(tcx, caller, gate) {
                         return;
                     }
 
@@ -874,10 +883,14 @@ impl Visitor<'tcx> for Validator<'mir, 'tcx> {
             }
 
             TerminatorKind::InlineAsm { .. } => self.check_op(ops::InlineAsm),
-            TerminatorKind::Abort => self.check_op(ops::Abort),
 
             TerminatorKind::GeneratorDrop | TerminatorKind::Yield { .. } => {
                 self.check_op(ops::Generator(hir::GeneratorKind::Gen))
+            }
+
+            TerminatorKind::Abort => {
+                // Cleanup blocks are skipped for const checking (see `visit_basic_block_data`).
+                span_bug!(self.span, "`Abort` terminator outside of cleanup block")
             }
 
             TerminatorKind::Assert { .. }
@@ -958,8 +971,8 @@ fn emit_unstable_in_stable_error(ccx: &ConstCx<'_, '_>, span: Span, gate: Symbol
         )
         .span_suggestion(
             attr_span,
-            "otherwise `#[allow_internal_unstable]` can be used to bypass stability checks",
-            format!("#[allow_internal_unstable({})]\n", gate),
+            "otherwise `#[rustc_allow_const_fn_unstable]` can be used to bypass stability checks",
+            format!("#[rustc_allow_const_fn_unstable({})]\n", gate),
             Applicability::MaybeIncorrect,
         )
         .emit();

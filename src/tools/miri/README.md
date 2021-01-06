@@ -1,5 +1,9 @@
-# Miri [![Build Status](https://travis-ci.com/rust-lang/miri.svg?branch=master)](https://travis-ci.com/rust-lang/miri) [![Windows build status](https://ci.appveyor.com/api/projects/status/github/rust-lang/miri?svg=true)](https://ci.appveyor.com/project/rust-lang-libs/miri)
+# Miri
 
+[![Actions build status][actions-badge]][actions-url]
+
+[actions-badge]: https://github.com/rust-lang/miri/workflows/CI/badge.svg?branch=master
+[actions-url]: https://github.com/rust-lang/miri/actions
 
 An experimental interpreter for [Rust][rust]'s
 [mid-level intermediate representation][mir] (MIR).  It can run binaries and
@@ -19,8 +23,7 @@ for example:
 
 On top of that, Miri will also tell you about memory leaks: when there is memory
 still allocated at the end of the execution, and that memory is not reachable
-from a global `static`, Miri will raise an error. Note however that
-[leak checking is currently disabled on Windows targets](https://github.com/rust-lang/miri/issues/1302).
+from a global `static`, Miri will raise an error.
 
 Miri has already discovered some [real-world bugs](#bugs-found-by-miri).  If you
 found a bug with Miri, we'd appreciate if you tell us and we'll add it to the
@@ -88,11 +91,6 @@ can pass arguments to Miri via `MIRIFLAGS`. For example,
 `MIRIFLAGS="-Zmiri-disable-stacked-borrows" cargo miri run` runs the program
 without checking the aliasing of references.
 
-Miri supports cross-execution: if you want to run the program as if it was a
-Linux program, you can do `cargo miri run --target x86_64-unknown-linux-gnu`.
-This is particularly useful if you are using Windows, as the Linux target is
-much better supported than Windows targets.
-
 When compiling code via `cargo miri`, the `cfg(miri)` config flag is set.  You
 can use this to ignore test cases that fail under Miri because they do things
 Miri does not support:
@@ -117,6 +115,19 @@ error: unsupported operation: can't call foreign function: bind
             performed an operation that the interpreter does not support
 ```
 
+### Cross-interpretation: running for different targets
+
+Miri can not only run a binary or test suite for your host target, it can also
+perform cross-interpretation for arbitrary foreign targets: `cargo miri run
+--target x86_64-unknown-linux-gnu` will run your program as if it was a Linux
+program, no matter your host OS.  This is particularly useful if you are using
+Windows, as the Linux target is much better supported than Windows targets.
+
+You can also use this to test platforms with different properties than your host
+platform.  For example `cargo miri test --target mips64-unknown-linux-gnuabi64`
+will run your test suite on a big-endian target, which is useful for testing
+endian-sensitive code.
+
 ### Running Miri on CI
 
 To run Miri on CI, make sure that you handle the case where the latest nightly
@@ -138,6 +149,19 @@ cargo miri test
 
 When using the above instructions, you may encounter a number of confusing compiler
 errors.
+
+### "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+
+You may see this when trying to get Miri to display a backtrace. By default, Miri
+doesn't expose any environment to the program, so running
+`RUST_BACKTRACE=1 cargo miri test` will not do what you expect.
+
+To get a backtrace, you need to disable isolation
+[using `-Zmiri-disable-isolation`](#miri-flags):
+
+```sh
+RUST_BACKTRACE=1 MIRIFLAGS="-Zmiri-disable-isolation" cargo miri test
+```
 
 #### "found possibly newer version of crate `std` which `<dependency>` depends on"
 
@@ -206,13 +230,20 @@ environment variable:
 * `-Zmiri-track-alloc-id=<id>` shows a backtrace when the given allocation is
   being allocated or freed.  This helps in debugging memory leaks and
   use after free bugs.
+* `-Zmiri-track-call-id=<id>` shows a backtrace when the given call id is
+  assigned to a stack frame.  This helps in debugging UB related to Stacked
+  Borrows "protectors".
 * `-Zmiri-track-pointer-tag=<tag>` shows a backtrace when the given pointer tag
   is popped from a borrow stack (which is where the tag becomes invalid and any
   future use of it will error).  This helps you in finding out why UB is
   happening and where in your code would be a good place to look for it.
-* `-Zmiri-track-call-id=<id>` shows a backtrace when the given call id is
-  assigned to a stack frame.  This helps in debugging UB related to Stacked
-  Borrows "protectors".
+* `-Zmiri-track-raw-pointers` makes Stacked Borrows track a pointer tag even for
+  raw pointers. This can make valid code fail to pass the checks, but also can
+  help identify latent aliasing issues in code that Miri accepts by default. You
+  can recognize false positives by "<untagged>" occurring in the message -- this
+  indicates a pointer that was cast from an integer, so Miri was unable to track
+  this pointer. Make sure to use a non-Windows target with this flag, as the
+  Windows runtime makes use of integer-pointer casts.
 
 Some native rustc `-Z` flags are also very relevant for Miri:
 
@@ -228,7 +259,7 @@ Some native rustc `-Z` flags are also very relevant for Miri:
 Moreover, Miri recognizes some environment variables:
 
 * `MIRI_LOG`, `MIRI_BACKTRACE` control logging and backtrace printing during
-  Miri executions, also [see above][testing-miri].
+  Miri executions, also [see "Testing the Miri driver" in `CONTRIBUTING.md`][testing-miri].
 * `MIRIFLAGS` (recognized by `cargo miri` and the test suite) defines extra
   flags to be passed to Miri.
 * `MIRI_SYSROOT` (recognized by `cargo miri` and the test suite)
@@ -250,6 +281,8 @@ different Miri binaries, and as such worth documenting:
   directory after loading all the source files, but before commencing
   interpretation. This is useful if the interpreted program wants a different
   working directory at run-time than at build-time.
+  
+[testing-miri]: CONTRIBUTING.md#testing-the-miri-driver
 
 ## Miri `extern` functions
 
@@ -287,6 +320,10 @@ extern "Rust" {
     ///     lineno: u32,
     ///     // The column number currently being executed in `filename`, starting from '1'.
     ///     colno: u32,
+    ///     // The function pointer to the function currently being executed.
+    ///     // This can be compared against function pointers obtained by
+    ///     // casting a function (e.g. `my_fn as *mut ()`)
+    ///     fn_ptr: *mut ()
     /// }
     /// ```
     ///
@@ -355,11 +392,15 @@ Definite bugs found:
 * [`servo_arc` creating a dangling shared reference](https://github.com/servo/servo/issues/26357)
 * [TiKV constructing out-of-bounds pointers (and overlapping mutable references)](https://github.com/tikv/tikv/pull/7751)
 * [`encoding_rs` doing out-of-bounds pointer arithmetic](https://github.com/hsivonen/encoding_rs/pull/53)
+* [TiKV using `Vec::from_raw_parts` incorrectly](https://github.com/tikv/agatedb/pull/24)
 
 Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows is currently just an experiment):
 
 * [`VecDeque::drain` creating overlapping mutable references](https://github.com/rust-lang/rust/pull/56161)
-* [`BTreeMap` iterators creating mutable references that overlap with shared references](https://github.com/rust-lang/rust/pull/58431)
+* Various `BTreeMap` problems
+    * [`BTreeMap` iterators creating mutable references that overlap with shared references](https://github.com/rust-lang/rust/pull/58431)
+    * [`BTreeMap::iter_mut` creating overlapping mutable references](https://github.com/rust-lang/rust/issues/73915)
+    * [`BTreeMap` node insertion using raw pointers outside their valid memory area](https://github.com/rust-lang/rust/issues/78477)
 * [`LinkedList` cursor insertion creating overlapping mutable references](https://github.com/rust-lang/rust/pull/60072)
 * [`Vec::push` invalidating existing references into the vector](https://github.com/rust-lang/rust/issues/60847)
 * [`align_to_mut` violating uniqueness of mutable references](https://github.com/rust-lang/rust/issues/68549)
@@ -368,17 +409,20 @@ Violations of [Stacked Borrows] found that are likely bugs (but Stacked Borrows 
 * [`ryu` using raw pointers outside their valid memory area](https://github.com/dtolnay/ryu/issues/24)
 * [ink! creating overlapping mutable references](https://github.com/rust-lang/miri/issues/1364)
 * [TiKV creating overlapping mutable reference and raw pointer](https://github.com/tikv/tikv/pull/7709)
-* [Windows `Env` iterator creating `*const T` from `&T` to read memory outside of `T`](https://github.com/rust-lang/rust/pull/70479)
-* [`BTreeMap::iter_mut` creating overlapping mutable references](https://github.com/rust-lang/rust/issues/73915)
+* [Windows `Env` iterator using a raw pointer outside its valid memory area](https://github.com/rust-lang/rust/pull/70479)
 * [`VecDeque::iter_mut` creating overlapping mutable references](https://github.com/rust-lang/rust/issues/74029)
+* [Various standard library aliasing issues involving raw pointers](https://github.com/rust-lang/rust/pull/78602)
 
 ## License
 
 Licensed under either of
+
   * Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
     http://www.apache.org/licenses/LICENSE-2.0)
   * MIT license ([LICENSE-MIT](LICENSE-MIT) or
-    http://opensource.org/licenses/MIT) at your option.
+    http://opensource.org/licenses/MIT)
+
+at your option.
 
 ### Contribution
 
