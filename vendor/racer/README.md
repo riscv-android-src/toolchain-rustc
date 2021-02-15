@@ -1,7 +1,6 @@
 # *Racer* - code completion for [Rust](http://www.rust-lang.org/)
 
-[![Build Status](https://travis-ci.org/racer-rust/racer.svg?branch=master)](https://travis-ci.org/racer-rust/racer)
-[![Build status](https://ci.appveyor.com/api/projects/status/hq51xvr5wpfcfqgt/branch/master?svg=true)](https://ci.appveyor.com/project/TedDriggs/racer-xr5g5/branch/master)
+[![Build Status](https://github.com/racer-rust/racer/workflows/CI/badge.svg?branch=master)](https://github.com/racer-rust/racer/actions?query=workflow%3ACI+branch%3Amaster)
 
 
 ![racer completion screenshot](images/racer_completion.png)
@@ -47,7 +46,7 @@ As mentioned in the command output, don't forget to add the installation directo
 
 1. Fetch the Rust sourcecode
 
-    1. automatically via [rustup](https://www.rustup.rs/) and run `rustup component add rust-src` in order to install the source to `$(rustc --print sysroot)/lib/rustlib/src/rust/library` (or `$(rustc --print sysroot)/lib/rustlib/src/rust/src` in older toolchains). Rustup will keep the sources in sync with the toolchain if you run `rustup update`.
+    1. automatically via [rustup](https://www.rustup.rs/) and run `rustup component add rust-src` in order to install the source to `$(rustc --print sysroot)/lib/rustlib/src/rust/library` (or `$(rustc --print sysroot)/lib/rustlib/src/rust/library` in older toolchains). Rustup will keep the sources in sync with the toolchain if you run `rustup update`.
 
     2. manually from git: https://github.com/rust-lang/rust
 
@@ -62,7 +61,7 @@ As mentioned in the command output, don't forget to add the installation directo
     `rustup component add rust-src`
 
 2. (Optional) Set `RUST_SRC_PATH` environment variable to point to the 'src' dir in the Rust source installation
-   e.g. `% export RUST_SRC_PATH=/usr/local/src/rust/src` or `% export RUST_SRC_PATH="$(rustc --print sysroot)/lib/rustlib/src/rust/src"`
+   e.g. `% export RUST_SRC_PATH=/usr/local/src/rust/library` or `% export RUST_SRC_PATH="$(rustc --print sysroot)/lib/rustlib/src/rust/library"`
 
    It's recommended to set `RUST_SRC_PATH` for speed up, but racer detects it automatically if you don't set it.
 

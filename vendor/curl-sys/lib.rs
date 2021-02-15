@@ -582,6 +582,8 @@ pub const CURLOPT_PROXY_CAPATH: CURLoption = CURLOPTTYPE_OBJECTPOINT + 247;
 pub const CURLOPT_PROXY_SSLCERT: CURLoption = CURLOPTTYPE_OBJECTPOINT + 254;
 pub const CURLOPT_PROXY_SSLKEY: CURLoption = CURLOPTTYPE_OBJECTPOINT + 256;
 
+pub const CURLOPT_MAXAGE_CONN: CURLoption = CURLOPTTYPE_LONG + 288;
+
 pub const CURL_IPRESOLVE_WHATEVER: c_int = 0;
 pub const CURL_IPRESOLVE_V4: c_int = 1;
 pub const CURL_IPRESOLVE_V6: c_int = 2;
@@ -808,7 +810,8 @@ pub const CURLVERSION_FOURTH: CURLversion = 3;
 pub const CURLVERSION_FIFTH: CURLversion = 4;
 pub const CURLVERSION_SIXTH: CURLversion = 5;
 pub const CURLVERSION_SEVENTH: CURLversion = 6;
-pub const CURLVERSION_NOW: CURLversion = CURLVERSION_SEVENTH;
+pub const CURLVERSION_EIGHTH: CURLversion = 7;
+pub const CURLVERSION_NOW: CURLversion = CURLVERSION_EIGHTH;
 
 #[repr(C)]
 pub struct curl_version_info_data {
@@ -833,6 +836,8 @@ pub struct curl_version_info_data {
     pub quic_version: *const c_char,
     pub cainfo: *const c_char,
     pub capath: *const c_char,
+    pub zstd_ver_num: c_uint,
+    pub zstd_version: *const c_char,
 }
 
 pub const CURL_VERSION_IPV6: c_int = 1 << 0;

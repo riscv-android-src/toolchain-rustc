@@ -3144,6 +3144,7 @@ fn compiler_json_error_format() {
                 "target":{
                     "kind":["custom-build"],
                     "crate_types":["bin"],
+                    "doc": false,
                     "doctest": false,
                     "edition": "2015",
                     "name":"build-script-build",
@@ -3169,6 +3170,7 @@ fn compiler_json_error_format() {
                 "target":{
                     "kind":["lib"],
                     "crate_types":["lib"],
+                    "doc": true,
                     "doctest": true,
                     "edition": "2015",
                     "name":"bar",
@@ -3193,6 +3195,7 @@ fn compiler_json_error_format() {
                 "target":{
                     "kind":["lib"],
                     "crate_types":["lib"],
+                    "doc": true,
                     "doctest": true,
                     "edition": "2015",
                     "name":"bar",
@@ -3222,6 +3225,7 @@ fn compiler_json_error_format() {
                 "target":{
                     "kind":["bin"],
                     "crate_types":["bin"],
+                    "doc": true,
                     "doctest": false,
                     "edition": "2015",
                     "name":"foo",
@@ -3237,6 +3241,7 @@ fn compiler_json_error_format() {
                 "target":{
                     "kind":["bin"],
                     "crate_types":["bin"],
+                    "doc": true,
                     "doctest": false,
                     "edition": "2015",
                     "name":"foo",
@@ -3306,6 +3311,7 @@ fn message_format_json_forward_stderr() {
                     "target":{
                         "kind":["bin"],
                         "crate_types":["bin"],
+                        "doc": true,
                         "doctest": false,
                         "edition": "2015",
                         "name":"foo",
@@ -3321,6 +3327,7 @@ fn message_format_json_forward_stderr() {
                     "target":{
                         "kind":["bin"],
                         "crate_types":["bin"],
+                        "doc": true,
                         "doctest": false,
                         "edition": "2015",
                         "name":"foo",
@@ -4016,9 +4023,8 @@ fn rustc_wrapper_from_path() {
 #[cfg(not(windows))]
 fn rustc_workspace_wrapper() {
     let p = project().file("src/lib.rs", "").build();
-    p.cargo("build -v -Zunstable-options")
+    p.cargo("build -v")
         .env("RUSTC_WORKSPACE_WRAPPER", "/usr/bin/env")
-        .masquerade_as_nightly_cargo()
         .with_stderr_contains("[RUNNING] `/usr/bin/env rustc --crate-name foo [..]")
         .run();
 }
@@ -4027,9 +4033,8 @@ fn rustc_workspace_wrapper() {
 #[cfg(not(windows))]
 fn rustc_workspace_wrapper_relative() {
     let p = project().file("src/lib.rs", "").build();
-    p.cargo("build -v -Zunstable-options")
+    p.cargo("build -v")
         .env("RUSTC_WORKSPACE_WRAPPER", "./sccache")
-        .masquerade_as_nightly_cargo()
         .with_status(101)
         .with_stderr_contains("[..]/foo/./sccache rustc[..]")
         .run();
@@ -4039,9 +4044,8 @@ fn rustc_workspace_wrapper_relative() {
 #[cfg(not(windows))]
 fn rustc_workspace_wrapper_from_path() {
     let p = project().file("src/lib.rs", "").build();
-    p.cargo("build -v -Zunstable-options")
+    p.cargo("build -v")
         .env("RUSTC_WORKSPACE_WRAPPER", "wannabe_sccache")
-        .masquerade_as_nightly_cargo()
         .with_status(101)
         .with_stderr_contains("[..]`wannabe_sccache rustc [..]")
         .run();

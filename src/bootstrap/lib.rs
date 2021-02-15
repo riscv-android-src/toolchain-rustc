@@ -142,6 +142,7 @@ mod native;
 mod run;
 mod sanity;
 mod setup;
+mod tarball;
 mod test;
 mod tool;
 mod toolstate;
@@ -178,6 +179,7 @@ const LLVM_TOOLS: &[&str] = &[
     "llvm-size",     // used to prints the size of the linker sections of a program
     "llvm-strip",    // used to discard symbols from binary files to reduce their size
     "llvm-ar",       // used for creating and modifying archive files
+    "llvm-as",       // used to convert LLVM assembly to LLVM bitcode
     "llvm-dis",      // used to disassemble LLVM bitcode
     "llc",           // used to compile LLVM bytecode
     "opt",           // used to optimize LLVM bytecode
@@ -1067,10 +1069,6 @@ impl Build {
         self.package_vers(&self.version)
     }
 
-    fn llvm_tools_vers(&self) -> String {
-        self.rust_version()
-    }
-
     fn llvm_link_tools_dynamically(&self, target: TargetSelection) -> bool {
         target.contains("linux-gnu") || target.contains("apple-darwin")
     }
@@ -1081,7 +1079,13 @@ impl Build {
     /// Note that this is a descriptive string which includes the commit date,
     /// sha, version, etc.
     fn rust_version(&self) -> String {
-        self.rust_info.version(self, &self.version)
+        let mut version = self.rust_info.version(self, &self.version);
+        if let Some(ref s) = self.config.description {
+            version.push_str(" (");
+            version.push_str(s);
+            version.push_str(")");
+        }
+        version
     }
 
     /// Returns the full commit hash.

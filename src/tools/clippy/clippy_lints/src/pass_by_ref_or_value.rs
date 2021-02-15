@@ -115,7 +115,7 @@ impl<'tcx> PassByRefOrValue {
         let fn_def_id = cx.tcx.hir().local_def_id(hir_id);
 
         let fn_sig = cx.tcx.fn_sig(fn_def_id);
-        let fn_sig = cx.tcx.erase_late_bound_regions(&fn_sig);
+        let fn_sig = cx.tcx.erase_late_bound_regions(fn_sig);
 
         let fn_body = cx.enclosing_body.map(|id| cx.tcx.hir().body(id));
 
@@ -244,9 +244,10 @@ impl<'tcx> LateLintPass<'tcx> for PassByRefOrValue {
 
         // Exclude non-inherent impls
         if let Some(Node::Item(item)) = cx.tcx.hir().find(cx.tcx.hir().get_parent_node(hir_id)) {
-            if matches!(item.kind, ItemKind::Impl{ of_trait: Some(_), .. } |
-            ItemKind::Trait(..))
-            {
+            if matches!(
+                item.kind,
+                ItemKind::Impl { of_trait: Some(_), .. } | ItemKind::Trait(..)
+            ) {
                 return;
             }
         }

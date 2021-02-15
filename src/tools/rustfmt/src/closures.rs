@@ -133,6 +133,7 @@ fn veto_block(e: &ast::Expr) -> bool {
 }
 
 // Rewrite closure with a single expression wrapping its body with block.
+// || { #[attr] foo() } -> Block { #[attr] foo() }
 fn rewrite_closure_with_block(
     body: &ast::Expr,
     prefix: &str,
@@ -154,8 +155,12 @@ fn rewrite_closure_with_block(
         }],
         id: ast::NodeId::root(),
         rules: ast::BlockCheckMode::Default,
-        span: body.span,
         tokens: None,
+        span: body
+            .attrs
+            .first()
+            .map(|attr| attr.span.to(body.span))
+            .unwrap_or(body.span),
     };
     let block = crate::expr::rewrite_block_with_visitor(
         context,
@@ -334,18 +339,21 @@ pub(crate) fn rewrite_last_closure(
         if is_block_closure_forced(context, body) {
             return rewrite_closure_with_block(body, &prefix, context, body_shape).and_then(
                 |body_str| {
-                    // If the expression can fit in a single line, we need not force block closure.
-                    if body_str.lines().count() <= 7 {
-                        match rewrite_closure_expr(body, &prefix, context, shape) {
-                            Some(ref single_line_body_str)
-                                if !single_line_body_str.contains('\n') =>
-                            {
-                                Some(single_line_body_str.clone())
+                    match fn_decl.output {
+                        ast::FnRetTy::Default(..) if body_str.lines().count() <= 7 => {
+                            // If the expression can fit in a single line, we need not force block
+                            // closure.  However, if the closure has a return type, then we must
+                            // keep the blocks.
+                            match rewrite_closure_expr(body, &prefix, context, shape) {
+                                Some(ref single_line_body_str)
+                                    if !single_line_body_str.contains('\n') =>
+                                {
+                                    Some(single_line_body_str.clone())
+                                }
+                                _ => Some(body_str),
                             }
-                            _ => Some(body_str),
                         }
-                    } else {
-                        Some(body_str)
+                        _ => Some(body_str),
                     }
                 },
             );

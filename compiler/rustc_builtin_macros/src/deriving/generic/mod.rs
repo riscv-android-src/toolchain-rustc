@@ -257,7 +257,10 @@ pub struct Substructure<'a> {
     pub type_ident: Ident,
     /// ident of the method
     pub method_ident: Ident,
-    /// dereferenced access to any `Self_` or `Ptr(Self_, _)` arguments
+    /// dereferenced access to any [`Self_`] or [`Ptr(Self_, _)][ptr]` arguments
+    ///
+    /// [`Self_`]: ty::Ty::Self_
+    /// [ptr]: ty::Ty::Ptr
     pub self_args: &'a [P<Expr>],
     /// verbatim access to any other arguments
     pub nonself_args: &'a [P<Expr>],
@@ -407,13 +410,7 @@ impl<'a> TraitDef<'a> {
                             _ => false,
                         })
                     }
-                    _ => {
-                        // Non-ADT derive is an error, but it should have been
-                        // set earlier; see
-                        // librustc_expand/expand.rs:MacroExpander::fully_expand_fragment()
-                        // librustc_expand/base.rs:Annotatable::derive_allowed()
-                        return;
-                    }
+                    _ => unreachable!(),
                 };
                 let container_id = cx.current_expansion.id.expn_data().parent;
                 let always_copy = has_no_type_params && cx.resolver.has_derive_copy(container_id);
@@ -475,12 +472,7 @@ impl<'a> TraitDef<'a> {
                 );
                 push(Annotatable::Item(P(ast::Item { attrs, ..(*newitem).clone() })))
             }
-            _ => {
-                // Non-Item derive is an error, but it should have been
-                // set earlier; see
-                // librustc_expand/expand.rs:MacroExpander::fully_expand_fragment()
-                // librustc_expand/base.rs:Annotatable::derive_allowed()
-            }
+            _ => unreachable!(),
         }
     }
 
@@ -608,10 +600,7 @@ impl<'a> TraitDef<'a> {
 
             let mut ty_params = params
                 .iter()
-                .filter_map(|param| match param.kind {
-                    ast::GenericParamKind::Type { .. } => Some(param),
-                    _ => None,
-                })
+                .filter(|param| matches!(param.kind,  ast::GenericParamKind::Type{..}))
                 .peekable();
 
             if ty_params.peek().is_some() {

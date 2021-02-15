@@ -501,6 +501,41 @@ impl Step for Rustc {
         let mut cargo = builder.cargo(compiler, Mode::Rustc, SourceType::InTree, target, "build");
         rustc_cargo(builder, &mut cargo, target);
 
+        if builder.config.rust_profile_use.is_some()
+            && builder.config.rust_profile_generate.is_some()
+        {
+            panic!("Cannot use and generate PGO profiles at the same time");
+        }
+
+        let is_collecting = if let Some(path) = &builder.config.rust_profile_generate {
+            if compiler.stage == 1 {
+                cargo.rustflag(&format!("-Cprofile-generate={}", path));
+                // Apparently necessary to avoid overflowing the counters during
+                // a Cargo build profile
+                cargo.rustflag("-Cllvm-args=-vp-counters-per-site=4");
+                true
+            } else {
+                false
+            }
+        } else if let Some(path) = &builder.config.rust_profile_use {
+            if compiler.stage == 1 {
+                cargo.rustflag(&format!("-Cprofile-use={}", path));
+                cargo.rustflag("-Cllvm-args=-pgo-warn-missing-function");
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if is_collecting {
+            // Ensure paths to Rust sources are relative, not absolute.
+            cargo.rustflag(&format!(
+                "-Cllvm-args=-static-func-strip-dirname-prefix={}",
+                builder.config.src.components().count()
+            ));
+        }
+
         builder.info(&format!(
             "Building stage{} compiler artifacts ({} -> {})",
             compiler.stage, &compiler.host, target
@@ -752,7 +787,7 @@ fn copy_codegen_backends_to_sysroot(
     // Here we're looking for the output dylib of the `CodegenBackend` step and
     // we're copying that into the `codegen-backends` folder.
     let dst = builder.sysroot_codegen_backends(target_compiler);
-    t!(fs::create_dir_all(&dst));
+    t!(fs::create_dir_all(&dst), dst);
 
     if builder.config.dry_run {
         return;
@@ -969,15 +1004,28 @@ impl Step for Assemble {
 
         copy_codegen_backends_to_sysroot(builder, build_compiler, target_compiler);
 
+        // We prepend this bin directory to the user PATH when linking Rust binaries. To
+        // avoid shadowing the system LLD we rename the LLD we provide to `rust-lld`.
         let libdir = builder.sysroot_libdir(target_compiler, target_compiler.host);
+        let libdir_bin = libdir.parent().unwrap().join("bin");
+        t!(fs::create_dir_all(&libdir_bin));
+
         if let Some(lld_install) = lld_install {
             let src_exe = exe("lld", target_compiler.host);
             let dst_exe = exe("rust-lld", target_compiler.host);
-            // we prepend this bin directory to the user PATH when linking Rust binaries. To
-            // avoid shadowing the system LLD we rename the LLD we provide to `rust-lld`.
-            let dst = libdir.parent().unwrap().join("bin");
-            t!(fs::create_dir_all(&dst));
-            builder.copy(&lld_install.join("bin").join(&src_exe), &dst.join(&dst_exe));
+            builder.copy(&lld_install.join("bin").join(&src_exe), &libdir_bin.join(&dst_exe));
+        }
+
+        // Similarly, copy `llvm-dwp` into libdir for Split DWARF.
+        {
+            let src_exe = exe("llvm-dwp", target_compiler.host);
+            let dst_exe = exe("rust-llvm-dwp", target_compiler.host);
+            let llvm_config_bin = builder.ensure(native::Llvm { target: target_compiler.host });
+            if !builder.config.dry_run {
+                let llvm_bin_dir = output(Command::new(llvm_config_bin).arg("--bindir"));
+                let llvm_bin_dir = Path::new(llvm_bin_dir.trim());
+                builder.copy(&llvm_bin_dir.join(&src_exe), &libdir_bin.join(&dst_exe));
+            }
         }
 
         // Ensure that `libLLVM.so` ends up in the newly build compiler directory,

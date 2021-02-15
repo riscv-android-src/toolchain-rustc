@@ -10,7 +10,6 @@ use rustc_hir as hir;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, CanonicalUserTypeAnnotation};
 use rustc_span::symbol::sym;
-
 use rustc_target::spec::abi::Abi;
 
 impl<'a, 'tcx> Builder<'a, 'tcx> {
@@ -62,7 +61,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
                 // (#66975) Source could be a const of type `!`, so has to
                 // exist in the generated MIR.
-                unpack!(block = this.as_temp(block, this.local_scope(), source, Mutability::Mut,));
+                unpack!(block = this.as_temp(block, Some(this.local_scope()), source, Mutability::Mut,));
 
                 // This is an optimization. If the expression was a call then we already have an
                 // unreachable block. Don't bother to terminate it and create a new one.
@@ -192,7 +191,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         .local_decls
                         .push(LocalDecl::with_source_info(ptr_ty, source_info).internal());
                     let ptr_temp = Place::from(ptr_temp);
+                    // No need for a scope, ptr_temp doesn't need drop
                     let block = unpack!(this.into(ptr_temp, block, ptr));
+                    // Maybe we should provide a scope here so that
+                    // `move_val_init` wouldn't leak on panic even with an
+                    // arbitrary `val` expression, but `schedule_drop`,
+                    // borrowck and drop elaboration all prevent us from
+                    // dropping `ptr_temp.deref()`.
                     this.into(this.hir.tcx().mk_place_deref(ptr_temp), block, val)
                 } else {
                     let args: Vec<_> = args
@@ -266,12 +271,12 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 // (evaluating them in order given by user)
                 let fields_map: FxHashMap<_, _> = fields
                     .into_iter()
-                    .map(|f| (f.name, unpack!(block = this.as_operand(block, scope, f.expr))))
+                    .map(|f| (f.name, unpack!(block = this.as_operand(block, Some(scope), f.expr))))
                     .collect();
 
                 let field_names = this.hir.all_fields(adt_def, variant_index);
 
-                let fields = if let Some(FruInfo { base, field_types }) = base {
+                let fields: Vec<_> = if let Some(FruInfo { base, field_types }) = base {
                     let base = unpack!(block = this.as_place(block, base));
 
                     // MIR does not natively support FRU, so for each
@@ -400,7 +405,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
             // Avoid creating a temporary
             ExprKind::VarRef { .. }
-            | ExprKind::SelfRef
+            | ExprKind::UpvarRef { .. }
             | ExprKind::PlaceTypeAscription { .. }
             | ExprKind::ValueTypeAscription { .. } => {
                 debug_assert!(Category::of(&expr.kind) == Some(Category::Place));
@@ -430,7 +435,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
 
             ExprKind::Yield { value } => {
                 let scope = this.local_scope();
-                let value = unpack!(block = this.as_operand(block, scope, value));
+                let value = unpack!(block = this.as_operand(block, Some(scope), value));
                 let resume = this.cfg.start_new_block();
                 this.cfg.terminate(
                     block,

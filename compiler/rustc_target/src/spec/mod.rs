@@ -54,7 +54,6 @@ mod apple_base;
 mod apple_sdk_base;
 mod arm_base;
 mod avr_gnu_base;
-mod cloudabi_base;
 mod dragonfly_base;
 mod freebsd_base;
 mod fuchsia_base;
@@ -505,6 +504,7 @@ supported_targets! {
     ("armv4t-unknown-linux-gnueabi", armv4t_unknown_linux_gnueabi),
     ("armv5te-unknown-linux-gnueabi", armv5te_unknown_linux_gnueabi),
     ("armv5te-unknown-linux-musleabi", armv5te_unknown_linux_musleabi),
+    ("armv5te-unknown-linux-uclibceabi", armv5te_unknown_linux_uclibceabi),
     ("armv7-unknown-linux-gnueabi", armv7_unknown_linux_gnueabi),
     ("armv7-unknown-linux-gnueabihf", armv7_unknown_linux_gnueabihf),
     ("thumbv7neon-unknown-linux-gnueabihf", thumbv7neon_unknown_linux_gnueabihf),
@@ -580,6 +580,7 @@ supported_targets! {
     ("armv7-apple-ios", armv7_apple_ios),
     ("armv7s-apple-ios", armv7s_apple_ios),
     ("x86_64-apple-ios-macabi", x86_64_apple_ios_macabi),
+    ("aarch64-apple-ios-macabi", aarch64_apple_ios_macabi),
     ("aarch64-apple-tvos", aarch64_apple_tvos),
     ("x86_64-apple-tvos", x86_64_apple_tvos),
 
@@ -627,11 +628,6 @@ supported_targets! {
     ("armv7a-none-eabihf", armv7a_none_eabihf),
 
     ("msp430-none-elf", msp430_none_elf),
-
-    ("aarch64-unknown-cloudabi", aarch64_unknown_cloudabi),
-    ("armv7-unknown-cloudabi-eabihf", armv7_unknown_cloudabi_eabihf),
-    ("i686-unknown-cloudabi", i686_unknown_cloudabi),
-    ("x86_64-unknown-cloudabi", x86_64_unknown_cloudabi),
 
     ("aarch64-unknown-hermit", aarch64_unknown_hermit),
     ("x86_64-unknown-hermit", x86_64_unknown_hermit),
@@ -713,11 +709,14 @@ pub struct TargetOptions {
     pub endian: String,
     /// Width of c_int type. Defaults to "32".
     pub c_int_width: String,
-    /// OS name to use for conditional compilation. Defaults to "none".
+    /// OS name to use for conditional compilation (`target_os`). Defaults to "none".
+    /// "none" implies a bare metal target without `std` library.
+    /// A couple of targets having `std` also use "unknown" as an `os` value,
+    /// but they are exceptions.
     pub os: String,
-    /// Environment name to use for conditional compilation. Defaults to "".
+    /// Environment name to use for conditional compilation (`target_env`). Defaults to "".
     pub env: String,
-    /// Vendor name to use for conditional compilation. Defaults to "unknown".
+    /// Vendor name to use for conditional compilation (`target_vendor`). Defaults to "unknown".
     pub vendor: String,
     /// Default linker flavor used if `-C linker-flavor` or `-C linker` are not passed
     /// on the command line. Defaults to `LinkerFlavor::Gcc`.
@@ -819,10 +818,23 @@ pub struct TargetOptions {
     /// Only useful for compiling against Illumos/Solaris,
     /// as they have a different set of linker flags. Defaults to false.
     pub is_like_solaris: bool,
-    /// Whether the target toolchain is like Windows'. Only useful for compiling against Windows,
-    /// only really used for figuring out how to find libraries, since Windows uses its own
-    /// library naming convention. Defaults to false.
+    /// Whether the target is like Windows.
+    /// This is a combination of several more specific properties represented as a single flag:
+    ///   - The target uses a Windows ABI,
+    ///   - uses PE/COFF as a format for object code,
+    ///   - uses Windows-style dllexport/dllimport for shared libraries,
+    ///   - uses import libraries and .def files for symbol exports,
+    ///   - executables support setting a subsystem.
     pub is_like_windows: bool,
+    /// Whether the target is like MSVC.
+    /// This is a combination of several more specific properties represented as a single flag:
+    ///   - The target has all the properties from `is_like_windows`
+    ///     (for in-tree targets "is_like_msvc ⇒ is_like_windows" is ensured by a unit test),
+    ///   - has some MSVC-specific Windows ABI properties,
+    ///   - uses a link.exe-like linker,
+    ///   - uses CodeView/PDB for debuginfo and natvis for its visualization,
+    ///   - uses SEH-based unwinding,
+    ///   - supports control flow guard mechanism.
     pub is_like_msvc: bool,
     /// Whether the target toolchain is like Emscripten's. Only useful for compiling with
     /// Emscripten toolchain.
@@ -1428,8 +1440,8 @@ impl Target {
         }
 
         key!(is_builtin, bool);
-        key!(endian = "target_endian");
-        key!(c_int_width = "target_c_int_width");
+        key!(endian = "target-endian");
+        key!(c_int_width = "target-c-int-width");
         key!(os);
         key!(env);
         key!(vendor);
@@ -1466,7 +1478,7 @@ impl Target {
         key!(exe_suffix);
         key!(staticlib_prefix);
         key!(staticlib_suffix);
-        key!(os_family = "target_family", optional);
+        key!(os_family = "target-family", optional);
         key!(abi_return_struct_as_int, bool);
         key!(is_like_osx, bool);
         key!(is_like_solaris, bool);
@@ -1511,7 +1523,7 @@ impl Target {
         key!(limit_rdylib_exports, bool);
         key!(override_export_symbols, opt_list);
         key!(merge_functions, MergeFunctions)?;
-        key!(mcount = "target_mcount");
+        key!(mcount = "target-mcount");
         key!(llvm_abiname);
         key!(relax_elf_relocations, bool);
         key!(llvm_args, list);
@@ -1663,8 +1675,8 @@ impl ToJson for Target {
         target_val!(data_layout);
 
         target_option_val!(is_builtin);
-        target_option_val!(endian, "target_endian");
-        target_option_val!(c_int_width, "target_c_int_width");
+        target_option_val!(endian, "target-endian");
+        target_option_val!(c_int_width, "target-c-int-width");
         target_option_val!(os);
         target_option_val!(env);
         target_option_val!(vendor);
@@ -1701,7 +1713,7 @@ impl ToJson for Target {
         target_option_val!(exe_suffix);
         target_option_val!(staticlib_prefix);
         target_option_val!(staticlib_suffix);
-        target_option_val!(os_family, "target_family");
+        target_option_val!(os_family, "target-family");
         target_option_val!(abi_return_struct_as_int);
         target_option_val!(is_like_osx);
         target_option_val!(is_like_solaris);
@@ -1746,7 +1758,7 @@ impl ToJson for Target {
         target_option_val!(limit_rdylib_exports);
         target_option_val!(override_export_symbols);
         target_option_val!(merge_functions);
-        target_option_val!(mcount, "target_mcount");
+        target_option_val!(mcount, "target-mcount");
         target_option_val!(llvm_abiname);
         target_option_val!(relax_elf_relocations);
         target_option_val!(llvm_args);
@@ -1786,6 +1798,24 @@ impl TargetTriple {
     pub fn from_path(path: &Path) -> Result<Self, io::Error> {
         let canonicalized_path = path.canonicalize()?;
         Ok(TargetTriple::TargetPath(canonicalized_path))
+    }
+
+    /// Creates a target triple from its alias
+    pub fn from_alias(triple: String) -> Self {
+        macro_rules! target_aliases {
+            ( $(($alias:literal, $target:literal ),)+ ) => {
+                match triple.as_str() {
+                    $( $alias => TargetTriple::from_triple($target), )+
+                    _ => TargetTriple::TargetTriple(triple),
+                }
+            }
+        }
+
+        target_aliases! {
+            // `x86_64-pc-solaris` is an alias for `x86_64_sun_solaris` for backwards compatibility reasons.
+            // (See <https://github.com/rust-lang/rust/issues/40531>.)
+            ("x86_64-pc-solaris", "x86_64-sun-solaris"),
+        }
     }
 
     /// Returns a string triple for this target.

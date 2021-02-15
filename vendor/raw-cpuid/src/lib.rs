@@ -104,12 +104,12 @@ fn get_bits(r: u32, from: u32, to: u32) -> u32 {
 }
 
 macro_rules! check_flag {
-    ($doc:meta, $fun:ident, $flags:ident, $flag:expr) => (
+    ($doc:meta, $fun:ident, $flags:ident, $flag:expr) => {
         #[$doc]
         pub fn $fun(&self) -> bool {
             self.$flags.contains($flag)
         }
-    )
+    };
 }
 
 macro_rules! is_bit_set {
@@ -119,12 +119,12 @@ macro_rules! is_bit_set {
 }
 
 macro_rules! check_bit_fn {
-    ($doc:meta, $fun:ident, $field:ident, $bit:expr) => (
+    ($doc:meta, $fun:ident, $field:ident, $bit:expr) => {
         #[$doc]
         pub fn $fun(&self) -> bool {
             is_bit_set!(self.$field, $bit)
         }
-    )
+    };
 }
 
 /// Main type used to query for information about the CPU we're running on.
@@ -642,7 +642,7 @@ impl Iterator for CacheInfoIter {
             return self.next();
         }
 
-        for cache_info in CACHE_INFO_TABLE.into_iter() {
+        for cache_info in CACHE_INFO_TABLE.iter() {
             if cache_info.num == byte {
                 self.current += 1;
                 return Some(*cache_info);
@@ -1279,6 +1279,10 @@ impl ProcessorSerial {
     pub fn serial_middle(&self) -> u32 {
         self.edx
     }
+
+    pub fn serial(&self) -> u64 {
+        (self.serial_lower() as u64) | (self.serial_middle() as u64) << 32
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1558,6 +1562,13 @@ impl FeatureInfo {
         has_rdrand,
         edx_ecx,
         FeatureInfoFlags::RDRAND
+    );
+
+    check_flag!(
+        doc = "A value of 1 indicates the indicates the presence of a hypervisor.",
+        has_hypervisor,
+        edx_ecx,
+        FeatureInfoFlags::HYPERVISOR
     );
 
     check_flag!(
@@ -1890,6 +1901,8 @@ bitflags! {
         const F16C = 1 << 29;
         /// A value of 1 indicates that processor supports RDRAND instruction.
         const RDRAND = 1 << 30;
+        /// A value of 1 indicates the indicates the presence of a hypervisor.
+        const HYPERVISOR = 1 << 31;
 
 
         // EDX flags
@@ -3557,8 +3570,8 @@ impl Iterator for SgxSectionIter {
     type Item = SgxSectionInfo;
 
     fn next(&mut self) -> Option<SgxSectionInfo> {
-        self.current += 1;
         let res = cpuid!(EAX_SGX, self.current);
+        self.current += 1;
         match get_bits(res.eax, 0, 3) {
             0b0001 => Some(SgxSectionInfo::Epc(EpcSection {
                 eax: res.eax,
@@ -3765,8 +3778,14 @@ impl TscInfo {
     }
 
     /// “TSC frequency” = “core crystal clock frequency” * EBX/EAX.
-    pub fn tsc_frequency(&self) -> u64 {
-        self.nominal_frequency() as u64 * self.numerator() as u64 / self.denominator() as u64
+    pub fn tsc_frequency(&self) -> Option<u64> {
+        // In some case TscInfo is a valid leaf, but the values reported are still 0
+        // we should avoid a division by zero in case denominator ends up being 0.
+        if self.nominal_frequency() == 0 || self.numerator() == 0 || self.denominator() == 0 {
+            return None;
+        }
+
+        Some(self.nominal_frequency() as u64 * self.numerator() as u64 / self.denominator() as u64)
     }
 }
 

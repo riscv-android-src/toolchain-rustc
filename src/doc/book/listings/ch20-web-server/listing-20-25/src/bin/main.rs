@@ -1,4 +1,3 @@
-// ANCHOR: all
 use hello::ThreadPool;
 use std::fs;
 use std::io::prelude::*;
@@ -47,4 +46,3 @@ fn handle_connection(mut stream: TcpStream) {
     stream.write(response.as_bytes()).unwrap();
     stream.flush().unwrap();
 }
-// ANCHOR_END: all

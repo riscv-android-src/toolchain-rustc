@@ -23,10 +23,10 @@ fn main() {
     if !cfg!(feature = "static-curl") {
         // OSX and Haiku ships libcurl by default, so we just use that version
         // so long as it has the right features enabled.
-        if target.contains("apple") || target.contains("haiku") {
-            if !cfg!(feature = "http2") || curl_config_reports_http2() {
-                return println!("cargo:rustc-flags=-l curl");
-            }
+        if (target.contains("apple") || target.contains("haiku"))
+            && (!cfg!(feature = "http2") || curl_config_reports_http2())
+        {
+            return println!("cargo:rustc-flags=-l curl");
         }
 
         // Next, fall back and try to use pkg-config if its available.
@@ -34,10 +34,8 @@ fn main() {
             if try_vcpkg() {
                 return;
             }
-        } else {
-            if try_pkg_config() {
-                return;
-            }
+        } else if try_pkg_config() {
+            return;
         }
     }
 
@@ -65,31 +63,27 @@ fn main() {
     println!("cargo:include={}", include.display());
     println!("cargo:static=1");
     fs::create_dir_all(include.join("curl")).unwrap();
-    fs::copy("curl/include/curl/curl.h", include.join("curl/curl.h")).unwrap();
-    fs::copy(
-        "curl/include/curl/curlver.h",
-        include.join("curl/curlver.h"),
-    )
-    .unwrap();
-    fs::copy("curl/include/curl/easy.h", include.join("curl/easy.h")).unwrap();
-    fs::copy(
-        "curl/include/curl/mprintf.h",
-        include.join("curl/mprintf.h"),
-    )
-    .unwrap();
-    fs::copy("curl/include/curl/multi.h", include.join("curl/multi.h")).unwrap();
-    fs::copy(
-        "curl/include/curl/stdcheaders.h",
-        include.join("curl/stdcheaders.h"),
-    )
-    .unwrap();
-    fs::copy("curl/include/curl/system.h", include.join("curl/system.h")).unwrap();
-    fs::copy("curl/include/curl/urlapi.h", include.join("curl/urlapi.h")).unwrap();
-    fs::copy(
-        "curl/include/curl/typecheck-gcc.h",
-        include.join("curl/typecheck-gcc.h"),
-    )
-    .unwrap();
+
+    for header in [
+        "curl.h",
+        "curlver.h",
+        "easy.h",
+        "options.h",
+        "mprintf.h",
+        "multi.h",
+        "stdcheaders.h",
+        "system.h",
+        "urlapi.h",
+        "typecheck-gcc.h",
+    ]
+    .iter()
+    {
+        fs::copy(
+            format!("curl/include/curl/{}", header),
+            include.join("curl").join(header),
+        )
+        .unwrap();
+    }
 
     let pkgconfig = dst.join("lib/pkgconfig");
     fs::create_dir_all(&pkgconfig).unwrap();
@@ -134,6 +128,7 @@ fn main() {
         .define("HAVE_ZLIB_H", None)
         .define("HAVE_LIBZ", None)
         .file("curl/lib/asyn-thread.c")
+        .file("curl/lib/altsvc.c")
         .file("curl/lib/base64.c")
         .file("curl/lib/conncache.c")
         .file("curl/lib/connect.c")
@@ -170,6 +165,7 @@ fn main() {
         .file("curl/lib/llist.c")
         .file("curl/lib/mime.c")
         .file("curl/lib/mprintf.c")
+        .file("curl/lib/mqtt.c")
         .file("curl/lib/multi.c")
         .file("curl/lib/netrc.c")
         .file("curl/lib/nonblock.c")
@@ -292,6 +288,7 @@ fn main() {
             .define("HAVE_IOCTLSOCKET_FIONBIO", None)
             .define("USE_WINSOCK", None)
             .file("curl/lib/system_win32.c")
+            .file("curl/lib/version_win32.c")
             .file("curl/lib/curl_multibyte.c");
 
         if cfg!(feature = "spnego") {
@@ -467,7 +464,7 @@ fn try_pkg_config() -> bool {
     for path in lib.include_paths.iter() {
         println!("cargo:include={}", path.display());
     }
-    return true;
+    true
 }
 
 fn xcode_major_version() -> Option<u8> {
@@ -507,7 +504,7 @@ fn curl_config_reports_http2() -> bool {
         return false;
     }
 
-    return true;
+    true
 }
 
 fn macos_link_search_path() -> Option<String> {

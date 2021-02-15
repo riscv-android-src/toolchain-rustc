@@ -13,9 +13,9 @@
 [package]
 edition = "2018"
 name = "mdbook"
-version = "0.4.3"
+version = "0.4.5"
 authors = ["Mathieu David <mathieudavid@mathieudavid.org>", "Michael-F-Bryan <michaelfbryan@gmail.com>", "Matt Ickstadt <mattico8@gmail.com>"]
-exclude = ["/book-example/*"]
+exclude = ["/guide/*"]
 description = "Creates a book from markdown files"
 documentation = "http://rust-lang.github.io/mdBook/index.html"
 readme = "README.md"

@@ -1,7 +1,6 @@
 use std::cmp::Reverse;
 use std::ptr;
 
-use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_ast::{self as ast, Path};
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashSet;
@@ -14,6 +13,7 @@ use rustc_middle::bug;
 use rustc_middle::ty::{self, DefIdTree};
 use rustc_session::Session;
 use rustc_span::hygiene::MacroKind;
+use rustc_span::lev_distance::find_best_match_for_name;
 use rustc_span::source_map::SourceMap;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{BytePos, MultiSpan, Span};
@@ -143,7 +143,7 @@ impl<'a> Resolver<'a> {
                     _ => {
                         bug!(
                             "GenericParamsFromOuterFunction should only be used with Res::SelfTy, \
-                            DefKind::TyParam"
+                            DefKind::TyParam or DefKind::ConstParam"
                         );
                     }
                 }
@@ -481,6 +481,7 @@ impl<'a> Resolver<'a> {
                         name
                     ));
                 }
+                err.help("use `#![feature(const_generics)]` and `#![feature(const_evaluatable_checked)]` to allow generic const expressions");
 
                 err
             }
@@ -609,7 +610,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 Scope::DeriveHelpersCompat => {
-                    let res = Res::NonMacroAttr(NonMacroAttrKind::DeriveHelper);
+                    let res = Res::NonMacroAttr(NonMacroAttrKind::DeriveHelperCompat);
                     if filter_fn(res) {
                         for derive in parent_scope.derives {
                             let parent_scope = &ParentScope { derives: &[], ..*parent_scope };
@@ -715,7 +716,7 @@ impl<'a> Resolver<'a> {
         suggestions.sort_by_cached_key(|suggestion| suggestion.candidate.as_str());
 
         match find_best_match_for_name(
-            suggestions.iter().map(|suggestion| &suggestion.candidate),
+            &suggestions.iter().map(|suggestion| suggestion.candidate).collect::<Vec<Symbol>>(),
             ident.name,
             None,
         ) {

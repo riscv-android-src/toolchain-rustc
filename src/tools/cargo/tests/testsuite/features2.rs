@@ -1367,7 +1367,7 @@ fn resolver_bad_setting() {
             [package]
             name = "foo"
             version = "0.1.0"
-            resolver = "1"
+            resolver = "foo"
             "#,
         )
         .file("src/lib.rs", "")
@@ -1381,10 +1381,65 @@ fn resolver_bad_setting() {
 error: failed to parse manifest at `[..]/foo/Cargo.toml`
 
 Caused by:
-  `resolver` setting `1` is not valid, only valid option is \"2\"
+  `resolver` setting `foo` is not valid, valid options are \"1\" or \"2\"
 ",
         )
         .run();
+}
+
+#[cargo_test]
+fn resolver_original() {
+    // resolver="1" uses old unification behavior.
+    Package::new("common", "1.0.0")
+        .feature("f1", &[])
+        .file(
+            "src/lib.rs",
+            r#"
+            #[cfg(feature = "f1")]
+            compile_error!("f1 should not activate");
+            "#,
+        )
+        .publish();
+
+    Package::new("bar", "1.0.0")
+        .add_dep(
+            Dependency::new("common", "1.0")
+                .target("cfg(whatever)")
+                .enable_features(&["f1"]),
+        )
+        .publish();
+
+    let manifest = |resolver| {
+        format!(
+            r#"
+                cargo-features = ["resolver"]
+                [package]
+                name = "foo"
+                version = "0.1.0"
+                resolver = "{}"
+
+                [dependencies]
+                common = "1.0"
+                bar = "1.0"
+            "#,
+            resolver
+        )
+    };
+
+    let p = project()
+        .file("Cargo.toml", &manifest("1"))
+        .file("src/lib.rs", "")
+        .build();
+
+    p.cargo("check")
+        .masquerade_as_nightly_cargo()
+        .with_status(101)
+        .with_stderr_contains("[..]f1 should not activate[..]")
+        .run();
+
+    p.change_file("Cargo.toml", &manifest("2"));
+
+    p.cargo("check").masquerade_as_nightly_cargo().run();
 }
 
 #[cargo_test]
@@ -2159,29 +2214,19 @@ fn minimal_download() {
         .run();
     clear();
 
-    // This disables itarget, but leaves decouple_dev_deps enabled. However,
-    // `cargo tree` downloads everything anyways. Ideally `cargo tree` should
-    // be a little smarter, but that would make it a bit more complicated. The
-    // two "Downloading" lines are because `download_accessible` doesn't
-    // download enough (`cargo tree` really wants everything). Again, that
-    // could be cleaner, but is difficult.
+    // This disables itarget, but leaves decouple_dev_deps enabled.
     p.cargo("tree -e normal --target=all -Zfeatures=all")
         .masquerade_as_nightly_cargo()
         .with_stderr_unordered(
             "\
 [DOWNLOADING] crates ...
-[DOWNLOADING] crates ...
 [DOWNLOADED] normal v1.0.0 [..]
-[DOWNLOADED] dev_dep v1.0.0 [..]
 [DOWNLOADED] normal_pm v1.0.0 [..]
 [DOWNLOADED] build_dep v1.0.0 [..]
-[DOWNLOADED] dev_dep_pm v1.0.0 [..]
 [DOWNLOADED] build_dep_pm v1.0.0 [..]
 [DOWNLOADED] itarget_normal v1.0.0 [..]
-[DOWNLOADED] itarget_dev_dep v1.0.0 [..]
 [DOWNLOADED] itarget_normal_pm v1.0.0 [..]
 [DOWNLOADED] itarget_build_dep v1.0.0 [..]
-[DOWNLOADED] itarget_dev_dep_pm v1.0.0 [..]
 [DOWNLOADED] itarget_build_dep_pm v1.0.0 [..]
 ",
         )

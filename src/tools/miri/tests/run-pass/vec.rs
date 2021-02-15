@@ -1,5 +1,4 @@
 // compile-flags: -Zmiri-track-raw-pointers
-// ignore-windows (FIXME: tracking raw pointers does not work on Windows)
 // Gather all references from a mutable iterator and make sure Miri notices if
 // using them is dangerous.
 fn test_all_refs<'a, T: 'a>(dummy: &mut T, iter: impl Iterator<Item = &'a mut T>) {
@@ -130,6 +129,12 @@ fn push_str_ptr_stable() {
     assert_eq!(format!("{}", hello), "hello");
 }
 
+fn sort() {
+    let mut v = vec![1; 20];
+    v.push(0);
+    v.sort();
+}
+
 fn main() {
     assert_eq!(vec_reallocate().len(), 5);
 
@@ -154,4 +159,6 @@ fn main() {
     vec_extend_ptr_stable();
     vec_truncate_ptr_stable();
     push_str_ptr_stable();
+
+    sort();
 }

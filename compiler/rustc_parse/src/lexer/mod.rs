@@ -510,7 +510,7 @@ impl<'a> StringReader<'a> {
         FatalError.raise()
     }
 
-    /// Note: It was decided to not add a test case, because it would be to big.
+    /// Note: It was decided to not add a test case, because it would be too big.
     /// <https://github.com/rust-lang/rust/pull/50296#issuecomment-392135180>
     fn report_too_many_hashes(&self, start: BytePos, found: usize) -> ! {
         self.fatal_span_(
@@ -532,10 +532,15 @@ impl<'a> StringReader<'a> {
             if let Err(err) = result {
                 let span_with_quotes =
                     self.mk_sp(content_start - BytePos(1), content_end + BytePos(1));
+                let (start, end) = (range.start as u32, range.end as u32);
+                let lo = content_start + BytePos(start);
+                let hi = lo + BytePos(end - start);
+                let span = self.mk_sp(lo, hi);
                 emit_unescape_error(
                     &self.sess.span_diagnostic,
                     lit_content,
                     span_with_quotes,
+                    span,
                     mode,
                     range,
                     err,

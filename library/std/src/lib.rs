@@ -206,12 +206,13 @@
 #![needs_panic_runtime]
 // std may use features in a platform-specific way
 #![allow(unused_features)]
-#![cfg_attr(not(bootstrap), feature(rustc_allow_const_fn_unstable))]
-#![cfg_attr(test, feature(print_internals, set_stdio, update_panic_count))]
+#![feature(rustc_allow_const_fn_unstable)]
+#![cfg_attr(test, feature(internal_output_capture, print_internals, update_panic_count))]
 #![cfg_attr(
     all(target_vendor = "fortanix", target_env = "sgx"),
     feature(slice_index_methods, coerce_unsized, sgx_platform)
 )]
+#![deny(rustc::existing_doc_keyword)]
 #![cfg_attr(all(test, target_vendor = "fortanix", target_env = "sgx"), feature(fixed_size_array))]
 // std is implemented with unstable features, many of which are internal
 // compiler details that will never be stable
@@ -227,7 +228,6 @@
 #![feature(asm)]
 #![feature(associated_type_bounds)]
 #![feature(atomic_mut_ptr)]
-#![feature(bool_to_option)]
 #![feature(box_syntax)]
 #![feature(c_variadic)]
 #![feature(cfg_accessible)]
@@ -235,7 +235,6 @@
 #![feature(cfg_target_thread_local)]
 #![feature(char_error_internals)]
 #![feature(char_internals)]
-#![feature(clamp)]
 #![feature(concat_idents)]
 #![feature(const_cstr_unchecked)]
 #![feature(const_fn_floating_point_arithmetic)]
@@ -289,7 +288,8 @@
 #![feature(nll)]
 #![feature(nonnull_slice_from_raw_parts)]
 #![feature(once_cell)]
-#![feature(optin_builtin_traits)]
+#![cfg_attr(bootstrap, feature(optin_builtin_traits))]
+#![cfg_attr(not(bootstrap), feature(auto_traits))]
 #![feature(or_patterns)]
 #![feature(panic_info_message)]
 #![feature(panic_internals)]
@@ -313,18 +313,18 @@
 #![feature(stdsimd)]
 #![feature(stmt_expr_attributes)]
 #![feature(str_internals)]
+#![feature(str_split_once)]
 #![feature(test)]
 #![feature(thread_local)]
 #![feature(thread_local_internals)]
 #![feature(toowned_clone_into)]
 #![feature(total_cmp)]
 #![feature(trace_macros)]
+#![feature(try_blocks)]
 #![feature(try_reserve)]
 #![feature(unboxed_closures)]
 #![feature(unsafe_block_in_unsafe_fn)]
-#![feature(unsafe_cell_get_mut)]
 #![feature(unsafe_cell_raw_get)]
-#![cfg_attr(bootstrap, feature(untagged_unions))]
 #![feature(unwind_attributes)]
 #![feature(vec_into_raw_parts)]
 #![feature(wake_trait)]
@@ -566,5 +566,5 @@ include!("keyword_docs.rs");
 // This is required to avoid an unstable error when `restricted-std` is not
 // enabled. The use of #![feature(restricted_std)] in rustc-std-workspace-std
 // is unconditional, so the unstable feature needs to be defined somewhere.
-#[cfg_attr(not(feature = "restricted-std"), unstable(feature = "restricted_std", issue = "none"))]
+#[unstable(feature = "restricted_std", issue = "none")]
 mod __restricted_std_workaround {}

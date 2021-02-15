@@ -17,12 +17,6 @@ name = "miri"
 test = false # we have no unit tests
 doctest = false # and no doc tests
 
-[[bin]]
-name = "miri-rustc-tests"
-test = false # we have no unit tests
-doctest = false # and no doc tests
-required-features = ["rustc_tests"]
-
 [dependencies]
 getrandom = { version = "0.2", features = ["std"] }
 env_logger = "0.7.1"
@@ -30,6 +24,7 @@ log = "0.4"
 shell-escape = "0.1.4"
 hex = "0.4.0"
 rand = "0.7"
+smallvec = "1.4.2"
 
 # A noop dependency that changes in the Rust repository, it's a bit of a hack.
 # See the `src/tools/rustc-workspace-hack/README.md` file in `rust-lang/rust`
@@ -45,6 +40,3 @@ libc = "0.2"
 compiletest_rs = { version = "0.5", features = ["tmp"] }
 rustc_version = "0.2.3"
 colored = "2"
-
-[features]
-rustc_tests = []

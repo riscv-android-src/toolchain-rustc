@@ -29,7 +29,7 @@ pub struct Refspecs<'remote> {
     remote: &'remote Remote<'remote>,
 }
 
-/// Description of a reference advertised bya remote server, given out on calls
+/// Description of a reference advertised by a remote server, given out on calls
 /// to `list`.
 pub struct RemoteHead<'remote> {
     raw: *const raw::git_remote_head,
@@ -71,6 +71,22 @@ impl<'repo> Remote<'repo> {
         crate::init();
         let remote_name = CString::new(remote_name).unwrap();
         unsafe { raw::git_remote_is_valid_name(remote_name.as_ptr()) == 1 }
+    }
+
+    /// Create a detached remote
+    ///
+    /// Create a remote with the given url in-memory. You can use this
+    /// when you have a URL instead of a remote's name.
+    /// Contrasted with an anonymous remote, a detached remote will not
+    /// consider any repo configuration values.
+    pub fn create_detached(url: &str) -> Result<Remote<'_>, Error> {
+        crate::init();
+        let mut ret = ptr::null_mut();
+        let url = CString::new(url)?;
+        unsafe {
+            try_call!(raw::git_remote_create_detached(&mut ret, url));
+            Ok(Binding::from_raw(ret))
+        }
     }
 
     /// Get the remote's name.

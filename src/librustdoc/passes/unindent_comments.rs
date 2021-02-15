@@ -8,13 +8,13 @@ use crate::passes::Pass;
 #[cfg(test)]
 mod tests;
 
-pub const UNINDENT_COMMENTS: Pass = Pass {
+crate const UNINDENT_COMMENTS: Pass = Pass {
     name: "unindent-comments",
     run: unindent_comments,
     description: "removes excess indentation on comments in order for markdown to like it",
 };
 
-pub fn unindent_comments(krate: clean::Crate, _: &DocContext<'_>) -> clean::Crate {
+crate fn unindent_comments(krate: clean::Crate, _: &DocContext<'_>) -> clean::Crate {
     CommentCleaner.fold_crate(krate)
 }
 
@@ -23,12 +23,12 @@ struct CommentCleaner;
 impl fold::DocFolder for CommentCleaner {
     fn fold_item(&mut self, mut i: Item) -> Option<Item> {
         i.attrs.unindent_doc_comments();
-        self.fold_item_recur(i)
+        Some(self.fold_item_recur(i))
     }
 }
 
 impl clean::Attributes {
-    pub fn unindent_doc_comments(&mut self) {
+    crate fn unindent_doc_comments(&mut self) {
         unindent_fragments(&mut self.doc_strings);
     }
 }

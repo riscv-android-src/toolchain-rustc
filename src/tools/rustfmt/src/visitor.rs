@@ -5,7 +5,7 @@ use rustc_ast::{ast, attr::HasAttrs, token::DelimToken, visit};
 use rustc_span::{symbol, BytePos, Pos, Span, DUMMY_SP};
 
 use crate::attr::*;
-use crate::comment::{rewrite_comment, CodeCharKind, CommentCodeSlices};
+use crate::comment::{contains_comment, rewrite_comment, CodeCharKind, CommentCodeSlices};
 use crate::config::Version;
 use crate::config::{BraceStyle, Config};
 use crate::coverage::transform_missing_snippet;
@@ -261,14 +261,23 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
             trimmed.is_empty() || trimmed.chars().all(|c| c == ';')
         };
 
-        for (kind, offset, sub_slice) in CommentCodeSlices::new(self.snippet(span)) {
+        let comment_snippet = self.snippet(span);
+
+        let align_to_right = if unindent_comment && contains_comment(&comment_snippet) {
+            let first_lines = comment_snippet.splitn(2, '/').next().unwrap_or("");
+            last_line_width(first_lines) > last_line_width(&comment_snippet)
+        } else {
+            false
+        };
+
+        for (kind, offset, sub_slice) in CommentCodeSlices::new(comment_snippet) {
             let sub_slice = transform_missing_snippet(config, sub_slice);
 
             debug!("close_block: {:?} {:?} {:?}", kind, offset, sub_slice);
 
             match kind {
                 CodeCharKind::Comment => {
-                    if !unindented && unindent_comment {
+                    if !unindented && unindent_comment && !align_to_right {
                         unindented = true;
                         self.block_indent = self.block_indent.block_unindent(config);
                     }
@@ -361,7 +370,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
 
     // Note that this only gets called for function definitions. Required methods
     // on traits do not get handled here.
-    fn visit_fn(
+    pub(crate) fn visit_fn(
         &mut self,
         fk: visit::FnKind<'_>,
         generics: &ast::Generics,
@@ -563,6 +572,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                             &self.get_context(),
                             self.block_indent,
                             &item.vis,
+                            item.span,
                         );
                         self.push_rewrite(item.span, rewrite);
                     }
@@ -574,6 +584,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                             generic_bounds,
                             generics,
                             &item.vis,
+                            item.span,
                         );
                         self.push_rewrite(item.span, rewrite);
                     }
@@ -640,6 +651,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                     &self.get_context(),
                     self.block_indent,
                     &ti.vis,
+                    ti.span,
                 );
                 self.push_rewrite(ti.span, rewrite);
             }
@@ -686,6 +698,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                         &generics,
                         &self.get_context(),
                         self.block_indent,
+                        ii.span,
                     )
                 };
                 let rewrite = match ty {
@@ -842,7 +855,7 @@ impl<'b, 'a: 'b> FmtVisitor<'a> {
                 );
             } else {
                 match &attr.kind {
-                    ast::AttrKind::Normal(ref attribute_item)
+                    ast::AttrKind::Normal(ref attribute_item, _)
                         if self.is_unknown_rustfmt_attr(&attribute_item.path.segments) =>
                     {
                         let file_name = self.parse_sess.span_to_filename(attr.span);

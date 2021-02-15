@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -631,11 +632,11 @@ fn client_use_statement_completion_doesnt_suggest_arguments() {
 ///
 /// ```
 /// [dependencies]
-/// version-check = "0.5555"
+/// auto-cfg = "0.5555"
 /// ```
 ///
-/// * Firstly "version-check" doesn't exist, it should be "version_check"
-/// * Secondly version 0.5555 of "version_check" doesn't exist.
+/// * Firstly "auto-cfg" doesn't exist, it should be "autocfg"
+/// * Secondly version 0.5555 of "autocfg" doesn't exist.
 #[test]
 fn client_dependency_typo_and_fix() {
     let manifest_with_dependency = |dep: &str| {
@@ -654,7 +655,7 @@ fn client_dependency_typo_and_fix() {
     };
 
     let p = project("dependency_typo")
-        .file("Cargo.toml", &manifest_with_dependency(r#"version-check = "0.5555""#))
+        .file("Cargo.toml", &manifest_with_dependency(r#"auto-cfg = "0.5555""#))
         .file(
             "src/main.rs",
             r#"
@@ -672,14 +673,14 @@ fn client_dependency_typo_and_fix() {
     let diag = rls.wait_for_diagnostics();
     assert_eq!(diag.diagnostics.len(), 1);
     assert_eq!(diag.diagnostics[0].severity, Some(DiagnosticSeverity::Error));
-    assert!(diag.diagnostics[0].message.contains("no matching package named `version-check`"));
+    assert!(diag.diagnostics[0].message.contains("no matching package named `auto-cfg`"));
 
     let change_manifest = |contents: &str| {
         std::fs::write(root_path.join("Cargo.toml"), contents).unwrap();
     };
 
     // fix naming typo, we now expect a version error diagnostic
-    change_manifest(&manifest_with_dependency(r#"version_check = "0.5555""#));
+    change_manifest(&manifest_with_dependency(r#"autocfg = "0.5555""#));
     rls.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
         changes: vec![FileEvent {
             uri: Url::from_file_path(p.root().join("Cargo.toml")).unwrap(),
@@ -694,8 +695,8 @@ fn client_dependency_typo_and_fix() {
 
     // Fix version issue so no error diagnostics occur.
     // This is kinda slow as cargo will compile the dependency, though I
-    // chose version_check to minimise this as it is a very small dependency.
-    change_manifest(&manifest_with_dependency(r#"version_check = "0.1""#));
+    // chose autocfg to minimise this as it is a very small dependency.
+    change_manifest(&manifest_with_dependency(r#"autocfg = "1""#));
     rls.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
         changes: vec![FileEvent {
             uri: Url::from_file_path(p.root().join("Cargo.toml")).unwrap(),
@@ -2226,4 +2227,31 @@ fn client_parse_error_on_malformed_input() {
     // Right now parse errors shutdown the RLS, which we might want to revisit
     // to provide better fault tolerance.
     cmd.wait().unwrap();
+}
+
+#[test]
+fn client_cargo_target_directory_is_excluded_from_backups() {
+    // This is to make sure that if it's rls that crates target/ directory the directory is
+    // excluded from backups just as if it was created by cargo itself. See a comment in
+    // run_cargo_ws() or rust-lang/cargo@cf3bfc9/rust-lang/cargo#8378 for more information.
+    let p = project("backup_exclusion_workspace")
+        .file("Cargo.toml", &basic_bin_manifest("foo"))
+        .file(
+            "src/main.rs",
+            r#"
+                fn main() {
+                    println!("Hello world!");
+                }
+            "#,
+        )
+        .build();
+    let root_path = p.root();
+    let mut rls = p.spawn_rls_async();
+    rls.request::<Initialize>(0, initialize_params(root_path));
+    let _ = rls.wait_for_indexing();
+    let cachedir_tag = p.root().join("target").join("CACHEDIR.TAG");
+    assert!(cachedir_tag.is_file());
+    assert!(fs::read_to_string(&cachedir_tag)
+        .unwrap()
+        .starts_with("Signature: 8a477f597d28d172789f06886806bc55"));
 }

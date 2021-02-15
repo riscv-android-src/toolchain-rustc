@@ -51,7 +51,7 @@ pub(super) fn mangle(
 
     // Erase regions because they may not be deterministic when hashed
     // and should not matter anyhow.
-    let instance_ty = tcx.erase_regions(&instance_ty);
+    let instance_ty = tcx.erase_regions(instance_ty);
 
     let hash = get_symbol_hash(tcx, instance, instance_ty, instantiating_crate);
 
@@ -222,7 +222,7 @@ impl Printer<'tcx> for SymbolPrinter<'tcx> {
 
     fn print_dyn_existential(
         mut self,
-        predicates: &'tcx ty::List<ty::ExistentialPredicate<'tcx>>,
+        predicates: &'tcx ty::List<ty::Binder<ty::ExistentialPredicate<'tcx>>>,
     ) -> Result<Self::DynExistential, Self::Error> {
         let mut first = true;
         for p in predicates {

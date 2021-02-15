@@ -17,7 +17,6 @@
 #include "smart.h"
 #include "remote.h"
 #include "repository.h"
-#include "global.h"
 #include "http.h"
 #include "git2/sys/credential.h"
 
@@ -875,41 +874,64 @@ static int do_send_request(winhttp_stream *s, size_t len, bool chunked)
 
 static int send_request(winhttp_stream *s, size_t len, bool chunked)
 {
-	int request_failed = 0, cert_valid = 1, error = 0;
-	DWORD ignore_flags;
+	int request_failed = 1, error, attempts = 0;
+	DWORD ignore_flags, send_request_error;
 
 	git_error_clear();
-	if ((error = do_send_request(s, len, chunked)) < 0) {
-		if (GetLastError() != ERROR_WINHTTP_SECURE_FAILURE) {
-			git_error_set(GIT_ERROR_OS, "failed to send request");
-			return -1;
+
+	while (request_failed && attempts++ < 3) {
+		int cert_valid = 1;
+		int client_cert_requested = 0;
+		request_failed = 0;
+		if ((error = do_send_request(s, len, chunked)) < 0) {
+			send_request_error = GetLastError();
+			request_failed = 1;
+			switch (send_request_error) {
+				case ERROR_WINHTTP_SECURE_FAILURE:
+					cert_valid = 0;
+					break;
+				case ERROR_WINHTTP_CLIENT_AUTH_CERT_NEEDED:
+					client_cert_requested = 1;
+					break;
+				default:
+					git_error_set(GIT_ERROR_OS, "failed to send request");
+					return -1;
+			}
 		}
 
-		request_failed = 1;
-		cert_valid = 0;
+		if (!request_failed || !cert_valid) {
+			git_error_clear();
+			if ((error = certificate_check(s, cert_valid)) < 0) {
+				if (!git_error_last())
+					git_error_set(GIT_ERROR_OS, "user cancelled certificate check");
+
+				return error;
+			}
+		}
+
+		/* if neither the request nor the certificate check returned errors, we're done */
+		if (!request_failed)
+			return 0;
+
+		if (!cert_valid) {
+			ignore_flags = no_check_cert_flags;
+			if (!WinHttpSetOption(s->request, WINHTTP_OPTION_SECURITY_FLAGS, &ignore_flags, sizeof(ignore_flags))) {
+				git_error_set(GIT_ERROR_OS, "failed to set security options");
+				return -1;
+			}
+		}
+
+		if (client_cert_requested) {
+			/*
+			 * Client certificates are not supported, explicitly tell the server that
+			 * (it's possible a client certificate was requested but is not required)
+			 */
+			if (!WinHttpSetOption(s->request, WINHTTP_OPTION_CLIENT_CERT_CONTEXT, WINHTTP_NO_CLIENT_CERT_CONTEXT, 0)) {
+				git_error_set(GIT_ERROR_OS, "failed to set client cert context");
+				return -1;
+			}
+		}
 	}
-
-	git_error_clear();
-	if ((error = certificate_check(s, cert_valid)) < 0) {
-		if (!git_error_last())
-			git_error_set(GIT_ERROR_OS, "user cancelled certificate check");
-
-		return error;
-	}
-
-	/* if neither the request nor the certificate check returned errors, we're done */
-	if (!request_failed)
-		return 0;
-
-	ignore_flags = no_check_cert_flags;
-
-	if (!WinHttpSetOption(s->request, WINHTTP_OPTION_SECURITY_FLAGS, &ignore_flags, sizeof(ignore_flags))) {
-		git_error_set(GIT_ERROR_OS, "failed to set security options");
-		return -1;
-	}
-
-	if ((error = do_send_request(s, len, chunked)) < 0)
-		git_error_set(GIT_ERROR_OS, "failed to send request with unchecked certificate");
 
 	return error;
 }
@@ -1004,7 +1026,7 @@ replay:
 		}
 
 		if (s->chunked) {
-			assert(s->verb == post_verb);
+			GIT_ASSERT(s->verb == post_verb);
 
 			/* Flush, if necessary */
 			if (s->chunk_buffer_len > 0 &&
@@ -1055,7 +1077,7 @@ replay:
 				}
 
 				len -= bytes_read;
-				assert(bytes_read == bytes_written);
+				GIT_ASSERT(bytes_read == bytes_written);
 			}
 
 			git__free(buffer);
@@ -1167,7 +1189,7 @@ replay:
 			if (error < 0) {
 				return error;
 			} else if (!error) {
-				assert(t->server.cred);
+				GIT_ASSERT(t->server.cred);
 				winhttp_stream_close(s);
 				goto replay;
 			}
@@ -1181,7 +1203,7 @@ replay:
 			if (error < 0) {
 				return error;
 			} else if (!error) {
-				assert(t->proxy.cred);
+				GIT_ASSERT(t->proxy.cred);
 				winhttp_stream_close(s);
 				goto replay;
 			}
@@ -1267,7 +1289,7 @@ static int winhttp_stream_write_single(
 		return -1;
 	}
 
-	assert((DWORD)len == bytes_written);
+	GIT_ASSERT((DWORD)len == bytes_written);
 
 	return 0;
 }
@@ -1366,7 +1388,7 @@ static int winhttp_stream_write_buffered(
 		return -1;
 	}
 
-	assert((DWORD)len == bytes_written);
+	GIT_ASSERT((DWORD)len == bytes_written);
 
 	s->post_body_len += bytes_written;
 
@@ -1573,7 +1595,7 @@ static int winhttp_action(
 			break;
 
 		default:
-			assert(0);
+			GIT_ASSERT(0);
 	}
 
 	if (!ret)

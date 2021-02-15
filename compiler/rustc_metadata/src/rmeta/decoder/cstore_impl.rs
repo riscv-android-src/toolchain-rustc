@@ -138,7 +138,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         cdata.get_deprecation(def_id.index).map(DeprecationEntry::external)
     }
     item_attrs => { tcx.arena.alloc_from_iter(
-        cdata.get_item_attrs(def_id.index, tcx.sess).into_iter()
+        cdata.get_item_attrs(def_id.index, tcx.sess)
     ) }
     fn_arg_names => { cdata.get_fn_param_names(tcx, def_id.index) }
     rendered_const => { cdata.get_rendered_const(def_id.index) }
@@ -415,11 +415,7 @@ impl CStore {
 
         let span = data.get_span(id.index, sess);
 
-        // Mark the attrs as used
-        let attrs = data.get_item_attrs(id.index, sess);
-        for attr in attrs.iter() {
-            sess.mark_attr_used(attr);
-        }
+        let attrs = data.get_item_attrs(id.index, sess).collect();
 
         let ident = data.item_ident(id.index, sess);
 
@@ -428,7 +424,7 @@ impl CStore {
                 ident,
                 id: ast::DUMMY_NODE_ID,
                 span,
-                attrs: attrs.to_vec(),
+                attrs,
                 kind: ast::ItemKind::MacroDef(data.get_macro(id.index, sess)),
                 vis: ast::Visibility {
                     span: span.shrink_to_lo(),
@@ -459,6 +455,10 @@ impl CStore {
 
     pub fn module_expansion_untracked(&self, def_id: DefId, sess: &Session) -> ExpnId {
         self.get_crate_data(def_id.krate).module_expansion(def_id.index, sess)
+    }
+
+    pub fn num_def_ids(&self, cnum: CrateNum) -> usize {
+        self.get_crate_data(cnum).num_def_ids()
     }
 }
 
@@ -502,12 +502,14 @@ impl CrateStore for CStore {
         self.get_crate_data(def.krate).def_path_hash(def.index)
     }
 
-    fn all_def_path_hashes_and_def_ids(&self, cnum: CrateNum) -> Vec<(DefPathHash, DefId)> {
-        self.get_crate_data(cnum).all_def_path_hashes_and_def_ids()
-    }
-
-    fn num_def_ids(&self, cnum: CrateNum) -> usize {
-        self.get_crate_data(cnum).num_def_ids()
+    // See `CrateMetadataRef::def_path_hash_to_def_id` for more details
+    fn def_path_hash_to_def_id(
+        &self,
+        cnum: CrateNum,
+        index_guess: u32,
+        hash: DefPathHash,
+    ) -> Option<DefId> {
+        self.get_crate_data(cnum).def_path_hash_to_def_id(cnum, index_guess, hash)
     }
 
     fn crates_untracked(&self) -> Vec<CrateNum> {

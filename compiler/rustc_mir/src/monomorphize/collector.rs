@@ -546,7 +546,7 @@ impl<'a, 'tcx> MirNeighborCollector<'a, 'tcx> {
         self.instance.subst_mir_and_normalize_erasing_regions(
             self.tcx,
             ty::ParamEnv::reveal_all(),
-            &value,
+            value,
         )
     }
 }
@@ -993,7 +993,7 @@ impl ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
         match item.kind {
             hir::ItemKind::ExternCrate(..)
             | hir::ItemKind::Use(..)
-            | hir::ItemKind::ForeignMod(..)
+            | hir::ItemKind::ForeignMod { .. }
             | hir::ItemKind::TyAlias(..)
             | hir::ItemKind::Trait(..)
             | hir::ItemKind::TraitAlias(..)
@@ -1066,6 +1066,8 @@ impl ItemLikeVisitor<'v> for RootCollector<'_, 'v> {
             self.push_if_root(def_id);
         }
     }
+
+    fn visit_foreign_item(&mut self, _foreign_item: &'v hir::ForeignItem<'v>) {}
 }
 
 impl RootCollector<'_, 'v> {
@@ -1118,7 +1120,7 @@ impl RootCollector<'_, 'v> {
         // late-bound regions, since late-bound
         // regions must appear in the argument
         // listing.
-        let main_ret_ty = self.tcx.erase_regions(&main_ret_ty.no_bound_vars().unwrap());
+        let main_ret_ty = self.tcx.erase_regions(main_ret_ty.no_bound_vars().unwrap());
 
         let start_instance = Instance::resolve(
             self.tcx,

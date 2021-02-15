@@ -259,7 +259,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 ItemKind::Trait(..)
                 | ItemKind::TraitAlias(..)
                 | ItemKind::Mod(..)
-                | ItemKind::ForeignMod(..)
+                | ItemKind::ForeignMod { .. }
                 | ItemKind::GlobalAsm(..)
                 | ItemKind::ExternCrate(..)
                 | ItemKind::Use(..) => {
@@ -637,7 +637,7 @@ fn infer_placeholder_type(
     }
 
     // Typeck doesn't expect erased regions to be returned from `type_of`.
-    tcx.fold_regions(&ty, &mut false, |r, _| match r {
+    tcx.fold_regions(ty, &mut false, |r, _| match r {
         ty::ReErased => tcx.lifetimes.re_static,
         _ => r,
     })

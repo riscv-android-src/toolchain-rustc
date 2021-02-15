@@ -69,7 +69,7 @@ declare_clippy_lint! {
 }
 
 declare_clippy_lint! {
-    /// **What it does:** Checks for comparing to an empty slice such as "" or [],`
+    /// **What it does:** Checks for comparing to an empty slice such as `""` or `[]`,
     /// and suggests using `.is_empty()` where applicable.
     ///
     /// **Why is this bad?** Some structures can answer `.is_empty()` much faster
@@ -222,9 +222,8 @@ fn check_impl_items(cx: &LateContext<'_>, item: &Item<'_>, impl_items: &[ImplIte
     let is_empty = if let Some(is_empty) = impl_items.iter().find(|i| is_named_self(cx, i, "is_empty")) {
         if cx.access_levels.is_exported(is_empty.id.hir_id) {
             return;
-        } else {
-            "a private"
         }
+        "a private"
     } else {
         "no corresponding"
     };

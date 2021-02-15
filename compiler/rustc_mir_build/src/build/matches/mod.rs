@@ -251,6 +251,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         arm.guard.as_ref(),
                         &fake_borrow_temps,
                         scrutinee_span,
+                        Some(arm.span),
                         Some(arm.scope),
                     );
 
@@ -288,6 +289,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         guard: Option<&Guard<'tcx>>,
         fake_borrow_temps: &Vec<(Place<'tcx>, Local)>,
         scrutinee_span: Span,
+        arm_span: Option<Span>,
         arm_scope: Option<region::Scope>,
     ) -> BasicBlock {
         if candidate.subcandidates.is_empty() {
@@ -299,6 +301,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 guard,
                 fake_borrow_temps,
                 scrutinee_span,
+                arm_span,
                 true,
             )
         } else {
@@ -334,6 +337,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         guard,
                         &fake_borrow_temps,
                         scrutinee_span,
+                        arm_span,
                         schedule_drops,
                     );
                     if arm_scope.is_none() {
@@ -494,6 +498,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             None,
             &fake_borrow_temps,
             irrefutable_pat.span,
+            None,
             None,
         )
         .unit()
@@ -876,11 +881,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// For an example of a case where we set `otherwise_block`, even for an
     /// exhaustive match consider:
     ///
+    /// ```rust
     /// match x {
     ///     (true, true) => (),
     ///     (_, false) => (),
     ///     (false, true) => (),
     /// }
+    /// ```
     ///
     /// For this match, we check if `x.0` matches `true` (for the first
     /// arm). If that's false, we check `x.1`. If it's `true` we check if
@@ -994,11 +1001,13 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Link up matched candidates. For example, if we have something like
     /// this:
     ///
+    /// ```rust
     /// ...
     /// Some(x) if cond => ...
     /// Some(x) => ...
     /// Some(x) if cond => ...
     /// ...
+    /// ```
     ///
     /// We generate real edges from:
     /// * `start_block` to the `prebinding_block` of the first pattern,
@@ -1394,12 +1403,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         match test.kind {
             TestKind::SwitchInt { switch_ty, ref mut options } => {
                 for candidate in candidates.iter() {
-                    if !self.add_cases_to_switch(
-                        &match_place,
-                        candidate,
-                        switch_ty,
-                        options,
-                    ) {
+                    if !self.add_cases_to_switch(&match_place, candidate, switch_ty, options) {
                         break;
                     }
                 }
@@ -1581,7 +1585,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Initializes each of the bindings from the candidate by
     /// moving/copying/ref'ing the source as appropriate. Tests the guard, if
     /// any, and then branches to the arm. Returns the block for the case where
-    /// the guard fails.
+    /// the guard succeeds.
     ///
     /// Note: we do not check earlier that if there is a guard,
     /// there cannot be move bindings. We avoid a use-after-move by only
@@ -1593,6 +1597,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         guard: Option<&Guard<'tcx>>,
         fake_borrows: &Vec<(Place<'tcx>, Local)>,
         scrutinee_span: Span,
+        arm_span: Option<Span>,
         schedule_drops: bool,
     ) -> BasicBlock {
         debug!("bind_and_guard_matched_candidate(candidate={:?})", candidate);
@@ -1723,15 +1728,42 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 self.cfg.push_assign(block, scrutinee_source_info, Place::from(temp), borrow);
             }
 
-            // the block to branch to if the guard fails; if there is no
-            // guard, this block is simply unreachable
-            let guard = match guard {
-                Guard::If(e) => self.hir.mirror(e.clone()),
+            let (guard_span, (post_guard_block, otherwise_post_guard_block)) = match guard {
+                Guard::If(e) => {
+                    let e = self.hir.mirror(e.clone());
+                    let source_info = self.source_info(e.span);
+                    (e.span, self.test_bool(block, e, source_info))
+                },
+                Guard::IfLet(pat, scrutinee) => {
+                    let scrutinee_span = scrutinee.span();
+                    let scrutinee_place = unpack!(block = self.lower_scrutinee(block, scrutinee.clone(), scrutinee_span));
+                    let mut guard_candidate = Candidate::new(scrutinee_place, &pat, false);
+                    let wildcard = Pat::wildcard_from_ty(pat.ty);
+                    let mut otherwise_candidate = Candidate::new(scrutinee_place, &wildcard, false);
+                    let fake_borrow_temps =
+                        self.lower_match_tree(block, pat.span, false, &mut [&mut guard_candidate, &mut otherwise_candidate]);
+                    self.declare_bindings(
+                        None,
+                        pat.span.to(arm_span.unwrap()),
+                        pat,
+                        ArmHasGuard(false),
+                        Some((Some(&scrutinee_place), scrutinee.span())),
+                    );
+                    let post_guard_block = self.bind_pattern(
+                        self.source_info(pat.span),
+                        guard_candidate,
+                        None,
+                        &fake_borrow_temps,
+                        scrutinee.span(),
+                        None,
+                        None,
+                    );
+                    let otherwise_post_guard_block = otherwise_candidate.pre_binding_block.unwrap();
+                    (scrutinee_span, (post_guard_block, otherwise_post_guard_block))
+                }
             };
-            let source_info = self.source_info(guard.span);
-            let guard_end = self.source_info(tcx.sess.source_map().end_point(guard.span));
-            let (post_guard_block, otherwise_post_guard_block) =
-                self.test_bool(block, guard, source_info);
+            let source_info = self.source_info(guard_span);
+            let guard_end = self.source_info(tcx.sess.source_map().end_point(guard_span));
             let guard_frame = self.guard_context.pop().unwrap();
             debug!("Exiting guard building context with locals: {:?}", guard_frame);
 
@@ -1780,14 +1812,11 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             // ```
             //
             // and that is clearly not correct.
-            let by_value_bindings =
-                parent_bindings
-                    .iter()
-                    .flat_map(|(bindings, _)| bindings)
-                    .chain(&candidate.bindings)
-                    .filter(|binding| {
-                        matches!(binding.binding_mode, BindingMode::ByValue )
-                    });
+            let by_value_bindings = parent_bindings
+                .iter()
+                .flat_map(|(bindings, _)| bindings)
+                .chain(&candidate.bindings)
+                .filter(|binding| matches!(binding.binding_mode, BindingMode::ByValue));
             // Read all of the by reference bindings to ensure that the
             // place they refer to can't be modified by the guard.
             for binding in by_value_bindings.clone() {
@@ -1992,7 +2021,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         self.var_debug_info.push(VarDebugInfo {
             name,
             source_info: debug_source_info,
-            place: for_arm_body.into(),
+            value: VarDebugInfoContents::Place(for_arm_body.into()),
         });
         let locals = if has_guard.0 {
             let ref_for_guard = self.local_decls.push(LocalDecl::<'tcx> {
@@ -2011,7 +2040,7 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
             self.var_debug_info.push(VarDebugInfo {
                 name,
                 source_info: debug_source_info,
-                place: ref_for_guard.into(),
+                value: VarDebugInfoContents::Place(ref_for_guard.into()),
             });
             LocalsForNode::ForGuard { ref_for_guard, for_arm_body }
         } else {

@@ -13,7 +13,7 @@
 [package]
 edition = "2018"
 name = "miow"
-version = "0.3.5"
+version = "0.3.6"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 description = "A zero overhead I/O library for Windows, focusing on IOCP and Async I/O\nabstractions.\n"
 homepage = "https://github.com/yoshuawuyts/miow"
@@ -26,7 +26,7 @@ repository = "https://github.com/yoshuawuyts/miow"
 default-target = "x86_64-pc-windows-msvc"
 targets = ["aarch64-pc-windows-msvc", "i686-pc-windows-msvc", "x86_64-pc-windows-msvc"]
 [dependencies.socket2]
-version = "0.3"
+version = "0.3.16"
 
 [dependencies.winapi]
 version = "0.3.3"

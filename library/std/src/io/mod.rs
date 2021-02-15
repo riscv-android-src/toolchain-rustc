@@ -266,24 +266,25 @@ pub use self::buffered::IntoInnerError;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::buffered::{BufReader, BufWriter, LineWriter};
 #[stable(feature = "rust1", since = "1.0.0")]
+pub use self::copy::copy;
+#[stable(feature = "rust1", since = "1.0.0")]
 pub use self::cursor::Cursor;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::error::{Error, ErrorKind, Result};
+#[unstable(feature = "internal_output_capture", issue = "none")]
+#[doc(no_inline, hidden)]
+pub use self::stdio::set_output_capture;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::stdio::{stderr, stdin, stdout, Stderr, Stdin, Stdout};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::stdio::{StderrLock, StdinLock, StdoutLock};
 #[unstable(feature = "print_internals", issue = "none")]
 pub use self::stdio::{_eprint, _print};
-#[unstable(feature = "libstd_io_internals", issue = "42788")]
-#[doc(no_inline, hidden)]
-pub use self::stdio::{set_panic, set_print, LocalOutput};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use self::util::{copy, empty, repeat, sink, Empty, Repeat, Sink};
-
-pub(crate) use self::stdio::clone_io;
+pub use self::util::{empty, repeat, sink, Empty, Repeat, Sink};
 
 mod buffered;
+pub(crate) mod copy;
 mod cursor;
 mod error;
 mod impls;
@@ -366,7 +367,6 @@ where
 {
     let start_len = buf.len();
     let mut g = Guard { len: buf.len(), buf };
-    let ret;
     loop {
         if g.len == g.buf.len() {
             unsafe {
@@ -385,21 +385,20 @@ where
             }
         }
 
-        match r.read(&mut g.buf[g.len..]) {
-            Ok(0) => {
-                ret = Ok(g.len - start_len);
-                break;
+        let buf = &mut g.buf[g.len..];
+        match r.read(buf) {
+            Ok(0) => return Ok(g.len - start_len),
+            Ok(n) => {
+                // We can't allow bogus values from read. If it is too large, the returned vec could have its length
+                // set past its capacity, or if it overflows the vec could be shortened which could create an invalid
+                // string if this is called via read_to_string.
+                assert!(n <= buf.len());
+                g.len += n;
             }
-            Ok(n) => g.len += n,
             Err(ref e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) => {
-                ret = Err(e);
-                break;
-            }
+            Err(e) => return Err(e),
         }
     }
-
-    ret
 }
 
 pub(crate) fn default_read_vectored<F>(read: F, bufs: &mut [IoSliceMut<'_>]) -> Result<usize>
@@ -1306,10 +1305,10 @@ pub trait Write {
         default_write_vectored(|b| self.write(b), bufs)
     }
 
-    /// Determines if this `Write`er has an efficient [`write_vectored`]
+    /// Determines if this `Write`r has an efficient [`write_vectored`]
     /// implementation.
     ///
-    /// If a `Write`er does not override the default [`write_vectored`]
+    /// If a `Write`r does not override the default [`write_vectored`]
     /// implementation, code using it may want to avoid the method all together
     /// and coalesce writes into a single buffer for higher performance.
     ///

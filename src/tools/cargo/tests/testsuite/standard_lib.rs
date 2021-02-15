@@ -7,7 +7,7 @@
 use cargo_test_support::registry::{Dependency, Package};
 use cargo_test_support::ProjectBuilder;
 use cargo_test_support::{is_nightly, paths, project, rustc_host, Execs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 struct Setup {
     rustc_wrapper: PathBuf,
@@ -27,17 +27,70 @@ fn setup() -> Option<Setup> {
         return None;
     }
 
-    // Register a version of one of the std dependencies that doesn't compile.
-    // This ensures that the mock-std's vendor is actually being used.
+    // Our mock sysroot requires a few packages from crates.io, so make sure
+    // they're "published" to crates.io. Also edit their code a bit to make sure
+    // that they have access to our custom crates with custom apis.
     Package::new("registry-dep-using-core", "1.0.0")
         .file(
             "src/lib.rs",
             "
-               don't compile me bro!!
+                #![no_std]
+
+                #[cfg(feature = \"mockbuild\")]
+                pub fn custom_api() {
+                }
+
+                #[cfg(not(feature = \"mockbuild\"))]
+                pub fn non_sysroot_api() {
+                    core::custom_api();
+                }
             ",
         )
         .add_dep(Dependency::new("rustc-std-workspace-core", "*").optional(true))
         .feature("mockbuild", &["rustc-std-workspace-core"])
+        .publish();
+    Package::new("registry-dep-using-alloc", "1.0.0")
+        .file(
+            "src/lib.rs",
+            "
+                #![no_std]
+
+                extern crate alloc;
+
+                #[cfg(feature = \"mockbuild\")]
+                pub fn custom_api() {
+                }
+
+                #[cfg(not(feature = \"mockbuild\"))]
+                pub fn non_sysroot_api() {
+                    core::custom_api();
+                    alloc::custom_api();
+                }
+            ",
+        )
+        .add_dep(Dependency::new("rustc-std-workspace-core", "*").optional(true))
+        .add_dep(Dependency::new("rustc-std-workspace-alloc", "*").optional(true))
+        .feature(
+            "mockbuild",
+            &["rustc-std-workspace-core", "rustc-std-workspace-alloc"],
+        )
+        .publish();
+    Package::new("registry-dep-using-std", "1.0.0")
+        .file(
+            "src/lib.rs",
+            "
+                #[cfg(feature = \"mockbuild\")]
+                pub fn custom_api() {
+                }
+
+                #[cfg(not(feature = \"mockbuild\"))]
+                pub fn non_sysroot_api() {
+                    std::custom_api();
+                }
+            ",
+        )
+        .add_dep(Dependency::new("rustc-std-workspace-std", "*").optional(true))
+        .feature("mockbuild", &["rustc-std-workspace-std"])
         .publish();
 
     let p = ProjectBuilder::new(paths::root().join("rustc-wrapper"))
@@ -78,15 +131,7 @@ fn setup() -> Option<Setup> {
 fn enable_build_std(e: &mut Execs, setup: &Setup) {
     // First up, force Cargo to use our "mock sysroot" which mimics what
     // libstd looks like upstream.
-    let root = paths::root();
-    let root = root
-        .parent() // chop off test name
-        .unwrap()
-        .parent() // chop off `citN`
-        .unwrap()
-        .parent() // chop off `target`
-        .unwrap()
-        .join("tests/testsuite/mock-std");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testsuite/mock-std");
     e.env("__CARGO_TESTS_ONLY_SRC_ROOT", &root);
 
     e.masquerade_as_nightly_cargo();
@@ -281,81 +326,6 @@ fn depend_same_as_std() {
         Some(s) => s,
         None => return,
     };
-
-    // Our mock sysroot requires a few packages from crates.io, so make sure
-    // they're "published" to crates.io. Also edit their code a bit to make sure
-    // that they have access to our custom crates with custom apis.
-    Package::new("registry-dep-using-core", "1.0.0")
-        .file(
-            "src/lib.rs",
-            "
-                #![no_std]
-
-                #[cfg(feature = \"mockbuild\")]
-                pub fn custom_api() {
-                }
-
-                #[cfg(not(feature = \"mockbuild\"))]
-                pub fn non_sysroot_api() {
-                    core::custom_api();
-                }
-            ",
-        )
-        .add_dep(Dependency::new("rustc-std-workspace-core", "*").optional(true))
-        .feature("mockbuild", &["rustc-std-workspace-core"])
-        .publish();
-    Package::new("registry-dep-using-alloc", "1.0.0")
-        .file(
-            "src/lib.rs",
-            "
-                #![no_std]
-
-                extern crate alloc;
-
-                #[cfg(feature = \"mockbuild\")]
-                pub fn custom_api() {
-                }
-
-                #[cfg(not(feature = \"mockbuild\"))]
-                pub fn non_sysroot_api() {
-                    core::custom_api();
-                    alloc::custom_api();
-                }
-            ",
-        )
-        .add_dep(Dependency::new("rustc-std-workspace-core", "*").optional(true))
-        .add_dep(Dependency::new("rustc-std-workspace-alloc", "*").optional(true))
-        .feature(
-            "mockbuild",
-            &["rustc-std-workspace-core", "rustc-std-workspace-alloc"],
-        )
-        .publish();
-    Package::new("registry-dep-using-std", "1.0.0")
-        .file(
-            "src/lib.rs",
-            "
-                #[cfg(feature = \"mockbuild\")]
-                pub fn custom_api() {
-                }
-
-                #[cfg(not(feature = \"mockbuild\"))]
-                pub fn non_sysroot_api() {
-                    std::custom_api();
-                }
-            ",
-        )
-        .add_dep(Dependency::new("rustc-std-workspace-std", "*").optional(true))
-        .feature("mockbuild", &["rustc-std-workspace-std"])
-        .publish();
-    Package::new("registry-dep-only-used-by-test", "1.0.0")
-        .file(
-            "src/lib.rs",
-            "
-                pub fn wow_testing_is_so_easy() {
-                }
-            ",
-        )
-        .publish();
 
     let p = project()
         .file(
@@ -675,5 +645,20 @@ fn different_features() {
         .build_std(&setup)
         .arg("-Zbuild-std-features=feature1")
         .target_host()
+        .run();
+}
+
+#[cargo_test]
+fn no_roots() {
+    // Checks for a bug where it would panic if there are no roots.
+    let setup = match setup() {
+        Some(s) => s,
+        None => return,
+    };
+    let p = project().file("tests/t1.rs", "").build();
+    p.cargo("build")
+        .build_std(&setup)
+        .target_host()
+        .with_stderr_contains("[FINISHED] [..]")
         .run();
 }

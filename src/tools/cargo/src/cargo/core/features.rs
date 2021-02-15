@@ -359,6 +359,8 @@ pub struct CliUnstable {
     pub terminal_width: Option<Option<usize>>,
     pub namespaced_features: bool,
     pub weak_dep_features: bool,
+    pub extra_link_arg: bool,
+    pub credential_process: bool,
 }
 
 fn deserialize_build_std<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -425,7 +427,7 @@ impl CliUnstable {
                 bail!("flag -Z{} does not take a value, found: `{}`", key, v);
             }
             Ok(true)
-        };
+        }
 
         fn parse_usize_opt(value: Option<&str>) -> CargoResult<Option<usize>> {
             Ok(match value {
@@ -466,6 +468,8 @@ impl CliUnstable {
             "terminal-width" => self.terminal_width = Some(parse_usize_opt(v)?),
             "namespaced-features" => self.namespaced_features = parse_empty(k, v)?,
             "weak-dep-features" => self.weak_dep_features = parse_empty(k, v)?,
+            "extra-link-arg" => self.extra_link_arg = parse_empty(k, v)?,
+            "credential-process" => self.credential_process = parse_empty(k, v)?,
             _ => bail!("unknown `-Z` flag specified: {}", k),
         }
 

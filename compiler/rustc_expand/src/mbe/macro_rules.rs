@@ -1174,7 +1174,8 @@ fn quoted_tt_to_string(tt: &mbe::TokenTree) -> String {
         mbe::TokenTree::MetaVarDecl(_, name, Some(kind)) => format!("${}:{}", name, kind),
         mbe::TokenTree::MetaVarDecl(_, name, None) => format!("${}:", name),
         _ => panic!(
-            "unexpected mbe::TokenTree::{{Sequence or Delimited}} \
+            "{}",
+            "unexpected mbe::TokenTree::{Sequence or Delimited} \
              in follow set checker"
         ),
     }

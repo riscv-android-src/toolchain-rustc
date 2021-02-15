@@ -4,7 +4,7 @@
 use crate::lint::{BufferedEarlyLint, BuiltinLintDiagnostics, Lint, LintId};
 use rustc_ast::node_id::NodeId;
 use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-use rustc_data_structures::sync::{Lock, Lrc, OnceCell};
+use rustc_data_structures::sync::{Lock, Lrc};
 use rustc_errors::{emitter::SilentEmitter, ColorConfig, Handler};
 use rustc_errors::{error_code, Applicability, DiagnosticBuilder};
 use rustc_feature::{find_feature_issue, GateIssue, UnstableFeatures};
@@ -130,7 +130,6 @@ pub struct ParseSess {
     /// operation token that followed it, but that the parser cannot identify without further
     /// analysis.
     pub ambiguous_block_expr_parse: Lock<FxHashMap<Span, Span>>,
-    pub injected_crate_name: OnceCell<Symbol>,
     pub gated_spans: GatedSpans,
     pub symbol_gallery: SymbolGallery,
     /// The parser has reached `Eof` due to an unclosed brace. Used to silence unnecessary errors.
@@ -151,7 +150,7 @@ impl ParseSess {
     pub fn with_span_handler(handler: Handler, source_map: Lrc<SourceMap>) -> Self {
         Self {
             span_diagnostic: handler,
-            unstable_features: UnstableFeatures::from_environment(),
+            unstable_features: UnstableFeatures::from_environment(None),
             config: FxHashSet::default(),
             edition: ExpnId::root().expn_data().edition,
             missing_fragment_specifiers: Default::default(),
@@ -160,7 +159,6 @@ impl ParseSess {
             source_map,
             buffered_lints: Lock::new(vec![]),
             ambiguous_block_expr_parse: Lock::new(FxHashMap::default()),
-            injected_crate_name: OnceCell::new(),
             gated_spans: GatedSpans::default(),
             symbol_gallery: SymbolGallery::default(),
             reached_eof: Lock::new(false),

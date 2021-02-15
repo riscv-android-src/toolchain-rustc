@@ -420,7 +420,9 @@ impl<'tcx> Body<'tcx> {
     /// Returns an iterator over all user-defined variables and compiler-generated temporaries (all
     /// locals that are neither arguments nor the return place).
     #[inline]
-    pub fn vars_and_temps_iter(&self) -> impl Iterator<Item = Local> + ExactSizeIterator {
+    pub fn vars_and_temps_iter(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = Local> + ExactSizeIterator {
         let arg_count = self.arg_count;
         let local_count = self.local_decls.len();
         (arg_count + 1..local_count).map(Local::new)
@@ -742,7 +744,7 @@ pub enum ImplicitSelfKind {
     None,
 }
 
-CloneTypeFoldableAndLiftImpls! { BindingForm<'tcx>, }
+TrivialTypeFoldableAndLiftImpls! { BindingForm<'tcx>, }
 
 mod binding_form_impl {
     use crate::ich::StableHashingContext;
@@ -809,7 +811,7 @@ pub struct LocalDecl<'tcx> {
     /// after typeck.
     ///
     /// This should be sound because the drop flags are fully algebraic, and
-    /// therefore don't affect the OIBIT or outlives properties of the
+    /// therefore don't affect the auto-trait or outlives properties of the
     /// generator.
     pub internal: bool,
 
@@ -1058,6 +1060,23 @@ impl<'tcx> LocalDecl<'tcx> {
     }
 }
 
+#[derive(Clone, TyEncodable, TyDecodable, HashStable, TypeFoldable)]
+pub enum VarDebugInfoContents<'tcx> {
+    /// NOTE(eddyb) There's an unenforced invariant that this `Place` is
+    /// based on a `Local`, not a `Static`, and contains no indexing.
+    Place(Place<'tcx>),
+    Const(Constant<'tcx>),
+}
+
+impl<'tcx> Debug for VarDebugInfoContents<'tcx> {
+    fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            VarDebugInfoContents::Const(c) => write!(fmt, "{}", c),
+            VarDebugInfoContents::Place(p) => write!(fmt, "{:?}", p),
+        }
+    }
+}
+
 /// Debug information pertaining to a user variable.
 #[derive(Clone, Debug, TyEncodable, TyDecodable, HashStable, TypeFoldable)]
 pub struct VarDebugInfo<'tcx> {
@@ -1069,9 +1088,7 @@ pub struct VarDebugInfo<'tcx> {
     pub source_info: SourceInfo,
 
     /// Where the data for this user variable is to be found.
-    /// NOTE(eddyb) There's an unenforced invariant that this `Place` is
-    /// based on a `Local`, not a `Static`, and contains no indexing.
-    pub place: Place<'tcx>,
+    pub value: VarDebugInfoContents<'tcx>,
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -1738,6 +1755,21 @@ impl<'tcx> Place<'tcx> {
 
     pub fn as_ref(&self) -> PlaceRef<'tcx> {
         PlaceRef { local: self.local, projection: &self.projection }
+    }
+
+    /// Iterate over the projections in evaluation order, i.e., the first element is the base with
+    /// its projection and then subsequently more projections are added.
+    /// As a concrete example, given the place a.b.c, this would yield:
+    /// - (a, .b)
+    /// - (a.b, .c)
+    /// Given a place without projections, the iterator is empty.
+    pub fn iter_projections(
+        self,
+    ) -> impl Iterator<Item = (PlaceRef<'tcx>, PlaceElem<'tcx>)> + DoubleEndedIterator {
+        self.projection.iter().enumerate().map(move |(i, proj)| {
+            let base = PlaceRef { local: self.local, projection: &self.projection[..i] };
+            (base, proj)
+        })
     }
 }
 
@@ -2452,32 +2484,20 @@ impl UserTypeProjection {
     }
 }
 
-CloneTypeFoldableAndLiftImpls! { ProjectionKind, }
+TrivialTypeFoldableAndLiftImpls! { ProjectionKind, }
 
 impl<'tcx> TypeFoldable<'tcx> for UserTypeProjection {
-    fn super_fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> Self {
-        use crate::mir::ProjectionElem::*;
-
-        let base = self.base.fold_with(folder);
-        let projs: Vec<_> = self
-            .projs
-            .iter()
-            .map(|&elem| match elem {
-                Deref => Deref,
-                Field(f, ()) => Field(f, ()),
-                Index(()) => Index(()),
-                Downcast(symbol, variantidx) => Downcast(symbol, variantidx),
-                ConstantIndex { offset, min_length, from_end } => {
-                    ConstantIndex { offset, min_length, from_end }
-                }
-                Subslice { from, to, from_end } => Subslice { from, to, from_end },
-            })
-            .collect();
-
-        UserTypeProjection { base, projs }
+    fn super_fold_with<F: TypeFolder<'tcx>>(self, folder: &mut F) -> Self {
+        UserTypeProjection {
+            base: self.base.fold_with(folder),
+            projs: self.projs.fold_with(folder),
+        }
     }
 
-    fn super_visit_with<Vs: TypeVisitor<'tcx>>(&self, visitor: &mut Vs) -> ControlFlow<()> {
+    fn super_visit_with<Vs: TypeVisitor<'tcx>>(
+        &self,
+        visitor: &mut Vs,
+    ) -> ControlFlow<Vs::BreakTy> {
         self.base.visit_with(visitor)
         // Note: there's nothing in `self.proj` to visit.
     }

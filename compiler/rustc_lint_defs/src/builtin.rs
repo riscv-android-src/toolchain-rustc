@@ -9,6 +9,42 @@ use rustc_span::edition::Edition;
 use rustc_span::symbol::sym;
 
 declare_lint! {
+    /// The `forbidden_lint_groups` lint detects violations of
+    /// `forbid` applied to a lint group. Due to a bug in the compiler,
+    /// these used to be overlooked entirely. They now generate a warning.
+    ///
+    /// ### Example
+    ///
+    /// ```rust
+    /// #![forbid(warnings)]
+    /// #![deny(bad_style)]
+    ///
+    /// fn main() {}
+    /// ```
+    ///
+    /// {{produces}}
+    ///
+    /// ### Recommended fix
+    ///
+    /// If your crate is using `#![forbid(warnings)]`,
+    /// we recommend that you change to `#![deny(warnings)]`.
+    ///
+    /// ### Explanation
+    ///
+    /// Due to a compiler bug, applying `forbid` to lint groups
+    /// previously had no effect. The bug is now fixed but instead of
+    /// enforcing `forbid` we issue this future-compatibility warning
+    /// to avoid breaking existing crates.
+    pub FORBIDDEN_LINT_GROUPS,
+    Warn,
+    "applying forbid to lint-groups",
+    @future_incompatible = FutureIncompatibleInfo {
+        reference: "issue #81670 <https://github.com/rust-lang/rust/issues/81670>",
+        edition: None,
+    };
+}
+
+declare_lint! {
     /// The `ill_formed_attribute_input` lint detects ill-formed attribute
     /// inputs that were previously accepted and used in practice.
     ///
@@ -588,8 +624,8 @@ declare_lint! {
 }
 
 declare_lint! {
-    /// The `overlapping_patterns` lint detects `match` arms that have
-    /// [range patterns] that overlap.
+    /// The `overlapping_range_endpoints` lint detects `match` arms that have [range patterns] that
+    /// overlap on their endpoints.
     ///
     /// [range patterns]: https://doc.rust-lang.org/nightly/reference/patterns.html#range-patterns
     ///
@@ -607,13 +643,12 @@ declare_lint! {
     ///
     /// ### Explanation
     ///
-    /// It is likely a mistake to have range patterns in a match expression
-    /// that overlap. Check that the beginning and end values are what you
-    /// expect, and keep in mind that with `..=` the left and right bounds are
-    /// inclusive.
-    pub OVERLAPPING_PATTERNS,
+    /// It is likely a mistake to have range patterns in a match expression that overlap in this
+    /// way. Check that the beginning and end values are what you expect, and keep in mind that
+    /// with `..=` the left and right bounds are inclusive.
+    pub OVERLAPPING_RANGE_ENDPOINTS,
     Warn,
-    "detects overlapping patterns"
+    "detects range patterns with overlapping endpoints"
 }
 
 declare_lint! {
@@ -1763,7 +1798,7 @@ declare_lint! {
     ///
     /// impl<T: ?Sized> MyIterator for T where T: Iterator { }
     ///
-    /// let x = vec![1,2,3];
+    /// let x = vec![1, 2, 3];
     /// let _ = x.iter().is_sorted();
     /// ```
     ///
@@ -2786,6 +2821,50 @@ declare_lint! {
     "detects deprecation attributes with no effect",
 }
 
+declare_lint! {
+    /// The `unsupported_naked_functions` lint detects naked function
+    /// definitions that are unsupported but were previously accepted.
+    ///
+    /// ### Example
+    ///
+    /// ```rust
+    /// #![feature(naked_functions)]
+    ///
+    /// #[naked]
+    /// pub fn f() -> u32 {
+    ///     42
+    /// }
+    /// ```
+    ///
+    /// {{produces}}
+    ///
+    /// ### Explanation
+    ///
+    /// The naked functions must be defined using a single inline assembly
+    /// block.
+    ///
+    /// The execution must never fall through past the end of the assembly
+    /// code so the block must use `noreturn` option. The asm block can also
+    /// use `att_syntax` option, but other options are not allowed.
+    ///
+    /// The asm block must not contain any operands other than `const` and
+    /// `sym`. Additionally, naked function should specify a non-Rust ABI.
+    ///
+    /// While other definitions of naked functions were previously accepted,
+    /// they are unsupported and might not work reliably. This is a
+    /// [future-incompatible] lint that will transition into hard error in
+    /// the future.
+    ///
+    /// [future-incompatible]: ../index.md#future-incompatible-lints
+    pub UNSUPPORTED_NAKED_FUNCTIONS,
+    Warn,
+    "unsupported naked function definitions",
+    @future_incompatible = FutureIncompatibleInfo {
+        reference: "issue #32408 <https://github.com/rust-lang/rust/issues/32408>",
+        edition: None,
+    };
+}
+
 declare_tool_lint! {
     pub rustc::INEFFECTIVE_UNSTABLE_TRAIT_IMPL,
     Deny,
@@ -2796,6 +2875,7 @@ declare_lint_pass! {
     /// Does nothing as a lint pass, but registers some `Lint`s
     /// that are used by other parts of the compiler.
     HardwiredLints => [
+        FORBIDDEN_LINT_GROUPS,
         ILLEGAL_FLOATING_POINT_LITERAL_PATTERN,
         ARITHMETIC_OVERFLOW,
         UNCONDITIONAL_PANIC,
@@ -2809,7 +2889,7 @@ declare_lint_pass! {
         DEAD_CODE,
         UNREACHABLE_CODE,
         UNREACHABLE_PATTERNS,
-        OVERLAPPING_PATTERNS,
+        OVERLAPPING_RANGE_ENDPOINTS,
         BINDINGS_WITH_VARIANT_NAME,
         UNUSED_MACROS,
         WARNINGS,
@@ -2877,6 +2957,7 @@ declare_lint_pass! {
         UNINHABITED_STATIC,
         FUNCTION_ITEM_REFERENCES,
         USELESS_DEPRECATED,
+        UNSUPPORTED_NAKED_FUNCTIONS,
     ]
 }
 

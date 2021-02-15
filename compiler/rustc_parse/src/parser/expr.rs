@@ -1,5 +1,5 @@
-use super::pat::{GateOr, PARAM_EXPECTED};
-use super::ty::{AllowPlus, RecoverQPath};
+use super::pat::{GateOr, RecoverComma, PARAM_EXPECTED};
+use super::ty::{AllowPlus, RecoverQPath, RecoverReturnSign};
 use super::{BlockMode, Parser, PathStyle, Restrictions, TokenType};
 use super::{SemiColonMode, SeqSep, TokenExpectType};
 use crate::maybe_recover_from_interpolated_ty_qpath;
@@ -1089,6 +1089,9 @@ impl<'a> Parser<'a> {
             self.parse_yield_expr(attrs)
         } else if self.eat_keyword(kw::Let) {
             self.parse_let_expr(attrs)
+        } else if self.eat_keyword(kw::Underscore) {
+            self.sess.gated_spans.gate(sym::destructuring_assignment, self.prev_token.span);
+            Ok(self.mk_expr(self.prev_token.span, ExprKind::Underscore, attrs))
         } else if !self.unclosed_delims.is_empty() && self.check(&token::Semi) {
             // Don't complain about bare semicolons after unclosed braces
             // recovery in order to keep the error count down. Fixing the
@@ -1447,10 +1450,10 @@ impl<'a> Parser<'a> {
                         .help("valid widths are 8, 16, 32, 64 and 128")
                         .emit();
                 } else {
-                    let msg = format!("invalid suffix `{}` for integer literal", suf);
+                    let msg = format!("invalid suffix `{}` for number literal", suf);
                     self.struct_span_err(span, &msg)
                         .span_label(span, format!("invalid suffix `{}`", suf))
-                        .help("the suffix must be one of the integral types (`u32`, `isize`, etc)")
+                        .help("the suffix must be one of the numeric types (`u32`, `isize`, `f32`, etc.)")
                         .emit();
                 }
             }
@@ -1600,7 +1603,7 @@ impl<'a> Parser<'a> {
             self.sess.gated_spans.gate(sym::async_closure, span);
         }
 
-        let capture_clause = self.parse_capture_clause();
+        let capture_clause = self.parse_capture_clause()?;
         let decl = self.parse_fn_block_decl()?;
         let decl_hi = self.prev_token.span;
         let body = match decl.output {
@@ -1623,8 +1626,18 @@ impl<'a> Parser<'a> {
     }
 
     /// Parses an optional `move` prefix to a closure-like construct.
-    fn parse_capture_clause(&mut self) -> CaptureBy {
-        if self.eat_keyword(kw::Move) { CaptureBy::Value } else { CaptureBy::Ref }
+    fn parse_capture_clause(&mut self) -> PResult<'a, CaptureBy> {
+        if self.eat_keyword(kw::Move) {
+            // Check for `move async` and recover
+            if self.check_keyword(kw::Async) {
+                let move_async_span = self.token.span.with_lo(self.prev_token.span.data().lo);
+                Err(self.incorrect_move_async_order_found(move_async_span))
+            } else {
+                Ok(CaptureBy::Value)
+            }
+        } else {
+            Ok(CaptureBy::Ref)
+        }
     }
 
     /// Parses the `|arg, arg|` header of a closure.
@@ -1644,7 +1657,8 @@ impl<'a> Parser<'a> {
             self.expect_or()?;
             args
         };
-        let output = self.parse_ret_ty(AllowPlus::Yes, RecoverQPath::Yes)?;
+        let output =
+            self.parse_ret_ty(AllowPlus::Yes, RecoverQPath::Yes, RecoverReturnSign::Yes)?;
 
         Ok(P(FnDecl { inputs, output }))
     }
@@ -1725,7 +1739,7 @@ impl<'a> Parser<'a> {
     /// The `let` token has already been eaten.
     fn parse_let_expr(&mut self, attrs: AttrVec) -> PResult<'a, P<Expr>> {
         let lo = self.prev_token.span;
-        let pat = self.parse_top_pat(GateOr::No)?;
+        let pat = self.parse_top_pat(GateOr::No, RecoverComma::Yes)?;
         self.expect(&token::Eq)?;
         let expr = self.with_res(self.restrictions | Restrictions::NO_STRUCT_LITERAL, |this| {
             this.parse_assoc_expr_with(1 + prec_let_scrutinee_needs_par(), None.into())
@@ -1788,7 +1802,7 @@ impl<'a> Parser<'a> {
             _ => None,
         };
 
-        let pat = self.parse_top_pat(GateOr::Yes)?;
+        let pat = self.parse_top_pat(GateOr::Yes, RecoverComma::Yes)?;
         if !self.eat_keyword(kw::In) {
             self.error_missing_in_for_loop();
         }
@@ -1898,7 +1912,7 @@ impl<'a> Parser<'a> {
     pub(super) fn parse_arm(&mut self) -> PResult<'a, Arm> {
         let attrs = self.parse_outer_attributes()?;
         let lo = self.token.span;
-        let pat = self.parse_top_pat(GateOr::No)?;
+        let pat = self.parse_top_pat(GateOr::No, RecoverComma::Yes)?;
         let guard = if self.eat_keyword(kw::If) {
             let if_span = self.prev_token.span;
             let cond = self.parse_expr()?;
@@ -2015,7 +2029,7 @@ impl<'a> Parser<'a> {
     fn parse_async_block(&mut self, mut attrs: AttrVec) -> PResult<'a, P<Expr>> {
         let lo = self.token.span;
         self.expect_keyword(kw::Async)?;
-        let capture_clause = self.parse_capture_clause();
+        let capture_clause = self.parse_capture_clause()?;
         let (iattrs, body) = self.parse_inner_attrs_and_block()?;
         attrs.extend(iattrs);
         let kind = ExprKind::Async(capture_clause, DUMMY_NODE_ID, body);

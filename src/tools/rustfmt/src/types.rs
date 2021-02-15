@@ -2,11 +2,14 @@ use std::iter::ExactSizeIterator;
 use std::ops::Deref;
 
 use rustc_ast::ast::{self, FnRetTy, Mutability};
-use rustc_span::{symbol::kw, BytePos, Span};
+use rustc_span::{symbol::kw, BytePos, Pos, Span};
 
+use crate::comment::{combine_strs_with_missing_comments, contains_comment};
 use crate::config::lists::*;
 use crate::config::{IndentStyle, TypeDensity, Version};
-use crate::expr::{format_expr, rewrite_assign_rhs, rewrite_tuple, rewrite_unary_prefix, ExprType};
+use crate::expr::{
+    format_expr, rewrite_assign_rhs, rewrite_call, rewrite_tuple, rewrite_unary_prefix, ExprType,
+};
 use crate::lists::{
     definitive_tactic, itemize_list, write_list, ListFormatting, ListItem, Separator,
 };
@@ -648,37 +651,72 @@ impl Rewrite for ast::Ty {
             ast::TyKind::Rptr(ref lifetime, ref mt) => {
                 let mut_str = format_mutability(mt.mutbl);
                 let mut_len = mut_str.len();
-                Some(match *lifetime {
-                    Some(ref lifetime) => {
-                        let lt_budget = shape.width.checked_sub(2 + mut_len)?;
-                        let lt_str = lifetime.rewrite(
+                let mut result = String::with_capacity(128);
+                result.push_str("&");
+                let ref_hi = context.snippet_provider.span_after(self.span(), "&");
+                let mut cmnt_lo = ref_hi;
+
+                if let Some(ref lifetime) = *lifetime {
+                    let lt_budget = shape.width.checked_sub(2 + mut_len)?;
+                    let lt_str = lifetime.rewrite(
+                        context,
+                        Shape::legacy(lt_budget, shape.indent + 2 + mut_len),
+                    )?;
+                    let before_lt_span = mk_sp(cmnt_lo, lifetime.ident.span.lo());
+                    if contains_comment(context.snippet(before_lt_span)) {
+                        result = combine_strs_with_missing_comments(
                             context,
-                            Shape::legacy(lt_budget, shape.indent + 2 + mut_len),
+                            &result,
+                            &lt_str,
+                            before_lt_span,
+                            shape,
+                            true,
                         )?;
-                        let lt_len = lt_str.len();
-                        let budget = shape.width.checked_sub(2 + mut_len + lt_len)?;
-                        format!(
-                            "&{} {}{}",
-                            lt_str,
-                            mut_str,
-                            mt.ty.rewrite(
-                                context,
-                                Shape::legacy(budget, shape.indent + 2 + mut_len + lt_len)
-                            )?
-                        )
+                    } else {
+                        result.push_str(&lt_str);
                     }
-                    None => {
-                        let budget = shape.width.checked_sub(1 + mut_len)?;
-                        format!(
-                            "&{}{}",
+                    result.push_str(" ");
+                    cmnt_lo = lifetime.ident.span.hi();
+                }
+
+                if ast::Mutability::Mut == mt.mutbl {
+                    let mut_hi = context.snippet_provider.span_after(self.span(), "mut");
+                    let before_mut_span = mk_sp(cmnt_lo, mut_hi - BytePos::from_usize(3));
+                    if contains_comment(context.snippet(before_mut_span)) {
+                        result = combine_strs_with_missing_comments(
+                            context,
+                            result.trim_end(),
                             mut_str,
-                            mt.ty.rewrite(
-                                context,
-                                Shape::legacy(budget, shape.indent + 1 + mut_len)
-                            )?
-                        )
+                            before_mut_span,
+                            shape,
+                            true,
+                        )?;
+                    } else {
+                        result.push_str(mut_str);
                     }
-                })
+                    cmnt_lo = mut_hi;
+                }
+
+                let before_ty_span = mk_sp(cmnt_lo, mt.ty.span.lo());
+                if contains_comment(context.snippet(before_ty_span)) {
+                    result = combine_strs_with_missing_comments(
+                        context,
+                        result.trim_end(),
+                        &mt.ty.rewrite(&context, shape)?,
+                        before_ty_span,
+                        shape,
+                        true,
+                    )?;
+                } else {
+                    let used_width = last_line_width(&result);
+                    let budget = shape.width.checked_sub(used_width)?;
+                    let ty_str = mt
+                        .ty
+                        .rewrite(&context, Shape::legacy(budget, shape.indent + used_width))?;
+                    result.push_str(&ty_str);
+                }
+
+                Some(result)
             }
             // FIXME: we drop any comments here, even though it's a silly place to put
             // comments.
@@ -761,7 +799,14 @@ impl Rewrite for ast::Ty {
                 })
             }
             ast::TyKind::CVarArgs => Some("...".to_owned()),
-            ast::TyKind::Err | ast::TyKind::Typeof(..) => unreachable!(),
+            ast::TyKind::Err => Some(context.snippet(self.span).to_owned()),
+            ast::TyKind::Typeof(ref anon_const) => rewrite_call(
+                context,
+                "typeof",
+                &[anon_const.value.clone()],
+                self.span,
+                shape,
+            ),
         }
     }
 }
@@ -838,57 +883,130 @@ fn join_bounds(
     items: &[ast::GenericBound],
     need_indent: bool,
 ) -> Option<String> {
+    join_bounds_inner(context, shape, items, need_indent, false)
+}
+
+fn join_bounds_inner(
+    context: &RewriteContext<'_>,
+    shape: Shape,
+    items: &[ast::GenericBound],
+    need_indent: bool,
+    force_newline: bool,
+) -> Option<String> {
     debug_assert!(!items.is_empty());
 
-    // Try to join types in a single line
-    let joiner = match context.config.type_punctuation_density() {
-        TypeDensity::Compressed => "+",
-        TypeDensity::Wide => " + ",
-    };
-    let type_strs = items
-        .iter()
-        .map(|item| item.rewrite(context, shape))
-        .collect::<Option<Vec<_>>>()?;
-    let result = type_strs.join(joiner);
-    if items.len() <= 1 || (!result.contains('\n') && result.len() <= shape.width) {
-        return Some(result);
-    }
-
-    // We need to use multiple lines.
-    let (type_strs, offset) = if need_indent {
-        // Rewrite with additional indentation.
-        let nested_shape = shape
-            .block_indent(context.config.tab_spaces())
-            .with_max_width(context.config);
-        let type_strs = items
-            .iter()
-            .map(|item| item.rewrite(context, nested_shape))
-            .collect::<Option<Vec<_>>>()?;
-        (type_strs, nested_shape.indent)
-    } else {
-        (type_strs, shape.indent)
-    };
-
+    let generic_bounds_in_order = is_generic_bounds_in_order(items);
     let is_bound_extendable = |s: &str, b: &ast::GenericBound| match b {
         ast::GenericBound::Outlives(..) => true,
         ast::GenericBound::Trait(..) => last_line_extendable(s),
     };
-    let mut result = String::with_capacity(128);
-    result.push_str(&type_strs[0]);
-    let mut can_be_put_on_the_same_line = is_bound_extendable(&result, &items[0]);
-    let generic_bounds_in_order = is_generic_bounds_in_order(items);
-    for (bound, bound_str) in items[1..].iter().zip(type_strs[1..].iter()) {
-        if generic_bounds_in_order && can_be_put_on_the_same_line {
-            result.push_str(joiner);
-        } else {
-            result.push_str(&offset.to_string_with_newline(context.config));
-            result.push_str("+ ");
-        }
-        result.push_str(bound_str);
-        can_be_put_on_the_same_line = is_bound_extendable(bound_str, bound);
-    }
 
-    Some(result)
+    let result = items.iter().enumerate().try_fold(
+        (String::new(), None, false),
+        |(strs, prev_trailing_span, prev_extendable), (i, item)| {
+            let trailing_span = if i < items.len() - 1 {
+                let hi = context
+                    .snippet_provider
+                    .span_before(mk_sp(items[i + 1].span().lo(), item.span().hi()), "+");
+
+                Some(mk_sp(item.span().hi(), hi))
+            } else {
+                None
+            };
+            let (leading_span, has_leading_comment) = if i > 0 {
+                let lo = context
+                    .snippet_provider
+                    .span_after(mk_sp(items[i - 1].span().hi(), item.span().lo()), "+");
+
+                let span = mk_sp(lo, item.span().lo());
+
+                let has_comments = contains_comment(context.snippet(span));
+
+                (Some(mk_sp(lo, item.span().lo())), has_comments)
+            } else {
+                (None, false)
+            };
+            let prev_has_trailing_comment = match prev_trailing_span {
+                Some(ts) => contains_comment(context.snippet(ts)),
+                _ => false,
+            };
+
+            let shape = if need_indent && force_newline {
+                shape
+                    .block_indent(context.config.tab_spaces())
+                    .with_max_width(context.config)
+            } else {
+                shape
+            };
+            let whitespace = if force_newline && (!prev_extendable || !generic_bounds_in_order) {
+                shape
+                    .indent
+                    .to_string_with_newline(context.config)
+                    .to_string()
+            } else {
+                String::from(" ")
+            };
+
+            let joiner = match context.config.type_punctuation_density() {
+                TypeDensity::Compressed => String::from("+"),
+                TypeDensity::Wide => whitespace + "+ ",
+            };
+            let joiner = if has_leading_comment {
+                joiner.trim_end()
+            } else {
+                &joiner
+            };
+            let joiner = if prev_has_trailing_comment {
+                joiner.trim_start()
+            } else {
+                joiner
+            };
+
+            let (extendable, trailing_str) = if i == 0 {
+                let bound_str = item.rewrite(context, shape)?;
+                (is_bound_extendable(&bound_str, item), bound_str)
+            } else {
+                let bound_str = &item.rewrite(context, shape)?;
+                match leading_span {
+                    Some(ls) if has_leading_comment => (
+                        is_bound_extendable(bound_str, item),
+                        combine_strs_with_missing_comments(
+                            context, joiner, bound_str, ls, shape, true,
+                        )?,
+                    ),
+                    _ => (
+                        is_bound_extendable(bound_str, item),
+                        String::from(joiner) + bound_str,
+                    ),
+                }
+            };
+            match prev_trailing_span {
+                Some(ts) if prev_has_trailing_comment => combine_strs_with_missing_comments(
+                    context,
+                    &strs,
+                    &trailing_str,
+                    ts,
+                    shape,
+                    true,
+                )
+                .map(|v| (v, trailing_span, extendable)),
+                _ => Some((
+                    String::from(strs) + &trailing_str,
+                    trailing_span,
+                    extendable,
+                )),
+            }
+        },
+    )?;
+
+    if !force_newline
+        && items.len() > 1
+        && (result.0.contains('\n') || result.0.len() > shape.width)
+    {
+        join_bounds_inner(context, shape, items, need_indent, true)
+    } else {
+        Some(result.0)
+    }
 }
 
 pub(crate) fn can_be_overflowed_type(

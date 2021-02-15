@@ -734,16 +734,22 @@ impl Session {
         self.opts.cg.panic.unwrap_or(self.target.panic_strategy)
     }
     pub fn fewer_names(&self) -> bool {
-        let more_names = self.opts.output_types.contains_key(&OutputType::LlvmAssembly)
-            || self.opts.output_types.contains_key(&OutputType::Bitcode)
-            // AddressSanitizer and MemorySanitizer use alloca name when reporting an issue.
-            || self.opts.debugging_opts.sanitizer.intersects(SanitizerSet::ADDRESS | SanitizerSet::MEMORY);
-
-        self.opts.debugging_opts.fewer_names || !more_names
+        if let Some(fewer_names) = self.opts.debugging_opts.fewer_names {
+            fewer_names
+        } else {
+            let more_names = self.opts.output_types.contains_key(&OutputType::LlvmAssembly)
+                || self.opts.output_types.contains_key(&OutputType::Bitcode)
+                // AddressSanitizer and MemorySanitizer use alloca name when reporting an issue.
+                || self.opts.debugging_opts.sanitizer.intersects(SanitizerSet::ADDRESS | SanitizerSet::MEMORY);
+            !more_names
+        }
     }
 
     pub fn unstable_options(&self) -> bool {
         self.opts.debugging_opts.unstable_options
+    }
+    pub fn is_nightly_build(&self) -> bool {
+        self.opts.unstable_features.is_nightly_build()
     }
     pub fn overflow_checks(&self) -> bool {
         self.opts
@@ -1103,36 +1109,7 @@ impl Session {
     }
 
     pub fn link_dead_code(&self) -> bool {
-        match self.opts.cg.link_dead_code {
-            Some(explicitly_set) => explicitly_set,
-            None => {
-                self.opts.debugging_opts.instrument_coverage && !self.target.is_like_msvc
-                // Issue #76038: (rustc `-Clink-dead-code` causes MSVC linker to produce invalid
-                // binaries when LLVM InstrProf counters are enabled). As described by this issue,
-                // the "link dead code" option produces incorrect binaries when compiled and linked
-                // under MSVC. The resulting Rust programs typically crash with a segmentation
-                // fault, or produce an empty "*.profraw" file (profiling counter results normally
-                // generated during program exit).
-                //
-                // If not targeting MSVC, `-Z instrument-coverage` implies `-C link-dead-code`, so
-                // unexecuted code is still counted as zero, rather than be optimized out. Note that
-                // instrumenting dead code can be explicitly disabled with:
-                //
-                //     `-Z instrument-coverage -C link-dead-code=no`.
-                //
-                // FIXME(richkadel): Investigate if `instrument-coverage` implementation can inject
-                // [zero counters](https://llvm.org/docs/CoverageMappingFormat.html#counter) in the
-                // coverage map when "dead code" is removed, rather than forcing `link-dead-code`.
-                // This may not be possible, however, if (as it seems to appear) the "dead code"
-                // that would otherwise not be linked is only identified as "dead" by the native
-                // linker. If that's the case, I believe it is too late for the Rust compiler to
-                // leverage any information it might be able to get from the linker regarding what
-                // code is dead, to be able to add those counters.
-                //
-                // On the other hand, if any Rust compiler passes are optimizing out dead code blocks
-                // we should inject "zero" counters for those code regions.
-            }
-        }
+        self.opts.cg.link_dead_code.unwrap_or(false)
     }
 
     pub fn mark_attr_known(&self, attr: &Attribute) {
@@ -1332,7 +1309,7 @@ pub fn build_session(
 
         let profiler = SelfProfiler::new(
             directory,
-            sopts.crate_name.as_ref().map(|s| &s[..]),
+            sopts.crate_name.as_deref(),
             &sopts.debugging_opts.self_profile_events,
         );
         match profiler {

@@ -456,6 +456,9 @@ pub struct git_cert_hostkey {
     pub hash_md5: [u8; 16],
     pub hash_sha1: [u8; 20],
     pub hash_sha256: [u8; 32],
+    pub raw_type: git_cert_ssh_raw_type_t,
+    pub hostkey: *const c_char,
+    pub hostkey_len: size_t,
 }
 
 #[repr(C)]
@@ -470,6 +473,15 @@ git_enum! {
         GIT_CERT_SSH_MD5 = 1 << 0,
         GIT_CERT_SSH_SHA1 = 1 << 1,
         GIT_CERT_SSH_SHA256 = 1 << 2,
+        GIT_CERT_SSH_RAW = 1 << 3,
+    }
+}
+
+git_enum! {
+    pub enum git_cert_ssh_raw_type_t {
+        GIT_CERT_SSH_RAW_TYPE_UNKNOWN = 0,
+        GIT_CERT_SSH_RAW_TYPE_RSA = 1,
+        GIT_CERT_SSH_RAW_TYPE_DSS = 2,
     }
 }
 
@@ -714,6 +726,8 @@ pub const GIT_BLAME_TRACK_COPIES_SAME_COMMIT_MOVES: u32 = 1 << 1;
 pub const GIT_BLAME_TRACK_COPIES_SAME_COMMIT_COPIES: u32 = 1 << 2;
 pub const GIT_BLAME_TRACK_COPIES_ANY_COMMIT_COPIES: u32 = 1 << 3;
 pub const GIT_BLAME_FIRST_PARENT: u32 = 1 << 4;
+pub const GIT_BLAME_USE_MAILMAP: u32 = 1 << 5;
+pub const GIT_BLAME_IGNORE_WHITESPACE: u32 = 1 << 6;
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -1823,6 +1837,34 @@ git_enum! {
     }
 }
 
+#[repr(C)]
+pub struct git_worktree_add_options {
+    pub version: c_uint,
+    pub lock: c_int,
+    pub reference: *mut git_reference,
+}
+
+pub const GIT_WORKTREE_ADD_OPTIONS_VERSION: c_uint = 1;
+
+git_enum! {
+    pub enum git_worktree_prune_t {
+        /* Prune working tree even if working tree is valid */
+        GIT_WORKTREE_PRUNE_VALID = 1 << 0,
+        /* Prune working tree even if it is locked */
+        GIT_WORKTREE_PRUNE_LOCKED = 1 << 1,
+        /* Prune checked out working tree */
+        GIT_WORKTREE_PRUNE_WORKING_TREE = 1 << 2,
+    }
+}
+
+#[repr(C)]
+pub struct git_worktree_prune_options {
+    pub version: c_uint,
+    pub flags: u32,
+}
+
+pub const GIT_WORKTREE_PRUNE_OPTIONS_VERSION: c_uint = 1;
+
 extern "C" {
     // threads
     pub fn git_libgit2_init() -> c_int;
@@ -2000,6 +2042,7 @@ extern "C" {
         repo: *mut git_repository,
         url: *const c_char,
     ) -> c_int;
+    pub fn git_remote_create_detached(out: *mut *mut git_remote, url: *const c_char) -> c_int;
     pub fn git_remote_delete(repo: *mut git_repository, name: *const c_char) -> c_int;
     pub fn git_remote_free(remote: *mut git_remote);
     pub fn git_remote_name(remote: *const git_remote) -> *const c_char;
@@ -3780,6 +3823,48 @@ extern "C" {
     ) -> c_int;
 
     pub fn git_libgit2_opts(option: c_int, ...) -> c_int;
+
+    // Worktrees
+    pub fn git_worktree_list(out: *mut git_strarray, repo: *mut git_repository) -> c_int;
+    pub fn git_worktree_lookup(
+        out: *mut *mut git_worktree,
+        repo: *mut git_repository,
+        name: *const c_char,
+    ) -> c_int;
+    pub fn git_worktree_open_from_repository(
+        out: *mut *mut git_worktree,
+        repo: *mut git_repository,
+    ) -> c_int;
+    pub fn git_worktree_free(wt: *mut git_worktree);
+    pub fn git_worktree_validate(wt: *const git_worktree) -> c_int;
+    pub fn git_worktree_add_options_init(
+        opts: *mut git_worktree_add_options,
+        version: c_uint,
+    ) -> c_int;
+    pub fn git_worktree_add(
+        out: *mut *mut git_worktree,
+        repo: *mut git_repository,
+        name: *const c_char,
+        path: *const c_char,
+        opts: *const git_worktree_add_options,
+    ) -> c_int;
+    pub fn git_worktree_lock(wt: *mut git_worktree, reason: *const c_char) -> c_int;
+    pub fn git_worktree_unlock(wt: *mut git_worktree) -> c_int;
+    pub fn git_worktree_is_locked(reason: *mut git_buf, wt: *const git_worktree) -> c_int;
+    pub fn git_worktree_name(wt: *const git_worktree) -> *const c_char;
+    pub fn git_worktree_path(wt: *const git_worktree) -> *const c_char;
+    pub fn git_worktree_prune_options_init(
+        opts: *mut git_worktree_prune_options,
+        version: c_uint,
+    ) -> c_int;
+    pub fn git_worktree_is_prunable(
+        wt: *mut git_worktree,
+        opts: *mut git_worktree_prune_options,
+    ) -> c_int;
+    pub fn git_worktree_prune(
+        wt: *mut git_worktree,
+        opts: *mut git_worktree_prune_options,
+    ) -> c_int;
 }
 
 pub fn init() {

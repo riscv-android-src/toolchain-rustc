@@ -110,9 +110,10 @@ pub enum ResolveBehavior {
 impl ResolveBehavior {
     pub fn from_manifest(resolver: &str) -> CargoResult<ResolveBehavior> {
         match resolver {
+            "1" => Ok(ResolveBehavior::V1),
             "2" => Ok(ResolveBehavior::V2),
             s => anyhow::bail!(
-                "`resolver` setting `{}` is not valid, only valid option is \"2\"",
+                "`resolver` setting `{}` is not valid, valid options are \"1\" or \"2\"",
                 s
             ),
         }
@@ -146,20 +147,8 @@ impl ResolveOpts {
         }
     }
 
-    pub fn new(
-        dev_deps: bool,
-        features: &[String],
-        all_features: bool,
-        uses_default_features: bool,
-    ) -> ResolveOpts {
-        ResolveOpts {
-            dev_deps,
-            features: RequestedFeatures::from_command_line(
-                features,
-                all_features,
-                uses_default_features,
-            ),
-        }
+    pub fn new(dev_deps: bool, features: RequestedFeatures) -> ResolveOpts {
+        ResolveOpts { dev_deps, features }
     }
 }
 

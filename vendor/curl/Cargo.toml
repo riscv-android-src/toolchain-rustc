@@ -12,7 +12,7 @@
 
 [package]
 name = "curl"
-version = "0.4.31"
+version = "0.4.34"
 authors = ["Alex Crichton <alex@alexcrichton.com>"]
 autotests = true
 description = "Rust bindings to libcurl for making HTTP requests"
@@ -32,7 +32,7 @@ required-features = ["ssl"]
 name = "atexit"
 harness = false
 [dependencies.curl-sys]
-version = "0.4.33"
+version = "0.4.37"
 default-features = false
 
 [dependencies.libc]
@@ -59,6 +59,7 @@ spnego = ["curl-sys/spnego"]
 ssl = ["openssl-sys", "openssl-probe", "curl-sys/ssl"]
 static-curl = ["curl-sys/static-curl"]
 static-ssl = ["curl-sys/static-ssl"]
+zlib-ng-compat = ["curl-sys/zlib-ng-compat", "static-curl"]
 [target."cfg(all(unix, not(target_os = \"macos\")))".dependencies.openssl-probe]
 version = "0.1.2"
 optional = true

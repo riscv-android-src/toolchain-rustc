@@ -285,8 +285,12 @@ impl Socket {
     /// `recvfrom` call.
     ///
     /// [`recv_from`]: #method.recv_from
-    pub fn recv_from_with_flags(&self, buf: &mut [u8], flags: i32) -> io::Result<usize> {
-        self.inner.recv(buf, flags)
+    pub fn recv_from_with_flags(
+        &self,
+        buf: &mut [u8],
+        flags: i32,
+    ) -> io::Result<(usize, SockAddr)> {
+        self.inner.recv_from(buf, flags)
     }
 
     /// Receives data from the socket, without removing it from the queue.
@@ -314,7 +318,7 @@ impl Socket {
     /// `send` call.
     ///
     /// [`send`]: #method.send
-    pub fn send_with_flags(&self, buf: &mut [u8], flags: i32) -> io::Result<usize> {
+    pub fn send_with_flags(&self, buf: &[u8], flags: i32) -> io::Result<usize> {
         self.inner.send(buf, flags)
     }
 
@@ -325,7 +329,7 @@ impl Socket {
     ///
     /// [`send`]: #method.send
     /// [`out_of_band_inline`]: #method.out_of_band_inline
-    pub fn send_out_of_band(&self, buf: &mut [u8]) -> io::Result<usize> {
+    pub fn send_out_of_band(&self, buf: &[u8]) -> io::Result<usize> {
         self.inner.send(buf, MSG_OOB)
     }
 
@@ -342,8 +346,8 @@ impl Socket {
     /// `sendto` call.
     ///
     /// [`send_to`]: #method.send_to
-    pub fn send_to_with_flags(&self, buf: &mut [u8], flags: i32) -> io::Result<usize> {
-        self.inner.recv(buf, flags)
+    pub fn send_to_with_flags(&self, buf: &[u8], addr: &SockAddr, flags: i32) -> io::Result<usize> {
+        self.inner.send_to(buf, flags, addr)
     }
 
     // ================================================

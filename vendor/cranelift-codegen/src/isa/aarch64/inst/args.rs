@@ -579,6 +579,15 @@ impl ScalarSize {
         }
     }
 
+    /// Convert to an integer operand size.
+    pub fn operand_size(&self) -> OperandSize {
+        match self {
+            ScalarSize::Size32 => OperandSize::Size32,
+            ScalarSize::Size64 => OperandSize::Size64,
+            _ => panic!("Unexpected operand_size request for: {:?}", self),
+        }
+    }
+
     /// Convert from a type into the smallest size that fits.
     pub fn from_ty(ty: Type) -> ScalarSize {
         Self::from_bits(ty_bits(ty))
@@ -609,10 +618,27 @@ pub enum VectorSize {
 }
 
 impl VectorSize {
+    /// Get the vector operand size with the given scalar size as lane size.
+    pub fn from_lane_size(size: ScalarSize, is_128bit: bool) -> VectorSize {
+        match (size, is_128bit) {
+            (ScalarSize::Size8, false) => VectorSize::Size8x8,
+            (ScalarSize::Size8, true) => VectorSize::Size8x16,
+            (ScalarSize::Size16, false) => VectorSize::Size16x4,
+            (ScalarSize::Size16, true) => VectorSize::Size16x8,
+            (ScalarSize::Size32, false) => VectorSize::Size32x2,
+            (ScalarSize::Size32, true) => VectorSize::Size32x4,
+            (ScalarSize::Size64, true) => VectorSize::Size64x2,
+            _ => panic!("Unexpected scalar FP operand size: {:?}", size),
+        }
+    }
+
     /// Convert from a type into a vector operand size.
     pub fn from_ty(ty: Type) -> VectorSize {
         match ty {
+            B8X16 => VectorSize::Size8x16,
+            B16X8 => VectorSize::Size16x8,
             B32X4 => VectorSize::Size32x4,
+            B64X2 => VectorSize::Size64x2,
             F32X2 => VectorSize::Size32x2,
             F32X4 => VectorSize::Size32x4,
             F64X2 => VectorSize::Size64x2,
@@ -660,6 +686,9 @@ impl VectorSize {
         }
     }
 
+    /// Produces a `VectorSize` with lanes twice as wide.  Note that if the resulting
+    /// size would exceed 128 bits, then the number of lanes is also halved, so as to
+    /// ensure that the result size is at most 128 bits.
     pub fn widen(&self) -> VectorSize {
         match self {
             VectorSize::Size8x8 => VectorSize::Size16x8,
@@ -672,6 +701,7 @@ impl VectorSize {
         }
     }
 
+    /// Produces a `VectorSize` that has the same lane width, but half as many lanes.
     pub fn halve(&self) -> VectorSize {
         match self {
             VectorSize::Size8x16 => VectorSize::Size8x8,

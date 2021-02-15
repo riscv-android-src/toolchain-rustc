@@ -362,8 +362,9 @@ versions of those crates you require. In this case, we’ll specify the `rand`
 crate with the semantic version specifier `0.5.5`. Cargo understands [Semantic
 Versioning][semver]<!-- ignore --> (sometimes called *SemVer*), which is a
 standard for writing version numbers. The number `0.5.5` is actually shorthand
-for `^0.5.5`, which means “any version that has a public API compatible with
-version 0.5.5.”
+for `^0.5.5`, which means any version that is at least `0.5.5` but below
+`0.6.0`. Cargo considers these versions to have public APIs compatible with
+version `0.5.5`.
 
 [semver]: http://semver.org
 
@@ -792,8 +793,8 @@ You guessed: 59
 You win!
 Please input your guess.
 quit
-thread 'main' panicked at 'Please type a number!: ParseIntError { kind: InvalidDigit }', src/libcore/result.rs:999:5
-note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace.
+thread 'main' panicked at 'Please type a number!: ParseIntError { kind: InvalidDigit }', src/main.rs:28:47
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
 ```
 
 Typing `quit` actually quits the game, but so will any other non-number input.
@@ -866,6 +867,7 @@ foo
 ```console
 $ cargo run
    Compiling guessing_game v0.1.0 (file:///projects/guessing_game)
+    Finished dev [unoptimized + debuginfo] target(s) in 4.45s
      Running `target/debug/guessing_game`
 Guess the number!
 The secret number is: 61

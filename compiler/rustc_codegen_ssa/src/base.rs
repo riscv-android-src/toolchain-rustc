@@ -399,7 +399,7 @@ pub fn maybe_create_entry_wrapper<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
         // late-bound regions, since late-bound
         // regions must appear in the argument
         // listing.
-        let main_ret_ty = cx.tcx().erase_regions(&main_ret_ty.no_bound_vars().unwrap());
+        let main_ret_ty = cx.tcx().erase_regions(main_ret_ty.no_bound_vars().unwrap());
 
         let llfn = match cx.declare_c_main(llfty) {
             Some(llfn) => llfn,
@@ -766,7 +766,7 @@ impl CrateInfo {
             profiler_runtime: None,
             is_no_builtins: Default::default(),
             native_libraries: Default::default(),
-            used_libraries: tcx.native_libraries(LOCAL_CRATE),
+            used_libraries: tcx.native_libraries(LOCAL_CRATE).iter().map(Into::into).collect(),
             link_args: tcx.link_args(LOCAL_CRATE),
             crate_name: Default::default(),
             used_crates_dynamic: cstore::used_crates(tcx, LinkagePreference::RequireDynamic),
@@ -787,7 +787,8 @@ impl CrateInfo {
         info.missing_lang_items.reserve(n_crates);
 
         for &cnum in crates.iter() {
-            info.native_libraries.insert(cnum, tcx.native_libraries(cnum));
+            info.native_libraries
+                .insert(cnum, tcx.native_libraries(cnum).iter().map(Into::into).collect());
             info.crate_name.insert(cnum, tcx.crate_name(cnum).to_string());
             info.used_crate_source.insert(cnum, tcx.used_crate_source(cnum));
             if tcx.is_panic_runtime(cnum) {

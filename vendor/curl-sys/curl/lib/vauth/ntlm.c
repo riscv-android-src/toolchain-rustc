@@ -9,7 +9,7 @@
  *
  * This software is licensed as described in the file COPYING, which
  * you should have received as part of this distribution. The terms
- * are also available at https://curl.haxx.se/docs/copyright.html.
+ * are also available at https://curl.se/docs/copyright.html.
  *
  * You may opt to use, copy, modify, merge, publish, distribute and/or sell
  * copies of the Software, and permit persons to whom the Software is
@@ -191,6 +191,7 @@ static CURLcode ntlm_decode_type2_target(struct Curl_easy *data,
         return CURLE_BAD_CONTENT_ENCODING;
       }
 
+      free(ntlm->target_info); /* replace any previous data */
       ntlm->target_info = malloc(target_info_len);
       if(!ntlm->target_info)
         return CURLE_OUT_OF_MEMORY;
@@ -496,7 +497,6 @@ CURLcode Curl_auth_create_ntlm_type3_message(struct Curl_easy *data,
                                              const char *passwdp,
                                              struct ntlmdata *ntlm,
                                              char **outptr, size_t *outlen)
-
 {
   /* NTLM type-3 message structure:
 

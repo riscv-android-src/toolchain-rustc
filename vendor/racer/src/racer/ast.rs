@@ -527,7 +527,17 @@ impl<'c, 's, 'ast> visit::Visitor<'ast> for ExprTypeVisitor<'c, 's> {
                                     .and_then(|ty| path_to_match(ty, self.session))
                             }
                             MatchType::Method(ref gen) => {
-                                typeinf::get_return_type_of_function(&m, &m, self.session).and_then(
+                                let mut return_ty = typeinf::get_return_type_of_function(&m, &m, self.session);
+                                // Account for already resolved generics if the return type is Self
+                                // (in which case we return bare type as found in the `impl` header)
+                                if let (Some(Ty::Match(ref mut m)), Some(gen)) = (&mut return_ty, gen) {
+                                    for (type_param, arg) in m.generics_mut().zip(gen.args()) {
+                                        if let Some(resolved) = arg.resolved() {
+                                            type_param.resolve(resolved.clone());
+                                        }
+                                    }
+                                }
+                                return_ty.and_then(
                                     |ty| {
                                         path_to_match_including_generics(
                                             ty,
@@ -797,7 +807,7 @@ impl<'c, 's, 'ast> visit::Visitor<'ast> for ExprTypeVisitor<'c, 's> {
         };
     }
     /// Just do nothing if we see a macro, but also prevent the panic! in the default impl.
-    fn visit_mac(&mut self, _mac: &ast::MacCall) {}
+    fn visit_mac_call(&mut self, _mac: &ast::MacCall) {}
 }
 
 // gets generics info from the context match
@@ -965,7 +975,7 @@ impl<'ast> visit::Visitor<'ast> for ExternCrateVisitor {
             }
         }
     }
-    fn visit_mac(&mut self, _mac: &ast::MacCall) {}
+    fn visit_mac_call(&mut self, _mac: &ast::MacCall) {}
 }
 
 #[derive(Debug)]

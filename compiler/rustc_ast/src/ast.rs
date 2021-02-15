@@ -24,7 +24,7 @@ pub use UnsafeSource::*;
 
 use crate::ptr::P;
 use crate::token::{self, CommentKind, DelimToken};
-use crate::tokenstream::{DelimSpan, LazyTokenStream, TokenStream, TokenTree};
+use crate::tokenstream::{DelimSpan, LazyTokenStream, TokenStream};
 
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::stack::ensure_sufficient_stack;
@@ -39,7 +39,6 @@ use rustc_span::{Span, DUMMY_SP};
 use std::cmp::Ordering;
 use std::convert::TryFrom;
 use std::fmt;
-use std::iter;
 
 #[cfg(test)]
 mod tests;
@@ -901,10 +900,39 @@ pub struct Stmt {
     pub id: NodeId,
     pub kind: StmtKind,
     pub span: Span,
-    pub tokens: Option<LazyTokenStream>,
 }
 
 impl Stmt {
+    pub fn tokens(&self) -> Option<&LazyTokenStream> {
+        match self.kind {
+            StmtKind::Local(ref local) => local.tokens.as_ref(),
+            StmtKind::Item(ref item) => item.tokens.as_ref(),
+            StmtKind::Expr(ref expr) | StmtKind::Semi(ref expr) => expr.tokens.as_ref(),
+            StmtKind::Empty => None,
+            StmtKind::MacCall(ref mac) => mac.tokens.as_ref(),
+        }
+    }
+
+    pub fn tokens_mut(&mut self) -> Option<&mut LazyTokenStream> {
+        match self.kind {
+            StmtKind::Local(ref mut local) => local.tokens.as_mut(),
+            StmtKind::Item(ref mut item) => item.tokens.as_mut(),
+            StmtKind::Expr(ref mut expr) | StmtKind::Semi(ref mut expr) => expr.tokens.as_mut(),
+            StmtKind::Empty => None,
+            StmtKind::MacCall(ref mut mac) => mac.tokens.as_mut(),
+        }
+    }
+
+    pub fn set_tokens(&mut self, tokens: Option<LazyTokenStream>) {
+        match self.kind {
+            StmtKind::Local(ref mut local) => local.tokens = tokens,
+            StmtKind::Item(ref mut item) => item.tokens = tokens,
+            StmtKind::Expr(ref mut expr) | StmtKind::Semi(ref mut expr) => expr.tokens = tokens,
+            StmtKind::Empty => {}
+            StmtKind::MacCall(ref mut mac) => mac.tokens = tokens,
+        }
+    }
+
     pub fn has_trailing_semicolon(&self) -> bool {
         match &self.kind {
             StmtKind::Semi(_) => true,
@@ -912,18 +940,25 @@ impl Stmt {
             _ => false,
         }
     }
+
+    /// Converts a parsed `Stmt` to a `Stmt` with
+    /// a trailing semicolon.
+    ///
+    /// This only modifies the parsed AST struct, not the attached
+    /// `LazyTokenStream`. The parser is responsible for calling
+    /// `CreateTokenStream::add_trailing_semi` when there is actually
+    /// a semicolon in the tokenstream.
     pub fn add_trailing_semicolon(mut self) -> Self {
         self.kind = match self.kind {
             StmtKind::Expr(expr) => StmtKind::Semi(expr),
             StmtKind::MacCall(mac) => {
-                StmtKind::MacCall(mac.map(|MacCallStmt { mac, style: _, attrs }| MacCallStmt {
-                    mac,
-                    style: MacStmtStyle::Semicolon,
-                    attrs,
+                StmtKind::MacCall(mac.map(|MacCallStmt { mac, style: _, attrs, tokens }| {
+                    MacCallStmt { mac, style: MacStmtStyle::Semicolon, attrs, tokens }
                 }))
             }
             kind => kind,
         };
+
         self
     }
 
@@ -963,6 +998,7 @@ pub struct MacCallStmt {
     pub mac: MacCall,
     pub style: MacStmtStyle,
     pub attrs: AttrVec,
+    pub tokens: Option<LazyTokenStream>,
 }
 
 #[derive(Clone, Copy, PartialEq, Encodable, Decodable, Debug)]
@@ -988,6 +1024,7 @@ pub struct Local {
     pub init: Option<P<Expr>>,
     pub span: Span,
     pub attrs: AttrVec,
+    pub tokens: Option<LazyTokenStream>,
 }
 
 /// An arm of a 'match'.
@@ -1192,6 +1229,7 @@ impl Expr {
             ExprKind::Field(..) => ExprPrecedence::Field,
             ExprKind::Index(..) => ExprPrecedence::Index,
             ExprKind::Range(..) => ExprPrecedence::Range,
+            ExprKind::Underscore => ExprPrecedence::Path,
             ExprKind::Path(..) => ExprPrecedence::Path,
             ExprKind::AddrOf(..) => ExprPrecedence::AddrOf,
             ExprKind::Break(..) => ExprPrecedence::Break,
@@ -1324,6 +1362,8 @@ pub enum ExprKind {
     Index(P<Expr>, P<Expr>),
     /// A range (e.g., `1..2`, `1..`, `..2`, `1..=2`, `..=2`; and `..` in destructuring assingment).
     Range(Option<P<Expr>>, Option<P<Expr>>, RangeLimits),
+    /// An underscore, used in destructuring assignment to ignore a value.
+    Underscore,
 
     /// Variable reference, possibly containing `::` and/or type
     /// parameters (e.g., `foo::bar::<baz>`).
@@ -1470,20 +1510,6 @@ impl MacArgs {
         match self {
             MacArgs::Empty => TokenStream::default(),
             MacArgs::Delimited(.., tokens) | MacArgs::Eq(.., tokens) => tokens.clone(),
-        }
-    }
-
-    /// Tokens together with the delimiters or `=`.
-    /// Use of this method generally means that something suboptimal or hacky is happening.
-    pub fn outer_tokens(&self) -> TokenStream {
-        match *self {
-            MacArgs::Empty => TokenStream::default(),
-            MacArgs::Delimited(dspan, delim, ref tokens) => {
-                TokenTree::Delimited(dspan, delim.to_token(), tokens.clone()).into()
-            }
-            MacArgs::Eq(eq_span, ref tokens) => {
-                iter::once(TokenTree::token(token::Eq, eq_span)).chain(tokens.trees()).collect()
-            }
         }
     }
 
@@ -1842,6 +1868,7 @@ impl UintTy {
 pub struct AssocTyConstraint {
     pub id: NodeId,
     pub ident: Ident,
+    pub gen_args: Option<GenericArgs>,
     pub kind: AssocTyConstraintKind,
     pub span: Span,
 }

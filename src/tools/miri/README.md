@@ -20,10 +20,17 @@ for example:
   or an invalid enum discriminant)
 * **Experimental**: Violations of the [Stacked Borrows] rules governing aliasing
   for reference types
+* **Experimental**: Data races (but no weak memory effects)
 
 On top of that, Miri will also tell you about memory leaks: when there is memory
 still allocated at the end of the execution, and that memory is not reachable
 from a global `static`, Miri will raise an error.
+
+You can use Miri to emulate programs on other targets, e.g. to ensure that
+byte-level data manipulation works correctly both on little-endian and
+big-endian systems. See
+[cross-interpretation](#cross-interpretation-running-for-different-targets)
+below.
 
 Miri has already discovered some [real-world bugs](#bugs-found-by-miri).  If you
 found a bug with Miri, we'd appreciate if you tell us and we'll add it to the
@@ -43,16 +50,15 @@ in your program, and cannot run all programs:
   still run fine in Miri -- but might break (including causing UB) on different
   compiler versions or different platforms.
 * Program execution is non-deterministic when it depends, for example, on where
-  exactly in memory allocations end up. Miri tests one of many possible
-  executions of your program. If your code is sensitive to allocation base
-  addresses or other non-deterministic data, try running Miri with different
-  values for `-Zmiri-seed` to test different executions.
+  exactly in memory allocations end up, or on the exact interleaving of
+  concurrent threads. Miri tests one of many possible executions of your
+  program. You can alleviate this to some extent by running Miri with different
+  values for `-Zmiri-seed`, but that will still by far not explore all possible
+  executions.
 * Miri runs the program as a platform-independent interpreter, so the program
   has no access to most platform-specific APIs or FFI. A few APIs have been
   implemented (such as printing to stdout) but most have not: for example, Miri
   currently does not support SIMD or networking.
-* Miri currently does not check for data-races and most other concurrency-related
-  issues.
 
 [rust]: https://www.rust-lang.org/
 [mir]: https://github.com/rust-lang/rfcs/blob/master/text/1211-mir.md
@@ -242,8 +248,7 @@ environment variable:
   help identify latent aliasing issues in code that Miri accepts by default. You
   can recognize false positives by "<untagged>" occurring in the message -- this
   indicates a pointer that was cast from an integer, so Miri was unable to track
-  this pointer. Make sure to use a non-Windows target with this flag, as the
-  Windows runtime makes use of integer-pointer casts.
+  this pointer.
 
 Some native rustc `-Z` flags are also very relevant for Miri:
 

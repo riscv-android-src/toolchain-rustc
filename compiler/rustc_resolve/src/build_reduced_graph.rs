@@ -258,7 +258,16 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
                 Ok(ty::Visibility::Restricted(DefId::local(CRATE_DEF_INDEX)))
             }
             ast::VisibilityKind::Inherited => {
-                Ok(ty::Visibility::Restricted(parent_scope.module.normal_ancestor_id))
+                if matches!(self.parent_scope.module.kind, ModuleKind::Def(DefKind::Enum, _, _)) {
+                    // Any inherited visibility resolved directly inside an enum
+                    // (e.g. variants or fields) inherits from the visibility of the enum.
+                    let parent_enum = self.parent_scope.module.def_id().unwrap().expect_local();
+                    Ok(self.r.visibilities[&parent_enum])
+                } else {
+                    // If it's not in an enum, its visibility is restricted to the `mod` item
+                    // that it's defined in.
+                    Ok(ty::Visibility::Restricted(self.parent_scope.module.normal_ancestor_id))
+                }
             }
             ast::VisibilityKind::Restricted { ref path, id, .. } => {
                 // For visibilities we are not ready to provide correct implementation of "uniform
@@ -1155,17 +1164,19 @@ impl<'a, 'b> BuildReducedGraphVisitor<'a, 'b> {
         false
     }
 
-    fn visit_invoc(&mut self, id: NodeId) -> MacroRulesScopeRef<'a> {
+    fn visit_invoc(&mut self, id: NodeId) -> ExpnId {
         let invoc_id = id.placeholder_to_expn_id();
-
-        self.parent_scope.module.unexpanded_invocations.borrow_mut().insert(invoc_id);
-
         let old_parent_scope = self.r.invocation_parent_scopes.insert(invoc_id, self.parent_scope);
         assert!(old_parent_scope.is_none(), "invocation data is reset for an invocation");
+        invoc_id
+    }
 
-        let scope = self.r.arenas.alloc_macro_rules_scope(MacroRulesScope::Invocation(invoc_id));
-        self.r.invocation_macro_rules_scopes.entry(invoc_id).or_default().insert(scope);
-        scope
+    /// Visit invocation in context in which it can emit a named item (possibly `macro_rules`)
+    /// directly into its parent scope's module.
+    fn visit_invoc_in_module(&mut self, id: NodeId) -> MacroRulesScopeRef<'a> {
+        let invoc_id = self.visit_invoc(id);
+        self.parent_scope.module.unexpanded_invocations.borrow_mut().insert(invoc_id);
+        self.r.arenas.alloc_macro_rules_scope(MacroRulesScope::Invocation(invoc_id))
     }
 
     fn proc_macro_stub(&self, item: &ast::Item) -> Option<(MacroKind, Ident, Span)> {
@@ -1293,7 +1304,7 @@ impl<'a, 'b> Visitor<'b> for BuildReducedGraphVisitor<'a, 'b> {
                 return;
             }
             ItemKind::MacCall(..) => {
-                self.parent_scope.macro_rules = self.visit_invoc(item.id);
+                self.parent_scope.macro_rules = self.visit_invoc_in_module(item.id);
                 return;
             }
             ItemKind::Mod(..) => self.contains_macro_use(&item.attrs),
@@ -1311,7 +1322,7 @@ impl<'a, 'b> Visitor<'b> for BuildReducedGraphVisitor<'a, 'b> {
 
     fn visit_stmt(&mut self, stmt: &'b ast::Stmt) {
         if let ast::StmtKind::MacCall(..) = stmt.kind {
-            self.parent_scope.macro_rules = self.visit_invoc(stmt.id);
+            self.parent_scope.macro_rules = self.visit_invoc_in_module(stmt.id);
         } else {
             visit::walk_stmt(self, stmt);
         }
@@ -1319,7 +1330,7 @@ impl<'a, 'b> Visitor<'b> for BuildReducedGraphVisitor<'a, 'b> {
 
     fn visit_foreign_item(&mut self, foreign_item: &'b ForeignItem) {
         if let ForeignItemKind::MacCall(_) = foreign_item.kind {
-            self.visit_invoc(foreign_item.id);
+            self.visit_invoc_in_module(foreign_item.id);
             return;
         }
 
@@ -1338,7 +1349,14 @@ impl<'a, 'b> Visitor<'b> for BuildReducedGraphVisitor<'a, 'b> {
 
     fn visit_assoc_item(&mut self, item: &'b AssocItem, ctxt: AssocCtxt) {
         if let AssocItemKind::MacCall(_) = item.kind {
-            self.visit_invoc(item.id);
+            match ctxt {
+                AssocCtxt::Trait => {
+                    self.visit_invoc_in_module(item.id);
+                }
+                AssocCtxt::Impl => {
+                    self.visit_invoc(item.id);
+                }
+            }
             return;
         }
 
@@ -1462,7 +1480,7 @@ impl<'a, 'b> Visitor<'b> for BuildReducedGraphVisitor<'a, 'b> {
     // type and value namespaces.
     fn visit_variant(&mut self, variant: &'b ast::Variant) {
         if variant.is_placeholder {
-            self.visit_invoc(variant.id);
+            self.visit_invoc_in_module(variant.id);
             return;
         }
 

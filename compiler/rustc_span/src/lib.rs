@@ -34,6 +34,7 @@ use hygiene::Transparency;
 pub use hygiene::{DesugaringKind, ExpnData, ExpnId, ExpnKind, ForLoopLoc, MacroKind};
 pub mod def_id;
 use def_id::{CrateNum, DefId, LOCAL_CRATE};
+pub mod lev_distance;
 mod span_encoding;
 pub use span_encoding::{Span, DUMMY_SP};
 
@@ -181,7 +182,7 @@ impl std::fmt::Display for FileName {
         use FileName::*;
         match *self {
             Real(RealFileName::Named(ref path)) => write!(fmt, "{}", path.display()),
-            // FIXME: might be nice to display both compoments of Devirtualized.
+            // FIXME: might be nice to display both components of Devirtualized.
             // But for now (to backport fix for issue #70924), best to not
             // perturb diagnostics so its obvious test suite still works.
             Real(RealFileName::Devirtualized { ref local_path, virtual_name: _ }) => {
@@ -1014,10 +1015,7 @@ pub enum ExternalSourceKind {
 
 impl ExternalSource {
     pub fn is_absent(&self) -> bool {
-        match self {
-            ExternalSource::Foreign { kind: ExternalSourceKind::Present(_), .. } => false,
-            _ => true,
-        }
+        !matches!(self, ExternalSource::Foreign { kind: ExternalSourceKind::Present(_), .. })
     }
 
     pub fn get_source(&self) -> Option<&Lrc<String>> {

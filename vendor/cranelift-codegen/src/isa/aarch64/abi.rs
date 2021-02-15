@@ -3,7 +3,6 @@
 use crate::ir;
 use crate::ir::types;
 use crate::ir::types::*;
-use crate::ir::SourceLoc;
 use crate::isa;
 use crate::isa::aarch64::{inst::EmitState, inst::*};
 use crate::machinst::*;
@@ -150,6 +149,11 @@ impl ABIMachineSpec for AArch64MachineDeps {
 
     fn word_bits() -> u32 {
         64
+    }
+
+    /// Return required stack alignment in bytes.
+    fn stack_align(_call_conv: isa::CallConv) -> u32 {
+        16
     }
 
     fn compute_arg_locs(
@@ -375,7 +379,7 @@ impl ABIMachineSpec for AArch64MachineDeps {
             extendop: ExtendOp::UXTX,
         });
         insts.push(Inst::TrapIf {
-            trap_info: (ir::SourceLoc::default(), ir::TrapCode::StackOverflow),
+            trap_code: ir::TrapCode::StackOverflow,
             // Here `Lo` == "less than" when interpreting the two
             // operands as unsigned integers.
             kind: CondBrKind::Cond(Cond::Lo),
@@ -508,6 +512,7 @@ impl ABIMachineSpec for AArch64MachineDeps {
         _: &settings::Flags,
         clobbers: &Set<Writable<RealReg>>,
         fixed_frame_storage_size: u32,
+        _outgoing_args_size: u32,
     ) -> (u64, SmallVec<[Inst; 16]>) {
         let mut insts = SmallVec::new();
         let (clobbered_int, clobbered_vec) = get_regs_saved_in_prologue(call_conv, clobbers);
@@ -548,7 +553,6 @@ impl ABIMachineSpec for AArch64MachineDeps {
                     stack_reg(),
                     SImm9::maybe_from_i64((vec_offset + (i * 16)) as i64).unwrap(),
                 ),
-                srcloc: None,
             });
         }
 
@@ -559,6 +563,8 @@ impl ABIMachineSpec for AArch64MachineDeps {
         call_conv: isa::CallConv,
         flags: &settings::Flags,
         clobbers: &Set<Writable<RealReg>>,
+        _fixed_frame_storage_size: u32,
+        _outgoing_args_size: u32,
     ) -> SmallVec<[Inst; 16]> {
         let mut insts = SmallVec::new();
         let (clobbered_int, clobbered_vec) = get_regs_saved_in_prologue(call_conv, clobbers);
@@ -595,7 +601,6 @@ impl ABIMachineSpec for AArch64MachineDeps {
                     stack_reg(),
                     SImm9::maybe_from_i64(((i * 16) + int_save_bytes) as i64).unwrap(),
                 ),
-                srcloc: None,
             });
         }
 
@@ -626,7 +631,6 @@ impl ABIMachineSpec for AArch64MachineDeps {
         dest: &CallDest,
         uses: Vec<Reg>,
         defs: Vec<Writable<Reg>>,
-        loc: SourceLoc,
         opcode: ir::Opcode,
         tmp: Writable<Reg>,
         callee_conv: isa::CallConv,
@@ -641,7 +645,6 @@ impl ABIMachineSpec for AArch64MachineDeps {
                         dest: name.clone(),
                         uses,
                         defs,
-                        loc,
                         opcode,
                         caller_callconv: caller_conv,
                         callee_callconv: callee_conv,
@@ -655,7 +658,6 @@ impl ABIMachineSpec for AArch64MachineDeps {
                         rd: tmp,
                         name: Box::new(name.clone()),
                         offset: 0,
-                        srcloc: loc,
                     },
                 ));
                 insts.push((
@@ -665,7 +667,6 @@ impl ABIMachineSpec for AArch64MachineDeps {
                             rn: tmp.to_reg(),
                             uses,
                             defs,
-                            loc,
                             opcode,
                             caller_callconv: caller_conv,
                             callee_callconv: callee_conv,
@@ -680,7 +681,6 @@ impl ABIMachineSpec for AArch64MachineDeps {
                         rn: *reg,
                         uses,
                         defs,
-                        loc,
                         opcode,
                         caller_callconv: caller_conv,
                         callee_callconv: callee_conv,

@@ -12,11 +12,12 @@ use rustc_middle::hir::map::Map;
 use rustc_middle::lint::in_external_macro;
 use rustc_middle::ty;
 use rustc_middle::ty::{DefIdTree, Ty};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_semver::RustcVersion;
+use rustc_session::{declare_tool_lint, impl_lint_pass};
 use rustc_span::symbol::kw;
 use rustc_typeck::hir_ty_to_ty;
 
-use crate::utils::{differing_macro_contexts, span_lint_and_sugg};
+use crate::utils::{differing_macro_contexts, meets_msrv, span_lint_and_sugg};
 
 declare_clippy_lint! {
     /// **What it does:** Checks for unnecessary repetition of structure name when a
@@ -53,7 +54,7 @@ declare_clippy_lint! {
     "unnecessary structure name repetition whereas `Self` is applicable"
 }
 
-declare_lint_pass!(UseSelf => [USE_SELF]);
+impl_lint_pass!(UseSelf => [USE_SELF]);
 
 const SEGMENTS_MSG: &str = "segments should be composed of at least 1 element";
 
@@ -123,7 +124,7 @@ fn check_trait_method_impl_decl<'tcx>(
         .expect("impl method matches a trait method");
 
     let trait_method_sig = cx.tcx.fn_sig(trait_method.def_id);
-    let trait_method_sig = cx.tcx.erase_late_bound_regions(&trait_method_sig);
+    let trait_method_sig = cx.tcx.erase_late_bound_regions(trait_method_sig);
 
     let output_hir_ty = if let FnRetTy::Return(ty) = &impl_decl.output {
         Some(&**ty)
@@ -157,8 +158,25 @@ fn check_trait_method_impl_decl<'tcx>(
     }
 }
 
+const USE_SELF_MSRV: RustcVersion = RustcVersion::new(1, 37, 0);
+
+pub struct UseSelf {
+    msrv: Option<RustcVersion>,
+}
+
+impl UseSelf {
+    #[must_use]
+    pub fn new(msrv: Option<RustcVersion>) -> Self {
+        Self { msrv }
+    }
+}
+
 impl<'tcx> LateLintPass<'tcx> for UseSelf {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
+        if !meets_msrv(self.msrv.as_ref(), &USE_SELF_MSRV) {
+            return;
+        }
+
         if in_external_macro(cx.sess(), item.span) {
             return;
         }
@@ -204,6 +222,7 @@ impl<'tcx> LateLintPass<'tcx> for UseSelf {
             }
         }
     }
+    extract_msrv_attr!(LateContext);
 }
 
 struct UseSelfVisitor<'a, 'tcx> {

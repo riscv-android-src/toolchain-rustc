@@ -19,7 +19,6 @@ use self::TargetLint::*;
 use crate::levels::LintLevelsBuilder;
 use crate::passes::{EarlyLintPassObject, LateLintPassObject};
 use rustc_ast as ast;
-use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync;
 use rustc_errors::{add_elided_lifetime_in_path_suggestion, struct_span_err, Applicability};
@@ -37,8 +36,10 @@ use rustc_session::lint::BuiltinLintDiagnostics;
 use rustc_session::lint::{FutureIncompatibleInfo, Level, Lint, LintBuffer, LintId};
 use rustc_session::Session;
 use rustc_session::SessionLintStore;
+use rustc_span::lev_distance::find_best_match_for_name;
 use rustc_span::{symbol::Symbol, MultiSpan, Span, DUMMY_SP};
 use rustc_target::abi::LayoutOf;
+use tracing::debug;
 
 use std::cell::Cell;
 use std::slice;
@@ -335,6 +336,20 @@ impl LintStore {
         }
     }
 
+    /// True if this symbol represents a lint group name.
+    pub fn is_lint_group(&self, lint_name: Symbol) -> bool {
+        debug!(
+            "is_lint_group(lint_name={:?}, lint_groups={:?})",
+            lint_name,
+            self.lint_groups.keys().collect::<Vec<_>>()
+        );
+        let lint_name_str = &*lint_name.as_str();
+        self.lint_groups.contains_key(&lint_name_str) || {
+            let warnings_name_str = crate::WARNINGS.name_lower();
+            lint_name_str == &*warnings_name_str
+        }
+    }
+
     /// Checks the name of a lint for its existence, and whether it was
     /// renamed or removed. Generates a DiagnosticBuilder containing a
     /// warning for renamed and removed lints. This is over both lint
@@ -411,7 +426,7 @@ impl LintStore {
                         self.by_name.keys().map(|name| Symbol::intern(&name)).collect::<Vec<_>>();
 
                     let suggestion = find_best_match_for_name(
-                        symbols.iter(),
+                        &symbols,
                         Symbol::intern(&lint_name.to_lowercase()),
                         None,
                     );
@@ -786,7 +801,7 @@ impl<'tcx> LateContext<'tcx> {
 
             fn print_dyn_existential(
                 self,
-                _predicates: &'tcx ty::List<ty::ExistentialPredicate<'tcx>>,
+                _predicates: &'tcx ty::List<ty::Binder<ty::ExistentialPredicate<'tcx>>>,
             ) -> Result<Self::DynExistential, Self::Error> {
                 Ok(())
             }

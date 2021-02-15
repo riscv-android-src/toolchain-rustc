@@ -5,20 +5,27 @@ use rustc_ast::attr;
 use rustc_ast::unwrap_or;
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_errors::{struct_span_err, Applicability};
+use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_hir::{intravisit, HirId};
 use rustc_middle::hir::map::Map;
+use rustc_middle::lint::LevelSource;
 use rustc_middle::lint::LintDiagnosticBuilder;
-use rustc_middle::lint::{struct_lint_level, LintLevelMap, LintLevelSets, LintSet, LintSource};
+use rustc_middle::lint::{
+    struct_lint_level, LintLevelMap, LintLevelSets, LintLevelSource, LintSet,
+};
 use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::TyCtxt;
-use rustc_session::lint::{builtin, Level, Lint, LintId};
+use rustc_session::lint::{
+    builtin::{self, FORBIDDEN_LINT_GROUPS},
+    Level, Lint, LintId,
+};
 use rustc_session::parse::feature_err;
 use rustc_session::Session;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::{source_map::MultiSpan, Span, DUMMY_SP};
+use tracing::debug;
 
 use std::cmp;
 
@@ -28,6 +35,8 @@ fn lint_levels(tcx: TyCtxt<'_>, cnum: CrateNum) -> LintLevelMap {
     let levels = LintLevelsBuilder::new(tcx.sess, false, &store);
     let mut builder = LintLevelMapBuilder { levels, tcx, store };
     let krate = tcx.hir().krate();
+
+    builder.levels.id_to_set.reserve(krate.exported_macros.len() + 1);
 
     let push = builder.levels.push(&krate.item.attrs, &store, true);
     builder.levels.register_id(hir::CRATE_HIR_ID);
@@ -46,6 +55,7 @@ pub struct LintLevelsBuilder<'s> {
     id_to_set: FxHashMap<HirId, u32>,
     cur: u32,
     warn_about_weird_lints: bool,
+    store: &'s LintStore,
 }
 
 pub struct BuilderPush {
@@ -54,13 +64,14 @@ pub struct BuilderPush {
 }
 
 impl<'s> LintLevelsBuilder<'s> {
-    pub fn new(sess: &'s Session, warn_about_weird_lints: bool, store: &LintStore) -> Self {
+    pub fn new(sess: &'s Session, warn_about_weird_lints: bool, store: &'s LintStore) -> Self {
         let mut builder = LintLevelsBuilder {
             sess,
             sets: LintLevelSets::new(),
             cur: 0,
             id_to_set: Default::default(),
             warn_about_weird_lints,
+            store,
         };
         builder.process_command_line(sess, store);
         assert_eq!(builder.sets.list.len(), 1);
@@ -88,12 +99,105 @@ impl<'s> LintLevelsBuilder<'s> {
             };
             for id in ids {
                 self.check_gated_lint(id, DUMMY_SP);
-                let src = LintSource::CommandLine(lint_flag_val, orig_level);
+                let src = LintLevelSource::CommandLine(lint_flag_val, orig_level);
                 specs.insert(id, (level, src));
             }
         }
 
         self.sets.list.push(LintSet::CommandLine { specs });
+    }
+
+    /// Attempts to insert the `id` to `level_src` map entry. If unsuccessful
+    /// (e.g. if a forbid was already inserted on the same scope), then emits a
+    /// diagnostic with no change to `specs`.
+    fn insert_spec(
+        &mut self,
+        specs: &mut FxHashMap<LintId, LevelSource>,
+        id: LintId,
+        (level, src): LevelSource,
+    ) {
+        // Setting to a non-forbid level is an error if the lint previously had
+        // a forbid level. Note that this is not necessarily true even with a
+        // `#[forbid(..)]` attribute present, as that is overriden by `--cap-lints`.
+        //
+        // This means that this only errors if we're truly lowering the lint
+        // level from forbid.
+        if level != Level::Forbid {
+            if let (Level::Forbid, old_src) =
+                self.sets.get_lint_level(id.lint, self.cur, Some(&specs), &self.sess)
+            {
+                // Backwards compatibility check:
+                //
+                // We used to not consider `forbid(lint_group)`
+                // as preventing `allow(lint)` for some lint `lint` in
+                // `lint_group`. For now, issue a future-compatibility
+                // warning for this case.
+                let id_name = id.lint.name_lower();
+                let fcw_warning = match old_src {
+                    LintLevelSource::Default => false,
+                    LintLevelSource::Node(symbol, _, _) => self.store.is_lint_group(symbol),
+                    LintLevelSource::CommandLine(symbol, _) => self.store.is_lint_group(symbol),
+                };
+                debug!(
+                    "fcw_warning={:?}, specs.get(&id) = {:?}, old_src={:?}, id_name={:?}",
+                    fcw_warning, specs, old_src, id_name
+                );
+
+                let decorate_diag_builder = |mut diag_builder: DiagnosticBuilder<'_>| {
+                    diag_builder.span_label(src.span(), "overruled by previous forbid");
+                    match old_src {
+                        LintLevelSource::Default => {
+                            diag_builder.note(&format!(
+                                "`forbid` lint level is the default for {}",
+                                id.to_string()
+                            ));
+                        }
+                        LintLevelSource::Node(_, forbid_source_span, reason) => {
+                            diag_builder.span_label(forbid_source_span, "`forbid` level set here");
+                            if let Some(rationale) = reason {
+                                diag_builder.note(&rationale.as_str());
+                            }
+                        }
+                        LintLevelSource::CommandLine(_, _) => {
+                            diag_builder.note("`forbid` lint level was set on command line");
+                        }
+                    }
+                    diag_builder.emit();
+                };
+                if !fcw_warning {
+                    let diag_builder = struct_span_err!(
+                        self.sess,
+                        src.span(),
+                        E0453,
+                        "{}({}) incompatible with previous forbid",
+                        level.as_str(),
+                        src.name(),
+                    );
+                    decorate_diag_builder(diag_builder);
+                } else {
+                    self.struct_lint(
+                        FORBIDDEN_LINT_GROUPS,
+                        Some(src.span().into()),
+                        |diag_builder| {
+                            let diag_builder = diag_builder.build(&format!(
+                                "{}({}) incompatible with previous forbid",
+                                level.as_str(),
+                                src.name(),
+                            ));
+                            decorate_diag_builder(diag_builder);
+                        },
+                    );
+                }
+
+                // Retain the forbid lint level, unless we are
+                // issuing a FCW. In the FCW case, we want to
+                // respect the new setting.
+                if !fcw_warning {
+                    return;
+                }
+            }
+        }
+        specs.insert(id, (level, src));
     }
 
     /// Pushes a list of AST lint attributes onto this context.
@@ -110,7 +214,7 @@ impl<'s> LintLevelsBuilder<'s> {
     ///   `#[allow]`
     ///
     /// Don't forget to call `pop`!
-    pub fn push(
+    pub(crate) fn push(
         &mut self,
         attrs: &[ast::Attribute],
         store: &LintStore,
@@ -219,10 +323,10 @@ impl<'s> LintLevelsBuilder<'s> {
                 let name = meta_item.path.segments.last().expect("empty lint name").ident.name;
                 match store.check_lint_name(&name.as_str(), tool_name) {
                     CheckLintNameResult::Ok(ids) => {
-                        let src = LintSource::Node(name, li.span(), reason);
+                        let src = LintLevelSource::Node(name, li.span(), reason);
                         for &id in ids {
                             self.check_gated_lint(id, attr.span);
-                            specs.insert(id, (level, src));
+                            self.insert_spec(&mut specs, id, (level, src));
                         }
                     }
 
@@ -230,13 +334,13 @@ impl<'s> LintLevelsBuilder<'s> {
                         match result {
                             Ok(ids) => {
                                 let complete_name = &format!("{}::{}", tool_name.unwrap(), name);
-                                let src = LintSource::Node(
+                                let src = LintLevelSource::Node(
                                     Symbol::intern(complete_name),
                                     li.span(),
                                     reason,
                                 );
                                 for id in ids {
-                                    specs.insert(*id, (level, src));
+                                    self.insert_spec(&mut specs, *id, (level, src));
                                 }
                             }
                             Err((Some(ids), new_lint_name)) => {
@@ -267,13 +371,13 @@ impl<'s> LintLevelsBuilder<'s> {
                                     },
                                 );
 
-                                let src = LintSource::Node(
+                                let src = LintLevelSource::Node(
                                     Symbol::intern(&new_lint_name),
                                     li.span(),
                                     reason,
                                 );
                                 for id in ids {
-                                    specs.insert(*id, (level, src));
+                                    self.insert_spec(&mut specs, *id, (level, src));
                                 }
                             }
                             Err((None, _)) => {
@@ -346,7 +450,7 @@ impl<'s> LintLevelsBuilder<'s> {
                 }
 
                 let (lint_attr_name, lint_attr_span) = match *src {
-                    LintSource::Node(name, span, _) => (name, span),
+                    LintLevelSource::Node(name, span, _) => (name, span),
                     _ => continue,
                 };
 
@@ -371,50 +475,6 @@ impl<'s> LintLevelsBuilder<'s> {
                 // don't set a separate error for every lint in the group
                 break;
             }
-        }
-
-        for (id, &(level, ref src)) in specs.iter() {
-            if level == Level::Forbid {
-                continue;
-            }
-            let forbid_src = match self.sets.get_lint_id_level(*id, self.cur, None) {
-                (Some(Level::Forbid), src) => src,
-                _ => continue,
-            };
-            let forbidden_lint_name = match forbid_src {
-                LintSource::Default => id.to_string(),
-                LintSource::Node(name, _, _) => name.to_string(),
-                LintSource::CommandLine(name, _) => name.to_string(),
-            };
-            let (lint_attr_name, lint_attr_span) = match *src {
-                LintSource::Node(name, span, _) => (name, span),
-                _ => continue,
-            };
-            let mut diag_builder = struct_span_err!(
-                self.sess,
-                lint_attr_span,
-                E0453,
-                "{}({}) overruled by outer forbid({})",
-                level.as_str(),
-                lint_attr_name,
-                forbidden_lint_name
-            );
-            diag_builder.span_label(lint_attr_span, "overruled by previous forbid");
-            match forbid_src {
-                LintSource::Default => {}
-                LintSource::Node(_, forbid_source_span, reason) => {
-                    diag_builder.span_label(forbid_source_span, "`forbid` level set here");
-                    if let Some(rationale) = reason {
-                        diag_builder.note(&rationale.as_str());
-                    }
-                }
-                LintSource::CommandLine(_, _) => {
-                    diag_builder.note("`forbid` lint level was set on command line");
-                }
-            }
-            diag_builder.emit();
-            // don't set a separate error for every lint in the group
-            break;
         }
 
         let prev = self.cur;
@@ -447,7 +507,7 @@ impl<'s> LintLevelsBuilder<'s> {
     }
 
     /// Find the lint level for a lint.
-    pub fn lint_level(&self, lint: &'static Lint) -> (Level, LintSource) {
+    pub fn lint_level(&self, lint: &'static Lint) -> (Level, LintLevelSource) {
         self.sets.get_lint_level(lint, self.cur, None, self.sess)
     }
 
